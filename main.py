@@ -18023,20 +18023,75 @@ def daily_cron():
             # wrong (prior) date while the title said today.
             digest_date = datetime.now().strftime('%Y-%m-%d')
             digest_url = 'https://dchub.cloud/news/digest-' + digest_date
-            post_lines = [f'📊 DC Hub Daily Intelligence — {today_str}\n']
             import html as _h_digest  # decode &nbsp; &amp; &#39; etc. leaking from RSS summaries
             def _clean_entity(_s):
                 try:
                     return ' '.join(_h_digest.unescape(str(_s or '')).split())
                 except Exception:
                     return str(_s or '')
-            for i, a in enumerate(articles[:5], 1):
-                post_lines.append(f"{i}. {_clean_entity(a['title'])}")
-                if a.get('summary'):
-                    post_lines.append(f"   {_clean_entity(a['summary'])[:120]}...")
-            post_lines.append(f'\n🔗 Full digest: {digest_url}')
-            post_lines.append('\n#DataCenter #Infrastructure #CloudComputing #AI #DigitalInfrastructure')
-            post_text = '\n'.join(post_lines)
+
+            # r-analyst-voice (2026-06-16): DC Hub Media should sound like an
+            # ANALYST reporting DC Hub's OWN signal + traction — not a news
+            # aggregator. The old post was a raw 5-headline scrape (off-topic
+            # GITEX/SpaceX/6G, ~20 impressions). Now: lead with today's LIVE DCPI
+            # read (our data), the agent-adoption narrative (our moat), and a
+            # VERIFIABLE standing, then ONE on-topic headline our desk is
+            # watching. Honest numbers only (DCPI is live; #1-Smithery verified).
+            _build_mkt = _avoid_mkt = None
+            _mkts_n = 307
+            try:
+                with pg_connection() as _pgd:
+                    _cd = _pgd.cursor()
+                    _cd.execute("""SELECT DISTINCT ON (market_slug) market_name,
+                                          excess_power_score, constraint_score, time_to_power_months
+                                     FROM market_power_scores
+                                    WHERE COALESCE(published, true) = true
+                                    ORDER BY market_slug, computed_at DESC""")
+                    _mr = _cd.fetchall()
+                    if _mr:
+                        _mkts_n = len(_mr)
+                        _b = max(_mr, key=lambda r: (r[1] or 0))
+                        _a2 = max(_mr, key=lambda r: (r[2] or 0))
+                        _build_mkt = (_b[0], _b[1])
+                        _avoid_mkt = (_a2[0], _a2[3])
+            except Exception as _dcpi_e:
+                logger.warning(f"[daily_cron] DCPI read for analyst post failed: {_dcpi_e}")
+
+            _ONTOPIC = ('data center', 'datacenter', 'data-center', 'grid', 'power',
+                        'hyperscale', 'colocation', 'megawatt', ' mw', 'substation',
+                        'fiber', 'interconnect', 'gpu', 'ai infrastructure', 'ai factory',
+                        'equinix', 'digital realty', 'vantage', 'coreweave', 'nuclear',
+                        'transmission', 'cooling')
+            _desk_pick = None
+            for _a in articles:
+                _t = _clean_entity(_a.get('title'))
+                if _t and any(k in _t.lower() for k in _ONTOPIC):
+                    _desk_pick = _t
+                    break
+
+            _lines = [f'📊 DC Hub Intelligence — {today_str}', '']
+            _lines.append("Frontier AI models — Claude, ChatGPT, Gemini, Perplexity — now query "
+                          "DC Hub directly for data-center power, the way an analyst pulls a "
+                          "terminal. They're all asking one thing: where's the power?")
+            _lines.append('')
+            if _build_mkt or _avoid_mkt:
+                _lines.append("Today's live read from the DC Hub Power Index (DCPI):")
+                if _build_mkt and _build_mkt[1] is not None:
+                    _lines.append(f"🟢 Strongest BUILD signal: {_build_mkt[0]} — excess-power score {float(_build_mkt[1]):.0f}")
+                if _avoid_mkt and _avoid_mkt[1] is not None:
+                    _lines.append(f"🔴 Tightest market: {_avoid_mkt[0]} — ~{float(_avoid_mkt[1]):.0f} months to power")
+                _lines.append('')
+            _lines.append(f"{_mkts_n} power markets scored daily · #1 on Smithery for "
+                          "“data center,” “grid” and “power.” The only "
+                          "infrastructure intelligence layer built for agent-native querying.")
+            if _desk_pick:
+                _lines.append('')
+                _lines.append(f"\U0001F4E1 On our desk today: {_desk_pick}")
+            _lines.append('')
+            _lines.append(f"→ Full read: {digest_url}")
+            _lines.append('')
+            _lines.append('#DataCenter #PowerIndex #DCPI #AI #Infrastructure')
+            post_text = '\n'.join(_lines)
 
             # r-image-required (2026-05-30): the daily digest must ship WITH a
             # rich image — NEVER text-only. Live evidence: a text-only digest
