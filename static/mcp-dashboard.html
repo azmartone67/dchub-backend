@@ -43,7 +43,8 @@ async function load() {
     const kt = d.keys_by_tier || {};
     const k = (kt.free||0) + (kt.paid||0) + (kt.enterprise||0);
     document.getElementById('kpis').innerHTML = `
-      <div class="card"><div class="label">Tool calls (7d)</div><div class="value">${d.tool_calls_7d ?? 0}</div></div>
+      <div class="card"><div class="label">Tool calls (7d)</div><div class="value">${(d.tool_calls_7d_complete ?? d.tool_calls_7d ?? 0).toLocaleString()}</div>
+        <div class="sub-value">~${(d.tool_calls_per_day_complete ?? 0).toLocaleString()}/day · last 7 full days (today excluded, so it won't dip mid-day)</div></div>
       <div class="card"><div class="label">Upgrade signals (7d)</div><div class="value">${d.upgrade_signals_7d ?? 0}</div></div>
       <div class="card"><div class="label">Conversions (30d)</div><div class="value">${d.conversions_30d ?? 0}</div></div>
       <div class="card"><div class="label">Active dev keys</div><div class="value">${k}</div>

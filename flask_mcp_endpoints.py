@@ -1402,6 +1402,22 @@ def mcp_funnel():
             )
             out["tool_calls_7d"] = cur.fetchone()[0]
 
+            # r89g (2026-06-15): partial-day-robust 7d count. The raw rolling
+            # tool_calls_7d above INCLUDES the in-progress current UTC day, so it
+            # dips mid-day and reads as "declining big time" when nothing changed
+            # (the recurring false alarm). tool_calls_7d_complete sums the last 7
+            # COMPLETE days (excludes today); per_day is the stable daily rate.
+            # tool_calls_7d stays as-is for back-compat (brain detectors /
+            # mcp_growth.py read it). The dashboard headline uses the complete one.
+            cur.execute(
+                "SELECT COUNT(*) FROM mcp_tool_calls "
+                "WHERE created_at >= CURRENT_DATE - INTERVAL '7 days' "
+                "  AND created_at < CURRENT_DATE"
+            )
+            _cd7 = int((cur.fetchone() or [0])[0])
+            out["tool_calls_7d_complete"] = _cd7
+            out["tool_calls_per_day_complete"] = round(_cd7 / 7)
+
             # r42x (2026-05-26): lifetime aggregate so press releases can
             # cite "N total tool calls since launch" as a moat metric.
             # Uses pg_class.reltuples for instant approximation (no full
