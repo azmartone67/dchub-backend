@@ -1,0 +1,61 @@
+name: Brain Fast-QA (cheap site/QA sweep every 30 min)
+
+# 2026-06-16 — brain speedup v1, lever B. The heavy consistency-radar /
+# Inspector QA runs on a ~6h cadence, so site breakage (a 404, a frozen feed)
+# could sit unnoticed for hours. This cron runs the CHEAP half — a curated
+# URL-health sweep (end-to-end against dchub.cloud) + freshness-drift check —
+# every 30 min, so breakage lands in the brain action-queue within ~1h. It
+# writes/resolves `fast_qa_*` findings (resolve-on-absence) and feeds honest
+# falsifiable resolution predictions to L16 calibration. Read-only checks; the
+# only state it mutates is brain_findings + brain_predictions_log.
+#
+# Minute 13,43 chosen as a free slot (avoids the 5,25,45 / 8-59/15 / 7-59/15
+# crons already in use) so the cron-collision detector stays quiet.
+
+on:
+  schedule:
+    - cron: '13,43 * * * *'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+env:
+  BASE: https://dchub-backend-production.up.railway.app
+
+jobs:
+  fast-qa:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Run the fast-QA sweep
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${ADMIN_KEY:-}" ]; then
+            echo "::warning::DCHUB_ADMIN_KEY not set — skipping fast-QA"
+            exit 0
+          fi
+          http=$(curl -sS --max-time 120 -X POST \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            -o /tmp/fastqa.json -w "%{http_code}" \
+            "$BASE/api/v1/brain/qa/fast-sweep" || echo "000")
+          body=$(cat /tmp/fastqa.json 2>/dev/null || echo '{}')
+          echo "HTTP $http"
+          echo "$body" | python3 -m json.tool 2>/dev/null || echo "$body"
+          # Surface problems as a workflow warning, but NEVER fail the run —
+          # a flaky probe must not page anyone; the finding is the signal.
+          python3 - <<'PY' || true
+          import json
+          try:
+              d = json.load(open('/tmp/fastqa.json'))
+          except Exception:
+              d = {}
+          probs = d.get('problems_total')
+          if probs:
+              print(f"::warning::fast-QA found {probs} problem(s): "
+                    f"{d.get('url_problems')} {d.get('freshness_problems')}")
+          else:
+              print("fast-QA: site healthy" if d.get('ok') else "fast-QA: no result")
+          PY

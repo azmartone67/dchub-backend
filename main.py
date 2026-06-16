@@ -28755,6 +28755,22 @@ try:
 except Exception as _bv3_e:
     print(f"[main] brain_v3_bp register failed: {_bv3_e}", flush=True)
 
+# 2026-06-16 — brain speedup v1: fast-QA loop (cheap ~30-min checks so site
+# breakage is caught in ~1h not ~6h) + action-queue (one ranked surface for the
+# human-consumption bottleneck).
+try:
+    from routes.brain_fast_qa import brain_fast_qa_bp
+    app.register_blueprint(brain_fast_qa_bp)
+    print("[main] brain_fast_qa_bp registered: POST /api/v1/brain/qa/fast-sweep + GET /api/v1/brain/qa/fast-sweep/status", flush=True)
+except Exception as _bfq_e:
+    print(f"[main] brain_fast_qa_bp register failed: {_bfq_e}", flush=True)
+try:
+    from routes.brain_action_queue import brain_action_queue_bp
+    app.register_blueprint(brain_action_queue_bp)
+    print("[main] brain_action_queue_bp registered: GET /api/v1/brain/action-queue", flush=True)
+except Exception as _baq_e:
+    print(f"[main] brain_action_queue_bp register failed: {_baq_e}", flush=True)
+
 # r79 (2026-06-03) — Redirect blueprint for known-dead URLs. Each entry
 # in routes/redirects_404_killer.py is a URL we caught 404ing in production
 # (some during live demos). The link-check CI workflow now catches new

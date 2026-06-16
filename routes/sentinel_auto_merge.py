@@ -619,6 +619,101 @@ def _gate_route_alias_l22(pr_number: int, files: list[dict]) -> tuple[bool, str,
     return True, "route_alias_404: single deterministic @app.route alias addition", {"added_line": added[0][:200]}
 
 
+# ── C1 recipe #2: cron_if_mismatched (stagger a colliding GH Actions cron) ──
+# The L22 cron-stagger recipe (brain_layer22_pr_writer.open_cron_stagger_pr)
+# edits EXACTLY one .github/workflows/*.yml file, changing ONE `cron:` line to
+# move a colliding workflow's minute to a free slot. That is as deterministic
+# and low-blast-radius as route_alias_404, so it earns the second auto-merge
+# slot — behind the SAME L22_AUTO_MERGE_ENABLE master flag + dry-run. The gate
+# below re-derives every safety constraint the PR-writer claims, from the PR
+# itself (never trust the writer's word): single file, under .github/workflows/,
+# NOT the schedule-guarded mega-workflow, +1/-1, both changed lines are quoted
+# `cron:` lines, the new minute is a plain integer, and the resulting file still
+# parses as YAML.
+_L22_CRON_LINE_RE = re.compile(r"^-?\s*cron:\s*(['\"])([^'\"]+)\1\s*$")
+
+
+def _list_l22_cron_prs(days: int = 7) -> list[dict]:
+    """Open L22 cron-stagger fork-PRs (title `[brain-l22] Stagger ... cron
+    collision (auto)`). Returns [] unless L22_AUTO_MERGE_ENABLE=1. Tagged
+    recipe='cron_if_mismatched' so should_auto_merge dispatches to the tight
+    cron gate path."""
+    if not _l22_automerge_on():
+        return []
+    if not _GITHUB_TOKEN:
+        return []
+    import urllib.parse as _up
+    since = (datetime.datetime.utcnow() - datetime.timedelta(days=days)
+             ).strftime("%Y-%m-%d")
+    q = (f"repo:{_GITHUB_REPO} is:pr is:open "
+         f"\"[brain-l22] Stagger\" \"cron collision\" in:title created:>={since}")
+    code, j = _gh_rest("GET", f"/search/issues?q={_up.quote(q)}&per_page=50")
+    if code != 200 or not isinstance(j, dict):
+        return []
+    out = []
+    for it in (j.get("items") or []):
+        out.append({
+            "number":  int(it.get("number") or 0),
+            "title":   it.get("title") or "",
+            "body":    it.get("body") or "",
+            "createdAt": it.get("created_at"),
+            "url":     it.get("html_url"),
+            "recipe":  "cron_if_mismatched",
+        })
+    return out
+
+
+def _gate_cron_l22(pr_number: int, files: list[dict]) -> tuple[bool, str, dict]:
+    """Tight gate for cron_if_mismatched: EXACTLY one file under
+    .github/workflows/ (never evolve-cron.yml), +1/-1, both the added and the
+    removed line are quoted `cron:` schedule lines, the NEW minute is a plain
+    integer, the file carries NO `github.event.schedule` guard, and the head
+    content still parses as YAML."""
+    if len(files) != 1:
+        return False, f"L22_CRON: expected exactly 1 file, got {len(files)}", {"files": [f.get('path') for f in files]}
+    f0 = files[0]
+    path = (f0.get("path") or "")
+    if not path.startswith(".github/workflows/") or not path.endswith((".yml", ".yaml")):
+        return False, f"L22_CRON: file must be a .github/workflows/*.yml, got {path}", {}
+    if path.endswith("/evolve-cron.yml") or path == ".github/workflows/evolve-cron.yml":
+        return False, "L22_CRON: evolve-cron.yml (schedule-guarded mega-workflow) is never auto-mergeable", {}
+    if int(f0.get("additions") or 0) != 1 or int(f0.get("deletions") or 0) != 1:
+        return False, (f"L22_CRON: must be +1/-1, got "
+                       f"+{f0.get('additions')}/-{f0.get('deletions')}"), {}
+    patch = _pr_file_patch(pr_number, path)
+    if not patch:
+        return False, "L22_CRON: could not fetch patch (fail-closed)", {}
+    added = [ln[1:] for ln in patch.splitlines()
+             if ln.startswith("+") and not ln.startswith("+++")]
+    removed = [ln[1:] for ln in patch.splitlines()
+               if ln.startswith("-") and not ln.startswith("---")]
+    if len(added) != 1 or len(removed) != 1:
+        return False, (f"L22_CRON: patch must be exactly 1 added + 1 removed "
+                       f"line, got +{len(added)}/-{len(removed)}"), {"added": added[:2], "removed": removed[:2]}
+    m_add = _L22_CRON_LINE_RE.match(added[0].strip())
+    m_del = _L22_CRON_LINE_RE.match(removed[0].strip())
+    if not m_add or not m_del:
+        return False, ("L22_CRON: both changed lines must be quoted `cron:` "
+                       f"lines; got add={added[0][:80]!r} del={removed[0][:80]!r}"), {}
+    new_expr = m_add.group(2).strip()
+    new_minute = new_expr.split()[0] if new_expr.split() else ""
+    if not new_minute.isdigit():
+        return False, f"L22_CRON: new minute must be a plain integer, got {new_minute!r}", {"new_cron": new_expr}
+    # defense-in-depth: fetch head content; reject schedule-guard + bad YAML
+    content = _pr_patch_for_file(pr_number, path)
+    if content is None:
+        return False, "L22_CRON: could not fetch head content (fail-closed)", {}
+    if "github.event.schedule" in content:
+        return False, "L22_CRON: file is schedule-guarded (github.event.schedule) — never auto-mergeable", {}
+    try:
+        import yaml
+        yaml.safe_load(content)
+    except Exception as e:
+        return False, f"L22_CRON: head content is not valid YAML ({str(e)[:80]})", {}
+    return True, (f"cron_if_mismatched: single +1/-1 cron stagger in {path} "
+                  f"→ minute {new_minute}"), {"file": path, "new_cron": new_expr}
+
+
 def _gate_ci_green(pr_number: int) -> tuple[bool, str, dict]:
     """Require the pre-merge-gauntlet required checks to be conclusion=success on
     the PR head SHA. Fail-CLOSED on missing/pending/queued/awaiting-approval (a
@@ -693,6 +788,25 @@ def should_auto_merge(pr_data: dict) -> tuple[bool, str]:
         if not ok:
             return False, reason
         return True, "route_alias_404: all L22 gates passed (tight signature + CI green)"
+
+    # C1 dispatch #2: L22 cron_if_mismatched fork-PRs — same master flag, its own
+    # tight gate (single +1/-1 cron-line stagger under .github/workflows/).
+    if pr_data.get("recipe") == "cron_if_mismatched":
+        if not _l22_automerge_on():
+            return False, "L22_CRON: L22_AUTO_MERGE_ENABLE off"
+        files = _pr_files(pr_number)
+        if not files:
+            return False, "L22_CRON: no files returned (fail-closed)"
+        ok, reason, _ = _gate_cron_l22(pr_number, files)
+        if not ok:
+            return False, reason
+        ok, reason, _ = _gate_ci_green(pr_number)   # required checks green (fail-closed)
+        if not ok:
+            return False, reason
+        ok, reason, _ = _gate_cap_and_kill_switch()
+        if not ok:
+            return False, reason
+        return True, "cron_if_mismatched: all L22 gates passed (tight +1/-1 cron stagger + CI green)"
 
     # ── L5 sentinel path (existing) ──
     # Gate 1: sentinel-derived
@@ -864,6 +978,7 @@ def run_auto_merge_sweep(force_log_all: bool = True) -> dict:
 
     prs = _list_brain_draft_prs(days=7)
     prs += _list_l22_alias_prs(days=7)   # C1: returns [] unless L22_AUTO_MERGE_ENABLE=1
+    prs += _list_l22_cron_prs(days=7)    # C1 #2: cron-stagger; same master flag
     out["scanned"] = len(prs)
 
     for pr in prs:
