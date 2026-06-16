@@ -43,6 +43,8 @@ _EXCLUDE_FILES = (
     "mcp_bug_fixes_and_new_tools.py",  # historical one-time migration script ($185B->… refs)
     "marketing_engine.py",             # docstring documents the OLD hardcoded "280+ markets" it swapped out
     "bug_squash.py",                   # meta-script: its docstrings quote the patterns it squashes ($324B, 12,907)
+    "wins_poster.py",                  # guard file: its _BANNED fence-self-check regexes literally quote $324B / DC Hub Nexus to BLOCK them
+    "test_wins_poster.py",             # asserts the fence rejects banned strings — must quote them
     # internal drafts / baselines / guard-docs that intentionally quote old values:
     "HEALTH_BASELINE.md", "DEPLOYMENT_LOCK.md", "SHOW_HN_DRAFT.md", "DAVID_EMAIL_DRAFT.md",
     "REGISTRY_SUBMISSIONS.md", "CBRE_x_DCHub_Partnership_Deck.md", "replit.md",

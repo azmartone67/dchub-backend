@@ -18230,6 +18230,17 @@ def daily_cron():
             results['linkedin'] = {'error': str(e)}
             logger.error(f"[daily_cron] linkedin failed: {traceback.format_exc()}")
 
+        # r-wins (2026-06-16): draft DC Hub Media "wins" posts into the review
+        # queue (status='draft' — a human approves; NEVER auto-sent unless
+        # WINS_POSTER_AUTOPILOT_ENABLED). <=1/day, deduped. Wrapped so it can
+        # never affect the digest result.
+        try:
+            from routes.wins_poster import queue_wins as _queue_wins
+            results['wins'] = _queue_wins(dry_run=False)
+            logger.info(f"[daily_cron] wins draft pass: {results['wins'].get('queued')}")
+        except Exception as _wins_e:
+            results['wins'] = {'error': str(_wins_e)[:120]}
+
         logger.info(f"[daily_cron] complete: {results}")
 
     threading.Thread(target=_run, daemon=True, name="daily-cron").start()
@@ -30476,6 +30487,17 @@ try:
     print("[main] brain_qa_bp registered: POST /api/v1/brain/ask + /api/v1/brain/ask/{status,log} + /admin/ask-brain (admin-gated; 50/day cap; budget BRAIN_R3_DAILY_BUDGET_USD; kill: BRAIN_R3_DISABLE or BRAIN_QA_DISABLE)", flush=True)
 except Exception as _bqa_e:
     print(f"[main] brain_qa_bp register failed: {_bqa_e}", file=sys.stderr)
+
+# r-wins (2026-06-16): DC Hub Media wins auto-drafter — detects a REAL fresh win
+# (milestone / agent-traction record / organic AI citation) and DRAFTS an
+# analyst-voice post. Review-queue default (status='draft'; a human approves;
+# never auto-sent unless WINS_POSTER_AUTOPILOT_ENABLED). Admin-gated endpoints.
+try:
+    from routes.wins_poster import register_wins_poster_routes
+    register_wins_poster_routes(app)
+    print("[main] wins_poster_bp registered: /api/v1/admin/wins/{candidates,queue-batch} (admin-gated; review-queue default)", flush=True)
+except Exception as _wins_reg_e:
+    print(f"[main] wins_poster_bp register failed: {_wins_reg_e}", file=sys.stderr)
 
 # === Brain v2 · Layer 3 freshness fields ===
 try:
