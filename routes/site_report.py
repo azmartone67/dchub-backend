@@ -680,6 +680,124 @@ def _gather_latency(lat, lon, target_arg):
     return out
 
 
+def _gather_market(lat, lon, state):
+    """DCPI market context for the site — verdict, time-to-power, queue — plus
+    delivered-power cost and data-center tax incentives. One DB connection,
+    fully failure-isolated (any miss degrades to an empty dict, never a 500).
+    Reuses the same reads as the get_market_brief MCP tool (site_brief)."""
+    out = {}
+    try:
+        from routes.site_valuation_engine import _nearest_market
+        from routes.site_brief import (_conn, _resolve_market,
+                                        _energy_for_state, _tax_for_state)
+    except Exception:
+        return out
+
+    slug = m_state = None
+    dist = None
+    try:
+        slug, m_state, dist = _nearest_market(lat, lon)
+    except Exception:
+        pass
+    st = state or m_state
+
+    conn = None
+    try:
+        conn = _conn()
+        cur = conn.cursor()
+        row = _resolve_market(cur, slug, st)
+        eff_state = st  # state for the cost/tax lookups
+        if row:
+            (m_slug, m_name, m_st, m_iso, verdict, excess, constraint,
+             ttp, queue_wait, queue_cap, reserve, gen_add, curtail,
+             stranded, emergency, risks_json, opps_json, computed_at) = row
+            vu = (verdict or "").upper()
+            out["market"] = {
+                "slug": m_slug, "name": m_name, "state": m_st, "iso": m_iso,
+                "verdict": vu or None,
+                "verdict_color": {"BUILD": "grn", "CAUTION": "amb",
+                                  "AVOID": "red"}.get(vu, "ind"),
+                "excess_power_score": excess, "constraint_score": constraint,
+                "time_to_power_months": ttp, "queue_wait_months": queue_wait,
+                "queue_capacity_mw": queue_cap, "reserve_margin_pct": reserve,
+                "distance_mi": (round(float(dist)) if dist is not None else None),
+            }
+            # The resolved DCPI market row's state is authoritative — prefer it
+            # over the coarse _state_for(), which can mis-bucket near-border
+            # coords (e.g. Ashburn VA → MD), poisoning the cost/tax lookups.
+            eff_state = m_st or st
+        out["energy"] = _energy_for_state(cur, eff_state)
+        out["tax"] = _tax_for_state(cur, eff_state)
+    except Exception:
+        pass
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+    return out
+
+
+def _compute_site_verdict(power, water, air, market):
+    """Composite BUILD / CAUTION / AVOID screening verdict.
+
+    Hard physical site constraints (air, water, transmission distance) drive
+    AVOID; softer factors plus the DCPI market signal drive CAUTION. The market
+    verdict is surfaced as context — never as a sole AVOID gate, because a DCPI
+    AVOID is two-sided (a saturated marquee cluster vs a no-demand town)."""
+    avoid, caution = [], []
+    risk = (air or {}).get("risk")
+    ws = (water or {}).get("_score")
+    pd = (power or {}).get("_dist")
+
+    if risk == "High":
+        avoid.append("High air-permitting risk (major-source / nonattainment pathway)")
+    elif risk in ("Moderate", "Elevated"):
+        caution.append(f"{risk} air-permitting pathway")
+
+    if ws is not None and ws < 30:
+        avoid.append("severe water constraint")
+    elif ws is not None and ws < 50:
+        caution.append("limited water availability — favour closed-loop cooling")
+
+    if pd is None:
+        avoid.append("no mapped transmission within 50 mi")
+    elif pd > 25:
+        avoid.append(f"nearest transmission {_fmt_mi(pd)} out (>25 mi)")
+    elif pd > 10:
+        caution.append(f"transmission {_fmt_mi(pd)} from the site")
+
+    mk = market or {}
+    mv = (mk.get("verdict") or "").upper()
+    ttp = mk.get("time_to_power_months")
+    nm = mk.get("name") or "the local market"
+    if mv == "CAUTION":
+        caution.append(f"DCPI market verdict CAUTION for {nm}")
+    elif mv == "AVOID":
+        caution.append(f"DCPI market verdict AVOID for {nm} "
+                       "(confirm whether saturation or weak demand)")
+    try:
+        if ttp is not None and float(ttp) >= 48:
+            caution.append(f"long interconnection queue (~{int(float(ttp))} mo time-to-power in-market)")
+    except (TypeError, ValueError):
+        pass
+
+    if avoid:
+        label, color = "AVOID", "red"
+        reasons = avoid + caution
+        head = "Material constraints at the screening level — resolve before committing capital."
+    elif caution:
+        label, color = "CAUTION", "amb"
+        reasons = caution
+        head = "Buildable with diligence — the items below are the critical path."
+    else:
+        label, color = "BUILD", "grn"
+        reasons = ["No hard power, water, air, or market constraints surfaced at the screening level."]
+        head = "No screening-level blockers — proceed to detailed diligence."
+    return {"label": label, "color": color, "headline": head, "reasons": reasons[:5]}
+
+
 # ════════════════════════════════════════════════════════════════════════════
 #  Survey assembly
 # ════════════════════════════════════════════════════════════════════════════
@@ -689,7 +807,7 @@ def _build_survey_data(lat, lon, latency_target, capacity_mw):
     # fallback) are the long poles; overlapping them keeps the uncached build to
     # roughly the single slowest section instead of their sum. Each gatherer is
     # already failure-isolated; a future timeout just yields an empty section.
-    with _cf.ThreadPoolExecutor(max_workers=6) as ex:
+    with _cf.ThreadPoolExecutor(max_workers=7) as ex:
         _f = {
             "power": ex.submit(_gather_power, lat, lon, state),
             "gas": ex.submit(_gather_gas, lat, lon, state),
@@ -697,6 +815,7 @@ def _build_survey_data(lat, lon, latency_target, capacity_mw):
             "air": ex.submit(_gather_air, lat, lon, capacity_mw),
             "fiber": ex.submit(_gather_fiber, lat, lon),
             "latency": ex.submit(_gather_latency, lat, lon, latency_target),
+            "market": ex.submit(_gather_market, lat, lon, state),
         }
 
         def _grab(k):
@@ -710,6 +829,10 @@ def _build_survey_data(lat, lon, latency_target, capacity_mw):
         air = _grab("air")
         fiber = _grab("fiber")
         latency = _grab("latency")
+        mkt = _grab("market")
+        market = mkt.get("market") or {}
+        energy = mkt.get("energy") or {}
+        tax = mkt.get("tax") or {}
 
     # Auto satellite site map for the Power page — every report gets a visual of
     # the parcel (a POST upload from the submission portal overrides this).
@@ -784,6 +907,35 @@ def _build_survey_data(lat, lon, latency_target, capacity_mw):
               air.get("pathway", "—"), air_color),
     ]
 
+    # ── DCPI market + cost + tax cells (keeps the summary grid a clean 3×3) ──
+    ind = energy.get("industrial_cents_kwh") if energy else None
+    summary_grid.append(gcell(
+        "Power cost", (f"{ind}¢" if ind is not None else "—"),
+        ("industrial /kWh" if ind is not None else "no EIA rate"), "amb"))
+    if tax:
+        tval = ("DC-specific" if tax.get("data_center_specific")
+                else ("Sales-tax exempt" if tax.get("sales_tax_exempt") else "Limited"))
+        summary_grid.append(gcell("Tax incentives", tval,
+                                  tax.get("state_name") or "state program",
+                                  "grn" if tax.get("data_center_specific") else "amb"))
+    else:
+        summary_grid.append(gcell("Tax incentives", "—", "no state record", "amb"))
+    if market.get("verdict"):
+        ttp_m = market.get("time_to_power_months")
+        mnote = market.get("name") or "—"
+        if ttp_m is not None:
+            try:
+                mnote = f"{mnote} · ~{int(float(ttp_m))} mo to power"
+            except (TypeError, ValueError):
+                pass
+        summary_grid.append(gcell("DCPI market", market["verdict"], mnote,
+                                  market.get("verdict_color", "ind")))
+    else:
+        summary_grid.append(gcell("DCPI market", "—", "no market within range", "ind"))
+
+    # ── Composite screening verdict (the headline a site selector reads first) ──
+    verdict = _compute_site_verdict(power, water, air, market)
+
     # Bottom line — data-driven, honest about gating items.
     gates = []
     gates.append("grid headroom (load study with the interconnecting utility — DC Hub does not hold "
@@ -808,6 +960,7 @@ def _build_survey_data(lat, lon, latency_target, capacity_mw):
         "scorecards": sc,
         "power": power, "gas": gas, "water": water, "air": air,
         "fiber": {**fiber, **latency},
+        "verdict": verdict, "market": market, "energy": energy, "tax": tax,
         "summary": {"grid": summary_grid, "bottom_line": bottom},
         "about": _ABOUT,
         "_meta": {"capacity_mw": capacity_mw, "state": state, "iso": iso},
@@ -883,6 +1036,20 @@ def _kv(k, v_html):
             f'<span class="vv">{v_html}</span></div>')
 
 
+def _verdict_card(v):
+    """Render the composite BUILD / CAUTION / AVOID screening verdict hero."""
+    if not v or not v.get("label"):
+        return ""
+    reasons = "".join(f'<li>{_esc(r)}</li>' for r in v.get("reasons", []))
+    return (
+        f'<div class="verdict {v.get("color","amb")}">'
+        f'<div class="vlabel">{_esc(v["label"])}</div>'
+        '<div class="vbody"><p class="vk">Screening verdict · DC Hub composite</p>'
+        f'<div class="vhead">{_esc(v.get("headline",""))}</div>'
+        f'<ul class="vreasons">{reasons}</ul></div></div>'
+    )
+
+
 def _mapfig(src, cap, h="3.4in", pin=False):
     """Render a map figure (data: URI or URL). Empty src → ''. When pin=True,
     overlays a centered marker (used for the auto satellite site map, which is
@@ -937,6 +1104,16 @@ _CSS = """
   .sc .t{font-family:'JetBrains Mono',monospace;font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--dim);margin:0 0 8px;}
   .sc .v{font-size:23px;font-weight:800;color:#fff;line-height:1;letter-spacing:-.02em;}.sc .v small{font-size:13px;color:var(--mut);font-weight:600;}
   .sc .s{font-size:11.5px;margin-top:6px;font-weight:600;}
+  .verdict{display:flex;align-items:stretch;gap:0;margin-top:24px;border:1px solid var(--b);border-radius:14px;overflow:hidden;background:linear-gradient(160deg,var(--surf),var(--surf2));}
+  .verdict.grn{border-left:4px solid var(--grn);}.verdict.amb{border-left:4px solid var(--amb);}.verdict.red{border-left:4px solid var(--red);}
+  .verdict .vlabel{font-family:'JetBrains Mono',monospace;font-weight:800;font-size:25px;letter-spacing:.04em;padding:16px 22px;display:flex;align-items:center;min-width:1.9in;border-right:1px solid var(--b);}
+  .verdict.grn .vlabel{color:var(--grn);background:rgba(52,211,153,.07);}
+  .verdict.amb .vlabel{color:var(--amb);background:rgba(251,191,36,.07);}
+  .verdict.red .vlabel{color:var(--red);background:rgba(248,113,113,.07);}
+  .verdict .vbody{padding:13px 18px;flex:1;}
+  .verdict .vk{font-family:'JetBrains Mono',monospace;font-size:9px;letter-spacing:.14em;text-transform:uppercase;color:var(--dim);margin:0 0 3px;}
+  .verdict .vhead{color:#fff;font-weight:700;font-size:13.5px;margin-bottom:6px;line-height:1.35;}
+  .verdict .vreasons{margin:0;padding-left:16px;color:var(--mut);font-size:11.5px;line-height:1.5;}
   .cover-foot{display:flex;justify-content:space-between;align-items:flex-end;margin-top:26px;padding-top:14px;border-top:1px solid var(--b);font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--dim);}
   .grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:0 0 14px;}
   .grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin:0 0 14px;}
@@ -974,7 +1151,7 @@ def _render_html(S):
     H = []
 
     def foot():
-        return (f'<div class="foot"><span>DC Hub · Site Intelligence Report</span>'
+        return (f'<div class="foot"><span>DC Hub · Site Study</span>'
                 f'<span>{_esc(S["location"])} · {_esc(S["coords"])}</span></div>')
 
     # ── COVER ──
@@ -992,9 +1169,9 @@ def _render_html(S):
     H.append(
         '<section class="page cover"><div class="cover-glow"></div>'
         '<div class="brandrow"><div class="wordmark">DC<span>·</span>Hub</div>'
-        f'<div class="badge">SITE INTELLIGENCE · {_esc(S["date"])}</div></div>'
+        f'<div class="badge">SITE STUDY · {_esc(S["date"])}</div></div>'
         '<div class="cover-mid"><p class="kick">Power · Gas · Water · Air · Fiber · Latency</p>'
-        f'<h1>{_esc(S["site_name"])}<br>Intelligence Report</h1>'
+        f'<h1>{_esc(S["site_name"])}<br>Site Study</h1>'
         f'<p class="coords">◎ {_esc(S["coords"])} · {_esc(S["location"])}</p>'
         '<p class="lead">A consolidated power, gas, network, water, and permitting assessment for the '
         'candidate site — auto-generated from DC Hub\'s live grid, pipeline, hydrology, and air-quality '
@@ -1002,7 +1179,8 @@ def _render_html(S):
         + (f'<div class="usecase"><div class="l">Intended Use Case</div>'
            f'<div class="v">{_esc(S["use_case"])}</div></div>' if S.get("use_case") else "")
         + '</div>'
-        f'<div class="scorecards">{sc}</div>'
+        + _verdict_card(S.get("verdict"))
+        + f'<div class="scorecards">{sc}</div>'
         f'<div class="cover-foot"><span>{prep} · Powered by DC&nbsp;Hub</span>'
         '<span>dchub.cloud</span></div></section>'
     )
@@ -1011,6 +1189,30 @@ def _render_html(S):
     p = S.get("power") or {}
     headroom_pill = (f'<span class="pill {p.get("headroom_color","amb")}">{_esc(p.get("headroom"))}</span>'
                      if p.get("headroom") else "")
+    # DCPI market context (verdict + time-to-power + queue + power cost) folded
+    # into the substation card — degrades silently to nothing when unavailable.
+    mk = S.get("market") or {}
+    en = S.get("energy") or {}
+    _vpill = (f'<span class="pill {mk.get("verdict_color","amb")}">{_esc(mk.get("verdict"))}</span>'
+              if mk.get("verdict") else None)
+
+    def _mo(x):
+        try:
+            return f'~{int(float(x))} mo' if x is not None else None
+        except (TypeError, ValueError):
+            return None
+    _mname = (f'{_esc(mk.get("name"))}'
+              + (f' · {mk.get("distance_mi")} mi' if mk.get("distance_mi") is not None else '')
+              ) if mk.get("name") else None
+    market_kvs = (
+        _kv("Nearest DCPI market", _mname)
+        + _kv("In-market verdict", _vpill)
+        + _kv("Time to power", _mo(mk.get("time_to_power_months")))
+        + _kv("Queue wait", _mo(mk.get("queue_wait_months")))
+        + _kv("Power cost (industrial)",
+              (f'{en.get("industrial_cents_kwh")}¢/kWh'
+               if en.get("industrial_cents_kwh") is not None else None))
+    )
     H.append(
         '<section class="page"><p class="kick"><span class="secnum">01</span> &nbsp;Power &amp; Grid</p>'
         '<h2>⚡ Transmission &amp; Substation</h2><div class="sec-rule"></div>'
@@ -1022,7 +1224,9 @@ def _render_html(S):
         + _kv("Voltage", _esc(p.get("voltage", "—")))
         + _kv("Operator", _esc(p.get("operator", "—")))
         + _kv("ISO / RTO", _esc(p.get("iso", "—")))
-        + (f'<div class="src"><b>Source:</b> {_esc(p.get("substation_source"))}</div>'
+        + market_kvs
+        + (f'<div class="src"><b>Source:</b> {_esc(p.get("substation_source"))}'
+           + (' · DCPI market layer' if mk.get("verdict") else '') + '</div>'
            if p.get("substation_source") else "")
         + '</div>'
         '<div class="card amb"><p class="lab">Transmission Line</p>'
@@ -1143,7 +1347,8 @@ def _render_html(S):
     H.append(
         '<section class="page"><p class="kick"><span class="secnum">06</span> &nbsp;Summary</p>'
         '<h2>◎ Site Readiness Summary</h2><div class="sec-rule"></div>'
-        f'<div class="grid3">{grid}</div>'
+        + _verdict_card(S.get("verdict"))
+        + f'<div class="grid3">{grid}</div>'
         + (f'<div class="card" style="margin-top:6px"><p class="lab">Bottom line</p>'
            f'<p class="note" style="font-size:13.5px;color:#d4d4d8">{_esc(sm.get("bottom_line"))}</p></div>'
            if sm.get("bottom_line") else "")
@@ -1178,7 +1383,7 @@ def _render_html(S):
     return (
         '<!doctype html><html lang="en"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width,initial-scale=1">'
-        f'<title>DC Hub · {_esc(S["site_name"])} · Site Report</title>'
+        f'<title>DC Hub · {_esc(S["site_name"])} · Site Study</title>'
         '<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap">'
         f'<style>{_CSS}</style></head><body>'
         + "".join(H)
@@ -1219,7 +1424,7 @@ def _render_unlock_page():
     CF proxy didn't forward the cookie to /api/*. If not logged in, prompt login."""
     return """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>DC Hub · Site Intelligence Report</title>
+<title>DC Hub · Site Study</title>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;600;700&display=swap">
 <style>
  html,body{margin:0;height:100%;background:#0a0a0f;color:#a1a1aa;font-family:'Instrument Sans',system-ui,sans-serif}
@@ -1229,7 +1434,7 @@ def _render_unlock_page():
  @keyframes sp{to{transform:rotate(360deg)}} a{color:#22d3ee;font-weight:600}
 </style></head>
 <body><div class="wrap"><div><div class="wm">DC<span>·</span>Hub</div>
-<div class="sp" id="sp"></div><div id="m">Loading your Site Intelligence Report…</div></div></div>
+<div class="sp" id="sp"></div><div id="m">Loading your DC Hub Site Study…</div></div></div>
 <script>
 (function(){
   var t=null; try{t=localStorage.getItem('dchub_token');}catch(e){}
@@ -1369,6 +1574,7 @@ def _render_portal(prefill):
 #  Route
 # ════════════════════════════════════════════════════════════════════════════
 @site_report_bp.route("/api/v1/site-report/portal", methods=["GET"])
+@site_report_bp.route("/api/v1/site-study/portal", methods=["GET"])
 def site_report_portal():
     """Human-facing submission portal (public form; generation is PRO-gated by
     the POST below). Pre-fills lat/lon from the query so the map's
@@ -1380,6 +1586,7 @@ def site_report_portal():
 
 
 @site_report_bp.route("/api/v1/site-report", methods=["GET", "POST"])
+@site_report_bp.route("/api/v1/site-study", methods=["GET", "POST"])
 def site_report():
     # PRO gate (premium deliverable). Anon/FREE → 402 + upgrade JSON.
     try:
@@ -1402,9 +1609,11 @@ def site_report():
                                 headers={"Cache-Control": "private, no-store",
                                          "X-Content-Type-Options": "nosniff"})
             return _gate_response(tier, "PRO", "site_report", {
-                "what": "Auto-generated, branded Site Intelligence Report from a lat/lon",
-                "sections": ["Power/Transmission", "Gas", "Water & Drought",
-                             "Air Permitting", "Fiber", "Latency"],
+                "what": "Auto-generated, branded DC Hub Site Study from a lat/lon",
+                "verdict": "Composite BUILD / CAUTION / AVOID screening verdict",
+                "sections": ["Power/Transmission + DCPI market verdict & time-to-power",
+                             "Gas", "Water & Drought", "Air Permitting", "Fiber",
+                             "Latency", "Power cost & tax incentives"],
                 "upgrade_url": "/pricing",
             })
     except Exception:

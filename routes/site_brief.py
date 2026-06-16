@@ -96,17 +96,40 @@ def _resolve_market(cur, slug, state):
     return None
 
 
+# eia_retail_rates stores the FULL state name ("Virginia"), but callers pass the
+# 2-letter abbreviation ("VA"). Without this map the energy lookup matched
+# nothing and every energy section (Site Study + the get_market_brief MCP tool)
+# silently returned null. Match both forms.
+_STATE_FULL = {
+    "AL": "Alabama", "AK": "Alaska", "AZ": "Arizona", "AR": "Arkansas",
+    "CA": "California", "CO": "Colorado", "CT": "Connecticut", "DE": "Delaware",
+    "DC": "District of Columbia", "FL": "Florida", "GA": "Georgia", "HI": "Hawaii",
+    "ID": "Idaho", "IL": "Illinois", "IN": "Indiana", "IA": "Iowa", "KS": "Kansas",
+    "KY": "Kentucky", "LA": "Louisiana", "ME": "Maine", "MD": "Maryland",
+    "MA": "Massachusetts", "MI": "Michigan", "MN": "Minnesota", "MS": "Mississippi",
+    "MO": "Missouri", "MT": "Montana", "NE": "Nebraska", "NV": "Nevada",
+    "NH": "New Hampshire", "NJ": "New Jersey", "NM": "New Mexico", "NY": "New York",
+    "NC": "North Carolina", "ND": "North Dakota", "OH": "Ohio", "OK": "Oklahoma",
+    "OR": "Oregon", "PA": "Pennsylvania", "RI": "Rhode Island", "SC": "South Carolina",
+    "SD": "South Dakota", "TN": "Tennessee", "TX": "Texas", "UT": "Utah",
+    "VT": "Vermont", "VA": "Virginia", "WA": "Washington", "WV": "West Virginia",
+    "WI": "Wisconsin", "WY": "Wyoming",
+}
+
+
 def _energy_for_state(cur, state):
     """Latest retail ¢/kWh per sector for a state."""
     if not state:
         return None
+    su = state.strip().upper()
+    full = _STATE_FULL.get(su, state)  # already a full name → keep as-is
     try:
         cur.execute(
             """SELECT DISTINCT ON (LOWER(sector))
                       LOWER(sector), rate_cents_kwh, period
                  FROM eia_retail_rates
-                WHERE UPPER(state) = %s
-                ORDER BY LOWER(sector), period DESC""", (state.upper(),))
+                WHERE UPPER(state) IN (%s, %s)
+                ORDER BY LOWER(sector), period DESC""", (su, full.upper()))
         rows = cur.fetchall()
     except Exception:
         return None
