@@ -120,9 +120,18 @@ def _summary(cur):
                 d7 = int(cur_count) - int(wk_c)
         dsc = _days_since_change(hist)
         flat = bool(stale is not None and dsc is not None and dsc > stale)
+        # Best-available rolling window: current vs the OLDEST snapshot still
+        # within 7d. Lets the public feed show a real delta even while the
+        # tracker is younger than 7 days (then window_days < 7, labelled so).
+        dwin = wdays = None
+        for d, cc in reversed(hist):            # reversed(newest-first) = oldest-first
+            age = (cur_date - d).days
+            if 1 <= age <= 7:
+                dwin, wdays = int(cur_count) - int(cc), age
+                break
         rec = {"layer": label, "category": cat, "count": int(cur_count),
-               "delta_1d": d1, "delta_7d": d7, "days_since_change": dsc,
-               "flatline": flat, "as_of": str(cur_date)}
+               "delta_1d": d1, "delta_7d": d7, "delta_window": dwin, "window_days": wdays,
+               "days_since_change": dsc, "flatline": flat, "as_of": str(cur_date)}
         out.append(rec)
         if flat:
             flatlines.append(f"{label} (no change in {dsc}d, expected <{stale}d)")
@@ -219,35 +228,45 @@ def whats_new():
     dsn = _dsn()
     if not dsn:
         return jsonify(ok=False, error="no DATABASE_URL"), 503
+    deals = None
     try:
         with psycopg2.connect(dsn, sslmode="require", connect_timeout=8) as c:
             with c.cursor() as cur:
                 _ensure(cur)
                 layers, _flat = _summary(cur)
-                deals_7d = deals_1d = None
+                # Deals: count by DB-insertion time (created_at = when WE added the
+                # row), not the text `date` column (that's the deal's announcement
+                # date, 2018→today, and is text so date math errors).
                 try:
-                    cur.execute("SELECT COUNT(*) FROM deals WHERE date >= CURRENT_DATE - 7")
-                    deals_7d = int(cur.fetchone()[0])
-                    cur.execute("SELECT COUNT(*) FROM deals WHERE date >= CURRENT_DATE - 1")
-                    deals_1d = int(cur.fetchone()[0])
+                    cur.execute("SELECT COUNT(*) FROM deals WHERE created_at::timestamptz >= NOW() - INTERVAL '7 days'")
+                    d7 = int(cur.fetchone()[0])
+                    cur.execute("SELECT COUNT(*) FROM deals WHERE created_at::timestamptz >= NOW() - INTERVAL '1 day'")
+                    d1 = int(cur.fetchone()[0])
+                    cur.execute("SELECT COUNT(*) FROM deals")
+                    dtot = int(cur.fetchone()[0])
+                    deals = (d7, d1, dtot)
                 except Exception:
-                    pass
+                    c.rollback()
     except Exception as e:
         return jsonify(ok=False, error=str(e)[:200]), 500
 
     items = []
-    if deals_7d is not None:
-        items.append({"category": "Data-center deals tracked", "total": None,
-                      "added_7d": deals_7d, "added_1d": deals_1d, "cadence": "daily", "as_of": None})
+    if deals is not None:
+        items.append({"category": "Data-center deals", "total": deals[2],
+                      "added": deals[0], "window_days": 7, "added_1d": deals[1],
+                      "cadence": "daily", "as_of": None})
     for l in layers:
+        if not l["count"]:        # don't advertise empty layers (transmission lives in HIFLD, not this table → 0)
+            continue
         items.append({"category": _FRIENDLY.get(l["layer"], l["layer"]), "total": l["count"],
-                      "added_7d": l["delta_7d"], "added_1d": l["delta_1d"],
-                      "cadence": l["category"], "as_of": l["as_of"]})
-    total_7d = sum(i["added_7d"] for i in items if isinstance(i["added_7d"], int) and i["added_7d"] > 0)
+                      "added": l.get("delta_window"), "window_days": l.get("window_days"),
+                      "added_1d": l["delta_1d"], "cadence": l["category"], "as_of": l["as_of"]})
+    # Everything counted here was added within the last 7 days (layer windows are ≤7d subsets).
+    total_added = sum(i["added"] for i in items if isinstance(i["added"], int) and i["added"] > 0)
     resp = jsonify(ok=True,
                    generated_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                   total_added_7d=total_7d, items=items,
-                   note="Live additions to DC Hub across infrastructure layers (rolling 7-day).",
+                   total_added=total_added, items=items,
+                   note="Live additions to DC Hub across infrastructure layers (rolling 7-day window).",
                    source="DC Hub (dchub.cloud), CC-BY-4.0")
     resp.headers["Cache-Control"] = "public, max-age=1800"
     return resp
