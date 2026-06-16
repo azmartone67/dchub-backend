@@ -1380,8 +1380,9 @@ def _write_release(rel: dict, signals: dict, topic: str) -> tuple[int | None, st
             cur.execute("""
                 INSERT INTO press_releases
                     (title, summary, subheadline, body, meta_description,
-                     slug, source, category, published_date, date, published)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, true)
+                     slug, source, category, published_date, date, published,
+                     published_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, true, NOW())
                 ON CONFLICT (slug) DO UPDATE SET
                     title            = EXCLUDED.title,
                     summary          = EXCLUDED.summary,
@@ -1389,7 +1390,8 @@ def _write_release(rel: dict, signals: dict, topic: str) -> tuple[int | None, st
                     body             = EXCLUDED.body,
                     meta_description = EXCLUDED.meta_description,
                     published_date   = EXCLUDED.published_date,
-                    published        = true
+                    published        = true,
+                    published_at     = NOW()
                 RETURNING id;
             """, (
                 rel["title"][:300],

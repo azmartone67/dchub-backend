@@ -1420,7 +1420,14 @@ def _ingest_mcp_derived() -> dict:
                 continue
             vendor = _detect_vendor(fp_str)
             if not vendor:
-                vendor = _label_unknown_fingerprint(fp_str)
+                # r89h (2026-06-15): do NOT synthesize "Unidentified client: X
+                # queried N times" usage-log filler for unrecognized fingerprints
+                # — it reads as spam on the public DC Hub Media rail and crowds
+                # out genuine vendor citations. Only KNOWN vendors (Perplexity,
+                # Claude, ChatGPT, …) become testimonials; unidentified callers
+                # are skipped. The real prose quotes from the citation scraper
+                # are a separate path and unaffected.
+                continue
             tools_str = ", ".join((t or "?") for t in (tools or [])[:3])
             ext_id = f"{vendor['key']}_{(last_seen.strftime('%Y%m%d') if last_seen else 'na')}"
             quote = (f"{vendor['product']} queried DC Hub MCP {int(calls):,} times "
