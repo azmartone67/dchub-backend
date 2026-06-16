@@ -126,6 +126,21 @@ def compute_self_model() -> dict:
                  WHERE last_seen_at >= NOW() - INTERVAL '24 hours'
             """, default=0)
 
+            # R3 honesty (2026-06-16): the headline must reflect a REAL verified
+            # effect, not merely that a remediation endpoint returned 2xx. The old
+            # rate = executed_ok/(ok+fail) scored ~68% ("verified"), while
+            # autopilot_outcomes (the per-pattern EFFECT verifier) shows only ~3 of
+            # 27 verified actions ever produced a real effect. Read the real signal:
+            # succeeded IS TRUE / FALSE (NULL = no verifier for that pattern → excluded).
+            verified_ok_30d, verified_fail_30d = _safe_dual(cur, """
+                SELECT
+                  COUNT(*) FILTER (WHERE succeeded IS TRUE
+                                    AND verified_at >= NOW() - INTERVAL '30 days'),
+                  COUNT(*) FILTER (WHERE succeeded IS FALSE
+                                    AND verified_at >= NOW() - INTERVAL '30 days')
+                  FROM autopilot_outcomes
+            """, default=(0, 0))
+            # endpoint-fire counts kept ONLY for coverage context — NOT the signal.
             ok_30d, fail_30d = _safe_dual(cur, """
                 SELECT
                   COUNT(*) FILTER (WHERE outcome = 'executed_ok'
@@ -134,8 +149,11 @@ def compute_self_model() -> dict:
                                     AND started_at >= NOW() - INTERVAL '30 days')
                   FROM brain_autopilot_actions
             """, default=(0, 0))
+            verified_sample = verified_ok_30d + verified_fail_30d
+            # Guard a tiny/volatile sample: report None rather than a noisy rate.
+            fix_success_rate = (round(verified_ok_30d / verified_sample, 3)
+                                if verified_sample >= 5 else None)
             attempted = ok_30d + fail_30d
-            fix_success_rate = round(ok_30d / attempted, 3) if attempted else None
 
             recent_rows = _safe_rows(cur, """
                 SELECT pattern_name, finding_issue, outcome, started_at
@@ -190,14 +208,17 @@ def compute_self_model() -> dict:
         except Exception: pass
 
     # ── Honest self-assessment ──
+    # R3: grade on the REAL verified-effect rate; be explicit that endpoint fires
+    # (executed_ok = 2xx) are NOT the success signal.
     if fix_success_rate is None:
-        verdict = "no recent autonomous actions to grade"
+        verdict = (f"insufficient verified sample ({verified_sample} effect-verified "
+                   f"of {ok_30d} endpoint-fires/30d) — cannot grade fix success honestly")
     elif fix_success_rate >= 0.8:
-        verdict = f"healthy — {int(fix_success_rate*100)}% of autonomous fixes verified over 30d"
+        verdict = f"healthy — {int(fix_success_rate*100)}% of autonomous fixes produced a verified real effect over 30d ({verified_ok_30d}/{verified_sample})"
     elif fix_success_rate >= 0.5:
-        verdict = f"mixed — {int(fix_success_rate*100)}% fix-success; some patterns underperform"
+        verdict = f"mixed — {int(fix_success_rate*100)}% verified real-effect rate; many actions fire but don't land ({verified_ok_30d}/{verified_sample})"
     else:
-        verdict = f"degraded — only {int(fix_success_rate*100)}% of fixes verify; review patterns"
+        verdict = f"degraded — only {int(fix_success_rate*100)}% of actions produce a verified real effect ({verified_ok_30d}/{verified_sample}); endpoint-fires ({ok_30d}) overstate success"
 
     pct = f"{int(fix_success_rate*100)}%" if fix_success_rate is not None else "n/a"
     cap_str = (f"{ap_auto}/{ap_total} remediation patterns autonomously (the rest escalate to a human)"
@@ -236,9 +257,11 @@ def compute_self_model() -> dict:
         },
         "current_state": {
             "open_findings_24h": int(open_findings or 0),
-            "fix_success_rate_30d": fix_success_rate,
-            "autonomous_fixes_verified_30d": ok_30d,
-            "autonomous_fixes_failed_30d": fail_30d,
+            "fix_success_rate_30d": fix_success_rate,            # R3: verified REAL-EFFECT rate (autopilot_outcomes.succeeded), not endpoint-fire
+            "verified_real_effects_30d": verified_ok_30d,
+            "verified_sample_30d": verified_sample,              # actions with a real verifier (TRUE+FALSE); cannot-verify (NULL) excluded
+            "endpoint_fires_30d": ok_30d,                        # executed_ok (2xx) — NOT success; coverage context only
+            "endpoint_fire_failures_30d": fail_30d,
             "recent_actions": recent_actions,
             "top_open_finding_types": top_open,
         },
