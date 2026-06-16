@@ -472,6 +472,29 @@ def count_log() -> int:
 # Issue persistence (stuck-issue tracker — the "errors it misses" feature)
 # ---------------------------------------------------------------------------
 
+def seen_counts_map(limit: int = 500) -> dict:
+    """{(issue_label, url): seen_count} for the most persistent rows.
+       Read-side companion to last_outcomes_map — lets the Layer-5 learn
+       loop ACKNOWLEDGE chronically-terminal findings (high seen_count +
+       a non-code-fixable last_outcome) so they stop churning the worklist."""
+    c = _conn()
+    if c is None:
+        return {}
+    try:
+        with c, c.cursor() as cur:
+            cur.execute(
+                """SELECT issue_label, url, seen_count
+                     FROM brain_issue_persistence
+                    ORDER BY seen_count DESC
+                    LIMIT %s;""", (limit,))
+            return {(r[0], r[1] or ""): int(r[2] or 0) for r in cur.fetchall()}
+    except Exception:
+        return {}
+    finally:
+        try: c.close()
+        except Exception: pass
+
+
 def last_outcomes_map(limit: int = 500) -> dict:
     """{(issue_label, url): last_outcome} for the most recently seen rows.
        Read-side companion to bump_persistence — lets the Layer-5 learn

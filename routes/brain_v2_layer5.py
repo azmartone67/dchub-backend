@@ -750,10 +750,12 @@ def learn_backend_issues():
     _PERMAFAIL = {"refused", "rejected_false_syntax_claim",
                   "rejected_sqlite_hallucination"}
     try:
-        from routes.brain_v2_store import last_outcomes_map as _lom
+        from routes.brain_v2_store import last_outcomes_map as _lom, seen_counts_map as _scm
         _prev_outcomes = _lom()
+        _seen_counts = _scm()
     except Exception:
         _prev_outcomes = {}
+        _seen_counts = {}
     if len(backend_issues) > 1:
         _rot = _cycle_no % len(backend_issues)
         backend_issues = backend_issues[_rot:] + backend_issues[:_rot]
@@ -780,6 +782,36 @@ def learn_backend_issues():
             pass
         url = issue.get("url", "")          # e.g. dchub://cron/dcpi_recompute
         label = issue.get("issue", "")[:300]
+
+        # S1.4 (2026-06-16) TERMINAL ACKNOWLEDGE — drain the chronically-stuck
+        # worklist. A finding parked on a NON-code-fixable outcome (config /
+        # availability / no-source / permafail / refused) for many cycles is
+        # owner-action or won't-fix; it inflated seen_count (×60+) with no
+        # progress and kept the "stuck worklist" perpetually noisy. Past the
+        # threshold, ACK it once: stop re-feeding + surface to a human a SINGLE
+        # time. The ack outcome is its own once-guard — next cycle the persisted
+        # last_outcome is 'terminal_acknowledged', so it silent-skips here.
+        _ik = ((issue.get("issue") or "")[:200], url)
+        _prev_oc = (_prev_outcomes.get(_ik)
+                    or _prev_outcomes.get((issue.get("issue") or "", url)) or "")
+        _seen_n = (_seen_counts.get(_ik)
+                   or _seen_counts.get((issue.get("issue") or "", url)) or 0)
+        if _prev_oc == "terminal_acknowledged":
+            results.append({"url": url, "outcome": "terminal_acknowledged"})
+            continue
+        _TERMINAL_OC = ("config_not_code", "not_code_availability", "no_source_map", "refused")
+        if _seen_n >= 40 and (_prev_oc in _TERMINAL_OC or _prev_oc.startswith("skipped_permafail")):
+            try:
+                from routes.brain_v2_store import log_event as _le_ack
+                _le_ack({"issue_label": label[:200], "outcome": "terminal_acknowledged",
+                         "url": url,
+                         "detail": (f"Stuck on '{_prev_oc}' for {_seen_n} cycles — acknowledged "
+                                    f"(owner-action / won't-fix). Surfaced once; dropped from the "
+                                    f"active learn worklist so it stops churning.")})
+            except Exception:
+                pass
+            results.append({"url": url, "outcome": "terminal_acknowledged"})
+            continue
 
         # Gap A (Phase RR-4): cron-schedule / workflow-config findings are
         # NOT Python code bugs — they're scheduling/config issues living in
