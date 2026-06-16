@@ -457,9 +457,19 @@ def get_deals():
             import psycopg2
             with _pg_connection() as pg_conn:
                 pg_cur = pg_conn.cursor()
+                # r89i (2026-06-16): push the buyer/seller junk filter INTO SQL and
+                # raise the cap. Previously `LIMIT 200` applied BEFORE the Python
+                # buyer/seller filter, and 1,936 null-date rows sank under
+                # ORDER BY COALESCE(date,'1970-01-01') DESC — so only ~57 of 2,802
+                # deals ever reached agents (2%). Filtering in SQL + a 2000 cap
+                # returns the full valid set.
                 pg_cur.execute("""
                     SELECT id, date, year, buyer, seller, value, mw, type, region, market
-                    FROM deals ORDER BY COALESCE(date, '1970-01-01') DESC LIMIT 200
+                    FROM deals
+                    WHERE COALESCE(LOWER(TRIM(buyer)),'')  NOT IN ('tbd','unknown','n/a','')
+                      AND COALESCE(LOWER(TRIM(seller)),'') NOT IN ('tbd','unknown','n/a','')
+                    ORDER BY COALESCE(date, '1970-01-01') DESC
+                    LIMIT 2000
                 """)
                 db_deals = []
                 for row in pg_cur.fetchall():
