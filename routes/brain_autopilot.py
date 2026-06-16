@@ -2866,16 +2866,19 @@ def autopilot_verification_status():
                  LIMIT 30
             """)
             rows = cur.fetchall()
-            # Aggregate fix success rate
+            # Aggregate fix success rate. R3 (2026-06-16): grade on the REAL effect
+            # verifier (autopilot_outcomes.succeeded) over 30d, NOT the finding-
+            # disappeared outcome_verified flag — that scored ~92% by counting
+            # findings going quiet (e.g. 91 monthly_trend "successes" with 0
+            # campaigns actually sent). 30d window for a stabler sample; cannot_verify
+            # (NULL = no verifier for that pattern) is excluded from the denominator.
             cur.execute("""
                 SELECT
-                  COUNT(*) FILTER (WHERE outcome_verified = TRUE) AS verified_ok,
-                  COUNT(*) FILTER (WHERE outcome_verified = FALSE) AS verified_failed,
-                  COUNT(*) FILTER (WHERE outcome_verified IS NULL
-                                     AND outcome = 'executed_ok'
-                                     AND started_at > NOW() - INTERVAL '24 hours') AS pending
-                  FROM brain_autopilot_actions
-                 WHERE started_at > NOW() - INTERVAL '7 days'
+                  COUNT(*) FILTER (WHERE succeeded IS TRUE)  AS verified_ok,
+                  COUNT(*) FILTER (WHERE succeeded IS FALSE) AS verified_failed,
+                  COUNT(*) FILTER (WHERE succeeded IS NULL)  AS cannot_verify
+                  FROM autopilot_outcomes
+                 WHERE verified_at > NOW() - INTERVAL '30 days'
             """)
             totals = cur.fetchone() or {}
     finally:
@@ -2883,14 +2886,19 @@ def autopilot_verification_status():
         except Exception: pass
 
     total = (totals.get("verified_ok") or 0) + (totals.get("verified_failed") or 0)
+    # Guard a tiny/volatile sample: None ("n/a") beats a noisy or fabricated rate.
     fix_success_rate = (
         round((totals.get("verified_ok") or 0) / total * 100, 1)
-        if total > 0 else None
+        if total >= 5 else None
     )
 
     return jsonify({
         "ok": True,
-        "totals_7d": dict(totals),
-        "fix_success_rate_pct": fix_success_rate,
-        "by_pattern": [dict(r) for r in rows],
+        # R3: real verified-effect aggregate (autopilot_outcomes.succeeded, 30d).
+        "verified_effect_totals_30d": dict(totals),
+        "fix_success_rate_pct": fix_success_rate,   # verified REAL effect, None if sample < 5
+        "fix_success_signal": "autopilot_outcomes.succeeded (real effect)",
+        # per-pattern breakdown below is the weaker finding-disappeared
+        # (outcome_verified) view, kept as context — NOT the headline signal.
+        "by_pattern_outcome_verified_7d": [dict(r) for r in rows],
     }), 200
