@@ -48,8 +48,12 @@ def _serialize(r):
         "iso": r["iso"],
         "as_of": r["as_of"].isoformat() if r["as_of"] else None,
         "queued_load_total_gw": float(r["queued_load_total_gw"] or 0),
-        "queued_load_data_center_gw": float(r["queued_load_data_center_gw"] or 0),
-        "queued_load_dc_share_pct": float(r["queued_load_dc_share_pct"] or 0),
+        # Honest-null: these feeds are GENERATION queues and do NOT classify
+        # queued load as data-center. NULL means "not tracked" — coercing it to
+        # 0.0 (the old `or 0`) fabricated a "0.0 GW DC-load" figure. Use
+        # `is not None` so a genuine 0.0 (if a feed ever provides one) survives.
+        "queued_load_data_center_gw": float(r["queued_load_data_center_gw"]) if r["queued_load_data_center_gw"] is not None else None,
+        "queued_load_dc_share_pct": float(r["queued_load_dc_share_pct"]) if r["queued_load_dc_share_pct"] is not None else None,
         "new_applications_q_gw": float(r["new_applications_q_gw"]) if r["new_applications_q_gw"] else None,
         "new_applications_period": r["new_applications_period"],
         "historical_completion_pct": float(r["historical_completion_pct"]) if r["historical_completion_pct"] else None,
@@ -65,7 +69,12 @@ def api_snapshot():
     # r47.1: Postgres NUMERIC -> Decimal; cast to float BEFORE arithmetic
     # so we don't mix float/Decimal (TypeError otherwise).
     total_gw = float(sum((r["queued_load_total_gw"] or 0) for r in snap))
-    dc_gw    = float(sum((r["queued_load_data_center_gw"] or 0) for r in snap))
+    # Honest-null: sum only the rows that actually carry a DC figure; if none do
+    # (the current reality — generation queues don't classify DC load), the DC
+    # total + share are null, NOT a fabricated 0.0.
+    _dc_vals = [r["queued_load_data_center_gw"] for r in snap
+                if r["queued_load_data_center_gw"] is not None]
+    dc_gw    = float(sum(_dc_vals)) if _dc_vals else None
     # r70 (2026-06-03): per-ISO freshness. Snapshots refresh per-ISO, so the set
     # can mix today's live data (MISO/SPP/CAISO/NYISO real parsers) with older
     # seeded rows (ERCOT/PJM/ISO-NE, whose source URLs moved). Surface it honestly
@@ -80,7 +89,15 @@ def api_snapshot():
         "totals": {
             "queued_load_gw": total_gw,
             "queued_load_data_center_gw": dc_gw,
-            "dc_share_pct": round(100.0 * dc_gw / total_gw, 1) if total_gw else None,
+            "dc_share_pct": round(100.0 * dc_gw / total_gw, 1) if (dc_gw is not None and total_gw) else None,
+        },
+        "data_center_load": {
+            "tracked": False,
+            "note": ("Figures cover the full generation interconnection queue. The ISO "
+                     "public queues (ERCOT GIS / PJM NSQ / MISO GI / SPP / CAISO / NYISO / "
+                     "ISO-NE) are generation-side and do not classify queued load as "
+                     "data-center, so per-ISO data-center load is not derivable from these "
+                     "feeds and is reported as null rather than 0."),
         },
         "freshness": {
             "latest_as_of": _latest.isoformat() if _latest else None,
@@ -128,8 +145,8 @@ def _row_html(r):
         f"<tr>"
         f'<td class="iso">{r["iso"]}</td>'
         f"<td>{float(r['queued_load_total_gw'] or 0):.1f}</td>"
-        f"<td>{float(r['queued_load_data_center_gw'] or 0):.1f}</td>"
-        f'<td class="dc-share">{float(r["queued_load_dc_share_pct"] or 0):.0f}%</td>'
+        f"<td>{'—' if r['queued_load_data_center_gw'] is None else format(float(r['queued_load_data_center_gw']), '.1f')}</td>"
+        f'<td class="dc-share">{"—" if r["queued_load_dc_share_pct"] is None else format(float(r["queued_load_dc_share_pct"]), ".0f") + "%"}</td>'
         f'<td class="subregions">{sub_html}</td>'
         f"</tr>"
     )
@@ -140,14 +157,25 @@ def landing():
     snap = _latest_snapshot()
     # r47.1: cast Decimal -> float before arithmetic (same bug as api_snapshot)
     total_gw = float(sum((r["queued_load_total_gw"] or 0) for r in snap))
-    dc_gw    = float(sum((r["queued_load_data_center_gw"] or 0) for r in snap))
-    dc_share = round(100.0 * dc_gw / total_gw, 0) if total_gw else 0
+    # Honest-null: DC load is NOT classified in these generation queues.
+    _dc_vals = [r["queued_load_data_center_gw"] for r in snap if r["queued_load_data_center_gw"] is not None]
+    dc_gw    = float(sum(_dc_vals)) if _dc_vals else None
+    dc_share = round(100.0 * dc_gw / total_gw, 0) if (dc_gw is not None and total_gw) else None
+    # Display strings — render '—' / a plain-English note rather than a fake 0.
+    _dc_tracked    = dc_gw is not None
+    _dc_gw_card    = f"{int(dc_gw):,} GW" if _dc_tracked else "—"
+    _dc_share_card = f"{int(dc_share)}%" if (_dc_tracked and dc_share is not None) else "—"
+    _dc_clause     = (f"{int(dc_share)}% is tied to data centers and AI clusters"
+                      if (_dc_tracked and dc_share is not None)
+                      else "data-center share is not separately classified in these generation-queue feeds")
+    _dc_clause_short = (f"{int(dc_share)}% data centers" if (_dc_tracked and dc_share is not None)
+                        else "DC share not separately tracked")
 
     jsonld = {
         "@context": "https://schema.org",
         "@type": "Dataset",
         "name": "ISO Interconnection Queue Snapshots (Data Center Focus)",
-        "description": f"Per-ISO interconnection queue MW totals + data-center share + top BUILD subregions. {int(total_gw)} GW total large-load queued across {len(snap)} US ISOs as of 2026-Q1, {int(dc_share)}% tied to data centers.",
+        "description": f"Per-ISO interconnection queue MW totals + top BUILD subregions. {int(total_gw)} GW total large-load queued across {len(snap)} US ISOs as of 2026-Q1; {_dc_clause}.",
         "url": "https://dchub.cloud/interconnection-queues",
         "creator": {"@type": "Organization", "name": "DC Hub", "url": "https://dchub.cloud"},
         "dateModified": datetime.now(timezone.utc).date().isoformat(),
@@ -167,10 +195,10 @@ def landing():
 <html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>US ISO Interconnection Queues &mdash; Data Center Tracker &middot; DC Hub</title>
-<meta name="description" content="{int(total_gw):,} GW total large-load queued across {len(snap)} US ISOs ({int(dc_share)}% data centers). Per-ISO BUILD/CAUTION/AVOID verdicts + top subregions with shortest TTP. Updated Q1 2026.">
+<meta name="description" content="{int(total_gw):,} GW total large-load queued across {len(snap)} US ISOs ({_dc_clause_short}). Per-ISO BUILD/CAUTION/AVOID verdicts + top subregions with shortest TTP. Updated Q1 2026.">
 <link rel="canonical" href="https://dchub.cloud/interconnection-queues">
 <meta property="og:title" content="US ISO Interconnection Queues &mdash; Data Center Tracker">
-<meta property="og:description" content="{int(total_gw)} GW queued &middot; {int(dc_share)}% data centers &middot; per-ISO BUILD verdicts">
+<meta property="og:description" content="{int(total_gw)} GW queued &middot; {_dc_clause_short} &middot; per-ISO BUILD verdicts">
 <meta property="og:url" content="https://dchub.cloud/interconnection-queues">
 <meta property="og:type" content="website">
 <link rel="alternate" type="application/json" href="/api/v1/interconnection-queue/snapshot" title="Snapshot JSON">
@@ -212,11 +240,11 @@ tr:last-child td{{border-bottom:0}}
 </head><body>
 <div class="eyebrow">DCPI &middot; ISO Queue Tracker</div>
 <h1>US Interconnection Queues &mdash; Data Center Load</h1>
-<p class="lead">{int(total_gw):,} GW of large-load interconnection requests sit in active queues across {len(snap)} US ISOs as of Q1 2026. {int(dc_share)}% is tied to data centers and AI clusters. Below: per-ISO totals and top BUILD subregions (shorter queues, faster Time-to-Power).</p>
+<p class="lead">{int(total_gw):,} GW of large-load interconnection requests sit in active queues across {len(snap)} US ISOs as of Q1 2026 &mdash; {_dc_clause}. Below: per-ISO totals and top BUILD subregions (shorter queues, faster Time-to-Power).</p>
 <div class="headline-stats">
   <div class="stat"><div class="stat-value">{int(total_gw):,} GW</div><div class="stat-label">Total queued large load</div></div>
-  <div class="stat"><div class="stat-value">{int(dc_gw):,} GW</div><div class="stat-label">Data center share</div></div>
-  <div class="stat"><div class="stat-value">{int(dc_share)}%</div><div class="stat-label">DC % of queue</div></div>
+  <div class="stat"><div class="stat-value">{_dc_gw_card}</div><div class="stat-label">Data-center load (not classified in gen-queue feeds)</div></div>
+  <div class="stat"><div class="stat-value">{_dc_share_card}</div><div class="stat-label">DC % of queue</div></div>
   <div class="stat"><div class="stat-value">{len(snap)}</div><div class="stat-label">ISOs tracked</div></div>
 </div>
 <table>

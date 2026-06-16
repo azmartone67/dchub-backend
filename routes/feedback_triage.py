@@ -94,11 +94,11 @@ _PUBLIC_BASE = (os.environ.get("DCHUB_PUBLIC_BASE_URL")
 
 
 def _conn():
-    try:
-        from routes._iso_common import conn as _c
-        return _c()
-    except Exception:
-        pass
+    # Must return a RAW connection: every call site does conn.cursor()/.commit()/
+    # .close(). routes._iso_common.conn is a @contextmanager (yields a conn), so
+    # the old `return _c()` handed back a _GeneratorContextManager and every
+    # triage run crashed with "'_GeneratorContextManager' object has no attribute
+    # 'cursor'". Connect directly.
     try:
         import psycopg2 as _pg
         dsn = (os.environ.get("DATABASE_URL")

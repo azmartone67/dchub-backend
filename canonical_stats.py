@@ -29,8 +29,10 @@ import threading
 # Conservative floors — used as fallback AND as the rounding basis for the
 # "*_phrase()" helpers. Never set these above the true live numbers.
 _FALLBACK = {
-    "facilities": 21000,
+    "facilities": 21000,            # raw "tracked" floor (discovery pile, incl unmerged dupes)
+    "facilities_verified": 3000,    # deduped/active floor — citation-safe (live ~3,141). MUST stay <= reality.
     "countries": 170,
+    "countries_verified": 30,       # deduped/active distinct floor (live ~33; country field dirty -> conservative)
     "markets": 300,          # 2026-06-08: Neon-verified COUNT(DISTINCT market_name) minus 3 aggregates = 300 (grew from 232 via intl expansion). Live query below; this is the fallback.
     "isos": 7,               # 7 live US ISOs (ERCOT, CAISO, NYISO, MISO, PJM, SPP, ISO-NE)
     "grid_operators": 10,    # 10 North-American grid operators w/ live data (7 US ISOs + TVA + BPA + IESO)
@@ -75,7 +77,19 @@ def _query_live() -> dict:
             cur.execute("SELECT COUNT(*) FROM discovered_facilities")
             n = int((cur.fetchone() or [0])[0] or 0)
             if n > 0:
-                out["facilities"] = n
+                out["facilities"] = n            # raw "tracked" discovery pile
+        except Exception:
+            pass
+        # VERIFIED/ACTIVE subset (deduped): excludes duplicate + merged rows.
+        # This is the count the map + dedup pipeline already use internally
+        # (is_duplicate=0 AND merged_at IS NULL). Lead honest copy with this;
+        # "tracked" (raw, above) is the discovery pile incl unmerged candidates.
+        try:
+            cur.execute("SELECT COUNT(*) FROM discovered_facilities "
+                        "WHERE COALESCE(is_duplicate,0)=0 AND merged_at IS NULL")
+            n = int((cur.fetchone() or [0])[0] or 0)
+            if n > 0:
+                out["facilities_verified"] = n
         except Exception:
             pass
         # Distinct countries we have facilities in.
@@ -85,6 +99,18 @@ def _query_live() -> dict:
             n = int((cur.fetchone() or [0])[0] or 0)
             if n > 0:
                 out["countries"] = n
+        except Exception:
+            pass
+        # Verified/active distinct countries (deduped). NB the country field is
+        # dirty (some non-US cities tagged 'US'), so this is approximate — the
+        # floor stays conservative.
+        try:
+            cur.execute("SELECT COUNT(DISTINCT country) FROM discovered_facilities "
+                        "WHERE country IS NOT NULL AND country <> '' "
+                        "AND COALESCE(is_duplicate,0)=0 AND merged_at IS NULL")
+            n = int((cur.fetchone() or [0])[0] or 0)
+            if n > 0:
+                out["countries_verified"] = n
         except Exception:
             pass
         # Markets in the DCPI index. r73 (2026-06-08): TRUE count is
@@ -136,12 +162,32 @@ def _floor_phrase(n: int, step: int = 1000) -> str:
 
 
 def facilities_phrase() -> str:
-    """e.g. '21,000+' — conservative, citation-safe."""
+    """Tracked (raw) floor, e.g. '21,000+' — the discovery pile (back-compat)."""
     return _floor_phrase(get_canonical_stats().get("facilities", _FALLBACK["facilities"]))
+
+
+def facilities_verified_phrase() -> str:
+    """Deduped/active floor, e.g. '3,100+' — what we've actually verified."""
+    return _floor_phrase(
+        get_canonical_stats().get("facilities_verified", _FALLBACK["facilities_verified"]),
+        step=100)
+
+
+def facilities_phrase_full() -> str:
+    """Honest dual claim: '21,000+ tracked · 3,100+ verified'. Prefer this in
+    any marketing/SEO copy that previously made the bare '21,000+ facilities'
+    claim — it keeps the discovery moat without implying 21k are confirmed."""
+    return f"{facilities_phrase()} tracked · {facilities_verified_phrase()} verified"
 
 
 def countries_phrase() -> str:
     n = get_canonical_stats().get("countries", _FALLBACK["countries"])
+    floored = (int(n) // 10) * 10
+    return f"{floored}+"
+
+
+def countries_verified_phrase() -> str:
+    n = get_canonical_stats().get("countries_verified", _FALLBACK["countries_verified"])
     floored = (int(n) // 10) * 10
     return f"{floored}+"
 

@@ -236,3 +236,74 @@ def test_no_fabricated_testimonials():
     hits = _scan([re.compile(re.escape(q), re.I) for q in _FABRICATED_QUOTES])
     assert not hits, ("Re-introduced a FABRICATED AI testimonial — only real "
                       "recorded citations are allowed:\n" + _fmt(hits))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ANTI-FABRICATION INVARIANTS (2026-06-16) — upgrade this fence from a denylist
+# of PAST specific mistakes into checks that catch the CLASS. These exist because
+# the freshness/breakage/placeholder detectors are blind to plausible-but-fake
+# data (it returns 200, looks fresh, isn't empty), and because a regex can't tell
+# a real per-facility `capacity_mw=4500` from a fabricated aggregate — only the
+# patterns below (NULL→0 coercion, ISO-scale literals, dedup-blind canonical
+# counts) are precise enough to gate in CI. The DYNAMIC half (cross-surface value
+# consistency + floor≤live-reality) runs in the brain, which has DB access.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_no_null_to_zero_metric_coercion():
+    """`float(<metric_col> or 0)` silently turns a NULL ('not tracked') into a
+    fabricated 0.0 — this is exactly how the ISO snapshot advertised a fake
+    '0.0 GW data-center load' for all 7 ISOs. Metric columns that can be NULL
+    must use `... if x is not None else None`, not truthiness coercion."""
+    cols = ("queued_load_data_center_gw", "queued_load_dc_share_pct")
+    pats = [re.compile(r"float\([^)]*" + re.escape(c) + r"[^)]*\bor\s+0\s*\)") for c in cols]
+    hits = _scan(pats)
+    assert not hits, ("NULL→0 coercion on a metric column fabricates a '0' where "
+                      "the honest value is 'not tracked' (null). Use "
+                      "`float(x) if x is not None else None`:\n" + _fmt(hits))
+
+
+def test_no_hardcoded_iso_scale_aggregates():
+    """An aggregate metric (total_mw/total_gw/queue total) assigned to a literal
+    >= 100,000 MW (100 GW) is an ISO/national-scale number that must come from
+    the live DB, never a hardcoded constant. A real per-facility capacity_mw is
+    <10,000, so this threshold cleanly separates fabricated aggregates (the
+    deleted /api/v1/queue/interconnection: PJM 298000, ERCOT 215000…) from
+    legitimate per-record values."""
+    pat = re.compile(r"['\"]?(total_mw|total_gw|queued_load_total_\w+|queue_mw)['\"]?\s*[:=]\s*([1-9]\d{5,})\b")
+    hits = []
+    for path in _live_py_files():
+        if not path.endswith(".py"):
+            continue
+        try:
+            with open(path, encoding="utf-8", errors="replace") as fh:
+                for i, line in enumerate(fh, 1):
+                    if _is_comment(line):
+                        continue
+                    m = pat.search(line)
+                    if m and int(m.group(2)) >= 100000:
+                        hits.append((os.path.relpath(path, ROOT), i, line.strip()[:120]))
+        except Exception:
+            pass
+    assert not hits, ("Hardcoded ISO-scale MW aggregate — must be queried live, "
+                      "not fabricated as a constant:\n" + _fmt(hits))
+
+
+def test_canonical_stats_is_dedup_aware():
+    """The single source of truth (canonical_stats.py) must distinguish the raw
+    'tracked' discovery pile from the deduped 'verified' active set, and its
+    verified floor must never exceed the tracked floor. This is what prevents the
+    marketed count from drifting 7x above reality again (21,461 raw vs 3,141
+    active). The dynamic 'floor <= live count' check runs in the brain."""
+    src = open(os.path.join(ROOT, "canonical_stats.py"), encoding="utf-8").read()
+    assert "facilities_verified" in src, "canonical_stats lost the verified/active count"
+    assert "is_duplicate" in src and "merged_at IS NULL" in src, (
+        "the verified count must filter the deduped/active set "
+        "(COALESCE(is_duplicate,0)=0 AND merged_at IS NULL)")
+    import importlib, sys
+    sys.path.insert(0, ROOT)
+    cs = importlib.import_module("canonical_stats")
+    fb = cs._FALLBACK
+    assert fb["facilities_verified"] <= fb["facilities"], (
+        f"verified floor {fb['facilities_verified']} must be <= tracked floor {fb['facilities']}")
+    assert fb["countries_verified"] <= fb["countries"], (
+        f"verified-country floor {fb['countries_verified']} must be <= tracked {fb['countries']}")
