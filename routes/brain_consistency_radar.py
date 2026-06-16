@@ -8000,6 +8000,105 @@ def check_blueprint_registration_silent_failure() -> list[dict]:
     return findings
 
 
+def check_canonical_floor_exceeds_live() -> list[dict]:
+    """PRE-EMPTION (2026-06-16): flag when a canonical_stats._FALLBACK floor
+    EXCEEDS the live deduped reality — the over-claim class (the marketed
+    21,000-floor vs 3,141-active, same family as the retired $324B). Floors must
+    round DOWN to reality, never above. Finding-only: NO autopilot action map →
+    escalates to a human (per the never-auto-apply gate).
+
+    CRITICAL trap (mirrors the honest-null discipline): canonical_stats._query_live
+    falls back to _FALLBACK verbatim on a DB outage, so live==floor and a naive
+    floor>live can NEVER fire AND an outage must not yield a false all-clear. We
+    require PROOF the DB answered — the raw `facilities` COUNT(*) (~21,461) differs
+    from its 21,000 floor — and skip (return []) otherwise."""
+    try:
+        import canonical_stats as _cs
+        live = _cs._query_live()          # fresh, uncached
+        fb = _cs._FALLBACK
+    except Exception:
+        return []
+    # DB-reachability proof: a real read sets facilities to the raw count, distinct
+    # from the floor. If they're identical, the DB didn't answer -> skip (no finding,
+    # no false all-clear).
+    try:
+        if int(live.get("facilities", 0)) == int(fb.get("facilities", 0)):
+            return []
+    except Exception:
+        return []
+    findings: list[dict] = []
+    for key in ("facilities_verified", "countries_verified", "facilities", "countries", "markets"):
+        floor, real = fb.get(key), live.get(key)
+        if floor is None or real is None:
+            continue
+        try:
+            if int(floor) > int(real):
+                findings.append({
+                    "issue": "canonical_floor_above_live_reality",
+                    "url": "canonical_stats._FALLBACK",
+                    "count": int(floor) - int(real),
+                    "detail": (f"canonical_stats floor `{key}`={floor} EXCEEDS the live "
+                               f"value {real}. Floors must round DOWN to reality, never "
+                               f"above — lower _FALLBACK['{key}'] to <= {real}. Over-claim "
+                               f"class (cf. retired $324B / 21,000-tracked-vs-3,141-verified)."),
+                })
+        except (TypeError, ValueError):
+            continue
+    return findings
+
+
+def check_cross_surface_value_drift() -> list[dict]:
+    """PRE-EMPTION (2026-06-16): flag SOURCE files that hardcode a canonical metric
+    (market / country count) at a value that DIVERGES from canonical_stats' live
+    read — the parallel-stale-surface class (e.g. state_of_power.py markets=233 vs
+    live ~307). canonical_stats is the ONE source (we do NOT re-query — that would
+    create a 3rd disagreeing source). Scoped to a small allow-list of known
+    count-bearing files. Finding-only; escalates to a human."""
+    try:
+        import canonical_stats as _cs, os, re
+        live = _cs.get_canonical_stats(force=True)
+        fb = _cs._FALLBACK
+    except Exception:
+        return []
+    try:
+        if int(live.get("facilities", 0)) == int(fb.get("facilities", 0)):
+            return []  # DB unreachable -> skip
+    except Exception:
+        return []
+    metrics = {"markets": live.get("markets"), "countries": live.get("countries")}
+    ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    SURFACES = ["routes/state_of_power.py", "competitive_seo.py", "agent_hub.py",
+                "quarterly_report.py", "mcp_presence_crawler.py"]
+    findings: list[dict] = []
+    for rel in SURFACES:
+        try:
+            txt = open(os.path.join(ROOT, rel), encoding="utf-8", errors="replace").read()
+        except Exception:
+            continue
+        for mkey, live_val in metrics.items():
+            if not live_val:
+                continue
+            lv = int(live_val)
+            pat = re.compile(r'(\d{2,4})\s*' + mkey + r'\b|' + mkey + r'["\']?\s*[:=]\s*["\']?(\d{2,4})')
+            for m in pat.finditer(txt):
+                try:
+                    lit = int(m.group(1) or m.group(2))
+                except (TypeError, ValueError):
+                    continue
+                # tolerance: flag only if a real count (>50) off by >max(10, 5%) — skips years/noise
+                if lit > 50 and abs(lit - lv) > max(10, 0.05 * lv):
+                    ln = txt[:m.start()].count("\n") + 1
+                    findings.append({
+                        "issue": "cross_surface_metric_divergence",
+                        "url": f"{rel}:{ln}",
+                        "count": abs(lit - lv),
+                        "detail": (f"{rel}:{ln} hardcodes {mkey}={lit} but the live canonical "
+                                   f"value is {lv}. Read canonical_stats.{mkey}_phrase() / "
+                                   f"get_canonical_stats() so it can't drift (parallel-stale-surface)."),
+                    })
+    return findings[:20]
+
+
 def scan_all() -> list[dict]:
     """Run every detector. Return a flat list of finding dicts ready
     to merge into actionable_backend_issues.
@@ -8010,7 +8109,13 @@ def scan_all() -> list[dict]:
     timeout — wall time becomes max(detector) instead of sum(detector)."""
     out: list[dict] = []
     detectors: list = []
-    for fn in (check_worker_version_drift,
+    for fn in (# r-preempt (2026-06-16): anti-fabrication PRE-EMPTION detectors —
+               # catch over-claim floors + parallel-stale metric surfaces (the
+               # class the freshness/breakage/placeholder detectors are blind to).
+               # Finding-only; NO autopilot action map → escalate to a human.
+               check_canonical_floor_exceeds_live,
+               check_cross_surface_value_drift,
+               check_worker_version_drift,
                check_tier_consistency,
                check_cron_coverage,
                check_cron_collisions,
