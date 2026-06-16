@@ -9,7 +9,6 @@ Endpoints:
   GET /api/v1/facilities/stats     - Facility statistics
   GET /api/v1/solar/farms          - Utility-scale solar farms
   GET /api/v1/wind/farms           - Utility-scale wind farms
-  GET /api/v1/queue/interconnection - Generation queue data
   POST /api/discovery/sync         - Trigger data sync (admin)
 """
 
@@ -365,129 +364,6 @@ def get_wind_farms():
         'farms': wind_farms
     })
 
-
-# =============================================================================
-# INTERCONNECTION QUEUE
-# =============================================================================
-
-@data_layers_bp.route('/api/v1/queue/interconnection', methods=['GET'])
-def get_interconnection_queue():
-    """Get aggregated interconnection queue data"""
-    iso = request.args.get('iso', 'all')
-    fuel_type = request.args.get('fuel_type')  # solar, wind, battery, gas
-    
-    # Aggregated queue data by ISO (from public queue reports)
-    queue_data = {
-        'pjm': {
-            'name': 'PJM',
-            'total_mw': 298000,
-            'projects': 2847,
-            'breakdown': {
-                'solar': 145000,
-                'battery': 78000,
-                'wind': 45000,
-                'gas': 25000,
-                'other': 5000
-            },
-            'avg_wait_months': 48
-        },
-        'ercot': {
-            'name': 'ERCOT',
-            'total_mw': 215000,
-            'projects': 1532,
-            'breakdown': {
-                'solar': 120000,
-                'battery': 52000,
-                'wind': 28000,
-                'gas': 12000,
-                'other': 3000
-            },
-            'avg_wait_months': 24
-        },
-        'caiso': {
-            'name': 'CAISO',
-            'total_mw': 178000,
-            'projects': 845,
-            'breakdown': {
-                'solar': 95000,
-                'battery': 65000,
-                'wind': 12000,
-                'gas': 4000,
-                'other': 2000
-            },
-            'avg_wait_months': 36
-        },
-        'miso': {
-            'name': 'MISO',
-            'total_mw': 245000,
-            'projects': 1823,
-            'breakdown': {
-                'solar': 110000,
-                'wind': 85000,
-                'battery': 35000,
-                'gas': 12000,
-                'other': 3000
-            },
-            'avg_wait_months': 42
-        },
-        'spp': {
-            'name': 'SPP',
-            'total_mw': 125000,
-            'projects': 687,
-            'breakdown': {
-                'wind': 65000,
-                'solar': 42000,
-                'battery': 12000,
-                'gas': 5000,
-                'other': 1000
-            },
-            'avg_wait_months': 30
-        },
-        'nyiso': {
-            'name': 'NYISO',
-            'total_mw': 95000,
-            'projects': 423,
-            'breakdown': {
-                'solar': 35000,
-                'wind': 28000,
-                'battery': 25000,
-                'gas': 5000,
-                'other': 2000
-            },
-            'avg_wait_months': 54
-        },
-        'isone': {
-            'name': 'ISO-NE',
-            'total_mw': 45000,
-            'projects': 312,
-            'breakdown': {
-                'solar': 18000,
-                'wind': 15000,
-                'battery': 8000,
-                'gas': 3000,
-                'other': 1000
-            },
-            'avg_wait_months': 48
-        }
-    }
-    
-    if iso != 'all' and iso in queue_data:
-        return jsonify({
-            'success': True,
-            'iso': iso,
-            'data': queue_data[iso]
-        })
-    
-    # Calculate totals
-    total_mw = sum(q['total_mw'] for q in queue_data.values())
-    total_projects = sum(q['projects'] for q in queue_data.values())
-    
-    return jsonify({
-        'success': True,
-        'total_mw': total_mw,
-        'total_projects': total_projects,
-        'by_iso': queue_data
-    })
 
 
 # =============================================================================
