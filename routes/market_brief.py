@@ -459,7 +459,8 @@ def _section_hero(cur, slug: str) -> dict | None:
     try:
         cur.execute(r"""
             SELECT market_slug, market_name, verdict,
-                   excess_power_score, constraint_score, computed_at, iso
+                   excess_power_score, constraint_score, computed_at, iso,
+                   state, latitude, longitude
               FROM market_power_scores
              WHERE LOWER(market_slug) = LOWER(%s)
                 OR LOWER(REPLACE(market_name, ' ', '-')) = LOWER(%s)
@@ -492,7 +493,9 @@ def _section_hero(cur, slug: str) -> dict | None:
     return {
         "slug":              r[0],
         "name":              r[1],
-        "state":             None,
+        "state":             r[7],
+        "lat":               _as_float(r[8]),
+        "lng":               _as_float(r[9]),
         "iso":               r[6],
         "verdict":           (r[2] or verdict),
         "composite_score":   None,
@@ -508,6 +511,28 @@ def _section_hero(cur, slug: str) -> dict | None:
 def _section_kpis(cur, hero: dict) -> dict:
     """Section 2: At-a-Glance KPIs (FREE)."""
     name = (hero or {}).get("name") or ""
+    # discovered_facilities.market holds CITY/METRO names ("Cheyenne",
+    # "Northern Virginia", "Dallas") while DCPI market_name carries a ", ST"
+    # suffix ("Cheyenne, WY"). r-fix 2026-06-17: the old exact-equality
+    # (market = market_name) matched 0 rows for EVERY suffixed market — the
+    # systemic "Facilities Not tracked" gap the data WAS being ingested for
+    # (45 facilities tagged "Cheyenne"). Match the full name OR the
+    # comma-stripped city so real facilities actually surface.
+    _city = name.split(",")[0].strip()
+    _mkt_match = list({v for v in (name.lower(), _city.lower()) if v})
+    # Match facilities by (a) name/city text OR (b) geographic proximity —
+    # state + a ~0.6° box around the market's coords — when the market has
+    # coordinates. Proximity is robust to the DCPI(city-level name, e.g.
+    # "Ashburn") vs facility(metro tag, e.g. "Northern Virginia") vocabulary
+    # mismatch that leaves ~half the markets unmatched on text alone; it lights
+    # up per-market as market_power_scores.latitude/longitude get backfilled.
+    _lat, _lng, _st = (hero or {}).get("lat"), (hero or {}).get("lng"), (hero or {}).get("state")
+    _match_sql = "LOWER(COALESCE(market, '')) = ANY(%s)"
+    _match_params = [_mkt_match]
+    if _lat is not None and _lng is not None and _st:
+        _match_sql += (" OR (state = %s AND latitude IS NOT NULL AND longitude IS NOT NULL "
+                       "AND (latitude-%s)*(latitude-%s)+(longitude-%s)*(longitude-%s) < 0.36)")
+        _match_params += [_st, _lat, _lat, _lng, _lng]
     out = {
         "operational_mw": None,
         "pipeline_mw":    None,
@@ -525,9 +550,9 @@ def _section_kpis(cur, hero: dict) -> dict:
                    COALESCE(SUM(CASE WHEN status ILIKE %s OR status ILIKE %s
                                      THEN power_mw ELSE 0 END), 0)
               FROM discovered_facilities
-             WHERE LOWER(COALESCE(market, '')) = LOWER(%s)
+             WHERE ({_match_sql})
                AND merged_at IS NULL AND is_duplicate = 0
-        """, ('%construction%', '%planned%', name))
+        """.format(_match_sql=_match_sql), ['%construction%', '%planned%'] + _match_params)
         f = cur.fetchone() or (None, None, None)
         out["facility_count"] = _as_int(f[0])
         out["operational_mw"] = _as_float(f[1])
@@ -539,11 +564,12 @@ def _section_kpis(cur, hero: dict) -> dict:
         cur.execute("""
             SELECT provider, COUNT(*) AS n
               FROM discovered_facilities
-             WHERE LOWER(COALESCE(market, '')) = LOWER(%s)
+             WHERE ({_match_sql})
                AND provider IS NOT NULL AND provider <> ''
+               AND LOWER(provider) NOT IN ('unknown', 'n/a', 'tbd')
                AND merged_at IS NULL AND is_duplicate = 0
              GROUP BY provider ORDER BY n DESC LIMIT 1
-        """, (name,))
+        """.format(_match_sql=_match_sql), list(_match_params))
         r = cur.fetchone()
         if r:
             out["top_operator"] = {"name": r[0], "facility_count": _as_int(r[1])}
