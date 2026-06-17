@@ -18,7 +18,7 @@
 </style>
 </head><body>
 <h1>DC Hub MCP — Upgrade Funnel <button class="reload" onclick="load()">↻ refresh</button></h1>
-<div class="sub">Live data from <code>/api/v1/mcp/funnel</code>. Refresh manually.</div>
+<div class="sub">Live data from <code>/api/v1/mcp/funnel</code> · auto-refreshes every 60s · <span id="fetched-at" style="color:#6a6">—</span></div>
 <div class="grid" id="kpis"></div>
 <div class="card">
   <h3 style="margin-top:0">Top tools triggering upgrade signals (last 30d)</h3>
@@ -47,8 +47,8 @@ async function load() {
     const kt = d.keys_by_tier || {};
     const k = (kt.free||0) + (kt.paid||0) + (kt.enterprise||0);
     document.getElementById('kpis').innerHTML = `
-      <div class="card"><div class="label">Tool calls (7d)</div><div class="value">${(d.tool_calls_7d_complete ?? d.tool_calls_7d ?? 0).toLocaleString()}</div>
-        <div class="sub-value">~${(d.tool_calls_per_day_complete ?? 0).toLocaleString()}/day · last 7 full days (today excluded, so it won't dip mid-day)</div></div>
+      <div class="card"><div class="label">Tool calls (7d · full days)</div><div class="value">${(d.tool_calls_7d_complete ?? d.tool_calls_7d ?? 0).toLocaleString()}</div>
+        <div class="sub-value">~${(d.tool_calls_per_day_complete ?? 0).toLocaleString()}/day · 7 full days (excl. today → stable mid-day) · <b style="color:#6a8">rolling incl. today: ${(d.tool_calls_7d ?? 0).toLocaleString()}</b> ← moves live</div></div>
       <div class="card"><div class="label">Upgrade signals (7d)</div><div class="value">${d.upgrade_signals_7d ?? 0}</div></div>
       <div class="card"><div class="label">Conversions (30d)</div><div class="value">${d.conversions_30d ?? 0}</div></div>
       <div class="card"><div class="label">Active dev keys</div><div class="value">${k}</div>
@@ -58,6 +58,7 @@ async function load() {
       .map(r => `<tr><td>${r.tool || '—'}</td><td>${r.sessions ?? '—'}</td><td>${r.callers ?? '—'}</td><td style="color:#999">${r.n}</td></tr>`).join('') || '<tr><td colspan=4 style="color:#666">No signals yet — Python MCP is offline or no free users have hit a paid tool.</td></tr>';
     document.querySelector('#paid tbody').innerHTML = (d.paid_tool_demand_30d || [])
       .map(r => `<tr><td>${r.tool}</td><td>${r.calls}</td><td>${r.users}</td></tr>`).join('');
+    const fa = document.getElementById('fetched-at'); if (fa) fa.textContent = 'fetched ' + new Date().toLocaleTimeString();
     // r86 retention panel
     try {
       const rt = await (await fetch('/api/v1/mcp/retention?weeks=10')).json();
@@ -78,4 +79,5 @@ async function load() {
   }
 }
 load();
+setInterval(load, 60000);
 </script></body></html>
