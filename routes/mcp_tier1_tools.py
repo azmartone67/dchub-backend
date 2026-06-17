@@ -19,6 +19,7 @@ from typing import Any
 from contextlib import contextmanager
 
 from flask import Blueprint, request, jsonify
+from routes.facility_slug import hash_sql
 
 try:
     import psycopg2
@@ -421,7 +422,7 @@ def score_facility():
                      WHERE CAST(id AS TEXT) = %s
                         OR LOWER(slug) = LOWER(%s)
                         OR TRIM(BOTH '-' FROM REGEXP_REPLACE(LOWER(name), '[^a-z0-9]+', '-', 'g')) = LOWER(%s)
-                        OR (%s <> '' AND LEFT(MD5(CAST(id AS TEXT)), 8) = %s)
+                        OR (%s <> '' AND """ + hash_sql('') + """ = %s)
                      LIMIT 1
                 """, (str(facility_id), str(facility_id), str(facility_id), _h8, _h8))
                 f = cur.fetchone()

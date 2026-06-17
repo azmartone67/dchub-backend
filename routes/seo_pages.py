@@ -34,6 +34,8 @@ import datetime as _dt
 from typing import Any
 from flask import Blueprint, Response, abort, redirect, request
 
+from routes.facility_slug import hash_sql
+
 try:
     import psycopg2
     import psycopg2.extras
@@ -287,7 +289,7 @@ def facility_page(id_or_slug: str):
                        source, source_url, confidence_score, last_updated
                   FROM discovered_facilities
                  WHERE (CAST(id AS TEXT) = %s)
-                    OR (%s IS NOT NULL AND LEFT(MD5(id::text), 8) = %s)
+                    OR (%s IS NOT NULL AND """ + hash_sql('') + """ = %s)
                     OR LOWER(REPLACE(REPLACE(COALESCE(name,''),' ','-'),',','')) = LOWER(%s)
                  LIMIT 1
             """, (id_or_slug, hash8, hash8, id_or_slug))

@@ -3767,12 +3767,12 @@ def api_v1_map():
             s = re.sub('[^a-z0-9 -]', '', s)
             s = re.sub('[- ]+', '-', s)
             return s.strip('-')
+        from routes.facility_slug import stable_hash8
         for f in facilities:
             provider_slug = _slugify(f.get('provider') or '')
             name_slug = _slugify(f.get('name') or '')
             if name_slug and len(name_slug) >= 3:
-                hash_src = str(f['id']) if f.get('id') else (str(f.get('provider','')) + str(f.get('name','')))
-                short_hash = __import__('hashlib').md5(hash_src.encode()).hexdigest()[:8]
+                short_hash = stable_hash8(f.get('provider'), f.get('name'))
                 f['slug'] = f"{provider_slug}-{name_slug}-{short_hash}" if provider_slug else f"{name_slug}-{short_hash}"
             else:
                 f['slug'] = ''
@@ -15795,6 +15795,7 @@ def facility_by_slug(slug):
     try:
         conn = get_read_db()
         c = conn.cursor()
+        from routes.facility_slug import hash_sql
         # On-site fiber carriers via the indexed carrier_facility_presence(dchub_facility_id)
         # link (same source as the map popup) — fulfils get_facility's "fiber providers" promise.
         c.execute("""
@@ -15817,7 +15818,7 @@ def facility_by_slug(slug):
                        AND cfp.carrier_name IS NOT NULL AND cfp.carrier_name <> ''
                    ) AS fiber_carrier_count
             FROM discovered_facilities
-            WHERE LEFT(MD5(id::text), 8) = %s
+            WHERE """ + hash_sql('') + """ = %s
             LIMIT 1
         """, (hash8,))
         row = c.fetchone()
@@ -16289,11 +16290,12 @@ def search_facilities():
                 s = _re2.sub(r'[^a-z0-9\s-]', '', s)
                 s = _re2.sub(r'[\s-]+', '-', s)
                 return s.strip('-')
+            from routes.facility_slug import stable_hash8
             for f in facilities:
                 _fid = f.get('id')
                 if _fid is None:
                     continue
-                _h = _hl.md5(str(_fid).encode()).hexdigest()[:8]
+                _h = stable_hash8(f.get('provider'), f.get('name'))
                 _ps, _ns = _fac_slug(f.get('provider')), _fac_slug(f.get('name'))
                 _slug = f"{_ps}-{_ns}-{_h}" if (_ps and _ns) else (f"{_ns}-{_h}" if _ns else None)
                 if _slug:
@@ -21898,9 +21900,10 @@ def serve_sitemap_xml():
         if not name_slug or len(name_slug) < 3:
             continue
 
-        # Generate 8-char hash from facility id or provider+name
-        hash_source = str(fac_id) if fac_id else f"{provider}{name}"
-        short_hash = hashlib.md5(hash_source.encode()).hexdigest()[:8]
+        # Generate STABLE 8-char hash keyed on provider|name (invariant across
+        # re-ingestion), NOT the volatile id — stops Google-indexing churn.
+        from routes.facility_slug import stable_hash8
+        short_hash = stable_hash8(provider, name)
 
         if provider_slug:
             full_slug = f"{provider_slug}-{name_slug}-{short_hash}"
@@ -24763,6 +24766,10 @@ def get_facility_by_slug(slug):
     try:
         conn = get_read_db()
         c = conn.cursor()
+        from routes.facility_slug import hash_sql
+        # r-stable-slug: stable provider|name hash can collide for true-dupes /
+        # generic names; ORDER BY highest power then lowest id so a collision
+        # deterministically resolves to the canonical facility.
         c.execute("""
             SELECT df.id, df.name, df.provider, df.city, df.state, df.country,
                    df.market AS region, df.latitude, df.longitude,
@@ -24770,7 +24777,8 @@ def get_facility_by_slug(slug):
                    df.status, df.address
             FROM discovered_facilities df
             LEFT JOIN facilities f ON f.id = df.merged_facility_id
-            WHERE LEFT(MD5(df.id::text), 8) = %s
+            WHERE """ + hash_sql('df') + """ = %s
+            ORDER BY COALESCE(df.power_mw, 0) DESC, df.id ASC
             LIMIT 1
         """, (hash8,))
         row = c.fetchone()
@@ -24794,6 +24802,7 @@ def get_facility_by_id(facility_id):
     try:
         conn = get_read_db()
         cur = conn.cursor()
+        from routes.facility_slug import hash_sql
         # Try integer id first, then hex merged_facility_id
         try:
             int_id = int(facility_id)
@@ -24827,7 +24836,7 @@ def get_facility_by_id(facility_id):
                 WHERE df.slug = %s
                    OR df.merged_facility_id = %s
                    OR df.source_id = %s
-                   OR (%s <> '' AND LEFT(MD5(df.id::text), 8) = %s)
+                   OR (%s <> '' AND """ + hash_sql('df') + """ = %s)
                 LIMIT 1
             """, (facility_id, facility_id, facility_id, _h8, _h8))
         row = cur.fetchone()

@@ -204,8 +204,10 @@ def _recent_facility_urls(n=2000):
                 if not name_slug or len(name_slug) < 3:
                     continue
                 provider_slug = _slugify(provider)
-                hash_source = str(fac_id) if fac_id else f"{provider or ''}{name or ''}"
-                short_hash = hashlib.md5(hash_source.encode()).hexdigest()[:8]
+                # r-stable-slug (2026-06-16): hash on provider|name (stable), NOT id
+                # (churns every re-ingestion) — must match the sitemap/lookup.
+                from routes.facility_slug import stable_hash8
+                short_hash = stable_hash8(provider, name)
                 full = (f"{provider_slug}-{name_slug}-{short_hash}"
                         if provider_slug else f"{name_slug}-{short_hash}")
                 if full in seen:

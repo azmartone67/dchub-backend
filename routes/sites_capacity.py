@@ -34,6 +34,8 @@ from datetime import datetime, timezone
 
 from flask import Blueprint, jsonify, request
 
+from routes.facility_slug import hash_sql
+
 sites_capacity_bp = Blueprint("sites_capacity", __name__)
 
 
@@ -92,11 +94,14 @@ def _resolve_site(cur, ident):
             if row:
                 return row, tbl
 
-    # 2) hashed slug — /api/v1/facility builds slugs ending in LEFT(MD5(id::text),8)
+    # 2) hashed slug — /api/v1/facility builds slugs ending in the STABLE
+    # provider|name hash (r-stable-slug). Both candidate tables
+    # (discovered_facilities, facilities) expose provider + name, so the bare
+    # hash_sql('') expression is safe for each.
     tail = s.rsplit("-", 1)[-1].lower()
     if len(tail) == 8 and all(ch in "0123456789abcdef" for ch in tail):
         for tbl in tables:
-            row = _q(tbl, "LEFT(MD5(id::text), 8) = %s", (tail,))
+            row = _q(tbl, f"{hash_sql('')} = %s", (tail,))
             if row:
                 return row, tbl
 

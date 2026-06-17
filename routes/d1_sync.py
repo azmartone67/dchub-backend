@@ -144,12 +144,13 @@ def _slugify(text: str) -> str:
 def _build_facility_slug(row: dict) -> str:
     """Reproduce the slug pattern from main.py:2546 _slugify so the
     D1 mirror keys match the public-facing /facilities/<slug> URLs."""
-    import hashlib
+    # r-stable-slug (2026-06-16): hash on provider|name (stable), NOT id (churns
+    # every re-ingestion) — must match the sitemap/lookup so D1 mirror keys align.
+    from routes.facility_slug import stable_hash8
     provider_slug = _slugify(row.get("provider") or "")
     name_slug = _slugify(row.get("name") or "")
     if name_slug and len(name_slug) >= 3:
-        hash_src = str(row["id"]) if row.get("id") else (str(row.get("provider", "")) + str(row.get("name", "")))
-        short_hash = hashlib.md5(hash_src.encode()).hexdigest()[:8]
+        short_hash = stable_hash8(row.get("provider"), row.get("name"))
         if provider_slug:
             return f"{provider_slug}-{name_slug}-{short_hash}"
         return f"{name_slug}-{short_hash}"

@@ -42,13 +42,18 @@ def _fetch_facility_by_slug(slug: str) -> dict | None:
         conn = get_read_db()
         if not conn: return None
         try:
+            from routes.facility_slug import hash_sql
             c = conn.cursor()
+            # r-stable-slug: stable provider|name hash can collide; ORDER BY
+            # highest power then lowest id so a collision deterministically
+            # resolves to the canonical facility.
             c.execute("""
                 SELECT id, name, provider, city, state, country,
                        market AS region, latitude, longitude,
                        power_mw, status, address
                 FROM discovered_facilities
-                WHERE LEFT(MD5(id::text), 8) = %s
+                WHERE """ + hash_sql('') + """ = %s
+                ORDER BY COALESCE(power_mw, 0) DESC, id ASC
                 LIMIT 1
             """, (hash8,))
             row = c.fetchone()
@@ -115,12 +120,13 @@ def _slugify(text: str) -> str:
 
 def _fac_slug(fac_id, provider, name) -> str:
     """Canonical facility slug — MUST match the sitemap format
-    /facilities/{provider-slug}-{name-slug}-{md5(id)[:8]} (main.py ~20234) so
+    /facilities/{provider-slug}-{name-slug}-{stable_hash8(provider,name)} so
     comparable-facility links resolve to the canonical URL with no duplicate-URL
-    or redirect penalty."""
-    import hashlib as _h
-    src = str(fac_id) if fac_id else f"{provider or ''}{name or ''}"
-    h8 = _h.md5(src.encode()).hexdigest()[:8]
+    or redirect penalty. r-stable-slug (2026-06-16): hash is now keyed on the
+    STABLE provider|name (invariant across re-ingestion), NOT the volatile id —
+    fac_id is kept in the signature for callers but ignored for the hash."""
+    from routes.facility_slug import stable_hash8
+    h8 = stable_hash8(provider, name)
     ps, ns = _slugify(provider or ""), _slugify(name or "")
     return f"{ps}-{ns}-{h8}" if ps else f"{ns}-{h8}"
 
