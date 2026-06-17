@@ -10997,6 +10997,63 @@ def stripe_webhook():
             except Exception as _ube:
                 print(f"⚠️ usage-based auto-key error (non-fatal): {_ube}")
 
+            # r-pack5 (2026-06-16): $5 / 1,000-credit one-time PACK. A fixed $5.00
+            # one-time checkout (amount_total=500, mode=payment, client_reference_id
+            # = the buying mcp session) mints/ensures a durable dch_live_ key (tier
+            # 'free' — CREDITS, not a paid tier, govern access so the balance can
+            # actually deplete) + grants 1000 credits keyed on BOTH the key and the
+            # session (same-session instant unlock + durable-key reuse) + emails the
+            # key. Idempotent on the Stripe session id. The legacy $5 top-up uses a
+            # reserved tu- ref (handled above) so it's excluded here. Fail-soft.
+            try:
+                from routes.mcp_conversion_plays import (
+                    PACK5_PRICE_CENTS, PACK5_CREDITS, PACK5_EXPIRY_DAYS,
+                    grant_credit_pack)
+                _p5_mode = (data.get('mode') or '').lower()
+                _p5_amt  = int(data.get('amount_total') or 0)
+                _p5_ref  = (data.get('client_reference_id') or '').strip()
+                _p5_reserved = (_p5_ref.upper().startswith('DCM-')
+                                or _p5_ref.lower().startswith('tu-')
+                                or _p5_ref.startswith('ref_'))
+                if _p5_mode == 'payment' and _p5_amt == PACK5_PRICE_CENTS and not _p5_reserved:
+                    import secrets as _p5sec
+                    _p5_email = (
+                        data.get('customer_email')
+                        or (data.get('customer_details') or {}).get('email')
+                        or '').lower().strip()
+                    _p5_key, _p5_newmint = None, False
+                    if _p5_email:
+                        _, _p5rows = _pg_execute(
+                            "SELECT api_key FROM mcp_dev_keys WHERE LOWER(email)=%s "
+                            "AND status='active' ORDER BY created_at DESC LIMIT 1",
+                            (_p5_email,), fetch=True)
+                        if _p5rows:
+                            _p5_key = _p5rows[0][0]
+                    if not _p5_key:
+                        _p5_key = "dch_live_" + _p5sec.token_hex(16)
+                        _p5_newmint = True
+                        _pg_execute(
+                            "INSERT INTO mcp_dev_keys (api_key, developer_id, email, "
+                            "tier, status, metadata) VALUES (%s,%s,%s,'free','active',%s::jsonb) "
+                            "ON CONFLICT (api_key) DO NOTHING",
+                            (_p5_key, "dev_" + _p5sec.token_hex(8), _p5_email or None,
+                             json.dumps({"source": "pack5",
+                                         "stripe_session_id": data.get('id')})))
+                    _p5_grant = grant_credit_pack(
+                        _p5_key, _p5_ref or None, PACK5_CREDITS,
+                        stripe_session_id=data.get('id'), source='pack5',
+                        expires_days=PACK5_EXPIRY_DAYS)
+                    print(f"💳 Pack5 grant: key={_p5_key[:14]}… email={_p5_email or '(none)'} "
+                          f"newmint={_p5_newmint} grant={_p5_grant}")
+                    if _p5_newmint and _p5_email and not _p5_grant.get('idempotent'):
+                        try:
+                            send_welcome_email_sendgrid(
+                                _p5_email, _p5_key, plan_name="1,000 API credits")
+                        except Exception:
+                            pass
+            except Exception as _p5e:
+                print(f"⚠️ pack5 grant error (non-fatal): {_p5e}")
+
             customer_email = (
                 data.get('customer_email') or
                 data.get('customer_details', {}).get('email') or ''

@@ -21,6 +21,7 @@ STRIPE_LINKS = {
     "pro":             "https://buy.stripe.com/eVq5kE4oOfs13mleGuaZi0h",  # $199/mo (new r38, replaces $299/$2990 link)
     "pro_annual":      "https://buy.stripe.com/dRm7sM6wW7Zz1edgOCaZi07",  # $1,188/yr (50% off $199/mo) - operator-provided link dRm7...07, 2026-06-04
     "metered":         "https://buy.stripe.com/9B69AU08y2FfbSR55UaZi0i",  # $1 / 100 API calls (usage-based / pay-as-you-go)
+    "pack5":           "https://buy.stripe.com/8x26oIbRg7ZzbSR7e2aZi0j",  # $5 one-time = 1,000 API credits (r-pack5, 2026-06-16; env override DCHUB_PACK5_URL in mcp_conversion_plays.py)
     "enterprise":      "https://buy.stripe.com/fZueVe5sS6Vv7CB41QaZi0a",  # Custom
     "enterprise_annual": "https://buy.stripe.com/dRmdRa4oO1Bb9KJ2XMaZi0b",  # Custom annual
     # r75 (2026-05-26): partnership-specific subscription links. NOT shown
@@ -61,6 +62,7 @@ TIER_PRICE_LABEL = {
     "pro":        "$199/mo",
     "pro_annual": "$1,188/yr",
     "metered":    "$1 / 100 calls",
+    "pack5":      "$5 / 1,000 calls (one-time)",
     "enterprise": "Custom",
     "enterprise_annual": "Custom annual",
     "research_seed_nlr": "$3,000/yr (NLR FY 2026 Research Seed)",

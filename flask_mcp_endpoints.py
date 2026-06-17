@@ -445,6 +445,49 @@ def mcp_usage_today():
         return jsonify({"count": 0, "error": str(e)[:160], "fail_soft": True}), 200
 
 
+# ── r-pack5: $5/1000 prepaid-credit balance + burn (gateway-facing) ─────────
+# Internal-only (X-Internal-Key). The MCP gateway calls balance before serving a
+# gated flagship tool to a non-paid caller, and burn after. Both fail-soft so a
+# DB blip can never break a tool call — the gateway falls back to the free-taste
+# path. Matched on the durable api_key OR the buying mcp session (same-session
+# instant unlock). Reuses routes.mcp_conversion_plays (the mcp_topups store).
+@mcp_bp.get("/api/v1/mcp/credits/balance")
+@_require_internal
+def mcp_credits_balance():
+    api_key = (request.args.get("key") or request.args.get("api_key") or "").strip()
+    session = (request.args.get("session") or request.args.get("mcp_session") or "").strip()
+    try:
+        from routes.mcp_conversion_plays import get_credit_balance
+        credits = int(get_credit_balance(api_key or None, session or None) or 0)
+        return jsonify({"credits": credits, "has_pack": credits > 0}), 200
+    except Exception as e:
+        return jsonify({"credits": 0, "error": str(e)[:160], "fail_soft": True}), 200
+
+
+@mcp_bp.post("/api/v1/mcp/credits/burn")
+@_require_internal
+def mcp_credits_burn():
+    body = request.get_json(silent=True) or {}
+    api_key = (body.get("key") or body.get("api_key") or "").strip()
+    session = (body.get("session") or body.get("mcp_session") or "").strip()
+    try:
+        cost = max(1, int(body.get("cost") or 1))
+    except Exception:
+        cost = 1
+    try:
+        from routes.mcp_conversion_plays import consume_credits
+        r = consume_credits(api_key or None, session or None, cost)
+        return jsonify({
+            "ok": bool(r.get("ok")),
+            "remaining": int(r.get("remaining") or 0),
+            "burned": r.get("burned"),
+            "tool": body.get("tool"),
+        }), 200
+    except Exception as e:
+        return jsonify({"ok": False, "remaining": 0, "error": str(e)[:160],
+                        "fail_soft": True}), 200
+
+
 # ── POST /api/v1/keys/claim ────────────────────────────────────────────────
 # Phase 275: programmatic dev-key claim — no email verification required.
 #

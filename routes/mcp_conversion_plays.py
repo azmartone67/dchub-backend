@@ -70,6 +70,21 @@ STRIPE_TOPUP_LINK = os.environ.get('DCHUB_STRIPE_TOPUP_LINK',
 TOPUP_CREDITS = int(os.environ.get('DCHUB_TOPUP_CREDITS', '50'))
 TOPUP_PRICE_CENTS = int(os.environ.get('DCHUB_TOPUP_PRICE_CENTS', '500'))
 
+# r-pack5 (2026-06-16): the $5 / 1,000-credit one-time PACK — the cheap
+# front-end acquisition offer (distinct from the legacy 50-credit top-up above).
+# A fixed $5.00 one-time Stripe Payment Link created in the dashboard. Unlike the
+# top-up (tu-token, keyed agent, 30-min TTL), the pack is a one-click,
+# session-bound acquisition SKU: the $5 checkout mints a durable key + grants
+# 1000 credits (90-day) keyed on BOTH the key AND the buying mcp session, so the
+# current session unlocks instantly (by session id) and future sessions unlock by
+# the emailed durable key. Both burn the same balance (consume_credits, value-
+# tiered cost). Reuses the proven mcp_topups storage — NOT a 2nd credits system.
+PACK5_URL = os.environ.get(
+    'DCHUB_PACK5_URL', 'https://buy.stripe.com/8x26oIbRg7ZzbSR7e2aZi0j').strip()
+PACK5_CREDITS = int(os.environ.get('DCHUB_PACK5_CREDITS', '1000'))
+PACK5_PRICE_CENTS = int(os.environ.get('DCHUB_PACK5_PRICE_CENTS', '500'))
+PACK5_EXPIRY_DAYS = int(os.environ.get('DCHUB_PACK5_EXPIRY_DAYS', '90'))
+
 
 def _conn():
     if not DATABASE_URL: return None
@@ -104,6 +119,14 @@ CREATE INDEX IF NOT EXISTS mcp_topups_token_idx ON mcp_topups(topup_token);
 CREATE INDEX IF NOT EXISTS mcp_topups_active_idx
     ON mcp_topups(api_key_hash, paid_at DESC)
     WHERE paid_at IS NOT NULL AND credits_remaining > 0;
+
+-- r-pack5 (2026-06-16): the $5/1000 pack keys credits on the buying mcp session
+-- too (same-session instant unlock, no fragile tier-flip) + source tag.
+ALTER TABLE mcp_topups ADD COLUMN IF NOT EXISTS mcp_session_id TEXT;
+ALTER TABLE mcp_topups ADD COLUMN IF NOT EXISTS source TEXT;
+CREATE INDEX IF NOT EXISTS mcp_topups_session_idx
+    ON mcp_topups(mcp_session_id, paid_at DESC)
+    WHERE mcp_session_id IS NOT NULL AND paid_at IS NOT NULL AND credits_remaining > 0;
 
 -- Play 5: email-gated 7-day trial captures
 CREATE TABLE IF NOT EXISTS mcp_trial_emails (
@@ -385,6 +408,136 @@ def redeem_topup_token(token: str, stripe_session_id: str | None = None) -> dict
         return out
     except Exception as e:
         out["error"] = str(e)[:200]
+        return out
+    finally:
+        try: c.close()
+        except Exception: pass
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# r-pack5 (2026-06-16): $5 / 1,000-credit prepaid PACK — grant + balance + burn
+# Reuses the mcp_topups storage + decrement shape; keys on api_key OR mcp session.
+# ═══════════════════════════════════════════════════════════════════════════
+def grant_credit_pack(api_key, mcp_session_id, credits,
+                      stripe_session_id=None, source="pack5", expires_days=90):
+    """Grant a one-time credit pack. IDEMPOTENT on stripe_session_id so a Stripe
+       webhook retry never double-grants. Keys the balance on BOTH the durable
+       api_key AND the buying mcp session (same-session instant unlock +
+       durable-key reuse). Returns {ok, credits_granted, topup_id, idempotent}."""
+    out = {"ok": False}
+    h = _hash_key(api_key)
+    if not h:
+        out["error"] = "missing_api_key"; return out
+    sid = (mcp_session_id or "").strip()[:200] or None
+    c = _conn()
+    if c is None:
+        out["error"] = "no_database"; return out
+    try:
+        with c, c.cursor() as cur:
+            if stripe_session_id:
+                cur.execute("SELECT id, credits FROM mcp_topups "
+                            "WHERE stripe_session_id = %s LIMIT 1",
+                            (stripe_session_id,))
+                ex = cur.fetchone()
+                if ex:
+                    out.update(ok=True, idempotent=True,
+                               topup_id=ex[0], credits_granted=ex[1])
+                    return out
+            token = f"{source}-" + _secrets.token_hex(8)
+            cur.execute("""
+                INSERT INTO mcp_topups
+                    (topup_token, api_key_hash, credits, price_cents, paid_at,
+                     expires_at, credits_remaining, stripe_session_id,
+                     mcp_session_id, source)
+                VALUES (%s, %s, %s, %s, NOW(),
+                        NOW() + (%s || ' days')::interval, %s, %s, %s, %s)
+                RETURNING id;
+            """, (token, h, credits, PACK5_PRICE_CENTS, str(int(expires_days)),
+                  credits, stripe_session_id, sid, source))
+            row = cur.fetchone()
+            out.update(ok=True, idempotent=False,
+                       topup_id=row[0], credits_granted=credits)
+            return out
+    except Exception as e:
+        out["error"] = str(e)[:200]
+        print(f"[mcp_conversion_plays] grant_credit_pack: {e}", file=sys.stderr)
+        return out
+    finally:
+        try: c.close()
+        except Exception: pass
+
+
+def get_credit_balance(api_key, mcp_session_id):
+    """Total remaining credits for a caller, matched by durable key OR the buying
+       session. Excludes expired/unpaid grants. Returns 0 on any failure
+       (fail-soft → the gateway falls back to the free-taste path)."""
+    h = _hash_key(api_key) if api_key else None
+    sid = (mcp_session_id or "").strip()[:200] or None
+    if not h and not sid:
+        return 0
+    c = _conn()
+    if c is None:
+        return 0
+    try:
+        with c, c.cursor() as cur:
+            cur.execute("""
+                SELECT COALESCE(SUM(credits_remaining), 0)
+                FROM mcp_topups
+                WHERE paid_at IS NOT NULL
+                  AND credits_remaining > 0
+                  AND (expires_at IS NULL OR expires_at > NOW())
+                  AND ((%s IS NOT NULL AND api_key_hash = %s)
+                       OR (%s IS NOT NULL AND mcp_session_id = %s));
+            """, (h, h, sid, sid))
+            row = cur.fetchone()
+            return int(row[0]) if row and row[0] else 0
+    except Exception as e:
+        print(f"[mcp_conversion_plays] get_credit_balance: {e}", file=sys.stderr)
+        return 0
+    finally:
+        try: c.close()
+        except Exception: pass
+
+
+def consume_credits(api_key, mcp_session_id, count=1):
+    """Atomically burn `count` credits from the caller's most-recently-paid active
+       grant (matched by durable key OR buying session). Refuses below zero.
+       Returns {ok, remaining, burned}. Same decrement-with-RETURNING shape as
+       consume_topup_credit, extended to also match the session key."""
+    out = {"ok": False, "remaining": 0}
+    h = _hash_key(api_key) if api_key else None
+    sid = (mcp_session_id or "").strip()[:200] or None
+    count = max(1, int(count or 1))
+    if not h and not sid:
+        out["error"] = "no_identity"; return out
+    c = _conn()
+    if c is None:
+        out["error"] = "no_database"; return out
+    try:
+        with c, c.cursor() as cur:
+            cur.execute("""
+                UPDATE mcp_topups
+                SET credits_remaining = credits_remaining - %s
+                WHERE id = (
+                    SELECT id FROM mcp_topups
+                    WHERE paid_at IS NOT NULL
+                      AND credits_remaining >= %s
+                      AND (expires_at IS NULL OR expires_at > NOW())
+                      AND ((%s IS NOT NULL AND api_key_hash = %s)
+                           OR (%s IS NOT NULL AND mcp_session_id = %s))
+                    ORDER BY paid_at DESC LIMIT 1
+                )
+                RETURNING credits_remaining;
+            """, (count, count, h, h, sid, sid))
+            row = cur.fetchone()
+            if row is None:
+                out.update(ok=False, error="insufficient_credits", remaining=0)
+                return out
+            out.update(ok=True, remaining=int(row[0]), burned=count)
+            return out
+    except Exception as e:
+        out["error"] = str(e)[:200]
+        print(f"[mcp_conversion_plays] consume_credits: {e}", file=sys.stderr)
         return out
     finally:
         try: c.close()
