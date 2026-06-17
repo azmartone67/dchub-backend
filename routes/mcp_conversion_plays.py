@@ -499,6 +499,43 @@ def get_credit_balance(api_key, mcp_session_id):
         except Exception: pass
 
 
+def get_credit_status(api_key, mcp_session_id):
+    """Like get_credit_balance but ALSO returns had_pack — whether the caller EVER
+       bought a pack (even if now depleted/expired). Lets the gateway show a 'top up
+       $5 for 1,000 more' re-up nudge to a PROVEN buyer (highest-ROI re-conversion)
+       instead of the generic claim-free-key teaser. Returns
+       {'credits': int, 'had_pack': bool}; fail-soft to {0, False}."""
+    h = _hash_key(api_key) if api_key else None
+    sid = (mcp_session_id or "").strip()[:200] or None
+    if not h and not sid:
+        return {"credits": 0, "had_pack": False}
+    c = _conn()
+    if c is None:
+        return {"credits": 0, "had_pack": False}
+    try:
+        with c, c.cursor() as cur:
+            cur.execute("""
+                SELECT
+                  COALESCE(SUM(credits_remaining) FILTER (
+                      WHERE credits_remaining > 0
+                        AND (expires_at IS NULL OR expires_at > NOW())), 0),
+                  bool_or(COALESCE(source,'') LIKE 'pack5%%')
+                FROM mcp_topups
+                WHERE paid_at IS NOT NULL
+                  AND ((%s IS NOT NULL AND api_key_hash = %s)
+                       OR (%s IS NOT NULL AND mcp_session_id = %s));
+            """, (h, h, sid, sid))
+            row = cur.fetchone()
+            return {"credits": int(row[0]) if row and row[0] else 0,
+                    "had_pack": bool(row[1]) if row else False}
+    except Exception as e:
+        print(f"[mcp_conversion_plays] get_credit_status: {e}", file=sys.stderr)
+        return {"credits": 0, "had_pack": False}
+    finally:
+        try: c.close()
+        except Exception: pass
+
+
 def consume_credits(api_key, mcp_session_id, count=1):
     """Atomically burn `count` credits from the caller's most-recently-paid active
        grant (matched by durable key OR buying session). Refuses below zero.

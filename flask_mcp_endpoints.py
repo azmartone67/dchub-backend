@@ -457,11 +457,16 @@ def mcp_credits_balance():
     api_key = (request.args.get("key") or request.args.get("api_key") or "").strip()
     session = (request.args.get("session") or request.args.get("mcp_session") or "").strip()
     try:
-        from routes.mcp_conversion_plays import get_credit_balance
-        credits = int(get_credit_balance(api_key or None, session or None) or 0)
-        return jsonify({"credits": credits, "has_pack": credits > 0}), 200
+        from routes.mcp_conversion_plays import get_credit_status
+        st = get_credit_status(api_key or None, session or None)
+        credits = int(st.get("credits") or 0)
+        # had_pack = ever bought a pack (even if depleted) → gateway shows a
+        # "top up $5" re-up nudge to a proven buyer instead of claim-free-key.
+        return jsonify({"credits": credits, "has_pack": credits > 0,
+                        "had_pack": bool(st.get("had_pack"))}), 200
     except Exception as e:
-        return jsonify({"credits": 0, "error": str(e)[:160], "fail_soft": True}), 200
+        return jsonify({"credits": 0, "had_pack": False, "error": str(e)[:160],
+                        "fail_soft": True}), 200
 
 
 @mcp_bp.post("/api/v1/mcp/credits/burn")

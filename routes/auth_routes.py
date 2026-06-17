@@ -164,13 +164,8 @@ def send_password_reset_email(email, name, reset_url):
                 print(f"⚠️ SENDGRID_API_KEY not set, skipping reset email for {email}")
                 return
             import urllib.request, urllib.error, json as _json
-            payload = {
-                "personalizations": [{"to": [{"email": email}]}],
-                "from": {"email": "info@dchub.cloud", "name": "DC Hub"},
-                "subject": "Reset Your DC Hub Password",
-                "content": [{
-                    "type": "text/html",
-                    "value": f"""
+            subject = "Reset Your DC Hub Password"
+            html = f"""
                     <div style="font-family: system-ui; max-width: 600px; margin: 0 auto;">
                         <h2 style="color: #2563eb;">DC Hub Password Reset</h2>
                         <p>Hi {name},</p>
@@ -183,6 +178,13 @@ def send_password_reset_email(email, name, reset_url):
                         <p style="color: #999; font-size: 12px;">DC Hub — Data Center Market Intelligence</p>
                     </div>
                     """
+            payload = {
+                "personalizations": [{"to": [{"email": email}]}],
+                "from": {"email": "info@dchub.cloud", "name": "DC Hub"},
+                "subject": subject,
+                "content": [{
+                    "type": "text/html",
+                    "value": html
                 }]
             }
             req = urllib.request.Request(
@@ -194,10 +196,37 @@ def send_password_reset_email(email, name, reset_url):
                 },
                 method='POST'
             )
-            with urllib.request.urlopen(req, timeout=5) as resp:
-                print(f"✅ Password reset email sent to {email} (status: {resp.status})")
+            try:
+                with urllib.request.urlopen(req, timeout=5) as resp:
+                    _ok = 200 <= int(getattr(resp, 'status', 0) or 0) < 300
+                    print(f"✅ Password reset email sent to {email} (status: {resp.status})")
+            except Exception as _sge:
+                # r-resend-port (2026-06-16): SendGrid out of credits ("Maximum
+                # credits exceeded" 401) raises urllib HTTPError. Fall through
+                # to Resend so the customer still gets their reset link.
+                print(f"⚠️ SendGrid reset email failed for {email}: {str(_sge)[:120]}")
+                _ok = False
+            if not _ok:
+                # Lazy import: main imports routes, so a top-level
+                # `from main import _resend_email` would be circular.
+                from main import _resend_email
+                if _resend_email(email, subject, html, from_email="info@dchub.cloud"):
+                    print(f"✅ Password reset email sent to {email} via Resend fallback")
+                    return
         except Exception as e:
             print(f"❌ Failed to send reset email to {email}: {e}")
+            # r-resend-port (2026-06-16): outer failure (e.g. payload build) →
+            # try Resend with a plain inline fallback carrying the reset link.
+            try:
+                from main import _resend_email
+                _subj = locals().get('subject') or "Reset Your DC Hub Password"
+                _html = locals().get('html') or (
+                    f"<h2>DC Hub Password Reset</h2><p>Reset your password (link valid 72h): "
+                    f"<a href='{reset_url}'>{reset_url}</a></p><p>— DC Hub</p>")
+                if _resend_email(email, _subj, _html, from_email="info@dchub.cloud"):
+                    print(f"✅ Password reset email sent to {email} via Resend fallback")
+            except Exception as _re:
+                print(f"❌ Resend reset fallback also failed for {email}: {str(_re)[:120]}")
 
     threading.Thread(target=_do_send, daemon=True).start()
 
@@ -226,9 +255,26 @@ def send_admin_alert_email(subject, body_text):
                 },
                 method='POST'
             )
-            response = urllib.request.urlopen(req, timeout=5)
-            print(f"🚨 Admin alert sent: {subject} (status: {response.status})")
-            return True
+            try:
+                response = urllib.request.urlopen(req, timeout=5)
+                _ok = 200 <= int(getattr(response, 'status', 0) or 0) < 300
+                print(f"🚨 Admin alert sent: {subject} (status: {response.status})")
+            except Exception as _sge:
+                # r-resend-port (2026-06-16): SendGrid out of credits → fall
+                # through to Resend so admin recovery alerts still arrive.
+                print(f"⚠️ SendGrid admin alert failed: {str(_sge)[:120]}")
+                _ok = False
+            if not _ok:
+                # Lazy import to avoid circular import (main imports routes).
+                from main import _resend_email
+                # body_text is sent as text/plain to SendGrid but callers pass
+                # HTML-ish content; <pre> wrapping keeps either form readable.
+                _html = body_text if '<' in (body_text or '') else f"<pre>{body_text}</pre>"
+                if _resend_email(admin_email, subject, _html,
+                                 from_email="info@dchub.cloud", from_name="DC Hub Alerts"):
+                    print(f"🚨 Admin alert sent via Resend fallback: {subject}")
+                    return True
+            return _ok
         except Exception as e:
             print(f"❌ Failed to send admin alert: {e}")
             return False

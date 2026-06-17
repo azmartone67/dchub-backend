@@ -11692,6 +11692,26 @@ def _welcome_email_resend_fallback(to_email, raw_api_key, plan_name='pro'):
         return False
 
 
+def _resend_email(to_email, subject, html, from_email="alerts@dchub.cloud", from_name="DC Hub"):
+    """General Resend send (fallback when SendGrid fails). Light urllib, no SDK.
+    Returns True on 2xx. r-resend-port 2026-06-16."""
+    import os as _os, json as _json, urllib.request as _u
+    rk = _os.environ.get('DCHUB_RESEND_API_KEY', '') or _os.environ.get('RESEND_API_KEY', '')
+    if not rk or not to_email:
+        return False
+    try:
+        payload = _json.dumps({"from": f"{from_name} <{from_email}>", "to": [to_email],
+                               "subject": subject, "html": html}).encode()
+        req = _u.Request("https://api.resend.com/emails", data=payload, method="POST",
+                         headers={"Authorization": "Bearer " + rk, "Content-Type": "application/json",
+                                  "User-Agent": "dchub/1.0"})
+        r = _u.urlopen(req, timeout=20)
+        return 200 <= getattr(r, 'status', 0) < 300
+    except Exception as _e:
+        print(f"⚠️ Resend send failed for {to_email}: {str(_e)[:120]}")
+        return False
+
+
 def send_welcome_email_sendgrid(to_email, raw_api_key, plan_name='pro', temp_password=None, reset_url=None):
     """Send welcome email with API key (and login password for new accounts) via SendGrid.
 
@@ -11998,8 +12018,26 @@ p {{ font-size: 16px; color: #4a4a5a; margin-bottom: 16px; line-height: 1.6; }}
             sg = SendGridAPIClient(sg_key)
             response = sg.send(message)
             print(f"📧 Free welcome email sent to {to_email} CC jonathan@dchub.cloud (status: {response.status_code})")
+            # r-resend-port (2026-06-16): SendGrid out of credits ("Maximum
+            # credits exceeded" 401) → fall back to Resend so free signups
+            # still get their welcome.
+            _ok = 200 <= int(getattr(response, 'status_code', 0) or 0) < 300
+            if not _ok and _resend_email(to_email, subject, html):
+                print(f"📧 Free welcome email sent to {to_email} via Resend fallback")
+                return
         except Exception as e:
             print(f"❌ Free welcome email failed for {to_email}: {e}")
+            # r-resend-port (2026-06-16): SendGrid raised → try Resend. Use a
+            # plain inline fallback if the template locals weren't built yet
+            # (e.g. the SendGrid import itself raised before subject/html).
+            _subj = locals().get('subject') or "Welcome to DC Hub - Your Free Account is Active"
+            _html = locals().get('html') or (
+                "<h2>Welcome to DC Hub</h2><p>Your free account is active. "
+                "Sign in at <a href='https://dchub.cloud/dashboard'>dchub.cloud/dashboard</a> "
+                "to start exploring 21,000+ data-center facilities.</p><p>— DC Hub</p>")
+            if _resend_email(to_email, _subj, _html):
+                print(f"📧 Free welcome email sent to {to_email} via Resend fallback")
+                return
     threading.Thread(target=_send, daemon=True).start()
 
 
@@ -12097,10 +12135,28 @@ p {{ font-size: 16px; color: #4a4a5a; margin-bottom: 16px; line-height: 1.6; }}
                 html_content=html
             )
             sg = SendGridAPIClient(sg_key)
-            sg.send(message)
-            print(f"📧 Pro welcome email sent to {to_email}")
+            response = sg.send(message)
+            print(f"📧 Pro welcome email sent to {to_email} (status: {getattr(response, 'status_code', '?')})")
+            # r-resend-port (2026-06-16): SendGrid out of credits ("Maximum
+            # credits exceeded" 401) → fall back to Resend so Pro upgrades
+            # still get their welcome.
+            _ok = 200 <= int(getattr(response, 'status_code', 0) or 0) < 300
+            if not _ok and _resend_email(to_email, subject, html):
+                print(f"📧 Pro welcome email sent to {to_email} via Resend fallback")
+                return
         except Exception as e:
             print(f"⚠️ Pro welcome email failed for {to_email}: {e}")
+            # r-resend-port (2026-06-16): SendGrid raised → try Resend. Use a
+            # plain inline fallback if the template locals weren't built yet
+            # (e.g. the SendGrid import itself raised before subject/html).
+            _subj = locals().get('subject') or "🎉 Welcome to DC Hub Pro - Your Upgrade is Active"
+            _html = locals().get('html') or (
+                "<h2>Welcome to DC Hub Pro</h2><p>Your Pro upgrade is active. "
+                "Visit <a href='https://dchub.cloud/dashboard'>dchub.cloud/dashboard</a> "
+                "to view your API keys and unlock full data.</p><p>— DC Hub</p>")
+            if _resend_email(to_email, _subj, _html):
+                print(f"📧 Pro welcome email sent to {to_email} via Resend fallback")
+                return
     threading.Thread(target=_send, daemon=True).start()
 def _pg_execute(query, params=(), fetch=False):
     """Execute a query on PostgreSQL. Returns (rows_affected, fetched_rows) or (0, []) on failure."""
