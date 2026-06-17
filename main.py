@@ -11241,6 +11241,19 @@ def stripe_webhook():
             _STRIPE_WEBHOOK_STATS["last_handler_error"] = f"subscription.created: {str(_e_sub)[:120]}"
             _evt_bucket["errored"] += 1
             print(f"[stripe_webhook] subscription.created handler error: {_e_sub}")
+        # r-dupsub (2026-06-17): catch SILENT double-billing. A buyer who checks
+        # out twice spawns a 2nd Stripe customer + 2nd active subscription for the
+        # SAME email — gabriel.zuckerman@nlr.gov hit this (2x $3k/mo across two
+        # customer ids, undetected for 3 weeks). Detect same-email multi-active-sub
+        # and admin-alert. Background daemon thread + fail-soft so it NEVER delays
+        # or breaks the webhook (Stripe retries on slow/500 responses).
+        try:
+            import threading as _dth
+            _dth.Thread(target=_detect_duplicate_active_subs,
+                        args=(data.get('customer'),),
+                        name="dup-sub-detect", daemon=True).start()
+        except Exception:
+            pass
         last_webhook_time = datetime.utcnow().isoformat() + 'Z'
         last_webhook_status = 'ok'
     elif event_type == 'customer.subscription.updated':
@@ -11722,6 +11735,66 @@ def _welcome_email_resend_fallback(to_email, raw_api_key, plan_name='pro'):
     except Exception as _e:
         print(f"⚠️ Resend fallback also failed for {to_email}: {str(_e)[:120]}")
         return False
+
+
+def _detect_duplicate_active_subs(customer_id):
+    """Alert when a buyer has >1 ACTIVE Stripe subscription under the same email
+    — silent double-billing. gabriel.zuckerman@nlr.gov hit this: two $3,000/mo
+    subs across two customer ids, undetected for 3 weeks (he re-checked-out and
+    Stripe minted a 2nd customer rather than reusing the first). Runs in a
+    background daemon thread off the webhook path; fully fail-soft (a Stripe
+    hiccup must never break payment handling). NEVER cancels/refunds — that's an
+    operator money decision; this only flags it."""
+    try:
+        if not customer_id:
+            return
+        import os as _os
+        import stripe as _st
+        _st.api_key = STRIPE_SECRET_KEY
+        cust = _st.Customer.retrieve(customer_id)
+        email = ((getattr(cust, "email", None) or
+                  (cust.get("email") if hasattr(cust, "get") else None)) or "").strip().lower()
+        if not email:
+            return
+        # All customer records sharing this email (a re-checkout spawns new ones).
+        try:
+            found = _st.Customer.search(query=f"email:'{email}'", limit=20)
+            cust_ids = [c["id"] for c in found.get("data", [])]
+        except Exception:
+            cust_ids = []
+        if customer_id not in cust_ids:
+            cust_ids.append(customer_id)
+        active = []
+        for cid in cust_ids:
+            try:
+                subs = _st.Subscription.list(customer=cid, status="active", limit=20)
+                for s in subs.get("data", []):
+                    amt = None
+                    try:
+                        amt = s["items"]["data"][0]["price"]["unit_amount"]
+                    except Exception:
+                        pass
+                    active.append((cid, s["id"], amt))
+            except Exception:
+                pass
+        if len(active) > 1:
+            rows = "".join(
+                f"<li>customer <code>{c}</code> · sub <code>{sid}</code> · "
+                f"${(amt or 0) / 100:.2f}/period</li>" for c, sid, amt in active)
+            html = (f"<p>⚠️ <b>{email}</b> has <b>{len(active)} active Stripe "
+                    f"subscriptions</b> — likely double-billed. Review and cancel "
+                    f"the duplicate (+ refund) in the Stripe dashboard:</p>"
+                    f"<ul>{rows}</ul>")
+            admin = _os.environ.get("DCHUB_ADMIN_EMAIL", "azmartone@gmail.com")
+            try:
+                _resend_email(admin, f"⚠️ Duplicate active subscriptions: {email}", html)
+            except Exception:
+                pass
+            print(f"[dup-sub-detect] ALERT {email}: {len(active)} active subs")
+        else:
+            print(f"[dup-sub-detect] {email}: {len(active)} active sub — ok")
+    except Exception as _e:
+        print(f"[dup-sub-detect] non-fatal: {str(_e)[:160]}")
 
 
 def _resend_email(to_email, subject, html, from_email="alerts@dchub.cloud", from_name="DC Hub"):
