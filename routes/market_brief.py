@@ -961,10 +961,14 @@ def _build_brief(slug: str, tier: str) -> dict:
             # shape is stable; the HTML template handles blur/teaser display.
             if is_pro:
                 out["power_grid"] = _section_power_grid(cur, hero)
-                out["pipeline"]   = _section_pipeline(cur, hero.get("name") or "")
-                out["operators"]  = _section_operators(cur, hero.get("name") or "")
-                out["ma"]         = _section_ma(cur, hero.get("name") or "")
-                out["comps"]      = _section_comps(cur, hero.get("name") or "")
+                # r-fix 2026-06-17: pass the comma-stripped CITY ("Cheyenne", not
+                # "Cheyenne, WY") so these exact-name section matches stop missing
+                # every ", ST"-suffixed market (same gap _section_kpis fixed).
+                _bn = ((hero.get("name") or "").split(",")[0].strip()) or (hero.get("name") or "")
+                out["pipeline"]   = _section_pipeline(cur, _bn)
+                out["operators"]  = _section_operators(cur, _bn)
+                out["ma"]         = _section_ma(cur, _bn)
+                out["comps"]      = _section_comps(cur, _bn)
                 out["risk"]       = _section_risk(cur, hero)
             else:
                 # Empty arrays / nulls so callers don't NPE on missing keys.
