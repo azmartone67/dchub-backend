@@ -623,9 +623,9 @@ def _cta_gated(tool: str, current: Tier, required: Tier, args: Optional[Dict] = 
                 f"for usage alerts + new-tool access>\"}}` → returns "
                 f"`api_key` instantly (no browser, no card). "
                 f"Then retry `{tool}` with header `X-API-Key: <key>`. "
-                f"Free tier: 200 calls/day, full data on identified tools.\n\n"
+                f"Free tier: 10 calls/day, full data on identified tools.\n\n"
                 f"👤 **Human user signup (if you're relaying):** {signup_url} "
-                f"— 30 seconds, email only, same 200 calls/day.")
+                f"— 30 seconds, email only, same 10 calls/day.")
 
     # Larger jumps (IDENTIFIED→DEV, DEV→PRO, etc.) keep the pricing path
     # Phase ZZZZ-T1-social-proof (2026-05-18): include the Stripe direct

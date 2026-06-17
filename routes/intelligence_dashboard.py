@@ -38,6 +38,7 @@ def intelligence_dashboard():
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>DC Hub Intelligence — live pulse of the platform</title>
 <meta name="description" content="Live operational intelligence from dchub.cloud — data freshness, MCP tool calls, brain detector findings, per-surface health. The only data center intelligence platform that publishes its own pulse in real time.">
 <meta name="robots" content="index,follow,max-snippet:-1">

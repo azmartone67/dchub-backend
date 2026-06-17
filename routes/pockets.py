@@ -491,6 +491,7 @@ def pockets_health():
 
 _POCKETS_PAGE_HTML = '''<!DOCTYPE html><html lang="en"><head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Pockets of Power · DC Hub</title>
 <meta name="description" content="Live ranking of data-center-friendly markets by excess power, grid constraint, and time-to-power. Updated daily.">
 <meta property="og:title" content="Pockets of Power — DC Hub">

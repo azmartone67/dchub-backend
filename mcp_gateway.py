@@ -1728,8 +1728,8 @@ class MCPGateway:
             "rate_limits": {
                 "anonymous": "60 req/min/IP",
                 "free_tier": "10 calls/day across 14 paid tools",
-                "developer": "1,000 calls/day ($49/mo)",
-                "pro": "10,000 calls/day ($149/mo)",
+                "developer": "500 calls/day ($49/mo)",
+                "pro": "2,000 calls/day ($199/mo)",
                 "enterprise": "100,000 calls/day (custom)",
             },
 

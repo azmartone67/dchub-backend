@@ -311,7 +311,7 @@ _USER_RECORDED_CITATIONS = [
             "tracking. Add to your Claude Desktop config with:\n"
             "  \"dchub\": { \"url\": \"https://dchub.cloud/mcp\", "
             "\"headers\": { \"X-API-Key\": \"<key>\" } }\n"
-            "Free dev key (1,000 calls/day) at dchub.cloud/signup."),
+            "Free key (10 calls/day) at dchub.cloud/signup."),
     },
     {
         "engine": "perplexity", "prompt_id": "data_center_intelligence_platforms_with_mcp",

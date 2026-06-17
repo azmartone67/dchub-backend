@@ -313,6 +313,7 @@ def transactions_index():
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Data Center Transactions Browser — {total:,} deals tracked | DC Hub</title>
 <meta name="description" content="Browse {total:,} data center M&amp;A transactions tracked by DC Hub. Filter by year, buyer, region, capacity. Free + indexable — schema.org markup, no signup.">
 <meta name="robots" content="index,follow,max-snippet:-1">
