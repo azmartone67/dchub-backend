@@ -2738,6 +2738,7 @@ def phase14c_health_aggregate():
             row = cur.fetchone() or {}
             latest = row.get('m')
             if latest:
+                if getattr(latest, 'tzinfo', None): latest = latest.replace(tzinfo=None)
                 hours = (_dt.datetime.utcnow() - latest).total_seconds() / 3600.0
                 check = {'latest': str(latest), 'hours_stale': round(hours, 1),
                          'rows': int(row.get('n') or 0)}
@@ -2756,6 +2757,7 @@ def phase14c_health_aggregate():
             row = cur.fetchone() or {}
             latest = row.get('m')
             if latest:
+                if getattr(latest, 'tzinfo', None): latest = latest.replace(tzinfo=None)
                 days = (_dt.datetime.utcnow() - latest).days
                 check = {'latest': str(latest), 'days_stale': days,
                          'rows': int(row.get('n') or 0)}

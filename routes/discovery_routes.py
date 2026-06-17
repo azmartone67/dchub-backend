@@ -714,6 +714,35 @@ def run_cloudscene_discovery():
     return {'source': 'cloudscene', 'found': 0, 'added': 0, 'duplicate': 0, 'note': 'No public API available'}
 
 
+def _run_competitor_gap_discovery():
+    """Discovery-runner adapter for the competitor coverage-gap crawler.
+
+    Invoked via POST /api/discovery/run?sources=competitor_gap (the endpoint
+    the brain's coverage_gap_competitor pattern POSTs to). Runs the legal
+    competitor sitemap crawl + diff, which stages TRUE gaps into
+    discovered_facilities via insert_discovered_facility. Time-capped +
+    background-safe by the crawler itself. Normalizes the crawler summary
+    into the {source, found, added, duplicate} shape discovery_run expects."""
+    try:
+        from routes.competitor_gap_crawler import run_competitor_gap_scan
+    except Exception as e:
+        return {'source': 'competitor_gap', 'found': 0, 'added': 0,
+                'duplicate': 0, 'error': f'import failed: {e}'}
+    try:
+        summary = run_competitor_gap_scan()
+    except Exception as e:
+        return {'source': 'competitor_gap', 'found': 0, 'added': 0,
+                'duplicate': 0, 'error': str(e)[:160]}
+    return {
+        'source': 'competitor_gap',
+        'found': summary.get('total_true_gaps', 0),
+        'added': summary.get('total_inserted', 0),
+        'duplicate': summary.get('total_dup', 0),
+        'sources_scanned': len(summary.get('sources', [])),
+        'errors': summary.get('errors', [])[:5],
+    }
+
+
 # ─────────────────────────────────────────────────────────────
 # EVOLUTION ENGINE (lazy import)
 # ─────────────────────────────────────────────────────────────
@@ -766,6 +795,13 @@ def discovery_run():
         'openstreetmap': run_osm_discovery,
         'datacentermap': run_datacentermap_discovery,
         'cloudscene': run_cloudscene_discovery,
+        # Competitor coverage-gap crawler (2026-06-17). The brain action
+        # coverage_gap_competitor:<slug> POSTs /api/discovery/run?sources=
+        # competitor_gap → this runner crawls LEGAL competitor sitemaps,
+        # diffs against our coverage, and stages TRUE gaps into
+        # discovered_facilities (never the live `facilities` table). The
+        # existing auto-approve → capacity sync chain promotes from there.
+        'competitor_gap': _run_competitor_gap_discovery,
     }
 
     for source_key, run_func in source_runners.items():

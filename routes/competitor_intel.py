@@ -166,6 +166,35 @@ def scan_competitors() -> dict:
     finally:
         try: c.close()
         except Exception: pass
+
+    # ── STEP 2 (2026-06-17) — competitor coverage-gap crawl. Piggybacks
+    # this EXISTING daily cron (POST /api/v1/competitors/scan) so no new
+    # cron is added. Runs in a BACKGROUND daemon thread, time-capped, so
+    # the heavy multi-fetch sitemap crawl never blocks the request path
+    # (the backend is 1 Railway replica — synchronous heavy fetches flap
+    # the whole site). Fully guarded: a crawler failure can't break the
+    # snapshot pass that already succeeded above.
+    out["gap_scan"] = {"status": "spawned_background"}
+    try:
+        import threading
+
+        def _gap_bg():
+            try:
+                from routes.competitor_gap_crawler import run_competitor_gap_scan
+                run_competitor_gap_scan(budget_s=90)
+            except Exception as e:
+                try:
+                    import logging
+                    logging.getLogger(__name__).warning(
+                        "competitor gap scan (bg) failed: %s", str(e)[:160])
+                except Exception:
+                    pass
+
+        t = threading.Thread(target=_gap_bg, name="competitor-gap-scan",
+                             daemon=True)
+        t.start()
+    except Exception as e:
+        out["gap_scan"] = {"status": "spawn_failed", "error": str(e)[:120]}
     return out
 
 

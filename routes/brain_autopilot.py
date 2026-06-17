@@ -315,6 +315,21 @@ def _action_outbound_distribution(finding: dict) -> tuple[str | None, dict | Non
     return "/api/v1/admin/outreach/mcp-registry/submit", {"target": key}
 
 
+def _action_competitor_gap(finding: dict) -> tuple[str | None, dict | None]:
+    """2026-06-17 — autonomous competitor coverage-gap ingestion.
+
+    The competitor_gap_crawler files findings keyed
+    coverage_gap_competitor:<slug> (dchawk / cloudscene / dcf ...). Instead
+    of escalating, the brain POSTs the discovery runner that crawls the
+    LEGAL competitor sitemaps, diffs against our coverage, and stages TRUE
+    gaps into discovered_facilities (the existing auto-approve → capacity
+    sync chain promotes them to live facilities). Same promotion pattern as
+    data_freshness + outbound_distribution: a finding the brain SOLVES, not
+    just flags. The runner is time-capped/background-safe so the 1-replica
+    request path never blocks."""
+    return "/api/discovery/run?sources=competitor_gap", {}
+
+
 def _action_worker_source_unreachable(finding: dict) -> tuple[str | None, dict | None]:
     """raw.githubusercontent.com fetch failed (private repo, no token).
     Needs GITHUB_TOKEN env var. Escalate."""
@@ -927,6 +942,21 @@ _PATTERN_LIBRARY: dict[str, dict[str, Any]] = {
         "method":      None,
         "use_admin":   False,
         "description": "Escalation-only: Alberta footprint thin. Known builds in Pincher Creek + Strathmore + Calgary metro need to be added. POST /api/v1/admin/facilities/bulk to patch.",
+    },
+    # 2026-06-17 — competitor coverage-gap (AUTONOMOUS). The
+    # competitor_gap_crawler files coverage_gap_competitor:<slug> findings
+    # (dchawk/cloudscene/dcf/...). _lookup_pattern resolves the dynamic
+    # :<slug> suffix via its prefix split, so all competitor sources share
+    # this one entry. The action POSTs /api/discovery/run?sources=
+    # competitor_gap → the 'competitor_gap' runner crawls the LEGAL
+    # competitor sitemaps, diffs, and stages TRUE gaps into
+    # discovered_facilities (auto-approve promotes them). Contrast with
+    # coverage_gap_canada/alberta which stay escalation-only.
+    "coverage_gap_competitor": {
+        "action":      _action_competitor_gap,
+        "method":      "POST",
+        "use_admin":   True,
+        "description": "Autonomous: a competitor (DatacenterHawk/Cloudscene/DCF) lists data-center facilities DC Hub doesn't have. Brain POSTs /api/discovery/run?sources=competitor_gap → the competitor_gap_crawler crawls LEGAL public sitemaps, NER-filters + fuzzy-dedups against discovered_facilities AND facilities, and stages TRUE gaps into discovered_facilities. The existing auto-approve → capacity-sync chain promotes them to live facilities so search_facilities/get_facility can answer for them. Time-capped + polite-rate-limited; runs in the daily competitor scan too.",
     },
     # Phase EEE — surface brain pattern. Dynamic key
     # `surface_health_critical:<surface_id>` is handled via the prefix-
