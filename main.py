@@ -11057,6 +11057,33 @@ def stripe_webhook():
                         expires_days=PACK5_EXPIRY_DAYS)
                     print(f"💳 Pack5 grant: key={_p5_key[:14]}… email={_p5_email or '(none)'} "
                           f"newmint={_p5_newmint} grant={_p5_grant}")
+                    # r-pack5-conv (2026-06-17): RECORD the pack sale as an
+                    # mcp_conversions row. The grant above mints credits + emails
+                    # the key but wrote NO conversion, so a real $5 pack sale was
+                    # INVISIBLE to conversions_30d (the dashboard "Conversions"
+                    # number) and the brain brief. One-time payment (no
+                    # subscription) → store the checkout session id (cs_…) in
+                    # stripe_subscription_id, the only UNIQUE column, to dedupe
+                    # webhook re-delivery (mirrors the subscription path's
+                    # ON CONFLICT (stripe_subscription_id)). mrr_cents=0 — a pack
+                    # is one-time, not recurring; it still counts via COUNT(*),
+                    # and via stripe_customer_id in paid_conversions_7d.
+                    if _p5_grant.get('ok'):
+                        try:
+                            _pg_execute(
+                                """INSERT INTO mcp_conversions
+                                     (user_email, stripe_customer_id,
+                                      stripe_subscription_id, plan_to, mrr_cents,
+                                      source)
+                                   VALUES (%s, %s, %s, 'pack_1000', 0,
+                                           'stripe_webhook_pack5')
+                                   ON CONFLICT (stripe_subscription_id)
+                                   DO NOTHING""",
+                                (_p5_email or None, data.get('customer'),
+                                 data.get('id')))
+                            print(f"💳 Pack5 conversion recorded (cs={str(data.get('id'))[:18]}…)")
+                        except Exception as _p5ce:
+                            print(f"⚠️ pack5 conversion-record error (non-fatal): {_p5ce}")
                     # r-pack5-tax-fix: email the key + credits on EVERY new grant,
                     # not just fresh mints — a buyer who already had a key still
                     # needs to know their 1,000 credits are live and on which key.
