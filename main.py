@@ -11011,11 +11011,18 @@ def stripe_webhook():
                     grant_credit_pack)
                 _p5_mode = (data.get('mode') or '').lower()
                 _p5_amt  = int(data.get('amount_total') or 0)
+                # r-pack5-tax-fix (2026-06-16): match on the PRE-TAX subtotal, not
+                # amount_total. Stripe Tax pushes amount_total above 500 (e.g. $5 +
+                # 8.8% AZ tax = 544), so `== 500` silently skipped the grant on the
+                # first real sale. amount_subtotal is always 500 for the $5 pack.
+                _p5_sub  = int(data.get('amount_subtotal') or 0)
                 _p5_ref  = (data.get('client_reference_id') or '').strip()
                 _p5_reserved = (_p5_ref.upper().startswith('DCM-')
                                 or _p5_ref.lower().startswith('tu-')
                                 or _p5_ref.startswith('ref_'))
-                if _p5_mode == 'payment' and _p5_amt == PACK5_PRICE_CENTS and not _p5_reserved:
+                if (_p5_mode == 'payment'
+                        and PACK5_PRICE_CENTS in (_p5_sub, _p5_amt)
+                        and not _p5_reserved):
                     import secrets as _p5sec
                     _p5_email = (
                         data.get('customer_email')
@@ -11045,7 +11052,11 @@ def stripe_webhook():
                         expires_days=PACK5_EXPIRY_DAYS)
                     print(f"💳 Pack5 grant: key={_p5_key[:14]}… email={_p5_email or '(none)'} "
                           f"newmint={_p5_newmint} grant={_p5_grant}")
-                    if _p5_newmint and _p5_email and not _p5_grant.get('idempotent'):
+                    # r-pack5-tax-fix: email the key + credits on EVERY new grant,
+                    # not just fresh mints — a buyer who already had a key still
+                    # needs to know their 1,000 credits are live and on which key.
+                    # (idempotent guard prevents a webhook replay from re-emailing.)
+                    if _p5_email and _p5_grant.get('ok') and not _p5_grant.get('idempotent'):
                         try:
                             send_welcome_email_sendgrid(
                                 _p5_email, _p5_key, plan_name="1,000 API credits")
