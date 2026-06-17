@@ -25282,6 +25282,53 @@ def api_site_score():
             (risk_score * 0.35)
         , 1)
 
+        # Power COST (¢/kWh) — the number a developer asks for FIRST. analyze_site
+        # historically returned a power *score* (substation/generation density)
+        # but never the actual cost, so "what does power cost here?" was
+        # unanswerable from this tool. Reuses eia_retail_rates (FULL state names)
+        # at the LATEST period only + industrial YoY. r-powercost 2026-06-17.
+        power_cost = None
+        try:
+            from location_names import get_state_name
+            _sn = get_state_name(state, 'US') or ''
+            if _sn:
+                c.execute("SELECT MAX(period) FROM eia_retail_rates WHERE rate_cents_kwh > 0 "
+                          "AND (state = %s OR UPPER(state) = %s OR state ILIKE %s)",
+                          (_sn, _sn.upper(), f"{_sn}%"))
+                _lp = (c.fetchone() or [None])[0]
+                if _lp:
+                    c.execute("SELECT LOWER(sector), AVG(rate_cents_kwh) FROM eia_retail_rates "
+                              "WHERE rate_cents_kwh > 0 AND period = %s "
+                              "AND (state = %s OR UPPER(state) = %s OR state ILIKE %s) "
+                              "GROUP BY LOWER(sector)",
+                              (_lp, _sn, _sn.upper(), f"{_sn}%"))
+                    _by = {r[0]: round(float(r[1]), 2) for r in c.fetchall() if r[1] is not None}
+                    _ind = _by.get('industrial')
+                    if _by:
+                        power_cost = {
+                            'industrial_cents_kwh': _ind,
+                            'commercial_cents_kwh': _by.get('commercial'),
+                            'period': _lp,
+                            'state': _sn,
+                            'basis': ('EIA state retail average — industrial benchmark; a '
+                                      'transmission-level DC typically contracts below this on '
+                                      'energy (utility/ISO-zone LMP + delivery + capacity).'),
+                            'source': 'EIA via DC Hub',
+                        }
+                        # Industrial YoY (the figure developers track)
+                        c.execute("SELECT AVG(rate_cents_kwh) FROM eia_retail_rates "
+                                  "WHERE rate_cents_kwh > 0 AND LOWER(sector)='industrial' AND period < %s "
+                                  "AND (state = %s OR UPPER(state) = %s OR state ILIKE %s) "
+                                  "GROUP BY period ORDER BY period DESC LIMIT 1",
+                                  (_lp, _sn, _sn.upper(), f"{_sn}%"))
+                        _prevrow = c.fetchone()
+                        if _prevrow and _prevrow[0] and _ind:
+                            _prev = float(_prevrow[0])
+                            if _prev:
+                                power_cost['industrial_yoy_pct'] = round((_ind - _prev) / _prev * 100, 1)
+        except Exception as _pce:
+            logger.warning(f"site-score power_cost lookup failed: {_pce}")
+
         return jsonify({
             'success': True,
             'location': {'lat': lat, 'lon': lon, 'state': state},
@@ -25294,6 +25341,7 @@ def api_site_score():
                 'market_conditions': round(market_score, 1),
                 'risk_resilience': round(risk_score, 1),
             },
+            'power_cost': power_cost,
             'nearby': {
                 'facilities_100km': nearby_facilities,
                 'total_capacity_mw': round(nearby_mw, 1),
@@ -26853,18 +26901,35 @@ def cf_stub_energy_summary():
         # column.
         where = ["rate_cents_kwh > 0"]
         params = []
+        # Reusable state-match fragment (full name / upper / bare code / ILIKE).
+        state_match_sql, state_match_params = "", []
         if state and len(state) <= 3:
             # Match: full name (e.g. "Georgia"), full name upper-cased,
             # the bare code (in case ingest used codes), and an ILIKE
             # fallback for prefix variants ("Ga.", "Georgia, USA").
-            where.append("(state = %s OR UPPER(state) = %s OR UPPER(state) = %s OR state ILIKE %s)")
-            params.extend([state_name, (state_name or '').upper(), state, f"{state_name}%"])
+            state_match_sql = "(state = %s OR UPPER(state) = %s OR UPPER(state) = %s OR state ILIKE %s)"
+            state_match_params = [state_name, (state_name or '').upper(), state, f"{state_name}%"]
+            where.append(state_match_sql)
+            params.extend(state_match_params)
         if sector and sector != 'all':
             where.append("LOWER(sector) = %s")
             params.append(sector)
+
+        # r-latest (2026-06-17): the AVG previously spanned EVERY year in the
+        # table (2022-2025) while the response labeled MAX(period) — so a
+        # multi-year mean (e.g. NJ industrial 12.41) was reported as "the
+        # latest year" when the real 2025 value is 13.9. Restrict the aggregate
+        # to the most-recent period for the filtered set so the number matches
+        # its label. Fail-open: if no period resolves, fall back to all-years.
+        _lp_where = "rate_cents_kwh > 0" + (f" AND {state_match_sql}" if state_match_sql else "")
+        cur.execute(f"SELECT MAX(period) FROM eia_retail_rates WHERE {_lp_where}", state_match_params)
+        latest_period = (cur.fetchone() or [None])[0]
+        if latest_period:
+            where.append("period = %s")
+            params.append(latest_period)
         where_sql = " AND ".join(where)
 
-        # Headline aggregate (filter-aware)
+        # Headline aggregate (filter-aware, latest-period only)
         cur.execute(f"""
             SELECT AVG(rate_cents_kwh), MIN(rate_cents_kwh),
                    MAX(rate_cents_kwh), COUNT(DISTINCT state), MAX(period)
@@ -26876,14 +26941,20 @@ def cf_stub_energy_summary():
         # page everything it needs in one shot.
         by_sector = {}
         if state and len(state) <= 3:
-            cur.execute("""
+            # Latest-period only (see r-latest above) so each sector reports
+            # its current-year rate, not a 2022-2025 average.
+            _ps_where = ("rate_cents_kwh > 0 AND (state = %s OR UPPER(state) = %s "
+                         "OR UPPER(state) = %s OR state ILIKE %s)")
+            _ps_params = [state_name, (state_name or '').upper(), state, f"{state_name}%"]
+            if latest_period:
+                _ps_where += " AND period = %s"
+                _ps_params.append(latest_period)
+            cur.execute(f"""
                 SELECT LOWER(sector), AVG(rate_cents_kwh), MAX(period)
                 FROM eia_retail_rates
-                WHERE rate_cents_kwh > 0
-                  AND (state = %s OR UPPER(state) = %s OR UPPER(state) = %s
-                       OR state ILIKE %s)
+                WHERE {_ps_where}
                 GROUP BY LOWER(sector)
-            """, (state_name, (state_name or '').upper(), state, f"{state_name}%"))
+            """, _ps_params)
             for r in cur.fetchall():
                 by_sector[r[0] or 'unknown'] = {
                     "avg_cents_kwh": round(float(r[1] or 0), 2),
