@@ -329,15 +329,22 @@ def _gather_signals() -> dict:
         # TIMESTAMP (same trap as discovered_facilities.discovered_at).
         # Bare >= comparison errored "text >= timestamp with time zone".
         # CAST to timestamptz with empty-string guard.
+        # r-honest-conv (2026-06-17): READ REAL PAYMENTS, not api_keys.plan.
+        # The old query counted ANY api_keys row with a paid plan as a
+        # "conversion" — so 9 SEEDED developer keys for partnerships@nvidia.com /
+        # coreweave / lambda / groq / deepmind (planted in a 6-second batch on
+        # 2026-06-16 with ZERO Stripe linkage) showed up as "9 developer-tier
+        # conversions — a genuine inflection" in every brief. The honest source
+        # is mcp_conversions WITH a real Stripe charge (stripe_customer_id) or
+        # real MRR. Seeded/test/free-upgraded keys never have those, so they
+        # can't fake an inflection anymore.
         _try("paid_conversions_7d",
-             """SELECT u.email, ak.plan, ak.created_at
-                  FROM api_keys ak
-                  LEFT JOIN users u ON u.id = ak.user_id
-                 WHERE ak.plan IN ('developer','pro','enterprise')
-                   AND COALESCE(ak.created_at, '') != ''
-                   AND ak.created_at::timestamptz
-                       >= NOW() - INTERVAL '7 days'
-                 ORDER BY ak.created_at DESC LIMIT 25""")
+             """SELECT user_email, plan_to, created_at, mrr_cents
+                  FROM mcp_conversions
+                 WHERE created_at >= NOW() - INTERVAL '7 days'
+                   AND (stripe_customer_id IS NOT NULL
+                        OR COALESCE(mrr_cents, 0) > 0)
+                 ORDER BY created_at DESC LIMIT 25""")
         # Phase r24 — news entity discovery candidates. Surfaces unknown
         # operator/facility names that appeared in recent news but
         # aren't in our facilities table yet. Inspector flags these as

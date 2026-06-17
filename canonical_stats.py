@@ -30,7 +30,7 @@ import threading
 # "*_phrase()" helpers. Never set these above the true live numbers.
 _FALLBACK = {
     "facilities": 21000,            # raw "tracked" floor (discovery pile, incl unmerged dupes)
-    "facilities_verified": 3000,    # deduped/active floor — citation-safe (live ~3,141). MUST stay <= reality.
+    "facilities_verified": 2800,    # deduped/active floor — citation-safe (live ~2,848 as of 2026-06-17, dropped from 3,141 as re-ingestion churned dedup flags). MUST stay <= reality — floors round DOWN.
     "countries": 170,
     "countries_verified": 30,       # deduped/active distinct floor (live ~33; country field dirty -> conservative)
     "markets": 300,          # 2026-06-08: Neon-verified COUNT(DISTINCT market_name) minus 3 aggregates = 300 (grew from 232 via intl expansion). Live query below; this is the fallback.
@@ -167,14 +167,14 @@ def facilities_phrase() -> str:
 
 
 def facilities_verified_phrase() -> str:
-    """Deduped/active floor, e.g. '3,100+' — what we've actually verified."""
+    """Deduped/active floor, e.g. '2,800+' — what we've actually verified."""
     return _floor_phrase(
         get_canonical_stats().get("facilities_verified", _FALLBACK["facilities_verified"]),
         step=100)
 
 
 def facilities_phrase_full() -> str:
-    """Honest dual claim: '21,000+ tracked · 3,100+ verified'. Prefer this in
+    """Honest dual claim: '21,000+ tracked · 2,800+ verified'. Prefer this in
     any marketing/SEO copy that previously made the bare '21,000+ facilities'
     claim — it keeps the discovery moat without implying 21k are confirmed."""
     return f"{facilities_phrase()} tracked · {facilities_verified_phrase()} verified"
