@@ -274,13 +274,39 @@ def _run_sync() -> dict:
     return out
 
 
+_D1_SYNC_RUNNING = False
+
+
 @d1_sync_bp.route("/api/v1/admin/d1-sync/run", methods=["POST"])
 def run_now():
-    """Admin: trigger a sync pass immediately."""
+    """Admin: trigger a sync pass in a BACKGROUND THREAD + return 202 immediately.
+    r-dr (2026-06-17): _run_sync() takes ~75s (250 CF D1 batches) which EXCEEDS the
+    gunicorn worker timeout — running it inline 502'd ('Application failed to
+    respond') on every hourly cron call, so the sync never completed and D1 froze
+    (stuck ~4.5K rows, sync_log empty). Background thread + a single-flight guard
+    fixes it. CF D1 uses INSERT ON CONFLICT (idempotent), so a worker recycled
+    mid-sync is harmless — the next hourly run just retries."""
     if not _admin_ok():
         return jsonify(error="forbidden", hint="X-Internal-Key required"), 403
-    result = _run_sync()
-    return jsonify(result), (200 if result["ok"] else 500)
+    global _D1_SYNC_RUNNING
+    if _D1_SYNC_RUNNING:
+        return jsonify(ok=True, started=False, mode="background",
+                       note="a D1 sync is already running"), 202
+    import threading
+
+    def _bg():
+        global _D1_SYNC_RUNNING
+        _D1_SYNC_RUNNING = True
+        try:
+            _run_sync()
+        except Exception as e:
+            logging.warning("[d1_sync] background sync failed: %s", e)
+        finally:
+            _D1_SYNC_RUNNING = False
+
+    threading.Thread(target=_bg, daemon=True, name="d1-sync").start()
+    return jsonify(ok=True, started=True, mode="background",
+                   note="sync running in background (~75s); poll /api/v1/admin/d1-sync/status"), 202
 
 
 @d1_sync_bp.route("/api/v1/admin/d1-sync/status", methods=["GET"])
