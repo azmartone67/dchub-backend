@@ -81,6 +81,70 @@ def _admin_ok():
     return sent in _INTERNAL_KEYS
 
 
+@brain_inspector_bp.route("/api/v1/brain/conversions-audit", methods=["GET"])
+def conversions_audit():
+    """Read-only honest-numbers audit of mcp_conversions (admin-gated).
+
+    A REAL paid conversion has a Stripe customer id (cus_...). Rows with
+    mrr_cents set but stripe_customer_id NULL are seeded/synthetic and must
+    NOT count as conversions — that's the loophole in paid_conversions_7d's
+    `OR mrr_cents>0`. Classifies the recent rows so we can see which named
+    'conversions' (e.g. the $300K research-seed line) are actually Stripe."""
+    if not _admin_ok():
+        return jsonify({"error": "admin only"}), 403
+    c = _get_db()
+    if c is None:
+        return jsonify({"error": "no db"}), 500
+    try:
+        with c.cursor() as cur:
+            cur.execute(
+                """SELECT user_email, plan_to, mrr_cents,
+                          stripe_customer_id, stripe_subscription_id,
+                          source, created_at
+                     FROM mcp_conversions
+                    ORDER BY created_at DESC LIMIT 30""")
+            cols = [d[0] for d in cur.description]
+            raw = [row if isinstance(row, dict) else dict(zip(cols, row))
+                   for row in cur.fetchall()]
+        rows, real, seeded = [], 0, 0
+        for r in raw:
+            cust = r.get("stripe_customer_id")
+            mrr = r.get("mrr_cents") or 0
+            if cust:
+                real += 1
+                cls = "real_stripe"
+            elif mrr > 0:
+                seeded += 1
+                cls = "seeded_mrr_only"
+            else:
+                cls = "no_value"
+            rows.append({
+                "email": r.get("user_email"),
+                "plan_to": r.get("plan_to"),
+                "mrr_cents": r.get("mrr_cents"),
+                "has_stripe_customer": bool(cust),
+                "has_stripe_sub": bool(r.get("stripe_subscription_id")),
+                "source": r.get("source"),
+                "created_at": str(r.get("created_at")),
+                "classify": cls,
+            })
+        return jsonify({
+            "rows": rows,
+            "real_stripe_count": real,
+            "seeded_mrr_only_count": seeded,
+            "note": ("real_stripe = has stripe_customer_id (cus_...). "
+                     "seeded_mrr_only = mrr set but NO Stripe charge → must "
+                     "NOT count as a conversion."),
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)[:200]}), 500
+    finally:
+        try:
+            c.close()
+        except Exception:
+            pass
+
+
 # ── Autonomous L22 auto-fire gate ────────────────────────────────────
 # The Inspector loop hands its code-fix candidates to L22 after every
 # brief (hook E in _generate_brief). That arm is AUTONOMOUS — no human in
