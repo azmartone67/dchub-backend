@@ -1016,9 +1016,12 @@ _pg_pool_read = None
 
 def _init_read_pool():
     global _pg_pool_read
-    read_url = os.environ.get('DATABASE_READ_URL', '')
+    # Accept EITHER name: DATABASE_READ_URL (canonical) OR NEON_REPLICA_URL
+    # (the name used when the Neon read-replica compute was created, 2026-06-17).
+    read_url = (os.environ.get('DATABASE_READ_URL', '')
+                or os.environ.get('NEON_REPLICA_URL', ''))
     if not read_url:
-        print("DATABASE POOL: No DATABASE_READ_URL set — all reads use primary")
+        print("DATABASE POOL: No DATABASE_READ_URL / NEON_REPLICA_URL set — all reads use primary")
         return
     if not read_url.startswith('postgres'):
         print("DATABASE POOL: ⚠️ DATABASE_READ_URL is not a valid postgres:// URL — ignoring")
