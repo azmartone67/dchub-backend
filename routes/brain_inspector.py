@@ -402,8 +402,15 @@ def _gather_signals() -> dict:
         # is mcp_conversions WITH a real Stripe charge (stripe_customer_id) or
         # real MRR. Seeded/test/free-upgraded keys never have those, so they
         # can't fake an inflection anymore.
+        # mrr_cents is CENTS — the brief LLM read the raw integer as dollars
+        # (9900 -> "$9,900" instead of $99/mo; 300000 -> "$300K" instead of
+        # $3,000/mo), a 100x over-statement that inflated every "inflection"
+        # line. Hand it mrr_usd so the brief reports the true figure. (Audit
+        # /api/v1/brain/conversions-audit shows 0 mrr-only rows today, so the
+        # stripe-or-mrr filter isn't currently counting seeded rows.)
         _try("paid_conversions_7d",
-             """SELECT user_email, plan_to, created_at, mrr_cents
+             """SELECT user_email, plan_to, created_at,
+                       ROUND(COALESCE(mrr_cents, 0) / 100.0, 2) AS mrr_usd
                   FROM mcp_conversions
                  WHERE created_at >= NOW() - INTERVAL '7 days'
                    AND (stripe_customer_id IS NOT NULL
