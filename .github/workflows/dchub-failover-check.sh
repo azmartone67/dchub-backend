@@ -1,81 +1,66 @@
 #!/usr/bin/env bash
-# dchub-failover-check.sh
-# Verifies dchub.cloud failover chain is healthy across /mcp (mcp-proxy) and
-# /api/* (dchubapiproxy v4.5.10+).
+# dchub-failover-check.sh — proves the LIVE failover chain is healthy.
+#
+# Rewritten 2026-06-17 (r-dr): the old version asserted `x-backend-used: replit`
+# via a CANARY_SECRET — that was the retired 3-backend Replit topology and proved
+# nothing. The live chain is Railway (primary) → Render (failover), routed by the
+# standalone ~/dchub-frontend/_worker.js. The worker lets you force a backend with
+# the header `X-DCHUB-Force-Backend: render` and tags the response with
+# `x-dc-hub-served-by: <backend>-<mode>` (e.g. render-failover, railway-primary,
+# kv-stale). So we force Render and assert HTTP 200 + served-by ~ "render" —
+# i.e. the failover mirror is actually live AND current.
+#
+# NOTE: only PROXIED paths carry x-dc-hub-served-by. /api/version is handled
+# INLINE by the worker, so we use /mcp (proxied) + /api/v1/stats (proxied).
 #
 # Modes:
-#   ./dchub-failover-check.sh              # canary mode: primary + forced-Replit on both surfaces
-#   ./dchub-failover-check.sh drill        # drill mode: verbose output, same checks
-#
-# Requires env: CANARY_SECRET  (Worker Secret bound on BOTH mcp-proxy and dchubapiproxy)
-#
-# Exits 0 on success, 1 on any failure. Silent on success in canary mode for
-# cron friendliness. GitHub Actions / cron captures stderr and emails on fail.
+#   ./dchub-failover-check.sh         # canary mode: silent on success (cron-friendly)
+#   ./dchub-failover-check.sh drill   # verbose
+# Exits 0 on success, 1 on any failure.
 
 set -u
 
 MCP_URL="https://dchub.cloud/mcp"
-API_URL="https://dchub.cloud/api/version"
+API_URL="https://dchub.cloud/api/v1/stats"
 INIT='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"canary","version":"1"}}}'
 FAIL=0
 
-# hit_post <label> <url> <expected_backend_or_empty> <extra_curl_args...>
-hit_post() {
-  local label="$1" url="$2" expect_backend="$3"; shift 3
-  local headers
-  headers=$(curl -sS -o /dev/null -D - -X POST "$url" \
+# assert_response <label> <headers> <expect_served_by_substr_or_empty>
+assert_response() {
+  local label="$1" headers="$2" expect="$3" status served
+  status=$(printf '%s' "$headers" | head -1 | awk '{print $2}')
+  served=$(printf '%s' "$headers" | awk -F': *' 'tolower($1)=="x-dc-hub-served-by"{print tolower($2)}' | tr -d '\r\n')
+  if [[ "$status" != "200" ]]; then
+    echo "[$label] FAIL status=$status served=${served:-none}" >&2; FAIL=1; return
+  fi
+  if [[ -n "$expect" && "$served" != *"$expect"* ]]; then
+    echo "[$label] FAIL expected served-by~$expect got=${served:-none}" >&2; FAIL=1; return
+  fi
+  [[ "${VERBOSE:-0}" == "1" ]] && echo "[$label] OK status=200 served=${served:-none}"
+}
+
+hit_post() {  # <label> <url> <expect> <extra curl args...>
+  local l="$1" u="$2" e="$3"; shift 3
+  assert_response "$l" "$(curl -sS -o /dev/null -D - -X POST "$u" \
     -H 'content-type: application/json' \
     -H 'accept: application/json, text/event-stream' \
-    --max-time 15 "$@" --data "$INIT")
-  assert_response "$label" "$headers" "$expect_backend"
+    --max-time 15 "$@" --data "$INIT")" "$e"
 }
-
-# hit_get <label> <url> <expected_backend_or_empty> <extra_curl_args...>
-hit_get() {
-  local label="$1" url="$2" expect_backend="$3"; shift 3
-  local headers
-  headers=$(curl -sS -o /dev/null -D - "$url" --max-time 15 "$@")
-  assert_response "$label" "$headers" "$expect_backend"
-}
-
-assert_response() {
-  local label="$1" headers="$2" expect_backend="$3"
-  local status backend
-  status=$(printf '%s' "$headers" | head -1 | awk '{print $2}')
-  backend=$(printf '%s' "$headers" | awk -F': *' 'tolower($1)=="x-backend-used"{print tolower($2)}' | tr -d '\r\n')
-
-  if [[ "$status" != "200" ]]; then
-    echo "[$label] FAIL status=$status backend=${backend:-none}" >&2
-    FAIL=1; return
-  fi
-  if [[ -n "$expect_backend" && "$backend" != "$expect_backend" ]]; then
-    echo "[$label] FAIL expected backend=$expect_backend got=${backend:-none}" >&2
-    FAIL=1; return
-  fi
-  [[ "${VERBOSE:-0}" == "1" ]] && echo "[$label] OK status=200 backend=$backend"
+hit_get() {   # <label> <url> <expect> <extra curl args...>
+  local l="$1" u="$2" e="$3"; shift 3
+  assert_response "$l" "$(curl -sS -o /dev/null -D - "$u" --max-time 15 "$@")" "$e"
 }
 
 MODE="${1:-canary}"
 [[ "$MODE" == "drill" ]] && VERBOSE=1
-if [[ "$MODE" == "drill" ]]; then
-  echo "=== dchub failover drill ==="
-fi
+[[ "$MODE" == "drill" ]] && echo "=== dchub failover drill (Railway primary → Render failover) ==="
 
-# --- /mcp surface (mcp-proxy) ---
-hit_post "mcp primary" "$MCP_URL" ""
-if [[ -n "${CANARY_SECRET:-}" ]]; then
-  hit_post "mcp canary -> replit" "$MCP_URL" "replit" -H "X-Dchub-Canary: $CANARY_SECRET"
-else
-  echo "[mcp canary] SKIP: CANARY_SECRET not set" >&2
-fi
+# Primary — any healthy backend must answer 200.
+hit_post "mcp primary"        "$MCP_URL" ""
+hit_get  "api primary"        "$API_URL" ""
+# Forced Render — PROVES the failover mirror is live and current (not stale/blocked).
+hit_post "mcp forced-render"  "$MCP_URL" "render" -H "X-DCHUB-Force-Backend: render"
+hit_get  "api forced-render"  "$API_URL" "render" -H "X-DCHUB-Force-Backend: render"
 
-# --- /api/* surface (dchubapiproxy v4.5.10+) ---
-hit_get "api primary" "$API_URL" ""
-if [[ -n "${CANARY_SECRET:-}" ]]; then
-  hit_get "api canary -> replit" "$API_URL" "replit" -H "X-Dchub-Canary: $CANARY_SECRET"
-else
-  echo "[api canary] SKIP: CANARY_SECRET not set" >&2
-fi
-
-[[ "$MODE" == "drill" && $FAIL -eq 0 ]] && echo "=== all checks passed ==="
+[[ "$MODE" == "drill" && $FAIL -eq 0 ]] && echo "=== all checks passed (Railway + Render both healthy) ==="
 exit $FAIL

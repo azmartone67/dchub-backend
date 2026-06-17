@@ -196,7 +196,7 @@ def compute_delta() -> dict:
                         SELECT total_count, verified_count,
                                operating_count, pipeline_count
                           FROM facility_count_snapshots
-                         WHERE snapshot_date <= CURRENT_DATE - INTERVAL '%s days'
+                         WHERE snapshot_date <= CURRENT_DATE - (%s * INTERVAL '1 day')
                          ORDER BY snapshot_date DESC LIMIT 1
                     """, (days,))
                     p = cur.fetchone()

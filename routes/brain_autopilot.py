@@ -1247,10 +1247,10 @@ _PATTERN_LIBRARY: dict[str, dict[str, Any]] = {
         "description": "Informational: path X had ≥5 SLOW REQUEST (>30s) events in the last hour. Audit the handler for sequential HTTP calls, unbounded queries, or sync wait on slow upstream APIs. This is the failure class that triggers gunicorn worker timeout → restart loop.",
     },
     "render_pipeline_blocked": {
-        "action":      lambda f: (None, None),
-        "method":      None,
+        "action":      _action_render_restart,
+        "method":      "POST",
         "use_admin":   False,
-        "description": "Escalation-only: Render is >2h behind the latest dchub-backend commit. Likely pipeline-minutes-blocked. Fix: Render dashboard → Settings → Billing → add pipeline minutes, OR manually trigger a deploy from the Deploys tab.",
+        "description": "Auto-recovery (r-dr 2026-06-17): Render is >2h behind the latest dchub-backend commit (pipeline-minutes-blocked / stuck deploy) — the failover MIRROR is going stale. Action POSTs the Render deploy hook (RENDER_DEPLOY_HOOK_URL) to force a fresh deploy and self-heal the stale mirror; 30-min cooldown prevents bounce loops; escalates if the hook env var is missing. Was escalation-only (no-op) → silent 5h staleness. DURABLE root fix is operator-side: set Render dashboard auto-deploy OFF + deploy on a schedule/tag so commit-churn stops burning Render pipeline minutes (this hook self-heals drift between scheduled deploys).",
     },
     # Phase r33-C (2026-05-21) — Render flap auto-restart. AUTO-FIRES
     # the Render deploy hook when probes fail. Rate-limited via

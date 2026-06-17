@@ -544,6 +544,12 @@ def fix_backfill_press_releases():
                     published_at TIMESTAMPTZ DEFAULT NOW()
                 );
             """)
+            # Ensure the `published` column exists (live table has it; required by
+            # the WHERE published = TRUE public serving queries in main.py).
+            cur.execute("""
+                ALTER TABLE press_releases
+                ADD COLUMN IF NOT EXISTS published BOOLEAN DEFAULT FALSE;
+            """)
             cur.execute("SELECT COUNT(*) FROM press_releases;")
             n = cur.fetchone()[0]
             if n > 0:
@@ -565,8 +571,8 @@ def fix_backfill_press_releases():
             ]
             for slug, title, body, url in prs:
                 cur.execute("""
-                    INSERT INTO press_releases (slug, title, body, url, published_at)
-                    VALUES (%s, %s, %s, %s, NOW())
+                    INSERT INTO press_releases (slug, title, body, url, published, published_at)
+                    VALUES (%s, %s, %s, %s, TRUE, NOW())
                     ON CONFLICT (slug) DO NOTHING;
                 """, (slug, title, body, url))
             c.commit()

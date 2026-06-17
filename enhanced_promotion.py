@@ -489,7 +489,7 @@ class EnhancedPromotionEngine:
         cursor.execute("SELECT COUNT(*) FROM fiber_routes")
         fiber_count = cursor.fetchone()[0]
         
-        cursor.execute("SELECT COUNT(*) FROM announcements WHERE published_date > datetime('now', '-7 days')")
+        cursor.execute("SELECT COUNT(*) FROM announcements WHERE published_date > NOW() - INTERVAL '7 days'")
         recent_news = cursor.fetchone()[0]
         
         if not news_hook:

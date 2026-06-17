@@ -259,7 +259,7 @@ def read_score_history(days: int = 30) -> dict:
                 SELECT score_date, queries_run, dchub_mentions, score_pct,
                        competitor_mentions
                   FROM citation_scores
-                 WHERE score_date >= CURRENT_DATE - INTERVAL '%s days'
+                 WHERE score_date >= CURRENT_DATE - (%s * INTERVAL '1 day')
                  ORDER BY score_date ASC
             """, (days,))
             for r in cur.fetchall():
