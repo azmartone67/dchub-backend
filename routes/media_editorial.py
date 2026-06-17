@@ -424,18 +424,39 @@ def editorial_decision(slot: str | None = None) -> dict:
     post=False means SUPPRESS — nothing today clears the newsworthiness bar
     or everything newsworthy was already covered this week."""
     ranked = rank_data_events()
-    recent_blob = _recently_posted_keys()
+    # r86e (2026-06-17): the novelty filter DEADLOCKED the entire LinkedIn feed
+    # — 0 quad posts for 7 days (last success 2026-06-10). Two compounding bugs:
+    #   (1) greedy SUBSTRING novelty against EVERY whitespace token of the last
+    #       9 days of post text — a short entity tail ("amazon", "cheyenne")
+    #       matched *something* almost always, so `fresh` was perpetually empty;
+    #   (2) when `fresh` was empty the gate SUPPRESSED outright, even with a
+    #       score-58 lead on the board (Amazon $10B), so the desk went dark.
+    # Fix: exact-token novelty over a 4-day window (was 9), and — critically —
+    # fall back to the best newsworthy lead instead of silence. The quad composer
+    # (6 story-type rotation + its own 14-day text dedup) already blocks
+    # byte-identical repeats, so a strong stale-angle lead beats posting nothing.
+    recent_blob = {re.sub(r"[^a-z0-9]+", "", w.lower())
+                   for w in _recently_posted_keys(days=4)}
+    recent_blob.discard("")
 
     def _is_novel(lead):
-        # market/iso/entity from the dedup_key shouldn't already be in recent posts
+        # market/iso/entity from the dedup_key shouldn't have LED a recent post
         tail = (lead.get("dedup_key") or "").split(":", 1)[-1]
         tail = re.sub(r"[^a-z0-9]+", "", tail.lower())
         if not tail:
             return True
-        return not any(tail in re.sub(r"[^a-z0-9]+", "", w.lower()) for w in recent_blob)
+        return tail not in recent_blob
 
     fresh = [l for l in ranked if _is_novel(l)]
     top = fresh[0] if fresh else None
+
+    # Never go dark on a genuinely strong day: if nothing reads as "novel" but
+    # the best-ranked lead clears the newsworthiness bar, post it anyway.
+    stale_fallback = False
+    if top is None and ranked:
+        cand = ranked[0]
+        if cand.get("raw_score", cand.get("score", 0)) >= _NEWSWORTHY_MIN:
+            top, stale_fallback = cand, True
 
     # r86d: judge the SUPPRESS bar on intrinsic newsworthiness (raw_score), so
     # the engagement weight only re-ORDERS leads — it never floors a genuinely
@@ -446,7 +467,10 @@ def editorial_decision(slot: str | None = None) -> dict:
             "post": True,
             "slot": slot,
             "lead": top,
-            "reason": f"{top['kind']} cleared the bar (score {top['score']:.0f} >= {_NEWSWORTHY_MIN:.0f})",
+            "reason": (f"{top['kind']} cleared the bar (score {top['score']:.0f} "
+                       f">= {_NEWSWORTHY_MIN:.0f})"
+                       + ("; stale-lead fallback (no novel event, strong lead)"
+                          if stale_fallback else "")),
             "ranked": ranked[:6],
             "generated_at": _dt.datetime.utcnow().isoformat() + "Z",
         }

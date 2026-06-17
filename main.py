@@ -18332,10 +18332,25 @@ def daily_cron():
             # posted TODAY in this process. Fail-open: the marker is set only AFTER
             # a confirmed success and resets on restart, so a failed attempt still
             # retries and the digest can never be permanently suppressed.
+            # RETIRED 2026-06-17 (operator decision): the self-promo daily digest
+            # ("📊 DC Hub Intelligence — where's the power?") was a STATIC template
+            # that (a) read the same every day, (b) double-posted (per-process
+            # in-memory guard × 2 Railway replicas + two external cron triggers),
+            # and (c) crowded out the analyst quad. The company LinkedIn voice is
+            # now the analyst quad ONLY — 4 varied Claude-composed posts/day via
+            # routes/linkedin_quad_daily (ANALYST_VOICE). The news/SEO sync (Step 1
+            # above) and wins drafting (below) still run unconditionally; only the
+            # LinkedIn POST is gated off. Set DCHUB_DAILY_DIGEST_LINKEDIN=1 to restore.
+            _digest_li_on = os.environ.get("DCHUB_DAILY_DIGEST_LINKEDIN", "").strip().lower() in ("1", "true", "yes", "on")
             _today_key = _dt.utcnow().strftime('%Y-%m-%d')
             _digest_done_today = getattr(daily_cron, '_last_digest_date', None) == _today_key
-            token = None if _digest_done_today else get_valid_token()
-            if _digest_done_today:
+            token = None if (_digest_done_today or not _digest_li_on) else get_valid_token()
+            if not _digest_li_on:
+                results['linkedin'] = {'success': True, 'skipped': True,
+                                       'reason': 'digest_retired_analyst_quad_is_primary'}
+                logger.info("[daily_cron] LinkedIn digest RETIRED — analyst quad is the company "
+                            "voice (set DCHUB_DAILY_DIGEST_LINKEDIN=1 to restore)")
+            elif _digest_done_today:
                 results['linkedin'] = {'success': True, 'skipped': True,
                                        'reason': 'digest_already_posted_today'}
                 logger.info("[daily_cron] digest already posted today — skipping duplicate")
