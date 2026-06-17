@@ -213,33 +213,28 @@ def _pull_dcpi_scoop() -> dict:
 
 
 def _pull_shipped_this_week() -> dict:
-    """What we built in the last 7 days — proof of velocity."""
-    if not (_pg and _dsn()):
-        return {"type": "shipped_this_week"}
+    """What DC Hub ADDED to the live index in the last 7 days — expansion from
+    strength (real new data/coverage), NOT internal vanity metrics. r-expansion
+    2026-06-17: was leading with internal ops counts (press releases, MCP-call
+    volume, brain proposals) which read as navel-gazing and risked the inflated
+    mcp_tool_calls number. Now pulls the VETTED /api/v1/whats-new adds (the same
+    figures the public What's-New page shows — avoids re-deriving table/column
+    names and the 5,532-vs-21,000 facilities-count conflict). Canonical headline
+    totals (21,000+ facilities · 232 markets · 2,000+ deals) are supplied by the
+    prompt, not queried here."""
+    adds = {}
     try:
-        with _conn() as c, c.cursor() as cur:
-            cur.execute("SELECT COUNT(*) FROM auto_press_releases WHERE generated_at >= NOW() - INTERVAL '7 days'")
-            press_7d = (cur.fetchone() or [0])[0]
-            cur.execute("SELECT COUNT(*) FROM mcp_tool_calls WHERE created_at >= NOW() - INTERVAL '7 days'")
-            calls_7d = (cur.fetchone() or [0])[0]
-            cur.execute("SELECT COUNT(*) FROM auto_press_releases WHERE linkedin_sent_at >= NOW() - INTERVAL '7 days' AND linkedin_sent_at IS NOT NULL")
-            li_7d = (cur.fetchone() or [0])[0]
-            cur.execute("SELECT COUNT(*) FROM brain_lifecycle_proposals WHERE proposed_at >= NOW() - INTERVAL '7 days'")
-            proposals_7d = (cur.fetchone() or [0])[0]
-            cur.execute("SELECT COUNT(*) FROM discovered_facilities WHERE COALESCE(last_seen_at, first_seen_at) >= NOW() - INTERVAL '7 days'")
-            disc_7d = (cur.fetchone() or [0])[0]
-            return {
-                "type": "shipped_this_week",
-                "stats": {
-                    "press_releases":      press_7d,
-                    "mcp_tool_calls":      calls_7d,
-                    "linkedin_posts":      li_7d,
-                    "brain_proposals":     proposals_7d,
-                    "facilities_discovered": disc_7d,
-                },
-            }
+        import urllib.request as _u, json as _j
+        base = os.environ.get("DCHUB_INTERNAL_API", "http://localhost:8080")
+        with _u.urlopen(f"{base}/api/v1/whats-new", timeout=5) as r:
+            wn = _j.loads(r.read().decode("utf-8"))
+        for it in (wn.get("items") or wn.get("changes") or []):
+            if isinstance(it, dict) and it.get("category") and (it.get("added") or 0) > 0:
+                adds[it["category"]] = {"added_7d": it.get("added"),
+                                        "added_1d": it.get("added_1d")}
     except Exception:
-        return {"type": "shipped_this_week"}
+        pass
+    return {"type": "shipped_this_week", "stats": {"added_this_week": adds}}
 
 
 def _pull_hyperscaler_drama() -> dict:
@@ -330,12 +325,18 @@ def _pick_story_type(slot_topic: str | None = None) -> str:
     so each slot retains some style identity (data/narrative/listicle/
     contrarian) but content varies.
     """
-    # Slot-based preferred set (still varies within each)
+    # Slot-based preferred set (still varies within each).
+    # r-strength 2026-06-17: LEAD every slot with a first-party "our story" type
+    # — shipped_this_week (expansions / new data added) or capability_spotlight
+    # (what DC Hub can answer). The market-commentary types (market_anomaly /
+    # dcpi_scoop / hyperscaler_drama / energy_narrative) are demoted to fallback
+    # variety. This is the fix for the feed reading like obscure market trivia
+    # (the "Cedar Falls held at 41.9" post) instead of DC Hub from strength.
     preferred = {
-        "dcpi_mover":         ["dcpi_scoop", "market_anomaly", "energy_narrative"],
-        "hyperscaler_deal":   ["hyperscaler_drama", "capability_spotlight", "shipped_this_week"],
-        "ai_capex_index":     ["capability_spotlight", "market_anomaly", "dcpi_scoop"],
-        "industry_pulse":     ["energy_narrative", "hyperscaler_drama", "shipped_this_week"],
+        "dcpi_mover":         ["shipped_this_week", "capability_spotlight", "dcpi_scoop"],
+        "hyperscaler_deal":   ["capability_spotlight", "shipped_this_week", "hyperscaler_drama"],
+        "ai_capex_index":     ["shipped_this_week", "capability_spotlight", "market_anomaly"],
+        "industry_pulse":     ["capability_spotlight", "shipped_this_week", "energy_narrative"],
     }
     candidates = preferred.get(slot_topic or "", list(_PULLERS.keys()))
 
@@ -378,6 +379,9 @@ _VOICE_SYSTEM = _ANALYST_VOICE + """
 OUTPUT CONTRACT (this generator): output the POST TEXT ONLY — no preamble, no
 surrounding quotes. 700-1500 characters. If a data lead is provided in the user
 message, the FIRST sentence must state its number; do not open with a brand line.
+HOOK: LinkedIn truncates the feed at ~140 characters ("...more"). Front-load the
+single strongest concrete number + claim into the FIRST ~12 words so the hook
+lands BEFORE the fold. Never open with an obscure market name or a setup clause.
 A landing URL may be included as a single optional source line after the insight."""
 
 
@@ -451,8 +455,13 @@ EXAMPLE QUESTION IT ANSWERS: {tool.get('ask','?')}
 LIVE DATA: {json.dumps(sample, default=str)[:600]}
 
 Open with: "Ask any AI:" and the example question. Then describe
-what DC Hub returns — concretely. Mention the tool name. End with
-CTA pointing at {landing} and 3-4 hashtags."""
+what DC Hub returns — concretely, but ONLY using the LIVE DATA above.
+HONESTY (non-negotiable): do NOT invent specific statutes, program
+names, tax rates, percentages, dollar figures, or dates that are not
+present in LIVE DATA. If you lack specifics, name the CATEGORIES the
+tool returns (e.g. "sales-tax exemptions, property-tax abatements,
+clawback terms") without fabricating the values. Mention the tool
+name. End with a CTA pointing at {landing} and 3-4 hashtags."""
 
     if story_type == "energy_narrative":
         s = data.get("story_data") or {}
@@ -479,15 +488,26 @@ Why does this matter for AI capacity decisions in 2026?
 CTA: {landing}. Hashtags include #DCPI."""
 
     if story_type == "shipped_this_week":
-        stats = data.get("stats") or {}
-        return f"""Compose a LinkedIn post that demonstrates DC Hub's
-build velocity. Last 7 days of real activity:
+        adds = (data.get("stats") or {}).get("added_this_week") or {}
+        return f"""Compose a LinkedIn post about what DC Hub ADDED to its live
+infrastructure index in the last 7 days — an expansion update from a position of
+strength. Real adds this week (category: counts):
 
-{json.dumps(stats, default=str)[:400]}
+{json.dumps(adds, default=str)[:400]}
 
-Frame it as "what we built so AI agents have better data this
-week." Be specific with the numbers. End with what this enables.
-CTA: {landing}. Hashtags include #DCHubMedia and #BuildInPublic."""
+RULES:
+- OPEN with the single biggest concrete add as a number in the first sentence
+  (e.g. "DC Hub added 133 data-center deals and 19 facilities to its live index
+  this week" — pick the largest real numbers from the data above). This is the
+  hook; it must land in the first ~12 words, before LinkedIn's "...more" fold.
+- The SO-WHAT: an agent-native layer that updates DAILY vs analyst PDFs that
+  refresh quarterly — a new interconnect filing or closed deal is queryable in
+  hours, not next quarter.
+- Anchor on the standing totals (use these EXACT figures, do not invent others):
+  21,000+ facilities, 232 US power markets, 2,000+ tracked deals — updated daily.
+- Confident, factual, no hype words. If the adds data is empty, lead with the
+  standing totals + "updated daily" instead.
+End with the value line + CTA: {landing}. Hashtags: #DataCenter #AIInfrastructure #DCPI."""
 
     if story_type == "hyperscaler_drama":
         news = data.get("news") or {}

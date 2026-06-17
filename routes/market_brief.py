@@ -924,6 +924,18 @@ def _build_brief(slug: str, tier: str) -> dict:
     if c is None:
         out["error"] = "no_database"
         return out
+    # r-fix 2026-06-17: read-only AUTOCOMMIT so a single failing section query
+    # can't abort the shared transaction and silently null EVERY downstream
+    # section. THE root cause of "0/8 sections · Not tracked" on every market:
+    # _live_as_of() (line below) runs a query that errors and poisons the tx
+    # ("current transaction is aborted, commands ignored…"), so _section_kpis /
+    # _power_grid / _pipeline / _operators / _ma / _comps all then fail into
+    # their try/except and return None. Every section here is a SELECT, so
+    # autocommit (each query independent) is safe and fixes all markets at once.
+    try:
+        c.autocommit = True
+    except Exception:
+        pass
     try:
         with c.cursor() as cur:
             hero = _section_hero(cur, canonical)
