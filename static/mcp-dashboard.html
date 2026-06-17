@@ -39,7 +39,11 @@
 <script>
 async function load() {
   try {
-    const d = await (await fetch('/api/v1/mcp/funnel')).json();
+    // r-fresh (2026-06-17): cache-bust + no-store. /api/v1/mcp/funnel ships
+    // Cache-Control: max-age=3600, so a plain fetch served the browser-cached
+    // copy on every "Refresh" — the dashboard looked frozen (stuck at an old
+    // tool_calls_7d) even though the live endpoint had moved. Force a fresh read.
+    const d = await (await fetch('/api/v1/mcp/funnel?_cb=' + Date.now(), { cache: 'no-store' })).json();
     const kt = d.keys_by_tier || {};
     const k = (kt.free||0) + (kt.paid||0) + (kt.enterprise||0);
     document.getElementById('kpis').innerHTML = `
