@@ -11658,6 +11658,40 @@ def _log_welcome_email(to_email, plan_name, status):
         print(f"⚠️ _log_welcome_email failed (non-fatal): {_e}")
 
 
+def _welcome_email_resend_fallback(to_email, raw_api_key, plan_name='pro'):
+    """Resend fallback when SendGrid fails (r-resend-fallback 2026-06-16 — SendGrid
+    hit 'Maximum credits exceeded' 401 on the first $5 pack sale, stranding paying
+    customers' API keys). Light (urllib, no SDK). Returns True on a 2xx send."""
+    import os as _os, json as _json, urllib.request as _u
+    rk = _os.environ.get('DCHUB_RESEND_API_KEY', '') or _os.environ.get('RESEND_API_KEY', '')
+    if not rk or not to_email:
+        return False
+    try:
+        _plan = (plan_name or '').replace('_', ' ')
+        html = (f"<h2>Welcome to DC Hub — your API key</h2>"
+                f"<p>Your {_plan} access is active. API key:</p>"
+                f"<p style='font-size:16px'><code>{raw_api_key}</code></p>"
+                f"<p>Set it as your <code>X-API-Key</code> header to unlock full data. "
+                f"In Claude/Cursor/etc:<br><code>claude mcp add dchub --transport http "
+                f"--header X-API-Key:{raw_api_key} https://dchub.cloud/mcp</code></p>"
+                f"<p>Questions? <a href='mailto:api@dchub.cloud'>api@dchub.cloud</a> · "
+                f"<a href='https://dchub.cloud/pricing'>dchub.cloud/pricing</a></p><p>— DC Hub</p>")
+        payload = _json.dumps({"from": "DC Hub <alerts@dchub.cloud>", "to": [to_email],
+                               "subject": "Welcome to DC Hub — Your API Key Inside",
+                               "html": html}).encode()
+        req = _u.Request("https://api.resend.com/emails", data=payload, method="POST",
+                         headers={"Authorization": "Bearer " + rk, "Content-Type": "application/json",
+                                  "User-Agent": "dchub/1.0"})
+        r = _u.urlopen(req, timeout=20)
+        ok = 200 <= getattr(r, 'status', 0) < 300
+        if ok:
+            print(f"📧 Welcome email sent to {to_email} via Resend fallback")
+        return ok
+    except Exception as _e:
+        print(f"⚠️ Resend fallback also failed for {to_email}: {str(_e)[:120]}")
+        return False
+
+
 def send_welcome_email_sendgrid(to_email, raw_api_key, plan_name='pro', temp_password=None, reset_url=None):
     """Send welcome email with API key (and login password for new accounts) via SendGrid.
 
@@ -11837,10 +11871,19 @@ p {{ font-size: 16px; color: #4a4a5a; margin-bottom: 16px; line-height: 1.6; }}
             print(f"📧 Welcome email sent to {to_email} CC jonathan@dchub.cloud (status: {response.status_code})")
             # r43-H: record outcome so the daily audit can reconcile.
             _ok = 200 <= int(getattr(response, 'status_code', 0) or 0) < 300
+            if not _ok and _welcome_email_resend_fallback(to_email, raw_api_key, plan_name):
+                _log_welcome_email(to_email, plan_name, status='sent_via_resend')
+                return
             _log_welcome_email(to_email, plan_name,
                                status=('sent' if _ok else f'sendgrid_{response.status_code}'))
         except Exception as e:
             print(f"❌ Welcome email failed for {to_email}: {e}")
+            # r-resend-fallback (2026-06-16): SendGrid out of credits ("Maximum
+            # credits exceeded" 401) → try Resend before alerting so paying
+            # customers still get their key.
+            if _welcome_email_resend_fallback(to_email, raw_api_key, plan_name):
+                _log_welcome_email(to_email, plan_name, status='sent_via_resend')
+                return
             # r43-H: a hard send failure means a paying customer may not
             # have their credentials. Record it + alert so we can recover.
             _log_welcome_email(to_email, plan_name, status=f'exception:{str(e)[:80]}')
