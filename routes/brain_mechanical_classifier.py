@@ -32,7 +32,10 @@ CONSERVATIVE BY DESIGN — when in doubt, human-only. A proposal is
 
 Endpoints (own blueprint, admin gate mirrors brain_inspector._admin_ok):
   GET  /api/v1/brain/proposals/mechanical            — the shadow surface
-  POST /api/v1/brain/proposals/mechanical/draft-prs  — gated, best-effort
+  POST /api/v1/brain/proposals/mechanical/draft-prs  — PHASE 2: opens DRAFT
+       PRs via the generic search→replace writer in brain_draft_pr_writer.
+       Default dry-run; ?apply=1 (+ DCHUB_L22_REAL_PR=1 + token) drafts.
+       DRAFT only, base=main, head=branch, NEVER auto-merged.
 """
 from __future__ import annotations
 
@@ -597,19 +600,22 @@ def proposals_mechanical():
 
 @brain_mechanical_bp.post("/api/v1/brain/proposals/mechanical/draft-prs")
 def proposals_mechanical_draft_prs():
-    """(Optional, gated, best-effort) Open DRAFT PRs for the mechanical
-    proposals via the EXISTING L22 machinery — ONLY IF DCHUB_L22_REAL_PR is
-    set AND a GH token is available. Never auto-merges. Phase 0 stubs the
-    actual PR write: the L22 real-PR path is recipe-specific (route_alias_404
-    / cron_if_mismatched) and does NOT yet have a generic "apply this
-    search/replace" writer, so wiring it cleanly is a Phase-2 task. Here we
-    return {would_open: [...]} so the track record shows what WOULD be drafted,
-    and {skipped} when the flags/token are absent."""
-    if not _admin_ok():
-        return jsonify(ok=False, error="admin only"), 403
+    """PHASE 2 (2026-06-18): open DRAFT PRs for the mechanical proposals via the
+    GENERIC search→replace writer in routes/brain_draft_pr_writer
+    (open_mechanical_draft_pr). Replaces the Phase-0 stub.
 
-    real_pr = os.environ.get("DCHUB_L22_REAL_PR", "0") == "1"
-    gh_token = bool((os.environ.get("GITHUB_TOKEN") or "").strip())
+    Admin-gated. Default is DRY-RUN (?apply absent / != 1) — zero GitHub side
+    effects, returns the preview. Real opening requires `?apply=1` AND (in the
+    writer) DCHUB_L22_REAL_PR==1 + a token; PRs are DRAFT, base=main, head=a new
+    branch, NEVER auto-merged. The per-run rate cap is MAX_DRAFT_PRS_PER_RUN.
+
+    Returns {dry_run, opened:[{id,pr_url}], previewed:[{id,branch,file,
+    diff_preview}], skipped:[{id,reason}]}."""
+    if not _admin_ok():
+        return jsonify(ok=False, error="admin only",
+                       hint="X-Admin-Key / X-Internal-Key header required"), 403
+
+    apply = (request.args.get("apply") or "0").lower() in ("1", "true", "yes")
 
     try:
         limit = int(request.args.get("limit", "200"))
@@ -621,37 +627,31 @@ def proposals_mechanical_draft_prs():
     if err:
         return jsonify(ok=False, error=err), 200
 
-    split = classify_open_proposals(rows)
-    would_open = [
-        {"id": m["id"], "file": m["file"], "class": m["class"],
-         "confidence": m["confidence"]}
-        for m in split["mechanical"]
-    ]
+    try:
+        from routes.brain_draft_pr_writer import (
+            open_mechanical_draft_prs, MAX_DRAFT_PRS_PER_RUN,
+        )
+    except Exception as e:  # pragma: no cover — keep the surface alive
+        return jsonify(ok=False, error=f"writer_import_failed: {str(e)[:160]}"), 200
 
-    if not real_pr or not gh_token:
-        return jsonify(
-            ok=True,
-            skipped=("L22 real-PR disabled / no token"
-                     if not (real_pr and gh_token) else None),
-            real_pr_enabled=real_pr,
-            gh_token_present=gh_token,
-            would_open=would_open,
-            note=("DCHUB_L22_REAL_PR must be 1 AND GITHUB_TOKEN set to draft. "
-                  "Even then, Phase 0 stubs the write — L22's real-PR path is "
-                  "recipe-specific; a generic search/replace draft-PR writer is "
-                  "Phase 2."),
-        ), 200
+    real_pr = os.environ.get("DCHUB_L22_REAL_PR", "0") == "1"
+    gh_token = bool((os.environ.get("PR_SUBMIT_TOKEN")
+                     or os.environ.get("GITHUB_TOKEN") or "").strip())
 
-    # Flags present, but Phase 0 still STUBS the actual write (no generic
-    # search/replace draft-PR writer exists in L22 yet). Surface the intent.
+    result = open_mechanical_draft_prs(rows, apply=apply)
     return jsonify(
         ok=True,
-        stubbed=True,
-        real_pr_enabled=True,
-        gh_token_present=True,
-        would_open=would_open,
-        note=("Phase 0 stub: L22 has no generic 'apply search/replace as a "
-              "DRAFT PR' writer (its real-PR path is recipe-specific: "
-              "route_alias_404 / cron_if_mismatched). Wiring a generic draft-PR "
-              "writer is Phase 2. No PR opened, no merge."),
+        phase="2-generic-draft-pr-writer",
+        as_of=datetime.now(timezone.utc).isoformat(),
+        apply=apply,
+        dry_run=result["dry_run"],
+        real_pr_enabled=real_pr,
+        gh_token_present=gh_token,
+        rate_cap=MAX_DRAFT_PRS_PER_RUN,
+        opened=result["opened"],
+        previewed=result["previewed"],
+        skipped=result["skipped"],
+        note=("DRAFT PRs only (base=main, head=branch); never auto-merged. "
+              "?apply=1 attempts real opening, which ALSO requires "
+              "DCHUB_L22_REAL_PR=1 + a token in the env. Default is dry-run."),
     ), 200
