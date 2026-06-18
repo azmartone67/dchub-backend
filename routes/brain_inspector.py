@@ -808,11 +808,30 @@ def _call_opus(system: str, user: str, model: str,
     }
 
 
+import re as _re_pii
+_EMAIL_RE = _re_pii.compile(r"\b([A-Za-z0-9])[A-Za-z0-9._%+-]*@([A-Za-z0-9.-]+\.[A-Za-z]{2,})\b")
+
+
+def _mask_emails_deep(obj):
+    """Mask customer emails before they enter a brief (which is stored in
+    brain_briefs + rendered). Keeps first char + domain (g•••@nlr.gov) so an admin
+    still sees the org but the full address is never persisted in narrative text.
+    Full PII stays available to admins via /api/v1/brain/conversions-audit.
+    r-brain-gate (2026-06-18)."""
+    if isinstance(obj, str):
+        return _EMAIL_RE.sub(lambda m: m.group(1) + "•••@" + m.group(2), obj)
+    if isinstance(obj, dict):
+        return {k: _mask_emails_deep(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_mask_emails_deep(v) for v in obj]
+    return obj
+
+
 def _generate_brief() -> dict:
     """End-to-end: gather signals → ask Opus → persist → return."""
     from routes.brain_models import brain_model_for
     model = brain_model_for("inspector")
-    signals = _gather_signals()
+    signals = _mask_emails_deep(_gather_signals())
     user_msg = (
         "Signal block (JSON):\n\n```json\n"
         + json.dumps(signals, indent=2, default=str)[:18000]

@@ -18,9 +18,38 @@ from __future__ import annotations
 import os
 from datetime import datetime, timezone
 from html import escape as _h
-from flask import Blueprint, Response
+from flask import Blueprint, Response, request
 
 brain_v2_public_bp = Blueprint("brain_v2_public", __name__)
+
+
+def _pub_admin_ok():
+    # r-brain-gate (2026-06-18): /brain is an internal ops view (file paths,
+    # infra failures, admin URLs) — admin/internal-key only.
+    _keys = set()
+    for _n in ("DCHUB_INTERNAL_KEY", "INTERNAL_KEY", "DCHUB_ADMIN_KEY"):
+        _v = os.environ.get(_n)
+        if _v:
+            _keys.add(_v)
+    _sent = (request.headers.get("X-Internal-Key")
+             or request.headers.get("X-Admin-Key")
+             or request.args.get("admin_key") or "").strip()
+    return bool(_sent) and _sent in _keys
+
+
+_PUB_ADMIN_ONLY_HTML = (
+    "<!doctype html><meta charset=utf-8><title>DC Hub · internal</title>"
+    "<body style='font-family:-apple-system,BlinkMacSystemFont,sans-serif;"
+    "background:#0a0a0a;color:#9a9a9a;display:flex;align-items:center;"
+    "justify-content:center;height:90vh;text-align:center'>"
+    "<div><h2 style='color:#e6e6e6;font-weight:300;letter-spacing:-.02em'>"
+    "Internal console</h2><p>The DC Hub brain dashboard is admin-only.</p></div>")
+
+
+@brain_v2_public_bp.after_request
+def _pub_no_store(resp):
+    resp.headers["Cache-Control"] = "no-store, private"
+    return resp
 
 
 def _get_state():
@@ -307,6 +336,8 @@ def _cached_internal_get(path, client, ttl=_INTERNAL_GET_TTL):
 @brain_v2_public_bp.route("/brain", methods=["GET"])
 @brain_v2_public_bp.route("/brain-live", methods=["GET"])  # r80 (2026-06-04): 200 alias — distribute.html "Watch brain evolve" + the brain's own page-monitor expect /brain-live; it was 404 -> CF worker fell through to Error 1000.
 def brain_page():
+    if not _pub_admin_ok():
+        return Response(_PUB_ADMIN_ONLY_HTML, mimetype="text/html", status=403)
     state = _get_state()
     proposals = state["proposed"]
     log = state["log"][-30:]  # last 30 entries
