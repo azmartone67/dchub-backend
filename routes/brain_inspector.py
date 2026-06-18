@@ -81,6 +81,18 @@ def _admin_ok():
     return sent in _INTERNAL_KEYS
 
 
+# r-brain-gate (2026-06-18): the brain brief/innovation surfaces were PUBLIC and
+# leaked customer emails (incl. a .gov domain), revenue, and internal ops — this
+# is an INTERNAL ops console, not a marketing page. Splash shown to anon viewers.
+_ADMIN_ONLY_HTML = (
+    "<!doctype html><meta charset=utf-8><title>DC Hub · internal</title>"
+    "<body style='font-family:-apple-system,BlinkMacSystemFont,sans-serif;"
+    "background:#0a0a0a;color:#9a9a9a;display:flex;align-items:center;"
+    "justify-content:center;height:90vh;text-align:center'>"
+    "<div><h2 style='color:#e6e6e6;font-weight:300;letter-spacing:-.02em'>"
+    "Internal console</h2><p>The DC Hub brain dashboard is admin-only.</p></div>")
+
+
 @brain_inspector_bp.route("/api/v1/brain/conversions-audit", methods=["GET"])
 def conversions_audit():
     """Read-only honest-numbers audit of mcp_conversions (admin-gated).
@@ -1000,7 +1012,9 @@ def _generate_brief() -> dict:
 # ── ENDPOINTS ────────────────────────────────────────────────────────
 @brain_inspector_bp.route("/api/v1/brain/brief/latest", methods=["GET"])
 def brief_latest():
-    """Public summary of the most recent brief. Returns 404 if none yet."""
+    """Most recent brief — ADMIN-ONLY (it embeds customer emails + revenue)."""
+    if not _admin_ok():
+        return jsonify(error="admin only — internal brain dashboard"), 403
     _ensure_brief_table()
     c = _get_db()
     if c is None:
@@ -1046,6 +1060,8 @@ def brief_latest():
 
 @brain_inspector_bp.route("/api/v1/brain/brief/<int:bid>", methods=["GET"])
 def brief_specific(bid: int):
+    if not _admin_ok():
+        return jsonify(error="admin only — internal brain dashboard"), 403
     c = _get_db()
     if c is None: return jsonify(ok=False, error="no_db"), 503
     try:
@@ -1069,6 +1085,8 @@ def brief_specific(bid: int):
 
 @brain_inspector_bp.route("/api/v1/brain/brief/list", methods=["GET"])
 def brief_list():
+    if not _admin_ok():
+        return jsonify(error="admin only — internal brain dashboard"), 403
     c = _get_db()
     if c is None: return jsonify(ok=False, error="no_db"), 503
     try:
@@ -1115,7 +1133,9 @@ def brain_models_endpoint():
 # ── HTML page at /brain/brief ────────────────────────────────────────
 @brain_inspector_bp.route("/brain/brief", methods=["GET"])
 def brief_html():
-    """Render the latest brief with the eyeball-card aesthetic."""
+    """Render the latest brief — ADMIN-ONLY (customer PII + revenue + infra)."""
+    if not _admin_ok():
+        return Response(_ADMIN_ONLY_HTML, mimetype="text/html", status=403)
     _ensure_brief_table()
     summary = ""
     md = ""

@@ -42,6 +42,30 @@ logger = logging.getLogger(__name__)
 brain_innovation_bp = Blueprint("brain_innovation", __name__)
 
 
+def _innov_admin_ok():
+    """Admin/internal-key gate (mirrors brain_inspector._admin_ok). r-brain-gate
+    (2026-06-18): this surface was PUBLIC and embedded customer emails + revenue
+    — it's an INTERNAL ops console."""
+    _keys = set()
+    for _n in ("DCHUB_INTERNAL_KEY", "INTERNAL_KEY", "DCHUB_ADMIN_KEY"):
+        _v = os.environ.get(_n)
+        if _v:
+            _keys.add(_v)
+    _sent = (request.headers.get("X-Internal-Key")
+             or request.headers.get("X-Admin-Key")
+             or request.args.get("admin_key") or "").strip()
+    return bool(_sent) and _sent in _keys
+
+
+_INNOV_ADMIN_ONLY_HTML = (
+    "<!doctype html><meta charset=utf-8><title>DC Hub · internal</title>"
+    "<body style='font-family:-apple-system,BlinkMacSystemFont,sans-serif;"
+    "background:#0a0a0a;color:#9a9a9a;display:flex;align-items:center;"
+    "justify-content:center;height:90vh;text-align:center'>"
+    "<div><h2 style='color:#e6e6e6;font-weight:300;letter-spacing:-.02em'>"
+    "Internal console</h2><p>The DC Hub brain dashboard is admin-only.</p></div>")
+
+
 def _get_db():
     db = os.environ.get("DATABASE_URL")
     if not db: return None
@@ -216,6 +240,8 @@ def _compute(days: int = 7) -> dict:
 
 @brain_innovation_bp.route("/api/v1/brain/innovation", methods=["GET"])
 def brain_innovation_json():
+    if not _innov_admin_ok():
+        return jsonify({"error": "admin only — internal brain dashboard"}), 403
     try:
         days = max(1, min(30, int(request.args.get("days", 7))))
     except (ValueError, TypeError):
@@ -351,6 +377,8 @@ L22 auto-code: routes/brain_layer22_auto_code.py · JSON: <a href="/api/v1/brain
 
 @brain_innovation_bp.route("/brain/innovation", methods=["GET"])
 def brain_innovation_page():
+    if not _innov_admin_ok():
+        return Response(_INNOV_ADMIN_ONLY_HTML, mimetype="text/html", status=403)
     try:
         days = max(1, min(30, int(request.args.get("days", 7))))
     except (ValueError, TypeError):
