@@ -102,7 +102,7 @@ CREATE TABLE IF NOT EXISTS morning_briefing_log (
     status              TEXT NOT NULL DEFAULT 'sent'
 );
 CREATE UNIQUE INDEX IF NOT EXISTS ux_morning_briefing_day_recipient
-    ON morning_briefing_log ((DATE(sent_at)), recipient_email);
+    ON morning_briefing_log (((sent_at AT TIME ZONE 'UTC')::date), recipient_email);
 CREATE INDEX IF NOT EXISTS ix_morning_briefing_sent_at
     ON morning_briefing_log(sent_at DESC);
 """

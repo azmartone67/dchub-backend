@@ -326,10 +326,10 @@ def _insert_row(cur, r: dict) -> tuple[bool, str]:
             )
             VALUES ('openstreetmap', %s, %s, %s, %s, %s, %s, %s, %s, 0,
                     'operational', %s, 0.9, 0, %s,
-                    NOW()::TEXT, NOW()::TEXT, NOW()::TEXT)
+                    NOW(), NOW(), NOW())
             ON CONFLICT (source, source_id) DO UPDATE SET
                 name = EXCLUDED.name,
-                last_updated = NOW()::TEXT
+                last_updated = NOW()
         """, (
             source_id, name, r.get("provider"),
             r.get("city"), r.get("state"), r.get("country", ""),
