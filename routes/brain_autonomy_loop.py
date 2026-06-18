@@ -234,13 +234,14 @@ _SWEEP_SPECS = [
         "guard": None,
         "transform": _t_bool_is_active,
     },
-    {
-        "klass": "tz_naive_utcnow",
-        "line_re": re.compile(r"datetime(?:\.datetime)?\.utcnow\(\)"),
-        # Skip lines that already pass a tz (e.g. inside a docstring fix note).
-        "guard": None,
-        "transform": _t_tz_naive_utcnow,
-    },
+    # r-autonomy-safety (2026-06-18): tz_naive_utcnow is DELIBERATELY EXCLUDED
+    # from the blind proactive sweep. Bare datetime.utcnow() is NOT a bug — it's
+    # used ~600x in this codebase — and swapping it to datetime.now(timezone.utc)
+    # changes naive→aware, which breaks callers that compare against naive
+    # datetimes or naive DB columns. It's only a bug in the narrow "utcnow() minus
+    # a tz-aware value" case, which a line regex can't tell apart. The class stays
+    # in the classifier's allowlist for context-bearing proposals, but the blind
+    # sweep must not propose 600 risky swaps. (Found via the dormant dry preview.)
     {
         "klass": "immutable_index",
         "line_re": re.compile(r"\bDATE\s*\(", re.IGNORECASE),
