@@ -26116,6 +26116,19 @@ try:
 except Exception as e:
     print(f"🧩 Brain Runtime-Error Capture: ⚠️ Failed to load: {e}")
 
+# PHASE 0 (2026-06-18) — mechanical-fix classifier (SHADOW-ONLY). Classifies
+# the brain's brain_proposed_code_fixes as "mechanical-safe-to-auto-apply" vs
+# "human-only" and SURFACES the split. NO auto-apply / merge / prod-code write
+# — this builds a zero-risk track record that a LATER phase will gate auto-merge
+# on. Admin-gated, read-only GET + an optional gated best-effort draft-PR POST.
+try:
+    from routes.brain_mechanical_classifier import brain_mechanical_bp
+    app.register_blueprint(brain_mechanical_bp)
+    print("🔧 Brain Mechanical Classifier: ✅ Registered "
+          "(GET /api/v1/brain/proposals/mechanical · shadow-only)")
+except Exception as e:
+    print(f"🔧 Brain Mechanical Classifier: ⚠️ Failed to load: {e}")
+
 # Phase FF+25-followup-r12 (2026-05-20) — site audit + status dashboard.
 # One URL (/status) that shows the entire stack at a glance — brain,
 # autopilot, Inspector, press, MCP, sponsorships. JSON at /api/v1/site/audit.
