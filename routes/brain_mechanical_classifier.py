@@ -598,6 +598,38 @@ def proposals_mechanical():
     ), 200
 
 
+@brain_mechanical_bp.post("/api/v1/brain/proposals/mechanical/test-open")
+def proposals_mechanical_test_open():
+    """Diagnostic (admin): drive the Phase-2 writer with an INLINE proposal (no DB
+    row needed) to prove the full classify → re-verify-against-live-main → DRAFT-PR
+    path. Body: {file_path, search_text, replace_text, confidence?, rationale?}.
+    Default DRY-RUN; ?apply=1 opens a real DRAFT PR (still draft, never merged, and
+    still subject to the writer's own classify + DCHUB_L22_REAL_PR + token gates).
+    id defaults to a non-matching sentinel so the status UPDATE can't touch a real
+    proposal row."""
+    if not _admin_ok():
+        return jsonify(ok=False, error="admin only"), 403
+    body = request.get_json(silent=True) or {}
+    proposal = {
+        "id": body.get("id", 999999999),
+        "file_path": body.get("file_path"),
+        "search_text": body.get("search_text"),
+        "replace_text": body.get("replace_text"),
+        "confidence": float(body.get("confidence", 0.9)),
+        "rationale": body.get("rationale", "inline test-open (diagnostic)"),
+        "status": "proposed",
+    }
+    if not (proposal["file_path"] and proposal["search_text"] and proposal["replace_text"]):
+        return jsonify(ok=False, error="file_path, search_text, replace_text required"), 400
+    apply = (request.args.get("apply") or "0").lower() in ("1", "true", "yes")
+    try:
+        from routes.brain_draft_pr_writer import open_mechanical_draft_pr
+    except Exception as e:  # pragma: no cover
+        return jsonify(ok=False, error=f"writer_import_failed: {str(e)[:160]}"), 200
+    res = open_mechanical_draft_pr(proposal, dry_run=(not apply))
+    return jsonify(ok=True, apply=apply, result=res)
+
+
 @brain_mechanical_bp.post("/api/v1/brain/proposals/mechanical/draft-prs")
 def proposals_mechanical_draft_prs():
     """PHASE 2 (2026-06-18): open DRAFT PRs for the mechanical proposals via the
