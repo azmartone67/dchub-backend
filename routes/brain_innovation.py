@@ -238,6 +238,15 @@ def _compute(days: int = 7) -> dict:
     return out
 
 
+@brain_innovation_bp.after_request
+def _innov_no_store(resp):
+    # r-brain-gate (2026-06-18): these embed customer PII — never let CF edge-cache
+    # them. An admin 200 (with ?admin_key=) was otherwise cacheable (the page set
+    # public,max-age=300) and would be served to anon. no-store kills that vector.
+    resp.headers["Cache-Control"] = "no-store, private"
+    return resp
+
+
 @brain_innovation_bp.route("/api/v1/brain/innovation", methods=["GET"])
 def brain_innovation_json():
     if not _innov_admin_ok():

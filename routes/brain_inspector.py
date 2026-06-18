@@ -93,6 +93,15 @@ _ADMIN_ONLY_HTML = (
     "Internal console</h2><p>The DC Hub brain dashboard is admin-only.</p></div>")
 
 
+@brain_inspector_bp.after_request
+def _inspector_no_store(resp):
+    # r-brain-gate (2026-06-18): brain briefs embed customer PII + revenue — never
+    # let CF edge-cache any inspector response (an admin 200 would otherwise be
+    # cached and served to anon).
+    resp.headers["Cache-Control"] = "no-store, private"
+    return resp
+
+
 @brain_inspector_bp.route("/api/v1/brain/conversions-audit", methods=["GET"])
 def conversions_audit():
     """Read-only honest-numbers audit of mcp_conversions (admin-gated).
