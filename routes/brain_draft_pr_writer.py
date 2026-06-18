@@ -149,19 +149,18 @@ def open_draft_pr_with_content(*, file_path: str, new_content: str,
     import datetime as _dt
 
     work_dir = f"/tmp/l22-mech-{int(_dt.datetime.utcnow().timestamp())}"
-    fork_url = (f"https://x-access-token:{token}@github.com/"
-                f"{cfg['fork_owner']}/dchub-backend.git")
+    upstream_url = (f"https://x-access-token:{token}@github.com/"
+                    f"{cfg['upstream']}.git")
 
-    # 1. Clone the fork's base branch (create the fork first if missing).
+    # 1. Clone the UPSTREAM base branch directly. L22's WORKING PRs (#1179+) push
+    #    branches straight to upstream as azmartone67:<branch>; the dchub-cloud-bot
+    #    FORK does not exist (404), so the fork path always aborted at fork_clone.
+    #    We branch off upstream + open the PR from the upstream branch. SAFE: only
+    #    a feature branch is ever created/pushed here — NEVER main.
     code, out = run(["git", "clone", "--depth", "1", "--branch", cfg["base"],
-                     fork_url, work_dir])
+                     upstream_url, work_dir])
     if code != 0:
-        run(["gh", "repo", "fork", cfg["upstream"], "--org", cfg["fork_owner"],
-             "--clone=false", "--remote=false"])
-        code, out = run(["git", "clone", "--depth", "1", "--branch", cfg["base"],
-                         fork_url, work_dir])
-        if code != 0:
-            return {"ok": False, "stage": "fork_clone", "error": out[:300]}
+        return {"ok": False, "stage": "upstream_clone", "error": out[:300]}
 
     # 2. Author + branch (NEVER main — base stays main, head is THIS branch).
     run(["git", "config", "user.name", cfg["author_name"]], cwd=work_dir)
@@ -191,11 +190,11 @@ def open_draft_pr_with_content(*, file_path: str, new_content: str,
     if code != 0:
         return {"ok": False, "stage": "git_push", "error": out[:300]}
 
-    # 5. Open the DRAFT PR. base=main (cfg base), head=fork:branch. --draft
-    #    is ALWAYS passed — invariant enforced here AND asserted by tests.
+    # 5. Open the DRAFT PR. base=main (cfg base), head=the upstream branch.
+    #    --draft is ALWAYS passed — invariant enforced here AND asserted by tests.
     code, out = run([
         "gh", "pr", "create", "--repo", cfg["upstream"],
-        "--head", f"{cfg['fork_owner']}:{branch}", "--base", cfg["base"],
+        "--head", branch, "--base", cfg["base"],
         "--draft", "--title", title, "--body", body,
     ], cwd=work_dir)
     if code != 0:

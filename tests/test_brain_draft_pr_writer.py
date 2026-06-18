@@ -340,7 +340,7 @@ def test_draft_pr_primitive_argv_is_draft_base_main_head_branch(monkeypatch):
     assert "--draft" in pr_argv, pr_argv
     bi = pr_argv.index("--base"); assert pr_argv[bi + 1] == "main", pr_argv
     hi = pr_argv.index("--head")
-    assert pr_argv[hi + 1] == "dchub-cloud-bot:brain/autofix-interval_literal-9-abc12345", pr_argv
+    assert pr_argv[hi + 1] == "brain/autofix-interval_literal-9-abc12345", pr_argv
     assert pr_argv[hi + 1] != "main", "head must NEVER be main"
     # No commit/push ever targets main as a branch.
     for c in seen["argv"]:
