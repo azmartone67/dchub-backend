@@ -1,0 +1,128 @@
+name: brain autonomy loop
+
+# THE AUTONOMY LOOP cron (2026-06-18). Every 30 min, drives the brain's
+# self-fix orchestrator + (if armed) the Phase-3 auto-merge + canary passes.
+#
+# All THREE steps are HARMLESS while the flags are off:
+#   · /autonomy/tick   no-ops unless BRAIN_AUTONOMY_ENABLED=1 (returns
+#                      {disabled:true, preview} — zero DB/GitHub writes).
+#   · /automerge/run   no-ops unless BRAIN_AUTOMERGE_ENABLED=1.
+#   · /automerge/canary no-ops unless BRAIN_AUTOMERGE_ENABLED=1.
+#
+# LAYERING:
+#   · AUTONOMY on  → tick auto-detects + auto-opens DRAFT PRs (human merges).
+#   · AUTOMERGE on → the run/canary steps also auto-merge + auto-revert.
+# Each flag is an independent Railway env var; flip them on the operator side.
+#
+# Auth mirrors brain-layer5.yml: the DCHUB_ADMIN_KEY repo secret sent as the
+# X-Admin-Key header (the same gate brain_mechanical_classifier._admin_ok and
+# every brain admin endpoint accept), against the Railway origin directly
+# (CF edge-cache + the 15s edge timeout don't apply to the origin).
+
+on:
+  schedule:
+    - cron: '*/30 * * * *'   # every 30 minutes
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+env:
+  RAILWAY_BASE: https://dchub-backend-production.up.railway.app
+
+jobs:
+  autonomy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Autonomy — tick (reactive + proactive; opens DRAFT PRs when armed)
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "$ADMIN_KEY" ]; then
+            echo "::warning::DCHUB_ADMIN_KEY not set — skipping autonomy tick"
+            exit 0
+          fi
+          response=$(curl -sS --max-time 180 -X POST \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            -H "Content-Type: application/json" \
+            "$RAILWAY_BASE/api/v1/brain/autonomy/tick" \
+            || echo '{"ok":false,"error":"curl_fail"}')
+          echo "$response" | head -c 4000
+          echo
+          echo "$response" | python3 -c "
+          import json, sys
+          try:
+              d = json.load(sys.stdin)
+              r = d.get('result') or {}
+              if r.get('disabled'):
+                  print('::notice::autonomy tick: DORMANT (BRAIN_AUTONOMY_ENABLED != 1) — no writes')
+              else:
+                  print('::notice::autonomy tick: '
+                        f\"findings_filed={r.get('findings_filed',0)} \"
+                        f\"proposals_created={r.get('proposals_created',0)} \"
+                        f\"draft_prs_opened={r.get('draft_prs_opened',0)} \"
+                        f\"reconciled={r.get('reconciled',0)}\")
+          except Exception as e:
+              print(f'::warning::autonomy tick parse failed: {e}')
+          "
+
+      - name: Auto-merge — run (no-op unless BRAIN_AUTOMERGE_ENABLED=1)
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "$ADMIN_KEY" ]; then
+            echo "::warning::DCHUB_ADMIN_KEY not set — skipping automerge run"
+            exit 0
+          fi
+          response=$(curl -sS --max-time 120 -X POST \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            -H "Content-Type: application/json" \
+            "$RAILWAY_BASE/api/v1/brain/automerge/run" \
+            || echo '{"ok":false,"error":"curl_fail"}')
+          echo "$response" | head -c 4000
+          echo
+          echo "$response" | python3 -c "
+          import json, sys
+          try:
+              d = json.load(sys.stdin)
+              if d.get('disabled') or d.get('enabled') is False:
+                  print('::notice::automerge run: DORMANT (BRAIN_AUTOMERGE_ENABLED != 1)')
+              else:
+                  r = d.get('result') or {}
+                  print(f'::notice::automerge run: merged={len(r.get(\"merged\",[]) or [])} '
+                        f'skipped={len(r.get(\"skipped\",[]) or [])}')
+          except Exception as e:
+              print(f'::warning::automerge run parse failed: {e}')
+          "
+
+      - name: Auto-merge — canary (no-op unless BRAIN_AUTOMERGE_ENABLED=1)
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "$ADMIN_KEY" ]; then
+            echo "::warning::DCHUB_ADMIN_KEY not set — skipping automerge canary"
+            exit 0
+          fi
+          response=$(curl -sS --max-time 120 -X POST \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            -H "Content-Type: application/json" \
+            "$RAILWAY_BASE/api/v1/brain/automerge/canary" \
+            || echo '{"ok":false,"error":"curl_fail"}')
+          echo "$response" | head -c 4000
+          echo
+          echo "$response" | python3 -c "
+          import json, sys
+          try:
+              d = json.load(sys.stdin)
+              if d.get('disabled') or d.get('enabled') is False:
+                  print('::notice::automerge canary: DORMANT (BRAIN_AUTOMERGE_ENABLED != 1)')
+              else:
+                  r = d.get('result') or {}
+                  print(f'::notice::automerge canary: evaluated={len(r.get(\"evaluated\",[]) or [])}')
+          except Exception as e:
+              print(f'::warning::automerge canary parse failed: {e}')
+          "

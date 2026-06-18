@@ -26147,6 +26147,26 @@ try:
 except Exception as e:
     print(f"🔀 Brain Auto-Merge (Phase 3): ⚠️ Failed to load: {e}")
 
+# THE AUTONOMY LOOP (2026-06-18) — wires the self-fix pieces into ONE
+# scheduled orchestrator: REACTIVE (captured runtime/DB errors → tracked
+# findings) + PROACTIVE (sweep the deployed Python tree for known bug-classes
+# → mechanical-fix proposals), then classify the open proposals + open DRAFT
+# PRs for the mechanical ones (human still merges) + reconcile already-fixed.
+# BUILT DORMANT: BRAIN_AUTONOMY_ENABLED defaults to "0" (OFF) — the OFF gate is
+# the FIRST check in autonomy_tick(); with it off the tick returns
+# {disabled:true, preview} and makes ZERO DB / GitHub writes. SEPARATE from
+# BRAIN_AUTOMERGE_ENABLED (AUTONOMY on = auto-open DRAFT PRs; AUTOMERGE on =
+# also auto-merge). Admin-gated POST /tick + GET /status.
+try:
+    from routes.brain_autonomy_loop import register as _register_brain_autonomy
+    _auto_ok = _register_brain_autonomy(app)
+    _auto_on = os.environ.get("BRAIN_AUTONOMY_ENABLED", "0") == "1"
+    print("🤖 Brain Autonomy Loop: ✅ Registered "
+          f"(POST /api/v1/brain/autonomy/tick · GET /status · "
+          f"enabled={_auto_on}) registered={_auto_ok}")
+except Exception as e:
+    print(f"🤖 Brain Autonomy Loop: ⚠️ Failed to load: {e}")
+
 # Phase FF+25-followup-r12 (2026-05-20) — site audit + status dashboard.
 # One URL (/status) that shows the entire stack at a glance — brain,
 # autopilot, Inspector, press, MCP, sponsorships. JSON at /api/v1/site/audit.

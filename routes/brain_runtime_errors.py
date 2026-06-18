@@ -197,6 +197,30 @@ def attach_runtime_capture_handler():
         return False
 
 
+# ── Public accessor (for the autonomy loop / any in-process consumer) ─
+def grouped_runtime_patterns(min_level: int = logging.WARNING) -> list:
+    """Return the captured runtime-error patterns as a list of plain dicts,
+    sorted by count desc. This is the PUBLIC, in-process accessor over the
+    in-memory store — the autonomy loop's reactive pass reads it to turn
+    recurring runtime/DB errors into tracked findings without going through the
+    admin HTTP endpoint. Snapshots under the lock; never raises.
+
+    Each dict carries: pattern, count, level, level_no, logger, first_seen,
+    last_seen, sample. min_level filters by severity (default WARNING+)."""
+    try:
+        with _lock:
+            snapshot = [dict(v) for v in _patterns.values()]
+    except Exception:
+        return []
+    try:
+        rows = [r for r in snapshot if r.get("level_no", 0) >= min_level]
+        rows.sort(key=lambda r: (r.get("count", 0), r.get("last_seen", 0)),
+                  reverse=True)
+        return rows
+    except Exception:
+        return snapshot
+
+
 # ── Endpoint ─────────────────────────────────────────────────────────
 @brain_runtime_errors_bp.route("/api/v1/brain/runtime-errors",
                                methods=["GET"])
