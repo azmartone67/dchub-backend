@@ -301,33 +301,46 @@ def test_apply_opens_draft_pr_and_updates_status(monkeypatch):
 # 5b. The real git-CLI primitive ALWAYS passes --draft, base=main, head=branch.
 #     We capture the exact `gh pr create` argv by mocking L22._safe_run.
 # ──────────────────────────────────────────────────────────────────────
-def test_draft_pr_primitive_argv_is_draft_base_main_head_branch(monkeypatch):
+def test_draft_pr_primitive_rest_api_draft_base_main_head_branch(monkeypatch):
+    """The REST primitive ALWAYS opens a DRAFT PR with base=main + head=the
+    feature branch, creates the branch ref off main, and commits onto the branch
+    — NEVER main, NEVER a merge."""
     import routes.brain_layer22_pr_writer as l22
     monkeypatch.setattr(l22, "GH_TOKEN", "ghp_faketoken", raising=False)
     monkeypatch.setattr(l22, "UPSTREAM_REPO", "azmartone67/dchub-backend", raising=False)
-    monkeypatch.setattr(l22, "FORK_OWNER", "dchub-cloud-bot", raising=False)
     monkeypatch.setattr(l22, "DEFAULT_BASE", "main", raising=False)
 
-    seen = {"argv": []}
+    seen = {"refs": None, "contents": None, "pulls": None}
 
-    def fake_run(cmd, cwd=None):
-        seen["argv"].append(cmd)
-        if cmd[:3] == ["gh", "pr", "create"]:
-            return 0, "https://github.com/azmartone67/dchub-backend/pull/1234\n"
-        return 0, ""  # clone / config / checkout / add / commit / push all "succeed"
+    class _Resp:
+        def __init__(self, code, payload=None, text=""):
+            self.status_code = code; self._p = payload or {}; self.text = text
+        def json(self): return self._p
 
-    monkeypatch.setattr(l22, "_safe_run", fake_run)
-    # Avoid touching the real /tmp filesystem write — stub the file write step.
-    monkeypatch.setattr(w.os, "makedirs", lambda *a, **k: None)
-    import builtins
-    real_open = builtins.open
+    def fake_get(url, headers=None, params=None, timeout=None):
+        if "/git/ref/heads/main" in url:
+            return _Resp(200, {"object": {"sha": "basesha123"}})
+        if "/contents/" in url:
+            return _Resp(200, {"sha": "filesha456"})
+        return _Resp(404, text="unexpected get " + url)
 
-    def fake_open(path, *a, **k):
-        if isinstance(path, str) and path.startswith("/tmp/l22-mech-"):
-            import io
-            return io.StringIO()
-        return real_open(path, *a, **k)
-    monkeypatch.setattr(builtins, "open", fake_open)
+    def fake_post(url, headers=None, json=None, timeout=None):
+        if url.endswith("/git/refs"):
+            seen["refs"] = json
+            return _Resp(201, {})
+        if url.endswith("/pulls"):
+            seen["pulls"] = json
+            return _Resp(201, {"html_url": "https://github.com/azmartone67/dchub-backend/pull/1234"})
+        return _Resp(404, text="unexpected post " + url)
+
+    def fake_put(url, headers=None, json=None, timeout=None):
+        seen["contents"] = json
+        return _Resp(201, {})
+
+    import requests as _rq
+    monkeypatch.setattr(_rq, "get", fake_get)
+    monkeypatch.setattr(_rq, "post", fake_post)
+    monkeypatch.setattr(_rq, "put", fake_put)
 
     res = w.open_draft_pr_with_content(
         file_path="routes/example.py", new_content="x = 1\n",
@@ -335,20 +348,16 @@ def test_draft_pr_primitive_argv_is_draft_base_main_head_branch(monkeypatch):
         title="t", body="b", commit_msg="m")
     assert res["ok"] and res["pr_url"].endswith("/pull/1234"), res
 
-    pr_argv = next(c for c in seen["argv"] if c[:3] == ["gh", "pr", "create"])
-    # INVARIANT assertions on the exact argv.
-    assert "--draft" in pr_argv, pr_argv
-    bi = pr_argv.index("--base"); assert pr_argv[bi + 1] == "main", pr_argv
-    hi = pr_argv.index("--head")
-    assert pr_argv[hi + 1] == "brain/autofix-interval_literal-9-abc12345", pr_argv
-    assert pr_argv[hi + 1] != "main", "head must NEVER be main"
-    # No commit/push ever targets main as a branch.
-    for c in seen["argv"]:
-        if c[:2] == ["git", "push"]:
-            assert "main" not in c, f"push must not target main: {c}"
-        if c[:2] == ["git", "checkout"]:
-            assert "main" not in c[2:], f"checkout must create a feature branch, not main: {c}"
-    print("ASSERTED gh pr create argv:", pr_argv)
+    # INVARIANTS on the REST payloads.
+    assert seen["pulls"]["draft"] is True, seen["pulls"]
+    assert seen["pulls"]["base"] == "main", seen["pulls"]
+    assert seen["pulls"]["head"] == "brain/autofix-interval_literal-9-abc12345", seen["pulls"]
+    assert seen["pulls"]["head"] != "main", "head must NEVER be main"
+    assert seen["refs"]["ref"] == "refs/heads/brain/autofix-interval_literal-9-abc12345", seen["refs"]
+    assert seen["refs"]["ref"] != "refs/heads/main", "never create/move the main ref"
+    assert seen["contents"]["branch"] == "brain/autofix-interval_literal-9-abc12345", seen["contents"]
+    assert seen["contents"]["branch"] != "main", "content commits onto the branch, never main"
+    print("ASSERTED REST draft-PR invariants:", seen)
 
 
 # ──────────────────────────────────────────────────────────────────────

@@ -144,65 +144,68 @@ def open_draft_pr_with_content(*, file_path: str, new_content: str,
     if not token:
         return {"ok": False, "error": "PR_SUBMIT_TOKEN / GITHUB_TOKEN unset"}
 
-    l22 = _l22()
-    run = l22._safe_run  # the SAME subprocess runner L22 uses
-    import datetime as _dt
-
-    work_dir = f"/tmp/l22-mech-{int(_dt.datetime.utcnow().timestamp())}"
-    upstream_url = (f"https://x-access-token:{token}@github.com/"
-                    f"{cfg['upstream']}.git")
-
-    # 1. Clone the UPSTREAM base branch directly. L22's WORKING PRs (#1179+) push
-    #    branches straight to upstream as azmartone67:<branch>; the dchub-cloud-bot
-    #    FORK does not exist (404), so the fork path always aborted at fork_clone.
-    #    We branch off upstream + open the PR from the upstream branch. SAFE: only
-    #    a feature branch is ever created/pushed here — NEVER main.
-    code, out = run(["git", "clone", "--depth", "1", "--branch", cfg["base"],
-                     upstream_url, work_dir])
-    if code != 0:
-        return {"ok": False, "stage": "upstream_clone", "error": out[:300]}
-
-    # 2. Author + branch (NEVER main — base stays main, head is THIS branch).
-    run(["git", "config", "user.name", cfg["author_name"]], cwd=work_dir)
-    run(["git", "config", "user.email", cfg["author_email"]], cwd=work_dir)
-    code, out = run(["git", "checkout", "-b", branch], cwd=work_dir)
-    if code != 0:
-        return {"ok": False, "stage": "branch", "error": out[:300]}
-
-    # 3. Write the new file content (full-file replace; new_content already
-    #    has the single search→replace applied by the caller).
+    # REST-API flow (NO git/gh CLI). The Railway runtime's git-CLI path fails
+    # (clone aborts) and the real auto-PRs come from GitHub Actions, not the app —
+    # but the GitHub REST API works here (get_file_on_main already reads via it).
+    # Steps: base HEAD sha → create branch ref → PUT new content on the branch
+    # (Contents API) → open a DRAFT PR (base=main, head=branch). NEVER commits to
+    # main, NEVER merges. draft=True is hardcoded.
     try:
-        target = os.path.join(work_dir, file_path)
-        os.makedirs(os.path.dirname(target), exist_ok=True)
-        with open(target, "w", encoding="utf-8") as f:
-            f.write(new_content)
+        import base64 as _b64
+        import requests
+    except Exception as e:  # pragma: no cover
+        return {"ok": False, "stage": "deps", "error": f"deps_unavailable: {e}"}
+    repo, base = cfg["upstream"], cfg["base"]
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    api = f"https://api.github.com/repos/{repo}"
+    try:
+        # 1. base (main) HEAD sha to branch off.
+        r = requests.get(f"{api}/git/ref/heads/{base}", headers=headers, timeout=15)
+        if r.status_code != 200:
+            return {"ok": False, "stage": "get_base_ref",
+                    "error": f"{r.status_code}: {r.text[:160]}"}
+        head_sha = ((r.json() or {}).get("object") or {}).get("sha")
+        if not head_sha:
+            return {"ok": False, "stage": "get_base_ref", "error": "no_sha"}
+        # 2. current blob sha of the file (Contents PUT requires it to update).
+        rf = requests.get(f"{api}/contents/{file_path}", headers=headers,
+                          params={"ref": base}, timeout=15)
+        if rf.status_code != 200:
+            return {"ok": False, "stage": "get_file_sha",
+                    "error": f"{rf.status_code}: {rf.text[:160]}"}
+        file_sha = (rf.json() or {}).get("sha")
+        # 3. create the branch ref (refs/heads/<branch> — NEVER main).
+        rc = requests.post(f"{api}/git/refs", headers=headers, timeout=15,
+                           json={"ref": f"refs/heads/{branch}", "sha": head_sha})
+        if rc.status_code not in (200, 201):
+            return {"ok": False, "stage": "create_branch",
+                    "error": f"{rc.status_code}: {rc.text[:200]}", "branch": branch}
+        # 4. commit new content onto the branch (Contents API).
+        rp = requests.put(
+            f"{api}/contents/{file_path}", headers=headers, timeout=20,
+            json={"message": commit_msg,
+                  "content": _b64.b64encode(new_content.encode("utf-8")).decode("ascii"),
+                  "branch": branch, "sha": file_sha})
+        if rp.status_code not in (200, 201):
+            return {"ok": False, "stage": "commit_content",
+                    "error": f"{rp.status_code}: {rp.text[:200]}", "branch": branch}
+        # 5. open the DRAFT PR. base=main, head=branch, draft=True (invariant).
+        rpr = requests.post(
+            f"{api}/pulls", headers=headers, timeout=20,
+            json={"title": title, "head": branch, "base": base,
+                  "body": body, "draft": True})
+        if rpr.status_code not in (200, 201):
+            return {"ok": False, "stage": "create_pr",
+                    "error": f"{rpr.status_code}: {rpr.text[:200]}", "branch": branch}
+        return {"ok": True, "branch": branch,
+                "pr_url": (rpr.json() or {}).get("html_url")}
     except Exception as e:
-        return {"ok": False, "stage": "write_file", "error": str(e)[:200]}
-
-    # 4. Stage + commit + push.
-    code, out = run(["git", "add", file_path], cwd=work_dir)
-    if code != 0:
-        return {"ok": False, "stage": "git_add", "error": out[:300]}
-    code, out = run(["git", "commit", "-m", commit_msg], cwd=work_dir)
-    if code != 0:
-        return {"ok": False, "stage": "git_commit", "error": out[:300]}
-    code, out = run(["git", "push", "-u", "origin", branch], cwd=work_dir)
-    if code != 0:
-        return {"ok": False, "stage": "git_push", "error": out[:300]}
-
-    # 5. Open the DRAFT PR. base=main (cfg base), head=the upstream branch.
-    #    --draft is ALWAYS passed — invariant enforced here AND asserted by tests.
-    code, out = run([
-        "gh", "pr", "create", "--repo", cfg["upstream"],
-        "--head", branch, "--base", cfg["base"],
-        "--draft", "--title", title, "--body", body,
-    ], cwd=work_dir)
-    if code != 0:
-        return {"ok": False, "stage": "gh_pr_create", "error": out[:300],
-                "branch": branch}
-    pr_url = next((ln.strip() for ln in (out or "").splitlines()
-                   if ln.strip().startswith("https://github.com/")), None)
-    return {"ok": True, "branch": branch, "pr_url": pr_url}
+        return {"ok": False, "stage": "api_exception",
+                "error": f"{type(e).__name__}: {str(e)[:160]}"}
 
 
 # ── DB: mark a proposal pr_opened (mirrors layer5's pr_url update) ───
