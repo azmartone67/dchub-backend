@@ -110,7 +110,7 @@ def read_history(days: int = 30) -> dict:
             cur.execute("""
                 SELECT snapshot_date, finding_count, type_count
                   FROM radar_finding_snapshots
-                 WHERE snapshot_date >= CURRENT_DATE - INTERVAL '%s days'
+                 WHERE snapshot_date >= CURRENT_DATE - (%s * INTERVAL '1 day')
                  ORDER BY snapshot_date ASC
             """, (days,))
             for r in cur.fetchall():
