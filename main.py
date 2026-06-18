@@ -26129,6 +26129,24 @@ try:
 except Exception as e:
     print(f"🔧 Brain Mechanical Classifier: ⚠️ Failed to load: {e}")
 
+# PHASE 3 (2026-06-18) — AUTONOMOUS MERGE + post-merge CANARY/auto-revert.
+# The highest-risk module: it can squash-merge the brain's mechanical autofix
+# DRAFT PRs to main (= instant prod deploy) and auto-revert on regression.
+# BUILT DORMANT: BRAIN_AUTOMERGE_ENABLED defaults to "0" (OFF) — with it off
+# NOTHING merges/reverts (every action path returns {disabled:true} BEFORE any
+# GitHub write). Squash-merge only (no force / no admin-override), GREEN-CI
+# fail-closed, rate-capped, incident-skip, and a persisted breaker that trips
+# on any auto-revert and blocks merges until a human re-arms via /arm.
+try:
+    from routes.brain_automerge import register as _register_brain_automerge
+    _am_ok = _register_brain_automerge(app)
+    _am_on = os.environ.get("BRAIN_AUTOMERGE_ENABLED", "0") == "1"
+    print("🔀 Brain Auto-Merge (Phase 3): ✅ Registered "
+          f"(POST /api/v1/brain/automerge/run|canary|arm · GET /status · "
+          f"enabled={_am_on}) registered={_am_ok}")
+except Exception as e:
+    print(f"🔀 Brain Auto-Merge (Phase 3): ⚠️ Failed to load: {e}")
+
 # Phase FF+25-followup-r12 (2026-05-20) — site audit + status dashboard.
 # One URL (/status) that shows the entire stack at a glance — brain,
 # autopilot, Inspector, press, MCP, sponsorships. JSON at /api/v1/site/audit.

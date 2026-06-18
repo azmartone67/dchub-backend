@@ -242,6 +242,105 @@ def _mark_pr_opened(proposal_id, pr_url: str) -> bool:
         return False
 
 
+# ── Phase-3 hook: log the proposal behind a PR so auto-merge can re-verify ──
+# Phase 3 (routes/brain_automerge.run_automerge) must, before merging an
+# autofix PR, RE-CONFIRM the change is still a single-file mechanical
+# search→replace in an allowlisted class. The PR diff alone doesn't carry the
+# proposal's confidence / changes_json, so we persist the proposal metadata
+# keyed by the PR's head BRANCH (which is deterministic:
+# brain/autofix-<klass>-<id>-<hash>). Phase 3 reads it back via
+# get_logged_proposal_for_branch(). Best-effort; a failure here never blocks
+# opening the DRAFT PR (Phase 3 simply fail-closes and skips that PR).
+def log_proposal_for_automerge(*, branch: str, file_path: str,
+                               search_text: str, replace_text: str,
+                               klass: str, proposal: dict) -> bool:
+    """Upsert the proposal behind an autofix PR into brain_automerge_proposals
+    keyed by branch. Returns committed. Tests monkeypatch this."""
+    try:
+        import psycopg2
+    except Exception:
+        return False
+    url = os.environ.get("NEON_DATABASE_URL") or os.environ.get("DATABASE_URL")
+    if not url:
+        return False
+    try:
+        with psycopg2.connect(url, connect_timeout=5) as conn, conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS brain_automerge_proposals (
+                    branch        TEXT PRIMARY KEY,
+                    proposal_id   BIGINT,
+                    file_path     TEXT,
+                    search_text   TEXT,
+                    replace_text  TEXT,
+                    klass         TEXT,
+                    confidence    REAL,
+                    changes_json  JSONB,
+                    logged_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+            """)
+            try:
+                conf = float(proposal.get("confidence") or 0.0)
+            except Exception:
+                conf = 0.0
+            cj = proposal.get("changes_json")
+            if not isinstance(cj, str):
+                try:
+                    cj = json.dumps(cj) if cj is not None else None
+                except Exception:
+                    cj = None
+            cur.execute(
+                "INSERT INTO brain_automerge_proposals "
+                "(branch, proposal_id, file_path, search_text, replace_text, "
+                " klass, confidence, changes_json) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s) "
+                "ON CONFLICT (branch) DO UPDATE SET "
+                "  proposal_id=EXCLUDED.proposal_id, file_path=EXCLUDED.file_path, "
+                "  search_text=EXCLUDED.search_text, replace_text=EXCLUDED.replace_text, "
+                "  klass=EXCLUDED.klass, confidence=EXCLUDED.confidence, "
+                "  changes_json=EXCLUDED.changes_json, logged_at=NOW()",
+                (branch, proposal.get("id"), file_path, search_text, replace_text,
+                 klass, conf, cj),
+            )
+            conn.commit()
+        return True
+    except Exception:
+        return False
+
+
+def get_logged_proposal_for_branch(branch: str) -> dict | None:
+    """Read back the proposal logged for an autofix PR branch (the Phase-3
+    re-verify source of truth). Returns a proposal-shaped dict
+    (id/file_path/search_text/replace_text/confidence/changes_json/status) or
+    None if absent. Tests monkeypatch this."""
+    if not branch:
+        return None
+    try:
+        import psycopg2
+        import psycopg2.extras
+    except Exception:
+        return None
+    url = os.environ.get("NEON_DATABASE_URL") or os.environ.get("DATABASE_URL")
+    if not url:
+        return None
+    try:
+        with psycopg2.connect(url, connect_timeout=5) as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(
+                    "SELECT proposal_id AS id, file_path, search_text, "
+                    "       replace_text, klass, confidence, changes_json "
+                    "  FROM brain_automerge_proposals WHERE branch = %s",
+                    (branch,),
+                )
+                row = cur.fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        d["status"] = "pr_opened"   # classify treats this as the live proposal
+        return d
+    except Exception:
+        return None
+
+
 # ── Helpers ──────────────────────────────────────────────────────────
 def _short_hash(text: str) -> str:
     import hashlib
@@ -425,6 +524,18 @@ def open_mechanical_draft_pr(proposal: dict, dry_run: bool = True) -> dict:
         db_ok = _mark_pr_opened(proposal.get("id"), pr_url or "")
     except Exception:
         db_ok = False
+
+    # PHASE-3 HOOK: persist the proposal metadata keyed by branch so the
+    # autonomous-merge pass can RE-VERIFY (re-classify) this change before it
+    # ever merges. Best-effort — failure here never affects the opened PR.
+    try:
+        log_proposal_for_automerge(
+            branch=res.get("branch") or branch, file_path=file_path,
+            search_text=search_text, replace_text=replace_text,
+            klass=klass, proposal=proposal,
+        )
+    except Exception:
+        pass
 
     return {"ok": True, "pr_url": pr_url, "branch": res.get("branch") or branch,
             "id": proposal.get("id"), "klass": klass, "status_updated": db_ok}
