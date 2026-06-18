@@ -40,6 +40,19 @@ SAFETY
   · source='openstreetmap' on every row → single SQL purge if needed
   · DCM_CRAWL_ENABLED + OSM_CRAWL_ENABLED env vars must be set
     (sharing the same flag for now since user already set it)
+
+INFRA SAFETY (r-osm-flap, 2026-06-18)
+=====================================
+  · NO pooled DB connection is held across an Overpass HTTP fetch.
+    The connection is acquired ONLY around each bbox's insert work and
+    closed before the next fetch (fixes "FORCED RECLAIM: held 62s by
+    osm_crawler.py" → pool exhaustion → site-wide flapping).
+  · On Overpass 429/504/timeout: back off (OSM_CRAWL_BACKOFF_S, def 8s)
+    then SKIP that bbox — no retry-hammering.
+  · WALL-CLOCK BUDGET per run (OSM_CRAWL_BUDGET_S, def 180s) + a
+    max-bboxes-per-run cap (OSM_CRAWL_MAX_BBOXES, def 6). A single
+    POST /api/v1/admin/osm-crawl/run can never run ~10 min (was 582s);
+    it stops cleanly + returns a summary, remaining regions next run.
 """
 import os
 from internal_auth import accepted_internal_keys
@@ -141,11 +154,38 @@ ENABLED = (os.environ.get("OSM_CRAWL_ENABLED",
                           os.environ.get("DCM_CRAWL_ENABLED", "false"))
            .lower() in ("1", "true", "yes"))
 
+# ── r-osm-flap (2026-06-18) — infra-safety caps ──────────────────────
+# The crawler was flapping the whole site: it held ONE pooled DB
+# connection across slow Overpass HTTP fetches (FORCED RECLAIM: held
+# 62s by osm_crawler.py → site-wide pool exhaustion) and the run loop
+# swept every bbox synchronously (SLOW REQUEST 582s on one POST). Three
+# guardrails, all env-tunable:
+#   1. Wall-clock budget per run — stop cleanly + return a summary so a
+#      single request can never run ~10 minutes (default 180s).
+#   2. Max bboxes per run — a hard cap on how many regions one POST will
+#      sweep (default 6); the rest are picked up on the next invocation.
+#   3. Overpass backoff — on 429/504/timeout, sleep then SKIP that bbox
+#      (no retry-hammering of overpass-api.de).
+# The DB connection is now acquired ONLY around each bbox's insert work
+# (fetch-then-short-lived-connection-then-close), never across a fetch.
+OSM_CRAWL_BUDGET_S = float(os.environ.get("OSM_CRAWL_BUDGET_S", "180"))
+OSM_CRAWL_MAX_BBOXES = int(os.environ.get("OSM_CRAWL_MAX_BBOXES", "6"))
+# Polite backoff after a throttle/timeout from Overpass, then skip.
+OSM_BACKOFF_S = float(os.environ.get("OSM_CRAWL_BACKOFF_S", "8"))
+
 
 # ── Overpass query ───────────────────────────────────────────────────
-def _query_bbox(bbox: tuple) -> list[dict]:
+def _query_bbox(bbox: tuple) -> tuple[list[dict], str]:
     """Run an Overpass query for data center POIs in a bounding box.
-    Returns a list of {tags, lat, lon, type, id} dicts."""
+
+    Returns (elements, status) where status is:
+      · "ok"       — query succeeded (elements may be an empty list)
+      · "throttle" — Overpass returned 429 (Too Many Requests)
+      · "timeout"  — Overpass returned 504 / the socket timed out
+      · "error"    — any other failure
+    The caller uses the status to BACK OFF + SKIP on throttle/timeout
+    instead of hammering overpass-api.de (which is what drove the
+    repeated 429/504 storm in the logs)."""
     south, west, north, east = bbox
     q = (
         f'[out:json][timeout:25];'
@@ -159,6 +199,8 @@ def _query_bbox(bbox: tuple) -> list[dict]:
     )
     import urllib.request
     import urllib.parse
+    import urllib.error
+    import socket
     try:
         data = urllib.parse.urlencode({"data": q}).encode()
         req = urllib.request.Request(
@@ -171,10 +213,22 @@ def _query_bbox(bbox: tuple) -> list[dict]:
         )
         with urllib.request.urlopen(req, timeout=40) as resp:
             body = json.loads(resp.read().decode("utf-8"))
-            return body.get("elements", []) or []
+            return (body.get("elements", []) or [], "ok")
+    except urllib.error.HTTPError as e:
+        if e.code == 429:
+            logger.info(f"[osm-crawl] bbox {bbox} → HTTP 429 (throttle)")
+            return ([], "throttle")
+        if e.code in (502, 503, 504):
+            logger.info(f"[osm-crawl] bbox {bbox} → HTTP {e.code} (timeout)")
+            return ([], "timeout")
+        logger.info(f"[osm-crawl] bbox {bbox} → HTTP {e.code}")
+        return ([], "error")
+    except (socket.timeout, TimeoutError) as e:
+        logger.info(f"[osm-crawl] bbox {bbox} → socket timeout: {e}")
+        return ([], "timeout")
     except Exception as e:
         logger.info(f"[osm-crawl] bbox {bbox} → {type(e).__name__}: {e}")
-        return []
+        return ([], "error")
 
 
 # ── Row mapping ──────────────────────────────────────────────────────
@@ -408,35 +462,110 @@ def _crawl(region: str | None, dry_run: bool) -> dict:
         "pois_dup": 0, "errors": 0, "dry_run": dry_run,
         "examples": [],
         "started_at": datetime.datetime.utcnow().isoformat() + "Z",
+        # r-osm-flap telemetry — how the run terminated + what it touched.
+        "regions_processed": [],
+        "regions_skipped": [],
+        "throttled": 0,
+        "stopped_reason": None,
     }
     cap_hit = False
-    c = _get_db()
     _ensure_log_table()
 
-    try:
-        for region_slug in regions:
-            if cap_hit: break
-            bbox = BBOXES[region_slug]
-            elements = _query_bbox(bbox)
+    # r-osm-flap (2026-06-18): wall-clock budget so a single
+    # POST /api/v1/admin/osm-crawl/run can never run ~10 minutes
+    # (observed 582s). budget + max-bboxes are env-tunable.
+    deadline = time.monotonic() + OSM_CRAWL_BUDGET_S
+
+    for idx, region_slug in enumerate(regions):
+        if cap_hit:
+            summary["stopped_reason"] = "max_per_run"
+            break
+        # Wall-clock budget: stop cleanly + return a summary. The
+        # remaining regions are recorded as skipped (next run sweeps them).
+        if time.monotonic() >= deadline:
+            summary["stopped_reason"] = "time_budget"
+            summary["regions_skipped"].extend(regions[idx:])
+            break
+        # Max-bboxes-per-run cap.
+        if len(summary["regions_processed"]) >= OSM_CRAWL_MAX_BBOXES:
+            summary["stopped_reason"] = "max_bboxes"
+            summary["regions_skipped"].extend(regions[idx:])
+            break
+
+        bbox = BBOXES[region_slug]
+
+        # ── NETWORK FETCH — NO DB CONNECTION HELD HERE ──────────────
+        # The connection is acquired only AFTER the fetch, around the
+        # insert work, then released before the next fetch. This is the
+        # fix for "FORCED RECLAIM: held 62s by osm_crawler.py" — a
+        # pooled connection was being held across these slow Overpass
+        # HTTP calls, exhausting the pool and flapping the site.
+        elements, status = _query_bbox(bbox)
+
+        if status in ("throttle", "timeout"):
+            # Back off + SKIP this bbox — do NOT retry-hammer Overpass.
+            summary["errors"] += 1
+            summary["throttled"] += 1
+            summary["regions_skipped"].append(region_slug)
+            logger.info(f"[osm-crawl] {region_slug} {status} → backoff "
+                        f"{OSM_BACKOFF_S}s + skip")
+            time.sleep(OSM_BACKOFF_S)
+            continue
+        if status != "ok":
+            summary["errors"] += 1
+            summary["regions_skipped"].append(region_slug)
             time.sleep(SLEEP_SEC)
-            if not elements:
-                summary["errors"] += 1
-                continue
-            summary["pois_seen"] += len(elements)
+            continue
+
+        summary["regions_processed"].append(region_slug)
+        # Polite delay between bbox fetches (Overpass usage policy).
+        time.sleep(SLEEP_SEC)
+
+        if not elements:
+            continue
+        summary["pois_seen"] += len(elements)
+
+        # ── DB WORK — SHORT-LIVED CONNECTION, this bbox only ────────
+        # Acquire here (after the fetch), insert this bbox's rows, then
+        # release in finally before looping to the next fetch. A whole
+        # bbox of inserts completes well under the 60s reclaim window.
+        if dry_run:
             for e in elements:
                 if summary["pois_new"] >= MAX_PER_RUN:
                     cap_hit = True
                     break
                 row = _osm_to_row(e, region_slug)
-                if not row: continue
-                if dry_run or c is None:
-                    if len(summary["examples"]) < 30:
-                        summary["examples"].append({
-                            "name": row["name"], "operator": row.get("provider"),
-                            "city": row.get("city"), "country": row.get("country"),
-                            "region": region_slug,
-                        })
-                    summary["pois_new"] += 1
+                if not row:
+                    continue
+                if len(summary["examples"]) < 30:
+                    summary["examples"].append({
+                        "name": row["name"], "operator": row.get("provider"),
+                        "city": row.get("city"), "country": row.get("country"),
+                        "region": region_slug,
+                    })
+                summary["pois_new"] += 1
+            continue
+
+        c = _get_db()
+        if c is None:
+            # No DB — treat like dry-run accounting so the run still
+            # finishes cleanly and reports.
+            for e in elements:
+                if summary["pois_new"] >= MAX_PER_RUN:
+                    cap_hit = True
+                    break
+                row = _osm_to_row(e, region_slug)
+                if not row:
+                    continue
+                summary["pois_new"] += 1
+            continue
+        try:
+            for e in elements:
+                if summary["pois_new"] >= MAX_PER_RUN:
+                    cap_hit = True
+                    break
+                row = _osm_to_row(e, region_slug)
+                if not row:
                     continue
                 try:
                     # FIX r22: ensure clean transaction state before
@@ -466,30 +595,39 @@ def _crawl(region: str | None, dry_run: bool) -> dict:
                     except Exception: pass
                     summary["errors"] += 1
                     logger.info(f"[osm-crawl] insert err: {str(e)[:120]}")
+        finally:
+            # Release the connection BEFORE the next bbox fetch so it is
+            # never held across an Overpass HTTP call.
+            try: c.close()
+            except Exception: pass
 
-        summary["finished_at"] = datetime.datetime.utcnow().isoformat() + "Z"
-        summary["ok"] = True
+    if summary["stopped_reason"] is None:
+        summary["stopped_reason"] = "completed"
+    summary["finished_at"] = datetime.datetime.utcnow().isoformat() + "Z"
+    summary["ok"] = True
 
-        if c is not None:
+    # ── Log the run (own short-lived connection) ────────────────────
+    if not dry_run:
+        lc = _get_db()
+        if lc is not None:
             try:
-                with c.cursor() as cur:
+                with lc.cursor() as cur:
                     cur.execute("""
                         INSERT INTO osm_crawl_log
                           (regions, pois_seen, pois_new, pois_dup,
                            errors, dry_run, finished_at)
                         VALUES (%s, %s, %s, %s, %s, %s, NOW())
-                    """, (regions, summary["pois_seen"],
+                    """, (summary["regions_processed"], summary["pois_seen"],
                            summary["pois_new"], summary["pois_dup"],
                            summary["errors"], dry_run))
-                try: c.commit()
+                try: lc.commit()
                 except Exception: pass
             except Exception:
-                try: c.rollback()
+                try: lc.rollback()
                 except Exception: pass
-    finally:
-        try:
-            if c is not None: c.close()
-        except Exception: pass
+            finally:
+                try: lc.close()
+                except Exception: pass
 
     return summary
 
@@ -540,6 +678,9 @@ def crawl_status():
 def _smoke():
     logger.info(f"[osm-crawl] ready · enabled={ENABLED} · "
                 f"{len(BBOXES)} regions configured · "
-                f"sleep={SLEEP_SEC}s · max={MAX_PER_RUN}/run")
+                f"sleep={SLEEP_SEC}s · max={MAX_PER_RUN}/run · "
+                f"budget={OSM_CRAWL_BUDGET_S}s · "
+                f"max_bboxes={OSM_CRAWL_MAX_BBOXES}/run · "
+                f"backoff={OSM_BACKOFF_S}s")
 
 _smoke()

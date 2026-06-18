@@ -26098,6 +26098,24 @@ try:
 except Exception as e:
     print(f"🧠 Brain Inspector: ⚠️ Failed to load: {e}")
 
+# r-runtime-capture (2026-06-18) — make the brain SEE runtime errors.
+# The brain's detectors read HTTP/heal findings, NOT the process's
+# runtime logs, so DB/runtime errors (NOW()::TEXT casts, non-IMMUTABLE
+# indexes, the OSM forced-reclaims) never became findings. Attach a
+# lightweight, in-memory WARNING+ capture handler to the ROOT logger +
+# expose it at GET /api/v1/brain/runtime-errors (admin). In-memory only
+# (no per-record DB write) + exception-safe (a handler must never raise).
+try:
+    from routes.brain_runtime_errors import (
+        brain_runtime_errors_bp, attach_runtime_capture_handler,
+    )
+    app.register_blueprint(brain_runtime_errors_bp)
+    _rc_ok = attach_runtime_capture_handler()
+    print("🧩 Brain Runtime-Error Capture: ✅ Registered "
+          f"(GET /api/v1/brain/runtime-errors · handler_attached={_rc_ok})")
+except Exception as e:
+    print(f"🧩 Brain Runtime-Error Capture: ⚠️ Failed to load: {e}")
+
 # Phase FF+25-followup-r12 (2026-05-20) — site audit + status dashboard.
 # One URL (/status) that shows the entire stack at a glance — brain,
 # autopilot, Inspector, press, MCP, sponsorships. JSON at /api/v1/site/audit.

@@ -121,6 +121,244 @@ def neutralize_proposed_code():
 
 
 # ──────────────────────────────────────────────────────────────────
+# r-reconcile (2026-06-18): mark already-fixed proposals 'resolved'.
+#
+# The /brain Layer-5 dashboard showed ~8 "proposed" code fixes but ~7
+# were ALREADY fixed in source (the INTERVAL '%s days' bugs, the tz-aware
+# utcnow, the boolean is_active=1, the SQLite datetime, the press_releases
+# published flag). Each proposal records the EXACT buggy snippet it wanted
+# to replace in `search_text` (and changes_json[].search). If that snippet
+# is GONE from the live file, the bug was fixed and the proposal is stale.
+#
+# Status values used by THIS module (free-text `status` column — the
+# CREATE TABLE has `status TEXT DEFAULT 'proposed'`, NO check constraint):
+#   proposed (default) · rejected · approved · pr_opened ·
+#   unfixable_by_sonnet · merged_healthy · reverted
+# We add 'resolved' for "verified gone in source, never PR'd". Open set
+# we reconcile = COALESCE(status,'proposed') IN ('proposed',
+# 'unfixable_by_sonnet') AND pr_url IS NULL.
+#
+# CONSERVATIVE BY DESIGN: only mark resolved when we are confident the
+# diagnosed pattern is GONE. A file that's missing / unreadable / read as
+# empty is NEVER treated as "bug gone" (that would falsely resolve every
+# open proposal on a transient read error).
+# ──────────────────────────────────────────────────────────────────
+
+# Known-bug heuristic patterns. If the proposal's rationale/search clearly
+# concerns one of these AND the pattern is absent from the file, that's a
+# strong "fixed" signal. Used in addition to the primary search_text check.
+_KNOWN_BUG_PATTERNS = (
+    "INTERVAL '%s days'",
+    "INTERVAL '%s day'",
+    "datetime.datetime.utcnow()",
+    "datetime.utcnow()",
+    "is_active, 1) = 1",
+    "is_active, 1)=1",
+    "datetime('now'",
+    "datetime(\"now\"",
+)
+
+
+def _read_file_full(path: str):
+    """Read a repo-relative file in full. Returns (text, ok). ok is False
+    when the file is missing or unreadable — the caller must then treat
+    the proposal as STILL open (never resolve on a read failure)."""
+    try:
+        full = os.path.join(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))), path)
+        if not os.path.exists(full):
+            return "", False
+        with open(full, encoding="utf-8") as f:
+            return f.read(), True
+    except Exception:
+        return "", False
+
+
+def _proposal_bug_gone(row: dict):
+    """Decide whether the bug a proposal diagnosed is STILL present.
+
+    Returns (gone, reason). `gone` is True ONLY when we are confident the
+    pattern is absent from every target file. On ANY uncertainty (missing
+    file, unreadable, no usable check derivable) returns (False, reason)
+    so the proposal stays open.
+
+    row carries: file_path, search_text, rationale, changes_json (list of
+    {file,search,replace} when present).
+    """
+    # Build the list of (file, search) checks. Prefer changes_json (the
+    # canonical multi-file shape); fall back to the legacy columns.
+    checks = []
+    raw_changes = row.get("changes_json")
+    if isinstance(raw_changes, str):
+        try:
+            raw_changes = json.loads(raw_changes)
+        except Exception:
+            raw_changes = None
+    if isinstance(raw_changes, list) and raw_changes:
+        for ch in raw_changes:
+            if not isinstance(ch, dict):
+                return False, "malformed_changes_json"
+            f = (ch.get("file") or "").strip()
+            s = (ch.get("search") or "").strip()
+            if f and s:
+                checks.append((f, s))
+    if not checks:
+        f = (row.get("file_path") or "").strip()
+        s = (row.get("search_text") or "").strip()
+        if f and s:
+            checks.append((f, s))
+
+    if not checks:
+        return False, "no_search_snippet"
+
+    rationale = (row.get("rationale") or "").lower()
+
+    # Every target file's bug must be confirmed gone for the whole
+    # proposal to resolve (all-or-nothing, mirroring how proposals are
+    # validated/applied as a unit).
+    confirmed = []
+    for f, s in checks:
+        # Only reconcile real source files we can read.
+        if not f.endswith(".py"):
+            return False, f"non_py_target:{f}"
+        text, ok = _read_file_full(f)
+        if not ok:
+            return False, f"unreadable:{f}"
+        if not text.strip():
+            return False, f"empty_read:{f}"
+
+        # PRIMARY check: the exact buggy snippet the proposal targeted.
+        # If search_text is short/ambiguous (<12 chars) it's an unreliable
+        # signal — refuse rather than risk a false resolve.
+        if len(s) < 12:
+            return False, f"search_too_short:{f}"
+        if s in text:
+            return False, f"still_present:{f}"
+
+        # SECONDARY (corroborating) check: if the rationale clearly names a
+        # known bug class, require that pattern to ALSO be absent from the
+        # file before we call it resolved. This guards against a proposal
+        # whose search_text drifted (e.g. surrounding lines edited) while
+        # the actual bug lingers under a slightly different snippet.
+        for pat in _KNOWN_BUG_PATTERNS:
+            key = pat.lower().rstrip("'\"")
+            # Does the proposal concern this known bug? (rationale or the
+            # original search snippet referenced it)
+            concerns = key[:18] in rationale or pat in s
+            if concerns and pat in text:
+                return False, f"known_pattern_lingers:{f}"
+
+        confirmed.append(f)
+
+    return True, "gone:" + ",".join(confirmed)
+
+
+@brain_v2_layer5_bp.post("/api/v1/brain/proposals/reconcile")
+def reconcile_proposals():
+    """Admin: mark open Layer-5 proposals 'resolved' when the bug they
+    diagnosed is already gone from source (so the dashboard stops showing
+    fixed-in-source proposals as still-open).
+
+    Conservative: a proposal is resolved ONLY when its exact buggy snippet
+    (search_text / changes_json[].search) is verifiably ABSENT from every
+    target .py file. Missing / unreadable / empty reads, short/ambiguous
+    snippets, and lingering known-bug patterns all leave it open. Never
+    resolves on a parse or read error.
+
+    Returns {checked, resolved, still_open, details:[...]}.
+    """
+    auth_err = _admin_guard()
+    if auth_err:
+        return auth_err
+
+    apply = (request.args.get("dry_run") or "").lower() not in ("1", "true", "yes")
+    try:
+        limit = int(request.args.get("limit", "200"))
+    except Exception:
+        limit = 200
+    limit = max(1, min(limit, 1000))
+
+    try:
+        import psycopg2
+        import psycopg2.extras
+        url = os.environ.get("NEON_DATABASE_URL") or os.environ.get("DATABASE_URL")
+        if not url:
+            return jsonify(ok=False, error="no_db_url"), 503
+        with psycopg2.connect(url, connect_timeout=5) as conn:
+            # pr_url may not exist on very old tables — add defensively so
+            # the WHERE clause never aborts the txn.
+            with conn.cursor() as cur:
+                try:
+                    cur.execute("ALTER TABLE brain_proposed_code_fixes "
+                                "ADD COLUMN IF NOT EXISTS pr_url TEXT;")
+                    conn.commit()
+                except Exception:
+                    conn.rollback()
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT id, loop_name, file_path, search_text,
+                           rationale, status, changes_json
+                      FROM brain_proposed_code_fixes
+                     WHERE COALESCE(status, 'proposed')
+                           IN ('proposed', 'unfixable_by_sonnet')
+                       AND pr_url IS NULL
+                     ORDER BY proposed_at DESC
+                     LIMIT %s
+                """, (limit,))
+                rows = [dict(r) for r in cur.fetchall()]
+
+            checked = len(rows)
+            resolved_ids = []
+            details = []
+            for row in rows:
+                try:
+                    gone, reason = _proposal_bug_gone(row)
+                except Exception as e:
+                    # Never resolve on an evaluation error — stay open.
+                    gone, reason = False, f"eval_error:{str(e)[:80]}"
+                details.append({
+                    "id": row.get("id"),
+                    "file": row.get("file_path"),
+                    "status": row.get("status") or "proposed",
+                    "bug_gone": gone,
+                    "reason": reason,
+                })
+                if gone:
+                    resolved_ids.append(row.get("id"))
+
+            applied_ids = []
+            if apply and resolved_ids:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        UPDATE brain_proposed_code_fixes
+                           SET status = 'resolved',
+                               reviewed_at = NOW(),
+                               reviewer_note = COALESCE(reviewer_note, '')
+                                   || ' [auto-reconcile: bug gone in source]'
+                         WHERE id = ANY(%s)
+                           AND COALESCE(status, 'proposed')
+                               IN ('proposed', 'unfixable_by_sonnet')
+                         RETURNING id
+                    """, (resolved_ids,))
+                    applied_ids = [r[0] for r in cur.fetchall()]
+                conn.commit()
+
+        return jsonify(
+            ok=True,
+            as_of=datetime.now(timezone.utc).isoformat(),
+            dry_run=(not apply),
+            checked=checked,
+            resolved=(len(applied_ids) if apply else len(resolved_ids)),
+            still_open=checked - (len(applied_ids) if apply else len(resolved_ids)),
+            resolved_ids=(applied_ids if apply else resolved_ids),
+            status_value="resolved",
+            details=details,
+        ), 200
+    except Exception as e:
+        return jsonify(ok=False, error=str(e)[:200]), 500
+
+
+# ──────────────────────────────────────────────────────────────────
 # Loop → source-file map. The Layer 5 prompt grabs a window of code
 # from these files so Claude has the actual implementation context,
 # not just the loop name. Files are LISTED IN ORDER OF RELEVANCE —
