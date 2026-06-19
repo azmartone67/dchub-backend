@@ -545,7 +545,7 @@ def admin_news_clamp_future_dates():
             try:
                 cur.execute("""
                     UPDATE news_articles
-                       SET published_at = NOW()::text
+                       SET published_at = NOW()
                      WHERE COALESCE(published_at, '') != ''
                        AND published_at ~ '^\\d{4}-\\d{2}-\\d{2}'
                        AND published_at::timestamptz > NOW()
