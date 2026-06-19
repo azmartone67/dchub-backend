@@ -251,6 +251,10 @@ def mcp_leadership():
               "dimension; executes nothing. Arming is per-actuator (the `armable_now` "
               "ones first), gated by BRAIN_MCP_OPTIMIZE_ARMED + fix_success_rate>=50%."),
     )
-    _RESP["at"] = _now
-    _RESP["v"] = payload
+    # Only cache a COMPLETE response — if any internal prefetch timed out / returned
+    # {} (e.g. the slow /api/v1/ai/reach), a dimension degrades to 0; don't freeze
+    # that for 45s, let the next request retry.
+    if all(_REQ.cache.get(p) for p in _PREFETCH):
+        _RESP["at"] = _now
+        _RESP["v"] = payload
     return jsonify(payload), 200

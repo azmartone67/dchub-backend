@@ -197,6 +197,9 @@ def agent_utilization():
               "gated by BRAIN_AGENT_UTIL_ARMED + fix_success_rate>=50%. Pairs with "
               "/api/v1/mcp/leadership (category index) + /api/v1/brain/ownership."),
     )
-    _RESP["at"] = _now
-    _RESP["v"] = payload
+    # Only cache a COMPLETE response (don't freeze a degraded frame from a timed-out
+    # internal prefetch — see mcp_leadership_engine).
+    if all(_REQ.cache.get(p) for p in _PREFETCH):
+        _RESP["at"] = _now
+        _RESP["v"] = payload
     return jsonify(payload), 200
