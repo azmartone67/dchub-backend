@@ -756,7 +756,7 @@ JSON only, no markdown."""
             cursor.execute('''
                 SELECT date(published_date) as day, COUNT(*) as count
                 FROM announcements
-                WHERE published_date > datetime('now', '-14 days')
+                WHERE published_date > NOW() - INTERVAL '14 days'
                 GROUP BY day
                 ORDER BY day DESC
             ''')
