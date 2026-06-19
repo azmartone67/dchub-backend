@@ -610,6 +610,50 @@ def _store_investigation(question: str, result: dict) -> Optional[int]:
         except Exception: pass
 
 
+def _enqueue_investigation(question: str) -> Optional[int]:
+    """Insert a PENDING row (no result yet) so POST /ask can return immediately
+    and a background thread fills it in. The 3-4-pass verified chain is far too
+    slow to run inside a request (502 + single-replica flapping)."""
+    return _store_investigation(question, {"status": "pending"})
+
+
+def _update_investigation(inv_id: int, result: dict) -> bool:
+    """Fill in a pending investigation with its result. Best-effort."""
+    conn = _conn()
+    if conn is None or inv_id is None:
+        return False
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE brain_investigations SET result_json=%s, confidence=%s WHERE id=%s",
+                (json.dumps(result)[:200000],
+                 float(result.get("confidence") or 0.0), int(inv_id)),
+            )
+            conn.commit()
+            return True
+    except Exception as e:
+        logger.warning("brain_investigator: update failed: %s", e)
+        try: conn.rollback()
+        except Exception: pass
+        return False
+    finally:
+        try: conn.close()
+        except Exception: pass
+
+
+def _run_investigation_async(inv_id: int, question: str, depth: str) -> None:
+    """Daemon-thread worker: run the slow verified investigation + store it.
+    Never blocks the request, never raises out (recommend-only)."""
+    try:
+        result = investigate(question, depth=depth)
+    except Exception as e:
+        result = {"question": question, "cannot_investigate": f"error:{str(e)[:160]}"}
+    try:
+        _update_investigation(inv_id, result)
+    except Exception:
+        pass
+
+
 def _get_investigation(inv_id: int) -> Optional[dict]:
     conn = _conn()
     if conn is None:
@@ -688,19 +732,24 @@ def ask():
     if not question:
         return jsonify(ok=False, error="question required"), 400
     depth = (body.get("depth") or "default").strip() or "default"
+    # ASYNC: the verified chain is 3-4 model calls (~40-120s) — running it inside
+    # the request 502s the gateway AND risks flapping the single backend replica.
+    # Enqueue a PENDING row, kick a daemon thread, return the id immediately;
+    # the caller polls GET /api/v1/brain/ask/<id>.
+    inv_id = _enqueue_investigation(question)
+    if inv_id is None:
+        return jsonify(ok=False, error="storage_unavailable",
+                       hint="cannot track an async investigation without the DB"), 503
     try:
-        result = investigate(question, depth=depth)
-    except Exception as e:  # belt + suspenders — investigate() shouldn't raise
-        logger.warning("brain_investigator: investigate raised: %s", e)
-        return jsonify(ok=True, enabled=True,
-                       result={"question": question,
-                               "cannot_investigate": f"error:{str(e)[:160]}"}), 200
-    inv_id = None
-    try:
-        inv_id = _store_investigation(question, result)
+        import threading
+        threading.Thread(target=_run_investigation_async,
+                         args=(inv_id, question, depth), daemon=True).start()
     except Exception as e:
-        logger.warning("brain_investigator: store wrapper failed: %s", e)
-    return jsonify(ok=True, enabled=True, id=inv_id, result=result), 200
+        logger.warning("brain_investigator: thread spawn failed: %s", e)
+        _run_investigation_async(inv_id, question, depth)  # fallback (rare)
+    return jsonify(ok=True, enabled=True, id=inv_id, status="pending",
+                   note=f"investigation queued — poll GET /api/v1/brain/ask/{inv_id} "
+                        f"(answer ready in ~1-2 min)"), 202
 
 
 @brain_investigator_bp.get("/api/v1/brain/ask/<int:inv_id>")
