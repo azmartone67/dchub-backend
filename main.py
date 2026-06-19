@@ -29424,6 +29424,12 @@ try:
     print("[main] agent_utilization_bp registered: GET /api/v1/agents/utilization (AI Agent Utilization Engine — SHADOW)", flush=True)
 except Exception as _aue_e:
     print(f"[main] agent_utilization_bp register failed: {_aue_e}", flush=True)
+try:
+    from routes.engines_dashboard import engines_dashboard_bp
+    app.register_blueprint(engines_dashboard_bp)
+    print("[main] engines_dashboard_bp registered: GET /admin/engines (optimization engines dashboard)", flush=True)
+except Exception as _edash_e:
+    print(f"[main] engines_dashboard_bp register failed: {_edash_e}", flush=True)
 
 # r79 (2026-06-03) — Redirect blueprint for known-dead URLs. Each entry
 # in routes/redirects_404_killer.py is a URL we caught 404ing in production
