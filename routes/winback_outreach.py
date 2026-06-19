@@ -108,7 +108,7 @@ def _platform_was_recently_sent(cur, platform: str, days: int = 7) -> bool:
         cur.execute("""
             SELECT 1 FROM winback_outreach_sent
              WHERE platform = %s
-               AND sent_at >= NOW() - INTERVAL '%s days'
+               AND sent_at >= NOW() - %s * INTERVAL '1 day'
              LIMIT 1
         """, (platform, days))
         return bool(cur.fetchone())
