@@ -430,7 +430,7 @@ def _recently_posted_for_slug(cur, slug: str) -> bool:
         cur.execute("""
             SELECT 1 FROM market_verdict_post_log
              WHERE market_slug = %s
-               AND posted_at > NOW() - INTERVAL '%s hours'
+               AND posted_at > NOW() - %s * INTERVAL '1 hour'
              LIMIT 1
         """, (slug, SOFT_RECENT_HOURS))
         return cur.fetchone() is not None
