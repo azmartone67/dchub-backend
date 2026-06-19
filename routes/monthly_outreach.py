@@ -329,8 +329,18 @@ def send_outreach():
                       triggered_by = EXCLUDED.triggered_by
                 """, (year, month, len(_JOURNALISTS), succeeded, failed,
                        permalink, triggered_by))
+            # FIX (2026-06-18): _get_db() returns a NON-AUTOCOMMIT connection
+            # (the same trap _ensure_log_table's "FIX r10" documents). Without
+            # this commit the campaign row is rolled back on c.close(), so
+            # monthly_outreach_log stayed EMPTY across 113 HTTP-200 sends →
+            # the brain's monthly_trend_unsent_3d verifier ("a row exists for
+            # year-month") ALWAYS failed → 23 verified failures that alone
+            # accounted for most of the ~17% autopilot fix-success rate.
+            c.commit()
         except Exception as e:
             logger.warning(f"[monthly-outreach] log insert failed: {e}")
+            try: c.rollback()
+            except Exception: pass
         finally:
             try: c.close()
             except Exception: pass
