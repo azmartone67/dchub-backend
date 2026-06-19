@@ -680,7 +680,7 @@ def get_live_stats():
         cursor.execute('SELECT COUNT(*) FROM facilities')
         facility_count = cursor.fetchone()[0]
         
-        cursor.execute('SELECT COUNT(*) FROM announcements WHERE timestamp > datetime("now", "-7 days")')
+        cursor.execute('SELECT COUNT(*) FROM announcements WHERE timestamp > NOW() - INTERVAL '7 days'')
         recent_news = cursor.fetchone()[0]
         
         cursor.execute('SELECT SUM(mw) FROM capacity_pipeline WHERE status != "cancelled"')
