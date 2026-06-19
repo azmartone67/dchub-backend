@@ -1556,6 +1556,28 @@ def _noop_quarantine_disabled() -> bool:
     return str(os.environ.get("BRAIN_NOOP_QUARANTINE_DISABLED", "")).lower() in ("1", "true", "yes")
 
 
+# ── Loop 3c (2026-06-18): EFFECT-AWARE quarantine ─────────────────────
+# Loop 3/3b key off HTTP outcome (executed_ok/execution_failed) inside a 24h
+# window. But the dominant drag on fix_success_rate (≈17%) is patterns that
+# return 2xx ("executed_ok") yet NEVER produce a verified real effect — the
+# EFFECT verifier (autopilot_outcomes.succeeded) marks them FALSE, but Loop 3b
+# exempts any pattern with a 2xx and Loop 3's 3-in-24h window misses slow-cadence
+# patterns. Measured 2026-06-18: monthly_trend_unsent_3d 23 verified-fail / 0
+# success (never quarantined), outbound_distribution_health 20/0, inspector_l22_
+# handoff 14/0 — together ~59 of the ~71 verified actions, which is the entire
+# 17%. Bench any pattern whose verified-effect record over the look-back shows
+# >= THRESHOLD failures and ZERO successes. Computed LIVE from autopilot_outcomes
+# (no time-window auto-release) so it stays benched until the pattern logs a
+# verified success or its failures age out → the brain stops looping on what it
+# demonstrably cannot fix, and the item escalates to a human via the action
+# queue. Conservative: 0 verified successes required, so a pattern that works
+# even occasionally (schema_org_coverage_low: 12 ok / 2 fail) is NEVER benched.
+_EFFECT_FAIL_DAYS      = _env_int("BRAIN_EFFECT_FAIL_DAYS", 7)
+_EFFECT_FAIL_THRESHOLD = _env_int("BRAIN_EFFECT_FAIL_THRESHOLD", 5)
+def _effect_quarantine_disabled() -> bool:
+    return str(os.environ.get("BRAIN_EFFECT_QUARANTINE_DISABLED", "")).lower() in ("1", "true", "yes")
+
+
 def _ensure_quarantine_table():
     c = _conn()
     if c is None:
@@ -1600,7 +1622,24 @@ def _quarantined_patterns() -> frozenset:
                                 WHERE released_at IS NULL
                                   AND quarantined_at >= NOW() - make_interval(hours => %s)""",
                             (_QUARANTINE_WINDOW_HOURS,))
-                s = frozenset(r[0] for r in cur.fetchall())
+                _set = set(r[0] for r in cur.fetchall())
+                # Loop 3c: effect-aware bench — patterns that return 2xx but whose
+                # verified-effect record is chronically all-failure (0 successes).
+                # Additive + fail-soft: any error here leaves the base set intact.
+                if not _effect_quarantine_disabled():
+                    try:
+                        cur.execute("""
+                            SELECT pattern_name FROM autopilot_outcomes
+                             WHERE verified_at >= NOW() - make_interval(days => %s)
+                               AND pattern_name IS NOT NULL AND pattern_name <> ''
+                             GROUP BY pattern_name
+                            HAVING COUNT(*) FILTER (WHERE succeeded IS FALSE) >= %s
+                               AND COUNT(*) FILTER (WHERE succeeded IS TRUE) = 0
+                        """, (_EFFECT_FAIL_DAYS, _EFFECT_FAIL_THRESHOLD))
+                        _set |= set(r[0] for r in cur.fetchall())
+                    except Exception:
+                        pass
+                s = frozenset(_set)
         except Exception:
             pass
         finally:
