@@ -475,7 +475,7 @@ def archive_stale():
                     f"""UPDATE source_registry SET enabled = FALSE,
                                                     updated_at = NOW(),
                                                     notes = COALESCE(notes, '')
-                                                            || ' [auto-archived ' || NOW()::text
+                                                            || ' [auto-archived ' || NOW()
                                                             || ': never reported]'
                           WHERE {sql_filter}""",
                     params,
