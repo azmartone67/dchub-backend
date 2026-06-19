@@ -211,29 +211,23 @@ def test_flag_off_short_circuits_before_model(client, monkeypatch):
     assert data["enabled"] is False
 
 
-def test_ask_enqueues_async_when_enabled(client, monkeypatch):
+def test_ask_runs_sync_and_returns_result(client, monkeypatch):
     monkeypatch.setattr(inv, "_enabled", lambda: True)
     monkeypatch.setattr(inv, "investigate",
                         lambda q, **k: {"question": q, "confidence": 0.6,
                                         "recommendation": "do X"})
-    # Stub storage so no DB is needed; enqueue returns a fake id.
+    # Stub storage so no DB is needed; the store returns the new row id.
     monkeypatch.setattr(inv, "_store_investigation", lambda q, r: 42)
-    captured = {}
-    monkeypatch.setattr(inv, "_update_investigation",
-                        lambda i, r: captured.update(id=i, result=r) or True)
     resp = client.post("/api/v1/brain/investigate", json={"question": "why flat?"})
-    # ASYNC: the slow chain must NOT run in-request (502/flapping) — enqueue +
-    # 202 + id + pending, no inline result.
-    assert resp.status_code == 202
+    # SYNCHRONOUS + DURABLE: the ~48s chain fits the 120s worker timeout and runs
+    # in-request — no daemon thread for a redeploy/worker-recycle to silently kill
+    # (which left rows stuck 'pending'). 200 + id + the result returned inline.
+    assert resp.status_code == 200
     data = resp.get_json()
     assert data["enabled"] is True
     assert data["id"] == 42
-    assert data["status"] == "pending"
-    assert "result" not in data
-    # The background worker runs the (mocked) verified chain + stores the result.
-    inv._run_investigation_async(42, "why flat?", "default")
-    assert captured["id"] == 42
-    assert captured["result"]["recommendation"] == "do X"
+    assert data["result"]["recommendation"] == "do X"
+    assert data["result"]["confidence"] == 0.6
 
 
 def test_ask_requires_admin(client, monkeypatch):

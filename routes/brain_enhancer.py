@@ -413,9 +413,23 @@ def propose_enhancements(*, max_proposals: int = 3, depth: str = "default") -> d
     except Exception:
         n = 3
 
+    # Wall-clock budget so a SYNCHRONOUS run stays under the gunicorn 120s worker
+    # timeout: each investigate() is ~48s, so once the budget is spent (after at
+    # least one proposal) we stop STARTING new ones and surface what we have.
+    import time as _time
+    try:
+        _budget = float(os.environ.get("BRAIN_ENHANCER_TIME_BUDGET_S", "55"))
+    except Exception:
+        _budget = 55.0
+    _start = _time.monotonic()
+
     candidates: list[dict] = []
     last_model = None
     for opp in opportunities[:n]:
+        if candidates and (_time.monotonic() - _start) > _budget:
+            logger.info("brain_enhancer: time budget %.0fs hit after %d proposal(s)",
+                        _budget, len(candidates))
+            break
         question = opp.get("question") or ""
         try:
             inv = investigate(question, depth=depth)
@@ -753,29 +767,41 @@ def enhance():
                             "dark (propose-only). Set it to 1 to enable."), 200
     body = request.get_json(silent=True) or {}
     try:
-        max_props = int(body.get("max") or 3)
+        max_props = int(body.get("max") or 2)
     except Exception:
-        max_props = 3
-    max_props = max(1, min(max_props, 10))
-    # ASYNC: propose_enhancements calls investigate() several times (each is a
-    # 3-4-pass verified chain) — running it inline 502s the gateway and risks
-    # flapping the single backend replica. Enqueue, spawn a daemon thread, return
-    # the run_id immediately; the caller polls GET /api/v1/brain/enhance/<run_id>.
+        max_props = 2
+    max_props = max(1, min(max_props, 5))
+    # SYNCHRONOUS: propose_enhancements runs investigate() per opportunity (~48s
+    # each) under a wall-clock budget (BRAIN_ENHANCER_TIME_BUDGET_S, default 55s)
+    # so the whole call stays under the gunicorn 120s worker timeout. Running it
+    # in-request is DURABLE — no daemon thread for a redeploy/worker-recycle to
+    # silently kill (which left runs stuck 'pending'). PROPOSE-ONLY: it scans,
+    # reasons, ranks, and STORES proposals; it NEVER acts.
     run_id = _enqueue_run(max_props)
-    if run_id is None:
-        return jsonify(ok=False, error="storage_unavailable",
-                       hint="cannot track an async run without the DB"), 503
+    result = propose_enhancements(max_proposals=max_props)
+    stored_ids = []
     try:
-        import threading
-        threading.Thread(target=_run_enhance_async,
-                         args=(run_id, max_props), daemon=True).start()
+        for prop in (result.get("proposals") or []):
+            pid = _store_proposal(run_id, prop)
+            if pid is not None:
+                stored_ids.append(pid)
     except Exception as e:
-        logger.warning("brain_enhancer: thread spawn failed: %s", e)
-        _run_enhance_async(run_id, max_props)  # fallback (rare)
-    return jsonify(ok=True, enabled=True, run_id=run_id, status="pending",
-                   note=f"enhancement run queued — poll GET "
-                        f"/api/v1/brain/enhance/{run_id} (proposals ready in "
-                        f"~2-4 min). PROPOSE-ONLY: nothing is acted on."), 202
+        logger.warning("brain_enhancer: storing proposals failed: %s", e)
+    summary = {
+        "opportunities": len(result.get("opportunities") or []),
+        "proposals_stored": len(stored_ids),
+        "proposal_ids": stored_ids,
+        "model": result.get("model"),
+        "cannot_enhance": result.get("cannot_enhance"),
+    }
+    if run_id is not None:
+        try:
+            _mark_run(run_id, "done", summary)
+        except Exception:
+            pass
+    return jsonify(ok=True, enabled=True, run_id=run_id, status="done",
+                   proposals=result.get("proposals") or [], summary=summary,
+                   note="PROPOSE-ONLY: nothing is acted on."), 200
 
 
 @brain_enhancer_bp.get("/api/v1/brain/enhance/<int:run_id>")

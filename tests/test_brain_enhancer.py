@@ -278,36 +278,13 @@ def test_enhance_requires_admin(client, monkeypatch):
     assert resp.status_code == 403
 
 
-def test_enhance_enqueues_async_and_worker_stores(client, monkeypatch):
-    """The async POST returns 202 + run_id + pending; the worker stores proposals
-    (PROPOSE-ONLY) and marks the run done."""
+def test_enhance_runs_sync_and_stores_proposals(client, monkeypatch):
+    """SYNC POST runs propose_enhancements in-request (under the time budget),
+    STORES proposals (PROPOSE-ONLY), marks the run done, and returns 200 with the
+    proposals inline."""
     monkeypatch.setattr(enh, "_enabled", lambda: True)
-    # Stub enqueue so no DB is needed; spawn must NOT run the slow chain inline.
     monkeypatch.setattr(enh, "_enqueue_run", lambda mp: 77)
-    spawned = {}
-
-    import threading
-    real_thread = threading.Thread
-
-    def _capture_thread(target=None, args=(), daemon=None):
-        spawned["target"] = target
-        spawned["args"] = args
-        return real_thread(target=lambda: None, daemon=daemon)
-    monkeypatch.setattr(threading, "Thread", _capture_thread)
-
-    resp = client.post("/api/v1/brain/enhance", json={"max": 2})
-    assert resp.status_code == 202
-    data = resp.get_json()
-    assert data["enabled"] is True
-    assert data["run_id"] == 77
-    assert data["status"] == "pending"
-    assert "proposals" not in data            # ASYNC: no inline result
-    # The worker the endpoint queued is _run_enhance_async(run_id=77, max=2).
-    assert spawned["target"] is enh._run_enhance_async
-    assert spawned["args"] == (77, 2)
-
-    # Drive the worker with mocks: it must STORE proposals and mark the run.
-    monkeypatch.setattr(enh, "propose_enhancements", lambda max_proposals=3: {
+    monkeypatch.setattr(enh, "propose_enhancements", lambda max_proposals=2: {
         "opportunities": [{"area": "reliability", "signal": "s", "question": "q"}],
         "proposals": [{"title": "[reliability] s", "area": "reliability",
                        "recommendation": "do X", "confidence": 0.8,
@@ -317,24 +294,43 @@ def test_enhance_enqueues_async_and_worker_stores(client, monkeypatch):
     stored = []
     marked = {}
     monkeypatch.setattr(enh, "_store_proposal",
-                        lambda rid, p: stored.append((rid, p)) or (len(stored)))
+                        lambda rid, p: stored.append((rid, p)) or len(stored))
     monkeypatch.setattr(enh, "_mark_run",
                         lambda rid, status, result=None: marked.update(
                             rid=rid, status=status, result=result) or True)
-    enh._run_enhance_async(77, 2)
-    assert len(stored) == 1
-    assert stored[0][0] == 77
+    resp = client.post("/api/v1/brain/enhance", json={"max": 2})
+    # SYNC + DURABLE: 200, proposals inline, run stored + marked done.
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["enabled"] is True
+    assert data["run_id"] == 77
+    assert data["status"] == "done"
+    assert len(data["proposals"]) == 1
+    assert data["proposals"][0]["recommendation"] == "do X"
+    # PROPOSE-ONLY: the only writes are storing the proposal + marking the run.
+    assert len(stored) == 1 and stored[0][0] == 77
     assert stored[0][1]["recommendation"] == "do X"
-    assert marked["rid"] == 77
-    assert marked["status"] == "done"
+    assert marked["rid"] == 77 and marked["status"] == "done"
     assert marked["result"]["proposals_stored"] == 1
 
 
-def test_enhance_storage_unavailable_returns_503(client, monkeypatch):
+def test_enhance_storage_unavailable_still_returns_proposals(client, monkeypatch):
+    """No DB to track the run -> still PROPOSE-ONLY answers inline (run_id None,
+    200) rather than failing the caller."""
     monkeypatch.setattr(enh, "_enabled", lambda: True)
     monkeypatch.setattr(enh, "_enqueue_run", lambda mp: None)
-    resp = client.post("/api/v1/brain/enhance", json={"max": 3})
-    assert resp.status_code == 503
+    monkeypatch.setattr(enh, "propose_enhancements", lambda max_proposals=2: {
+        "opportunities": [],
+        "proposals": [{"title": "t", "area": "reliability", "recommendation": "do Y",
+                       "confidence": 0.5, "leverage_rank": 0.5, "caveats": [],
+                       "refutation": {}}],
+        "model": "m"})
+    monkeypatch.setattr(enh, "_store_proposal", lambda rid, p: None)
+    resp = client.post("/api/v1/brain/enhance", json={"max": 2})
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["run_id"] is None
+    assert data["proposals"][0]["recommendation"] == "do Y"
 
 
 def test_get_run_not_found(client, monkeypatch):

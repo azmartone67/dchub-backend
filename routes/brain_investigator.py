@@ -529,8 +529,11 @@ def investigate(question: str, *, depth: str = "default") -> dict:
         f"EVIDENCE it was built on:\n{evidence_block}\n\n"
         f"Try to break this recommendation."
     )
+    # max_tokens generous: the adversarial pass enumerates weaknesses + caveats
+    # and a tight cap truncates the JSON mid-object → unparseable → a refutation
+    # that silently contributes nothing while still claiming it ran.
     ftext, ferr, fmodel = _call_model(
-        _REFUTE_SYSTEM, refute_prompt, tier="challenger", max_tokens=1200)
+        _REFUTE_SYSTEM, refute_prompt, tier="challenger", max_tokens=1800)
     refutation = {"attempted": True, "weaknesses_found": [], "survived": None}
     if ferr:
         # The refutation pass failed — be HONEST about it (don't pretend the
@@ -541,25 +544,35 @@ def investigate(question: str, *, depth: str = "default") -> dict:
                        f"({ferr}) — recommendation is UN-stress-tested")
         confidence = _clamp01(confidence - 0.15, confidence)
     else:
-        ref = _parse_json(ftext) or {}
-        weaknesses = list(ref.get("weaknesses_found") or [])
-        survived = ref.get("survives_scrutiny")
-        adj = ref.get("confidence_adjustment")
-        try:
-            adj = float(adj)
-        except Exception:
-            adj = 0.0
-        adj = max(-0.5, min(0.0, adj))
-        refutation["weaknesses_found"] = weaknesses
-        refutation["survived"] = bool(survived) if survived is not None else None
-        refutation["model"] = fmodel
-        # Fold the refutation into final confidence + caveats.
-        confidence = _clamp01(confidence + adj, confidence)
-        if survived is False:
-            confidence = _clamp01(min(confidence, 0.35), confidence)
-        for c in (ref.get("added_caveats") or []):
-            if c and c not in caveats:
-                caveats.append(c)
+        ref = _parse_json(ftext)
+        if not ref:
+            # The pass RAN but its output didn't parse (truncation / non-JSON).
+            # Do NOT claim it survived scrutiny it never resolved — say so and
+            # dock confidence, so the trust signal stays honest.
+            refutation["unparsed"] = True
+            caveats.append("adversarial refutation ran but its output could not "
+                           "be parsed — treat the recommendation as only "
+                           "PARTIALLY stress-tested")
+            confidence = _clamp01(confidence - 0.1, confidence)
+        else:
+            weaknesses = list(ref.get("weaknesses_found") or [])
+            survived = ref.get("survives_scrutiny")
+            adj = ref.get("confidence_adjustment")
+            try:
+                adj = float(adj)
+            except Exception:
+                adj = 0.0
+            adj = max(-0.5, min(0.0, adj))
+            refutation["weaknesses_found"] = weaknesses
+            refutation["survived"] = bool(survived) if survived is not None else None
+            refutation["model"] = fmodel
+            # Fold the refutation into final confidence + caveats.
+            confidence = _clamp01(confidence + adj, confidence)
+            if survived is False:
+                confidence = _clamp01(min(confidence, 0.35), confidence)
+            for c in (ref.get("added_caveats") or []):
+                if c and c not in caveats:
+                    caveats.append(c)
 
     # ── Honest-numbers fence: catch any fabricated figure ───────────
     fab = _fence_fabricated_figures(recommendation + " " + " ".join(caveats))
@@ -732,24 +745,14 @@ def ask():
     if not question:
         return jsonify(ok=False, error="question required"), 400
     depth = (body.get("depth") or "default").strip() or "default"
-    # ASYNC: the verified chain is 3-4 model calls (~40-120s) — running it inside
-    # the request 502s the gateway AND risks flapping the single backend replica.
-    # Enqueue a PENDING row, kick a daemon thread, return the id immediately;
-    # the caller polls GET /api/v1/brain/investigate/<id>.
-    inv_id = _enqueue_investigation(question)
-    if inv_id is None:
-        return jsonify(ok=False, error="storage_unavailable",
-                       hint="cannot track an async investigation without the DB"), 503
-    try:
-        import threading
-        threading.Thread(target=_run_investigation_async,
-                         args=(inv_id, question, depth), daemon=True).start()
-    except Exception as e:
-        logger.warning("brain_investigator: thread spawn failed: %s", e)
-        _run_investigation_async(inv_id, question, depth)  # fallback (rare)
-    return jsonify(ok=True, enabled=True, id=inv_id, status="pending",
-                   note=f"investigation queued — poll GET /api/v1/brain/investigate/{inv_id} "
-                        f"(answer ready in ~1-2 min)"), 202
+    # SYNCHRONOUS: the verified chain is ~48s (3 model calls) — comfortably under
+    # the gunicorn 120s worker timeout. Running it in-request is DURABLE: unlike a
+    # fire-and-forget daemon thread, there is no in-flight work for a redeploy /
+    # worker-recycle to silently kill (which left rows stuck 'pending'), and any
+    # failure is visible to the caller + retryable. Recommend-only; never raises.
+    result = investigate(question, depth=depth)
+    inv_id = _store_investigation(question, result)
+    return jsonify(ok=True, enabled=True, id=inv_id, result=result), 200
 
 
 @brain_investigator_bp.get("/api/v1/brain/investigate/<int:inv_id>")
