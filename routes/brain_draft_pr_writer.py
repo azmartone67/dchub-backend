@@ -374,13 +374,144 @@ def _diff_preview(content: str, search_text: str, replace_text: str,
 
 
 def _already_opened(proposal: dict) -> bool:
-    """Idempotency gate: skip if the proposal already has a pr_url or its
-    status is already pr_opened."""
+    """Idempotency gate (PER-PROPOSAL): skip if THIS proposal already has a
+    pr_url or its status is already pr_opened."""
     if (proposal.get("pr_url") or "").strip():
         return True
     if (proposal.get("status") or "").strip() == "pr_opened":
         return True
     return False
+
+
+# ── CROSS-PROPOSAL dedup: another open autofix PR already owns this file+class ─
+# _already_opened only catches THE SAME proposal twice. The L15-flood pattern is
+# DIFFERENT proposals (#183 + #184) for the SAME (file_path, klass) BOTH opening
+# a PR. brain_proposed_code_fixes has no klass column (the transform class is
+# derived at classify-time), so we fetch the small set of OTHER rows that are
+# already status='pr_opened' with a non-null pr_url on the SAME file_path, then
+# re-derive each one's klass in-process and compare. Pure DB + local classify —
+# NO GitHub API. Guarded/best-effort: any failure returns None (treated as "no
+# existing PR" so we never wrongly block a legitimate distinct fix). Crucially
+# this only matches SAME file AND SAME class — a different file OR a different
+# class yields no match and still opens.
+def _pr_is_open(pr_url: str):
+    """True if the PR at pr_url is still OPEN, False if closed or merged, None if
+    indeterminate (no token / network error / unparseable). Guarded; never raises.
+    Lets dedup ignore a STALE 'pr_opened' DB row whose PR has since closed or merged,
+    so a resolved PR can't permanently block a legit new fix to that file+class."""
+    try:
+        import re as _re
+        import requests as _rq
+        m = _re.search(r"/pull/(\d+)", pr_url or "")
+        if not m:
+            return None
+        cfg = _gh_config()
+        token, repo = cfg.get("token") or "", cfg.get("upstream") or ""
+        if not token or not repo:
+            return None
+        resp = _rq.get(
+            f"https://api.github.com/repos/{repo}/pulls/{m.group(1)}",
+            headers={"Authorization": f"Bearer {token}",
+                     "Accept": "application/vnd.github+json"},
+            timeout=8,
+        )
+        if resp.status_code != 200:
+            return None
+        return resp.json().get("state") == "open"
+    except Exception:
+        return None
+
+
+def find_open_pr_for_file_class(*, file_path: str, klass: str,
+                                exclude_id=None) -> dict | None:
+    """Return {id, pr_url} of ANOTHER proposal that already has an OPEN draft PR
+    for the SAME (file_path, klass), or None. Best-effort; never raises."""
+    file_path = (file_path or "").strip()
+    klass = (klass or "").strip()
+    if not file_path or not klass:
+        return None
+    try:
+        import psycopg2
+        import psycopg2.extras
+    except Exception:
+        return None
+    url = os.environ.get("NEON_DATABASE_URL") or os.environ.get("DATABASE_URL")
+    if not url:
+        return None
+    try:
+        rows = []
+        with psycopg2.connect(url, connect_timeout=5) as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                # Cheap candidate set: SAME file, already PR-opened, real pr_url.
+                cur.execute(
+                    "SELECT id, loop_name, file_path, search_text, replace_text, "
+                    "       changes_json, pr_url "
+                    "  FROM brain_proposed_code_fixes "
+                    " WHERE file_path = %s "
+                    "   AND status = 'pr_opened' "
+                    "   AND pr_url IS NOT NULL AND pr_url <> '' "
+                    " LIMIT 200",
+                    (file_path,),
+                )
+                rows = cur.fetchall() or []
+    except Exception:
+        return None
+    # Re-derive each candidate's transform class in-process (no API) and match.
+    try:
+        from routes.brain_mechanical_classifier import classify_mechanical
+    except Exception:
+        return None
+    for r in rows:
+        try:
+            rid = r.get("id")
+            if exclude_id is not None and rid == exclude_id:
+                continue
+            verdict = classify_mechanical(dict(r))
+            if verdict.get("klass") == klass:
+                # Verify the blocking PR is ACTUALLY still open. A stale
+                # 'pr_opened' row from a closed or merged PR must NOT permanently
+                # block a legit new fix. Indeterminate (None) stays conservative
+                # (treat as an open dup so we never double-open under flood).
+                if _pr_is_open(r.get("pr_url")) is False:
+                    continue
+                return {"id": rid, "pr_url": r.get("pr_url")}
+        except Exception:
+            continue
+    return None
+
+
+def _mark_dup_skipped(proposal_id, dup_of_pr_url: str = "",
+                      dup_of_id=None) -> bool:
+    """UPDATE brain_proposed_code_fixes SET status='dup_skipped' so a proposal
+    whose (file_path, klass) is already owned by another OPEN draft PR is not
+    retried every tick. Best-effort; returns True on a committed update. Never
+    raises. Tests monkeypatch this."""
+    try:
+        import psycopg2
+    except Exception:
+        return False
+    url = os.environ.get("NEON_DATABASE_URL") or os.environ.get("DATABASE_URL")
+    if not url:
+        return False
+    note = "dup of open autofix PR for same file+class"
+    if dup_of_id is not None:
+        note += f" (proposal #{dup_of_id})"
+    if (dup_of_pr_url or "").strip():
+        note += f" {dup_of_pr_url}"
+    try:
+        with psycopg2.connect(url, connect_timeout=5) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE brain_proposed_code_fixes "
+                    "SET status = 'dup_skipped', reviewed_at = NOW(), "
+                    "    reviewer_note = %s "
+                    "WHERE id = %s",
+                    (note, proposal_id),
+                )
+            conn.commit()
+        return True
+    except Exception:
+        return False
 
 
 # ── The generic writer ───────────────────────────────────────────────
@@ -421,6 +552,33 @@ def open_mechanical_draft_pr(proposal: dict, dry_run: bool = True) -> dict:
     if not file_path or not search_text:
         return {"ok": False, "aborted": True, "reason": "missing_file_or_search",
                 "id": proposal.get("id")}
+
+    # ── Gate 1b: CROSS-PROPOSAL dedup — another OPEN autofix PR already owns
+    # this (file_path, klass). Without this, two DIFFERENT proposals for the
+    # same file+class (e.g. #183 + #184 on db_utils.py) BOTH open a draft PR and
+    # the queue piles up (the L15-flood pattern). We mark THIS proposal
+    # 'dup_skipped' (so it is not retried) and open nothing. Best-effort: a DB
+    # error returns None => no dup => we fall through and open normally, and a
+    # DIFFERENT file OR class never matches, so legitimately-distinct fixes still
+    # open. (No GitHub side effects here — runs in dry_run too.)
+    try:
+        existing = find_open_pr_for_file_class(
+            file_path=file_path, klass=klass, exclude_id=proposal.get("id"))
+    except Exception:
+        existing = None
+    if existing:
+        try:
+            _mark_dup_skipped(proposal.get("id"),
+                              dup_of_pr_url=existing.get("pr_url") or "",
+                              dup_of_id=existing.get("id"))
+        except Exception:
+            pass
+        return {"ok": True, "skipped": True,
+                "reason": "dup_open_pr_same_file_class",
+                "id": proposal.get("id"),
+                "klass": klass, "file_path": file_path,
+                "dup_of_id": existing.get("id"),
+                "dup_of_pr_url": existing.get("pr_url")}
 
     # ── Gate 2: re-verify search occurs EXACTLY ONCE in LIVE main. ───
     # The proposal may be stale; classify against REAL main, not the snapshot.
@@ -554,6 +712,13 @@ def open_mechanical_draft_prs(rows, *, apply: bool,
     cap = MAX_DRAFT_PRS_PER_RUN if max_prs is None else int(max_prs)
     opened, previewed, skipped = [], [], []
     used = 0
+    # CROSS-PROPOSAL dedup WITHIN this run: once we open/preview a PR for a
+    # (file_path, klass) pair, a LATER row for the SAME pair is skipped. The DB
+    # check in open_mechanical_draft_pr() only catches PRIOR-run open PRs; two
+    # fresh same-file+class proposals in ONE batch (neither yet 'pr_opened')
+    # would both slip through without this. Keyed on (file, klass) so a
+    # different file OR class never collides.
+    seen_pairs: dict = {}
     for row in (rows or []):
         try:
             verdict = classify_mechanical(row)
@@ -567,6 +732,19 @@ def open_mechanical_draft_prs(rows, *, apply: bool,
             continue
         if _already_opened(row):
             skipped.append({"id": row.get("id"), "reason": "already_pr_opened"})
+            continue
+        _pair = ((row.get("file_path") or "").strip(), verdict.get("klass"))
+        if _pair[0] and _pair[1] and _pair in seen_pairs:
+            # Another row THIS run already owns this file+class — mark it so it
+            # is not retried next tick, exactly like the cross-run DB path.
+            try:
+                _mark_dup_skipped(row.get("id"),
+                                  dup_of_id=seen_pairs[_pair])
+            except Exception:
+                pass
+            skipped.append({"id": row.get("id"),
+                            "reason": "dup_open_pr_same_file_class",
+                            "dup_of_id": seen_pairs[_pair]})
             continue
         if used >= cap:
             skipped.append({"id": row.get("id"),
@@ -586,9 +764,13 @@ def open_mechanical_draft_prs(rows, *, apply: bool,
             skipped.append({"id": row.get("id"),
                             "reason": res.get("reason", "skipped")})
         elif apply and res.get("pr_url"):
+            if _pair[0] and _pair[1]:
+                seen_pairs.setdefault(_pair, row.get("id"))
             opened.append({"id": row.get("id"), "pr_url": res.get("pr_url"),
                            "branch": res.get("branch")})
         else:
+            if _pair[0] and _pair[1]:
+                seen_pairs.setdefault(_pair, row.get("id"))
             previewed.append({"id": row.get("id"), "branch": res.get("branch"),
                               "file": res.get("file_path"),
                               "klass": res.get("klass"),

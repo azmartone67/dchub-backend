@@ -149,6 +149,97 @@ def _forbidden_path_hits(path: str) -> list[str]:
     return [pat.pattern for pat in _FORBIDDEN_PATH_RE if pat.search(p)]
 
 
+# ── Per-class forbidden paths (sqlite-data guard) ────────────────────
+# The `sqlite_datetime_on_pg` class is the one transform whose search text can
+# appear as DATA (a SQLite→Postgres translation table) rather than executable
+# SQL. db_utils.py holds exactly such a mapping (SQLITE_TO_PG_FUNC), where
+# "datetime('now','-7 days')" is a DICT KEY — the source side of the swap. A
+# "fix" there would Postgres-ify the key and DESTROY the translation. Belt: any
+# path that IS db_utils, names a translation table, or carries "translat" in
+# the path is human-only FOR THIS CLASS. We scope this to the class so the
+# other transforms (interval_literal etc.) keep their broad reach.
+_SQLITE_CLASS_FORBIDDEN_PATTERNS = [
+    r"\bdb_utils\b",
+    r"sqlite_?to_?pg",
+    r"translat",  # *translate* / *translation* helpers carry mapping tables
+]
+_SQLITE_CLASS_FORBIDDEN_RE = [
+    re.compile(p, re.IGNORECASE) for p in _SQLITE_CLASS_FORBIDDEN_PATTERNS
+]
+
+
+def _sqlite_class_forbidden_path_hits(path: str) -> list[str]:
+    """Forbidden-path hits SPECIFIC to the sqlite_datetime_on_pg class."""
+    p = path or ""
+    return [pat.pattern for pat in _SQLITE_CLASS_FORBIDDEN_RE if pat.search(p)]
+
+
+# ── SQLite-as-DATA context guard ─────────────────────────────────────
+# Classes whose `search` can legitimately match inside a Python STRING LITERAL
+# (i.e. as DATA, e.g. a key in a SQLite→PG translation table) rather than as
+# executable SQL. For these, a "mechanical" rewrite of the data would silently
+# corrupt a mapping. At minimum: sqlite_datetime_on_pg.
+_STRING_LITERAL_RISK_CLASSES = {"sqlite_datetime_on_pg"}
+
+# Marker that a file defines a SQLite→PG translation mapping (search occurrences
+# inside such a file are almost certainly DATA, not SQL).
+_TRANSLATION_MAP_MARKER_RE = re.compile(r"SQLITE_?TO_?PG", re.IGNORECASE)
+
+# Marker that the file itself RUNS SQLite (imports sqlite3). In such a file
+# datetime('now', ...) is CORRECT SQLite syntax — rewriting it to NOW()/INTERVAL
+# (Postgres-only) BREAKS the real query. e.g. api_server.py uses a sqlite3 cursor.
+_SQLITE3_IMPORT_RE = re.compile(r"(?m)^\s*(?:import\s+sqlite3|from\s+sqlite3\b)")
+
+
+def _sqlite_data_context_block(file_path: str, search_text: str) -> str | None:
+    """For the sqlite-class search, decide whether the matched SQLite syntax is
+    DATA (a dict key / translation-table entry) rather than executable SQL.
+
+    Returns a human-readable block REASON (str) when the match should be
+    REJECTED, or None when the context looks like real SQL (safe to proceed).
+
+    CONSERVATIVE: false-positives here are harmful (the brain corrupted a live
+    translation table), so when the file is unreadable we BLOCK rather than
+    wave the proposal through — the caller must NOT let an unverifiable
+    sqlite-class match pass.
+    """
+    text, ok = _read_file(file_path)
+    if not ok:
+        return ("sqlite syntax may be DATA — target file unreadable locally, "
+                "cannot verify it is executable SQL (conservative block)")
+
+    # The file RUNS SQLite (imports sqlite3) → datetime('now', ...) is CORRECT
+    # here; swapping to NOW()/INTERVAL is Postgres-only and would BREAK the real
+    # SQLite query. (e.g. api_server.py — the brain proposed exactly this.)
+    if _SQLITE3_IMPORT_RE.search(text):
+        return ("sqlite syntax is CORRECT here: file imports sqlite3 (a real "
+                "SQLite DB) — NOW()/INTERVAL is Postgres-only and would break it")
+
+    # The file defines a SQLite→PG translation mapping anywhere → its
+    # occurrences of SQLite syntax are the SOURCE side of the swap (DATA).
+    if _TRANSLATION_MAP_MARKER_RE.search(text):
+        return ("sqlite syntax is DATA: file defines a SQLITE_TO_PG translation "
+                "mapping (rewriting it would destroy the SQLite->PG swap)")
+
+    # The search occurs as a DICT KEY: the quoted search text immediately
+    # followed by a colon, e.g.  "datetime('now','-7 days')": "(NOW() - ...)".
+    # Build a tolerant regex: an opening quote, the (whitespace-flexible)
+    # escaped search, a closing quote, optional ws, then a colon.
+    needle = (search_text or "").strip()
+    if needle:
+        # Allow flexible inner whitespace (the table key may differ from the
+        # proposal's search only by spaces, e.g. "'now', '-7 days'" vs
+        # "'now','-7 days'"). Escape, then relax runs of whitespace.
+        esc = re.escape(needle)
+        esc = re.sub(r"\\?\s+", r"\\s*", esc)
+        dict_key_re = re.compile(r"""["']\s*""" + esc + r"""\s*["']\s*:""")
+        if dict_key_re.search(text):
+            return ("sqlite syntax is DATA: search_text appears as a DICT KEY "
+                    "(quoted-then-colon), not executable SQL")
+
+    return None
+
+
 # ── Allowlisted transform classes ───────────────────────────────────
 # Each class is a named, proven-safe mechanical fix. `search` is a regex
 # tested against the proposal's search_text; `replace` (optional) is a
@@ -454,6 +545,32 @@ def classify_mechanical(proposal: dict) -> dict:
         blocked_by.append("forbidden path pattern(s): " + ",".join(fp_hits[:5]))
     else:
         reasons.append("path not in forbidden set")
+
+    # Rule 4b (sqlite-data guard): the sqlite_datetime_on_pg transform is the one
+    # class whose `search` can match SQLite syntax that is DATA — a key in a
+    # SQLite->PG translation table (e.g. db_utils.SQLITE_TO_PG_FUNC) — rather than
+    # executable SQL. Rewriting that DATA to Postgres DESTROYS the mapping. Two
+    # belt-and-suspenders defenses, scoped to this class so other transforms keep
+    # their reach:
+    #   (i)  per-class forbidden paths (db_utils / *translat* / sqlite_to_pg);
+    #   (ii) a content context-check that BLOCKS when the search occurs as a dict
+    #        key or the file defines a SQLITE_TO_PG mapping — and, conservatively,
+    #        BLOCKS when the file is unreadable (an unverifiable match is unsafe).
+    if klass in _STRING_LITERAL_RISK_CLASSES:
+        sq_path_hits = _sqlite_class_forbidden_path_hits(file_path)
+        if sq_path_hits:
+            blocked_by.append(
+                "sqlite-data guard: forbidden translation-table path "
+                + ",".join(sq_path_hits[:5]))
+        try:
+            ctx_block = _sqlite_data_context_block(file_path, search_text)
+        except Exception as e:  # best-effort; never crash a tick — fail closed
+            ctx_block = f"sqlite-data guard error (fail-closed): {str(e)[:80]}"
+        if ctx_block:
+            blocked_by.append("sqlite-data guard: " + ctx_block)
+        if not sq_path_hits and not ctx_block:
+            reasons.append("sqlite-data guard: search is executable SQL "
+                           "(not a translation-table key)")
 
     # Rule 6: confidence >= MECH_MIN_CONF.
     try:

@@ -402,6 +402,112 @@ def test_batch_isolates_bad_rows(monkeypatch):
 
 
 # ──────────────────────────────────────────────────────────────────────
+# 9. CROSS-PROPOSAL dedup (the #183/#184 piling-up bug).
+#    Two DIFFERENT proposals for the SAME (file_path, klass) must NOT both
+#    open a PR; the 2nd is marked dup_skipped. Different file => both open.
+# ──────────────────────────────────────────────────────────────────────
+def test_cross_proposal_dedup_db_marks_second_dup_skipped(monkeypatch):
+    """A single proposal whose (file_path, klass) is ALREADY owned by another
+    OPEN draft PR (found via the DB helper) is skipped + marked dup_skipped,
+    opening NOTHING — even though it is itself a clean mechanical fix."""
+    calls = _capture_gh(monkeypatch)
+    marked = {"dup": None}
+
+    # The DB says #183 already has an open PR for routes/db_utils.py + this klass.
+    monkeypatch.setattr(
+        w, "find_open_pr_for_file_class",
+        lambda *, file_path, klass, exclude_id=None: {
+            "id": 183,
+            "pr_url": "https://github.com/azmartone67/dchub-backend/pull/183",
+        })
+    monkeypatch.setattr(
+        w, "_mark_dup_skipped",
+        lambda pid, dup_of_pr_url="", dup_of_id=None: marked.__setitem__(
+            "dup", (pid, dup_of_id)) or True)
+
+    p184 = _mech_proposal("routes/db_utils.py", pid=184)
+    res = w.open_mechanical_draft_pr(p184, dry_run=False)
+
+    assert res["ok"] and res.get("skipped"), res
+    assert res["reason"] == "dup_open_pr_same_file_class", res
+    assert res["dup_of_id"] == 183, res
+    # NOTHING opened, NO normal status mark, and we never even fetched main.
+    assert calls["pr"] is None and calls["mark"] is None, calls
+    assert calls["fetch"] == [], "dup must short-circuit before fetching main"
+    # The 2nd proposal was marked dup_skipped so it is not retried.
+    assert marked["dup"] == (184, 183), marked
+
+
+def test_cross_proposal_dedup_distinct_file_still_opens(monkeypatch):
+    """Dedup must NOT block a legitimately-distinct fix: a DIFFERENT file (or
+    different class) yields no DB match, so the proposal opens normally."""
+    calls = _capture_gh(monkeypatch)
+    seen_q = {"args": None}
+
+    def fake_find(*, file_path, klass, exclude_id=None):
+        seen_q["args"] = (file_path, klass, exclude_id)
+        return None  # no other open PR for THIS file+class
+
+    monkeypatch.setattr(w, "find_open_pr_for_file_class", fake_find)
+    monkeypatch.setattr(w, "_mark_dup_skipped",
+                        lambda *a, **k: pytest.fail("must NOT mark distinct fix"))
+
+    p = _mech_proposal("routes/some_other.py", pid=900)
+    res = w.open_mechanical_draft_pr(p, dry_run=True)
+    assert res["ok"] and res["would_open"] is True, res
+    # The dedup query ran with the right (file, klass) and excluded self.
+    assert seen_q["args"][0] == "routes/some_other.py"
+    assert seen_q["args"][1] == "interval_literal"
+    assert seen_q["args"][2] == 900
+
+
+def test_batch_cross_proposal_dedup_same_file_one_pr(monkeypatch):
+    """The #183/#184 scenario in ONE batch run: two DIFFERENT proposals for the
+    SAME file+class — only the FIRST previews/opens; the 2nd is dup_skipped.
+    (Neither is yet 'pr_opened' in the DB, so the in-run guard must catch it.)"""
+    _capture_gh(monkeypatch)
+    # No DB: the per-proposal DB dedup helper finds nothing; the batch in-run
+    # guard is what must stop the duplicate.
+    monkeypatch.setattr(w, "find_open_pr_for_file_class",
+                        lambda *, file_path, klass, exclude_id=None: None)
+    marked = []
+    monkeypatch.setattr(w, "_mark_dup_skipped",
+                        lambda pid, dup_of_pr_url="", dup_of_id=None:
+                        marked.append((pid, dup_of_id)) or True)
+
+    p183 = _mech_proposal("routes/db_utils.py", pid=183)
+    p184 = _mech_proposal("routes/db_utils.py", pid=184)  # same file + class
+    out = w.open_mechanical_draft_prs([p183, p184], apply=False)
+
+    prev_ids = [p["id"] for p in out["previewed"]]
+    dup_skips = [s for s in out["skipped"]
+                 if s.get("reason") == "dup_open_pr_same_file_class"]
+    assert prev_ids == [183], out          # only the first opened/previewed
+    assert len(dup_skips) == 1, out
+    assert dup_skips[0]["id"] == 184, out
+    assert dup_skips[0]["dup_of_id"] == 183, out
+    assert (184, 183) in marked, marked    # 2nd marked dup_skipped
+
+
+def test_batch_cross_proposal_dedup_different_files_both_open(monkeypatch):
+    """Two proposals for DIFFERENT files (same class) must BOTH open — the
+    dedup keys on (file, klass), so distinct files never collide."""
+    _capture_gh(monkeypatch)
+    monkeypatch.setattr(w, "find_open_pr_for_file_class",
+                        lambda *, file_path, klass, exclude_id=None: None)
+    monkeypatch.setattr(w, "_mark_dup_skipped",
+                        lambda *a, **k: pytest.fail("distinct files must not dup"))
+
+    a = _mech_proposal("routes/file_a.py", pid=10)
+    b = _mech_proposal("routes/file_b.py", pid=11)
+    out = w.open_mechanical_draft_prs([a, b], apply=False)
+    prev_ids = sorted(p["id"] for p in out["previewed"])
+    assert prev_ids == [10, 11], out
+    assert not [s for s in out["skipped"]
+                if s.get("reason") == "dup_open_pr_same_file_class"], out
+
+
+# ──────────────────────────────────────────────────────────────────────
 # 8. STATIC GUARD: no merge call / no commit-to-main anywhere in the writer.
 # ──────────────────────────────────────────────────────────────────────
 def test_no_merge_or_commit_to_main_in_source():
