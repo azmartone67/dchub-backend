@@ -24889,6 +24889,23 @@ def _startup_health_check():
 _deferred_bg_threads.append(('Startup Health Check', _startup_health_check))
 
 
+# r-surfaces-warm (2026-06-19): /api/v1/surfaces has a 600s in-process cache but
+# the cold recompute is ~5s (65 surfaces × 2 DB queries) and NOTHING primed it on
+# boot — so the first hit after each deploy (often the Sentinel canary, which
+# measured it at 4.9s, the slowest page) paid the full ~5s and held a thread.
+# Prime the cache with one in-process GET, queued LAST so it fires AFTER the boot
+# storm + tier-gate settle (not on a gunicorn request thread). Best-effort.
+def _warm_surfaces():
+    try:
+        with app.test_client() as _c:
+            _r = _c.get('/api/v1/surfaces')
+            logger.info("Surfaces warm: HTTP %s — _SURFACES_CACHE primed", _r.status_code)
+    except Exception as e:
+        logger.warning("Surfaces warm failed (non-fatal): %s", str(e)[:120])
+
+_deferred_bg_threads.append(('Surfaces Warm', _warm_surfaces))
+
+
 # =============================================================================
 # STAGGERED BACKGROUND TASK LAUNCHER
 # Waits 60s after module load, then starts each deferred thread 10s apart.
