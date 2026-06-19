@@ -390,7 +390,7 @@ def insert_deal():
             %(type)s, %(deal_category)s, %(region)s, %(market)s,
             %(source_url)s, %(notes)s, %(verified)s, %(status)s,
             %(extraction_confidence)s, %(extracted_via)s, %(extracted_at)s,
-            NOW()::text
+            NOW()
         )
         ON CONFLICT (id) DO UPDATE SET
             extraction_confidence = GREATEST(
