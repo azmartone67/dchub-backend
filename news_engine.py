@@ -717,7 +717,7 @@ def get_latest_news(limit=100, category=None, source=None, hours=168, db_path=NE
             'published_at': row['published_at'], 'timeAgo': ta,
             'relevance': row['relevance_score'], 'image': row['image_url'],
         })
-    c.execute("SELECT source, COUNT(*) as cnt FROM news_articles WHERE fetched_at > datetime('now','-168 hours') GROUP BY source ORDER BY cnt DESC LIMIT 50")
+    c.execute("SELECT source, COUNT(*) as cnt FROM news_articles WHERE fetched_at > NOW() - INTERVAL '168 hours' GROUP BY source ORDER BY cnt DESC LIMIT 50")
     sources = {r['source']: r['cnt'] for r in c.fetchall()}
     c.execute("SELECT category, COUNT(*) as cnt FROM news_articles WHERE fetched_at > datetime('now','-168 hours') GROUP BY category ORDER BY cnt DESC")
     categories = {r['category']: r['cnt'] for r in c.fetchall()}
