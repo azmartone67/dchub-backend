@@ -22,8 +22,11 @@ Endpoint:
                                shadow optimize-loop (what it WOULD fire).
 """
 from __future__ import annotations
-import os, json, urllib.request
+import os, json, urllib.request, threading
+from concurrent.futures import ThreadPoolExecutor
 from flask import Blueprint, jsonify
+
+_REQ = threading.local()  # per-request prefetch cache so dimension reads are instant
 
 mcp_leadership_bp = Blueprint("mcp_leadership", __name__)
 _BASE = "http://127.0.0.1:8080"
@@ -36,7 +39,7 @@ def _no_store(resp):
     return resp
 
 
-def _get(path: str, timeout: int = 8) -> dict:
+def _raw_get(path: str, timeout: int = 6) -> dict:
     """Read-only internal GET. Fail-soft to {}. The engine never writes."""
     try:
         req = urllib.request.Request(_BASE + path, method="GET",
@@ -45,6 +48,21 @@ def _get(path: str, timeout: int = 8) -> dict:
             return json.loads(r.read().decode("utf-8", "replace") or "{}")
     except Exception:
         return {}
+
+
+def _get(path: str, timeout: int = 6) -> dict:
+    """Return the per-request prefetched response if present, else fetch live."""
+    cache = getattr(_REQ, "cache", None)
+    if cache is not None and path in cache:
+        return cache[path]
+    return _raw_get(path, timeout)
+
+
+# All endpoints the 6 dimensions read — prefetched in PARALLEL per request so the
+# engine responds in ~2s (was ~7.5s sequential → CF worker timed out → failover
+# to a stale backend → 404 on dchub.cloud).
+_PREFETCH = ["/api/v1/brain/mcp-registries", "/api/v1/mcp/standing", "/api/v1/ai/reach",
+             "/api/v1/mcp/retention", "/api/v1/mcp/funnel", "/api/v1/citations/by-agent"]
 
 
 def _clamp(x):
@@ -191,6 +209,11 @@ def _shadow_actions(dims):
 def mcp_leadership():
     """MCP Leadership Index + shadow optimize-loop. Measures + proposes the
     actuator per dimension; executes nothing. See module docstring."""
+    try:
+        with ThreadPoolExecutor(max_workers=len(_PREFETCH)) as ex:
+            _REQ.cache = dict(zip(_PREFETCH, ex.map(_raw_get, _PREFETCH)))
+    except Exception:
+        _REQ.cache = {}
     dims = []
     for fn in (_dim_discoverability, _dim_adoption, _dim_retention,
                _dim_tool_quality, _dim_conversion, _dim_authority):

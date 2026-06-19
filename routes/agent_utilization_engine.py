@@ -27,8 +27,11 @@ Endpoint:
   GET /api/v1/agents/utilization — the live tracks + lifecycle funnel + shadow loop
 """
 from __future__ import annotations
-import os, json, urllib.request
+import os, json, urllib.request, threading
+from concurrent.futures import ThreadPoolExecutor
 from flask import Blueprint, jsonify
+
+_REQ = threading.local()  # per-request prefetch cache
 
 agent_utilization_bp = Blueprint("agent_utilization", __name__)
 _BASE = "http://127.0.0.1:8080"
@@ -41,7 +44,7 @@ def _no_store(resp):
     return resp
 
 
-def _get(path: str, timeout: int = 8) -> dict:
+def _raw_get(path: str, timeout: int = 6) -> dict:
     try:
         req = urllib.request.Request(_BASE + path, method="GET",
                                      headers={"User-Agent": "dchub-agent-util/shadow"})
@@ -49,6 +52,19 @@ def _get(path: str, timeout: int = 8) -> dict:
             return json.loads(r.read().decode("utf-8", "replace") or "{}")
     except Exception:
         return {}
+
+
+def _get(path: str, timeout: int = 6) -> dict:
+    cache = getattr(_REQ, "cache", None)
+    if cache is not None and path in cache:
+        return cache[path]
+    return _raw_get(path, timeout)
+
+
+# Prefetched in PARALLEL per request (was ~5 sequential GETs → too slow → CF
+# worker failover → 404 on dchub.cloud).
+_PREFETCH = ["/api/v1/mcp/funnel", "/api/v1/ai/reach", "/api/v1/mcp/retention",
+             "/api/v1/onboard", "/api/v1/agent/cookbook"]
 
 
 def _clamp(x):
@@ -77,6 +93,11 @@ def _util_armed():
 def agent_utilization():
     """AI Agent Utilization Engine — SHADOW. onboard/incent/train tracks over the
     real agent lifecycle; names the actuator per track; executes nothing."""
+    try:
+        with ThreadPoolExecutor(max_workers=len(_PREFETCH)) as ex:
+            _REQ.cache = dict(zip(_PREFETCH, ex.map(_raw_get, _PREFETCH)))
+    except Exception:
+        _REQ.cache = {}
     funnel = _get("/api/v1/mcp/funnel")
     reach = _get("/api/v1/ai/reach")
     ret = _get("/api/v1/mcp/retention").get("summary") or {}
