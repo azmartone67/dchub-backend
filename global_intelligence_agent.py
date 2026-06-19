@@ -695,7 +695,7 @@ class GlobalIntelligenceAgent:
             cursor.execute('''
                 SELECT id, title, content, source, url, discovered_at
                 FROM announcements
-                WHERE discovered_at > datetime('now', '-30 days')
+                WHERE discovered_at > NOW() - INTERVAL '30 days'
                 ORDER BY discovered_at DESC
             ''')
 
