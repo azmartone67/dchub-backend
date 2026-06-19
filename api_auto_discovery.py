@@ -1049,7 +1049,7 @@ class APIAutoDiscovery:
         cursor.execute('''
             SELECT id, name, url, api_type FROM discovered_apis
             WHERE status NOT IN ('deprecated')
-            AND (last_tested IS NULL OR last_tested < datetime('now', '-7 days'))
+            AND (last_tested IS NULL OR last_tested < NOW() - INTERVAL '7 days')
             LIMIT 25
         ''')
         apis = cursor.fetchall()
