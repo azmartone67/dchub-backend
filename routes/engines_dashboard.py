@@ -74,7 +74,7 @@ function renderLead(d){
   if(d.top_priority){h+='<div class="callout"><b>TOP PRIORITY · '+d.top_priority.dimension+' ('+d.top_priority.score+')</b><br>'+d.top_priority.move+'</div>'}
   h+='<div class="sec">shadow optimize-loop</div>';
   (d.shadow_actions||[]).forEach(function(a){h+=actLine(a.dimension,a.armable_now,a.would_fire)});
-  document.getElementById('lead-body').innerHTML=h;return d.mcp_leadership_index;
+  document.getElementById('lead-body').innerHTML=h;return d;
 }
 function renderUtil(d){
   var h='<div class="score">'+d.utilization_score+'<small>/100</small></div><div class="verdict" style="color:var(--dim)">onboard · incent · train</div>';
@@ -86,19 +86,28 @@ function renderUtil(d){
   if(d.biggest_leak){h+='<div class="callout"><b>BIGGEST LEAK · '+d.biggest_leak.track+' ('+d.biggest_leak.score+')</b><br>'+d.biggest_leak.move+'</div>'}
   h+='<div class="sec">shadow optimize-loop</div>';
   (d.shadow_actions||[]).forEach(function(a){h+=actLine(a.track,a.armable_now,a.would_fire)});
-  document.getElementById('util-body').innerHTML=h;return d.utilization_score;
+  document.getElementById('util-body').innerHTML=h;return d;
 }
 function load(){
   Promise.all([
     fetch('/api/v1/mcp/leadership?_='+Date.now(),{cache:'no-store'}).then(function(r){return r.json()}).then(renderLead).catch(function(){document.getElementById('lead-body').innerHTML='<span class=err>engine unavailable</span>';return null}),
     fetch('/api/v1/agents/utilization?_='+Date.now(),{cache:'no-store'}).then(function(r){return r.json()}).then(renderUtil).catch(function(){document.getElementById('util-body').innerHTML='<span class=err>engine unavailable</span>';return null})
   ]).then(function(v){
-    var b=document.getElementById('banner');
-    b.innerHTML='<b>Convergent diagnosis:</b> all engines point at the same binding constraint — <b style="color:#ffb4b4">retention / incent</b>. Agents arrive, love us (153 calls per real IP), and don\'t come back (~1/wk). Onboarding &amp; training are strong; the entire game is the return loop.';
+    var L=v[0],U=v[1],b=document.getElementById('banner');
+    if(!L||!U){b.innerHTML='<b>Convergent diagnosis:</b> one engine unavailable — see panels below.';return;}
+    var lp=(L.top_priority||{}).dimension||'?',ul=(U.biggest_leak||{}).track||'?',f=U.lifecycle_funnel||{};
+    var same=(lp==='retention'&&ul==='incent')||(lp===ul);
+    b.innerHTML='<b>Convergent diagnosis:</b> the Leadership Engine\'s top priority is <b style="color:#ffb4b4">'+lp+'</b>; the Utilization Engine\'s biggest leak is <b style="color:#ffb4b4">'+ul+'</b>'+(same?' — the same constraint, <b>the return loop</b>':' (engines diverging — investigate')+'. Live: agents activate heavily ('+(f.activate||'?')+') but don\'t return ('+(f['return']||'?')+'). Onboarding &amp; training strong.';
   });
 }
 load();setInterval(load,60000);
 </script></body></html>"""
+
+
+@engines_dashboard_bp.after_request
+def _no_store(resp):
+    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+    return resp
 
 
 @engines_dashboard_bp.route("/admin/engines", methods=["GET"])

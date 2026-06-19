@@ -29,6 +29,13 @@ mcp_leadership_bp = Blueprint("mcp_leadership", __name__)
 _BASE = "http://127.0.0.1:8080"
 
 
+@mcp_leadership_bp.after_request
+def _no_store(resp):
+    # live engine — never CF-cache (a stale 404/200 poisons the dashboard)
+    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+    return resp
+
+
 def _get(path: str, timeout: int = 8) -> dict:
     """Read-only internal GET. Fail-soft to {}. The engine never writes."""
     try:

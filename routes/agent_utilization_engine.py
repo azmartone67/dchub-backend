@@ -34,6 +34,13 @@ agent_utilization_bp = Blueprint("agent_utilization", __name__)
 _BASE = "http://127.0.0.1:8080"
 
 
+@agent_utilization_bp.after_request
+def _no_store(resp):
+    # live engine — never CF-cache (a stale 404/200 poisons the dashboard)
+    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+    return resp
+
+
 def _get(path: str, timeout: int = 8) -> dict:
     try:
         req = urllib.request.Request(_BASE + path, method="GET",
