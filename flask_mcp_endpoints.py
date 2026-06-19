@@ -892,13 +892,13 @@ def identify_key():
         unlocked={
             "daily_calls": int(os.environ.get("MCP_IDENTIFIED_DAILY_LIMIT", "100")),
             "previous_daily_calls": int(os.environ.get("MCP_FREE_DAILY_LIMIT", "25")),
-            "extras": ["weekly digest of the markets you query",
-                       "alerts when a tracked market moves"],
+            "extras": ["key tied to your account — recoverable from the dashboard",
+                       "upgrade receipts + billing land on this email"],
         },
         message=("Email already on file — your key is identified."
                  if already else
                  "Identified — this key now gets 100 calls/day (up from 25) "
-                 "plus the weekly market digest."),
+                 "and is tied to your account for recovery + receipts."),
         upgrade_note="Need 1,000/day + full data? Developer plan is $49/mo at https://dchub.cloud/pricing",
     ), 200
 

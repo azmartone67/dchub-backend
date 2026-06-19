@@ -216,10 +216,10 @@ def _send_identify_welcome_blocking(email, api_key):
 <p style="color:#555;font-size:15px;line-height:1.55">Your AI assistant's DC Hub key is now tied to this email, which means:</p>
 <ul style="color:#555;font-size:15px;line-height:1.7">
 <li><strong>{ident_limit} MCP calls/day</strong> (up from {free_limit})</li>
-<li>A weekly digest of the data-center markets your assistant queries</li>
-<li>Alerts when a market you've looked at moves</li>
+<li>Your key is tied to this email — recover it any time from the dashboard</li>
+<li>Upgrade receipts &amp; billing land right here</li>
 </ul>
-<p style="color:#555;font-size:15px;line-height:1.55">Nothing else to do — your assistant already has the higher limit. The first market digest lands within a week.</p>
+<p style="color:#555;font-size:15px;line-height:1.55">Nothing else to do — your assistant already has the higher limit.</p>
 <p style="margin:22px 0"><a href="https://dchub.cloud/pricing" style="background:#1976d2;color:#fff;padding:11px 22px;border-radius:6px;text-decoration:none;font-weight:600;display:inline-block">Need 1,000/day + full data? See Developer &rarr;</a></p>
 <hr style="border:0;border-top:1px solid #eee;margin:28px 0">
 <p style="font-size:12px;color:#888">You're getting this because your AI assistant identified its DC Hub key with this email. <a href="https://dchub.cloud" style="color:#888">dchub.cloud</a></p>
@@ -233,7 +233,7 @@ def _send_identify_welcome_blocking(email, api_key):
             headers={"Authorization": f"Bearer {resend_key}",
                      "Content-Type": "application/json"},
             json={"from": sender, "to": [email],
-                  "subject": "Your DC Hub key is unlocked — 100 calls/day + market digest",
+                  "subject": f"Your DC Hub key is identified — {ident_limit} calls/day",
                   "html": html},
             timeout=12,
         )

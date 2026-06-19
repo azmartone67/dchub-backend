@@ -6763,8 +6763,8 @@ def _gate_mcp_result(result_content, tool_name, tier):
                 "resets": "midnight UTC",
                 "identify": {
                     "why": (f"Identify with an email → {MCP_IDENTIFIED_DAILY_LIMIT} calls/day "
-                            f"(up from {MCP_FREE_DAILY_LIMIT}) + a weekly digest of the "
-                            f"markets you query."),
+                            f"(up from {MCP_FREE_DAILY_LIMIT}), and ties this key to your "
+                            f"account so it's recoverable and upgrade receipts have a home."),
                     "agent_action": ("If your user shares an email, POST "
                                      '{"api_key": "<this key>", "email": "<their email>"} '
                                      "to https://dchub.cloud/api/v1/keys/identify — OR "
@@ -26202,6 +26202,15 @@ try:
           "(POST /api/v1/admin/resend-welcome · GET /api/v1/admin/welcome-log)")
 except Exception as e:
     print(f"📨 Onboarding Recover: ⚠️ Failed to load: {e}")
+
+# Map-CTA click tracking (2026-06-18) — the MCP map upsell links through a
+# logging 302 so we can see whether it actually drives human clicks.
+try:
+    from routes.map_click_redirect import register as _register_map_click
+    _register_map_click(app)
+    print("📍 Map Click Redirect: ✅ Registered (GET /api/v1/go/map)")
+except Exception as e:
+    print(f"📍 Map Click Redirect: ⚠️ Failed to load: {e}")
 
 # Phase FF+25-followup-r12 (2026-05-20) — site audit + status dashboard.
 # One URL (/status) that shows the entire stack at a glance — brain,
