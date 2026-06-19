@@ -57,20 +57,20 @@ def _get(path: str, timeout: int = 8) -> dict:
 # ── The domains the brain OWNS (each becomes a closed loop when armed) ──────
 
 def _domain_site_integrity() -> dict:
+    # NB: /api/v1/sentinel/scan returns `unhealthy`/`healthy`/`total` as INT counts,
+    # not lists — so derive proposed moves from the action-queue (dicts with
+    # issue+detail), not from iterating the scan.
     s = _get("/api/v1/sentinel/scan")
-    unhealthy = s.get("unhealthy") or []
-    orphans = sum(1 for u in unhealthy if isinstance(u, dict)
-                  and "orphan" in str(u.get("reason", "")).lower())
     aq = _get("/api/v1/brain/action-queue").get("queue") or []
     site_moves = [q.get("issue") for q in aq if isinstance(q, dict)
-                  and any(k in str(q.get("issue", "")).lower()
+                  and any(k in (str(q.get("issue", "")) + " " + str(q.get("detail", ""))).lower()
                           for k in ("page", "orphan", "nav", "schema", "brand", "alias", "404"))]
     return {
         "domain": "site_integrity",
         "owns": "every page navigable, schema-complete, alive",
-        "goal": "0 orphan pages; 100% nav + schema coverage",
+        "goal": "0 orphan/broken pages; 100% nav + schema coverage",
         "current": {"pages_total": s.get("total"), "healthy": s.get("healthy"),
-                    "orphan_pages": orphans},
+                    "unhealthy": s.get("unhealthy")},
         "proposed_next_move": site_moves[:3] or ["no open site-integrity actions"],
         "arm_order": 1, "arm_risk": "low (bounded recipes, reversible)",
         "broadcast": None,
