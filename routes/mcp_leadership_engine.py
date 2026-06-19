@@ -1,29 +1,28 @@
 """
 mcp_leadership_engine.py — the MCP Leadership Engine (2026-06-18).
 
-Goal: WIN the MCP category (be the #1 MCP server for data-center / power /
-energy / infrastructure intelligence — and adjacent). This is the closed
-optimization loop:
+Goal: WIN the MCP category (#1 MCP server for data-center / power / energy /
+infrastructure intelligence — and adjacent). Closed optimization loop:
 
     MEASURE leadership → DIAGNOSE the biggest gap → OPTIMIZE → VERIFY → repeat.
 
-★ PHASE = SHADOW (this build): it MEASURES leadership across the dimensions that
-define category leadership and PROPOSES the single highest-leverage move per
-dimension — but EXECUTES NOTHING. Read-only by construction (GET-only internal
-reads). The ACTING half (auto-optimize) arms progressively and is reliability-
-gated (autopilot fix_success_rate >= 50%, the recovery watch) — same crawl→walk
-→run discipline as the Brain v4 ownership loop. An engine that "automatically
-optimizes us" with its hands off the controls until it has earned them.
+★ PHASE = SHADOW: it MEASURES leadership across the 6 dimensions of category
+leadership and, for each, names the actuator it WOULD fire to close the gap — but
+EXECUTES NOTHING (read-only internal GETs). The ACTING half arms per-actuator,
+reliability-gated (BRAIN_MCP_OPTIMIZE_ARMED, default off; only after autopilot
+fix_success_rate >= 50% — the recovery watch). Same crawl→walk→run discipline as
+the Brain v4 ownership loop: an engine that "automatically optimizes us" with its
+hands off the controls until it has earned them.
 
-The Leadership Index is a 0-100 weighted score across 6 dimensions. Retention
-carries the highest weight because it is the binding constraint (agents arrive
-but ~1 returns/wk). Each dimension reports current · target · score · the #1 move.
+Leadership Index = 0-100 weighted score. Retention carries the highest weight
+because it is the binding constraint (agents arrive but ~1 returns/wk).
 
 Endpoint:
-  GET /api/v1/mcp/leadership   — the live MCP Leadership Index + per-dimension moves
+  GET /api/v1/mcp/leadership — live Leadership Index + per-dimension moves + the
+                               shadow optimize-loop (what it WOULD fire).
 """
 from __future__ import annotations
-import json, urllib.request
+import os, json, urllib.request
 from flask import Blueprint, jsonify
 
 mcp_leadership_bp = Blueprint("mcp_leadership", __name__)
@@ -48,46 +47,42 @@ def _clamp(x):
         return 0.0
 
 
+def _count(v):
+    return len(v) if isinstance(v, list) else int(v or 0)
+
+
 def _status(score):
-    return ("leading" if score >= 75 else
-            "contending" if score >= 50 else
-            "trailing" if score >= 25 else "absent")
+    return ("leading" if score >= 75 else "contending" if score >= 50
+            else "trailing" if score >= 25 else "absent")
 
 
 # ── The 6 dimensions of MCP category leadership ───────────────────────────
 
 def _dim_discoverability():
     reg = _get("/api/v1/brain/mcp-registries")
-    present = reg.get("present") or []
-    total = reg.get("total") or (len(present) + len(reg.get("missing") or []))
-    n_present = len(present) if isinstance(present, list) else int(present or 0)
-    total = int(total or 0) or max(n_present, 1)
-    standing = _get("/api/v1/mcp/standing")
-    rank1s = len(standing.get("rank_highlights") or [])
-    # score: registry coverage, bonused by #1 category ranks
+    n_present, n_missing = _count(reg.get("present")), _count(reg.get("missing"))
+    total = int(reg.get("total") or 0) or (n_present + n_missing) or 1
+    rank1s = len(_get("/api/v1/mcp/standing").get("rank_highlights") or [])
     score = _clamp(100.0 * n_present / total)
-    missing = reg.get("missing") or []
     return {
         "dimension": "discoverability", "weight": 0.15, "score": round(score, 1),
-        "current": f"{n_present}/{total} registries · {rank1s} #1 category ranks",
+        "current": f"{n_present}/{total} tracked registries · {rank1s} #1 category ranks",
         "target": "on every agent-client directory (Cline, Cursor, Anthropic Connector, Windsurf)",
         "status": _status(score),
-        "top_move": (f"submit to missing: {', '.join(str(m) for m in missing[:4])}"
-                     if missing else "complete the pending Cline/Cursor/Anthropic submissions"),
+        "top_move": (f"submit to the {n_missing} missing registries + finish the pending Cline/Cursor/Anthropic submissions"
+                     if n_missing else "complete the pending Cline/Cursor/Anthropic submissions"),
     }
 
 
 def _dim_adoption():
     reach = _get("/api/v1/ai/reach")
-    agents = int(reach.get("distinct_agents_7d") or 0)
-    plats = int(reach.get("distinct_platforms") or 0)
-    TARGET = 50  # distinct external agents/wk = clear category lead
-    score = _clamp(100.0 * agents / TARGET)
+    agents, plats = int(reach.get("distinct_agents_7d") or 0), int(reach.get("distinct_platforms") or 0)
+    TARGET = 50
     return {
-        "dimension": "adoption", "weight": 0.15, "score": round(score, 1),
+        "dimension": "adoption", "weight": 0.15, "score": round(_clamp(100.0 * agents / TARGET), 1),
         "current": f"{agents} distinct external agents/wk across {plats} platforms",
         "target": f"{TARGET}+ distinct agents/wk",
-        "status": _status(score),
+        "status": _status(_clamp(100.0 * agents / TARGET)),
         "top_move": "grow NEW external agents — directory placements + 'best MCP' roundups + SEO",
     }
 
@@ -99,10 +94,7 @@ def _dim_retention():
         reuse = float(ret.get("pct_reused_30d") or 0)
     except Exception:
         reuse = 0.0
-    # binding constraint: blend returning-IP progress (target 10) + reuse% (target 25)
-    s_ret = 100.0 * returning / 10.0
-    s_reuse = 100.0 * reuse / 25.0
-    score = _clamp(0.5 * s_ret + 0.5 * s_reuse)
+    score = _clamp(0.5 * (100.0 * returning / 10.0) + 0.5 * (100.0 * reuse / 25.0))
     return {
         "dimension": "retention", "weight": 0.30, "score": round(score, 1),
         "current": f"{returning} returning IPs/wk · {reuse:.1f}% key-reuse",
@@ -113,57 +105,85 @@ def _dim_retention():
 
 
 def _dim_tool_quality():
-    f = _get("/api/v1/mcp/funnel")
-    pool = f.get("addressable_demand") or f.get("paid_tool_demand") or []
-    top = f.get("top_tools") or []
-    # breadth of tools earning real distinct demand (more tools with real users = stickier surface)
-    tools_with_demand = sum(1 for t in (pool if isinstance(pool, list) else [])
-                            if isinstance(t, dict) and int(t.get("distinct_users") or t.get("users") or 0) >= 20)
-    total_tools = int((_get("/api/v1/mcp/standing").get("summary") or "").split("tools")[0].split()[-1]) \
-        if "tools" in str(_get("/api/v1/mcp/standing").get("summary")) else 0
+    pool = _get("/api/v1/mcp/funnel").get("paid_tool_demand_30d") or []
+    with_demand = sum(1 for t in pool if isinstance(t, dict) and int(t.get("users") or 0) >= 20)
     TARGET = 8
-    score = _clamp(100.0 * tools_with_demand / TARGET)
     return {
-        "dimension": "tool_quality", "weight": 0.10, "score": round(score, 1),
-        "current": f"{tools_with_demand} tools with real distinct demand (>=20 users)",
-        "target": f"{TARGET}+ flagship tools each pulling real recurring demand",
-        "status": _status(score),
-        "top_move": "deepen the high-demand tools (grid/fiber); dogfood-probe each tool's agent experience (phase 2)",
+        "dimension": "tool_quality", "weight": 0.10, "score": round(_clamp(100.0 * with_demand / TARGET), 1),
+        "current": f"{with_demand} tools with real distinct demand (>=20 users)",
+        "target": f"{TARGET}+ flagship tools each pulling recurring demand",
+        "status": _status(_clamp(100.0 * with_demand / TARGET)),
+        "top_move": "deepen high-demand tools (grid/fiber); auto-tune descriptions per platform; dogfood-probe each (phase 2)",
     }
 
 
 def _dim_conversion():
-    f = _get("/api/v1/mcp/funnel")
-    conv = int(f.get("conversions_30d") or (f.get("conversions") or {}).get("count") or 0)
+    conv = int(_get("/api/v1/mcp/funnel").get("conversions_30d") or 0)
     TARGET = 30
-    score = _clamp(100.0 * conv / TARGET)
     return {
-        "dimension": "conversion", "weight": 0.20, "score": round(score, 1),
+        "dimension": "conversion", "weight": 0.20, "score": round(_clamp(100.0 * conv / TARGET), 1),
         "current": f"{conv} conversions / 30d",
         "target": f"{TARGET}+ /30d",
-        "status": _status(score),
-        "top_move": "downstream of retention — surface usage-based ($5 pack / metered) at the moment of value",
+        "status": _status(_clamp(100.0 * conv / TARGET)),
+        "top_move": "downstream of retention — surface usage-based ($5 pack / metered) at the value moment",
     }
 
 
 def _dim_authority():
     cit = _get("/api/v1/citations/by-agent").get("by_agent") or []
-    n = len(cit) if isinstance(cit, list) else int(cit or 0)
-    TARGET = 6  # cited by 6+ distinct agents = recognized source-of-truth
-    score = _clamp(100.0 * n / TARGET)
+    n = _count(cit)
+    TARGET = 6
     return {
-        "dimension": "authority", "weight": 0.10, "score": round(score, 1),
+        "dimension": "authority", "weight": 0.10, "score": round(_clamp(100.0 * n / TARGET), 1),
         "current": f"cited by {n} distinct agents",
         "target": f"{TARGET}+ distinct agents citing DC Hub",
-        "status": _status(score),
+        "status": _status(_clamp(100.0 * n / TARGET)),
         "top_move": "keep the citation footer on full responses; feed the source-of-truth media channel",
     }
 
 
+# ── Shadow optimize-loop: each dimension → the actuator it WOULD fire ──────
+# SHADOW = logs the actuator + executed:false; fires nothing. Arming is per
+# actuator (only the `armable` ones), gated by BRAIN_MCP_OPTIMIZE_ARMED (off)
+# AND the recovery watch (fix_success_rate >= 50%).
+def _optimize_armed():
+    return str(os.environ.get("BRAIN_MCP_OPTIMIZE_ARMED", "")).lower() in ("1", "true", "yes")
+
+_ACTUATORS = {
+    "discoverability": ("POST /api/v1/admin/outreach/mcp-registry/submit-all", True, "registry-outreach",
+                        "auto-submit / refresh listings on the missing registries"),
+    "tool_quality":    ("ai_platform_tool_tuner — per-platform tool descriptions", True, "tool-tuner",
+                        "tune low-demand tool descriptions per platform (reversible)"),
+    "conversion":      ("depth-tease / unlock_more_data (mcp-server server.mjs)", False, "mcp-server",
+                        "surface usage-billing at the value moment — lives in the MCP server, not a backend actuator"),
+    "retention":       ("r-return hook (shipped) + durable-identity build", False, "engineering",
+                        "r-return is live; durable identity / OAuth is an engineering build, not a one-call actuator"),
+    "adoption":        ("directory submissions + 'best MCP' roundups", False, "human",
+                        "human levers — Cline submitted; Cursor / Anthropic / Windsurf pending"),
+    "authority":       ("citation footer (live) + source-of-truth media channel", False, "media",
+                        "citation footer already on; feed the media source-of-truth loop"),
+}
+
+def _shadow_actions(dims):
+    out = []
+    for d in dims:
+        a = _ACTUATORS.get(d.get("dimension"))
+        if not a:
+            continue
+        actuator, armable, kind, note = a
+        out.append({
+            "dimension": d.get("dimension"), "score": d.get("score"),
+            "would_fire": actuator, "kind": kind,
+            "armable_now": armable, "executed": False,  # SHADOW — fires nothing
+            "rationale": d.get("top_move"), "note": note,
+        })
+    return sorted(out, key=lambda x: (x.get("score") if x.get("score") is not None else 100))
+
+
 @mcp_leadership_bp.route("/api/v1/mcp/leadership", methods=["GET"])
 def mcp_leadership():
-    """MCP Leadership Index — SHADOW. Measures category leadership + proposes the
-    #1 move per dimension. Executes nothing (read-only). See module docstring."""
+    """MCP Leadership Index + shadow optimize-loop. Measures + proposes the
+    actuator per dimension; executes nothing. See module docstring."""
     dims = []
     for fn in (_dim_discoverability, _dim_adoption, _dim_retention,
                _dim_tool_quality, _dim_conversion, _dim_authority):
@@ -175,19 +195,19 @@ def mcp_leadership():
     index = round(sum(d.get("score", 0) * d.get("weight", 0) for d in dims) / wsum, 1)
     verdict = ("leading" if index >= 75 else "contending" if index >= 50
                else "trailing" if index >= 25 else "early")
-    # highest-leverage move = the dimension dragging the weighted index down most
     ranked = sorted([d for d in dims if d.get("weight", 0) > 0],
                     key=lambda d: (100 - d.get("score", 0)) * d.get("weight", 0), reverse=True)
     top = ranked[0] if ranked else None
+    actions = _shadow_actions(dims)
     return jsonify(
         engine="MCP Leadership Engine",
-        phase="shadow", decides=True, executes=False,
-        mcp_leadership_index=index,
-        verdict=verdict,
+        phase="shadow", decides=True, executes=False, armed=_optimize_armed(),
+        mcp_leadership_index=index, verdict=verdict,
         top_priority={"dimension": top.get("dimension"), "score": top.get("score"),
                       "move": top.get("top_move")} if top else None,
         dimensions=dims,
-        note=("MEASURES category leadership + proposes the #1 move per dimension; "
-              "executes nothing. The auto-optimize loop arms progressively, "
-              "reliability-gated (fix_success_rate >= 50%) — same discipline as Brain v4."),
+        shadow_actions=actions,
+        note=("MEASURES category leadership + names the actuator it WOULD fire per "
+              "dimension; executes nothing. Arming is per-actuator (the `armable_now` "
+              "ones first), gated by BRAIN_MCP_OPTIMIZE_ARMED + fix_success_rate>=50%."),
     ), 200
