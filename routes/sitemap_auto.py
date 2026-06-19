@@ -46,7 +46,7 @@ _STATIC_PAGES = [
     ("/rankings", 0.8, "weekly"),
     ("/dcpi/leaderboard", 0.9, "daily"),    # 2026-06-08: canonical ranked-market leaderboard (structured-data page)
     ("/mcp-standing", 0.8, "weekly"),       # MCP adoption / registry-standing page
-    ("/brain", 0.6, "daily"),
+    ("/brain-live", 0.6, "daily"),  # r-brain-public (2026-06-18): /brain is now admin-only (403 to crawlers); /brain-live is the PUBLIC sanitized transparency page (index,follow). Sitemapping /brain was a crawl error.
     ("/gdci", 0.7, "weekly"),
     ("/about", 0.6, "monthly"),
     ("/tax-incentives", 0.7, "weekly"),
