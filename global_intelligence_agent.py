@@ -1271,7 +1271,7 @@ class DeepLearningEnhancer:
             cursor.execute('''
                 SELECT title, companies
                 FROM announcements
-                WHERE discovered_at > datetime('now', '-7 days')
+                WHERE discovered_at > NOW() - INTERVAL '7 days'
                 ORDER BY discovered_at DESC
                 LIMIT 100
             ''')
