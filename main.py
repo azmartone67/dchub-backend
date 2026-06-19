@@ -6633,7 +6633,6 @@ def _mcp_key_is_identified(api_key):
     cached = _mcp_key_identified_cache.get(api_key)
     if cached and (now - cached[1]) < 300:
         return cached[0]
-    identified = False
     try:
         with pg_connection() as conn:
             cur = conn.cursor()
@@ -6643,7 +6642,14 @@ def _mcp_key_is_identified(api_key):
             row = cur.fetchone()
             identified = bool(row and row[0])
     except Exception:
-        identified = False
+        # STICKY: a transient DB blip must NOT downgrade a just-bound
+        # identified key to the free quota — that would wall a user at the
+        # exact moment they were sold the higher cap. If we have ANY prior
+        # knowledge for this key (even staler than 300s), trust it. Only
+        # fall to False when we've genuinely never seen this key succeed.
+        if cached is not None:
+            return cached[0]
+        return False
     if len(_mcp_key_identified_cache) > 5000:
         _mcp_key_identified_cache.clear()
     _mcp_key_identified_cache[api_key] = (identified, now)
@@ -6801,6 +6807,15 @@ def _gate_mcp_result(result_content, tool_name, tier):
         if not allowed:
             # Already identified and STILL hit the (higher) wall — now
             # the right next step genuinely is the paid Developer plan.
+            if _identified:
+                # carrot-integrity: an identified key should almost never
+                # reach the free wall (it earns the 4x cap). When it does,
+                # that's a signal the per-IP sticky/identity path misfired —
+                # surface it so we can catch the bug (expected rate ~0).
+                logging.warning(
+                    "[carrot-integrity] identified key hit free wall "
+                    "tool=%s ip=%s used=%s limit=%s",
+                    tool_name, ip, used, _limit)
             return _inject_agent_claim([{
                 "type": "text",
                 "text": json.dumps({
@@ -26202,6 +26217,16 @@ try:
           "(POST /api/v1/admin/resend-welcome · GET /api/v1/admin/welcome-log)")
 except Exception as e:
     print(f"📨 Onboarding Recover: ⚠️ Failed to load: {e}")
+
+# Key recovery (2026-06-18) — transactional self-serve key-recovery flow so a
+# user who lost their MCP key can recover it by email (key recovery is one of
+# the two honest transactional email purposes; no digest/marketing promise).
+try:
+    from routes.keys_recover import register as _register_keys_recover
+    _register_keys_recover(app)
+    print("🔑 Keys Recover: ✅ Registered")
+except Exception as e:
+    print(f"🔑 Keys Recover: ⚠️ Failed to load: {e}")
 
 # Map-CTA click tracking (2026-06-18) — the MCP map upsell links through a
 # logging 302 so we can see whether it actually drives human clicks.

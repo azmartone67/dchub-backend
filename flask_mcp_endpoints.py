@@ -747,6 +747,25 @@ def identify_key():
         return jsonify(ok=False, error="invalid_email",
                        message="Pass a valid email address to identify this key."), 200
 
+    # Deliverability gate (soft): the regex above is a cheap pre-filter; this
+    # rejects role accounts / disposable domains / domains with no MX|A so we
+    # don't bind a key to an address recovery can never reach. SOFT-FAIL on
+    # every axis — a bad email is a 200+ok:false (never an error/retry), and a
+    # missing validator module falls back to the regex-only behavior above so
+    # identify can't break on it.
+    try:
+        from routes.email_validation import validate_email
+        _ok, _reason, _norm = validate_email(email)
+        if not _ok:
+            return jsonify(
+                ok=False, error="undeliverable_email", reason=_reason,
+                message="That email looks undeliverable — the key still works; "
+                        "try another to enable recovery."), 200
+        email = _norm or email
+    except Exception:
+        # Validator absent/broke — never block identify on our own check.
+        pass
+
     try:
         with _pool.connection() as conn, conn.cursor() as cur:
             cur.execute(
@@ -763,12 +782,27 @@ def identify_key():
                 # Fall through with bind semantics (operator_email), which
                 # also lifts the key's daily cap 15 → 50.
                 if api_key.startswith("dch_trial_"):
+                    # Consent provenance, same as the mcp_dev_keys branch.
+                    # auto_trial_keys has no jsonb metadata column — stamp a
+                    # compact JSON consent marker into the existing `notes`
+                    # TEXT column (idempotent: only when not already stamped,
+                    # so a re-bind never clobbers it). marketing_opt_in:false.
+                    _consent_note = json.dumps({
+                        "consent_at": datetime.now(timezone.utc).isoformat(),
+                        "lawful_basis": "legitimate_interest_transactional",
+                        "marketing_opt_in": False,
+                        "purpose": "key_recovery_and_receipts",
+                        "identify_source": "mcp_value_moment",
+                    })
                     cur.execute(
                         """UPDATE auto_trial_keys
-                               SET operator_email = %s
+                               SET operator_email = %s,
+                                   notes = CASE
+                                             WHEN notes IS NULL OR notes NOT LIKE '%%consent_at%%'
+                                             THEN %s ELSE notes END
                              WHERE api_key = %s
                          RETURNING expires_at""",
-                        (email, api_key),
+                        (email, _consent_note, api_key),
                     )
                     trow = cur.fetchone()
                     if trow:
@@ -800,9 +834,18 @@ def identify_key():
                            metadata = COALESCE(metadata, '{}'::jsonb)
                                       || jsonb_build_object(
                                            'identified_at', %s::text,
-                                           'identify_source', 'mcp_value_moment')
+                                           'identify_source', 'mcp_value_moment',
+                                           -- Consent provenance (GDPR/CAN-SPAM): we
+                                           -- only email this address for key recovery +
+                                           -- upgrade receipts. marketing_opt_in is a JSON
+                                           -- boolean false by default — no opt-in here.
+                                           'consent_at', %s::text,
+                                           'lawful_basis', 'legitimate_interest_transactional',
+                                           'marketing_opt_in', false,
+                                           'purpose', 'key_recovery_and_receipts')
                      WHERE api_key = %s""",
-                (email, datetime.now(timezone.utc).isoformat(), api_key),
+                (email, datetime.now(timezone.utc).isoformat(),
+                 datetime.now(timezone.utc).isoformat(), api_key),
             )
 
             # r77 (2026-06-07): inherit paid tier if this email already belongs to

@@ -164,8 +164,9 @@ def record_funnel_event(event_type, *, tool=None, tier=None, source=None,
 # This is the first nurture touch: the moment a key is identified, its
 # human gets a welcome email confirming what they unlocked, setting up
 # the relationship, and planting the soft upgrade seed. It's what makes
-# the "known" stage real — and the anchor the weekly digest + payment
-# ask (Increment 3b/3c) will build on.
+# the "known" stage real — the anchor a future opt-in nurture/upgrade
+# ask would build on. (The "weekly digest" promise was stripped 2026-06-18:
+# it was never implemented; don't re-imply it until a real digest ships.)
 #
 # Fire-and-forget (own daemon thread) so it never adds latency to the
 # capture response. Deduped once-per-key via mcp_dev_keys.metadata.
