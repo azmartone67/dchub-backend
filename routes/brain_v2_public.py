@@ -334,6 +334,7 @@ def _cached_internal_get(path, client, ttl=_INTERNAL_GET_TTL):
 
 
 @brain_v2_public_bp.route("/brain", methods=["GET"])
+@brain_v2_public_bp.route("/brain/", methods=["GET"])  # r-slash (2026-06-18): bare "/brain" is strict-slash → "/brain/" 404'd outright (no 308). Explicit trailing-slash alias.
 @brain_v2_public_bp.route("/brain-live", methods=["GET"])  # r80 (2026-06-04): 200 alias — distribute.html "Watch brain evolve" + the brain's own page-monitor expect /brain-live; it was 404 -> CF worker fell through to Error 1000.
 def brain_page():
     if not _pub_admin_ok():

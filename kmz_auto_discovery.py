@@ -35,6 +35,7 @@ import time
 import logging
 import threading
 import requests
+from psycopg2.extras import execute_values  # r-batch (2026-06-18): batched route inserts
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any
 from math import radians, sin, cos, sqrt, atan2
@@ -1117,28 +1118,41 @@ class KMZAutoDiscovery:
                     break
 
             # Phase 2: open the pooled connection ONLY now (HTTP is done) and write
-            # the buffered rows in one fast burst. The outer finally releases it.
+            # the buffered rows. r-batch (2026-06-18): switched from a per-row execute
+            # loop to a single batched execute_values. The old loop did up to 5000 rows
+            # one at a time — and with the per-cursor fiber guard each INSERT is wrapped
+            # in SAVEPOINT/INSERT/RELEASE (3 round-trips) against remote Neon, so the
+            # connection was held 60-77s. The 60s pool watchdog (main.py _forced_reclaim_loop)
+            # then cancel()'d the in-flight query and closed the connection underneath
+            # this thread EVERY cycle. Batching collapses ~15k round-trips into a handful,
+            # dropping the hold to a second or two. RETURNING distance_km under
+            # ON CONFLICT DO NOTHING yields only the newly-inserted rows, so the
+            # routes_found / total_km tally stays exact.
             if pending:
                 conn = _conn()
                 cur = conn.cursor()
-                for _params, _dist in pending:
-                    try:
-                        cur.execute('''
-                            INSERT INTO fiber_kmz_routes
+                try:
+                    inserted = execute_values(
+                        cur,
+                        '''INSERT INTO fiber_kmz_routes
                             (name, provider, route_type, start_point, end_point,
                              distance_km, coordinates, kmz_file, source_url)
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                            ON CONFLICT DO NOTHING
-                        ''', _params)
-                        if cur.rowcount > 0:
-                            results['routes_found'] += 1
-                            results['total_km'] += _dist
-                    except Exception as e:
-                        logger.debug(f"Route insert error: {e}")
-                try:
+                           VALUES %s
+                           ON CONFLICT DO NOTHING
+                           RETURNING distance_km''',
+                        [p[0] for p in pending],
+                        page_size=500,
+                        fetch=True,
+                    )
+                    results['routes_found'] = len(inserted)
+                    results['total_km'] = sum((row[0] or 0) for row in inserted)
                     conn.commit()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Batched route insert error: {e}")
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
 
             if results['routes_found'] > 0:
                 logger.info(f"  {source_name}: {results['routes_found']} routes, {results['total_km']:.1f} km (fetched {total_fetched} features)")

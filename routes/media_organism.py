@@ -286,12 +286,15 @@ def media_organism():
     else:
         verdict = "dormant"
 
-    # Find what's dragging the score down
-    weakest = min(
-        components.items(),
-        key=lambda kv: kv[1].get("score", 100),
-        default=None,
-    )
+    # Find what's dragging the score down. r-noneguard (2026-06-18): only
+    # consider channels with a REAL (non-None) score. The old key used
+    # kv[1].get("score", 100), but an unreachable channel has "score"
+    # PRESENT as None (not absent), so the 100 default never applied and
+    # min() hit None < float → TypeError that 500'd the whole endpoint.
+    # None channels are already excluded from the composite; exclude them
+    # here too (they stay visible in `components` as "unreachable").
+    _scored = [(k, c) for k, c in components.items() if c.get("score") is not None]
+    weakest = min(_scored, key=lambda kv: kv[1]["score"], default=None)
 
     payload = dict(
         vitality_score=composite,
