@@ -21950,6 +21950,17 @@ def serve_sitemap_xml():
         ('/assets', '0.7', 'daily'),
         ('/for-ai', '0.7', 'weekly'),
         ('/connect', '0.7', 'weekly'),
+        # r-seo-coverage (2026-06-19): live 200 + index public pages that were
+        # ABSENT from this CRAWLED sitemap (they existed only in the unadvertised
+        # /api/v1/sitemap.xml). Verified 200+index at the apex 2026-06-19, additive
+        # (NOT slug churn). /brain-live = the PUBLIC brain transparency page (the
+        # admin /brain is 403 → excluded). /fiber excluded (301 redirect).
+        ('/brain-live',     '0.6', 'daily'),
+        ('/by-the-numbers', '0.8', 'daily'),
+        ('/gdci',           '0.7', 'weekly'),
+        ('/tax-incentives', '0.7', 'weekly'),
+        ('/ai',             '0.7', 'weekly'),
+        ('/about',          '0.5', 'monthly'),
         # r36 (2026-05-31): /ai/facts REMOVED from the sitemap. The page
         # exists on the backend (200, text/html "Data Center Facts") but
         # dchub.cloud/ai/facts returns 404 — it isn't routed to the origin by
@@ -26250,6 +26261,20 @@ try:
     print("🔢 MCP Anon Usage: ✅ Registered (GET /api/v1/mcp/anon-usage)")
 except Exception as e:
     print(f"🔢 MCP Anon Usage: ⚠️ Failed to load: {e}")
+
+# Phase 3 (2026-06-18) — email suppression + one-click unsubscribe. CAN-SPAM /
+# GDPR backbone: every marketing audience builder excludes email_suppression
+# (NOT EXISTS), and a token minted here verifies against the same HMAC secret as
+# the digest unsubscribe so any DC Hub email's List-Unsubscribe link resolves
+# here. ALWAYS returns a friendly HTTP 200 (neutral even on a bad token — no
+# dead links, no enumeration signal).
+try:
+    from routes.email_suppression import register as _register_email_suppression
+    _register_email_suppression(app)
+    print("🚫 Email Suppression: ✅ Registered "
+          "(GET/POST /api/v1/unsubscribe)")
+except Exception as e:
+    print(f"🚫 Email Suppression: ⚠️ Failed to load: {e}")
 
 # Phase FF+25-followup-r12 (2026-05-20) — site audit + status dashboard.
 # One URL (/status) that shows the entire stack at a glance — brain,
