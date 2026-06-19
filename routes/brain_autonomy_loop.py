@@ -666,6 +666,27 @@ def _open_draft_prs_for_open_proposals() -> dict:
     rows, err = _fetch_open_proposals(include_resolved=False, limit=200)
     if err:
         return {"error": err, "opened": [], "previewed": [], "skipped": []}
+
+    # ── SELF-AWARE work selection (BRAIN_WORK_SELECTOR, default ON) ───────
+    # Re-ORDER the open proposals by evidence-weighted leverage BEFORE the
+    # writer's per-run rate cap slices them, so the small budget is spent on
+    # the highest-leverage, most-likely-to-LAND fixes (down-weighting fix-
+    # classes with a poor historical resolve-rate, with a soft-greedy floor so
+    # an unproven class is still explored). RANK-ONLY: rank_work returns a
+    # permutation — it NEVER drops a candidate; lower-ranked work is deferred to
+    # a future run, not discarded. On ANY error we keep the EXISTING scan order
+    # (rank_work itself is fail-safe; this try/except is belt-and-suspenders so
+    # a selector hiccup can never crash a tick).
+    if os.environ.get("BRAIN_WORK_SELECTOR", "1") not in (
+            "0", "false", "False", "off"):
+        try:
+            from routes.brain_work_selector import rank_work
+            ranked = rank_work(rows)
+            if isinstance(ranked, list) and len(ranked) == len(rows):
+                rows = ranked
+        except Exception:
+            pass  # fall back to the existing scan order
+
     return open_mechanical_draft_prs(rows, apply=True)
 
 

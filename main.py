@@ -29407,6 +29407,13 @@ try:
 except Exception as _baq_e:
     print(f"[main] brain_action_queue_bp register failed: {_baq_e}", flush=True)
 try:
+    from routes.brain_work_selector import brain_work_selector_bp
+    if brain_work_selector_bp is not None:
+        app.register_blueprint(brain_work_selector_bp)
+        print("[main] brain_work_selector_bp registered: GET /api/v1/brain/work-plan", flush=True)
+except Exception as _bws_e:
+    print(f"[main] brain_work_selector_bp register failed: {_bws_e}", flush=True)
+try:
     from routes.brain_ownership_loop import brain_ownership_bp
     app.register_blueprint(brain_ownership_bp)
     print("[main] brain_ownership_bp registered: GET /api/v1/brain/ownership (Brain v4 ownership loop — SHADOW)", flush=True)
