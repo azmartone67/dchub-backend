@@ -26,12 +26,14 @@ dry-run mode and reports what WOULD be sent without delivering — same
 pattern as digest_weekly + market_alerts.
 """
 import hashlib
+import hmac
+import html as _html
 import json
 import os
 from datetime import datetime, timezone, timedelta
 from functools import wraps
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, Response, jsonify, request
 
 try:
     from util.provenance import src, attach_sources, now_iso
@@ -53,12 +55,18 @@ except Exception:
 # may not be present in every deployment yet, so a missing module must
 # never break a broadcast; we degrade to SQL-only suppression exclusion.
 try:
-    from routes.email_suppression import is_suppressed as _is_suppressed  # noqa: F401
+    from routes.email_suppression import (is_suppressed as _is_suppressed,  # noqa: F401
+                                          unsub_token as _unsub_token,
+                                          suppress as _suppress)
 except Exception:
     try:
-        from email_suppression import is_suppressed as _is_suppressed  # noqa: F401
+        from email_suppression import (is_suppressed as _is_suppressed,  # noqa: F401
+                                       unsub_token as _unsub_token,
+                                       suppress as _suppress)
     except Exception:
         _is_suppressed = None
+        _unsub_token = None
+        _suppress = None
 
 broadcast_bp = Blueprint("broadcast", __name__)
 
@@ -271,20 +279,76 @@ def subscribe():
         return jsonify(ok=False, error=str(e)[:200]), 200
 
 
+def _do_local_unsubscribe(email):
+    """Opt `email` out of the newsletter (local table) AND mirror the opt-out
+    into the canonical email_suppression list so a single unsubscribe is
+    honored everywhere. Returns the rowcount from the local table.
+    Best-effort suppression mirror — a missing module / DB hiccup there must
+    never undo the local opt-out."""
+    n = 0
+    with _conn() as c, c.cursor() as cur:
+        cur.execute("""UPDATE email_subscribers
+                          SET unsubscribed_at = NOW()
+                        WHERE email = %s""", (email,))
+        n = cur.rowcount
+    if _suppress is not None:
+        try:
+            _suppress(email, reason="newsletter-unsubscribe",
+                      source="subscribers-unsubscribe")
+        except Exception:
+            pass
+    return n
+
+
+def _confirm_page(email):
+    """Neutral HTML confirm form for a no/invalid-token GET. A drive-by image
+    or link GET cannot opt anyone out — only an explicit POST from this form
+    (or an RFC 8058 one-click POST) performs the unsubscribe."""
+    e = _html.escape(email or "")
+    return f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Unsubscribe · DC Hub</title></head>
+<body style="margin:0;background:#eef0f5;font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif">
+<table role="presentation" width="100%" height="100%" cellpadding="0" cellspacing="0"><tr><td align="center" valign="middle" style="padding:48px 16px">
+<table role="presentation" width="460" cellpadding="0" cellspacing="0" style="max-width:460px;background:#fff;border-radius:14px;border:1px solid #e6e9f0">
+<tr><td style="padding:28px;text-align:center;color:#0f172a;font-size:16px;line-height:1.6">
+Unsubscribe <b>{e}</b> from the DC Hub newsletter?
+<form method="post" style="padding-top:18px;margin:0">
+<input type="hidden" name="email" value="{e}">
+<button type="submit" style="background:#6366f1;color:#fff;border:0;padding:11px 22px;border-radius:8px;font-weight:600;font-size:15px;cursor:pointer">Yes, unsubscribe me</button>
+</form></td></tr></table></td></tr></table></body></html>"""
+
+
 @broadcast_bp.route("/api/v1/subscribers/unsubscribe", methods=["POST", "GET"])
 def unsubscribe():
-    """Public unsubscribe. POST body {email} or GET ?email=..."""
+    """Public unsubscribe, HMAC-hardened.
+
+    GET with a valid HMAC token -> RFC 8058 one-click opt-out (local table +
+    email_suppression mirror), friendly JSON.
+    POST -> explicit human confirmation; perform the opt-out.
+    GET with NO/invalid token -> do NOT auto-unsubscribe (that is the drive-by
+    abuse vector where a malicious <img>/link GET opts a third party out);
+    instead render a neutral confirm page whose form POSTs back to opt out.
+    """
     _ensure_schema()
     email = ((request.get_json(silent=True) or {}).get("email")
+             or request.form.get("email")
              or request.args.get("email") or "").strip().lower()
+    token = (request.args.get("token") or request.form.get("token") or "").strip()
     if not email:
         return jsonify(ok=False, error="email required"), 400
+
+    token_ok = bool(token and _unsub_token is not None
+                    and hmac.compare_digest(token, _unsub_token(email)))
+
+    # Only act on a real POST (explicit confirm / RFC 8058 one-click) or a
+    # GET that carries a valid HMAC token. A bare/invalid-token GET must NOT
+    # opt anyone out — render the confirm page instead.
+    if request.method == "GET" and not token_ok:
+        return Response(_confirm_page(email), status=200, mimetype="text/html")
+
     try:
-        with _conn() as c, c.cursor() as cur:
-            cur.execute("""UPDATE email_subscribers
-                              SET unsubscribed_at = NOW()
-                            WHERE email = %s""", (email,))
-            n = cur.rowcount
+        n = _do_local_unsubscribe(email)
         return jsonify(ok=True, removed=n, email=email,
                        note="You're unsubscribed. Sorry to see you go."), 200
     except Exception as e:

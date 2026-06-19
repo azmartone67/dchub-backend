@@ -50,20 +50,41 @@ def _conn():
         return None
 
 
-def _send_resend_email(to_email, subject, body_html):
+# Phase 3 — CAN-SPAM suppression + one-click unsubscribe helpers. Guarded so
+# a missing/broken module degrades gracefully and never blocks a send.
+def _suppression():
+    """Return (is_suppressed, unsub_link, list_unsubscribe_headers) or (None,)*3."""
+    try:
+        from routes.email_suppression import (
+            is_suppressed, unsub_link, list_unsubscribe_headers)
+        return is_suppressed, unsub_link, list_unsubscribe_headers
+    except Exception:
+        try:
+            from email_suppression import (
+                is_suppressed, unsub_link, list_unsubscribe_headers)
+            return is_suppressed, unsub_link, list_unsubscribe_headers
+        except Exception:
+            return None, None, None
+
+
+def _send_resend_email(to_email, subject, body_html, unsub_headers=None):
     """Returns (ok, info). Silent in dry-run mode."""
     if not _RESEND_KEY:
         return False, "no_resend_api_key"
     try:
         import requests
+        _json = {
+            "from": f"{_FROM_NAME} <{_FROM_EMAIL}>",
+            "to":   [to_email],
+            "subject": subject,
+            "html":    body_html,
+        }
+        # RFC 2369 + RFC 8058 one-click unsubscribe headers (Resend "headers").
+        if unsub_headers:
+            _json["headers"] = {str(k): str(v) for k, v in unsub_headers.items()}
         r = requests.post(
             "https://api.resend.com/emails",
-            json={
-                "from": f"{_FROM_NAME} <{_FROM_EMAIL}>",
-                "to":   [to_email],
-                "subject": subject,
-                "html":    body_html,
-            },
+            json=_json,
             headers={"Authorization": f"Bearer {_RESEND_KEY}"},
             timeout=10,
         )
@@ -154,7 +175,8 @@ def _new_facilities_within_radius(cur, lat: float, lon: float,
 
 
 def _render_alert_html(site: dict, alert: dict, current_value: float | None,
-                        previous_value: float | None) -> str:
+                        previous_value: float | None,
+                        unsub_url: str | None = None) -> str:
     """Conversion-friendly alert email body."""
     site_name = site.get("name", "your saved site")
     lat = site.get("latitude", "")
@@ -171,6 +193,14 @@ def _render_alert_html(site: dict, alert: dict, current_value: float | None,
     map_url = (f"https://dchub.cloud/land-power-map"
                f"?lat={lat}&lon={lon}&utm_source=lp_alert&utm_medium=email")
     site_url = f"https://dchub.cloud/api/v1/lp/saved"
+    # Real tokenized one-click unsubscribe (replaces bare "Reply to unsubscribe").
+    if unsub_url:
+        unsub_line = (f'<a href="{unsub_url}" style="color:#1e40af">Unsubscribe</a> '
+                      f'from all DC Hub alert email, or delete the saved site via '
+                      f'DELETE /api/v1/lp/saved/&lt;id&gt;.')
+    else:
+        unsub_line = ("Reply to unsubscribe this specific alert, or delete the "
+                      "saved site via DELETE /api/v1/lp/saved/&lt;id&gt;.")
     return f"""<!doctype html>
 <html><body style="font-family:-apple-system,sans-serif;max-width:600px;
 margin:0 auto;padding:1.5rem;color:#1f2937;line-height:1.55">
@@ -186,7 +216,7 @@ that crossed your configured threshold of {alert.get('threshold','?')}.</p>
 </p>
 <p style="color:#6b7280;font-size:.85rem;margin-top:2rem">
  Manage your saved sites + alerts: <a href="{site_url}" style="color:#1e40af">/api/v1/lp/saved</a><br>
- Reply to unsubscribe this specific alert, or delete the saved site via DELETE /api/v1/lp/saved/&lt;id&gt;.
+ {unsub_line}
 </p>
 </body></html>"""
 
@@ -232,6 +262,7 @@ def fire_pending_alerts(dry_run: bool = False, max_alerts: int = 100) -> dict:
 
             # Per-email cap so a bad config doesn't spam one user
             per_email_count: dict = {}
+            _is_sup, _ulink, _lheaders = _suppression()
 
             for a in alerts:
                 out["checked"] += 1
@@ -239,6 +270,15 @@ def fire_pending_alerts(dry_run: bool = False, max_alerts: int = 100) -> dict:
                 if not email or "@" not in email:
                     out["skipped"].append({"alert_id": int(a["alert_id"]), "reason": "no_email"})
                     continue
+                # Phase 3 — honor CAN-SPAM suppression list (opted-out addresses).
+                if _is_sup:
+                    try:
+                        if _is_sup(cur, email):
+                            out["skipped"].append({"alert_id": int(a["alert_id"]),
+                                                    "reason": "suppressed"})
+                            continue
+                    except Exception:
+                        pass
                 if per_email_count.get(email, 0) >= 5:
                     out["skipped"].append({"alert_id": int(a["alert_id"]), "reason": "per_email_cap"})
                     continue
@@ -319,9 +359,23 @@ def fire_pending_alerts(dry_run: bool = False, max_alerts: int = 100) -> dict:
                     continue
 
                 # Fire (or pretend to in dry-run)
+                # Tokenized one-click unsubscribe link + List-Unsubscribe headers.
+                unsub_url = None
+                unsub_headers = None
+                if _ulink:
+                    try:
+                        unsub_url = _ulink(email)
+                    except Exception:
+                        unsub_url = None
+                if _lheaders:
+                    try:
+                        unsub_headers = _lheaders(email)
+                    except Exception:
+                        unsub_headers = None
+
                 subject = (f"DC Hub Alert: {site['name']} — "
                            f"{trigger.replace('_', ' ')} crossed {threshold}")
-                body = _render_alert_html(site, alert, curr, prev)
+                body = _render_alert_html(site, alert, curr, prev, unsub_url=unsub_url)
 
                 if dry_run:
                     out["fired"].append({"alert_id": int(a["alert_id"]),
@@ -330,7 +384,8 @@ def fire_pending_alerts(dry_run: bool = False, max_alerts: int = 100) -> dict:
                                           "subject": subject})
                     continue
 
-                ok, info = _send_resend_email(email, subject, body)
+                ok, info = _send_resend_email(email, subject, body,
+                                              unsub_headers=unsub_headers)
                 if ok:
                     try:
                         cur.execute("""

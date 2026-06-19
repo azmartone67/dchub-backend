@@ -1621,8 +1621,14 @@ def pockets_digest_send():
             cur.execute("""
                 SELECT DISTINCT lower(email)
                   FROM (
-                    SELECT email FROM mcp_dev_keys
+                    SELECT email FROM mcp_dev_keys m
                      WHERE email IS NOT NULL AND email != ''
+                       -- Phase 3 consent gate: only opted-in, non-suppressed
+                       -- captured MCP emails. digest_subscribers arm below is
+                       -- separately consented and intentionally NOT gated here.
+                       AND m.metadata->>'marketing_opt_in' = 'true'
+                       AND NOT EXISTS (SELECT 1 FROM email_suppression s
+                                       WHERE lower(s.email)=lower(m.email))
                     UNION
                     SELECT email FROM digest_subscribers
                      WHERE email IS NOT NULL AND email != ''
@@ -1676,16 +1682,32 @@ def pockets_digest_send():
         import requests as _rq
         from_email = os.environ.get("DCHUB_FROM_EMAIL",
                                      "DC Hub <jonathan@dchub.cloud>")
+        # Canonical one-click unsubscribe (RFC 8058) + tokenized footer link.
+        try:
+            from routes.email_suppression import (
+                list_unsubscribe_headers as _luh, unsub_link as _ulink)
+        except Exception:
+            _luh = lambda e: {}
+            _ulink = lambda e: "https://dchub.cloud/api/v1/unsubscribe"
         for em in emails:
             try:
+                _unsub = _ulink(em)
+                _footer = (
+                    '<p style="margin:16px 0 0;color:#6b7280;font-size:11px;'
+                    'text-align:center">You received this DC Hub weekly digest. '
+                    f'<a href="{_unsub}" style="color:#6b7280">Unsubscribe</a>.</p>')
+                _payload = {
+                    "from":    from_email,
+                    "to":      [em],
+                    "subject": d["title"],
+                    "html":    html_body + _footer,
+                }
+                _lu = _luh(em)
+                if _lu:
+                    _payload["headers"] = _lu
                 r = _rq.post(
                     "https://api.resend.com/emails",
-                    json={
-                        "from":    from_email,
-                        "to":      [em],
-                        "subject": d["title"],
-                        "html":    html_body,
-                    },
+                    json=_payload,
                     headers={
                         "Authorization": f"Bearer {resend_key.strip()}",
                         "Content-Type":  "application/json",

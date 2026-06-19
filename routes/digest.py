@@ -445,8 +445,14 @@ def digest_send():
         cur.execute("""
             SELECT DISTINCT lower(email) AS email
               FROM (
-                SELECT email FROM mcp_dev_keys
+                SELECT email FROM mcp_dev_keys m
                  WHERE email IS NOT NULL AND email != ''
+                   -- Phase 3 consent gate: only opted-in, non-suppressed
+                   -- captured MCP emails. digest_subscribers arm below is
+                   -- separately consented and intentionally NOT gated here.
+                   AND m.metadata->>'marketing_opt_in' = 'true'
+                   AND NOT EXISTS (SELECT 1 FROM email_suppression s
+                                   WHERE lower(s.email)=lower(m.email))
                 UNION
                 SELECT email FROM digest_subscribers
                  WHERE email IS NOT NULL AND email != ''

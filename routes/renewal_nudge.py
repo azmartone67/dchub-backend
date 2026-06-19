@@ -102,16 +102,38 @@ def _ensure_schema(c):
         except Exception: pass
 
 
-def _send_via_resend(to_email: str, subject: str, body_html: str) -> tuple[bool, str, str]:
+# Phase 3 — CAN-SPAM suppression + one-click unsubscribe helpers. Guarded so
+# a missing/broken module degrades gracefully and never blocks a send.
+def _suppression():
+    """Return (is_suppressed, unsub_link, list_unsubscribe_headers) or (None,)*3."""
+    try:
+        from routes.email_suppression import (
+            is_suppressed, unsub_link, list_unsubscribe_headers)
+        return is_suppressed, unsub_link, list_unsubscribe_headers
+    except Exception:
+        try:
+            from email_suppression import (
+                is_suppressed, unsub_link, list_unsubscribe_headers)
+            return is_suppressed, unsub_link, list_unsubscribe_headers
+        except Exception:
+            return None, None, None
+
+
+def _send_via_resend(to_email: str, subject: str, body_html: str,
+                     unsub_headers: dict | None = None) -> tuple[bool, str, str]:
     """POST to Resend. Returns (ok, info_string, message_id)."""
     if not _RESEND_KEY:
         return False, "no_resend_key", ""
     try:
         import requests
+        _json = {"from": f"{_FROM_NAME} <{_FROM_EMAIL}>",
+                 "to": [to_email], "subject": subject, "html": body_html}
+        # RFC 2369 + RFC 8058 one-click unsubscribe headers (Resend "headers").
+        if unsub_headers:
+            _json["headers"] = {str(k): str(v) for k, v in unsub_headers.items()}
         r = requests.post(
             "https://api.resend.com/emails",
-            json={"from": f"{_FROM_NAME} <{_FROM_EMAIL}>",
-                  "to": [to_email], "subject": subject, "html": body_html},
+            json=_json,
             headers={"Authorization": f"Bearer {_RESEND_KEY}"},
             timeout=10,
         )
@@ -142,6 +164,20 @@ def _render_nudge_html(email: str, days_remaining: int,
     # Prefilled-email Stripe links for one-click renewal.
     annual_url  = f"{_STRIPE_PRO_ANNUAL}?prefilled_email={email}"
     monthly_url = f"{_STRIPE_PRO_MONTHLY}?prefilled_email={email}"
+
+    # Real tokenized one-click unsubscribe (replaces bare "Reply STOP").
+    _is_sup, _unsub_link, _lh = _suppression()
+    unsub_url = None
+    if _unsub_link:
+        try:
+            unsub_url = _unsub_link(email)
+        except Exception:
+            unsub_url = None
+    if unsub_url:
+        unsub_footer = (f'<a href="{unsub_url}" style="color:#9ca3af">Unsubscribe</a> '
+                        f'from renewal reminders.')
+    else:
+        unsub_footer = "Reply STOP to opt out of renewal reminders."
 
     body = f"""<!doctype html>
 <html><body style="font-family:-apple-system,sans-serif;max-width:600px;
@@ -189,7 +225,7 @@ flexible — $199/mo, cancel anytime:</p>
 </p>
 
 <p style="color:#9ca3af;font-size:.75rem;margin-top:2rem;border-top:1px solid #e5e7eb;padding-top:.75rem">
- You're receiving this because you have an active DC Hub Pro Annual subscription. Reply STOP to opt out of renewal reminders.
+ You're receiving this because you have an active DC Hub Pro Annual subscription. {unsub_footer}
 </p>
 
 </body></html>"""
@@ -262,14 +298,34 @@ def run_renewal_nudge(dry_run: bool = False) -> dict:
         with c.cursor() as cur:
             eligible = find_eligible_users(cur)
             out["eligible_count"] = len(eligible)
+            _is_sup, _ulink, _lheaders = _suppression()
             for u in eligible:
                 if not u["email"] or "@" not in u["email"]:
                     out["skipped"].append({"user_id": u["user_id"],
                                             "reason": "bad_email"})
                     continue
 
+                # Phase 3 — honor CAN-SPAM suppression list (opted-out addresses).
+                if _is_sup:
+                    try:
+                        if _is_sup(cur, u["email"]):
+                            out["skipped"].append({"user_id": u["user_id"],
+                                                    "email": u["email"],
+                                                    "reason": "suppressed"})
+                            continue
+                    except Exception:
+                        pass
+
                 subject, body = _render_nudge_html(
                     u["email"], u["days_remaining"], u["tier_expires_at"])
+
+                # RFC 2369 + RFC 8058 one-click unsubscribe headers.
+                unsub_headers = None
+                if _lheaders:
+                    try:
+                        unsub_headers = _lheaders(u["email"])
+                    except Exception:
+                        unsub_headers = None
 
                 if dry_run:
                     print(f"📧 [DRY-RUN] WOULD HAVE SENT renewal nudge → "
@@ -284,7 +340,8 @@ def run_renewal_nudge(dry_run: bool = False) -> dict:
                     })
                     continue
 
-                ok, info, msg_id = _send_via_resend(u["email"], subject, body)
+                ok, info, msg_id = _send_via_resend(u["email"], subject, body,
+                                                    unsub_headers=unsub_headers)
                 try:
                     cur.execute("""
                         INSERT INTO renewal_nudge_log

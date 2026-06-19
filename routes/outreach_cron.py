@@ -62,11 +62,47 @@ def _provider():
     return None
 
 
-def _build_email(lead):
+# Phase 3 — CAN-SPAM suppression + one-click unsubscribe helpers. Guarded so
+# a missing/broken module degrades gracefully and never blocks a send.
+def _suppression():
+    """Return (is_suppressed, unsub_link, list_unsubscribe_headers) or (None,)*3."""
+    try:
+        from routes.email_suppression import (
+            is_suppressed, unsub_link, list_unsubscribe_headers)
+        return is_suppressed, unsub_link, list_unsubscribe_headers
+    except Exception:
+        try:
+            from email_suppression import (
+                is_suppressed, unsub_link, list_unsubscribe_headers)
+            return is_suppressed, unsub_link, list_unsubscribe_headers
+        except Exception:
+            return None, None, None
+
+
+def _is_suppressed(email):
+    """True only if the suppression list positively contains `email`."""
+    is_sup, _ul, _lh = _suppression()
+    if not is_sup:
+        return False
+    try:
+        with _conn() as c, c.cursor() as cur:
+            return bool(is_sup(cur, email))
+    except Exception:
+        return False
+
+
+def _build_email(lead, unsub_url=None):
     tool = lead["tool"] or "DC Hub"
     tier = lead["tier"]
     tier_price = {"developer":"$49/mo","pro":"$199/mo","starter":"$9/mo"}.get(tier, "—")
     subject = f"Finish your DC Hub {tier.title()} upgrade — {tier_price}"
+    # Real tokenized one-click unsubscribe (replaces bare "Reply STOP").
+    if unsub_url:
+        unsub_html = (f' <a href="{unsub_url}" style="color:#94a3b8">Unsubscribe</a>.')
+        unsub_text = f"Unsubscribe: {unsub_url}"
+    else:
+        unsub_html = " Reply STOP to unsubscribe."
+        unsub_text = "Reply STOP to unsubscribe."
     html = f"""<!DOCTYPE html><html><head><meta charset="utf-8"></head>
 <body style="font-family:-apple-system,sans-serif;max-width:560px;margin:40px auto;padding:0 24px;color:#0f172a;line-height:1.55">
 <p>Hey,</p>
@@ -84,7 +120,7 @@ def _build_email(lead):
 <p style="font-size:.85rem;color:#64748b;margin-top:32px">Questions? Reply to this email — we respond within a few hours.</p>
 <p style="font-size:.85rem;color:#64748b">— DC Hub team<br><a href="https://dchub.cloud" style="color:#6366f1">dchub.cloud</a></p>
 <hr style="border:none;border-top:1px solid #e2e8f0;margin:32px 0 16px">
-<p style="font-size:.75rem;color:#94a3b8">You're receiving this because you started a DC Hub Pro signup that wasn't completed. Reply STOP to unsubscribe.</p>
+<p style="font-size:.75rem;color:#94a3b8">You're receiving this because you started a DC Hub Pro signup that wasn't completed.{unsub_html}</p>
 </body></html>"""
     text = (
         f"You started a DC Hub {tier.title()} upgrade ({tier_price}) after hitting "
@@ -92,12 +128,12 @@ def _build_email(lead):
         f"Finish here (email prefilled):\n"
         f"https://api.dchub.cloud/pricing/upgrade?tool={tool}&tier={tier}&direct=1&ref=outreach\n\n"
         "— DC Hub\n"
-        "Reply STOP to unsubscribe."
+        f"{unsub_text}"
     )
     return subject, html, text
 
 
-def _send_resend(to_email, subject, html, text):
+def _send_resend(to_email, subject, html, text, extra_headers=None):
     """r39.4 (2026-05-25): Resend via SMTP (port 587 + STARTTLS), NOT
     HTTPS. The HTTPS API at api.resend.com is fronted by Cloudflare WAF
     which 1010-bans Railway's static outbound IP (162.220.232.99).
@@ -111,6 +147,12 @@ def _send_resend(to_email, subject, html, text):
     msg["Subject"] = subject
     msg["From"]    = f"{FROM_NAME} <{FROM_EMAIL}>"
     msg["To"]      = to_email
+    # RFC 2369 + RFC 8058 one-click unsubscribe headers.
+    for _hk, _hv in (extra_headers or {}).items():
+        try:
+            msg[_hk] = _hv
+        except Exception:
+            pass
     msg.attach(MIMEText(text, "plain"))
     msg.attach(MIMEText(html, "html"))
     try:
@@ -131,8 +173,8 @@ def _send_resend(to_email, subject, html, text):
         return 0, f"{type(e).__name__}: {str(e)[:120]}"
 
 
-def _send_sendgrid(to_email, subject, html, text):
-    body = json.dumps({
+def _send_sendgrid(to_email, subject, html, text, extra_headers=None):
+    _payload = {
         "personalizations": [{"to": [{"email": to_email}]}],
         "from": {"email": FROM_EMAIL, "name": FROM_NAME},
         "subject": subject,
@@ -140,7 +182,11 @@ def _send_sendgrid(to_email, subject, html, text):
             {"type": "text/plain", "value": text},
             {"type": "text/html",  "value": html},
         ],
-    }).encode()
+    }
+    if extra_headers:
+        # SendGrid passes custom headers through the top-level "headers" field.
+        _payload["headers"] = {str(k): str(v) for k, v in extra_headers.items()}
+    body = json.dumps(_payload).encode()
     req = urllib.request.Request(
         "https://api.sendgrid.com/v3/mail/send",
         data=body,
@@ -212,6 +258,21 @@ def process_pending():
             except Exception: pass
             continue
 
+        # Phase 3 — honor CAN-SPAM suppression list (opted-out addresses).
+        if _is_suppressed(email):
+            try:
+                with _conn() as c, c.cursor() as cur:
+                    cur.execute("""
+                        UPDATE identified_checkout_signals
+                           SET outreach_sent = TRUE, outreach_at = NOW(),
+                               notes = 'skipped_suppressed'
+                         WHERE id = %s
+                    """, (lead["id"],))
+                    c.commit()
+            except Exception: pass
+            out["results"].append({"id": lead["id"], "email": email, "status": "skipped_suppressed"})
+            continue
+
         if not provider:
             out["skipped_no_provider"] += 1
             # Mark so we don't keep re-evaluating
@@ -228,11 +289,26 @@ def process_pending():
             out["results"].append({"id": lead["id"], "email": email, "status": "no_provider"})
             continue
 
-        subject, html, text = _build_email(lead)
+        # Tokenized one-click unsubscribe link + List-Unsubscribe headers.
+        _is_sup, _unsub_link, _list_unsub = _suppression()
+        unsub_url = None
+        unsub_headers = None
+        if _unsub_link:
+            try:
+                unsub_url = _unsub_link(email)
+            except Exception:
+                unsub_url = None
+        if _list_unsub:
+            try:
+                unsub_headers = _list_unsub(email)
+            except Exception:
+                unsub_headers = None
+
+        subject, html, text = _build_email(lead, unsub_url=unsub_url)
         if provider == "resend":
-            status, body = _send_resend(email, subject, html, text)
+            status, body = _send_resend(email, subject, html, text, extra_headers=unsub_headers)
         else:
-            status, body = _send_sendgrid(email, subject, html, text)
+            status, body = _send_sendgrid(email, subject, html, text, extra_headers=unsub_headers)
 
         ok = 200 <= status < 300
         try:

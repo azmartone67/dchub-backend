@@ -134,6 +134,23 @@ def _log(msg: str) -> None:
         pass
 
 
+# Phase 3 — CAN-SPAM suppression + one-click unsubscribe helpers. Guarded so
+# a missing/broken module degrades gracefully and never blocks a send.
+def _suppression():
+    """Return (is_suppressed, unsub_link, list_unsubscribe_headers) or (None,)*3."""
+    try:
+        from routes.email_suppression import (
+            is_suppressed, unsub_link, list_unsubscribe_headers)
+        return is_suppressed, unsub_link, list_unsubscribe_headers
+    except Exception:
+        try:
+            from email_suppression import (
+                is_suppressed, unsub_link, list_unsubscribe_headers)
+            return is_suppressed, unsub_link, list_unsubscribe_headers
+        except Exception:
+            return None, None, None
+
+
 # ── Auth / admin gate ────────────────────────────────────────────────
 
 def _admin_authorized() -> bool:
@@ -183,6 +200,20 @@ def _render_email(email: str) -> tuple[str, str, str]:
     # Prefilled-email Stripe link for one-click checkout.
     annual_url = f"{_STRIPE_PRO_ANNUAL}?prefilled_email={email}"
 
+    # Real tokenized one-click unsubscribe (replaces bare "Reply STOP").
+    _is_sup, _unsub_link, _lh = _suppression()
+    unsub_url = None
+    if _unsub_link:
+        try:
+            unsub_url = _unsub_link(email)
+        except Exception:
+            unsub_url = None
+    if unsub_url:
+        unsub_footer = (f'<a href="{unsub_url}" style="color:#9ca3af">Unsubscribe</a> '
+                        f'from DC Hub marketing email.')
+    else:
+        unsub_footer = "Reply STOP to opt out."
+
     body_html = f"""<!doctype html>
 <html><body style="font-family:-apple-system,sans-serif;max-width:600px;
 margin:0 auto;padding:1.5rem;color:#1f2937;line-height:1.55">
@@ -226,7 +257,7 @@ about anything we shipped this quarter.</p>
 </p>
 
 <p style="color:#9ca3af;font-size:.75rem;margin-top:2rem;border-top:1px solid #e5e7eb;padding-top:.75rem">
- You're receiving this because you have an active DC Hub Pro Monthly subscription. Reply STOP to opt out.
+ You're receiving this because you have an active DC Hub Pro Monthly subscription. {unsub_footer}
 </p>
 
 </body></html>"""
@@ -243,17 +274,22 @@ about anything we shipped this quarter.</p>
 
 # ── Resend integration ───────────────────────────────────────────────
 
-def _send_via_resend(to_email: str, subject: str, body_html: str
+def _send_via_resend(to_email: str, subject: str, body_html: str,
+                     unsub_headers: dict | None = None
                      ) -> tuple[bool, str, str]:
     """POST to Resend. Returns (ok, info_string, message_id)."""
     if not _RESEND_KEY:
         return False, "no_resend_key", ""
     try:
         import requests
+        _json = {"from": f"{_FROM_NAME} <{_FROM_EMAIL}>",
+                 "to": [to_email], "subject": subject, "html": body_html}
+        # RFC 2369 + RFC 8058 one-click unsubscribe headers (Resend "headers").
+        if unsub_headers:
+            _json["headers"] = {str(k): str(v) for k, v in unsub_headers.items()}
         r = requests.post(
             "https://api.resend.com/emails",
-            json={"from": f"{_FROM_NAME} <{_FROM_EMAIL}>",
-                  "to": [to_email], "subject": subject, "html": body_html},
+            json=_json,
             headers={"Authorization": f"Bearer {_RESEND_KEY}"},
             timeout=10,
         )
@@ -456,7 +492,26 @@ def run_fire(fire_key: str) -> dict:
                     out["skipped"].append({"user_id": user_id, "reason": "bad_email"})
                     continue
 
+                # Phase 3 — honor CAN-SPAM suppression list (opted-out addresses).
+                _is_sup, _ulink, _lheaders = _suppression()
+                if _is_sup:
+                    try:
+                        if _is_sup(cur, email):
+                            out["skipped"].append({"user_id": user_id, "email": email,
+                                                    "reason": "suppressed"})
+                            continue
+                    except Exception:
+                        pass
+
                 subject, body_html, _preview = _render_email(email)
+
+                # RFC 2369 + RFC 8058 one-click unsubscribe headers.
+                unsub_headers = None
+                if _lheaders:
+                    try:
+                        unsub_headers = _lheaders(email)
+                    except Exception:
+                        unsub_headers = None
 
                 if env_dry:
                     _log(f"FIRE [DRY_RUN_ENV] would have sent → {email}")
@@ -464,7 +519,8 @@ def run_fire(fire_key: str) -> dict:
                                          "dry_run": True})
                     continue
 
-                ok, info, msg_id = _send_via_resend(email, subject, body_html)
+                ok, info, msg_id = _send_via_resend(email, subject, body_html,
+                                                    unsub_headers=unsub_headers)
 
                 # Write campaign_log row even on failure so we don't
                 # spam the same user on retry. UNIQUE(campaign_name, email)

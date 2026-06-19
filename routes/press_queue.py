@@ -169,7 +169,13 @@ def _distribute_published_releases(releases):
 
     _ensure_optout()
     with _conn() as c, c.cursor() as cur:
-        cur.execute("""SELECT DISTINCT email FROM mcp_dev_keys WHERE email IS NOT NULL AND email != ''""")
+        # Phase 3 consent gate: captured MCP emails only go out if they
+        # explicitly opted in to marketing AND are not on the suppression list.
+        cur.execute("""SELECT DISTINCT email FROM mcp_dev_keys m
+                        WHERE email IS NOT NULL AND email != ''
+                          AND metadata->>'marketing_opt_in' = 'true'
+                          AND NOT EXISTS (SELECT 1 FROM email_suppression s
+                                          WHERE lower(s.email)=lower(m.email))""")
         keys_emails = [r[0] for r in cur.fetchall()]
         try:
             cur.execute("""SELECT DISTINCT email FROM digest_subscribers WHERE unsubscribed_at IS NULL""")
@@ -201,9 +207,19 @@ def _distribute_published_releases(releases):
                      f'You received this as a DC Hub dev-key holder. '
                      f'<a href="https://dchub.cloud/api/v1/press/unsubscribe?email={em}" style="color:#aaa;">'
                      f'Unsubscribe from DCPI alerts</a>.</p>')
+            # RFC 2369 + RFC 8058 one-click headers (canonical /api/v1/unsubscribe).
+            _lu_headers = {}
             try:
+                from routes.email_suppression import list_unsubscribe_headers as _luh
+                _lu_headers = _luh(em)
+            except Exception:
+                _lu_headers = {}
+            try:
+                _payload = {"from": from_email, "to": [em], "subject": title, "html": html + unsub}
+                if _lu_headers:
+                    _payload["headers"] = _lu_headers
                 _rq.post("https://api.resend.com/emails",
-                    json={"from": from_email, "to": [em], "subject": title, "html": html + unsub},
+                    json=_payload,
                     headers={"Authorization": f"Bearer {api_key}",
                              "Content-Type": "application/json", "Accept": "application/json",
                              "User-Agent": "Mozilla/5.0 (compatible; DCHub/1.0)"},

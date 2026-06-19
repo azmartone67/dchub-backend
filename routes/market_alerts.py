@@ -42,6 +42,8 @@ Public endpoints (subscribe / unsubscribe / list) are intentionally
 lightweight so both the web app and the MCP layer can call them.
 """
 
+import hmac
+import html as _html
 import json
 import os
 import re
@@ -49,7 +51,23 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from functools import wraps
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, Response, jsonify, request
+
+# Phase 3 (consent/legal): the email_suppression list is the single source of
+# truth for "never email this address". Guarded import — the module may not be
+# present in every deployment, so a failure must degrade gracefully and never
+# crash an unsubscribe. We use unsub_token to HMAC-verify one-click links and
+# suppress() to mirror an opt-out into the canonical list.
+try:
+    from routes.email_suppression import (unsub_token as _unsub_token,
+                                          suppress as _suppress)
+except Exception:
+    try:
+        from email_suppression import (unsub_token as _unsub_token,
+                                        suppress as _suppress)
+    except Exception:
+        _unsub_token = None
+        _suppress = None
 
 market_alerts_bp = Blueprint("market_alerts", __name__)
 
@@ -254,32 +272,99 @@ def subscribe():
         return jsonify(ok=False, error=str(e)[:200]), 200
 
 
-@market_alerts_bp.route("/api/v1/alerts/unsubscribe", methods=["POST"])
+def _do_unsubscribe(slug, channel, destination):
+    """Deactivate matching market_subscriptions rows, then mirror the opt-out
+    into the canonical email_suppression list (email channel only — webhook
+    destinations are URLs, not addresses). Returns the deactivated rowcount.
+    The suppression mirror is best-effort so one opt-out is honored everywhere
+    without ever undoing the local deactivation."""
+    with _conn() as c, c.cursor() as cur:
+        if slug:
+            cur.execute(
+                """UPDATE market_subscriptions SET active = FALSE
+                    WHERE market_slug = %s AND channel = %s
+                      AND LOWER(destination) = %s""",
+                (slug, channel, destination))
+        else:
+            cur.execute(
+                """UPDATE market_subscriptions SET active = FALSE
+                    WHERE channel = %s AND LOWER(destination) = %s""",
+                (channel, destination))
+        n = cur.rowcount
+        c.commit()
+    if channel == "email" and _suppress is not None:
+        try:
+            _suppress(destination, reason="market-alerts-unsubscribe",
+                      source="alerts-unsubscribe")
+        except Exception:
+            pass
+    return n
+
+
+def _alerts_confirm_page(channel, destination, slug):
+    """Neutral HTML confirm form for a no/invalid-token GET. A drive-by image
+    or link GET cannot opt anyone out — only an explicit POST from this form
+    (or an RFC 8058 one-click POST) performs the unsubscribe."""
+    d = _html.escape(destination or "")
+    scope = ("all markets" if not slug else _html.escape(slug))
+    return f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Unsubscribe · DC Hub</title></head>
+<body style="margin:0;background:#eef0f5;font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif">
+<table role="presentation" width="100%" height="100%" cellpadding="0" cellspacing="0"><tr><td align="center" valign="middle" style="padding:48px 16px">
+<table role="presentation" width="460" cellpadding="0" cellspacing="0" style="max-width:460px;background:#fff;border-radius:14px;border:1px solid #e6e9f0">
+<tr><td style="padding:28px;text-align:center;color:#0f172a;font-size:16px;line-height:1.6">
+Stop market-movement alerts for <b>{d}</b> ({scope})?
+<form method="post" style="padding-top:18px;margin:0">
+<input type="hidden" name="channel" value="{_html.escape(channel or 'email')}">
+<input type="hidden" name="destination" value="{d}">
+<input type="hidden" name="market" value="{_html.escape(slug or '')}">
+<button type="submit" style="background:#1976d2;color:#fff;border:0;padding:11px 22px;border-radius:8px;font-weight:600;font-size:15px;cursor:pointer">Yes, unsubscribe me</button>
+</form></td></tr></table></td></tr></table></body></html>"""
+
+
+@market_alerts_bp.route("/api/v1/alerts/unsubscribe", methods=["POST", "GET"])
 def unsubscribe():
-    """Deactivate a subscription. Body: {market, channel, destination}.
-    Omit `market` to unsubscribe a destination from ALL markets."""
+    """Deactivate a subscription, HMAC-hardened.
+
+    Body/params: {market?, channel, destination}. Omit `market` to unsubscribe
+    a destination from ALL markets.
+
+    GET with a valid HMAC token -> RFC 8058 one-click opt-out (deactivate +
+    email_suppression mirror), friendly JSON.
+    POST -> explicit human confirmation; perform the opt-out.
+    GET with NO/invalid token -> do NOT auto-unsubscribe (the drive-by abuse
+    vector where a malicious <img>/link GET opts a third party out); instead
+    render a neutral confirm page whose form POSTs back to opt out.
+
+    The token is verified against unsub_token(destination) — the email/URL
+    being opted out — so one-click links minted for that destination verify.
+    """
     _ensure_schema()
     body = request.get_json(silent=True) or {}
-    slug = _norm_slug(body.get("market") or body.get("market_slug") or "")
-    channel = (body.get("channel") or "").strip().lower()
-    destination = (body.get("destination") or "").strip().lower()
+    slug = _norm_slug(body.get("market") or body.get("market_slug")
+                      or request.form.get("market")
+                      or request.args.get("market") or "")
+    channel = (body.get("channel") or request.form.get("channel")
+               or request.args.get("channel") or "").strip().lower()
+    destination = (body.get("destination") or request.form.get("destination")
+                   or request.args.get("destination") or "").strip().lower()
+    token = (request.args.get("token") or request.form.get("token") or "").strip()
     if not destination or channel not in ("email", "webhook"):
         return jsonify(ok=False, error="channel + destination required"), 400
+
+    token_ok = bool(token and _unsub_token is not None
+                    and hmac.compare_digest(token, _unsub_token(destination)))
+
+    # Only act on a real POST (explicit confirm / RFC 8058 one-click) or a GET
+    # that carries a valid HMAC token. A bare/invalid-token GET must NOT opt
+    # anyone out — render the confirm page instead.
+    if request.method == "GET" and not token_ok:
+        return Response(_alerts_confirm_page(channel, destination, slug),
+                        status=200, mimetype="text/html")
+
     try:
-        with _conn() as c, c.cursor() as cur:
-            if slug:
-                cur.execute(
-                    """UPDATE market_subscriptions SET active = FALSE
-                        WHERE market_slug = %s AND channel = %s
-                          AND LOWER(destination) = %s""",
-                    (slug, channel, destination))
-            else:
-                cur.execute(
-                    """UPDATE market_subscriptions SET active = FALSE
-                        WHERE channel = %s AND LOWER(destination) = %s""",
-                    (channel, destination))
-            n = cur.rowcount
-            c.commit()
+        n = _do_unsubscribe(slug, channel, destination)
         return jsonify(ok=True, deactivated=n), 200
     except Exception as e:
         return jsonify(ok=False, error=str(e)[:200]), 200

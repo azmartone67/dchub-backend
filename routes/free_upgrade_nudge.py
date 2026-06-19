@@ -78,6 +78,42 @@ def _key_hash(k: str) -> str:
     return hashlib.sha256((k or "").encode()).hexdigest()[:16]
 
 
+# Phase 3 — CAN-SPAM suppression + one-click unsubscribe helpers. Guarded so
+# a missing/broken module degrades gracefully and never blocks a send.
+def _suppression():
+    """Return (is_suppressed, unsub_link, list_unsubscribe_headers) or (None,)*3."""
+    try:
+        from routes.email_suppression import (
+            is_suppressed, unsub_link, list_unsubscribe_headers)
+        return is_suppressed, unsub_link, list_unsubscribe_headers
+    except Exception:
+        try:
+            from email_suppression import (
+                is_suppressed, unsub_link, list_unsubscribe_headers)
+            return is_suppressed, unsub_link, list_unsubscribe_headers
+        except Exception:
+            return None, None, None
+
+
+def _is_suppressed_email(email: str) -> bool:
+    """True only if the suppression list positively contains `email`.
+
+    Opens a short-lived safe_db cursor and unwraps to the raw psycopg2 cursor
+    (db_utils PGCursorWrapper trap) before handing it to is_suppressed.
+    """
+    is_sup, _ul, _lh = _suppression()
+    if not is_sup:
+        return False
+    try:
+        from db_utils import safe_db
+        with safe_db() as c:
+            cur = c.cursor()
+            raw = getattr(cur, "_cur", cur)
+            return bool(is_sup(raw, email))
+    except Exception:
+        return False
+
+
 def _candidates(min_calls: int, days: int, cooldown_days: int,
                 include_internal: bool = False) -> list[dict]:
     out: list[dict] = []
@@ -170,6 +206,22 @@ def _render(cand: dict, links: dict) -> tuple[str, str]:
     subject = f"Your DC Hub key made {_cw} this month — here's the full-data unlock"
     dev_link = links.get("developer") or "https://dchub.cloud/pricing"
     met_link = links.get("metered") or "https://dchub.cloud/pricing"
+
+    # Real tokenized one-click unsubscribe (replaces bare "Reply STOP").
+    _is_sup, _unsub_link, _lh = _suppression()
+    unsub_url = None
+    if _unsub_link:
+        try:
+            unsub_url = _unsub_link(cand.get("email"))
+        except Exception:
+            unsub_url = None
+    if unsub_url:
+        unsub_footer = (f'<a href="{unsub_url}" style="color:#999">Unsubscribe</a> '
+                        f'and we\'ll never send another upgrade note. '
+                        f'Either way we won\'t send this more than once every 45 days.')
+    else:
+        unsub_footer = ("Reply STOP and we'll never send another upgrade note. "
+                        "Either way we won't send this more than once every 45 days.")
     body = f"""
 <div style="font-family:-apple-system,Segoe UI,Inter,sans-serif;max-width:560px;margin:0 auto;color:#1a1a2e">
   <p>Hi,</p>
@@ -188,20 +240,24 @@ def _render(cand: dict, links: dict) -> tuple[str, str]:
   <p style="font-size:13px;color:#666">Questions? Just reply — this inbox is read by a human.
      Full plans: <a href="https://dchub.cloud/pricing">dchub.cloud/pricing</a></p>
   <p style="font-size:12px;color:#999">You're receiving this because your API key has been
-     actively calling DC Hub. Reply STOP and we'll never send another upgrade note.
-     Either way we won't send this more than once every 45 days.</p>
+     actively calling DC Hub. {unsub_footer}</p>
 </div>"""
     return subject, body
 
 
-def _send_resend(to_email: str, subject: str, html: str) -> tuple[bool, str]:
+def _send_resend(to_email: str, subject: str, html: str,
+                 unsub_headers: dict | None = None) -> tuple[bool, str]:
     if not _RESEND_KEY:
         return False, "no_resend_key"
     try:
+        _json = {"from": f"{_FROM_NAME} <{_FROM_EMAIL}>",
+                 "to": [to_email], "subject": subject, "html": html}
+        # RFC 2369 + RFC 8058 one-click unsubscribe headers (Resend "headers").
+        if unsub_headers:
+            _json["headers"] = {str(k): str(v) for k, v in unsub_headers.items()}
         r = requests.post(
             "https://api.resend.com/emails",
-            json={"from": f"{_FROM_NAME} <{_FROM_EMAIL}>",
-                  "to": [to_email], "subject": subject, "html": html},
+            json=_json,
             headers={"Authorization": f"Bearer {_RESEND_KEY}",
                      "User-Agent": "DCHub-UpgradeNudge/1.0 (+https://dchub.cloud)"},
             timeout=15)
@@ -256,11 +312,26 @@ def nudge_fire():
     cands = _candidates(min_calls, days, cooldown, include_internal)[:cap]
     results = []
     from db_utils import safe_db
+    _is_sup, _ulink, _lheaders = _suppression()
     for cand in cands:
+        # Phase 3 — honor CAN-SPAM suppression list (opted-out addresses).
+        if _is_suppressed_email(cand["email"]):
+            results.append({"to": cand["email"], "ok": False,
+                            "detail": "skipped_suppressed",
+                            "pair_code": None})
+            continue
         links = _checkout_links(cand["api_key"], cand["api_key_hash"])
         subj, html = _render(cand, links)
+        # RFC 2369 + RFC 8058 one-click unsubscribe headers.
+        unsub_headers = None
+        if _lheaders:
+            try:
+                unsub_headers = _lheaders(cand["email"])
+            except Exception:
+                unsub_headers = None
         if live:
-            ok, detail = _send_resend(cand["email"], subj, html)
+            ok, detail = _send_resend(cand["email"], subj, html,
+                                      unsub_headers=unsub_headers)
         else:
             ok, detail = True, "dry_run"
         results.append({"to": cand["email"], "ok": ok, "detail": detail,

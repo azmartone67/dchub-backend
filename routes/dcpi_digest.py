@@ -45,9 +45,14 @@ def send_digest():
 
     # Pull all dev-key holders
     with _conn() as c, c.cursor() as cur:
-        cur.execute("""SELECT DISTINCT email FROM mcp_dev_keys
+        # Phase 3 consent gate: captured MCP emails only go out if they
+        # explicitly opted in to marketing AND are not on the suppression list.
+        cur.execute("""SELECT DISTINCT email FROM mcp_dev_keys m
                        WHERE email IS NOT NULL AND email != ''
-                       AND tier IN ('free','paid','enterprise')""")
+                       AND tier IN ('free','paid','enterprise')
+                       AND metadata->>'marketing_opt_in' = 'true'
+                       AND NOT EXISTS (SELECT 1 FROM email_suppression s
+                                       WHERE lower(s.email)=lower(m.email))""")
         emails = [r[0] for r in cur.fetchall()]
 
     if dry:
@@ -61,25 +66,40 @@ def send_digest():
     except Exception as e:
         return jsonify(error=f"import: {e}"), 500
 
+    # Canonical one-click unsubscribe (RFC 8058) + tokenized footer link.
+    try:
+        from routes.email_suppression import list_unsubscribe_headers as _luh, unsub_link as _ulink
+    except Exception:
+        _luh = lambda e: {}
+        _ulink = lambda e: "https://dchub.cloud/api/v1/unsubscribe"
     for em in emails:
         # Use _p99_send_email but inject the digest html — simpler to just
         # send a plain digest via Resend directly here
         try:
             import requests as _rq
+            _unsub = _ulink(em)
+            _footer = (f'<p style="color:#888;font-size:0.72rem;margin-top:1.6rem;text-align:center;">'
+                       f'You received this DC Hub digest. '
+                       f'<a href="{_unsub}" style="color:#888;">Unsubscribe</a>.</p>')
+            _resend_headers = {
+                "Authorization": f"Bearer {os.environ.get('RESEND_API_KEY','').strip()}",
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "User-Agent": "Mozilla/5.0 (compatible; DCHub/1.0; +https://dchub.cloud)",
+            }
+            _payload = {
+                "from": os.environ.get("DCHUB_FROM_EMAIL", "DC Hub <jonathan@dchub.cloud>"),
+                "to": [em],
+                "subject": "DCPI Weekly · the markets that moved",
+                "html": html + _footer,
+            }
+            _lu = _luh(em)
+            if _lu:
+                _payload["headers"] = _lu
             r = _rq.post(
                 "https://api.resend.com/emails",
-                json={
-                    "from": os.environ.get("DCHUB_FROM_EMAIL", "DC Hub <jonathan@dchub.cloud>"),
-                    "to": [em],
-                    "subject": "DCPI Weekly · the markets that moved",
-                    "html": html,
-                },
-                headers={
-                    "Authorization": f"Bearer {os.environ.get('RESEND_API_KEY','').strip()}",
-                    "Content-Type": "application/json",
-                    "Accept": "application/json",
-                    "User-Agent": "Mozilla/5.0 (compatible; DCHub/1.0; +https://dchub.cloud)",
-                },
+                json=_payload,
+                headers=_resend_headers,
                 timeout=15,
             )
             if 200 <= r.status_code < 300: sent += 1
