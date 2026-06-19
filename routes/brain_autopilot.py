@@ -2237,6 +2237,14 @@ def autopilot_status():
         actions_24h=total,
         last_action_ever=last_ever,
         by_pattern_outcome=rows,
+        # r-3c (2026-06-18): expose the LIVE benched set (time-window quarantine
+        # ∪ effect-aware bench) so the reliability fix is observable + verifiable.
+        quarantined_now=sorted(_quarantined_patterns()),
+        effect_bench={
+            "lookback_days": _EFFECT_FAIL_DAYS,
+            "fail_threshold": _EFFECT_FAIL_THRESHOLD,
+            "disabled": _effect_quarantine_disabled(),
+        },
         disabled=_is_disabled(),
         dry_run=_is_dry_run(),
         pattern_library_size=len(_PATTERN_LIBRARY),
