@@ -43,8 +43,20 @@ _RESTART_WINDOW_MIN = int(os.environ.get("HEALTH_ALERT_RESTART_WINDOW_MIN", "15"
 _RESTART_THRESHOLD  = int(os.environ.get("HEALTH_ALERT_RESTART_N", "4"))  # distinct RESTART EVENTS (one deploy = 1)
 _RATE_LIMIT_S       = int(os.environ.get("HEALTH_ALERT_RATE_LIMIT_S", "600"))  # 10 min between same-kind alerts
 
-_last_sent = {}   # in-process rate limit: kind -> ts
-_consec_high = 0  # consecutive high-pool readings (require 2 → ignore brief spikes)
+# Auto-recovery (shadow→arm, like everything else here). The existing HealthMonitor
+# resets the pool only on DB-UNREACHABLE; the 2026-06-19 outage was the pool FULL
+# while the DB was fine (1802 conns free), so it slipped past. This catches that:
+# critical utilization + forced_reclaims RISING = stuck/leaked connections → reset
+# helps; reclaims FLAT = a flood → reset is futile, so alert "find the source"
+# instead. The reset itself only fires when ARMED (default OFF — observe first).
+_AUTORESET_PCT     = float(os.environ.get("HEALTH_AUTORESET_PCT", "95"))
+_AUTORESET_ENABLE  = str(os.environ.get("HEALTH_AUTORESET_ENABLE", "")).lower() in ("1", "true", "yes")
+_AUTORESET_GAP_S   = int(os.environ.get("HEALTH_AUTORESET_GAP_S", "300"))  # ≥5 min between auto-resets
+
+_last_sent = {}        # in-process rate limit: kind -> ts
+_consec_high = 0       # consecutive high-pool readings (require 2 → ignore brief spikes)
+_last_reclaims = None  # forced_reclaims at last check (rise = stuck/leaked conns)
+_last_reset = 0.0      # ts of the last auto-reset (rate limit)
 _started = False
 
 
@@ -94,7 +106,7 @@ def _alert(kind: str, subject: str, html: str):
 
 # ── 1) pool / circuit-breaker monitor (in-process, in-memory reads) ──────────
 def _monitor_loop():
-    global _consec_high
+    global _consec_high, _last_reclaims, _last_reset
     time.sleep(_INITIAL_DELAY_S)  # let boot noise settle (a brief boot spike isn't a problem)
     while True:
         try:
@@ -103,8 +115,14 @@ def _monitor_loop():
             h = get_pool_health() or {}
             pool = h.get("pool") or {}
             cb = h.get("circuit_breaker") or {}
+            stats = h.get("stats") or {}
             util = float(pool.get("utilization_pct") or 0)
             checked, mx = pool.get("checked_out"), pool.get("max_configured")
+            reclaims = int(stats.get("forced_reclaims") or 0)
+            reclaim_delta = (reclaims - _last_reclaims) if _last_reclaims is not None else 0
+            _last_reclaims = reclaims
+            stuck = reclaim_delta > 0  # connections being force-reclaimed = leaked/stuck → reset frees them
+
             if cb.get("open"):
                 _alert("circuit_open", "🚨 DC Hub: DB circuit breaker OPEN",
                        f"<h2>DB circuit breaker is OPEN</h2>"
@@ -114,6 +132,40 @@ def _monitor_loop():
                        f"<p>The site is likely degrading. Check Railway logs + "
                        f"<code>/api/health/db</code>.</p>")
                 _consec_high = 0
+            elif util >= _AUTORESET_PCT:
+                # CRITICAL. Diagnose stuck (reset helps) vs flood (reset is futile).
+                _consec_high += 1
+                if _consec_high >= 2:
+                    import time as _t
+                    now = _t.time()
+                    if stuck and _AUTORESET_ENABLE and (now - _last_reset) > _AUTORESET_GAP_S:
+                        try:
+                            from main import _reset_all_pools
+                            _reset_all_pools()  # proven HealthMonitor reset — frees stuck/leaked conns
+                            _last_reset = now
+                            log.warning("health_alerter: AUTO-RESET pool (util=%s reclaims+=%s)", util, reclaim_delta)
+                            _alert("autoreset", f"🔧 DC Hub: AUTO-RESET stuck DB pool (was {util}%, +{reclaim_delta} reclaims)",
+                                   f"<h2>Auto-recovered: reset the DB pool</h2>"
+                                   f"<p>Pool was {util}% ({checked}/{mx}) with connections being force-reclaimed "
+                                   f"(+{reclaim_delta}) — i.e. stuck/leaked. The brain reset the pool (the proven "
+                                   f"HealthMonitor reset) to free them. If this repeats, find the leak.</p>")
+                        except Exception as _re:
+                            log.warning("health_alerter: auto-reset failed: %s", _re)
+                    elif stuck:
+                        _alert("pool_stuck", f"🚨 DC Hub: DB pool {util}% STUCK ({checked}/{mx}, +{reclaim_delta} reclaims)",
+                               f"<h2>DB pool critical + STUCK: {util}%</h2>"
+                               f"<p>{checked}/{mx} checked out, connections being force-reclaimed "
+                               f"(+{reclaim_delta}) = leaked/stuck. A pool reset would free them — the brain "
+                               f"<b>would auto-reset</b> here but auto-recovery is OFF. Arm with "
+                               f"<code>HEALTH_AUTORESET_ENABLE=1</code> once you've seen it diagnose correctly, "
+                               f"or reset now via <code>/api/health/db</code> tooling.</p>")
+                    else:
+                        _alert("pool_flood", f"🚨 DC Hub: DB pool {util}% (FLOOD — reclaims flat)",
+                               f"<h2>DB pool critical: {util}% — looks like a FLOOD</h2>"
+                               f"<p>{checked}/{mx} checked out but reclaims are flat — connections are churning "
+                               f"fast (a load flood), not stuck. A pool reset would NOT help (it re-fills "
+                               f"instantly). Find + shed the load SOURCE (a hot endpoint / a caller hammering "
+                               f"the backend) — this is what the 2026-06-19 outage was.</p>")
             elif util >= _POOL_UTIL_ALERT:
                 _consec_high += 1
                 if _consec_high >= 2:  # sustained, not a blip
