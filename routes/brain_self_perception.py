@@ -390,7 +390,7 @@ def _gather_strategic_recs(window_days: int = 7) -> dict:
                 """SELECT week_of, kind, title, status, pr_url,
                           confidence, dollar_lift_est, created_at
                      FROM brain_strategic_recommendations
-                    WHERE created_at > NOW() - INTERVAL '%s days'
+                    WHERE created_at > NOW() - %s * INTERVAL '1 day'
                       AND kind != 'synthesis_meta'
                     ORDER BY created_at DESC
                     LIMIT 30""", (window_days,))
