@@ -82,9 +82,13 @@ def _admin_ok() -> bool:
         _v = os.environ.get(_n)
         if _v:
             _keys.add(_v)
+    # Accept the key from a header, the ?admin_key= query param (first visit), OR
+    # the dchub_innov_key cookie (remembered after the first valid open) so the
+    # operator pastes the key once and revisits clean.
     _sent = (request.headers.get("X-Internal-Key")
              or request.headers.get("X-Admin-Key")
-             or request.args.get("admin_key") or "").strip()
+             or request.args.get("admin_key")
+             or request.cookies.get("dchub_innov_key") or "").strip()
     return bool(_sent) and _sent in _keys
 
 
@@ -450,7 +454,17 @@ def innovation_dashboard_page():
     admin key the digest fetch + grade POSTs need."""
     if not _admin_ok():
         return Response(_ADMIN_ONLY_HTML, mimetype="text/html", status=403)
-    return Response(_PAGE_HTML, mimetype="text/html")
+    resp = Response(_PAGE_HTML, mimetype="text/html")
+    # Remember the key so the operator pastes it once. Only (re)set it when it was
+    # PROVIDED this visit via query/header (first open); JS-readable so the page
+    # reuses it for the cross-module grade/approve POSTs. Secure + SameSite=Lax, 30d.
+    _provided = (request.headers.get("X-Internal-Key")
+                 or request.headers.get("X-Admin-Key")
+                 or request.args.get("admin_key") or "").strip()
+    if _provided:
+        resp.set_cookie("dchub_innov_key", _provided, max_age=30 * 24 * 3600,
+                        secure=True, samesite="Lax", path="/")
+    return resp
 
 
 # ── Self-contained HTML (inline CSS/JS, no build step) ───────────────
@@ -575,7 +589,8 @@ brain_self_agenda · brain_investigations · brain_enhancement_proposals</footer
   // Carry the SAME admin key the page was opened with onto the digest fetch +
   // grade POSTs (mirrors the page's own ?admin_key= gate). Header is preferred;
   // query-param is the fallback that makes the whole thing browser-openable.
-  var KEY = new URLSearchParams(location.search).get('admin_key') || '';
+  function getCookie(n){var m=document.cookie.match(new RegExp('(?:^|; )'+n.replace(/([.*+?^${}()|[\]\\])/g,'\\$1')+'=([^;]*)'));return m?decodeURIComponent(m[1]):'';}
+  var KEY = new URLSearchParams(location.search).get('admin_key') || getCookie('dchub_innov_key') || '';
   // APPROVE ledger — operator GREENLIGHT decisions, keyed "kind:id". Populated
   // from /api/v1/brain/innovation/approvals before each render so approved items
   // stay marked across the 60s auto-refresh. Propose-only: approving RECORDS the
