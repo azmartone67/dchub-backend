@@ -795,7 +795,7 @@ class ConstructionPermitDiscovery:
                         'development', 'approved', 'planning commission', 'zoning']
             for keyword in keywords:
                 try:
-                    # FIX: datetime('now') → NOW() - INTERVAL, LIKE → ILIKE, ? → %s
+                    # FIX: NOW() → NOW() - INTERVAL, LIKE → ILIKE, ? → %s
                     cursor.execute('''
                         SELECT title, summary, companies, locations FROM announcements
                         WHERE (title ILIKE %s OR summary ILIKE %s)
