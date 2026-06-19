@@ -855,7 +855,7 @@ def gather_recent_proposals(window_days: int = 30) -> list:
                 """SELECT pattern, title, status, files_affected,
                           proposed_at, confidence
                      FROM brain_architecture_proposals
-                    WHERE proposed_at > NOW() - INTERVAL '%s days'
+                    WHERE proposed_at > NOW() - %s * INTERVAL '1 day'
                     ORDER BY proposed_at DESC LIMIT 20""",
                 (window_days,))
             rows = cur.fetchall() or []
