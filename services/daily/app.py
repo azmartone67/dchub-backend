@@ -1,4 +1,5 @@
 """FastAPI service — DC Hub Daily.
+# deploy-trigger 2026-06-18: ship nav fix (7ef76d08) via GitHub source deploy
 
 Endpoints:
     GET  /                          landing (HTML)
