@@ -351,7 +351,7 @@ def _unused_crawler_stats():
 
             cursor.execute('''
                 SELECT COUNT(*) FROM crawler_visits
-                WHERE created_at > datetime('now', '-24 hours')
+                WHERE created_at > NOW() - INTERVAL '24 hours'
             ''')
             last_24h = cursor.fetchone()[0]
 
