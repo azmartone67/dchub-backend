@@ -172,24 +172,30 @@ def _check_restart_loop():
         cur = c.cursor()
         cur.execute("CREATE TABLE IF NOT EXISTS app_health_boots "
                     "(id BIGSERIAL PRIMARY KEY, boot_at TIMESTAMPTZ NOT NULL DEFAULT NOW())")
+        cur.execute("ALTER TABLE app_health_boots ADD COLUMN IF NOT EXISTS deploy_id TEXT")
         cur.execute("CREATE TABLE IF NOT EXISTS app_health_alerts "
                     "(kind TEXT, sent_at TIMESTAMPTZ NOT NULL DEFAULT NOW())")
-        cur.execute("INSERT INTO app_health_boots DEFAULT VALUES")
-        # Count distinct RESTART EVENTS, not raw boots. One container start fans
-        # out many boot rows (gunicorn worker + MCP sidecar + watchdog, × 2
-        # replicas — observed ~8 rows within ~35s), so raw counting reads a single
-        # deploy as a "loop" (it false-fired once on 2026-06-19). Collapse boots
-        # <60s apart into one event (gaps-and-islands); a real crash/watchdog loop
-        # reboots ≥~80s apart, so each reboot is its own event.
-        cur.execute("""WITH b AS (
-                         SELECT boot_at, LAG(boot_at) OVER (ORDER BY boot_at) AS prev
-                         FROM app_health_boots
-                         WHERE boot_at > NOW() - make_interval(mins => %s))
-                       SELECT count(*) FROM b
-                       WHERE prev IS NULL OR (boot_at - prev) > INTERVAL '60 seconds'""",
-                    (_RESTART_WINDOW_MIN,))
-        n = int(cur.fetchone()[0] or 0)
-        if n >= _RESTART_THRESHOLD:
+        # THE discriminator: a DEPLOY gets a NEW Railway deployment id each time;
+        # a CRASH LOOP restarts the SAME deployment. So we only count restarts that
+        # share THIS deployment's id — operator deploy bursts (each a fresh id) can
+        # never trip it, only one image restarting repeatedly does. (The first two
+        # versions counted raw boots / total events and false-fired on my own
+        # rapid deploy session, 2026-06-19.)
+        deploy_id = (os.environ.get("RAILWAY_DEPLOYMENT_ID")
+                     or os.environ.get("RAILWAY_GIT_COMMIT_SHA") or "").strip()
+        cur.execute("INSERT INTO app_health_boots (deploy_id) VALUES (%s)", (deploy_id or None,))
+        n = 0
+        if deploy_id:
+            # distinct restart events (boots <60s apart collapse to 1) for THIS deploy_id
+            cur.execute("""WITH b AS (
+                             SELECT boot_at, LAG(boot_at) OVER (ORDER BY boot_at) AS prev
+                             FROM app_health_boots
+                             WHERE deploy_id = %s AND boot_at > NOW() - make_interval(mins => %s))
+                           SELECT count(*) FROM b
+                           WHERE prev IS NULL OR (boot_at - prev) > INTERVAL '60 seconds'""",
+                        (deploy_id, _RESTART_WINDOW_MIN))
+            n = int(cur.fetchone()[0] or 0)
+        if deploy_id and n >= _RESTART_THRESHOLD:
             cur.execute("SELECT max(sent_at) FROM app_health_alerts WHERE kind='restart_loop'")
             last = cur.fetchone()[0]
             recent = False
@@ -199,12 +205,11 @@ def _check_restart_loop():
             if not recent:
                 if _send_email("🚨 DC Hub backend RESTART LOOP",
                                f"<h2>Backend is restart-looping</h2>"
-                               f"<p>{n} distinct restarts in the last {_RESTART_WINDOW_MIN} min "
-                               f"(threshold {_RESTART_THRESHOLD}; deploy bursts collapse to 1). "
-                               f"The container is crash/restart-looping — "
-                               f"likely a bad deploy, DB-pool exhaustion, or OOM.</p>"
-                               f"<p>Check Railway deploy logs; consider rolling back the last deploy or "
-                               f"flipping the relevant kill-switch.</p>"):
+                               f"<p>The SAME deployment ({deploy_id[:12]}…) has restarted {n} times in the "
+                               f"last {_RESTART_WINDOW_MIN} min (threshold {_RESTART_THRESHOLD}). This is a real "
+                               f"crash/restart loop — NOT a deploy burst (those get new ids) — likely DB-pool "
+                               f"exhaustion, OOM, or a boot crash.</p>"
+                               f"<p>Check Railway deploy logs; consider rolling back or flipping a kill-switch.</p>"):
                     cur.execute("INSERT INTO app_health_alerts (kind) VALUES ('restart_loop')")
                     log.warning("health_alerter: RESTART-LOOP alert sent (%s boots/%smin)", n, _RESTART_WINDOW_MIN)
         cur.execute("DELETE FROM app_health_boots WHERE boot_at < NOW() - INTERVAL '2 days'")
