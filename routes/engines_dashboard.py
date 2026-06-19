@@ -90,8 +90,8 @@ function renderUtil(d){
 }
 function load(){
   Promise.all([
-    fetch('/api/v1/mcp/leadership',{cache:'no-store'}).then(function(r){return r.json()}).then(renderLead).catch(function(){document.getElementById('lead-body').innerHTML='<span class=err>engine unavailable</span>';return null}),
-    fetch('/api/v1/agents/utilization',{cache:'no-store'}).then(function(r){return r.json()}).then(renderUtil).catch(function(){document.getElementById('util-body').innerHTML='<span class=err>engine unavailable</span>';return null})
+    fetch('/api/v1/mcp/leadership?_='+Date.now(),{cache:'no-store'}).then(function(r){return r.json()}).then(renderLead).catch(function(){document.getElementById('lead-body').innerHTML='<span class=err>engine unavailable</span>';return null}),
+    fetch('/api/v1/agents/utilization?_='+Date.now(),{cache:'no-store'}).then(function(r){return r.json()}).then(renderUtil).catch(function(){document.getElementById('util-body').innerHTML='<span class=err>engine unavailable</span>';return null})
   ]).then(function(v){
     var b=document.getElementById('banner');
     b.innerHTML='<b>Convergent diagnosis:</b> all engines point at the same binding constraint — <b style="color:#ffb4b4">retention / incent</b>. Agents arrive, love us (153 calls per real IP), and don\'t come back (~1/wk). Onboarding &amp; training are strong; the entire game is the return loop.';
