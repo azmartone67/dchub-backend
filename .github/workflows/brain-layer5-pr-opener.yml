@@ -67,7 +67,7 @@ jobs:
 
       - name: Install test deps
         run: |
-          pip install --quiet pytest requests psycopg2-binary 2>/dev/null || true
+          pip install --quiet pytest requests psycopg2-binary flask pyyaml 2>/dev/null || true
           # Best-effort: install whatever requirements.txt has so the
           # test suite's imports resolve. Don't fail the job if some
           # heavy dep won't install — the pure-function tests/ suite

@@ -69,7 +69,11 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: '3.13'
-      - name: Install pytest
-        run: python3 -m pip install pytest
+      - name: Install pytest + the light deps the suite needs
+        # pytest-only aborted collection: routes the tests import pull flask /
+        # requests / yaml / psycopg2. Installing these light, no-DB deps lets the
+        # brain auto-merge/draft/gate tests actually RUN (a real gate, not a skip).
+        # Verified green: 210 passed, 8 skipped (DB tests skip w/o DATABASE_URL).
+        run: python3 -m pip install pytest requests flask pyyaml psycopg2-binary
       - name: Run pure-function tests
         run: python3 -m pytest tests/ -v --tb=short
