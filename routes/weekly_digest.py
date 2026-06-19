@@ -202,6 +202,14 @@ def _gather_cohort(limit):
                 WHERE k.email IS NOT NULL
                   AND k.status = 'active'
                   AND l.timestamp >= NOW() - INTERVAL '7 days'
+                  -- r-consent (2026-06-19): the weekly digest is MARKETING (digest +
+                  -- payment ask), so gate the captured-MCP audience on opt-in +
+                  -- suppression — it was fully fail-open (emailed any active key,
+                  -- incl. non-opted-in/opted-out). Mirrors digest.py:453 / the
+                  -- sanctioned marketing_recipients_from_keys() predicate.
+                  AND k.metadata->>'marketing_opt_in' = 'true'
+                  AND NOT EXISTS (SELECT 1 FROM email_suppression s
+                                   WHERE lower(s.email) = lower(k.email))
                 GROUP BY k.api_key, k.email, k.tier, k.metadata
                HAVING COUNT(*) >= %s
                 ORDER BY COUNT(*) DESC
@@ -385,20 +393,24 @@ def _build_digest(row, rates):
 
 
 def _send_email(to_email, subject, html) -> bool:
-    """Deliver one digest via Resend. Returns True only on a confirmed send."""
-    if not RESEND_KEY:
-        return False
+    """Deliver one digest via the MARKETING choke-point. r-consent (2026-06-19):
+    was a raw Resend POST with NO unsubscribe link/headers; now routes through
+    routes.marketing_send.send_marketing_email() so suppression (opt-out) + a
+    tokenized unsubscribe footer + List-Unsubscribe / List-Unsubscribe-Post headers
+    are guaranteed (the audience is already opt-in-gated in _gather_cohort). FAIL
+    CLOSED — if the choke-point can't be imported, do NOT send marketing without
+    compliance. Returns True only on a confirmed send."""
     try:
-        import requests as _rq
-        resp = _rq.post(
-            "https://api.resend.com/emails",
-            headers={"Authorization": f"Bearer {RESEND_KEY}",
-                     "Content-Type": "application/json"},
-            json={"from": FROM_EMAIL, "to": [to_email],
-                  "subject": subject, "html": html},
-            timeout=12,
-        )
-        return resp.status_code in (200, 201)
+        from routes.marketing_send import send_marketing_email
+    except Exception:
+        try:
+            from marketing_send import send_marketing_email  # type: ignore
+        except Exception:
+            return False
+    try:
+        r = send_marketing_email(to_email, subject, html,
+                                 source="weekly_digest", from_email=FROM_EMAIL)
+        return bool(r.get("sent"))
     except Exception:
         return False
 

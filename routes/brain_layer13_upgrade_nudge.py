@@ -99,6 +99,14 @@ def _candidates(limit: int = 25) -> list[dict]:
                 JOIN users u    ON u.id = k.user_id
                 WHERE u.email IS NOT NULL AND u.email <> ''
                   AND COALESCE(k.plan, 'free') IN ('free', 'identified', 'developer')
+                  -- r-consent (2026-06-19): the upgrade nudge is MARKETING; gate on an
+                  -- explicit captured-key marketing opt-in for this email + exclude
+                  -- suppressed (was fully ungated). No opt-in record => excluded.
+                  AND EXISTS (SELECT 1 FROM mcp_dev_keys mk
+                               WHERE lower(mk.email) = lower(u.email)
+                                 AND mk.metadata->>'marketing_opt_in' = 'true')
+                  AND NOT EXISTS (SELECT 1 FROM email_suppression s
+                                   WHERE lower(s.email) = lower(u.email))
             ),
             not_recently_nudged AS (
                 SELECT w.* FROM with_email w
@@ -135,6 +143,13 @@ def _candidates(limit: int = 25) -> list[dict]:
                  WHERE t.operator_email IS NOT NULL AND t.operator_email <> ''
                    AND COALESCE(t.call_count,0) >= %s
                    AND (n.last_sent IS NULL OR n.last_sent < NOW() - INTERVAL %s)
+                   -- r-consent (2026-06-19): trial-pool opt-in marker lives in notes
+                   -- (auto_trial_keys has no jsonb metadata col); mirror
+                   -- upgrade_pool_outreach.py Source C + exclude suppressed.
+                   AND (t.notes ILIKE '%%"marketing_opt_in": true%%'
+                     OR t.notes ILIKE '%%"marketing_opt_in":true%%')
+                   AND NOT EXISTS (SELECT 1 FROM email_suppression s
+                                    WHERE lower(s.email) = lower(t.operator_email))
                  ORDER BY t.call_count DESC NULLS LAST
                  LIMIT %s
             """, (_MIN_CALLS_14D, f"{_NUDGE_COOLDOWN_DAYS} days", limit))

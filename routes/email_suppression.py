@@ -159,3 +159,17 @@ def unsubscribe():
 
 def register(app):
     app.register_blueprint(email_suppression_bp)
+    # r-suppress-bootstrap (2026-06-19): create email_suppression EAGERLY at startup,
+    # not lazily on the first unsubscribe. Until the table exists, the opt-OUT list, the
+    # choke-point's suppression check, and every NOT EXISTS(email_suppression) audience
+    # subquery fail OPEN (is_suppressed returns False; the subquery raises). Best-effort —
+    # a bootstrap failure must never block boot. (_ensure_table uses direct psycopg2, so
+    # the safe_db SKIP_DDL trap does not apply.)
+    try:
+        _ensure_table()
+    except Exception as _e:
+        try:
+            import logging as _lg
+            _lg.getLogger(__name__).warning("email_suppression table bootstrap failed (non-fatal): %s", _e)
+        except Exception:
+            pass

@@ -148,6 +148,13 @@ def _query_candidates(min_signals=2, days=30, limit=500):
                     WHERE any_converted IS NOT TRUE
                       AND any_outreach_sent IS NOT TRUE
                       AND signal_count >= %s
+                      -- r-consent (2026-06-19): nurture outreach is MARKETING; it had
+                      -- suppression (opt-OUT) but NO opt-in gate. Require the signal's
+                      -- email to map to a captured key with an explicit marketing opt-in
+                      -- (user_signals.email is already lower-trimmed).
+                      AND EXISTS (SELECT 1 FROM mcp_dev_keys k
+                                   WHERE lower(k.email) = user_signals.email
+                                     AND k.metadata->>'marketing_opt_in' = 'true')
                     ORDER BY signal_count DESC, last_signal_at DESC
                 """ % (int(days), int(min_signals)))
                 for r in cur.fetchall():

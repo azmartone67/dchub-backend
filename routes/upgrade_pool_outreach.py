@@ -135,6 +135,14 @@ def _fetch_candidates(min_signals: int = 3, limit: int = 200) -> list[dict]:
                        AND COALESCE(converted, false) = false
                        AND COALESCE(outreach_sent, false) = false
                        AND {_supp('user_email')}
+                       -- r-consent (2026-06-19): Source A was suppression-only (opt-OUT)
+                       -- with NO opt-in gate, unlike Source B (:170) and C (:202). Require
+                       -- the signal's email to map to a captured key carrying an explicit
+                       -- marketing opt-in, so this promotional outreach only reaches
+                       -- opted-in people (no opt-in record => excluded).
+                       AND EXISTS (SELECT 1 FROM mcp_dev_keys k
+                                    WHERE lower(k.email) = lower(mcp_upgrade_signals.user_email)
+                                      AND k.metadata->>'marketing_opt_in' = 'true')
                      GROUP BY lower(user_email)
                     HAVING COUNT(*) >= %s
                      ORDER BY signal_count DESC
