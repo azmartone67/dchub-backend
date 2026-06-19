@@ -170,7 +170,7 @@ def fire_upgrade_signal(*, signal_type, tool_requested=None, tier_current="free"
                     """SELECT u.email FROM api_keys ak
                          JOIN users u ON ak.user_id = u.id
                         WHERE ak.key_hash = %s
-                          AND COALESCE(ak.is_active, 1) = 1
+                          AND ak.is_active IS TRUE
                         LIMIT 1""",
                     (kh,),
                 )
