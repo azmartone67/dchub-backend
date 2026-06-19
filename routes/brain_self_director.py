@@ -1,0 +1,655 @@
+"""
+routes/brain_self_director.py — Brain SELF-DIRECTOR (2026-06-19). PROPOSE-ONLY.
+
+THE SELF-DIRECTING RUNG. Everything below this rung had to be POKED:
+  · the investigator answers a question a HUMAN poses,
+  · the enhancer runs when a HUMAN (or a cron) hits POST /enhance,
+  · the automerge loop only ever fixes a bug a detector already FILED.
+
+This module makes the brain direct its OWN ATTENTION. On its own schedule,
+UNPROMPTED, a tick:
+  1. ASSESSES what is most worth thinking about right now — by REUSING the
+     vetted brain_work_selector.build_work_plan() AND
+     brain_enhancer.scan_opportunities(), then choosing the SINGLE
+     highest-leverage candidate, DEDUPED against agenda items surfaced in the
+     last ~3 days (so it does not re-investigate the same thing every tick).
+  2. INVESTIGATES it — by REUSING the verified
+     brain_investigator.investigate() (decompose -> gather REAL evidence ->
+     reason -> adversarially REFUTE -> synthesize). This is the ONLY model work
+     a tick does: at most ONE investigation per tick.
+  3. SURFACES the verified, refuted recommendation to a human-facing AGENDA
+     (stored, gradable). The human reads it and decides.
+
+THE HARD SAFETY LINE — this rung gains NO new authority to ACT. It is strictly
+PROPOSE-ONLY and strictly WEAKER than the existing automerge loop (which is the
+ONLY autonomous ACTOR, and only on allowlisted MECHANICAL fixes):
+  · It NEVER merges, sends, opens/applies a PR, triggers the automerge, or
+    writes ANYTHING to prod beyond STORING one agenda row.
+  · Self-directing = self-directed ANALYSIS, NOT self-directed ACTION.
+
+COST SAFETY — a self-running loop that calls an LLM must NOT cost-explode, so
+the caps are enforced SERVER-SIDE in the tick handler (never trusting the cron
+schedule):
+  · at most 1 investigation per tick,
+  · a daily cap BRAIN_SELF_DIRECT_DAILY_CAP (default 4) — counted from the
+    stored agenda rows (created_at::date = today),
+  · BRAIN_SELF_DIRECT_ENABLED (default OFF) — ships dark; a tick is a NO-OP
+    that makes ZERO model calls when off,
+  · degrades gracefully with NO ANTHROPIC_API_KEY (no-op, never crashes).
+
+Every LLM/DB touch is wrapped in try/except; self_direct_tick NEVER raises.
+Admin-gated endpoints (reuse the investigator's _admin_ok pattern).
+
+The GUARD ORDER in self_direct_tick() is load-bearing (cost-first):
+  flag off    -> {ran:false, skipped:disabled}     (NO model call)
+  no api key  -> {ran:false, skipped:no_api_key}    (NO model call)
+  daily cap   -> {ran:false, skipped:daily_cap}     (NO model call)
+  no candidate-> {ran:false, skipped:no_candidate}  (NO model call)
+  else        -> investigate() ONCE, STORE one agenda row, {ran:true, agenda_id}
+
+Endpoints (blueprint brain_self_director_bp, admin-gated):
+  POST /api/v1/brain/self-direct/tick  -> runs self_direct_tick (what the cron
+                                          hits; returns the skip reason when
+                                          capped/dark/no-key so cron logs are
+                                          legible). Flag/cap gated SERVER-SIDE.
+  GET  /api/v1/brain/agenda            -> recent self-chosen verified agenda,
+                                          highest-leverage first.
+  POST /api/v1/brain/agenda/<id>/grade {grade} -> human grade for CALIBRATION.
+"""
+from __future__ import annotations
+
+import json
+import logging
+import os
+from typing import Optional
+
+from flask import Blueprint, jsonify, request
+
+logger = logging.getLogger(__name__)
+
+brain_self_director_bp = Blueprint("brain_self_director", __name__)
+
+
+# ── env / flags ──────────────────────────────────────────────────────
+def _truthy(v) -> bool:
+    return str(v or "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _enabled() -> bool:
+    """The self-director ships DARK. Default OFF so a self-running loop can't
+    burn API budget or surface half-baked analysis until an operator flips the
+    flag. When off, a tick is a NO-OP that makes ZERO model calls."""
+    return _truthy(os.environ.get("BRAIN_SELF_DIRECT_ENABLED"))
+
+
+def _daily_cap() -> int:
+    """Server-side daily cap on investigations the self-director kicks off — the
+    cost ceiling. Default 4. Enforced in the tick handler, NOT trusted to the
+    cron schedule."""
+    try:
+        return max(0, int(os.environ.get("BRAIN_SELF_DIRECT_DAILY_CAP", "4")))
+    except Exception:
+        return 4
+
+
+# How far back to look when deduping the chosen agenda item (days). Keeps the
+# loop from re-investigating the same thing every tick.
+def _dedup_window_days() -> int:
+    try:
+        return max(0, int(os.environ.get("BRAIN_SELF_DIRECT_DEDUP_DAYS", "3")))
+    except Exception:
+        return 3
+
+
+def _has_api_key() -> bool:
+    """True when an Anthropic key is configured. Read the investigator's LIVE
+    module attribute first (tests monkeypatch it there, and it's the same key
+    the investigation will actually use) and fall back to the raw env so
+    degrade-gracefully works either way."""
+    try:
+        from routes import brain_investigator as _bi
+        if (getattr(_bi, "ANTHROPIC_API_KEY", "") or "").strip():
+            return True
+    except Exception:
+        pass
+    return bool((os.environ.get("ANTHROPIC_API_KEY") or "").strip())
+
+
+# ── Admin gate (reuse the investigator/classifier's, per the brief) ──
+def _admin_ok() -> bool:
+    """Reuse brain_mechanical_classifier._admin_ok so the gate stays in one
+    place (the same gate every brain admin endpoint accepts). Falls back to an
+    inline internal-key check if that import fails so the endpoints are never
+    accidentally left open."""
+    try:
+        from routes.brain_mechanical_classifier import _admin_ok as _mech_admin_ok
+        return bool(_mech_admin_ok())
+    except Exception:
+        keys = set()
+        for _n in ("DCHUB_INTERNAL_KEY", "INTERNAL_KEY", "DCHUB_ADMIN_KEY"):
+            v = os.environ.get(_n)
+            if v:
+                keys.add(v)
+        sent = (request.headers.get("X-Internal-Key")
+                or request.headers.get("X-Admin-Key")
+                or request.args.get("admin_key") or "").strip()
+        return bool(sent) and sent in keys
+
+
+# ── DB (direct psycopg2, mirror brain_investigator) ──────────────────
+def _conn():
+    """Raw psycopg2 connection. Mirrors brain_investigator._conn — the
+    _iso_common contextmanager crashes on .cursor()."""
+    try:
+        import psycopg2 as _pg
+        dsn = (os.environ.get("DATABASE_URL")
+               or os.environ.get("NEON_DATABASE_URL") or "")
+        if dsn:
+            return _pg.connect(dsn, sslmode="require", connect_timeout=6)
+    except Exception as e:
+        logger.warning("brain_self_director: _conn failed: %s", e)
+    return None
+
+
+def init_self_director_schema() -> None:
+    """Bootstrap brain_self_agenda via DIRECT psycopg2 (safe_db SKIPs DDL under
+    SKIP_DDL=1). Idempotent; never raises."""
+    conn = _conn()
+    if conn is None:
+        logger.warning("brain_self_director: no DB; skipping schema init")
+        return
+    try:
+        with conn.cursor() as cur:
+            try:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS brain_self_agenda (
+                        id          BIGSERIAL PRIMARY KEY,
+                        kind        TEXT,
+                        title       TEXT NOT NULL,
+                        question    TEXT NOT NULL,
+                        area        TEXT,
+                        result_json JSONB,
+                        confidence  DOUBLE PRECISION,
+                        status      TEXT NOT NULL DEFAULT 'surfaced',
+                        grade       TEXT,
+                        created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    )
+                """)
+                conn.commit()
+            except Exception:
+                try: conn.rollback()
+                except Exception: pass
+            try:
+                cur.execute(
+                    "CREATE INDEX IF NOT EXISTS ix_brain_self_agenda_created "
+                    "ON brain_self_agenda (created_at DESC)"
+                )
+                conn.commit()
+            except Exception:
+                try: conn.rollback()
+                except Exception: pass
+        logger.info("brain_self_director: schema ready")
+    finally:
+        try: conn.close()
+        except Exception: pass
+
+
+# ════════════════════════════════════════════════════════════════════
+#  Step 1: ASSESS — pick the single highest-leverage agenda item
+# ════════════════════════════════════════════════════════════════════
+def _recent_titles(days: int) -> set:
+    """Titles of agenda items surfaced in the last `days` days — the dedup set so
+    the loop doesn't re-investigate the same thing every tick. [] / empty set on
+    any error (fail-OPEN to picking: a DB hiccup must not block the loop, the
+    daily cap still bounds cost)."""
+    out: set = set()
+    conn = _conn()
+    if conn is None:
+        return out
+    try:
+        with conn.cursor() as cur:
+            try:
+                cur.execute(
+                    "SELECT title, question FROM brain_self_agenda "
+                    "WHERE created_at >= NOW() - (%s || ' days')::interval",
+                    (str(int(days)),),
+                )
+                for r in (cur.fetchall() or []):
+                    for v in (r[0], r[1]):
+                        if v:
+                            out.add(str(v).strip().lower())
+            except Exception:
+                try: conn.rollback()
+                except Exception: pass
+    except Exception:
+        pass
+    finally:
+        try: conn.close()
+        except Exception: pass
+    return out
+
+
+def _work_plan_candidates() -> list[dict]:
+    """Candidate agenda items from the brain's own ranked WORK-PLAN — the top
+    open mechanical work, framed as a SYSTEMIC question (not "fix this one
+    instance"). REUSE-ONLY: reads build_work_plan(); never raises."""
+    out: list[dict] = []
+    try:
+        from routes.brain_work_selector import build_work_plan
+        plan = build_work_plan(limit=10) or {}
+    except Exception as e:
+        logger.warning("brain_self_director: work-plan scan failed: %s", e)
+        return out
+    ranked = plan.get("ranked") or []
+    for r in ranked:
+        if not isinstance(r, dict):
+            continue
+        klass = r.get("class") or "(unknown)"
+        lev = r.get("leverage")
+        try:
+            lev_f = float(lev) if lev is not None else 0.0
+        except Exception:
+            lev_f = 0.0
+        title = f"work-plan: lift the '{klass}' fix-class"
+        question = (
+            f"The brain's ranked work-plan keeps surfacing class '{klass}' "
+            f"(leverage {lev}). Beyond fixing each instance, what single "
+            f"systemic change would most reduce how often the '{klass}' class "
+            "recurs?"
+        )
+        out.append({
+            "kind": "work_plan",
+            "title": title,
+            "question": question,
+            "area": "reliability",
+            "leverage": lev_f,
+            "source": "brain_work_selector.build_work_plan",
+        })
+    return out
+
+
+def _opportunity_candidates() -> list[dict]:
+    """Candidate agenda items from the enhancer's evidence SCAN — improvement
+    opportunities across {reliability, performance, data_coverage,
+    conversion_revenue, developer_ux}, each grounded in a real signal. REUSE-
+    ONLY: reads scan_opportunities(); never raises. scan_opportunities already
+    REORDERS by the brain's learned per-area success, so earlier items get a
+    small leverage edge here (rank-position proxy) — the work-plan's own
+    numeric leverage still competes on equal footing."""
+    out: list[dict] = []
+    try:
+        from routes.brain_enhancer import scan_opportunities
+        opps = scan_opportunities() or []
+    except Exception as e:
+        logger.warning("brain_self_director: opportunity scan failed: %s", e)
+        return out
+    n = len(opps)
+    for idx, o in enumerate(opps):
+        if not isinstance(o, dict):
+            continue
+        area = o.get("area") or "developer_ux"
+        signal = (o.get("signal") or "").strip()
+        question = (o.get("question") or "").strip()
+        if not question:
+            continue
+        # Title mirrors the enhancer's chip form: "[area] <signal tail>".
+        sig_tail = signal.split(":", 1)[1].strip() if ":" in signal else signal
+        title = f"[{area}] {sig_tail[:90]}".strip()
+        # scan_opportunities is already learned-reordered (best first). Give
+        # earlier items a small, bounded leverage edge so the brain's own
+        # attention-ordering is honored, while staying in a band the work-plan's
+        # numeric leverage can still beat. Range ~[1.0 .. ~1.5].
+        rank_leverage = 1.0 + (0.5 * (n - idx) / float(max(1, n)))
+        out.append({
+            "kind": "opportunity",
+            "title": title,
+            "question": question,
+            "area": area,
+            "leverage": round(rank_leverage, 4),
+            "source": "brain_enhancer.scan_opportunities",
+        })
+    return out
+
+
+def pick_agenda_item() -> Optional[dict]:
+    """ASSESS what is most worth thinking about RIGHT NOW.
+
+    REUSES brain_work_selector.build_work_plan() AND
+    brain_enhancer.scan_opportunities(), pools their candidates, DEDUPES against
+    agenda items surfaced in the last ~3 days, and returns the SINGLE
+    highest-leverage remaining candidate as
+    {kind, title, question, area, leverage, source} — or None when there is
+    nothing new to think about (no data / everything deduped).
+
+    Best-effort + read-only: NEVER raises (returns None on any error). It writes
+    NOTHING — picking is pure ASSESSMENT."""
+    try:
+        candidates: list[dict] = []
+        try:
+            candidates.extend(_work_plan_candidates())
+        except Exception as e:
+            logger.warning("brain_self_director: work-plan candidates failed: %s", e)
+        try:
+            candidates.extend(_opportunity_candidates())
+        except Exception as e:
+            logger.warning("brain_self_director: opportunity candidates failed: %s", e)
+
+        if not candidates:
+            return None
+
+        # DEDUPE against recently-surfaced agenda items so the loop doesn't
+        # re-investigate the same thing every tick.
+        try:
+            recent = _recent_titles(_dedup_window_days())
+        except Exception:
+            recent = set()
+        fresh = [c for c in candidates
+                 if str(c.get("title") or "").strip().lower() not in recent
+                 and str(c.get("question") or "").strip().lower() not in recent]
+        if not fresh:
+            return None
+
+        # Highest-leverage first; stable on ties by original pooled order so the
+        # choice is deterministic.
+        def _lev(c) -> float:
+            try:
+                return float(c.get("leverage") or 0.0)
+            except Exception:
+                return 0.0
+        fresh_indexed = list(enumerate(fresh))
+        fresh_indexed.sort(key=lambda t: (-_lev(t[1]), t[0]))
+        return fresh_indexed[0][1]
+    except Exception as e:
+        logger.warning("brain_self_director: pick_agenda_item failed: %s", e)
+        return None
+
+
+# ════════════════════════════════════════════════════════════════════
+#  Storage (direct psycopg2, mirror brain_investigator)
+# ════════════════════════════════════════════════════════════════════
+def _today_count() -> int:
+    """Number of agenda rows created TODAY (created_at::date = today) — the
+    daily-cap counter. Returns a LARGE number on DB error so a broken counter
+    fails CLOSED (skips the model call) rather than letting the loop run
+    uncapped. The cost ceiling must hold even when the DB is flaky."""
+    conn = _conn()
+    if conn is None:
+        # No DB to count against -> we can't enforce the cap -> fail closed.
+        return 10 ** 9
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT COUNT(*) FROM brain_self_agenda "
+                "WHERE created_at::date = (NOW() AT TIME ZONE 'UTC')::date"
+            )
+            row = cur.fetchone()
+            return int(row[0]) if row else 0
+    except Exception as e:
+        logger.warning("brain_self_director: today_count failed: %s", e)
+        try: conn.rollback()
+        except Exception: pass
+        return 10 ** 9
+    finally:
+        try: conn.close()
+        except Exception: pass
+
+
+def _store_agenda(item: dict, result: dict) -> Optional[int]:
+    """Persist ONE agenda row. This is the ONLY write the self-director ever
+    performs — PROPOSE-ONLY. status defaults 'surfaced' (NEVER 'applied' /
+    'merged' / 'acted'). Returns the new id (or None on failure)."""
+    conn = _conn()
+    if conn is None:
+        return None
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO brain_self_agenda "
+                "(kind, title, question, area, result_json, confidence, status) "
+                "VALUES (%s, %s, %s, %s, %s, %s, 'surfaced') RETURNING id",
+                (
+                    str(item.get("kind") or "")[:64],
+                    str(item.get("title") or "")[:500],
+                    str(item.get("question") or "")[:4000],
+                    str(item.get("area") or "")[:64],
+                    json.dumps(result)[:200000],
+                    float(result.get("confidence") or 0.0),
+                ),
+            )
+            row = cur.fetchone()
+            conn.commit()
+            return int(row[0]) if row else None
+    except Exception as e:
+        logger.warning("brain_self_director: store agenda failed: %s", e)
+        try: conn.rollback()
+        except Exception: pass
+        return None
+    finally:
+        try: conn.close()
+        except Exception: pass
+
+
+def _row_to_agenda(row) -> dict:
+    rj = row[5]
+    if isinstance(rj, str):
+        try: rj = json.loads(rj)
+        except Exception: rj = {}
+    created = row[9]
+    try: created = created.isoformat()
+    except Exception: created = str(created)
+    return {
+        "id": row[0], "kind": row[1], "title": row[2], "question": row[3],
+        "area": row[4], "result": rj, "confidence": row[6],
+        "status": row[7], "grade": row[8], "created_at": created,
+    }
+
+
+def _recent_agenda(limit: int = 25) -> list[dict]:
+    """Recent self-chosen agenda items, ranked highest-leverage (confidence)
+    first. [] on error."""
+    conn = _conn()
+    if conn is None:
+        return []
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, kind, title, question, area, result_json, confidence, "
+                "status, grade, created_at "
+                "FROM brain_self_agenda "
+                "ORDER BY created_at DESC LIMIT %s",
+                (int(limit),),
+            )
+            rows = cur.fetchall() or []
+        items = [_row_to_agenda(r) for r in rows]
+        # Surface highest-confidence first (the leverage proxy on the stored
+        # verified result), ties keep the recency order.
+        try:
+            items.sort(key=lambda p: (p.get("confidence") or 0.0), reverse=True)
+        except Exception:
+            pass
+        return items
+    except Exception as e:
+        logger.warning("brain_self_director: recent agenda failed: %s", e)
+        return []
+    finally:
+        try: conn.close()
+        except Exception: pass
+
+
+def _grade_agenda(agenda_id: int, grade: str) -> bool:
+    """Record a human grade for CALIBRATION (the verify->learn loop applied to
+    the self-director's own track record). Returns True if a row was updated."""
+    conn = _conn()
+    if conn is None:
+        return False
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE brain_self_agenda SET grade = %s WHERE id = %s",
+                (str(grade)[:64], int(agenda_id)),
+            )
+            n = cur.rowcount or 0
+            conn.commit()
+            return n > 0
+    except Exception as e:
+        logger.warning("brain_self_director: grade failed: %s", e)
+        try: conn.rollback()
+        except Exception: pass
+        return False
+    finally:
+        try: conn.close()
+        except Exception: pass
+
+
+# ════════════════════════════════════════════════════════════════════
+#  Step 2 + 3: the autonomous tick — INVESTIGATE + SURFACE
+# ════════════════════════════════════════════════════════════════════
+def self_direct_tick() -> dict:
+    """THE AUTONOMOUS STEP. Runs UNPROMPTED on the cron's schedule.
+
+    GUARD ORDER (cost-first — every guard before the model call short-circuits
+    WITHOUT calling a model):
+      1. flag off    -> {ran:false, skipped:disabled}
+      2. no api key  -> {ran:false, skipped:no_api_key}
+      3. daily cap   -> {ran:false, skipped:daily_cap}
+      4. no candidate-> {ran:false, skipped:no_candidate}
+      5. else        -> investigate() ONCE (the ONLY model work, 1 per tick),
+                        STORE one agenda row, return {ran:true, agenda_id}.
+
+    PROPOSE-ONLY: the ONLY write is the agenda row (via _store_agenda). It NEVER
+    merges/sends/opens-a-PR/triggers-the-automerge/writes-to-prod beyond that
+    row. NEVER raises — any LLM/DB error degrades to a skip/no-op."""
+    try:
+        # ── Guard 1: flag off → NO model call ────────────────────────
+        if not _enabled():
+            return {"ran": False, "skipped_reason": "disabled"}
+
+        # ── Guard 2: no API key → NO model call (degrade gracefully) ──
+        if not _has_api_key():
+            return {"ran": False, "skipped_reason": "no_api_key"}
+
+        # ── Guard 3: daily cap → NO model call (the cost ceiling) ────
+        cap = _daily_cap()
+        try:
+            used = _today_count()
+        except Exception:
+            # Fail CLOSED on a broken counter — don't run uncapped.
+            used = 10 ** 9
+        if used >= cap:
+            return {"ran": False, "skipped_reason": "daily_cap",
+                    "used_today": used, "daily_cap": cap}
+
+        # ── Guard 4: ASSESS — pick the agenda item (read-only) ──────
+        try:
+            item = pick_agenda_item()
+        except Exception as e:
+            logger.warning("brain_self_director: pick failed: %s", e)
+            item = None
+        if not item:
+            return {"ran": False, "skipped_reason": "no_candidate"}
+
+        # ── INVESTIGATE — the ONE model call this tick performs ─────
+        question = (item.get("question") or "").strip()
+        if not question:
+            return {"ran": False, "skipped_reason": "no_candidate"}
+        try:
+            from routes.brain_investigator import investigate
+        except Exception as e:
+            logger.warning("brain_self_director: investigate import failed: %s", e)
+            return {"ran": False, "skipped_reason": "investigate_unavailable"}
+        try:
+            result = investigate(question)
+        except Exception as e:
+            logger.warning("brain_self_director: investigate failed: %s", e)
+            return {"ran": False, "skipped_reason": "investigate_error"}
+        if not isinstance(result, dict) or result.get("cannot_investigate"):
+            return {"ran": False, "skipped_reason": "cannot_investigate",
+                    "detail": (result or {}).get("cannot_investigate")
+                    if isinstance(result, dict) else None}
+
+        # ── SURFACE — STORE one agenda row (the ONLY write) ─────────
+        agenda_id = _store_agenda(item, result)
+        if agenda_id is None:
+            # The investigation ran but we couldn't persist it. Be honest: the
+            # tick did NOT surface an agenda row, so it didn't "run" in the
+            # sense the cap counts. (No row → no double-charge against the cap.)
+            return {"ran": False, "skipped_reason": "store_failed",
+                    "title": item.get("title")}
+        return {"ran": True, "agenda_id": agenda_id,
+                "kind": item.get("kind"), "title": item.get("title"),
+                "area": item.get("area"),
+                "confidence": result.get("confidence")}
+    except Exception as e:
+        # The whole tick is best-effort — a self-running loop must never raise.
+        logger.warning("brain_self_director: tick failed: %s", e)
+        return {"ran": False, "skipped_reason": f"error:{str(e)[:120]}"}
+
+
+# ════════════════════════════════════════════════════════════════════
+#  Endpoints (admin-gated)
+# ════════════════════════════════════════════════════════════════════
+@brain_self_director_bp.post("/api/v1/brain/self-direct/tick")
+def self_direct_tick_endpoint():
+    """The cron heartbeat. Runs ONE self-directed tick: ASSESS -> (maybe)
+    INVESTIGATE -> SURFACE. Returns the skip reason when dark/no-key/capped/no-
+    candidate so the cron logs are legible. PROPOSE-ONLY: the most it ever does
+    is store ONE agenda row — it NEVER acts. Admin-gated. The flag + caps are
+    enforced SERVER-SIDE inside self_direct_tick (the endpoint adds no
+    authority)."""
+    if not _admin_ok():
+        return jsonify(ok=False, error="admin only",
+                       hint="X-Admin-Key / X-Internal-Key header required"), 403
+    result = self_direct_tick()
+    return jsonify(ok=True,
+                   note="PROPOSE-ONLY self-directed analysis — never acts; the "
+                        "most it does is store one agenda row.",
+                   **result), 200
+
+
+@brain_self_director_bp.get("/api/v1/brain/agenda")
+def get_agenda():
+    """The brain's self-chosen, verified AGENDA — recent items it CHOSE to think
+    about, each carrying the adversarially-refuted recommendation, highest-
+    leverage (confidence) first. PROPOSE-ONLY: these are for a human to
+    review/decide; nothing here is acted on. Admin-gated."""
+    if not _admin_ok():
+        return jsonify(ok=False, error="admin only"), 403
+    try:
+        limit = int(request.args.get("limit", "25"))
+    except Exception:
+        limit = 25
+    limit = max(1, min(limit, 200))
+    items = _recent_agenda(limit=limit)
+    return jsonify(ok=True, count=len(items), agenda=items,
+                   note="PROPOSE-ONLY — the brain's self-directed analysis "
+                        "agenda; a human reviews/decides. Nothing is acted "
+                        "on."), 200
+
+
+@brain_self_director_bp.post("/api/v1/brain/agenda/<int:agenda_id>/grade")
+def grade_agenda(agenda_id):
+    """Record a human grade (good/bad/score) for CALIBRATION — the same
+    verify->learn loop, applied to the self-director's own track record of
+    CHOOSING what to think about. Admin-gated."""
+    if not _admin_ok():
+        return jsonify(ok=False, error="admin only"), 403
+    body = request.get_json(silent=True) or {}
+    grade = (str(body.get("grade") or "")).strip()
+    if not grade:
+        return jsonify(ok=False, error="grade required"), 400
+    ok = _grade_agenda(agenda_id, grade)
+    if not ok:
+        return jsonify(ok=False, error="not_found_or_db_error"), 404
+    return jsonify(ok=True, id=agenda_id, grade=grade), 200
+
+
+def register_brain_self_director(app) -> None:
+    """Idempotent registration helper for main.py. Best-effort schema init."""
+    try:
+        init_self_director_schema()
+    except Exception as e:
+        logger.warning("brain_self_director: schema init skipped: %s", e)
+    try:
+        app.register_blueprint(brain_self_director_bp)
+    except Exception as e:
+        logger.warning("brain_self_director already registered: %s", e)

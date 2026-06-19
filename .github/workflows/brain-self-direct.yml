@@ -1,0 +1,74 @@
+name: brain self-direct loop
+
+# THE SELF-DIRECTING LOOP heartbeat (2026-06-19). Every 4 hours, pokes the
+# brain's self-director so it can — UNPROMPTED — ASSESS what is most worth
+# thinking about (reuse work-plan + scan_opportunities), INVESTIGATE the single
+# highest-leverage item (reuse the verified investigate()), and SURFACE the
+# refuted recommendation to a human-facing AGENDA. The brain directs its own
+# ATTENTION.
+#
+# IT SHIPS DARK. This cron only provides the HEARTBEAT — every safety cap is
+# enforced SERVER-SIDE inside self_direct_tick(), NOT here:
+#   · BRAIN_SELF_DIRECT_ENABLED defaults OFF → a tick returns
+#     {ran:false, skipped_reason:"disabled"} and makes ZERO model calls.
+#   · at most 1 investigation per tick + a daily cap
+#     (BRAIN_SELF_DIRECT_DAILY_CAP, default 4) → cost can't explode even if the
+#     cron fires more often than expected.
+#   · no ANTHROPIC_API_KEY → {ran:false, skipped_reason:"no_api_key"} (no-op).
+#
+# THE HARD SAFETY LINE: this rung gains NO authority to ACT. self_direct_tick is
+# strictly PROPOSE-ONLY — the most it ever does is store ONE agenda row. It NEVER
+# merges/sends/opens-a-PR/triggers-the-automerge. It is strictly WEAKER than the
+# automerge loop (the only autonomous actor, on allowlisted mechanical fixes).
+#
+# Auth mirrors brain-autonomy.yml: the DCHUB_ADMIN_KEY repo secret sent as the
+# X-Admin-Key header (the same gate every brain admin endpoint accepts), against
+# the Railway origin directly (CF edge-cache + the 15s edge timeout don't apply
+# to the origin).
+
+on:
+  schedule:
+    - cron: '0 */4 * * *'   # every 4 hours
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+env:
+  RAILWAY_BASE: https://dchub-backend-production.up.railway.app
+
+jobs:
+  self-direct:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Self-direct — tick (assess → investigate → surface agenda; ships dark)
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "$ADMIN_KEY" ]; then
+            echo "::warning::DCHUB_ADMIN_KEY not set — skipping self-direct tick"
+            exit 0
+          fi
+          response=$(curl -sS --max-time 180 -X POST \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            -H "Content-Type: application/json" \
+            "$RAILWAY_BASE/api/v1/brain/self-direct/tick" \
+            || echo '{"ok":false,"error":"curl_fail"}')
+          echo "$response" | head -c 4000
+          echo
+          echo "$response" | python3 -c "
+          import json, sys
+          try:
+              d = json.load(sys.stdin)
+              if d.get('ran'):
+                  print('::notice::self-direct tick: SURFACED agenda item '
+                        f\"id={d.get('agenda_id')} area={d.get('area')} \"
+                        f\"kind={d.get('kind')} confidence={d.get('confidence')}\")
+              else:
+                  print('::notice::self-direct tick: NO-OP '
+                        f\"(skipped_reason={d.get('skipped_reason')}) — propose-only, no writes\")
+          except Exception as e:
+              print(f'::warning::self-direct tick parse failed: {e}')
+          "

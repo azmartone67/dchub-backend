@@ -26231,7 +26231,7 @@ try:
 except Exception as e:
     print(f"🧠 Brain Investigator: ⚠️ Failed to load: {e}")
 
-# (2026-06-19) — Brain ENHANCER (PROPOSE-ONLY). The self-DIRECTING rung: it
+# (2026-06-19) — Brain ENHANCER (PROPOSE-ONLY). The self-ENHANCING rung: it
 # SCANS the brain's own evidence (canonical_stats + recent brain_findings +
 # HEALTH_BASELINE + the work-plan) for high-leverage improvement OPPORTUNITIES,
 # runs the REUSED verified investigate() per opportunity to produce an
@@ -26248,6 +26248,25 @@ try:
           "(POST /api/v1/brain/enhance · propose-only · ships dark)")
 except Exception as e:
     print(f"🧠 Brain Enhancer: ⚠️ Failed to load: {e}")
+
+# (2026-06-19) — Brain SELF-DIRECTOR (PROPOSE-ONLY, AUTONOMOUS). The self-DIRECTING
+# rung: on its OWN schedule (a cron heartbeat) and UNPROMPTED, it ASSESSES what is
+# most worth thinking about (reusing brain_work_selector + brain_enhancer.
+# scan_opportunities), runs the REUSED verified investigate() on the single
+# highest-leverage item, and SURFACES the result to a human-facing AGENDA. It gains
+# NO new authority to act — strictly weaker than the automerge loop (NO
+# merge/send/PR; the ONLY write is one agenda row). Ships DARK:
+# BRAIN_SELF_DIRECT_ENABLED defaults OFF (a tick is a no-op with ZERO model calls).
+# Server-side daily cap BRAIN_SELF_DIRECT_DAILY_CAP (default 4) so a runaway cron
+# cannot cost-explode. Degrades gracefully with no ANTHROPIC_API_KEY. Admin-gated.
+try:
+    from routes.brain_self_director import register_brain_self_director
+    register_brain_self_director(app)
+    print("🧠 Brain Self-Director: ✅ Registered "
+          "(POST /api/v1/brain/self-direct/tick · GET /api/v1/brain/agenda · "
+          "propose-only · ships dark)")
+except Exception as e:
+    print(f"🧠 Brain Self-Director: ⚠️ Failed to load: {e}")
 
 # PHASE 3 (2026-06-18) — AUTONOMOUS MERGE + post-merge CANARY/auto-revert.
 # The highest-risk module: it can squash-merge the brain's mechanical autofix
