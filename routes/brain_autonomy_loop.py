@@ -263,6 +263,12 @@ def _allowed_classes() -> set:
         return set()
 
 
+# r-autonomy-safety: these classes are only BUGS against Postgres. In a genuine
+# SQLite file datetime('now',…)/is_active=1 are CORRECT, so the sweep must skip
+# them when the file touches sqlite3 (the line alone can't tell which DB).
+_SQLITE_AMBIGUOUS_CLASSES = {"sqlite_datetime_on_pg", "bool_is_active"}
+
+
 def _candidate_fixes_in_text(rel_path: str, text: str) -> list:
     """Find every unique-in-file mechanical-fix candidate in one file's text.
 
@@ -278,8 +284,13 @@ def _candidate_fixes_in_text(rel_path: str, text: str) -> list:
     out = []
     seen_search = set()   # de-dup identical search lines within this file
     lines = text.split("\n")
+    # SQLite-ambiguous classes are correct in a real SQLite file → skip them when
+    # this file touches sqlite3, or we'd mis-"fix" working code into broken SQL.
+    file_uses_sqlite = ("import sqlite3" in text) or ("sqlite3.connect" in text)
     for spec in _SWEEP_SPECS:
         if spec["klass"] not in allowed:
+            continue
+        if file_uses_sqlite and spec["klass"] in _SQLITE_AMBIGUOUS_CLASSES:
             continue
         guard = spec.get("guard")
         for raw in lines:
@@ -742,7 +753,7 @@ def _record_tick(summary: dict, disabled: bool):
         pass
 
 
-def autonomy_tick() -> dict:
+def autonomy_tick(dry_run: bool = False) -> dict:
     """One autonomy tick. Idempotent + safe to run every 30 min.
 
     GATE (FIRST, before ANY write): if BRAIN_AUTONOMY_ENABLED != '1' →
@@ -756,8 +767,9 @@ def autonomy_tick() -> dict:
       (d) reconcile already-fixed proposals
     Returns a summary {enabled, findings_filed, proposals_created,
     draft_prs_opened, reconciled, ...}."""
-    # ── OFF GATE — the first check, before any write. ────────────────
-    if not autonomy_enabled():
+    # ── OFF GATE — the first check, before any write. ?dry_run=1 forces this
+    #    read-only preview path even while armed (safe preview, zero writes). ──
+    if dry_run or not autonomy_enabled():
         # READ-ONLY preview only — never writes.
         preview = {"reactive": None, "proactive": None}
         try:
@@ -770,8 +782,9 @@ def autonomy_tick() -> dict:
             preview["proactive"] = {"error": str(e)[:120]}
         out = {
             "ok": True,
-            "disabled": True,
-            "autonomy_enabled": False,
+            "disabled": not autonomy_enabled(),
+            "dry_run": dry_run,
+            "autonomy_enabled": autonomy_enabled(),
             "automerge_enabled": automerge_enabled(),
             "as_of": datetime.now(timezone.utc).isoformat(),
             "preview": preview,
@@ -850,7 +863,9 @@ def make_blueprint():
                            hint="X-Admin-Key / X-Internal-Key header required"), 403
         # autonomy_tick() itself enforces the OFF gate FIRST (returns
         # {disabled:true, preview} with zero writes when the flag is off).
-        result = autonomy_tick()
+        # ?dry_run=1 forces the read-only preview path even while armed.
+        dry = (request.args.get("dry_run") or "").lower() in ("1", "true", "yes")
+        result = autonomy_tick(dry_run=dry)
         return jsonify(ok=True, result=result), 200
 
     @bp.get("/api/v1/brain/autonomy/status")
