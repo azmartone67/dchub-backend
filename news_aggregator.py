@@ -179,7 +179,7 @@ ON CONFLICT (guid) DO UPDATE SET
 """
 
 CLEAN_OLD_SQL = """
-DELETE FROM news WHERE published_date < NOW() - INTERVAL '%s days'
+DELETE FROM news WHERE published_date < NOW() - %s * INTERVAL '1 day'
 """
 
 
