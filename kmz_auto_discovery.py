@@ -9,7 +9,7 @@ v3.0 CHANGES (Mar 2026):
   - Uses late-binding DB connection pattern (injected from main.py)
   - PostgreSQL parameterized queries (%s instead of ?)
   - ON CONFLICT instead of INSERT OR IGNORE
-  - datetime('now', '-7 days') → NOW() - INTERVAL '7 days'
+  - NOW() - INTERVAL '7 days' → NOW() - INTERVAL '7 days'
 
 FIBER SOURCES:
 - NTIA Broadband Infrastructure maps
