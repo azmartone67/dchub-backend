@@ -445,7 +445,7 @@ def _enqueue_linkedin_post(cur, blurb: str) -> int | None:
         cur.execute("""
             INSERT INTO social_media_posts
                    (content, platform, status, created_at, approved_at)
-            VALUES (%s, 'linkedin', 'approved', NOW(), NOW()::text)
+            VALUES (%s, 'linkedin', 'approved', NOW(), NOW())
             RETURNING id
         """, (blurb,))
         row = cur.fetchone()
