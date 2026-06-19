@@ -225,6 +225,24 @@ def _query_candidates(min_signals=2, days=30, limit=500):
                     except Exception: pass
                     continue
 
+            # Phase 3 (2026-06-18): drop anyone on the email_suppression list
+            # (one-click unsubscribers, hard bounces). Captured api_keys emails
+            # must honor suppression. Guarded so a missing module/table never
+            # eats the whole candidate list — degrades to "no suppression
+            # filter this run" rather than crashing.
+            try:
+                from routes.email_suppression import is_suppressed as _is_suppressed
+                for _em in list(out.keys()):
+                    try:
+                        if _is_suppressed(cur, _em):
+                            del out[_em]
+                    except Exception:
+                        try: conn.rollback()
+                        except Exception: pass
+                        break
+            except Exception:
+                pass
+
         ordered = sorted(out.values(),
                          key=lambda c: (-c["signal_count"],
                                         c.get("last_signal_at") or ""),
@@ -312,6 +330,17 @@ def _build_email(candidate: dict) -> dict:
         f"https://dchub.cloud/upgrade?utm_source=lost_conversion_outreach"
         f"&utm_age={days_since}d&utm_tool={tool}"
     )
+    # Phase 3 (2026-06-18): tokenized one-click unsubscribe via
+    # routes.email_suppression. The old bare
+    # https://dchub.cloud/unsubscribe?email= link had no HMAC token and was a
+    # dead end. Guarded import — a missing module falls back to the legacy bare
+    # link so an existing send never crashes.
+    try:
+        from routes.email_suppression import unsub_link as _unsub_link
+        _ulink = _unsub_link(candidate["email"])
+    except Exception:
+        _ulink = ("https://dchub.cloud/unsubscribe?email="
+                  + str(candidate["email"]))
     html = (
         f'<!DOCTYPE html><html><body style="font-family:-apple-system,sans-serif;'
         f'max-width:560px;margin:0 auto;color:#1f2937;line-height:1.55;padding:24px">'
@@ -327,7 +356,7 @@ def _build_email(candidate: dict) -> dict:
         f'<p style="color:#6b7280;font-size:13px;margin-top:32px;'
         f'border-top:1px solid #e5e7eb;padding-top:16px">'
         f'DC Hub · Data center intelligence<br>'
-        f'<a href="https://dchub.cloud/unsubscribe?email={candidate["email"]}" '
+        f'<a href="{_ulink}" '
         f'style="color:#9ca3af">unsubscribe</a></p></body></html>'
     )
     text = (
@@ -337,7 +366,7 @@ def _build_email(candidate: dict) -> dict:
         f"{days_since} days.\n\n"
         f"Try it again: {upgrade_url}\n\n"
         f"— DC Hub team\n"
-        f"unsubscribe: https://dchub.cloud/unsubscribe?email={candidate['email']}\n"
+        f"unsubscribe: {_ulink}\n"
     )
     return {"subject": subject, "html": html, "text": text,
             "template_age_bucket": tpl[0]}
@@ -470,6 +499,16 @@ def send():
             }
             if msg.get("html"):
                 payload["html"] = msg["html"]
+            # Phase 3 (2026-06-18): RFC 2369 + RFC 8058 one-click unsubscribe
+            # headers via routes.email_suppression. Guarded so a missing module
+            # never blocks the send.
+            try:
+                from routes.email_suppression import (
+                    list_unsubscribe_headers as _list_unsub_headers,
+                )
+                payload["headers"] = _list_unsub_headers(c["email"])
+            except Exception:
+                pass
             rr = _rq.post(
                 "https://api.resend.com/emails",
                 headers={

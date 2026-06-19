@@ -48,6 +48,18 @@ except Exception:
     def now_iso():
         return datetime.now(timezone.utc).isoformat()
 
+# Phase 3 (consent/legal): the suppression list is the single source of
+# truth for "never email this address". Guarded import — Agent A's module
+# may not be present in every deployment yet, so a missing module must
+# never break a broadcast; we degrade to SQL-only suppression exclusion.
+try:
+    from routes.email_suppression import is_suppressed as _is_suppressed  # noqa: F401
+except Exception:
+    try:
+        from email_suppression import is_suppressed as _is_suppressed  # noqa: F401
+    except Exception:
+        _is_suppressed = None
+
 broadcast_bp = Blueprint("broadcast", __name__)
 
 ADMIN_KEY = os.environ.get("DCHUB_ADMIN_KEY") or os.environ.get("ADMIN_KEY")
@@ -123,25 +135,43 @@ def _require_admin(fn):
 def _build_audience(cur, target_tiers):
     """Resolve the target audience into (email, name, source) tuples.
 
-    target_tiers is a list like ['free', 'identified', 'newsletter'].
-    Pulls from users (filtered by plan) + email_subscribers (newsletter).
+    target_tiers is a list like ['free', 'identified', 'newsletter',
+    'captured'].
+    Pulls from users (filtered by plan) + email_subscribers (newsletter)
+    + the consent-gated captured MCP pool (mcp_dev_keys, opt-in only).
     Dedupes by email; subscribers can opt out via unsubscribed_at.
+
+    Phase 3 (consent/legal): EVERY source is filtered against the
+    email_suppression list with a NOT EXISTS subquery, so a suppressed
+    address can never re-enter the audience via any source. The captured
+    MCP pool is ADDITIONALLY gated on metadata->>'marketing_opt_in'
+    = 'true' — captured emails are transactional-only by default and may
+    receive marketing only on an explicit opt-in.
     """
     addrs = {}  # email → (name, source)
+
+    # Shared suppression predicate — references the OUTER source's email
+    # column by alias so each caller substitutes the right column name.
+    def _supp(col):
+        return (f"NOT EXISTS (SELECT 1 FROM email_suppression s "
+                f"WHERE lower(s.email) = lower({col}))")
+
     plans = [t for t in target_tiers if t in
              ('free', 'identified', 'developer', 'pro', 'enterprise', 'founding', 'all_users')]
     if plans:
         if 'all_users' in plans:
-            sql = """SELECT email, COALESCE(name, ''), plan
-                       FROM users
-                      WHERE email IS NOT NULL AND email <> ''"""
+            sql = f"""SELECT email, COALESCE(name, ''), plan
+                        FROM users u
+                       WHERE email IS NOT NULL AND email <> ''
+                         AND {_supp('u.email')}"""
             params = []
         else:
             placeholders = ','.join(['%s'] * len(plans))
             sql = f"""SELECT email, COALESCE(name, ''), plan
-                        FROM users
+                        FROM users u
                        WHERE email IS NOT NULL AND email <> ''
-                         AND plan IN ({placeholders})"""
+                         AND plan IN ({placeholders})
+                         AND {_supp('u.email')}"""
             params = plans
         try:
             cur.execute(sql, params)
@@ -152,13 +182,36 @@ def _build_audience(cur, target_tiers):
             pass
     if 'newsletter' in target_tiers:
         try:
-            cur.execute("""SELECT email FROM email_subscribers
-                            WHERE unsubscribed_at IS NULL""")
+            cur.execute(f"""SELECT email FROM email_subscribers es
+                             WHERE unsubscribed_at IS NULL
+                               AND {_supp('es.email')}""")
             for (email,) in cur.fetchall():
                 if email and email.lower().strip() not in addrs:
                     addrs[email.lower().strip()] = ("", "newsletter")
         except Exception:
             pass
+
+    # Phase 3 captured MCP pool — consent-gated. Only addresses whose
+    # mcp_dev_keys.metadata marketing_opt_in field equals the string
+    # 'true' (a JSON boolean true renders as the text 'true' via ->>),
+    # active keys only, suppression-excluded, deduped against everything
+    # already collected above. Opt-in to MARKETING here is explicit; the
+    # default false stamp keeps captured emails transactional-only.
+    if 'captured' in target_tiers:
+        try:
+            cur.execute(f"""
+                SELECT DISTINCT lower(k.email)
+                  FROM mcp_dev_keys k
+                 WHERE k.email IS NOT NULL AND k.email <> ''
+                   AND COALESCE(k.status, 'active') = 'active'
+                   AND k.metadata->>'marketing_opt_in' = 'true'
+                   AND {_supp('k.email')}""")
+            for (email,) in cur.fetchall():
+                if email and email.strip() and email.strip() not in addrs:
+                    addrs[email.strip()] = ("", "captured:mcp_opt_in")
+        except Exception:
+            pass
+
     return list(addrs.items())
 
 

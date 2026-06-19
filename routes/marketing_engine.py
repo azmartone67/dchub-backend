@@ -1887,14 +1887,32 @@ def _notify_mcp_subscribers(rel: dict, press_id: int) -> None:
         url = f"https://dchub.cloud/news/{slug}"
         title = (rel.get("title") or "").strip()
         sub = (rel.get("subheadline") or rel.get("meta_description") or "").strip()
-        html_body = f"""<!doctype html><html><body style="font-family:-apple-system,sans-serif;max-width:560px;margin:0 auto;padding:24px;color:#1a1a1a">
+        # Phase 3 (2026-06-18): per-recipient tokenized unsubscribe + RFC 8058
+        # one-click headers via routes.email_suppression. The old bare
+        # https://dchub.cloud/unsubscribe link had no token and was a dead end.
+        # Guarded import so a missing module degrades gracefully (falls back to
+        # the legacy bare link, never crashes the press-notify send).
+        try:
+            from routes.email_suppression import (
+                unsub_link as _unsub_link,
+                list_unsubscribe_headers as _list_unsub_headers,
+            )
+        except Exception:
+            _unsub_link = None
+            _list_unsub_headers = None
+
+        # Body is built per-recipient inside the loop so each recipient gets a
+        # token bound to their address. {unsub} is filled in there.
+        html_body_tmpl = """<!doctype html><html><body style="font-family:-apple-system,sans-serif;max-width:560px;margin:0 auto;padding:24px;color:#1a1a1a">
 <div style="font-size:11px;color:#888;letter-spacing:.05em;text-transform:uppercase;margin-bottom:8px">Daily Press Release · DC Hub</div>
-<h2 style="margin:0 0 12px;font-size:22px;line-height:1.3">{_html_escape(title)}</h2>
-<p style="color:#555;margin:0 0 24px;font-size:15px;line-height:1.5">{_html_escape(sub)}</p>
+<h2 style="margin:0 0 12px;font-size:22px;line-height:1.3">{title}</h2>
+<p style="color:#555;margin:0 0 24px;font-size:15px;line-height:1.5">{sub}</p>
 <p style="margin:24px 0"><a href="{url}" style="background:#1976d2;color:#fff;padding:12px 24px;border-radius:6px;text-decoration:none;font-weight:600;display:inline-block">Read the full release →</a></p>
 <hr style="border:0;border-top:1px solid #eee;margin:32px 0">
-<p style="font-size:12px;color:#888">You're receiving this because you signed up at dchub.cloud. <a href="https://dchub.cloud/unsubscribe" style="color:#888">Unsubscribe</a> · <a href="https://dchub.cloud" style="color:#888">dchub.cloud</a></p>
+<p style="font-size:12px;color:#888">You're receiving this because you signed up at dchub.cloud. <a href="{unsub}" style="color:#888">Unsubscribe</a> · <a href="https://dchub.cloud" style="color:#888">dchub.cloud</a></p>
 </body></html>"""
+        _safe_title = _html_escape(title)
+        _safe_sub = _html_escape(sub)
 
         # 4. Resend batch send: one POST with `to: [array]` is one
         # email per recipient (Resend handles fan-out). Use BCC pattern
@@ -1916,14 +1934,40 @@ def _notify_mcp_subscribers(rel: dict, press_id: int) -> None:
             batch = recipients[i:i+batch_size]
             for to_addr in batch:
                 try:
+                    # Phase 3: skip anyone on the suppression list (one-click
+                    # unsubscribers, bounces). Reuses the already-open conn `c`;
+                    # guarded so a missing module/table never blocks the send.
+                    try:
+                        from routes.email_suppression import is_suppressed as _is_suppressed
+                        with c.cursor() as _scur:
+                            if _is_suppressed(_scur, to_addr):
+                                continue
+                    except Exception:
+                        try: c.rollback()
+                        except Exception: pass
+
+                    # Per-recipient tokenized unsubscribe link + one-click hdrs.
+                    if _unsub_link is not None:
+                        _ulink = _unsub_link(to_addr)
+                    else:
+                        _ulink = ("https://dchub.cloud/unsubscribe?email="
+                                  + str(to_addr))
+                    html_body = html_body_tmpl.format(
+                        title=_safe_title, sub=_safe_sub, url=url, unsub=_ulink)
+                    _payload = {
+                        "from": sender,
+                        "to": [to_addr],
+                        "subject": subject,
+                        "html": html_body,
+                    }
+                    if _list_unsub_headers is not None:
+                        try:
+                            _payload["headers"] = _list_unsub_headers(to_addr)
+                        except Exception:
+                            pass
                     resp = _rq.post(
                         "https://api.resend.com/emails",
-                        json={
-                            "from": sender,
-                            "to": [to_addr],
-                            "subject": subject,
-                            "html": html_body,
-                        },
+                        json=_payload,
                         headers=headers,
                         timeout=15,
                     )

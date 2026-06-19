@@ -80,33 +80,145 @@ def _get_db():
 
 
 def _fetch_candidates(min_signals: int = 3, limit: int = 200) -> list[dict]:
-    """Returns identified users with paywall signals worth outreaching:
-    not yet outreached, not yet converted, ≥ min_signals hits in 30d."""
+    """Returns the addressable upgrade-outreach pool, deduped by lower(email).
+
+    Phase 3 (2026-06-18) — three suppression-excluded sources, unioned:
+
+      A) mcp_upgrade_signals — identified paywall hits (>= min_signals in
+         30d), not yet converted, not yet outreached. The high-intent core;
+         carries tools/clients/tier for the personalized body.
+
+      B) mcp_dev_keys — captured MCP emails that EXPLICITLY opted in to
+         marketing (metadata->>'marketing_opt_in' = 'true'), active keys
+         only. Captured emails are transactional-only by default (Phase-2
+         stamps marketing_opt_in:false), so this gate is what makes them
+         lawfully marketable.
+
+      C) auto_trial_keys.operator_email — trial keys whose consent marker
+         (stamped into the `notes` TEXT column at identify time, since this
+         table has no jsonb metadata) shows a marketing opt-in.
+
+    EVERY source is filtered against email_suppression with NOT EXISTS, so a
+    one-click unsubscriber / bounce can never re-enter via any source. Dedup
+    is by lower(email): source A (with its rich signal data) wins over the
+    bare opt-in pools B/C. Each query is wrapped so a missing optional table
+    (fresh DB) degrades gracefully instead of crashing the whole fetch.
+    """
     conn = _get_db()
     if conn is None:
         return []
+
+    # NOT EXISTS suppression predicate against an outer email column alias —
+    # same idiom as routes/broadcast.py. Lowercased on both sides so casing
+    # never lets a suppressed address slip back in.
+    def _supp(col):
+        return (f"NOT EXISTS (SELECT 1 FROM email_suppression s "
+                f"WHERE lower(s.email) = lower({col}))")
+
+    out: dict = {}   # lower(email) -> candidate dict (source A wins on dedup)
     try:
         with conn.cursor() as cur:
-            cur.execute("""
-                SELECT user_email,
-                       COUNT(*) AS signal_count,
-                       array_agg(DISTINCT tool_requested
-                                  ORDER BY tool_requested) AS tools,
-                       MAX(created_at) AS most_recent,
-                       array_agg(DISTINCT mcp_client) AS clients,
-                       MAX(tier_current) AS current_tier
-                  FROM mcp_upgrade_signals
-                 WHERE created_at > NOW() - INTERVAL '30 days'
-                   AND user_email IS NOT NULL
-                   AND user_email != ''
-                   AND COALESCE(converted, false) = false
-                   AND COALESCE(outreach_sent, false) = false
-                 GROUP BY user_email
-                HAVING COUNT(*) >= %s
-                 ORDER BY signal_count DESC
-                 LIMIT %s
-            """, (min_signals, limit))
-            rows = cur.fetchall()
+            # ── Source A — identified paywall signals (high intent) ──────────
+            try:
+                cur.execute(f"""
+                    SELECT lower(user_email) AS email,
+                           COUNT(*) AS signal_count,
+                           array_agg(DISTINCT tool_requested
+                                      ORDER BY tool_requested) AS tools,
+                           MAX(created_at) AS most_recent,
+                           array_agg(DISTINCT mcp_client) AS clients,
+                           MAX(tier_current) AS current_tier
+                      FROM mcp_upgrade_signals
+                     WHERE created_at > NOW() - INTERVAL '30 days'
+                       AND user_email IS NOT NULL
+                       AND user_email != ''
+                       AND COALESCE(converted, false) = false
+                       AND COALESCE(outreach_sent, false) = false
+                       AND {_supp('user_email')}
+                     GROUP BY lower(user_email)
+                    HAVING COUNT(*) >= %s
+                     ORDER BY signal_count DESC
+                     LIMIT %s
+                """, (min_signals, limit))
+                for r in cur.fetchall():
+                    em = (r[0] or "").strip()
+                    if not em:
+                        continue
+                    out[em] = {
+                        "email":         em,
+                        "signal_count":  int(r[1] or 0),
+                        "tools":         [t for t in (r[2] or []) if t],
+                        "most_recent":   r[3].isoformat() if r[3] else None,
+                        "mcp_clients":   [c for c in (r[4] or []) if c],
+                        "current_tier":  r[5] or "free",
+                        "source":        "upgrade_signals",
+                    }
+            except Exception as e:
+                logger.warning(f"upgrade_pool: source A query failed: {e}")
+                try: conn.rollback()
+                except Exception: pass
+
+            # ── Source B — captured MCP emails, explicit marketing opt-in ────
+            # metadata->>'marketing_opt_in' returns the JSON boolean true as
+            # the text 'true'. Active keys only, suppression-excluded.
+            try:
+                cur.execute(f"""
+                    SELECT DISTINCT lower(k.email) AS email
+                      FROM mcp_dev_keys k
+                     WHERE k.email IS NOT NULL AND k.email <> ''
+                       AND COALESCE(k.status, 'active') = 'active'
+                       AND k.metadata->>'marketing_opt_in' = 'true'
+                       AND {_supp('k.email')}
+                """)
+                for (em,) in cur.fetchall():
+                    em = (em or "").strip()
+                    if em and em not in out:
+                        out[em] = {
+                            "email":         em,
+                            "signal_count":  0,
+                            "tools":         [],
+                            "most_recent":   None,
+                            "mcp_clients":   [],
+                            "current_tier":  "free",
+                            "source":        "captured_mcp_opt_in",
+                        }
+            except Exception as e:
+                logger.warning(f"upgrade_pool: source B query failed: {e}")
+                try: conn.rollback()
+                except Exception: pass
+
+            # ── Source C — captured trial keys with a marketing opt-in marker ─
+            # auto_trial_keys has no jsonb metadata column; the consent marker
+            # lives as a JSON blob in the `notes` TEXT column (see
+            # flask_mcp_endpoints identify path). Match the opt-in rendering
+            # ("marketing_opt_in": true / "marketing_opt_in":true) case-insens.
+            try:
+                cur.execute(f"""
+                    SELECT DISTINCT lower(t.operator_email) AS email
+                      FROM auto_trial_keys t
+                     WHERE t.operator_email IS NOT NULL
+                       AND t.operator_email <> ''
+                       AND t.notes IS NOT NULL
+                       AND (t.notes ILIKE '%%"marketing_opt_in": true%%'
+                         OR t.notes ILIKE '%%"marketing_opt_in":true%%')
+                       AND {_supp('t.operator_email')}
+                """)
+                for (em,) in cur.fetchall():
+                    em = (em or "").strip()
+                    if em and em not in out:
+                        out[em] = {
+                            "email":         em,
+                            "signal_count":  0,
+                            "tools":         [],
+                            "most_recent":   None,
+                            "mcp_clients":   [],
+                            "current_tier":  "trial",
+                            "source":        "captured_trial_opt_in",
+                        }
+            except Exception as e:
+                logger.warning(f"upgrade_pool: source C query failed: {e}")
+                try: conn.rollback()
+                except Exception: pass
     except Exception as e:
         logger.warning(f"upgrade_pool: query failed: {e}")
         return []
@@ -114,17 +226,10 @@ def _fetch_candidates(min_signals: int = 3, limit: int = 200) -> list[dict]:
         try: conn.close()
         except Exception: pass
 
-    out = []
-    for r in rows:
-        out.append({
-            "email":         r[0],
-            "signal_count":  int(r[1] or 0),
-            "tools":         [t for t in (r[2] or []) if t],
-            "most_recent":   r[3].isoformat() if r[3] else None,
-            "mcp_clients":   [c for c in (r[4] or []) if c],
-            "current_tier":  r[5] or "free",
-        })
-    return out
+    # signal-rich source A first, then the opt-in pools; cap at limit.
+    ordered = sorted(out.values(),
+                     key=lambda c: -int(c.get("signal_count") or 0))
+    return ordered[:int(limit)]
 
 
 # Hand-tuned descriptions per tool — used in personalized outreach body.
@@ -167,6 +272,16 @@ def _draft_outreach(user: dict) -> dict:
         for t in top_tools
     ) or '<li><b>DC Hub MCP tools</b></li>'
 
+    # Phase 3 (2026-06-18): tokenized one-click unsubscribe via
+    # routes.email_suppression. The old bare https://dchub.cloud/unsubscribe
+    # ?email= link had no HMAC token and was a dead end. Guarded — a missing
+    # module falls back to the legacy bare link so the draft never crashes.
+    try:
+        from routes.email_suppression import unsub_link as _unsub_link
+        _ulink = _unsub_link(email)
+    except Exception:
+        _ulink = f"https://dchub.cloud/unsubscribe?email={email}"
+
     body = f"""<div style="font-family:-apple-system,BlinkMacSystemFont,'Inter',sans-serif;color:#1a1a1a;line-height:1.55;max-width:560px">
 <p>Hi {name_guess},</p>
 <p>I run DC Hub (<a href="https://dchub.cloud">dchub.cloud</a>). Our backend pings me when someone hits a paid MCP tool from a free tier — and you've shown up {sig} times in the last 30 days.</p>
@@ -181,7 +296,7 @@ $49/mo Developer or $99/mo (50% off Pro) for the first 90 days. Reply to this em
 <p>If neither works because of what you're trying to do, tell me what would — I read every reply.</p>
 <p>— Jonathan<br>
 DC Hub · <a href="https://dchub.cloud">dchub.cloud</a></p>
-<p style="margin-top:32px;font-size:11px;color:#6b7280;border-top:1px solid #e5e7eb;padding-top:12px">You're receiving this because your dev key has hit DC Hub's MCP server {sig} times in the last 30 days. <a href="https://dchub.cloud/unsubscribe?email={email}" style="color:#6b7280">Unsubscribe</a></p>
+<p style="margin-top:32px;font-size:11px;color:#6b7280;border-top:1px solid #e5e7eb;padding-top:12px">You're receiving this because your dev key has hit DC Hub's MCP server {sig} times in the last 30 days. <a href="{_ulink}" style="color:#6b7280">Unsubscribe</a></p>
 </div>"""
     return {
         "email":   email,
@@ -464,21 +579,36 @@ def upgrade_pool_send():
     sent_emails = []
     try:
         import requests as _rq
+        # Phase 3 (2026-06-18): RFC 2369 + RFC 8058 one-click unsubscribe
+        # headers via routes.email_suppression. Guarded so a missing module
+        # never blocks the send.
+        try:
+            from routes.email_suppression import (
+                list_unsubscribe_headers as _list_unsub_headers,
+            )
+        except Exception:
+            _list_unsub_headers = None
         for d in drafts:
             try:
+                _email_json = {
+                    "from":    from_email,
+                    "to":      [d["email"]],
+                    "subject": d["subject"],
+                    "html":    d["body"],
+                    "reply_to": "jonathan@dchub.cloud",
+                    "tags": [
+                        {"name": "campaign", "value": "upgrade_pool"},
+                        {"name": "signal_count", "value": str(d["signals"])},
+                    ],
+                }
+                if _list_unsub_headers is not None:
+                    try:
+                        _email_json["headers"] = _list_unsub_headers(d["email"])
+                    except Exception:
+                        pass
                 r = _rq.post(
                     "https://api.resend.com/emails",
-                    json={
-                        "from":    from_email,
-                        "to":      [d["email"]],
-                        "subject": d["subject"],
-                        "html":    d["body"],
-                        "reply_to": "jonathan@dchub.cloud",
-                        "tags": [
-                            {"name": "campaign", "value": "upgrade_pool"},
-                            {"name": "signal_count", "value": str(d["signals"])},
-                        ],
-                    },
+                    json=_email_json,
                     headers={
                         "Authorization": f"Bearer {resend_key}",
                         "Content-Type":  "application/json",

@@ -739,6 +739,16 @@ def identify_key():
     body = request.get_json(silent=True) or {}
     api_key = (str(body.get("api_key") or "")).strip()
     email = (str(body.get("email") or "")).strip().lower()
+    # Phase 3 (2026-06-18) — explicit marketing opt-in. CONSENT-SAFE DEFAULT:
+    # only an EXPLICIT boolean true (or the strings "true"/"1"/"yes") flips
+    # marketing_opt_in; absent / false / anything else leaves it the Phase-2
+    # default of false, so a captured MCP email is never marketed without a
+    # clear yes. This opt-in is what gives the Phase-3 marketing union an
+    # actual audience. It never affects the soft-fail contract or the claim path.
+    _moi_raw = body.get("marketing_opt_in")
+    marketing_opt_in = (_moi_raw is True
+                        or (isinstance(_moi_raw, str)
+                            and _moi_raw.strip().lower() in ("true", "1", "yes")))
 
     if not api_key:
         return jsonify(ok=False, error="missing_api_key",
@@ -828,6 +838,19 @@ def identify_key():
             # Idempotent: re-identifying with the same email is a clean
             # confirm; a different email re-points the key (humans switch
             # accounts — last-write-wins is fine for a free key).
+            # Phase 3: marketing_opt_in is parameter-driven now. Consent-safe
+            # default is still false (no opt-in → no marketing); only an
+            # EXPLICIT yes from the body sets it true and stamps a
+            # marketing_opt_in_at timestamp so the consent moment is auditable.
+            # Absent / false → we still write marketing_opt_in:false, which IS
+            # the consent-safe Phase-2 default. The trailing || %s::jsonb adds
+            # marketing_opt_in_at only on a true opt-in ({} is a no-op merge
+            # otherwise). Building that extra jsonb in Python keeps the SQL one
+            # expression and avoids a second jsonb_build_object.
+            _now_iso = datetime.now(timezone.utc).isoformat()
+            _consent_extra = {}
+            if marketing_opt_in:
+                _consent_extra["marketing_opt_in_at"] = _now_iso
             cur.execute(
                 """UPDATE mcp_dev_keys
                        SET email = %s,
@@ -836,16 +859,17 @@ def identify_key():
                                            'identified_at', %s::text,
                                            'identify_source', 'mcp_value_moment',
                                            -- Consent provenance (GDPR/CAN-SPAM): we
-                                           -- only email this address for key recovery +
-                                           -- upgrade receipts. marketing_opt_in is a JSON
-                                           -- boolean false by default — no opt-in here.
+                                           -- email this address for key recovery +
+                                           -- upgrade receipts always; marketing only
+                                           -- when marketing_opt_in is explicitly true.
                                            'consent_at', %s::text,
                                            'lawful_basis', 'legitimate_interest_transactional',
-                                           'marketing_opt_in', false,
+                                           'marketing_opt_in', %s::boolean,
                                            'purpose', 'key_recovery_and_receipts')
+                                      || %s::jsonb
                      WHERE api_key = %s""",
-                (email, datetime.now(timezone.utc).isoformat(),
-                 datetime.now(timezone.utc).isoformat(), api_key),
+                (email, _now_iso, _now_iso, marketing_opt_in,
+                 json.dumps(_consent_extra), api_key),
             )
 
             # r77 (2026-06-07): inherit paid tier if this email already belongs to

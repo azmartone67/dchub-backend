@@ -221,6 +221,32 @@ def subscribe():
                 (slug, channel, destination, api_key, source),
             )
             row = cur.fetchone()
+
+            # Phase 3 BACK-BIND (identity): an email alert subscriber who
+            # arrived via an MCP key is now identity-emailable. Stamp the
+            # destination onto the key's empty email slot so transactional
+            # mail (key recovery, receipts) can reach them — WITHOUT
+            # clobbering an existing bind (humans switch accounts; the
+            # first identified email wins here) and WITHOUT touching
+            # marketing_opt_in (marketing stays an explicit, separate
+            # opt-in). Best-effort: a failure here must never break the
+            # subscribe, so it runs in its own SAVEPOINT.
+            if channel == "email" and api_key:
+                try:
+                    cur.execute("SAVEPOINT backbind")
+                    cur.execute(
+                        """UPDATE mcp_dev_keys
+                              SET email = %s
+                            WHERE api_key = %s
+                              AND email IS NULL""",
+                        (destination, api_key))
+                    cur.execute("RELEASE SAVEPOINT backbind")
+                except Exception:
+                    try:
+                        cur.execute("ROLLBACK TO SAVEPOINT backbind")
+                    except Exception:
+                        pass
+
             c.commit()
         return jsonify(ok=True, subscription_id=row[0], market=slug,
                        channel=channel, message="subscribed to market-movement alerts"), 200
