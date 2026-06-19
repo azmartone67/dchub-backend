@@ -122,7 +122,7 @@ def track_tool_call():
                 """INSERT INTO mcp_call_log
                      (timestamp, tool, params, platform, api_key, tier,
                       session_id, status, duration_ms)
-                   VALUES (%s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s)""",
+                   VALUES (%s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING""",
                 (
                     ts_dt,
                     tool,
