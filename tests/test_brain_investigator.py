@@ -19,6 +19,11 @@ import pytest
 
 inv = pytest.importorskip("routes.brain_investigator")
 
+# The autouse _no_db_evidence fixture (below) stubs inv.gather_evidence so the
+# 5-step-chain tests never touch a DB. Capture the REAL function here, BEFORE
+# any patching, so the GOAL-A tests can exercise the genuine gather_evidence.
+_REAL_GATHER_EVIDENCE = inv.gather_evidence
+
 
 # ── helpers ──────────────────────────────────────────────────────────
 def _fake_caller(responses):
@@ -183,6 +188,140 @@ def test_cannot_investigate_without_api_key(monkeypatch):
 def test_empty_question_cannot_investigate():
     out = inv.investigate("   ")
     assert out["cannot_investigate"] == "empty_question"
+
+
+# ── GOAL A: growth-funnel evidence ──────────────────────────────────
+# A canned honest-dashboard blob shaped like routes.funnel_health._data_cached().
+_FAKE_FUNNEL_DATA = {
+    "kpis": {
+        "mrr_usd": 4735,
+        "conversions_30d": 3,
+        "active_dev_keys": 412,
+        "tool_calls_7d": 35021,
+        "dev_keys_by_tier": {"free": 400, "paid": 10, "enterprise": 2},
+    },
+    "funnel": {
+        "distinct_paid_users_30d": 9,
+        "stage_drops_pct": {"signals->codes": 80.0, "codes->paid": 95.0},
+    },
+}
+_FAKE_REACH_CACHE = {
+    "ts": 1.0,
+    "data": {"distinct_agents_7d": 76, "distinct_platforms": 5},
+}
+
+
+def _patch_growth_sources(monkeypatch, *, funnel=_FAKE_FUNNEL_DATA,
+                          reach=_FAKE_REACH_CACHE):
+    """Inject fake modules for funnel_health + ai_reach so gather_growth_funnel
+    runs with NO DB / NO network. We swap the symbols inside sys.modules so the
+    function-local `from routes.funnel_health import _data_cached` resolves to
+    our fakes."""
+    import sys
+    import types
+
+    fh = types.ModuleType("routes.funnel_health")
+    fh._data_cached = lambda: (dict(funnel) if funnel is not None else None)
+    monkeypatch.setitem(sys.modules, "routes.funnel_health", fh)
+
+    reach_mod = types.ModuleType("routes.ai_reach")
+    reach_mod._cache = dict(reach) if reach is not None else {}
+    monkeypatch.setitem(sys.modules, "routes.ai_reach", reach_mod)
+
+
+def test_gather_growth_funnel_returns_funnel_items(monkeypatch):
+    """The new helper surfaces MRR, conversions, paid keys, reach, retention —
+    the measured data that lets growth questions clear 0.25 confidence."""
+    _patch_growth_sources(monkeypatch)
+    items = inv.gather_growth_funnel()
+    assert isinstance(items, list) and items
+    # every item is the {claim, source, value} shape the chain expects.
+    for it in items:
+        assert set(it.keys()) >= {"claim", "source", "value"}
+
+    def _val(needle):
+        for it in items:
+            if needle in it["claim"].lower():
+                return it["value"]
+        return None
+
+    # MRR is the users.plan-derived number (~$4.7k), NOT a row count.
+    assert _val("mrr") == 4735
+    # Conversions from the Stripe-backed table.
+    assert _val("conversion") == 3
+    # PAID keys = tier in (paid, enterprise) = 10 + 2 = 12 (NOT the 412 total).
+    assert _val("paid dev keys") == 12
+    # Reach = DISTINCT external IPs (honest, not loop-inflated volume).
+    assert _val("external ai agents") == 76
+    # Retention proxy: distinct paid users 30d.
+    assert _val("distinct paid users") == 9
+
+
+def test_gather_evidence_includes_growth_funnel(monkeypatch):
+    """gather_evidence must APPEND the growth-funnel items to the existing
+    canonical/findings/baseline evidence (not replace them)."""
+    # Stub the other three sources to empty so we isolate the growth items.
+    monkeypatch.setattr(inv, "_gather_recent_findings", lambda *a, **k: [])
+    monkeypatch.setattr(inv, "_gather_health_baseline", lambda *a, **k: [])
+    # canonical_stats import lives inside gather_evidence; make it a no-op by
+    # forcing an empty stats dict via a fake module.
+    import sys
+    import types
+    cs = types.ModuleType("canonical_stats")
+    cs.get_canonical_stats = lambda: {}
+    monkeypatch.setitem(sys.modules, "canonical_stats", cs)
+    _patch_growth_sources(monkeypatch)
+
+    # Bypass the autouse stub — exercise the REAL gather_evidence.
+    ev = _REAL_GATHER_EVIDENCE()
+    sources = " ".join(e.get("source", "") for e in ev)
+    assert "funnel_health" in sources
+    assert "ai_reach" in sources
+    # At least the MRR claim made it through.
+    assert any("mrr" in e["claim"].lower() for e in ev)
+
+
+def test_gather_growth_funnel_degraded_source_yields_empty(monkeypatch):
+    """A degraded underlying source (raises on call) must yield [] WITHOUT
+    raising — best-effort contract."""
+    import sys
+    import types
+
+    fh = types.ModuleType("routes.funnel_health")
+
+    def _boom():
+        raise RuntimeError("DB down")
+
+    fh._data_cached = _boom
+    monkeypatch.setitem(sys.modules, "routes.funnel_health", fh)
+
+    # ai_reach module absent / empty cache → no reach items either.
+    reach_mod = types.ModuleType("routes.ai_reach")
+    reach_mod._cache = {}
+    monkeypatch.setitem(sys.modules, "routes.ai_reach", reach_mod)
+
+    items = inv.gather_growth_funnel()
+    assert items == []
+
+
+def test_gather_evidence_survives_growth_funnel_failure(monkeypatch):
+    """If gather_growth_funnel itself blows up, gather_evidence must still
+    return the other evidence and NOT crash the investigation."""
+    monkeypatch.setattr(inv, "_gather_recent_findings", lambda *a, **k: [])
+    monkeypatch.setattr(inv, "_gather_health_baseline", lambda *a, **k: [])
+    import sys
+    import types
+    cs = types.ModuleType("canonical_stats")
+    cs.get_canonical_stats = lambda: {"facilities": 21000}
+    monkeypatch.setitem(sys.modules, "canonical_stats", cs)
+
+    def _boom():
+        raise RuntimeError("growth source exploded")
+
+    monkeypatch.setattr(inv, "gather_growth_funnel", _boom)
+    ev = _REAL_GATHER_EVIDENCE()  # must not raise (bypass autouse stub)
+    # The canonical facilities item still came through.
+    assert any("facilities" in e["claim"].lower() for e in ev)
 
 
 # ── endpoints (Flask test client) ───────────────────────────────────

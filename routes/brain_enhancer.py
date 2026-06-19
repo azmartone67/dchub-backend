@@ -16,6 +16,17 @@ evidence -> reason -> adversarially REFUTE -> synthesize), RANKS the resulting
 proposals by leverage x confidence via the REUSED brain_work_selector, and
 SURFACES them for a human to review/decide.
 
+LEARNING-DRIVEN scan (BRAIN_ENHANCER_LEARNED_SCAN, default on): instead of
+mining the four evidence sources in a FIXED canonical->findings->baseline->
+work_plan order, scan_opportunities() REORDERS the scanned opportunities so the
+AREAS where the brain HISTORICALLY succeeds are mined first. The per-area weight
+is aggregated from the related mechanical fix-classes' learned resolve rates via
+the VETTED brain_work_selector aggregators (_read_class_rate / _soft_greedy) —
+NO hand-rolled counts. It is REORDER-ONLY (never drops/invents an opportunity),
+keeps an anti-starvation FLOOR (an unproven area stays NEUTRAL and is explored,
+never permanently skipped), and is best-effort (any failure logs and falls back
+to the prior fixed order).
+
 This is strictly WEAKER than the self-healing loop:
   · self-HEALING auto-merges allowlisted MECHANICAL fixes (it acts).
   · self-ENHANCING only PROPOSES improvements (it NEVER acts). An improvement
@@ -69,6 +80,16 @@ def _enabled() -> bool:
     """The enhancer ships DARK. Default OFF so it can't burn API budget or
     surface half-baked proposals until an operator flips the flag."""
     return _truthy(os.environ.get("BRAIN_ENHANCER_ENABLED"))
+
+
+def _learned_scan_enabled() -> bool:
+    """LEARNING-DRIVEN scan reordering. Default ON — it is REORDER-ONLY (never
+    drops or invents an opportunity), so the worst case is identical to the old
+    fixed order. An operator can flip BRAIN_ENHANCER_LEARNED_SCAN=0 to fall back
+    to the pure canonical->findings->baseline->work_plan order."""
+    return os.environ.get("BRAIN_ENHANCER_LEARNED_SCAN", "1") not in (
+        "0", "false", "False", "off", "no",
+    )
 
 
 def _has_api_key() -> bool:
@@ -207,6 +228,120 @@ AREAS = (
 
 def _opportunity(area: str, signal: str, question: str) -> dict:
     return {"area": area, "signal": signal, "question": question}
+
+
+# ── LEARNING-DRIVEN scan reordering (GOAL B) ─────────────────────────
+# The brain learns per-fix-CLASS resolve rates (brain_fix_outcomes, read by
+# brain_work_selector._read_class_rate / class_success_weight). The enhancer's
+# improvement AREAS are business themes, NOT mechanical fix-classes, so we map
+# each AREA to the related fix-classes and aggregate their learned success rates
+# into a per-AREA weight. We then REORDER the scanned opportunities so areas
+# where the brain HISTORICALLY succeeds are mined first — never DROPPING any
+# opportunity (anti-starvation: the FLOOR in class_success_weight keeps an
+# unproven/unlucky area explored, and reorder-only means nothing is skipped).
+#
+# Mapping is intentionally coarse: the six allowlisted mechanical classes are
+# {interval_literal, tz_naive_utcnow, bool_is_active, sqlite_datetime_on_pg,
+# now_text_cast, immutable_index}. Areas with no mechanical proxy fall through to
+# NEUTRAL (1.0), preserving exploration — they are neither boosted nor starved.
+_AREA_CLASS_MAP = {
+    "reliability": ("tz_naive_utcnow", "now_text_cast"),
+    "performance": ("sqlite_datetime_on_pg", "immutable_index"),
+    "data_coverage": ("interval_literal", "bool_is_active"),
+    # No mechanical fix-class proxy yet — these stay NEUTRAL (explored, never
+    # boosted nor starved) until a calibration feed exists for them.
+    "conversion_revenue": (),
+    "developer_ux": (),
+}
+
+
+def _area_success_weight(area: str) -> float:
+    """Learned soft-greedy weight for an AREA, aggregated from the success rates
+    of its related mechanical fix-classes via the VETTED honest aggregators in
+    brain_work_selector (_read_class_rate + class_success_weight). REUSE-ONLY —
+    no hand-rolled SQL, no COUNT(*) (the vetted reader already reads the
+    tri-state brain_fix_outcomes.resolved over a recent window).
+
+      · area maps to N fix-classes → mean of their succeeded-rates → soft-greedy
+        weight in [FLOOR, CAP].
+      · no usable per-class data (untried) → NEUTRAL (1.0), so the area is
+        EXPLORED, never starved (anti-starvation floor, mirrors the work
+        selector's aging spirit).
+
+    Fail-NEUTRAL: returns 1.0 on missing area or ANY error — a DB hiccup must
+    never penalise (or permanently demote) an area."""
+    try:
+        classes = _AREA_CLASS_MAP.get(area, ())
+        if not classes:
+            return 1.0  # no proxy → neutral (explored, not starved)
+        from routes.brain_work_selector import (
+            _read_class_rate, _soft_greedy, WORK_NEUTRAL,
+        )
+        rates = []
+        total_samples = 0
+        for klass in classes:
+            try:
+                rate, samples = _read_class_rate(klass)
+            except Exception:
+                rate, samples = None, 0
+            if rate is not None and samples > 0:
+                rates.append(rate)
+                total_samples += int(samples)
+        if not rates:
+            return float(WORK_NEUTRAL)  # untried area → neutral (explored)
+        mean_rate = sum(rates) / float(len(rates))
+        # Use the aggregate sample count so a single sparse class can't be
+        # over-trusted; _soft_greedy already blends small samples toward neutral.
+        return float(_soft_greedy(mean_rate, total_samples))
+    except Exception as e:
+        logger.warning("brain_enhancer: area success weight failed for %r: %s",
+                       area, e)
+        return 1.0
+
+
+def _reorder_by_learned_success(opps: list[dict]) -> list[dict]:
+    """REORDER opportunities so areas where the brain HISTORICALLY succeeds are
+    mined first, while keeping an anti-starvation floor so NO area is permanently
+    skipped. REORDER-ONLY:
+
+      · NEVER drops or invents an opportunity — the result is a permutation of
+        the input (same length, same items).
+      · STABLE for ties — original scan order breaks equal-weight ties, so a
+        zero-evidence run is byte-identical to the old fixed order.
+      · Computes each AREA's learned weight ONCE (not per-opportunity) to avoid
+        N+1 DB reads.
+
+    Best-effort: on ANY error it returns the input UNCHANGED (the prior
+    canonical->findings->baseline->work_plan order) — it can never crash a scan
+    or reorder work away."""
+    try:
+        items = [o for o in (opps or []) if isinstance(o, dict)]
+        # If filtering changed the count, something is off — fall back untouched.
+        if len(items) != len(opps or []):
+            return list(opps or [])
+        if len(items) < 2:
+            return list(items)
+        # Pre-compute the learned weight per DISTINCT area ONCE (avoid N+1).
+        area_weights: dict = {}
+        for o in items:
+            a = o.get("area")
+            if a not in area_weights:
+                area_weights[a] = _area_success_weight(a)
+        annotated = []
+        for idx, o in enumerate(items):
+            w = area_weights.get(o.get("area"), 1.0)
+            # (-weight, original_index) → stable descending by learned weight,
+            # ties broken by the original scan order.
+            annotated.append((-float(w), idx, o))
+        annotated.sort(key=lambda t: (t[0], t[1]))
+        ranked = [t[2] for t in annotated]
+        # SAFETY invariant: reorder-only must never drop an opportunity.
+        if len(ranked) != len(items):
+            return list(items)
+        return ranked
+    except Exception as e:
+        logger.warning("brain_enhancer: learned-scan reorder failed: %s", e)
+        return list(opps or [])
 
 
 def _scan_canonical(out: list[dict]) -> None:
@@ -353,6 +488,15 @@ def scan_opportunities() -> list[dict]:
         except Exception as e:
             logger.warning("brain_enhancer: scan step %s failed: %s",
                            getattr(fn, "__name__", "?"), e)
+    # LEARNING-DRIVEN reorder (GOAL B): mine areas where the brain HISTORICALLY
+    # succeeds first, instead of the fixed canonical->findings->baseline->
+    # work_plan order. REORDER-ONLY + anti-starvation floor + flag-gated +
+    # best-effort (a failure logs and falls back to the order above).
+    if _learned_scan_enabled():
+        try:
+            out = _reorder_by_learned_success(out)
+        except Exception as e:
+            logger.warning("brain_enhancer: learned scan reorder skipped: %s", e)
     return out
 
 

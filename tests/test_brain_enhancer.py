@@ -93,6 +93,128 @@ def test_scan_opportunities_no_data_returns_empty(monkeypatch):
 
 
 # ════════════════════════════════════════════════════════════════════
+#  LEARNING-DRIVEN scan reorder (GOAL B) — mine where the brain wins first
+# ════════════════════════════════════════════════════════════════════
+def test_learned_scan_favors_high_success_area(monkeypatch):
+    """With a stubbed learned-state signal that favors a chosen AREA,
+    scan_opportunities ranks that area's opportunities AHEAD of the others —
+    instead of the fixed canonical->findings->baseline->work_plan order."""
+    monkeypatch.setattr(enh, "_learned_scan_enabled", lambda: True)
+    # Three opportunities in three areas, in a FIXED non-learned order where the
+    # winning area is LAST (so a real reorder must move it to the front).
+    # Patch the four scanners so scan_opportunities assembles a known list.
+    def _seed(out):
+        out.append(enh._opportunity("performance", "sig-perf", "q perf"))
+        out.append(enh._opportunity("developer_ux", "sig-ux", "q ux"))
+        out.append(enh._opportunity("data_coverage", "sig-cov", "q cov"))
+    monkeypatch.setattr(enh, "_scan_canonical", lambda out: _seed(out))
+    monkeypatch.setattr(enh, "_scan_findings", lambda out, limit=12: None)
+    monkeypatch.setattr(enh, "_scan_health_baseline", lambda out: None)
+    monkeypatch.setattr(enh, "_scan_work_plan", lambda out: None)
+
+    # Stub the learned-state signal: data_coverage is the historically-winning
+    # area (high weight), the others NEUTRAL.
+    def _fake_area_weight(area):
+        return {"data_coverage": 1.30}.get(area, 1.0)
+    monkeypatch.setattr(enh, "_area_success_weight", _fake_area_weight)
+
+    opps = enh.scan_opportunities()
+    assert [o["area"] for o in opps][0] == "data_coverage", \
+        "the historically-winning area must be mined FIRST"
+    # REORDER-ONLY: same set, nothing dropped or invented.
+    assert sorted(o["area"] for o in opps) == ["data_coverage", "developer_ux", "performance"]
+    assert len(opps) == 3
+
+
+def test_learned_scan_is_reorder_only_stable_on_ties(monkeypatch):
+    """When all areas have EQUAL learned weight the order is UNCHANGED (stable —
+    a zero-evidence run is identical to the old fixed order)."""
+    monkeypatch.setattr(enh, "_learned_scan_enabled", lambda: True)
+    monkeypatch.setattr(enh, "_area_success_weight", lambda area: 1.0)
+
+    seed = [
+        enh._opportunity("reliability", "s1", "q1"),
+        enh._opportunity("performance", "s2", "q2"),
+        enh._opportunity("data_coverage", "s3", "q3"),
+    ]
+    monkeypatch.setattr(enh, "_scan_canonical",
+                        lambda out: out.extend(dict(o) for o in seed))
+    monkeypatch.setattr(enh, "_scan_findings", lambda out, limit=12: None)
+    monkeypatch.setattr(enh, "_scan_health_baseline", lambda out: None)
+    monkeypatch.setattr(enh, "_scan_work_plan", lambda out: None)
+
+    opps = enh.scan_opportunities()
+    assert [o["area"] for o in opps] == ["reliability", "performance", "data_coverage"]
+
+
+def test_learned_scan_falls_back_when_source_errors(monkeypatch):
+    """When the learned-state source RAISES, scan_opportunities falls back to the
+    PRIOR (fixed) order WITHOUT raising — best-effort, never crashes."""
+    monkeypatch.setattr(enh, "_learned_scan_enabled", lambda: True)
+
+    seed = [
+        enh._opportunity("reliability", "s1", "q1"),
+        enh._opportunity("performance", "s2", "q2"),
+        enh._opportunity("data_coverage", "s3", "q3"),
+    ]
+    monkeypatch.setattr(enh, "_scan_canonical",
+                        lambda out: out.extend(dict(o) for o in seed))
+    monkeypatch.setattr(enh, "_scan_findings", lambda out, limit=12: None)
+    monkeypatch.setattr(enh, "_scan_health_baseline", lambda out: None)
+    monkeypatch.setattr(enh, "_scan_work_plan", lambda out: None)
+
+    # The learned-state read blows up — the reorder must swallow it and keep the
+    # original order.
+    def _boom(area):
+        raise RuntimeError("learned-state DB down")
+    monkeypatch.setattr(enh, "_area_success_weight", _boom)
+
+    opps = enh.scan_opportunities()  # must NOT raise
+    assert [o["area"] for o in opps] == ["reliability", "performance", "data_coverage"]
+
+
+def test_learned_scan_disabled_keeps_fixed_order(monkeypatch):
+    """BRAIN_ENHANCER_LEARNED_SCAN off -> the reorder is SKIPPED; the fixed
+    canonical->findings->baseline->work_plan order is preserved even if the
+    learned signal would have favored a later area."""
+    monkeypatch.setattr(enh, "_learned_scan_enabled", lambda: False)
+
+    seed = [
+        enh._opportunity("performance", "s1", "q1"),
+        enh._opportunity("data_coverage", "s2", "q2"),
+    ]
+    monkeypatch.setattr(enh, "_scan_canonical",
+                        lambda out: out.extend(dict(o) for o in seed))
+    monkeypatch.setattr(enh, "_scan_findings", lambda out, limit=12: None)
+    monkeypatch.setattr(enh, "_scan_health_baseline", lambda out: None)
+    monkeypatch.setattr(enh, "_scan_work_plan", lambda out: None)
+
+    # Even though the learned signal STRONGLY favors data_coverage, the disabled
+    # flag means it is never consulted → fixed order.
+    def _should_not_be_called(area):
+        raise AssertionError("learned weight must not be read when flag is off")
+    monkeypatch.setattr(enh, "_area_success_weight", _should_not_be_called)
+
+    opps = enh.scan_opportunities()
+    assert [o["area"] for o in opps] == ["performance", "data_coverage"]
+
+
+def test_area_success_weight_neutral_for_unmapped_area(monkeypatch):
+    """An AREA with no mechanical fix-class proxy is NEUTRAL (1.0) — explored,
+    never starved. And a DB error in the vetted reader is fail-neutral too."""
+    # conversion_revenue / developer_ux have no class proxy -> neutral, no DB hit.
+    assert enh._area_success_weight("conversion_revenue") == 1.0
+    assert enh._area_success_weight("developer_ux") == 1.0
+    # Unknown area -> neutral.
+    assert enh._area_success_weight("totally_unknown_area") == 1.0
+    # A mapped area whose vetted reader RAISES -> fail-neutral (1.0), not a crash.
+    import routes.brain_work_selector as ws
+    monkeypatch.setattr(ws, "_read_class_rate",
+                        lambda k: (_ for _ in ()).throw(RuntimeError("db")))
+    assert enh._area_success_weight("reliability") == 1.0
+
+
+# ════════════════════════════════════════════════════════════════════
 #  propose_enhancements — reuses investigate, RANKS by leverage x conf
 # ════════════════════════════════════════════════════════════════════
 def _fake_investigate_by_confidence(conf_map):

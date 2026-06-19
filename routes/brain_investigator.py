@@ -15,9 +15,13 @@ instead of code bugs. The brain analyzes; the HUMAN decides and acts.
 THE 5-STEP CHAIN (what makes it trustworthy vs confidently-wrong):
   1. DECOMPOSE   — break the question into sub-questions + name the data needed.
   2. GATHER      — pull REAL evidence from a CURATED set of brain data sources
-                   (canonical_stats + HEALTH_BASELINE + recent brain findings).
-                   Every cited figure is grounded in a real source; the model is
-                   handed these numbers, it does NOT get to invent one.
+                   (canonical_stats + HEALTH_BASELINE + recent brain findings +
+                   honest GROWTH-FUNNEL metrics: MRR, conversions, paid keys,
+                   reach as DISTINCT external IPs, retention — via the vetted
+                   funnel_health + ai_reach aggregators so the loop-inflation /
+                   internal-traffic traps are handled upstream). Every cited
+                   figure is grounded in a real source; the model is handed
+                   these numbers, it does NOT get to invent one.
   3. REASON      — the model reasons FROM the gathered evidence to a draft
                    hypothesis / recommendation.
   4. REFUTE      — a SEPARATE model pass that tries to BREAK the draft
@@ -244,7 +248,144 @@ def gather_evidence() -> list[dict]:
     except Exception as e:
         logger.warning("brain_investigator: health-baseline evidence failed: %s", e)
 
+    # Source 4: growth-funnel metrics (traffic/reach, conversion, paid keys,
+    # MRR, retention). Without these, ANY growth question is "an inference
+    # dressed as a finding" and the refutation correctly nukes confidence to
+    # ~0.25. Best-effort: a failure logs + is omitted, never raises.
+    try:
+        ev = gather_growth_funnel()
+        if ev:
+            evidence.extend(ev)
+    except Exception as e:
+        logger.warning("brain_investigator: growth-funnel evidence failed: %s", e)
+
     return evidence
+
+
+# ── Step 2b: GATHER honest GROWTH-FUNNEL evidence ────────────────────
+def gather_growth_funnel() -> list[dict]:
+    """Pull REAL growth-funnel metrics so growth questions ("why is reach
+    flat?", "is conversion working?", "is MRR moving?") get answered with
+    MEASURED data instead of the model inventing inferences.
+
+    HONEST-NUMBERS DISCIPLINE — we do NOT hand-roll trap-prone SQL. We reuse
+    two ALREADY-VETTED honest aggregators:
+
+      · routes.funnel_health._data_cached() — the canonical dashboard blob.
+        MRR is users.plan-derived (NOT a raw row count), conversions_30d
+        prefers the Stripe-backed mcp_conversions table, paid keys are the
+        mcp_dev_keys tier breakdown, and the funnel waterfall uses DISTINCT
+        paid users — all the loop-inflation / internal-traffic traps are
+        handled INSIDE that module.
+
+      · routes.ai_reach (cached module state) — honest REACH = DISTINCT
+        external IPs (private/loopback + internal platforms filtered out),
+        NOT loop-inflated request volume. We only read its in-memory cache so
+        we never trigger the heavy scan or need a Flask app context here.
+
+    Each item is {claim, source, value}. Read-only. Best-effort: any source
+    that errors is simply omitted — this function NEVER raises (callers also
+    wrap it, but we are defensive)."""
+    out: list[dict] = []
+
+    # ── Honest dashboard KPIs + funnel waterfall (the vetted aggregator) ──
+    try:
+        from routes.funnel_health import _data_cached
+        data = _data_cached() or {}
+        kpis = data.get("kpis") or {}
+        funnel = data.get("funnel") or {}
+
+        # MRR — users.plan-derived (Stripe-aligned, ~$4.7k), NOT a row count.
+        if kpis.get("mrr_usd") is not None:
+            out.append({
+                "claim": "Monthly recurring revenue (MRR), USD",
+                "source": "funnel_health KPIs (users.plan × per-plan price map)",
+                "value": int(kpis.get("mrr_usd") or 0),
+            })
+
+        # Conversions 30d — canonical mcp_conversions (Stripe-backed),
+        # fallback mcp_pair_codes.redeemed_at. NOT raw signal rows.
+        if kpis.get("conversions_30d") is not None:
+            out.append({
+                "claim": "Paid conversions in last 30 days",
+                "source": "funnel_health KPIs (mcp_conversions, Stripe-backed)",
+                "value": int(kpis.get("conversions_30d") or 0),
+            })
+
+        # Paid + enterprise dev keys — the canonical paid-tier metric
+        # (mcp_dev_keys.tier in (paid, enterprise)). Surface the honest
+        # paid count, not the all-tier total (which is mostly free keys).
+        tiers = kpis.get("dev_keys_by_tier") or {}
+        if tiers:
+            paid_keys = int(tiers.get("paid", 0) or 0) + \
+                int(tiers.get("enterprise", 0) or 0)
+            out.append({
+                "claim": "Paid dev keys (tier in paid+enterprise)",
+                "source": "funnel_health KPIs (mcp_dev_keys GROUP BY tier)",
+                "value": paid_keys,
+            })
+        if kpis.get("active_dev_keys") is not None:
+            out.append({
+                "claim": "Active dev keys (all tiers, mostly free)",
+                "source": "funnel_health KPIs (mcp_dev_keys active)",
+                "value": int(kpis.get("active_dev_keys") or 0),
+            })
+
+        # Tool calls 7d — usage/retention proxy.
+        if kpis.get("tool_calls_7d") is not None:
+            out.append({
+                "claim": "MCP tool calls in last 7 days",
+                "source": "funnel_health KPIs (mcp_call_log 7d)",
+                "value": int(kpis.get("tool_calls_7d") or 0),
+            })
+
+        # Funnel waterfall — DISTINCT paid users 30d (honest retention/
+        # activation count, NOT looping power-key signal rows).
+        if funnel.get("distinct_paid_users_30d") is not None:
+            out.append({
+                "claim": "Distinct paid users active in last 30 days",
+                "source": "funnel_health funnel (DISTINCT paid api_key 30d)",
+                "value": int(funnel.get("distinct_paid_users_30d") or 0),
+            })
+        # Top conversion-funnel stage drop, if computed — names the leak.
+        drops = funnel.get("stage_drops_pct") or {}
+        if isinstance(drops, dict) and drops:
+            try:
+                worst_stage = max(drops.items(),
+                                  key=lambda kv: float(kv[1] or 0))
+                out.append({
+                    "claim": f"Biggest funnel stage drop: {worst_stage[0]}",
+                    "source": "funnel_health funnel (stage_drops_pct)",
+                    "value": float(worst_stage[1] or 0),
+                })
+            except Exception:
+                pass
+    except Exception as e:
+        logger.warning(
+            "brain_investigator: funnel_health evidence failed: %s", e)
+
+    # ── Honest REACH = DISTINCT external IPs (read cached state only) ──
+    try:
+        from routes import ai_reach as _reach_mod
+        cached = getattr(_reach_mod, "_cache", {}) or {}
+        rdata = cached.get("data")
+        if isinstance(rdata, dict):
+            if rdata.get("distinct_agents_7d") is not None:
+                out.append({
+                    "claim": "Distinct external AI agents (reach), ~7d",
+                    "source": "ai_reach (DISTINCT public IPs, internal filtered)",
+                    "value": int(rdata.get("distinct_agents_7d") or 0),
+                })
+            if rdata.get("distinct_platforms") is not None:
+                out.append({
+                    "claim": "Distinct AI platforms reached, ~7d",
+                    "source": "ai_reach (DISTINCT external platforms)",
+                    "value": int(rdata.get("distinct_platforms") or 0),
+                })
+    except Exception as e:
+        logger.warning("brain_investigator: ai_reach evidence failed: %s", e)
+
+    return out
 
 
 def _gather_recent_findings(limit: int = 12) -> list[dict]:
