@@ -1,0 +1,67 @@
+name: brain innovation digest email
+
+# DAILY EMAIL of the brain INNOVATION front to the operator inbox (2026-06-19).
+# Once a day, POKES the send endpoint, which composes the SAME consolidated digest
+# the dashboard renders (self-agenda / investigations / proposals) and pushes it as
+# OPERATOR OPS MAIL (transactional — Resend/SendGrid, NOT the marketing consent
+# choke-point) so the operator SEES the innovation front without opening the page.
+#
+# IT SHIPS DARK. This cron only provides the HEARTBEAT — every gate is enforced
+# SERVER-SIDE inside send_innovation_digest(), NOT here:
+#   · BRAIN_INNOVATION_EMAIL_ENABLED defaults OFF → the endpoint returns
+#     {sent:false, skipped:"disabled"} and sends ZERO email.
+#   · no recipient (BRAIN_DIGEST_EMAIL / ADMIN_ALERT_EMAIL unset) → skipped:no_recipient.
+#   · no provider key (Resend / SendGrid) → skipped:no_provider (no crash).
+#
+# THE HARD SAFETY LINE: this rung NEVER acts — it sends ONE read-only digest email
+# to the operator. It writes nothing, merges nothing, opens no PR.
+#
+# Auth mirrors brain-self-direct.yml: the DCHUB_ADMIN_KEY repo secret sent as the
+# X-Admin-Key header (the gate every brain admin endpoint accepts), against the
+# Railway origin directly (CF edge-cache + the 15s edge timeout don't apply there).
+
+on:
+  schedule:
+    - cron: '0 13 * * *'   # ~09:00 ET, daily
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+env:
+  RAILWAY_BASE: https://dchub-backend-production.up.railway.app
+
+jobs:
+  innovation-digest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Send brain innovation digest to operator (transactional; ships dark)
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "$ADMIN_KEY" ]; then
+            echo "::warning::DCHUB_ADMIN_KEY not set — skipping innovation digest email"
+            exit 0
+          fi
+          response=$(curl -sS --max-time 120 -X POST \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            -H "Content-Type: application/json" \
+            "$RAILWAY_BASE/api/v1/brain/innovation/digest/email" \
+            || echo '{"ok":false,"error":"curl_fail"}')
+          echo "$response" | head -c 4000
+          echo
+          echo "$response" | python3 -c "
+          import json, sys
+          try:
+              d = json.load(sys.stdin)
+              if d.get('sent'):
+                  print('::notice::innovation digest: SENT to '
+                        f\"{d.get('to')} — {d.get('subject')}\")
+              else:
+                  print('::notice::innovation digest: NO-OP '
+                        f\"(skipped={d.get('skipped')} error={d.get('error')}) — ships dark\")
+          except Exception as e:
+              print(f'::warning::innovation digest parse failed: {e}')
+          "

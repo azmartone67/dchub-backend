@@ -123,6 +123,7 @@ _MARKETING_SENDERS = frozenset({
 # --- TRANSACTIONAL senders: NOT marketing; allowed to stay direct -----------
 _TRANSACTIONAL_SENDERS = frozenset({
     "main.py",                       # shared _resend_email + transactional/ops mail
+    "brain_innovation_email.py",     # operator innovation digest — transactional, not marketing
     "enterprise_inquiry.py",         # enterprise data-licensing inquiry receipts
     "feedback_triage.py",            # routes /feedback to operator (ops, not promo)
     "health_alerter.py",             # ops alert on backend restart-loop/health (to operator)

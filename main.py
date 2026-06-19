@@ -26290,6 +26290,20 @@ try:
 except Exception as e:
     print(f"🧠 Brain Innovation Dashboard: ⚠️ Failed to load: {e}")
 
+# (2026-06-19) — Brain INNOVATION EMAIL (transactional, dark). A daily digest of
+# the innovation front (self-agenda + investigations + proposals) pushed to the
+# operator inbox so they don't have to open the dashboard. Reuses build_digest +
+# the transactional email_fallback sender (NOT marketing_send / consent). Ships
+# DARK: BRAIN_INNOVATION_EMAIL_ENABLED default OFF (zero sends when off); recipient
+# from BRAIN_DIGEST_EMAIL/ADMIN_ALERT_EMAIL. Admin-gated; daily cron heartbeat.
+try:
+    from routes.brain_innovation_email import register_brain_innovation_email
+    register_brain_innovation_email(app)
+    print("🧠 Brain Innovation Email: ✅ Registered "
+          "(POST /api/v1/brain/innovation/digest/email · transactional · ships dark)")
+except Exception as e:
+    print(f"🧠 Brain Innovation Email: ⚠️ Failed to load: {e}")
+
 # PHASE 3 (2026-06-18) — AUTONOMOUS MERGE + post-merge CANARY/auto-revert.
 # The highest-risk module: it can squash-merge the brain's mechanical autofix
 # DRAFT PRs to main (= instant prod deploy) and auto-revert on regression.
