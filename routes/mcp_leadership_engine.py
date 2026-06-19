@@ -177,8 +177,8 @@ def _optimize_armed():
 _ACTUATORS = {
     "discoverability": ("POST /api/v1/admin/outreach/mcp-registry/submit-all", True, "registry-outreach",
                         "auto-submit / refresh listings on the missing registries"),
-    "tool_quality":    ("ai_platform_tool_tuner — per-platform tool descriptions", True, "tool-tuner",
-                        "tune low-demand tool descriptions per platform (reversible)"),
+    "tool_quality":    ("ai_platform_tool_tuner — per-platform tool descriptions (WIRED LIVE 2026-06-19)", True, "tool-tuner",
+                        "per-platform descriptions now reach the live tools/list; re-seed/refine variants to lift low-demand tools (reversible)"),
     "conversion":      ("depth-tease / unlock_more_data (mcp-server server.mjs)", False, "mcp-server",
                         "surface usage-billing at the value moment — lives in the MCP server, not a backend actuator"),
     "retention":       ("r-return hook (shipped) + durable-identity build", False, "engineering",

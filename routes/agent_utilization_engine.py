@@ -166,9 +166,9 @@ def agent_utilization():
         "current": f"{tools_with_demand} tools with real demand · {recipes} concierge recipes",
         "status": _status(train_score),
         "lever": "teach high-value tool-chains: surface the concierge cookbook in responses, tune tool descriptions per platform",
-        "actuator": "ai_platform_tool_tuner (per-platform) + surface /api/v1/agent/cookbook recipes in tool output",
+        "actuator": "ai_platform_tool_tuner (per-platform, WIRED LIVE r-tuner-wire 2026-06-19) + surface /api/v1/agent/cookbook recipes in tool output",
         "armable_now": True, "kind": "tool-tuner",
-        "note": "recipes + tuner exist; under-surfaced. Reversible, lowest-risk track to arm first.",
+        "note": "per-platform tool descriptions now WIRED into the live tools/list (was shelf-ware — 50 variants generated but unconsumed); cookbook recipes still under-surfaced.",
     }
 
     tracks = [onboard, incent, train]
