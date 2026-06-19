@@ -202,4 +202,9 @@ def agent_utilization():
     if all(_REQ.cache.get(p) for p in _PREFETCH):
         _RESP["at"] = _now
         _RESP["v"] = payload
+        try:  # snapshot the headline for trend tracking (rate-limited ~hourly, fail-soft)
+            from routes.engine_trends import record as _rec
+            _rec("utilization", util_score, {"biggest_leak": leak["track"]})
+        except Exception:
+            pass
     return jsonify(payload), 200

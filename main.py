@@ -29430,6 +29430,12 @@ try:
     print("[main] engines_dashboard_bp registered: GET /admin/engines (optimization engines dashboard)", flush=True)
 except Exception as _edash_e:
     print(f"[main] engines_dashboard_bp register failed: {_edash_e}", flush=True)
+try:
+    from routes.engine_trends import engine_trends_bp
+    app.register_blueprint(engine_trends_bp)
+    print("[main] engine_trends_bp registered: GET /api/v1/engines/trend (engine score trend tracking)", flush=True)
+except Exception as _etrend_e:
+    print(f"[main] engine_trends_bp register failed: {_etrend_e}", flush=True)
 
 # r79 (2026-06-03) — Redirect blueprint for known-dead URLs. Each entry
 # in routes/redirects_404_killer.py is a URL we caught 404ing in production

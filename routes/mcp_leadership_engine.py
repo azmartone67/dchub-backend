@@ -257,4 +257,10 @@ def mcp_leadership():
     if all(_REQ.cache.get(p) for p in _PREFETCH):
         _RESP["at"] = _now
         _RESP["v"] = payload
+        try:  # snapshot the headline for trend tracking (rate-limited ~hourly, fail-soft)
+            from routes.engine_trends import record as _rec
+            _rec("leadership", index, {"verdict": verdict,
+                                       "top_priority": (top or {}).get("dimension")})
+        except Exception:
+            pass
     return jsonify(payload), 200

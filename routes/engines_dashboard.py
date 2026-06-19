@@ -33,6 +33,7 @@ h1{font-size:24px;font-weight:600;letter-spacing:-.02em;margin:0 0 4px}
 .ptag{font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--dim);border:1px solid var(--bd);border-radius:20px;padding:3px 9px}
 .score{font-size:52px;font-weight:700;line-height:1;letter-spacing:-.03em;font-variant-numeric:tabular-nums}
 .score small{font-size:18px;color:var(--dim);font-weight:500}
+.delta{font-size:13px;font-weight:600;margin-left:12px;vertical-align:middle;font-variant-numeric:tabular-nums}
 .verdict{font-size:12px;text-transform:uppercase;letter-spacing:.08em;margin:2px 0 18px}
 .row{display:grid;grid-template-columns:120px 1fr 42px;align-items:center;gap:10px;margin-bottom:9px;font-size:12px}
 .rname{color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -66,8 +67,18 @@ h1{font-size:24px;font-weight:600;letter-spacing:-.02em;margin:0 0 4px}
 function col(s){return s>=75?'#4ade80':s>=50?'#4F8FFF':s>=25?'#fbbf24':'#f87171'}
 function bar(name,score,status){return '<div class="row"><div class="rname">'+name+'</div><div class="bar"><div class="fill" style="width:'+Math.max(3,score)+'%;background:'+col(score)+'"></div></div><div class="rval">'+score+'</div></div>'}
 function actLine(label,armable,fire){return '<div class="act"><span class="arm'+(armable?'':' no')+'">'+(armable?'⚡ ARMABLE':'·')+'</span><span>'+label+' → <code>'+fire+'</code></span></div>'}
+function arrow(x){return x>0?'▲':x<0?'▼':'▬'}
+function dcol(x){return x>0?'#4ade80':x<0?'#f87171':'#8B92A8'}
+function fillDelta(id,t){
+  var el=document.getElementById(id);if(!el)return;
+  if(!t||(t.delta_1d==null&&t.delta_7d==null)){el.innerHTML='<span style="color:var(--dim);font-size:11px;font-weight:500">· building trend ('+((t&&t.points)||0)+'pt)</span>';return;}
+  var p=[];
+  if(t.delta_1d!=null)p.push('<span style="color:'+dcol(t.delta_1d)+'">'+arrow(t.delta_1d)+' '+(t.delta_1d>0?'+':'')+t.delta_1d+'<span style="color:var(--dim);font-size:10px;font-weight:500"> /1d</span></span>');
+  if(t.delta_7d!=null)p.push('<span style="color:'+dcol(t.delta_7d)+'">'+arrow(t.delta_7d)+' '+(t.delta_7d>0?'+':'')+t.delta_7d+'<span style="color:var(--dim);font-size:10px;font-weight:500"> /7d</span></span>');
+  el.innerHTML=p.join('<span style="color:var(--dim)"> · </span>');
+}
 function renderLead(d){
-  var h='<div class="score">'+d.mcp_leadership_index+'<small>/100</small></div>';
+  var h='<div class="score">'+d.mcp_leadership_index+'<small>/100</small><span class="delta" id="lead-delta"></span></div>';
   h+='<div class="verdict" style="color:'+col(d.mcp_leadership_index)+'">'+d.verdict+'</div>';
   var dims=(d.dimensions||[]).slice().sort(function(a,b){return a.score-b.score});
   dims.forEach(function(x){h+=bar(x.dimension,x.score,x.status)});
@@ -77,7 +88,7 @@ function renderLead(d){
   document.getElementById('lead-body').innerHTML=h;return d;
 }
 function renderUtil(d){
-  var h='<div class="score">'+d.utilization_score+'<small>/100</small></div><div class="verdict" style="color:var(--dim)">onboard · incent · train</div>';
+  var h='<div class="score">'+d.utilization_score+'<small>/100</small><span class="delta" id="util-delta"></span></div><div class="verdict" style="color:var(--dim)">onboard · incent · train</div>';
   var f=d.lifecycle_funnel||{};h+='<div class="funnel">';
   ['arrive','identify','activate','return','convert'].forEach(function(k){if(f[k])h+='<div class="fstep"><div class="fl">'+k+'</div><div class="fv">'+f[k]+'</div></div>'});
   h+='</div>';
@@ -91,9 +102,11 @@ function renderUtil(d){
 function load(){
   Promise.all([
     fetch('/api/v1/mcp/leadership?_='+Date.now(),{cache:'no-store'}).then(function(r){return r.json()}).then(renderLead).catch(function(){document.getElementById('lead-body').innerHTML='<span class=err>engine unavailable</span>';return null}),
-    fetch('/api/v1/agents/utilization?_='+Date.now(),{cache:'no-store'}).then(function(r){return r.json()}).then(renderUtil).catch(function(){document.getElementById('util-body').innerHTML='<span class=err>engine unavailable</span>';return null})
+    fetch('/api/v1/agents/utilization?_='+Date.now(),{cache:'no-store'}).then(function(r){return r.json()}).then(renderUtil).catch(function(){document.getElementById('util-body').innerHTML='<span class=err>engine unavailable</span>';return null}),
+    fetch('/api/v1/engines/trend?_='+Date.now(),{cache:'no-store'}).then(function(r){return r.json()}).catch(function(){return null})
   ]).then(function(v){
-    var L=v[0],U=v[1],b=document.getElementById('banner');
+    var L=v[0],U=v[1],T=v[2]||{},b=document.getElementById('banner');
+    fillDelta('lead-delta',T.leadership);fillDelta('util-delta',T.utilization);
     if(!L||!U){b.innerHTML='<b>Convergent diagnosis:</b> one engine unavailable — see panels below.';return;}
     var lp=(L.top_priority||{}).dimension||'?',ul=(U.biggest_leak||{}).track||'?',f=U.lifecycle_funnel||{};
     var same=(lp==='retention'&&ul==='incent')||(lp===ul);
