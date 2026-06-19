@@ -125,6 +125,7 @@ _TRANSACTIONAL_SENDERS = frozenset({
     "main.py",                       # shared _resend_email + transactional/ops mail
     "enterprise_inquiry.py",         # enterprise data-licensing inquiry receipts
     "feedback_triage.py",            # routes /feedback to operator (ops, not promo)
+    "health_alerter.py",             # ops alert on backend restart-loop/health (to operator)
     "morning_briefing.py",           # operator's PERSONAL CEO daily report (self)
     "outreach_cap_exceeded.py",      # reactive limit-hit -> transactional notice
     "redeem_diagnostic.py",          # diagnostic test-send for the redeem flow
