@@ -537,7 +537,7 @@ def main() -> int:
                 SELECT id, title, COALESCE(content, summary, '') AS content,
                        summary, source_url, discovered_at
                 FROM announcements
-                WHERE discovered_at::timestamp > NOW() - INTERVAL '%s days'
+                WHERE discovered_at::timestamp > NOW() - %s * INTERVAL '1 day'
                 ORDER BY discovered_at DESC
                 LIMIT %s
                 """,
