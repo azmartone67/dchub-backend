@@ -36,7 +36,14 @@ import os
 import re
 from flask import Blueprint, Response, jsonify, request
 
+from utils.cache import BoundedCache
+
 operator_brief_bp = Blueprint("operator_brief", __name__)
+
+# r-boot-cache (2026-06-18): in-process TTL cache of the full brief, keyed
+# (canonical_slug, is_pro) — see the matching note in market_brief.py.
+# _build_brief self-caches so the prewarm cron warms it for free.
+_BRIEF_CACHE = BoundedCache(max_size=256, ttl=600)
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -735,10 +742,31 @@ def _build_brief(slug: str, tier: str) -> dict:
         "tier":        tier,
         "is_pro":      is_pro,
     }
+    _ck = f"{canonical}|{1 if is_pro else 0}"
+    _hit = _BRIEF_CACHE.get(_ck)
+    if _hit is not None:
+        cached = dict(_hit)
+        cached["requested"]   = requested
+        cached["redirect_to"] = redirect_to
+        cached["tier"]        = tier
+        return cached
     c = _conn()
     if c is None:
         out["error"] = "no_database"
         return out
+    # r-boot-cache (2026-06-18): read-only autocommit + per-query statement_timeout
+    # so a slow/cold section degrades one tile instead of holding a gunicorn
+    # thread to the 120s ceiling (CF 522), and so a timeout doesn't abort the
+    # whole shared transaction. All sections are SELECTs.
+    try:
+        c.autocommit = True
+    except Exception:
+        pass
+    try:
+        with c.cursor() as _scur:
+            _scur.execute("SET statement_timeout = '8000ms'")
+    except Exception:
+        pass
     try:
         with c.cursor() as cur:
             provider = _resolve_operator(cur, canonical)
@@ -805,6 +833,11 @@ def _build_brief(slug: str, tier: str) -> dict:
     finally:
         try:
             c.close()
+        except Exception:
+            pass
+    if out.get("ok"):
+        try:
+            _BRIEF_CACHE.set(_ck, out)
         except Exception:
             pass
     return out

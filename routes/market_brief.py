@@ -40,9 +40,19 @@ from urllib.parse import urlparse, quote_plus
 from flask import (Blueprint, Response, jsonify, render_template, request,
                    stream_with_context, url_for)
 
+from utils.cache import BoundedCache
+
 logger = logging.getLogger(__name__)
 
 market_brief_bp = Blueprint("market_brief", __name__)
+
+# r-boot-cache (2026-06-18): in-process TTL cache of the full brief, keyed
+# (canonical_slug, is_pro). The HTML route is private/no-store at the edge, so
+# without this EVERY hit re-ran the ~9-section DB fan-out — on a cold deploy
+# that saturated the single-worker / 16-thread gunicorn pool and produced the
+# CF 522s. 600s TTL; _build_brief self-caches so the prewarm cron warms it for
+# free. Paired with a per-query statement_timeout in _build_brief.
+_BRIEF_CACHE = BoundedCache(max_size=512, ttl=600)
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -920,6 +930,16 @@ def _build_brief(slug: str, tier: str) -> dict:
         "tier":        tier,
         "is_pro":      is_pro,
     }
+    _ck = f"{canonical}|{1 if is_pro else 0}"
+    _hit = _BRIEF_CACHE.get(_ck)
+    if _hit is not None:
+        # Reuse the cached section fan-out; refresh the per-request fields so the
+        # 301-to-canonical redirect still fires for non-canonical slugs.
+        cached = dict(_hit)
+        cached["requested"]   = requested_slug
+        cached["redirect_to"] = redirect_to
+        cached["tier"]        = tier
+        return cached
     c = _conn()
     if c is None:
         out["error"] = "no_database"
@@ -934,6 +954,15 @@ def _build_brief(slug: str, tier: str) -> dict:
     # autocommit (each query independent) is safe and fixes all markets at once.
     try:
         c.autocommit = True
+    except Exception:
+        pass
+    # r-boot-cache (2026-06-18): cap each section query so a slow/cold DB can't
+    # hold a gunicorn thread to the 120s worker ceiling (the mechanism behind
+    # the CF 522s). With autocommit, a timed-out section degrades that one tile
+    # into its try/except, not the whole page.
+    try:
+        with c.cursor() as _scur:
+            _scur.execute("SET statement_timeout = '8000ms'")
     except Exception:
         pass
     try:
@@ -989,6 +1018,11 @@ def _build_brief(slug: str, tier: str) -> dict:
     finally:
         try:
             c.close()
+        except Exception:
+            pass
+    if out.get("ok"):
+        try:
+            _BRIEF_CACHE.set(_ck, out)
         except Exception:
             pass
     return out

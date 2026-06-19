@@ -48,7 +48,13 @@ _PUB_ADMIN_ONLY_HTML = (
 
 @brain_v2_public_bp.after_request
 def _pub_no_store(resp):
-    resp.headers["Cache-Control"] = "no-store, private"
+    # The public brain view (/brain-live, /brain/public) is sanitized and safe
+    # to edge-cache; every other response on this blueprint is admin-only and
+    # must never be cached.
+    if request.path in ("/brain-live", "/brain/public"):
+        resp.headers["Cache-Control"] = "public, max-age=60, s-maxage=30"
+    else:
+        resp.headers["Cache-Control"] = "no-store, private"
     return resp
 
 
@@ -333,9 +339,148 @@ def _cached_internal_get(path, client, ttl=_INTERNAL_GET_TTL):
     return resp
 
 
+# r-brain-public (2026-06-18): the PUBLIC, sanitized brain-evolution view.
+# /brain itself is admin-only (it renders file paths, source URLs, stuck-issue
+# worklists, raw learning logs). This handler exposes ONLY safe aggregates — the
+# health verdict LABEL (never verdict_detail), the self-assessment letter grade +
+# component scores, and high-level evolution counts — all pulled from the
+# already-public /api/v1/brain/{self-assessment,evolution} JSON. It OWNS the
+# /brain-live alias (moved off the gated handler) so the distribute.html "Watch
+# brain evolve" link + the brain's own page-monitors get a 200, not the 403.
+_PUBLIC_BRAIN_HEAD = (
+    '<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">'
+    '<title>DC Hub · Brain — watch it evolve</title>'
+    '<meta name="viewport" content="width=device-width, initial-scale=1">'
+    '<meta name="description" content="Live, public view of the DC Hub self-learning system: health verdict, self-assessment grade, and how many issues it has autonomously resolved.">'
+    '<meta name="robots" content="index,follow">'
+    '<link rel="canonical" href="https://dchub.cloud/brain-live">'
+    '<meta property="og:title" content="DC Hub · Brain — watch it evolve">'
+    '<meta property="og:description" content="Live public scorecard for the DC Hub autonomous self-learning loop.">'
+    '<meta property="og:url" content="https://dchub.cloud/brain-live">'
+    '<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">'
+    "<style>"
+    ":root{--bg:#0a0a12;--bg2:#0f1119;--card:#11121a;--bd:#1f2030;--tx:#fff;--tx2:#9ca3af;--tx3:#6b7280;--green:#10b981;--amber:#f59e0b;--red:#ef4444;--acc:#6366f1;--acc-light:#818cf8;--gradient:linear-gradient(135deg,#6366f1 0%,#a855f7 100%);}"
+    "*{box-sizing:border-box}"
+    "body{font-family:'Inter',system-ui;background:var(--bg);color:var(--tx);margin:0;line-height:1.55;-webkit-font-smoothing:antialiased;}"
+    ".wrap{max-width:1000px;margin:0 auto;padding:3rem 1.5rem;}"
+    ".eyebrow{font-family:'JetBrains Mono',monospace;font-size:0.74rem;color:var(--acc);text-transform:uppercase;letter-spacing:0.14em;margin-bottom:0.6rem;}"
+    "h1{font-size:clamp(2.2rem,5vw,3rem);margin:0 0 0.7rem;font-weight:800;letter-spacing:-0.025em;line-height:1.05;}"
+    "h1 .grad{background:var(--gradient);-webkit-background-clip:text;background-clip:text;color:transparent;}"
+    ".lede{color:var(--tx2);font-size:1.08rem;max-width:720px;margin:0 0 1rem;}"
+    ".banner{background:rgba(99,102,241,0.08);border:1px solid rgba(99,102,241,0.3);border-radius:10px;padding:1rem 1.25rem;margin:0.4rem 0 1.5rem;}"
+    ".banner b{font-size:0.95rem;} .banner div{color:var(--tx2);font-size:0.9rem;margin-top:0.25rem;}"
+    ".kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:1rem;margin:1.4rem 0;}"
+    ".kpi{background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:1.2rem 1.3rem;}"
+    ".kpi .v{font-family:'JetBrains Mono',monospace;font-size:2rem;font-weight:800;line-height:1;}"
+    ".kpi .v.green{color:var(--green);}.kpi .v.red{color:var(--red);}.kpi .v.amber{color:var(--amber);}"
+    ".kpi .l{color:var(--tx2);font-size:0.75rem;margin-top:0.55rem;text-transform:uppercase;letter-spacing:0.08em;}"
+    ".section{margin:2rem 0;} .section-title{font-size:1.15rem;font-weight:700;margin:0 0 1rem;}"
+    ".explainer{background:var(--bg2);border:1px solid var(--bd);border-radius:10px;padding:1.4rem 1.5rem;color:var(--tx2);font-size:0.95rem;}"
+    ".explainer p{margin:0.7rem 0;}"
+    ".foot{margin-top:3rem;color:var(--tx3);font-size:0.8rem;text-align:center;} .foot a{color:var(--tx2);}"
+    "</style></head>"
+)
+
+
+@brain_v2_public_bp.route("/brain-live", methods=["GET"])  # PUBLIC sanitized view — distribute.html "Watch brain evolve" + page-monitors land here.
+@brain_v2_public_bp.route("/brain/public", methods=["GET"])
+def brain_public_page():
+    """PUBLIC, sanitized brain-evolution view — no admin key required."""
+    from flask import current_app
+
+    # --- health verdict LABEL only (never verdict_detail) ---
+    try:
+        verdict = (_get_state() or {}).get("verdict", "unknown")
+    except Exception:
+        verdict = "unknown"
+    _LABELS = {
+        "healthy":         ("HEALTHY",    "green", "Healthy — the self-learning loop is running."),
+        "healthy_quiet":   ("HEALTHY",    "green", "Healthy — quiet because there's nothing to fix."),
+        "healthy_working": ("WORKING",    "green", "Healthy — actively proposing fixes."),
+        "healthy_backlog": ("HEALTHY",    "green", "Healthy — clean; open work is queued."),
+        "warming_up":      ("WARMING UP", "amber", "Warming up — first learn pass pending."),
+        "stalled":         ("STALLED",    "red",   "Stalled — the learn loop stopped firing."),
+        "dormant":         ("DORMANT",    "amber", "Dormant — model key not set."),
+        "unknown":         ("LIVE",       "amber", "Status updating…"),
+    }
+    status_text, status_class, headline = _LABELS.get(verdict, _LABELS["unknown"])
+
+    # --- safe numbers from the already-public JSON endpoints ---
+    sa, evo = {}, {}
+    try:
+        with current_app.test_client() as _client:
+            _r = _cached_internal_get("/api/v1/brain/self-assessment", _client)
+            if _r.status_code == 200:
+                sa = _r.get_json() or {}
+            _r = _cached_internal_get("/api/v1/brain/evolution", _client)
+            if _r.status_code == 200:
+                evo = _r.get_json() or {}
+    except Exception:
+        pass
+
+    def _i(v):
+        try:
+            return int(v)
+        except Exception:
+            return 0
+
+    evo_score = evo.get("evolution_score")
+    fr7       = _i(evo.get("findings_resolved_7d"))
+    fr30      = _i(evo.get("findings_resolved_30d"))
+    aa24      = _i(evo.get("autonomous_actions_24h"))
+    dt30      = _i(evo.get("decisions_taken_30d"))
+    _l5d      = evo.get("layer_5_proposals_30d") or {}
+    l5        = _i(_l5d.get("submitted") if isinstance(_l5d, dict) else _l5d)
+
+    parts = [_PUBLIC_BRAIN_HEAD]
+    parts.append('<body><div class="wrap">')
+    parts.append('<div class="eyebrow">DC Hub · Brain · live</div>')
+    parts.append('<h1>Watch the system <span class="grad">learn to fix itself</span>.</h1>')
+    parts.append('<p class="lede">DC Hub runs an autonomous self-learning loop: it watches its own surfaces, learns new failure patterns, proposes fixes through Claude, and validates them before anything ships. This is the live, public scorecard.</p>')
+    parts.append(f'<div class="banner"><b>{_h(headline)}</b><div>Reflects the most recent learn pass.</div></div>')
+
+    parts.append('<div class="kpis">')
+    parts.append(f'<div class="kpi"><div class="v {status_class}">{_h(status_text)}</div><div class="l">Loop status</div></div>')
+    if evo_score is not None:
+        parts.append(f'<div class="kpi"><div class="v">{_i(evo_score)}</div><div class="l">Evolution score · /100</div></div>')
+    parts.append(f'<div class="kpi"><div class="v green">{fr7}</div><div class="l">Findings resolved · 7d</div></div>')
+    parts.append(f'<div class="kpi"><div class="v">{fr30}</div><div class="l">Findings resolved · 30d</div></div>')
+    parts.append(f'<div class="kpi"><div class="v">{aa24}</div><div class="l">Autonomous actions · 24h</div></div>')
+    parts.append(f'<div class="kpi"><div class="v">{dt30}</div><div class="l">Decisions taken · 30d</div></div>')
+    parts.append(f'<div class="kpi"><div class="v">{l5}</div><div class="l">Code proposals · 30d</div></div>')
+    parts.append('</div>')
+
+    grade = sa.get("grade")
+    if grade:
+        _gc = {"A": "green", "B": "green", "C": "amber", "D": "red", "F": "red", "I": "amber"}.get(str(grade), "amber")
+        _ws = sa.get("weighted_score")
+        _score_txt = f" · {_h(str(round(_ws, 1)))}/100" if isinstance(_ws, (int, float)) else ""
+        parts.append('<div class="section"><h2 class="section-title">Self-assessment</h2><div class="kpis">')
+        parts.append(f'<div class="kpi"><div class="v {_gc}" style="font-size:2.6rem">{_h(str(grade))}</div><div class="l">Letter grade{_score_txt}</div></div>')
+        _comp = sa.get("component_scores") or {}
+        # Closed-by-default: only these known component keys ever render on the
+        # public page, regardless of any field the upstream JSON adds later.
+        _labels = {"fix_success": "fix success", "rejection": "rejection rate", "cron_health": "cron health", "volume": "volume", "memory": "memory depth"}
+        if isinstance(_comp, dict):
+            for _k, _lbl in _labels.items():
+                if _k not in _comp:
+                    continue
+                parts.append(f'<div class="kpi"><div class="v">{_i(_comp[_k])}<span style="font-size:0.9rem;color:var(--tx3)">/4</span></div><div class="l">{_h(_lbl)}</div></div>')
+        parts.append('</div></div>')
+
+    parts.append('<div class="section"><h2 class="section-title">How the loop works</h2><div class="explainer">')
+    parts.append('<p><strong>Continuously</strong>, the system reads its own health findings — stale data, broken links, regressions — across the public site.</p>')
+    parts.append("<p>For anything it doesn't already know how to fix, it asks Claude for a safe, narrow change, then runs that through a set of safety validators.</p>")
+    parts.append('<p>A fix is only applied after it clears a multi-cycle approval gate — proposed independently more than once. One-shot suggestions stay queued and never reach the live site.</p>')
+    parts.append('</div></div>')
+
+    parts.append('<p class="foot">Live · DC Hub (dchub.cloud) · numbers update every learn pass · <a href="/dcpi">DCPI</a> · <a href="/freshness">Data freshness</a></p>')
+    parts.append('</div></body></html>')
+    return Response("".join(parts), mimetype="text/html")
+
+
 @brain_v2_public_bp.route("/brain", methods=["GET"])
 @brain_v2_public_bp.route("/brain/", methods=["GET"])  # r-slash (2026-06-18): bare "/brain" is strict-slash → "/brain/" 404'd outright (no 308). Explicit trailing-slash alias.
-@brain_v2_public_bp.route("/brain-live", methods=["GET"])  # r80 (2026-06-04): 200 alias — distribute.html "Watch brain evolve" + the brain's own page-monitor expect /brain-live; it was 404 -> CF worker fell through to Error 1000.
 def brain_page():
     if not _pub_admin_ok():
         return Response(_PUB_ADMIN_ONLY_HTML, mimetype="text/html", status=403)

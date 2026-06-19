@@ -470,10 +470,17 @@ def start_scheduler():
     # of the volume.
     _scheduler.add_job(heal_cycle, "interval", hours=6, id="heal_cycle",
                        max_instances=1, coalesce=True, misfire_grace_time=300)
-    # Also run once 60 seconds after boot
+    # Also run once after boot — but AFTER the cold-start window clears.
+    # r-boot (2026-06-18): was +60s, which landed mid warmup; on a >5.5h-gap
+    # deploy the full ~10-probe edge sweep then round-tripped through CF into the
+    # still-cold origin and helped generate the 522/429 boot spikes. Push to
+    # +300s (env SELF_HEAL_WARMUP_DELAY_S) so it fires after the staggered
+    # launcher + DB-pool warm. The 5.5h interval gate inside heal_cycle still
+    # skips it entirely on a recent-cycle redeploy.
     from datetime import datetime, timedelta
+    _warm_delay = int(os.environ.get("SELF_HEAL_WARMUP_DELAY_S", "300"))
     _scheduler.add_job(heal_cycle, "date",
-                       run_date=datetime.utcnow() + timedelta(seconds=60),
+                       run_date=datetime.utcnow() + timedelta(seconds=_warm_delay),
                        id="heal_warmup", max_instances=1)
     _scheduler.start()
     log.info("self_heal scheduler STARTED — heal_cycle every 6 h")
