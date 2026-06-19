@@ -465,7 +465,7 @@ a{{color:var(--ind)}}
 </div>
 {paragraphs}
 <div style="max-width:1080px;margin:26px auto;padding:18px 22px;background:linear-gradient(135deg,rgba(99,102,241,0.14),rgba(168,85,247,0.07));border:1px solid rgba(99,102,241,0.3);border-radius:14px;text-align:center"><a href="/pricing" style="color:#a5b4fc;text-decoration:none;font-weight:600;font-size:15px">DC Hub &mdash; the live infrastructure data layer for AI agents and the people who build data centers. All 19,000+ facilities + live power, grid, fiber &amp; site-selection tools &mdash; <strong>from $49/mo &rarr;</strong></a></div>
-<p class="foot">JSON: <a href="/api/v1/markets/{slug}/deep-dive">/api/v1/markets/{slug}/deep-dive</a> · DCPI: <a href="/dcpi">/dcpi</a> · Operators: <a href="/operators">/operators</a> · Updated nightly</p>
+<p class="foot">JSON: <a href="/api/v1/markets/{slug}/deep-dive" rel="nofollow">/api/v1/markets/{slug}/deep-dive</a> · DCPI: <a href="/dcpi">/dcpi</a> · Operators: <a href="/operators">/operators</a> · Updated nightly</p>
 <script src="/js/dchub-nav.js" defer></script>
 </body></html>"""
     return Response(html, mimetype="text/html",
@@ -781,7 +781,7 @@ ul{{padding-left:1.25rem}} li{{margin:.3rem 0}}
 {fac_links_html}
 <div style="max-width:1080px;margin:26px auto;padding:18px 22px;background:linear-gradient(135deg,rgba(99,102,241,0.14),rgba(168,85,247,0.07));border:1px solid rgba(99,102,241,0.3);border-radius:14px;text-align:center"><a href="/pricing" style="color:#a5b4fc;text-decoration:none;font-weight:600;font-size:15px">DC Hub &mdash; the live infrastructure data layer for AI agents and the people who build data centers. All 19,000+ facilities + live power, grid, fiber &amp; site-selection tools &mdash; <strong>from $49/mo &rarr;</strong></a></div>
 <p class="foot">Deep-dive narrative: <a href="/markets/{slug_norm}/deep-dive">/markets/{slug_norm}/deep-dive</a> ·
-JSON: <a href="/api/v1/markets/{name.replace(' ', '%20')}">/api/v1/markets/{name}</a> ·
+JSON: <a href="/api/v1/markets/{name.replace(' ', '%20')}" rel="nofollow">/api/v1/markets/{name}</a> ·
 All markets: <a href="/markets">/markets</a></p>
 <script src="/js/dchub-nav.js" defer></script>
 </body></html>"""

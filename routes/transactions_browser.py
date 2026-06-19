@@ -555,7 +555,7 @@ def transaction_detail(deal_id):
 
 <p style="margin-top:2rem;color:#9ca3af;font-size:.85rem">
   Part of <a href="/transactions">DC Hub's transactions database</a> · {_fmt_date(datetime.datetime.utcnow())} ·
-  API: <a href="/api/v1/transactions/{deal_id}">/api/v1/transactions/{deal_id}</a>
+  API: <a href="/api/v1/transactions/{deal_id}" rel="nofollow">/api/v1/transactions/{deal_id}</a>
 </p>
 <script src="/js/dchub-nav.js" defer></script>
 </body>
