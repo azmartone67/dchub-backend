@@ -119,8 +119,17 @@ def agent_utilization():
     distinct_agents = int(reach.get("distinct_agents_7d") or 0)
     keys = funnel.get("keys_by_tier") or {}
     identified = int(keys.get("free") or 0) + int(keys.get("paid") or 0)
-    returning = int(ret.get("latest_returning_ips") or 0)
-    reuse = _f(ret.get("pct_reused_30d"))
+    # r-metric-honesty (2026-06-19): the INCENT score must read the HONEST
+    # cross-session return signal — key-reuse on the durable trial key — NOT
+    # the ip_cohort artifact. latest_returning_ips counts mcp_tool_calls.ip
+    # (the client's ROTATING egress IP) so the SAME agent reads NEW every week
+    # → it UNDERCOUNTS returns and made incent read like a cliff (~1/wk). And
+    # pct_reused_30d (call_count>1) isn't cross-session either. Both replaced by
+    # the mature-cohort cross-session return (mcp_retention.py:100-105), which
+    # keys on the durable api_key. The artifact is kept for contrast only.
+    returning = int(ret.get("returned_next_week_mature") or 0)
+    reuse = _f(ret.get("pct_returned_next_week_mature"))
+    returning_ip_artifact = int(ret.get("latest_returning_ips") or 0)  # NOT scored
     converts = int(funnel.get("conversions_30d") or 0)
     calls_per_real_ip = round(real_calls / real_ips, 1) if real_ips else 0.0
 
@@ -146,12 +155,14 @@ def agent_utilization():
     incent = {
         "track": "incent", "weight": 0.45, "score": round(incent_score, 1),
         "stage": "activate → RETURN → convert",
-        "current": f"{returning} returning IPs/wk · {reuse:.1f}% key-reuse · {converts} conversions/30d",
+        "current": f"{returning} cross-session returners (mature 30d cohort) · {reuse:.1f}% return rate · {converts} conversions/30d",
         "status": _status(incent_score),
         "lever": "reasons to come back: r-return hook (get_changes), progressive unlocks ('earn more by returning'), durable identity / OAuth, usage-billing at the value moment",
         "actuator": "r-return (shipped) + depth-tease/unlock_more_data (server.mjs) + durable-identity build",
         "armable_now": False, "kind": "engineering+mcp-server",
-        "note": "THE leak — agents activate but ~1 returns/wk. This is where the whole funnel bleeds.",
+        "return_signal": "key_reuse.returned_next_week_mature (durable api_key, cross-session) — NOT the ip_cohort artifact",
+        "ip_artifact_for_contrast": returning_ip_artifact,
+        "note": "THE leak — agents activate but few return cross-session. Now scored on the durable-key signal (was the rotating-IP artifact that read a false ~1/wk cliff).",
     }
 
     # ── TRACK 3: TRAIN (use well — breadth + recipes) ──
