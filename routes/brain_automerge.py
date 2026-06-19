@@ -932,10 +932,20 @@ def _make_blueprint():
     def _run():
         if not _admin_ok():
             return jsonify(ok=False, error="admin only"), 403
+        # PR janitor runs EVERY tick, governed by its OWN flag
+        # (BRAIN_PR_JANITOR_ENABLED) — independent of the auto-merge flag, so the
+        # RED brain-autofix PR pileup is cleaned even while auto-merge is still
+        # dormant. dry-run (zero closes) unless the janitor flag is on. Never raises.
+        _jan = None
+        try:
+            from routes.brain_pr_janitor import janitor_sweep
+            _jan = janitor_sweep(dry_run=False)
+        except Exception as _e:
+            _jan = {"error": f"{type(_e).__name__}:{str(_e)[:120]}"}
         if not _enabled():
-            return jsonify(ok=True, enabled=False, disabled=True,
+            return jsonify(ok=True, enabled=False, disabled=True, janitor=_jan,
                            note="BRAIN_AUTOMERGE_ENABLED != 1 — dormant, no GitHub writes"), 200
-        return jsonify(ok=True, enabled=True, result=run_automerge()), 200
+        return jsonify(ok=True, enabled=True, janitor=_jan, result=run_automerge()), 200
 
     @bp.post("/api/v1/brain/automerge/canary")
     def _canary():
