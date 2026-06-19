@@ -40,7 +40,7 @@ _POOL_UTIL_ALERT    = float(os.environ.get("HEALTH_ALERT_POOL_PCT", "85"))
 _CHECK_EVERY_S      = int(os.environ.get("HEALTH_ALERT_INTERVAL_S", "60"))
 _INITIAL_DELAY_S    = int(os.environ.get("HEALTH_ALERT_INITIAL_DELAY_S", "90"))
 _RESTART_WINDOW_MIN = int(os.environ.get("HEALTH_ALERT_RESTART_WINDOW_MIN", "15"))
-_RESTART_THRESHOLD  = int(os.environ.get("HEALTH_ALERT_RESTART_N", "5"))  # > a normal 2-replica deploy burst
+_RESTART_THRESHOLD  = int(os.environ.get("HEALTH_ALERT_RESTART_N", "4"))  # distinct RESTART EVENTS (one deploy = 1)
 _RATE_LIMIT_S       = int(os.environ.get("HEALTH_ALERT_RATE_LIMIT_S", "600"))  # 10 min between same-kind alerts
 
 _last_sent = {}   # in-process rate limit: kind -> ts
@@ -145,8 +145,19 @@ def _check_restart_loop():
         cur.execute("CREATE TABLE IF NOT EXISTS app_health_alerts "
                     "(kind TEXT, sent_at TIMESTAMPTZ NOT NULL DEFAULT NOW())")
         cur.execute("INSERT INTO app_health_boots DEFAULT VALUES")
-        cur.execute("SELECT count(*) FROM app_health_boots "
-                    "WHERE boot_at > NOW() - make_interval(mins => %s)", (_RESTART_WINDOW_MIN,))
+        # Count distinct RESTART EVENTS, not raw boots. One container start fans
+        # out many boot rows (gunicorn worker + MCP sidecar + watchdog, × 2
+        # replicas — observed ~8 rows within ~35s), so raw counting reads a single
+        # deploy as a "loop" (it false-fired once on 2026-06-19). Collapse boots
+        # <60s apart into one event (gaps-and-islands); a real crash/watchdog loop
+        # reboots ≥~80s apart, so each reboot is its own event.
+        cur.execute("""WITH b AS (
+                         SELECT boot_at, LAG(boot_at) OVER (ORDER BY boot_at) AS prev
+                         FROM app_health_boots
+                         WHERE boot_at > NOW() - make_interval(mins => %s))
+                       SELECT count(*) FROM b
+                       WHERE prev IS NULL OR (boot_at - prev) > INTERVAL '60 seconds'""",
+                    (_RESTART_WINDOW_MIN,))
         n = int(cur.fetchone()[0] or 0)
         if n >= _RESTART_THRESHOLD:
             cur.execute("SELECT max(sent_at) FROM app_health_alerts WHERE kind='restart_loop'")
@@ -158,8 +169,9 @@ def _check_restart_loop():
             if not recent:
                 if _send_email("🚨 DC Hub backend RESTART LOOP",
                                f"<h2>Backend is restart-looping</h2>"
-                               f"<p>{n} boots in the last {_RESTART_WINDOW_MIN} min "
-                               f"(threshold {_RESTART_THRESHOLD}). The container is crash/restart-looping — "
+                               f"<p>{n} distinct restarts in the last {_RESTART_WINDOW_MIN} min "
+                               f"(threshold {_RESTART_THRESHOLD}; deploy bursts collapse to 1). "
+                               f"The container is crash/restart-looping — "
                                f"likely a bad deploy, DB-pool exhaustion, or OOM.</p>"
                                f"<p>Check Railway deploy logs; consider rolling back the last deploy or "
                                f"flipping the relevant kill-switch.</p>"):
