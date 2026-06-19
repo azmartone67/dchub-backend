@@ -668,7 +668,7 @@ def _init_pg_pool():
                 or os.environ.get("DCHUB_FAILOVER", "").lower() in ("true", "1", "yes")
             )
             _minconn = 0 if _is_failover else int(os.environ.get('DB_POOL_MIN', 2))
-            _maxconn = int(os.environ.get('DB_POOL_MAX', 20))
+            _maxconn = int(os.environ.get('DB_POOL_MAX', 50))
             # On failover containers also use shorter idle timeout
             # so keepalive probes catch dead conns faster.
             _keepidle = 30 if _is_failover else 60
@@ -677,6 +677,16 @@ def _init_pg_pool():
                 maxconn=_maxconn,
                 dsn=pg_url,
                 connect_timeout=15,
+                # r-pool-resilience (2026-06-19, after the tuner-init pool-exhaustion
+                # outage): DB-side per-checkout cap. A connection that BEGINs a
+                # transaction then sits idle (a leak — code path errored without
+                # commit/rollback, or a thread stalled) is killed by Postgres after
+                # 180s and returned to the pool, instead of silently draining a slot
+                # until the 60s app-side FORCED RECLAIM happens to catch it. 180s is
+                # well above any legitimate operation (the slowest real holder, KMZ
+                # discovery, is ~63s and queries actively — never idle-in-tx) so this
+                # only ever reaps genuine leaks. Pairs with _CONN_MAX_HOLD_SECONDS.
+                options='-c idle_in_transaction_session_timeout=180000',
                 keepalives=1,
                 keepalives_idle=_keepidle,
                 keepalives_interval=10,
@@ -798,7 +808,7 @@ def get_pg_connection(retries=3, pool_type=None):
                 _track_checkout(conn)
 
                 used = _pool_stats['acquired'] - _pool_stats['returned']
-                max_conn = int(os.environ.get('DB_POOL_MAX', 20))
+                max_conn = int(os.environ.get('DB_POOL_MAX', 50))
                 if max_conn > 0 and used >= int(max_conn * 0.75):
                     logging.getLogger('db_pool').warning(f"⚠️ Pool at {used}/{max_conn} ({int(used/max_conn*100)}%) -- high usage")
 
@@ -915,7 +925,7 @@ def get_pool_health():
                     'stack': info['stack'][:300],
                 })
 
-    max_conn = int(os.environ.get('DB_POOL_MAX', 20))
+    max_conn = int(os.environ.get('DB_POOL_MAX', 50))
     estimated_available = max(0, max_conn - checked_out)
     utilization = round(checked_out / max_conn * 100, 1) if max_conn else 0
 
@@ -1048,6 +1058,7 @@ def _init_read_pool():
                 maxconn=30,
                 dsn=read_url,
                 connect_timeout=10,
+                options='-c idle_in_transaction_session_timeout=180000',  # r-pool-resilience: DB-side leaked-tx reaper (see write pool)
                 keepalives=1,
                 keepalives_idle=_read_keepidle,
                 keepalives_interval=10,
@@ -26205,6 +26216,23 @@ try:
           "(GET /api/v1/brain/proposals/mechanical · shadow-only)")
 except Exception as e:
     print(f"🔧 Brain Mechanical Classifier: ⚠️ Failed to load: {e}")
+
+# (2026-06-19) — Brain INVESTIGATOR (RECOMMEND-ONLY). The "thinking" rung: a
+# human poses a real business question (why is reach flat? is this customer
+# churning? what should we build next?) and the brain runs a VERIFIED 5-step
+# investigation (decompose -> gather REAL evidence -> reason -> adversarially
+# refute -> synthesize) and returns an evidence-backed recommendation with
+# confidence + caveats + the decision surfaced for the human. It NEVER acts.
+# Ships DARK: BRAIN_INVESTIGATOR_ENABLED defaults OFF (POST /ask returns
+# {enabled:false} without a model call). Degrades gracefully with no
+# ANTHROPIC_API_KEY. Admin-gated.
+try:
+    from routes.brain_investigator import register_brain_investigator
+    register_brain_investigator(app)
+    print("🧠 Brain Investigator: ✅ Registered "
+          "(POST /api/v1/brain/ask · recommend-only · ships dark)")
+except Exception as e:
+    print(f"🧠 Brain Investigator: ⚠️ Failed to load: {e}")
 
 # PHASE 3 (2026-06-18) — AUTONOMOUS MERGE + post-merge CANARY/auto-revert.
 # The highest-risk module: it can squash-merge the brain's mechanical autofix
