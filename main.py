@@ -26237,6 +26237,20 @@ try:
 except Exception as e:
     print(f"📍 Map Click Redirect: ⚠️ Failed to load: {e}")
 
+# Anonymous per-IP daily usage count (2026-06-18) — read side of the SOFT
+# anonymous-daily-cap nudge. The MCP gateway (server.mjs) calls this with the
+# TRUE client IP to learn today's tool-call count for that anon IP; over-cap it
+# adds an _upgrade escalation to the trimForTrial preview (no 429, no isError).
+# COUNT only — all policy + the OFF-by-default DCHUB_ANON_DAILY_CAP gate live in
+# the gateway. FAIL-OPEN: missing ip / DB error → {ok:true, count:0}, so a
+# backend hiccup can never throttle the funnel.
+try:
+    from routes.mcp_anon_usage import register as _register_mcp_anon_usage
+    _register_mcp_anon_usage(app)
+    print("🔢 MCP Anon Usage: ✅ Registered (GET /api/v1/mcp/anon-usage)")
+except Exception as e:
+    print(f"🔢 MCP Anon Usage: ⚠️ Failed to load: {e}")
+
 # Phase FF+25-followup-r12 (2026-05-20) — site audit + status dashboard.
 # One URL (/status) that shows the entire stack at a glance — brain,
 # autopilot, Inspector, press, MCP, sponsorships. JSON at /api/v1/site/audit.
