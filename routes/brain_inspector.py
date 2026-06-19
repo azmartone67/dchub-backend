@@ -78,7 +78,19 @@ def _admin_ok():
     sent = (request.headers.get("X-Internal-Key")
             or request.headers.get("X-Admin-Key")
             or request.args.get("admin_key") or "").strip()
-    return sent in _INTERNAL_KEYS
+    if not sent:
+        return False
+    if sent in _INTERNAL_KEYS:
+        return True
+    # r-admin-gate-fresh (2026-06-18): _INTERNAL_KEYS is captured at IMPORT time,
+    # so a key set/rotated after startup — or a replica that imported while
+    # DCHUB_ADMIN_KEY was momentarily unset — 403s a valid key. Re-check the
+    # CURRENT env at request time (what paid_account_health already does).
+    for _n in ("DCHUB_INTERNAL_KEY", "INTERNAL_KEY", "DCHUB_ADMIN_KEY"):
+        _v = os.environ.get(_n)
+        if _v and sent == _v:
+            return True
+    return False
 
 
 # r-brain-gate (2026-06-18): the brain brief/innovation surfaces were PUBLIC and
