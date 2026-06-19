@@ -132,8 +132,11 @@ def mint_trial_for_request(req=None, tool_name: str = "", client_name: str = "",
     do, so we capture the operator at the moment of maximum intent.
 
     Reuses an existing trial key for the SAME (ip_hash, ua) within
-    the last 24h instead of minting a new one — prevents N-keys-per-
-    user when an agent retries before getting the message."""
+    AUTO_TRIAL_REUSE_DAYS (default 30, but capped by the key's expires_at —
+    so effectively ~TRIAL_DAYS=7d for unbound trials; the full 30d only bites
+    once a key is email-redeemed to 365d) instead of minting a new one —
+    prevents N-keys-per-user AND lets a returning agent re-bind its durable
+    key across sessions."""
     req = req or request
     ip = (req.headers.get("CF-Connecting-IP")
           or req.headers.get("X-Forwarded-For", "").split(",")[0].strip()
@@ -162,11 +165,23 @@ def mint_trial_for_request(req=None, tool_name: str = "", client_name: str = "",
         with c.cursor() as cur:
             # Check for existing recent trial key for this caller
             try:
-                cur.execute("""
+                # r-retention (2026-06-19): widen the same-(ip_hash,ua) reuse
+                # window 24h -> AUTO_TRIAL_REUSE_DAYS (default 30, capped by
+                # expires_at → effectively ~7d for unbound keys, full 30d once
+                # email-redeemed) so a returning agent on a STABLE IP re-binds the SAME
+                # durable key across sessions instead of minting a fresh throwaway
+                # each visit. That is what lets call_count / last_used_at accumulate
+                # and makes the key-reuse retention metric meaningful (avg 0.67
+                # calls/key today = re-mint churn, not real one-shot use). Web hosts
+                # on ROTATING egress IPs still won't match — email-bind is their
+                # durable path. _reuse_days is int()-built, so the f-string is
+                # injection-safe.
+                _reuse_days = max(1, int(os.environ.get("AUTO_TRIAL_REUSE_DAYS", "30") or 30))
+                cur.execute(f"""
                     SELECT api_key, expires_at FROM auto_trial_keys
                      WHERE request_ip_hash = %s
                        AND request_ua = %s
-                       AND minted_at >= NOW() - INTERVAL '24 hours'
+                       AND minted_at >= NOW() - INTERVAL '{_reuse_days} days'
                        AND expires_at > NOW()
                      ORDER BY minted_at DESC LIMIT 1
                 """, (ip_hash, ua))

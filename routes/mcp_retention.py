@@ -47,9 +47,19 @@ def mcp_retention():
     if c is None:
         return jsonify(error="no_db"), 503
     out = {"weeks": weeks, "ip_cohort": [], "key_reuse": [], "summary": {},
-           "note": ("Retention is the lever, not reach: inflow ~30-50 new ext IPs/wk but ~1 returns. "
-                    "Watch pct_reused + returning_ips climb = the r86 first-touch fix working. "
-                    "Mint VOLUME is scan/anon-inflated — read the RATE, not the count.")}
+           "primary_metric": "summary.pct_returned_next_week_mature (durable api_key, mature 8-30d cohort)",
+           "note": ("Retention is the lever, not reach. ⚠️ ip_cohort is NOT the retention truth — it counts "
+                    "mcp_tool_calls.ip_address, which is UNRELIABLE IN BOTH DIRECTIONS: TODAY it is the client's "
+                    "ROTATING egress IP, so the same agent reads as NEW every week (UNDERCOUNTS returns); "
+                    "PRE-2026-06-14 it was the CF/Node PROXY IP, which folded many distinct agents onto one IP "
+                    "that read as a single 'returning' caller (OVERCOUNTS — that is the fake Apr '25-32 returning/"
+                    "wk'). The honest, identity-based signal is key_reuse on the durable api_key: returned_next_week "
+                    "= a key first used in a LATER ISO week than minted = a true cross-session return. Read the "
+                    "mature RATE (pct_returned_next_week_mature — computed over keys minted 8-30d ago so each has had "
+                    "a full week to return), NOT the right-censored latest week. CAVEAT: it is a FLOOR, not exact — "
+                    "keyed on (client-IP-hash, UA) reuse, it can slightly OVER-count distinct agents sharing one NAT "
+                    "egress + identical UA onto one key, and still MISSES rotating-IP web hosts (their durable path is "
+                    "email-bind, not key reuse). Mint VOLUME is scan/anon-inflated.")}
     try:
         with c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute("""
@@ -71,6 +81,8 @@ def mcp_retention():
                        COUNT(*) FILTER (WHERE call_count > 1) AS reused_2plus,
                        COUNT(*) FILTER (WHERE last_used_at IS NOT NULL
                                 AND last_used_at > minted_at + interval '1 hour') AS returned_later,
+                       COUNT(*) FILTER (WHERE last_used_at IS NOT NULL
+                                AND date_trunc('week', last_used_at) > date_trunc('week', minted_at)) AS returned_next_week,
                        COUNT(DISTINCT request_ip_hash) AS distinct_ips
                 FROM auto_trial_keys WHERE minted_at >= now() - (%s || ' weeks')::interval
                 GROUP BY week ORDER BY week
@@ -79,7 +91,18 @@ def mcp_retention():
             cur.execute("""
                 SELECT COUNT(*) AS minted_30d,
                        ROUND(100.0*COUNT(*) FILTER (WHERE call_count > 1)/NULLIF(COUNT(*),0),1) AS pct_reused_30d,
-                       ROUND(AVG(call_count),2) AS avg_calls_per_key_30d
+                       ROUND(AVG(call_count),2) AS avg_calls_per_key_30d,
+                       -- r-retention fix (2026-06-19): the cross-session-return RATE is computed ONLY
+                       -- over a MATURE cohort (keys minted 8-30d ago) so every key has had a full
+                       -- subsequent ISO week in which to return. Including the last ~week would
+                       -- right-censor it downward into a fake decline (the 'partial period = cliff'
+                       -- trap r86b already fixed for ip_cohort). Volume (minted_30d) stays full-30d.
+                       COUNT(*) FILTER (WHERE minted_at < now() - interval '7 days') AS mature_cohort_30d,
+                       COUNT(*) FILTER (WHERE minted_at < now() - interval '7 days' AND last_used_at IS NOT NULL
+                                AND date_trunc('week', last_used_at) > date_trunc('week', minted_at)) AS returned_next_week_mature,
+                       ROUND(100.0*COUNT(*) FILTER (WHERE minted_at < now() - interval '7 days' AND last_used_at IS NOT NULL
+                                AND date_trunc('week', last_used_at) > date_trunc('week', minted_at))
+                             /NULLIF(COUNT(*) FILTER (WHERE minted_at < now() - interval '7 days'),0),1) AS pct_returned_next_week_mature
                 FROM auto_trial_keys WHERE minted_at >= now() - interval '30 days'
             """)
             row = cur.fetchone()
