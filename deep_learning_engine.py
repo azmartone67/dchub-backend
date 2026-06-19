@@ -394,7 +394,7 @@ class DeepLearningEngine:
             cursor.execute('''
                 SELECT city, state, country, COUNT(*) as cnt
                 FROM facilities
-                WHERE last_updated > datetime('now', '-90 days')
+                WHERE last_updated > NOW() - INTERVAL '90 days'
                 GROUP BY city, state, country
                 ORDER BY cnt DESC
                 LIMIT 10
