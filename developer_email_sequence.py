@@ -17,6 +17,7 @@ import os
 import logging
 from datetime import datetime, timezone, timedelta
 from typing import Optional
+from email_fallback import send_email_resilient
 
 logger = logging.getLogger('dchub-developer-email')
 
@@ -175,32 +176,20 @@ def _email_day7_convert(api_key: str) -> dict:
 # ─────────────────────────────────────────────────────────────
 
 def _send_email(to_email: str, subject: str, html: str) -> bool:
-    """Send via SendGrid API."""
-    if not SENDGRID_API_KEY:
-        logger.warning(f"⚠️  SENDGRID_API_KEY not set — would send '{subject}' to {to_email}")
+    """Send via resilient channel (SendGrid → Resend fallback)."""
+    resend_key = os.environ.get('RESEND_API_KEY', '') or os.environ.get('DCHUB_RESEND_API_KEY', '')
+    if not SENDGRID_API_KEY and not resend_key:
+        logger.warning(f"⚠️  No email channel configured — would send '{subject}' to {to_email}")
         return False
 
     try:
-        import requests
-        resp = requests.post(
-            'https://api.sendgrid.com/v3/mail/send',
-            headers={
-                'Authorization': f'Bearer {SENDGRID_API_KEY}',
-                'Content-Type': 'application/json',
-            },
-            json={
-                'personalizations': [{'to': [{'email': to_email}]}],
-                'from': {'email': FROM_EMAIL, 'name': FROM_NAME},
-                'subject': subject,
-                'content': [{'type': 'text/html', 'value': html}],
-            },
-            timeout=10,
-        )
-        if resp.status_code in (200, 202):
+        _ok = send_email_resilient(to_email, subject, html, None,
+                                   from_email=FROM_EMAIL, from_name=FROM_NAME)
+        if _ok:
             logger.info(f"✅ Email sent: '{subject}' → {to_email}")
             return True
         else:
-            logger.error(f"❌ SendGrid error {resp.status_code}: {resp.text[:200]}")
+            logger.error(f"❌ Email send failed (SendGrid + Resend): '{subject}' → {to_email}")
             return False
     except Exception as e:
         logger.error(f"❌ Email send error: {e}")

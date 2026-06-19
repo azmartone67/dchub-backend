@@ -132,14 +132,15 @@ if _bg_neon_url and 'neon' in _bg_neon_url.lower():
             import threading as _bg_thr
             def _bg_alert():
                 try:
-                    import urllib.request, json
-                    _k = _bg_os.environ.get('SENDGRID_API_KEY', '')
-                    if not _k: return
-                    _p = json.dumps({"personalizations":[{"to":[{"email":_bg_os.environ.get('ADMIN_ALERT_EMAIL','jonathan@dchub.cloud')}]}],"from":{"email":_bg_os.environ.get('SENDGRID_FROM_EMAIL','alerts@dchub.cloud'),"name":"DC Hub Boot Guard"},"subject":"\U0001f6a8 Neon Hostname Changed on Boot","content":[{"type":"text/html","value":f"<h2>Neon Hostname Changed</h2><p>Previous: {_bg_previous_host}</p><p>Current: {_bg_current_host}</p>"}]}).encode()
-                    _r = urllib.request.Request("https://api.sendgrid.com/v3/mail/send",data=_p,method='POST')
-                    _r.add_header('Authorization',f'Bearer {_k}')
-                    _r.add_header('Content-Type','application/json')
-                    urllib.request.urlopen(_r,timeout=5)
+                    # was SendGrid-only (silently dead since the SENDGRID_API_KEY 401);
+                    # now SendGrid→Resend fallback so a Neon hostname change actually pages.
+                    from email_fallback import send_email_resilient
+                    send_email_resilient(
+                        _bg_os.environ.get('ADMIN_ALERT_EMAIL', 'jonathan@dchub.cloud'),
+                        "\U0001f6a8 Neon Hostname Changed on Boot",
+                        html_content=f"<h2>Neon Hostname Changed</h2><p>Previous: {_bg_previous_host}</p><p>Current: {_bg_current_host}</p>",
+                        from_email=_bg_os.environ.get('SENDGRID_FROM_EMAIL', 'alerts@dchub.cloud'),
+                        from_name="DC Hub Boot Guard")
                 except Exception: pass
             _bg_thr.Thread(target=_bg_alert,daemon=True).start()
         else:

@@ -6,6 +6,7 @@ Sends email alert via SendGrid. Register as Flask blueprint.
 """
 import os, time, json, logging, threading
 from datetime import datetime, timezone
+from email_fallback import send_email_resilient
 
 logger = logging.getLogger('neon_health')
 
@@ -21,29 +22,21 @@ LATENCY_CRITICAL_MS = 2000
 
 def _send_alert(subject, body_html):
     sg_key = os.environ.get('SENDGRID_API_KEY', '')
+    resend_key = os.environ.get('RESEND_API_KEY', '') or os.environ.get('DCHUB_RESEND_API_KEY', '')
     admin_email = os.environ.get('ADMIN_ALERT_EMAIL', 'jonathan@dchub.cloud')
-    if not sg_key:
+    if not sg_key and not resend_key:
         return False
     if _state['alert_sent_at'] and (time.time() - _state['alert_sent_at']) < ALERT_COOLDOWN_SECONDS:
         return False
-    try:
-        import urllib.request
-        payload = json.dumps({
-            "personalizations": [{"to": [{"email": admin_email}]}],
-            "from": {"email": os.environ.get('SENDGRID_FROM_EMAIL', 'info@dchub.cloud'), "name": "DC Hub Alerts"},
-            "subject": subject,
-            "content": [{"type": "text/html", "value": body_html}]
-        }).encode('utf-8')
-        req = urllib.request.Request("https://api.sendgrid.com/v3/mail/send", data=payload, method='POST')
-        req.add_header('Authorization', f'Bearer {sg_key}')
-        req.add_header('Content-Type', 'application/json')
-        urllib.request.urlopen(req, timeout=10)
+    _ok = send_email_resilient(admin_email, subject, body_html, None,
+                               from_email=os.environ.get('SENDGRID_FROM_EMAIL', 'info@dchub.cloud'),
+                               from_name="DC Hub Alerts")
+    if _ok:
         _state['alert_sent_at'] = time.time()
         logger.info("NEON HEALTH: Alert sent to %s", admin_email)
         return True
-    except Exception as e:
-        logger.error("NEON HEALTH: Alert send failed: %s", e)
-        return False
+    logger.error("NEON HEALTH: Alert send failed")
+    return False
 
 def check_neon_health():
     import psycopg2

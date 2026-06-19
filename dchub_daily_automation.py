@@ -31,6 +31,7 @@ import logging
 import traceback
 from datetime import datetime, timedelta, timezone
 from flask import Blueprint, request, jsonify
+from email_fallback import send_email_resilient
 
 # phase57_landing — daily landing URL helper for LinkedIn rich-card preview
 def _phase30c_landing_url(d=None):
@@ -74,43 +75,21 @@ def _ensure_tables():
 # ===========================================================================
 
 def send_email(to_email, subject, html_content, text_content=None):
-    """Send email via SendGrid API."""
-    if not SENDGRID_API_KEY:
-        log.warning("SendGrid not configured - email skipped")
-        return {'success': False, 'error': 'SendGrid not configured'}
-
-    import urllib.request
-    import urllib.error
-
-    payload = {
-        "personalizations": [{"to": [{"email": to_email}]}],
-        "from": {"email": SENDGRID_FROM_EMAIL, "name": "DC Hub"},
-        "subject": subject,
-        "content": [{"type": "text/html", "value": html_content}]
-    }
-    if text_content:
-        payload["content"].insert(0, {"type": "text/plain", "value": text_content})
-
-    data = json.dumps(payload).encode('utf-8')
-    req = urllib.request.Request(
-        'https://api.sendgrid.com/v3/mail/send',
-        data=data,
-        headers={
-            'Authorization': f'Bearer {SENDGRID_API_KEY}',
-            'Content-Type': 'application/json'
-        },
-        method='POST'
-    )
+    """Send email via resilient channel (SendGrid → Resend fallback)."""
+    resend_key = os.environ.get('RESEND_API_KEY', '') or os.environ.get('DCHUB_RESEND_API_KEY', '')
+    if not SENDGRID_API_KEY and not resend_key:
+        log.warning("No email channel configured (SendGrid/Resend) - email skipped")
+        return {'success': False, 'error': 'No email channel configured'}
 
     try:
-        resp = urllib.request.urlopen(req, timeout=30)
-        return {'success': True, 'status_code': resp.status}
-    except urllib.error.HTTPError as e:
-        body = e.read().decode('utf-8', errors='replace')
-        log.error(f"SendGrid error {e.code}: {body}")
-        return {'success': False, 'error': f'HTTP {e.code}', 'details': body}
+        _ok = send_email_resilient(to_email, subject, html_content, text_content,
+                                   from_email=SENDGRID_FROM_EMAIL, from_name="DC Hub")
+        if _ok:
+            return {'success': True}
+        log.error("Email send failed (SendGrid + Resend)")
+        return {'success': False, 'error': 'Email send failed (SendGrid + Resend)'}
     except Exception as e:
-        log.error(f"SendGrid exception: {e}")
+        log.error(f"Email send exception: {e}")
         return {'success': False, 'error': str(e)}
 
 

@@ -17,6 +17,7 @@ import json
 import logging
 import time
 from datetime import datetime, timedelta
+from email_fallback import send_email_resilient
 
 logger = logging.getLogger('welcome_emails')
 
@@ -263,40 +264,20 @@ def init_drip_table(conn):
 # ─── SendGrid Integration ─────────────────────────────────
 
 def _send_email(to_email, subject, html_body, from_email='intelligence@dchub.cloud', from_name='DC Hub'):
-    """Send a single email via SendGrid API."""
+    """Send a single email via resilient channel (SendGrid → Resend fallback)."""
     api_key = os.environ.get('SENDGRID_API_KEY')
-    if not api_key:
-        logger.error("SENDGRID_API_KEY not set — cannot send email")
+    resend_key = os.environ.get('RESEND_API_KEY') or os.environ.get('DCHUB_RESEND_API_KEY')
+    if not api_key and not resend_key:
+        logger.error("No email channel configured (SendGrid/Resend) — cannot send email")
         return False
 
-    import requests
-
-    payload = {
-        'personalizations': [{'to': [{'email': to_email}]}],
-        'from': {'email': from_email, 'name': from_name},
-        'subject': subject,
-        'content': [{'type': 'text/html', 'value': html_body}]
-    }
-
-    try:
-        resp = requests.post(
-            'https://api.sendgrid.com/v3/mail/send',
-            headers={
-                'Authorization': f'Bearer {api_key}',
-                'Content-Type': 'application/json'
-            },
-            json=payload,
-            timeout=10
-        )
-        if resp.status_code in (200, 202):
-            logger.info(f"✅ Email sent to {to_email}: {subject}")
-            return True
-        else:
-            logger.error(f"❌ SendGrid error {resp.status_code}: {resp.text}")
-            return False
-    except Exception as e:
-        logger.error(f"❌ Email send failed: {e}")
-        return False
+    _ok = send_email_resilient(to_email, subject, html_body, None,
+                               from_email=from_email, from_name=from_name)
+    if _ok:
+        logger.info(f"✅ Email sent to {to_email}: {subject}")
+        return True
+    logger.error(f"❌ Email send failed (SendGrid + Resend): {subject}")
+    return False
 
 
 def _already_sent(conn, email, email_key):

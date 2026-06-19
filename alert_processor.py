@@ -26,6 +26,7 @@ from email.mime.multipart import MIMEMultipart
 from datetime import datetime, timedelta
 from collections import defaultdict
 from db_utils import get_db
+from email_fallback import send_email_resilient
 
 alert_processor_bp = Blueprint('alert_processor', __name__)
 
@@ -90,37 +91,17 @@ init_alert_log_db()
 # =============================================================================
 
 def send_email_sendgrid(to_email, subject, html_content, text_content=None):
-    """Send email via SendGrid API."""
-    if not SENDGRID_API_KEY:
-        print("⚠️ SendGrid API key not configured")
-        return False, "SendGrid API key not configured"
-    
-    url = "https://api.sendgrid.com/v3/mail/send"
-    headers = {
-        "Authorization": f"Bearer {SENDGRID_API_KEY}",
-        "Content-Type": "application/json"
-    }
-    
-    data = {
-        "personalizations": [{"to": [{"email": to_email}]}],
-        "from": {"email": FROM_EMAIL, "name": FROM_NAME},
-        "subject": subject,
-        "content": [
-            {"type": "text/html", "value": html_content}
-        ]
-    }
-    
-    if text_content:
-        data["content"].insert(0, {"type": "text/plain", "value": text_content})
-    
-    try:
-        response = requests.post(url, headers=headers, json=data, timeout=10)
-        if response.status_code in (200, 202):
-            return True, "Sent via SendGrid"
-        else:
-            return False, f"SendGrid error: {response.status_code} - {response.text}"
-    except Exception as e:
-        return False, f"SendGrid exception: {str(e)}"
+    """Send email via resilient channel (SendGrid → Resend fallback)."""
+    resend_key = os.environ.get('RESEND_API_KEY', '') or os.environ.get('DCHUB_RESEND_API_KEY', '')
+    if not SENDGRID_API_KEY and not resend_key:
+        print("⚠️ No email channel configured (SendGrid/Resend)")
+        return False, "No email channel configured"
+
+    _ok = send_email_resilient(to_email, subject, html_content, text_content,
+                               from_email=FROM_EMAIL, from_name=FROM_NAME)
+    if _ok:
+        return True, "Sent via SendGrid"
+    return False, "Email send failed (SendGrid + Resend)"
 
 def send_email_mailgun(to_email, subject, html_content, text_content=None):
     """Send email via Mailgun API."""

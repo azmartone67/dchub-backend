@@ -35,6 +35,7 @@ from datetime import datetime, timedelta
 from functools import wraps
 from flask import Blueprint, request, jsonify
 from db_utils import get_db
+from email_fallback import send_email_resilient
 
 # =============================================================================
 # CONFIGURATION
@@ -186,48 +187,22 @@ def init_alerts_v2_table():
 # =============================================================================
 
 def send_alert_email(to_email, subject, html_content, text_content=None):
-    """Send email via SendGrid API"""
-    if not SENDGRID_API_KEY:
-        print(f"⚠️ SendGrid not configured, would send to {to_email}: {subject}")
-        return {'success': False, 'error': 'SendGrid not configured'}
-    
+    """Send email via resilient channel (SendGrid → Resend fallback)"""
+    resend_key = os.environ.get('RESEND_API_KEY', '') or os.environ.get('DCHUB_RESEND_API_KEY', '')
+    if not SENDGRID_API_KEY and not resend_key:
+        print(f"⚠️ No email channel configured, would send to {to_email}: {subject}")
+        return {'success': False, 'error': 'No email channel configured'}
+
     try:
-        import requests
-        
-        data = {
-            "personalizations": [{
-                "to": [{"email": to_email}],
-                "subject": subject
-            }],
-            "from": {
-                "email": SENDGRID_FROM_EMAIL,
-                "name": SENDGRID_FROM_NAME
-            },
-            "content": [
-                {"type": "text/html", "value": html_content}
-            ]
-        }
-        
-        if text_content:
-            data["content"].insert(0, {"type": "text/plain", "value": text_content})
-        
-        response = requests.post(
-            "https://api.sendgrid.com/v3/mail/send",
-            headers={
-                "Authorization": f"Bearer {SENDGRID_API_KEY}",
-                "Content-Type": "application/json"
-            },
-            json=data,
-            timeout=10
-        )
-        
-        if response.status_code in [200, 202]:
+        _ok = send_email_resilient(to_email, subject, html_content, text_content,
+                                   from_email=SENDGRID_FROM_EMAIL, from_name=SENDGRID_FROM_NAME)
+        if _ok:
             print(f"✅ Email sent to {to_email}: {subject}")
             return {'success': True}
         else:
-            print(f"❌ SendGrid error {response.status_code}: {response.text}")
-            return {'success': False, 'error': response.text}
-            
+            print(f"❌ Email send failed (SendGrid + Resend) to {to_email}")
+            return {'success': False, 'error': 'Email send failed (SendGrid + Resend)'}
+
     except Exception as e:
         print(f"❌ Email send error: {e}")
         return {'success': False, 'error': str(e)}
