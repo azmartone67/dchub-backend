@@ -472,7 +472,7 @@ JSON only, no markdown."""
         try:
             cursor.execute('''
                 SELECT title, summary, url, source FROM announcements
-                WHERE published_date > datetime('now', '-3 days')
+                WHERE published_date > NOW() - INTERVAL '3 days'
                 ORDER BY published_date DESC LIMIT 100
             ''')
             recent_news = cursor.fetchall()
