@@ -1060,7 +1060,7 @@ def _run_market_refresh():
                 UPDATE market_intelligence SET
                     facility_count = sub.cnt,
                     total_mw = sub.mw,
-                    last_updated = NOW()::text
+                    last_updated = NOW()
                 FROM (
                     SELECT COUNT(*) as cnt, ROUND(COALESCE(SUM(power_mw),0)::numeric) as mw
                     FROM discovered_facilities WHERE city IN ({placeholders}) AND country = 'US'
