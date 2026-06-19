@@ -448,7 +448,7 @@ class NexusDatabase:
         c.execute("SELECT region, COUNT(*) FROM facilities WHERE region != '' GROUP BY region")
         stats['by_region'] = dict(c.fetchall())
         
-        c.execute("SELECT COUNT(*) FROM facilities WHERE first_seen > datetime('now', '-7 days')")
+        c.execute("SELECT COUNT(*) FROM facilities WHERE first_seen > NOW() - INTERVAL '7 days'")
         stats['new_last_7_days'] = c.fetchone()[0]
         
         c.execute("SELECT COUNT(*) FROM announcements WHERE published_date > datetime('now', '-7 days')")
