@@ -26167,6 +26167,16 @@ try:
 except Exception as e:
     print(f"🤖 Brain Autonomy Loop: ⚠️ Failed to load: {e}")
 
+# Onboarding recovery + welcome-email audit (2026-06-18) — resend a customer's
+# welcome email + make welcome_email_log readable (it was write-only).
+try:
+    from routes.onboarding_recover import register as _register_onboarding_recover
+    _register_onboarding_recover(app)
+    print("📨 Onboarding Recover: ✅ Registered "
+          "(POST /api/v1/admin/resend-welcome · GET /api/v1/admin/welcome-log)")
+except Exception as e:
+    print(f"📨 Onboarding Recover: ⚠️ Failed to load: {e}")
+
 # Phase FF+25-followup-r12 (2026-05-20) — site audit + status dashboard.
 # One URL (/status) that shows the entire stack at a glance — brain,
 # autopilot, Inspector, press, MCP, sponsorships. JSON at /api/v1/site/audit.
