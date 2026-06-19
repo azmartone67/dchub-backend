@@ -1,4 +1,5 @@
 from internal_auth import is_valid_internal_key
+from railway_egress import is_railway_egress
 # rate_limiter.py
 # DC Hub - Rate Limiting Middleware
 # Location: root level (alongside main.py)
@@ -295,7 +296,7 @@ def rate_limit_before():
     # few other /24s. We can't trust the IP alone (could be spoofed in
     # XFF), so also check the User-Agent matches one of our internal
     # crawler signatures — defense in depth.
-    if raw_ip.startswith('162.220.232.') or raw_ip.startswith('162.220.233.'):
+    if is_railway_egress(raw_ip):
         ua = (request.headers.get('User-Agent') or '').lower()
         # Allow if either (a) the UA is one of our known internal ones,
         # OR (b) the request is for /api/health or a known healthcheck

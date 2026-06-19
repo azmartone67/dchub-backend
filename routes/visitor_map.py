@@ -67,6 +67,7 @@ def _top_ips(days: int = 7, limit: int = 200) -> list[dict]:
                    AND ip_address != ''
                    AND ip_address NOT LIKE '162.220.232.%%'
                    AND ip_address NOT LIKE '162.220.233.%%'
+                   AND ip_address NOT LIKE '152.55.176.%%'
                    AND ip_address != '127.0.0.1'
                  GROUP BY ip_address
                  ORDER BY calls DESC

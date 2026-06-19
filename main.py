@@ -2623,10 +2623,10 @@ def phase19b_grid_intelligence(region):
     _ip = (request.headers.get('Cf-Connecting-Ip')
            or (request.headers.get('X-Forwarded-For') or '').split(',')[0].strip()
            or request.remote_addr or '')
+    from railway_egress import is_railway_egress
     _is_internal = (any(m in _ua for m in ('dchub-', 'dchubhealer', 'brain-radar',
                                             'brain-v2-headless', 'uptimerobot'))
-                    or _ip.startswith('162.220.232.')
-                    or _ip.startswith('162.220.233.'))
+                    or is_railway_egress(_ip))
     _has_key = bool(request.headers.get('X-API-Key') or request.args.get('api_key'))
     if not _is_internal and not _has_key:
         # Anonymous external caller — return headline only + agent_action.

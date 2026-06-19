@@ -398,6 +398,7 @@ def check_repeated_admin_401() -> list[dict]:
                        AND status_code = 401
                        AND ip_address NOT LIKE '162.220.232.%%'
                        AND ip_address NOT LIKE '162.220.233.%%'
+                       AND ip_address NOT LIKE '152.55.176.%%'
                        AND ip_address != '127.0.0.1'
                      GROUP BY ip_address, path
                     HAVING COUNT(*) >= 20
@@ -456,6 +457,7 @@ def check_hosting_traffic_share() -> list[dict]:
                        AND ip_address != ''
                        AND ip_address NOT LIKE '162.220.232.%%'
                        AND ip_address NOT LIKE '162.220.233.%%'
+                       AND ip_address NOT LIKE '152.55.176.%%'
                      GROUP BY ip_address
                      ORDER BY calls DESC
                      LIMIT 20
@@ -569,6 +571,7 @@ def check_privacy_traffic_share() -> list[dict]:
                        AND ip_address != ''
                        AND ip_address NOT LIKE '162.220.232.%%'
                        AND ip_address NOT LIKE '162.220.233.%%'
+                       AND ip_address NOT LIKE '152.55.176.%%'
                      GROUP BY ip_address
                      ORDER BY calls DESC LIMIT 20
                 """)

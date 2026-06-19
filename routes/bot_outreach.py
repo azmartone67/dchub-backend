@@ -85,6 +85,7 @@ def _compute_whales(min_days: int = 3, min_calls_per_day: int = 100) -> list[dic
                      AND ip_address != ''
                      AND ip_address NOT LIKE '162.220.232.%%'
                      AND ip_address NOT LIKE '162.220.233.%%'
+                     AND ip_address NOT LIKE '152.55.176.%%'
                      AND ip_address != '127.0.0.1'
                    GROUP BY ip_address, DATE(created_at)
                   HAVING COUNT(*) >= %s
