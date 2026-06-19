@@ -821,7 +821,7 @@ def api_alert_status():
         c = db.cursor()
         sent_week = c.execute('''
             SELECT COUNT(*) as cnt FROM alert_notifications 
-            WHERE sent_at > datetime('now', '-7 days')
+            WHERE sent_at > NOW() - INTERVAL '7 days'
         ''').fetchone()['cnt']
     except:
         sent_today = 0
