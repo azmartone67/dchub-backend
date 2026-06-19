@@ -428,7 +428,7 @@ def process_alerts():
 
         c = db.cursor()
         recent_news = c.execute(
-            "SELECT id, title, source, published_date FROM news_articles WHERE published_date >= datetime('now', '-1 day') ORDER BY published_date DESC LIMIT 200"
+            "SELECT id, title, source, published_date FROM news_articles WHERE published_date >= NOW() - INTERVAL '1 days' ORDER BY published_date DESC LIMIT 200"
         ).fetchall()
 
         c = db.cursor()
