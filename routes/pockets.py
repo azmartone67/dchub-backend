@@ -544,7 +544,7 @@ footer a{color:var(--acc)}
   h1{font-size:2rem}
   .wrap{padding:2rem 1rem}
 }
-</style></head><body><div class="wrap">
+</style><link rel="stylesheet" href="/static/dchub-brand.css"></head><body><div class="wrap">
 <div class="kicker">DC HUB · LIVE MARKETS · {{ as_of[:10] }}</div>
 <h1>Pockets of Power</h1>
 <p class="sub">Where to put new data center capacity, ranked by excess power, grid constraint, and time-to-power. Updated daily from EIA + ISO + DCPI signals.</p>
@@ -1065,7 +1065,7 @@ footer a{color:var(--acc)}
 .share{display:flex;gap:0.5rem;margin-top:1.5rem;flex-wrap:wrap}
 .share a{padding:0.5rem 1rem;background:var(--card);border:1px solid var(--bd);border-radius:8px;color:var(--tx2);text-decoration:none;font-size:0.85rem;font-weight:600}
 .share a:hover{border-color:var(--violet);color:#fff}
-</style></head><body><div class="wrap">
+</style><link rel="stylesheet" href="/static/dchub-brand.css"></head><body><div class="wrap">
 <div class="crumb"><a href="/pockets">← All pockets</a> · <a href="/dcpi">DCPI index</a></div>
 <h1>{{ d.market_name }} <span class="verdict {{ d.verdict or 'HOLD' }}">{{ d.verdict or 'HOLD' }}</span></h1>
 <p class="sub">{{ d.iso or 'No ISO' }} · {{ d.state or 'No state' }} · last computed {{ d.computed_at[:10] if d.computed_at else 'never' }}</p>
