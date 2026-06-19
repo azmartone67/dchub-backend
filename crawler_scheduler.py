@@ -74,6 +74,13 @@ SCHEDULE = [
     # overnight settle. Same-hour-same-day cap → one run per day. The
     # underlying endpoint /api/v1/markets/gas-pricing/cron has a 90s soft
     # deadline so it cannot overrun the next slot.
+    # eia_gas_prices loader (2026-06-19): the UPSTREAM source for the DCGI
+    # gas_cost_score factor (routes/dcgi.py) + powered_land_gas delivered
+    # tariffs. Was UNPOPULATED → 40% of DCGI was a dead constant + delivered
+    # tariffs null. Runs 01:00 UTC so the 04:00 gas_pricing_refresh recomputes
+    # on fresh state delivered prices. Idempotent (UNIQUE state,sector,period);
+    # no-ops without EIA_API_KEY.
+    ( 1,  1, "eia_gas_prices",      "_run_eia_gas_prices"),
     ( 4,  4, "gas_pricing_refresh", "_run_gas_pricing_refresh"),
     # Brain Layer-15 Tool Calibration Drift (2026-06-04):
     # Daily test of every registered tool against known-correct (input,
@@ -1576,6 +1583,25 @@ def _run_daily_r2_refresh():
                          r.status_code, base, r.text[:200])
     except Exception as e:
         logger.error("🖼️  daily_r2_refresh: POST failed to %s — %s", base, e)
+
+
+def _run_eia_gas_prices():
+    """Refresh eia_gas_prices — state delivered industrial/electric gas price
+    ($/MMBtu, from EIA PIN/PEU). UPSTREAM source for the DCGI gas_cost_score
+    factor (routes/dcgi.py) and powered_land_gas delivered tariffs; must run
+    before gas_pricing_refresh. Idempotent (UNIQUE state,sector,period).
+    No-ops gracefully without EIA_API_KEY (loader sys.exit(1) → caught here)."""
+    try:
+        import eia_gas_prices_loader
+        n = eia_gas_prices_loader.run()
+        logger.info("eia_gas_prices: upserted %s rows", n)
+        return {"ok": True, "rows": n}
+    except SystemExit as e:
+        logger.warning("eia_gas_prices loader exited (missing config?): %s", e)
+        return {"ok": False, "reason": "loader_exit"}
+    except Exception as e:
+        logger.error("eia_gas_prices loader failed: %s", e)
+        return {"ok": False, "error": str(e)[:200]}
 
 
 def _run_gas_pricing_refresh():

@@ -2595,6 +2595,15 @@ def phase19b_grid_intelligence(region):
         # the site (api-docs, intelligence, interconnection-queue, the explorer
         # dropdown) — it was 400ing while only ISONE/NEISO worked.
         'ISONE': 'ISNE', 'NEISO': 'ISNE', 'ISO-NE': 'ISNE', 'ISO NE': 'ISNE',
+        # r-ba-expand (2026-06-19): the three biggest US DC markets with ZERO
+        # grid telemetry (covered only by DCPI) — lit up via their EIA-930
+        # balancing-authority respondents on the SAME hourly-RTO path:
+        #   Phoenix (APS + Salt River Project), Las Vegas/Reno (NV Energy),
+        #   Pacific NW hyperscale corridor (Bonneville — Hillsboro/Quincy/The Dalles).
+        'AZPS': 'AZPS', 'APS': 'AZPS', 'PHOENIX': 'AZPS', 'ARIZONA': 'AZPS',
+        'SRP': 'SRP', 'SALTRIVER': 'SRP',
+        'NEVP': 'NEVP', 'NVENERGY': 'NEVP', 'NVE': 'NEVP', 'LASVEGAS': 'NEVP',
+        'BPA': 'BPAT', 'BPAT': 'BPAT', 'BONNEVILLE': 'BPAT', 'PACNW': 'BPAT', 'PACIFICNW': 'BPAT',
     }
     # Normalize separators so PJM / iso-ne / iso_ne / "iso ne" all resolve.
     rto_code = EIA_RTO_MAP.get(region) or EIA_RTO_MAP.get(region.replace('-', '').replace('_', '').replace(' ', ''))
