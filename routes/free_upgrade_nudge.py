@@ -136,6 +136,9 @@ def _candidates(min_calls: int, days: int, cooldown_days: int,
               JOIN mcp_call_log l ON l.api_key = k.api_key
              WHERE k.tier = 'free'
                AND COALESCE(k.email,'') <> ''{internal_filter}
+               AND k.metadata->>'marketing_opt_in' = 'true'
+               AND NOT EXISTS (SELECT 1 FROM email_suppression s
+                                WHERE lower(s.email) = lower(k.email))
                AND l.timestamp > NOW() - INTERVAL '{int(days)} days'
                AND NOT EXISTS (
                    SELECT 1 FROM upgrade_nudge_log n

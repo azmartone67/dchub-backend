@@ -691,6 +691,9 @@ def select_recipients(cap: int = _RECIPIENT_CAP, throttle_days: int = _RESEND_DA
                      WHERE status = 'active' AND email IS NOT NULL
                        AND email NOT LIKE '%@example.com'
                        AND email NOT LIKE 'trial-%'
+                       AND metadata->>'marketing_opt_in' = 'true'
+                       AND NOT EXISTS (SELECT 1 FROM email_suppression s
+                                        WHERE lower(s.email) = lower(mcp_dev_keys.email))
                 ),
                 blocked AS (
                     SELECT email FROM newsletter_subscribers
