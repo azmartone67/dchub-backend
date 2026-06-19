@@ -29404,6 +29404,12 @@ try:
     print("[main] brain_ownership_bp registered: GET /api/v1/brain/ownership (Brain v4 ownership loop — SHADOW)", flush=True)
 except Exception as _bown_e:
     print(f"[main] brain_ownership_bp register failed: {_bown_e}", flush=True)
+try:
+    from routes.mcp_leadership_engine import mcp_leadership_bp
+    app.register_blueprint(mcp_leadership_bp)
+    print("[main] mcp_leadership_bp registered: GET /api/v1/mcp/leadership (MCP Leadership Engine — SHADOW)", flush=True)
+except Exception as _mle_e:
+    print(f"[main] mcp_leadership_bp register failed: {_mle_e}", flush=True)
 
 # r79 (2026-06-03) — Redirect blueprint for known-dead URLs. Each entry
 # in routes/redirects_404_killer.py is a URL we caught 404ing in production
