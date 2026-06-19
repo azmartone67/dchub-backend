@@ -18,6 +18,7 @@ from __future__ import annotations
 import os
 from datetime import datetime, timezone
 from html import escape as _h
+from urllib.parse import quote as _quote
 from flask import Blueprint, Response, request
 
 brain_v2_public_bp = Blueprint("brain_v2_public", __name__)
@@ -438,6 +439,25 @@ def brain_public_page():
     parts.append('<h1>Watch the system <span class="grad">learn to fix itself</span>.</h1>')
     parts.append('<p class="lede">DC Hub runs an autonomous self-learning loop: it watches its own surfaces, learns new failure patterns, proposes fixes through Claude, and validates them before anything ships. This is the live, public scorecard.</p>')
     parts.append(f'<div class="banner"><b>{_h(headline)}</b><div>Reflects the most recent learn pass.</div></div>')
+
+    # Discoverable link to the brain INNOVATION DASHBOARD — the one
+    # browser-openable surface for the brain's verified, adversarially-refuted
+    # analysis (self-agenda / investigations / proposals) with per-item grade +
+    # approve. Carry the same admin key the operator opened /brain with so the link
+    # works without re-auth. Served under /api/ (the CF worker passes /api/* through
+    # unconditionally; /brain/innovation is owned by a different surface + /brain/*
+    # subpaths hit CF Error-1000). (r-innov-link 2026-06-19)
+    _ak = (request.args.get("admin_key") or "").strip()
+    _akq = f"?admin_key={_quote(_ak)}" if _ak else ""
+    parts.append(
+        '<div class="banner" style="border-color:rgba(99,102,241,0.45);'
+        'background:rgba(99,102,241,0.10);">'
+        f'<b><a href="/api/v1/brain/innovation/dashboard{_akq}" style="color:#c4b5fd;text-decoration:none;">'
+        '★ Innovation dashboard →</a></b>'
+        '<div style="color:var(--tx2);">What the brain is thinking — its self-chosen '
+        'agenda, verified investigations and ranked proposals, each with a grade + '
+        'approve control.</div></div>'
+    )
 
     parts.append('<div class="kpis">')
     parts.append(f'<div class="kpi"><div class="v {status_class}">{_h(status_text)}</div><div class="l">Loop status</div></div>')

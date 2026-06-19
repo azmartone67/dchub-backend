@@ -26268,6 +26268,28 @@ try:
 except Exception as e:
     print(f"🧠 Brain Self-Director: ⚠️ Failed to load: {e}")
 
+# (2026-06-19) — Brain INNOVATION DASHBOARD (READ-ONLY + grade-POST only). ONE
+# browser-openable page that consolidates the brain's three verified-analysis
+# streams (self-chosen brain_self_agenda + brain_investigations + ranked
+# brain_enhancement_proposals) at a glance, with a per-item 👍/👎 grade button so
+# the operator closes the calibration loop. Until now this analysis was reachable
+# only via admin curl. Reads the three tables directly (read-only), flattens each
+# item for display, and the grade buttons POST to the EXISTING admin grade
+# endpoints (/api/v1/brain/{agenda,investigate,enhancements}/<id>/grade) — this
+# module adds NO write of its own. Admin-gated (mirrors the existing brain-
+# dashboard ?admin_key= gate). Path-shape: BOTH endpoints live under /api/ so the
+# CF worker forwards them unconditionally — avoids the CF Error-1000 trap on
+# un-allow-listed /brain/* subpaths AND the duplicate-rule collision with the
+# existing /brain/innovation surface. Page is browser-openable at
+# /api/v1/brain/innovation/dashboard?admin_key=<KEY>.
+try:
+    from routes.brain_innovation_dashboard import register_brain_innovation_dashboard
+    register_brain_innovation_dashboard(app)
+    print("🧠 Brain Innovation Dashboard: ✅ Registered "
+          "(GET /api/v1/brain/innovation/dashboard · /digest · read-only + grade)")
+except Exception as e:
+    print(f"🧠 Brain Innovation Dashboard: ⚠️ Failed to load: {e}")
+
 # PHASE 3 (2026-06-18) — AUTONOMOUS MERGE + post-merge CANARY/auto-revert.
 # The highest-risk module: it can squash-merge the brain's mechanical autofix
 # DRAFT PRs to main (= instant prod deploy) and auto-revert on regression.
