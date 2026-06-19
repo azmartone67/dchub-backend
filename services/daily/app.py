@@ -372,7 +372,7 @@ def share_page_html(date: datetime.date) -> str:
   figcaption {{ padding:12px 14px; font-size:13px; display:flex;
                 justify-content:space-between; align-items:center; }}
   figcaption a {{ color:#9EF3FF; text-decoration: none; }}
-</style></head><body>
+</style><script src="/js/dchub-nav.js" defer></script></head><body>
 <header>
   <h1>DC HUB · DAILY</h1>
   <p>U.S. Data Center Hubs — {date.isoformat()}. 3 themes × 3 formats. Click any to download.</p>
