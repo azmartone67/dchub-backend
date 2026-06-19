@@ -21,7 +21,7 @@ def _is_ddl(sql):
     return any(stripped.startswith(p) for p in _DDL_PREFIXES)
 
 SQLITE_TO_PG_FUNC = {
-    "datetime('now', '-7 days')": "(NOW() - INTERVAL '7 days')",
+    "NOW() - INTERVAL '7 days'": "(NOW() - INTERVAL '7 days')",
     "datetime('now', '-30 days')": "(NOW() - INTERVAL '30 days')",
     "datetime('now', '-1 day')": "(NOW() - INTERVAL '1 day')",
     "datetime('now', '-24 hours')": "(NOW() - INTERVAL '24 hours')",
