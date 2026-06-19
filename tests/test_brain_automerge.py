@@ -277,6 +277,29 @@ def test_ci_zero_checks_fail_closed_unit(monkeypatch):
     assert out["green"] is False and out["reason"] == "no_ci_signals", out
 
 
+def test_ci_checkruns_only_green_when_combined_status_empty(monkeypatch):
+    """REGRESSION: GitHub returns combined state='pending' when there are ZERO
+    classic statuses (modern CI is all check-RUNS, not legacy commit statuses).
+    The engine must NOT fail-close on that empty 'pending' — it must report
+    GREEN when the check-runs are all green. This bug blocked EVERY
+    check-runs-only PR from ever auto-merging."""
+    monkeypatch.setattr(am, "_gh_cfg",
+                        lambda: {"token": "t", "upstream": "azmartone67/dchub-backend"})
+
+    class _R:
+        def __init__(self, code, p): self.status_code = code; self._p = p; self.text = ""
+        def json(self): return self._p
+    import requests as _rq
+    monkeypatch.setattr(_rq, "get", lambda url, **k: (
+        _R(200, {"state": "pending", "statuses": []}) if "/status" in url
+        else _R(200, {"check_runs": [
+            {"status": "completed", "conclusion": "success"},
+            {"status": "completed", "conclusion": "neutral"},
+        ]})))
+    out = am.ci_status_for_sha("abc")
+    assert out["green"] is True and out["reason"] == "all_green", out
+
+
 # ══════════════════════════════════════════════════════════════════════
 # 4. Non-brain/autofix-* PR ⇒ ignored.
 # ══════════════════════════════════════════════════════════════════════

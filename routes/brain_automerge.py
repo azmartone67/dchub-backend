@@ -191,9 +191,16 @@ def ci_status_for_sha(sha: str) -> dict:
         if total_signals == 0:
             return {"green": False, "reason": "no_ci_signals", "checks": 0}
 
-        # Every classic status must be 'success'. combined state of
-        # 'pending'/'failure'/'error' is not green.
-        if combined and combined != "success":
+        # Every classic status must be 'success'. BUT the classic combined
+        # state is only meaningful when classic statuses ACTUALLY EXIST: with
+        # ZERO legacy statuses GitHub returns state='pending' by default, which
+        # is NOT a real pending signal — modern CI (GitHub Actions) reports as
+        # check-RUNS, not classic statuses. Fail-closing on that empty 'pending'
+        # made the engine unable to merge ANY check-runs-only PR. So only honor
+        # the combined state when there is at least one classic status; otherwise
+        # rely on the strictly-validated check-runs below. (total_signals==0 is
+        # already fail-closed above, so an all-empty PR still never merges.)
+        if statuses and combined and combined != "success":
             return {"green": False, "reason": f"combined_status_{combined}",
                     "checks": total_signals}
 
