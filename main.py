@@ -26226,9 +26226,27 @@ try:
     from routes.brain_investigator import register_brain_investigator
     register_brain_investigator(app)
     print("🧠 Brain Investigator: ✅ Registered "
-          "(POST /api/v1/brain/ask · recommend-only · ships dark)")
+          "(POST /api/v1/brain/investigate · recommend-only · ships dark)")
 except Exception as e:
     print(f"🧠 Brain Investigator: ⚠️ Failed to load: {e}")
+
+# (2026-06-19) — Brain ENHANCER (PROPOSE-ONLY). The self-DIRECTING rung: it
+# SCANS the brain's own evidence (canonical_stats + recent brain_findings +
+# HEALTH_BASELINE + the work-plan) for high-leverage improvement OPPORTUNITIES,
+# runs the REUSED verified investigate() per opportunity to produce an
+# evidence-backed + adversarially-refuted proposal, RANKS them by leverage x
+# confidence (REUSED brain_work_selector), and STORES them for a human to decide.
+# Strictly WEAKER than self-healing: it NEVER acts (no merge/send/PR/write beyond
+# storing proposals). Ships DARK: BRAIN_ENHANCER_ENABLED defaults OFF (POST
+# /enhance returns {enabled:false} without a model call). Degrades gracefully
+# with no ANTHROPIC_API_KEY. Admin-gated.
+try:
+    from routes.brain_enhancer import register_brain_enhancer
+    register_brain_enhancer(app)
+    print("🧠 Brain Enhancer: ✅ Registered "
+          "(POST /api/v1/brain/enhance · propose-only · ships dark)")
+except Exception as e:
+    print(f"🧠 Brain Enhancer: ⚠️ Failed to load: {e}")
 
 # PHASE 3 (2026-06-18) — AUTONOMOUS MERGE + post-merge CANARY/auto-revert.
 # The highest-risk module: it can squash-merge the brain's mechanical autofix
@@ -29467,6 +29485,15 @@ try:
     print("[main] engine_trends_bp registered: GET /api/v1/engines/trend (engine score trend tracking)", flush=True)
 except Exception as _etrend_e:
     print(f"[main] engine_trends_bp register failed: {_etrend_e}", flush=True)
+try:
+    # proactive health escalation: emails the admin on sustained pool-exhaustion /
+    # circuit-breaker-open / restart-loop — closes the gap where the 2026-06-19
+    # outage was only LOGGED, never paged. Fail-soft; kill: HEALTH_ALERTER_DISABLE=1
+    from routes import health_alerter as _health_alerter
+    _health_alerter.start()
+    print("[main] health_alerter started (pool/circuit/restart-loop email escalation)", flush=True)
+except Exception as _halert_e:
+    print(f"[main] health_alerter start failed: {_halert_e}", flush=True)
 
 # r79 (2026-06-03) — Redirect blueprint for known-dead URLs. Each entry
 # in routes/redirects_404_killer.py is a URL we caught 404ing in production
