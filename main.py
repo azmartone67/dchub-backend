@@ -24889,21 +24889,29 @@ def _startup_health_check():
 _deferred_bg_threads.append(('Startup Health Check', _startup_health_check))
 
 
-# r-surfaces-warm (2026-06-19): /api/v1/surfaces has a 600s in-process cache but
-# the cold recompute is ~5s (65 surfaces × 2 DB queries) and NOTHING primed it on
-# boot — so the first hit after each deploy (often the Sentinel canary, which
-# measured it at 4.9s, the slowest page) paid the full ~5s and held a thread.
-# Prime the cache with one in-process GET, queued LAST so it fires AFTER the boot
-# storm + tier-gate settle (not on a gunicorn request thread). Best-effort.
-def _warm_surfaces():
-    try:
-        with app.test_client() as _c:
-            _r = _c.get('/api/v1/surfaces')
-            logger.info("Surfaces warm: HTTP %s — _SURFACES_CACHE primed", _r.status_code)
-    except Exception as e:
-        logger.warning("Surfaces warm failed (non-fatal): %s", str(e)[:120])
-
-_deferred_bg_threads.append(('Surfaces Warm', _warm_surfaces))
+# r-surfaces-warm-v2 (2026-06-19): the one-shot deferred warm (v1) was INEFFECTIVE —
+# QA found it fired ~255s post-boot (last in the staggered launcher), but the 600s
+# cache then expired between warms and the frequent autopilot redeploys reset it, so
+# the Sentinel canary kept hitting the ~5s cold /api/v1/surfaces (reproduced: two
+# back-to-back ~4.9s misses). Run a periodic re-warm DAEMON instead: first warm ~90s
+# post-boot (after the worst of the boot storm), then re-warm every 480s (< the 600s
+# cache TTL) so _SURFACES_CACHE never expires cold between requests. Best-effort.
+def _surfaces_warm_loop():
+    import time as _t
+    _t.sleep(90)
+    while True:
+        try:
+            with app.test_client() as _c:
+                _r = _c.get('/api/v1/surfaces')
+                logger.info("Surfaces warm: HTTP %s — _SURFACES_CACHE primed", _r.status_code)
+        except Exception as _e:
+            logger.warning("Surfaces warm failed (non-fatal): %s", str(_e)[:120])
+        _t.sleep(480)
+try:
+    import threading as _surf_th
+    _surf_th.Thread(target=_surfaces_warm_loop, name="surfaces-warm", daemon=True).start()
+except Exception as _e:
+    logger.warning("surfaces warm loop start failed: %s", str(_e)[:120])
 
 
 # =============================================================================
