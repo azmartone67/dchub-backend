@@ -107,7 +107,7 @@ def _velocity(key: str, days: int = 7) -> dict:
                 SELECT EXTRACT(EPOCH FROM recorded_at)::float, value
                 FROM brain_metric_snapshots
                 WHERE metric_key = %s
-                  AND recorded_at >= NOW() - INTERVAL '%s days'
+                  AND recorded_at >= NOW() - %s * INTERVAL '1 day'
                 ORDER BY recorded_at ASC
             """ % (cur.mogrify("%s", (key,)).decode(), days))
             rows = cur.fetchall() or []
