@@ -304,7 +304,7 @@ def seo_status():
             backlinks = c.fetchone()[0] or 0
 
             c.execute('''SELECT COUNT(*) FROM seo_indexing_log
-                WHERE submitted_at > datetime('now', '-24 hours')''')
+                WHERE submitted_at > NOW() - INTERVAL '24 hours'''')
             today_pings = c.fetchone()[0] or 0
 
         finally:
