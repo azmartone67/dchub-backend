@@ -699,6 +699,29 @@ def run_automerge() -> dict:
         merged.append({"pr": num, "merge_sha": merge_sha, "klass": klass,
                        "file_path": file_path, "logged": rec})
 
+        # ── FIX-OUTCOME VERIFY (RECORD-ONLY, flag-gated) ─────────────
+        # After a fix LANDS on main, verify against GROUND TRUTH that it actually
+        # resolved the finding (anti-pattern gone + replacement present) and
+        # RECORD the verdict for the calibration feed. This NEVER blocks a merge
+        # (the merge already happened above) and is a no-op unless
+        # BRAIN_FIX_VERIFY=1. Fully guarded — never breaks the merge pass.
+        try:
+            from routes.brain_fix_outcome_verify import (
+                _flag_on as _fix_verify_on, verify_and_record,
+            )
+            if _fix_verify_on():
+                v = verify_and_record(
+                    {"id": proposal.get("id"), "file_path": file_path,
+                     "search_text": search_text, "replace_text": replace_text,
+                     "klass": klass, "changes_json": proposal.get("changes_json")},
+                    proposal_id=proposal.get("id"), pr_number=num,
+                    branch=ref,
+                )
+                merged[-1]["fix_resolved"] = v.get("resolved")
+                merged[-1]["fix_verify_reason"] = v.get("reason")
+        except Exception:
+            pass
+
     return {"merged": merged, "skipped": skipped, "rate_cap": cap}
 
 

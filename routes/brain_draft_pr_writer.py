@@ -553,6 +553,22 @@ def open_mechanical_draft_pr(proposal: dict, dry_run: bool = True) -> dict:
         return {"ok": False, "aborted": True, "reason": "missing_file_or_search",
                 "id": proposal.get("id")}
 
+    # ── Gate 1a2: QUARANTINE-CONSUME — the janitor (brain_pr_janitor) quarantines
+    # a (file, klass) recipe whose autofix PR went RED so it is NOT re-proposed.
+    # Until now NOTHING read that status, so the recipe re-opened a PR every tick.
+    # Consume it here: if this (file_path, klass) is quarantined, skip BEFORE any
+    # GitHub call (runs in dry_run too). Best-effort — is_recipe_quarantined()
+    # returns False on any DB error, so a transient DB problem can never wrongly
+    # block a legitimate fix. A DIFFERENT class on the same file is unaffected.
+    try:
+        from routes.brain_fix_outcome_verify import is_recipe_quarantined
+        if is_recipe_quarantined(file_path, klass):
+            return {"ok": True, "skipped": True, "reason": "quarantined",
+                    "id": proposal.get("id"),
+                    "klass": klass, "file_path": file_path}
+    except Exception:
+        pass
+
     # ── Gate 1b: CROSS-PROPOSAL dedup — another OPEN autofix PR already owns
     # this (file_path, klass). Without this, two DIFFERENT proposals for the
     # same file+class (e.g. #183 + #184 on db_utils.py) BOTH open a draft PR and

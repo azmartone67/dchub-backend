@@ -1809,6 +1809,28 @@ def _should_skip_publish(cur, content_text: str, platform: str):
         except Exception as _ng:
             logger.warning("r86c number-gate unavailable (%s) — failing OPEN", _ng)
 
+        # (v) CLAIM-VERIFY GATE (r-claimverify, 2026-06-19). leads_with_number
+        # checks a number is PRESENT; this checks the number is TRUE against
+        # canonical_stats — catching runtime-hallucinated over-claims (50,000
+        # facilities, $324B, 190 countries) the static honest-numbers fence
+        # never sees because they're composed, not committed. Behind
+        # MEDIA_CLAIM_VERIFY: 'block' fails the publish (mirrors the number-lead
+        # rejection); anything else (default 'warn') logs and ships. Fail-OPEN if
+        # the verifier is unavailable so a transient import never dark-holds.
+        try:
+            _cv_mode = str(os.environ.get("MEDIA_CLAIM_VERIFY", "warn")).strip().lower()
+            from routes.media_claim_verify import verify_claims
+            _cv = verify_claims(_text)
+            if _cv.get("blocks"):
+                _reason = "; ".join(_cv["blocks"])[:240]
+                if _cv_mode == "block":
+                    return True, (f"claim-verify: {_reason} (r-claimverify gate)")
+                logger.warning("[claim_verify] WARN-only (would block): %s", _reason)
+            for _w in (_cv.get("warns") or []):
+                logger.warning("[claim_verify] warn: %s", _w)
+        except Exception as _cve:
+            logger.warning("claim-verify gate unavailable (%s) — failing OPEN", _cve)
+
     sig = _post_headline_signature(content_text or "")
 
     # (b) zero / null headline stat — hard block, no DB needed.
