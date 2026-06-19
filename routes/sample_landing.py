@@ -32,7 +32,14 @@ sample_landing_bp = Blueprint("sample_landing", __name__)
 # fetch + 5min Redis-shared cache gets cold-call under 8s and hot calls
 # under 200ms across all gunicorn workers.
 _SAMPLE_CACHE: dict[str, dict] = {}
-_SAMPLE_TTL = 300  # 5 minutes
+# r-sample-ttl (2026-06-19): was 300s (5min) — far too short. The narratives only
+# change when the monthly/quarterly reports regenerate (daily/monthly), but this
+# forced the expensive claude-haiku narrative gen (~11-14s for the journalist/pe/
+# agent variants) on the FIRST hit after every 5-min expiry. And since Redis is
+# unset in prod the cross-worker cache no-ops, so THIS per-process dict is the only
+# cache (cold after every deploy too). 6h default cuts cold-gen events ~70x while
+# keeping the sample page plenty fresh. Env-tunable.
+_SAMPLE_TTL = int(os.environ.get("SAMPLE_CACHE_TTL_S", "21600"))  # 6h
 
 
 def _safe_pull_monthly(audience: str = "default"):
