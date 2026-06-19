@@ -677,16 +677,12 @@ def _init_pg_pool():
                 maxconn=_maxconn,
                 dsn=pg_url,
                 connect_timeout=15,
-                # r-pool-resilience (2026-06-19, after the tuner-init pool-exhaustion
-                # outage): DB-side per-checkout cap. A connection that BEGINs a
-                # transaction then sits idle (a leak — code path errored without
-                # commit/rollback, or a thread stalled) is killed by Postgres after
-                # 180s and returned to the pool, instead of silently draining a slot
-                # until the 60s app-side FORCED RECLAIM happens to catch it. 180s is
-                # well above any legitimate operation (the slowest real holder, KMZ
-                # discovery, is ~63s and queries actively — never idle-in-tx) so this
-                # only ever reaps genuine leaks. Pairs with _CONN_MAX_HOLD_SECONDS.
-                options='-c idle_in_transaction_session_timeout=180000',
+                # NOTE (2026-06-19): do NOT override idle_in_transaction_session_timeout
+                # — Neon already enforces a 20s default (verified live), which is
+                # tighter than anything we'd safely set; an app override only loosens
+                # it. Leaked idle-in-tx connections are reaped by Neon (20s), held-but-
+                # active ones by the app's 60s FORCED RECLAIM. The resilience lever
+                # here is pool HEADROOM (DB_POOL_MAX), not a per-checkout cap.
                 keepalives=1,
                 keepalives_idle=_keepidle,
                 keepalives_interval=10,
@@ -1058,7 +1054,7 @@ def _init_read_pool():
                 maxconn=30,
                 dsn=read_url,
                 connect_timeout=10,
-                options='-c idle_in_transaction_session_timeout=180000',  # r-pool-resilience: DB-side leaked-tx reaper (see write pool)
+                # idle-in-tx cap: rely on Neon's 20s default (see write pool note).
                 keepalives=1,
                 keepalives_idle=_read_keepidle,
                 keepalives_interval=10,
