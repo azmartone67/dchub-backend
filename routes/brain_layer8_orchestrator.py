@@ -34,6 +34,86 @@ _CACHE = {"plan": None, "computed_at": 0.0}
 _TTL = 300
 
 
+# ── COST SAFETY (2026-06-19) ─────────────────────────────────────────
+# This endpoint is fired by a ~4x/day cron and, with ANTHROPIC_API_KEY set,
+# would otherwise call Claude on every hit with NO off-switch and NO daily cap.
+# Mirror the brain_self_director EXEMPLAR: a _truthy/_enabled flag that ships
+# DARK (default OFF) plus a SERVER-SIDE daily cap, both enforced BEFORE any
+# model call in cost-first guard order. Both are ADDITIVE: when the flag is ON
+# (operator opt-in) the endpoint behaves exactly as before.
+_ORCH_FLAG = "BRAIN_ORCHESTRATOR_ENABLED"
+_ORCH_CAP_ENV = "BRAIN_ORCHESTRATOR_DAILY_CAP"
+
+# Module-level in-memory daily counter (UTC-date keyed). The orchestrator has
+# no natural per-row output table (its output is the in-memory _CACHE plan), so
+# per the brief a best-effort in-memory counter is the backstop here — the FLAG
+# is the primary control. {"date": "YYYY-MM-DD", "count": N}.
+_DAILY = {"date": None, "count": 0}
+
+
+def _truthy(v) -> bool:
+    return str(v or "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _enabled() -> bool:
+    """The orchestrator's autonomous Claude refresh ships DARK. Default OFF so a
+    cron-fired loop can't burn API budget until an operator flips the flag. When
+    off, /refresh is a NO-OP that makes ZERO model calls."""
+    return _truthy(os.environ.get(_ORCH_FLAG))
+
+
+def _daily_cap() -> int:
+    """Server-side daily cap on orchestrator refreshes that reach a model — the
+    cost ceiling. Default 4 (the cron fires ~4x/day). Enforced in the handler,
+    NOT trusted to the cron schedule."""
+    try:
+        return max(0, int(os.environ.get(_ORCH_CAP_ENV, "4")))
+    except Exception:
+        return 4
+
+
+def _utc_today() -> str:
+    try:
+        return _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%d")
+    except Exception:
+        # Fail CLOSED: an unknown date string forces a roll, but if even that
+        # blows up the counter below will fail closed too.
+        return "ERR"
+
+
+def _today_count() -> int:
+    """Number of model-bound refreshes dispatched TODAY (UTC). Mirrors the
+    exemplar's _today_count contract: returns a LARGE number on ANY error so a
+    broken counter fails CLOSED (skips the model call) rather than letting the
+    loop run uncapped. The cost ceiling must hold even when state is weird."""
+    try:
+        today = _utc_today()
+        if today == "ERR":
+            return 10 ** 9
+        if _DAILY.get("date") != today:
+            # New UTC day -> reset the window.
+            _DAILY["date"] = today
+            _DAILY["count"] = 0
+        return int(_DAILY.get("count") or 0)
+    except Exception as e:
+        logger.warning(f"L8 orchestrator: today_count failed: {e}")
+        return 10 ** 9
+
+
+def _bump_today_count() -> None:
+    """Record that ONE model-bound refresh was dispatched today. Best-effort;
+    never raises. Called right before the Claude call so the cap counts actual
+    model dispatches, not skipped/dark ticks."""
+    try:
+        today = _utc_today()
+        if _DAILY.get("date") != today:
+            _DAILY["date"] = today
+            _DAILY["count"] = 0
+        _DAILY["count"] = int(_DAILY.get("count") or 0) + 1
+    except Exception as e:
+        logger.warning(f"L8 orchestrator: bump_today_count failed: {e}")
+
+
 def _internal(path: str, timeout: int = 3) -> dict:
     """r33-Q+l8-self-call-fix (2026-05-21): default timeout slashed
     from 8s → 3s. _gather_context() does 9-10 of these calls to itself
@@ -276,28 +356,88 @@ def orchestrator_refresh():
     thread. If RSS is approaching the watchdog threshold OR too many
     Claude calls have started recently, this endpoint refuses and
     returns 429.
+
+    COST-SAFETY GUARD ORDER (2026-06-19, cost-first — every guard before the
+    model call short-circuits WITHOUT dispatching Claude):
+      1. flag off    -> 200 {ok:false, skipped:disabled}   (NO model call;
+                        ships DARK behind BRAIN_ORCHESTRATOR_ENABLED, default OFF)
+      2. no api key  -> 503 (NO model call; degrade gracefully)
+      3. daily cap   -> 200 {ok:false, skipped:daily_cap}  (NO model call; the
+                        cost ceiling, BRAIN_ORCHESTRATOR_DAILY_CAP default 4)
+      4. L20 throttle-> 429 (NO model call; existing durability guard). If L20
+                        is UNAVAILABLE we now FAIL CLOSED (429) instead of
+                        silently proceeding unguarded.
+      5. else        -> spawn the ONE background Claude refresh (unchanged).
     """
+    # ── Guard 0: admin (unchanged) ───────────────────────────────────
     provided = (request.headers.get("X-Admin-Key") or "").strip()
     if request.method == "POST" and _ADMIN_KEY and provided != _ADMIN_KEY:
         return jsonify(error="unauthorized"), 401
+
+    # ── Guard 1: flag off → NO model call (ships DARK) ───────────────
+    if not _enabled():
+        return jsonify(
+            ok=False, ran=False, skipped_reason="disabled",
+            note=("Orchestrator autonomous refresh ships DARK. Set "
+                  f"{_ORCH_FLAG}=1 to enable (operator opt-in)."),
+        ), 200
+
+    # ── Guard 2: no API key → NO model call (degrade gracefully) ─────
     if not _ANTHROPIC_KEY:
         return jsonify(ok=False, error="ANTHROPIC_API_KEY not set"), 503
 
-    # L20 durability guard
+    # ── Guard 3: daily cap → NO model call (the cost ceiling) ────────
+    cap = _daily_cap()
+    try:
+        used = _today_count()
+    except Exception:
+        # Fail CLOSED on a broken counter — don't run uncapped.
+        used = 10 ** 9
+    if used >= cap:
+        return jsonify(
+            ok=False, ran=False, skipped_reason="daily_cap",
+            used_today=used, daily_cap=cap,
+            note=("Orchestrator daily cap reached; no model call. Raise "
+                  f"{_ORCH_CAP_ENV} to allow more refreshes/day."),
+        ), 200
+
+    # ── Guard 4: L20 durability guard. FAIL CLOSED if L20 unavailable ─
+    # Previously this fell back to no-op lambdas and proceeded UNGUARDED if the
+    # import failed; now an unavailable durability guard refuses the refresh
+    # (429) so a missing guard can't let an uncapped Claude call through.
     try:
         from routes.brain_layer20_durability import (
             can_start_claude_call, register_claude_call_start,
             register_claude_call_end)
+    except Exception as _e:
+        logger.warning(f"L8 orchestrator: L20 durability guard unavailable, "
+                       f"failing closed (no model call): {_e}")
+        return jsonify(ok=False, throttled=True,
+                       reason="durability_guard_unavailable",
+                       cached_plan_age_seconds=(
+                           int(time.monotonic() - _CACHE["computed_at"])
+                           if _CACHE.get("computed_at") else None)), 429
+    try:
         allowed, reason = can_start_claude_call("L8")
         if not allowed:
             return jsonify(ok=False, throttled=True, reason=reason,
                            cached_plan_age_seconds=(
                                int(time.monotonic() - _CACHE["computed_at"])
                                if _CACHE.get("computed_at") else None)), 429
-    except Exception:
-        # If L20 isn't available, fall back to permissive — but log
-        register_claude_call_start = lambda layer: None  # noqa
-        register_claude_call_end = lambda call_id: None  # noqa
+    except Exception as _e:
+        # The guard itself errored — fail CLOSED rather than proceed unguarded.
+        logger.warning(f"L8 orchestrator: L20 can_start check errored, "
+                       f"failing closed (no model call): {_e}")
+        return jsonify(ok=False, throttled=True,
+                       reason="durability_guard_error",
+                       cached_plan_age_seconds=(
+                           int(time.monotonic() - _CACHE["computed_at"])
+                           if _CACHE.get("computed_at") else None)), 429
+
+    # The model call is now committed (a background thread is about to dispatch
+    # Claude). Count it against today's cap up front so concurrent/rapid cron
+    # hits can't all slip under the cap before any of them increments.
+    _bump_today_count()
 
     def _bg_refresh():
         call_id = None

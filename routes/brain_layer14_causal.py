@@ -52,6 +52,73 @@ _TTL = 3600  # 1h — causal analyses are expensive, change slowly
 _DB_TTL = 86400  # 24h — DB-persisted analysis is the cross-worker source of truth
 
 
+# ── COST SAFETY (2026-06-19): ships DARK behind a default-OFF flag + a
+# server-side daily cap, mirroring routes/brain_self_director.py. /analyze is
+# cron-fired ~4x/day and, with ANTHROPIC_API_KEY set, fired a GUARANTEED model
+# call every time with NO off-switch and NO daily cap. The guards below run
+# cost-first BEFORE any model work is spawned: flag off -> no key -> daily cap
+# -> then (and only then) the existing L20 durability guard + the background
+# Claude call. EVERY change here is ADDITIVE; the flag DEFAULTS OFF (operator
+# flips it later). When the flag IS on, the endpoint behaves exactly as before.
+def _truthy(v) -> bool:
+    return str(v or "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _enabled() -> bool:
+    """L14 causal/analyze ships DARK. Default OFF so a cron-fired loop can't burn
+    API budget until an operator flips BRAIN_CAUSAL_ENABLED. When off, /analyze is
+    a NO-OP that makes ZERO model calls (the background thread is never spawned)."""
+    return _truthy(os.environ.get("BRAIN_CAUSAL_ENABLED"))
+
+
+def _daily_cap() -> int:
+    """Server-side daily cap on causal analyses — the cost ceiling. Default 4.
+    Enforced in the handler, NOT trusted to the cron schedule."""
+    try:
+        return max(0, int(os.environ.get("BRAIN_CAUSAL_DAILY_CAP", "4")))
+    except Exception:
+        return 4
+
+
+# In-memory UTC-date-keyed daily counter. The natural output table
+# (brain_causal_cache) is a single-row upsert (id=1) so it cannot count "today's
+# rows" — the FLAG is the primary control, and this best-effort backstop bounds
+# cost per worker. Mirrors _today_count's fail-CLOSED contract: any error counting
+# returns a huge number so a broken counter never lets the loop run uncapped.
+_DAILY = {"date": None, "count": 0}
+
+
+def _utc_today() -> str:
+    return _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%d")
+
+
+def _today_count() -> int:
+    """Causal analyses STARTED today (UTC). Returns a LARGE number on any error so
+    a broken counter fails CLOSED (skips the model call) rather than running
+    uncapped — the cost ceiling must hold even when something is off."""
+    try:
+        if _DAILY.get("date") != _utc_today():
+            _DAILY["date"] = _utc_today()
+            _DAILY["count"] = 0
+        return int(_DAILY.get("count") or 0)
+    except Exception as e:
+        logger.warning(f"L14 _today_count failed: {e}")
+        return 10 ** 9
+
+
+def _bump_today_count() -> None:
+    """Record that one causal analysis was STARTED today. Best-effort; counted
+    BEFORE the model call so a crash mid-call still consumes a slot (fail-safe
+    toward UNDER-running, never over)."""
+    try:
+        if _DAILY.get("date") != _utc_today():
+            _DAILY["date"] = _utc_today()
+            _DAILY["count"] = 0
+        _DAILY["count"] = int(_DAILY.get("count") or 0) + 1
+    except Exception as e:
+        logger.warning(f"L14 _bump_today_count failed: {e}")
+
+
 def _db():
     """Postgres/Neon connection or None. r89e (2026-06-15): the causal analysis
     MUST persist to the DB, not just the per-process _CACHE. analyze() runs in a
@@ -308,8 +375,33 @@ def analyze():
         provided = (request.headers.get("X-Admin-Key") or "").strip()
         if provided != _ADMIN_KEY:
             return jsonify(error="unauthorized"), 401
+
+    # ── COST GUARDS (cost-first order — each short-circuits BEFORE any model
+    # work is spawned, so a dark/keyless/capped call makes ZERO model calls). ──
+    # Guard 1: flag OFF -> NO model call. Ships dark; operator flips
+    # BRAIN_CAUSAL_ENABLED to turn the cron-fired analysis on. Behavior is
+    # otherwise UNCHANGED when the flag is on.
+    if not _enabled():
+        return jsonify(ok=False, skipped=True, skipped_reason="disabled",
+                       note=("L14 causal/analyze ships dark. Set "
+                             "BRAIN_CAUSAL_ENABLED=1 to enable.")), 200
+
+    # Guard 2: no API key -> NO model call (degrade gracefully).
     if not _ANTHROPIC_KEY:
         return jsonify(ok=False, error="ANTHROPIC_API_KEY not set"), 503
+
+    # Guard 3: daily cap -> NO model call (the cost ceiling, enforced
+    # SERVER-SIDE in the handler, not trusted to the cron schedule). Counter
+    # fails CLOSED on error.
+    cap = _daily_cap()
+    try:
+        used = _today_count()
+    except Exception:
+        used = 10 ** 9
+    if used >= cap:
+        return jsonify(ok=False, skipped=True, skipped_reason="daily_cap",
+                       used_today=used, daily_cap=cap,
+                       note="L14 causal/analyze daily cap reached."), 200
 
     # L20 durability guard
     try:
@@ -320,7 +412,12 @@ def analyze():
                            cached_analysis_age_seconds=(
                                int(time.monotonic() - _CACHE["computed_at"])
                                if _CACHE.get("computed_at") else None)), 429
-    except Exception: pass
+    except Exception as e:
+        # Fail CLOSED: if the durability guard cannot run (import/call error),
+        # do NOT proceed unguarded — skip this tick. A flaky import must never
+        # bypass the cost/durability gate.
+        return jsonify(ok=False, throttled=True,
+                       reason=f"durability_guard_unavailable:{str(e)[:80]}"), 429
 
     def _bg_analyze():
         call_id = None
@@ -348,6 +445,9 @@ def analyze():
                     register_claude_call_end(call_id)
                 except Exception: pass
 
+    # Consume one daily slot BEFORE spawning the model work — count the START so a
+    # crash mid-call still spends the slot (fail toward UNDER-running, never over).
+    _bump_today_count()
     import threading as _th
     _th.Thread(target=_bg_analyze, daemon=True, name="l14-causal-analyze").start()
     return jsonify(

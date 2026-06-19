@@ -32,6 +32,69 @@ _NARRATIVE_CACHE = {"text": None, "computed_at": 0.0, "based_on_count": 0}
 _NARRATIVE_TTL = 300  # 5 min
 
 
+# ── COST SAFETY: flag (ships dark) + server-side daily cap ───────────
+# This endpoint is hit by a cron ~4x/day with ONLY an admin + key check, so
+# with ANTHROPIC_API_KEY set it fires guaranteed model calls with no opt-out.
+# Mirror routes/brain_self_director.py: ship DARK behind a default-OFF flag and
+# a server-side daily cap, both enforced cost-first BEFORE any model call.
+def _truthy(v) -> bool:
+    return str(v or "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _enabled() -> bool:
+    """The narrative refresh ships DARK. Default OFF so a cron-fired loop can't
+    burn API budget until an operator flips the flag. When off, refresh is a
+    NO-OP that makes ZERO model calls."""
+    return _truthy(os.environ.get("BRAIN_NARRATIVE_ENABLED"))
+
+
+def _daily_cap() -> int:
+    """Server-side daily cap on narrative recomputes — the cost ceiling.
+    Default 4 (the cron fires ~4x/day). Enforced in the handler, NOT trusted to
+    the cron schedule."""
+    try:
+        return max(0, int(os.environ.get("BRAIN_NARRATIVE_DAILY_CAP", "4")))
+    except Exception:
+        return 4
+
+
+# In-memory daily counter, keyed by UTC date. This endpoint has no natural
+# output table (it caches in _NARRATIVE_CACHE only), so a best-effort module-
+# level counter is the cap backstop — the FLAG is the primary control. Fails
+# CLOSED on any error (returns a huge number) so a broken counter never lets the
+# loop run uncapped.
+_DAILY_COUNTER = {"date": None, "count": 0}
+
+
+def _utc_today() -> str:
+    return _dt.datetime.utcnow().strftime("%Y-%m-%d")
+
+
+def _today_count() -> int:
+    """How many narrative recomputes ran TODAY (UTC). Returns a LARGE number on
+    any error so a broken counter fails CLOSED (skips the model call) rather
+    than letting the loop run uncapped."""
+    try:
+        today = _utc_today()
+        if _DAILY_COUNTER.get("date") != today:
+            return 0
+        return int(_DAILY_COUNTER.get("count") or 0)
+    except Exception:
+        return 10 ** 9
+
+
+def _bump_today_count() -> None:
+    """Record that a model call ran today. Best-effort; never raises."""
+    try:
+        today = _utc_today()
+        if _DAILY_COUNTER.get("date") != today:
+            _DAILY_COUNTER["date"] = today
+            _DAILY_COUNTER["count"] = 0
+        _DAILY_COUNTER["count"] = int(_DAILY_COUNTER.get("count") or 0) + 1
+    except Exception:
+        pass
+
+
 def _fetch_findings() -> list[dict]:
     """Pull current brain findings. Bumped to 30s timeout because the
     brain radar's cold-start scan runs 50+ detectors in parallel and
@@ -158,14 +221,55 @@ def narrative():
 @brain_narrative_bp.route("/api/v1/brain/narrative/refresh",
                             methods=["POST", "GET"])
 def refresh_narrative():
-    """Force a Claude-narrative recompute. Costs ~$0.001/call (haiku)."""
+    """Force a Claude-narrative recompute. Costs ~$0.001/call (haiku).
+
+    COST-FIRST GUARD ORDER (every guard short-circuits WITHOUT a model call):
+      1. admin check (unchanged) — non-admin POST -> 401
+      2. flag off  -> {ok:false, skipped:disabled}  (ships dark; ZERO model calls)
+      3. no api key-> {ok:false} 503                 (degrade gracefully)
+      4. daily cap -> {ok:false, skipped:daily_cap}  (the cost ceiling)
+      5. L20 durability guard (memory/concurrency/rate) -> 429
+      6. else      -> the existing single Claude call (behavior UNCHANGED).
+    """
     provided = (request.headers.get("X-Admin-Key") or "").strip()
     if request.method == "POST" and _ADMIN_KEY and provided != _ADMIN_KEY:
         return jsonify(error="unauthorized"), 401
 
+    # ── Guard: flag off → NO model call (ships dark) ─────────────────
+    if not _enabled():
+        return jsonify(
+            ok=False, skipped_reason="disabled",
+            note=("Narrative refresh is dark (default OFF). Set "
+                  "BRAIN_NARRATIVE_ENABLED=1 to enable."),
+        ), 200
+
+    # ── Guard: no API key → NO model call (degrade gracefully) ───────
     if not _ANTHROPIC_KEY:
         return jsonify(ok=False,
                        error="ANTHROPIC_API_KEY not set"), 503
+
+    # ── Guard: daily cap → NO model call (the cost ceiling) ──────────
+    cap = _daily_cap()
+    try:
+        used = _today_count()
+    except Exception:
+        # Fail CLOSED on a broken counter — don't run uncapped.
+        used = 10 ** 9
+    if used >= cap:
+        return jsonify(ok=False, skipped_reason="daily_cap",
+                       used_today=used, daily_cap=cap,
+                       note="Daily narrative-recompute cap reached."), 200
+
+    # ── L20 durability guard (memory/concurrency/rate) before the call.
+    # Mirrors how brain_layer8 gates; fails SAFE (permissive) if L20 import
+    # errors so the narrative never hard-depends on the durability module.
+    try:
+        from routes.brain_layer20_durability import can_start_claude_call
+        allowed, reason = can_start_claude_call("L2-narrative")
+        if not allowed:
+            return jsonify(ok=False, throttled=True, reason=reason), 429
+    except Exception:
+        pass
 
     findings = _fetch_findings()
     commits = _recent_commits(days=1)
@@ -178,6 +282,10 @@ def refresh_narrative():
         }]
 
     prompt = _build_narrative_prompt(findings, commits)
+    # Count this recompute against the daily cap BEFORE the call so a slow/
+    # failing call still consumes its slot (the cap bounds attempts, not just
+    # successes — a retrying cron must not bypass the ceiling).
+    _bump_today_count()
     text = _call_claude(prompt)
     if not text:
         return jsonify(ok=False, error="Claude call failed"), 503
