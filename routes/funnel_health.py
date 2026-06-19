@@ -984,7 +984,7 @@ def _render_html(data: dict, admin_key: str) -> str:
     stages = [
         ("Tool calls (30d)",          f["calls_30d"],
             None),
-        ("Distinct paid-tool users",  f["distinct_paid_users_30d"],
+        ("Distinct active callers (30d)",  f["distinct_paid_users_30d"],
             f["stage_drops_pct"].get("calls→distinct")),
         ("Upgrade signals",           f["signals_30d"],
             f["stage_drops_pct"].get("distinct→signals")),

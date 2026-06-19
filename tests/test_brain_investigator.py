@@ -253,8 +253,9 @@ def test_gather_growth_funnel_returns_funnel_items(monkeypatch):
     assert _val("paid dev keys") == 12
     # Reach = DISTINCT external IPs (honest, not loop-inflated volume).
     assert _val("external ai agents") == 76
-    # Retention proxy: distinct paid users 30d.
-    assert _val("distinct paid users") == 9
+    # Distinct ACTIVE callers 30d (free+paid) — relabeled from the misleading
+    # "paid users" (it counts non-internal api_keys, not paying accounts).
+    assert _val("active mcp callers") == 9
 
 
 def test_gather_evidence_includes_growth_funnel(monkeypatch):

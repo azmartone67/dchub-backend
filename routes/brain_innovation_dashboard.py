@@ -239,19 +239,28 @@ def _recent_investigations(limit: int = 15) -> list[dict]:
     out: list[dict] = []
     try:
         with conn.cursor() as cur:
+            # Fetch extra so we can SKIP dead/incomplete rows (pending/failed
+            # cruft from the old daemon-thread era — no recommendation, conf 0.0)
+            # and still return up to `limit` real investigations.
             cur.execute(
                 "SELECT id, question, confidence, result_json, grade, created_at "
                 "FROM brain_investigations "
                 "ORDER BY created_at DESC LIMIT %s",
-                (int(limit),),
+                (int(limit) * 3,),
             )
             for r in (cur.fetchall() or []):
                 flat = _flatten(_as_obj(r[3]))
+                # Skip incomplete rows: no recommendation AND not an explicit
+                # cannot_investigate result = nothing worth showing.
+                if not flat.get("recommendation"):
+                    continue
                 out.append({
                     "id": r[0], "question": r[1], "title": None, "area": None,
                     "confidence": r[2], "grade": r[4], "created_at": _iso(r[5]),
                     **flat,
                 })
+                if len(out) >= int(limit):
+                    break
     except Exception as e:
         logger.warning("brain_innovation_dashboard: investigations read failed: %s", e)
         try: conn.rollback()

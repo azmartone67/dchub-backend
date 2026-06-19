@@ -259,7 +259,72 @@ def gather_evidence() -> list[dict]:
     except Exception as e:
         logger.warning("brain_investigator: growth-funnel evidence failed: %s", e)
 
+    # Source 5: paid-monetization RECONCILIATION. Billing (users.plan) and the
+    # MCP paywall (mcp_dev_keys.tier) track DIFFERENT populations — conflating
+    # them is what produced the "91 paid users vs 18 paid keys" contradiction.
+    # Surface both + real-invoice payers + the activation gap so the brain reasons
+    # on the true picture. Best-effort.
+    try:
+        ev = _gather_paid_reconciliation()
+        if ev:
+            evidence.extend(ev)
+    except Exception as e:
+        logger.warning("brain_investigator: paid-reconciliation evidence failed: %s", e)
+
     return evidence
+
+
+_PAID_PLANS = "('pro','founding','enterprise','pro_annual','developer')"
+
+
+def _gather_paid_reconciliation() -> list[dict]:
+    """Honest billing-vs-paywall reconciliation. users.plan (billing) and
+    mcp_dev_keys.tier (the MCP paywall) are nearly-disjoint populations; the
+    brain must see BOTH plus real-invoice payers and the activation gap, so it
+    never reads 'active callers' as 'payers'. Read-only; [] on any error."""
+    conn = _conn()
+    if conn is None:
+        return []
+    items: list[dict] = []
+    try:
+        with conn.cursor() as cur:
+            def scalar(sql: str):
+                try:
+                    cur.execute(sql)
+                    row = cur.fetchone()
+                    return int(row[0]) if row and row[0] is not None else 0
+                except Exception:
+                    try: conn.rollback()
+                    except Exception: pass
+                    return None
+            specs = [
+                ("Accounts on a paid plan (billing)",
+                 f"SELECT COUNT(*) FROM users WHERE plan IN {_PAID_PLANS}",
+                 "users.plan"),
+                ("Accounts with >=1 real paid invoice (true revenue)",
+                 "SELECT COUNT(*) FROM users WHERE COALESCE(invoices_paid_count,0) > 0",
+                 "users.invoices_paid_count"),
+                ("Paid MCP keys (the paywall population)",
+                 "SELECT COUNT(*) FROM mcp_dev_keys WHERE COALESCE(status,'active')='active' "
+                 "AND tier IN ('paid','enterprise')",
+                 "mcp_dev_keys.tier"),
+                ("Paid-plan accounts WITHOUT a paid MCP key (activation gap)",
+                 "SELECT COUNT(*) FROM users u LEFT JOIN mcp_dev_keys k "
+                 "ON lower(k.email)=lower(u.email) AND COALESCE(k.status,'active')='active' "
+                 f"WHERE u.plan IN {_PAID_PLANS} AND (k.tier IS NULL OR k.tier NOT IN ('paid','enterprise'))",
+                 "users LEFT JOIN mcp_dev_keys (email)"),
+            ]
+            for claim, sql, src in specs:
+                v = scalar(sql)
+                if v is not None:
+                    items.append({"claim": claim, "source": src, "value": v})
+        return items
+    except Exception as e:
+        logger.warning("brain_investigator: paid reconciliation failed: %s", e)
+        return []
+    finally:
+        try: conn.close()
+        except Exception: pass
 
 
 # ── Step 2b: GATHER honest GROWTH-FUNNEL evidence ────────────────────
@@ -339,12 +404,14 @@ def gather_growth_funnel() -> list[dict]:
                 "value": int(kpis.get("tool_calls_7d") or 0),
             })
 
-        # Funnel waterfall — DISTINCT paid users 30d (honest retention/
-        # activation count, NOT looping power-key signal rows).
+        # Funnel waterfall — DISTINCT ACTIVE callers 30d. NOTE: this counts
+        # distinct non-internal api_keys that made a call (free + paid), NOT
+        # paying accounts. The old "paid users" label was wrong and caused the
+        # brain to read it as 91 payers; paid accounts come from Source 5.
         if funnel.get("distinct_paid_users_30d") is not None:
             out.append({
-                "claim": "Distinct paid users active in last 30 days",
-                "source": "funnel_health funnel (DISTINCT paid api_key 30d)",
+                "claim": "Distinct active MCP callers (free+paid) in last 30 days",
+                "source": "funnel_health funnel (DISTINCT non-internal api_key 30d)",
                 "value": int(funnel.get("distinct_paid_users_30d") or 0),
             })
         # Top conversion-funnel stage drop, if computed — names the leak.
