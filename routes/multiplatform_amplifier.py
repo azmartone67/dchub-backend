@@ -934,7 +934,7 @@ def hn_submit_redirect(short: str):
                 # Stamp a click row for tracking.
                 cur.execute("""
                     UPDATE multiplatform_amplifier_log
-                       SET error = COALESCE(error,'') || ' clicked@' || NOW()::text
+                       SET error = COALESCE(error,'') || ' clicked@' || NOW()
                      WHERE target_platform = 'hn'
                        AND MD5(target_post_url) LIKE %s
                 """, (short + "%",))
