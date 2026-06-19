@@ -205,10 +205,20 @@ def _shadow_actions(dims):
     return sorted(out, key=lambda x: (x.get("score") if x.get("score") is not None else 100))
 
 
+_RESP = {"at": 0.0, "v": None}
+_RESP_TTL = 45.0  # response cache: the engine makes 6 internal calls — cache so
+                  # repeat hits (dashboard 60s refresh) are instant and never trip
+                  # the CF worker's primary-timeout → failover to the stale backend.
+
+
 @mcp_leadership_bp.route("/api/v1/mcp/leadership", methods=["GET"])
 def mcp_leadership():
     """MCP Leadership Index + shadow optimize-loop. Measures + proposes the
     actuator per dimension; executes nothing. See module docstring."""
+    import time as _t
+    _now = _t.time()
+    if _RESP["v"] is not None and (_now - _RESP["at"]) < _RESP_TTL:
+        return jsonify(_RESP["v"]), 200
     try:
         with ThreadPoolExecutor(max_workers=len(_PREFETCH)) as ex:
             _REQ.cache = dict(zip(_PREFETCH, ex.map(_raw_get, _PREFETCH)))
@@ -229,7 +239,7 @@ def mcp_leadership():
                     key=lambda d: (100 - d.get("score", 0)) * d.get("weight", 0), reverse=True)
     top = ranked[0] if ranked else None
     actions = _shadow_actions(dims)
-    return jsonify(
+    payload = dict(
         engine="MCP Leadership Engine",
         phase="shadow", decides=True, executes=False, armed=_optimize_armed(),
         mcp_leadership_index=index, verdict=verdict,
@@ -240,4 +250,7 @@ def mcp_leadership():
         note=("MEASURES category leadership + names the actuator it WOULD fire per "
               "dimension; executes nothing. Arming is per-actuator (the `armable_now` "
               "ones first), gated by BRAIN_MCP_OPTIMIZE_ARMED + fix_success_rate>=50%."),
-    ), 200
+    )
+    _RESP["at"] = _now
+    _RESP["v"] = payload
+    return jsonify(payload), 200

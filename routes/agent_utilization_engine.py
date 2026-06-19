@@ -89,10 +89,18 @@ def _util_armed():
     return str(os.environ.get("BRAIN_AGENT_UTIL_ARMED", "")).lower() in ("1", "true", "yes")
 
 
+_RESP = {"at": 0.0, "v": None}
+_RESP_TTL = 45.0  # response cache (see mcp_leadership_engine: keeps repeat hits fast)
+
+
 @agent_utilization_bp.route("/api/v1/agents/utilization", methods=["GET"])
 def agent_utilization():
     """AI Agent Utilization Engine — SHADOW. onboard/incent/train tracks over the
     real agent lifecycle; names the actuator per track; executes nothing."""
+    import time as _t
+    _now = _t.time()
+    if _RESP["v"] is not None and (_now - _RESP["at"]) < _RESP_TTL:
+        return jsonify(_RESP["v"]), 200
     try:
         with ThreadPoolExecutor(max_workers=len(_PREFETCH)) as ex:
             _REQ.cache = dict(zip(_PREFETCH, ex.map(_raw_get, _PREFETCH)))
@@ -168,7 +176,7 @@ def agent_utilization():
     util_score = round(sum(t["score"] * t["weight"] for t in tracks) / wsum, 1)
     leak = min(tracks, key=lambda t: t["score"])
 
-    return jsonify(
+    payload = dict(
         engine="AI Agent Utilization Engine",
         phase="shadow", decides=True, executes=False, armed=_util_armed(),
         utilization_score=util_score,
@@ -188,4 +196,7 @@ def agent_utilization():
               "the leak; onboard/train function. Executes nothing — arming per-actuator, "
               "gated by BRAIN_AGENT_UTIL_ARMED + fix_success_rate>=50%. Pairs with "
               "/api/v1/mcp/leadership (category index) + /api/v1/brain/ownership."),
-    ), 200
+    )
+    _RESP["at"] = _now
+    _RESP["v"] = payload
+    return jsonify(payload), 200
