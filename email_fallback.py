@@ -3,9 +3,10 @@ email_fallback.py — resilient email send (SendGrid → Resend fallback) [2026-
 
 SENDGRID_API_KEY went invalid (401 verified) but many senders were SendGrid-ONLY,
 so their emails (health alerts, welcome/onboarding, lifecycle) silently failed.
-This single helper tries SendGrid, then falls back to Resend (the live channel),
-so any sender that routes through it keeps working regardless of which provider's
-key is valid — and automatically uses SendGrid again if its key is later rotated.
+This single helper tries RESEND (the canonical/live outreach channel — see
+dchub_outreach.py / routes/outreach_cron.py), then falls back to SendGrid (the
+stale leftover, key 401). So any sender routed through it keeps working on Resend
+today, and SendGrid auto-resumes only if its key is rotated AND Resend is down.
 
 Direct HTTP only (no `sendgrid` SDK — not installed in prod; no DB). Returns True
 if either provider accepted the message, else False. Never raises.
@@ -39,7 +40,7 @@ def _sendgrid(to_email, subject, html, text, from_email, from_name):
         urllib.request.urlopen(req, timeout=10)
         return True
     except Exception as e:
-        log.warning("email_fallback: SendGrid failed (%s) — falling back to Resend", e)
+        log.warning("email_fallback: SendGrid (fallback) failed: %s", e)
         return False
 
 
@@ -73,9 +74,14 @@ def send_email_resilient(to_email, subject, html_content=None, text_content=None
         return False
     from_email = from_email or os.environ.get("SENDGRID_FROM_EMAIL", "info@dchub.cloud")
     from_name = from_name or os.environ.get("SENDGRID_FROM_NAME", "DC Hub")
-    if _sendgrid(to_email, subject, html_content, text_content, from_email, from_name):
+    # Resend FIRST — it's the canonical/live channel (the outreach machine
+    # dchub_outreach.py + routes/outreach_cron.py already send Resend-first).
+    # SendGrid is the stale leftover (key 401), kept only as a dormant fallback
+    # so it auto-resumes IF its key is ever rotated AND Resend is down. This
+    # ordering also avoids eating a 401 round-trip on every send.
+    if _resend(to_email, subject, html_content, text_content, from_email, from_name):
         return True
-    ok = _resend(to_email, subject, html_content, text_content, from_email, from_name)
+    ok = _sendgrid(to_email, subject, html_content, text_content, from_email, from_name)
     if not ok:
-        log.warning("email_fallback: NO channel delivered '%s' to %s (both SendGrid + Resend failed)", subject, to_email)
+        log.warning("email_fallback: NO channel delivered '%s' to %s (Resend + SendGrid both failed)", subject, to_email)
     return ok

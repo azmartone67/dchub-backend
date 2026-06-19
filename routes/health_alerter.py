@@ -61,38 +61,16 @@ _started = False
 
 
 def _send_email(subject: str, html: str) -> bool:
-    """Direct-HTTP email: SendGrid primary, Resend fallback. No DB, no pool."""
-    sg = os.environ.get("SENDGRID_API_KEY", "").strip()
-    if sg:
-        try:
-            payload = json.dumps({
-                "personalizations": [{"to": [{"email": _TO}]}],
-                "from": {"email": _FROM, "name": "DC Hub Health Alerter"},
-                "subject": subject,
-                "content": [{"type": "text/html", "value": html}],
-            }).encode()
-            r = urllib.request.Request("https://api.sendgrid.com/v3/mail/send", data=payload, method="POST")
-            r.add_header("Authorization", f"Bearer {sg}")
-            r.add_header("Content-Type", "application/json")
-            urllib.request.urlopen(r, timeout=6)
-            return True
-        except Exception as e:
-            log.warning("health_alerter: SendGrid send failed: %s", e)
-    rk = (os.environ.get("RESEND_API_KEY") or os.environ.get("DCHUB_RESEND_API_KEY") or "").strip()
-    if rk:
-        try:
-            payload = json.dumps({"from": f"DC Hub Alerts <{_FROM}>", "to": [_TO],
-                                  "subject": subject, "html": html}).encode()
-            r = urllib.request.Request("https://api.resend.com/emails", data=payload, method="POST")
-            r.add_header("Authorization", f"Bearer {rk}")
-            r.add_header("Content-Type", "application/json")
-            r.add_header("User-Agent", "dchub-health-alerter/1.0")  # Resend/CF want a UA
-            urllib.request.urlopen(r, timeout=6)
-            return True
-        except Exception as e:
-            log.warning("health_alerter: Resend send failed: %s", e)
-    log.warning("health_alerter: no email channel available (SENDGRID/RESEND key unset)")
-    return False
+    """Email the admin via the shared Resend-first helper (one path, not a 2nd copy).
+    The helper is stdlib+HTTP only — DB-independent, so it's safe to call during the
+    pool exhaustion this alerter exists to report."""
+    try:
+        from email_fallback import send_email_resilient
+        return send_email_resilient(_TO, subject, html_content=html,
+                                    from_email=_FROM, from_name="DC Hub Health Alerter")
+    except Exception as e:
+        log.warning("health_alerter: send failed: %s", e)
+        return False
 
 
 def _alert(kind: str, subject: str, html: str):
