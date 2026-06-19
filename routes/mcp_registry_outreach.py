@@ -430,7 +430,69 @@ def _audit_target(target: dict) -> dict:
         return {"listed": None, "reason": f"err:{type(e).__name__}"}
 
 
-def _submit_target(target: dict) -> dict:
+# ──────────────────────────────────────────────────────────────────
+# Safe-arm guards for the ONLY outward-facing branch (submit_method
+# 'form' → live network POST). Mirrors the brain_automerge pattern:
+# master OFF-switch + dry-run + kill-switch + per-run cap + a dedup
+# cooldown — all read LIVE from env (a Railway flip is honored with no
+# redeploy). Default posture is SAFE: the network POST is OFF until
+# REGISTRY_SUBMIT_ENABLED=1, and even armed a per-registry cooldown
+# blocks re-POSTing the same target within N days. No-op today (no
+# 'form' targets exist) — this is future-proofing so adding/repointing
+# a 'form' target can never spam a registry. The read-only audit
+# (_audit_target) is NEVER gated, so listing visibility is unaffected.
+# ──────────────────────────────────────────────────────────────────
+def _truthy(v) -> bool:
+    return str(v or "").strip().lower() in ("1", "true", "yes", "on")
+
+def _submit_enabled() -> bool:   # master gate for the live network POST
+    return _truthy(os.environ.get("REGISTRY_SUBMIT_ENABLED"))
+
+def _submit_dry_run() -> bool:   # log "would submit", skip the POST
+    return _truthy(os.environ.get("REGISTRY_SUBMIT_DRY_RUN"))
+
+def _submit_disabled() -> bool:  # kill-switch — beats everything
+    return _truthy(os.environ.get("REGISTRY_SUBMIT_DISABLE"))
+
+def _submit_cooldown_days() -> int:
+    try: return max(0, int(os.environ.get("REGISTRY_SUBMIT_COOLDOWN_DAYS", "7")))
+    except Exception: return 7
+
+def _submit_max_per_run() -> int:
+    try: return max(0, int(os.environ.get("REGISTRY_SUBMIT_MAX_PER_RUN", "2")))
+    except Exception: return 2
+
+def _recently_submitted(target_key: str, days: int) -> bool:
+    """True if a live submit POST for this target was already attempted
+    within `days` (the dedup cooldown). FAIL-CLOSED: any DB error / no
+    DB returns True so we DON'T re-POST when we can't verify — anti-spam
+    beats availability here (the audit half still runs regardless)."""
+    if days <= 0:
+        return False
+    conn = _db()
+    if conn is None:
+        return True
+    try:
+        with conn.cursor() as cur:
+            cur.execute(_LEDGER_DDL)
+            cur.execute("""
+                SELECT 1 FROM outreach_submissions
+                 WHERE target_key = %s
+                   AND action = 'submit'
+                   AND outcome IN ('submitted','rejected','http_error','exception')
+                   AND submitted_at >= NOW() - (INTERVAL '1 day' * %s)
+                 LIMIT 1
+            """, (target_key, days))
+            return cur.fetchone() is not None
+    except Exception as e:
+        logger.warning("outreach cooldown check failed (fail-closed): %s", e)
+        return True
+    finally:
+        try: conn.close()
+        except Exception: pass
+
+
+def _submit_target(target: dict, run_state: Optional[dict] = None) -> dict:
     """Submit DC Hub to a single registry. Most registries today
     require manual/PR submission — for those we just LOG the intent
     (so we have a record) and the operator (or L22) opens the PR.
@@ -482,6 +544,35 @@ def _submit_target(target: dict) -> dict:
             _record(key, name, "submit", "skipped",
                     detail="no submit_url configured")
             return {"target": key, "outcome": "skipped"}
+
+        # ── safe-arm guards (this is the ONLY branch that POSTs to an
+        #    external registry — bound the blast radius before sending) ──
+        if _submit_disabled():
+            _record(key, name, "submit", "skipped_killswitch",
+                    detail="REGISTRY_SUBMIT_DISABLE set")
+            return {"target": key, "outcome": "skipped", "reason": "kill_switch"}
+        cd = _submit_cooldown_days()
+        if _recently_submitted(key, cd):
+            _record(key, name, "submit", "skipped_cooldown",
+                    detail=f"already submitted within {cd}d — dedup (no re-POST)")
+            return {"target": key, "outcome": "skipped",
+                    "reason": "cooldown", "cooldown_days": cd}
+        if (not _submit_enabled()) or _submit_dry_run():
+            why = ("REGISTRY_SUBMIT_ENABLED not set" if not _submit_enabled()
+                   else "REGISTRY_SUBMIT_DRY_RUN set")
+            _record(key, name, "submit", "dry_run",
+                    detail=f"would POST manifest to {submit_url} ({why})")
+            return {"target": key, "outcome": "dry_run",
+                    "reason": why, "would_post_to": submit_url}
+        if run_state is not None:
+            cap = _submit_max_per_run()
+            if cap > 0 and run_state.get("posts", 0) >= cap:
+                _record(key, name, "submit", "skipped_cap",
+                        detail=f"per-run network-POST cap {cap} reached")
+                return {"target": key, "outcome": "skipped",
+                        "reason": "rate_cap", "cap": cap}
+            run_state["posts"] = run_state.get("posts", 0) + 1
+
         try:
             payload = json.dumps({
                 "name":        "DC Hub",
@@ -541,8 +632,9 @@ def outreach_submit_all():
         return jsonify(error="unauthorized"), 401
 
     results = []
+    run_state = {"posts": 0}   # per-run live-POST counter for the cap
     for target in DISCOVERY_TARGETS:
-        sub = _submit_target(target)
+        sub = _submit_target(target, run_state)
         audit = _audit_target(target)
         # Record audit separately so the timeline is visible
         _record(target["key"], target["name"], action="audit",
@@ -568,6 +660,16 @@ def outreach_submit_all():
         "not_listed": sum(1 for r in results if r["audit"].get("listed") is False),
         "queued":     sum(1 for r in results if r["submit"].get("outcome") == "queued"),
         "submitted":  sum(1 for r in results if r["submit"].get("outcome") == "submitted"),
+        "dry_run":    sum(1 for r in results if r["submit"].get("outcome") == "dry_run"),
+        "skipped":    sum(1 for r in results if r["submit"].get("outcome") == "skipped"),
+        "guards": {
+            "network_post_enabled": _submit_enabled(),
+            "dry_run":              _submit_dry_run(),
+            "disabled":             _submit_disabled(),
+            "cooldown_days":        _submit_cooldown_days(),
+            "max_per_run":          _submit_max_per_run(),
+            "posts_this_run":       run_state["posts"],
+        },
         "results":    results,
     }
     return jsonify(ok=True, summary=summary), 200
