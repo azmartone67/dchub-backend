@@ -205,7 +205,7 @@ def test_flag_off_short_circuits_before_model(client, monkeypatch):
         raise AssertionError("investigate must NOT be called when flag is off")
 
     monkeypatch.setattr(inv, "investigate", _boom)
-    resp = client.post("/api/v1/brain/ask", json={"question": "anything"})
+    resp = client.post("/api/v1/brain/investigate", json={"question": "anything"})
     assert resp.status_code == 200
     data = resp.get_json()
     assert data["enabled"] is False
@@ -221,7 +221,7 @@ def test_ask_enqueues_async_when_enabled(client, monkeypatch):
     captured = {}
     monkeypatch.setattr(inv, "_update_investigation",
                         lambda i, r: captured.update(id=i, result=r) or True)
-    resp = client.post("/api/v1/brain/ask", json={"question": "why flat?"})
+    resp = client.post("/api/v1/brain/investigate", json={"question": "why flat?"})
     # ASYNC: the slow chain must NOT run in-request (502/flapping) — enqueue +
     # 202 + id + pending, no inline result.
     assert resp.status_code == 202
@@ -238,13 +238,13 @@ def test_ask_enqueues_async_when_enabled(client, monkeypatch):
 
 def test_ask_requires_admin(client, monkeypatch):
     monkeypatch.setattr(inv, "_admin_ok", lambda: False)
-    resp = client.post("/api/v1/brain/ask", json={"question": "x"})
+    resp = client.post("/api/v1/brain/investigate", json={"question": "x"})
     assert resp.status_code == 403
 
 
 def test_grade_endpoint_records_grade(client, monkeypatch):
     monkeypatch.setattr(inv, "_grade_investigation", lambda i, g: True)
-    resp = client.post("/api/v1/brain/ask/7/grade", json={"grade": "good"})
+    resp = client.post("/api/v1/brain/investigate/7/grade", json={"grade": "good"})
     assert resp.status_code == 200
     data = resp.get_json()
     assert data["ok"] is True
@@ -253,11 +253,11 @@ def test_grade_endpoint_records_grade(client, monkeypatch):
 
 
 def test_grade_endpoint_requires_grade(client):
-    resp = client.post("/api/v1/brain/ask/7/grade", json={})
+    resp = client.post("/api/v1/brain/investigate/7/grade", json={})
     assert resp.status_code == 400
 
 
 def test_get_investigation_not_found(client, monkeypatch):
     monkeypatch.setattr(inv, "_get_investigation", lambda i: None)
-    resp = client.get("/api/v1/brain/ask/999")
+    resp = client.get("/api/v1/brain/investigate/999")
     assert resp.status_code == 404

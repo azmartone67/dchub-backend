@@ -41,10 +41,10 @@ SAFETY:
   · Admin-gated endpoints (reuse brain_mechanical_classifier._admin_ok).
 
 Endpoints (blueprint brain_investigator_bp, admin-gated):
-  POST /api/v1/brain/ask              {question} -> runs investigate, stores,
+  POST /api/v1/brain/investigate              {question} -> runs investigate, stores,
                                        returns {id, result}. Flag-gated.
-  GET  /api/v1/brain/ask/<id>         -> the stored investigation.
-  POST /api/v1/brain/ask/<id>/grade  {grade} -> records a human grade for
+  GET  /api/v1/brain/investigate/<id>         -> the stored investigation.
+  POST /api/v1/brain/investigate/<id>/grade  {grade} -> records a human grade for
                                        CALIBRATION (the verify->learn loop).
 """
 from __future__ import annotations
@@ -713,7 +713,7 @@ def _grade_investigation(inv_id: int, grade: str) -> bool:
 
 
 # ── Endpoints (admin-gated) ──────────────────────────────────────────
-@brain_investigator_bp.post("/api/v1/brain/ask")
+@brain_investigator_bp.post("/api/v1/brain/investigate")
 def ask():
     """Pose a business question. RECOMMEND-ONLY: runs the verified investigation
     chain, stores it, returns {id, result}. Flag-gated — when
@@ -735,7 +735,7 @@ def ask():
     # ASYNC: the verified chain is 3-4 model calls (~40-120s) — running it inside
     # the request 502s the gateway AND risks flapping the single backend replica.
     # Enqueue a PENDING row, kick a daemon thread, return the id immediately;
-    # the caller polls GET /api/v1/brain/ask/<id>.
+    # the caller polls GET /api/v1/brain/investigate/<id>.
     inv_id = _enqueue_investigation(question)
     if inv_id is None:
         return jsonify(ok=False, error="storage_unavailable",
@@ -748,11 +748,11 @@ def ask():
         logger.warning("brain_investigator: thread spawn failed: %s", e)
         _run_investigation_async(inv_id, question, depth)  # fallback (rare)
     return jsonify(ok=True, enabled=True, id=inv_id, status="pending",
-                   note=f"investigation queued — poll GET /api/v1/brain/ask/{inv_id} "
+                   note=f"investigation queued — poll GET /api/v1/brain/investigate/{inv_id} "
                         f"(answer ready in ~1-2 min)"), 202
 
 
-@brain_investigator_bp.get("/api/v1/brain/ask/<int:inv_id>")
+@brain_investigator_bp.get("/api/v1/brain/investigate/<int:inv_id>")
 def get_ask(inv_id):
     """Fetch a stored investigation. Admin-gated."""
     if not _admin_ok():
@@ -763,7 +763,7 @@ def get_ask(inv_id):
     return jsonify(ok=True, **rec), 200
 
 
-@brain_investigator_bp.post("/api/v1/brain/ask/<int:inv_id>/grade")
+@brain_investigator_bp.post("/api/v1/brain/investigate/<int:inv_id>/grade")
 def grade_ask(inv_id):
     """Record a human grade (good/bad/score) for CALIBRATION — the same
     verify->learn loop, applied to the investigator's own track record.
