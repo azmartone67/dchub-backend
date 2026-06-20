@@ -1198,7 +1198,7 @@ def auto_merge_log_json():
                        dry_run, follow_up_at, follow_up_sentinel_grade,
                        follow_up_status_code, follow_up_outcome, decided_at
                   FROM sentinel_auto_merge_log
-                 WHERE decided_at > NOW() - INTERVAL '%s days'
+                 WHERE decided_at > NOW() - %s * INTERVAL '1 day'
                  ORDER BY decided_at DESC
                  LIMIT 500
             """ % days)
