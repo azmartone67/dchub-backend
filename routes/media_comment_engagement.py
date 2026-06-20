@@ -1165,7 +1165,7 @@ def http_regenerate(log_id: int):
             cur2.execute("""
                 UPDATE media_comment_engagement_log
                    SET reply_generated = %s,
-                       decision_reason = CONCAT(COALESCE(decision_reason,''), ' | regenerated@', NOW()::text)
+                       decision_reason = CONCAT(COALESCE(decision_reason,''), ' | regenerated@', NOW())
                  WHERE id = %s
             """, (reply["reply"], int(log_id)))
         return jsonify(ok=True, log_id=int(log_id), reply=reply)
