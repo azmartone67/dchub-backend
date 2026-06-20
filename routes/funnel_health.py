@@ -101,60 +101,48 @@ _AI_PLATFORMS = [
 
 
 # ── De-loop definition (SINGLE SOURCE) ─────────────────────────────────
-# THE honest "real external tool calls" definition. Matches the
-# /api/v1/mcp/funnel endpoint's `tool_calls_7d_real` (flask_mcp_endpoints.py
-# L1857-1893): read from mcp_tool_calls (NOT mcp_call_log) — the legacy
-# mcp_call_log captures EVERY row including our own selfheal/probe/sweep loop
-# traffic, so a COUNT(*) there reads ~35-41k and a non-decline looks like a
-# decline. mcp_tool_calls already drops internal clients at WRITE time (Item 5
-# SELF-HEAL DIET, main.py L6398-6422), and we additionally exclude the
-# probe/loop client_name + user_agent families below so the count is what
-# external AI agents actually did.
+# THE honest "real external tool calls" definition NOW LIVES IN ONE PLACE:
+# top-level mcp_calls_deloop.py. Both this dashboard's tool_calls_7d_real KPI
+# AND the /api/v1/mcp/funnel endpoint (flask_mcp_endpoints.mcp_funnel) import
+# the SAME PLATFORM_CASE classifier + PROBE_PLATFORMS list from there, so the
+# two `tool_calls_7d_real` counts are byte-identical by construction.
+#
+# Why a shared module: this clause used to be hand-rolled here (a broad
+# client_name NOT-IN list + NOT-LIKE families + self-UA patterns) while the
+# endpoint counted over a `_platform_case` classifier + a narrow 6-item probe
+# list. Both claimed to be "the honest number" but they diverged. The shared
+# classifier folds every self-UA (dchub-/dchubhealer/brain-radar/...) into the
+# 'internal-dchub' bucket and excludes it, so null-client_name self-traffic is
+# still caught — same intent as the old UA NOT-LIKE block, now expressed once.
 #
 # DO NOT duplicate this clause inline — both the 7d/30d KPI and the weekly
 # trend below reuse _deloop_calls_where(). Honest-numbers fence: one filter,
-# many sinks.
-_PROBE_CLIENT_NAMES = (
-    'node', 'dchub-selfheal', 'dchub-mcp-test', 'mcp-probe', 'mcp-test',
-    'pipeline_mcp', 'canary', 'mcp-remote-fallback-test',
-    'registry-health-checker', 'mcp-shield-scanner', 'yellowmcp-health',
-    'glama-health', 'chiark-prober', 'fabrique-noauth-probe',
-    'agentpulse', 'mcpscoringengine', 'mcp-extractor',
-    'curl', 'python-script', 'node-script', 'postman', 'insomnia', 'verify',
-)
+# many sinks. tests/test_funnel_health_deloop.py asserts this stays identical
+# to the endpoint's definition.
+try:
+    from mcp_calls_deloop import (
+        deloop_calls_where as _shared_deloop_where,
+        PROBE_PLATFORMS as _PROBE_CLIENT_NAMES,  # re-exported for back-compat
+    )
+except Exception:  # pragma: no cover - defensive: never let an import blank the page
+    _shared_deloop_where = None
+    _PROBE_CLIENT_NAMES = ()
 
 
 def _deloop_calls_where() -> str:
-    """Return the SQL WHERE fragment (no leading AND) that excludes
-    loop/selfheal/probe/sweep traffic from mcp_tool_calls. Columns referenced:
-    client_name, user_agent. Trusted hardcoded constants only — safe to inline
-    as SQL literals (no bound params, so literal % in LIKE is left alone)."""
-    _excl_in = ",".join(
-        "'" + str(p).replace("'", "''") + "'"
-        for p in sorted(set(_PROBE_CLIENT_NAMES)))
-    return (
-        f" COALESCE(LOWER(client_name),'') NOT IN ({_excl_in}) "
-        " AND COALESCE(LOWER(client_name),'') NOT LIKE 'loop%' "
-        " AND COALESCE(LOWER(client_name),'') NOT LIKE 'dchub-%' "
-        " AND COALESCE(LOWER(client_name),'') NOT LIKE 'local-agent-mode%' "
-        " AND COALESCE(LOWER(client_name),'') NOT LIKE 'leakaudit%' "
-        " AND COALESCE(LOWER(client_name),'') NOT LIKE 'trial-leak%' "
-        " AND COALESCE(LOWER(client_name),'') NOT LIKE '%-probe' "
-        " AND COALESCE(LOWER(client_name),'') NOT LIKE '%-health' "
-        " AND COALESCE(LOWER(client_name),'') NOT LIKE '%-scanner' "
-        " AND COALESCE(LOWER(client_name),'') NOT LIKE '%-checker' "
-        " AND COALESCE(LOWER(client_name),'') NOT LIKE '%-sweep' "
-        " AND COALESCE(LOWER(client_name),'') NOT LIKE 'regression-test%' "
-        # user_agent-level catch for our own internal crawlers (client_name
-        # is null/empty for ~70% of calls — these self-UAs would otherwise
-        # fall through to the count). Mirrors flask_mcp_endpoints.py's
-        # 'internal-dchub' UA bucket.
-        " AND COALESCE(LOWER(user_agent),'') NOT LIKE '%dchub-%' "
-        " AND COALESCE(LOWER(user_agent),'') NOT LIKE '%dchubhealer%' "
-        " AND COALESCE(LOWER(user_agent),'') NOT LIKE '%brain-radar%' "
-        " AND COALESCE(LOWER(user_agent),'') NOT LIKE '%brain-v2-headless%' "
-        " AND COALESCE(LOWER(user_agent),'') NOT LIKE '%uptimerobot%' "
-    )
+    """Return the SQL boolean fragment (no leading AND) that keeps ONLY real
+    external tool calls in mcp_tool_calls — i.e. excludes loop/selfheal/probe/
+    sweep traffic. Columns referenced: client_name, user_agent. Identical to
+    the /api/v1/mcp/funnel endpoint's `tool_calls_7d_real` filter because both
+    import mcp_calls_deloop.deloop_calls_where(). Trusted hardcoded constants
+    only — inlined as SQL literals (no bound params, so the literal % in the
+    ILIKE patterns is left alone)."""
+    if _shared_deloop_where is not None:
+        return _shared_deloop_where()
+    # Fallback (shared module unavailable): keep the dashboard alive with a
+    # conservative client_name-only exclude so a missing import never 500s the
+    # page. This path is exercised only if mcp_calls_deloop fails to import.
+    return " COALESCE(LOWER(client_name),'') NOT LIKE 'dchub-%' "
 
 
 # ── DB ────────────────────────────────────────────────────────────────
@@ -383,14 +371,23 @@ def _build_data() -> dict:
             "SELECT COUNT(*) FROM mcp_tool_calls "
             " WHERE created_at >= NOW() - INTERVAL '7 days' "
             "   AND " + _where)
-        if v_real7 is None:
-            out["missing_tables"].append("mcp_tool_calls")
-        out["kpis"]["tool_calls_7d_real"] = int(v_real7 or 0)
         v_real30 = _scalar(cur,
             "SELECT COUNT(*) FROM mcp_tool_calls "
             " WHERE created_at >= NOW() - INTERVAL '30 days' "
             "   AND " + _where)
-        out["kpis"]["tool_calls_30d_real"] = int(v_real30 or 0)
+        # HARDENING (2026-06-20): the de-loop COUNT (19 LIKE predicates over
+        # mcp_tool_calls) is the slowest probe on this page and times out under
+        # transient DB load (crawler connection churn) → _scalar None.
+        # mcp_tool_calls is a CORE table many live surfaces read, so a None here
+        # is ~always a transient query timeout, NOT a missing table. Rendering it
+        # as 'Schema gaps: mcp_tool_calls' + 'external: 0' twice scared a health
+        # spot-check into thinking MCP died. Surface it as DEGRADED (self-recovers
+        # next 60s refresh); never emit a false schema-gap or a false 0.
+        if v_real7 is None or v_real30 is None:
+            out.setdefault("degraded", []).append(
+                "tool_calls_*_real de-loop query timed out (transient DB load, NOT a schema gap)")
+        out["kpis"]["tool_calls_7d_real"]  = int(v_real7) if v_real7 is not None else None
+        out["kpis"]["tool_calls_30d_real"] = int(v_real30) if v_real30 is not None else None
 
         # ── KPI 4c: WEEKLY TREND (de-looped) so a real decline is visible ──
         # Last ~8 ISO weeks of de-looped calls + DISTINCT external callers

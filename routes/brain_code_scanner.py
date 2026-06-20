@@ -691,6 +691,12 @@ def run_code_scan(force: bool = False) -> dict:
                         ORDER BY ran_at DESC LIMIT 1""")
                 row = cur.fetchone()
             if row:
+                # LEAK FIX (2026-06-20): release the pooled connection on the
+                # from_cache early-return — it was held until the 60-89s FORCED
+                # RECLAIM (this crawler runs ~every 2min and mostly hits cache,
+                # so each run leaked a connection → recurring pool pressure).
+                try: c.close()
+                except Exception: pass
                 return {"ok": True, "from_cache": True,
                         "run_id": int(row[0]),
                         "files_scanned": int(row[1] or 0),
