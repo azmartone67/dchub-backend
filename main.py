@@ -2569,9 +2569,14 @@ def _grid_intel_fetch(region, rto_code):
         params = {
             'frequency': 'hourly', 'data[0]': 'value',
             'facets[respondent][]': rto_code,
-            'facets[fueltype][]': ['NG','COL','NUC','SUN','WND','WAT','OTH'],
+            # ROBUSTNESS (2026-06-19): NO fueltype whitelist — the old 7-fuel
+            # filter ['NG','COL','NUC','SUN','WND','WAT','OTH'] silently DROPPED
+            # battery (BAT), geothermal (GEO), oil (OIL) and pumped-storage (PS),
+            # understating totals and corrupting every renewable/gas share (AZPS
+            # BAT=676, CAISO GEO=807 were invisible). Request ALL fuel types; the
+            # shaper excludes storage from the denominator + counts GEO renewable.
             'sort[0][column]': 'period', 'sort[0][direction]': 'desc',
-            'offset': 0, 'length': 168,  # 7 days × 24h
+            'offset': 0, 'length': 400,  # all fuels × ~36h (was 7 fuels × 24h)
         }
         if eia_key: params['api_key'] = eia_key
         r = _rq.get('https://api.eia.gov/v2/electricity/rto/fuel-type-data/data',
@@ -26526,6 +26531,24 @@ try:
           "(GET/POST /api/v1/unsubscribe)")
 except Exception as e:
     print(f"🚫 Email Suppression: ⚠️ Failed to load: {e}")
+
+# (2026-06-19) — DOUBLE OPT-IN marketing-consent capture. Grows the
+# upgrade-outreach high_usage_free audience COMPLIANTLY: a user expresses
+# interest → we email a TOKENIZED confirm link (transactional) → ONLY on the
+# confirm click do we set mcp_dev_keys.metadata->>'marketing_opt_in'=true and
+# log the consent (timestamp/source/ip/UA/token-hash) to opt_in_consents. Never
+# sets opt-in from usage or a single click. Honors email_suppression. Sends NO
+# marketing (the outreach engine does that, behind its own flags). Token reuses
+# the email_suppression HMAC idiom so it cross-verifies. Status endpoint is
+# admin-gated.
+try:
+    from routes.marketing_opt_in import register as _register_marketing_opt_in
+    _register_marketing_opt_in(app)
+    print("✅ Marketing Opt-In (double opt-in): ✅ Registered "
+          "(POST /api/v1/opt-in/request, GET /api/v1/opt-in/confirm, "
+          "GET /api/v1/opt-in/status[admin])")
+except Exception as e:
+    print(f"✅ Marketing Opt-In (double opt-in): ⚠️ Failed to load: {e}")
 
 # Phase FF+25-followup-r12 (2026-05-20) — site audit + status dashboard.
 # One URL (/status) that shows the entire stack at a glance — brain,
