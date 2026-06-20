@@ -239,10 +239,31 @@ def media_organism():
             if isinstance(e, dict) and (e.get("sent_at") or "") >= cutoff
         )
         score, verdict = _score_component(recent_sent, 70, 30, max_value=10)
+        # 2026-06-20: RECENCY, not just volume. 20 stale re-sends of the SAME
+        # May report scored 100 ("healthy") and hid that the last journalist
+        # email was days ago — so the staging cron (fires when this channel is
+        # weakest) never ran and outreach silently went dark. Penalize
+        # staleness: if the most-recent send is >10 days old, force this
+        # component weak so a fresh draft batch gets staged for review.
+        _last_sent = max(
+            (e.get("sent_at") or "" for e in log if isinstance(e, dict)),
+            default="")
+        days_since_last = None
+        if _last_sent:
+            try:
+                _ls = datetime.datetime.fromisoformat(
+                    _last_sent.replace("Z", "").split("+")[0].split(".")[0])
+                days_since_last = round(
+                    (datetime.datetime.utcnow() - _ls).total_seconds() / 86400.0, 1)
+            except Exception:
+                days_since_last = None
+        if days_since_last is not None and days_since_last > 10:
+            score, verdict = min(score, 25), "quiet"
         components["journalist_outreach"] = {
             "score": score, "verdict": verdict,
             "journalist_count": len(journos),
             "sent_14d": recent_sent, "sent_total": len(log),
+            "days_since_last_send": days_since_last,
         }
 
     # 6. Winback

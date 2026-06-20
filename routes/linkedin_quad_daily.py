@@ -82,6 +82,12 @@ SLOTS = [
     {"hour": 20, "topic": "industry_pulse",     "style": "contrarian", "title": "Industry Counter-Take"},
 ]
 
+# Slots the heartbeat actually fires (slots 08 + 20 were disabled in the
+# 2026-06-08 "4->2/day" quality cut — see routes/cron_heartbeat.py). The
+# catch-up backfill in run() only re-posts these, so it never resurrects the
+# retired 08/20 posts.
+_ACTIVE_SLOT_HOURS = {12, 16}
+
 OG_IMAGE_MAP = {
     "dcpi_mover":         "https://api.dchub.cloud/static/og/landing-ai-capacity.png",
     "hyperscaler_deal":   "https://api.dchub.cloud/static/og/landing-hyperscaler-deals.png",
@@ -541,6 +547,24 @@ def run():
         _topic = _p("topic")
         target_slot = next(
             (s for s in SLOTS if s["topic"] == _topic), SLOTS[0])
+    # 2026-06-20: CATCH-UP. The heartbeat that drives this is GitHub-throttled
+    # (~26 runs/day, stateless, no replay) so a slot's exact hour-window is
+    # frequently missed entirely — which is why whole days had ZERO posts. On
+    # ANY later call (the linkedin_quad_catchup heartbeat fires hourly from
+    # 13:00 UTC), backfill the most-recent DUE active slot (12/16) that has no
+    # successful post today. Each call posts at most one missed slot;
+    # _already_posted (success-only) + UNIQUE(slot_date,slot_hour) keep it
+    # idempotent, so both slots reliably land across the day's later ticks.
+    if not target_slot:
+        _today = now.date()
+        _due_unposted = [
+            s for s in SLOTS
+            if s["hour"] in _ACTIVE_SLOT_HOURS
+            and s["hour"] <= now.hour
+            and not _already_posted(_today, s["hour"])
+        ]
+        if _due_unposted:
+            target_slot = max(_due_unposted, key=lambda s: s["hour"])
     if not target_slot:
         return jsonify({
             "skipped": True,

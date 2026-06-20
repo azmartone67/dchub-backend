@@ -148,14 +148,27 @@ _DISPATCH = [
      f"{BASE}/api/v1/linkedin-quad/run",
      "POST",
      lambda now: False),  # disabled — 4->2/day quality cut
+    # 2026-06-20: widened minute<10 -> minute<55 so a THROTTLED heartbeat (the
+    # GitHub-Actions "5-min" cron actually delivers ~26 runs/day, ~hourly at
+    # random minutes) still lands inside the slot HOUR. Idempotency is enforced
+    # by linkedin_quad_posts UNIQUE(slot_date,slot_hour) + _already_posted
+    # (success=TRUE only), so re-fires within the hour are safe.
     ("linkedin_quad_slot_12",
      f"{BASE}/api/v1/linkedin-quad/run",
      "POST",
-     lambda now: now.hour == 12 and now.minute < 10),
+     lambda now: now.hour == 12 and now.minute < 55),
     ("linkedin_quad_slot_16",
      f"{BASE}/api/v1/linkedin-quad/run",
      "POST",
-     lambda now: now.hour == 16 and now.minute < 10),
+     lambda now: now.hour == 16 and now.minute < 55),
+    # 2026-06-20: TRUE catch-up. If the throttled heartbeat misses hours 12/16
+    # entirely, this fires every tick from 13:00 UTC onward and /run backfills
+    # the most-recent DUE-but-unposted active slot (12/16) for today — so the
+    # day's 2 posts still land even when the exact slot window was never hit.
+    ("linkedin_quad_catchup",
+     f"{BASE}/api/v1/linkedin-quad/run",
+     "POST",
+     lambda now: now.hour >= 13 and now.minute < 55),
     ("linkedin_quad_slot_20",
      f"{BASE}/api/v1/linkedin-quad/run",
      "POST",

@@ -37,7 +37,10 @@ log = logging.getLogger(__name__)
 wins_poster_bp = Blueprint("wins_poster", __name__)
 
 _ADMIN_KEY = (os.environ.get("DCHUB_ADMIN_KEY") or "").strip()
-_DAILY_CAP = int(os.environ.get("WINS_POST_DAILY_CAP", "1"))
+# 2026-06-20: 1 -> 2. At cap=1 a single ship win starved genuine
+# milestone/traction/citation wins (the "1M requests" milestone never posted).
+# 2/day lets a real win ride alongside without flooding.
+_DAILY_CAP = int(os.environ.get("WINS_POST_DAILY_CAP", "2"))
 # default OFF — the job only drafts; a human approves. This flag is the ONLY way
 # the job itself writes status='approved'.
 _AUTOPILOT = str(os.environ.get("WINS_POSTER_AUTOPILOT_ENABLED", "")).lower() in ("1", "true", "yes")
@@ -392,6 +395,13 @@ def detect_ship_win() -> list[dict]:
     seen: set[str] = set()
     for ship_id, slug, title, body in rows:
         slug = slug or f"id{ship_id}"
+        # 2026-06-20: DCPI market-stat releases are ALREADY the formulaic feed
+        # (linkedin_quad dcpi_mover slot). Excluding them here stops them from
+        # being re-narrated as "ship wins" and crowding out genuine
+        # citation/milestone/traction updates in the wins feed.
+        _haystack = f"{slug} {title or ''}".lower()
+        if any(k in _haystack for k in ("dcpi", "power index", "market mover", "dcpi mover")):
+            continue
         metric = _extract_ship_metric(title, body)
         if not metric:
             continue  # no concrete capability → not an honest, postable ship
@@ -446,12 +456,16 @@ def compose_win_post(lead: dict, platform: str = "linkedin") -> str | None:
             f"Source: DC Hub MCP server, the live infrastructure data layer for AI agents · "
             f"dchub.cloud\n#AIAgents #MCP #DataCenter")
     elif kind == "citation":
+        # 2026-06-20: replaced the sweeping over-claim ("AI models now treat DC
+        # Hub as THE source of truth") — unsupported (one engine, one prompt) —
+        # with the specific, defensible fact: THIS engine cited us for THIS
+        # question, and what agents actually get when they query.
         text = (
             f"{lead.get('engine')} cited DC Hub to answer “{lead.get('prompt')}” — "
             f"pulling live grid intelligence for a siting question that used to take weeks of "
             f"consulting.\n\n"
-            f"AI models now treat DC Hub as the infrastructure source of truth, because it's "
-            f"the only one built for agent-native querying.\n\n"
+            f"When an agent queries DC Hub it gets cited, machine-readable infrastructure data "
+            f"— live power, grid, fiber and tenants — instead of a static PDF.\n\n"
             f"Source: DC Hub · dchub.cloud\n#AI #DataCenter #DCPI")
     elif kind == "ship":
         # Prefer the LLM-drafted analyst-voice post (value framing) when it's
@@ -536,11 +550,18 @@ def queue_wins(dry_run: bool = True) -> dict:
                 if _already_posted(cur, c["kind"], c["dedup_key"], c.get("cooldown_days", 7)):
                     out["skipped"].append({"win_key": c["win_key"], "reason": "dedup_or_cooldown"})
                     continue
-            # novelty check vs recent LinkedIn posts (belt-and-suspenders)
+            # novelty check vs recent LinkedIn posts (belt-and-suspenders).
+            # 2026-06-20: EXEMPT milestone/citation/agent_traction. Their metric
+            # is a bare recurring word ("requests", "facilities", "agents") that
+            # routinely appears in other posts, so this check silently killed
+            # every milestone (the "1M requests" win never posted). Those kinds
+            # are already deduped by their own dedup_key + cooldown above; only
+            # ship wins (topic-repeat risk) still get the bare-metric guard.
             try:
                 from routes.media_editorial import _recently_posted_keys
-                recent = _recently_posted_keys(days=9)
-                if c.get("metric") and c["metric"] in recent:
+                if (c["kind"] not in ("milestone", "citation", "agent_traction")
+                        and c.get("metric")
+                        and c["metric"] in _recently_posted_keys(days=9)):
                     out["skipped"].append({"win_key": c["win_key"], "reason": "recently_posted"})
                     continue
             except Exception:

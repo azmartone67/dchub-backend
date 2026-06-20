@@ -242,21 +242,28 @@ def send_outreach():
             succeeded += 1
             continue
 
-        # Skip if same recipient was emailed in the last 7 days (cooldown
-        # convention from media_outreach.pitch_send).
+        # Skip if same recipient was emailed in the last 7 days (cooldown), OR
+        # 2026-06-20: if they ALREADY received THIS EXACT report (same
+        # year/month) at ANY time. The 7-day cooldown alone let the 3-day
+        # backstop re-send the IDENTICAL May report every 7+ days (20 dupes, 0
+        # replies — reads as spam to journalists). Per-report dedup makes each
+        # monthly report reach a recipient at most once; next month's NEW
+        # report (different pitch_topic) still flows.
+        _report_topic = f"monthly_trend_{year}_{month:02d}"
         try:
             cc = _mo_conn()
             cur = cc.cursor()
             cur.execute(
                 "SELECT MAX(sent_at) FROM media_outreach_log "
                 "WHERE recipient_email = %s "
-                "  AND sent_at > NOW() - INTERVAL '7 days'",
-                (recipient["email"],),
+                "  AND (sent_at > NOW() - INTERVAL '7 days' "
+                "       OR pitch_topic = %s)",
+                (recipient["email"], _report_topic),
             )
             r = cur.fetchone()
             if r and r[0]:
                 results.append({"to": recipient["email"],
-                                "skipped": "cooldown_7d",
+                                "skipped": "cooldown_or_report_already_sent",
                                 "last_sent": str(r[0])[:19]})
                 cc.close()
                 continue
