@@ -1391,7 +1391,7 @@ def http_regenerate(log_id: int):
                        dm_body    = %s,
                        dm_link    = %s,
                        decision_reason = CONCAT(COALESCE(decision_reason,''),
-                                                ' | regenerated@', NOW()::text)
+                                                ' | regenerated@', NOW())
                  WHERE id = %s
             """, (dm["subject"][:DM_SUBJECT_MAX_CHARS],
                   dm["body"][:DM_BODY_MAX_CHARS],
