@@ -654,6 +654,123 @@ def _optin_recipient_suppressed(api_key: Optional[str]) -> bool:
         return True  # fail-safe: skip the CTA on any error
 
 
+# ═══════════════════════════════════════════════════════════════
+# FIRST-CALL DURABLE-KEY SURFACE (ships DARK behind FIRST_CALL_KEY_SURFACE_ENABLED)
+# ═══════════════════════════════════════════════════════════════
+# GOAL: multi-day MCP retention is ~5% — agents chain calls within ONE session
+# (64%) but ~never return on a LATER day. Root cause = CREDENTIAL FRICTION: a
+# new/anonymous caller succeeds via inline auto-trial (anon-grace) but the
+# durable key never gets SURFACED on the SUCCESS path, so the agent doesn't
+# persist it and the human can't come back tomorrow without re-provisioning.
+#
+# FIX: on the FIRST successful call for a caller that has NO durable/bound key,
+# additively surface the caller's OWN auto-trial key (already minted by the
+# anon-grace path this same request — reused/extended so it persists ≥7d, and
+# 365d once email-bound) + a one-line "save it, reuse across sessions, bind your
+# email to keep it" note. We do NOT mint a second key system — we reuse the
+# auto-trial + bind paths.
+#
+# RAILS honored here:
+#   (1) ADDITIVE — a separate `_meta.first_call_key_offer` field + one appended
+#       line; NEVER replaces/mutates the tool's data payload.
+#   (2) FIRST-CALL ONLY — only fires when THIS request's anon-grace minted/reused
+#       an auto-trial key for a caller with no durable bound key. Once the caller
+#       passes the gate on their own durable/bound key, grace_meta is absent →
+#       suppressed (not on every call).
+#   (3) DURABLE — the surfaced key is the auto-trial (≥7d unbound, 365d bound);
+#       honest expiry + cap come straight from the mint result, never a promise.
+#   (4) FLAG-GATED DARK — FIRST_CALL_KEY_SURFACE_ENABLED default OFF.
+#   (5) NO LEAK — the key comes ONLY from this request's own grace_meta (minted
+#       for this caller) or the api_key the caller themselves passed; never
+#       another caller's key, and it's only ever placed in the caller's own
+#       response (never logged).
+
+
+def first_call_key_surface_enabled() -> bool:
+    """Master flag — ships DARK. Toggle via FIRST_CALL_KEY_SURFACE_ENABLED=true
+    (no redeploy). Mirrors the OPTIN_CTA_ENABLED / FREE_TIER_GATE_ENABLED
+    env-gate convention."""
+    return os.environ.get(
+        "FIRST_CALL_KEY_SURFACE_ENABLED", "false").strip().lower() == "true"
+
+
+def _first_call_key_surface_block(tool_name: str, tier: int,
+                                  api_key: Optional[str],
+                                  grace_meta: Optional[Dict[str, Any]]
+                                  ) -> Optional[Dict[str, Any]]:
+    """Build the additive first-call durable-key surface for a SUCCESSFUL call.
+
+    Pure + side-effect-free (no Flask/db/network) so it's safe on the hot
+    success path and trivially unit-testable. Returns a small structured dict
+    (machine-readable card + a one-line `note` for text-only relay agents), or
+    None when the surface must NOT show.
+
+    Shows ONLY when ALL hold:
+      • FIRST_CALL_KEY_SURFACE_ENABLED flag is on (ships dark by default), AND
+      • the caller is sub-DEVELOPER (new/free/identified — established paid
+        callers already have a durable key + are already customers), AND
+      • THIS request's anon-grace minted/reused an auto-trial key for the caller
+        (grace_meta carries `auto_trial_key`) — i.e. they had NO durable bound
+        key and just got one. This is the FIRST-CALL signal: a caller arriving
+        on their own durable/bound key passes the gate WITHOUT grace, so
+        grace_meta is absent and the surface is suppressed (not every call).
+
+    NO LEAK: the surfaced key is taken ONLY from grace_meta["auto_trial_key"]
+    (minted for THIS caller, this request). We never read another caller's key.
+    """
+    if not first_call_key_surface_enabled():
+        return None
+    # Established paid callers already hold a durable key — don't pester them.
+    if tier >= Tier.DEVELOPER:
+        return None
+    if not grace_meta:
+        return None
+    surfaced_key = (grace_meta.get("auto_trial_key") or "").strip() \
+        if isinstance(grace_meta, dict) else ""
+    if not surfaced_key:
+        return None
+
+    # Honest durability — read the ACTUAL terms off the mint result, never
+    # promise more than the DB granted. expires_at / daily cap come from the
+    # grace_meta the anon-grace path stashed when it minted/reused the key.
+    expires_at = grace_meta.get("auto_trial_expires_at")
+    daily_calls = grace_meta.get("auto_trial_daily_calls")
+
+    # The bind path that turns a 7d unbound trial into a 365d, higher-cap key.
+    # /api/v1/keys/auto-trial/bind is the lightweight operator-only bind (agent
+    # asks its human for an email, no email sent); /redeem is the human 365d
+    # conversion. We surface bind as the primary CTA so the agent can act.
+    bind_url = "https://dchub.cloud/api/v1/keys/auto-trial/bind"
+    redeem_url = "https://dchub.cloud/api/v1/keys/auto-trial/redeem"
+
+    _exp_txt = f", expires {str(expires_at)[:10]}" if expires_at else ""
+    _cap_txt = f" ({daily_calls}/day{_exp_txt})" if daily_calls else (
+        f"{_exp_txt}" if _exp_txt else "")
+    note = (
+        f"🔑 Save this DC Hub key and reuse it across sessions — set "
+        f"`X-API-Key: {surfaced_key}` in your MCP client config so you don't "
+        f"re-provision next time{_cap_txt}. Have your human bind their email "
+        f"(POST {bind_url} {{api_key, email}}) to keep it permanently."
+    )
+    return {
+        # Machine-readable card for agents that parse structured output.
+        "api_key": surfaced_key,
+        "header": "X-API-Key",
+        "expires_at": expires_at,
+        "daily_calls": daily_calls,
+        "bind_url": bind_url,
+        "bind_body": {"api_key": surfaced_key, "email": "<your human's email>"},
+        "redeem_url": redeem_url,
+        "reuse_instruction": (
+            "Persist this api_key in your MCP client config and send it as the "
+            "X-API-Key header on every future call — including on later days — "
+            "so you reuse the same durable key instead of re-provisioning."
+        ),
+        # One-line note for text-only relay agents that strip structured fields.
+        "note": note,
+    }
+
+
 # Per-tool value teasers. Each entry: (one-line "what you'd unlock", optional
 # data-shape hint). The CTA includes this so the MCP client can relay
 # something concrete — "Atlanta industrial rates ~7-12¢/kWh, paywalled" is
@@ -911,6 +1028,13 @@ def _gate(tool_name: str, api_key: Optional[str] = None,
         block = _gate("get_energy_prices", api_key, locals())   # better
         if block: return block
     """
+    # NO-LEAK boundary: drain any grace_meta left on this thread by a PRIOR
+    # request that set it but never reached _finalize (e.g. a tool handler that
+    # raised after the gate passed). _gate runs at the TOP of every gated tool
+    # call, so clearing here guarantees the grace _finalize later reads was
+    # minted during THIS request only — a stale caller's auto-trial key can
+    # never be surfaced to the next caller on a reused thread.
+    get_pending_grace_meta()
     tier = resolve_tier(api_key)
     required = TOOL_TIER.get(tool_name, Tier.DEVELOPER)
 
@@ -935,13 +1059,22 @@ def _gate(tool_name: str, api_key: Optional[str] = None,
                         # Stash trial key on a module-level so the tool
                         # handler can attach it to its response metadata.
                         # The handler reads via get_pending_grace_meta().
+                        # Stash the HONEST minted terms (daily_calls / expiry
+                        # straight off the mint result), NOT an inflated
+                        # constant. The first-call key surface reads these to
+                        # tell the agent the real cap + expiry — overpromising
+                        # (the old hardcoded 200/day) is exactly the trust break
+                        # that fed the retention leak when the cap actually bit.
+                        _ok = bool(trial.get("ok"))
+                        _daily = trial.get("daily_calls") if _ok else None
+                        _exp = trial.get("expires_at") if _ok else None
                         _set_pending_grace_meta({
                             "anon_grace_used":              True,
                             "anon_grace_calls_remaining":   grace_remaining(_flask_req),
                             "anon_grace_cap":               5,
                             "auto_trial_key":               trial_key,
-                            "auto_trial_daily_calls":       200,
-                            "auto_trial_expires_at":        trial.get("expires_at") if trial.get("ok") else None,
+                            "auto_trial_daily_calls":       _daily,
+                            "auto_trial_expires_at":        _exp,
                             "promotion_note": (
                                 "You're using anon grace. After this, a trial key "
                                 "auto-mints (or claim a permanent free key now at "
@@ -1357,6 +1490,39 @@ def _finalize(result_json: str, tool_name: str, api_key: Optional[str] = None) -
         rows_total = data.get("_meta", {}).get("total_available", rows_visible)
         data["_meta"]["value_unlock"] = _value_unlock_block(
             tool_name, tier, max_rows, rows_visible, rows_total)
+
+    # ── First-call durable-key surface (ships DARK behind
+    #    FIRST_CALL_KEY_SURFACE_ENABLED). RETENTION fix: on the FIRST successful
+    #    call for a caller with NO durable bound key (i.e. THIS request's
+    #    anon-grace minted/reused an auto-trial key for them), additively surface
+    #    that OWN key + a "save it, reuse across sessions, bind your email"
+    #    note so the agent persists it and the human can return tomorrow without
+    #    re-provisioning. Additive (separate _meta field + appended note),
+    #    best-effort (never block the response), first-call only (suppressed once
+    #    the caller arrives on their own durable/bound key — no grace_meta), and
+    #    NO-LEAK (key comes only from this request's own grace_meta).
+    #    get_pending_grace_meta() is read-once + auto-clears; nothing else reads
+    #    it, so consuming here is the canonical surface point. ALWAYS drain it so
+    #    a flag-off request doesn't leak grace state into the next request on
+    #    this thread.
+    try:
+        _grace = get_pending_grace_meta()
+        _fck = _first_call_key_surface_block(tool_name, tier, api_key, _grace)
+        if _fck:
+            data["_meta"]["first_call_key_offer"] = _fck
+            # Weave the one-line note into the natural-language message too, so
+            # text-only relay agents (which strip structured _meta fields) still
+            # surface it. Appended additively — never replaces the data/message.
+            _msg = data.get("message")
+            if isinstance(_msg, str):
+                data["message"] = _msg + "\n\n" + _fck["note"]
+            else:
+                # No prose message on this tool's payload — expose the note in a
+                # dedicated additive field so it's still reachable, without
+                # touching any data key.
+                data["_meta"]["first_call_key_note"] = _fck["note"]
+    except Exception:
+        pass  # surface is best-effort; never block the successful response
 
     return json.dumps(data, indent=2, default=str)
 
