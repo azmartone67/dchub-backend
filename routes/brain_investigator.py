@@ -830,6 +830,16 @@ def investigate(question: str, *, depth: str = "default") -> dict:
     # that silently contributes nothing while still claiming it ran.
     ftext, ferr, fmodel = _call_model(
         _REFUTE_SYSTEM, refute_prompt, tier="challenger", max_tokens=1800)
+    # 2026-06-20: the adversarial pass IS the brain's trust signal — a confidence
+    # that never got refuted (survived=null) is worth far less than one that did.
+    # A TRANSIENT failure (read timeout) was silently leaving recommendations
+    # un-stress-tested (e.g. the retention 0.4 whose refutation timed out).
+    # Retry ONCE on any transient error so far more investigations get a REAL
+    # survived/broke verdict; only a second failure records the honest un-tested
+    # state + the confidence dock below.
+    if ferr:
+        ftext, ferr, fmodel = _call_model(
+            _REFUTE_SYSTEM, refute_prompt, tier="challenger", max_tokens=1800)
     refutation = {"attempted": True, "weaknesses_found": [], "survived": None}
     if ferr:
         # The refutation pass failed — be HONEST about it (don't pretend the

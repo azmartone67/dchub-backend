@@ -61,6 +61,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from typing import Optional
 
 from flask import Blueprint, jsonify, request
@@ -311,6 +312,82 @@ def _opportunity_candidates() -> list[dict]:
     return out
 
 
+# ════════════════════════════════════════════════════════════════════
+#  Anti-loop (2026-06-20): the brain was re-investigating the SAME topic
+#  every tick — e.g. 8+ data_coverage "where to verify facilities" agenda
+#  items in 2 days, each at confidence 0.20-0.25, each correctly shredded by
+#  refutation for the SAME reason (the per-geo/operator breakdown isn't in the
+#  evidence). The old dedup compared EXACT titles, but the data_coverage title
+#  embeds live counts ("2207 verified vs 21804" -> "2235 vs 21762") that drift
+#  every tick, so it never matched and was re-picked forever. Two fixes:
+#   (1) dedup on a NUMBER-STRIPPED signature so drifting-count titles collapse;
+#   (2) suppress a whole AREA once it has produced >=2 low-confidence (<0.3) or
+#       refuted results in the window — the brain has LEARNED that area can't be
+#       answered with current evidence, so it should spend its reasoning on a
+#       productive area (e.g. conversion_revenue, which scored 0.40) instead of
+#       spinning. Flag-gated (BRAIN_SELFDIRECT_ANTILOOP, default ON) + a
+#       fail-safe: if it would suppress EVERYTHING, it returns nothing this tick
+#       (skipping a known dead-end is the efficiency win) rather than re-loop.
+_DIGITS_RE = re.compile(r"\d[\d,\.]*")
+_LOWYIELD_CONF = 0.30
+_LOWYIELD_MIN_REPEATS = 2
+
+
+def _antiloop_enabled() -> bool:
+    return os.environ.get(
+        "BRAIN_SELFDIRECT_ANTILOOP", "1").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _norm_sig(text: str) -> str:
+    """Loop-dedup signature: lowercase, strip volatile numbers, collapse space —
+    so a title whose only change is drifting live counts collapses to one sig."""
+    s = _DIGITS_RE.sub("#", (text or "").strip().lower())
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def _recent_sigs_and_lowyield(days: int) -> tuple[set, set]:
+    """(recent number-stripped signatures, low-yield areas). A low-yield area has
+    produced >= _LOWYIELD_MIN_REPEATS results that were low-confidence or
+    refuted in the window. Fail-OPEN to empty sets (a DB hiccup must not freeze
+    the loop; the daily cap still bounds cost)."""
+    sigs: set = set()
+    area_low: dict = {}
+    conn = _conn()
+    if conn is None:
+        return sigs, set()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT title, question, area, confidence, result_json "
+                "FROM brain_self_agenda "
+                "WHERE created_at >= NOW() - (%s || ' days')::interval",
+                (str(int(days)),))
+            for title, question, area, conf, rj in (cur.fetchall() or []):
+                for v in (title, question):
+                    if v:
+                        sigs.add(_norm_sig(str(v)))
+                refuted = False
+                try:
+                    if isinstance(rj, str):
+                        rj = json.loads(rj)
+                    if isinstance(rj, dict):
+                        refuted = (bool(rj.get("refuted"))
+                                   or rj.get("refutation_survived") is False)
+                except Exception:
+                    pass
+                low = refuted or (conf is not None and float(conf) < _LOWYIELD_CONF)
+                if area and low:
+                    area_low[area] = area_low.get(area, 0) + 1
+    except Exception:
+        try: conn.rollback()
+        except Exception: pass
+    finally:
+        try: conn.close()
+        except Exception: pass
+    lowyield = {a for a, n in area_low.items() if n >= _LOWYIELD_MIN_REPEATS}
+    return sigs, lowyield
+
+
 def pick_agenda_item() -> Optional[dict]:
     """ASSESS what is most worth thinking about RIGHT NOW.
 
@@ -339,15 +416,40 @@ def pick_agenda_item() -> Optional[dict]:
 
         # DEDUPE against recently-surfaced agenda items so the loop doesn't
         # re-investigate the same thing every tick.
-        try:
-            recent = _recent_titles(_dedup_window_days())
-        except Exception:
-            recent = set()
-        fresh = [c for c in candidates
-                 if str(c.get("title") or "").strip().lower() not in recent
-                 and str(c.get("question") or "").strip().lower() not in recent]
-        if not fresh:
-            return None
+        if _antiloop_enabled():
+            # Number-stripped signature dedup + low-yield AREA suppression, so a
+            # topic whose title only differs by drifting live counts (or a whole
+            # area the brain keeps failing to answer) is not re-picked.
+            try:
+                recent_sigs, lowyield_areas = _recent_sigs_and_lowyield(
+                    _dedup_window_days())
+            except Exception:
+                recent_sigs, lowyield_areas = set(), set()
+            fresh = [c for c in candidates
+                     if _norm_sig(str(c.get("title") or "")) not in recent_sigs
+                     and _norm_sig(str(c.get("question") or "")) not in recent_sigs
+                     and (c.get("area") not in lowyield_areas)]
+            if not fresh:
+                # Everything is a recent repeat or a known low-yield area.
+                # Skipping this tick (returning None) is the efficiency win —
+                # better than burning the daily-cap on a known dead-end. The
+                # loop re-engages when the candidate generators surface
+                # something new.
+                logger.info(
+                    "brain_self_director: anti-loop — all candidates recent/"
+                    "low-yield (suppressed areas=%s); skipping tick",
+                    sorted(lowyield_areas))
+                return None
+        else:
+            try:
+                recent = _recent_titles(_dedup_window_days())
+            except Exception:
+                recent = set()
+            fresh = [c for c in candidates
+                     if str(c.get("title") or "").strip().lower() not in recent
+                     and str(c.get("question") or "").strip().lower() not in recent]
+            if not fresh:
+                return None
 
         # Highest-leverage first; stable on ties by original pooled order so the
         # choice is deterministic.

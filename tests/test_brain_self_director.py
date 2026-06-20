@@ -251,6 +251,7 @@ def test_pick_chooses_highest_leverage(monkeypatch):
          "area": "data_coverage", "leverage": 1.45, "source": "op"},
     ])
     monkeypatch.setattr(sd, "_recent_titles", lambda days: set())
+    monkeypatch.setattr(sd, "_recent_sigs_and_lowyield", lambda days: (set(), set()))
 
     item = sd.pick_agenda_item()
     assert item is not None
@@ -270,8 +271,9 @@ def test_pick_dedupes_against_recent_items(monkeypatch):
         {"kind": "opportunity", "title": "fresh-one", "question": "qb",
          "area": "performance", "leverage": 1.0, "source": "op"},
     ])
-    # The high-leverage item's title is in the recent set -> it must be skipped.
-    monkeypatch.setattr(sd, "_recent_titles", lambda days: {"already-done"})
+    # The high-leverage item's signature is in the recent set -> skipped.
+    monkeypatch.setattr(sd, "_recent_sigs_and_lowyield",
+                        lambda days: ({sd._norm_sig("already-done")}, set()))
 
     item = sd.pick_agenda_item()
     assert item is not None
@@ -287,7 +289,8 @@ def test_pick_returns_none_when_all_deduped(monkeypatch):
          "area": "reliability", "leverage": 1.0, "source": "wp"},
     ])
     monkeypatch.setattr(sd, "_opportunity_candidates", lambda: [])
-    monkeypatch.setattr(sd, "_recent_titles", lambda days: {"a", "qa"})
+    monkeypatch.setattr(sd, "_recent_sigs_and_lowyield",
+                        lambda days: ({sd._norm_sig("a"), sd._norm_sig("qa")}, set()))
     assert sd.pick_agenda_item() is None
 
 
@@ -307,10 +310,69 @@ def test_pick_never_raises_when_a_source_errors(monkeypatch):
         {"kind": "opportunity", "title": "ok", "question": "q",
          "area": "performance", "leverage": 1.0, "source": "op"},
     ])
-    monkeypatch.setattr(sd, "_recent_titles", lambda days: set())
+    monkeypatch.setattr(sd, "_recent_sigs_and_lowyield", lambda days: (set(), set()))
     item = sd.pick_agenda_item()  # must NOT raise
     assert item is not None
     assert item["title"] == "ok"
+
+
+# ── anti-loop (2026-06-20): the data_coverage spin fix ───────────────────────
+def test_norm_sig_collapses_drifting_count_titles():
+    """The data_coverage agenda title embeds live counts that drift every tick;
+    the number-stripped signature must collapse them so dedup actually fires."""
+    a = "[data_coverage] 2207 verified vs 21804 tracked facilities (19597 in the pile)"
+    b = "[data_coverage] 2235 verified vs 21762 tracked facilities (19527 in the pile)"
+    assert sd._norm_sig(a) == sd._norm_sig(b)
+    # but a genuinely different topic must NOT collapse onto it
+    assert sd._norm_sig(a) != sd._norm_sig("[conversion_revenue] 5 paying accounts")
+
+
+def test_pick_suppresses_low_yield_area(monkeypatch):
+    """An AREA that keeps coming back low-confidence/refuted is suppressed even
+    when its title is novel — so the brain stops spinning on data_coverage and
+    spends its reasoning on a productive area instead."""
+    monkeypatch.setattr(sd, "_work_plan_candidates", lambda: [
+        {"kind": "opportunity", "title": "[data_coverage] 2299 vs 21762 NEW",
+         "question": "where to verify?", "area": "data_coverage",
+         "leverage": 2.0, "source": "op"},
+    ])
+    monkeypatch.setattr(sd, "_opportunity_candidates", lambda: [
+        {"kind": "opportunity", "title": "[conversion_revenue] activation gap",
+         "question": "close the 30-account gap?", "area": "conversion_revenue",
+         "leverage": 1.0, "source": "op"},
+    ])
+    # data_coverage flagged low-yield; its novel-but-higher-leverage item is
+    # suppressed and the productive area wins.
+    monkeypatch.setattr(sd, "_recent_sigs_and_lowyield",
+                        lambda days: (set(), {"data_coverage"}))
+    item = sd.pick_agenda_item()
+    assert item is not None
+    assert item["area"] == "conversion_revenue", \
+        "a low-yield area must be skipped even at higher leverage"
+
+
+def test_pick_skips_tick_when_all_low_yield(monkeypatch):
+    """If the only candidates are in low-yield areas, pick returns None — skipping
+    a known dead-end is the efficiency win, not re-looping on it."""
+    monkeypatch.setattr(sd, "_work_plan_candidates", lambda: [
+        {"kind": "opportunity", "title": "[data_coverage] x", "question": "q",
+         "area": "data_coverage", "leverage": 2.0, "source": "op"},
+    ])
+    monkeypatch.setattr(sd, "_opportunity_candidates", lambda: [])
+    monkeypatch.setattr(sd, "_recent_sigs_and_lowyield",
+                        lambda days: (set(), {"data_coverage"}))
+    assert sd.pick_agenda_item() is None
+
+
+def test_antiloop_default_on():
+    """Ships ON (BRAIN_SELFDIRECT_ANTILOOP default '1')."""
+    import os as _os
+    _prev = _os.environ.pop("BRAIN_SELFDIRECT_ANTILOOP", None)
+    try:
+        assert sd._antiloop_enabled() is True
+    finally:
+        if _prev is not None:
+            _os.environ["BRAIN_SELFDIRECT_ANTILOOP"] = _prev
 
 
 # ════════════════════════════════════════════════════════════════════
