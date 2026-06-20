@@ -37,6 +37,8 @@ ai_reach_rollup_bp = Blueprint("ai_reach_rollup", __name__)
 
 CAP_WEEKS = 16              # how many trailing weeks the /trend endpoint serves
 BACKFILL_WEEKS = 12         # trailing weeks recomputed every run (idempotent; self-heals gaps)
+_SCAN_CHUNK = 200_000       # id-range chunk per scan statement (dense weeks are ~1M+ wide rows;
+                            # a single GROUP BY over a whole week exceeds the statement timeout)
 # Filter external/internal in PYTHON on the small grouped output, NOT with a SQL
 # regex per row — the SQL `ip !~ regex` over 1M+ dense recent-week rows blew the
 # statement timeout and killed the rollup mid-backfill. Same _PRIVATE_IP pattern
@@ -128,25 +130,33 @@ def _compute_week(cur, week_start: date, id_lo: int, id_hi: int) -> dict:
     """One id-bounded GROUP BY scan → counts + the week's external IP set; then
     fold the IP set into reach_ip_seen and derive new_external_ips from
     first_seen_week (idempotent on re-run)."""
-    # No SQL regex — group cheaply, then filter private IPs + internal platforms
-    # in Python over the small grouped result (a few hundred rows at most).
-    cur.execute("""
-        SELECT ip_address, platform_id, COUNT(*) AS reqs
-        FROM agent_requests
-        WHERE id BETWEEN %s AND %s
-          AND ip_address IS NOT NULL AND ip_address <> ''
-        GROUP BY ip_address, platform_id
-    """, (id_lo, id_hi))
+    # Scan the week's id-range in bounded CHUNKS, merging in Python. A single
+    # GROUP BY over a dense week (~1M+ wide rows, heap fetches for ip/platform)
+    # blew the statement timeout; chunking keeps every statement small while the
+    # distinct-IP/platform SETS accumulate across chunks. Filter private IPs +
+    # internal platforms in Python (same _PRIVATE_IP / _INTERNAL_PLAT as the live
+    # /ai/reach — no drift).
     ips, plats, reqs = set(), set(), 0
-    for ip, plat, n in cur.fetchall():
-        if _PRIV_RE.match(ip or ''):                 # private/loopback = internal
-            continue
-        if (plat or '') in _INT_PLAT:                # internal platform buckets
-            continue
-        ips.add(ip)
-        if plat:
-            plats.add(plat)
-        reqs += int(n or 0)
+    cl = id_lo
+    while cl <= id_hi:
+        ch = min(cl + _SCAN_CHUNK - 1, id_hi)
+        cur.execute("""
+            SELECT ip_address, platform_id, COUNT(*) AS reqs
+            FROM agent_requests
+            WHERE id BETWEEN %s AND %s
+              AND ip_address IS NOT NULL AND ip_address <> ''
+            GROUP BY ip_address, platform_id
+        """, (cl, ch))
+        for ip, plat, n in cur.fetchall():
+            if _PRIV_RE.match(ip or ''):              # private/loopback = internal
+                continue
+            if (plat or '') in _INT_PLAT:             # internal platform buckets
+                continue
+            ips.add(ip)
+            if plat:
+                plats.add(plat)
+            reqs += int(n or 0)
+        cl = ch + 1
 
     # Fold this week's IPs into the cumulative seen-set. Only IPs not seen in an
     # EARLIER week get first_seen_week = this week (weeks are processed ascending),
