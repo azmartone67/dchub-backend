@@ -8,10 +8,16 @@
 name: DataCenterMap — nightly coverage sweep
 
 on:
-  schedule:
-    # 04:11 UTC daily — well off-peak for DCM, doesn't dogpile our
-    # other crons (monthly cron at 00:05, brain inspector at :07).
-    - cron: '11 4 * * *'
+  # DISABLED 2026-06-20: datacentermap.com moved behind a Vercel bot-wall
+  # (returns HTTP 429 "Vercel Security Checkpoint" to all crawlers), so the
+  # nightly fetched nothing and finished in ~8s — a daily no-op that reported
+  # a misleading green "success" and never wrote a dcm_crawl_log row. Schedule
+  # commented out; kept as workflow_dispatch so it auto-resumes the moment
+  # datacentermap drops the Vercel wall (just uncomment the cron).
+  # schedule:
+  #   # 04:11 UTC daily — well off-peak for DCM, doesn't dogpile our
+  #   # other crons (monthly cron at 00:05, brain inspector at :07).
+  #   - cron: '11 4 * * *'
   workflow_dispatch:
     inputs:
       country:
