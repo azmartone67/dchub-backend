@@ -26,7 +26,7 @@ Routes (registered via ai_reach_rollup_bp in main.py, next to ai_reach):
   GET  /api/v1/ai/reach/trend   -> precomputed weeks (cold-start safe, fail-soft 200)
 """
 from __future__ import annotations
-import threading
+import re, threading
 from datetime import datetime, date, timedelta
 from flask import Blueprint, jsonify
 import psycopg2, psycopg2.extras
@@ -36,7 +36,13 @@ from routes.ai_reach import _conn, _PRIVATE_IP, _INTERNAL_PLAT
 ai_reach_rollup_bp = Blueprint("ai_reach_rollup", __name__)
 
 CAP_WEEKS = 16              # how many trailing weeks the /trend endpoint serves
-FIRST_RUN_BACKFILL = 12     # weeks to backfill on the very first run (bounded cost)
+BACKFILL_WEEKS = 12         # trailing weeks recomputed every run (idempotent; self-heals gaps)
+# Filter external/internal in PYTHON on the small grouped output, NOT with a SQL
+# regex per row — the SQL `ip !~ regex` over 1M+ dense recent-week rows blew the
+# statement timeout and killed the rollup mid-backfill. Same _PRIVATE_IP pattern
+# + _INTERNAL_PLAT set → identical result to the live /ai/reach, no drift.
+_PRIV_RE = re.compile(_PRIVATE_IP)
+_INT_PLAT = set(_INTERNAL_PLAT)
 _running = threading.Lock()         # prevents two overlapping recomputes on one replica
 
 
@@ -122,18 +128,21 @@ def _compute_week(cur, week_start: date, id_lo: int, id_hi: int) -> dict:
     """One id-bounded GROUP BY scan → counts + the week's external IP set; then
     fold the IP set into reach_ip_seen and derive new_external_ips from
     first_seen_week (idempotent on re-run)."""
-    plats_ph = "(" + ",".join("%s" for _ in _INTERNAL_PLAT) + ")"
-    cur.execute(f"""
+    # No SQL regex — group cheaply, then filter private IPs + internal platforms
+    # in Python over the small grouped result (a few hundred rows at most).
+    cur.execute("""
         SELECT ip_address, platform_id, COUNT(*) AS reqs
         FROM agent_requests
         WHERE id BETWEEN %s AND %s
           AND ip_address IS NOT NULL AND ip_address <> ''
-          AND ip_address !~ %s
-          AND COALESCE(platform_id,'') NOT IN {plats_ph}
         GROUP BY ip_address, platform_id
-    """, (id_lo, id_hi, _PRIVATE_IP, *_INTERNAL_PLAT))
+    """, (id_lo, id_hi))
     ips, plats, reqs = set(), set(), 0
     for ip, plat, n in cur.fetchall():
+        if _PRIV_RE.match(ip or ''):                 # private/loopback = internal
+            continue
+        if (plat or '') in _INT_PLAT:                # internal platform buckets
+            continue
         ips.add(ip)
         if plat:
             plats.add(plat)
@@ -172,10 +181,11 @@ def _compute_week(cur, week_start: date, id_lo: int, id_hi: int) -> dict:
 
 
 def run_reach_rollup() -> dict:
-    """Recompute the weekly reach rollup. First run backfills FIRST_RUN_BACKFILL
-    weeks (ascending, with a pre-window seed so 'new' is honest); later runs only
-    recompute the previous + current week. Idempotent. Safe to call from the
-    daily cron thread or the /api/cron/reach-rollup handler."""
+    """Recompute the weekly reach rollup over the trailing BACKFILL_WEEKS window,
+    processed ascending (so reach_ip_seen builds chronologically and
+    new_external_ips is honest). UPSERT-idempotent and self-healing — re-running
+    re-derives every window week. Safe to call from the daily cron thread or the
+    /api/cron/reach-rollup handler."""
     if not _running.acquire(blocking=False):
         return {"ok": False, "skipped": "already_running"}
     try:
@@ -199,14 +209,11 @@ def run_reach_rollup() -> dict:
                 cur_week = _monday(today)
                 data_first_week = _monday(first_dt.date())
 
-                cur.execute("SELECT COUNT(*) FROM reach_weekly")
-                have_rows = int((cur.fetchone() or [0])[0]) > 0
-
-                if not have_rows:
-                    # first run: backfill a bounded window, oldest-first
-                    start_week = max(data_first_week, cur_week - timedelta(weeks=FIRST_RUN_BACKFILL - 1))
-                else:
-                    start_week = max(data_first_week, cur_week - timedelta(weeks=1))
+                # Always recompute the full trailing window (UPSERT-idempotent).
+                # The per-week scan is now cheap (no SQL regex), so this is ~tens
+                # of seconds/day in a background thread and it SELF-HEALS any gap
+                # left by a prior partial/timed-out run.
+                start_week = max(data_first_week, cur_week - timedelta(weeks=BACKFILL_WEEKS - 1))
 
                 weeks = []
                 w = start_week
@@ -238,7 +245,7 @@ def run_reach_rollup() -> dict:
                     results.append(_compute_week(cur, wk, id_lo, id_hi))
 
                 return {"ok": True, "weeks_computed": len(results),
-                        "backfill": not have_rows, "current_week": cur_week.isoformat(),
+                        "window_weeks": len(weeks), "current_week": cur_week.isoformat(),
                         "weeks": results}
         finally:
             try: c.close()
