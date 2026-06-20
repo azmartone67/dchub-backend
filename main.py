@@ -1529,18 +1529,11 @@ try:
     except Exception as _fhe:
         import logging
         logging.getLogger(__name__).warning('funnel_health wiring failed: %s', _fhe)
-    # RETENTION COHORT analyzer (2026-06-19): key-based retention over mcp_call_log
-    # so the brain reasons on REAL funnel data (the ~74-try / ~1-return leak it
-    # flagged at 0.2 confidence for lack of instrumentation). De-looped via the
-    # canonical mcp_calls_deloop.PROBE_PLATFORMS list, COUNT(DISTINCT api_key).
-    # Exposes admin-gated GET /api/v1/mcp/retention/cohorts; the brain investigator
-    # reads compute_retention_cohorts()->retention_cohort_evidence() as Source 6.
-    try:
-        from routes.retention_cohorts import register_retention_cohorts
-        register_retention_cohorts(app)
-    except Exception as _rce:
-        import logging
-        logging.getLogger(__name__).warning('retention_cohorts wiring failed: %s', _rce)
+    # RETENTION COHORT analyzer: moved OUT of this 960-line shared try-block so a
+    # failure in any EARLIER blueprint import here can't silently skip it (which
+    # is exactly what stranded GET /api/v1/mcp/retention/cohorts at 404 while the
+    # adjacent funnel_health registered fine). Re-wired at module level just after
+    # this block ends — see "RETENTION COHORT analyzer (decoupled wiring)" below.
     # MCP Funnel Round 3 (2026-06-07): three Unlocks landing together —
     #   1) per-tool conversion analyzer (read-only brain detector, daily 02 UTC)
     #   2) /dashboard/usage customer self-serve usage page (key-gated, 10 req/min)
@@ -2325,6 +2318,24 @@ except Exception as _e:
     import logging
     logging.getLogger(__name__).warning('phase22-24 wiring failed: %s', _e)
 # --- end Phase 22 + 23 + 24 ---
+
+# --- RETENTION COHORT analyzer (decoupled wiring, 2026-06-19) ----------------
+# Key-based retention over mcp_call_log (DISTINCT api_key, de-looped via
+# mcp_calls_deloop.PROBE_PLATFORMS) so the brain reasons on REAL funnel data
+# (the ~74-try / ~1-return multi-day leak). Exposes admin-gated
+# GET /api/v1/mcp/retention/cohorts; the brain investigator reads
+# compute_retention_cohorts()->retention_cohort_evidence() as Source 6.
+# Deliberately registered in its OWN top-level try/except — NOT inside the big
+# phase22-24 block above — so an unrelated earlier import failure there can't
+# strand this endpoint at 404. This is the measurement instrument for the
+# first-call durable-key surface; it must always wire.
+try:
+    from routes.retention_cohorts import register_retention_cohorts
+    register_retention_cohorts(app)
+    logging.getLogger(__name__).info('[main] retention_cohorts_bp registered: /api/v1/mcp/retention/cohorts')
+except Exception as _rce:
+    import logging as _logging
+    _logging.getLogger(__name__).warning('retention_cohorts wiring failed: %s', _rce)
 
 # --- phase 19: clean geocoder, ArcGIS first (proven works locally) ---------
 @app.route('/api/v1/geocode', methods=['GET', 'OPTIONS'])
