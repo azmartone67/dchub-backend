@@ -241,15 +241,18 @@ def mcp_leadership():
     actions = _shadow_actions(dims)
     payload = dict(
         engine="MCP Leadership Engine",
-        phase="shadow", decides=True, executes=False, armed=_optimize_armed(),
+        phase="diagnostic", decides=True, executes=False,
+        armed=_optimize_armed(), execution_wired=False,  # NOTE: no executor reads `armed` — diagnostic-only
         mcp_leadership_index=index, verdict=verdict,
         top_priority={"dimension": top.get("dimension"), "score": top.get("score"),
                       "move": top.get("top_move")} if top else None,
         dimensions=dims,
         shadow_actions=actions,
-        note=("MEASURES category leadership + names the actuator it WOULD fire per "
-              "dimension; executes nothing. Arming is per-actuator (the `armable_now` "
-              "ones first), gated by BRAIN_MCP_OPTIMIZE_ARMED + fix_success_rate>=50%."),
+        note=("DIAGNOSTIC-ONLY: measures category leadership + names the actuator it "
+              "WOULD fire per dimension, but NO code path executes any actuator from this "
+              "engine — `armed`/fix_success_rate are NOT wired to an executor. The named "
+              "actuators run via their own crons/endpoints (e.g. the tool-tuner re-seed "
+              "cron) or remain human-gated; treat this as a scoreboard, not an autopilot."),
     )
     # Only cache a COMPLETE response — if any internal prefetch timed out / returned
     # {} (e.g. the slow /api/v1/ai/reach), a dimension degrades to 0; don't freeze

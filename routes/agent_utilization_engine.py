@@ -189,7 +189,8 @@ def agent_utilization():
 
     payload = dict(
         engine="AI Agent Utilization Engine",
-        phase="shadow", decides=True, executes=False, armed=_util_armed(),
+        phase="diagnostic", decides=True, executes=False,
+        armed=_util_armed(), execution_wired=False,  # NOTE: no executor reads `armed` — diagnostic-only
         utilization_score=util_score,
         biggest_leak={"track": leak["track"], "score": leak["score"], "why": leak["note"], "move": leak["lever"]},
         lifecycle_funnel={
@@ -203,10 +204,11 @@ def agent_utilization():
         shadow_actions=[{"track": t["track"], "score": t["score"], "would_fire": t["actuator"],
                          "armable_now": t["armable_now"], "kind": t["kind"], "executed": False,
                          "rationale": t["lever"]} for t in sorted(tracks, key=lambda x: x["score"])],
-        note=("onboard/incent/train over the REAL agent lifecycle. INCENT (return) is "
-              "the leak; onboard/train function. Executes nothing — arming per-actuator, "
-              "gated by BRAIN_AGENT_UTIL_ARMED + fix_success_rate>=50%. Pairs with "
-              "/api/v1/mcp/leadership (category index) + /api/v1/brain/ownership."),
+        note=("onboard/incent/train over the REAL agent lifecycle. INCENT (return) is the "
+              "leak; onboard/train function. DIAGNOSTIC-ONLY: no code path executes any "
+              "actuator from this engine — `armed`/fix_success_rate are NOT wired to an "
+              "executor. Named actuators run via their own crons/endpoints or are human-"
+              "gated. Pairs with /api/v1/mcp/leadership + /api/v1/brain/ownership."),
     )
     # Only cache a COMPLETE response (don't freeze a degraded frame from a timed-out
     # internal prefetch — see mcp_leadership_engine).

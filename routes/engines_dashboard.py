@@ -55,13 +55,13 @@ h1{font-size:24px;font-weight:600;letter-spacing:-.02em;margin:0 0 4px}
 .err{color:#ffb4b4;font-size:12px}
 </style></head><body><div class="wrap">
 <h1>DC Hub · Optimization Engines</h1>
-<div class="sub">self-measuring · self-optimizing · <b id="phase">shadow</b> phase — measures &amp; proposes, executes nothing until <code>fix_success_rate &ge; 50%</code></div>
+<div class="sub">self-measuring · <b id="phase">diagnostic</b> phase — DIAGNOSTIC ONLY: measures &amp; names the actuator per dimension, but this engine fires nothing. The proposed actuators run via their own crons/endpoints, not an auto-loop.</div>
 <div class="banner" id="banner">Loading engines…</div>
 <div class="grid">
   <div class="panel" id="lead"><div class="phead"><div class="ptitle">⚡ MCP Leadership</div><div class="ptag">/api/v1/mcp/leadership</div></div><div id="lead-body" class="err">loading…</div></div>
   <div class="panel" id="util"><div class="phead"><div class="ptitle">🤖 Agent Utilization</div><div class="ptag">/api/v1/agents/utilization</div></div><div id="util-body" class="err">loading…</div></div>
 </div>
-<div class="foot">SHADOW — both engines execute nothing. The auto-optimize loop arms per-actuator (⚡ = armable now) when the recovery watch clears 50%. · auto-refreshes 60s</div>
+<div class="foot">MEASUREMENT-ONLY — these engines diagnose + name the actuator per dimension but fire nothing themselves. There is NO wired auto-optimize loop; the ⚡ "armable" actuators are run by SEPARATE jobs (e.g. the weekly tool-tuner re-seed cron) or are still human-gated. · auto-refreshes 60s</div>
 </div>
 <script>
 function col(s){return s>=75?'#4ade80':s>=50?'#4F8FFF':s>=25?'#fbbf24':'#f87171'}
