@@ -1,12 +1,6 @@
 /* phase71_runtime_gating -- DOM observer + pattern scanner
- *
- * Three layers of gating:
- *   1. Hard-coded data-gate attrs (set in templates) -> redacted on load
- *   2. Pattern scanner over text nodes -> auto-wraps MW/GW values, $/MW-day
- *      rates, ratios, large counts in tables
- *   3. MutationObserver re-runs both above on dynamic content insertions
- *
- * Single file, no dependencies, ~2 KB.
+ * Hosted from dchub-frontend so dchub.cloud/static/gating.js resolves natively
+ * via CF Pages. Same logic as Phase 71's dchub-backend copy.
  */
 (function () {
   'use strict';
@@ -17,32 +11,35 @@
   var currentTierIdx = 0;
   var sessionId = '';
   var redeemTemplate = 'https://dchub.cloud/api/v1/redeem/{session_id}';
-  var GATING_VERSION = 'phase71';
+  var GATING_VERSION = 'phase72.1-localstorage-auth';
 
-  // Patterns to detect at runtime (case-sensitive on units to avoid false positives)
+  // Phase 285: placeholders that DON'T look like real pricing data.
+  // Previously rate/amount used "$1,188" which renders identically to a
+  // real (terrible) price — users mistook it for broken data, not a paywall.
+  // The CI/healer correctly flagged "$1,188" as absent_text on /markets/.
+  // Now both use em-dash, matching the capacity placeholder convention and
+  // making "this is redacted, click to unlock" visually obvious. The blue
+  // dotted-underline + click-to-redeem behavior is preserved via the
+  // .gated-redacted CSS class (unchanged).
   var PATTERNS = [
     {
-      // Large MW/GW values: 30 GW, 1,200 MW, 63,691 MW
       regex: /\b(?:\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d{2,6}(?:\.\d+)?)(\s*)(MW|GW)\b/g,
-      placeholder: 'multi-GW',
+      placeholder: '—',
       label: 'capacity'
     },
     {
-      // $/MW-day, $/kWh, $/MWh rates
       regex: /\$\s*\d+(?:\.\d+)?\s*\/\s*(?:MW-day|kWh|MWh)/g,
-      placeholder: '—',
+      placeholder: '—',  // phase 285: was '$1,188' — looked like real broken pricing
       label: 'rate'
     },
     {
-      // Ratios: 1.4x, 2.7x
       regex: /\b\d+\.\d+x\b/g,
       placeholder: '1x-2x',
       label: 'ratio'
     },
     {
-      // Dollar amounts >= $1M
       regex: /\$\s*\d{1,3}(?:,\d{3})+(?:\.\d+)?(?:M|B|K)?\b/g,
-      placeholder: '—',
+      placeholder: '—',  // phase 285: was '$1,188' — looked like real broken pricing
       label: 'amount'
     }
   ];
@@ -53,6 +50,23 @@
   function tierIndex(t) {
     var i = TIER_ORDER.indexOf(String(t || 'anonymous').toLowerCase());
     return i < 0 ? 0 : i;
+  }
+
+  // 2026-06-20: the Land & Power map (and the rest of the app) signs paying
+  // users in via a localStorage token/key — NOT a session cookie. Sending only
+  // credentials:'include' made /api/v1/me/tier resolve 'anonymous' for a
+  // logged-in Pro/Enterprise (even the owner), so this scanner redacted their
+  // CAPACITY popups. Forward the same Bearer/X-API-Key the map's own fetches
+  // use so the tier resolves correctly and paid users are never gated.
+  function authHeaders() {
+    var h = {};
+    try {
+      var tok = localStorage.getItem('dchub_token');
+      var key = localStorage.getItem('dchub_api_key');
+      if (tok) h['Authorization'] = 'Bearer ' + tok;
+      if (key) h['X-API-Key'] = key;
+    } catch (e) {}
+    return h;
   }
 
   function injectStyles() {
@@ -79,8 +93,17 @@
   }
 
   function redeemUrl() {
+    // Phase FF+1 (2026-05-13): when sessionId is empty (anonymous user
+    // never went through the AI-assistant flow), send them to /pricing
+    // instead of /api/v1/redeem/browse. The redeem endpoint validates
+    // session_id against UUID_RE and returns a 400 "Invalid session ID"
+    // page for 'browse' — that broke the Markets→Pricing nav for
+    // incognito users ("I was on a call and couldn't access our LA
+    // pricing"). Real UUID sessions still flow through redeem; the
+    // anonymous case now bounces cleanly to the public pricing wall.
+    if (!sessionId || sessionId === 'browse') return '/pricing';
     return (redeemTemplate || 'https://dchub.cloud/api/v1/redeem/{session_id}')
-      .replace('{session_id}', sessionId || 'browse');
+      .replace('{session_id}', sessionId);
   }
 
   function attachClick(el) {
@@ -119,7 +142,6 @@
     var text = node.nodeValue;
     if (!text || text.length < 2) return;
 
-    // Walk the text, finding earliest match across patterns at each position
     var fragments = [];
     var lastIdx = 0;
     var hasMatch = false;
@@ -173,11 +195,10 @@
   }
 
   function scanRoot(root) {
-    if (currentTierIdx >= 2) return; // 2 = developer; dev+ sees everything
+    if (currentTierIdx >= 2) return;
     if (!root) return;
     var walker = document.createTreeWalker(
-      root,
-      NodeFilter.SHOW_TEXT,
+      root, NodeFilter.SHOW_TEXT,
       {
         acceptNode: function (n) {
           var p = n.parentNode;
@@ -192,7 +213,6 @@
     var nodes = [];
     var n;
     while ((n = walker.nextNode())) nodes.push(n);
-    // Reverse to avoid invalidating walker's parent references
     for (var i = nodes.length - 1; i >= 0; i--) {
       processTextNode(nodes[i]);
     }
@@ -226,13 +246,10 @@
   function setupObserver() {
     if (!window.MutationObserver) return;
     var observer = new MutationObserver(function (muts) {
-      // Skip mutations triggered by our own gating (replaceChild adds new nodes)
-      // The data-gating-applied attribute on the new spans tells us to skip
       var rescanNeeded = false;
       for (var i = 0; i < muts.length; i++) {
         var m = muts[i];
         if (m.type !== 'childList' && m.type !== 'characterData') continue;
-        // Check if all added nodes are our own gated spans
         var allOurs = true;
         for (var j = 0; j < m.addedNodes.length; j++) {
           var node = m.addedNodes[j];
@@ -249,21 +266,27 @@
       if (rescanNeeded) debouncedRescan();
     });
     observer.observe(document.body, {
-      childList: true,
-      subtree: true,
-      characterData: true
+      childList: true, subtree: true, characterData: true
     });
   }
 
   function init() {
+    // r62-qa: NEVER run the paywall scanner on public sales/checkout surfaces.
+    // PATTERN 4 (comma-grouped dollar amounts) was redacting the pricing page's
+    // OWN annual prices ($2,990 / $5,990 / save $1,200 …) to '—' for anonymous
+    // visitors, making real pricing look broken. These pages must always show
+    // real prices regardless of tier.
+    var _p = (location.pathname || '').replace(/\/+$/, '').toLowerCase();
+    if (_p === '/pricing' || _p === '/checkout' || _p === '/signup' || _p === '/upgrade') {
+      return;
+    }
     injectStyles();
-    fetch('/api/v1/me/tier', { credentials: 'include' })
+    fetch('/api/v1/me/tier', { credentials: 'include', headers: authHeaders() })
       .then(function (r) { return r.json(); })
       .then(function (data) {
         currentTierIdx = tierIndex(data.tier);
         sessionId = data.session_id || '';
         redeemTemplate = data.redeem_url_template || redeemTemplate;
-        // initial pass + observer
         applyMarkedGating(document);
         scanRoot(document.body);
         setupObserver();

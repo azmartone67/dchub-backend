@@ -107,6 +107,25 @@ def get_current_tier():
                 tier = str(_ct).lower()
         except Exception:
             pass
+    # 2026-06-20: the owner + dashboard-authed PAYING users reach the Land &
+    # Power map via a localStorage X-API-Key / Bearer (no JWT session cookie),
+    # so _tier_from_api_key (mcp_dev_keys only) AND the cookie-JWT path above
+    # both miss → /api/v1/me/tier reported 'anonymous' and gating.js redacted
+    # CAPACITY (MW/GW) in popups for a paying — even enterprise/owner — user
+    # ("shows for a microsecond then blocks"). Promote via the proven
+    # cross-table resolver (util.tier_gate.resolve_tier: api_keys dual key_hash
+    # match incl. raw-stored owner/admin keys + users.plan + Bearer-JWT).
+    # Additive + fail-soft — only ever PROMOTES, never downgrades.
+    if (not tier) or str(tier).lower() in ('anonymous', 'anon', 'free', ''):
+        try:
+            from util.tier_gate import resolve_tier as _rt
+            _t, _ = _rt(request)
+            _name = {0: 'anonymous', 1: 'free', 2: 'developer',
+                     3: 'pro', 4: 'enterprise'}.get(int(_t), 'anonymous')
+            if TIER_INDEX.get(_name, 0) > TIER_INDEX.get(str(tier or 'anonymous').lower(), 0):
+                tier = _name
+        except Exception:
+            pass
     try:
         setattr(request, '_cached_tier', tier)
     except Exception:
