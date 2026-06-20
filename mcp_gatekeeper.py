@@ -522,6 +522,138 @@ TIER_PRICE = {
     Tier.ENTERPRISE: "Contact sales",
 }
 
+# ═══════════════════════════════════════════════════════════════
+# OPT-IN CTA (marketing consent capture) — ships DARK
+# ═══════════════════════════════════════════════════════════════
+#
+# GOAL: make high-usage FREE users *reachable* for upgrade outreach by
+# getting them to OPT IN to marketing — compliantly. The outreach engine's
+# high_usage_free segment hard-gates on mcp_dev_keys.metadata->>marketing_opt_in
+# = 'true' (routes/upgrade_outreach.py); today ~0 are opted in, so the power
+# users on get_grid_intelligence / get_fiber_intel are unreachable.
+#
+# This is the SOFT, honest, ADDITIVE CTA injected into the paywall response a
+# FREE user gets when they hit one of those high-usage paid tools. It does NOT
+# send anything — it only points the user at the opt-in REQUEST flow (which
+# emails a tokenized CONFIRM link; opt-in is set ONLY on the confirm click —
+# the double-opt-in confirm path is a sibling component). Compliance rules
+# baked in here:
+#   • FLAG-GATED behind OPTIN_CTA_ENABLED (default OFF) — ships dark, tunable
+#     without redeploy.
+#   • FREE users only (never shown to paid/identified+ — they're already
+#     reachable / already customers).
+#   • Targeted to the real pool: only the high-usage paid tools below.
+#   • SOFT + honest value (free grid-data upgrade guide + early access), easy
+#     to ignore, no dark pattern. No pre-checked anything; opt-in happens on a
+#     later explicit confirm click, never from showing this CTA.
+#   • Additive: returned as a separate structured field + an appended note —
+#     it NEVER replaces or mutates the tool's real data payload.
+
+# The high-usage paid tools that define the reachable pool we want to convert.
+# Keep this tight so we only prompt where there's a real upgrade-outreach
+# audience (184 power users on get_grid_intelligence, 166 on get_fiber_intel).
+OPTIN_CTA_TOOLS = frozenset({
+    "get_grid_intelligence",
+    "get_fiber_intel",
+})
+
+
+def optin_cta_enabled() -> bool:
+    """Master flag — ships DARK. Toggle via OPTIN_CTA_ENABLED=true (no
+    redeploy). Mirrors the FREE_TIER_GATE_ENABLED env-gate convention."""
+    return os.environ.get("OPTIN_CTA_ENABLED", "false").strip().lower() == "true"
+
+
+def _optin_cta_block(tool_name: str, tier: int,
+                     api_key: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """Build the SOFT marketing opt-in CTA for a paywalled FREE-tier response.
+
+    Returns a small structured dict (machine-readable card + a one-line note
+    for text-only relay agents), or None when the CTA must NOT show. Pure +
+    side-effect-free (no Flask/db/network) so it's safe to call on the hot
+    paywall path and trivially unit-testable.
+
+    Shows ONLY when ALL hold:
+      • OPTIN_CTA_ENABLED flag is on (ships dark by default), AND
+      • the caller is FREE tier (paid/identified+ are already reachable), AND
+      • the tool is one of the high-usage paid tools (OPTIN_CTA_TOOLS).
+
+    This NEVER sets marketing_opt_in. It only advertises the opt-in REQUEST
+    flow; consent is captured later, on the tokenized confirm click (the
+    double-opt-in confirm path is a separate component). No email is sent here.
+    """
+    if not optin_cta_enabled():
+        return None
+    # FREE only. Tier is an IntEnum (FREE=0); anyone identified or paying is
+    # already reachable / already a customer — don't pester them.
+    if tier != Tier.FREE:
+        return None
+    if tool_name not in OPTIN_CTA_TOOLS:
+        return None
+
+    # Opt-in REQUEST endpoint. Hitting it triggers the double-opt-in flow:
+    # the server emails a tokenized CONFIRM link, and ONLY the confirm click
+    # sets marketing_opt_in=true + logs consent. The CTA carries the source
+    # tool (attribution) but no consent is implied by clicking this link.
+    from urllib.parse import urlencode
+    params = {"source": "paywall_optin_cta", "tool": tool_name}
+    if api_key:
+        # Lets the request flow pre-resolve the bound email for this key (if
+        # any) so the human only confirms — still double-opt-in, no auto-set.
+        params["key"] = api_key
+    optin_url = f"https://dchub.cloud/api/v1/marketing/opt-in/request?{urlencode(params)}"
+
+    note = (
+        "📓 Power user? Get our free grid-data upgrade guide + early access to "
+        "new datasets — opt in (we email you a confirm link, unsubscribe "
+        "anytime): " + optin_url
+    )
+    return {
+        "optin_url": optin_url,
+        "optin_note": note,
+        "optin_value": (
+            "Free grid-data upgrade guide + early access to new datasets. "
+            "Double opt-in (we email a confirm link); one-click unsubscribe "
+            "anytime. Easy to ignore — your tool access is unchanged."
+        ),
+        "optin_double_opt_in": True,
+        "optin_source": "paywall_optin_cta",
+        "optin_tool": tool_name,
+    }
+
+
+def _optin_recipient_suppressed(api_key: Optional[str]) -> bool:
+    """True if the email bound to this api_key is on the suppression list — so a
+    previously-unsubscribed user is never RE-shown the opt-in CTA (CAN-SPAM).
+    Called ONLY on the narrow CTA-candidate path (flag on + FREE + target tool),
+    so the extra query is rare, not on every call. FAIL-SAFE: on any error /
+    missing DB we return True (skip the CTA) rather than risk re-prompting."""
+    if not api_key:
+        return False  # anonymous/no bound email -> nothing to suppress
+    try:
+        import os as _os
+        import psycopg2 as _pg
+        from routes.email_suppression import is_suppressed as _is_suppressed
+        dsn = _os.environ.get("DATABASE_URL") or _os.environ.get("NEON_DATABASE_URL")
+        if not dsn:
+            return True
+        conn = _pg.connect(dsn, connect_timeout=4)
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT email FROM mcp_dev_keys WHERE api_key=%s LIMIT 1",
+                            (api_key,))
+                row = cur.fetchone()
+                email = ((row[0] if row else "") or "").strip()
+                if not email:
+                    return False  # key has no bound email -> nothing to suppress
+                return bool(_is_suppressed(cur, email))
+        finally:
+            try: conn.close()
+            except Exception: pass
+    except Exception:
+        return True  # fail-safe: skip the CTA on any error
+
+
 # Per-tool value teasers. Each entry: (one-line "what you'd unlock", optional
 # data-shape hint). The CTA includes this so the MCP client can relay
 # something concrete — "Atlanta industrial rates ~7-12¢/kWh, paywalled" is
@@ -1012,6 +1144,30 @@ def _gate(tool_name: str, api_key: Optional[str] = None,
                 )
         except Exception:
             pass  # if email_capture fails to import, paywall still works
+
+        # Marketing opt-in soft-CTA (ships DARK behind OPTIN_CTA_ENABLED).
+        # Additive only: a structured `optin_cta` card + an appended note —
+        # it NEVER replaces or mutates the tool's real data. Shown ONLY to
+        # FREE callers hitting a high-usage paid tool (get_grid_intelligence /
+        # get_fiber_intel), to target the actual upgrade-outreach pool. Points
+        # at the opt-in REQUEST flow (double-opt-in confirm sets consent on the
+        # tokenized click — nothing is sent or set here). See _optin_cta_block.
+        try:
+            _optin = _optin_cta_block(tool_name, tier, api_key)
+            # Don't RE-prompt a suppressed (previously-unsubscribed) user — check
+            # only when the CTA would actually show (flag on + FREE + target tool),
+            # so it adds no query to the common path. Fail-safe: skip on error.
+            if _optin and _optin_recipient_suppressed(api_key):
+                _optin = None
+            if _optin:
+                payload["optin_cta"] = _optin
+                # Weave the soft ask into the natural-language message too, so
+                # text-only relay agents (which strip structured fields) still
+                # surface it. Appended AFTER the upgrade paths — easy to ignore.
+                if isinstance(payload.get("message"), str):
+                    payload["message"] = payload["message"] + "\n\n" + _optin["optin_note"]
+        except Exception:
+            pass  # opt-in CTA is best-effort; never block the paywall response
         # Phase DDDDD: inject auto-minted trial key INLINE if we got one.
         # This is THE conversion-killer move — agent gets a working key
         # in the same response, retries with X-API-Key header, succeeds.
@@ -1049,6 +1205,14 @@ def _gate(tool_name: str, api_key: Optional[str] = None,
                 f"Tool returns: {teaser or 'data'}"
                 + (f"\n\n{_bind_cta}" if _bind_cta else "")
             )
+            # The auto-trial branch fully REPLACED the message above, which
+            # would drop the opt-in note woven in earlier. Re-append it (still
+            # additive, still gated — payload["optin_cta"] only exists when the
+            # flag is on + FREE + high-usage tool) so text-only relay agents
+            # keep seeing the soft ask.
+            _optin = payload.get("optin_cta")
+            if _optin and isinstance(payload.get("message"), str):
+                payload["message"] = payload["message"] + "\n\n" + _optin["optin_note"]
             # Suppress the now-redundant claim_endpoint to keep payload tight
             payload.pop("claim_endpoint", None)
         return json.dumps(payload)
