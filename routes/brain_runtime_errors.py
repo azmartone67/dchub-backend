@@ -4,7 +4,7 @@ WHY
 ===
 The brain's detectors (consistency radar, self-heal, Inspector) read
 HTTP probes + heal findings — NOT the process's runtime logs. So when a
-DB/runtime error fires at WARNING+ (the NOW()::TEXT cast, a non-IMMUTABLE
+DB/runtime error fires at WARNING+ (the NOW() cast, a non-IMMUTABLE
 index, the OSM crawler's "FORCED RECLAIM: held 62s" pool reclaims), it
 scrolls past in the Railway logs and NEVER becomes a finding. The brain
 literally cannot see the bugs that bite production hardest.
