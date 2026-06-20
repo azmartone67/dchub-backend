@@ -79,7 +79,7 @@ def _compute_funnel(tool_filter: str | None = None, days: int = 14) -> list[dict
                    AND tool IS NOT NULL
             """ + _SYNTH_CALL_CLAUSE   # exclude our own monitoring/test traffic
             # r88 (2026-06-15): days is now a BOUND psycopg2 param everywhere (the
-            # `INTERVAL '%s days'` + Python `% days` mix was the recurring
+            # `%s * INTERVAL '1 day'` + Python `% days` mix was the recurring
             # "tuple index out of range" trap the brain kept flagging — a literal %
             # anywhere in the string would make `% days` throw, and a params/
             # placeholder misalign would crash the whole funnel signal).
