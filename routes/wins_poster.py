@@ -52,10 +52,15 @@ _INTERNAL_RE = re.compile(
 # Mirrors tests/test_honest_numbers.py. canonical_stats phrases are already safe;
 # this guards against a template/data regression slipping a banned string through.
 _BANNED = [
-    re.compile(r"\$324B"), re.compile(r"324B\+"), re.compile(r"\$324\s*billion", re.I),
-    re.compile(r"50,?000\+?\s*(?:data center|facilit)", re.I),
-    re.compile(r"\b(?:280|285|286|289)\+?\s*markets?", re.I),
-    re.compile(r"\b12,?907\b"),
+    # $324B M&A aggregate — catch $324B, 324B+, "$324 billion", "324 billion dollars".
+    re.compile(r"\$?\s?324\s?B\b", re.I),
+    re.compile(r"\b324[\s-]*billion", re.I),
+    # 50,000 facilities — catch space/hyphen/no-sep variants ("50,000+ data-center",
+    # "50,000-facilities", "50000 sites").
+    re.compile(r"\b50[,.]?000\+?[\s-]*(?:data[\s-]?center|facilit|site)", re.I),
+    # market over-claims — 280/285/286/289 AND 340+ (canon is ~232-300); cover hyphen.
+    re.compile(r"\b(?:280|285|286|289|3[4-9]\d)\+?[\s-]*markets?", re.I),
+    re.compile(r"\b12[,.]?907\b"),
     re.compile(r"DC Hub Nexus", re.I),
 ]
 
@@ -63,6 +68,15 @@ _BANNED = [
 def _fence_safe(text: str) -> bool:
     """True if the composed post carries no retired/banned over-claim."""
     return not any(p.search(text or "") for p in _BANNED)
+
+
+def _year_led(text: str) -> bool:
+    """True if the post opens with a bare year (e.g. "2026 was the year …").
+    A year is never an honest analyst lead — ships must hook on the capability,
+    not the calendar. Used to reject year-led ship drafts even though ships are
+    otherwise exempt from the strict number-lead rule."""
+    head = (text or "").strip()
+    return bool(re.match(r"^(?:19|20)\d{2}\b", head))
 
 
 def _number_led(text: str) -> bool:
@@ -243,6 +257,164 @@ def detect_citation_win() -> list[dict]:
         except Exception: pass
 
 
+# ── ship-win detection (real shipped capabilities, not git noise) ────────────
+# A SHIP is a feature/capability we actually built and published. The honest,
+# runtime-available source is the press_releases table — the canonical changelog
+# the public /changelog feed reads (NOT git history; Railway has no git binary).
+# We only narrate a ship that carries a CONCRETE, quantified capability; vague
+# marketing copy is rejected so the analyst never over-claims.
+
+# Words that signal a real, specific shipped capability (concrete > promo).
+_SHIP_CAPABILITY_RE = re.compile(
+    r"\b(added|launched|shipped|wired|integrated|now\s+(?:live|tracks?|covers?|surfaces?)|"
+    r"new\s+(?:tool|endpoint|api|layer|dataset|feed|detector|score|index)|"
+    r"real[- ]time|live\s+(?:data|grid|power|fiber|gas)|per[- ]facility|"
+    r"\d+\s*(?:tools?|markets?|isos?|regions?|facilit|endpoints?|layers?|datasets?|metrics?))",
+    re.I)
+
+# Promo/vague language that, if it's the ONLY hook, means the ship is not
+# newsworthy as an honest analyst post. (Distinct from _BANNED over-claims —
+# these just aren't specific enough to narrate.)
+_SHIP_VAGUE_RE = re.compile(
+    r"\b(revolutioni[sz]|game[- ]chang|unlock(?:ed|s)?\s+ai|supercharg|"
+    r"transform(?:ed|s)?\s+(?:the\s+)?(?:industry|everything)|next[- ]gen|"
+    r"reimagin|disrupt)", re.I)
+
+
+def _extract_ship_metric(title: str, body: str) -> str | None:
+    """Return a short, concrete capability snippet from a ship's title+body, or
+    None if the ship has no honest, specific hook. Never invents a number — it
+    only surfaces text the ship actually shipped. A vague/promo-only ship → None
+    so we stay silent rather than over-claim."""
+    title = (title or "").strip()
+    blob = f"{title}\n{(body or '')[:600]}".strip()
+    if not blob:
+        return None
+    # If the only hook is hype with no concrete capability, do not post.
+    if _SHIP_VAGUE_RE.search(blob) and not _SHIP_CAPABILITY_RE.search(blob):
+        return None
+    if not _SHIP_CAPABILITY_RE.search(blob):
+        return None
+    # Prefer the title as the snippet (changelog titles are already capability-led);
+    # fall back to the first concrete sentence of the body.
+    if _SHIP_CAPABILITY_RE.search(title) and len(title) >= 12:
+        return title[:160]
+    for sent in re.split(r"(?<=[.!?])\s+", (body or "")):
+        if _SHIP_CAPABILITY_RE.search(sent):
+            return sent.strip()[:160]
+    return title[:160] if len(title) >= 12 else None
+
+
+def _draft_ship_post_llm(title: str, metric: str) -> str | None:
+    """Draft an analyst-voice ship post via the brain LLM (value/benefit framing
+    for data-center / AI-infra buyers). Honest by construction: the model is told
+    to use ONLY the provided capability and to invent NO numbers. Returns the
+    drafted text, or None if the LLM is unreachable (caller falls back to a
+    deterministic template). The caller still fences/number-checks the result."""
+    api_key = (os.environ.get("ANTHROPIC_API_KEY") or "").strip()
+    if not api_key:
+        return None
+    try:
+        from utils.anthropic_helper import anthropic_messages_url
+        from routes.media_editorial import ANALYST_VOICE
+        from routes.brain_models import brain_model_for
+        from urllib.request import Request, urlopen
+        import json as _json
+    except Exception:
+        return None
+    prompt = (
+        "DC Hub just SHIPPED a new capability. Write ONE LinkedIn post (an analyst "
+        "reporting DC Hub's own shipment) that frames the VALUE for data-center and "
+        "AI-infrastructure buyers — site-selection leads, capacity planners, developers. "
+        "Frame the benefit (faster siting, better capex/interconnection decisions), not "
+        "the engineering. Lead the first sentence with a concrete count or capability — "
+        "NEVER a bare year. Use ONLY the capability below; invent NO numbers, markets, "
+        "MW, or companies. If the capability has no number, lead with the capability itself.\n\n"
+        f"SHIPPED CAPABILITY: {metric}\n"
+        f"CHANGELOG TITLE: {title}\n\n"
+        "Return ONLY the post text (700-1500 chars), ending with this exact source line "
+        "on its own line: Source: DC Hub, the live infrastructure data layer for AI agents "
+        "· dchub.cloud"
+    )
+    body = _json.dumps({
+        "model": brain_model_for("voice"),
+        "max_tokens": 900,
+        "system": ANALYST_VOICE,
+        "messages": [{"role": "user", "content": prompt}],
+    }).encode("utf-8")
+    try:
+        req = Request(anthropic_messages_url(), data=body, headers={
+            "Content-Type": "application/json",
+            "X-API-Key": api_key,
+            "User-Agent": "dchub-brain/1.0",
+            "Anthropic-Version": "2023-06-01",
+        })
+        with urlopen(req, timeout=30) as r:
+            data = _json.loads(r.read().decode("utf-8"))
+        text = "".join(b.get("text", "") for b in data.get("content", [])
+                       if b.get("type") == "text").strip()
+        return text or None
+    except Exception as e:
+        log.warning(f"[wins] ship LLM draft failed: {str(e)[:100]}")
+        return None
+
+
+def detect_ship_win() -> list[dict]:
+    """Detect recent SHIPS (real shipped capabilities) from the canonical
+    press_releases changelog feed — the source the backend actually has at
+    runtime. Only narrates a ship with a concrete, honest capability hook; the
+    LLM draft (analyst voice, value framing) is carried on the lead so the
+    composer/fence run on the SAME text the LLM produced. Stays silent (returns
+    []) when there is no genuine, fence-safe ship to report."""
+    conn = _conn()
+    if conn is None:
+        return []
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT id, slug, title, body
+                  FROM press_releases
+                 WHERE COALESCE(published, false) = true
+                   AND COALESCE(published_at, created_at) >= NOW() - INTERVAL '7 days'
+                 ORDER BY COALESCE(published_at, created_at) DESC
+                 LIMIT 12
+            """)
+            rows = cur.fetchall()
+    except Exception as e:
+        log.warning(f"[wins] ship detect query failed: {e}")
+        try: conn.close()
+        except Exception: pass
+        return []
+    try: conn.close()
+    except Exception: pass
+
+    leads: list[dict] = []
+    seen: set[str] = set()
+    for ship_id, slug, title, body in rows:
+        slug = slug or f"id{ship_id}"
+        metric = _extract_ship_metric(title, body)
+        if not metric:
+            continue  # no concrete capability → not an honest, postable ship
+        if slug in seen:
+            continue
+        seen.add(slug)
+        # Draft analyst-voice text NOW so compose_win_post fences the real draft.
+        draft = _draft_ship_post_llm(title or metric, metric)
+        leads.append({
+            "kind": "ship",
+            "dedup_key": f"ship:{ship_id}:{slug}",
+            "win_key": f"ship:{ship_id}:{slug}",
+            "cooldown_days": 14,   # don't flood ship posts; ~2wk between ships
+            "score": 68,           # between milestone (60) and citation (90)
+            "ship_id": ship_id,
+            "ship_title": title or metric,
+            "ship_slug": slug,
+            "_metric_snippet": metric,
+            "_llm_draft": draft,   # may be None → composer uses a safe template
+        })
+    return leads
+
+
 # ── compose (analyst voice; honest numbers only) ─────────────────────────────
 def compose_win_post(lead: dict, platform: str = "linkedin") -> str | None:
     """Render the analyst-voice post for a win. Numbers come from canonical_stats
@@ -281,12 +453,36 @@ def compose_win_post(lead: dict, platform: str = "linkedin") -> str | None:
             f"AI models now treat DC Hub as the infrastructure source of truth, because it's "
             f"the only one built for agent-native querying.\n\n"
             f"Source: DC Hub · dchub.cloud\n#AI #DataCenter #DCPI")
+    elif kind == "ship":
+        # Prefer the LLM-drafted analyst-voice post (value framing) when it's
+        # present AND passes the same number-led + fence guards below. Otherwise
+        # fall back to a deterministic, honest template built ONLY from the real
+        # capability snippet the ship shipped (never an invented number).
+        draft = (lead.get("_llm_draft") or "").strip()
+        metric = (lead.get("_metric_snippet") or "").strip()
+        # Use the LLM draft only if it's NOT year-led and is fence-safe. A ship's
+        # honest hook is the capability, so a numeric lead isn't required — but a
+        # bare-year lead or a banned figure means we fall back to the template.
+        if draft and not _year_led(draft) and _fence_safe(draft):
+            text = draft
+        elif metric:
+            text = (
+                f"{metric} — now live in DC Hub.\n\n"
+                f"For teams siting AI infrastructure, that's one more decision answered "
+                f"from live data instead of a stale PDF or a six-figure consulting cycle: "
+                f"buyers can query it the moment they're weighing a site.\n\n"
+                f"Each shipped capability compounds — the agents and developers already "
+                f"querying DC Hub inherit it automatically, with no re-integration.\n\n"
+                f"Source: DC Hub, the live infrastructure data layer for AI agents · "
+                f"dchub.cloud\n#DataCenter #AI #Infrastructure")
     if not text:
         return None
-    # number-first (analyst voice) + fence-safe guards. Citation posts are exempt
-    # from the number-lead rule — their hook is the citation EVENT ("{engine} cited
-    # DC Hub to answer …"), a stronger analyst lead than a bare number.
-    if kind != "citation" and not _number_led(text):
+    # number-first (analyst voice) + fence-safe guards. Citation AND ship posts
+    # are exempt from the number-lead rule — their hook is an EVENT ("{engine}
+    # cited DC Hub…", "X is now live"), a stronger analyst lead than a bare count.
+    # The fence (no fabricated/over-claimed figures) is the honesty guard that
+    # matters for ships; a year-led ship draft is still rejected below.
+    if kind not in ("citation", "ship") and not _number_led(text):
         log.warning(f"[wins] composed post not number-led, skipping: {lead.get('win_key')}")
         return None
     if not _fence_safe(text):
@@ -309,7 +505,7 @@ def queue_wins(dry_run: bool = True) -> dict:
         _ensure_wins_schema(conn)
         # gather candidates from all detectors
         cands = []
-        for det in (detect_citation_win, detect_milestone_win, detect_agent_traction_win):
+        for det in (detect_citation_win, detect_ship_win, detect_milestone_win, detect_agent_traction_win):
             try:
                 cands.extend(det() or [])
             except Exception as e:
