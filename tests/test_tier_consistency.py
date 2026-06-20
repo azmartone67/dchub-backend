@@ -60,11 +60,11 @@ def test_registry_pricing_canonical():
     def c(cond, msg):
         if not cond:
             fails.append(msg)
-    # canonical flat-rate monthly prices (r-reprice 2026-06-19: dev 49→79,
-    # pro 199→299, team 499→699; kept in lockstep with routes/_stripe_links.py
-    # + pricing.html).
+    # canonical flat-rate monthly prices (r-reprice 2026-06-19: pro 199→299,
+    # team 499→699; developer HELD at 49 per owner call — builder on-ramp.
+    # Kept in lockstep with routes/_stripe_links.py + pricing.html).
     c(tr.price('starter') == 9,    f"starter price {tr.price('starter')} != 9")
-    c(tr.price('developer') == 79, f"developer price {tr.price('developer')} != 79")
+    c(tr.price('developer') == 49, f"developer price {tr.price('developer')} != 49")
     c(tr.price('pro') == 299,      f"pro price {tr.price('pro')} != 299")
     c(tr.price('team') == 699,     f"team price {tr.price('team')} != 699")
     # founding price DECOUPLED from pro at r-reprice (legacy grandfathered

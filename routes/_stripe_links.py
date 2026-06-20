@@ -24,7 +24,7 @@ STRIPE_LINKS = {
     # The subscription webhook is amount-agnostic (mrr from price.unit_amount,
     # tier→'paid' for any paid sub: flask_mcp_endpoints.py:2347/2407), so the
     # new amounts provision + email a key correctly.
-    "developer":       "https://buy.stripe.com/00w28s3kK0x7f5355UaZi0k",  # $79/mo (r-reprice; legacy $49: 7sY5kE8F4fs13ml0PEaZi0c)
+    "developer":       "https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c",  # $49/mo (HELD 2026-06-19 owner call — builder on-ramp; the $79 link 00w28s3kK0x7f5355UaZi0k was minted then reverted/deactivated)
     "pro":             "https://buy.stripe.com/7sY7sM9J8enX7CB69YaZi0l",  # $299/mo (r-reprice; legacy $199: eVq5kE4oOfs13mleGuaZi0h)
     "team":            "https://buy.stripe.com/14AbJ2bRga7H0a98i6aZi0m",  # $699/mo, 5 seats (r-reprice; no prior link existed)
     "pro_annual":      "https://buy.stripe.com/dRm7sM6wW7Zz1edgOCaZi07",  # $1,188/yr (50% off $199/mo) - operator-provided link dRm7...07, 2026-06-04

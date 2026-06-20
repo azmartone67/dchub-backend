@@ -86,7 +86,8 @@ TIER_PRICE_USD_MONTH = {
     # customer is charged by the Stripe link in routes/_stripe_links.py — both
     # updated together. Existing subscribers grandfathered on their old links.
     'starter':    9,      # held — the relay/conversion wedge
-    'developer':  79,     # was 49
+    'developer':  49,     # HELD at 49 (2026-06-19 owner call): the builder/agent
+                          # on-ramp stays wide; capture the increase on Pro instead.
     'pro':        299,    # was 199 (restores original pre-r38 anchor)
     'team':       699,    # was 499; 5 seats = $139.80/seat (frontend already showed $699)
     # founding DECOUPLED from pro at r-reprice: founding members are a legacy
@@ -230,5 +231,5 @@ def as_public_dict():
         'pricing': {n: TIER_PRICE_USD_MONTH.get(n) for n in TIERS},
         'features': TIER_FEATURES,
         'rule': 'founding == pro for access and benefits',
-        'price_note': 'price_usd_month: starter 9 · developer 79 · pro 299 · team 699 · enterprise custom. calls_per_day = mcp_daily.',
+        'price_note': 'price_usd_month: starter 9 · developer 49 · pro 299 · team 699 · enterprise custom. calls_per_day = mcp_daily.',
     }
