@@ -2481,6 +2481,41 @@ _GRID_INTEL_NEG_TTL = 120   # r71 (2026-06-04): negative-cache an EIA-less resul
                             # throttle on get_grid_intelligence — the #1 paid-demand tool).
 
 
+def _eia_to_float(v):
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _eia_median(values):
+    nums = sorted(v for v in values if v is not None)
+    if not nums:
+        return None
+    return nums[len(nums) // 2]
+
+
+def _eia_latest_settled(series, value_key='value', floor_ratio=0.5):
+    """Return the most recent series point whose numeric value is PLAUSIBLE.
+
+    EIA publishes its newest 1-2 hourly points as preliminary partials that
+    get revised upward later (e.g. AZPS reported 382 MW @ 00:00 vs a real
+    ~6500 the prior hour — a 94%-wrong number). Blindly taking data[0] surfaces
+    that garbage. This walks newest→older and returns the first point at or
+    above floor_ratio × the window median, i.e. the latest SETTLED reading.
+    Returns (point, skipped_newest_bool); falls back to series[0]."""
+    if not series:
+        return None, False
+    med = _eia_median([_eia_to_float(d.get(value_key)) for d in series])
+    floor = (med * floor_ratio) if med else None
+    if floor is not None:
+        for d in series:
+            f = _eia_to_float(d.get(value_key))
+            if f is not None and f >= floor:
+                return d, (d is not series[0])
+    return series[0], False
+
+
 def _grid_intel_fetch(region, rto_code):
     """Expensive upstream assembly for phase19b_grid_intelligence. Cached by
     _grid_intel_cached. Timeouts trimmed (15→8, 8→5) so a cache miss can't
@@ -2509,9 +2544,18 @@ def _grid_intel_fetch(region, rto_code):
         if r.ok:
             data = (r.json() or {}).get('response', {}).get('data', [])
             if data:
-                latest = data[0]
-                out['demand_mw'] = latest.get('value')
-                out['demand_period'] = latest.get('period')
+                # ROBUSTNESS (2026-06-19): EIA's newest hour(s) are preliminary
+                # partials (e.g. AZPS 382 MW vs a real ~6500) — use the latest
+                # SETTLED hour, not data[0], so the flagship never surfaces a
+                # 90%-wrong demand number.
+                settled, skipped = _eia_latest_settled(data)
+                out['demand_mw'] = settled.get('value')
+                out['demand_period'] = settled.get('period')
+                if skipped:
+                    out['demand_note'] = (
+                        'EIA newest hour was preliminary ('
+                        + str(data[0].get('value')) + ' MW @ '
+                        + str(data[0].get('period')) + '); using latest settled hour.')
                 out['demand_24h'] = [{'period': d.get('period'),
                                       'mw': d.get('value')} for d in data]
         else:
@@ -2534,13 +2578,36 @@ def _grid_intel_fetch(region, rto_code):
                     params=params, headers=H, timeout=5)
         if r.ok:
             data = (r.json() or {}).get('response', {}).get('data', [])
-            latest_by_fuel = {}
-            for d in data:
-                fuel = d.get('fueltype')
-                if fuel and fuel not in latest_by_fuel:
-                    latest_by_fuel[fuel] = {'mw': d.get('value'),
-                                            'period': d.get('period')}
-            out['generation_mix'] = latest_by_fuel
+            # ROBUSTNESS (2026-06-19): build the mix from ONE consistent recent
+            # hour, not each fuel's independently-latest value (fuels lag
+            # differently → a Frankenstein mix spanning multiple hours) AND skip
+            # the preliminary newest hour (same partial-data trap as demand).
+            from collections import OrderedDict as _OD
+            by_period = _OD()
+            for d in data:  # period-desc
+                p, fuel = d.get('period'), d.get('fueltype')
+                if not p or not fuel:
+                    continue
+                by_period.setdefault(p, {})[fuel] = d.get('value')
+            if by_period:
+                def _ptotal(fm):
+                    s = 0.0
+                    for v in fm.values():
+                        f = _eia_to_float(v)
+                        if f:
+                            s += f
+                    return s
+                pmed = _eia_median([t for t in (_ptotal(fm) for fm in by_period.values()) if t > 0])
+                pfloor = (pmed * 0.5) if pmed else None
+                chosen = next(iter(by_period))  # newest period
+                if pfloor is not None:
+                    for p, fm in by_period.items():
+                        if _ptotal(fm) >= pfloor:
+                            chosen = p
+                            break
+                out['generation_mix'] = {fuel: {'mw': v, 'period': chosen}
+                                         for fuel, v in by_period[chosen].items()}
+                out['generation_mix_period'] = chosen
         else:
             out['eia_genmix_error'] = f'HTTP {r.status_code}'
     except Exception as e:
