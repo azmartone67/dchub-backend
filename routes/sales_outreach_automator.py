@@ -1224,7 +1224,7 @@ def endpoint_log():
                        detected_at, decided_at, sent_at,
                        response_received_at, response_text
                   FROM sales_outreach_log
-                 WHERE detected_at > NOW() - INTERVAL '%s days'
+                 WHERE detected_at > NOW() - %s * INTERVAL '1 day'
                  ORDER BY detected_at DESC
                  LIMIT %s
             """ % (int(days), int(limit)))
