@@ -7652,9 +7652,12 @@ _MCP_LANDING_HTML = """<!DOCTYPE html>
 <html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>DC Hub MCP Server · Connect to Claude, Cursor, Cline, Windsurf</title>
-<meta name="description" content="Add DC Hub's Model Context Protocol server to any AI agent runtime. 38 tools. Auto-trial keys mean you start in 60 seconds.">
+<meta name="description" content="Add DC Hub's Model Context Protocol server to any AI agent runtime. 46 tools. Auto-trial keys mean you start in 60 seconds.">
 <link rel="canonical" href="https://dchub.cloud/mcp">
 <meta property="og:title" content="DC Hub MCP Server">
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"SoftwareApplication","name":"DC Hub MCP Server","applicationCategory":"DeveloperApplication","operatingSystem":"MCP (Streamable HTTP)","url":"https://dchub.cloud/mcp","description":"Model Context Protocol server giving AI agents live, citable data-center, power-grid (DCPI), fiber and M&A intelligence — 46 tools across 21,000+ facilities, 232 markets and 10 ISOs.","offers":{"@type":"Offer","price":"0","priceCurrency":"USD","description":"Free tier: 10 calls/day, no signup required"},"provider":{"@type":"Organization","name":"DC Hub","url":"https://dchub.cloud"},"sameAs":["https://smithery.ai/servers/azmartone67/dchub"]}
+</script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600;700&display=swap" rel="stylesheet">
