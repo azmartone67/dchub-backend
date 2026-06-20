@@ -1037,7 +1037,7 @@ def claim_variant_conversion():
                     SELECT
                         COALESCE(NULLIF(h.claim_variant,''), 'generic') AS variant,
                         COUNT(*) FILTER (WHERE h.claim_minted_at IS NOT NULL
-                                         AND h.claim_minted_at >= NOW() - INTERVAL '%s days') AS minted,
+                                         AND h.claim_minted_at >= NOW() - %s * INTERVAL '1 day') AS minted,
                         COUNT(*) FILTER (WHERE h.claim_used_at IS NOT NULL
                                          AND h.claim_used_at   >= NOW() - INTERVAL '%s days') AS used,
                         COUNT(DISTINCT CASE
