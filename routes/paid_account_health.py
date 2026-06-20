@@ -379,7 +379,7 @@ def mint_key():
             user_id, plan = row[0], (row[1] or 'free')
             cur.execute("""
                 SELECT key_prefix FROM api_keys
-                 WHERE user_id = %s AND COALESCE(is_active, 1) = 1 LIMIT 1
+                 WHERE user_id = %s AND is_active IS TRUE LIMIT 1
             """, (user_id,))
             existing = cur.fetchone()
             if existing and not regenerate:
