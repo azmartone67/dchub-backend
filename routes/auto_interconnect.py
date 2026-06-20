@@ -572,10 +572,19 @@ def _run_detection_cycle(dry_run: bool = False) -> dict:
                     "reason": "already_pending_or_approved",
                 })
 
+        # LEAK FIX: all DB work is done above — release the pooled conn BEFORE
+        # the slow (~15s) Resend digest POST so it isn't held idle across the
+        # external call and tripped by FORCED RECLAIM.
+        try: conn.close()
+        except Exception: pass
+        conn = None
+
         if not dry_run:
             out["email_sent"] = _send_admin_digest(out["promoted"])
     finally:
-        try: conn.close()
+        try:
+            if conn is not None:
+                conn.close()
         except Exception: pass
     return out
 

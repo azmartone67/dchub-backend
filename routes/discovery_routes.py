@@ -356,6 +356,11 @@ def run_peeringdb_discovery():
 
         conn = _db()
 
+        # LEAK FIX: accumulate rows then bulk-insert via _stage_facilities_batch
+        # (the OSM r41-disco-batch pattern). The pre-fix per-row _stage_facility
+        # loop held the pooled connection across one INSERT+commit per facility,
+        # which on a multi-thousand-row PeeringDB payload tripped FORCED RECLAIM.
+        rows = []
         for fac in facilities:
             name = fac.get('name', '').strip()
             if not name:
@@ -369,17 +374,24 @@ def run_peeringdb_discovery():
             lng = fac.get('longitude')
             source_id = f"pdb_{fac.get('id', '')}"
 
-            added = _stage_facility(
-                conn, 'PeeringDB', source_id, name, org or 'Unknown',
-                city=city, state=state, country=country,
-                latitude=lat, longitude=lng,
-                source_url=f"https://www.peeringdb.com/fac/{fac.get('id', '')}",
-                raw_data=fac, confidence=0.8
-            )
-            if added:
-                result['added'] += 1
-            else:
-                result['duplicate'] += 1
+            rows.append({
+                'source':     'PeeringDB',
+                'source_id':  source_id,
+                'name':       name,
+                'provider':   org or 'Unknown',
+                'city':       city,
+                'state':      state,
+                'country':    country,
+                'latitude':   lat,
+                'longitude':  lng,
+                'source_url': f"https://www.peeringdb.com/fac/{fac.get('id', '')}",
+                'raw_data':   fac,
+                'confidence': 0.8,
+            })
+
+        added, dup = _stage_facilities_batch(conn, rows)
+        result['added']     = added
+        result['duplicate'] = dup
 
         logger.info(f"PeeringDB: {result['found']} found, {result['added']} new, {result['duplicate']} existing")
     except Exception as e:
@@ -511,6 +523,10 @@ def run_datacentermap_discovery():
 
         conn = _db()
 
+        # LEAK FIX: accumulate then bulk-insert (OSM r41-disco-batch pattern)
+        # instead of a per-row _stage_facility loop that held the pooled
+        # connection across one INSERT+commit per facility.
+        rows = []
         for fac in facilities:
             name = fac.get('name', '').strip()
             if not name:
@@ -524,17 +540,24 @@ def run_datacentermap_discovery():
             lat = fac.get('latitude', fac.get('lat'))
             lng = fac.get('longitude', fac.get('lng', fac.get('lon')))
 
-            added = _stage_facility(
-                conn, 'datacentermap', source_id, name, provider or 'Unknown',
-                city=city, state=state, country=country[:2].upper() if country else 'US',
-                latitude=lat, longitude=lng,
-                source_url=fac.get('url', ''),
-                raw_data=fac, confidence=0.65
-            )
-            if added:
-                result['added'] += 1
-            else:
-                result['duplicate'] += 1
+            rows.append({
+                'source':     'datacentermap',
+                'source_id':  source_id,
+                'name':       name,
+                'provider':   provider or 'Unknown',
+                'city':       city,
+                'state':      state,
+                'country':    country[:2].upper() if country else 'US',
+                'latitude':   lat,
+                'longitude':  lng,
+                'source_url': fac.get('url', ''),
+                'raw_data':   fac,
+                'confidence': 0.65,
+            })
+
+        added, dup = _stage_facilities_batch(conn, rows)
+        result['added']     = added
+        result['duplicate'] = dup
 
         logger.info(f"DataCenterMap: {result['found']} found, {result['added']} new")
     except Exception as e:

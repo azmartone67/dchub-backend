@@ -380,8 +380,12 @@ def _scan(days: int, dry_run: bool) -> dict:
                     except Exception: pass
                     continue
     finally:
-        # Don't close yet; we'll reuse for dedup checks below
-        pass
+        # LEAK FIX: release the pooled conn before the (potentially long) LLM
+        # enrichment loop below so it isn't held idle across external calls and
+        # tripped by FORCED RECLAIM. We re-acquire a fresh conn for persist.
+        try: c.close()
+        except Exception: pass
+        c = None
 
     out["articles_scanned"] = len(articles)
 
@@ -410,7 +414,13 @@ def _scan(days: int, dry_run: bool) -> dict:
 
     out["candidates_found"] = len(candidate_counts)
 
-    # Persist + classify
+    # Persist + classify. Re-acquire a fresh pooled conn — the read conn was
+    # released before the LLM loop so it wasn't held idle across external calls.
+    c = _get_db()
+    if c is None:
+        out["error"] = "no_db_persist"
+        out["finished_at"] = datetime.datetime.utcnow().isoformat() + "Z"
+        return out
     try:
         with c.cursor() as cur:
             for name, count in candidate_counts.items():

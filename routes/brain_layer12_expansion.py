@@ -28,6 +28,7 @@ brain_layer12_bp = Blueprint("brain_layer12", __name__)
 
 
 def _ensure_table():
+    conn = None
     try:
         from main import get_db  # type: ignore
         conn = get_db()
@@ -51,12 +52,14 @@ def _ensure_table():
         conn.commit()
         try: cur.close()
         except Exception: pass
-        try: conn.close()
-        except Exception: pass
         return True
     except Exception as e:
         logger.warning(f"L12 table create failed: {e}")
         return False
+    finally:
+        if conn is not None:
+            try: conn.close()
+            except Exception: pass
 
 
 def _count_routes() -> int:
@@ -128,6 +131,7 @@ def _count_pub_channels() -> int:
 
 
 def _count_db_tables() -> int:
+    conn = None
     try:
         from main import get_db  # type: ignore
         conn = get_db()
@@ -138,11 +142,13 @@ def _count_db_tables() -> int:
         n = int((cur.fetchone() or [0])[0])
         try: cur.close()
         except Exception: pass
-        try: conn.close()
-        except Exception: pass
         return n
     except Exception:
         return 0
+    finally:
+        if conn is not None:
+            try: conn.close()
+            except Exception: pass
 
 
 def _count_code_lines() -> int:
@@ -177,6 +183,7 @@ def _current_snapshot() -> dict:
 
 def _save_snapshot(snap: dict):
     if not _ensure_table(): return
+    conn = None
     try:
         from main import get_db  # type: ignore
         conn = get_db()
@@ -194,13 +201,16 @@ def _save_snapshot(snap: dict):
         conn.commit()
         try: cur.close()
         except Exception: pass
-        try: conn.close()
-        except Exception: pass
     except Exception as e:
         logger.warning(f"L12 save failed: {e}")
+    finally:
+        if conn is not None:
+            try: conn.close()
+            except Exception: pass
 
 
 def _historical(days: int) -> dict | None:
+    conn = None
     try:
         from main import get_db  # type: ignore
         conn = get_db()
@@ -217,8 +227,6 @@ def _historical(days: int) -> dict | None:
         row = cur.fetchone()
         try: cur.close()
         except Exception: pass
-        try: conn.close()
-        except Exception: pass
         if not row: return None
         return {"routes": row[0], "detectors": row[1], "brain_layers": row[2],
                 "cron_jobs": row[3], "journalists": row[4],
@@ -226,6 +234,10 @@ def _historical(days: int) -> dict | None:
                 "code_lines": row[7], "as_of": str(row[8])}
     except Exception:
         return None
+    finally:
+        if conn is not None:
+            try: conn.close()
+            except Exception: pass
 
 
 def _delta(now: dict, then: dict | None) -> dict:

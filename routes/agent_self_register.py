@@ -325,6 +325,8 @@ def register():
         try: c.rollback()
         except Exception: pass
         logger.warning("register insert failed: %s", e)
+        try: c.close()        # LEAK FIX: release the pooled conn on every exit
+        except Exception: pass
         return jsonify(ok=False, error="db_insert_failed",
                        detail=repr(e)[:200]), 500
 
@@ -369,6 +371,8 @@ def register():
     slug = re.sub(r"[^a-z0-9]+", "-", payload["name"].lower()).strip("-")
     integration_card_url = f"https://dchub.cloud/integrations/{slug or 'platform'}"
 
+    try: c.close()        # LEAK FIX: release the pooled conn on the success path
+    except Exception: pass
     return jsonify(
         ok=True,
         platform_id=sub_id,
@@ -403,8 +407,12 @@ def status(sub_id: int):
     except Exception as e:
         try: c.rollback()
         except Exception: pass
+        try: c.close()        # LEAK FIX: release the pooled conn on error
+        except Exception: pass
         return jsonify(ok=False, error="db_error",
                        detail=repr(e)[:200]), 500
+    try: c.close()            # LEAK FIX: release on both not_found and ok paths
+    except Exception: pass
     if not row:
         return jsonify(ok=False, error="not_found"), 404
     name, url, ptype, fit, st, card, sub_at, proc_at, app_at = row

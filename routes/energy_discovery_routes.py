@@ -343,6 +343,7 @@ def energy_discovery_status():
             'recent_syncs': [],
         },
     }
+    conn = None
     try:
         from db_utils import try_get_db
         conn = try_get_db()
@@ -441,11 +442,14 @@ def energy_discovery_status():
             out['data']['seed_data'] = (
                 int(out['data'].get('total_substations', 0)) < 1000
             )
-
-            try: conn.close()
-            except Exception: pass
     except Exception as _e:
         out['data']['_error'] = type(_e).__name__ + ': ' + str(_e)[:200]
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
     # Cache only a clean result — never pin a transient DB error for 2 min.
     if not out.get('data', {}).get('_error'):

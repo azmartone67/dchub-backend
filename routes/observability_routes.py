@@ -282,65 +282,67 @@ def snapshot():
         from db_utils import try_get_db
         conn = try_get_db()
         if not conn: return jsonify(out)
-        cur = conn.cursor()
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS observability_metrics (
-                metric TEXT NOT NULL,
-                value DOUBLE PRECISION NOT NULL,
-                recorded_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-            )
-        """)
-        try: conn.commit()
-        except Exception: pass
-
-        # Phase QA-sweep (2026-05-16): probe each source table with
-        # to_regclass FIRST so missing tables degrade silently instead
-        # of dumping "relation X does not exist" to Railway logs every
-        # cycle (the schema_drift detector was repeatedly flagging
-        # pipelines, gas_compressors, wind_projects which don't exist
-        # on this deploy).
-        samples = {}
-        for label, table, sql in [
-            ('total_substations',    'substations',    "SELECT COUNT(*) FROM substations"),
-            ('total_pipelines',      'pipelines',      "SELECT COUNT(*) FROM pipelines"),
-            ('total_power_plants',   'power_plants',   "SELECT COUNT(*) FROM power_plants"),
-            ('total_fiber_routes',   'fiber_routes',   "SELECT COUNT(*) FROM fiber_routes"),
-            ('total_capacity_mw',    'power_plants',   "SELECT COALESCE(SUM(capacity_mw),0) FROM power_plants"),
-            # Phase FF+11-schemafix (2026-05-19): column is `created_at`,
-            # not `called_at`. The wrong name aborted the request's
-            # transaction, which is why subsequent INSERT INTO
-            # observability_metrics statements then ALSO failed with
-            # "relation does not exist" — psycopg2 surfaces aborted-
-            # transaction errors that way until rollback. Two bugs,
-            # one root cause.
-            ('mcp_tool_calls_24h',   'mcp_tool_calls', "SELECT COUNT(*) FROM mcp_tool_calls WHERE created_at > NOW() - INTERVAL '24 hours'"),
-            ('mcp_conversions_24h',  'mcp_conversions',"SELECT COUNT(*) FROM mcp_conversions WHERE created_at > NOW() - INTERVAL '24 hours'"),
-        ]:
-            try:
-                # Probe first — silently skip if table doesn't exist
-                cur.execute("SELECT to_regclass(%s)", (f"public.{table}",))
-                if not (cur.fetchone() or [None])[0]:
-                    continue
-                cur.execute(sql)
-                samples[label] = int((cur.fetchone() or (0,))[0])
-            except Exception:
-                try: conn.rollback()
-                except Exception: pass
-
-        for k, v in samples.items():
-            try:
-                cur.execute(
-                    "INSERT INTO observability_metrics (metric, value) VALUES (%s, %s)",
-                    (k, float(v))
+        try:
+            cur = conn.cursor()
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS observability_metrics (
+                    metric TEXT NOT NULL,
+                    value DOUBLE PRECISION NOT NULL,
+                    recorded_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 )
-                out['data']['recorded'].append({'metric': k, 'value': v})
-            except Exception:
-                try: conn.rollback()
-                except Exception: pass
-        try: conn.commit()
-        except Exception: pass
-        try: conn.close()
-        except Exception: pass
+            """)
+            try: conn.commit()
+            except Exception: pass
+
+            # Phase QA-sweep (2026-05-16): probe each source table with
+            # to_regclass FIRST so missing tables degrade silently instead
+            # of dumping "relation X does not exist" to Railway logs every
+            # cycle (the schema_drift detector was repeatedly flagging
+            # pipelines, gas_compressors, wind_projects which don't exist
+            # on this deploy).
+            samples = {}
+            for label, table, sql in [
+                ('total_substations',    'substations',    "SELECT COUNT(*) FROM substations"),
+                ('total_pipelines',      'pipelines',      "SELECT COUNT(*) FROM pipelines"),
+                ('total_power_plants',   'power_plants',   "SELECT COUNT(*) FROM power_plants"),
+                ('total_fiber_routes',   'fiber_routes',   "SELECT COUNT(*) FROM fiber_routes"),
+                ('total_capacity_mw',    'power_plants',   "SELECT COALESCE(SUM(capacity_mw),0) FROM power_plants"),
+                # Phase FF+11-schemafix (2026-05-19): column is `created_at`,
+                # not `called_at`. The wrong name aborted the request's
+                # transaction, which is why subsequent INSERT INTO
+                # observability_metrics statements then ALSO failed with
+                # "relation does not exist" — psycopg2 surfaces aborted-
+                # transaction errors that way until rollback. Two bugs,
+                # one root cause.
+                ('mcp_tool_calls_24h',   'mcp_tool_calls', "SELECT COUNT(*) FROM mcp_tool_calls WHERE created_at > NOW() - INTERVAL '24 hours'"),
+                ('mcp_conversions_24h',  'mcp_conversions',"SELECT COUNT(*) FROM mcp_conversions WHERE created_at > NOW() - INTERVAL '24 hours'"),
+            ]:
+                try:
+                    # Probe first — silently skip if table doesn't exist
+                    cur.execute("SELECT to_regclass(%s)", (f"public.{table}",))
+                    if not (cur.fetchone() or [None])[0]:
+                        continue
+                    cur.execute(sql)
+                    samples[label] = int((cur.fetchone() or (0,))[0])
+                except Exception:
+                    try: conn.rollback()
+                    except Exception: pass
+
+            for k, v in samples.items():
+                try:
+                    cur.execute(
+                        "INSERT INTO observability_metrics (metric, value) VALUES (%s, %s)",
+                        (k, float(v))
+                    )
+                    out['data']['recorded'].append({'metric': k, 'value': v})
+                except Exception:
+                    try: conn.rollback()
+                    except Exception: pass
+            try: conn.commit()
+            except Exception: pass
+        finally:
+            try: conn.close()
+            except Exception: pass
     except Exception as _e:
         out['data']['_error'] = type(_e).__name__ + ': ' + str(_e)[:200]
     return jsonify(out)
@@ -355,48 +357,50 @@ def drift():
         if not conn:
             out['data']['_error'] = 'no DB connection'
             return jsonify(out)
-        cur = conn.cursor()
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS observability_metrics (
-                metric TEXT NOT NULL,
-                value DOUBLE PRECISION NOT NULL,
-                recorded_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-            )
-        """)
-        try: conn.commit()
-        except Exception: pass
+        try:
+            cur = conn.cursor()
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS observability_metrics (
+                    metric TEXT NOT NULL,
+                    value DOUBLE PRECISION NOT NULL,
+                    recorded_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+            """)
+            try: conn.commit()
+            except Exception: pass
 
-        for m in CRITICAL_METRICS:
-            try:
-                cur.execute("""
-                    SELECT COALESCE(AVG(value), 0), COALESCE(STDDEV_SAMP(value), 0), COUNT(*)
-                    FROM observability_metrics
-                    WHERE metric = %s AND recorded_at > NOW() - INTERVAL '7 days'
-                """, (m,))
-                r = cur.fetchone() or (0, 0, 0)
-                cur.execute("""
-                    SELECT value, recorded_at FROM observability_metrics
-                    WHERE metric = %s ORDER BY recorded_at DESC LIMIT 1
-                """, (m,))
-                latest = cur.fetchone()
-                cur_v = float(latest[0]) if latest else None
-                baseline = float(r[0] or 0)
-                sigma = float(r[1] or 0)
-                samples = int(r[2] or 0)
-                drift_z = None
-                drift_flag = False
-                if cur_v is not None and sigma > 0:
-                    drift_z = (cur_v - baseline) / sigma
-                    drift_flag = abs(drift_z) > 2.0
-                out['data']['metrics'].append({
-                    'metric': m, 'current': cur_v, 'baseline_7d': baseline,
-                    'sigma': sigma, 'samples': samples, 'z_score': drift_z, 'drift': drift_flag,
-                })
-            except Exception:
-                try: conn.rollback()
-                except Exception: pass
-        try: conn.close()
-        except Exception: pass
+            for m in CRITICAL_METRICS:
+                try:
+                    cur.execute("""
+                        SELECT COALESCE(AVG(value), 0), COALESCE(STDDEV_SAMP(value), 0), COUNT(*)
+                        FROM observability_metrics
+                        WHERE metric = %s AND recorded_at > NOW() - INTERVAL '7 days'
+                    """, (m,))
+                    r = cur.fetchone() or (0, 0, 0)
+                    cur.execute("""
+                        SELECT value, recorded_at FROM observability_metrics
+                        WHERE metric = %s ORDER BY recorded_at DESC LIMIT 1
+                    """, (m,))
+                    latest = cur.fetchone()
+                    cur_v = float(latest[0]) if latest else None
+                    baseline = float(r[0] or 0)
+                    sigma = float(r[1] or 0)
+                    samples = int(r[2] or 0)
+                    drift_z = None
+                    drift_flag = False
+                    if cur_v is not None and sigma > 0:
+                        drift_z = (cur_v - baseline) / sigma
+                        drift_flag = abs(drift_z) > 2.0
+                    out['data']['metrics'].append({
+                        'metric': m, 'current': cur_v, 'baseline_7d': baseline,
+                        'sigma': sigma, 'samples': samples, 'z_score': drift_z, 'drift': drift_flag,
+                    })
+                except Exception:
+                    try: conn.rollback()
+                    except Exception: pass
+        finally:
+            try: conn.close()
+            except Exception: pass
         flagged = [m for m in out['data']['metrics'] if m.get('drift')]
         out['data']['drift_count'] = len(flagged)
         out['data']['healthy'] = len(flagged) == 0
@@ -412,32 +416,34 @@ def anomalies():
         from db_utils import try_get_db
         conn = try_get_db()
         if not conn: return jsonify(out)
-        cur = conn.cursor()
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS daily_anomalies (
-                id SERIAL PRIMARY KEY,
-                detected_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                severity TEXT NOT NULL DEFAULT 'info',
-                summary TEXT NOT NULL,
-                details JSONB
-            )
-        """)
-        try: conn.commit()
-        except Exception: pass
-        cur.execute("""
-            SELECT id, detected_at, severity, summary, details
-            FROM daily_anomalies
-            WHERE detected_at > NOW() - INTERVAL '7 days'
-            ORDER BY detected_at DESC LIMIT 50
-        """)
-        for r in cur.fetchall():
-            out['data']['anomalies'].append({
-                'id': r[0], 'detected_at': str(r[1]),
-                'severity': r[2], 'summary': r[3],
-                'details': r[4] if r[4] else {},
-            })
-        try: conn.close()
-        except Exception: pass
+        try:
+            cur = conn.cursor()
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS daily_anomalies (
+                    id SERIAL PRIMARY KEY,
+                    detected_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    severity TEXT NOT NULL DEFAULT 'info',
+                    summary TEXT NOT NULL,
+                    details JSONB
+                )
+            """)
+            try: conn.commit()
+            except Exception: pass
+            cur.execute("""
+                SELECT id, detected_at, severity, summary, details
+                FROM daily_anomalies
+                WHERE detected_at > NOW() - INTERVAL '7 days'
+                ORDER BY detected_at DESC LIMIT 50
+            """)
+            for r in cur.fetchall():
+                out['data']['anomalies'].append({
+                    'id': r[0], 'detected_at': str(r[1]),
+                    'severity': r[2], 'summary': r[3],
+                    'details': r[4] if r[4] else {},
+                })
+        finally:
+            try: conn.close()
+            except Exception: pass
     except Exception as _e:
         out['data']['_error'] = type(_e).__name__ + ': ' + str(_e)[:200]
     return jsonify(out)

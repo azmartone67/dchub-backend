@@ -41,27 +41,29 @@ def _ensure_table():
         from main import get_db  # type: ignore
         conn = get_db()
         if not conn: return False
-        cur = conn.cursor()
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS brain_upgrade_nudges (
-                id            SERIAL PRIMARY KEY,
-                sent_at       TIMESTAMPTZ DEFAULT NOW(),
-                api_key_hash  TEXT,
-                email         TEXT,
-                calls_14d     INTEGER,
-                top_tool      TEXT,
-                resend_id     TEXT,
-                error         TEXT
-            )
-        """)
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_nudges_email_time "
-                    "ON brain_upgrade_nudges(email, sent_at DESC)")
-        conn.commit()
-        try: cur.close()
-        except Exception: pass
-        try: conn.close()
-        except Exception: pass
-        return True
+        try:
+            cur = conn.cursor()
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS brain_upgrade_nudges (
+                    id            SERIAL PRIMARY KEY,
+                    sent_at       TIMESTAMPTZ DEFAULT NOW(),
+                    api_key_hash  TEXT,
+                    email         TEXT,
+                    calls_14d     INTEGER,
+                    top_tool      TEXT,
+                    resend_id     TEXT,
+                    error         TEXT
+                )
+            """)
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_nudges_email_time "
+                        "ON brain_upgrade_nudges(email, sent_at DESC)")
+            conn.commit()
+            try: cur.close()
+            except Exception: pass
+            return True
+        finally:
+            try: conn.close()
+            except Exception: pass
     except Exception as e:
         logger.warning(f"L13 table create failed: {e}")
         return False
@@ -70,6 +72,7 @@ def _ensure_table():
 def _candidates(limit: int = 25) -> list[dict]:
     """High-volume free-tier callers with a captured email who haven't
     been nudged recently."""
+    conn = None
     try:
         from main import get_db  # type: ignore
         conn = get_db()
@@ -167,12 +170,14 @@ def _candidates(limit: int = 25) -> list[dict]:
             logger.info(f"L13 operator-pool merge skipped: {_e}")
         try: cur.close()
         except Exception: pass
-        try: conn.close()
-        except Exception: pass
         return rows
     except Exception as e:
         logger.warning(f"L13 candidates query failed: {e}")
         return []
+    finally:
+        if conn is not None:
+            try: conn.close()
+            except Exception: pass
 
 
 def _pitch_body(c: dict) -> tuple[str, str]:
@@ -253,21 +258,23 @@ def _log_send(c: dict, ok: bool, rid_or_err: str):
         from main import get_db  # type: ignore
         conn = get_db()
         if not conn: return
-        cur = conn.cursor()
-        cur.execute(
-            "INSERT INTO brain_upgrade_nudges "
-            "(api_key_hash, email, calls_14d, top_tool, resend_id, error) "
-            "VALUES (%s, %s, %s, %s, %s, %s)",
-            (c.get("api_key_hash"), c.get("email"), c.get("calls_14d"),
-             c.get("top_tool"),
-             rid_or_err if ok else None,
-             None if ok else rid_or_err),
-        )
-        conn.commit()
-        try: cur.close()
-        except Exception: pass
-        try: conn.close()
-        except Exception: pass
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "INSERT INTO brain_upgrade_nudges "
+                "(api_key_hash, email, calls_14d, top_tool, resend_id, error) "
+                "VALUES (%s, %s, %s, %s, %s, %s)",
+                (c.get("api_key_hash"), c.get("email"), c.get("calls_14d"),
+                 c.get("top_tool"),
+                 rid_or_err if ok else None,
+                 None if ok else rid_or_err),
+            )
+            conn.commit()
+            try: cur.close()
+            except Exception: pass
+        finally:
+            try: conn.close()
+            except Exception: pass
     except Exception as e:
         logger.warning(f"L13 log failed: {e}")
 

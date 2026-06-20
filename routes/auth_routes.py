@@ -721,33 +721,36 @@ def update_user():
     data = request.get_json()
 
     conn = _get_db()
-    c = conn.cursor()
+    try:
+        c = conn.cursor()
 
-    updates = []
-    params = []
+        updates = []
+        params = []
 
-    if 'name' in data:
-        updates.append('name = %s')
-        params.append(data['name'])
-    if 'company' in data:
-        updates.append('company = %s')
-        params.append(data['company'])
-    if 'preferences' in data:
-        updates.append('preferences = %s')
-        params.append(json.dumps(data['preferences']))
-    if 'saved_searches' in data:
-        updates.append('saved_searches = %s')
-        params.append(json.dumps(data['saved_searches']))
-    if 'saved_markets' in data:
-        updates.append('saved_markets = %s')
-        params.append(json.dumps(data['saved_markets']))
+        if 'name' in data:
+            updates.append('name = %s')
+            params.append(data['name'])
+        if 'company' in data:
+            updates.append('company = %s')
+            params.append(data['company'])
+        if 'preferences' in data:
+            updates.append('preferences = %s')
+            params.append(json.dumps(data['preferences']))
+        if 'saved_searches' in data:
+            updates.append('saved_searches = %s')
+            params.append(json.dumps(data['saved_searches']))
+        if 'saved_markets' in data:
+            updates.append('saved_markets = %s')
+            params.append(json.dumps(data['saved_markets']))
 
-    if updates:
-        params.append(request.user['user_id'])
-        c.execute(f"UPDATE users SET {', '.join(updates)} WHERE id = %s", params)
-        conn.commit()
-
-    conn.close()
+        if updates:
+            params.append(request.user['user_id'])
+            c.execute(f"UPDATE users SET {', '.join(updates)} WHERE id = %s", params)
+            conn.commit()
+    finally:
+        # LEAK FIX: release the pooled conn on every path (was skipped on error)
+        try: conn.close()
+        except Exception: pass
 
     return jsonify({'success': True, 'message': 'Profile updated'})
 
@@ -765,28 +768,31 @@ def get_user_dashboard():
         return jsonify({'error': 'User ID required'}), 400
 
     conn = _get_db_connection()
-    c = conn.cursor()
+    try:
+        c = conn.cursor()
 
-    c.execute("""
-        SELECT id, market, alert_type, enabled, created_at, last_triggered, trigger_count
-        FROM user_alerts
-        WHERE user_id = %s
-        ORDER BY created_at DESC
-        LIMIT 20
-    """, (user_id,))
-    alerts_rows = c.fetchall()
+        c.execute("""
+            SELECT id, market, alert_type, enabled, created_at, last_triggered, trigger_count
+            FROM user_alerts
+            WHERE user_id = %s
+            ORDER BY created_at DESC
+            LIMIT 20
+        """, (user_id,))
+        alerts_rows = c.fetchall()
 
-    alerts = [{
-        'id': f'alert_{row[0]}',
-        'name': f'{row[1]} - {row[2]}',
-        'condition': row[2],
-        'market': row[1],
-        'active': bool(row[3]),
-        'triggered': row[5] is not None,
-        'created': row[4]
-    } for row in alerts_rows]
-
-    conn.close()
+        alerts = [{
+            'id': f'alert_{row[0]}',
+            'name': f'{row[1]} - {row[2]}',
+            'condition': row[2],
+            'market': row[1],
+            'active': bool(row[3]),
+            'triggered': row[5] is not None,
+            'created': row[4]
+        } for row in alerts_rows]
+    finally:
+        # LEAK FIX: release the conn on every path (was skipped on error)
+        try: conn.close()
+        except Exception: pass
 
     return jsonify({
         'success': True,
@@ -818,18 +824,22 @@ def save_user_dashboard():
 def get_user_api_keys():
     """Get all API keys for the authenticated user"""
     conn = _get_db()
-    c = conn.cursor()
+    try:
+        c = conn.cursor()
 
-    c.execute("""
-        SELECT id, key_prefix, name, plan, rate_limit_tier, is_active,
-               created_at, usage_count, calls_today, calls_total
-        FROM api_keys
-        WHERE user_id = %s
-        ORDER BY created_at DESC
-    """, (request.user['user_id'],))
+        c.execute("""
+            SELECT id, key_prefix, name, plan, rate_limit_tier, is_active,
+                   created_at, usage_count, calls_today, calls_total
+            FROM api_keys
+            WHERE user_id = %s
+            ORDER BY created_at DESC
+        """, (request.user['user_id'],))
 
-    rows = c.fetchall()
-    conn.close()
+        rows = c.fetchall()
+    finally:
+        # LEAK FIX: release the pooled conn on every path (was skipped on error)
+        try: conn.close()
+        except Exception: pass
 
     keys = [{
         'id': row[0],

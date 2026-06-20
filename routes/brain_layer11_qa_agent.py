@@ -275,6 +275,7 @@ def qa_agent():
         )
 
     # GET — cached summary from latest run
+    conn = None
     try:
         from main import get_db  # type: ignore
         conn = get_db()
@@ -302,8 +303,6 @@ def qa_agent():
                  "probed_at": str(r[7])} for r in cur.fetchall()]
         try: cur.close()
         except Exception: pass
-        try: conn.close()
-        except Exception: pass
 
         by_class: dict = {}
         for r in rows:
@@ -324,6 +323,10 @@ def qa_agent():
         )
     except Exception as e:
         return jsonify(ok=False, error=str(e)[:200]), 503
+    finally:
+        if conn is not None:
+            try: conn.close()
+            except Exception: pass
 
 
 @brain_layer11_bp.route("/api/v1/brain/qa-agent/history", methods=["GET"])
@@ -332,6 +335,7 @@ def qa_history():
     path = (request.args.get("path") or "").strip()
     if not path:
         return jsonify(ok=False, error="missing path param"), 400
+    conn = None
     try:
         from main import get_db  # type: ignore
         conn = get_db()
@@ -349,8 +353,10 @@ def qa_history():
                    for r in cur.fetchall()]
         try: cur.close()
         except Exception: pass
-        try: conn.close()
-        except Exception: pass
         return jsonify(ok=True, path=path, count=len(history), history=history)
     except Exception as e:
         return jsonify(ok=False, error=str(e)[:200]), 503
+    finally:
+        if conn is not None:
+            try: conn.close()
+            except Exception: pass

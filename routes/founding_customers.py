@@ -399,6 +399,7 @@ Real thanks for the bet.
             body = resp.read().decode("utf-8", errors="replace")
         logger.info(f"[founding-customers] welcome sent to {email}")
         # Mark in DB
+        c = None
         try:
             c = _get_db()
             if c is not None:
@@ -411,8 +412,11 @@ Real thanks for the bet.
                     )
                 try: c.commit()
                 except Exception: pass
-                c.close()
         except Exception: pass
+        finally:
+            if c is not None:
+                try: c.close()
+                except Exception: pass
         return True
     except Exception as e:
         logger.warning(f"[founding-customers] welcome email failed: {e}")

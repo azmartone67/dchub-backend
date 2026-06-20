@@ -1219,6 +1219,7 @@ def brief_html():
     rec_count = 0
     fix_count = 0
     if md:
+        c2 = None
         try:
             c2 = _get_db()
             if c2 is not None:
@@ -1230,8 +1231,11 @@ def brief_html():
                     """)
                     rid = cur2.fetchone()
                     if rid: latest_id = str(rid[0])
-                c2.close()
         except Exception: pass
+        finally:
+            if c2 is not None:
+                try: c2.close()
+                except Exception: pass
         rec_count = len(_parse_recommendations(md))
         fix_count = len(_parse_code_fix_candidates(md))
 

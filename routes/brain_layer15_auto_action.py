@@ -41,6 +41,7 @@ _DEDUP_WINDOW_DAYS = 7
 
 
 def _ensure_table():
+    conn = None
     try:
         from main import get_db
         conn = get_db()
@@ -64,12 +65,14 @@ def _ensure_table():
         conn.commit()
         try: cur.close()
         except Exception: pass
-        try: conn.close()
-        except Exception: pass
         return True
     except Exception as e:
         logger.warning(f"L15 table create failed: {e}")
         return False
+    finally:
+        if conn is not None:
+            try: conn.close()
+            except Exception: pass
 
 
 def _internal(path: str, timeout: int = 8) -> dict:
@@ -85,6 +88,7 @@ def _internal(path: str, timeout: int = 8) -> dict:
 def _recently_issued_titles() -> set[str]:
     """Pull chain titles that already got an issue in the dedup window."""
     out: set[str] = set()
+    conn = None
     try:
         from main import get_db
         conn = get_db()
@@ -101,10 +105,12 @@ def _recently_issued_titles() -> set[str]:
             if t: out.add(t)
         try: cur.close()
         except Exception: pass
-        try: conn.close()
-        except Exception: pass
     except Exception as e:
         logger.warning(f"L15 dedup lookup failed: {e}")
+    finally:
+        if conn is not None:
+            try: conn.close()
+            except Exception: pass
     return out
 
 
@@ -197,6 +203,7 @@ def _open_issue(chain: dict) -> tuple[bool, str]:
 
 
 def _record(chain: dict, ok: bool, url_or_err: str, issue_num: int | None = None):
+    conn = None
     try:
         from main import get_db
         conn = get_db()
@@ -218,16 +225,19 @@ def _record(chain: dict, ok: bool, url_or_err: str, issue_num: int | None = None
         conn.commit()
         try: cur.close()
         except Exception: pass
-        try: conn.close()
-        except Exception: pass
     except Exception as e:
         logger.warning(f"L15 record failed: {e}")
+    finally:
+        if conn is not None:
+            try: conn.close()
+            except Exception: pass
 
 
 @brain_layer15_bp.route("/api/v1/brain/auto-action", methods=["GET"])
 def auto_action_list():
     """Recent auto-actions (last 20)."""
     _ensure_table()
+    conn = None
     try:
         from main import get_db
         conn = get_db()
@@ -262,8 +272,6 @@ def auto_action_list():
                 })
         try: cur.close()
         except Exception: pass
-        try: conn.close()
-        except Exception: pass
         return jsonify(
             ok=True,
             count=len(rows),
@@ -272,6 +280,10 @@ def auto_action_list():
         )
     except Exception as e:
         return jsonify(ok=False, error=str(e)[:200]), 503
+    finally:
+        if conn is not None:
+            try: conn.close()
+            except Exception: pass
 
 
 @brain_layer15_bp.route("/api/v1/brain/auto-action/run",
