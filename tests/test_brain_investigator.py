@@ -197,9 +197,27 @@ _FAKE_FUNNEL_DATA = {
         "mrr_usd": 4735,
         "conversions_30d": 3,
         "active_dev_keys": 412,
+        # tool_calls_7d = GROSS (incl loop/selfheal/probe) — must NOT be cited.
         "tool_calls_7d": 35021,
+        "tool_calls_7d_incl_loops": 35021,
+        # tool_calls_7d_real = HONEST de-looped external — the one to cite.
+        "tool_calls_7d_real": 9154,
+        "tool_calls_30d_real": 38000,
         "dev_keys_by_tier": {"free": 400, "paid": 10, "enterprise": 2},
     },
+    # Weekly de-looped trend — lets the brain judge a real decline.
+    "calls_week_trend": {
+        "last_week_calls": 9154,
+        "trailing_4wk_avg_calls": 9500.0,
+        "delta_pct": -3.6,
+        "last_week_distinct_callers": 42,
+    },
+    "calls_by_week": [
+        {"week_start": "2026-05-26", "calls": 9800, "distinct_callers": 50},
+        {"week_start": "2026-06-02", "calls": 9500, "distinct_callers": 48},
+        {"week_start": "2026-06-09", "calls": 9400, "distinct_callers": 45},
+        {"week_start": "2026-06-16", "calls": 9154, "distinct_callers": 42},
+    ],
     "funnel": {
         "distinct_paid_users_30d": 9,
         "stage_drops_pct": {"signals->codes": 80.0, "codes->paid": 95.0},
@@ -256,6 +274,29 @@ def test_gather_growth_funnel_returns_funnel_items(monkeypatch):
     # Distinct ACTIVE callers 30d (free+paid) — relabeled from the misleading
     # "paid users" (it counts non-internal api_keys, not paying accounts).
     assert _val("active mcp callers") == 9
+
+    # HONEST de-looped tool calls 7d — the brain must cite the EXTERNAL number
+    # (9,154), NOT the gross mcp_call_log count (35,021) that lumps in our own
+    # loop/selfheal/probe traffic. The whole point of the reconciliation.
+    tc_items = [it for it in items
+                if "tool calls in last 7 days" in it["claim"].lower()]
+    assert len(tc_items) == 1, "exactly one 7d-calls evidence item expected"
+    assert tc_items[0]["value"] == 9154, (
+        "must cite de-looped tool_calls_7d_real (9154), not the inflated "
+        "mcp_call_log count (35021)")
+    assert "de-looped" in tc_items[0]["claim"].lower()
+    # The gross 35,021 must NOT appear as a value anywhere.
+    assert all(it["value"] != 35021 for it in items)
+
+    # WEEKLY TREND evidence — so the brain can judge a decline, not just an
+    # absolute. The "this week vs trailing 4-week avg" item must be present
+    # with the de-looped last-week value and a delta in the claim text.
+    trend_items = [it for it in items
+                   if "trailing 4-week avg" in it["claim"].lower()]
+    assert len(trend_items) == 1, "exactly one weekly-trend evidence item"
+    assert trend_items[0]["value"] == 9154
+    assert "-3.6%" in trend_items[0]["claim"]
+    assert "de-looped" in trend_items[0]["claim"].lower()
 
 
 def test_gather_evidence_includes_growth_funnel(monkeypatch):

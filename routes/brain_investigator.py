@@ -396,12 +396,42 @@ def gather_growth_funnel() -> list[dict]:
                 "value": int(kpis.get("active_dev_keys") or 0),
             })
 
-        # Tool calls 7d — usage/retention proxy.
-        if kpis.get("tool_calls_7d") is not None:
+        # Tool calls 7d — usage/retention proxy. CITE THE HONEST de-looped
+        # number (external AI-agent calls), NOT the gross mcp_call_log count
+        # which lumps in our own selfheal/probe/sweep loop traffic (~35-41k vs
+        # ~9k real). The inflated count made a non-decline read as a decline.
+        # tool_calls_7d_real is the canonical de-loop, identical to the
+        # /api/v1/mcp/funnel endpoint definition. Honest-numbers fence.
+        if kpis.get("tool_calls_7d_real") is not None:
             out.append({
-                "claim": "MCP tool calls in last 7 days",
-                "source": "funnel_health KPIs (mcp_call_log 7d)",
+                "claim": "MCP tool calls in last 7 days (de-looped, external)",
+                "source": "funnel_health KPIs (mcp_tool_calls 7d, "
+                          "loop/selfheal/probe excluded)",
+                "value": int(kpis.get("tool_calls_7d_real") or 0),
+            })
+        elif kpis.get("tool_calls_7d") is not None:
+            # Fallback only if the honest field is unavailable (degraded source).
+            out.append({
+                "claim": "MCP tool calls in last 7 days (INCL loop/internal "
+                         "traffic — over-counts)",
+                "source": "funnel_health KPIs (mcp_call_log 7d, gross)",
                 "value": int(kpis.get("tool_calls_7d") or 0),
+            })
+
+        # Weekly TREND — so the brain can actually judge a DECLINE rather than
+        # staring at one absolute number. Sourced from funnel_health's
+        # de-looped weekly buckets (calls_week_trend). "This week vs trailing
+        # 4-week avg" is the honest decline signal.
+        trend = data.get("calls_week_trend") or {}
+        if isinstance(trend, dict) and trend.get("last_week_calls") is not None:
+            dp = trend.get("delta_pct")
+            dp_str = (f"{dp:+.1f}%" if isinstance(dp, (int, float)) else "n/a")
+            out.append({
+                "claim": ("MCP calls last complete week vs trailing 4-week avg "
+                          f"({dp_str}); de-looped external"),
+                "source": "funnel_health calls_by_week (mcp_tool_calls, "
+                          "loop/selfheal/probe excluded)",
+                "value": int(trend.get("last_week_calls") or 0),
             })
 
         # Funnel waterfall — DISTINCT ACTIVE callers 30d. NOTE: this counts

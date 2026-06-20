@@ -100,6 +100,63 @@ _AI_PLATFORMS = [
 ]
 
 
+# ── De-loop definition (SINGLE SOURCE) ─────────────────────────────────
+# THE honest "real external tool calls" definition. Matches the
+# /api/v1/mcp/funnel endpoint's `tool_calls_7d_real` (flask_mcp_endpoints.py
+# L1857-1893): read from mcp_tool_calls (NOT mcp_call_log) — the legacy
+# mcp_call_log captures EVERY row including our own selfheal/probe/sweep loop
+# traffic, so a COUNT(*) there reads ~35-41k and a non-decline looks like a
+# decline. mcp_tool_calls already drops internal clients at WRITE time (Item 5
+# SELF-HEAL DIET, main.py L6398-6422), and we additionally exclude the
+# probe/loop client_name + user_agent families below so the count is what
+# external AI agents actually did.
+#
+# DO NOT duplicate this clause inline — both the 7d/30d KPI and the weekly
+# trend below reuse _deloop_calls_where(). Honest-numbers fence: one filter,
+# many sinks.
+_PROBE_CLIENT_NAMES = (
+    'node', 'dchub-selfheal', 'dchub-mcp-test', 'mcp-probe', 'mcp-test',
+    'pipeline_mcp', 'canary', 'mcp-remote-fallback-test',
+    'registry-health-checker', 'mcp-shield-scanner', 'yellowmcp-health',
+    'glama-health', 'chiark-prober', 'fabrique-noauth-probe',
+    'agentpulse', 'mcpscoringengine', 'mcp-extractor',
+    'curl', 'python-script', 'node-script', 'postman', 'insomnia', 'verify',
+)
+
+
+def _deloop_calls_where() -> str:
+    """Return the SQL WHERE fragment (no leading AND) that excludes
+    loop/selfheal/probe/sweep traffic from mcp_tool_calls. Columns referenced:
+    client_name, user_agent. Trusted hardcoded constants only — safe to inline
+    as SQL literals (no bound params, so literal % in LIKE is left alone)."""
+    _excl_in = ",".join(
+        "'" + str(p).replace("'", "''") + "'"
+        for p in sorted(set(_PROBE_CLIENT_NAMES)))
+    return (
+        f" COALESCE(LOWER(client_name),'') NOT IN ({_excl_in}) "
+        " AND COALESCE(LOWER(client_name),'') NOT LIKE 'loop%' "
+        " AND COALESCE(LOWER(client_name),'') NOT LIKE 'dchub-%' "
+        " AND COALESCE(LOWER(client_name),'') NOT LIKE 'local-agent-mode%' "
+        " AND COALESCE(LOWER(client_name),'') NOT LIKE 'leakaudit%' "
+        " AND COALESCE(LOWER(client_name),'') NOT LIKE 'trial-leak%' "
+        " AND COALESCE(LOWER(client_name),'') NOT LIKE '%-probe' "
+        " AND COALESCE(LOWER(client_name),'') NOT LIKE '%-health' "
+        " AND COALESCE(LOWER(client_name),'') NOT LIKE '%-scanner' "
+        " AND COALESCE(LOWER(client_name),'') NOT LIKE '%-checker' "
+        " AND COALESCE(LOWER(client_name),'') NOT LIKE '%-sweep' "
+        " AND COALESCE(LOWER(client_name),'') NOT LIKE 'regression-test%' "
+        # user_agent-level catch for our own internal crawlers (client_name
+        # is null/empty for ~70% of calls — these self-UAs would otherwise
+        # fall through to the count). Mirrors flask_mcp_endpoints.py's
+        # 'internal-dchub' UA bucket.
+        " AND COALESCE(LOWER(user_agent),'') NOT LIKE '%dchub-%' "
+        " AND COALESCE(LOWER(user_agent),'') NOT LIKE '%dchubhealer%' "
+        " AND COALESCE(LOWER(user_agent),'') NOT LIKE '%brain-radar%' "
+        " AND COALESCE(LOWER(user_agent),'') NOT LIKE '%brain-v2-headless%' "
+        " AND COALESCE(LOWER(user_agent),'') NOT LIKE '%uptimerobot%' "
+    )
+
+
 # ── DB ────────────────────────────────────────────────────────────────
 
 def _conn():
@@ -183,7 +240,11 @@ def _build_data() -> dict:
     """
     out: dict[str, Any] = {
         "kpis": {"mrr_usd": 0, "conversions_30d": 0, "active_dev_keys": 0,
-                 "tool_calls_7d": 0, "dev_keys_by_tier": {}},
+                 "tool_calls_7d": 0, "tool_calls_7d_incl_loops": 0,
+                 "tool_calls_7d_real": 0, "tool_calls_30d_real": 0,
+                 "dev_keys_by_tier": {}},
+        "calls_by_week": [],
+        "calls_week_trend": {},
         "funnel": {"calls_30d": 0, "distinct_paid_users_30d": 0,
                    "signals_30d": 0, "codes_minted_30d": 0,
                    "pages_viewed_30d": 0, "stripe_clicked_30d": 0,
@@ -299,6 +360,10 @@ def _build_data() -> dict:
             out["missing_tables"].append("mcp_dev_keys")
 
         # ── KPI 4: Tool calls 7d ──────────────────────────────────────
+        # tool_calls_7d = GROSS mcp_call_log row count — INCLUDES our own
+        # loop/selfheal/probe/sweep traffic (~35-41k). Kept for backward
+        # compat ONLY (brain detectors / mcp_growth.py read it). It is NOT the
+        # honest external number — see tool_calls_7d_real below.
         v = _scalar(cur,
             "SELECT COUNT(*) FROM mcp_call_log "
             " WHERE timestamp >= NOW() - INTERVAL '7 days'")
@@ -306,6 +371,68 @@ def _build_data() -> dict:
             out["missing_tables"].append("mcp_call_log")
             v = 0
         out["kpis"]["tool_calls_7d"] = int(v)
+        out["kpis"]["tool_calls_7d_incl_loops"] = int(v)  # explicit honest label
+
+        # ── KPI 4b: HONEST de-looped tool calls (7d + 30d) ────────────
+        # Single source of truth, identical definition to /api/v1/mcp/funnel's
+        # tool_calls_7d_real: mcp_tool_calls minus loop/selfheal/probe/sweep
+        # (see _deloop_calls_where). This is the number every surface should
+        # headline — it does NOT collapse when the selfheal loop changes cadence.
+        _where = _deloop_calls_where()
+        v_real7 = _scalar(cur,
+            "SELECT COUNT(*) FROM mcp_tool_calls "
+            " WHERE created_at >= NOW() - INTERVAL '7 days' "
+            "   AND " + _where)
+        if v_real7 is None:
+            out["missing_tables"].append("mcp_tool_calls")
+        out["kpis"]["tool_calls_7d_real"] = int(v_real7 or 0)
+        v_real30 = _scalar(cur,
+            "SELECT COUNT(*) FROM mcp_tool_calls "
+            " WHERE created_at >= NOW() - INTERVAL '30 days' "
+            "   AND " + _where)
+        out["kpis"]["tool_calls_30d_real"] = int(v_real30 or 0)
+
+        # ── KPI 4c: WEEKLY TREND (de-looped) so a real decline is visible ──
+        # Last ~8 ISO weeks of de-looped calls + DISTINCT external callers
+        # (by ip_address). A genuine drop shows here; a loop-cadence change
+        # does NOT (it's already excluded). Current (partial) week is dropped
+        # so the latest bucket isn't a misleading mid-week dip.
+        try:
+            cur.execute(
+                "SELECT DATE_TRUNC('week', created_at)::DATE AS week_start, "
+                "       COUNT(*) AS calls, "
+                "       COUNT(DISTINCT ip_address) AS distinct_callers "
+                "  FROM mcp_tool_calls "
+                " WHERE created_at >= DATE_TRUNC('week', NOW()) "
+                "                    - INTERVAL '8 weeks' "
+                "   AND created_at <  DATE_TRUNC('week', NOW()) "
+                "   AND " + _where +
+                " GROUP BY 1 ORDER BY 1")
+            weeks = [
+                {"week_start": (r[0].isoformat() if r[0] is not None else None),
+                 "calls": int(r[1] or 0),
+                 "distinct_callers": int(r[2] or 0)}
+                for r in (cur.fetchall() or [])
+            ]
+            out["calls_by_week"] = weeks
+            # Pre-compute the "this week vs trailing 4-week avg" delta so any
+            # consumer (brain, dashboard) reads ONE honest judgement, not raw
+            # rows. Uses the last COMPLETE week vs the 4 weeks before it.
+            if len(weeks) >= 2:
+                last = weeks[-1]["calls"]
+                prior = [w["calls"] for w in weeks[:-1]][-4:]
+                avg_prior = (sum(prior) / len(prior)) if prior else 0
+                out["calls_week_trend"] = {
+                    "last_week_calls": last,
+                    "trailing_4wk_avg_calls": round(avg_prior, 1),
+                    "delta_pct": (round((last - avg_prior) / avg_prior * 100.0, 1)
+                                  if avg_prior > 0 else None),
+                    "last_week_distinct_callers": weeks[-1]["distinct_callers"],
+                }
+        except Exception as e:
+            logger.debug("[funnel_health] calls_by_week probe failed: %s", e)
+            try: conn.rollback()
+            except Exception: pass
 
         # ── MCP funnel waterfall (30d) ────────────────────────────────
         v = _scalar(cur,
@@ -1228,9 +1355,9 @@ def _render_html(data: dict, admin_key: str) -> str:
       <div class="hero-d">{_esc(tier_strs)}</div>
     </div>
     <div class="hero">
-      <div class="hero-l">Tool calls 7d</div>
-      <div class="hero-v">{_fmt_n(k['tool_calls_7d'])}</div>
-      <div class="hero-d">mcp_call_log row count</div>
+      <div class="hero-l">Tool calls 7d (external)</div>
+      <div class="hero-v">{_fmt_n(k.get('tool_calls_7d_real', 0))}</div>
+      <div class="hero-d">de-looped · {_fmt_n(k.get('tool_calls_7d_incl_loops', k.get('tool_calls_7d', 0)))} incl-loops</div>
     </div>
   </div>
 
