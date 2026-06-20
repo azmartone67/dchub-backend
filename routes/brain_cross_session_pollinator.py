@@ -145,7 +145,7 @@ def detect_cross_session_patterns(window_days: int = 7) -> dict:
                                            END
                             WHERE detector = %s
                               AND issue = %s
-                              AND last_seen > NOW() - INTERVAL '%s days'
+                              AND last_seen > NOW() - %s * INTERVAL '1 day'
                               AND cross_session_escalated_at IS NULL""",
                         (int(sess_n), det, iss, window_days))
                     rows_escalated += cur.rowcount or 0
