@@ -47,6 +47,8 @@ _EXCLUDE_FILES = (
     "test_wins_poster.py",             # asserts the fence rejects banned strings — must quote them
     "brain_investigator.py",           # guard file: its fabrication denylist + LLM prompt literally quote $324B/50,000/340+ markets/96+ platforms to FLAG them in investigation output
     "test_brain_investigator.py",      # asserts the investigator flags fabricated figures — must quote them
+    "upgrade_outreach.py",             # guard file: its draft-generator LLM prompt quotes the banned figures to instruct the model to NEVER cite them in outreach
+    "test_upgrade_outreach.py",        # asserts the outreach draft avoids fabricated figures — may quote them
     # internal drafts / baselines / guard-docs that intentionally quote old values:
     "HEALTH_BASELINE.md", "DEPLOYMENT_LOCK.md", "SHOW_HN_DRAFT.md", "DAVID_EMAIL_DRAFT.md",
     "REGISTRY_SUBMISSIONS.md", "CBRE_x_DCHub_Partnership_Deck.md", "replit.md",

@@ -135,6 +135,15 @@ _TRANSACTIONAL_SENDERS = frozenset({
     "render_build_monitor.py",       # ops alert on failed Render build (to operator)
     "site_sentinel.py",              # page-health/error ops alerts (to operator)
     "state_visitor_claim.py",        # delivers the trial key the visitor claimed
+    "upgrade_outreach.py",           # draft-and-approve outreach engine: its
+                                     # TRANSACTIONAL path (keyless_payer +
+                                     # at_risk_paid) sends via
+                                     # email_fallback.send_email_resilient — it
+                                     # contains NO direct api.resend.com/emails
+                                     # POST. Its MARKETING path (comped_paid +
+                                     # high_usage_free) routes through
+                                     # routes/marketing_send.send_marketing_email,
+                                     # so it is NOT a new direct-Resend bypass.
 })
 
 # The full ratchet baseline: a file in EITHER bucket may call Resend directly.
