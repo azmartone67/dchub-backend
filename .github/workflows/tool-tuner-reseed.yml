@@ -1,0 +1,64 @@
+name: MCP Tool-Tuner Re-seed (keep per-platform descriptions fresh)
+
+# 2026-06-20 — the MISSING trigger for the tool_quality / train actuator.
+#
+# The per-platform tool-description tuner (routes/ai_platform_tool_tuner.py)
+# is CONSUMED live by the MCP server (server.mjs reads /api/v1/mcp/
+# tool-descriptions every 30 min and substitutes per-platform copy), but the
+# GENERATOR was only ever seeded ONCE manually (2026-06-07) — there was no
+# cron, so the variants froze for weeks. This workflow re-seeds weekly so the
+# "tool_quality optimization" the dashboard advertises actually executes on a
+# cadence instead of sitting in cosmetic shadow.
+#
+# Endpoint: POST /api/v1/admin/mcp/tool-tuner/seed?force=1  (X-Admin-Key)
+#   - idempotent + bounded (top-10 tools × top-5 platforms = 50 Claude calls)
+#   - force=1 regenerates so descriptions stay current as tools/positioning change
+#   - no-ops cleanly if AI_AGENT_EXPANSION_DISABLE=1 or the key is unset
+
+on:
+  schedule:
+    - cron: '23 14 * * 1'   # Mondays 14:23 UTC — distinct minute (cron-collision guard)
+  workflow_dispatch: {}     # manual trigger from the Actions tab
+
+permissions:
+  contents: read
+
+env:
+  RAILWAY_BASE: https://dchub-backend-production.up.railway.app
+
+jobs:
+  reseed:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Re-seed per-platform tool descriptions
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "$ADMIN_KEY" ]; then
+            echo "::warning::DCHUB_ADMIN_KEY not set — skipping tuner re-seed"
+            exit 0
+          fi
+          response=$(curl -sS --max-time 180 -X POST \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            -H "Content-Type: application/json" \
+            "$RAILWAY_BASE/api/v1/admin/mcp/tool-tuner/seed?force=1" \
+            || echo '{"ok":false,"error":"curl_fail"}')
+          echo "$response" | head -c 4000
+          echo
+          echo "$response" | python3 -c "
+          import json, sys
+          try:
+              d = json.load(sys.stdin)
+              w = len(d.get('written') or [])
+              s = len(d.get('skipped') or [])
+              f = len(d.get('failed') or [])
+              print(f'::notice::tool-tuner re-seed: written={w} skipped={s} failed={f}')
+              if d.get('skipped') is True:
+                  print('::warning::tuner re-seed skipped (AI_AGENT_EXPANSION_DISABLE=1)')
+              if not d.get('ok', False) and d.get('skipped') is not True:
+                  print(f'::warning::tuner re-seed not ok: {str(d)[:200]}')
+          except Exception as e:
+              print(f'::warning::tuner re-seed parse failed: {e}')
+          "
