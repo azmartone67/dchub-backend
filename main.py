@@ -2534,30 +2534,54 @@ def _grid_intel_fetch(region, rto_code):
         eia_key = os.environ.get('EIA_API_KEY', '')
         params = {
             'frequency': 'hourly', 'data[0]': 'value',
-            'facets[respondent][]': rto_code, 'facets[type][]': 'D',
+            'facets[respondent][]': rto_code,
+            'facets[type][]': ['D', 'DF'],  # D=demand actual, DF=day-ahead forecast (cross-check)
             'sort[0][column]': 'period', 'sort[0][direction]': 'desc',
-            'offset': 0, 'length': 24,
+            'offset': 0, 'length': 48,
         }
         if eia_key: params['api_key'] = eia_key
         r = _rq.get('https://api.eia.gov/v2/electricity/rto/region-data/data',
                     params=params, headers=H, timeout=8)  # demand = the #1 field + smallest payload; 5s ReadTimeout'd too often (cache-poisoned PJM/SRP to null)
         if r.ok:
-            data = (r.json() or {}).get('response', {}).get('data', [])
+            rows = (r.json() or {}).get('response', {}).get('data', [])
+            data = [d for d in rows if str(d.get('type') or '').upper() == 'D']
+            df_by_period = {d.get('period'): _eia_to_float(d.get('value'))
+                            for d in rows if str(d.get('type') or '').upper() == 'DF'}
             if data:
                 # ROBUSTNESS (2026-06-19): EIA's newest hour(s) are preliminary
                 # partials (e.g. AZPS 382 MW vs a real ~6500) — use the latest
                 # SETTLED hour, not data[0], so the flagship never surfaces a
                 # 90%-wrong demand number.
                 settled, skipped = _eia_latest_settled(data)
-                out['demand_mw'] = settled.get('value')
+                _sv = _eia_to_float(settled.get('value'))
+                out['demand_mw'] = round(_sv) if _sv is not None else settled.get('value')  # numeric, not string
                 out['demand_period'] = settled.get('period')
                 if skipped:
                     out['demand_note'] = (
                         'EIA newest hour was preliminary ('
                         + str(data[0].get('value')) + ' MW @ '
                         + str(data[0].get('period')) + '); using latest settled hour.')
-                out['demand_24h'] = [{'period': d.get('period'),
-                                      'mw': d.get('value')} for d in data]
+                # P3a: cross-check the settled demand against the EIA day-ahead
+                # forecast (DF) — a second guard catching partials that slip past
+                # the median floor (e.g. a 55%-of-median value).
+                _df = df_by_period.get(settled.get('period'))
+                if _df and _sv is not None and _df > 0 and abs(_sv - _df) / _df > 0.40:
+                    out['demand_forecast_warning'] = (
+                        f'settled demand {round(_sv)} MW deviates '
+                        f'{round(abs(_sv - _df) / _df * 100)}% from the EIA day-ahead '
+                        f'forecast {round(_df)} MW — value may be unreliable.')
+                # P2: 24h series with preliminary partials FLAGGED (so charts /
+                # min-avg-peak aggregations can exclude the leading cliff) + numeric mw.
+                _med = _eia_median([_eia_to_float(d.get('value')) for d in data])
+                _floor = (_med * 0.5) if _med else None
+                series = []
+                for d in data:
+                    fv = _eia_to_float(d.get('value'))
+                    pt = {'period': d.get('period'), 'mw': round(fv) if fv is not None else None}
+                    if _floor is not None and fv is not None and fv < _floor:
+                        pt['preliminary'] = True
+                    series.append(pt)
+                out['demand_24h'] = series
         else:
             out['eia_demand_error'] = f'HTTP {r.status_code}'
     except Exception as e:
@@ -2610,8 +2634,11 @@ def _grid_intel_fetch(region, rto_code):
                         if _ptotal(fm) >= pfloor:
                             chosen = p
                             break
-                out['generation_mix'] = {fuel: {'mw': v, 'period': chosen}
-                                         for fuel, v in by_period[chosen].items()}
+                out['generation_mix'] = {}
+                for fuel, v in by_period[chosen].items():
+                    fv = _eia_to_float(v)
+                    out['generation_mix'][fuel] = {'mw': round(fv) if fv is not None else v,
+                                                   'period': chosen}  # numeric mw, not string
                 out['generation_mix_period'] = chosen
         else:
             out['eia_genmix_error'] = f'HTTP {r.status_code}'
