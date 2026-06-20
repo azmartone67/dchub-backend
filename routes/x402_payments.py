@@ -193,6 +193,32 @@ def _facilitator_verify(payment_header: str, requirements: dict) -> tuple[bool, 
         return False, {"reason": "facilitator_error", "detail": str(e)[:120]}
 
 
+def _facilitator_settle(payment_header: str, requirements: dict) -> tuple[bool, dict]:
+    """Call the facilitator's /settle to CAPTURE the funds on-chain. x402 is
+    verify -> serve -> settle; we settle BEFORE unlocking so we never hand over
+    full data without the USDC actually being captured. Best-effort; (ok, detail).
+    Never raises."""
+    fac = _facilitator()
+    if not fac or not _recipient():
+        return False, {"reason": "not_configured"}
+    try:
+        body = json.dumps({
+            "x402Version": 1,
+            "paymentPayload": payment_header,
+            "paymentRequirements": requirements.get("accepts", [{}])[0],
+        }).encode()
+        r = urllib.request.Request(
+            fac + "/settle", data=body, method="POST",
+            headers={"Content-Type": "application/json",
+                     "User-Agent": "dchub-x402/1.0"})
+        with urllib.request.urlopen(r, timeout=15) as resp:
+            data = json.loads(resp.read().decode("utf-8", errors="replace") or "{}")
+        return bool(data.get("success") or data.get("settled")), data
+    except Exception as e:
+        logger.warning("x402 facilitator settle failed: %s", e)
+        return False, {"reason": "settle_error", "detail": str(e)[:120]}
+
+
 @x402_bp.route("/api/v1/x402/verify", methods=["POST", "OPTIONS"])
 def x402_verify():
     if request.method == "OPTIONS":
@@ -209,14 +235,21 @@ def x402_verify():
     if not payment or not tool:
         return jsonify(ok=False, error="missing X-PAYMENT header or tool"), 400
     reqs = payment_requirements(tool)
+    # 1) VERIFY the payment authorization is valid.
     ok, detail = _facilitator_verify(payment, reqs)
     if not ok:
         return jsonify(ok=False, error="payment_unverified", detail=detail), 402
-    # Verified: mint a short-lived unlock token the agent presents on retry.
+    # 2) SETTLE — actually capture the USDC on-chain BEFORE we unlock. If
+    #    settlement fails we do NOT hand over data (no free data on an
+    #    uncaptured payment).
+    settled, settle_detail = _facilitator_settle(payment, reqs)
+    if not settled:
+        return jsonify(ok=False, error="settlement_failed", detail=settle_detail), 402
+    # 3) Settled — mint a short-lived unlock token the agent presents on retry.
     token = "x402_" + str(int(time.time())) + "_" + tool
     _record_unlock(tool, token, reqs.get("price_usd"))
-    return jsonify(ok=True, tool=tool, unlock_token=token,
-                   expires_in_s=300, settlement=detail.get("payment") or "pending",
+    return jsonify(ok=True, tool=tool, unlock_token=token, expires_in_s=300,
+                   settlement=settle_detail.get("transaction") or settle_detail.get("network") or "settled",
                    note="Retry the tool with header X-Unlock: <unlock_token> for full data."), 200
 
 

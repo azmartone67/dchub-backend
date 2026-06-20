@@ -123,10 +123,11 @@ def test_verify_unverified_payment_returns_402(client, monkeypatch):
     assert r.get_json()["ok"] is False
 
 
-def test_verify_mints_unlock_on_valid_payment(client, monkeypatch):
+def test_verify_then_settle_mints_unlock_on_valid_payment(client, monkeypatch):
     monkeypatch.setenv("X402_ENABLED", "true")
     monkeypatch.setenv("X402_RECIPIENT_ADDRESS", "0xabc0000000000000000000000000000000000001")
-    monkeypatch.setattr(x, "_facilitator_verify", lambda p, r: (True, {"payment": "settled"}))
+    monkeypatch.setattr(x, "_facilitator_verify", lambda p, r: (True, {"valid": True}))
+    monkeypatch.setattr(x, "_facilitator_settle", lambda p, r: (True, {"transaction": "0xtxhash"}))
     monkeypatch.setattr(x, "_record_unlock", lambda *a, **k: None)  # no DB in test
     r = client.post("/api/v1/x402/verify?tool=get_grid_intelligence",
                     headers={"X-PAYMENT": "validproof"})
@@ -134,6 +135,20 @@ def test_verify_mints_unlock_on_valid_payment(client, monkeypatch):
     j = r.get_json()
     assert j["ok"] and j["tool"] == "get_grid_intelligence"
     assert j["unlock_token"].startswith("x402_")
+    assert j["settlement"] == "0xtxhash"
+
+
+def test_verified_but_unsettled_does_not_unlock(client, monkeypatch):
+    """No free data: a payment that VERIFIES but fails to SETTLE (funds not
+    captured) must NOT mint an unlock."""
+    monkeypatch.setenv("X402_ENABLED", "true")
+    monkeypatch.setenv("X402_RECIPIENT_ADDRESS", "0xabc0000000000000000000000000000000000001")
+    monkeypatch.setattr(x, "_facilitator_verify", lambda p, r: (True, {"valid": True}))
+    monkeypatch.setattr(x, "_facilitator_settle", lambda p, r: (False, {"reason": "settle_error"}))
+    r = client.post("/api/v1/x402/verify?tool=get_grid_intelligence",
+                    headers={"X-PAYMENT": "validproof"})
+    assert r.status_code == 402
+    assert r.get_json()["error"] == "settlement_failed"
 
 
 def test_register_wires_routes_onto_real_app():
