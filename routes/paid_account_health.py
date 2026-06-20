@@ -142,7 +142,7 @@ def check_paid_health():
                     cur.execute("SAVEPOINT sp_keys")
                     cur.execute("""
                         SELECT count(*) FROM api_keys
-                        WHERE user_id = %s AND COALESCE(is_active, 1) = 1
+                        WHERE user_id = %s AND is_active IS TRUE
                     """, (user_id,))
                     n_keys = (cur.fetchone() or [0])[0]
                     cur.execute("RELEASE SAVEPOINT sp_keys")
