@@ -106,7 +106,7 @@ def _insert_one(cur, f: dict) -> tuple[bool, str]:
                 first_seen, last_updated
             )
             VALUES ('manual', %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                    1.0, 0, %s, NOW()::TEXT, NOW()::TEXT, NOW()::TEXT)
+                    1.0, 0, %s, NOW(), NOW(), NOW())
             ON CONFLICT (source, source_id) DO UPDATE SET
                 name = EXCLUDED.name,
                 provider = EXCLUDED.provider,
