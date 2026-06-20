@@ -50,6 +50,11 @@ Endpoints (blueprint brain_investigator_bp, admin-gated):
   GET  /api/v1/brain/investigate/<id>         -> the stored investigation.
   POST /api/v1/brain/investigate/<id>/grade  {grade} -> records a human grade for
                                        CALIBRATION (the verify->learn loop).
+
+The KEY-based retention cohort summary for ops is served by
+routes/retention_cohorts.py at GET /api/v1/mcp/retention/cohorts (the canonical
+analyzer). gather_retention_cohorts() here is the brain's GATHER-step Source 6
+that reads de-looped, COUNT(DISTINCT api_key) cohort evidence.
 """
 from __future__ import annotations
 
@@ -271,7 +276,60 @@ def gather_evidence() -> list[dict]:
     except Exception as e:
         logger.warning("brain_investigator: paid-reconciliation evidence failed: %s", e)
 
+    # Source 6: RETENTION COHORTS (key-based funnel retention + reuse). The
+    # brain diagnosed retention as the flywheel leak (~74 agents try / ~1
+    # returns) but flagged its own answer ~0.2 confidence for LACK of
+    # instrumentation. This source closes that gap: it hands the investigator
+    # REAL, de-looped, COUNT(DISTINCT api_key) cohort figures — distinct new
+    # keys, return rate, reuse distribution, and retention-by-first-tool — so
+    # the next retention investigate() reasons on measured data, not a guess.
+    # Best-effort, capped to a handful of items; never raises.
+    try:
+        ev = gather_retention_cohorts()
+        if ev:
+            evidence.extend(ev)
+    except Exception as e:
+        logger.warning("brain_investigator: retention-cohort evidence failed: %s", e)
+
     return evidence
+
+
+# ── Step 2c: GATHER honest RETENTION-COHORT evidence ─────────────────
+# The actual cohort SQL lives in the CANONICAL standalone analyzer
+# routes/retention_cohorts.py (compute_retention_cohorts + the adapter
+# retention_cohort_evidence). We REUSE it here rather than hand-rolling a
+# second copy of the cohort SQL — same de-loop (mcp_calls_deloop.PROBE_PLATFORMS
+# applied to mcp_call_log's pre-classified platform), same COUNT(DISTINCT
+# api_key) discipline — so the brain's GATHER-step evidence and the
+# GET /api/v1/mcp/retention/cohorts ops endpoint NEVER drift. The brain reads
+# the same numbers ops sees.
+def gather_retention_cohorts(window_days: int = 30) -> list[dict]:
+    """RETENTION COHORT evidence so the brain reasons on REAL key-based funnel
+    retention instead of an un-instrumented ~0.2-confidence guess.
+
+    Thin delegating wrapper over the canonical analyzer
+    routes.retention_cohorts.retention_cohort_evidence() — that module owns the
+    de-looped, COUNT(DISTINCT api_key) cohort SQL (new keys, return rate, reuse
+    distribution, retention-by-first-tool, median time-to-2nd-call) and the
+    ops endpoint. Reusing it keeps the brain evidence and the endpoint in
+    lock-step (no two drifting implementations).
+
+    Returns a CONCISE, CAPPED list of {claim, source, value} items. Best-effort:
+    [] on any error / no canonical module / no data; NEVER raises (callers also
+    wrap it)."""
+    try:
+        from routes.retention_cohorts import retention_cohort_evidence
+    except Exception as e:
+        logger.warning(
+            "brain_investigator: retention_cohorts module unavailable: %s", e)
+        return []
+    try:
+        ev = retention_cohort_evidence(days=int(window_days))
+        return ev if isinstance(ev, list) else []
+    except Exception as e:
+        logger.warning(
+            "brain_investigator: retention-cohort evidence failed: %s", e)
+        return []
 
 
 _PAID_PLANS = "('pro','founding','enterprise','pro_annual','developer')"
@@ -1019,6 +1077,16 @@ def grade_ask(inv_id):
     if not ok:
         return jsonify(ok=False, error="not_found_or_db_error"), 404
     return jsonify(ok=True, id=inv_id, grade=grade), 200
+
+
+# NOTE: GET /api/v1/mcp/retention/cohorts is served by routes/retention_cohorts.py
+# (the canonical standalone analyzer — richer structured shape: new_keys,
+# return_rate, reuse_buckets, multiday_rate, first_tool_mix, retention_by_first_tool,
+# median_time_to_2nd_call). gather_retention_cohorts() above stays as the brain's
+# GATHER-step evidence Source 6. Both de-loop via the SAME canonical
+# mcp_calls_deloop.PROBE_PLATFORMS list, so the endpoint and the evidence agree.
+# Defining the route here too would collide at blueprint registration (duplicate
+# rule on the same app), so it is owned by retention_cohorts_bp only.
 
 
 def register_brain_investigator(app) -> None:

@@ -1529,6 +1529,18 @@ try:
     except Exception as _fhe:
         import logging
         logging.getLogger(__name__).warning('funnel_health wiring failed: %s', _fhe)
+    # RETENTION COHORT analyzer (2026-06-19): key-based retention over mcp_call_log
+    # so the brain reasons on REAL funnel data (the ~74-try / ~1-return leak it
+    # flagged at 0.2 confidence for lack of instrumentation). De-looped via the
+    # canonical mcp_calls_deloop.PROBE_PLATFORMS list, COUNT(DISTINCT api_key).
+    # Exposes admin-gated GET /api/v1/mcp/retention/cohorts; the brain investigator
+    # reads compute_retention_cohorts()->retention_cohort_evidence() as Source 6.
+    try:
+        from routes.retention_cohorts import register_retention_cohorts
+        register_retention_cohorts(app)
+    except Exception as _rce:
+        import logging
+        logging.getLogger(__name__).warning('retention_cohorts wiring failed: %s', _rce)
     # MCP Funnel Round 3 (2026-06-07): three Unlocks landing together —
     #   1) per-tool conversion analyzer (read-only brain detector, daily 02 UTC)
     #   2) /dashboard/usage customer self-serve usage page (key-gated, 10 req/min)

@@ -366,6 +366,116 @@ def test_gather_evidence_survives_growth_funnel_failure(monkeypatch):
     assert any("facilities" in e["claim"].lower() for e in ev)
 
 
+# ── retention cohorts (key-based funnel retention) ──────────────────
+# Canned cohort items shaped exactly like gather_retention_cohorts() emits.
+_FAKE_COHORT_ITEMS = [
+    {"claim": "Distinct NEW MCP keys (first-ever call) in last 30d",
+     "source": "mcp_call_log (DISTINCT api_key, de-looped)", "value": 74},
+    {"claim": "Return rate (new key made a 2nd-DAY call) — distinct returners "
+              "/ distinct first-callers",
+     "source": "mcp_call_log (DISTINCT api_key, de-looped)", "value": "1.4% (1/74)"},
+    {"claim": "Keys used ONCE only (one-and-done) — 70 of 74 new keys",
+     "source": "mcp_call_log (DISTINCT api_key, de-looped)", "value": "94.6%"},
+    {"claim": "Best-retaining FIRST tool: get_grid_intelligence "
+              "(3/8 new keys returned)",
+     "source": "mcp_call_log (DISTINCT api_key, first tool, de-looped)",
+     "value": "37.5% return rate"},
+]
+
+
+def test_gather_evidence_includes_retention_cohorts(monkeypatch):
+    """gather_evidence must APPEND the retention-cohort items as a new Source so
+    the next retention investigate() reasons on real key-based funnel data.
+    We mock the cohort source (no DB) and assert the items flow through."""
+    # Silence the other DB-touching sources so we isolate the cohort items.
+    monkeypatch.setattr(inv, "_gather_recent_findings", lambda *a, **k: [])
+    monkeypatch.setattr(inv, "_gather_health_baseline", lambda *a, **k: [])
+    monkeypatch.setattr(inv, "_gather_paid_reconciliation", lambda *a, **k: [])
+    monkeypatch.setattr(inv, "gather_growth_funnel", lambda *a, **k: [])
+    import sys
+    import types
+    cs = types.ModuleType("canonical_stats")
+    cs.get_canonical_stats = lambda: {}
+    monkeypatch.setitem(sys.modules, "canonical_stats", cs)
+    # MOCK the cohort source.
+    monkeypatch.setattr(inv, "gather_retention_cohorts",
+                        lambda *a, **k: list(_FAKE_COHORT_ITEMS))
+
+    ev = _REAL_GATHER_EVIDENCE()  # bypass the autouse stub
+    claims = " ".join(e.get("claim", "").lower() for e in ev)
+    sources = " ".join(e.get("source", "").lower() for e in ev)
+    # The retention cohort items are present.
+    assert "distinct new mcp keys" in claims
+    assert "return rate" in claims
+    assert "one-and-done" in claims
+    assert "best-retaining first tool" in claims
+    # Sourced from the de-looped mcp_call_log (the honest key-based signal).
+    assert "mcp_call_log" in sources
+    assert "de-looped" in sources
+    # Every cohort item keeps the {claim, source, value} shape the chain expects.
+    for it in _FAKE_COHORT_ITEMS:
+        assert it in ev
+
+
+def test_gather_evidence_survives_retention_cohort_failure(monkeypatch):
+    """If gather_retention_cohorts blows up, gather_evidence must still return
+    the other evidence and NOT crash the investigation (best-effort contract)."""
+    monkeypatch.setattr(inv, "_gather_recent_findings", lambda *a, **k: [])
+    monkeypatch.setattr(inv, "_gather_health_baseline", lambda *a, **k: [])
+    monkeypatch.setattr(inv, "_gather_paid_reconciliation", lambda *a, **k: [])
+    monkeypatch.setattr(inv, "gather_growth_funnel", lambda *a, **k: [])
+    import sys
+    import types
+    cs = types.ModuleType("canonical_stats")
+    cs.get_canonical_stats = lambda: {"facilities": 21000}
+    monkeypatch.setitem(sys.modules, "canonical_stats", cs)
+
+    def _boom(*a, **k):
+        raise RuntimeError("retention source exploded")
+
+    monkeypatch.setattr(inv, "gather_retention_cohorts", _boom)
+    ev = _REAL_GATHER_EVIDENCE()  # must not raise
+    assert any("facilities" in e["claim"].lower() for e in ev)
+
+
+def test_gather_retention_cohorts_delegates_to_canonical_module(monkeypatch):
+    """gather_retention_cohorts must REUSE the canonical analyzer
+    routes.retention_cohorts.retention_cohort_evidence (do NOT hand-roll a 2nd
+    cohort implementation) so the brain evidence and the ops endpoint never
+    drift. We inject a fake module and assert the items + window flow through."""
+    import sys
+    import types
+
+    seen = {}
+    rc = types.ModuleType("routes.retention_cohorts")
+
+    def _fake_evidence(days=30):
+        seen["days"] = days
+        return list(_FAKE_COHORT_ITEMS)
+
+    rc.retention_cohort_evidence = _fake_evidence
+    monkeypatch.setitem(sys.modules, "routes.retention_cohorts", rc)
+
+    out = inv.gather_retention_cohorts(window_days=14)
+    assert out == _FAKE_COHORT_ITEMS
+    assert seen["days"] == 14
+
+
+def test_gather_retention_cohorts_missing_module_returns_empty(monkeypatch):
+    """If the canonical analyzer is unavailable (import fails), the wrapper
+    returns [] WITHOUT raising (best-effort contract)."""
+    import builtins
+    real_import = builtins.__import__
+
+    def _blocked(name, *a, **k):
+        if name == "routes.retention_cohorts":
+            raise ImportError("simulated missing module")
+        return real_import(name, *a, **k)
+
+    monkeypatch.setattr(builtins, "__import__", _blocked)
+    assert inv.gather_retention_cohorts() == []
+
+
 # ── endpoints (Flask test client) ───────────────────────────────────
 @pytest.fixture()
 def client(monkeypatch):
@@ -436,3 +546,99 @@ def test_get_investigation_not_found(client, monkeypatch):
     monkeypatch.setattr(inv, "_get_investigation", lambda i: None)
     resp = client.get("/api/v1/brain/investigate/999")
     assert resp.status_code == 404
+
+
+# ── retention-cohorts ENDPOINT (canonical standalone analyzer) ──────
+# The GET /api/v1/mcp/retention/cohorts ops endpoint lives in the canonical
+# routes/retention_cohorts.py (a non-contested standalone module, mirroring
+# routes/mcp_retention.py), NOT on brain_investigator_bp — defining it on both
+# blueprints would collide as a duplicate rule. brain_investigator REUSES that
+# module's retention_cohort_evidence() as GATHER Source 6 (tested above).
+rc = pytest.importorskip("routes.retention_cohorts")
+
+
+@pytest.fixture()
+def rc_client(monkeypatch):
+    flask = pytest.importorskip("flask")
+    app = flask.Flask(__name__)
+    app.register_blueprint(rc.retention_cohorts_bp)
+    # Admin gate always passes in tests.
+    monkeypatch.setattr(rc, "_admin_ok", lambda: True)
+    return app.test_client()
+
+
+_FAKE_COHORT_SUMMARY = {
+    "window_days": 30, "new_keys": 74, "returned_keys": 1, "return_rate": 1.4,
+    "multiday_returned_keys": 1, "multiday_rate": 1.4,
+    "reuse_buckets": {"1": 70, "2-5": 3, "6+": 1},
+    "first_tool_mix": [{"tool": "get_grid_intelligence", "count": 8, "pct": 10.8}],
+    "retention_by_first_tool": [
+        {"tool": "get_grid_intelligence", "first_callers": 8, "returned": 3,
+         "return_rate": 37.5}],
+    "median_time_to_2nd_call_seconds": 3600.0,
+    "p95_time_to_2nd_call_seconds": 86400.0,
+}
+
+
+def test_retention_cohorts_endpoint_returns_summary(rc_client, monkeypatch):
+    """GET /api/v1/mcp/retention/cohorts returns the de-looped cohort summary
+    (admin-gated)."""
+    monkeypatch.setattr(rc, "compute_retention_cohorts",
+                        lambda *a, **k: dict(_FAKE_COHORT_SUMMARY))
+    monkeypatch.setattr(rc, "retention_cohort_evidence",
+                        lambda *a, **k: list(_FAKE_COHORT_ITEMS))
+    resp = rc_client.get("/api/v1/mcp/retention/cohorts?days=30")
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["ok"] is True
+    assert data["days"] == 30
+    assert data["cohorts"]["new_keys"] == 74
+    # A retention rate is distinct-returners / distinct-first-callers.
+    assert data["cohorts"]["return_rate"] == 1.4
+    # The evidence adapter (what the brain reads) is surfaced too.
+    assert data["evidence"] == _FAKE_COHORT_ITEMS
+
+
+def test_retention_cohorts_endpoint_requires_admin(rc_client, monkeypatch):
+    monkeypatch.setattr(rc, "_admin_ok", lambda: False)
+    resp = rc_client.get("/api/v1/mcp/retention/cohorts")
+    assert resp.status_code == 403
+
+
+def test_retention_cohorts_endpoint_clamps_days(rc_client, monkeypatch):
+    """days= is clamped (1..180) and passed through to the analyzer."""
+    seen = {}
+
+    def _capture(days=30, conn=None):
+        seen["days"] = days
+        return dict(_FAKE_COHORT_SUMMARY, window_days=days)
+
+    monkeypatch.setattr(rc, "compute_retention_cohorts", _capture)
+    monkeypatch.setattr(rc, "retention_cohort_evidence", lambda *a, **k: [])
+    resp = rc_client.get("/api/v1/mcp/retention/cohorts?days=9999")
+    assert resp.status_code == 200
+    assert seen["days"] == 180
+
+
+def test_retention_cohort_evidence_adapter_shape(monkeypatch):
+    """The adapter the brain reads emits {claim, source, value} items with
+    DISTINCT-key / de-looped sourcing and a return rate framed as
+    distinct-returners / distinct-first-callers. No DB: mock compute_*."""
+    monkeypatch.setattr(rc, "compute_retention_cohorts",
+                        lambda *a, **k: dict(_FAKE_COHORT_SUMMARY))
+    items = rc.retention_cohort_evidence(days=30)
+    assert isinstance(items, list) and items
+    for it in items:
+        assert set(it.keys()) >= {"claim", "source", "value"}
+    blob = " ".join(f"{i['claim']} {i['source']} {i['value']}" for i in items).lower()
+    assert "new mcp api_keys" in blob or "new mcp keys" in blob
+    assert "return rate" in blob
+    assert "distinct api_key" in blob
+    # The "which first tool retains?" signal is present.
+    assert "get_grid_intelligence" in blob
+
+
+def test_retention_cohort_evidence_no_data_returns_empty(monkeypatch):
+    """No new keys in window → [] (best-effort, never raises)."""
+    monkeypatch.setattr(rc, "compute_retention_cohorts", lambda *a, **k: {})
+    assert rc.retention_cohort_evidence() == []
