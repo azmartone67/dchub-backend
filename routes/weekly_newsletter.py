@@ -701,7 +701,7 @@ def select_recipients(cap: int = _RECIPIENT_CAP, throttle_days: int = _RESEND_DA
                 ),
                 recent AS (
                     SELECT email FROM newsletter_sends
-                     WHERE sent_at >= NOW() - INTERVAL '%s days'
+                     WHERE sent_at >= NOW() - %s * INTERVAL '1 day'
                 )
                 SELECT DISTINCT p.email
                   FROM pool p
