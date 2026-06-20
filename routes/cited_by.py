@@ -103,7 +103,7 @@ def _gather_cited_by_data(days: int = 30) -> dict:
                        MAX(created_at) AS last_seen,
                        MIN(created_at) AS first_seen
                   FROM mcp_tool_calls
-                 WHERE created_at >= NOW() - INTERVAL '%s days'
+                 WHERE created_at >= NOW() - %s * INTERVAL '1 day'
                    AND user_agent IS NOT NULL
                    AND user_agent != ''
                  GROUP BY user_agent, tool_name
