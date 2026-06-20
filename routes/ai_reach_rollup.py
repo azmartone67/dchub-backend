@@ -37,7 +37,6 @@ ai_reach_rollup_bp = Blueprint("ai_reach_rollup", __name__)
 
 CAP_WEEKS = 16              # how many trailing weeks the /trend endpoint serves
 FIRST_RUN_BACKFILL = 12     # weeks to backfill on the very first run (bounded cost)
-_SENTINEL_WEEK = date(2000, 1, 1)   # first_seen_week for pre-window IPs (never "new")
 _running = threading.Lock()         # prevents two overlapping recomputes on one replica
 
 
@@ -202,8 +201,6 @@ def run_reach_rollup() -> dict:
 
                 cur.execute("SELECT COUNT(*) FROM reach_weekly")
                 have_rows = int((cur.fetchone() or [0])[0]) > 0
-                cur.execute("SELECT COUNT(*) FROM reach_ip_seen")
-                seen_empty = int((cur.fetchone() or [0])[0]) == 0
 
                 if not have_rows:
                     # first run: backfill a bounded window, oldest-first
@@ -217,23 +214,14 @@ def run_reach_rollup() -> dict:
                     weeks.append(w)
                     w += timedelta(weeks=1)
 
-                # pre-window seed (only when the seen-set is empty): mark every
-                # external IP that appears BEFORE the first window week as already
-                # seen, so window weeks don't count old IPs as "new".
-                if seen_empty:
-                    pre_hi = _id_for_instant(cur, datetime.combine(start_week, datetime.min.time()),
-                                             minid, maxid)
-                    if pre_hi and pre_hi > minid:
-                        plats_ph = "(" + ",".join("%s" for _ in _INTERNAL_PLAT) + ")"
-                        cur.execute(f"""
-                            INSERT INTO reach_ip_seen (ip_address, first_seen_week)
-                            SELECT DISTINCT ip_address, %s FROM agent_requests
-                            WHERE id < %s
-                              AND ip_address IS NOT NULL AND ip_address <> ''
-                              AND ip_address !~ %s
-                              AND COALESCE(platform_id,'') NOT IN {plats_ph}
-                            ON CONFLICT (ip_address) DO NOTHING
-                        """, (_SENTINEL_WEEK, pre_hi, _PRIVATE_IP, *_INTERNAL_PLAT))
+                # NOTE: we deliberately do NOT pre-seed reach_ip_seen from the
+                # pre-window range — that DISTINCT+regex scan over millions of
+                # rows exceeds the statement timeout. Weeks are processed
+                # ASCENDING so the seen-set builds chronologically; the EARLIEST
+                # backfilled week's new_external_ips may be slightly inflated
+                # (nothing was seeded before it), but the external-IP universe is
+                # tiny (~tens) so it self-corrects within a week or two, and every
+                # week from the first live run forward is exact (cumulative set).
 
                 # resolve id boundaries for each week start (ascending)
                 results = []
