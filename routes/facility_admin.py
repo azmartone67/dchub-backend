@@ -230,7 +230,7 @@ def backfill_discovered():
                         )
                         VALUES ('manual', %s, %s, %s, %s, %s, %s, %s, %s, %s,
                                 1.0, 0, %s, NOW()::TEXT,
-                                NOW()::TEXT, NOW()::TEXT)
+                                NOW(), NOW())
                         ON CONFLICT (source, source_id) DO NOTHING
                     """, (r[8], r[0], r[1], r[2], r[3], r[4],
                            float(r[5] or 0), r[6], r[7], r[8]))
