@@ -538,7 +538,7 @@ def _topic_recently_ran(topic: str, recent_3d: set) -> bool:
             cur.execute(
                 """SELECT 1 FROM auto_press_releases
                     WHERE source_topic = %s
-                      AND generated_for >= (CURRENT_DATE - INTERVAL '%s days')
+                      AND generated_for >= (CURRENT_DATE - %s * INTERVAL '1 day')
                       AND generated_for < CURRENT_DATE
                     LIMIT 1""",
                 (topic, win))
