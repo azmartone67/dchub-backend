@@ -1404,7 +1404,23 @@ def ping_all_ai_platforms():
 
 @ai_interconnect_bp.route('/ai/outreach', methods=['GET'])
 def ai_outreach_status():
-    """Get AI outreach activity summary"""
+    """Get AI outreach activity summary.
+
+    INTENTIONALLY PUBLIC — left ungated by design (security review 2026-06-19).
+    This is an AI-platform/SEO transparency stat, NOT the journalist media log:
+      · It is allow-listed at tier 'none' (public) in the dchub.cloud CF worker
+        (dchub-frontend/_worker.js) and in dchub-frontend/_routes.json.
+      · It is fetched ANONYMOUSLY (CORS) by the public /ai marketing page
+        (static/ai.html, dchub-frontend/ai.html, for-ai.html) to render the
+        live "outreach / agents / organic-traffic" cards.
+      · The payload is AGGREGATE COUNTERS ONLY — directory/IndexNow ping counts,
+        per-AI-platform ping counts (ChatGPT/Perplexity/Gemini/etc.), and an
+        organic_traffic_total count from get_outreach_stats(). It exposes NO
+        journalist recipient emails, NO names, and no PII.
+    Gating it would break the live public /ai page with no security benefit, so
+    it is deliberately NOT admin-gated (unlike the media journalist endpoints in
+    routes/media_outreach.py, which DO carry recipient PII and ARE gated).
+    """
     track_ai_usage('/ai/outreach', response_type='meta')
     try:
         from ai_outreach_agent import get_outreach_stats

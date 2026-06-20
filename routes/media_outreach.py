@@ -38,6 +38,48 @@ _RESEND_KEY = (os.environ.get("DCHUB_RESEND_API_KEY") or "").strip()
 _FROM_ADDR = "press@dchub.cloud"
 
 
+# ── Admin gate — MIRROR the canonical brain/customer-portal gate ──────────────
+# This is the SINGLE fail-closed admin check for every PII / draft endpoint in
+# this module (outreach-log, the /media/outreach dashboard, drafts, stage-weekly).
+# It accepts an internal/admin key from the X-Internal-Key / X-Admin-Key header,
+# the ?admin_key= query param (first browser visit), OR the dchub_innov_key cookie
+# (remembered after a valid open) — compared against env DCHUB_ADMIN_KEY /
+# DCHUB_INTERNAL_KEY / INTERNAL_KEY.
+#
+# FAIL-CLOSED by construction (the inverted-gate bug must never come back):
+#   · If NO admin key is configured in the env, `_keys` is empty and the
+#     `_sent in _keys` test can never pass -> DENY. (The old `if _ADMIN_KEY and
+#     provided != _ADMIN_KEY` logic did the opposite: it ALLOWED everyone when no
+#     key was set, and proceeded when set but no header was sent.)
+#   · If a key IS configured but none is provided (or it mismatches) -> DENY.
+# Copied verbatim from routes/customer_portal._admin_ok /
+# routes/brain_innovation_dashboard._admin_ok — no new auth scheme is invented.
+def _admin_ok() -> bool:
+    """Fail-closed admin gate: True ONLY when a provided key matches a configured
+    env key. Returns False when no admin key is configured OR none is provided."""
+    _keys = set()
+    for _n in ("DCHUB_INTERNAL_KEY", "INTERNAL_KEY", "DCHUB_ADMIN_KEY"):
+        _v = os.environ.get(_n)
+        if _v:
+            _keys.add(_v)
+    _sent = (request.headers.get("X-Internal-Key")
+             or request.headers.get("X-Admin-Key")
+             or request.args.get("admin_key")
+             or request.cookies.get("dchub_innov_key") or "").strip()
+    return bool(_sent) and _sent in _keys
+
+
+_ADMIN_ONLY_HTML = (
+    "<!doctype html><meta charset=utf-8><title>DC Hub · internal</title>"
+    "<meta name='robots' content='noindex,nofollow'>"
+    "<body style='font-family:-apple-system,BlinkMacSystemFont,sans-serif;"
+    "background:#0a0a0a;color:#9a9a9a;display:flex;align-items:center;"
+    "justify-content:center;height:90vh;text-align:center'>"
+    "<div><h2 style='color:#e6e6e6;font-weight:300;letter-spacing:-.02em'>"
+    "Internal console</h2><p>The media outreach dashboard is admin-only. "
+    "Append <code>?admin_key=…</code> or send <code>X-Admin-Key</code>.</p></div>")
+
+
 def _conn():
     try:
         from main import get_db
@@ -281,12 +323,19 @@ def _default_story():
 def stage_weekly():
     """Compose + PERSIST pending pitch drafts for the top journalists. Operator
     reviews at GET /api/v1/media/drafts, sends via pitch-send. Cron-callable
-    (X-Admin-Key OR an internal dchub-* User-Agent). Never auto-sends."""
-    provided = (request.headers.get("X-Admin-Key") or "").strip()
+    (a valid admin key OR an internal dchub-* / brain User-Agent). Never
+    auto-sends.
+
+    GATE: accept EITHER the legitimate internal cron (a dchub-* / brain
+    User-Agent — the path the weekly cron uses) OR a valid admin key via the
+    canonical fail-closed _admin_ok(). Without one of those -> 401. (The old
+    `if _ADMIN_KEY and provided != _ADMIN_KEY` check was the inverted-gate bug:
+    it let everyone through when DCHUB_ADMIN_KEY was unset.)"""
     _ua = (request.headers.get("User-Agent") or "").lower()
     _internal = _ua.startswith("dchub-") or "brain" in _ua
-    if _ADMIN_KEY and provided != _ADMIN_KEY and not _internal:
-        return jsonify(error="unauthorized"), 401
+    if not (_internal or _admin_ok()):
+        return jsonify(error="unauthorized",
+                       hint="internal cron (dchub-* UA) or X-Admin-Key / ?admin_key="), 401
     _ensure_schema(); _ensure_drafts_schema()
     try: top = max(1, min(int(request.args.get("top", 3)), len(_JOURNALISTS)))
     except Exception: top = 3
@@ -326,10 +375,13 @@ def stage_weekly():
 
 @media_outreach_bp.route("/api/v1/media/drafts", methods=["GET"])
 def list_drafts():
-    """List pending pitch drafts for operator review. Admin-gated."""
-    provided = (request.headers.get("X-Admin-Key") or "").strip()
-    if _ADMIN_KEY and provided != _ADMIN_KEY:
-        return jsonify(error="unauthorized"), 401
+    """List pending pitch drafts for operator review. Admin-gated (fail-closed):
+    drafts carry journalist recipient_email + the full pitch body, so this denies
+    unless a provided key matches a configured admin key (never allows when no
+    admin key is configured — the inverted-gate bug must not return)."""
+    if not _admin_ok():
+        return jsonify(ok=False, error="admin only",
+                       hint="send X-Admin-Key / X-Internal-Key or append ?admin_key="), 403
     _ensure_drafts_schema()
     try:
         c = _conn(); cur = c.cursor()
@@ -355,9 +407,8 @@ def pitch_draft():
         story: {headline, story_paragraph, data_url, methodology_url,
                 angle_1, angle_2, angle_3} }
     """
-    provided = (request.headers.get("X-Admin-Key") or "").strip()
-    if _ADMIN_KEY and provided != _ADMIN_KEY:
-        return jsonify(error="unauthorized"), 401
+    if not _admin_ok():
+        return jsonify(error="unauthorized"), 403
 
     body = request.get_json(silent=True) or {}
     email = body.get("recipient_email")
@@ -400,9 +451,8 @@ def pitch_send():
 
     POST body: { recipient_email, subject, body, topic, story }
     """
-    provided = (request.headers.get("X-Admin-Key") or "").strip()
-    if _ADMIN_KEY and provided != _ADMIN_KEY:
-        return jsonify(error="unauthorized"), 401
+    if not _admin_ok():
+        return jsonify(error="unauthorized"), 403
 
     _ensure_schema()
     if not _RESEND_KEY:
@@ -544,8 +594,24 @@ def pitch_send():
     ), 200
 
 
+def _pii_no_store(resp):
+    """Stamp a PII response so neither the browser nor the dchub.cloud CF edge
+    caches an admin 200 and re-serves it to an anon. (Mirrors
+    customer_portal._no_store.)"""
+    resp.headers["Cache-Control"] = "no-store, private"
+    return resp
+
+
 @media_outreach_bp.route("/api/v1/media/outreach-log", methods=["GET"])
 def outreach_log():
+    """Sent/replied/converted tracking. Admin-gated (fail-closed) — the log rows
+    carry journalist recipient_email + recipient_name (PII), so this denies unless
+    a provided key matches a configured admin key. Cache-Control: no-store, private
+    so no admin 200 is ever edge-cached and served to anon."""
+    if not _admin_ok():
+        return _pii_no_store(jsonify(
+            ok=False, error="admin only — media outreach log contains recipient PII",
+            hint="send X-Admin-Key / X-Internal-Key or append ?admin_key=")), 403
     _ensure_schema()
     try:
         c = _conn()
@@ -562,7 +628,7 @@ def outreach_log():
             try: c.close()
             except Exception: pass
     except Exception as e:
-        return jsonify(ok=False, error=str(e)[:200]), 503
+        return _pii_no_store(jsonify(ok=False, error=str(e)[:200])), 503
     log = [{
         "id":      r[0], "to": r[1], "name": r[2], "pub": r[3],
         "subject": r[4], "topic": r[5],
@@ -573,7 +639,7 @@ def outreach_log():
     total = len(log)
     replied = sum(1 for x in log if x["replied_at"])
     converted = sum(1 for x in log if x["converted"])
-    return jsonify(
+    return _pii_no_store(jsonify(
         ok=True,
         total=total, replied=replied, converted=converted,
         reply_rate_pct=round(replied / max(total, 1) * 100, 1),
@@ -585,14 +651,27 @@ def outreach_log():
         send_ready=bool(_RESEND_KEY and _ADMIN_KEY),
         last_send_at=(log[0]["sent_at"] if log else None),
         log=log,
-    ), 200
+    )), 200
 
 
 @media_outreach_bp.route("/media/outreach", methods=["GET"])
 def outreach_page():
-    """Admin HTML dashboard for the outreach pipeline."""
-    return Response(f"""<!doctype html><html><head><meta charset=utf-8>
+    """Admin HTML dashboard for the outreach pipeline. Admin-gated (fail-closed):
+    this page fetches the PII outreach-log + journalist endpoints, so deny unless
+    a provided key matches a configured admin key. NO public caching (the old
+    `public, max-age=600` let the CF edge cache + re-serve it to anon)."""
+    if not _admin_ok():
+        return Response(_ADMIN_ONLY_HTML, mimetype="text/html", status=403,
+                        headers={"Cache-Control": "no-store, private"})
+    # Carry the admin key onto the in-page fetches: prefer the cookie (set on a
+    # valid open) so subsequent visits work; otherwise the ?admin_key= the
+    # operator just used. The JSON endpoints below are themselves admin-gated.
+    _provided = (request.headers.get("X-Internal-Key")
+                 or request.headers.get("X-Admin-Key")
+                 or request.args.get("admin_key") or "").strip()
+    resp = Response(f"""<!doctype html><html><head><meta charset=utf-8>
 <title>Media Outreach · DC Hub</title>
+<meta name="robots" content="noindex,nofollow">
 <style>body{{font-family:-apple-system,sans-serif;max-width:980px;margin:0 auto;padding:2rem 1rem;color:#1f2937}}
 .kpi{{display:inline-block;margin:1rem 1.5rem 1rem 0}}.kpi-v{{font-size:2rem;font-weight:800;font-family:monospace}}
 .kpi-l{{color:#6b7280;font-size:.85rem}}
@@ -601,27 +680,38 @@ th,td{{padding:.5rem;border-bottom:1px solid #e5e7eb;text-align:left;font-size:.
 .muted{{color:#6b7280}}
 </style></head><body>
 <h1>Media Outreach Pipeline</h1>
-<p class="muted">Outbound journalist pitches via Resend. Tracks sent/replied/converted.</p>
+<p class="muted">Outbound journalist pitches via Resend. Tracks sent/replied/converted. <b>Internal · admin-only.</b></p>
 
 <div id="kpis">Loading...</div>
 <h2>Journalists ({len(_JOURNALISTS)})</h2>
-<p class="muted">JSON: <a href="/api/v1/media/journalists">/api/v1/media/journalists</a> · log: <a href="/api/v1/media/outreach-log">/api/v1/media/outreach-log</a></p>
+<p class="muted">Admin-gated JSON: <code>/api/v1/media/journalists</code> · log: <code>/api/v1/media/outreach-log</code></p>
 <table id="journalists"></table>
 
 <script>
-fetch('/api/v1/media/outreach-log').then(r=>r.json()).then(d => {{
+// The log + journalist endpoints are admin-gated; carry the admin key (from the
+// ?admin_key= the operator used OR the dchub_innov_key cookie) onto each fetch.
+function getCookie(n){{var m=document.cookie.match(new RegExp('(?:^|; )'+n.replace(/([.*+?^${{}}()|[\\]\\\\])/g,'\\\\$1')+'=([^;]*)'));return m?decodeURIComponent(m[1]):'';}}
+var KEY = new URLSearchParams(location.search).get('admin_key') || getCookie('dchub_innov_key') || '';
+function authh(){{ var h={{'Accept':'application/json'}}; if(KEY){{h['X-Admin-Key']=KEY;}} return h; }}
+fetch('/api/v1/media/outreach-log', {{headers:authh()}}).then(r=>r.json()).then(d => {{
   document.getElementById('kpis').innerHTML =
-    `<div class="kpi"><div class="kpi-v">${{d.total}}</div><div class="kpi-l">Total sent</div></div>`
-    + `<div class="kpi"><div class="kpi-v">${{d.replied}}</div><div class="kpi-l">Replied (${{d.reply_rate_pct}}%)</div></div>`
-    + `<div class="kpi"><div class="kpi-v">${{d.converted}}</div><div class="kpi-l">Converted (${{d.conversion_rate_pct}}%)</div></div>`;
-}});
-fetch('/api/v1/media/journalists').then(r=>r.json()).then(d => {{
+    `<div class="kpi"><div class="kpi-v">${{d.total||0}}</div><div class="kpi-l">Total sent</div></div>`
+    + `<div class="kpi"><div class="kpi-v">${{d.replied||0}}</div><div class="kpi-l">Replied (${{d.reply_rate_pct||0}}%)</div></div>`
+    + `<div class="kpi"><div class="kpi-v">${{d.converted||0}}</div><div class="kpi-l">Converted (${{d.conversion_rate_pct||0}}%)</div></div>`;
+}}).catch(function(){{ document.getElementById('kpis').textContent='Could not load (admin key required).'; }});
+fetch('/api/v1/media/journalists', {{headers:authh()}}).then(r=>r.json()).then(d => {{
   document.getElementById('journalists').innerHTML =
     '<tr><th>Name</th><th>Publication</th><th>Beat</th><th>Email</th></tr>' +
-    d.journalists.map(j =>
+    (d.journalists||[]).map(j =>
       `<tr><td>${{j.name}}</td><td>${{j.publication}}</td><td class="muted">${{j.beat}}</td>` +
       `<td><a href="mailto:${{j.email}}">${{j.email}}</a></td></tr>`).join('');
 }});
 </script>
 </body></html>""", mimetype="text/html",
-                    headers={"Cache-Control": "public, max-age=600"})
+                    headers={"Cache-Control": "no-store, private"})
+    # Remember the admin key (same UX as the brain/customer-portal dashboards) so
+    # the operator pastes ?admin_key= once and revisits clean.
+    if _provided:
+        resp.set_cookie("dchub_innov_key", _provided, max_age=30 * 24 * 3600,
+                        secure=True, samesite="Lax", path="/")
+    return resp
