@@ -905,3 +905,98 @@ def parser_versions():
             "pypdf": "no longer required (ERCOT moved off PDF to the GIS Report XLSX)",
         },
     })
+
+
+# ── r-queue-projects-cron (2026-06-20): per-PROJECT interconnect_queue refresh ──
+# Companion to /ingest (which writes AGGREGATE GW totals to iso_queue_snapshots).
+# This refreshes the per-PROJECT `interconnect_queue` table (5,300+ NAMED ISO queue
+# projects: project, MW, status, state/county, fuel, POI) by REUSING the parsers in
+# load_interconnect_queue_live.py (PARSERS + upsert + ensure_schema + _dedupe).
+#
+# Fetches run ON RAILWAY (same as /ingest), so the daily GH cron just curls it —
+# the 6 hosts the aggregate /ingest already fetches daily are proven Railway-egress
+# reachable; ISO-NE is the one unknown. Each ISO is INDEPENDENT: an ISO blocked
+# from Railway egress fails alone (others still load) and the GH workflow re-fetches
+# THAT ISO on the runner (open egress, `--emit-json`) and POSTs the parsed rows back
+# here (accept-rows mode). Open + idempotent (ON CONFLICT upsert), mirroring /ingest
+# so the keyless GH curl works (GitHub Actions has no DATABASE_URL secret).
+@iso_queue_ingest_bp.route("/ingest-projects", methods=["GET", "POST"])
+@iso_queue_ingest_bp.route("/ingest-projects/<iso>", methods=["GET", "POST"])
+def ingest_projects(iso=None):
+    if not NEON_URL:
+        return jsonify({"error": "no_neon_url"}), 500
+    started = datetime.datetime.now(datetime.timezone.utc)
+    try:
+        import load_interconnect_queue_live as lq
+    except Exception as e:
+        return jsonify({"error": "loader_import_failed", "detail": str(e)[:200]}), 500
+    try:
+        import psycopg2  # the loader's upsert/ensure_schema use psycopg2 (v2)
+        conn = psycopg2.connect(NEON_URL, connect_timeout=15)
+    except Exception as e:
+        return jsonify({"error": "db_connect_failed", "detail": str(e)[:200]}), 500
+
+    out = {}
+    try:
+        lq.ensure_schema(conn)
+        body = request.get_json(silent=True) or {}
+        posted = body.get("rows") if isinstance(body, dict) else None
+        if posted:
+            # accept-rows mode: GH runner POSTs {iso, rows:[...]} for a blocked ISO
+            name = (body.get("iso") or iso or "POSTED").upper()
+            try:
+                rows = [tuple(r) for r in posted if r and r[0]]
+                if rows:
+                    lq.upsert(conn, rows)
+                out[name] = {"status": "ok", "rows": len(rows), "mode": "posted"}
+            except Exception as e:
+                out[name] = {"status": "failed", "mode": "posted",
+                             "error": f"{type(e).__name__}: {str(e)[:160]}"}
+        else:
+            # trigger mode: self-fetch + parse + upsert on Railway
+            if iso:
+                targets = [iso.upper()]
+            else:
+                q = (request.args.get("iso") or "").upper().strip()
+                targets = [q] if q else list(lq.PARSERS.keys())
+            for name in targets:
+                fn = lq.PARSERS.get(name)
+                if not fn:
+                    out[name] = {"status": "unknown_iso"}
+                    continue
+                try:
+                    rows = [r for r in lq._dedupe(fn()) if r[0]]
+                    if rows:
+                        lq.upsert(conn, rows)
+                    out[name] = {"status": "ok", "rows": len(rows),
+                                 "with_mw": sum(1 for r in rows if r[6] is not None)}
+                except Exception as e:
+                    # most likely Railway egress block -> GH-runner fallback re-fetches
+                    out[name] = {"status": "failed",
+                                 "error": f"{type(e).__name__}: {str(e)[:160]}"}
+        # post-run table totals — the real confirming count
+        with conn.cursor() as cur:
+            cur.execute("SELECT iso, COUNT(*) FROM interconnect_queue GROUP BY iso ORDER BY COUNT(*) DESC")
+            by = {r[0]: int(r[1]) for r in cur.fetchall()}
+            cur.execute("SELECT COUNT(*) FROM interconnect_queue")
+            total = int(cur.fetchone()[0])
+    except Exception as e:
+        return jsonify({"error": "ingest_failed", "detail": str(e)[:200], "partial": out}), 500
+    finally:
+        try: conn.close()
+        except Exception: pass
+
+    healthy = sum(1 for v in out.values() if isinstance(v, dict) and v.get("status") == "ok")
+    elapsed_ms = int((datetime.datetime.now(datetime.timezone.utc) - started).total_seconds() * 1000)
+    return jsonify({
+        "ok": True,
+        "started_at": started.isoformat(),
+        "elapsed_ms": elapsed_ms,
+        "ran": list(out.keys()),
+        "isos_ok": healthy,
+        "by_iso": out,
+        "interconnect_queue_total": total,
+        "interconnect_queue_by_iso": by,
+        "note": "Per-PROJECT rows in interconnect_queue (reuses load_interconnect_queue_live "
+                "PARSERS). Aggregate GW totals are at /ingest (iso_queue_snapshots).",
+    }), 200 if out and healthy == len(out) else 207

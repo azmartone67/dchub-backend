@@ -30,10 +30,20 @@ stripe_direct_bp = Blueprint("stripe_direct_upgrade", __name__)
 from routes._stripe_links import STRIPE_LINKS, TOOL_TIER_MAP, resolve_tier as _resolve_tier
 
 
-def _build_url(tier, tool, ref):
+def _build_url(tier, tool, ref, surface=None):
     base = STRIPE_LINKS[tier]
-    # client_reference_id appends as URL param; Stripe webhooks see it
-    ref_str = f"mcp:tool={tool or 'none'}:ref={ref or 'paywall'}"
+    # per-surface-attr (2026-06-20): when a WEB surface drove the click
+    # (?surface=market|facility|dcpi|pricing|…) emit the parseable
+    # web__<surface>__<slug> client_reference_id so the canonical Stripe
+    # webhook records mcp_conversions.web_source=<surface>/web_tool=<slug>
+    # and the operator can SEE which page sells. `ref` (the page slug) is
+    # the <slug>. With no surface this is an agent/MCP paywall hit, so keep
+    # the legacy mcp:tool=…:ref=… shape (attributed via the agent funnel).
+    if surface:
+        from routes._attribution_ref import build_web_ref
+        ref_str = build_web_ref(surface, ref)
+    else:
+        ref_str = f"mcp:tool={tool or 'none'}:ref={ref or 'paywall'}"
     sep = "&" if "?" in base else "?"
     return f"{base}{sep}client_reference_id={quote(ref_str)}"
 
@@ -45,23 +55,24 @@ def upgrade_redirect():
     identify every paywall-click. Add ?direct=1 to skip the form and go
     straight to Stripe (legacy behavior, kept for testing + power users).
     """
-    tool   = (request.args.get("tool") or "").strip()
-    tier   = (request.args.get("tier") or "").strip()
-    ref    = (request.args.get("ref")  or "paywall").strip()
-    direct = (request.args.get("direct") or "").strip() in ("1","true","yes")
-    chosen = _resolve_tier(tool, tier)
+    tool    = (request.args.get("tool") or "").strip()
+    tier    = (request.args.get("tier") or "").strip()
+    ref     = (request.args.get("ref")  or "paywall").strip()
+    surface = (request.args.get("surface") or "").strip()  # per-surface-attr
+    direct  = (request.args.get("direct") or "").strip() in ("1","true","yes")
+    chosen  = _resolve_tier(tool, tier)
 
     # r39: route through email capture for identity gating BEFORE Stripe.
     # /upgrade legacy path keeps the old direct behavior to not break the
     # pair-code redeem flow that was here pre-r38.
     if not direct and request.path.startswith("/pricing/upgrade"):
         from urllib.parse import urlencode
-        params = {"tool": tool, "tier": chosen, "ref": ref}
+        params = {"tool": tool, "tier": chosen, "ref": ref, "surface": surface}
         params = {k: v for k, v in params.items() if v}
         return redirect(f"/pricing/checkout/start?{urlencode(params)}", code=302)
 
     # Direct path or /upgrade legacy: straight to Stripe
-    url = _build_url(chosen, tool, ref)
+    url = _build_url(chosen, tool, ref, surface)
     return redirect(url, code=302)
 
 
@@ -69,14 +80,20 @@ def upgrade_redirect():
 def paywall_checkout_json():
     """JSON variant so MCP paywall responses can embed a one-click link
     AND show the user the destination before they click."""
-    tool   = (request.args.get("tool") or "").strip()
-    tier   = (request.args.get("tier") or "").strip()
-    ref    = (request.args.get("ref")  or "mcp-paywall").strip()
-    chosen = _resolve_tier(tool, tier)
+    tool    = (request.args.get("tool") or "").strip()
+    tier    = (request.args.get("tier") or "").strip()
+    ref     = (request.args.get("ref")  or "mcp-paywall").strip()
+    surface = (request.args.get("surface") or "").strip()  # per-surface-attr
+    chosen  = _resolve_tier(tool, tier)
+    if surface:
+        from routes._attribution_ref import build_web_ref
+        _cref = build_web_ref(surface, ref)
+    else:
+        _cref = f"mcp:tool={tool or 'none'}:ref={ref}"
     return jsonify({
         "tool":           tool or None,
         "tier":           chosen,
-        "checkout_url":   _build_url(chosen, tool, ref),
+        "checkout_url":   _build_url(chosen, tool, ref, surface),
         "stripe_managed": True,
         "tier_pricing":   {
             "developer": "$49/mo",
@@ -84,7 +101,7 @@ def paywall_checkout_json():
             "starter":   "$9/mo",
             "enterprise": "Custom",
         }.get(chosen, "—"),
-        "client_reference_id": f"mcp:tool={tool or 'none'}:ref={ref}",
+        "client_reference_id": _cref,
     }), 200, {"Cache-Control": "public, max-age=300"}
 
 

@@ -119,6 +119,8 @@ _CAPTURE_HTML = """<!DOCTYPE html>
 <form method="post" action="https://api.dchub.cloud/pricing/checkout/submit">
   <input type="hidden" name="tool" value="__TOOL__">
   <input type="hidden" name="tier" value="__TIER__">
+  <input type="hidden" name="surface" value="__SURFACE__">
+  <input type="hidden" name="ref" value="__REF__">
   <label for="email">Work email</label>
   <input type="email" id="email" name="email" required autofocus placeholder="you@company.com" autocomplete="email">
   <button type="submit">Continue to Stripe checkout →</button>
@@ -137,18 +139,31 @@ _CAPTURE_HTML = """<!DOCTYPE html>
 </body></html>"""
 
 
+def _esc_attr(v):
+    """Minimal HTML-attribute escape for values we inject into the form."""
+    from html import escape
+    return escape(str(v or ""), quote=True)
+
+
 @checkout_email_bp.route("/pricing/checkout/start", methods=["GET"], strict_slashes=False)
 def start():
     tool = (request.args.get("tool") or "").strip()
     tier_param = (request.args.get("tier") or "").strip()
+    # per-surface-attr (2026-06-20): carry the web surface + page slug through
+    # the email-capture form so submit() can stamp a parseable
+    # web__<surface>__<slug> client_reference_id on the Stripe URL.
+    surface = (request.args.get("surface") or "").strip()
+    ref     = (request.args.get("ref") or "").strip()
     tier = _resolve_tier(tool, tier_param)
     stripe_url = STRIPE_LINKS[tier]
     price = {"starter":"$9/mo","developer":"$49/mo","pro":"$199/mo","enterprise":"Custom"}.get(tier, "—")
     html = (_CAPTURE_HTML
-            .replace("__TOOL__", tool or "MCP")
-            .replace("__TIER__", tier)
+            .replace("__TOOL__", _esc_attr(tool) or "MCP")
+            .replace("__TIER__", _esc_attr(tier))
             .replace("__TIER_LABEL__", tier.title())
             .replace("__PRICE_LABEL__", price)
+            .replace("__SURFACE__", _esc_attr(surface))
+            .replace("__REF__", _esc_attr(ref))
             .replace("__STRIPE_URL__", stripe_url))
     return html, 200, {"Content-Type": "text/html; charset=utf-8",
                         "Cache-Control": "no-store"}
@@ -158,6 +173,8 @@ def start():
 def submit():
     email = (request.form.get("email") or request.json and request.json.get("email") or "").strip().lower()
     tool  = (request.form.get("tool")  or "").strip()
+    surface = (request.form.get("surface") or "").strip()  # per-surface-attr
+    web_ref = (request.form.get("ref") or "").strip()      # page slug
     tier  = _resolve_tier(tool, request.form.get("tier") or "")
     if not email or "@" not in email or "." not in email:
         return jsonify({"error": "invalid_email"}), 400
@@ -179,8 +196,16 @@ def submit():
         except Exception:
             pass
 
-    # Build Stripe URL with prefilled email + attribution
-    ref = f"mcp:tool={tool or 'none'}:tier={tier}:email_capture=1"
+    # Build Stripe URL with prefilled email + attribution.
+    # per-surface-attr (2026-06-20): when a web surface drove this checkout,
+    # emit the parseable web__<surface>__<slug> client_reference_id so the
+    # webhook records mcp_conversions.web_source/web_tool. Otherwise keep the
+    # legacy mcp:… shape (agent paywall; attributed via the funnel).
+    if surface:
+        from routes._attribution_ref import build_web_ref
+        ref = build_web_ref(surface, web_ref)
+    else:
+        ref = f"mcp:tool={tool or 'none'}:tier={tier}:email_capture=1"
     sep = "&" if "?" in stripe_url else "?"
     final_url = f"{stripe_url}{sep}prefilled_email={quote(email)}&client_reference_id={quote(ref)}"
     return redirect(final_url, code=302)

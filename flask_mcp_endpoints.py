@@ -2197,6 +2197,22 @@ def stripe_webhook_mcp():
         _wm = _re_ref.match(r'^ref_(.+?)__tool_(.+?)(?:__ts_\d+)?$', str(ref_session or ""))
         web_src  = _wm.group(1) if _wm else None
         web_tool = _wm.group(2) if _wm else None
+        # per-surface-attr (2026-06-20): newer per-surface scheme
+        # web__<surface>__<slug> (e.g. web__market__northern-virginia,
+        # web__facility__a1b2c3d4, web__dcpi__ashburn, web__pricing__none) emitted
+        # by routes/_attribution_ref.py so the operator can SEE which public page
+        # drove the sale → web_source=<surface>, web_tool=<slug>. Parsed ONLY when
+        # the legacy ref_ shape above didn't already match, and guarded inside
+        # parse_web_ref to never swallow a DCM- pair-code / tu- top-up / ref_ ref
+        # (those keep their existing handlers untouched).
+        if not web_src:
+            try:
+                from routes._attribution_ref import parse_web_ref as _parse_web_ref
+                _ws, _wt = _parse_web_ref(ref_session)
+                if _ws:
+                    web_src, web_tool = _ws, _wt
+            except Exception:
+                pass
         attribution, linked = {}, None
         try:
             from mcp_signal_canonical import mark_signals_converted

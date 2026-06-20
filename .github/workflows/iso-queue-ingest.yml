@@ -1,4 +1,4 @@
-name: ISO interconnection-queue ingest (daily — 6 real ISOs)
+name: ISO interconnection-queue ingest (daily — aggregate GW + per-project, 7 ISOs)
 
 # r70 (2026-06-03): the iso_queue_ingest parsers (ERCOT/PJM/NYISO/MISO/CAISO/SPP)
 # had NO scheduled trigger — so the /interconnection-queue/snapshot sat stale
@@ -24,10 +24,46 @@ env:
 jobs:
   ingest:
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 20
     steps:
-      - name: Run ISO-queue ingest
+      - name: Checkout (for the per-project runner-fallback loader)
+        uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Run ISO-queue AGGREGATE ingest (iso_queue_snapshots — GW totals)
         run: |
           set -euo pipefail
           resp=$(curl -sS --max-time 240 -X POST "$RAILWAY_BASE/api/v1/iso-queue/ingest" || echo '{"error":"curl_fail"}')
           echo "$resp" | python3 -c "import sys,json; d=json.load(sys.stdin); print('fetched', d.get('isos_fetched'), 'of', d.get('isos_total'), '| with_data', d.get('isos_with_new_data'), '| as_of', d.get('as_of'))" 2>/dev/null || { echo "$resp" | head -c 600; }
+      - name: Run per-PROJECT interconnect_queue ingest (named projects)
+        run: |
+          set -uo pipefail
+          # r-queue-projects-cron (2026-06-20): refresh the per-PROJECT interconnect_queue
+          # table (5,300+ named ISO queue projects) on the SAME daily schedule as the
+          # aggregate step above. Per-ISO so each request stays short for the single
+          # backend replica; the /ingest-projects route self-fetches on Railway (all 7
+          # ISO feeds verified reachable from Railway egress 2026-06-20). Any ISO that
+          # fails on Railway egress is re-fetched on THIS runner (open egress, no DB)
+          # via load_interconnect_queue_live.py --emit-json and POSTed back for upsert.
+          fail=""
+          for iso in NYISO CAISO MISO PJM SPP ERCOT ISO-NE; do
+            resp=$(curl -sS --max-time 200 -X POST "$RAILWAY_BASE/api/v1/iso-queue/ingest-projects/$iso" || echo '{}')
+            status=$(echo "$resp" | python3 -c "import sys,json;print((json.load(sys.stdin).get('by_iso') or {}).get('$iso',{}).get('status','no_status'))" 2>/dev/null || echo parse_fail)
+            rows=$(echo "$resp" | python3 -c "import sys,json;print((json.load(sys.stdin).get('by_iso') or {}).get('$iso',{}).get('rows',''))" 2>/dev/null || echo '')
+            echo "$iso -> $status rows=$rows"
+            [ "$status" = "ok" ] || fail="$fail $iso"
+          done
+          if [ -n "$fail" ]; then
+            echo "Railway egress failed for:$fail — runner fetch+POST fallback"
+            python3 -m pip install --quiet openpyxl lxml || true
+            for iso in $fail; do
+              python3 load_interconnect_queue_live.py --emit-json "$iso" > /tmp/all.json 2>/tmp/err.txt || { echo "  $iso runner parse failed"; head -c 300 /tmp/err.txt; continue; }
+              python3 -c "import json;d=json.load(open('/tmp/all.json'));r=d.get('$iso');open('/tmp/post.json','w').write(json.dumps({'iso':'$iso','rows':r if isinstance(r,list) else []}))"
+              code=$(curl -sS --max-time 120 -o /tmp/resp.json -w '%{http_code}' -X POST "$RAILWAY_BASE/api/v1/iso-queue/ingest-projects" -H 'Content-Type: application/json' --data @/tmp/post.json || echo 000)
+              echo "  $iso runner-POST -> http $code: $(head -c 200 /tmp/resp.json)"
+            done
+          fi
+          echo "=== final interconnect_queue count ==="
+          curl -sS --max-time 30 -X POST "$RAILWAY_BASE/api/v1/iso-queue/ingest-projects/ISO-NE" | python3 -c "import sys,json;d=json.load(sys.stdin);print('total =',d.get('interconnect_queue_total'),'| by_iso =',d.get('interconnect_queue_by_iso'))" 2>/dev/null || true

@@ -37,7 +37,7 @@ def preview():
         "market": market,
         "preview": True,
         "note": "Free preview shows ONE metric. Full intel (supply/demand, pricing, vacancy, pipeline) requires Developer plan.",
-        "upgrade_url": f"https://api.dchub.cloud/pricing/upgrade?tool=get_market_intel",
+        "upgrade_url": f"https://api.dchub.cloud/pricing/upgrade?tool=get_market_intel&surface=market-intel-preview&ref={market}",
         "upgrade_tier": "developer",
         "upgrade_price": "$49/mo",
     }

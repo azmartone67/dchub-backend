@@ -4552,7 +4552,7 @@ h1 {
   <div class="cta-pro">
     <h2>Drill into {{ s.market_name }} at the county level.</h2>
     <p>Free alerts tell you {{ s.market_name }} moved. Pro tells you <em>where</em> — the score at the county level so you can pinpoint which sub-markets have the headroom, plus PDF export for your buyers.</p>
-    <a href="/pricing">Get Pro · $199/mo →</a>
+    <a href="/pricing?ref=dcpi&tool={{ s.market_slug }}">Get Pro · $199/mo →</a>
   </div>
 </div>
 

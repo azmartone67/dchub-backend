@@ -63,9 +63,61 @@ def _serialize(r):
     }
 
 
+# r-queue-projects (2026-06-20): per-PROJECT drill-down. The snapshot above is
+# GW aggregates from iso_queue_snapshots; this surfaces the 5,300+ NAMED projects
+# loaded into interconnect_queue (project, MW, status, state/county) — the actual
+# "which data-center / generation builds are in the queue" data agents ask for.
+# Ordered by capacity_mw so the biggest builds lead. lat/lng are NULL (the ISO
+# feeds carry no coordinates); location is state/county.
+def _top_projects(iso=None, limit=8):
+    if not NEON_URL:
+        return []
+    try:
+        with psycopg.connect(NEON_URL, autocommit=True) as conn, conn.cursor() as cur:
+            if iso:
+                cur.execute("""
+                  SELECT project_name, iso, state, county, fuel_type, capacity_mw,
+                         queue_status, queue_date, queue_id
+                  FROM interconnect_queue WHERE upper(iso) = upper(%s)
+                  ORDER BY capacity_mw DESC NULLS LAST LIMIT %s
+                """, (iso, limit))
+            else:
+                cur.execute("""
+                  SELECT project_name, iso, state, county, fuel_type, capacity_mw,
+                         queue_status, queue_date, queue_id
+                  FROM interconnect_queue
+                  ORDER BY capacity_mw DESC NULLS LAST LIMIT %s
+                """, (limit,))
+            cols = [c.name for c in cur.description]
+            out = []
+            for r in cur.fetchall():
+                d = dict(zip(cols, r))
+                d["capacity_mw"] = float(d["capacity_mw"]) if d["capacity_mw"] is not None else None
+                d["queue_date"] = d["queue_date"].isoformat() if d.get("queue_date") else None
+                out.append(d)
+            return out
+    except Exception:
+        return []
+
+
+def _project_counts():
+    """Per-ISO row counts + total in interconnect_queue (one cheap query)."""
+    if not NEON_URL:
+        return {}, 0
+    try:
+        with psycopg.connect(NEON_URL, autocommit=True) as conn, conn.cursor() as cur:
+            cur.execute("SELECT upper(iso), COUNT(*) FROM interconnect_queue GROUP BY upper(iso)")
+            by = {iso: int(n) for iso, n in cur.fetchall()}
+            return by, sum(by.values())
+    except Exception:
+        return {}, 0
+
+
 @interconnection_queues_bp.route("/api/v1/interconnection-queue/snapshot")
 def api_snapshot():
     snap = _latest_snapshot()
+    _proj_by, _proj_total = _project_counts()      # r-queue-projects: per-project drill-down
+    _proj_top = _top_projects(None, 10)
     # r47.1: Postgres NUMERIC -> Decimal; cast to float BEFORE arithmetic
     # so we don't mix float/Decimal (TypeError otherwise).
     total_gw = float(sum((r["queued_load_total_gw"] or 0) for r in snap))
@@ -106,6 +158,16 @@ def api_snapshot():
             "note": "Per-ISO as_of is in by_iso; 'fresh' = refreshed on the latest daily ingest.",
         },
         "by_iso": [_serialize(r) for r in snap],
+        "projects": {
+            "tracked": _proj_total > 0,
+            "total": _proj_total,
+            "by_iso_count": _proj_by,
+            "top": _proj_top,
+            "note": ("Named per-project queue rows (project, MW, status, state/county) "
+                     "from the 7 US ISO public queues. Aggregate GW totals are in "
+                     "by_iso; call /api/v1/interconnection-queue/by-iso?iso=ERCOT for "
+                     "the full per-ISO project list."),
+        },
         "methodology": "DCPI maps ISO queue position + load growth vs signed contracts -> Excess Power / Constraint scoring. Per-ISO BUILD/CAUTION/AVOID verdicts at https://dchub.cloud/dcpi.",
         "source": "https://dchub.cloud/interconnection-queues",
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -127,7 +189,12 @@ def api_by_iso():
     if not snap:
         return jsonify({"error": "iso_not_found", "iso": iso,
                         "available": [r["iso"] for r in _latest_snapshot()]}), 404
-    return jsonify(_serialize(snap[0]))
+    out = _serialize(snap[0])
+    # r-queue-projects (2026-06-20): attach the named per-project rows for this ISO
+    # (top 25 by MW) from interconnect_queue — the drill-down the GW aggregate lacks.
+    out["projects"] = _top_projects(iso, 25)
+    out["project_count"] = _project_counts()[0].get(iso, 0)
+    return jsonify(out)
 
 
 def _row_html(r):

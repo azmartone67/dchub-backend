@@ -312,9 +312,47 @@ def redeem_pair_code(code: str, stripe_session_id: str | None = None) -> dict:
             # api_keys table might use a different hash scheme; in that case
             # the operator does a manual upgrade via the existing dashboard.
             # Either way, the conversion is RECORDED so we know to act on it.
+            try: c.rollback()
+            except Exception: pass
             out["flip_error"] = str(_flip_err)[:200]
+        # ── r-paircode-mcptier (2026-06-20) — THE table that actually unlocks ──
+        # The api_keys flip above was cosmetic for the MCP funnel: the live /mcp
+        # paywall gate reads `mcp_dev_keys.tier`, NOT api_keys.plan (see the MCP
+        # auth-chain — /me and /keys/validate hit different tables). So before
+        # this, a paid pair-code redemption marked the code redeemed and flipped
+        # api_keys.plan, but the agent's NEXT MCP call still saw tier='free' and
+        # stayed walled. 0/34 pair codes had ever redeemed, so this never bit in
+        # production — it would have silently failed the first real redemption.
+        #
+        # Two schema facts make the match non-obvious (both verified live):
+        #   1. mcp_dev_keys stores the RAW api_key (no hash), while pair codes
+        #      store _hash_key(key) = sha256(key).hexdigest()[:32]. So we match by
+        #      recomputing the same 32-char prefix from the stored raw key in SQL:
+        #      left(encode(sha256(api_key::bytea),'hex'), 32) = key_hash.
+        #   2. mcp_dev_keys.tier has a CHECK of (free|paid|enterprise) ONLY —
+        #      writing target_tier='developer' would throw. Map developer/pro/etc
+        #      → 'paid'; only an explicit enterprise target → 'enterprise'.
+        # Never downgrade: `tier <> 'enterprise'` leaves an enterprise key alone.
+        mcp_tier = 'enterprise' if str(target_tier or '').lower() == 'enterprise' else 'paid'
+        mcp_keys_flipped = 0
+        try:
+            with c.cursor() as cur:
+                cur.execute("""
+                    UPDATE mcp_dev_keys
+                    SET tier = %s
+                    WHERE left(encode(sha256(api_key::bytea), 'hex'), 32) = %s
+                      AND tier IS DISTINCT FROM %s
+                      AND tier <> 'enterprise'
+                """, (mcp_tier, key_hash, mcp_tier))
+                mcp_keys_flipped = cur.rowcount or 0
+        except Exception as _mcp_err:
+            try: c.rollback()
+            except Exception: pass
+            out["mcp_flip_error"] = str(_mcp_err)[:200]
         c.commit()
         out["rows_flipped"] = rows_flipped
+        out["mcp_keys_flipped"] = mcp_keys_flipped
+        out["mcp_tier"] = mcp_tier
         out["ok"] = True
         out["target_tier"] = target_tier
         out["pair_code_id"] = pid

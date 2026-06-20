@@ -420,7 +420,7 @@ def _render_facility(f: dict, nearby: list) -> str:
 <section id="cta">
   <h2>Get more facility intelligence</h2>
   <p>This page shows the public summary. The full facility profile includes M&amp;A history, lease comparables, power profile breakdown, fiber carrier presence, water risk score, and competitive analysis.</p>
-  <a href="/pricing?ref=facility-{_esc_attr(fac_id)}-report" class="cta">Generate full PDF report</a>
+  <a href="/pricing?ref=facility&tool={_esc_attr(fac_id)}" class="cta">Generate full PDF report</a>
   <a href="/signup?from=facility-{_esc_attr(fac_id)}" class="cta secondary">Or: free MCP API access</a>
 </section>
 
@@ -568,7 +568,7 @@ def _render_market(slug, city, state, facilities, stats) -> str:
   <h2>Get the {_h(city)} market report</h2>
   <p>The full report includes lease comparables, pipeline projects, grid capacity analysis, and competitive landscape.</p>
   <p>DC Hub is the live infrastructure data layer for AI agents — and for the people who build data centers: live power, grid, fiber, gas, tenants &amp; site scores on {_h(city)}, cited and machine-readable. Plans from $9/mo · full market &amp; grid intelligence from $49/mo.</p>
-  <a href="/pricing?ref=market-{_esc_attr(slug)}-report" class="cta">See plans — from $49/mo</a>
+  <a href="/pricing?ref=market&tool={_esc_attr(slug)}" class="cta">See plans — from $49/mo</a>
   <a href="/signup?from=market-{_esc_attr(slug)}" class="cta secondary">Or: free MCP API access</a>
 </section>"""
 
