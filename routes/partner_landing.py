@@ -712,7 +712,10 @@ def _render_partner_page(slug: str, p: dict) -> str:
   (async function(){{
     try {{
       const f = await fetch('/api/v1/mcp/funnel').then(r=>r.ok?r.json():null).catch(()=>null);
-      const c = f && (f.tool_calls_7d || f.tool_calls_30d || f.calls_7d || f.calls);
+      // Honest-numbers fence: prefer the DE-LOOPED real-external count
+      // (tool_calls_7d_real) over the gross tool_calls_7d (which includes our
+      // own selfheal/probe/sweep loop).
+      const c = f && (f.tool_calls_7d_real || f.tool_calls_7d || f.tool_calls_30d || f.calls_7d || f.calls);
       if (c) document.getElementById('ls-calls').textContent = Number(c).toLocaleString();
     }} catch(e){{}}
     try {{

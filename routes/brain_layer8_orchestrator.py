@@ -191,7 +191,13 @@ def _gather_context() -> dict:
         "proposed_detectors_pending": [p for p in (proposed.get("proposals") or [])
                                         if p.get("decision") == "pending"],
         "funnel": {
-            "tool_calls_7d":      funnel.get("tool_calls_7d"),
+            # Honest-numbers fence: feed the orchestrator the DE-LOOPED
+            # real-external count (tool_calls_7d_real) so its synthesis doesn't
+            # headline the gross incl-loops number (~35-41k/wk of our own
+            # selfheal/probe/sweep loop). Falls back to gross if _real absent.
+            "tool_calls_7d":      funnel.get("tool_calls_7d_real")
+                                  or funnel.get("tool_calls_7d"),
+            "tool_calls_7d_incl_loops": funnel.get("tool_calls_7d"),
             "upgrade_signals_7d": funnel.get("upgrade_signals_7d"),
             "conversions_30d":    funnel.get("conversions_30d"),
             "keys_by_tier":       funnel.get("keys_by_tier"),

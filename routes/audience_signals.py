@@ -71,8 +71,25 @@ _SUMMARY_CACHE = {"exp": 0.0, "data": None}
 
 # ── Data collectors (each independent, fail-safe) ───────────────────
 
+# Honest-numbers fence: the public /advertise hero must headline the
+# DE-LOOPED tool-call volume — the same `tool_calls_7d_real` definition the
+# /api/v1/mcp/funnel endpoint + the funnel-health dashboard use — not a gross
+# COUNT(*) that includes our own selfheal/probe/sweep loop (~35-41k/wk). The
+# de-loop predicate is single-sourced from mcp_calls_deloop. Import is
+# defensive: if it fails, we fall back to gross BUT label it incl-loops so we
+# never silently re-inflate.
+try:
+    from mcp_calls_deloop import deloop_calls_where as _deloop_where
+except Exception:  # pragma: no cover - defensive
+    _deloop_where = None
+
+
 def _mcp_signals():
-    """Pull MCP tool-call volume from mcp_tool_calls table."""
+    """Pull MCP tool-call volume from mcp_tool_calls table.
+
+    Headline numbers (tool_calls_7d / 30d) are DE-LOOPED — real external AI
+    agent traffic only. The gross incl-loops counts are also returned, clearly
+    labeled, for transparency / debugging."""
     try:
         from main import get_db
         conn = get_db()
@@ -81,18 +98,41 @@ def _mcp_signals():
     except Exception as e:
         return {"_error": f"db_init: {str(e)[:80]}"}
     out = {"tool_calls_7d": 0, "tool_calls_30d": 0,
+           "tool_calls_7d_incl_loops": 0, "tool_calls_30d_incl_loops": 0,
+           "deloop_applied": False,
            "distinct_clients_7d": 0, "top_tools": []}
+    # Build the de-loop AND-fragment once (or '' if the shared helper is
+    # unavailable → gross fallback, flagged via deloop_applied=False).
+    _dl = ""
+    if _deloop_where is not None:
+        try:
+            _dl = " AND " + _deloop_where()
+            out["deloop_applied"] = True
+        except Exception:
+            _dl = ""
     try:
         with conn.cursor() as cur:
             _bound(cur)
+            # Gross incl-loops (kept, explicitly labeled — never headlined).
             cur.execute(
                 "SELECT COUNT(*) FROM mcp_tool_calls "
                 "WHERE created_at >= NOW() - INTERVAL '7 days'"
             )
-            out["tool_calls_7d"] = int(cur.fetchone()[0] or 0)
+            out["tool_calls_7d_incl_loops"] = int(cur.fetchone()[0] or 0)
             cur.execute(
                 "SELECT COUNT(*) FROM mcp_tool_calls "
                 "WHERE created_at >= NOW() - INTERVAL '30 days'"
+            )
+            out["tool_calls_30d_incl_loops"] = int(cur.fetchone()[0] or 0)
+            # Headline = de-looped (falls back to gross if _dl is '').
+            cur.execute(
+                "SELECT COUNT(*) FROM mcp_tool_calls "
+                "WHERE created_at >= NOW() - INTERVAL '7 days'" + _dl
+            )
+            out["tool_calls_7d"] = int(cur.fetchone()[0] or 0)
+            cur.execute(
+                "SELECT COUNT(*) FROM mcp_tool_calls "
+                "WHERE created_at >= NOW() - INTERVAL '30 days'" + _dl
             )
             out["tool_calls_30d"] = int(cur.fetchone()[0] or 0)
             cur.execute(

@@ -36,6 +36,17 @@ from functools import wraps
 # called /api/v1/keys/validate, got a 500, cached the failure as "free".
 from internal_auth import accepted_internal_keys
 
+# SINGLE SOURCE of the mcp_tool_calls de-loop. mcp_funnel()'s
+# `tool_calls_7d_real` and routes/funnel_health both import the SAME
+# PLATFORM_CASE classifier + PROBE_PLATFORMS from here, so the two honest
+# counts are byte-identical. See mcp_calls_deloop.py + the byte-identity test
+# in tests/test_funnel_health_deloop.py.
+from mcp_calls_deloop import (
+    PLATFORM_CASE as _DELOOP_PLATFORM_CASE,
+    PROBE_PLATFORMS as _DELOOP_PROBE_PLATFORMS,
+    real_calls_predicate as _deloop_real_calls_predicate,
+)
+
 # Compat: prefer psycopg (v3), fall back to psycopg2 if Railway only has the older one
 try:
     import psycopg
@@ -1412,10 +1423,14 @@ def mcp_funnel():
     # 'unknown'; lumping it with probes classified 100% of 7d traffic as probe
     # → real KPI structurally read 0. Per this list's own sibling comment below,
     # 'unknown' is real external traffic we couldn't sub-classify, NOT a probe.
-    _PROBE_PLATFORMS = (
-        'curl', 'python-script', 'node-script',
-        'postman', 'insomnia', 'verify',
-    )
+    #
+    # 2026-06-19: _PROBE_PLATFORMS now comes from the shared mcp_calls_deloop
+    # module so this endpoint's `tool_calls_7d_real` is byte-identical to
+    # routes/funnel_health's. The shared list ADDS 'internal-dchub' +
+    # 'node-http-client' (our own crawler/healer UAs fold into 'internal-dchub'
+    # via PLATFORM_CASE) — previously those self-calls leaked into the "real"
+    # count here while funnel_health excluded them, the exact drift this fixes.
+    _PROBE_PLATFORMS = _DELOOP_PROBE_PLATFORMS
     # r61: internal/self + registry-scanner client names that crush the
     # funnel's per-platform conversion rate to ~0% (they emit signals but
     # never convert — see reference_dchub_mcp_signal_inflation). Excluded
@@ -1772,70 +1787,11 @@ def mcp_funnel():
                 #      generic 'node-script' falls through means we know
                 #      "this is an MCP agent" even when the host AI client
                 #      didn't pass clientInfo.name.
-                _platform_case = r"""
-                    CASE
-                        WHEN NULLIF(LOWER(client_name), '') IS NOT NULL
-                             AND client_name !~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
-                            THEN LOWER(client_name)
-                        WHEN user_agent ILIKE '%dchub-%' OR user_agent ILIKE '%dchubhealer%'
-                            OR user_agent ILIKE '%brain-v2-headless%' OR user_agent ILIKE '%brain-radar%'
-                            OR user_agent ILIKE '%uptimerobot%'
-                            THEN 'internal-dchub'
-                        WHEN user_agent ILIKE '%@modelcontextprotocol/sdk%'
-                            OR user_agent ILIKE '%modelcontextprotocol%'
-                            THEN 'mcp-sdk'
-                        WHEN user_agent ILIKE '%mcp-inspector%'
-                            THEN 'mcp-inspector'
-                        WHEN user_agent ILIKE '%n8n%'
-                            THEN 'n8n'
-                        WHEN user_agent ILIKE '%smithery%'
-                            THEN 'smithery'
-                        WHEN user_agent ILIKE '%chatgpt%' OR user_agent ILIKE '%openai%'
-                            THEN 'chatgpt'
-                        WHEN user_agent ILIKE '%claude%' OR user_agent ILIKE '%anthropic%'
-                            THEN 'claude'
-                        WHEN user_agent ILIKE '%perplexity%'
-                            THEN 'perplexity'
-                        WHEN user_agent ILIKE '%gemini%' OR user_agent ILIKE '%googleother%'
-                            THEN 'gemini'
-                        WHEN user_agent ILIKE '%groq%'
-                            THEN 'groq'
-                        WHEN user_agent ILIKE '%cursor%'
-                            THEN 'cursor'
-                        WHEN user_agent ILIKE '%windsurf%' OR user_agent ILIKE '%codeium%'
-                            THEN 'windsurf'
-                        WHEN user_agent ILIKE '%continue%'
-                            THEN 'continue.dev'
-                        WHEN user_agent ILIKE '%cody%' OR user_agent ILIKE '%sourcegraph%'
-                            THEN 'sourcegraph-cody'
-                        WHEN user_agent ILIKE '%copilot%'
-                            THEN 'github-copilot'
-                        WHEN user_agent ILIKE '%cline%'
-                            THEN 'cline'
-                        WHEN user_agent ILIKE '%phind%'
-                            THEN 'phind'
-                        WHEN user_agent ILIKE '%you.com%' OR user_agent ILIKE '%youbot%'
-                            THEN 'you.com'
-                        WHEN user_agent ILIKE '%meta-external%' OR user_agent ILIKE '%llama%'
-                            THEN 'meta-ai'
-                        WHEN user_agent ILIKE '%applebot-extended%'
-                            THEN 'apple-intelligence'
-                        WHEN user_agent ILIKE '%curl%'
-                            THEN 'curl'
-                        WHEN user_agent ILIKE '%python%' OR user_agent ILIKE '%requests%'
-                            THEN 'python-script'
-                        WHEN user_agent ILIKE '%node-fetch%' OR user_agent ILIKE '%undici%'
-                            OR user_agent ILIKE '%axios%' OR user_agent ILIKE '%got/%'
-                            THEN 'node-http-client'
-                        WHEN user_agent ILIKE '%node%'
-                            THEN 'node-script'
-                        WHEN user_agent ILIKE '%postman%'
-                            THEN 'postman'
-                        WHEN user_agent ILIKE '%insomnia%'
-                            THEN 'insomnia'
-                        ELSE 'unknown'
-                    END
-                """
+                # 2026-06-19: single-sourced from mcp_calls_deloop.PLATFORM_CASE
+                # so the GROUP-BY classifier here and the tool_calls_7d_real
+                # FILTER below classify EVERY row identically — and identically
+                # to routes/funnel_health. (Was an inline copy of the same CASE.)
+                _platform_case = _DELOOP_PLATFORM_CASE
                 cur.execute(
                     f"""SELECT
                           {_platform_case} AS client_platform,
@@ -1862,21 +1818,27 @@ def mcp_funnel():
                 # No bound params here: passing %s tripped the driver two ways
                 # (psycopg2 parsed the LIKE '%chatgpt%' in _platform_case as
                 # placeholders → "got '%c'"; and the tuple binding rendered a
-                # bare "$1" Postgres couldn't parse). _PROBE_PLATFORMS is a
+                # bare "$1" Postgres couldn't parse). The probe list is a
                 # trusted hardcoded constant, so inline it as a SQL literal
                 # IN-list — no binding, so _platform_case's % are left alone.
-                _probe_in = ",".join(
-                    "'" + str(p).replace("'", "''") + "'" for p in _PROBE_PLATFORMS)
+                #
+                # 2026-06-19: the real/probe predicate is built by the shared
+                # mcp_calls_deloop.real_calls_predicate() — the SAME function
+                # routes/funnel_health._deloop_calls_where() returns — so this
+                # endpoint's tool_calls_7d_real is byte-identical to the
+                # dashboard's. (Was an inline `{_platform_case} NOT IN (...)`.)
+                _real_pred  = _deloop_real_calls_predicate()      # TRUE = external
+                _probe_pred = f"NOT {_real_pred}"
                 cur.execute(
                     f"""SELECT
                           COUNT(*) FILTER (
-                            WHERE {_platform_case} NOT IN ({_probe_in})
+                            WHERE {_real_pred}
                           ) AS real_calls,
                           COUNT(*) FILTER (
-                            WHERE {_platform_case}     IN ({_probe_in})
+                            WHERE {_probe_pred}
                           ) AS probe_calls,
                           COUNT(DISTINCT ip_address) FILTER (
-                            WHERE {_platform_case} NOT IN ({_probe_in})
+                            WHERE {_real_pred}
                           ) AS real_unique_ips
                        FROM mcp_tool_calls
                        WHERE created_at >= NOW() - INTERVAL '7 days'"""

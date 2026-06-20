@@ -263,7 +263,11 @@ def growth():
         as_of=now_iso,
         last_check_at=now_iso,
         # Funnel (working in audit already)
-        tool_calls_7d=f.get("tool_calls_7d"),
+        # Honest-numbers fence: headline the DE-LOOPED real-external count
+        # (tool_calls_7d_real) from /api/v1/mcp/funnel, not the gross
+        # tool_calls_7d that includes our own selfheal/probe/sweep loop.
+        tool_calls_7d=f.get("tool_calls_7d_real") or f.get("tool_calls_7d"),
+        tool_calls_7d_incl_loops=f.get("tool_calls_7d"),
         upgrade_signals_7d=f.get("upgrade_signals_7d"),
         conversions_30d=f.get("conversions_30d"),
         keys_by_tier=f.get("keys_by_tier", {}),

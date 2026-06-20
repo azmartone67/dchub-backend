@@ -266,7 +266,14 @@ def _gather_funnel() -> dict:
         "mrr_usd":            int(k.get("mrr_usd") or 0),
         "conversions_30d":    int(k.get("conversions_30d") or 0),
         "active_dev_keys":    int(k.get("active_dev_keys") or 0),
-        "tool_calls_7d":      int(k.get("tool_calls_7d") or 0),
+        # Honest-numbers fence: the operator brief headlines the DE-LOOPED
+        # real-external count (tool_calls_7d_real), not the gross incl-loops
+        # tool_calls_7d (~35-41k/wk of our own selfheal/probe/sweep loop).
+        # Falls back to gross only if the de-looped KPI is missing/zero.
+        "tool_calls_7d":      int(k.get("tool_calls_7d_real")
+                                  or k.get("tool_calls_7d") or 0),
+        "tool_calls_7d_incl_loops": int(k.get("tool_calls_7d_incl_loops")
+                                        or k.get("tool_calls_7d") or 0),
         "signals_30d":        sig30,
         "trial_keys_active":  int(su.get("trial_keys_active") or 0),
         "high_intent_claims": int(su.get("high_intent_claims_30d") or 0),

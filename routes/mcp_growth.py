@@ -34,6 +34,14 @@ import psycopg2.extras
 
 mcp_growth_bp = Blueprint("mcp_growth", __name__)
 
+# Single-sourced mcp_tool_calls de-loop (same filter the /api/v1/mcp/funnel
+# endpoint + funnel-health dashboard use). Defensive import — a failure must
+# never break the growth pulse; we fall back to gross-incl-loops + flag it.
+try:
+    from mcp_calls_deloop import deloop_calls_where as _deloop_where
+except Exception:  # pragma: no cover - defensive
+    _deloop_where = None
+
 
 def _conn():
     db = os.environ.get("DATABASE_URL")
@@ -212,17 +220,55 @@ def _compute_growth() -> dict:
     try:
         with c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             # ── Volume ──
+            # Honest-numbers fence (2026-06-19): tool_calls_7d/30d now headline
+            # the DE-LOOPED real-external count from mcp_tool_calls — the same
+            # `tool_calls_7d_real` definition the /api/v1/mcp/funnel endpoint +
+            # funnel-health dashboard use (single-sourced via mcp_calls_deloop).
+            # The legacy gross mcp_call_log COUNT(*) (~35-41k/wk, INCLUDES our
+            # own selfheal/probe/sweep loop) is kept ONLY as the explicitly
+            # labeled *_incl_loops fields so a non-decline stops reading as a
+            # decline whenever the loop cadence changes. The persisted snapshot
+            # + WoW growth signal flow off tool_calls_7d, so this de-loop
+            # propagates to the brain trend detector automatically.
+            try:
+                _dl = ""
+                if _deloop_where is not None:
+                    try:
+                        _dl = " AND " + _deloop_where()
+                    except Exception:
+                        _dl = ""
+                cur.execute(
+                    "SELECT COUNT(*) AS n FROM mcp_tool_calls "
+                    "WHERE created_at >= NOW() - INTERVAL '7 days'" + _dl
+                )
+                out["tool_calls_7d"] = int((cur.fetchone() or {"n":0})["n"] or 0)
+                cur.execute(
+                    "SELECT COUNT(*) AS n FROM mcp_tool_calls "
+                    "WHERE created_at >= NOW() - INTERVAL '30 days'" + _dl
+                )
+                out["tool_calls_30d"] = int((cur.fetchone() or {"n":0})["n"] or 0)
+                out["deloop_applied"] = bool(_dl)
+            except Exception:
+                pass
+            # Legacy gross incl-loops (mcp_call_log) — kept, clearly labeled,
+            # NEVER headlined. If the de-looped read above failed, these are the
+            # only volume numbers we have; consumers must read the _real fields.
             try:
                 cur.execute("""
                     SELECT COUNT(*) AS n FROM mcp_call_log
                      WHERE timestamp >= NOW() - INTERVAL '7 days'
                 """)
-                out["tool_calls_7d"] = int((cur.fetchone() or {"n":0})["n"] or 0)
+                out["tool_calls_7d_incl_loops"] = int((cur.fetchone() or {"n":0})["n"] or 0)
                 cur.execute("""
                     SELECT COUNT(*) AS n FROM mcp_call_log
                      WHERE timestamp >= NOW() - INTERVAL '30 days'
                 """)
-                out["tool_calls_30d"] = int((cur.fetchone() or {"n":0})["n"] or 0)
+                out["tool_calls_30d_incl_loops"] = int((cur.fetchone() or {"n":0})["n"] or 0)
+                # If the de-looped read failed, fall back so the snapshot isn't 0.
+                if not out.get("tool_calls_7d"):
+                    out["tool_calls_7d"] = out["tool_calls_7d_incl_loops"]
+                if not out.get("tool_calls_30d"):
+                    out["tool_calls_30d"] = out["tool_calls_30d_incl_loops"]
             except Exception:
                 pass
 
