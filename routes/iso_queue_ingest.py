@@ -105,9 +105,66 @@ def _try_openpyxl(xlsx_bytes):
 # from the public listing, download it, sum active 'Project Details - Large
 # Gen' + '- Small Gen' capacity. Apples-to-apples with the other ISO gen queues.
 # ══════════════════════════════════════════════════════════════════════
+def _ercot_large_load():
+    """ERCOT large-load (predominantly data-center) interconnection figures.
+
+    ERCOT publishes these ONLY in monthly TAC / committee PDF decks — the Large
+    Load Integration web page carries no machine-readable numbers and the PDF
+    URLs are date-stamped/unstable. So this is best-effort: if the operator
+    points ERCOT_LARGE_LOAD_PDF_URL at the current monthly report we fetch+parse
+    the headline GW figure; otherwise we surface the latest PUBLISHED, CITED
+    figure (ERCOT Q1-2026 TAC large-load update). Honest + dated, never blank.
+    Returns {in_process_gw, subregions:[provenance block]}."""
+    in_process_gw = 225.0          # ">225 GW of Large Loads going through the process"
+    approved_gw = 9.0              # 9,042 MW have received Approval to Energize
+    as_of = "2026-Q1"
+    src = "https://www.ercot.com/services/rq/large-load-integration"
+    basis = "cited: ERCOT Q1-2026 TAC Large Load update"
+    pdf_url = (os.environ.get("ERCOT_LARGE_LOAD_PDF_URL") or "").strip()
+    if pdf_url:
+        try:
+            pdf_bytes, st = _fetch(pdf_url, timeout=40, return_bytes=True)
+            if st == 200 and pdf_bytes:
+                text = _try_pypdf(pdf_bytes) or ""
+                gws = re.findall(r'([0-9]{2,3}(?:\.[0-9])?)\s*GW', text)
+                apprs = re.findall(r'([0-9],?[0-9]{3})\s*MW[^\n.]{0,40}(?:approv|energiz)', text, re.I)
+                if gws:
+                    in_process_gw = max(float(g) for g in gws)
+                    src = pdf_url
+                    basis = "parsed: ERCOT large-load PDF"
+                    as_of = "live_pdf"
+                if apprs:
+                    approved_gw = round(float(apprs[0].replace(',', '')) / 1000.0, 1)
+        except Exception:
+            pass  # degrade to the cited fallback — never blank the field
+    return {
+        "in_process_gw": round(in_process_gw, 1),
+        "subregions": [{
+            "name": "Large-load (data-center-driven) interconnection queue",
+            "in_process_gw": round(in_process_gw, 1),
+            "approved_to_energize_gw": approved_gw,
+            "as_of": as_of,
+            "basis": basis,
+            "source_url": src,
+            "note": ("ERCOT large-load (>=75 MW) interconnection queue, "
+                     "predominantly data centers — DISTINCT from the generation "
+                     "queue (queued_load_total_gw); not a share of generation."),
+        }],
+    }
+
+
 def ingest_ercot():
     debug = []
     parsed = {}
+    # ERCOT large-load (data-center-driven) queue — independent of the GIS
+    # generation report below, so set it FIRST: it survives even if the GIS
+    # listing/download fails (those early-return with `parsed`).
+    try:
+        _ll = _ercot_large_load()
+        parsed["queued_load_data_center_gw"] = _ll["in_process_gw"]
+        parsed["top_subregions"] = _ll["subregions"]
+    except Exception:
+        pass
     try:
         LISTING = "https://www.ercot.com/misapp/GetReports.do?reportTypeId=15933"
         DL = "https://www.ercot.com/misdownload/servlets/mirDownload?doclookupId="

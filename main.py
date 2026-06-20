@@ -2540,7 +2540,7 @@ def _grid_intel_fetch(region, rto_code):
         }
         if eia_key: params['api_key'] = eia_key
         r = _rq.get('https://api.eia.gov/v2/electricity/rto/region-data/data',
-                    params=params, headers=H, timeout=5)
+                    params=params, headers=H, timeout=8)  # demand = the #1 field + smallest payload; 5s ReadTimeout'd too often (cache-poisoned PJM/SRP to null)
         if r.ok:
             data = (r.json() or {}).get('response', {}).get('data', [])
             if data:
@@ -2643,7 +2643,13 @@ def _grid_intel_cached(region, rto_code):
     # result, so when EIA timed out every call re-fetched (~16s) and saturated the
     # worker pool. Now: full TTL when EIA data is present; a short NEGATIVE TTL when
     # it isn't, so a transient outage is absorbed for 2 min instead of re-paid per hit.
-    _has_eia = out.get('demand_mw') is not None or bool(out.get('generation_mix'))
+    # ROBUSTNESS (2026-06-19): require BOTH demand AND gen-mix for the full
+    # 30-min TTL. The old `or` cached a demand-less result (the 5s demand call
+    # frequently ReadTimeouts while the 168-row gen call succeeds) for the FULL
+    # TTL, pinning demand_mw=null for major ISOs (PJM/SRP) for half an hour.
+    # Now a missing-demand result only gets the 120s NEG_TTL → self-heals in 2
+    # min instead of 30.
+    _has_eia = out.get('demand_mw') is not None and bool(out.get('generation_mix'))
     _GRID_INTEL_CACHE[region] = (now + (_GRID_INTEL_TTL if _has_eia else _GRID_INTEL_NEG_TTL), dict(out))
     return out
 
