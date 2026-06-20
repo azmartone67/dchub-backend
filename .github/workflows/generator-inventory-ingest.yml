@@ -1,0 +1,55 @@
+name: Generator Inventory Ingest (EIA-860M → generator_inventory)
+
+# Refreshes the generator_inventory table = the operable generator fleet
+# (operating + standby/reserve + returning-to-service) by balancing authority,
+# state, technology and nameplate MW, from EIA's operating-generator-capacity
+# v2 API (EIA-860M, monthly). A grid-capacity signal for data-center siting:
+# which grids hold how much of each generation type, including latent reserve.
+#
+# Same trigger pattern as eia-pricing-ingest.yml: the EIA_API_KEY secret is NOT
+# set in GitHub, so we POST to the admin-gated ingest endpoint and let Railway
+# do the fetch with its own EIA_API_KEY env (Railway reaches api.eia.gov fine;
+# the operable set is a fast paginated pull). The endpoint clears its own
+# source='eia860m' rows each run (idempotent) and has an empty-replace guard.
+# Logic: routes/generation_pipeline_ingest.py.
+
+on:
+  schedule:
+    - cron: '47 7 * * 1'      # Mondays 07:47 UTC (EIA-860M updates monthly)
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: generator-inventory-ingest
+  cancel-in-progress: false
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - name: Trigger generator-inventory ingest on Railway
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          if [ -z "$ADMIN_KEY" ]; then
+            echo "::error::DCHUB_ADMIN_KEY secret not set"; exit 1
+          fi
+          echo "Triggering EIA-860M generator-inventory ingest…"
+          response=$(curl -sS --max-time 180 -X POST \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            "https://dchub-backend-production.up.railway.app/api/v1/admin/ingest/generator-inventory" \
+            || echo '{"ok":false,"error":"curl_fail"}')
+          echo "$response" | python3 -m json.tool || echo "$response"
+          echo "$response" | python3 -c "
+          import json, sys
+          try:
+              d = json.load(sys.stdin)
+          except Exception:
+              print('::error::endpoint returned non-JSON'); sys.exit(1)
+          if not d.get('ok'):
+              print(f\"::error::generator-inventory ingest failed — {d.get('error','unknown')}\"); sys.exit(1)
+          print(f\"::notice::generator-inventory OK — {d.get('inserted')} generators (source={d.get('source')})\")
+          "

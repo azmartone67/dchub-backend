@@ -272,7 +272,72 @@ def post_rows(path, rows, cap):
         return getattr(r, "status", r.getcode()), json.loads(r.read()), len(body)
 
 
+# EIA-860M operating-generator-capacity (monthly JSON v2 API, not ArcGIS) —
+# OPERABLE generator inventory by balancing authority = grid-capacity signal
+# ("which grids hold how much of each generation type, incl. standby/reserve").
+# EIA's v2 API has NO planned/under-construction route, so this is the operable
+# snapshot (the forward queue lives in interconnect_queue). Needs EIA_API_KEY.
+# Returns dict rows; the ingest endpoint accepts named fields. Latest period only.
+EIA_KEY = os.environ.get("EIA_API_KEY") or os.environ.get("EIA_KEY") or ""
+EIA_GEN = "https://api.eia.gov/v2/electricity/operating-generator-capacity/data/"
+# OP=operating, SB=standby/reserve, OA=out-of-service but expected back <1yr.
+_INVENTORY_STATUS = ["OP", "SB", "OA"]
+
+
+def fetch_generator_inventory(cap):
+    """Latest-period operable generators (operating + standby + returning) from EIA-860M."""
+    if not EIA_KEY:
+        print("::warning::EIA_API_KEY not set — generator-inventory skipped", flush=True)
+        return []
+    rows, offset, page, latest = [], 0, 5000, None
+    while len(rows) < cap and offset < 80000:
+        params = [("api_key", EIA_KEY), ("frequency", "monthly"),
+                  ("data[]", "nameplate-capacity-mw"),
+                  ("sort[0][column]", "period"), ("sort[0][direction]", "desc"),
+                  ("offset", str(offset)), ("length", str(page))]
+        for s in _INVENTORY_STATUS:
+            params.append(("facets[status][]", s))
+        raw = _get(EIA_GEN + "?" + urllib.parse.urlencode(params), timeout=60)
+        data = (json.loads(raw).get("response") or {}).get("data") or []
+        if not data:
+            break
+        if latest is None:
+            latest = data[0].get("period")   # newest period in the desc-sorted result
+        for r in data:
+            if r.get("period") != latest:     # sorted desc → past the current snapshot
+                return rows[:cap]
+            try:
+                mw = float(r.get("nameplate-capacity-mw") or 0)
+            except (TypeError, ValueError):
+                mw = 0.0
+            rows.append({
+                "period":        (r.get("period") or "")[:7],
+                "plant_id":      str(r.get("plantid") or "")[:20],
+                "generator_id":  str(r.get("generatorid") or "")[:20],
+                "plant_name":    (r.get("plantName") or "")[:200],
+                "state":         (r.get("stateid") or "")[:2],
+                "ba_code":       (r.get("balancing_authority_code") or "")[:20],
+                "entity_name":   (r.get("entityName") or "")[:200],
+                "technology":    (r.get("technology") or "")[:100],
+                "energy_source": (r.get("energy_source_code") or "")[:20],
+                "capacity_mw":   mw,
+                "status":        (r.get("status") or "")[:8],
+                "status_desc":   (r.get("statusDescription") or "")[:200],
+            })
+            if len(rows) >= cap:
+                break
+        offset += page
+        if len(data) < page:
+            break
+    return rows[:cap]
+
+
 LAYERS = {
+    "generator-inventory": {
+        "fetch": fetch_generator_inventory,
+        "ingest": "/api/v1/admin/ingest/generator-inventory",
+        "default_cap": 40000,    # ~25-30k operable generators nationally
+    },
     "gas-pipelines": {
         "fetch": fetch_gas_pipelines,
         "ingest": "/api/v1/admin/ingest/gas-pipelines",
