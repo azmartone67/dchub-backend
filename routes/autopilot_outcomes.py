@@ -349,7 +349,7 @@ def verify_pending(window_minutes: int = 30, max_actions: int = 50) -> dict:
                            -- harmless for the pre-existing verifiers.
                            a.action_payload, a.detail
                       FROM brain_autopilot_actions a
-                     WHERE a.started_at <= NOW() - INTERVAL '%s minutes'
+                     WHERE a.started_at <= NOW() - %s * INTERVAL '1 minute'
                        -- r86b: 6h→24h to match the autopilot_action_unverified
                        -- detector window (1h-24h). At 6h, executed_ok actions in
                        -- the 6h-24h band were unreachable, so verifier-less
