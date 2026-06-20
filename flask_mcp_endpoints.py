@@ -185,6 +185,50 @@ def _require_internal(fn):
     return wrapper
 
 
+# ── GET/POST /api/v1/keys/standing ─────────────────────────────────────────
+# Read-only cross-session standing for a durable key (auto_trial_keys). Powers
+# the MCP server's RETURNING-KEY reward: a key first minted in a PRIOR ISO week
+# that is being used again is a genuine cross-session RETURNER — exactly the
+# cohort the retention KPI (routes/mcp_retention.py returned_next_week) measures
+# and the 0.5%-reuse leak the Optimization Engines flag. No writes; fail-soft.
+@mcp_bp.get("/api/v1/keys/standing")
+@mcp_bp.post("/api/v1/keys/standing")
+@_require_internal
+def key_standing():
+    api_key = (request.args.get("api_key")
+               or (request.get_json(silent=True) or {}).get("api_key") or "").strip()
+    out = {"found": False, "returning": False, "age_days": 0.0,
+           "call_count": 0, "weeks_active": 0}
+    if not api_key:
+        return jsonify(out), 200
+    try:
+        with _pool.connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT COALESCE(call_count, 0), "
+                "       EXTRACT(EPOCH FROM (now() - minted_at)) / 86400.0, "
+                "       (minted_at < date_trunc('week', now())) AS before_this_week "
+                "  FROM auto_trial_keys WHERE api_key = %s",
+                (api_key,),
+            )
+            row = cur.fetchone()
+        if row:
+            call_count, age_days, before_this_week = row
+            # RETURNING = the key predates the current ISO week (spanned >=1 week
+            # boundary) AND was used beyond its first call — a real return, not a
+            # one-shot. The reward (MCP side) is bounded to 1 bonus full call/day.
+            returning = bool(before_this_week) and int(call_count or 0) > 1
+            out = {
+                "found": True,
+                "returning": returning,
+                "age_days": round(float(age_days or 0), 1),
+                "call_count": int(call_count or 0),
+                "weeks_active": int(float(age_days or 0) // 7) + 1,
+            }
+    except Exception as e:
+        out["error"] = str(e)[:120]   # fail-soft: never block the funnel
+    return jsonify(out), 200
+
+
 # ── POST /api/v1/keys/validate ─────────────────────────────────────────────
 
 # The Node gate (server.mjs applyTierGate) unlocks paid tools ONLY for
