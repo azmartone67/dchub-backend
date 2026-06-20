@@ -17,8 +17,16 @@ To swap a Stripe link, edit ONLY this file.
 # ─────────────────────────────────────────────────────────────────────
 STRIPE_LINKS = {
     "starter":         "https://buy.stripe.com/8x2dRa5sS0x75uteGuaZi0g",  # $9/mo
-    "developer":       "https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c",  # $49/mo
-    "pro":             "https://buy.stripe.com/eVq5kE4oOfs13mleGuaZi0h",  # $199/mo (new r38, replaces $299/$2990 link)
+    # r-reprice (2026-06-19): Developer $49→$79, Pro $199→$299 (restores the
+    # pre-r38 Pro anchor), Team $499→$699. NEW checkouts only — existing
+    # subscribers stay on the OLD links (Stripe never auto-migrates a
+    # subscription's price), so all current paid members are grandfathered.
+    # The subscription webhook is amount-agnostic (mrr from price.unit_amount,
+    # tier→'paid' for any paid sub: flask_mcp_endpoints.py:2347/2407), so the
+    # new amounts provision + email a key correctly.
+    "developer":       "https://buy.stripe.com/00w28s3kK0x7f5355UaZi0k",  # $79/mo (r-reprice; legacy $49: 7sY5kE8F4fs13ml0PEaZi0c)
+    "pro":             "https://buy.stripe.com/7sY7sM9J8enX7CB69YaZi0l",  # $299/mo (r-reprice; legacy $199: eVq5kE4oOfs13mleGuaZi0h)
+    "team":            "https://buy.stripe.com/14AbJ2bRga7H0a98i6aZi0m",  # $699/mo, 5 seats (r-reprice; no prior link existed)
     "pro_annual":      "https://buy.stripe.com/dRm7sM6wW7Zz1edgOCaZi07",  # $1,188/yr (50% off $199/mo) - operator-provided link dRm7...07, 2026-06-04
     "metered":         "https://buy.stripe.com/9B69AU08y2FfbSR55UaZi0i",  # $1 / 100 API calls (usage-based / pay-as-you-go)
     "pack5":           "https://buy.stripe.com/8x26oIbRg7ZzbSR7e2aZi0j",  # $5 one-time = 1,000 API credits (r-pack5, 2026-06-16; env override DCHUB_PACK5_URL in mcp_conversion_plays.py)

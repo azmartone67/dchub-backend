@@ -79,11 +79,22 @@ TIER_PRICE_USD_MONTH = {
     'anon':       0,
     'free':       0,
     'identified': 0,
-    'starter':    9,
-    'developer':  49,
-    'pro':        199,
-    'team':       499,    # $499/mo for 5 seats = $99.80/seat (R3 Unlock 3)
-    'founding':   199,    # == pro
+    # r-reprice (2026-06-19): Developer $49→$79, Pro $199→$299 (restores the
+    # pre-r38 Pro anchor), Team $499→$699. Justified by the deepened grid layer
+    # (live multi-ISO + Phoenix/Vegas/PacNW BAs, fixed compare_isos/scoreboard,
+    # real DCGI gas-cost + gas-to-grid economics). DISPLAY price only; the
+    # customer is charged by the Stripe link in routes/_stripe_links.py — both
+    # updated together. Existing subscribers grandfathered on their old links.
+    'starter':    9,      # held — the relay/conversion wedge
+    'developer':  79,     # was 49
+    'pro':        299,    # was 199 (restores original pre-r38 anchor)
+    'team':       699,    # was 499; 5 seats = $139.80/seat (frontend already showed $699)
+    # founding DECOUPLED from pro at r-reprice: founding members are a legacy
+    # grandfathered cohort and must NOT see the new Pro price. founding still
+    # == pro for ACCESS/rank/benefits (TIERS + TIER_LIMITS below); only the
+    # DISPLAY dollar figure is held at its legacy value. test_tier_consistency
+    # asserts founding==pro for rank/api_tier, NOT for price, so this is safe.
+    'founding':   199,    # legacy grandfathered price (was "== pro"; now decoupled)
     'enterprise': None,   # custom / contact sales
     'research_seed': None,
     'admin':      None,
@@ -219,5 +230,5 @@ def as_public_dict():
         'pricing': {n: TIER_PRICE_USD_MONTH.get(n) for n in TIERS},
         'features': TIER_FEATURES,
         'rule': 'founding == pro for access and benefits',
-        'price_note': 'price_usd_month: starter 9 · developer 49 · pro 199 · enterprise custom. calls_per_day = mcp_daily.',
+        'price_note': 'price_usd_month: starter 9 · developer 79 · pro 299 · team 699 · enterprise custom. calls_per_day = mcp_daily.',
     }
