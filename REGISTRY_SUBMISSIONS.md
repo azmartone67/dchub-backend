@@ -181,7 +181,7 @@ For each registry, log the citation in `ai_citations`:
 INSERT INTO ai_citations (engine, platform, query, cited_url, citation_type,
                           dchub_cited, dchub_position, source, observed_at)
 VALUES
-  ('smithery', 'smithery',   'mcp registry listing', 'https://smithery.ai/server/dchub', 'registry_listing', true, 1, 'manual_submission', NOW()),
+  ('smithery', 'smithery',   'mcp registry listing', 'https://smithery.ai/servers/azmartone67/dchub', 'registry_listing', true, 1, 'manual_submission', NOW()),
   ('glama',    'glama',      'mcp registry listing', 'https://glama.ai/mcp/servers/dchub', 'registry_listing', true, 1, 'manual_submission', NOW()),
   ('modelcontextprotocol','community','mcp servers list', 'https://github.com/modelcontextprotocol/servers', 'registry_pr', true, 1, 'manual_submission', NOW()),
   ('cline',    'cline',      'mcp marketplace', 'https://github.com/cline/mcp-marketplace', 'registry_pr', true, 1, 'manual_submission', NOW()),

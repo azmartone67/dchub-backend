@@ -83,7 +83,7 @@ STALE_DAYS_THRESHOLD = 30
 SEED_REGISTRIES: list[dict] = [
     {
         "registry_name": "smithery",
-        "listing_url":   "https://smithery.ai/server/@dchub/dchub-mcp-server",
+        "listing_url":   "https://smithery.ai/servers/azmartone67/dchub",
         "submit_url":    "https://smithery.ai/new",
     },
     {
@@ -480,7 +480,7 @@ def _extractor_generic(html: str) -> dict | None:
 #      for what we get (extractors must stay self-contained + cheap)
 # Each function returns the canonical extractor dict shape
 # (tools/uptime/last_updated/status) or None on failure. NEVER raises.
-_DCHUB_SMITHERY_SLUG = "@dchub/dchub-mcp-server"
+_DCHUB_SMITHERY_SLUG = "azmartone67/dchub"
 _DCHUB_GLAMA_SLUG    = "dchub"
 _DCHUB_LOBEHUB_SLUG  = "dchub-mcp-server"
 _DCHUB_MCPHIVE_SLUG  = "dchub"
@@ -1390,7 +1390,7 @@ RESEED_BROKEN_REGISTRIES: list[dict] = [
     },
     {
         "registry_name": "smithery",
-        "listing_url":   "https://smithery.ai/server/@dchub/dchub-mcp-server",
+        "listing_url":   "https://smithery.ai/servers/azmartone67/dchub",
         "submit_url":    "https://smithery.ai/new",
         "notes_patch":   {"reseed_reason": "added pre-emptive 5s backoff + "
                                             "429 Retry-After handling in "

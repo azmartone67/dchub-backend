@@ -1945,7 +1945,7 @@ def outreach_agent_card():
             "Policy + research: standardized DCPI metrics across 300+ markets",
         ],
         "submission_tracking": {
-            "smithery":          "https://smithery.ai/server/@dchub/nexus",
+            "smithery":          "https://smithery.ai/servers/azmartone67/dchub",
             "glama":             "submitted",
             "anthropic_mcp_dir": "submitted",
             "indexnow":          "auto-pinged on new press releases",

@@ -22135,6 +22135,13 @@ def serve_sitemap_xml():
         ('/gdci',           '0.7', 'weekly'),
         ('/tax-incentives', '0.7', 'weekly'),
         ('/ai',             '0.7', 'weekly'),
+        # r-seo-agentpages (2026-06-20): the two HIGHEST-INTENT agent landing
+        # pages were orphaned from the crawled sitemap. /mcp = connect-your-agent
+        # (the literal target for "data center MCP server"); /playground = live
+        # no-signup query console ("data center API for AI agents"). Both verified
+        # 200 + routed to origin on the public apex. priority 0.9.
+        ('/mcp',            '0.9', 'weekly'),
+        ('/playground',     '0.9', 'weekly'),
         ('/about',          '0.5', 'monthly'),
         # r36 (2026-05-31): /ai/facts REMOVED from the sitemap. The page
         # exists on the backend (200, text/html "Data Center Facts") but

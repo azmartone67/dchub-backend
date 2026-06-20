@@ -111,7 +111,7 @@ PLATFORM_REGISTRY = {
         "protocol": "mcp_streamable_http",
         "discovery_method": "smithery_registry",
         "endpoints": {
-            "registry": "https://smithery.ai/server/@dchub/nexus",
+            "registry": "https://smithery.ai/servers/azmartone67/dchub",
             "mcp": "/mcp",
         },
         "required_headers": {
