@@ -481,6 +481,138 @@ def _parse_workflow_regex(text: str) -> tuple[list[str], set[str]]:
     return phase_options, scheduled
 
 
+def check_paywall_capacity_gating() -> list[dict]:
+    """Paywall-integrity canary — the alarm that was MISSING during the
+    2026-06-20 incident, where a PAYING (even the owner's enterprise) key was
+    resolved as 'anonymous' and the map's gating.js redacted CAPACITY (MW) in
+    every popup. Four independent links all had to hold and none was watched.
+    This detector watches them continuously. cf [[dchub-capacity-paywall-gating]].
+
+    Layer 1 (ALWAYS runs, no key, no network): the tier-VOCABULARY invariant.
+    Several legacy resolvers emit 'paid'/'identified'/'admin'/… while gating.js
+    and /me/tier only understand TIER_ORDER (anonymous<free<developer<pro<
+    enterprise<founding). If a genuinely-paid word stops mapping to index >=
+    developer(2), paid users silently get redacted again. Asserts the
+    normalization map in gating_routes covers every word.
+
+    Layer 2 (runs when PAYWALL_CANARY_KEY env = a known PAID key): live HTTP
+    checks of /api/v1/me/tier — the exact endpoint gating.js calls:
+      (a) paid key  → must resolve tier_index >= 2 (else capacity is redacted
+          for payers — P1, the literal incident);
+      (b) the per-user response must NOT be CF-edge-cached (a cached
+          'anonymous' was served to cookieless key-auth'd payers);
+      (c) anonymous → must resolve tier_index == 0 (paywall must still gate;
+          protects monetization).
+    """
+    findings: list[dict] = []
+
+    # ── Layer 1: vocabulary invariant (no network, no key) ──────────────
+    try:
+        from routes.gating_routes import _GATE_TIER_NORMALIZE, TIER_INDEX
+        # (tier word a resolver can emit, must_be_a_paid_tier)
+        _VOCAB = [
+            ("paid", True), ("pro", True), ("enterprise", True),
+            ("developer", True), ("dev", True), ("founding", True),
+            ("team", True), ("metered", True), ("admin", True),
+            ("ent", True), ("research_seed", True),
+            ("free", False), ("identified", False), ("starter", False),
+            ("anonymous", False), ("anon", False),
+        ]
+        for word, must_pay in _VOCAB:
+            norm = _GATE_TIER_NORMALIZE.get(word, word)
+            idx = TIER_INDEX.get(norm, 0)
+            if must_pay and idx < 2:
+                findings.append({
+                    "issue": "tier_vocab_unmapped_paid",
+                    "url": "routes/gating_routes.py::_GATE_TIER_NORMALIZE",
+                    "count": 1,
+                    "severity": "critical",
+                    "detail": (f"Paid tier word '{word}' normalizes to '{norm}' = "
+                               f"index {idx} < developer(2). gating.js will REDACT "
+                               f"capacity for any key resolving '{word}'. Map it in "
+                               f"_GATE_TIER_NORMALIZE to a name >= developer. "
+                               f"(2026-06-20 incident class.)"),
+                })
+    except Exception as e:
+        findings.append({
+            "issue": "paywall_canary_import_failed",
+            "url": "routes/gating_routes.py",
+            "count": 1,
+            "detail": f"Could not import tier normalization map for the canary: {e}",
+        })
+
+    # ── Layer 2: live /me/tier checks (needs a known paid canary key) ───
+    canary = os.environ.get("PAYWALL_CANARY_KEY")
+    if not canary:
+        return findings  # dormant until owner sets the env var (fail-soft)
+    try:
+        import requests as _req
+        import random as _rnd
+    except Exception:
+        return findings
+    _base = "https://dchub.cloud/api/v1/me/tier"
+
+    def _tier(headers, bust):
+        url = _base + (f"?_={_rnd.randint(1, 10 ** 9)}" if bust else "")
+        r = _req.get(url, headers=headers, timeout=8)
+        try:
+            return r.json(), r.headers
+        except Exception:
+            return {}, r.headers
+
+    # (a) paid key must NOT be gated — the literal incident
+    try:
+        d, _h = _tier({"X-API-Key": canary, "Cache-Control": "no-cache"}, True)
+        if d.get("tier_index", 0) < 2:
+            findings.append({
+                "issue": "paid_key_gated",
+                "url": "/api/v1/me/tier",
+                "count": 1,
+                "severity": "critical",
+                "detail": (f"A known PAID canary key resolves tier='{d.get('tier')}' "
+                           f"index {d.get('tier_index')} < developer(2) → gating.js "
+                           f"redacts CAPACITY (MW) in map popups for paying users "
+                           f"(the literal 2026-06-20 incident). Inspect "
+                           f"util.tier_gate.resolve_tier + gating_routes."
+                           f"get_current_tier + the api_keys dual key_hash match."),
+            })
+    except Exception:
+        pass
+    # (b) per-user endpoint must not be edge-cached
+    try:
+        _d2, h2 = _tier({"X-API-Key": canary}, False)
+        cc = (h2.get("cf-cache-status") or "").upper() if h2 else ""
+        if cc == "HIT":
+            findings.append({
+                "issue": "me_tier_edge_cached",
+                "url": "/api/v1/me/tier",
+                "count": 1,
+                "severity": "warning",
+                "detail": ("/api/v1/me/tier is per-user but returned cf-cache-status: "
+                           "HIT — a cached 'anonymous' can be served to a paid user "
+                           "whose request carries no session cookie (Vary keys on "
+                           "Cookie, not X-API-Key). Must be no-store. (2026-06-20.)"),
+            })
+    except Exception:
+        pass
+    # (c) anonymous must still be gated — paywall/monetization intact
+    try:
+        d3, _h3 = _tier({}, True)
+        if d3.get("tier_index", 0) != 0:
+            findings.append({
+                "issue": "paywall_anon_leak",
+                "url": "/api/v1/me/tier",
+                "count": 1,
+                "severity": "warning",
+                "detail": (f"Anonymous /me/tier resolves tier='{d3.get('tier')}' "
+                           f"index {d3.get('tier_index')} != 0 — the capacity paywall "
+                           f"no longer gates free visitors (monetization leak)."),
+            })
+    except Exception:
+        pass
+    return findings
+
+
 def check_cron_coverage() -> list[dict]:
     """Parse evolve-cron.yml. For each workflow_dispatch phase option,
     check if any job has a `cron:` trigger that fires it. Flag
@@ -8117,6 +8249,12 @@ def scan_all() -> list[dict]:
                check_cross_surface_value_drift,
                check_worker_version_drift,
                check_tier_consistency,
+               # 2026-06-20 incident alarm — fires if a PAID key ever resolves
+               # below developer (capacity redacted for payers), if a paid tier
+               # word stops mapping into TIER_ORDER, if /me/tier gets edge-
+               # cached, or if anon stops being gated. cf gating_routes +
+               # [[dchub-capacity-paywall-gating]].
+               check_paywall_capacity_gating,
                check_cron_coverage,
                check_cron_collisions,
                # Phase FF+7 (2026-05-19) — catches the bug L14 helped
