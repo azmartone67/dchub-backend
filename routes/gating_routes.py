@@ -155,22 +155,51 @@ def gated(value, required='developer', placeholder=None):
     return f'<span class="gated-pill" data-required="{required}">Pro only</span>'
 
 
+# 2026-06-20: vocabulary bridge. get_current_tier() can return any of several
+# legacy tier vocabularies — validate_key_tier() speaks 'free'/'paid'/
+# 'enterprise'; resolve_tier/_PLAN_TO_TIER can surface 'identified'/'starter'/
+# 'dev'/'team'/'metered'/'admin'/'ent'/'research_seed'. gating.js only knows the
+# canonical TIER_ORDER (anonymous<free<developer<pro<enterprise<founding) and
+# maps anything else to index 0 → it was redacting CAPACITY for a key that
+# resolved 'paid' (tier_index came back 0, gating.js tierIndex('paid')=-1→0).
+# Normalize to the canonical vocabulary so tier_index is correct everywhere.
+_GATE_TIER_NORMALIZE = {
+    'anonymous': 'anonymous', 'anon': 'anonymous', '': 'anonymous',
+    'free': 'free', 'identified': 'free', 'starter': 'free',
+    'dev': 'developer', 'developer': 'developer',
+    'paid': 'pro', 'pro': 'pro', 'team': 'pro', 'metered': 'pro',
+    'founding': 'founding',
+    'enterprise': 'enterprise', 'ent': 'enterprise', 'admin': 'enterprise',
+    'research_seed': 'enterprise',
+}
+
+
 @gating_bp.route('/api/v1/me/tier', methods=['GET'])
 def my_tier():
     """Return the current user's tier as JSON. Used by gating.js."""
-    tier = get_current_tier()
+    raw = get_current_tier()
+    tier = _GATE_TIER_NORMALIZE.get(str(raw or '').lower().strip(),
+                                    str(raw or 'anonymous').lower().strip())
     session_id = (
         request.headers.get('Mcp-Session-Id')
         or request.headers.get('X-Session-Id')
         or request.cookies.get('session_id')
         or ''
     )
-    return jsonify({
+    resp = jsonify({
         'tier': tier,
         'tier_index': TIER_INDEX.get(tier, 0),
         'session_id': session_id,
         'redeem_url_template': 'https://dchub.cloud/api/v1/redeem/{session_id}',
     })
+    # Per-user — must never be edge/browser cached (a cached 'anonymous' was
+    # being served to paid users whose request carried no session cookie, since
+    # the CF cache key Vary'd on Cookie, not the X-API-Key header). The client
+    # (gating.js) also cache-busts, but make the directive unambiguous here.
+    resp.headers['Cache-Control'] = 'private, no-store, no-cache, must-revalidate, max-age=0'
+    resp.headers['CDN-Cache-Control'] = 'no-store'
+    resp.headers['Vary'] = 'Cookie, Authorization, X-API-Key'
+    return resp
 
 
 def register_jinja_filter(app):

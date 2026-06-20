@@ -11,7 +11,7 @@
   var currentTierIdx = 0;
   var sessionId = '';
   var redeemTemplate = 'https://dchub.cloud/api/v1/redeem/{session_id}';
-  var GATING_VERSION = 'phase72.1-localstorage-auth';
+  var GATING_VERSION = 'phase72.2-localstorage-auth-cachebust';
 
   // Phase 285: placeholders that DON'T look like real pricing data.
   // Previously rate/amount used "$1,188" which renders identically to a
@@ -50,6 +50,21 @@
   function tierIndex(t) {
     var i = TIER_ORDER.indexOf(String(t || 'anonymous').toLowerCase());
     return i < 0 ? 0 : i;
+  }
+
+  // 2026-06-20: the backend resolves tier from several legacy vocabularies
+  // ('paid', 'identified', 'team', 'admin', …) that aren't in TIER_ORDER, so a
+  // genuinely-paid user could map to index 0 and get redacted. /me/tier now
+  // normalizes server-side, but keep a client-side bridge so a stale cached
+  // response (e.g. 'paid') still resolves to the right tier.
+  var TIER_ALIAS = {
+    paid: 'pro', team: 'pro', metered: 'pro',
+    identified: 'free', starter: 'free', dev: 'developer',
+    ent: 'enterprise', admin: 'enterprise', research_seed: 'enterprise'
+  };
+  function normalizeTier(t) {
+    var s = String(t || 'anonymous').toLowerCase().trim();
+    return TIER_ALIAS[s] || s;
   }
 
   // 2026-06-20: the Land & Power map (and the rest of the app) signs paying
@@ -281,10 +296,17 @@
       return;
     }
     injectStyles();
-    fetch('/api/v1/me/tier', { credentials: 'include', headers: authHeaders() })
+    // Cache-bust: the CF edge/worker caches /api/v1/me/tier keyed on URL+Cookie
+    // (NOT the X-API-Key header), so a paid user authenticating via a
+    // localStorage key (no session cookie) was served a previously-cached
+    // 'anonymous' response and got their CAPACITY popups redacted. A unique
+    // query per load forces a fresh origin resolution. (2026-06-20)
+    var _bust = '/api/v1/me/tier?_=' + (new Date().getTime()) + '-' +
+                Math.floor(Math.random() * 1e9);
+    fetch(_bust, { credentials: 'include', headers: authHeaders(), cache: 'no-store' })
       .then(function (r) { return r.json(); })
       .then(function (data) {
-        currentTierIdx = tierIndex(data.tier);
+        currentTierIdx = tierIndex(normalizeTier(data.tier));
         sessionId = data.session_id || '';
         redeemTemplate = data.redeem_url_template || redeemTemplate;
         applyMarkedGating(document);
