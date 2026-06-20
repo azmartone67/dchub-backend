@@ -26240,6 +26240,24 @@ try:
 except Exception as e:
     print(f"🧠 Brain Investigator: ⚠️ Failed to load: {e}")
 
+# (2026-06-19) — DRAFT-AND-APPROVE upgrade OUTREACH engine + admin customer
+# portal. The brain DRAFTS a short, honest, per-account upgrade/activation email
+# for each of 4 reconciliation segments (keyless_payer + at_risk_paid =
+# transactional; comped_paid + high_usage_free = marketing); NOTHING sends unless
+# the operator clicks approve AND OUTREACH_SEND_ENABLED is on. Generation itself
+# is gated by OUTREACH_GENERATE_ENABLED. BOTH default OFF — ships DARK. Marketing
+# segments route ONLY through routes/marketing_send.send_marketing_email (consent
+# + suppression + List-Unsubscribe choke-point); transactional via
+# email_fallback.send_email_resilient after a suppression check. Admin-gated;
+# the only writes are the outreach_drafts table.
+try:
+    from routes.upgrade_outreach import register_upgrade_outreach
+    register_upgrade_outreach(app)
+    print("📨 Upgrade Outreach: ✅ Registered "
+          "(POST /api/v1/portal/outreach/* · draft-and-approve · ships dark)")
+except Exception as e:
+    print(f"📨 Upgrade Outreach: ⚠️ Failed to load: {e}")
+
 # (2026-06-19) — Brain ENHANCER (PROPOSE-ONLY). The self-ENHANCING rung: it
 # SCANS the brain's own evidence (canonical_stats + recent brain_findings +
 # HEALTH_BASELINE + the work-plan) for high-leverage improvement OPPORTUNITIES,
@@ -26298,6 +26316,23 @@ try:
           "(GET /api/v1/brain/innovation/dashboard · /digest · read-only + grade)")
 except Exception as e:
     print(f"🧠 Brain Innovation Dashboard: ⚠️ Failed to load: {e}")
+
+# (2026-06-19) — Admin CUSTOMER PORTAL (STRICTLY READ-ONLY). ONE browser-openable,
+# admin-gated page that reconciles billing (users.plan) against the MCP paywall
+# (mcp_dev_keys.tier) — two nearly-disjoint populations — and classifies each
+# account into one of the four outreach segments (keyless_payer / comped_paid /
+# high_usage_free / at_risk_paid) using the SAME verified predicate logic as
+# brain_investigator._gather_paid_reconciliation. Writes NOTHING (the api_key is
+# redacted to a tail; PII is served only behind the admin gate). Served under /api/
+# so the CF worker forwards it unconditionally (bare subpaths + /brain/* hit CF
+# Error-1000). Browser-openable at /api/v1/portal?admin_key=<KEY>.
+try:
+    from routes.customer_portal import register_customer_portal
+    register_customer_portal(app)
+    print("👥 Customer Portal: ✅ Registered "
+          "(GET /api/v1/portal · /portal/accounts · read-only · segmented)")
+except Exception as e:
+    print(f"👥 Customer Portal: ⚠️ Failed to load: {e}")
 
 # (2026-06-19) — Brain INNOVATION EMAIL (transactional, dark). A daily digest of
 # the innovation front (self-agenda + investigations + proposals) pushed to the
@@ -30012,6 +30047,16 @@ try:
 except Exception as _e:
     print(f"[main] mcp_registry_outreach register failed: {_e}",
           file=sys.stderr)
+
+# OAuth durable store (Phase 2 / P2) — internal-only backend for the gateway's
+# MCP OAuth AS (clients/codes/tokens that must survive a gateway redeploy).
+# Inert until DCHUB_OAUTH_ENABLED is armed on the gateway; X-Internal-Key gated.
+try:
+    from routes.oauth_store import oauth_store_bp
+    app.register_blueprint(oauth_store_bp)
+    print("🔐 OAuth durable store: ✅ Registered (internal /api/v1/oauth/store|fetch|consume)")
+except Exception as _e:
+    print(f"[main] oauth_store register failed: {_e}", file=sys.stderr)
 
 # Phase XX (2026-05-16): Land+Power MCP bridge. /api/v1/land-power/site-analysis
 # powers the new free-tier `find_power_site` MCP tool — the missing link
