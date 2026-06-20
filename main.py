@@ -26408,6 +26408,23 @@ try:
 except Exception as e:
     print(f"🧠 Brain Investigator: ⚠️ Failed to load: {e}")
 
+# (2026-06-20) — Brain CAPABILITY LEDGER (GATHER-step Source 8 / self-knowledge).
+# Seeds a tiny, HONEST brain_live_capabilities table (CREATE IF NOT EXISTS +
+# idempotent UPSERT — the ONLY writes in the module, at startup only) listing
+# what the MCP gateway ALREADY ships, so the Investigator's REASON step stops
+# recommending already-built work (e.g. the durable-key-on-first-call surface
+# persist_command it kept mis-flagging as a gap). NOT a blueprint — it's a
+# GATHER source read by gather_evidence() behind BRAIN_CAPABILITY_LEDGER_ENABLED
+# (default OFF / dark). STANDALONE top-level try/except (NOT inside a shared
+# try-block — that pattern stranded a route at 404). Best-effort; never raises.
+try:
+    from routes.brain_capability_ledger import register_capability_ledger
+    register_capability_ledger(app)
+    print("🧠 Brain Capability Ledger: ✅ Seeded "
+          "(GATHER Source 8 · brain_live_capabilities · ships dark)")
+except Exception as e:
+    print(f"🧠 Brain Capability Ledger: ⚠️ Failed to load: {e}")
+
 # (2026-06-19) — DRAFT-AND-APPROVE upgrade OUTREACH engine + admin customer
 # portal. The brain DRAFTS a short, honest, per-account upgrade/activation email
 # for each of 4 reconciliation segments (keyless_payer + at_risk_paid =

@@ -291,6 +291,37 @@ def gather_evidence() -> list[dict]:
     except Exception as e:
         logger.warning("brain_investigator: retention-cohort evidence failed: %s", e)
 
+    # Source 7: FACILITY BREAKDOWNS (verified vs tracked, by country / operator /
+    # US ISO) from discovered_facilities. Answers the brain's self-resolving
+    # "21k tracked vs ~2k verified" loop with REAL top-N measured breakdowns so
+    # REASON cites ground truth instead of looping on a vague gap. Compact (≤4
+    # items), so always attached when relevant — the module self-gates on
+    # BRAIN_DATA_GATHER_ENABLED (default OFF / dark) and self-caps via a 4s
+    # statement_timeout, returning [] when disabled or unreachable. Best-effort:
+    # a failure logs + is omitted, mirroring Sources 5/6; NEVER raises.
+    try:
+        from routes.brain_data_gatherer import gather_facility_breakdowns
+        ev = gather_facility_breakdowns()
+        if ev:
+            evidence.extend(ev)
+    except Exception as e:
+        logger.warning("brain_investigator: facility-breakdown evidence failed: %s", e)
+
+    # Source 8: CAPABILITY LEDGER (self-knowledge). Hands REASON a compact
+    # "ALREADY BUILT — do NOT recommend building" line (incl. the durable-key-
+    # on-first-call surface persist_command the brain kept mis-flagging as a
+    # gap) so it stops recommending shipped work. Read-only at gather time; the
+    # module self-gates on BRAIN_CAPABILITY_LEDGER_ENABLED (default OFF / dark)
+    # and returns [] when disabled. Best-effort: a failure logs + is omitted,
+    # mirroring Sources 5/6; NEVER raises.
+    try:
+        from routes.brain_capability_ledger import gather_live_capabilities
+        ev = gather_live_capabilities()
+        if ev:
+            evidence.extend(ev)
+    except Exception as e:
+        logger.warning("brain_investigator: capability-ledger evidence failed: %s", e)
+
     return evidence
 
 
