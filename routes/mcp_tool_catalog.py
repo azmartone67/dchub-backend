@@ -31,6 +31,7 @@ _CATEGORIES = [
     ("intelligence",  "Market intelligence", "Tools that DESCRIBE — facts about specific markets, facilities, deals."),
     ("infrastructure","Infrastructure",      "Grid, fiber, water, tax, energy — the physical-layer signals."),
     ("portfolio",     "Portfolio + search",  "Facility-level search, scoring, and comparison."),
+    ("account",       "Account & access",    "Key, identity & upgrade tools — claim a free key, bind/recover it, unlock full data."),
 ]
 
 
@@ -179,6 +180,37 @@ TOOLS = [
     ("export_dataset",        "portfolio",      "pro",
      "Bulk export your saved sites as CSV or GeoJSON for offline analysis / ingestion.",
      'export_dataset(format="csv")'),
+    # r-catalog-46 (2026-06-20): the 8 tools that were live on the MCP server
+    # (tools/list=46) but missing from this catalog (=42) → drift across every
+    # catalog-fed manifest. Backfilled so LIVE_MCP_TOOL_COUNT + the well-known /
+    # card surfaces all read 46. (set_site_alert also added to PRO_ONLY_TOOLS.)
+    # ── INFRASTRUCTURE ──
+    ("get_fiber_readiness",   "infrastructure", "identified",
+     "Fiber-readiness verdict for ONE parcel (lat/lon): near-net distance to a carrier-served facility, how many distinct carriers can serve it, and single-carrier path-diversity risk — the connectivity screen site-selectors run before committing.",
+     'get_fiber_readiness(lat=39.04, lon=-77.48, radius_km=50)'),
+    ("get_gas_economics",     "infrastructure", "identified",
+     "Behind-the-meter / gas-fired power ECONOMICS for a US data-center market: Henry Hub spot, basis differential, delivered industrial + electric gas tariff, and the gas-to-grid levelized cost ($/MWh) across CCGT/peaker heat-rate scenarios.",
+     'get_gas_economics(market="northern-virginia")'),
+    ("plan_fiber_leadin",     "infrastructure", "identified",
+     "Plan N diverse, road-following fibre lead-in routes from a candidate site to a carrier hotel / POP, each with length + GeoJSON geometry, a route-diversity read, and indicative build cost. Indicative auto-routed corridors, not engineered alignments.",
+     'plan_fiber_leadin(from="250 Paringa Rd, Murarrie QLD", to="20 Wharf St, Brisbane QLD", n=4)'),
+    # ── PORTFOLIO ──
+    ("set_site_alert",        "portfolio",      "pro",
+     "Arm an email watch on a site you already saved (PRO): DC Hub emails you when that site's DCPI score, grid capacity, or nearby facilities move — the 'monitor my shortlist' loop. Call save_site first, then set_site_alert on the returned id.",
+     'set_site_alert(saved_site_id=12, trigger_type="dcpi_change", threshold=5, notify_email="you@firm.com")'),
+    # ── ACCOUNT & ACCESS ──
+    ("claim_free_key",        "account",        "free",
+     "Mint a FREE DC Hub dev key instantly — no email, no browser, one call. Returns an api_key you set as the X-API-Key header to unlock the full free tier (10 calls/day, all 232 markets + grid/fiber/DCPI). The fastest path from anonymous to identified.",
+     'claim_free_key(client_name="your-agent")'),
+    ("bind_email",            "account",        "free",
+     "Tie your DC Hub key to your human's email so the key is RECOVERABLE and upgrade receipts reach the right inbox. Optional — the key already works without it. Email is used ONLY for recovery + transactional receipts (no marketing without opt-in).",
+     'bind_email(email="you@firm.com")'),
+    ("recover_my_key",        "account",        "free",
+     "Recover a LOST DC Hub key: pass your human's email and DC Hub re-sends any key tied to that address to that inbox. It never returns the key over the wire, and the confirmation is enumeration-safe (identical whether or not a key exists).",
+     'recover_my_key(email="you@firm.com")'),
+    ("unlock_more_data",      "account",        "free",
+     "Unlock DC Hub's full depth — call this when a result came back as a 1-of-N preview or a tool was locked. Returns the upgrade ladder + ready-to-paste one-click checkout links your human completes in one click; cheapest start is $5 = 1,000 full queries.",
+     'unlock_more_data(reason="need the full market report")'),
 ]
 
 
@@ -250,7 +282,7 @@ PRO_ONLY_TOOLS = [
     "get_fiber_intel", "get_dchub_recommendation",
     # Agent MOAT (2026-06-06): persistence + monitoring + export are PRO.
     # get_changes (incremental sync) stays free — it drives agent retention.
-    "save_site", "list_saved_sites", "set_market_alert", "export_dataset",
+    "save_site", "list_saved_sites", "set_market_alert", "set_site_alert", "export_dataset",
 ]
 
 
