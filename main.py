@@ -26425,6 +26425,20 @@ try:
 except Exception as e:
     print(f"🧠 Brain Capability Ledger: ⚠️ Failed to load: {e}")
 
+# (2026-06-20) — x402 AGENT-AUTONOMOUS PAYMENT rail. Monetize the agent DIRECTLY
+# at the value moment: a wallet-funded agent pays per call (USDC) for the
+# flagship tools — no human, no account — the lever that removes the human-pays
+# bottleneck (185+166 distinct free agents → ~6 paid/30d). Additive to the human
+# $5 path. Ships DARK (X402_ENABLED off) + cannot receive funds until the
+# operator sets X402_RECIPIENT_ADDRESS. STANDALONE top-level try/except.
+try:
+    from routes.x402_payments import register_x402_payments
+    register_x402_payments(app)
+    print("🪙 x402 agent-pay rail: ✅ Registered "
+          "(/api/v1/x402/quote + /verify · ships dark · flagship $0.10/call)")
+except Exception as e:
+    print(f"🪙 x402 agent-pay rail: ⚠️ Failed to load: {e}")
+
 # (2026-06-19) — DRAFT-AND-APPROVE upgrade OUTREACH engine + admin customer
 # portal. The brain DRAFTS a short, honest, per-account upgrade/activation email
 # for each of 4 reconciliation segments (keyless_payer + at_risk_paid =
