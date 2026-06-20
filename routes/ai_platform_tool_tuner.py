@@ -133,6 +133,26 @@ def _get_db():
         return None
 
 
+def _put_db(c):
+    """Release a pooled connection from _get_db() BACK to the write pool.
+    Without this the connection is held until the 60-89s FORCED RECLAIM
+    (main.py) — and the read endpoint below is hit by the gateway's warm-cache
+    refresher (5 platforms, every 30 min, via a ThreadPoolExecutor), so a burst
+    of un-returned connections starves the pool and degrades unrelated internal
+    fetches across the app. get_db()==get_pg_connection() (write pool), so the
+    correct release is return_pg_connection(). Fail-soft."""
+    if c is None:
+        return
+    try:
+        from main import return_pg_connection
+        return_pg_connection(c)
+    except Exception:
+        try:
+            c.close()
+        except Exception:
+            pass
+
+
 def _ensure_table(c) -> None:
     """Self-heal — create the table inline if schema_repair hasn't run."""
     try:
@@ -322,23 +342,26 @@ def get_tool_descriptions():
     c = _get_db()
     if c is None:
         return jsonify(ok=False, error="no_db"), 503
-    plat = (request.args.get("platform") or "").strip().lower()
-    if not plat:
-        ua = request.args.get("ua") or request.headers.get("User-Agent", "")
-        plat = _platform_from_ua(ua) or ""
-    plat = PLATFORM_MAP.get(plat, plat)
-    all_tuned = _load_all_tuned(c)
-    if plat:
-        overrides = {k: v["description"]
-                     for k, v in (all_tuned.get(plat) or {}).items()}
-        return jsonify(ok=True, platform=plat, overrides=overrides,
+    try:
+        plat = (request.args.get("platform") or "").strip().lower()
+        if not plat:
+            ua = request.args.get("ua") or request.headers.get("User-Agent", "")
+            plat = _platform_from_ua(ua) or ""
+        plat = PLATFORM_MAP.get(plat, plat)
+        all_tuned = _load_all_tuned(c)
+        if plat:
+            overrides = {k: v["description"]
+                         for k, v in (all_tuned.get(plat) or {}).items()}
+            return jsonify(ok=True, platform=plat, overrides=overrides,
+                           fallback_generic=GENERIC_DESCRIPTIONS,
+                           count=len(overrides))
+        # No platform → return everything (admin/inspection use)
+        return jsonify(ok=True, platform=None,
+                       all_overrides=all_tuned,
                        fallback_generic=GENERIC_DESCRIPTIONS,
-                       count=len(overrides))
-    # No platform → return everything (admin/inspection use)
-    return jsonify(ok=True, platform=None,
-                   all_overrides=all_tuned,
-                   fallback_generic=GENERIC_DESCRIPTIONS,
-                   platforms_with_overrides=len(all_tuned))
+                       platforms_with_overrides=len(all_tuned))
+    finally:
+        _put_db(c)
 
 
 @ai_platform_tool_tuner_bp.route("/api/v1/admin/mcp/tool-tuner/seed",
@@ -404,6 +427,7 @@ def seed_variants():
     _TUNED_CACHE["data"] = {}
     _TUNED_CACHE["at"] = 0.0
 
+    _put_db(c)  # release the pooled connection (rare admin path; normal completion)
     return jsonify(ok=True,
                    written=len(written),
                    skipped=len(skipped),
@@ -433,11 +457,14 @@ def manual_upsert():
     c = _get_db()
     if c is None:
         return jsonify(ok=False, error="no_db"), 503
-    _ensure_table(c)
-    _upsert(c, plat, tool, desc, body.get("generated_by") or "manual")
-    _TUNED_CACHE["data"] = {}
-    _TUNED_CACHE["at"] = 0.0
-    return jsonify(ok=True, platform=plat, tool_name=tool, version_bumped=True)
+    try:
+        _ensure_table(c)
+        _upsert(c, plat, tool, desc, body.get("generated_by") or "manual")
+        _TUNED_CACHE["data"] = {}
+        _TUNED_CACHE["at"] = 0.0
+        return jsonify(ok=True, platform=plat, tool_name=tool, version_bumped=True)
+    finally:
+        _put_db(c)
 
 
 @ai_platform_tool_tuner_bp.route("/api/v1/admin/mcp/tool-tuner/coverage",
@@ -449,20 +476,23 @@ def coverage():
     c = _get_db()
     if c is None:
         return jsonify(ok=False, error="no_db"), 503
-    _ensure_table(c)
-    all_tuned = _load_all_tuned(c)
-    matrix = {}
-    for canon, _, _ in TOP_5_PLATFORMS:
-        row = {}
-        for tool in TOP_10_TOOLS:
-            row[tool] = (canon in all_tuned and tool in all_tuned[canon])
-        matrix[canon] = row
-    total_cells = len(TOP_5_PLATFORMS) * len(TOP_10_TOOLS)
-    filled = sum(1 for canon in matrix for t in matrix[canon] if matrix[canon][t])
-    return jsonify(ok=True, total_cells=total_cells, filled=filled,
-                   percent=round(100 * filled / max(total_cells, 1), 1),
-                   matrix=matrix, top_tools=TOP_10_TOOLS,
-                   top_platforms=[c for c, _, _ in TOP_5_PLATFORMS])
+    try:
+        _ensure_table(c)
+        all_tuned = _load_all_tuned(c)
+        matrix = {}
+        for canon, _, _ in TOP_5_PLATFORMS:
+            row = {}
+            for tool in TOP_10_TOOLS:
+                row[tool] = (canon in all_tuned and tool in all_tuned[canon])
+            matrix[canon] = row
+        total_cells = len(TOP_5_PLATFORMS) * len(TOP_10_TOOLS)
+        filled = sum(1 for canon in matrix for t in matrix[canon] if matrix[canon][t])
+        return jsonify(ok=True, total_cells=total_cells, filled=filled,
+                       percent=round(100 * filled / max(total_cells, 1), 1),
+                       matrix=matrix, top_tools=TOP_10_TOOLS,
+                       top_platforms=[p for p, _, _ in TOP_5_PLATFORMS])
+    finally:
+        _put_db(c)
 
 
 # ── Smoke ────────────────────────────────────────────────────────────
