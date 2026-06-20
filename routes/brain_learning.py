@@ -258,7 +258,7 @@ def bump_temporal(issue_label, url=""):
                              WHEN jsonb_array_length(brain_temporal_patterns.seen_timestamps) >= 200
                              THEN brain_temporal_patterns.seen_timestamps
                              ELSE brain_temporal_patterns.seen_timestamps
-                                  || jsonb_build_array(NOW()::text)
+                                  || jsonb_build_array(NOW())
                            END),
                        last_seen_at = NOW()""",
                 (issue_label[:200], (url or '')[:300]))
