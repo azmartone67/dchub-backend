@@ -11232,15 +11232,15 @@ def stripe_webhook():
                         try:
                             _pg_execute(
                                 """INSERT INTO mcp_conversions
-                                     (user_email, stripe_customer_id,
+                                     (user_email, caller_id, stripe_customer_id,
                                       stripe_subscription_id, plan_to, mrr_cents,
                                       source)
-                                   VALUES (%s, %s, %s, 'pack_1000', 0,
+                                   VALUES (%s, %s, %s, %s, 'pack_1000', 0,
                                            'stripe_webhook_pack5')
                                    ON CONFLICT (stripe_subscription_id)
                                    DO NOTHING""",
-                                (_p5_email or None, data.get('customer'),
-                                 data.get('id')))
+                                (_p5_email or None, (_p5_email or '').strip().lower() or None,
+                                 data.get('customer'), data.get('id')))
                             print(f"💳 Pack5 conversion recorded (cs={str(data.get('id'))[:18]}…)")
                         except Exception as _p5ce:
                             print(f"⚠️ pack5 conversion-record error (non-fatal): {_p5ce}")
@@ -18689,6 +18689,17 @@ def daily_cron():
             logger.info(f"[daily_cron] wins draft pass: {results['wins'].get('queued')}")
         except Exception as _wins_e:
             results['wins'] = {'error': str(_wins_e)[:120]}
+
+        # 2026-06-20: recompute the weekly REACH rollup once/day on the leader
+        # replica only (UPSERT-on-week_start makes it idempotent even if both
+        # raced). Piggybacks the already-scheduled daily trigger — no new cron.
+        try:
+            if is_current_leader():
+                from routes.ai_reach_rollup import run_reach_rollup
+                results['reach_rollup'] = run_reach_rollup()
+                logger.info(f"[daily_cron] reach_rollup: {results['reach_rollup'].get('weeks_computed')}")
+        except Exception as _rr_e:
+            results['reach_rollup'] = {'error': str(_rr_e)[:120]}
 
         logger.info(f"[daily_cron] complete: {results}")
 
@@ -30299,6 +30310,16 @@ try:
     app.register_blueprint(ai_reach_bp)
 except Exception as _air_e:
     print(f"[main] ai_reach register failed: {_air_e}", file=sys.stderr)
+
+# 2026-06-20: durable weekly REACH rollup — precomputes distinct-external-IPs/wk
+# + NEW-external-IPs/wk (the acquisition signal) so reading reach is cold-start
+# safe (the live /ai/reach scan times out the TEXT-timestamp cast). /api/v1/ai/
+# reach/trend serves from the rollup; /api/cron/reach-rollup recomputes (202).
+try:
+    from routes.ai_reach_rollup import ai_reach_rollup_bp
+    app.register_blueprint(ai_reach_rollup_bp)
+except Exception as _arr_e:
+    print(f"[main] ai_reach_rollup register failed: {_arr_e}", file=sys.stderr)
 
 # fibre route planner (/api/v1/fiber/route-plan) — diverse-route + indicative-cost
 # engine for the land+power map feature. Standalone file (conflict-proof).

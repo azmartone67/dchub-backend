@@ -2227,13 +2227,14 @@ def stripe_webhook_mcp():
                     # only UNIQUE column, so we store cs_ there to dedupe Stripe's
                     # webhook re-delivery. No reader filters on this column's shape.
                     cur.execute("""INSERT INTO mcp_conversions
-                                     (user_email, stripe_customer_id, stripe_subscription_id,
+                                     (user_email, caller_id, stripe_customer_id, stripe_subscription_id,
                                       plan_to, mrr_cents, source, attribution_signal_id,
                                       web_source, web_tool)
-                                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                                    ON CONFLICT (stripe_subscription_id) DO NOTHING
                                    RETURNING id""",
-                                (cust_email, cust_id, sess.get("id"), plan_to, mrr,
+                                (cust_email, (cust_email or '').strip().lower() or None,
+                                 cust_id, sess.get("id"), plan_to, mrr,
                                  _src, attr_id, web_src, web_tool))
                     _row = cur.fetchone()
                     conn.commit()
@@ -2256,16 +2257,18 @@ def stripe_webhook_mcp():
             if web_src and sess.get("mode") == "subscription" and _sub and cust_email:
                 with _pool.connection() as conn, conn.cursor() as cur:
                     cur.execute("""INSERT INTO mcp_conversions
-                                     (user_email, stripe_customer_id, stripe_subscription_id,
+                                     (user_email, caller_id, stripe_customer_id, stripe_subscription_id,
                                       plan_to, source, web_source, web_tool)
-                                   VALUES (%s, %s, %s, 'pending', %s, %s, %s)
+                                   VALUES (%s, %s, %s, %s, 'pending', %s, %s, %s)
                                    ON CONFLICT (stripe_subscription_id) DO UPDATE SET
+                                     caller_id  = COALESCE(mcp_conversions.caller_id, EXCLUDED.caller_id),
                                      web_source = EXCLUDED.web_source,
                                      web_tool   = EXCLUDED.web_tool,
                                      source = CASE WHEN mcp_conversions.attribution_signal_id IS NULL
                                                    THEN EXCLUDED.source ELSE mcp_conversions.source END
                                    RETURNING id""",
-                                (cust_email, cust_id, _sub, "web:" + web_src, web_src, web_tool))
+                                (cust_email, (cust_email or '').strip().lower() or None,
+                                 cust_id, _sub, "web:" + web_src, web_src, web_tool))
                     _wr = cur.fetchone()
                     conn.commit()
                     webattr = {"web_source": web_src, "web_tool": web_tool,
@@ -2338,14 +2341,16 @@ def stripe_webhook_mcp():
         with _pool.connection() as conn, conn.cursor() as cur:
             cur.execute(
                 """INSERT INTO mcp_conversions
-                     (user_email, stripe_customer_id, stripe_subscription_id,
+                     (user_email, caller_id, stripe_customer_id, stripe_subscription_id,
                       plan_to, mrr_cents, source, attribution_signal_id)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                    ON CONFLICT (stripe_subscription_id) DO UPDATE
                      SET plan_to   = EXCLUDED.plan_to,
-                         mrr_cents = EXCLUDED.mrr_cents
+                         mrr_cents = EXCLUDED.mrr_cents,
+                         caller_id = COALESCE(mcp_conversions.caller_id, EXCLUDED.caller_id)
                    RETURNING id""",
-                (email, customer_id, sub_id, plan_to, mrr_cents,
+                (email, (email or '').strip().lower() or None,
+                 customer_id, sub_id, plan_to, mrr_cents,
                  _source, attribution_id),
             )
             conv_id = cur.fetchone()[0]
