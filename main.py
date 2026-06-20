@@ -2661,6 +2661,17 @@ def phase19b_grid_intelligence(region):
     mix + demand. Region codes: PJM, MISO, ERCOT, CAISO, NYISO, SPP, ISONE.
     """
     region = (region or '').upper().strip()
+    # PJM Dominion (DOM) sub-zone — Ashburn / Northern Virginia (the world's #1
+    # data-center market), INVISIBLE in EIA-930 (no sub-BA DOM). Served from PJM
+    # Data Miner 2 (DOM-zone load + LMP); fail-closed without PJM_API_KEY (returns
+    # a clear source_unavailable marker, never errors). Activates on key-set.
+    if region.replace('-', '').replace('_', '').replace(' ', '') in ('PJMDOM', 'DOM', 'DOMINION'):
+        try:
+            from pjm_dataminer import pjm_dom_zone
+            return jsonify(pjm_dom_zone()), 200
+        except Exception as _e:
+            return jsonify({'region': 'PJM-DOM', 'error': str(_e)[:160],
+                            'note': 'PJM Dominion zone loader unavailable'}), 200
     EIA_RTO_MAP = {
         'PJM': 'PJM', 'MISO': 'MISO', 'ERCOT': 'ERCO',
         'CAISO': 'CISO', 'NYISO': 'NYIS', 'SPP': 'SWPP',
