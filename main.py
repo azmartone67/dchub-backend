@@ -19631,6 +19631,14 @@ def _build_fiber_routes_geojson(max_features=None):
             types = CLASS_TYPES[route_class]
             query += ' AND route_type IN (' + ','.join(['%s'] * len(types)) + ')'
             params.extend(types)
+        # ROBUSTNESS (2026-06-20): prioritize REAL multi-vertex surveyed geometry
+        # (Zayo carrier KMZ, NTIA middle-mile) over synthetic 2-point straight
+        # lines. There was NO ORDER BY, so a 10k cap on 39k physically-insert-ordered
+        # rows truncated the 19,241 real Zayo routes (only 522 surfaced). Real
+        # routes store a long multi-vertex `coordinates` array (>80 chars);
+        # synthetic endpoint-pairs are ~35 chars.
+        query += (" ORDER BY (coordinates IS NOT NULL AND char_length(coordinates::text) > 80) DESC,"
+                  " distance_miles DESC NULLS LAST")
         query += ' LIMIT %s'
         params.append(limit)
 
