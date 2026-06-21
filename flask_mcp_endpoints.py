@@ -1592,6 +1592,27 @@ def mcp_funnel():
             out["tool_calls_7d_complete"] = _cd7
             out["tool_calls_per_day_complete"] = round(_cd7 / 7)
 
+            # r-funnel-platform-excl (2026-06-20): the de-looped, partial-day-robust
+            # HEADLINE number. complete-7-days (no mid-day dip) AND external-only —
+            # the shared de-loop predicate now also drops self-heal/probe traffic by
+            # the write-time platform column, so a self-heal cadence change can no
+            # longer read as a funnel collapse (the recurring false alarm). The
+            # dashboard headline points at THIS field; tool_calls_7d_complete stays
+            # for back-compat.
+            try:
+                cur.execute(
+                    "SELECT COUNT(*) FROM mcp_tool_calls "
+                    "WHERE created_at >= CURRENT_DATE - INTERVAL '7 days' "
+                    "  AND created_at < CURRENT_DATE "
+                    f"  AND {_deloop_real_calls_predicate()}"
+                )
+                _cd7r = int((cur.fetchone() or [0])[0])
+                out["tool_calls_7d_complete_real"] = _cd7r
+                out["tool_calls_per_day_complete_real"] = round(_cd7r / 7)
+            except Exception as e:
+                out["tool_calls_7d_complete_real"] = None
+                out["tool_calls_7d_complete_real_error"] = str(e)[:120]
+
             # r42x (2026-05-26): lifetime aggregate so press releases can
             # cite "N total tool calls since launch" as a moat metric.
             # Uses pg_class.reltuples for instant approximation (no full

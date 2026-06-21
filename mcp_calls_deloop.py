@@ -138,12 +138,53 @@ def _probe_in_list() -> str:
         for p in sorted(set(PROBE_PLATFORMS)))
 
 
+# ── Internal/self platforms by the WRITE-TIME `platform` column ───────────
+# r-funnel-platform-excl (2026-06-20): the PLATFORM_CASE classifier above keys
+# on client_name/user_agent and MISSES our self-heal traffic — those rows carry
+# client_name='dchub-selfheal' (or the literal 'unknown'), which wins the first
+# CASE branch and classifies as a real platform. So dchub-selfheal (the single
+# biggest source, ~93% of raw volume, ~1,878 of the last 7d's "real" 3,166) sailed
+# straight into tool_calls_7d_real, making the headline swing with the self-heal
+# cadence and read as a funnel collapse (verified 2026-06-20 — empirical: current
+# de-loop removed only 25 of 3,191 rows). The reliable signal is the write-time
+# `platform` COLUMN, which our own services self-identify in. Exclude those here,
+# on TOP of the classifier, but KEEP NULL/empty platform (real anonymous agents
+# often have no platform) — only NAMED internal/probe/test platforms are dropped.
+INTERNAL_PLATFORM_VALUES = (
+    'mcp-probe', 'pipeline_mcp', 'probe', 'verify', 'dchubhealer',
+    'capwall2', 'fv', 'v', 't', 'p', 'test',
+)
+
+
+def _internal_platform_list() -> str:
+    return ",".join("'" + str(p).replace("'", "''") + "'"
+                    for p in sorted(set(INTERNAL_PLATFORM_VALUES)))
+
+
+def external_platform_predicate() -> str:
+    """TRUE when the write-time `platform` column is NOT one of our own
+    internal/self/probe services. `dchub-%` covers selfheal / mcp-test /
+    regression-test; the explicit list covers named probes + short test-client
+    names. NULL/empty platform is KEPT (real anonymous agents)."""
+    p = "COALESCE(LOWER(platform), '')"
+    # NOT LIKE patterns catch recurring internal validators/probes whose names
+    # vary (p1verify, gate-audit, mcp-probe, diag-*, …) without an ever-growing
+    # exact list. Literal % is safe here — this clause is inlined (no bound
+    # params), same as PLATFORM_CASE's ILIKE patterns.
+    return (f"({p} NOT LIKE 'dchub-%' "
+            f"AND {p} NOT IN ({_internal_platform_list()}) "
+            f"AND {p} NOT LIKE '%verify%' "
+            f"AND {p} NOT LIKE '%probe%' "
+            f"AND {p} NOT LIKE '%audit%')")
+
+
 def real_calls_predicate() -> str:
     """Boolean SQL fragment that is TRUE for a real external tool call:
-    `<PLATFORM_CASE> NOT IN (<probe list>)`. This is the exact filter the
-    /api/v1/mcp/funnel endpoint FILTERs `tool_calls_7d_real` on. Reads the
-    mcp_tool_calls columns client_name + user_agent."""
-    return f"({PLATFORM_CASE.strip()} NOT IN ({_probe_in_list()}))"
+    `<PLATFORM_CASE> NOT IN (<probe list>) AND <external platform>`. This is the
+    exact filter the /api/v1/mcp/funnel endpoint FILTERs `tool_calls_7d_real` on.
+    Reads mcp_tool_calls columns client_name + user_agent + platform."""
+    return (f"(({PLATFORM_CASE.strip()} NOT IN ({_probe_in_list()})) "
+            f"AND {external_platform_predicate()})")
 
 
 def probe_calls_predicate() -> str:

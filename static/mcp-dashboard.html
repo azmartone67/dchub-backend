@@ -47,8 +47,8 @@ async function load() {
     const kt = d.keys_by_tier || {};
     const k = (kt.free||0) + (kt.paid||0) + (kt.enterprise||0);
     document.getElementById('kpis').innerHTML = `
-      <div class="card"><div class="label">Tool calls (7d · full days)</div><div class="value">${(d.tool_calls_7d_complete ?? d.tool_calls_7d ?? 0).toLocaleString()}</div>
-        <div class="sub-value">~${(d.tool_calls_per_day_complete ?? 0).toLocaleString()}/day · 7 full days (excl. today → stable mid-day) · <b style="color:#6a8">rolling incl. today: ${(d.tool_calls_7d ?? 0).toLocaleString()}</b> ← moves live</div></div>
+      <div class="card"><div class="label">Tool calls (7d · external, full days)</div><div class="value">${(d.tool_calls_7d_complete_real ?? d.tool_calls_7d_complete ?? d.tool_calls_7d ?? 0).toLocaleString()}</div>
+        <div class="sub-value">~${(d.tool_calls_per_day_complete_real ?? d.tool_calls_per_day_complete ?? 0).toLocaleString()}/day · 7 full days, <b>self-heal/probe traffic excluded</b> · <span style="color:#888">incl. internal+today: ${(d.tool_calls_7d ?? 0).toLocaleString()}</span></div></div>
       <div class="card"><div class="label">Upgrade signals (7d)</div><div class="value">${d.upgrade_signals_7d ?? 0}</div></div>
       <div class="card"><div class="label">Conversions (30d)</div><div class="value">${d.conversions_30d ?? 0}</div></div>
       <div class="card"><div class="label">Active dev keys</div><div class="value">${k}</div>
