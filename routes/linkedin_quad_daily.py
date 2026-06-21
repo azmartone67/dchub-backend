@@ -693,6 +693,17 @@ def run():
     _record(slot_date, target_slot["hour"], target_slot["topic"], target_slot["style"],
              text, landing, og_url, result)
 
+    # Capability radar: retire a capability/milestone lead ONLY after it actually
+    # posted (success), so a new capability stays visible until announced and a
+    # failed post leaves it to retry. (The radar is read-only; this is the writer.)
+    try:
+        if (result or {}).get("ok") and isinstance(_ed_lead, dict) \
+                and _ed_lead.get("kind") in ("capability_launch", "data_milestone"):
+            from routes.brain_capability_radar import mark_capability_announced
+            mark_capability_announced(_ed_lead.get("dedup_key", ""))
+    except Exception:
+        pass
+
     return jsonify({
         "slot":     target_slot,
         "payload":  payload,

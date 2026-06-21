@@ -473,15 +473,11 @@ def editorial_decision(slot: str | None = None) -> dict:
     # newsworthy lead below the bar nor promotes noise above it. (ranked is
     # already sorted by the weighted score, so `top` is the best-by-reach lead.)
     if top and top.get("raw_score", top.get("score", 0)) >= _NEWSWORTHY_MIN:
-        # Capability/milestone lead won the slot → it's about to be posted, so
-        # advance its baseline now (the radar itself is read-only; this is the
-        # only writer). A new capability stays visible until it wins a slot.
-        if top.get("kind") in ("capability_launch", "data_milestone"):
-            try:
-                from routes.brain_capability_radar import mark_capability_announced
-                mark_capability_announced(top.get("dedup_key", ""))
-            except Exception as e:
-                logger.warning("[editorial] mark capability failed: %s", str(e)[:120])
+        # NOTE: a capability/milestone lead is retired (baseline advanced) only
+        # when the quad ACTUALLY posts it (linkedin_quad_daily, on a successful
+        # LinkedIn publish) — NOT here. editorial_decision() is also called by
+        # previews (marketing_engine, the read endpoints), so marking here would
+        # consume the "new source" signal without ever posting it.
         return {
             "post": True,
             "slot": slot,
