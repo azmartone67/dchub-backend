@@ -26992,6 +26992,12 @@ try:
     except Exception as _pgi_e:
         print(f"🛠️ Planned Generators Ingest: ⚠️ {_pgi_e}")
     try:
+        from routes.brain_codegen_expose import register_codegen_expose
+        register_codegen_expose(app)
+        print("🤖 Brain Codegen Expose: ✅ Registered (/api/v1/admin/brain/codegen-expose/run)")
+    except Exception as _cge_e:
+        print(f"🤖 Brain Codegen Expose: ⚠️ {_cge_e}")
+    try:
         from routes.infra_growth import register_infra_growth
         register_infra_growth(app)
         print("📈 Infra Growth Tracker: ✅ Registered (/api/v1/admin/infra-growth)")
