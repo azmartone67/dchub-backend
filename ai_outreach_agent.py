@@ -489,7 +489,7 @@ def _update_channel_scores():
         
         cursor.execute('''
             SELECT platform, COUNT(*) FROM organic_traffic_alerts 
-            WHERE is_organic = 1 AND detected_at > datetime('now', '-7 days')
+            WHERE is_organic = 1 AND detected_at > NOW() - INTERVAL '7 days'
             GROUP BY platform
         ''')
         organic_by_platform = {r[0]: r[1] for r in cursor.fetchall()}
