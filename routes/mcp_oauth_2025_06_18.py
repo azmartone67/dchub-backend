@@ -25,12 +25,24 @@ Routes:
   GET /oauth/introspect                                — introspection stub
 """
 import datetime
+import os
 from flask import Blueprint, jsonify, request
 
 mcp_oauth_2025_bp = Blueprint("mcp_oauth_2025", __name__)
 
 
 ROOT = "https://api.dchub.cloud"
+
+# r-workos (2026-06-21): wire WorkOS AuthKit as the Authorization Server. DC Hub
+# is the RESOURCE SERVER — clients discover WorkOS via authorization_servers and
+# do DCR/consent/token directly with WorkOS; DC Hub just validates the JWT
+# (Phase B). ENV-GATED: empty WORKOS_AUTHKIT_DOMAIN => authorization_servers stays
+# [] (today's anonymous behaviour, unchanged) so this is inert until the domain
+# is set AFTER the WorkOS dashboard is configured (CIMD/DCR + Resource Indicator).
+_AUTHKIT = (os.environ.get("WORKOS_AUTHKIT_DOMAIN") or "").strip().rstrip("/")
+# The MCP resource indicator — MUST match the WorkOS "Resource Indicator" config
+# and the token `aud`. This is the URL clients actually connect to.
+_RESOURCE = (os.environ.get("DCHUB_MCP_RESOURCE") or "https://dchub.cloud/mcp").strip()
 
 
 @mcp_oauth_2025_bp.route("/.well-known/oauth-protected-resource", methods=["GET"])
@@ -44,14 +56,14 @@ def oauth_protected_resource():
     Populated array = enterprise tier; tokens accepted from listed AS.
     """
     return jsonify({
-        "resource":                       f"{ROOT}/mcp",
+        "resource":                       _RESOURCE,
         "resource_documentation":         "https://dchub.cloud/integrations/mcp",
         "resource_name":                  "DC Hub Intelligence MCP Server",
         "resource_policy_uri":            "https://dchub.cloud/terms",
         "resource_tos_uri":               "https://dchub.cloud/terms",
-        # Empty array = free tier (anonymous OK). Enterprise customers
-        # get a custom AS configured per-tenant; contact api@dchub.cloud.
-        "authorization_servers":          [],
+        # WorkOS AuthKit as the AS when WORKOS_AUTHKIT_DOMAIN is set; empty = today's
+        # anonymous/X-API-Key behaviour (clients read [] as "no auth required").
+        "authorization_servers":          ([_AUTHKIT] if _AUTHKIT else []),
         "bearer_methods_supported":       ["header"],
         "resource_signing_alg_values_supported": ["RS256", "ES256"],
         "scopes_supported":               [
