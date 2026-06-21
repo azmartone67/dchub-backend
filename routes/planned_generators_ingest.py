@@ -157,6 +157,94 @@ def ingest_planned_generators():
     return jsonify(ok=True, inserted=inserted, source=_SRC)
 
 
+@planned_gen_ingest_bp.route("/api/v1/planned-generators", methods=["GET"])
+def get_planned_generators():
+    """PUBLIC read API for the planned-generator pipeline (map + MCP consume this).
+
+    Query params (all optional):
+      bbox=minLng,minLat,maxLng,maxLat   spatial filter (the map sends the viewport)
+      state=TX        2-letter state
+      ba=ERCO         balancing-authority code
+      status=U        EIA status code prefix (U/V=under construction, P/L/T=planned, TS)
+      min_mw=50       minimum nameplate MW
+      limit=2000      cap (default 2000, max 5000)
+      format=geojson  (default) GeoJSON FeatureCollection; format=json → flat array
+
+    Returns only geocoded rows. Public, read-only, federal data (EIA-860M).
+    """
+    dsn = _dsn()
+    if not dsn:
+        return jsonify(ok=False, error="no DATABASE_URL"), 503
+    args = request.args
+    where = ["source = %s", "lat IS NOT NULL", "lng IS NOT NULL"]
+    params = [_SRC]
+    bbox = args.get("bbox")
+    if bbox:
+        try:
+            w, s, e, n = [float(x) for x in bbox.split(",")[:4]]
+            where.append("lng BETWEEN %s AND %s AND lat BETWEEN %s AND %s")
+            params += [min(w, e), max(w, e), min(s, n), max(s, n)]
+        except (ValueError, IndexError):
+            return jsonify(ok=False, error="bad bbox (want minLng,minLat,maxLng,maxLat)"), 400
+    if args.get("state"):
+        where.append("UPPER(state) = %s"); params.append(args["state"].upper()[:2])
+    if args.get("ba"):
+        where.append("UPPER(ba_code) = %s"); params.append(args["ba"].upper()[:20])
+    if args.get("status"):
+        where.append("status ILIKE %s"); params.append("(" + args["status"][:3] + "%")
+    if args.get("min_mw"):
+        try:
+            where.append("capacity_mw >= %s"); params.append(float(args["min_mw"]))
+        except ValueError:
+            pass
+    try:
+        limit = min(int(args.get("limit", 2000)), 5000)
+    except (TypeError, ValueError):
+        limit = 2000
+
+    sql = (
+        "SELECT plant_name, entity_name, state, county, ba_code, technology, "
+        "capacity_mw, status, planned_month, planned_year, lat, lng "
+        "FROM planned_generators WHERE " + " AND ".join(where) +
+        " ORDER BY capacity_mw DESC NULLS LAST LIMIT %s"
+    )
+    params.append(limit)
+    try:
+        with psycopg2.connect(dsn, sslmode="require", connect_timeout=8) as c:
+            with c.cursor() as cur:
+                cur.execute(sql, params)
+                cols = [d[0] for d in cur.description]
+                recs = [dict(zip(cols, r)) for r in cur.fetchall()]
+                cur.execute("SELECT MAX(ingested_at) FROM planned_generators WHERE source=%s", (_SRC,))
+                asof = cur.fetchone()[0]
+    except Exception as e:
+        return jsonify(ok=False, error=str(e)[:160]), 500
+
+    for r in recs:
+        for k in ("capacity_mw", "planned_month", "planned_year", "lat", "lng"):
+            if r.get(k) is not None:
+                r[k] = float(r[k])
+
+    if args.get("format") == "json":
+        return jsonify(ok=True, count=len(recs), as_of=str(asof) if asof else None,
+                       source="EIA-860M planned generators", generators=recs)
+
+    # Default: GeoJSON FeatureCollection (Leaflet-native)
+    feats = []
+    for r in recs:
+        feats.append({
+            "type": "Feature",
+            "geometry": {"type": "Point", "coordinates": [r["lng"], r["lat"]]},
+            "properties": {k: v for k, v in r.items() if k not in ("lat", "lng")},
+        })
+    resp = jsonify({"type": "FeatureCollection", "count": len(feats),
+                    "as_of": str(asof) if asof else None,
+                    "source": "EIA-860M planned generators (DC Hub)",
+                    "features": feats})
+    resp.headers["Cache-Control"] = "public, max-age=3600"
+    return resp
+
+
 def register_planned_generators_ingest(app):
     """Idempotent registration helper."""
     try:
