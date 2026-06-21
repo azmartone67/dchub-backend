@@ -11176,6 +11176,20 @@ def stripe_webhook():
             except Exception as _ube:
                 print(f"⚠️ usage-based auto-key error (non-fatal): {_ube}")
 
+            # Agentic Commerce (ACP, 2026-06-20): when an AI agent buys a feed
+            # product (Stripe Agentic Commerce), fulfill by FEED SKU
+            # (line_items[].price.external_reference) — the spec-correct path,
+            # robust to tax/price quirks. Idempotent on the Stripe session id, so
+            # it co-exists with the amount-based pack5 block below without
+            # double-granting/emailing. Fail-soft — never breaks the webhook.
+            try:
+                from routes.stripe_metered import handle_agentic_commerce_order
+                _ac = handle_agentic_commerce_order(data)
+                if _ac and _ac.get("ok"):
+                    print(f"🛒 Agentic-commerce order fulfilled: {_ac}")
+            except Exception as _ace:
+                print(f"⚠️ agentic-commerce fulfill error (non-fatal): {_ace}")
+
             # r-pack5 (2026-06-16): $5 / 1,000-credit one-time PACK. A fixed $5.00
             # one-time checkout (amount_total=500, mode=payment, client_reference_id
             # = the buying mcp session) mints/ensures a durable dch_live_ key (tier

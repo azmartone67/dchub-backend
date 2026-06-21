@@ -373,6 +373,121 @@ def handle_usage_based_checkout(session):
         return {"ok": False, "error": str(e)[:160]}
 
 
+# ── Agentic Commerce (ACP) fulfillment (2026-06-20) ──────────────────
+# When an AI agent buys one of our feed products via Stripe Agentic Commerce,
+# Stripe fires a standard checkout.session.completed. Per the spec, the product
+# is identified by the FEED SKU at line_items[].price.external_reference (e.g.
+# 'dchub_pack_5_1000') — NOT by amount. We fulfill by SKU here (spec-correct +
+# robust to tax/price quirks + future SKUs). IDEMPOTENT: pack grants dedupe on
+# the Stripe session id (grant_credit_pack), so this safely co-exists with the
+# amount-based pack5 path in main.py — no double-grant, no double-email.
+_AGENTIC_SKU_PACK = "dchub_pack_5_1000"
+_AGENTIC_SKU_DEV = "dchub_developer_monthly"
+
+
+def _agentic_key_for_email(email):
+    """Find the buyer's most-recent active key, else mint a durable dch_live_
+    key. Best-effort."""
+    import secrets as _sec
+    key = None
+    if email:
+        try:
+            with _conn() as c, c.cursor() as cur:
+                cur.execute("SELECT api_key FROM mcp_dev_keys WHERE LOWER(email)=%s "
+                            "AND status='active' ORDER BY created_at DESC LIMIT 1",
+                            (email,))
+                row = cur.fetchone()
+                if row:
+                    key = row[0]
+        except Exception:
+            pass
+    if not key:
+        key = "dch_live_" + _sec.token_hex(16)
+        try:
+            with _conn() as c, c.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO mcp_dev_keys (api_key, developer_id, email, tier, "
+                    "status, metadata) VALUES (%s,%s,%s,'free','active',%s::jsonb) "
+                    "ON CONFLICT (api_key) DO NOTHING",
+                    (key, "dev_" + _sec.token_hex(8), email or None,
+                     json.dumps({"source": "agentic_commerce"})))
+                c.commit()
+        except Exception:
+            pass
+    return key
+
+
+def _agentic_email_key(email, key):
+    if not (email and key):
+        return False
+    try:
+        from routes.redeem_routes import _p99_send_email
+        ok, _ = _p99_send_email(email, key, [])
+        return bool(ok)
+    except Exception:
+        return False
+
+
+def handle_agentic_commerce_order(session):
+    """Fulfill an Agentic-Commerce order by FEED SKU. Best-effort; never raises.
+    Returns {ok, results} or {skipped: reason} when it's not a feed order."""
+    try:
+        sid = session.get("id")
+        if not sid:
+            return {"skipped": "no_session_id"}
+        stripe_key = (os.environ.get("STRIPE_SECRET_KEY", "")
+                      or os.environ.get("STRIPE_API_KEY", "")).strip()
+        if not stripe_key:
+            return {"skipped": "no_stripe_key"}
+        li = _stripe_get(
+            "/v1/checkout/sessions/%s/line_items?limit=20&expand[]=data.price" % sid,
+            stripe_key) or {}
+        skus = []
+        for it in (li.get("data") or []):
+            ext = ((it.get("price") or {}).get("external_reference") or "").strip()
+            if ext:
+                skus.append(ext)
+        if not skus:
+            return {"skipped": "no_feed_sku"}  # not an agentic/feed order
+        email = (((session.get("customer_details") or {}).get("email"))
+                 or session.get("customer_email")
+                 or session.get("email") or "").strip().lower()
+        results = []
+        for sku in skus:
+            if sku == _AGENTIC_SKU_PACK:
+                from routes.mcp_conversion_plays import (
+                    grant_credit_pack, PACK5_CREDITS, PACK5_EXPIRY_DAYS)
+                key = _agentic_key_for_email(email)
+                grant = grant_credit_pack(
+                    key, None, PACK5_CREDITS, stripe_session_id=sid,
+                    source="agentic_pack5", expires_days=PACK5_EXPIRY_DAYS)
+                emailed = False
+                if grant.get("ok") and not grant.get("idempotent"):
+                    emailed = _agentic_email_key(email, key)
+                results.append({"sku": sku, "key": (key or "")[:14] + "…",
+                                "granted": grant.get("ok"),
+                                "idempotent": grant.get("idempotent"),
+                                "emailed": emailed})
+            elif sku == _AGENTIC_SKU_DEV:
+                key = _agentic_key_for_email(email)
+                try:
+                    with _conn() as c, c.cursor() as cur:
+                        cur.execute("UPDATE mcp_dev_keys SET tier='developer' "
+                                    "WHERE api_key=%s", (key,))
+                        c.commit()
+                except Exception:
+                    pass
+                results.append({"sku": sku, "key": (key or "")[:14] + "…",
+                                "tier": "developer",
+                                "emailed": _agentic_email_key(email, key)})
+            else:
+                results.append({"sku": sku, "skipped": "unknown_sku"})
+        return {"ok": True, "session": str(sid)[:18],
+                "email": email or "(none)", "results": results}
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:160]}
+
+
 @stripe_metered_bp.route("/link-metered-key", methods=["POST"])
 def link_metered_key():
     """Admin: link a dchub api_key to a Stripe customer on the usage-based
