@@ -335,7 +335,7 @@ def set_tier():
                 cur.execute("""
                     UPDATE api_keys SET rate_limit_tier = %s, plan = %s
                      WHERE user_id = (SELECT id FROM users WHERE LOWER(email) = %s)
-                       AND COALESCE(is_active, 1) = 1
+                       AND is_active IS TRUE
                 """, (role, plan, email))
             except Exception as _ke:
                 logger.warning(f"set-tier: api_keys update skipped: {_ke}")
