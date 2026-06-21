@@ -33,6 +33,37 @@ def _dsn() -> str:
     return os.environ.get("DATABASE_URL") or os.environ.get("NEON_DATABASE_URL") or ""
 
 
+def _smithery_core_rank() -> dict | None:
+    """LIVE external check: how many CORE Smithery search terms DC Hub ranks #1 for.
+    A registry source can use `check` instead of `metric_sql` — this is the first.
+    FAIL-SAFE: returns None if Smithery is unreachable (→ the radar skips this source,
+    never a false announce). Per-term errors are non-fatal. Browser UA (Smithery 403s
+    the default urllib UA). Used by the smithery_rank_1 launch source below."""
+    import json as _json
+    import urllib.parse
+    import urllib.request
+    terms = ["data center", "power grid", "fiber", "capacity",
+             "grid interconnection", "interconnection"]
+    ua = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
+    at1, ok_any = [], False
+    for t in terms:
+        try:
+            url = "https://registry.smithery.ai/servers?" + urllib.parse.urlencode({"q": t, "pageSize": "5"})
+            req = urllib.request.Request(url, headers={"User-Agent": ua, "Accept": "application/json"})
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                d = _json.load(resp)
+            ok_any = True
+            servers = d.get("servers") or []
+            if servers and "dchub" in (servers[0].get("qualifiedName") or "").lower():
+                at1.append(t)
+        except Exception:
+            continue
+    if not ok_any:
+        return None
+    return {"core_at_1": float(len(at1)), "terms": at1,
+            "terms_str": ", ".join(f'"{t}"' for t in at1)}
+
+
 # ── The registry: one row per announceable capability/metric ────────────────
 REGISTRY = [
     # ---- LAUNCH: new data feeds (announce once on ship) --------------------
@@ -110,6 +141,22 @@ REGISTRY = [
         "trend": "AI assistants are sourcing live data-center infrastructure facts from DC Hub",
         "so_what": "the MCP-native data layer is becoming the default ground truth agents cite.",
     },
+    # ---- ACHIEVEMENT: competitive standing (live-verified, announce once) ---
+    {
+        "key": "smithery_rank_1",
+        "mode": "launch",            # announce once when the achievement is first verified
+        "check": _smithery_core_rank,  # live external check instead of metric_sql
+        "value_key": "core_at_1",
+        "min_value": 5,              # only fire once we lead a robust majority of the core cluster
+        "score": 88,
+        "source_url": "https://smithery.ai/servers/azmartone67/dchub",
+        "headline": lambda r: (f"DC Hub is now the #1 data-center MCP server on Smithery — "
+                               f"ranked #1 for {r['terms_str']}"),
+        "trend": ("agents browsing the Smithery MCP marketplace now find DC Hub first for "
+                  "data-center, power-grid and interconnection queries — out of 69,000+ servers"),
+        "so_what": ("the live, MCP-native data layer agents reach for on data-center "
+                    "infrastructure — query it and cite it at dchub.cloud/mcp."),
+    },
 ]
 
 
@@ -124,7 +171,13 @@ def _ensure_table(cur):
 
 
 def _metric(cur, src):
-    """Run a registry source's metric_sql -> dict row + the diff value."""
+    """Resolve a registry source's value: a live `check` callable (external, no DB)
+    or metric_sql against the DB -> (row dict, diff value)."""
+    if src.get("check"):
+        r = src["check"]()
+        if not r:
+            return None, None
+        return r, float(r.get(src["value_key"]) or 0)
     cur.execute(src["metric_sql"])
     cols = [d[0] for d in cur.description]
     row = cur.fetchone()
@@ -153,6 +206,8 @@ def capability_radar_leads() -> list[dict]:
                         r, cur_val = _metric(cur, src)
                         if r is None or cur_val <= 0:
                             continue
+                        if cur_val < float(src.get("min_value", 0)):
+                            continue  # achievement threshold not met yet (e.g. not #1 enough)
                         cur.execute("SELECT last_value FROM data_milestone_snapshots WHERE source_key=%s",
                                     (src["key"],))
                         prev_row = cur.fetchone()
