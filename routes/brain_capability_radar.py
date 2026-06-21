@@ -1,23 +1,25 @@
 """Capability / data-milestone radar — the autonomous "what can we announce" input.
 
 The announce machinery already exists (media_editorial.rank_data_events ranks
-leads → the LinkedIn analyst quad posts them 4×/day). What was missing was an
-INPUT that turns "we shipped / grew a data capability" into a ranked lead — so
-new feeds, tools, and map layers get announced WITHOUT anyone hand-feeding the
-media machine.
+leads -> the LinkedIn analyst quad posts them 4x/day). This is the missing INPUT:
+it turns "we shipped or grew a capability" into a ranked analyst-voice lead, so
+new feeds/tools AND coverage/reach milestones get announced WITHOUT hand-feeding.
 
-This is the registry-driven version (owner choice, 2026-06-21): a curated list
-of announceable data sources, each with a headline-metric query + an analyst-
-voice template. The radar runs each, diffs against a stored baseline, and emits
-a lead when a source is NEW (first time we've seen it) or has JUMPED past a
-threshold. Adding a future feed = ONE registry row — no edits to the desk.
+Registry-driven (owner choice). Two entry modes:
+  • mode="launch"    a NEW data source/feed we just shipped. Emits capability_launch
+                     the first time it's seen (no baseline), then data_milestone on
+                     a jump_pct growth.
+  • mode="milestone" an EXISTING metric (coverage/reach) worth announcing on
+                     round-number crossings (round_step) or jump_pct growth. Needs a
+                     SEEDED baseline so it never announces the current level as "new"
+                     — seed once with seed_milestone_baselines().
 
-  • NEW source  → "DC Hub now maps/tracks X — <headline number>"
-  • jump        → "X crossed <N> — <so-what>"
+Bookkeeping (took care to get right): capability_radar_leads() is READ-ONLY. The
+baseline (data_milestone_snapshots) advances ONLY via mark_capability_announced(),
+called from linkedin_quad_daily AFTER a successful LinkedIn post — so a lead stays
+visible until actually posted, and previews never consume it.
 
-The editorial desk's existing newsworthiness gate + 4-day dedup prevent spam;
-the baseline advances only when a lead is emitted, so slow growth accumulates
-toward the next milestone instead of re-firing daily.
+Adding a future feed/metric = ONE registry row.
 """
 import logging
 import os
@@ -31,64 +33,82 @@ def _dsn() -> str:
     return os.environ.get("DATABASE_URL") or os.environ.get("NEON_DATABASE_URL") or ""
 
 
-# ── The registry: one row per announceable data source ──────────────────────
-# metric_sql must return a single row; `value_key` picks the number we diff for
-# milestones. `headline`/`trend`/`so_what` are analyst-voice (number-first, no
-# marketing words, no em-dashes — same spec the desk enforces).
+# ── The registry: one row per announceable capability/metric ────────────────
 REGISTRY = [
+    # ---- LAUNCH: new data feeds (announce once on ship) --------------------
     {
         "key": "planned_generation",
-        "table": "planned_generators",
-        "metric_sql": (
-            "SELECT COUNT(*) AS n, COALESCE(SUM(capacity_mw),0) AS mw, "
-            "COUNT(DISTINCT state) AS states "
-            "FROM planned_generators WHERE source='eia860m_planned'"
-        ),
-        "value_key": "mw",
-        "jump_pct": 0.15,
-        "score": 82,
+        "mode": "launch",
+        "metric_sql": ("SELECT COUNT(*) AS n, COALESCE(SUM(capacity_mw),0) AS mw, "
+                       "COUNT(DISTINCT state) AS states FROM planned_generators "
+                       "WHERE source='eia860m_planned'"),
+        "value_key": "mw", "jump_pct": 0.20, "score": 82,
         "source_url": "https://dchub.cloud/land-power",
-        "headline": lambda r: (
-            f"DC Hub now maps the full US generation build pipeline: "
-            f"{r['mw'] / 1000:.0f} GW of planned capacity across "
-            f"{int(r['n']):,} generators in {int(r['states'])} states"
-        ),
-        "trend": lambda r: (
-            "planned, permitting and under-construction generators nationwide, "
-            "including the non-ISO regions (TVA, Southern, Arizona, PacifiCorp) "
-            "the per-ISO interconnection queues miss"
-        ),
-        "so_what": (
-            "the forward power-supply curve for every siting decision: where new "
-            "MW land, what fuel, and when they come online, on the map and via the "
-            "get_power_pipeline MCP tool."
-        ),
+        "headline": lambda r: (f"DC Hub now maps the full US generation build pipeline: "
+                               f"{r['mw'] / 1000:.0f} GW of planned capacity across "
+                               f"{int(r['n']):,} generators in {int(r['states'])} states"),
+        "trend": ("planned, permitting and under-construction generators nationwide, "
+                  "including the non-ISO regions (TVA, Southern, Arizona) the per-ISO "
+                  "interconnection queues miss"),
+        "so_what": ("the forward power-supply curve for every siting decision, on the "
+                    "map and via the get_power_pipeline MCP tool."),
     },
     {
         "key": "operable_generation",
-        "table": "generator_inventory",
-        "metric_sql": (
-            "SELECT COUNT(*) AS n, COALESCE(SUM(capacity_mw),0) AS mw, "
-            "COUNT(DISTINCT ba_code) AS bas "
-            "FROM generator_inventory WHERE source='eia860m'"
-        ),
-        "value_key": "mw",
-        "jump_pct": 0.15,
-        "score": 78,
+        "mode": "launch",
+        "metric_sql": ("SELECT COUNT(*) AS n, COALESCE(SUM(capacity_mw),0) AS mw, "
+                       "COUNT(DISTINCT ba_code) AS bas FROM generator_inventory "
+                       "WHERE source='eia860m'"),
+        "value_key": "mw", "jump_pct": 0.20, "score": 78,
         "source_url": "https://dchub.cloud/dcpi",
-        "headline": lambda r: (
-            f"DC Hub now tracks the full operable US generator fleet: "
-            f"{r['mw'] / 1000:.0f} GW across {int(r['n']):,} generators, "
-            f"keyed to {int(r['bas'])} balancing authorities"
-        ),
-        "trend": lambda r: (
-            "operating, standby and returning-to-service capacity by ISO and fuel, "
-            "with the standby reserve that signals grid headroom"
-        ),
-        "so_what": (
-            "the installed-supply side of the power picture, by ISO, behind the "
-            "DCPI excess-power scores."
-        ),
+        "headline": lambda r: (f"DC Hub now tracks the full operable US generator fleet: "
+                               f"{r['mw'] / 1000:.0f} GW across {int(r['n']):,} generators, "
+                               f"keyed to {int(r['bas'])} balancing authorities"),
+        "trend": ("operating, standby and returning-to-service capacity by ISO and fuel, "
+                  "with the standby reserve that signals grid headroom"),
+        "so_what": "the installed-supply side of the power picture, by ISO, behind the DCPI scores.",
+    },
+    # ---- MILESTONE: coverage (round-number crossings) ----------------------
+    {
+        "key": "facility_coverage",
+        "mode": "milestone", "round_step": 1000, "value_key": "n", "score": 74,
+        "metric_sql": "SELECT COUNT(*) AS n, COUNT(DISTINCT country) AS countries FROM discovered_facilities",
+        "source_url": "https://dchub.cloud/map",
+        "headline": lambda r: (f"DC Hub's live index just crossed {int(r['_milestone']):,} "
+                               f"data-center facilities, across {int(r['countries'])} countries"),
+        "trend": "the most complete machine-readable map of the physical AI buildout, refreshed daily",
+        "so_what": "every facility queryable by AI agents and on the map, with power, fiber and tenant context.",
+    },
+    {
+        "key": "country_coverage",
+        "mode": "milestone", "round_step": 10, "value_key": "n", "score": 70,
+        "metric_sql": "SELECT COUNT(DISTINCT country) AS n FROM discovered_facilities",
+        "source_url": "https://dchub.cloud/map",
+        "headline": lambda r: (f"DC Hub now tracks data-center infrastructure in "
+                               f"{int(r['_milestone'])}+ countries"),
+        "trend": "global coverage of the physical layer behind AI compute, one live dataset",
+        "so_what": "cross-border site comparisons agents and developers can run in one query.",
+    },
+    {
+        "key": "dcpi_markets",
+        "mode": "milestone", "round_step": 25, "value_key": "n", "score": 70,
+        "metric_sql": "SELECT COUNT(*) AS n FROM market_power_scores",
+        "source_url": "https://dchub.cloud/dcpi",
+        "headline": lambda r: (f"The DC Hub Power Index now scores {int(r['_milestone'])}+ "
+                               f"US power markets on buildable headroom"),
+        "trend": "a single comparable power-availability score per market, updated continuously",
+        "so_what": "rank-and-shortlist any market on time-to-power without a consultant.",
+    },
+    # ---- MILESTONE: reach -------------------------------------------------
+    {
+        "key": "ai_citations",
+        "mode": "milestone", "round_step": 10, "value_key": "n", "score": 80,
+        "metric_sql": "SELECT COUNT(*) AS n, COUNT(DISTINCT engine) AS engines FROM ai_citations WHERE dchub_cited=TRUE",
+        "source_url": "https://dchub.cloud",
+        "headline": lambda r: (f"DC Hub has now been cited {int(r['_milestone'])}+ times in AI "
+                               f"answers across {int(r['engines'])} engines"),
+        "trend": "AI assistants are sourcing live data-center infrastructure facts from DC Hub",
+        "so_what": "the MCP-native data layer is becoming the default ground truth agents cite.",
     },
 ]
 
@@ -103,12 +123,22 @@ def _ensure_table(cur):
     """)
 
 
-def capability_radar_leads() -> list[dict]:
-    """Return analyst-voice leads for NEW or milestone-jumped data sources.
+def _metric(cur, src):
+    """Run a registry source's metric_sql -> dict row + the diff value."""
+    cur.execute(src["metric_sql"])
+    cols = [d[0] for d in cur.description]
+    row = cur.fetchone()
+    if not row:
+        return None, None
+    r = {k: (float(v) if isinstance(v, (int, float)) else v) for k, v in zip(cols, row)}
+    return r, float(r.get(src["value_key"]) or 0)
 
-    Shape matches media_editorial.rank_data_events() leads:
-      {kind, headline_number, trend, so_what, source_url, dedup_key, score}.
-    Fully defensive — any source/DB error is skipped (never breaks the desk)."""
+
+def capability_radar_leads() -> list[dict]:
+    """READ-ONLY. Return analyst-voice leads for new sources + milestone crossings.
+
+    Shape matches media_editorial.rank_data_events() leads. Never writes (the
+    baseline advances only on an actual post, via mark_capability_announced)."""
     dsn = _dsn()
     if not dsn:
         return []
@@ -120,47 +150,49 @@ def capability_radar_leads() -> list[dict]:
                 _ensure_table(cur)
                 for src in REGISTRY:
                     try:
-                        cur.execute(src["metric_sql"])
-                        cols = [d[0] for d in cur.description]
-                        row = cur.fetchone()
-                        if not row:
+                        r, cur_val = _metric(cur, src)
+                        if r is None or cur_val <= 0:
                             continue
-                        r = {k: (float(v) if isinstance(v, (int, float)) else v)
-                             for k, v in zip(cols, row)}
-                        cur_val = float(r.get(src["value_key"]) or 0)
-                        if cur_val <= 0:
-                            continue
-
-                        cur.execute(
-                            "SELECT last_value FROM data_milestone_snapshots WHERE source_key=%s",
-                            (src["key"],))
-                        prev = cur.fetchone()
-
+                        cur.execute("SELECT last_value FROM data_milestone_snapshots WHERE source_key=%s",
+                                    (src["key"],))
+                        prev_row = cur.fetchone()
+                        prev = prev_row[0] if prev_row else None
+                        mode = src.get("mode", "launch")
+                        jp = src.get("jump_pct")
+                        rs = src.get("round_step")
                         is_new = prev is None
-                        jumped = (prev is not None and prev[0]
-                                  and cur_val >= prev[0] * (1 + src.get("jump_pct", 0.15)))
-                        if not (is_new or jumped):
+                        kind = None
+
+                        if mode == "launch":
+                            if is_new:
+                                kind = "capability_launch"
+                            elif jp and prev and cur_val >= prev * (1 + jp):
+                                kind = "data_milestone"
+                        else:  # milestone — needs a seeded baseline; never announces "new"
+                            if is_new:
+                                continue
+                            crossed = rs and int(cur_val // rs) > int(prev // rs)
+                            jumped = jp and cur_val >= prev * (1 + jp)
+                            if crossed or jumped:
+                                kind = "data_milestone"
+                                r["_milestone"] = (int(cur_val // rs) * rs) if rs else cur_val
+                        if not kind:
                             continue
 
                         headline = src["headline"](r) if callable(src["headline"]) else src["headline"]
-                        trend = src["trend"](r) if callable(src.get("trend")) else src.get("trend", "")
-                        if jumped and not is_new:
-                            trend = f"+{(cur_val / prev[0] - 1) * 100:.0f}% since last reported. " + trend
+                        trend = src.get("trend", "")
+                        if kind == "data_milestone" and prev and mode == "launch":
+                            trend = f"+{(cur_val / prev - 1) * 100:.0f}% since last reported. " + trend
                         leads.append({
-                            "kind": "capability_launch" if is_new else "data_milestone",
+                            "kind": kind,
                             "headline_number": headline,
                             "trend": trend,
                             "so_what": src.get("so_what", ""),
                             "source_url": src.get("source_url", "https://dchub.cloud"),
-                            "dedup_key": f"capability:{src['key']}" if is_new else f"milestone:{src['key']}",
+                            "dedup_key": (f"capability:{src['key']}" if kind == "capability_launch"
+                                          else f"milestone:{src['key']}"),
                             "score": float(src.get("score", 70)),
                         })
-                        # READ-ONLY: the baseline is advanced ONLY when this lead is
-                        # actually selected for posting (mark_capability_announced,
-                        # called from editorial_decision). Advancing on emit would let
-                        # any READ of the leads (the data-leads probe, the quad's
-                        # per-slot ranking of non-winning leads) consume the "new
-                        # source" signal before it's posted.
                     except Exception as e:
                         logger.warning("[capability-radar] source %s skipped: %s",
                                        src.get("key"), str(e)[:140])
@@ -174,34 +206,24 @@ def capability_radar_leads() -> list[dict]:
 
 
 def mark_capability_announced(dedup_key: str) -> bool:
-    """Advance a source's baseline because its lead was just SELECTED FOR POSTING.
+    """Advance a source's baseline because its lead was just POSTED (success).
 
-    Called from media_editorial.editorial_decision() when a capability_launch /
-    data_milestone lead wins a slot. This is the ONLY writer of the baseline, so
-    a NEW source keeps emitting (and stays visible in /data-leads) until the quad
-    actually posts it — then it retires (and a future jump re-fires as a
-    data_milestone). dedup_key is 'capability:<key>' or 'milestone:<key>'."""
+    Called from linkedin_quad_daily after a successful publish. The ONLY writer of
+    the baseline. dedup_key is 'capability:<key>' or 'milestone:<key>'."""
     if not dedup_key or ":" not in dedup_key:
         return False
     key = dedup_key.split(":", 1)[1]
     src = next((s for s in REGISTRY if s["key"] == key), None)
-    if not src:
-        return False
-    dsn = _dsn()
-    if not dsn:
+    if not src or not _dsn():
         return False
     try:
-        with psycopg2.connect(dsn, sslmode="require", connect_timeout=8) as c:
+        with psycopg2.connect(_dsn(), sslmode="require", connect_timeout=8) as c:
             c.autocommit = True
             with c.cursor() as cur:
                 _ensure_table(cur)
-                cur.execute(src["metric_sql"])
-                cols = [d[0] for d in cur.description]
-                row = cur.fetchone()
-                if not row:
+                _, cur_val = _metric(cur, src)
+                if cur_val is None:
                     return False
-                r = dict(zip(cols, row))
-                cur_val = float(r.get(src["value_key"]) or 0)
                 cur.execute("""
                     INSERT INTO data_milestone_snapshots (source_key, last_value, announced_at)
                     VALUES (%s, %s, NOW())
@@ -212,3 +234,36 @@ def mark_capability_announced(dedup_key: str) -> bool:
     except Exception as e:
         logger.warning("[capability-radar] mark %s failed: %s", key, str(e)[:120])
         return False
+
+
+def seed_milestone_baselines() -> dict:
+    """One-time: record the CURRENT value of every mode='milestone' source so it
+    only fires on the NEXT crossing (never announces the existing level as new).
+    Launch sources are intentionally left unseeded so they announce on ship.
+    Idempotent: only seeds milestone sources that have no baseline yet."""
+    dsn = _dsn()
+    if not dsn:
+        return {"ok": False, "error": "no dsn"}
+    seeded = []
+    try:
+        with psycopg2.connect(dsn, sslmode="require", connect_timeout=8) as c:
+            c.autocommit = True
+            with c.cursor() as cur:
+                _ensure_table(cur)
+                for src in REGISTRY:
+                    if src.get("mode") != "milestone":
+                        continue
+                    cur.execute("SELECT 1 FROM data_milestone_snapshots WHERE source_key=%s", (src["key"],))
+                    if cur.fetchone():
+                        continue
+                    try:
+                        _, cur_val = _metric(cur, src)
+                        cur.execute("""INSERT INTO data_milestone_snapshots (source_key, last_value, announced_at)
+                                       VALUES (%s, %s, NOW()) ON CONFLICT (source_key) DO NOTHING""",
+                                    (src["key"], cur_val))
+                        seeded.append({src["key"]: cur_val})
+                    except Exception:
+                        c.rollback()
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:160]}
+    return {"ok": True, "seeded": seeded}
