@@ -30,7 +30,7 @@ import threading
 # "*_phrase()" helpers. Never set these above the true live numbers.
 _FALLBACK = {
     "facilities": 21000,            # raw "tracked" floor (discovery pile, incl unmerged dupes)
-    "facilities_verified": 2800,    # deduped/active floor — citation-safe (live ~2,848 as of 2026-06-17, dropped from 3,141 as re-ingestion churned dedup flags). MUST stay <= reality — floors round DOWN.
+    "facilities_verified": 1800,    # deduped/active floor — citation-safe. 2026-06-21: live=1,903 (kept dropping 3,141->2,848->1,903 as re-ingestion churns dedup flags), so the old 2,800 seed had gone STALE-HIGH and a DB-failure fallback would OVERSTATE by ~47% (this is the canonical_floor_above_live_reality finding). MUST stay <= reality — floors round DOWN; re-floor whenever live drops below it. [flag: verified set is shrinking fast — investigate whether dedup is over-merging.]
     "countries": 170,
     "countries_verified": 30,       # deduped/active distinct floor (live ~33; country field dirty -> conservative)
     "markets": 300,          # 2026-06-08: Neon-verified COUNT(DISTINCT market_name) minus 3 aggregates = 300 (grew from 232 via intl expansion). Live query below; this is the fallback.
@@ -64,8 +64,15 @@ def _conn():
 
 def _query_live() -> dict:
     """Best-effort live counts from the CANONICAL tables. Any failure on an
-    individual metric falls back to its floor — never raises."""
-    out = dict(_FALLBACK)
+    individual metric falls back to the LAST-KNOWN-GOOD live value (the cache),
+    or the static floor only at cold start — never raises.
+
+    r-floor-freshness (2026-06-21): starting from `_cache` (not the static
+    `_FALLBACK`) means a transient per-metric query failure keeps the freshest
+    real value instead of reverting to a seed that may have gone stale-high as
+    data churns — the durable form of the floor<=live invariant (the static seed
+    is only the process-cold-start floor)."""
+    out = dict(_cache) if _cache else dict(_FALLBACK)
     c = _conn()
     if c is None:
         return out

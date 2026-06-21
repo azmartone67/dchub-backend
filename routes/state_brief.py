@@ -318,22 +318,30 @@ def _section_kpis(cur, abbr: str, full_name: str, markets: list[dict]) -> dict:
     # at the market-name level by joining facility MW to the market's iso.
     try:
         iso_counts: dict[str, float] = {}
+        # r-statebrief-batch (2026-06-21): ONE GROUP BY instead of N sequential
+        # SUM-per-market scans of the 21k-row facilities table — that loop was the
+        # ~9s cold-render the sentinel caught on big states (Ohio/Texas).
+        name_to_iso: dict[str, str] = {}
         for m in markets:
             iso = m.get("iso")
-            if not iso:
-                continue
+            nm = (m.get("name") or "").strip().lower()
+            if iso and nm:
+                name_to_iso.setdefault(nm, iso)
+        if name_to_iso:
             try:
                 cur.execute("""
-                    SELECT COALESCE(SUM(power_mw), 0)
+                    SELECT LOWER(COALESCE(market, '')) AS m, COALESCE(SUM(power_mw), 0)
                       FROM discovered_facilities
-                     WHERE LOWER(COALESCE(market, '')) = LOWER(%s)
+                     WHERE LOWER(COALESCE(market, '')) = ANY(%s)
                        AND merged_at IS NULL AND is_duplicate = 0
-                """, (m.get("name") or "",))
-                rr = cur.fetchone()
-                if rr and rr[0]:
-                    iso_counts[iso] = iso_counts.get(iso, 0) + float(rr[0])
+                     GROUP BY LOWER(COALESCE(market, ''))
+                """, (list(name_to_iso.keys()),))
+                for mname, mw in cur.fetchall():
+                    iso = name_to_iso.get(mname)
+                    if iso and mw:
+                        iso_counts[iso] = iso_counts.get(iso, 0) + float(mw)
             except Exception:
-                continue
+                pass
         if iso_counts:
             top_iso, top_mw = max(iso_counts.items(), key=lambda kv: kv[1])
             out["dominant_iso"] = {
