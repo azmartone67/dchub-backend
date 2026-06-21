@@ -251,6 +251,16 @@ def rank_data_events() -> list[dict]:
     any source that errors is simply skipped."""
     leads: list[dict] = []
 
+    # 0) Capability / data-milestone radar (2026-06-21) — the autonomous "what
+    # can we announce" input: NEW data sources (a feed/tool/layer we just
+    # shipped) and milestone jumps become ranked leads here, so the desk + quad
+    # announce product enhancements on their own. Registry: brain_capability_radar.
+    try:
+        from routes.brain_capability_radar import capability_radar_leads
+        leads += capability_radar_leads() or []
+    except Exception as e:
+        logger.warning("[editorial] capability radar failed: %s", str(e)[:160])
+
     # Core signals (movers, deals, facilities) — reuse the tested collector.
     sig = {}
     try:
