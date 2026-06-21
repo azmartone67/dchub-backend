@@ -240,6 +240,7 @@ def handoff_funnel():
     out = {"ok": True, "metric": "agent_to_human_handoff_funnel", "unit": "distinct_sessions"}
     try:
         with _pool.connection() as conn, conn.cursor() as cur:
+            out["last_24h"] = _win(cur, 1)
             out["last_7d"] = _win(cur, 7)
             out["last_30d"] = _win(cur, 30)
     except Exception as e:
