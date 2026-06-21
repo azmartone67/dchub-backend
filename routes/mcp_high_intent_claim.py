@@ -93,6 +93,25 @@ def _norm_variant(v: str | None) -> str:
     return s if s in VALID_VARIANTS else "generic"
 
 
+# r-claim-internal-guard (2026-06-21): DC Hub's OWN automated traffic crosses the
+# 2-paid-hit high-intent threshold but has NO human to ever open the /claim URL.
+# It was minting ~81% of all claims (44/54 in 30d, all `dchub-regression-test`)
+# and faking a 98.2% funnel "drop". Keep internal/CI/probe/monitor clients OUT of
+# the high-intent funnel so it reflects only real, human-bearing prospects.
+_INTERNAL_CLAIM_CLIENT_RE = re.compile(
+    r"dchub|self.?heal|regression|verify.?test|trial.?test|smoke|e2e"
+    r"|sweep|probe|\bqa\b|monitor|health.?check|watchdog|canary"
+    r"|uptimerobot|fleet.?view|\bfv\b|headless|brain",
+    re.I,
+)
+
+
+def _is_internal_claim_client(mcp_client: str | None, user_agent: str | None) -> bool:
+    """True for our own monitors / CI / probe traffic — never mint a claim for them."""
+    blob = f"{mcp_client or ''} {user_agent or ''}"
+    return bool(_INTERNAL_CLAIM_CLIENT_RE.search(blob))
+
+
 def _hmac_secret() -> bytes:
     s = (os.environ.get("DCHUB_HMAC_SECRET") or "").strip()
     if not s:
@@ -282,6 +301,13 @@ def track_paid_hit():
         return jsonify(ok=False, error="missing_session_or_tool"), 400
     ua = str(body.get("user_agent") or "")[:300] or None
     mcp_client = str(body.get("mcp_client") or "")[:80] or None
+    # r-claim-internal-guard (2026-06-21): never enter our OWN automated traffic
+    # (self-heal / regression / QA / probe / brain) into the high-intent funnel —
+    # it crossed the threshold and minted ~81% of all claims with no human to open
+    # them, faking a 98.2% drop. Skip recording so the funnel = real prospects only.
+    if _is_internal_claim_client(mcp_client, ua):
+        return jsonify(ok=True, count=0, is_high_intent=False,
+                       threshold=HIGH_INTENT_THRESHOLD, skipped="internal_client")
     # Round 2 (2026-06-07): platform-derived variant for the A/B test. The
     # mcp-server sends this on every call so we can store it the FIRST time
     # we see the (sid, tool) pair (per-row stickiness — a user's first

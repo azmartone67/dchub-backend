@@ -11320,10 +11320,17 @@ def stripe_webhook():
                         )
                     else:
                         print(f"✅ Verified: {customer_email} is active with plan {_u.get('plan')}")
-                        try:
-                            send_pro_welcome_email_sendgrid(customer_email, customer_email.split("@")[0])
-                        except Exception as email_err:
-                            print(f"⚠️ Pro welcome email error: {email_err}")
+                        # r-pack5-proemail-fix (2026-06-21): ONLY send the "Welcome to
+                        # Pro / your upgrade is active" email for a real recurring
+                        # SUBSCRIPTION checkout. A one-time $5 / 1,000-credit pack is
+                        # mode='payment' and already gets its own credit-pack email
+                        # above — firing the Pro-welcome on it falsely tells a $5 buyer
+                        # they were upgraded to Pro ($99/$199).
+                        if data.get('mode') == 'subscription':
+                            try:
+                                send_pro_welcome_email_sendgrid(customer_email, customer_email.split("@")[0])
+                            except Exception as email_err:
+                                print(f"⚠️ Pro welcome email error: {email_err}")
                         # r74 (2026-06-07): emit CRM reverse-ETL paid_conversion capture.
                         # Fail-soft — a CRM hiccup cannot break webhook ack.
                         try:
