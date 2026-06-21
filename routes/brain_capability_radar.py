@@ -155,14 +155,12 @@ def capability_radar_leads() -> list[dict]:
                             "dedup_key": f"capability:{src['key']}" if is_new else f"milestone:{src['key']}",
                             "score": float(src.get("score", 70)),
                         })
-                        # Advance the baseline ONLY on emit, so it doesn't re-fire
-                        # daily; the desk's 4-day dedup covers same-week reposts.
-                        cur.execute("""
-                            INSERT INTO data_milestone_snapshots (source_key, last_value, announced_at)
-                            VALUES (%s, %s, NOW())
-                            ON CONFLICT (source_key)
-                            DO UPDATE SET last_value=EXCLUDED.last_value, announced_at=NOW()
-                        """, (src["key"], cur_val))
+                        # READ-ONLY: the baseline is advanced ONLY when this lead is
+                        # actually selected for posting (mark_capability_announced,
+                        # called from editorial_decision). Advancing on emit would let
+                        # any READ of the leads (the data-leads probe, the quad's
+                        # per-slot ranking of non-winning leads) consume the "new
+                        # source" signal before it's posted.
                     except Exception as e:
                         logger.warning("[capability-radar] source %s skipped: %s",
                                        src.get("key"), str(e)[:140])
@@ -173,3 +171,44 @@ def capability_radar_leads() -> list[dict]:
     except Exception as e:
         logger.warning("[capability-radar] failed: %s", str(e)[:160])
     return leads
+
+
+def mark_capability_announced(dedup_key: str) -> bool:
+    """Advance a source's baseline because its lead was just SELECTED FOR POSTING.
+
+    Called from media_editorial.editorial_decision() when a capability_launch /
+    data_milestone lead wins a slot. This is the ONLY writer of the baseline, so
+    a NEW source keeps emitting (and stays visible in /data-leads) until the quad
+    actually posts it — then it retires (and a future jump re-fires as a
+    data_milestone). dedup_key is 'capability:<key>' or 'milestone:<key>'."""
+    if not dedup_key or ":" not in dedup_key:
+        return False
+    key = dedup_key.split(":", 1)[1]
+    src = next((s for s in REGISTRY if s["key"] == key), None)
+    if not src:
+        return False
+    dsn = _dsn()
+    if not dsn:
+        return False
+    try:
+        with psycopg2.connect(dsn, sslmode="require", connect_timeout=8) as c:
+            c.autocommit = True
+            with c.cursor() as cur:
+                _ensure_table(cur)
+                cur.execute(src["metric_sql"])
+                cols = [d[0] for d in cur.description]
+                row = cur.fetchone()
+                if not row:
+                    return False
+                r = dict(zip(cols, row))
+                cur_val = float(r.get(src["value_key"]) or 0)
+                cur.execute("""
+                    INSERT INTO data_milestone_snapshots (source_key, last_value, announced_at)
+                    VALUES (%s, %s, NOW())
+                    ON CONFLICT (source_key)
+                    DO UPDATE SET last_value=EXCLUDED.last_value, announced_at=NOW()
+                """, (key, cur_val))
+                return True
+    except Exception as e:
+        logger.warning("[capability-radar] mark %s failed: %s", key, str(e)[:120])
+        return False
