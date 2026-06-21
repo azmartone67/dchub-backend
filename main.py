@@ -27465,6 +27465,29 @@ def cf_stub_energy_summary():
     state = state_raw.upper()
     sector = (_req.args.get('sector') or '').strip().lower()
 
+    # r-iso-price (2026-06-21): the MCP get_energy_prices tool passes ?iso=
+    # (PJM, ERCOT, …) but this handler historically honored only ?state=, so
+    # an ISO-only query fell through to the NATIONAL aggregate — every ISO
+    # returned the same ~12.48 ¢/kWh (a Claude.ai connector session caught
+    # PJM and ERCOT reporting an identical national avg). Resolve the ISO to
+    # its member states and filter the retail-rate aggregate to that
+    # footprint so ERCOT≈Texas and PJM≈mid-Atlantic are genuinely distinct.
+    # An explicit ?state= still wins (single-state path below).
+    iso_raw = (_req.args.get('iso') or _req.args.get('region') or '').strip()
+    iso_norm = iso_raw.upper().replace('_', '-').replace(' ', '-')
+    _ENERGY_ISO_TO_STATES = {
+        'PJM':   ['DE', 'IL', 'IN', 'KY', 'MD', 'MI', 'NJ', 'NC', 'OH', 'PA', 'TN', 'VA', 'WV', 'DC'],
+        'ERCOT': ['TX'], 'ERCO': ['TX'],
+        'CAISO': ['CA'], 'CISO': ['CA'],
+        'MISO':  ['AR', 'IL', 'IN', 'IA', 'LA', 'MI', 'MN', 'MS', 'MO', 'ND', 'SD', 'WI'],
+        'SPP':   ['AR', 'KS', 'LA', 'MO', 'NE', 'NM', 'OK', 'ND', 'SD'], 'SWPP': ['AR', 'KS', 'LA', 'MO', 'NE', 'NM', 'OK', 'ND', 'SD'],
+        'NYISO': ['NY'], 'NYIS': ['NY'],
+        'ISO-NE': ['CT', 'ME', 'MA', 'NH', 'RI', 'VT'], 'ISONE': ['CT', 'ME', 'MA', 'NH', 'RI', 'VT'],
+        'ISNE':  ['CT', 'ME', 'MA', 'NH', 'RI', 'VT'], 'NEISO': ['CT', 'ME', 'MA', 'NH', 'RI', 'VT'],
+    }
+    # Only treat ?iso= as an ISO filter when no explicit single-state was given.
+    iso_states = _ENERGY_ISO_TO_STATES.get(iso_norm) if (iso_norm and not state) else None
+
     # ── Phase r33-D: in-memory cache check ─────────────────────────
     # See _ENERGY_SUMMARY_CACHE block above the route. The cache key
     # includes tier (after we resolve it below) but we can fast-path
@@ -27474,7 +27497,7 @@ def cf_stub_energy_summary():
     # (state, sector, 'paid') and only serving cached if it exists.
     # The tier check below is cheap; we'll re-check after resolving.
     import time as _energy_time
-    _cache_key = f"{state}|{sector}"
+    _cache_key = f"{state}|{iso_norm if iso_states else ''}|{sector}"
     # Use a stable cache key; tier-gated paths set their own key below.
 
     # ── Tier gate ───────────────────────────────────────────────────
@@ -27580,7 +27603,7 @@ def cf_stub_energy_summary():
     # PAID tiers (the gated envelope is cheap to build, plus we don't
     # want to cache a tier-changed user's response from the prior
     # tier). 5min TTL is short enough to pick up new EIA ingest.
-    _paid_cache_key = f"{state}|{sector}|{_caller_tier}"
+    _paid_cache_key = f"{state}|{iso_norm if iso_states else ''}|{sector}|{_caller_tier}"
     _cached = _ENERGY_SUMMARY_CACHE.get(_paid_cache_key)
     if _cached:
         _cached_at, _cached_body = _cached
@@ -27611,6 +27634,21 @@ def cf_stub_energy_summary():
             # fallback for prefix variants ("Ga.", "Georgia, USA").
             state_match_sql = "(state = %s OR UPPER(state) = %s OR UPPER(state) = %s OR state ILIKE %s)"
             state_match_params = [state_name, (state_name or '').upper(), state, f"{state_name}%"]
+            where.append(state_match_sql)
+            params.extend(state_match_params)
+        elif iso_states:
+            # r-iso-price: ISO footprint → its member states. eia_retail_rates
+            # stores FULL state names, so resolve each code via get_state_name
+            # and match an IN (...) list. This yields a real ISO-specific
+            # average instead of the national fallback.
+            try:
+                from location_names import get_state_name
+                _iso_names = [get_state_name(c, 'US') or c for c in iso_states]
+            except Exception:
+                _iso_names = list(iso_states)
+            _ph = ",".join(["%s"] * len(_iso_names))
+            state_match_sql = f"state IN ({_ph})"
+            state_match_params = list(_iso_names)
             where.append(state_match_sql)
             params.extend(state_match_params)
         if sector and sector != 'all':
@@ -27667,7 +27705,10 @@ def cf_stub_energy_summary():
 
         out = {
             "success": True,
-            "filter": {"state": state or None, "sector": sector or "all"},
+            "filter": {"state": state or None,
+                       "iso": (iso_norm if iso_states else None),
+                       "sector": sector or "all"},
+            "scope": ("iso_footprint_avg" if iso_states else ("state" if state else "national")),
             "retail_rates": {
                 "avg_cents_kwh":  round(float(row[0] or 0), 2),
                 "min_cents_kwh":  round(float(row[1] or 0), 2),

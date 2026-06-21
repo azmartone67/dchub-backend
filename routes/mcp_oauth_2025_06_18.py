@@ -48,6 +48,13 @@ _RESOURCE = (os.environ.get("DCHUB_MCP_RESOURCE") or "https://dchub.cloud/mcp").
 @mcp_oauth_2025_bp.route("/.well-known/oauth-protected-resource", methods=["GET"])
 @mcp_oauth_2025_bp.route("/.well-known/oauth-protected-resource/mcp", methods=["GET"])
 @mcp_oauth_2025_bp.route("/.well-known/oauth-protected-resource.json", methods=["GET"])
+# r-workos-scopes (2026-06-21): ALSO serve this metadata at a non-.well-known
+# path. The live .well-known/* path is served by the out-of-repo dchub-oauth-meta
+# CF worker (which advertises stale custom scopes → Claude requests them → WorkOS
+# rejects with invalid_scope). The MCP 401 `WWW-Authenticate: resource_metadata`
+# points clients HERE instead, so we control the advertised scopes from Flask.
+@mcp_oauth_2025_bp.route("/api/v1/oauth-protected-resource", methods=["GET"])
+@mcp_oauth_2025_bp.route("/api/v1/oauth-protected-resource/mcp", methods=["GET"])
 def oauth_protected_resource():
     """RFC 9728 — OAuth 2.0 Protected Resource Metadata.
 
@@ -66,14 +73,16 @@ def oauth_protected_resource():
         "authorization_servers":          ([_AUTHKIT] if _AUTHKIT else []),
         "bearer_methods_supported":       ["header"],
         "resource_signing_alg_values_supported": ["RS256", "ES256"],
+        # r-workos-scopes: advertise ONLY the standard OIDC scopes WorkOS AuthKit
+        # actually issues (openid/profile/email/offline_access). Custom resource
+        # scopes (read:facilities…) make WorkOS reject authorization with
+        # invalid_scope. profile+email give us the sub/email for identity binding;
+        # offline_access yields a refresh token for durable (multi-day) sessions.
         "scopes_supported":               [
-            "read:facilities",
-            "read:deals",
-            "read:grid",
-            "read:fiber",
-            "read:pipeline",
-            "write:reports",
-            "admin:tenant",
+            "openid",
+            "profile",
+            "email",
+            "offline_access",
         ],
         # r37: explicit MCP 2025-06-18 declaration
         "mcp_protocol_version":           "2025-06-18",
@@ -168,3 +177,100 @@ def oauth_introspect():
         return ("", 204, {"Access-Control-Allow-Origin": "*"})
     return jsonify({"active": False,
                     "error": "introspection_not_implemented"}), 501
+
+
+# ── Phase B (r-workos 2026-06-21): durable-identity binding ────────────────
+# The RESOURCE-SERVER half of the WorkOS OAuth connector. The MCP gateway
+# (server.mjs) does the JWT crypto: it validates the WorkOS access token
+# against the WorkOS JWKS (signature + issuer + audience + exp) BEFORE calling
+# this endpoint. We therefore TRUST the {sub,email,iss} it sends, but only from
+# the gateway — gated by the same X-Internal-Key the gateway uses for every
+# other server-to-server call. Public callers get 403.
+#
+# Job: map a verified OAuth identity (`sub`) → a durable mcp_dev_keys row
+# (get-or-create). The api_key is DETERMINISTIC per sub (HMAC over the server
+# secret) so (a) concurrent first-calls converge on one row via
+# ON CONFLICT(api_key) DO NOTHING, and (b) the SAME agent identity re-resolves
+# to the SAME key across sessions — the retention lever (usage accrues to one
+# identity → multi-day return; baseline 4.5%).
+#
+# DORMANT until the gateway flag DCHUB_WORKOS_OAUTH_ENABLED is on — nothing
+# calls this otherwise. Anonymous + X-API-Key flows are completely untouched:
+# this only ever runs for a gateway that has ALREADY verified a WorkOS JWT.
+@mcp_oauth_2025_bp.route("/api/v1/oauth/identity", methods=["POST"])
+def oauth_identity_resolve():
+    try:
+        from internal_auth import is_valid_internal_key
+    except Exception:
+        is_valid_internal_key = lambda _v: False  # noqa: E731 — fail-closed
+    if not is_valid_internal_key(request.headers.get("X-Internal-Key", "")):
+        return jsonify({"error": "internal_only"}), 403
+
+    body = request.get_json(silent=True) or {}
+    sub = (body.get("sub") or "").strip()
+    iss = (body.get("iss") or "").strip()
+    email = (body.get("email") or "").strip() or None
+    if not sub:
+        return jsonify({"error": "sub_required"}), 400
+
+    import hmac as _hmac
+    import hashlib as _hashlib
+    import json as _json
+    import psycopg2 as _pg
+    # HMAC so the durable key is NOT guessable from the public `sub` alone.
+    _secret = (os.environ.get("JWT_SECRET")
+               or os.environ.get("DCHUB_SESSION_SECRET")
+               or "dchub-oauth-fallback").encode()
+    _h = _hmac.new(_secret, f"workos:{sub}".encode(), _hashlib.sha256).hexdigest()
+    api_key = f"dch_oauth_{_h[:32]}"
+    developer_id = f"dev_oauth_{_h[:12]}"
+    # tier CHECK on mcp_dev_keys = free/paid/enterprise ONLY — seed 'free'.
+    metadata = {"source": "workos_oauth", "oauth_sub": sub, "oauth_iss": iss}
+
+    dsn = os.environ.get("DATABASE_URL") or os.environ.get("NEON_DATABASE_URL")
+    if not dsn:
+        return jsonify({"error": "no_db"}), 500
+    conn = None
+    try:
+        conn = _pg.connect(dsn, sslmode="require", connect_timeout=5)
+        cur = conn.cursor()
+        # Get-or-create. Deterministic key => concurrent first-calls collide on
+        # the SAME api_key and DO NOTHING resolves the race to one row.
+        cur.execute(
+            "INSERT INTO mcp_dev_keys (api_key, developer_id, email, tier, status, metadata) "
+            "VALUES (%s, %s, %s, 'free', 'active', %s::jsonb) "
+            "ON CONFLICT (api_key) DO NOTHING",
+            (api_key, developer_id, email, _json.dumps(metadata)),
+        )
+        # Backfill an email we learned later (row created before bind).
+        if email:
+            cur.execute(
+                "UPDATE mcp_dev_keys SET email = COALESCE(NULLIF(email, ''), %s) "
+                "WHERE api_key = %s",
+                (email, api_key),
+            )
+        # Read back the CURRENT tier so a later upgrade reflects immediately.
+        cur.execute("SELECT tier FROM mcp_dev_keys WHERE api_key = %s", (api_key,))
+        row = cur.fetchone()
+        conn.commit()
+        tier = (row[0] if row else "free") or "free"
+        return jsonify({
+            "api_key": api_key,
+            "tier": tier,
+            "developer_id": developer_id,
+            "source": "workos_oauth",
+        }), 200
+    except Exception as e:
+        try:
+            if conn:
+                conn.rollback()
+        except Exception:
+            pass
+        return jsonify({"error": "identity_resolve_failed",
+                        "detail": f"{type(e).__name__}: {e}"}), 500
+    finally:
+        try:
+            if conn:
+                conn.close()
+        except Exception:
+            pass
