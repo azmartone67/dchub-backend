@@ -1214,7 +1214,7 @@ class APIAutoDiscovery:
 
             cursor.execute('''
                 SELECT event_type, COUNT(*) FROM api_change_events
-                WHERE detected_at > datetime('now', '-30 days')
+                WHERE detected_at > NOW() - INTERVAL '30 days'
                 GROUP BY event_type
             ''')
             recent_changes = dict(cursor.fetchall())
