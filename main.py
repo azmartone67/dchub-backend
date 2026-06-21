@@ -29838,6 +29838,12 @@ try:
     print("[main] health_alerter started (pool/circuit/restart-loop email escalation)", flush=True)
 except Exception as _halert_e:
     print(f"[main] health_alerter start failed: {_halert_e}", flush=True)
+try:
+    from routes.agent_winback_digest import agent_winback_digest_bp
+    app.register_blueprint(agent_winback_digest_bp)
+    print("[main] agent_winback_digest_bp registered: /api/v1/admin/agent-digest/{preview,send} (retention push-back, DRY-RUN default)", flush=True)
+except Exception as _awd_e:
+    print(f"[main] agent_winback_digest_bp register failed: {_awd_e}", flush=True)
 
 # r79 (2026-06-03) — Redirect blueprint for known-dead URLs. Each entry
 # in routes/redirects_404_killer.py is a URL we caught 404ing in production
