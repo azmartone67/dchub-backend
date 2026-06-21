@@ -1,0 +1,54 @@
+name: Planned Generators Ingest (EIA-860M → planned_generators)
+
+# The forward pipeline of NEW power capacity (planned / permitting / under
+# construction) NATIONWIDE — including the non-ISO regions (TVA, Southern Co,
+# Arizona PS, PacifiCorp, LADWP…) that the per-ISO interconnection-queue feed
+# doesn't cover. Source: EIA-860M monthly Excel "Planned" sheet (the v2 JSON
+# API has no planned route). Each row carries coords + planned operation date.
+#
+# The 13MB Excel is downloaded + parsed HERE on the runner (openpyxl), which
+# POSTs compact rows to the admin-gated ingest endpoint (Railway only writes).
+# Idempotent (clears its own source='eia860m_planned' rows each run).
+# Logic: tools/infra_fetch.py (layer 'planned-generators').
+
+on:
+  schedule:
+    - cron: '23 8 1 * *'      # 1st of each month, 08:23 UTC (EIA-860M is monthly)
+  workflow_dispatch:
+    inputs:
+      cap:
+        description: 'Max generators to ingest'
+        required: false
+        default: '10000'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: planned-generators-ingest
+  cancel-in-progress: false
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      DCHUB_ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+      DCHUB_ORIGIN: https://dchub-backend-production.up.railway.app
+      CAP: ${{ github.event.inputs.cap || '10000' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install openpyxl
+        run: pip install --quiet openpyxl
+      - name: Fetch EIA-860M Planned sheet + ingest
+        run: |
+          set -uo pipefail
+          if [ -z "${DCHUB_ADMIN_KEY:-}" ]; then
+            echo "::warning::DCHUB_ADMIN_KEY not set — skipping"; exit 0
+          fi
+          python tools/infra_fetch.py planned-generators "${CAP}"

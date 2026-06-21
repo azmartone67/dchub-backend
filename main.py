@@ -26971,6 +26971,12 @@ try:
     except Exception as _gpli_e:
         print(f"🔌 Generator Inventory Ingest: ⚠️ {_gpli_e}")
     try:
+        from routes.planned_generators_ingest import planned_gen_ingest_bp
+        app.register_blueprint(planned_gen_ingest_bp)
+        print("🛠️ Planned Generators Ingest: ✅ Registered (/api/v1/admin/ingest/planned-generators)")
+    except Exception as _pgi_e:
+        print(f"🛠️ Planned Generators Ingest: ⚠️ {_pgi_e}")
+    try:
         from routes.infra_growth import register_infra_growth
         register_infra_growth(app)
         print("📈 Infra Growth Tracker: ✅ Registered (/api/v1/admin/infra-growth)")

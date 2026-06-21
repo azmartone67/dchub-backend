@@ -332,7 +332,114 @@ def fetch_generator_inventory(cap):
     return rows[:cap]
 
 
+# EIA-860M "Planned" sheet — the forward pipeline of new generators NATIONWIDE
+# (incl. non-ISO regions the per-ISO queue misses). The v2 JSON API has no
+# planned route, so we parse the monthly Excel here on the runner (13MB +
+# openpyxl is too heavy for the 1-replica backend). eia.gov needs a browser UA
+# + Referer or the xlsx download returns 0 bytes.
+EIA860M_PAGE = "https://www.eia.gov/electricity/data/eia860m/"
+_EIA_BUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"
+
+
+def _eia_get(url, referer=None, timeout=90, tries=4):
+    headers = {"User-Agent": _EIA_BUA}
+    if referer:
+        headers["Referer"] = referer
+    last = None
+    for a in range(tries):
+        try:
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                return r.read()
+        except Exception as e:
+            last = e
+            print(f"    eia fetch {a+1}/{tries}: {str(e)[:90]}", flush=True)
+            time.sleep(min(2 * (a + 1), 10))
+    raise last
+
+
+def fetch_planned_generators(cap):
+    """Download the latest EIA-860M Excel + parse the 'Planned' sheet → dict rows."""
+    import io
+    import re
+    import calendar
+    try:
+        import openpyxl
+    except ImportError:
+        print("::error::openpyxl not installed (pip install openpyxl)", flush=True)
+        return []
+    # Pick the newest non-archive monthly file (e.g. /xls/april_generator2026.xlsx).
+    html = _eia_get(EIA860M_PAGE, timeout=40).decode("utf-8", "ignore")
+    found = re.findall(r"/electricity/data/eia860m/xls/([a-z]+)_generator(\d{4})\.xlsx", html, re.I)
+    months = {m.lower(): i for i, m in enumerate(calendar.month_name) if m}
+    cand = sorted(set(found), key=lambda x: (int(x[1]), months.get(x[0].lower(), 0)), reverse=True)
+    xlsx = None
+    for mon, yr in cand:
+        url = f"{EIA860M_PAGE}xls/{mon}_generator{yr}.xlsx"
+        try:
+            raw = _eia_get(url, referer=EIA860M_PAGE, timeout=120)
+        except Exception:
+            continue
+        if raw and len(raw) > 1_000_000:
+            print(f"    EIA-860M file: {mon}_generator{yr}.xlsx ({len(raw)//1024//1024}MB)", flush=True)
+            xlsx = raw
+            break
+    if not xlsx:
+        print("::error::no usable EIA-860M xlsx found", flush=True)
+        return []
+    wb = openpyxl.load_workbook(io.BytesIO(xlsx), read_only=True, data_only=True)
+    if "Planned" not in wb.sheetnames:
+        print("::error::no Planned sheet", flush=True)
+        return []
+    xr = list(wb["Planned"].iter_rows(values_only=True))
+    hdr = [str(c) if c is not None else "" for c in xr[2]]   # header on row 3
+
+    def ci(sub):
+        for i, h in enumerate(hdr):
+            if sub.lower() in h.lower():
+                return i
+        return None
+    c = {k: ci(k) for k in ("Entity Name", "Plant ID", "Plant Name", "Plant State",
+                            "County", "Balancing Authority", "Generator ID",
+                            "Nameplate Capacity", "Technology", "Energy Source Code",
+                            "Status", "Operation Month", "Operation Year",
+                            "Latitude", "Longitude")}
+
+    def g(r, key):
+        i = c[key]
+        return r[i] if i is not None and i < len(r) else None
+    out = []
+    for r in xr[3:]:
+        if not r or not g(r, "Plant ID"):
+            continue
+        out.append({
+            "entity_name":   g(r, "Entity Name"),
+            "plant_id":      g(r, "Plant ID"),
+            "plant_name":    g(r, "Plant Name"),
+            "state":         g(r, "Plant State"),
+            "county":        g(r, "County"),
+            "ba_code":       g(r, "Balancing Authority"),
+            "generator_id":  g(r, "Generator ID"),
+            "technology":    g(r, "Technology"),
+            "energy_source": g(r, "Energy Source Code"),
+            "capacity_mw":   g(r, "Nameplate Capacity"),
+            "status":        g(r, "Status"),
+            "planned_month": g(r, "Operation Month"),
+            "planned_year":  g(r, "Operation Year"),
+            "lat":           g(r, "Latitude"),
+            "lng":           g(r, "Longitude"),
+        })
+        if len(out) >= cap:
+            break
+    return out
+
+
 LAYERS = {
+    "planned-generators": {
+        "fetch": fetch_planned_generators,
+        "ingest": "/api/v1/admin/ingest/planned-generators",
+        "default_cap": 10000,    # EIA-860M Planned sheet is ~2,300 generators
+    },
     "generator-inventory": {
         "fetch": fetch_generator_inventory,
         "ingest": "/api/v1/admin/ingest/generator-inventory",
