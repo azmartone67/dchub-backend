@@ -185,6 +185,69 @@ def _require_internal(fn):
     return wrapper
 
 
+# ── GET /api/v1/mcp/handoff-funnel ──────────────────────────────────────────
+# r-handoff (2026-06-21): the agent→human conversion funnel, end to end, on
+# DISTINCT sessions — surfaces WHERE the handoff leaks. paywall-hit → high-intent
+# → relay artifact minted (claim_token) → human acted (claim used) → identified
+# (email) → paid (attributed). Built from existing tables, read-only, fail-soft,
+# aggregate-only (no PII). 2026-06-21 baseline (30d): 1582 → 675 → 32 → 1 → 1 → 0:
+# the handoff dies at relay-mint (only ~5% of high-intent sessions ever mint a
+# relay artifact) and paid attribution is empty.
+@mcp_bp.get("/api/v1/mcp/handoff-funnel")
+def handoff_funnel():
+    def _win(cur, days):
+        iv = "%d days" % int(days)
+        def one(sql):
+            try:
+                cur.execute(sql); r = cur.fetchone()
+                return int(r[0]) if r and r[0] is not None else 0
+            except Exception:
+                return None
+        paywall = one("select count(distinct session_id) from mcp_upgrade_signals "
+                      "where created_at > now() - interval '%s' "
+                      "and signal_type in ('trial_preview','paid_tool_blocked') "
+                      "and session_id is not null" % iv)
+        high    = one("select count(distinct mcp_session_id) from mcp_high_intent_sessions "
+                      "where first_hit_at > now() - interval '%s'" % iv)
+        minted  = one("select count(distinct mcp_session_id) from mcp_high_intent_sessions "
+                      "where claim_minted_at is not null and first_hit_at > now() - interval '%s'" % iv)
+        used    = one("select count(distinct mcp_session_id) from mcp_high_intent_sessions "
+                      "where claim_used_at is not null and first_hit_at > now() - interval '%s'" % iv)
+        emailed = one("select count(distinct mcp_session_id) from mcp_high_intent_sessions "
+                      "where claim_email is not null and claim_email <> '' "
+                      "and first_hit_at > now() - interval '%s'" % iv)
+        paid_su = one("select count(distinct mcp_session_id) from mcp_session_upgrades "
+                      "where upgraded_at > now() - interval '%s'" % iv)
+        paid_tp = one("select count(distinct mcp_session_id) from mcp_topups "
+                      "where mcp_session_id is not null and created_at > now() - interval '%s'" % iv)
+        paid = (paid_su or 0) + (paid_tp or 0)
+        def pct(n, d):
+            return round(100.0 * n / d, 2) if (n is not None and d) else None
+        steps = {"paywall_hit": paywall, "high_intent": high, "relay_minted": minted,
+                 "human_acted": used, "identified": emailed, "paid_attributed": paid}
+        return {
+            "steps": steps,
+            "rates": {
+                "paywall_to_relay_pct": pct(minted, paywall),
+                "relay_to_human_pct": pct(used, minted),
+                "paywall_to_paid_pct": pct(paid, paywall),
+            },
+            "biggest_leak": (
+                "paywall→relay_mint" if (paywall and (minted or 0) < paywall * 0.5)
+                else "relay→human_action" if ((minted or 0) and (used or 0) < (minted or 0) * 0.5)
+                else "human_action→paid"),
+        }
+    out = {"ok": True, "metric": "agent_to_human_handoff_funnel", "unit": "distinct_sessions"}
+    try:
+        with _pool.connection() as conn, conn.cursor() as cur:
+            out["last_7d"] = _win(cur, 7)
+            out["last_30d"] = _win(cur, 30)
+    except Exception as e:
+        out["ok"] = False
+        out["error"] = str(e)[:160]
+    return jsonify(out), 200
+
+
 # ── GET/POST /api/v1/keys/standing ─────────────────────────────────────────
 # Read-only cross-session standing for a durable key (auto_trial_keys). Powers
 # the MCP server's RETURNING-KEY reward: a key first minted in a PRIOR ISO week
