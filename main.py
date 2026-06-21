@@ -11266,7 +11266,8 @@ def stripe_webhook():
                                    VALUES (%s, %s, %s, %s, 'pack_1000', 0,
                                            'stripe_webhook_pack5')
                                    ON CONFLICT (stripe_subscription_id)
-                                   DO NOTHING""",
+                                   DO UPDATE SET plan_to = 'pack_1000',
+                                                 source  = 'stripe_webhook_pack5'""",
                                 (_p5_email or None, (_p5_email or '').strip().lower() or None,
                                  data.get('customer'), data.get('id')))
                             print(f"💳 Pack5 conversion recorded (cs={str(data.get('id'))[:18]}…)")
