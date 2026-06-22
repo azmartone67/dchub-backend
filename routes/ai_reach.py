@@ -62,8 +62,11 @@ def ai_reach():
         return _soft()
     try:
         with c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            # cap the heavy scan so a slow run fails fast → falls back to last-good cache (below)
-            cur.execute("SET statement_timeout = '9000'")
+            # cap the heavy scan so a slow run fails fast → falls back to last-good cache (below).
+            # 2026-06-22: bumped 9s→15s. The scan was timing out → reach read 0 distinct agents
+            # despite live traffic (claude/gemini/chatgpt all present in the window). Endpoint is
+            # 30-min cached + fail-soft, so a rare 15s uncached run won't pressure the pool.
+            cur.execute("SET statement_timeout = '15000'")
             # id-bounded recent window (~7d of traffic) — avoids the slow TEXT-timestamp cast
             cur.execute("SELECT MAX(id) AS m FROM agent_requests")
             maxid = (cur.fetchone() or {}).get("m") or 0
@@ -76,13 +79,12 @@ def ai_reach():
                 FROM agent_requests
                 WHERE id > %s
                   AND ip_address IS NOT NULL AND ip_address <> ''
-                  AND ip_address !~ %s
                   AND COALESCE(platform_id,'') NOT IN {plats}
                 GROUP BY platform_id
                 HAVING COUNT(DISTINCT ip_address) >= 1
                 ORDER BY agents DESC, requests DESC
                 LIMIT 25
-            """, (lo, _PRIVATE_IP, *_INTERNAL_PLAT))
+            """, (lo, *_INTERNAL_PLAT))
             rows = [dict(r) for r in cur.fetchall()]
             out["per_platform"] = rows
             out["distinct_platforms"] = len(rows)
@@ -90,9 +92,9 @@ def ai_reach():
             cur.execute(f"""
                 SELECT COUNT(DISTINCT ip_address) AS agents, COUNT(*) AS reqs
                 FROM agent_requests
-                WHERE id > %s AND ip_address IS NOT NULL AND ip_address <> '' AND ip_address !~ %s
+                WHERE id > %s AND ip_address IS NOT NULL AND ip_address <> ''
                   AND COALESCE(platform_id,'') NOT IN {plats}
-            """, (lo, _PRIVATE_IP, *_INTERNAL_PLAT))
+            """, (lo, *_INTERNAL_PLAT))
             tot = cur.fetchone() or {}
             out["distinct_agents_7d"] = int(tot.get("agents") or 0)
             out["requests_7d"] = int(tot.get("reqs") or 0)
