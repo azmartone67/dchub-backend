@@ -26,7 +26,7 @@ Routes (registered via ai_reach_rollup_bp in main.py, next to ai_reach):
   GET  /api/v1/ai/reach/trend   -> precomputed weeks (cold-start safe, fail-soft 200)
 """
 from __future__ import annotations
-import re, threading
+import json, re, threading
 from datetime import datetime, date, timedelta
 from flask import Blueprint, jsonify
 import psycopg2, psycopg2.extras
@@ -64,9 +64,13 @@ def _ensure_tables():
                     requests              BIGINT  NOT NULL DEFAULT 0,
                     id_lo                 BIGINT,
                     id_hi                 BIGINT,
+                    per_platform          JSONB,
                     computed_at           TIMESTAMPTZ DEFAULT NOW()
                 )
             """)
+            # idempotent add for the already-deployed table (per_platform feeds
+            # /api/v1/ai/reach's per_platform[] so the live endpoint needs no scan).
+            cur.execute("ALTER TABLE reach_weekly ADD COLUMN IF NOT EXISTS per_platform JSONB")
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS reach_ip_seen (
                     ip_address      TEXT PRIMARY KEY,
@@ -137,6 +141,8 @@ def _compute_week(cur, week_start: date, id_lo: int, id_hi: int) -> dict:
     # internal platforms in Python (same _PRIVATE_IP / _INTERNAL_PLAT as the live
     # /ai/reach — no drift).
     ips, plats, reqs = set(), set(), 0
+    plat_ips: dict = {}   # platform_id -> set(ip)  → per-platform distinct-agent counts
+    plat_reqs: dict = {}  # platform_id -> request count
     cl = id_lo
     while cl <= id_hi:
         ch = min(cl + _SCAN_CHUNK - 1, id_hi)
@@ -155,8 +161,18 @@ def _compute_week(cur, week_start: date, id_lo: int, id_hi: int) -> dict:
             ips.add(ip)
             if plat:
                 plats.add(plat)
+                plat_ips.setdefault(plat, set()).add(ip)
+                plat_reqs[plat] = plat_reqs.get(plat, 0) + int(n or 0)
             reqs += int(n or 0)
         cl = ch + 1
+
+    # per-platform breakdown — same shape the live /api/v1/ai/reach used to scan for
+    # ([{platform_id, agents, requests}], distinct IPs per platform, top 25).
+    per_platform = sorted(
+        ({"platform_id": p, "agents": len(s), "requests": plat_reqs.get(p, 0)}
+         for p, s in plat_ips.items()),
+        key=lambda d: (-d["agents"], -d["requests"]),
+    )[:25]
 
     # Fold this week's IPs into the cumulative seen-set. Only IPs not seen in an
     # EARLIER week get first_seen_week = this week (weeks are processed ascending),
@@ -174,8 +190,8 @@ def _compute_week(cur, week_start: date, id_lo: int, id_hi: int) -> dict:
     cur.execute("""
         INSERT INTO reach_weekly
             (week_start, distinct_external_ips, distinct_platforms,
-             new_external_ips, requests, id_lo, id_hi, computed_at)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, NOW())
+             new_external_ips, requests, id_lo, id_hi, per_platform, computed_at)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW())
         ON CONFLICT (week_start) DO UPDATE SET
             distinct_external_ips = EXCLUDED.distinct_external_ips,
             distinct_platforms    = EXCLUDED.distinct_platforms,
@@ -183,11 +199,14 @@ def _compute_week(cur, week_start: date, id_lo: int, id_hi: int) -> dict:
             requests              = EXCLUDED.requests,
             id_lo                 = EXCLUDED.id_lo,
             id_hi                 = EXCLUDED.id_hi,
+            per_platform          = EXCLUDED.per_platform,
             computed_at           = NOW()
-    """, (week_start, len(ips), len(plats), new_ips, reqs, id_lo, id_hi))
+    """, (week_start, len(ips), len(plats), new_ips, reqs, id_lo, id_hi,
+          json.dumps(per_platform)))
 
     return {"week_start": week_start.isoformat(), "distinct_external_ips": len(ips),
-            "distinct_platforms": len(plats), "new_external_ips": new_ips, "requests": reqs}
+            "distinct_platforms": len(plats), "new_external_ips": new_ips,
+            "requests": reqs, "per_platform": per_platform}
 
 
 def run_reach_rollup() -> dict:
@@ -293,13 +312,17 @@ def reach_trend():
             with c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                 cur.execute("""
                     SELECT week_start, distinct_external_ips, distinct_platforms,
-                           new_external_ips, requests, computed_at
+                           new_external_ips, requests, per_platform, computed_at
                     FROM reach_weekly ORDER BY week_start DESC LIMIT %s
                 """, (CAP_WEEKS,))
                 rows = [dict(r) for r in cur.fetchall()]
             for r in rows:
                 r["week_start"] = r["week_start"].isoformat() if r["week_start"] else None
                 r["computed_at"] = r["computed_at"].isoformat() if r.get("computed_at") else None
+                pp = r.get("per_platform")
+                if isinstance(pp, str):
+                    try: r["per_platform"] = json.loads(pp)
+                    except Exception: r["per_platform"] = []
             rows.reverse()  # ascending for charting
             out["weeks"] = rows
             out["current"] = rows[-1] if rows else None

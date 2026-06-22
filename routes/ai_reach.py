@@ -12,7 +12,7 @@ Register in main.py:  from routes.ai_reach import ai_reach_bp; app.register_blue
   GET /api/v1/ai/reach   -> { distinct_agents_7d, distinct_platforms, per_platform:[...], requests_7d, note }
 """
 from __future__ import annotations
-import os, time
+import os, time, json
 from flask import Blueprint, jsonify
 import psycopg2, psycopg2.extras
 
@@ -62,10 +62,47 @@ def ai_reach():
         return _soft()
     try:
         with c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            # cap the heavy scan so a slow run fails fast → falls back to last-good cache (below).
-            # 2026-06-22: bumped 9s→15s. The scan was timing out → reach read 0 distinct agents
-            # despite live traffic (claude/gemini/chatgpt all present in the window). Endpoint is
-            # 30-min cached + fail-soft, so a rare 15s uncached run won't pressure the pool.
+            # ── FAST PATH (r-reach-rollup 2026-06-22): read the precomputed weekly
+            # rollup (reach_weekly, built by routes/ai_reach_rollup.run_reach_rollup
+            # on the daily cron). O(2-row PK read), NO agent_requests scan — so this
+            # endpoint never times out and never exhausts the 1-replica pool when the
+            # Leadership/Utilization engines self-call it concurrently (the documented
+            # anti-pattern that froze those dashboards at 0.0). MAX over the last 2
+            # weeks so the current (partial) ISO week never dips the metric to a
+            # Monday-morning low. Falls through to a single capped live scan only if
+            # the rollup table is empty (cold start) — same _PRIVATE_IP / _INTERNAL_PLAT
+            # filters, so the two sources can never drift.
+            rolled = None
+            try:
+                cur.execute("SET statement_timeout = '4000'")
+                cur.execute("""
+                    SELECT week_start, distinct_external_ips, distinct_platforms,
+                           requests, per_platform
+                    FROM reach_weekly ORDER BY week_start DESC LIMIT 2
+                """)
+                rolled = [dict(r) for r in cur.fetchall()] or None
+            except Exception:
+                rolled = None   # table missing / cold → live-scan fallback below
+
+            if rolled:
+                agents = max(int(r.get("distinct_external_ips") or 0) for r in rolled)
+                nplats = max(int(r.get("distinct_platforms") or 0) for r in rolled)
+                reqs   = max(int(r.get("requests") or 0) for r in rolled)
+                pp = rolled[0].get("per_platform") or []
+                if isinstance(pp, str):
+                    try: pp = json.loads(pp)
+                    except Exception: pp = []
+                out["distinct_agents_7d"] = agents
+                out["distinct_platforms"] = nplats or len(pp)
+                out["per_platform"] = pp
+                out["requests_7d"] = reqs
+                out["window"] = "weekly rollup (reach_weekly · precomputed daily)"
+                out["source"] = "rollup"
+                _cache["data"] = out
+                _cache["ts"] = now
+                return jsonify(out), 200
+
+            # ── COLD-START FALLBACK: rollup empty → one capped live scan ──
             cur.execute("SET statement_timeout = '15000'")
             # id-bounded recent window (~7d of traffic) — avoids the slow TEXT-timestamp cast
             cur.execute("SELECT MAX(id) AS m FROM agent_requests")
@@ -98,6 +135,7 @@ def ai_reach():
             tot = cur.fetchone() or {}
             out["distinct_agents_7d"] = int(tot.get("agents") or 0)
             out["requests_7d"] = int(tot.get("reqs") or 0)
+            out["source"] = "live_scan_coldstart"
     except Exception:
         return _soft()   # fail-soft: never 5xx (last-good cache, else degraded 200)
     finally:
