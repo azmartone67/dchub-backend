@@ -17,9 +17,9 @@ MCP_LANDING_HTML = """<!DOCTYPE html>
 <html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Connect DC Hub MCP · Claude, Cursor, Cline, Continue</title>
-<meta name="description" content="DC Hub MCP server — 38 tools covering 21,000+ data center facilities, 2,000+ tracked M&A deals, grid intelligence, fiber, water risk, tax incentives. Free tier: 10 calls/day, no signup.">
+<meta name="description" content="DC Hub MCP server — 47 tools covering 21,000+ data center facilities, 2,000+ tracked M&A deals, grid intelligence, fiber, water risk, tax incentives. Free tier: 10 calls/day, no signup.">
 <meta property="og:title" content="DC Hub MCP — connect to any AI agent in 30 seconds">
-<meta property="og:description" content="38 tools · 21,000+ facilities · 300+ markets · streamable-http · free tier no signup">
+<meta property="og:description" content="47 tools · 21,000+ facilities · 300+ markets · streamable-http · free tier no signup">
 <meta property="og:image" content="https://api.dchub.cloud/static/og/landing-integrations-mcp.png">
 <meta property="og:url" content="https://dchub.cloud/integrations/mcp">
 <meta name="twitter:card" content="summary_large_image">
@@ -48,11 +48,37 @@ MCP_LANDING_HTML = """<!DOCTYPE html>
  .tool b{display:block;color:#0f172a;font-family:ui-monospace,monospace;font-size:.78rem;margin-bottom:4px}
  footer{margin-top:36px;padding-top:18px;border-top:1px solid #e2e8f0;color:#64748b;font-size:.85rem}
  footer a{color:#6366f1;text-decoration:none}
-</style></head><body>
+</style>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "DC Hub MCP Server",
+  "alternateName": "DC Hub — Data Center & Energy Intelligence",
+  "applicationCategory": "DeveloperApplication",
+  "operatingSystem": "Any (remote streamable-HTTP MCP server)",
+  "url": "https://dchub.cloud/integrations/mcp",
+  "description": "Model Context Protocol server giving AI agents live, citable data-center, power-grid, fiber and market intelligence — 47 tools over 21,000+ facilities, 232 power markets, real-time ISO grid data, interconnection queues and 2,000+ tracked M&A deals. Works with Claude, Cursor, Cline and Continue.",
+  "featureList": "47 MCP tools, 6 guided prompts, streamable-HTTP transport, CC-BY-4.0 citable data, zero-install free tier",
+  "softwareVersion": "2.3",
+  "offers": {
+    "@type": "Offer",
+    "price": "0",
+    "priceCurrency": "USD",
+    "description": "Free tier — 10 calls/day, no signup"
+  },
+  "provider": {
+    "@type": "Organization",
+    "name": "DC Hub",
+    "url": "https://dchub.cloud"
+  }
+}
+</script>
+</head><body>
 <header>
   <div class="eyebrow">Model Context Protocol</div>
   <h1>Connect DC Hub to your AI in 30 seconds.</h1>
-  <p class="lead">Native MCP server. <b>38 tools</b> covering <b>21,000+ facilities</b>, <b>2,000+ tracked M&amp;A deals</b>,
+  <p class="lead">Native MCP server. <b>47 tools</b> covering <b>21,000+ facilities</b>, <b>2,000+ tracked M&amp;A deals</b>,
   grid intelligence (US ISOs + Hydro-Québec + AESO + Nord Pool), fiber routes, water risk, tax incentives.
   Free tier: <b>10 calls/day, no signup</b>.</p>
 </header>
@@ -84,7 +110,7 @@ MCP_LANDING_HTML = """<!DOCTYPE html>
 </div>
 
 <div class="pane">
-  <h2>The 38 tools</h2>
+  <h2>The 47 tools</h2>
   <div class="tools">
     <div class="tool"><b>search_facilities</b>21k facilities, by city/MW/operator</div>
     <div class="tool"><b>get_facility</b>Full profile by ID</div>
@@ -123,7 +149,7 @@ MCP_LANDING_HTML = """<!DOCTYPE html>
 
 <div class="pane">
   <h2>Works with every agent platform</h2>
-  <p>Connect via MCP (all 38 tools), the SDK, or REST tool-use. Copy-paste guides per platform:</p>
+  <p>Connect via MCP (all 47 tools), the SDK, or REST tool-use. Copy-paste guides per platform:</p>
   <p style="line-height:2.1">
     <a href="https://github.com/azmartone67/dchub-mcp-server/tree/main/integrations/mcp-clients">Claude Desktop · Cursor · Cline · Continue · Windsurf · Zed</a> ·
     <a href="https://github.com/azmartone67/dchub-mcp-server/tree/main/integrations/chatgpt">ChatGPT</a> ·
