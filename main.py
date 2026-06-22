@@ -26627,6 +26627,17 @@ try:
 except Exception as e:
     print(f"🔑 Keys Recover: ⚠️ Failed to load: {e}")
 
+# Marketing opt-in capture (2026-06-22) — records the EXPLICIT consent the winback
+# digest reads (metadata.marketing_opt_in). bind_email is transactional only and
+# nothing ever set this flag, so the opt-in pool was 0. Suppression + unsubscribe
+# still gate every marketing send downstream.
+try:
+    from routes.marketing_consent import marketing_consent_bp
+    app.register_blueprint(marketing_consent_bp)
+    print("📧 Marketing Consent: ✅ Registered (POST /api/v1/keys/marketing-consent)")
+except Exception as e:
+    print(f"📧 Marketing Consent: ⚠️ Failed to load: {e}")
+
 # Map-CTA click tracking (2026-06-18) — the MCP map upsell links through a
 # logging 302 so we can see whether it actually drives human clicks.
 try:
