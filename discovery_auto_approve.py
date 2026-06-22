@@ -1,4 +1,5 @@
 import hashlib
+import os
 import time
 import re
 import math
@@ -8,6 +9,17 @@ from collections import defaultdict
 from db_utils import get_db
 
 TRUSTED_SOURCES = {'peeringdb', 'openstreetmap'}
+
+# 2026-06-21: gated auto-promotion of competitor-gap LEADS. DEFAULT OFF.
+# The competitor-gap crawler stages source='competitor_gap:<slug>' rows with a
+# uniform 0.55 "unverified lead" confidence. When this flag is on, leads that
+# have already passed the name+geo dedup AND carry coordinates + a name are
+# promoted to `facilities` with status='unverified_lead' (source preserved) so
+# they are filterable, one-query reversible, and meant to be EXCLUDED from the
+# honest facility count + paid search until a phase-2 second-source check
+# verifies them. Everything else still routes to flagged_review.
+PROMOTE_COMPETITOR_GAP = os.environ.get(
+    'DISCOVERY_PROMOTE_COMPETITOR_GAP', '').strip().lower() in ('1', 'true', 'on', 'yes')
 
 BATCH_SIZE = 50
 BATCH_DELAY = 2
@@ -213,6 +225,7 @@ def run_auto_approval(max_records=None, test_mode=False):
 
         stats = {
             'approved': 0,
+            'auto_promoted_gap': 0,
             'duplicate_skipped': 0,
             'flagged_review': 0,
             'errors': 0,
@@ -299,7 +312,17 @@ def _process_batch(conn, batch, stats, name_index, geo_index):
                 stats['flagged_review'] += 1
                 continue
 
-            if source not in TRUSTED_SOURCES:
+            # Gated competitor-gap lead promotion (default OFF). These rows have
+            # already passed name-dedup (above) and geo-dedup (above), so they are
+            # genuinely new. Promote ONLY with coords + a name, tagged distinctly.
+            _promote_as_lead = (
+                PROMOTE_COMPETITOR_GAP
+                and source.startswith('competitor_gap')
+                and disc.get('latitude') is not None
+                and disc.get('longitude') is not None
+                and bool((disc.get('name') or '').strip())
+            )
+            if source not in TRUSTED_SOURCES and not _promote_as_lead:
                 c = conn.cursor()
                 c.execute("""
                     INSERT INTO discovery_approvals
@@ -334,7 +357,7 @@ def _process_batch(conn, batch, stats, name_index, geo_index):
                     disc.get('longitude'),
                     disc.get('power_mw'),
                     disc.get('sqft'),
-                    disc.get('status') or 'active',
+                    'unverified_lead' if _promote_as_lead else (disc.get('status') or 'active'),
                     disc['source'],
                     disc.get('source_id'),
                     disc.get('source_url'),
@@ -347,8 +370,11 @@ def _process_batch(conn, batch, stats, name_index, geo_index):
                 c.execute("""
                     INSERT INTO discovery_approvals
                     (discovered_facility_id, source, action, match_reason, promoted_facility_id)
-                    VALUES (%s, %s, 'approved', NULL, %s)
-                """, (disc['id'], disc['source'], facility_id))
+                    VALUES (%s, %s, %s, %s, %s)
+                """, (disc['id'], disc['source'],
+                      'auto_promoted_gap' if _promote_as_lead else 'approved',
+                      'competitor_gap_lead' if _promote_as_lead else None,
+                      facility_id))
 
                 c = conn.cursor()
                 c.execute("""
@@ -373,7 +399,10 @@ def _process_batch(conn, batch, stats, name_index, geo_index):
                     except (ValueError, TypeError):
                         pass
 
-                stats['approved'] += 1
+                if _promote_as_lead:
+                    stats['auto_promoted_gap'] += 1
+                else:
+                    stats['approved'] += 1
 
             except Exception:
                 c = conn.cursor()
