@@ -243,16 +243,24 @@ def license_facilities():
         r[1] = _lic_norm_provider(r[1])
         norm.append(r)
     if fmt == "json":
-        return jsonify(ok=True, source="DC Hub (dchub.cloud)", license="CC-BY-4.0",
-                       count=len(norm), columns=_LICENSE_COLS,
-                       facilities=[dict(zip(_LICENSE_COLS, r)) for r in norm])
-    buf = _io.StringIO()
-    w = _csv.writer(buf)
-    w.writerow(_LICENSE_COLS)
-    for r in norm:
-        w.writerow(["" if v is None else v for v in r])
-    out = make_response(buf.getvalue())
-    out.headers["Content-Type"] = "text/csv; charset=utf-8"
-    out.headers["Content-Disposition"] = 'attachment; filename="dchub_facility_census.csv"'
+        out = make_response(jsonify(ok=True, source="DC Hub (dchub.cloud)", license="CC-BY-4.0",
+                                    count=len(norm), columns=_LICENSE_COLS,
+                                    facilities=[dict(zip(_LICENSE_COLS, r)) for r in norm]))
+    else:
+        buf = _io.StringIO()
+        w = _csv.writer(buf)
+        w.writerow(_LICENSE_COLS)
+        for r in norm:
+            w.writerow(["" if v is None else v for v in r])
+        out = make_response(buf.getvalue())
+        out.headers["Content-Type"] = "text/csv; charset=utf-8"
+        out.headers["Content-Disposition"] = 'attachment; filename="dchub_facility_census.csv"'
+    # MOAT DATA — never cache. The CF edge cacheEverything's /api/* GETs by URL
+    # (ignoring auth headers), so a cached enterprise response could be served to
+    # a non-enterprise caller = a gate bypass. no-store + private + Vary on the
+    # auth headers is the in-origin defense; the edge must also be confirmed not
+    # to cache this path (verify test).
+    out.headers["Cache-Control"] = "no-store, private, max-age=0"
+    out.headers["Vary"] = "Authorization, X-API-Key"
     out.headers["X-DCHub-License"] = "CC-BY-4.0; cite DC Hub (dchub.cloud)"
     return out
