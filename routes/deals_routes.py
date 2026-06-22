@@ -966,6 +966,24 @@ def get_gas_pipelines():
         _gp_paid = False
     _gp_eff_limit = min(limit, 500) if _gp_paid else min(limit, _GP_NONPAID_CAP)
 
+    # r-gas-leak-fix (2026-06-22): the operator name ("Columbia Gas Trans Co") +
+    # pipeline name are the proprietary bits. The CF worker injects a dchub.cloud
+    # Referer on every proxied request, so the _MAP_BYPASS_PATHS referer-bypass let
+    # bare ANON callers reach this route and pull rows WITH operator names. Gate
+    # those identity fields on an UNFORGEABLE signal: caller_is_privileged honors
+    # the Bearer token / dchub_token cookie / X-API-Key / loopback and explicitly
+    # does NOT trust Origin/Referer (see routes/tier_gate.py:225-234). Anon gets
+    # pipeline geometry + type (the map still renders the overlay) but NOT operator
+    # identity; identified/keyed/logged-in callers get full. Mirrors /api/facilities.
+    # Fail-closed: any error → not privileged → strip. (The endpoint stays in
+    # _MAP_BYPASS_PATHS so the map's no-auth-header fetch isn't 401'd by the
+    # header-only enforce_free_tier — the strip below is the real gate.)
+    try:
+        from routes.tier_gate import caller_is_privileged
+        _gp_priv = caller_is_privileged('IDENTIFIED')
+    except Exception:
+        _gp_priv = False
+
     try:
         with _pg_connection() as conn:
             c = conn.cursor()
@@ -1002,8 +1020,13 @@ def get_gas_pipelines():
 
             pipelines = []
             for r in rows:
+                # r-gas-leak-fix: strip operator + pipeline name for non-privileged
+                # callers (anon). Geometry/type/status stay so the map overlay still
+                # renders; the proprietary operator identity is the gated upgrade.
+                _op = r[2] if _gp_priv else None
+                _nm = r[1] if _gp_priv else None
                 pipelines.append({
-                    'id': r[0], 'name': r[1], 'operator': r[2],
+                    'id': r[0], 'name': _nm, 'operator': _op,
                     'pipeline_type': r[3],
                     'diameter_inches': float(r[4]) if r[4] else None,
                     'capacity_mcf': float(r[5]) if r[5] else None,
