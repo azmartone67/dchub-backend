@@ -195,13 +195,16 @@ _LICENSE_COLS = ["name", "provider", "market", "city", "state", "country",
                  "source_url", "operational_year", "investment_usd"]
 
 
-@r2_exports_bp.route("/api/v1/license/facilities", methods=["GET"])
+@r2_exports_bp.route("/api/v1/license/facilities", methods=["POST"])
 @_license_require_plan('enterprise')
 def license_facilities():
     """Enterprise data-license: the deep NAMED-OPERATOR data-center facility census.
-    Query params: ?format=csv|json (default csv), ?limit=N (default all, cap 50000).
-    Data-quality gated (excludes anonymous + duplicate rows, normalizes provider
-    dups, drops the dead sqft field). CC-BY-4.0 — cite "DC Hub (dchub.cloud)"."""
+    POST-only — the CF edge cacheEverything's /api/* GETs by URL (ignoring auth +
+    no-store), which would cache an enterprise response and serve it to a
+    non-enterprise caller (a gate bypass — confirmed in testing). POST is never
+    edge-cached, so it sidesteps that leak entirely. Enterprise consumers POST
+    with their X-API-Key. Query params: ?format=csv|json (default csv), ?limit=N
+    (cap 50000). Data-quality gated. CC-BY-4.0 — cite "DC Hub (dchub.cloud)"."""
     fmt = (request.args.get("format") or "csv").lower()
     try:
         limit = min(int(request.args.get("limit", 0) or 0), 50000)
