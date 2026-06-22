@@ -143,20 +143,27 @@ def _compute_week(cur, week_start: date, id_lo: int, id_hi: int) -> dict:
     ips, plats, reqs = set(), set(), 0
     plat_ips: dict = {}   # platform_id -> set(ip)  → per-platform distinct-agent counts
     plat_reqs: dict = {}  # platform_id -> request count
+    # Drop the internal platform buckets ('unknown' etc. — the ~732K-row flood) in
+    # SQL. This is an equality IN-list, NOT the per-row private-IP REGEX (that one
+    # stays in Python — a SQL `ip !~ regex` over dense rows is what blew the timeout).
+    # Filtering the flood here collapses the GROUP BY to real external platforms only,
+    # so a dense recent week no longer cancels on the statement timeout under load.
+    _plat_ph = "(" + ",".join("%s" for _ in _INTERNAL_PLAT) + ")"
     cl = id_lo
     while cl <= id_hi:
         ch = min(cl + _SCAN_CHUNK - 1, id_hi)
-        cur.execute("""
+        cur.execute(f"""
             SELECT ip_address, platform_id, COUNT(*) AS reqs
             FROM agent_requests
             WHERE id BETWEEN %s AND %s
               AND ip_address IS NOT NULL AND ip_address <> ''
+              AND COALESCE(platform_id,'') NOT IN {_plat_ph}
             GROUP BY ip_address, platform_id
-        """, (cl, ch))
+        """, (cl, ch, *_INTERNAL_PLAT))
         for ip, plat, n in cur.fetchall():
             if _PRIV_RE.match(ip or ''):              # private/loopback = internal
                 continue
-            if (plat or '') in _INT_PLAT:             # internal platform buckets
+            if (plat or '') in _INT_PLAT:             # defensive (SQL already excludes)
                 continue
             ips.add(ip)
             if plat:
@@ -265,15 +272,26 @@ def run_reach_rollup() -> dict:
                 for wk in weeks + [cur_week + timedelta(weeks=1)]:
                     bounds[wk] = _id_for_instant(cur, datetime.combine(wk, datetime.min.time()),
                                                  minid, maxid)
+                skipped = []
                 for i, wk in enumerate(weeks):
                     id_lo = bounds.get(wk) or minid
                     nxt = bounds.get(wk + timedelta(weeks=1))
                     id_hi = (nxt - 1) if nxt else maxid
                     if id_hi < id_lo:
                         continue
-                    results.append(_compute_week(cur, wk, id_lo, id_hi))
+                    # Per-week resilience: a single dense week that still cancels on
+                    # the statement timeout must NOT abort the whole backfill (which
+                    # left every later week — incl. the current one — unwritten, so
+                    # per_platform never filled). The conn is autocommit, so it
+                    # survives a QueryCanceled; skip the bad week and keep going.
+                    try:
+                        results.append(_compute_week(cur, wk, id_lo, id_hi))
+                    except Exception as e:
+                        skipped.append({"week": wk.isoformat(), "error": str(e)[:120]})
+                        continue
 
                 return {"ok": True, "weeks_computed": len(results),
+                        "weeks_skipped": len(skipped), "skipped": skipped,
                         "window_weeks": len(weeks), "current_week": cur_week.isoformat(),
                         "weeks": results}
         finally:
