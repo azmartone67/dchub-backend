@@ -37,8 +37,14 @@ ai_reach_rollup_bp = Blueprint("ai_reach_rollup", __name__)
 
 CAP_WEEKS = 16              # how many trailing weeks the /trend endpoint serves
 BACKFILL_WEEKS = 12         # trailing weeks recomputed every run (idempotent; self-heals gaps)
-_SCAN_CHUNK = 200_000       # id-range chunk per scan statement (dense weeks are ~1M+ wide rows;
-                            # a single GROUP BY over a whole week exceeds the statement timeout)
+_SCAN_CHUNK = 40_000        # id-range chunk per scan statement. Small on purpose: the cost is
+                            # heap-fetching ip/platform for every row in the id-range, which under
+                            # the 1-replica pool load can blow a big chunk past the timeout. 40K
+                            # keeps each statement well under _CHUNK_TIMEOUT_MS even at peak load,
+                            # so the backfill completes any time of day (not just the low-load
+                            # daily-cron window) — was 200K, which only finished at ~13:00 UTC.
+_CHUNK_TIMEOUT_MS = 30_000  # per-statement cap: a chunk that can't finish in 30s fails fast and the
+                            # week is skipped (per-week try/except) instead of burning 90s × 14 weeks.
 # Filter external/internal in PYTHON on the small grouped output, NOT with a SQL
 # regex per row — the SQL `ip !~ regex` over 1M+ dense recent-week rows blew the
 # statement timeout and killed the rollup mid-backfill. Same _PRIVATE_IP pattern
@@ -232,7 +238,7 @@ def run_reach_rollup() -> dict:
             return {"ok": False, "error": "no_db"}
         try:
             with c.cursor() as cur:
-                cur.execute("SET statement_timeout = '90000'")  # background thread; generous
+                cur.execute(f"SET statement_timeout = '{_CHUNK_TIMEOUT_MS}'")  # fail-fast per statement
                 cur.execute("SELECT MIN(id), MAX(id) FROM agent_requests")
                 minid, maxid = cur.fetchone()
                 if not maxid:
