@@ -39,8 +39,13 @@ def _no_store(resp):
     return resp
 
 
-def _raw_get(path: str, timeout: int = 6) -> dict:
-    """Read-only internal GET. Fail-soft to {}. The engine never writes."""
+def _raw_get(path: str, timeout: int = 18) -> dict:
+    """Read-only internal GET. Fail-soft to {}. The engine never writes.
+    2026-06-22: timeout 6s→18s. /api/v1/ai/reach's agent_requests scan takes ~12s
+    on a cold per-replica cache (the table is large) — at 6s it always timed out →
+    {} → adoption read 0 → the all-success cache gate never tripped → the WHOLE
+    engine froze at 0.0. 18s lets the cold scan complete + populate reach's 30-min
+    cache; subsequent engine runs hit the warm cache and are instant."""
     try:
         req = urllib.request.Request(_BASE + path, method="GET",
                                      headers={"User-Agent": "dchub-mcp-leadership/shadow"})
