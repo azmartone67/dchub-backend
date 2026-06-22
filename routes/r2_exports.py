@@ -20,7 +20,7 @@ import gzip
 import json
 import datetime
 import urllib.request
-from flask import Blueprint, jsonify, request, redirect
+from flask import Blueprint, jsonify, request, redirect, make_response
 
 r2_exports_bp = Blueprint("r2_exports", __name__)
 
@@ -145,3 +145,114 @@ def download(name):
         return redirect(url, code=302)
     except Exception as e:
         return jsonify({"error": type(e).__name__}), 502
+
+
+# ── Enterprise data-license: the DEEP named-operator facility census ─────────
+# r-data-license (2026-06-22): the public exports above are FREE/PUBLIC + trimmed.
+# THIS is the paid moat asset — the deep per-facility census enterprise buyers
+# license. Gated to enterprise tier via require_plan, which FAILS CLOSED (401 no
+# auth / 403 wrong tier / 503 if gating unavailable) — the gate is load-bearing
+# because this exposes the crown-jewel data. NOT in the free EXPORTS manifest.
+#
+# Data quality IS the product (an enterprise buyer spot-checks). Gates verified
+# against live discovered_facilities (21,808 rows):
+#   • EXCLUDE provider IN ('', 'Unknown')  (2,653 anonymous rows)
+#   • EXCLUDE is_duplicate = 1
+#   • NORMALIZE corporate-suffix dups ("Equinix, Inc." → "Equinix")
+#   • DROP sqft (dead: 3/21,808 populated)
+# Net ≈ 19,155 named-operator facilities with deep fields.
+try:
+    from api_tier_gating import require_plan as _license_require_plan
+except Exception as _lic_e:  # pragma: no cover — FAIL CLOSED if gating absent
+    def _license_require_plan(_plan):
+        def _decorator(fn):
+            def _wrapped(*a, **kw):
+                return jsonify(ok=False, error="gate_not_wired",
+                               hint="Tier-gating unavailable; enterprise export fails closed."), 503
+            _wrapped.__name__ = getattr(fn, "__name__", "_wrapped")
+            return _wrapped
+        return _decorator
+
+import csv as _csv
+import io as _io
+import re as _re
+
+# Collapse the corporate-suffix dup ("Equinix, Inc." → "Equinix") WITHOUT touching
+# names that lack the comma-suffix pattern (conservative — only strips a trailing
+# ", <suffix>"). This is the observed dedup source, not aggressive name munging.
+_LIC_SUFFIX_RE = _re.compile(
+    r',\s*(inc|incorporated|llc|l\.l\.c|ltd|limited|corp|corporation|co|company|'
+    r'gmbh|s\.a|s\.a\.s|ag|n\.v|b\.v|plc|holdings?)\.?\s*$', _re.I)
+
+def _lic_norm_provider(p):
+    if not p:
+        return p
+    out = _LIC_SUFFIX_RE.sub('', p).strip()
+    return out or p
+
+_LICENSE_COLS = ["name", "provider", "market", "city", "state", "country",
+                 "latitude", "longitude", "power_mw", "status", "facility_type",
+                 "source_url", "operational_year", "investment_usd"]
+
+
+@r2_exports_bp.route("/api/v1/license/facilities", methods=["GET"])
+@_license_require_plan('enterprise')
+def license_facilities():
+    """Enterprise data-license: the deep NAMED-OPERATOR data-center facility census.
+    Query params: ?format=csv|json (default csv), ?limit=N (default all, cap 50000).
+    Data-quality gated (excludes anonymous + duplicate rows, normalizes provider
+    dups, drops the dead sqft field). CC-BY-4.0 — cite "DC Hub (dchub.cloud)"."""
+    fmt = (request.args.get("format") or "csv").lower()
+    try:
+        limit = min(int(request.args.get("limit", 0) or 0), 50000)
+    except Exception:
+        limit = 0
+    dsn = os.environ.get("DATABASE_URL") or os.environ.get("NEON_DATABASE_URL")
+    if not dsn:
+        return jsonify(ok=False, error="no_db"), 503
+    sql = (
+        "SELECT name, provider, market, city, state, country, latitude, longitude, "
+        "power_mw, status, facility_type, source_url, operational_year, investment_usd "
+        "FROM discovered_facilities "
+        "WHERE provider IS NOT NULL AND btrim(provider) NOT IN ('', 'Unknown') "
+        "AND COALESCE(is_duplicate, 0) = 0 "
+        "ORDER BY provider, market NULLS LAST, name"
+    )
+    if limit:
+        sql += " LIMIT %d" % limit
+    conn = None
+    try:
+        import psycopg2
+        conn = psycopg2.connect(dsn, sslmode="require", connect_timeout=10)
+        cur = conn.cursor()
+        cur.execute(sql)
+        rows = cur.fetchall()
+        cur.close()
+    except Exception as e:
+        return jsonify(ok=False, error="query_failed", detail=str(e)[:200]), 500
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+    # Normalize the provider (index 1) for the dedup; drop nothing else.
+    norm = []
+    for r in rows:
+        r = list(r)
+        r[1] = _lic_norm_provider(r[1])
+        norm.append(r)
+    if fmt == "json":
+        return jsonify(ok=True, source="DC Hub (dchub.cloud)", license="CC-BY-4.0",
+                       count=len(norm), columns=_LICENSE_COLS,
+                       facilities=[dict(zip(_LICENSE_COLS, r)) for r in norm])
+    buf = _io.StringIO()
+    w = _csv.writer(buf)
+    w.writerow(_LICENSE_COLS)
+    for r in norm:
+        w.writerow(["" if v is None else v for v in r])
+    out = make_response(buf.getvalue())
+    out.headers["Content-Type"] = "text/csv; charset=utf-8"
+    out.headers["Content-Disposition"] = 'attachment; filename="dchub_facility_census.csv"'
+    out.headers["X-DCHub-License"] = "CC-BY-4.0; cite DC Hub (dchub.cloud)"
+    return out
