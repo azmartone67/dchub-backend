@@ -133,6 +133,58 @@ def mcp_retention():
                                       current_partial_returning_ips=pw["returning_ips"])
             else:
                 out["summary"]["current_partial_week"] = str(cur_wk)
+
+            # ── identity_breakdown (2026-06-22): WHO returns, by identity DURABILITY ──
+            # The return loop's diagnostic split. email_bound + oauth_durable survive
+            # across sessions; key_only returns ONLY if the client resends the X-API-Key
+            # (header-less hosts — Claude.ai web / ChatGPT — drop it → structurally CANNOT
+            # return until they bind email or OAuth). Additive + each query self-isolated:
+            # a failure here can never break the headline metric above.
+            ib = {"note": ("Returns split by identity durability. email_bound + oauth_durable are "
+                           "cross-session durable; key_only depends on the client resending the key. "
+                           "Validates whether the durable-identity levers (email-bind, WorkOS OAuth) "
+                           "actually lift the 0.6% return rate.")}
+            try:
+                # email-bound vs key-only return rate, same mature 8-30d cohort as summary.
+                cur.execute("""
+                    SELECT CASE WHEN operator_email IS NOT NULL AND operator_email <> ''
+                                THEN 'email_bound' ELSE 'key_only' END AS cohort,
+                           COUNT(*) FILTER (WHERE minted_at < now() - interval '7 days') AS mature,
+                           COUNT(*) FILTER (WHERE minted_at < now() - interval '7 days'
+                                    AND last_used_at IS NOT NULL
+                                    AND date_trunc('week', last_used_at) > date_trunc('week', minted_at)
+                                   ) AS returned_mature
+                    FROM auto_trial_keys
+                    WHERE minted_at >= now() - interval '30 days'
+                    GROUP BY 1
+                """)
+                for r in cur.fetchall():
+                    m = int(r["mature"] or 0); rt = int(r["returned_mature"] or 0)
+                    ib[r["cohort"]] = {"mature_cohort": m, "returned_next_week_mature": rt,
+                                       "pct_returned": round(100.0 * rt / m, 1) if m else None}
+            except Exception:
+                ib["trial_breakdown_error"] = True
+            try:
+                # OAuth-durable cohort SIZE (the new lever's uptake). dch_oauth_ keys live in
+                # mcp_dev_keys (NOT auto_trial_keys), which has no usage tracking → return rate
+                # is not yet computable. No params arg ⇒ the literal % in LIKE is safe.
+                cur.execute("SELECT COUNT(*) AS identities, "
+                            "COUNT(*) FILTER (WHERE email IS NOT NULL AND email <> '') AS with_email "
+                            "FROM mcp_dev_keys WHERE api_key LIKE 'dch_oauth_%'")
+                o = cur.fetchone() or {}
+                ib["oauth_durable"] = {
+                    "identities": int(o.get("identities") or 0),
+                    "with_email": int(o.get("with_email") or 0),
+                    "returned_next_week_mature": None, "measurable": False,
+                    "gap": ("OAuth returns are NOT yet measurable: dch_oauth_ keys live in mcp_dev_keys "
+                            "(no last_used/usage column) and mcp_tool_calls is keyed on the rotating "
+                            "ip_address, not the caller key. To measure OAuth retention: attribute calls "
+                            "to the caller api_key at the gateway, OR stamp last_used_at on mcp_dev_keys "
+                            "validate. Until then the durable-identity lever is invisible to this metric."),
+                }
+            except Exception:
+                ib["oauth_error"] = True
+            out["identity_breakdown"] = ib
     except Exception as e:
         return jsonify(error="query_failed", detail=str(e)[:200]), 500
     finally:
