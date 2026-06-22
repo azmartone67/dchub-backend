@@ -556,13 +556,41 @@ def _draft_pr(draft: dict, dry_run: bool) -> dict:
                "next iteration will write the file change directly to " \
                "a branch + open a PR. For now, the operator applies the " \
                "1-line change from the suggestion and clicks 'Create PR'.*"
+        _gh_headers = {
+            "Authorization": f"Bearer {_GITHUB_TOKEN}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
+        # Dedup guard (2026-06-21): GitHub-side search-before-create, fail-CLOSED.
+        # The local DB dedup (_already_drafted) fails OPEN, so a wiped table could
+        # re-flood. Skip if an OPEN issue with this exact title already exists; and
+        # if the search itself errors, do NOT post (fail closed — never risk a flood).
+        try:
+            import urllib.parse as _ulp
+            _q = _ulp.quote(f'repo:{_GITHUB_REPO} is:issue is:open in:title "{draft["title"]}"')
+            _sr = requests.get(f"https://api.github.com/search/issues?q={_q}&per_page=20",
+                               headers=_gh_headers, timeout=15)
+            if _sr.status_code == 200:
+                _match = next((i for i in (_sr.json() or {}).get("items", [])
+                               if i.get("title") == draft["title"]), None)
+                if _match:
+                    _record(draft, dry_run=False, pr_url=_match.get("html_url"),
+                             pr_number=_match.get("number"), branch=None,
+                             error="deduped_existing_open_issue")
+                    return {"ok": True, "deduped": True,
+                            "issue_url": _match.get("html_url"),
+                            "issue_number": _match.get("number"), **draft}
+            else:
+                _e = f"dedup_search_{_sr.status_code}"
+                _record(draft, dry_run=False, pr_url=None, pr_number=None, branch=None, error=_e)
+                return {"ok": False, "error": _e}
+        except Exception as _de:
+            _e = f"dedup_search_exc: {str(_de)[:120]}"
+            _record(draft, dry_run=False, pr_url=None, pr_number=None, branch=None, error=_e)
+            return {"ok": False, "error": _e}
         r = requests.post(
             f"https://api.github.com/repos/{_GITHUB_REPO}/issues",
-            headers={
-                "Authorization": f"Bearer {_GITHUB_TOKEN}",
-                "Accept": "application/vnd.github+json",
-                "X-GitHub-Api-Version": "2022-11-28",
-            },
+            headers=_gh_headers,
             json={
                 "title": draft["title"],
                 "body": body,
