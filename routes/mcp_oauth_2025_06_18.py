@@ -227,6 +227,32 @@ def oauth_identity_resolve():
     # tier CHECK on mcp_dev_keys = free/paid/enterprise ONLY — seed 'free'.
     metadata = {"source": "workos_oauth", "oauth_sub": sub, "oauth_iss": iss}
 
+    # CONTACTABILITY (2026-06-22): the gateway can't supply an email — WorkOS access
+    # tokens omit the email claim, and /oauth2/userinfo 401s our aud-bound token
+    # (RFC 8707, valid for us not for WorkOS). Resolve it server-side via the WorkOS
+    # Management API by user_id (the verified `sub`). The API key lives HERE (backend
+    # secrets), NOT on the internet-facing gateway. DORMANT unless WORKOS_API_KEY is
+    # set. Fail-safe: any miss → email stays None (durable identity still works; the
+    # row is just not yet contactable). Backfills the existing row via COALESCE below.
+    if not email and sub.startswith("user_"):
+        _wk = (os.environ.get("WORKOS_API_KEY") or "").strip()
+        if _wk:
+            try:
+                import urllib.request as _ur
+                _req = _ur.Request(
+                    f"https://api.workos.com/user_management/users/{sub}",
+                    headers={"Authorization": f"Bearer {_wk}",
+                             "Accept": "application/json",
+                             "User-Agent": "dchub-oauth-identity/1.0"})
+                with _ur.urlopen(_req, timeout=5) as _resp:
+                    if getattr(_resp, "status", 200) == 200:
+                        _u = _json.loads(_resp.read().decode("utf-8") or "{}")
+                        _e = ((_u.get("email") or "").strip().lower()) or None
+                        if _e and "@" in _e:
+                            email = _e
+            except Exception as _we:
+                print(f"[oauth-identity] workos email lookup failed: {_we!r}", flush=True)
+
     dsn = os.environ.get("DATABASE_URL") or os.environ.get("NEON_DATABASE_URL")
     if not dsn:
         return jsonify({"error": "no_db"}), 500
