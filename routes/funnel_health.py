@@ -809,13 +809,23 @@ def _build_data() -> dict:
                    "distinct_sessions_30d": 0, "signals_30d": 0,
                    "conversions_30d": 0, "conv_rate_pct": 0.0}
             try:
+                # FIX (2026-06-22): this read mcp_call_log.platform, but mcp_call_log is
+                # logged WITHOUT a platform column (_bulk_log_call + onboarding inserts omit
+                # it) → every per-platform match was 0. The CANONICAL, correctly-attributed
+                # MCP telemetry is mcp_connections (ai_tracking.log_mcp_connection, v4.1:
+                # EVERY rpc_method writes platform + client_name). Read from there, matching
+                # platform OR client_name; distinct = callers by IP (mcp_connections has no
+                # session_id). NOTE: the signals + conversions per-platform sub-queries below
+                # are a SEPARATE, harder gap — they need a session→platform join through the
+                # pair-code flow that mcp_connections doesn't carry; left as-is for now.
                 like_clauses = " OR ".join(
-                    "LOWER(COALESCE(platform,'')) LIKE %s" for _ in patterns)
-                params = tuple(f"%{p}%" for p in patterns)
+                    "LOWER(COALESCE(platform,'')) LIKE %s OR LOWER(COALESCE(client_name,'')) LIKE %s"
+                    for _ in patterns)
+                params = tuple(x for p in patterns for x in (f"%{p}%", f"%{p}%"))
                 cur.execute(
-                    "SELECT COUNT(*), COUNT(DISTINCT session_id) "
-                    "  FROM mcp_call_log "
-                    " WHERE timestamp >= NOW() - INTERVAL '30 days' "
+                    "SELECT COUNT(*), COUNT(DISTINCT ip_address) "
+                    "  FROM mcp_connections "
+                    " WHERE created_at >= NOW() - INTERVAL '30 days' "
                     "   AND (" + like_clauses + ")",
                     params)
                 r = cur.fetchone() or (0, 0)
@@ -1596,7 +1606,7 @@ def _render_html(data: dict, admin_key: str) -> str:
       <thead><tr>
         <th>Platform</th>
         <th style="text-align:right">Requests</th>
-        <th style="text-align:right">Distinct sessions</th>
+        <th style="text-align:right">Distinct callers (IP)</th>
         <th style="text-align:right">Signals</th>
         <th style="text-align:right">Conversions</th>
         <th style="text-align:right">Conv %</th>
