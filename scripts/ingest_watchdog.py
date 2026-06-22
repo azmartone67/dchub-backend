@@ -19,6 +19,15 @@ def fetch():
 def open_issue(title, body):
     if os.environ.get('GH_TOKEN'):
         try:
+            # Dedup guard (2026-06-21): skip if an OPEN watchdog issue with this
+            # exact title already exists, so we don't re-file a dup every run.
+            existing = subprocess.run(
+                ['gh','issue','list','--state','open','--label','watchdog',
+                 '--search', f'{title} in:title', '--json','number,title'],
+                capture_output=True, text=True, check=True).stdout
+            if any(i.get('title') == title for i in json.loads(existing or '[]')):
+                print('watchdog: open issue already exists, skipping:', title)
+                return
             subprocess.run(['gh','issue','create','--title',title,
                             '--body',body,'--label','watchdog'], check=True)
             return
