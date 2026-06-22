@@ -39,6 +39,64 @@ MAX_CONNECTIONS_PER_CRAWLER = 2       # Leave 6 of 8 for API traffic
 HARD_TIMEOUT_SECONDS = 30 * 60       # 15 min max per crawler run
 OVERLAP_GUARD_SECONDS = 30           # Wait after each crawler finishes
 
+# ── Cross-replica run claim (2026-06-22) ───────────────────────────────────
+# dchub-backend runs 2 Railway replicas, EACH with its own crawler scheduler.
+# Without a shared lock both run the SAME crawl at the same time — e.g. both
+# hammer the free OSM Overpass API, DOUBLING the load → self-inflicted 429s +
+# wasted compute + startup pool pressure. A DB row-claim makes exactly ONE
+# replica run each crawl: the winner holds the claim, losers skip. The claim is
+# RELEASED on completion (so the next scheduled cycle runs immediately) and
+# self-EXPIRES after a crawl's max lifetime (so a crashed replica can't wedge the
+# lock). FAIL-OPEN: if the DB is unreachable we run anyway — better a rare
+# double-run than silently skipping a crawl.
+_CLAIM_TTL_SECONDS = HARD_TIMEOUT_SECONDS + 120
+
+
+def _claim_crawler_run(name):
+    """True on exactly ONE replica per run window for `name` (fail-open)."""
+    dsn = os.environ.get("DATABASE_URL") or os.environ.get("NEON_DATABASE_URL")
+    if not dsn:
+        return True
+    try:
+        import psycopg2
+        conn = psycopg2.connect(dsn, sslmode="require", connect_timeout=5)
+        conn.autocommit = True
+        try:
+            with conn.cursor() as cur:
+                cur.execute("CREATE TABLE IF NOT EXISTS crawler_run_claims ("
+                            "name TEXT PRIMARY KEY, claimed_at TIMESTAMPTZ DEFAULT NOW())")
+                cur.execute(
+                    "INSERT INTO crawler_run_claims (name, claimed_at) VALUES (%s, NOW()) "
+                    "ON CONFLICT (name) DO UPDATE SET claimed_at = NOW() "
+                    "  WHERE crawler_run_claims.claimed_at < NOW() - (%s * INTERVAL '1 second') "
+                    "RETURNING name",
+                    (name, int(_CLAIM_TTL_SECONDS)))
+                return cur.fetchone() is not None
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.warning(f"[crawler-claim] {name}: claim check failed ({type(e).__name__}) — running anyway (fail-open)")
+        return True
+
+
+def _release_crawler_run(name):
+    """Release the run claim so the next scheduled cycle can run without waiting
+    out the TTL. Best-effort — if it fails, the TTL reclaims the lock."""
+    dsn = os.environ.get("DATABASE_URL") or os.environ.get("NEON_DATABASE_URL")
+    if not dsn:
+        return
+    try:
+        import psycopg2
+        conn = psycopg2.connect(dsn, sslmode="require", connect_timeout=5)
+        conn.autocommit = True
+        try:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM crawler_run_claims WHERE name = %s", (name,))
+        finally:
+            conn.close()
+    except Exception:
+        pass
+
 # Schedule: (hour_utc_run1, hour_utc_run2, crawler_name, runner_func_name)
 # 4-hour gaps between each crawler for safety
 # api_discovery EXCLUDED — too heavy, available via manual trigger only
@@ -698,7 +756,16 @@ def _run_with_guard(name, func):
             logger.warning(f"⏭️  Skipping {name} — {_active_crawler} still running")
             return
         _active_crawler = name
-    
+
+    # Cross-replica singleton: only ONE of the 2 replicas runs each crawl. The
+    # in-process _active_crawler lock above dedups WITHIN a replica; this dedups
+    # ACROSS replicas (released in the finally; self-expires if a replica dies).
+    if not _claim_crawler_run(name):
+        logger.info(f"⏭️  Skipping {name} — another replica holds the run claim")
+        with _lock:
+            _active_crawler = None
+        return
+
     started = datetime.now(timezone.utc)
     status = "success"
     logger.info(f"🚀 CRAWLER START: {name} at {started.strftime('%H:%M:%S UTC')}")
@@ -736,7 +803,8 @@ def _run_with_guard(name, func):
         
         with _lock:
             _active_crawler = None
-        
+        _release_crawler_run(name)   # let the other replica's next cycle run immediately
+
         _run_history.append({
             "name": name,
             "started": started.isoformat(),
