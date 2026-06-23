@@ -19928,6 +19928,10 @@ def fiber_routes_public_api():
 # HTTP 404 Not Found"). Add it as an alias of /api/v1/fiber/routes so
 # both internal callers (radar, redeem) get real data and the radar's
 # tier-consistency check has something to compare against.
+_FIBER_INTEL_CACHE = {"data": None, "at": 0.0}   # in-process full-build cache (r-fibercache)
+_FIBER_INTEL_TTL = 300
+
+
 @app.route('/api/v1/fiber/intel', methods=['GET'])
 def fiber_intel_api():
     """Alias of /api/v1/fiber/routes with free-tier teaser.
@@ -19950,9 +19954,26 @@ def fiber_intel_api():
 
     2026-06-13: private,no-store — same poisoned-edge-cache class as
     /api/v1/fiber/routes/public (a cached anonymous teaser was served to
-    PAID get_fiber_intel callers; this is the paid MCP fiber tool's API)."""
-    payload = (_build_fiber_routes_geojson() if _fiber_full_access_ok()
-               else _fiber_teaser_response())
+    PAID get_fiber_intel callers; this is the paid MCP fiber tool's API).
+
+    r-fibercache (2026-06-23): _build_fiber_routes_geojson() rebuilt the FULL
+    FeatureCollection on EVERY full-access call — a heavy DB build that the
+    brain-radar's CF probe timed out on (a top self-inflicted slow request). The
+    full payload is IDENTICAL for every access-granted caller, so cache it
+    IN-PROCESS for 5 min. The `no-store` edge headers below STAY (no paywall
+    bypass — only access-granted callers ever read this branch); teaser callers
+    never touch the cache."""
+    if _fiber_full_access_ok():
+        _now = time.time()
+        if (_FIBER_INTEL_CACHE["data"] is not None
+                and (_now - _FIBER_INTEL_CACHE["at"]) < _FIBER_INTEL_TTL):
+            payload = _FIBER_INTEL_CACHE["data"]
+        else:
+            payload = _build_fiber_routes_geojson()
+            _FIBER_INTEL_CACHE["data"] = payload
+            _FIBER_INTEL_CACHE["at"] = _now
+    else:
+        payload = _fiber_teaser_response()
     resp = jsonify(payload)
     # canonical anti-edge-cache directive (same as the facilities endpoint's
     # r-tune fix): the zone worker stamps plain Cache-Control with its own
