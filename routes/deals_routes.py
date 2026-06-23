@@ -429,18 +429,41 @@ def get_deals():
     date_to = request.args.get('to', '').strip()
     
     cache_key = f"deals_{year}_{region}_{deal_type}_{category}_{buyer_filter}_{seller_filter}_{min_value}_{max_value}_{date_from}_{date_to}"
+
+    # r-deals-dollar-mask (2026-06-22): deal $ values + MW are PAID intel (the
+    # sibling /api/v1/transactions already withholds them from free/anon). The
+    # CF-injected Referer let anon pull every confirmed $ value via protect_data's
+    # bypass (audit leak #4). Mask value/value_display/value_confirmed/mw + the
+    # aggregates for any NON-PAID caller — caller_is_privileged('PRO') trusts pro
+    # tier / internal / loopback / a logged-in browser cookie, but NOT the
+    # forgeable Referer (tier_gate.py:225). Anon + free-keyed → no $; Pro+ → full.
+    # Fail-closed to masked. Masks COPIES so the shared DEALS_CACHE keeps full data.
+    try:
+        from routes.tier_gate import caller_is_privileged
+        _deals_paid = caller_is_privileged('PRO')
+    except Exception:
+        _deals_paid = False
+
+    def _mask_d(d):
+        if _deals_paid:
+            return d
+        return {**d, 'value': None, 'value_display': None, 'value_confirmed': False, 'mw': None}
+
     cached_data = DEALS_CACHE.get(cache_key)
     if cached_data is not None:
-        limited = cached_data[:limit]
+        limited = [_mask_d(d) for d in cached_data[:limit]]
         return jsonify({
             'success': True,
             'transactions': limited,
             'data': limited,
             'count': len(limited),
             'total_count': len(cached_data),
-            'total_value': sum((d.get('value') or 0) for d in cached_data),
+            'total_value': (sum((d.get('value') or 0) for d in cached_data) if _deals_paid else None),
             'data_source': 'cached',
-            'cached': True
+            'cached': True,
+            'tier': ('paid' if _deals_paid else 'free'),
+            'upgrade_url': (None if _deals_paid else 'https://dchub.cloud/pricing'),
+            'note': (None if _deals_paid else 'Free: deal $ values + MW are Pro. Upgrade at https://dchub.cloud/pricing for confirmed values + capacity.'),
         })
     
     # Phase GG (2026-05-14): live DB wins COMPLETELY. The `deals` table
@@ -574,18 +597,21 @@ def get_deals():
     DEALS_CACHE.set(cache_key, deals)
     
     # Apply limit
-    limited_deals = deals[:limit]
-    
+    # r-deals-dollar-mask: strip $/MW for non-paid callers (copies; cache keeps full)
+    limited_deals = [_mask_d(d) for d in deals[:limit]]
+
     return jsonify({
         'success': True,
         'transactions': limited_deals,
         'data': limited_deals,  # Keep for backwards compatibility
         'count': len(limited_deals),
         'total_count': len(deals),
-        'total_value': sum((d.get('value') or 0) for d in deals),
+        'total_value': (sum((d.get('value') or 0) for d in deals) if _deals_paid else None),
         'data_source': data_source,
-        'stats_by_type': stats_by_type,
-        'stats_by_year': stats_by_year,
+        'stats_by_type': (stats_by_type if _deals_paid else {k: {'count': v['count'], 'value': None} for k, v in stats_by_type.items()}),
+        'stats_by_year': (stats_by_year if _deals_paid else {k: {'count': v['count'], 'value': None} for k, v in stats_by_year.items()}),
+        'tier': ('paid' if _deals_paid else 'free'),
+        'upgrade_url': (None if _deals_paid else 'https://dchub.cloud/pricing'),
         'deal_types': {
             'ma': 'M&A / Acquisitions',
             'equity': 'Equity Investments',
