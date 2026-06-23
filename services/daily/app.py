@@ -324,6 +324,53 @@ def _resolve_og_image(date: datetime.date, base: str) -> str:
     return fallback
 
 
+_FLOW_CACHE: dict = {"html": None, "ts": 0.0}
+
+
+def _today_flow_html() -> str:
+    """A live-flow band of genuinely DAILY-changing numbers (new adds this
+    week, 7d deal count, 24h news, biggest DCPI grid mover) shown ABOVE the
+    slow-moving cumulative state infographics — so the page reads as "daily"
+    even though per-state capacity barely moves day to day. Fully guarded +
+    5-min cached; returns '' on any failure so the page never breaks."""
+    import time, json, urllib.request
+    now = time.time()
+    if _FLOW_CACHE["html"] is not None and (now - _FLOW_CACHE["ts"]) < 300:
+        return _FLOW_CACHE["html"]
+
+    def _get(url):
+        try:
+            req = urllib.request.Request(
+                url, headers={"User-Agent": "dchub-daily/1"})  # UA or CF 403s
+            with urllib.request.urlopen(req, timeout=5) as r:
+                return json.loads(r.read().decode("utf-8"))
+        except Exception:
+            return None
+
+    chips = []
+    wn = _get("https://dchub.cloud/api/v1/whats-new")
+    if wn and wn.get("total_added"):
+        chips.append(f'<span class="chip"><b>{wn["total_added"]}</b> new this week</span>')
+    dg = _get("https://dchub.cloud/api/v1/digest/today")
+    if dg:
+        if dg.get("deals_count_7d"):
+            chips.append(f'<span class="chip"><b>{dg["deals_count_7d"]}</b> deals · 7d</span>')
+        if dg.get("news_count_24h"):
+            chips.append(f'<span class="chip"><b>{dg["news_count_24h"]}</b> news · 24h</span>')
+        mv = (dg.get("biggest_movers") or [None])[0]
+        if mv and mv.get("delta") is not None:
+            d = mv["delta"]
+            arrow = "▲" if d >= 0 else "▼"
+            chips.append(f'<span class="chip">Top grid mover · <b>{mv.get("market","?")}</b> '
+                         f'{arrow}{abs(d):.1f}</span>')
+
+    html = ('<div class="flow"><span class="flow-live">● LIVE TODAY</span>'
+            + "".join(chips) + '</div>') if chips else ""
+    _FLOW_CACHE["html"] = html
+    _FLOW_CACHE["ts"] = now
+    return html
+
+
 def share_page_html(date: datetime.date) -> str:
     rows = []
     if os.environ.get("DATABASE_URL"):
@@ -373,11 +420,19 @@ def share_page_html(date: datetime.date) -> str:
   figcaption {{ padding:12px 14px; font-size:13px; display:flex;
                 justify-content:space-between; align-items:center; }}
   figcaption a {{ color:#9EF3FF; text-decoration: none; }}
+  .flow {{ display:flex; flex-wrap:wrap; gap:10px; align-items:center;
+           padding:14px 32px; border-bottom:1px solid #1c2840;
+           background:#0b1730; font-size:13px; }}
+  .flow-live {{ color:#34d399; font-weight:700; letter-spacing:1px; }}
+  .chip {{ background:#13233f; border:1px solid #1c2840; border-radius:999px;
+           padding:5px 12px; color:#cfe9ff; }}
+  .chip b {{ color:#9EF3FF; }}
 </style><script src="/js/dchub-nav.js" defer></script></head><body>
 <header>
   <h1>DC HUB · DAILY</h1>
   <p>U.S. Data Center Hubs — {date.isoformat()}. 3 themes × 3 formats. Click any to download.</p>
 </header>
+{_today_flow_html()}
 <main>{grid}</main>
 </body></html>"""
 
