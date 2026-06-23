@@ -16447,6 +16447,15 @@ def _list_facilities_full():
         sql += " AND state = %s"
         count_sql += " AND state = %s"
         params.append(state.upper())
+    # r-cityfix (2026-06-23): the authed path aliased operator/market/min_mw but
+    # FORGOT `city` — so a keyed agent's search_facilities city=Phoenix was silently
+    # IGNORED and ran unfiltered (caught live: a Phoenix search returned Hampton GA /
+    # Las Cruces NM, total 15290). Mirror the state filter above.
+    city = request.args.get('city')
+    if city:
+        sql += " AND city ILIKE %s"
+        count_sql += " AND city ILIKE %s"
+        params.append(f"%{city}%")
 
     # Phase 4: min_confidence filter
     min_confidence = request.args.get('min_confidence', type=float)
