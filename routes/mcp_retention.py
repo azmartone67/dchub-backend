@@ -165,22 +165,31 @@ def mcp_retention():
             except Exception:
                 ib["trial_breakdown_error"] = True
             try:
-                # OAuth-durable cohort SIZE (the new lever's uptake). dch_oauth_ keys live in
-                # mcp_dev_keys (NOT auto_trial_keys), which has no usage tracking → return rate
-                # is not yet computable. No params arg ⇒ the literal % in LIKE is safe.
-                cur.execute("SELECT COUNT(*) AS identities, "
-                            "COUNT(*) FILTER (WHERE email IS NOT NULL AND email <> '') AS with_email "
-                            "FROM mcp_dev_keys WHERE api_key LIKE 'dch_oauth_%'")
+                # OAuth-durable cohort — now MEASURABLE (2026-06-22): last_used_at is stamped on
+                # /oauth/identity resolve + /keys/validate, so created_at (first connect) vs
+                # last_used_at (latest use) gives a true cross-session return. dch_oauth_ keys live
+                # in mcp_dev_keys (NOT auto_trial_keys). No params arg ⇒ the literal % in LIKE is safe.
+                cur.execute("""
+                    SELECT COUNT(*) AS identities,
+                           COUNT(*) FILTER (WHERE email IS NOT NULL AND email <> '') AS with_email,
+                           COUNT(*) FILTER (WHERE created_at < now() - interval '7 days') AS mature,
+                           COUNT(*) FILTER (WHERE created_at < now() - interval '7 days'
+                                    AND last_used_at IS NOT NULL
+                                    AND date_trunc('week', last_used_at) > date_trunc('week', created_at)
+                                   ) AS returned_mature
+                    FROM mcp_dev_keys WHERE api_key LIKE 'dch_oauth_%'
+                """)
                 o = cur.fetchone() or {}
+                m = int(o.get("mature") or 0); rt = int(o.get("returned_mature") or 0)
                 ib["oauth_durable"] = {
                     "identities": int(o.get("identities") or 0),
                     "with_email": int(o.get("with_email") or 0),
-                    "returned_next_week_mature": None, "measurable": False,
-                    "gap": ("OAuth returns are NOT yet measurable: dch_oauth_ keys live in mcp_dev_keys "
-                            "(no last_used/usage column) and mcp_tool_calls is keyed on the rotating "
-                            "ip_address, not the caller key. To measure OAuth retention: attribute calls "
-                            "to the caller api_key at the gateway, OR stamp last_used_at on mcp_dev_keys "
-                            "validate. Until then the durable-identity lever is invisible to this metric."),
+                    "mature_cohort": m, "returned_next_week_mature": rt,
+                    "pct_returned": round(100.0 * rt / m, 1) if m else None,
+                    "measurable": True,
+                    "note": ("MEASURABLE via created_at vs last_used_at (stamped on /oauth/identity + "
+                             "/keys/validate). pct_returned is null until the cohort matures 8d+ — "
+                             "watch it as OAuth adoption grows; this is the durable-identity payoff signal."),
                 }
             except Exception:
                 ib["oauth_error"] = True
