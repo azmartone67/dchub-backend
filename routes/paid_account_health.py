@@ -142,7 +142,7 @@ def check_paid_health():
                     cur.execute("SAVEPOINT sp_keys")
                     cur.execute("""
                         SELECT count(*) FROM api_keys
-                        WHERE user_id = %s AND is_active IS TRUE
+                        WHERE user_id = %s AND COALESCE(is_active,1) <> 0
                     """, (user_id,))
                     n_keys = (cur.fetchone() or [0])[0]
                     cur.execute("RELEASE SAVEPOINT sp_keys")
@@ -335,7 +335,7 @@ def set_tier():
                 cur.execute("""
                     UPDATE api_keys SET rate_limit_tier = %s, plan = %s
                      WHERE user_id = (SELECT id FROM users WHERE LOWER(email) = %s)
-                       AND is_active IS TRUE
+                       AND COALESCE(is_active,1) <> 0
                 """, (role, plan, email))
             except Exception as _ke:
                 logger.warning(f"set-tier: api_keys update skipped: {_ke}")
@@ -379,7 +379,7 @@ def mint_key():
             user_id, plan = row[0], (row[1] or 'free')
             cur.execute("""
                 SELECT key_prefix FROM api_keys
-                 WHERE user_id = %s AND is_active IS TRUE LIMIT 1
+                 WHERE user_id = %s AND COALESCE(is_active,1) <> 0 LIMIT 1
             """, (user_id,))
             existing = cur.fetchone()
             if existing and not regenerate:
