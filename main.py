@@ -4803,7 +4803,12 @@ def system_status():
 
 @app.route('/assets')
 def assets_page():
-    return app.send_static_file('assets.html')
+    # r-datacenters wave-1 (2026-06-23): consolidated into the single "Data Centers"
+    # surface (/database — search-led, filter/sort/map/export, never-empty). The old
+    # Assets Explorer was a DUPLICATE door for the same 21,000 facilities; a real
+    # customer researching DC assets landed on this weaker page and never found
+    # /database. 301 so the journey + any /assets SEO funnels to the good surface.
+    return redirect('/database', code=301)
 
 @app.route('/ecosystem')
 def ecosystem_page():
