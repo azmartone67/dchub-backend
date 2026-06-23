@@ -364,6 +364,18 @@ def publish_announcement(item: dict) -> dict:
             row_id = cur.fetchone()[0]
         conn.commit()
         conn.close()
+        # r-indexnow-onpublish (2026-06-23): ping IndexNow so the just-published page
+        # is indexed within minutes (Bing/Yandex) instead of at the next crawl. This is
+        # the hook routes/indexnow.py was built for but had zero callers. Fail-soft —
+        # submit_to_indexnow host-filters to dchub.cloud, dedups, caps, and never raises.
+        try:
+            from routes.indexnow import submit_to_indexnow
+            _u = item.get("url") or ("/news/" + slug)
+            if _u.startswith("/"):
+                _u = "https://dchub.cloud" + _u
+            submit_to_indexnow([_u])
+        except Exception:
+            pass
         return {"ok": True, "id": row_id, "slug": slug}
     except Exception as e:
         log.warning(f"publish_announcement err: {e}")

@@ -812,19 +812,23 @@ def _build_data() -> dict:
                 # FIX (2026-06-22): this read mcp_call_log.platform, but mcp_call_log is
                 # logged WITHOUT a platform column (_bulk_log_call + onboarding inserts omit
                 # it) → every per-platform match was 0. The CANONICAL, correctly-attributed
-                # MCP telemetry is mcp_connections (ai_tracking.log_mcp_connection, v4.1:
-                # EVERY rpc_method writes platform + client_name). Read from there, matching
-                # platform OR client_name; distinct = callers by IP (mcp_connections has no
-                # session_id). NOTE: the signals + conversions per-platform sub-queries below
-                # are a SEPARATE, harder gap — they need a session→platform join through the
-                # pair-code flow that mcp_connections doesn't carry; left as-is for now.
+                # r-perplatform-source (2026-06-23): read mcp_tool_calls, NOT
+                # mcp_connections. mcp_connections was effectively empty (~3 rows/7d)
+                # because ai_tracking.log_mcp_connection's ON CONFLICT bug swallowed
+                # every insert (now fixed, but it refills over ~30d). mcp_tool_calls
+                # is the populated, correctly-attributed table (platform + client_name
+                # + user_agent per row, ~1.2k/7d) the working /mcp/funnel endpoint reads.
+                # Match platform OR client_name OR user_agent; distinct = callers by IP.
+                # NOTE: the signals + conversions per-platform sub-queries below are a
+                # SEPARATE, harder gap (need a session→platform join) — left as-is.
                 like_clauses = " OR ".join(
-                    "LOWER(COALESCE(platform,'')) LIKE %s OR LOWER(COALESCE(client_name,'')) LIKE %s"
+                    "LOWER(COALESCE(platform,'')) LIKE %s OR LOWER(COALESCE(client_name,'')) LIKE %s "
+                    "OR LOWER(COALESCE(user_agent,'')) LIKE %s"
                     for _ in patterns)
-                params = tuple(x for p in patterns for x in (f"%{p}%", f"%{p}%"))
+                params = tuple(x for p in patterns for x in (f"%{p}%", f"%{p}%", f"%{p}%"))
                 cur.execute(
                     "SELECT COUNT(*), COUNT(DISTINCT ip_address) "
-                    "  FROM mcp_connections "
+                    "  FROM mcp_tool_calls "
                     " WHERE created_at >= NOW() - INTERVAL '30 days' "
                     "   AND (" + like_clauses + ")",
                     params)

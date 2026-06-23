@@ -583,21 +583,13 @@ def log_mcp_connection(
                 success, error_message, created_at
             )
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (platform) DO UPDATE SET
-                method = EXCLUDED.method,
-                user_agent = EXCLUDED.user_agent,
-                ip_address = EXCLUDED.ip_address,
-                tool_name = EXCLUDED.tool_name,
-                params = EXCLUDED.params,
-                status_code = EXCLUDED.status_code,
-                response_ms = EXCLUDED.response_ms,
-                client_name = EXCLUDED.client_name,
-                client_version = EXCLUDED.client_version,
-                protocol_version = EXCLUDED.protocol_version,
-                success = EXCLUDED.success,
-                error_message = EXCLUDED.error_message,
-                created_at = EXCLUDED.created_at
         """, (
+            # r-mcpconn-append (2026-06-23): mcp_connections is an APPEND-ONLY event
+            # log (one row per RPC), NOT an upsert-by-platform table. The old
+            # `ON CONFLICT (platform) DO UPDATE` had NO matching unique constraint on
+            # platform, so EVERY direct insert raised and fell into the SQLite buffer
+            # — the table held ~3 rows/7d and the per-platform funnel read 0 for all.
+            # Removed the clause so per-platform/per-tool rows actually accumulate.
             platform, method, ua, ip,
             tool_name, params_str, status_code, response_ms or 0,
             client_name, client_version, protocol_version,
