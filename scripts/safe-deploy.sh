@@ -58,5 +58,29 @@ if [ "$CHECK_ONLY" = "true" ]; then
   exit 0
 fi
 
+# 5) r-harden (2026-06-23): align a CLEAN checkout to origin/main HEAD before deploying.
+#    THE deploy-race that silently reverted fixes: a stale local checkout (behind main,
+#    no local edits) `railway up`s an OLD commit, clobbering main HEAD. If there are NO
+#    modified/staged TRACKED files AND HEAD is strictly an ancestor of origin/main,
+#    fast-forward to main HEAD so we always deploy the LATEST committed state. A dirty
+#    tree (active local edits) or a branch with un-merged commits deploys AS-IS — this
+#    never drops in-progress work; it only stops stale checkouts from reverting main.
+#    Fail-soft: if the ff can't apply (e.g. untracked-file collision), deploy as-is.
+#    Kill with DCHUB_DEPLOY_NO_FF=1.
+if [ "${DCHUB_DEPLOY_NO_FF:-}" != "1" ]; then
+  git fetch origin main --quiet 2>/dev/null || true
+  _dirty="$(git diff --name-only 2>/dev/null; git diff --cached --name-only 2>/dev/null)"
+  if [ -z "$_dirty" ] \
+     && git merge-base --is-ancestor HEAD origin/main 2>/dev/null \
+     && ! git merge-base --is-ancestor origin/main HEAD 2>/dev/null; then
+    echo "   ↪ clean checkout behind origin/main — fast-forwarding to deploy main HEAD"
+    if git merge --ff-only origin/main 2>/dev/null; then
+      echo "   ✓ now at $(git rev-parse --short HEAD) (origin/main HEAD)"
+    else
+      echo "   ⚠️  ff blocked (untracked collision?) — deploying the local tree as-is"
+    fi
+  fi
+fi
+
 echo "🚀 railway up --service $SERVICE --detach"
 railway up --service "$SERVICE" --detach
