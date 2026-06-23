@@ -1873,18 +1873,42 @@ def sentinel_findings():
     return resp, 200
 
 
+_scan_running = __import__("threading").Lock()
+
+
 @site_sentinel_bp.route("/api/v1/sentinel/scan-now", methods=["POST"])
 def sentinel_scan_now():
-    """Admin-only: trigger a fresh sweep."""
+    """Admin-only: trigger a fresh sweep — FIRE-AND-FORGET (202).
+    r-async (2026-06-23): scan_all() is a ~50s synchronous sweep that held a
+    gunicorn worker (a top 'SLOW REQUEST' contributing to the pool-saturation
+    flap). Now it runs in a background thread (non-blocking lock prevents overlap)
+    and the endpoint returns the LAST-known results immediately so the admin board
+    still renders; the fresh sweep lands within ~60s (reload to see it)."""
+    import threading
     provided = (request.headers.get("X-Admin-Key")
                 or request.args.get("admin_key") or "").strip()
     if _ADMIN_KEY and provided != _ADMIN_KEY:
         return jsonify(error="unauthorized", hint="X-Admin-Key required"), 401
-    rows = scan_all()
+
+    started = False
+    if _scan_running.acquire(blocking=False):
+        started = True
+
+        def _bg():
+            try:
+                scan_all()
+            finally:
+                try: _scan_running.release()
+                except Exception: pass
+        threading.Thread(target=_bg, daemon=True, name="sentinel-scan").start()
+
+    rows = latest_results() or []
     healthy = sum(1 for r in rows if r.get("healthy"))
     return jsonify(scanned=len(rows), healthy=healthy,
-                   unhealthy=len(rows) - healthy,
-                   results=rows), 200
+                   unhealthy=len(rows) - healthy, results=rows,
+                   scan_started=started,
+                   note=("fresh sweep started in background; reload in ~60s for updated results"
+                         if started else "a sweep is already running; reload shortly")), 202
 
 
 @site_sentinel_bp.route("/sentinel", methods=["GET"], strict_slashes=False)

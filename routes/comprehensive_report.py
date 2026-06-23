@@ -649,10 +649,28 @@ def quarterly_html():
                              "X-DC-Phase": "ZZZZZ-round47.13-comprehensive-quarterly"})
 
 
+_MONTHLY_JSON_CACHE = {"data": None, "at": 0.0}   # r-monthlycache (2026-06-23)
+_MONTHLY_JSON_TTL = 900
+
+
 @comprehensive_report_bp.route("/api/v1/reports/monthly.json", methods=["GET"], strict_slashes=False)
 @comprehensive_report_bp.route("/api/v1/reports/monthly", methods=["GET"], strict_slashes=False)
 def monthly_json():
-    d = _attach_narrative_safe(_attach_license(_gather(quarter_window=False), "monthly"), "monthly")
+    # r-monthlycache (2026-06-23): the edge caches this (max-age=900) for external
+    # callers, but ORIGIN callers — the brain-radar's localhost probe, internal
+    # crons — bypass the edge and re-ran the full _gather() + LLM narrative every
+    # hit (a top SLOW REQUEST the radar timed out on). Cache the built payload
+    # in-process for 15 min so the origin path is fast too. Public report =
+    # identical for all callers, so a single global cache is correct.
+    import time as _t
+    _now = _t.time()
+    if (_MONTHLY_JSON_CACHE["data"] is not None
+            and (_now - _MONTHLY_JSON_CACHE["at"]) < _MONTHLY_JSON_TTL):
+        d = _MONTHLY_JSON_CACHE["data"]
+    else:
+        d = _attach_narrative_safe(_attach_license(_gather(quarter_window=False), "monthly"), "monthly")
+        _MONTHLY_JSON_CACHE["data"] = d
+        _MONTHLY_JSON_CACHE["at"] = _now
     return jsonify(d), 200, {"Cache-Control": "public, max-age=900",
                              "Link": _CC_LINK_HEADER,
                              "X-License": "CC-BY-4.0"}

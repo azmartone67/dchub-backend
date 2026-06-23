@@ -537,7 +537,7 @@ def get_deals():
     
     # Filter by year
     if year:
-        deals = [d for d in deals if str(d.get('year', '')) == str(year) or d.get('date', '').startswith(str(year))]
+        deals = [d for d in deals if str(d.get('year', '')) == str(year) or (d.get('date') or '').startswith(str(year))]
     
     # Filter by region
     if region and region != 'All Regions':

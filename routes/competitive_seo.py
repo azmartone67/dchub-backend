@@ -170,7 +170,7 @@ def _dchub_numbers() -> dict:
         "grid_operators": 10,
         "utility_bas": 43,
         "grid_regions": 53,            # 10 NA operators + 43 utility BAs
-        "mcp_tools": 25,               # .well-known/mcp.json tools array
+        "mcp_tools": 40,               # conservative floor; live tools/list on dchub.cloud/mcp = 47 (2026-06-21 growth audit; was the stale .well-known/mcp.json manifest count of 25)
     }
     try:
         from canonical_stats import get_canonical_stats, facilities_phrase

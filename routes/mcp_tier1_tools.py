@@ -428,6 +428,25 @@ def score_facility():
                 f = cur.fetchone()
 
                 if not f:
+                    # r-search2score (2026-06-23): the AUTHED search_facilities returns
+                    # rows from the `facilities` table (NOT discovered_facilities), so
+                    # its id/slug 404'd here and the agent had to guess the name-slug
+                    # (caught live: score_facility worked only with the slug, not the
+                    # search id). Fall back to `facilities` with the same id/slug/name
+                    # resolution so the search→score round-trip just works.
+                    cur.execute("""
+                        SELECT id, name, provider, city, state, country,
+                               latitude, longitude, power_mw, status,
+                               source, source_url, confidence_score
+                          FROM facilities
+                         WHERE CAST(id AS TEXT) = %s
+                            OR LOWER(slug) = LOWER(%s)
+                            OR TRIM(BOTH '-' FROM REGEXP_REPLACE(LOWER(name), '[^a-z0-9]+', '-', 'g')) = LOWER(%s)
+                         LIMIT 1
+                    """, (str(facility_id), str(facility_id), str(facility_id)))
+                    f = cur.fetchone()
+
+                if not f:
                     return jsonify({"error": "facility not found", "facility_id": facility_id}), 404
 
                 # Default missing columns so the rest of the scoring works
@@ -436,15 +455,19 @@ def score_facility():
                 f.setdefault('certifications', None)
                 f.setdefault('connectivity', None)
 
-                # Get market context (count of facilities + avg MW in market)
+                # Get market context (count of facilities + avg MW in market).
+                # CAST id to text: a facilities-table fallback gives f["id"] a STRING
+                # slug (e.g. 'aligned-phoenix-az-exp') while discovered_facilities.id is
+                # INTEGER — `id != <string>` threw InvalidTextRepresentation. Text-compare
+                # works for both (a string id simply never matches an int id → no exclude).
                 cur.execute("""
                     SELECT COUNT(*) AS n, AVG(power_mw) AS avg_mw,
                            COUNT(DISTINCT provider) AS operators
                       FROM discovered_facilities
                      WHERE city = %s AND state = %s
                        AND COALESCE(is_duplicate, 0) = 0
-                       AND id != %s
-                """, (f["city"], f["state"], f["id"]))
+                       AND CAST(id AS TEXT) != %s
+                """, (f["city"], f["state"], str(f["id"])))
                 market = cur.fetchone() or {"n": 0, "avg_mw": 0, "operators": 0}
         except Exception as e:
             return jsonify({"error": f"query_failed: {type(e).__name__}: {str(e)[:200]}"}), 500

@@ -268,6 +268,14 @@ def oauth_identity_resolve():
             "ON CONFLICT (api_key) DO NOTHING",
             (api_key, developer_id, email, _json.dumps(metadata)),
         )
+        # Stamp last_used_at on EVERY resolve (create OR return) so OAuth retention is
+        # measurable: created_at (first connect) vs last_used_at (latest use) → a return
+        # = last_used_at in a later ISO week than created. The gateway resolves on a
+        # ~5-min token-cache miss, so this is a bounded write (same column /keys/validate
+        # stamps). Without it a returning OAuth session hits ON CONFLICT DO NOTHING and
+        # last_used_at never moves → the durable-identity lever stays invisible to the
+        # return metric the engines steer by.
+        cur.execute("UPDATE mcp_dev_keys SET last_used_at = NOW() WHERE api_key = %s", (api_key,))
         # Backfill an email we learned later (row created before bind).
         if email:
             cur.execute(

@@ -44,7 +44,9 @@ def _no_store(resp):
     return resp
 
 
-def _raw_get(path: str, timeout: int = 6) -> dict:
+def _raw_get(path: str, timeout: int = 18) -> dict:
+    # 2026-06-22: 6s→18s — same fix as the leadership engine: the slow /api/v1/ai/reach
+    # cold scan (~12s) was 6s-timing-out → utilization dimensions read 0.
     try:
         req = urllib.request.Request(_BASE + path, method="GET",
                                      headers={"User-Agent": "dchub-agent-util/shadow"})

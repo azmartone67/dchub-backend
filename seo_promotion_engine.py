@@ -76,60 +76,72 @@ class SEOPromotionEngine:
         return conn
 
     def _init_db(self):
-        """Initialize SEO tracking tables"""
-        conn = self._get_db()
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS seo_submissions (
-                id SERIAL PRIMARY KEY,
-                engine TEXT NOT NULL,
-                url_submitted TEXT NOT NULL,
-                submission_type TEXT,
-                status TEXT DEFAULT 'pending',
-                response_code INTEGER,
-                submitted_at TEXT DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-        
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS backlinks (
-                id SERIAL PRIMARY KEY,
-                source_url TEXT NOT NULL,
-                source_domain TEXT,
-                target_url TEXT,
-                anchor_text TEXT,
-                discovered_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                verified BOOLEAN DEFAULT 0,
-                UNIQUE(source_url, target_url)
-            )
-        ''')
-        
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS press_releases (
-                id SERIAL PRIMARY KEY,
-                title TEXT NOT NULL,
-                content TEXT,
-                status TEXT DEFAULT 'draft',
-                distributed_to TEXT,
-                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                published_at TEXT
-            )
-        ''')
-        
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS seo_stats (
-                id SERIAL PRIMARY KEY,
-                date TEXT UNIQUE,
-                pages_indexed INTEGER DEFAULT 0,
-                sitemap_submissions INTEGER DEFAULT 0,
-                indexnow_pings INTEGER DEFAULT 0,
-                backlinks_found INTEGER DEFAULT 0
-            )
-        ''')
-        
-        conn.commit()
-        conn.close()
+        """Initialize SEO tracking tables.
+
+        r-seoddl (2026-06-23): these CREATE TABLEs ran through db_utils get_db(),
+        which SILENTLY SKIPS DDL (SKIP_DDL=1) — so the tables were NEVER created
+        and get_seo_stats 500'd `relation "seo_submissions" does not exist`. Run
+        the DDL on a RAW autocommit psycopg2 conn that bypasses the skip (same
+        pattern as routes/ai_reach_rollup._ensure_tables). Also Postgres-cleaned:
+        TIMESTAMPTZ DEFAULT NOW() (was `TEXT DEFAULT CURRENT_TIMESTAMP`, which
+        Postgres can't auto-cast) and `verified BOOLEAN DEFAULT FALSE` (was
+        `DEFAULT 0`, invalid for a Postgres boolean). Fail-soft."""
+        import os
+        import psycopg2 as _pg
+        dsn = os.environ.get("DATABASE_URL") or os.environ.get("NEON_DATABASE_URL")
+        if not dsn:
+            return
+        try:
+            conn = _pg.connect(dsn, sslmode="require", connect_timeout=5)
+            conn.autocommit = True
+            cur = conn.cursor()
+            cur.execute('''
+                CREATE TABLE IF NOT EXISTS seo_submissions (
+                    id SERIAL PRIMARY KEY,
+                    engine TEXT NOT NULL,
+                    url_submitted TEXT NOT NULL,
+                    submission_type TEXT,
+                    status TEXT DEFAULT 'pending',
+                    response_code INTEGER,
+                    submitted_at TIMESTAMPTZ DEFAULT NOW()
+                )
+            ''')
+            cur.execute('''
+                CREATE TABLE IF NOT EXISTS backlinks (
+                    id SERIAL PRIMARY KEY,
+                    source_url TEXT NOT NULL,
+                    source_domain TEXT,
+                    target_url TEXT,
+                    anchor_text TEXT,
+                    discovered_at TIMESTAMPTZ DEFAULT NOW(),
+                    verified BOOLEAN DEFAULT FALSE,
+                    UNIQUE(source_url, target_url)
+                )
+            ''')
+            cur.execute('''
+                CREATE TABLE IF NOT EXISTS press_releases (
+                    id SERIAL PRIMARY KEY,
+                    title TEXT NOT NULL,
+                    content TEXT,
+                    status TEXT DEFAULT 'draft',
+                    distributed_to TEXT,
+                    created_at TIMESTAMPTZ DEFAULT NOW(),
+                    published_at TIMESTAMPTZ
+                )
+            ''')
+            cur.execute('''
+                CREATE TABLE IF NOT EXISTS seo_stats (
+                    id SERIAL PRIMARY KEY,
+                    date TEXT UNIQUE,
+                    pages_indexed INTEGER DEFAULT 0,
+                    sitemap_submissions INTEGER DEFAULT 0,
+                    indexnow_pings INTEGER DEFAULT 0,
+                    backlinks_found INTEGER DEFAULT 0
+                )
+            ''')
+            conn.close()
+        except Exception as _e:
+            print(f"[seo_engine] _init_db skipped: {_e}")
     
     def generate_sitemap(self) -> str:
         """Generate XML sitemap from facilities and pages"""
@@ -447,18 +459,21 @@ Visit {self.site_url} to explore the platform.
             conn = self._get_db()
             cursor = conn.cursor()
             
-            cursor.execute('SELECT COUNT(*) FROM seo_submissions WHERE status = "success"')
+            # r-seopg (2026-06-23): single-quote string literals — in Postgres,
+            # "success" is an IDENTIFIER (→ column does not exist), not a string.
+            # And a Postgres boolean compares to TRUE, not 1. (SQLite tolerated both.)
+            cursor.execute("SELECT COUNT(*) FROM seo_submissions WHERE status = 'success'")
             total_submissions = cursor.fetchone()[0]
-            
-            cursor.execute('SELECT COUNT(*) FROM backlinks WHERE verified = 1')
+
+            cursor.execute('SELECT COUNT(*) FROM backlinks WHERE verified = TRUE')
             verified_backlinks = cursor.fetchone()[0]
-            
+
             cursor.execute('SELECT COUNT(*) FROM press_releases')
             total_prs = cursor.fetchone()[0]
-            
+
             cursor.execute('''
-                SELECT engine, COUNT(*) FROM seo_submissions 
-                WHERE status = "success"
+                SELECT engine, COUNT(*) FROM seo_submissions
+                WHERE status = 'success'
                 GROUP BY engine
             ''')
             by_engine = {row[0]: row[1] for row in cursor.fetchall()}

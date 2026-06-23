@@ -3,937 +3,198 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Data Center Research Data | DC Hub</title>
-  <meta name="description" content="DC Hub provides institutional-grade data center research data including operational dates, permit records, construction timelines, M&A transactions, and infrastructure intelligence across 11,000+ facilities.">
-  <meta property="og:title" content="Data Center Research Data | DC Hub">
-  <meta property="og:description" content="Operational dates, permit records, M&A transactions, and infrastructure data for 11,000+ facilities. Used by researchers, analysts, and AI agents.">
+  <title>DC Hub Research — Live Data-Center Power, Grid &amp; Infrastructure Analysis</title>
+  <meta name="description" content="DC Hub Research: live, cited analysis of the infrastructure behind AI — DCPI power-market rankings, grid headroom &amp; time-to-power, AI-infrastructure deal flow, and per-facility tenant intelligence. Updated daily, not quarterly. The ground truth a PDF can't be.">
+  <meta property="og:title" content="DC Hub Research — the live, agent-native analyst desk for AI infrastructure">
+  <meta property="og:description" content="DCPI power rankings, grid headroom, deal flow and tenant intelligence — recomputed daily from live data, every figure cited and machine-readable. Not a quarterly PDF.">
   <meta property="og:url" content="https://dchub.cloud/research">
+  <meta property="og:type" content="website">
   <link rel="canonical" href="https://dchub.cloud/research">
-  <script src="https://dchub.cloud/dchub-nav.js" defer></script>
+  <link rel="alternate" type="application/rss+xml" title="DC Hub Research" href="https://dchub.cloud/api/v1/press/rss">
+  <script type="application/ld+json">
+  {"@context":"https://schema.org","@type":"CollectionPage","name":"DC Hub Research","url":"https://dchub.cloud/research",
+   "description":"Live, cited analysis of the infrastructure behind AI: DCPI power-market rankings, grid headroom & time-to-power, AI-infrastructure deal flow, and per-facility tenant intelligence.",
+   "publisher":{"@type":"Organization","name":"DC Hub","url":"https://dchub.cloud"},
+   "isPartOf":{"@type":"WebSite","name":"DC Hub","url":"https://dchub.cloud"}}
+  </script>
+  <link rel="stylesheet" href="/static/dchub-brand.css">
+  <script src="/js/dchub-nav.js?v=research-hub-2026-06-22" defer></script>
   <style>
-    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-
-    :root {
-      --bg:        #0a0e1a;
-      --bg2:       #0f1524;
-      --bg3:       #151c30;
-      --border:    rgba(255,255,255,0.08);
-      --border2:   rgba(255,255,255,0.14);
-      --teal:      #00d4aa;
-      --teal-dim:  rgba(0,212,170,0.12);
-      --teal-glow: rgba(0,212,170,0.06);
-      --text:      #e8eaf0;
-      --muted:     #8892a4;
-      --accent:    #3b82f6;
-      --amber:     #f59e0b;
-      --red:       #ef4444;
-      --green:     #22c55e;
+    *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+    :root{
+      --bg:#0a0a0f; --bg2:#12121c; --border:rgba(255,255,255,.09); --border2:rgba(255,255,255,.16);
+      --indigo:#6366f1; --violet:#a855f7; --text:#e8eaf2; --muted:#9aa3b8; --green:#22c55e; --amber:#f59e0b;
     }
-
-    body {
-      background: var(--bg);
-      color: var(--text);
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-      font-size: 15px;
-      line-height: 1.6;
-      padding-top: 64px;
-    }
-
-    /* ── Hero ── */
-    .hero {
-      position: relative;
-      padding: 72px 24px 56px;
-      text-align: center;
-      overflow: hidden;
-    }
-    .hero::before {
-      content: '';
-      position: absolute;
-      inset: 0;
-      background: radial-gradient(ellipse 80% 60% at 50% 0%, rgba(0,212,170,0.07) 0%, transparent 70%);
-      pointer-events: none;
-    }
-    .hero-badge {
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      background: var(--teal-dim);
-      border: 1px solid rgba(0,212,170,0.3);
-      border-radius: 20px;
-      padding: 4px 14px;
-      font-size: 12px;
-      font-weight: 600;
-      color: var(--teal);
-      letter-spacing: 0.05em;
-      text-transform: uppercase;
-      margin-bottom: 20px;
-    }
-    .hero h1 {
-      font-size: clamp(28px, 5vw, 48px);
-      font-weight: 700;
-      letter-spacing: -0.02em;
-      line-height: 1.15;
-      margin-bottom: 16px;
-      max-width: 720px;
-      margin-left: auto;
-      margin-right: auto;
-    }
-    .hero h1 span { color: var(--teal); }
-    .hero p {
-      font-size: 17px;
-      color: var(--muted);
-      max-width: 600px;
-      margin: 0 auto 32px;
-    }
-    .hero-stats {
-      display: flex;
-      justify-content: center;
-      gap: 40px;
-      flex-wrap: wrap;
-    }
-    .hero-stat { text-align: center; }
-    .hero-stat .val {
-      font-size: 32px;
-      font-weight: 700;
-      color: var(--teal);
-      display: block;
-      line-height: 1;
-    }
-    .hero-stat .lbl {
-      font-size: 12px;
-      color: var(--muted);
-      margin-top: 4px;
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
-    }
-
-    /* ── Layout ── */
-    .container { max-width: 1200px; margin: 0 auto; padding: 0 24px; }
-    section { padding: 56px 0; border-top: 1px solid var(--border); }
-
-    /* ── Section header ── */
-    .section-header { margin-bottom: 32px; }
-    .section-label {
-      font-size: 11px;
-      font-weight: 700;
-      letter-spacing: 0.1em;
-      text-transform: uppercase;
-      color: var(--teal);
-      margin-bottom: 8px;
-    }
-    .section-header h2 {
-      font-size: 24px;
-      font-weight: 700;
-      letter-spacing: -0.01em;
-    }
-    .section-header p { color: var(--muted); margin-top: 8px; max-width: 600px; }
-
-    /* ── Coverage stats cards ── */
-    .stats-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-      gap: 16px;
-      margin-bottom: 40px;
-    }
-    .stat-card {
-      background: var(--bg2);
-      border: 1px solid var(--border);
-      border-radius: 12px;
-      padding: 24px;
-      position: relative;
-      overflow: hidden;
-      transition: border-color 0.2s;
-    }
-    .stat-card:hover { border-color: var(--border2); }
-    .stat-card::after {
-      content: '';
-      position: absolute;
-      top: 0; left: 0; right: 0;
-      height: 2px;
-      background: var(--teal);
-      opacity: 0.4;
-    }
-    .stat-card .num {
-      font-size: 36px;
-      font-weight: 700;
-      color: var(--text);
-      line-height: 1;
-      margin-bottom: 6px;
-    }
-    .stat-card .num span { color: var(--teal); }
-    .stat-card .desc { font-size: 13px; color: var(--muted); }
-    .stat-card .sub {
-      font-size: 11px;
-      color: var(--teal);
-      margin-top: 8px;
-      font-weight: 600;
-    }
-
-    /* ── Coverage map ── */
-    .map-container {
-      background: var(--bg2);
-      border: 1px solid var(--border);
-      border-radius: 12px;
-      padding: 24px;
-      margin-bottom: 16px;
-    }
-    .map-title {
-      font-size: 13px;
-      font-weight: 600;
-      color: var(--muted);
-      margin-bottom: 16px;
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
-    }
-    .market-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
-      gap: 8px;
-    }
-    .market-pill {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      background: var(--bg3);
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 8px 12px;
-      font-size: 13px;
-      transition: border-color 0.2s;
-    }
-    .market-pill:hover { border-color: rgba(0,212,170,0.3); }
-    .market-name { font-weight: 500; }
-    .market-count {
-      font-size: 11px;
-      color: var(--teal);
-      font-weight: 700;
-      background: var(--teal-dim);
-      padding: 2px 7px;
-      border-radius: 10px;
-    }
-    .coverage-bar-wrap {
-      margin-top: 16px;
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      font-size: 13px;
-      color: var(--muted);
-    }
-    .coverage-bar {
-      flex: 1;
-      height: 6px;
-      background: var(--bg3);
-      border-radius: 3px;
-      overflow: hidden;
-    }
-    .coverage-bar-fill {
-      height: 100%;
-      background: linear-gradient(90deg, var(--teal), #3b82f6);
-      border-radius: 3px;
-      transition: width 1.2s ease;
-    }
-
-    /* ── Data sources ── */
-    .sources-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-      gap: 16px;
-    }
-    .source-card {
-      background: var(--bg2);
-      border: 1px solid var(--border);
-      border-radius: 12px;
-      padding: 24px;
-      transition: border-color 0.2s, transform 0.2s;
-    }
-    .source-card:hover {
-      border-color: var(--border2);
-      transform: translateY(-2px);
-    }
-    .source-icon {
-      width: 40px; height: 40px;
-      border-radius: 10px;
-      display: flex; align-items: center; justify-content: center;
-      font-size: 20px;
-      margin-bottom: 14px;
-    }
-    .source-icon.phase1 { background: rgba(0,212,170,0.12); }
-    .source-icon.phase2 { background: rgba(59,130,246,0.12); }
-    .source-icon.phase3 { background: rgba(245,158,11,0.12); }
-    .source-icon.phase4 { background: rgba(139,92,246,0.12); }
-    .source-card h3 { font-size: 15px; font-weight: 700; margin-bottom: 6px; }
-    .source-card p { font-size: 13px; color: var(--muted); line-height: 1.5; }
-    .source-badge {
-      display: inline-block;
-      margin-top: 12px;
-      font-size: 11px;
-      font-weight: 700;
-      padding: 3px 10px;
-      border-radius: 10px;
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
-    }
-    .badge-live { background: rgba(34,197,94,0.15); color: var(--green); }
-    .badge-building { background: rgba(245,158,11,0.15); color: var(--amber); }
-    .confidence-row {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      margin-top: 10px;
-      font-size: 12px;
-      color: var(--muted);
-    }
-    .conf-dots { display: flex; gap: 3px; }
-    .conf-dot {
-      width: 8px; height: 8px;
-      border-radius: 50%;
-      background: var(--border2);
-    }
-    .conf-dot.filled { background: var(--teal); }
-
-    /* ── Facility table ── */
-    .table-controls {
-      display: flex;
-      gap: 12px;
-      margin-bottom: 16px;
-      flex-wrap: wrap;
-      align-items: center;
-    }
-    .search-box {
-      flex: 1;
-      min-width: 200px;
-      background: var(--bg2);
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 9px 14px;
-      color: var(--text);
-      font-size: 14px;
-      outline: none;
-      transition: border-color 0.2s;
-    }
-    .search-box:focus { border-color: var(--teal); }
-    .search-box::placeholder { color: var(--muted); }
-    select.filter-sel {
-      background: var(--bg2);
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 9px 14px;
-      color: var(--text);
-      font-size: 13px;
-      outline: none;
-      cursor: pointer;
-    }
-    .table-wrap {
-      background: var(--bg2);
-      border: 1px solid var(--border);
-      border-radius: 12px;
-      overflow: hidden;
-    }
-    table { width: 100%; border-collapse: collapse; }
-    thead { background: var(--bg3); }
-    th {
-      padding: 12px 16px;
-      text-align: left;
-      font-size: 11px;
-      font-weight: 700;
-      color: var(--muted);
-      text-transform: uppercase;
-      letter-spacing: 0.06em;
-      border-bottom: 1px solid var(--border);
-      cursor: pointer;
-      user-select: none;
-      white-space: nowrap;
-    }
-    th:hover { color: var(--text); }
-    th .sort-icon { opacity: 0.4; margin-left: 4px; }
-    th.sorted .sort-icon { opacity: 1; color: var(--teal); }
-    td {
-      padding: 11px 16px;
-      font-size: 13px;
-      border-bottom: 1px solid var(--border);
-      vertical-align: middle;
-    }
-    tr:last-child td { border-bottom: none; }
-    tr:hover td { background: rgba(255,255,255,0.02); }
-    .td-name { font-weight: 500; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .td-date { font-variant-numeric: tabular-nums; color: var(--teal); font-weight: 600; }
-    .td-source {
-      font-size: 11px;
-      padding: 2px 8px;
-      border-radius: 6px;
-      font-weight: 600;
-      white-space: nowrap;
-    }
-    .src-sec { background: rgba(59,130,246,0.15); color: #60a5fa; }
-    .src-county { background: rgba(0,212,170,0.12); color: var(--teal); }
-    .src-manual { background: rgba(245,158,11,0.12); color: var(--amber); }
-    .confidence-pip {
-      display: inline-flex;
-      align-items: center;
-      gap: 2px;
-    }
-    .pip { width: 6px; height: 6px; border-radius: 50%; background: var(--border2); }
-    .pip.on { background: var(--teal); }
-    .table-footer {
-      padding: 12px 16px;
-      font-size: 12px;
-      color: var(--muted);
-      border-top: 1px solid var(--border);
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      background: var(--bg3);
-    }
-    .pagination { display: flex; gap: 4px; }
-    .page-btn {
-      background: var(--bg2);
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      padding: 4px 10px;
-      font-size: 12px;
-      color: var(--muted);
-      cursor: pointer;
-      transition: all 0.15s;
-    }
-    .page-btn:hover, .page-btn.active { background: var(--teal-dim); border-color: rgba(0,212,170,0.3); color: var(--teal); }
-
-    /* ── API CTA ── */
-    .cta-section {
-      background: linear-gradient(135deg, var(--bg2) 0%, rgba(0,212,170,0.04) 100%);
-      border: 1px solid rgba(0,212,170,0.2);
-      border-radius: 16px;
-      padding: 48px;
-      text-align: center;
-    }
-    .cta-section h2 { font-size: 28px; font-weight: 700; margin-bottom: 12px; }
-    .cta-section h2 span { color: var(--teal); }
-    .cta-section p { color: var(--muted); max-width: 520px; margin: 0 auto 32px; }
-    .cta-buttons { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
-    .btn-primary {
-      background: var(--teal);
-      color: #0a0e1a;
-      border: none;
-      border-radius: 8px;
-      padding: 12px 24px;
-      font-size: 14px;
-      font-weight: 700;
-      cursor: pointer;
-      text-decoration: none;
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-      transition: opacity 0.2s;
-    }
-    .btn-primary:hover { opacity: 0.9; }
-    .btn-secondary {
-      background: transparent;
-      color: var(--text);
-      border: 1px solid var(--border2);
-      border-radius: 8px;
-      padding: 12px 24px;
-      font-size: 14px;
-      font-weight: 600;
-      cursor: pointer;
-      text-decoration: none;
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-      transition: border-color 0.2s;
-    }
-    .btn-secondary:hover { border-color: var(--teal); color: var(--teal); }
-    .api-snippet {
-      background: var(--bg);
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      padding: 20px 24px;
-      font-family: 'SF Mono', 'Fira Code', monospace;
-      font-size: 13px;
-      color: var(--teal);
-      text-align: left;
-      max-width: 560px;
-      margin: 0 auto 32px;
-      overflow-x: auto;
-      white-space: pre;
-    }
-    .api-snippet .comment { color: var(--muted); }
-    .api-snippet .key { color: #60a5fa; }
-    .api-snippet .val { color: #a78bfa; }
-
-    /* ── Loading state ── */
-    .loading {
-      text-align: center;
-      padding: 48px;
-      color: var(--muted);
-      font-size: 14px;
-    }
-    .spinner {
-      width: 32px; height: 32px;
-      border: 2px solid var(--border);
-      border-top-color: var(--teal);
-      border-radius: 50%;
-      animation: spin 0.8s linear infinite;
-      margin: 0 auto 12px;
-    }
-    @keyframes spin { to { transform: rotate(360deg); } }
-
-    /* ── Responsive ── */
-    @media (max-width: 768px) {
-      .hero-stats { gap: 24px; }
-      .cta-section { padding: 32px 24px; }
-      table th:nth-child(4), table td:nth-child(4),
-      table th:nth-child(5), table td:nth-child(5) { display: none; }
-    }
+    body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Instrument Sans',sans-serif;font-size:15px;line-height:1.6;padding-top:64px}
+    a{color:inherit;text-decoration:none}
+    .wrap{max-width:1080px;margin:0 auto;padding:0 24px}
+    /* hero */
+    .hero{padding:64px 24px 40px;text-align:center;background:radial-gradient(1200px 400px at 50% -10%,rgba(99,102,241,.14),transparent)}
+    .eyebrow{display:inline-block;font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--violet);font-weight:600;margin-bottom:14px}
+    h1{font-size:40px;line-height:1.12;font-weight:800;letter-spacing:-.02em;margin-bottom:16px}
+    h1 .grad{background:linear-gradient(90deg,var(--indigo),var(--violet));-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+    .sub{max-width:680px;margin:0 auto;color:var(--muted);font-size:17px}
+    .hero-cta{margin-top:24px;display:flex;gap:12px;justify-content:center;flex-wrap:wrap}
+    .btn{display:inline-flex;align-items:center;gap:8px;padding:11px 18px;border-radius:10px;font-weight:600;font-size:14px;border:1px solid var(--border2)}
+    .btn-primary{background:linear-gradient(90deg,var(--indigo),var(--violet));border:none;color:#fff}
+    .btn:hover{border-color:var(--violet)}
+    /* franchises */
+    section{padding:36px 0}
+    .sec-h{font-size:13px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);font-weight:600;margin-bottom:18px}
+    .grid{display:grid;grid-template-columns:repeat(2,1fr);gap:16px}
+    .card{background:var(--bg2);border:1px solid var(--border);border-radius:14px;padding:22px;display:flex;flex-direction:column;transition:border-color .15s}
+    .card:hover{border-color:var(--violet)}
+    .card .k{font-size:11px;letter-spacing:.1em;text-transform:uppercase;font-weight:700;color:var(--indigo)}
+    .card h3{font-size:18px;font-weight:700;margin:8px 0 8px}
+    .card p{color:var(--muted);font-size:14px;flex:1}
+    .card .foot{margin-top:14px;display:flex;align-items:center;justify-content:space-between;font-size:13px}
+    .pill{font-size:11px;color:var(--muted);border:1px solid var(--border);border-radius:999px;padding:3px 9px}
+    .card .go{color:var(--violet);font-weight:600}
+    /* feed */
+    .feed{display:flex;flex-direction:column;gap:2px}
+    .item{display:block;padding:16px 4px;border-bottom:1px solid var(--border)}
+    .item:hover{background:rgba(255,255,255,.02)}
+    .item .meta{display:flex;gap:10px;align-items:center;font-size:12px;color:var(--muted);margin-bottom:5px}
+    .tag{font-size:10px;letter-spacing:.06em;text-transform:uppercase;font-weight:700;color:var(--indigo);border:1px solid rgba(99,102,241,.3);border-radius:5px;padding:1px 7px}
+    .item h4{font-size:16px;font-weight:600;line-height:1.35}
+    .item .dek{color:var(--muted);font-size:13.5px;margin-top:3px}
+    .loading{color:var(--muted);padding:24px 0;text-align:center}
+    .foot-note{color:var(--muted);font-size:13px;border-top:1px solid var(--border);margin-top:30px;padding:24px 0 48px;text-align:center}
+    .card{cursor:pointer}
+    .card.active{border-color:var(--violet);box-shadow:0 0 0 1px var(--violet);background:linear-gradient(180deg,rgba(99,102,241,.08),var(--bg2))}
+    .feed-head{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:14px}
+    .feed-head .sec-h{margin:0}
+    #showall{font-size:13px;color:var(--violet);font-weight:600;cursor:pointer;display:none}
+    #showall.on{display:inline}
+    @media(max-width:720px){h1{font-size:30px}.grid{grid-template-columns:1fr}}
   </style>
 </head>
 <body>
-
-<!-- Hero -->
-<section class="hero">
-  <div class="container">
-    <div class="hero-badge">⬡ Research & Data Coverage</div>
-    <h1>Institutional-grade data for<br><span>data center research</span></h1>
-    <p>DC Hub aggregates operational dates, permit records, M&A transactions, and infrastructure intelligence across 11,000+ facilities worldwide — continuously enriched from public and proprietary sources.</p>
-    <div class="hero-stats">
-      <div class="hero-stat">
-        <span class="val" id="stat-facilities">11,361</span>
-        <div class="lbl">Global Facilities</div>
-      </div>
-      <div class="hero-stat">
-        <span class="val" id="stat-permit">567</span>
-        <div class="lbl">Permit Date Records</div>
-      </div>
-      <div class="hero-stat">
-        <span class="val">44</span>
-        <div class="lbl">Markets Tracked</div>
-      </div>
-      <div class="hero-stat">
-        <span class="val">540+</span>
-        <div class="lbl">M&A Transactions</div>
-      </div>
+  <div class="hero">
+    <div class="eyebrow">DC Hub Research</div>
+    <h1>The live analyst desk for <span class="grad">AI infrastructure</span>.</h1>
+    <p class="sub">Power markets, grid headroom, deal flow and per-facility tenants — analyzed daily from live, cited data and published the moment it moves. The ground truth a quarterly PDF can't be.</p>
+    <div class="hero-cta">
+      <a class="btn btn-primary" href="/api/v1/press/rss">📡 Subscribe (RSS)</a>
+      <a class="btn" href="/dcpi">Open the DC Hub Power Index →</a>
     </div>
   </div>
-</section>
 
-<!-- Coverage Stats -->
-<section>
-  <div class="container">
-    <div class="section-header">
-      <div class="section-label">Coverage</div>
-      <h2>Operational Date Coverage</h2>
-      <p>Sourced from SEC 10-K filings, county permit portals, and municipal records. Coverage grows weekly as our enrichment pipeline runs.</p>
-    </div>
+  <div class="wrap">
+    <section>
+      <div class="sec-h">Recurring research franchises</div>
+      <div class="grid">
+        <a class="card" href="/research?series=dcpi" data-series="dcpi">
+          <span class="k">Weekly</span>
+          <h3>DCPI Power Report</h3>
+          <p>The DC Hub Power Index across 300+ markets — biggest mover, the leading BUILD market, and where excess power is opening or closing. The recurring read on where to build.</p>
+          <div class="foot"><span class="pill" data-count="dcpi">—</span><span class="go">Latest →</span></div>
+        </a>
+        <a class="card" href="/research?series=grid" data-series="grid">
+          <span class="k">Tracker</span>
+          <h3>Grid Headroom &amp; Time-to-Power</h3>
+          <p>Interconnection-queue depth, curtailment and time-to-power by ISO — the constraint that decides whether a campus lands in 18 months or 6 years. Live across 7 US ISOs + 43 utility BAs.</p>
+          <div class="foot"><span class="pill" data-count="grid">—</span><span class="go">Latest →</span></div>
+        </a>
+        <a class="card" href="/research?series=deals" data-series="deals">
+          <span class="k">Tracker</span>
+          <h3>AI Infrastructure Deal Tracker</h3>
+          <p>The largest disclosed data-center M&amp;A, JV and capex moves as they happen — with the comparable-market read on what each deal signals. 3,000+ tracked transactions.</p>
+          <div class="foot"><span class="pill" data-count="deals">—</span><span class="go">Latest →</span></div>
+        </a>
+        <a class="card" href="/research?series=tenant" data-series="tenant">
+          <span class="k">Brief · the moat</span>
+          <h3>Tenant Intelligence Brief</h3>
+          <p>Who actually occupies the largest facilities — the per-tenant footprint no analyst PDF or directory publishes. Hyperscaler concentration, MW by operator, market by market.</p>
+          <div class="foot"><span class="pill" data-count="tenant">—</span><span class="go">Latest →</span></div>
+        </a>
+      </div>
+    </section>
 
-    <div class="stats-grid">
-      <div class="stat-card">
-        <div class="num"><span id="c-total">567</span></div>
-        <div class="desc">Facilities with permit date</div>
-        <div class="sub">↑ Growing weekly</div>
+    <section id="feed-section">
+      <div class="feed-head">
+        <div class="sec-h" id="feed-title">Latest research</div>
+        <span id="showall">← Show all research</span>
       </div>
-      <div class="stat-card">
-        <div class="num"><span>0.75</span> <span style="font-size:18px;color:var(--muted)">avg conf.</span></div>
-        <div class="desc">Average confidence score (0–1)</div>
-        <div class="sub">SEC filings = 0.75–0.92</div>
-      </div>
-      <div class="stat-card">
-        <div class="num"><span>4</span></div>
-        <div class="desc">Public REIT 10-K series parsed</div>
-        <div class="sub">Equinix · DLR · IRM · CoreSite</div>
-      </div>
-      <div class="stat-card">
-        <div class="num"><span>8</span></div>
-        <div class="desc">Years of historical filings</div>
-        <div class="sub">First-appearance dating method</div>
-      </div>
-    </div>
+      <div id="feed" class="feed"><div class="loading">Loading the latest analysis…</div></div>
+    </section>
 
-    <!-- Market coverage -->
-    <div class="map-container">
-      <div class="map-title">US Market Coverage — Facilities with permit_date</div>
-      <div class="market-grid" id="market-grid">
-        <!-- Populated by JS -->
-      </div>
-      <div class="coverage-bar-wrap">
-        <span>US coverage</span>
-        <div class="coverage-bar"><div class="coverage-bar-fill" id="coverage-fill" style="width:0%"></div></div>
-        <span id="coverage-pct">18%</span>
-      </div>
+    <div class="foot-note">
+      Every figure is live and cited, published under CC-BY-4.0, and machine-readable — so an AI agent can both query it and quote it.
+      Source: <strong>DC Hub</strong>, the live infrastructure data layer for AI agents. · <a href="/api/v1/press/rss" style="color:var(--violet)">RSS</a> · <a href="/vs" style="color:var(--violet)">vs. the field</a>
     </div>
   </div>
-</section>
 
-<!-- Data Sources -->
-<section>
-  <div class="container">
-    <div class="section-header">
-      <div class="section-label">Methodology</div>
-      <h2>Data Sources & Enrichment Pipeline</h2>
-      <p>Four distinct acquisition pipelines, each attacking permit data from a different angle with confidence scoring to prevent lower-quality data from overwriting higher-quality records.</p>
-    </div>
-
-    <div class="sources-grid">
-      <div class="source-card">
-        <div class="source-icon phase2">📄</div>
-        <h3>SEC / EDGAR Filings</h3>
-        <p>10-K annual reports from public REITs (Equinix, Digital Realty, Iron Mountain, CoreSite). Item 2 "Properties" sections are parsed across 8 years of filings to find the first year a market appeared — establishing an "operational by" date.</p>
-        <div class="confidence-row">
-          <div class="conf-dots">
-            <div class="conf-dot filled"></div>
-            <div class="conf-dot filled"></div>
-            <div class="conf-dot filled"></div>
-            <div class="conf-dot filled"></div>
-            <div class="conf-dot"></div>
-          </div>
-          <span>Confidence 0.75 – 0.92</span>
-        </div>
-        <span class="source-badge badge-live">● Live</span>
-      </div>
-
-      <div class="source-card">
-        <div class="source-icon phase1">🏛️</div>
-        <h3>County Permit Portals</h3>
-        <p>BuildingPermit.io API (~75% US county coverage) plus direct county portal integrations for Virginia, Texas, and Georgia — the three highest-density DC markets. Address-matched to facilities with fuzzy scoring.</p>
-        <div class="confidence-row">
-          <div class="conf-dots">
-            <div class="conf-dot filled"></div>
-            <div class="conf-dot filled"></div>
-            <div class="conf-dot filled"></div>
-            <div class="conf-dot filled"></div>
-            <div class="conf-dot"></div>
-          </div>
-          <span>Confidence 0.65 – 0.85</span>
-        </div>
-        <span class="source-badge badge-building">◐ Expanding</span>
-      </div>
-
-      <div class="source-card">
-        <div class="source-icon phase3">🔍</div>
-        <h3>FOIA Requests</h3>
-        <p>Freedom of Information Act requests to municipal building departments for non-public operators. High-fidelity full-date records including certificate of occupancy dates. Slower cadence, gold-standard accuracy.</p>
-        <div class="confidence-row">
-          <div class="conf-dots">
-            <div class="conf-dot filled"></div>
-            <div class="conf-dot filled"></div>
-            <div class="conf-dot filled"></div>
-            <div class="conf-dot filled"></div>
-            <div class="conf-dot filled"></div>
-          </div>
-          <span>Confidence 0.90 – 1.00</span>
-        </div>
-        <span class="source-badge badge-building">◐ In development</span>
-      </div>
-
-      <div class="source-card">
-        <div class="source-icon phase4">⚡</div>
-        <h3>AI-Assisted Extraction</h3>
-        <p>Press releases, permitting announcements, and news articles processed by DC Hub's AI pipeline. Extracts facility names, addresses, and commissioning dates. Cross-referenced against existing records before writing.</p>
-        <div class="confidence-row">
-          <div class="conf-dots">
-            <div class="conf-dot filled"></div>
-            <div class="conf-dot filled"></div>
-            <div class="conf-dot filled"></div>
-            <div class="conf-dot"></div>
-            <div class="conf-dot"></div>
-          </div>
-          <span>Confidence 0.55 – 0.75</span>
-        </div>
-        <span class="source-badge badge-building">◐ In development</span>
-      </div>
-    </div>
-  </div>
-</section>
-
-<!-- Facility Table -->
-<section>
-  <div class="container">
-    <div class="section-header">
-      <div class="section-label">Data Preview</div>
-      <h2>Sample Permit Date Records</h2>
-      <p>Live data from DC Hub's Neon database. Full dataset available via API with Developer or Pro plan.</p>
-    </div>
-
-    <div class="table-controls">
-      <input type="text" class="search-box" id="search" placeholder="Search facility name or market...">
-      <select class="filter-sel" id="filter-source">
-        <option value="">All sources</option>
-        <option value="sec">SEC / EDGAR</option>
-        <option value="county">County portal</option>
-      </select>
-      <select class="filter-sel" id="filter-market">
-        <option value="">All markets</option>
-        <option value="Northern Virginia">Northern Virginia</option>
-        <option value="Dallas">Dallas</option>
-        <option value="Chicago">Chicago</option>
-        <option value="Silicon Valley">Silicon Valley</option>
-        <option value="Atlanta">Atlanta</option>
-        <option value="Seattle">Seattle</option>
-      </select>
-    </div>
-
-    <div class="table-wrap">
-      <div class="loading" id="table-loading">
-        <div class="spinner"></div>
-        Loading permit records…
-      </div>
-      <table id="permit-table" style="display:none">
-        <thead>
-          <tr>
-            <th data-col="name">Facility <span class="sort-icon">↕</span></th>
-            <th data-col="city">Market <span class="sort-icon">↕</span></th>
-            <th data-col="state">State <span class="sort-icon">↕</span></th>
-            <th data-col="permit_date">Permit Date <span class="sort-icon">↕</span></th>
-            <th data-col="permit_source">Source <span class="sort-icon">↕</span></th>
-            <th data-col="permit_confidence">Confidence <span class="sort-icon">↕</span></th>
-          </tr>
-        </thead>
-        <tbody id="table-body"></tbody>
-      </table>
-      <div class="table-footer" id="table-footer" style="display:none">
-        <span id="table-count">Showing 25 of 567 records</span>
-        <div class="pagination" id="pagination"></div>
-      </div>
-    </div>
-  </div>
-</section>
-
-<!-- API CTA -->
-<section>
-  <div class="container">
-    <div class="cta-section">
-      <h2>Access the full dataset via <span>API or MCP</span></h2>
-      <p>All permit date fields are available via DC Hub's REST API and MCP server. AI agents can query facility data including operational dates in natural language.</p>
-
-      <div class="api-snippet"><span class="comment"># REST API — get facility with permit data</span>
-GET https://dchub.cloud/api/facilities/{id}
-<span class="key">X-API-Key</span>: <span class="val">your_dev_key</span>
-
-<span class="comment"># Response includes:</span>
-{
-  <span class="key">"permit_date"</span>: <span class="val">"2020-01-01"</span>,
-  <span class="key">"permit_source"</span>: <span class="val">"sec_edgar_10k_EQIX"</span>,
-  <span class="key">"permit_confidence"</span>: <span class="val">0.75</span>
-}</div>
-
-      <div class="cta-buttons">
-        <a href="/pricing#developer" class="btn-primary">Get API Access — $49/mo</a>
-        <a href="/developers" class="btn-secondary">View API Docs</a>
-        <a href="https://dchub.cloud/mcp" class="btn-secondary">MCP Server</a>
-      </div>
-    </div>
-  </div>
-</section>
-
-<script>
-// ── Market coverage data ──────────────────────────────────────────────────────
-const MARKETS = [
-  {name:'Northern Virginia', count:89},
-  {name:'Dallas',            count:67},
-  {name:'Chicago',           count:54},
-  {name:'Silicon Valley',    count:51},
-  {name:'Atlanta',           count:38},
-  {name:'Seattle',           count:35},
-  {name:'New York',          count:32},
-  {name:'Phoenix',           count:28},
-  {name:'Denver',            count:21},
-  {name:'Los Angeles',       count:19},
-  {name:'Boston',            count:16},
-  {name:'Miami',             count:14},
-  {name:'Portland',          count:11},
-  {name:'Houston',           count:10},
-  {name:'Charlotte',         count:8},
-  {name:'Austin',            count:7},
-];
-
-function buildMarketGrid() {
-  const grid = document.getElementById('market-grid');
-  grid.innerHTML = MARKETS.map(m => `
-    <div class="market-pill">
-      <span class="market-name">${m.name}</span>
-      <span class="market-count">${m.count}</span>
-    </div>`).join('');
-  setTimeout(() => {
-    document.getElementById('coverage-fill').style.width = '18%';
-  }, 300);
-}
-
-// ── Facility table ─────────────────────────────────────────────────────────────
-const PAGE_SIZE = 25;
-let allRows = [];
-let filteredRows = [];
-let currentPage = 1;
-let sortCol = 'permit_date';
-let sortDir = 1;
-
-function sourceClass(src) {
-  if (!src) return 'src-manual';
-  if (src.includes('sec')) return 'src-sec';
-  if (src.includes('county') || src.includes('permit')) return 'src-county';
-  return 'src-manual';
-}
-
-function sourceLabel(src) {
-  if (!src) return '—';
-  if (src.includes('EQIX')) return 'SEC · Equinix';
-  if (src.includes('DLR'))  return 'SEC · Dig.Realty';
-  if (src.includes('IRM'))  return 'SEC · Iron Mtn';
-  if (src.includes('COR'))  return 'SEC · CoreSite';
-  if (src.includes('sec'))  return 'SEC / EDGAR';
-  if (src.includes('county')) return 'County portal';
-  return src.replace('sec_edgar_10k_','SEC · ').substring(0,18);
-}
-
-function confPips(val) {
-  const filled = Math.round((val || 0) * 5);
-  return `<div class="confidence-pip">${Array.from({length:5},(_,i)=>`<div class="pip${i<filled?' on':''}"></div>`).join('')}</div>`;
-}
-
-function renderTable() {
-  const tbody = document.getElementById('table-body');
-  const start = (currentPage - 1) * PAGE_SIZE;
-  const page  = filteredRows.slice(start, start + PAGE_SIZE);
-
-  tbody.innerHTML = page.map(r => `
-    <tr>
-      <td class="td-name" title="${r.name||''}">${r.name||'—'}</td>
-      <td>${r.city||'—'}</td>
-      <td>${r.state||'—'}</td>
-      <td class="td-date">${r.permit_date ? r.permit_date.substring(0,10) : '—'}</td>
-      <td><span class="td-source ${sourceClass(r.permit_source)}">${sourceLabel(r.permit_source)}</span></td>
-      <td>${confPips(r.permit_confidence)}</td>
-    </tr>`).join('');
-
-  document.getElementById('table-count').textContent =
-    `Showing ${Math.min(start+PAGE_SIZE, filteredRows.length)} of ${filteredRows.length} records`;
-
-  // Pagination
-  const totalPages = Math.ceil(filteredRows.length / PAGE_SIZE);
-  const pg = document.getElementById('pagination');
-  const pages = [];
-  if (currentPage > 1) pages.push(`<button class="page-btn" onclick="goPage(${currentPage-1})">‹</button>`);
-  for (let i = Math.max(1,currentPage-2); i <= Math.min(totalPages, currentPage+2); i++) {
-    pages.push(`<button class="page-btn${i===currentPage?' active':''}" onclick="goPage(${i})">${i}</button>`);
-  }
-  if (currentPage < totalPages) pages.push(`<button class="page-btn" onclick="goPage(${currentPage+1})">›</button>`);
-  pg.innerHTML = pages.join('');
-}
-
-function goPage(n) { currentPage = n; renderTable(); }
-
-function applyFilters() {
-  const q   = document.getElementById('search').value.toLowerCase();
-  const src = document.getElementById('filter-source').value;
-  const mkt = document.getElementById('filter-market').value;
-
-  filteredRows = allRows.filter(r => {
-    const nameMatch = !q || (r.name||'').toLowerCase().includes(q) || (r.city||'').toLowerCase().includes(q);
-    const srcMatch  = !src || (r.permit_source||'').includes(src);
-    const mktMatch  = !mkt || (r.city||'').toLowerCase().includes(mkt.toLowerCase());
-    return nameMatch && srcMatch && mktMatch;
-  });
-
-  filteredRows.sort((a,b) => {
-    const va = a[sortCol] || '';
-    const vb = b[sortCol] || '';
-    return va < vb ? -sortDir : va > vb ? sortDir : 0;
-  });
-
-  currentPage = 1;
-  renderTable();
-}
-
-async function loadFacilities() {
-  try {
-    const resp = await fetch('https://dchub.cloud/api/facilities?has_permit_date=true&limit=300&country=US');
-    if (!resp.ok) throw new Error('API error');
-    const data = await resp.json();
-    const rows = data.facilities || data.data || data.results || [];
-    allRows = rows.filter(r => r.permit_date);
-
-    // Fallback: use static sample if API returns nothing
-    if (allRows.length === 0) throw new Error('empty');
-
-    document.getElementById('table-loading').style.display = 'none';
-    document.getElementById('permit-table').style.display = 'table';
-    document.getElementById('table-footer').style.display = 'flex';
-    applyFilters();
-  } catch(e) {
-    // Show static sample data
-    allRows = SAMPLE_DATA;
-    document.getElementById('table-loading').style.display = 'none';
-    document.getElementById('permit-table').style.display = 'table';
-    document.getElementById('table-footer').style.display = 'flex';
-    applyFilters();
-  }
-}
-
-// Static sample for when API is unavailable / loading
-const SAMPLE_DATA = [
-  {name:'Equinix DC1',              city:'Ashburn',          state:'VA', permit_date:'2020-01-01', permit_source:'sec_edgar_10k_EQIX', permit_confidence:0.75},
-  {name:'Equinix DC2',              city:'Ashburn',          state:'VA', permit_date:'2020-01-01', permit_source:'sec_edgar_10k_EQIX', permit_confidence:0.75},
-  {name:'Digital Realty IAD',       city:'Ashburn',          state:'VA', permit_date:'2021-01-01', permit_source:'sec_edgar_10k_DLR',  permit_confidence:0.75},
-  {name:'QTS Manassas DC1',         city:'Manassas',         state:'VA', permit_date:'2020-01-01', permit_source:'sec_edgar_10k_EQIX', permit_confidence:0.75},
-  {name:'Iron Mountain VA-1',       city:'Manassas',         state:'VA', permit_date:'2020-01-01', permit_source:'sec_edgar_10k_EQIX', permit_confidence:0.75},
-  {name:'CyrusOne Sterling IX',     city:'Sterling',         state:'VA', permit_date:'2020-01-01', permit_source:'sec_edgar_10k_EQIX', permit_confidence:0.75},
-  {name:'Aligned IAD02',            city:'Ashburn',          state:'VA', permit_date:'2020-01-01', permit_source:'sec_edgar_10k_EQIX', permit_confidence:0.75},
-  {name:'STACK NVA01A',             city:'Ashburn',          state:'VA', permit_date:'2020-01-01', permit_source:'sec_edgar_10k_EQIX', permit_confidence:0.75},
-  {name:'CoreSite Denver',          city:'Denver',           state:'CO', permit_date:'2016-01-01', permit_source:'sec_edgar_10k_COR',  permit_confidence:0.75},
-  {name:'Equinix SV1',              city:'San Jose',         state:'CA', permit_date:'2020-01-01', permit_source:'sec_edgar_10k_EQIX', permit_confidence:0.75},
-  {name:'Equinix CH1',              city:'Chicago',          state:'IL', permit_date:'2020-01-01', permit_source:'sec_edgar_10k_EQIX', permit_confidence:0.75},
-  {name:'Digital Realty Dallas',    city:'Dallas',           state:'TX', permit_date:'2019-01-01', permit_source:'sec_edgar_10k_DLR',  permit_confidence:0.75},
-  {name:'TierPoint Spokane',        city:'Spokane',          state:'WA', permit_date:'2019-01-01', permit_source:'sec_edgar_10k_COR',  permit_confidence:0.75},
-  {name:'Tonaquint Boise',          city:'Boise',            state:'ID', permit_date:'2019-01-01', permit_source:'sec_edgar_10k_COR',  permit_confidence:0.75},
-  {name:'T5@Augusta',               city:'Augusta',          state:'GA', permit_date:'2019-01-01', permit_source:'sec_edgar_10k_COR',  permit_confidence:0.75},
-  {name:'Equinix DA1',              city:'Dallas',           state:'TX', permit_date:'2020-01-01', permit_source:'sec_edgar_10k_EQIX', permit_confidence:0.75},
-  {name:'Equinix SE2',              city:'Seattle',          state:'WA', permit_date:'2021-01-01', permit_source:'sec_edgar_10k_EQIX', permit_confidence:0.75},
-  {name:'DataBank Ashburn IAD3',    city:'Ashburn',          state:'VA', permit_date:'2020-01-01', permit_source:'sec_edgar_10k_EQIX', permit_confidence:0.75},
-  {name:'Vantage WA11',             city:'Quincy',           state:'WA', permit_date:'2020-01-01', permit_source:'sec_edgar_10k_EQIX', permit_confidence:0.75},
-  {name:'CoreSite Los Angeles',     city:'Los Angeles',      state:'CA', permit_date:'2014-01-01', permit_source:'sec_edgar_10k_COR',  permit_confidence:0.75},
-  {name:'Equinix LA1',              city:'Los Angeles',      state:'CA', permit_date:'2020-01-01', permit_source:'sec_edgar_10k_EQIX', permit_confidence:0.75},
-  {name:'Equinix BO1',              city:'Boston',           state:'MA', permit_date:'2021-01-01', permit_source:'sec_edgar_10k_EQIX', permit_confidence:0.75},
-  {name:'Digital Realty Phoenix',   city:'Phoenix',          state:'AZ', permit_date:'2023-01-01', permit_source:'sec_edgar_10k_DLR',  permit_confidence:0.75},
-  {name:'Equinix MI1',              city:'Miami',            state:'FL', permit_date:'2024-01-01', permit_source:'sec_edgar_10k_EQIX', permit_confidence:0.75},
-  {name:'CloudHQ LC1',              city:'Ashburn',          state:'VA', permit_date:'2020-01-01', permit_source:'sec_edgar_10k_EQIX', permit_confidence:0.75},
-];
-
-// ── Sort headers ──────────────────────────────────────────────────────────────
-document.querySelectorAll('th[data-col]').forEach(th => {
-  th.addEventListener('click', () => {
-    const col = th.dataset.col;
-    if (sortCol === col) sortDir *= -1;
-    else { sortCol = col; sortDir = 1; }
-    document.querySelectorAll('th').forEach(t => t.classList.remove('sorted'));
-    th.classList.add('sorted');
-    th.querySelector('.sort-icon').textContent = sortDir === 1 ? '↑' : '↓';
-    applyFilters();
-  });
-});
-
-document.getElementById('search').addEventListener('input', applyFilters);
-document.getElementById('filter-source').addEventListener('change', applyFilters);
-document.getElementById('filter-market').addEventListener('change', applyFilters);
-
-// ── Live stats from API ───────────────────────────────────────────────────────
-async function loadStats() {
-  try {
-    const r = await fetch('https://dchub.cloud/api/stats');
-    const d = await r.json();
-    if (d.facilities) document.getElementById('stat-facilities').textContent = d.facilities.toLocaleString();
-  } catch(e) {}
-
-  try {
-    const r = await fetch('https://dchub.cloud/api/facilities/permit-coverage');
-    const d = await r.json();
-    if (d.count) {
-      document.getElementById('stat-permit').textContent = d.count.toLocaleString();
-      document.getElementById('c-total').textContent = d.count.toLocaleString();
+  <script>
+  (function(){
+    // Classify each release into a franchise by content (titles/meta), since the
+    // legacy `category` field is mostly the generic "press_release".
+    var SERIES = [
+      {id:'dcpi',   tag:'DCPI',   name:'DCPI Power Report',              rx:/dcpi|power (capacity )?index|excess.?power|build (signal|market|verdict)|tops (the |us )?power|leads the/i},
+      {id:'grid',   tag:'Grid',   name:'Grid Headroom & Time-to-Power',  rx:/interconnection|\bqueue\b|\bGW\b|time.?to.?power|headroom|curtail|\bISO\b|grid/i},
+      {id:'deals',  tag:'Deals',  name:'AI Infrastructure Deal Tracker', rx:/\bdeal|acquisition|merger|\bM&A\b|\bJV\b|joint venture|capex|\$\d|billion|invest|financ|recap/i},
+      {id:'tenant', tag:'Tenant', name:'Tenant Intelligence Brief',      rx:/tenant|occupie|lease|hyperscaler|operator footprint/i}
+    ];
+    var NAME = {}; SERIES.forEach(function(s){ NAME[s.id] = s.name; });
+    function classify(r){
+      var hay = ((r.title||'')+' '+(r.subheadline||'')+' '+(r.meta_description||'')+' '+(r.category||''));
+      for(var i=0;i<SERIES.length;i++){ if(SERIES[i].rx.test(hay)) return SERIES[i]; }
+      return {id:'infra', tag:'Infra'};
     }
-  } catch(e) {}
-}
+    function fmtDate(d){ try{ return new Date(d+'T00:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}); }catch(e){ return d||''; } }
+    function esc(s){ return (s||'').replace(/</g,'&lt;'); }
 
-// ── Init ──────────────────────────────────────────────────────────────────────
-buildMarketGrid();
-loadStats();
-loadFacilities();
-</script>
+    var ROWS = [];
+    var feed    = document.getElementById('feed');
+    var title   = document.getElementById('feed-title');
+    var showall = document.getElementById('showall');
 
+    function renderFeed(filter){
+      title.textContent = filter && NAME[filter] ? NAME[filter] : 'Latest research';
+      showall.classList.toggle('on', !!filter);
+      document.querySelectorAll('.card[data-series]').forEach(function(c){
+        c.classList.toggle('active', c.getAttribute('data-series') === filter);
+      });
+      var list = ROWS.filter(function(r){ return !filter || r._s.id === filter; }).slice(0,40);
+      if(!list.length){
+        feed.innerHTML = '<div class="loading">No reports in this series yet — new analysis publishes daily. <span id="sa2" style="color:var(--violet);cursor:pointer">Show all →</span></div>';
+        var sa2 = document.getElementById('sa2'); if(sa2) sa2.onclick = function(){ go(null, true); };
+        return;
+      }
+      feed.innerHTML = list.map(function(r){
+        var url = r.url || ('/press-release/'+r.slug);
+        return '<a class="item" href="'+url+'">'+
+          '<div class="meta"><span class="tag">'+r._s.tag+'</span><span>'+fmtDate(r.date)+'</span></div>'+
+          '<h4>'+esc(r.title)+'</h4>'+
+          (r.subheadline?'<div class="dek">'+esc(r.subheadline)+'</div>':'')+
+        '</a>';
+      }).join('');
+    }
+    // In-place filter — NO page reload (that was the "nothing moves" bug: a full
+    // reload reset the scroll to the top so the filtered feed change was invisible).
+    function go(filter, scroll){
+      renderFeed(filter);
+      try { history.replaceState(null, '', filter ? ('/research?series='+filter) : '/research'); } catch(e){}
+      if(scroll){ document.getElementById('feed-section').scrollIntoView({behavior:'smooth', block:'start'}); }
+    }
+    document.querySelectorAll('.card[data-series]').forEach(function(c){
+      c.addEventListener('click', function(e){ e.preventDefault(); go(c.getAttribute('data-series'), true); });
+    });
+    showall.addEventListener('click', function(){ go(null, true); });
+
+    fetch('/api/press-releases/list?limit=200').then(function(r){return r.json();}).then(function(data){
+      ROWS = Array.isArray(data) ? data : (data.releases||data.items||[]);
+      var counts = {dcpi:0,grid:0,deals:0,tenant:0,infra:0};
+      ROWS.forEach(function(r){ r._s = classify(r); counts[r._s.id] = (counts[r._s.id]||0)+1; });
+      document.querySelectorAll('.pill[data-count]').forEach(function(el){
+        var c = counts[el.getAttribute('data-count')]||0; el.textContent = c + (c===1?' report':' reports');
+      });
+      var initial = new URLSearchParams(location.search).get('series');
+      renderFeed(initial && NAME[initial] ? initial : null);
+    }).catch(function(){
+      feed.innerHTML = '<div class="loading">Live feed momentarily unavailable — try the <a href="/api/v1/press/rss" style="color:var(--violet)">RSS feed</a>.</div>';
+    });
+  })();
+  </script>
 </body>
 </html>

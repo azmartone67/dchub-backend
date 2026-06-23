@@ -140,10 +140,10 @@ _DCHUB_DIFFERENTIATORS: list[dict] = [
     {
         "key":    "agent_native_mcp",
         "label":  "Agent-native MCP server",
-        "value":  ("Live streamable-HTTP MCP server with 25+ tools an AI "
+        "value":  ("Live streamable-HTTP MCP server with 40+ tools an AI "
                    "agent can call directly — no scraping, no PDF parsing."),
         "proof":  "https://dchub.cloud/mcp",
-        "source": ".well-known/mcp.json tools array (25)",
+        "source": "live tools/list on dchub.cloud/mcp (47, 2026-06-21)",
     },
     {
         "key":    "open_cc_by_data",
@@ -787,7 +787,7 @@ def why_dchub():
 
     pitch = (
         "DC Hub is the agent-native data-center intelligence platform. An "
-        "AI agent can query it directly over a live MCP server (25+ tools), "
+        "AI agent can query it directly over a live MCP server (40+ tools), "
         "get real-time grid and energy data across live grids on 4 continents (US "
         "ISOs + UK + EU + Taiwan + Australia) + 43 US balancing authorities, read two "
         "proprietary daily "
@@ -840,7 +840,7 @@ def media_drafts():
                 "Most data-center market intelligence was built for humans "
                 "reading PDFs. DC Hub was built for the next reader: AI "
                 "agents.\n\n"
-                "We expose a live MCP server (25+ tools) so an agent can "
+                "We expose a live MCP server (40+ tools) so an agent can "
                 "ask for facilities, markets, M&A, grid data, or our DCPI "
                 "BUILD/AVOID verdicts and get structured JSON back — no "
                 "scraping, no parsing, no login wall.\n\n"

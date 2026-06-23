@@ -238,8 +238,8 @@ PLAN_INFO = {
     },
     'pro': {
         'name': 'Pro',
-        'price_monthly': 199,
-        'price_annual': 1590,
+        'price_monthly': 299,   # audit #9: was 199 — canonical is tier_registry PRICES['pro']=299 (r-reprice 2026-06-19)
+        'price_annual': 2392,   # preserves the prior ~8x annual ratio at the new $299 anchor
         'rate_limit': 10000,
         'tagline': 'Developer + market compare + PDF reports (10,000 calls/day)',
         'show_in_gate': True,
@@ -918,8 +918,10 @@ FACILITY_TIER_LIMITS = {
     'pro': 2000, 'enterprise': 9999, 'research_seed': 9999, 'developer': 1000, 'admin': 9999,
 }
 FACILITY_VISIBLE_FIELDS = {
-    'anon': {'name', 'city', 'country', 'latitude', 'longitude', 'status', 'slug'},
-    'free': {'name', 'city', 'country', 'latitude', 'longitude', 'status', 'slug',
+    # 'state' added 2026-06-23: basic public geo (same class as city), used by the
+    # map + /database — was being stripped from anon/free, leaving blank state cols.
+    'anon': {'name', 'city', 'state', 'country', 'latitude', 'longitude', 'status', 'slug'},
+    'free': {'name', 'city', 'state', 'country', 'latitude', 'longitude', 'status', 'slug',
              'provider', 'operator', 'region', 'market'},
 }
 
