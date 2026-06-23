@@ -20290,26 +20290,42 @@ def data_freshness():
             except:
                 pass
 
+_news_refresh_running = threading.Lock()
+
+
 @app.route('/api/news/refresh', methods=['POST'])
 def refresh_news():
-    """Force immediate news refresh"""
-    try:
-        from auto_sync import sync_news
-        saved = sync_news()
-        if 'news_sync' in _scheduler_registry:
-            _scheduler_registry['news_sync']['last_run'] = datetime.utcnow().isoformat()
-            _scheduler_registry['news_sync']['last_success'] = datetime.utcnow().isoformat()
-            _scheduler_registry['news_sync']['items_last_cycle'] = saved if isinstance(saved, int) else 0
-            _scheduler_registry['news_sync']['total_runs'] += 1
-        return jsonify({
-            'success': True,
-            'message': f'News refresh complete: {saved} new articles',
-            'refreshed_at': datetime.utcnow().isoformat()
-        })
-    except Exception as e:
-        if 'news_sync' in _scheduler_registry:
-            _scheduler_registry['news_sync']['last_error'] = str(e)
-        return jsonify({'success': False, 'error': str(e)}), 500
+    """Force immediate news refresh — FIRE-AND-FORGET (202).
+    r-async (2026-06-23): sync_news() fetches 34 RSS feeds + Google News + dedups +
+    DB-syncs = ~39s SYNCHRONOUS, which held a gunicorn worker the whole time (a top
+    'SLOW REQUEST' saturating the 16-thread pool → the contention that flapped live
+    sessions). Now it runs in a background thread and returns 202 immediately; the
+    cron trigger doesn't need the synchronous result. A non-blocking lock prevents
+    overlapping refreshes from piling up workers."""
+    if not _news_refresh_running.acquire(blocking=False):
+        return jsonify({'success': True, 'started': False,
+                        'message': 'News refresh already running'}), 202
+
+    def _bg():
+        try:
+            from auto_sync import sync_news
+            saved = sync_news()
+            if 'news_sync' in _scheduler_registry:
+                _scheduler_registry['news_sync']['last_run'] = datetime.utcnow().isoformat()
+                _scheduler_registry['news_sync']['last_success'] = datetime.utcnow().isoformat()
+                _scheduler_registry['news_sync']['items_last_cycle'] = saved if isinstance(saved, int) else 0
+                _scheduler_registry['news_sync']['total_runs'] += 1
+        except Exception as e:
+            if 'news_sync' in _scheduler_registry:
+                _scheduler_registry['news_sync']['last_error'] = str(e)
+        finally:
+            try: _news_refresh_running.release()
+            except Exception: pass
+
+    threading.Thread(target=_bg, daemon=True, name='news-refresh').start()
+    return jsonify({'success': True, 'started': True,
+                    'message': 'News refresh started in background',
+                    'started_at': datetime.utcnow().isoformat()}), 202
 
 @app.route('/api/transactions/refresh', methods=['POST'])
 def refresh_transactions():
