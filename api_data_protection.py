@@ -490,6 +490,52 @@ def increment_violation(api_key, amount=1):
 # MAIN DECORATOR — @protect_data
 # ===========================================================================
 
+# r-tierfix (2026-06-23): resolve a key's REAL tier for @protect_data routes that
+# have NO @require_plan (e.g. /api/v1/search), where g.user_tier is never set so a
+# PAID/ENTERPRISE key wrongly defaulted to 'free' and hit the free 10-record/day cap
+# (LIVE bug: an enterprise dch_oauth_ key 429'd "Daily download limit reached for
+# your free plan"). Cached 5min; direct short-lived conn (no pool interaction → no
+# forced-reclaim risk); fail-safe → None so the caller keeps its current tier. Only
+# ever used to UPGRADE g.user_tier, never downgrade.
+_KEY_TIER_CACHE = {}      # key_hash -> (protection_tier|None, expiry_epoch)
+_KEY_TIER_TTL = 300.0
+# mcp_dev_keys.tier ∈ {free,paid,enterprise}; map to a PROTECTION_CONFIG cap tier.
+_MCP_TIER_TO_PROTECTION = {'enterprise': 'enterprise', 'paid': 'developer',
+                           'developer': 'developer', 'pro': 'pro',
+                           'founding': 'founding', 'starter': 'starter'}
+
+
+def _resolve_key_tier(api_key):
+    if not api_key:
+        return None
+    kh = _get_key_hash(api_key)
+    now = time.time()
+    hit = _KEY_TIER_CACHE.get(kh)
+    if hit and hit[1] > now:
+        return hit[0]
+    tier = None
+    try:
+        import psycopg2 as _pg
+        dsn = os.environ.get('DATABASE_URL')
+        if dsn:
+            conn = _pg.connect(dsn, sslmode='require', connect_timeout=4)
+            conn.autocommit = True
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("SET statement_timeout='3000'")
+                    cur.execute("SELECT LOWER(tier) FROM mcp_dev_keys "
+                                "WHERE api_key = %s AND status = 'active' LIMIT 1", (api_key,))
+                    row = cur.fetchone()
+                    tier = _MCP_TIER_TO_PROTECTION.get(((row[0] or '') if row else ''))
+            finally:
+                try: conn.close()
+                except Exception: pass
+    except Exception:
+        tier = None
+    _KEY_TIER_CACHE[kh] = (tier, now + _KEY_TIER_TTL)
+    return tier
+
+
 def protect_data(f):
     # BUG-003 FIX: Skip rate limiting for dchub.cloud frontend requests
     """
@@ -520,6 +566,13 @@ def protect_data(f):
             or ""
         )
         tier = getattr(g, "user_tier", "free")
+        # r-tierfix (2026-06-23): on @protect_data routes with no @require_plan,
+        # g.user_tier is never set → a paid/enterprise key fell through to the free
+        # 10-record/day cap and 429'd. Resolve the key's REAL tier and UPGRADE only.
+        if tier in (None, "", "free", "anonymous", "anon") and api_key:
+            _real_tier = _resolve_key_tier(api_key)
+            if _real_tier:
+                tier = _real_tier
         endpoint = request.path
         params = {**request.args.to_dict(), **request.view_args} if request.view_args else request.args.to_dict()
 
