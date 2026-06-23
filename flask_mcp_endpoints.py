@@ -690,7 +690,7 @@ def claim_key():
                 # New path: (client_name + ip) tuple — preserves
                 # multi-agent shared-IP deployments
                 cur.execute(
-                    """SELECT created_at, api_key
+                    """SELECT created_at, api_key, tier
                          FROM mcp_dev_keys
                         WHERE metadata->>'source' = 'claim_api'
                           AND metadata->>'client_name' = %s
@@ -704,7 +704,7 @@ def claim_key():
                 # Legacy path for anonymous (no client_name) claims —
                 # IP-only dedup, same 24h window
                 cur.execute(
-                    """SELECT created_at, api_key
+                    """SELECT created_at, api_key, tier
                          FROM mcp_dev_keys
                         WHERE metadata->>'source' = 'claim_api'
                           AND metadata->>'ip' = %s
@@ -723,11 +723,15 @@ def claim_key():
             # restarted in CI/CD pipelines reuse their slot. No more
             # silent 429 walls.
             existing_at, existing_key = existing[0], existing[1]
+            # Echo the key's ACTUAL tier (the reuse SELECT now fetches it). A key
+            # minted before the 'identified' carrot is still 'free'; a new claim is
+            # 'identified'. Never hardcode — that would over-claim to the agent.
+            existing_tier = (existing[2] if len(existing) > 2 and existing[2] else "free")
             return jsonify(
                 ok=True,
                 api_key=existing_key,
-                tier="free",
-                daily_calls=100,
+                tier=existing_tier,
+                daily_calls=(50 if existing_tier == "identified" else 100),
                 reused=True,
                 note=(f"Existing key reused for client_name='{client_name or '(anon)'}' "
                       f"from this IP within the last 24h. This is idempotent — call "
@@ -764,7 +768,7 @@ def claim_key():
             cur.execute(
                 """INSERT INTO mcp_dev_keys
                      (api_key, developer_id, email, tier, status, metadata)
-                   VALUES (%s, %s, %s, 'free', 'active', %s::jsonb)""",
+                   VALUES (%s, %s, %s, 'identified', 'active', %s::jsonb)""",
                 (api_key, developer_id, (email or None), json.dumps(metadata)),
             )
     except Exception as e:
@@ -781,7 +785,7 @@ def claim_key():
         ok=True,
         api_key=api_key,
         developer_id=developer_id,
-        tier="free",
+        tier="identified",
         claim_id=claim_id,
         unverified=(not email),
         email_captured=bool(email),

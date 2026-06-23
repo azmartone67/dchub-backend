@@ -235,7 +235,7 @@ def _gather():
         "dcpi":               "https://dchub.cloud/dcpi",
         "international_dcpi": "https://dchub.cloud/dcpi/intl",
         "hyperscaler_deals":  "https://dchub.cloud/hyperscaler-deals",
-        "press_rss":          "https://dchub.cloud/press-release/rss",
+        "press_rss":          "https://dchub.cloud/api/v1/press/rss",
         "agent_integration":  "https://dchub.cloud/api/v1/ai-agents.json",
         "agents_md":          "https://dchub.cloud/AGENTS.md",
         "openapi":            "https://dchub.cloud/openapi-live.json",

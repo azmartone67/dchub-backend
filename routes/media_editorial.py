@@ -137,6 +137,10 @@ def leads_with_number(text: str, head_chars: int = 220) -> bool:
 #   queue    "ERCOT's interconnection queue holds 427 GW ..."
 #   facility "... 18 MW ... entered the tracker"
 _KIND_PATTERNS = [
+    # r-tenant (2026-06-22): the uncontested moat — per-facility occupier data no
+    # analyst PDF or directory publishes. FIRST so its "MW" mention doesn't
+    # misclassify as new_facility; tenant-specific tokens won't match other leads.
+    ("tenant",          re.compile(r"\btenant\b|occupie|hyperscaler footprint|leased capacity|most-tracked (?:tenant|occupier)", re.I)),
     ("deal",            re.compile(r"\$\s?\d|\bacquisition\b|acquir|\btransaction\b|\bM&A\b|\bbuyer\b|\bsold\b", re.I)),
     ("dcpi_mover",      re.compile(r"climbed|slid|biggest mover|shifted|moved \d|\bpts?\b|\bpoints?\b", re.I)),
     ("dcpi_build",      re.compile(r"leads the DCPI|index at|at \d+/100|build (?:signal|market)|excess.?power|\bDCPI\b", re.I)),
@@ -334,6 +338,41 @@ def rank_data_events() -> list[dict]:
             # (a $50B deal must out-rank a $10B one even after the 0.7-1.3x weight).
             "score": min(120.0, 18.0 + bv / 250.0),
         })
+
+    # 2b) Tenant intelligence — the uncontested moat (project_dchub_competitive_moat):
+    # per-facility occupier footprint no analyst PDF / directory publishes. No
+    # tenant-rollup endpoint exists, so query facility_tenants directly; fully
+    # defensive — any failure → no tenant lead, no harm to the rest of the slate.
+    try:
+        import psycopg2 as _pg
+        _tc = _pg.connect(os.environ.get("DATABASE_URL"))
+        _tcur = _tc.cursor()
+        _tcur.execute(
+            "SELECT tenant_name, COUNT(DISTINCT facility_id) AS c, "
+            "       COALESCE(SUM(estimated_mw), 0) AS mw "
+            "FROM facility_tenants "
+            "WHERE tenant_name IS NOT NULL AND tenant_name <> '' "
+            "GROUP BY tenant_name ORDER BY c DESC LIMIT 3"
+        )
+        _trows = _tcur.fetchall()
+        _tcur.close(); _tc.close()
+        if _trows and _num(_trows[0][1]) and _num(_trows[0][1]) >= 5:
+            _t1, _c1, _mw1 = _trows[0][0], int(_trows[0][1]), _num(_trows[0][2]) or 0
+            _runners = ", ".join(f"{r[0]} ({int(r[1])})" for r in _trows[1:3] if r and r[0])
+            _mwline = f" (~{_mw1:,.0f} MW of tracked leased capacity)" if _mw1 > 0 else ""
+            leads.append({
+                "kind": "tenant",
+                "headline_number": f"{_t1} is the most-tracked data-center tenant in DC Hub — present at {_c1} facilities{_mwline}",
+                "trend": (f"ahead of {_runners} — " if _runners else "") +
+                         "the per-occupier footprint no analyst PDF or directory publishes",
+                "so_what": f"hyperscaler concentration IS the forward demand signal — where {_t1} clusters, "
+                           "power headroom and land tighten next; price the comparable markets now.",
+                "source_url": "https://dchub.cloud/research?series=tenant",
+                "dedup_key": f"tenant:top:{str(_t1).lower()}",
+                "score": 14.0 + min(20.0, _c1 * 0.4),
+            })
+    except Exception as _te:
+        logger.warning("[editorial] tenant lead failed: %s", str(_te)[:160])
 
     # 3) Interconnection queue — the clearest 'time-to-power' trend (ungated).
     snap = _internal("/api/v1/interconnection-queue/snapshot")

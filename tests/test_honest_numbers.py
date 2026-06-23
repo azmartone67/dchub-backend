@@ -11,13 +11,22 @@ cache settings whose drift previously stalled the gunicorn worker pool.
 Runs automatically in pre-merge.yml (`pytest tests/`). Pure file-reading — no DB,
 no network — so it's deterministic and fast.
 
-VERIFIED CANONICAL NUMBERS (checked at the Railway origin, 2026-06-03):
-  deals        = 2,032  -> say "2,000+"   (NEVER "$324B": uncomputable, value_usd sparse,
-                                           the one live-computing route falls back to $85B)
-  countries    = 178    -> say "170+"
-  DCPI markets = 233    -> say "232"       (NEVER 280+/285/286/289: SPP-clone inflation, deduped in fix #43)
-  MCP tools    = 38     (AUTHORITATIVE: live tools/list on dchub.cloud/mcp, 2026-06-07.
-                         NEVER 11/19/20/24/30/31/33/40 as the TOTAL — those are stale/subset)
+VERIFIED CANONICAL NUMBERS — REFRESHED 2026-06-21 (growth-audit live pull from
+/api/v1/stats + tools/list on dchub.cloud/mcp). The 2026-06-03 values below several
+metrics had DRIFTED UP; the enforced regexes still only ban GROSS over/under-claims,
+so they remain green, but treat THESE as the say-numbers going forward:
+  deals        = 3,079  -> say "3,000+"   (was 2,032/"2,000+"; live /api/v1/stats total_deals.
+                                           STILL never "$324B": uncomputable, value_usd sparse)
+  countries    = 178    -> say "170+"      (unchanged)
+  facilities   = 21,808 -> say "21,000+"   (was 21,432; floor phrase unchanged)
+  DCPI markets = ~311    -> say "300+"      (was 232→300; live /api/v1/stats markets=311,
+                                           capabilities.json=317; still NEVER 340+)
+  MCP tools    = 47      (live tools/list on dchub.cloud/mcp, 2026-06-21; →48 once why_dchub
+                         deploys. The old "38" AUTHORITATIVE is now STALE. A full surface
+                         sweep of 38/42/46→47 across ~12 backend files + the /mcp landing +
+                         the frontend repo + the OUT-OF-REPO zone worker (42) + .well-known/
+                         mcp.json (25) is PENDING — do it completely or not at all to avoid
+                         increasing drift. The enforced ban (30|31|33|40 "tools") is unchanged.)
   active MCP clients = Claude + Cursor     (NEVER "96+ AI platforms" / long "cited by ChatGPT,
                                            Claude, Gemini, Perplexity, Groq" lists)
 """
@@ -101,7 +110,7 @@ def test_no_324b_inflation():
     pats = [re.compile(r"\$324B"), re.compile(r"324B\+"), re.compile(r"\$324\s*billion", re.I)]
     hits = _scan(pats)
     assert not hits, ("Re-introduced the unverified $324B M&A aggregate — replace with "
-                      "'2,000+ tracked deals' (live COUNT(*)=2,032):\n" + _fmt(hits))
+                      "'3,000+ tracked deals' (live COUNT(*)=3,079, 2026-06-21):\n" + _fmt(hits))
 
 
 def test_no_inflated_platform_counts():
@@ -128,7 +137,7 @@ def test_no_inflated_market_counts():
             re.compile(r'"markets"\s*:\s*(3[4-9][0-9]|[4-9][0-9]{2})\b')]
     hits = _scan(pats)
     assert not hits, ("Re-introduced an inflated DCPI market count — the verified universe "
-                      "is 232 (live /api/v1/dcpi/scores=233):\n" + _fmt(hits))
+                      "is ~311 (live /api/v1/stats markets=311, 2026-06-21; say '300+'):\n" + _fmt(hits))
 
 
 def test_no_understated_country_count():
@@ -203,7 +212,7 @@ def test_no_stale_tool_count():
     splits) are legitimate and intentionally NOT banned — only the bare total claims."""
     pats = [re.compile(r"\b19\s+tools\b", re.I),
             re.compile(r"\b24\s+free\b[^.\n]{0,24}tools", re.I),
-            re.compile(r"\b(30|31|33|40)\s+(MCP\s+)?tools\b", re.I)]
+            re.compile(r"\b(30|31|33|40|42|46)\s+(MCP\s+)?tools\b", re.I)]
     hits = _scan(pats)
     assert not hits, ("Re-introduced a stale MCP tool count — the verified count is 38 "
                       "(live tools/list on dchub.cloud/mcp). Use 38 for the TOTAL; keep "
