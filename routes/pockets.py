@@ -652,7 +652,16 @@ def pockets_page():
         total_known=total_known,
     )
     resp = Response(html, mimetype="text/html")
-    resp.headers["Cache-Control"] = "public, max-age=300, must-revalidate"
+    # r-tierleak (2026-06-23): paid sees full ranked rows + all gold fields; anon/free
+    # gets 12 market NAMES only (ranking masked). This set public/max-age=300 for BOTH →
+    # a paid full-ranking render got edge-cached and served to anon (same class as /dcpi
+    # 6053d603). after_request honors private/no-store (main.py ~9848): paid → no-store;
+    # the free name-only teaser stays publicly cacheable.
+    if paid:
+        resp.headers["Cache-Control"] = "private, no-store, max-age=0"
+        resp.headers["CDN-Cache-Control"] = "no-store"
+    else:
+        resp.headers["Cache-Control"] = "public, max-age=300, must-revalidate"
     return resp
 
 

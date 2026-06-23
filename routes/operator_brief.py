@@ -1298,9 +1298,18 @@ def html_operator_brief(slug):
         from flask import redirect
         return redirect(f"/operators/{brief['redirect_to']}/brief", code=301)
     html = _render_html(brief)
-    return Response(html, mimetype="text/html",
-                    headers={
-                        # 6h edge cache
-                        "Cache-Control": "public, max-age=21600, s-maxage=21600",
-                        "X-Operator-Brief-Tier": tier,
-                    })
+    # r-tierleak (2026-06-23): the PRO render ships 6 full data sections; the free
+    # render is a paywalled teaser. This set public/s-maxage=21600 (6h) for BOTH →
+    # a PRO full-data render got edge-cached at CF and served to anon (same class as
+    # the /dcpi leak, commit 6053d603). The global after_request honors an explicit
+    # private/no-store (main.py ~9848), so: PRO render → private/no-store (never
+    # edge-shared); free teaser stays publicly cacheable (SEO/perf).
+    _pro = bool(brief.get("is_pro"))
+    _hdrs = {
+        "Cache-Control": ("private, no-store, max-age=0" if _pro
+                          else "public, max-age=21600, s-maxage=21600"),
+        "X-Operator-Brief-Tier": tier,
+    }
+    if _pro:
+        _hdrs["CDN-Cache-Control"] = "no-store"
+    return Response(html, mimetype="text/html", headers=_hdrs)

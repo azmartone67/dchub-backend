@@ -1262,8 +1262,16 @@ def html_state_brief(state):
         from flask import redirect
         return redirect(f"/states/{brief['redirect_to']}/brief", code=301)
     html = _render_html(brief)
-    return Response(html, mimetype="text/html", headers={
-        # 6h edge cache
-        "Cache-Control":       "public, max-age=21600, s-maxage=21600",
-        "X-State-Brief-Tier":  tier,
-    })
+    # r-tierleak (2026-06-23): PRO render ships full iso/policy/transmission/operators/
+    # M&A sections; free is a paywalled teaser. Public/s-maxage=21600 for BOTH edge-cached
+    # the PRO render and served it to anon (same class as /dcpi 6053d603). after_request
+    # honors private/no-store (main.py ~9848): PRO → no-store; free teaser stays cacheable.
+    _pro = bool(brief.get("is_pro"))
+    _hdrs = {
+        "Cache-Control": ("private, no-store, max-age=0" if _pro
+                          else "public, max-age=21600, s-maxage=21600"),
+        "X-State-Brief-Tier": tier,
+    }
+    if _pro:
+        _hdrs["CDN-Cache-Control"] = "no-store"
+    return Response(html, mimetype="text/html", headers=_hdrs)

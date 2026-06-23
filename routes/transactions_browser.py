@@ -406,8 +406,14 @@ def transactions_index():
 <script src="/js/dchub-nav.js" defer></script>
 </body>
 </html>"""
-    return Response(html, mimetype="text/html",
-                    headers={"Cache-Control": "public, max-age=300"})
+    # r-tierleak (2026-06-23): authed visitors see real deal $value/type on every row;
+    # anon gets 🔒-redacted cells. This set public/max-age=300 for BOTH → an authed
+    # full-value render got edge-cached and served to anon (same class as /dcpi 6053d603).
+    # after_request honors private/no-store (main.py ~9848): authed → no-store; anon
+    # redacted render stays publicly cacheable.
+    _hdrs = ({"Cache-Control": "private, no-store, max-age=0", "CDN-Cache-Control": "no-store"}
+             if is_authed else {"Cache-Control": "public, max-age=300"})
+    return Response(html, mimetype="text/html", headers=_hdrs)
 
 
 # Phase DDDD (2026-05-16) — DEVELOPER-gated CSV export. User

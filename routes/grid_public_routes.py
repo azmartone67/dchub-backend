@@ -263,7 +263,13 @@ def grid_iso(iso):
         return Response('<h1>Unknown ISO</h1>', status=404, mimetype='text/html')
     tier = _user_tier(request)
     if tier == 'free' and iso not in FREE_TIER_ISOS:
-        return Response(render_paywall_html(iso, ISOS[iso]), mimetype='text/html')
+        # r-tierleak (2026-06-23): paywall vs full render share the /grid/<iso> cache
+        # key; public-caching either cross-serves tiers (a free visitor gets a cached
+        # paid full render, or a paid visitor gets a cached paywall). Paid-only ISOs are
+        # tier-varying → private/no-store (after_request honors it, main.py ~9848).
+        return Response(render_paywall_html(iso, ISOS[iso]), mimetype='text/html',
+                        headers={"Cache-Control": "private, no-store, max-age=0",
+                                 "CDN-Cache-Control": "no-store"})
 
     meta = ISOS[iso]
     live = _fetch_live(iso)
@@ -280,7 +286,14 @@ def grid_iso(iso):
     }
 
     html = render_grid_iso_html(iso, meta, live, schema)
-    return Response(html, mimetype='text/html')
+    # Free-tier ISOs render identically for everyone → keep edge-cacheable (SEO/perf).
+    # Paid-only ISOs are tier-gated (free gets the paywall above) → never edge-share the
+    # full render or it'd be served to a free visitor on the same /grid/<iso> path.
+    if iso in FREE_TIER_ISOS:
+        return Response(html, mimetype='text/html')
+    return Response(html, mimetype='text/html',
+                    headers={"Cache-Control": "private, no-store, max-age=0",
+                             "CDN-Cache-Control": "no-store"})
 
 
 @grid_public_bp.route('/grid/sitemap.xml', methods=['GET'])
