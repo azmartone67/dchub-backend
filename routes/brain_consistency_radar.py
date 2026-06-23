@@ -5679,7 +5679,7 @@ def check_conversion_rate_floor() -> list[dict]:
                 # removed from the other funnel detectors. Gate + rate on distinct
                 # callers so the floor reflects real demand.
                 # r72: dropped the NULLIF(tool_requested,'') fallback from the
-                # COALESCE. With it, an anonymous bot looping all ~38 tools counted
+                # COALESCE. With it, an anonymous bot looping all ~48 tools counted
                 # as 38 distinct "callers" (tool-name diversity, not caller
                 # diversity) — inflating the denominator and DEFLATING the
                 # conversion rate, which kept this escalation firing ~x27 on a

@@ -386,7 +386,7 @@ def _draft_near_converter_pitch(nc: dict) -> str:
     else:
         price_block = (
             f"Good news — `{top_tool}` unlocks on the $9/mo Starter plan (200 calls/day,\n"
-            f"all 38 tools, full grid + fiber + market data). At your cadence ({p403}\n"
+            f"all 48 tools, full grid + fiber + market data). At your cadence ({p403}\n"
             f"blocked calls in {days_active} days) that's plenty, and the 403s stop the\n"
             f"moment you swap in your X-API-Key header. Running heavier? $49/mo Developer\n"
             f"is 500 calls/day.")

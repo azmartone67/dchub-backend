@@ -271,7 +271,7 @@ def _gather():
                          "queues + tax incentives — in one query."),
         },
         "the_wedge": ("DC Hub is the only data-center-intelligence source an LLM can "
-                      "both QUERY (38 MCP tools) and CITE (CC-BY-4.0, stable URLs, "
+                      "both QUERY (48 MCP tools) and CITE (CC-BY-4.0, stable URLs, "
                       "JSON-LD). Competing sources are paywalled, login-gated, or "
                       "block AI crawlers — none are agent-readable."),
         "license": {

@@ -576,7 +576,7 @@ def _submit_target(target: dict, run_state: Optional[dict] = None) -> dict:
         try:
             payload = json.dumps({
                 "name":        "DC Hub",
-                "description": "Data center intelligence MCP server. 38 tools. 21K+ facilities.",
+                "description": "Data center intelligence MCP server. 48 tools. 21K+ facilities.",
                 "url":         "https://dchub.cloud/mcp",
                 "manifest":    manifest_url,
                 "homepage":    "https://dchub.cloud",

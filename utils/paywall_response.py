@@ -79,7 +79,7 @@ STRIPE_PRO_LINK = STRIPE_DEVELOPER_LINK
 # 2026-06-12 conversion-nudge: the funnel teardown showed ~330 distinct free
 # users hammering get_grid_intelligence / get_fiber_intel, but the paywall
 # only ever pitched Developer ($49/mo). The cheapest unblock — Starter
-# ($9/mo, 200 calls/day, all 38 tools) — was never mentioned. For a free
+# ($9/mo, 200 calls/day, all 48 tools) — was never mentioned. For a free
 # user who's already called a tool many times, "$9 unlocks all of it" is a
 # far lower-friction yes than "$49/mo". Lead with Starter; keep Developer as
 # the step-up for heavy API users. Env-overridable; default is the live link.
@@ -98,7 +98,7 @@ def _one_click_starter_line(tool_name=None, call_count=0):
     used = (f"You've called `{tool_name}` **{call_count}×** — "
             if (tool_name and call_count and call_count > 0) else "")
     return (
-        f"💡 **{used}$9/mo Starter unlocks all 38 tools (200 calls/day) — "
+        f"💡 **{used}$9/mo Starter unlocks all 48 tools (200 calls/day) — "
         f"the cheapest way to unblock this:** "
         f"[{STRIPE_STARTER_LINK}]({STRIPE_STARTER_LINK})\n\n"
     )
@@ -284,7 +284,7 @@ def _build_human_message(tool_name, call_count, current_tier, partial_data_summa
     # Tier 1 — standard preview (calls 1-2)
     return (
         f"🔓 **This is a SAMPLE PREVIEW — not your actual query result. The free tier shows one pre-canned record.** Get full `{tool_name}` data + 6 more ISOs grid intel "
-        f"+ fiber routes — **from just $9/mo (Starter, all 38 tools)**.\n\n"
+        f"+ fiber routes — **from just $9/mo (Starter, all 48 tools)**.\n\n"
         f"{starter}"
         f"{quick}"
         f"**[Start 7-day free trial →]({pricing_url})** — no credit card required.\n\n"
@@ -396,7 +396,7 @@ def build_paywall_response(
         base['one_click_upgrade_tier'] = 'developer'  # phase 281
         base['one_click_upgrade_price'] = '$49/mo'    # phase 281
     # 2026-06-12: lead structured CTA is the $9 Starter (cheapest unblock,
-    # all 38 tools). Discrete field so AI clients render it as the primary
+    # all 48 tools). Discrete field so AI clients render it as the primary
     # button; the markdown human_message already leads with it too.
     if STRIPE_STARTER_LINK:
         base['recommended_upgrade_url'] = _stripe_with_attrib(STRIPE_STARTER_LINK)

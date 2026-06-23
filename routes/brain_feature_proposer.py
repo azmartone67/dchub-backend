@@ -409,7 +409,7 @@ _PROPOSE_SYSTEM = (
     "write a tight 200-word feature spec a human engineer can review in "
     "60 seconds.\n\n"
     "DC Hub's existing primitives — REUSE these wherever possible:\n"
-    "  - 33-38 MCP tools (search_facilities, compare_isos, compare_sites,\n"
+    "  - 33-48 MCP tools (search_facilities, compare_isos, compare_sites,\n"
     "    score_facility, deal_autopsy, get_market_intel, get_grid_*,\n"
     "    site_selection_canvas, etc.)\n"
     "  - /market-briefs/<slug> 9-section report (live)\n"

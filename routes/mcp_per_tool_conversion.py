@@ -87,7 +87,7 @@ _INTERNAL_KEY_PATTERNS = ("dchub-%", "%-probe", "%-health", "%-scanner",
 # Tool catalog — driven from routes.mcp_tool_catalog.TOOLS but lazily
 # loaded so an import-order accident doesn't kill this module.
 def _get_tools() -> list[tuple[str, str, str]]:
-    """Return [(name, category, tier)] for the 38 MCP tools."""
+    """Return [(name, category, tier)] for the 48 MCP tools."""
     try:
         from routes.mcp_tool_catalog import TOOLS
         return [(t[0], t[1], t[2]) for t in TOOLS]

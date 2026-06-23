@@ -442,6 +442,42 @@ def _energy_block() -> dict:
         return {}
 
 
+def _dedup_place(rows: list) -> list:
+    """Collapse duplicate market slugs that point at the SAME place with the
+    SAME scores — e.g. 'cheyenne' + 'cheyenne-wy' (both 69.5/22.5), 'washington'
+    + 'dc', 'st-louis' + 'st.-louis'. The DCPI ingest minted ~5 such slug pairs,
+    inflating the 'scored markets' count to 317 and listing the same city twice
+    in the rankings. Keyed on (normalized-name, excess, constraint) so two
+    GENUINELY different markets that share a name but differ in score — Portland
+    OR (44.8/41.1) vs Portland ME (30.3/39.0) — are BOTH kept. Order-preserving:
+    keeps the first (best-ranked) occurrence. Display-layer only — never touches
+    market_power_scores, so /dcpi/<slug> URLs and ingest re-runs are unaffected."""
+    import re
+    def _nf(r):
+        return (r.get("market") or r.get("market_name") or r.get("name") or "")
+    def _ex(r):
+        v = r.get("excess", r.get("excess_power_score"))
+        try: return round(float(v or 0), 1)
+        except Exception: return 0.0
+    def _con(r):
+        v = r.get("constraint", r.get("constraint_score"))
+        try: return round(float(v or 0), 1)
+        except Exception: return 0.0
+    def _sc(r):                              # movers rows carry a single 'score'
+        v = r.get("score")
+        try: return round(float(v), 1) if v is not None else None
+        except Exception: return None
+    seen, out = set(), []
+    for r in rows or []:
+        nm = re.sub(r'[^a-z0-9]', '', re.sub(r',?\s+[a-z]{2}$', '', _nf(r).lower().strip()))
+        key = (nm, _ex(r), _con(r), _sc(r))
+        if nm and key in seen:
+            continue
+        seen.add(key)
+        out.append(r)
+    return out
+
+
 def _dcpi_scores() -> list:
     """All current DCPI market scores (for the CSV + the scores table),
     read straight from market_power_scores. Mirrors the SELECT in
@@ -497,7 +533,7 @@ def _dcpi_scores() -> list:
     _vrank = {"BUILD": 0, "CAUTION": 1, "AVOID": 2}
     rows.sort(key=lambda x: (_vrank.get((x.get("verdict") or "").upper(), 3),
                              -(x.get("excess") or 0)))
-    return rows
+    return _dedup_place(rows)
 
 
 def _narrative(qinfo: dict, shifts: dict, energy: dict, mna: dict, stats: dict) -> dict:
@@ -643,6 +679,24 @@ def _gather(qinfo: dict) -> dict:
     shifts = _verdict_shifts(qinfo)
     mna = _mna_runrate(qinfo)
     scores = _dcpi_scores()
+    # Re-derive the scored-market count + verdict split from the DEDUPED score
+    # set so the headline count, the verdict-distribution boxes, the rankings
+    # and the narrative all agree (was 317 with ~5 duplicate-slug places double-
+    # counted — Cheyenne/Columbus/DC/St. Louis/The Dalles listed twice; ~312
+    # distinct). Also collapse the same dupes out of the BUILD/AVOID leaderboards.
+    if scores:
+        energy["markets_scored_total"] = len(scores)
+        _vd: dict = {}
+        for _s in scores:
+            _v = (_s.get("verdict") or "").upper()
+            if _v:
+                _vd[_v] = _vd.get(_v, 0) + 1
+        if _vd:
+            energy["verdict_distribution"] = _vd
+    if energy.get("top_build_markets"):
+        energy["top_build_markets"] = _dedup_place(energy["top_build_markets"])
+    if energy.get("top_avoid_markets"):
+        energy["top_avoid_markets"] = _dedup_place(energy["top_avoid_markets"])
     narrative = _narrative(qinfo, shifts, energy, mna, stats)
 
     slug = f"state-of-power-{qinfo['slug']}"
@@ -1142,12 +1196,19 @@ def _legacy_compute_report_data() -> dict:
             # `merged_at IS NULL AND is_duplicate=0` filter dropped 14k+ rows
             # and produced a misleading 6,951 investor-facing headline.
             try:
-                cur.execute("""
-                    SELECT COUNT(*), COALESCE(SUM(power_mw),0)
-                      FROM discovered_facilities
-                """)
-                r = cur.fetchone() or (0, 0)
-                out["headline"] = {"facilities": int(r[0] or 0), "total_mw": float(r[1] or 0)}
+                # facilities COUNT = discovered_facilities (canonical 21,809).
+                # total_mw = the FULL `facilities` table — discovered_facilities
+                # .power_mw is sparse and undercounted to 170.8 GW vs the
+                # MONTHLY report's 849.7 GW (which sums `facilities.power_mw`).
+                # Match the monthly's source so the two snapshots AGREE on the
+                # "Power tracked · Operational + pipeline" headline.
+                cur.execute("SELECT COUNT(*) FROM discovered_facilities")
+                _n_fac = int((cur.fetchone() or [0])[0] or 0)
+                cur.execute(
+                    "SELECT COALESCE(SUM(power_mw),0) FROM facilities "
+                    "WHERE power_mw IS NOT NULL")
+                _mw = float((cur.fetchone() or [0])[0] or 0)
+                out["headline"] = {"facilities": _n_fac, "total_mw": _mw}
             except Exception as e:
                 logger.warning(f"quarterly_report headline failed: {e}")
             # ─── DCPI MOVERS ──────────────────────────────────────────
@@ -1194,9 +1255,9 @@ def _legacy_compute_report_data() -> dict:
                      ORDER BY ABS(cur_s.score - prev_s.score) DESC
                      LIMIT 10
                 """)
-                out["dcpi_movers"] = [
+                out["dcpi_movers"] = _dedup_place([
                     {"market": r[0], "score": int(r[1] or 0), "delta": int(r[2] or 0)}
-                    for r in cur.fetchall()]
+                    for r in cur.fetchall()])
                 # r70 (2026-06-05): when no markets moved this week (DCPI is
                 # often stable in steady-state — e.g. the new daily recompute
                 # is < 7d old, so the prev_s lookback comes back empty for
@@ -1214,11 +1275,12 @@ def _legacy_compute_report_data() -> dict:
                          WHERE published = true
                          ORDER BY market_slug, computed_at DESC
                     """)
-                    rows = [(r[0], int(r[1] or 0)) for r in cur.fetchall()]
-                    rows.sort(key=lambda x: x[1], reverse=True)
-                    out["dcpi_movers"] = [
-                        {"market": m, "score": s, "delta": 0}
-                        for m, s in rows[:10]]
+                    _mv = [{"market": r[0], "score": int(r[1] or 0), "delta": 0}
+                           for r in cur.fetchall()]
+                    _mv.sort(key=lambda x: x["score"], reverse=True)
+                    # collapse duplicate-slug places (cheyenne/cheyenne-wy) BEFORE
+                    # the top-10 slice so the ranking shows 10 DISTINCT markets
+                    out["dcpi_movers"] = _dedup_place(_mv)[:10]
                     out["dcpi_movers_mode"] = "top_score_fallback"
                 else:
                     out["dcpi_movers_mode"] = "weekly_delta"
@@ -1227,14 +1289,23 @@ def _legacy_compute_report_data() -> dict:
                 out["dcpi_movers"] = []
                 out["dcpi_movers_mode"] = "error"
             try:
+                # Verdict distribution — select name + scores too so we can
+                # collapse duplicate-slug places (cheyenne/cheyenne-wy …) BEFORE
+                # counting, else the total reads 317 instead of the ~312 distinct.
                 cur.execute("""
-                    WITH latest AS (
-                      SELECT DISTINCT ON (market_slug) verdict
-                        FROM market_power_scores WHERE published = true
-                       ORDER BY market_slug, computed_at DESC)
-                    SELECT verdict, COUNT(*) FROM latest GROUP BY verdict
+                    SELECT DISTINCT ON (market_slug) market_name, verdict,
+                           excess_power_score, constraint_score
+                      FROM market_power_scores WHERE published = true
+                     ORDER BY market_slug, computed_at DESC
                 """)
-                vd = {(r[0] or '').upper(): int(r[1] or 0) for r in cur.fetchall()}
+                _vr = _dedup_place([
+                    {"market": r[0], "verdict": (r[1] or ''),
+                     "excess": r[2], "constraint": r[3]} for r in cur.fetchall()])
+                vd: dict = {}
+                for _r in _vr:
+                    _v = (_r["verdict"] or '').upper()
+                    if _v:
+                        vd[_v] = vd.get(_v, 0) + 1
                 out["dcpi_verdicts"] = {
                     "build": vd.get("BUILD", 0), "caution": vd.get("CAUTION", 0),
                     "avoid": vd.get("AVOID", 0), "total": sum(vd.values())}
@@ -1245,10 +1316,11 @@ def _legacy_compute_report_data() -> dict:
                      WHERE published = true AND verdict = 'BUILD'
                      ORDER BY market_slug, computed_at DESC
                 """)
-                rows = sorted(cur.fetchall(), key=lambda r: -(r[2] or 0))[:8]
-                out["top_build"] = [
+                _tb = _dedup_place([
                     {"market": r[0], "iso": r[1], "excess": int(r[2] or 0),
-                     "constraint": int(r[3] or 0)} for r in rows]
+                     "constraint": int(r[3] or 0)} for r in cur.fetchall()])
+                _tb.sort(key=lambda x: -x["excess"])
+                out["top_build"] = _tb[:8]
             except Exception as e:
                 logger.warning(f"quarterly_report dcpi_verdicts/top_build failed: {e}")
                 out["dcpi_verdicts"] = {}

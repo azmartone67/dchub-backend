@@ -81,7 +81,7 @@ def _payload(cat: str) -> dict:
         d.update({
             "category": "mcp",
             "what": "MCP client (Claude Desktop, Cursor, Cline, Continue, ChatGPT, Gemini, Windsurf)",
-            "method": "Add the DC Hub MCP server to your client config — 38 tools become callable.",
+            "method": "Add the DC Hub MCP server to your client config — 48 tools become callable.",
             "mcp_config": {"mcpServers": {"dchub": {"url": f"{BASE}/mcp"}}},
             "one_click_setup": {t: f"{BASE}/connect/{t}" for t in
                                 ("claude-desktop", "cursor", "cline", "continue",

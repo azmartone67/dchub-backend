@@ -1653,7 +1653,7 @@ try:
     # 2026-05-31: /vs is now served by the FACTUAL competitive_seo module
     # (observed-and-dated competitor facts only, from the moat radar). The
     # old competitive_vs.py carried UNVERIFIED pricing claims ($25K seat,
-    # $9/mo, "38 tools/96 platforms") — RETIRED here (not registered), so
+    # $9/mo, "48 tools/96 platforms") — RETIRED here (not registered), so
     # those routes no longer serve. competitive_seo registers first so it
     # owns /vs + /vs/<slug> (and beats the quick_redirects /vs 301 below).
     try:
@@ -4137,7 +4137,7 @@ def handle_well_known():
             "contact":      "api@dchub.cloud",
             "license":      "Free for AI citation; data subject to https://dchub.cloud/terms",
             # r68.1 (2026-05-26): add fields AI agents quote from `jq`:
-            # - tools_count: numeric for "DC Hub exposes 38 MCP tools"
+            # - tools_count: numeric for "DC Hub exposes 48 MCP tools"
             # - pricing.<tier>.price_usd_month: numeric for ROI math
             # See main.py `_canonical_pricing()` for the shared shape that
             # also feeds /mcp/manifest + /api/v1/mcp/manifest. .tiers (above)
@@ -4326,7 +4326,7 @@ def handle_well_known():
                     # r37b (2026-06-02): advertise the actual tool surface so an
                     # agent reading this manifest (the path llms.txt points at)
                     # sees what it can call without a round-trip to tools/list.
-                    # Synced to the 38 tools registered on the live MCP server
+                    # Synced to the 48 tools registered on the live MCP server
                     # (dchub-mcp-server/server.mjs) + the static
                     # /.well-known/ai-agents.json — keep all three in sync.
                     # r78: was 30 — drifted 8 behind the live server
@@ -22771,7 +22771,7 @@ def _canonical_mcp_manifest():
     ]
     # Single source of truth: override the inline list with the canonical
     # tool catalog, which matches the live server.mjs tools/list exactly
-    # (38 tools). This kills the recurring drift between this manifest, the
+    # (48 tools). This kills the recurring drift between this manifest, the
     # server card, and the CF-worker fallback — they now all derive from the
     # same catalog. The inline list above remains only as a hard fallback if
     # the import ever fails (the manifest must never break).

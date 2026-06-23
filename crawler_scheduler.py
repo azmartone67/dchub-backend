@@ -1738,7 +1738,7 @@ def _run_tool_calibration_check():
 
 def _run_per_tool_conversion():
     """MCP Funnel Round 3 Unlock 1 (2026-06-07): per-tool conversion
-    analyzer. Computes 30d conv rate for each of the 38 MCP tools and
+    analyzer. Computes 30d conv rate for each of the 48 MCP tools and
     writes LOW/HIGH brain findings via the canonical upsert. Idempotent
     + read-only against tool tables. Kill switch:
     MCP_FUNNEL_R3_DISABLE=1.

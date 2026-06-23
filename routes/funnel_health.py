@@ -1639,10 +1639,10 @@ def _render_html(data: dict, admin_key: str) -> str:
        Cron at 02:00 UTC writes LOW (≥100 callers + 0 paid) and HIGH (top 3
        by rate) findings to brain_findings. Card content is hydrated by JS
        from /api/v1/admin/per-tool-conversion/top so this dashboard doesn't
-       have to re-probe 38 tools on every refresh. -->
+       have to re-probe 48 tools on every refresh. -->
   <div class="card" style="margin-bottom:18px;">
     <h2>Per-tool conversion ranking
-      <span style="font-size:10px;color:var(--accent);">R3 NEW · 38 tools · daily</span>
+      <span style="font-size:10px;color:var(--accent);">R3 NEW · 48 tools · daily</span>
     </h2>
     <div id="ptc-inline" style="display:grid;grid-template-columns:1fr 1fr;gap:16px;font-size:12px;">
       <div>
