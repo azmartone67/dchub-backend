@@ -94,21 +94,11 @@ def get_peeringdb_facilities():
     
     # Audit #8: net_count/ix_count (network-density) is a Developer+ feature.
     # Use the UNFORGEABLE caller_is_privileged (rejects Referer/UA spoofing).
-    _dbg = {}
     try:
         from routes.tier_gate import caller_is_privileged as _cip8
         _conn_priv = bool(_cip8('DEVELOPER'))
-        _dbg['cip'] = _conn_priv
-    except Exception as _e8:
+    except Exception:
         _conn_priv = False
-        _dbg['cip_err'] = str(_e8)[:70]
-    try:
-        from api_tier_gating import get_request_tier as _grt_conn
-        _dbg['grt'] = _grt_conn()
-    except Exception as _e8b:
-        _dbg['grt_err'] = str(_e8b)[:70]
-    _dbg['ikey'] = bool(request.headers.get('X-Internal-Key'))
-    _dbg['ua'] = (request.headers.get('User-Agent') or '')[:40]
 
     features = []
     for fac in facilities:
@@ -147,8 +137,7 @@ def get_peeringdb_facilities():
         'type': 'FeatureCollection',
         'features': features,
         'count': len(features),
-        'source': 'PeeringDB',
-        '_dbg': _dbg
+        'source': 'PeeringDB'
     })
 
 
