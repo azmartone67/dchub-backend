@@ -4691,6 +4691,22 @@ def public_dashboard():
     # treated /dcpi as a regression even though the page is intentional.
     resp = Response(html, mimetype="text/html")
     resp.headers["Content-Security-Policy"] = _DCPI_CSP
+    # r-tierleak (2026-06-23): /dcpi body VARIES by tier — anon gets the 25-card
+    # teaser, authed gets all 317 scored cards. It set NO Cache-Control, so it fell
+    # through to the after_request's PUBLIC s-maxage=300 HTML cache → an AUTHED render
+    # got edge-cached at CF and served to ANON (the leak the owner caught on mobile).
+    # Fix per the established pattern (main.py ~9848 honors an explicit private/no-store):
+    # authed render → private/no-store (never edge-shared); the anon teaser stays
+    # edge-cacheable (SEO/perf). The CF worker already bypasses the edge cache for
+    # authed (hasAuth), so an authed visitor still gets their full render — not a
+    # cached anon teaser. NOTE: the 317 market name+link list is names-only (no scores)
+    # and the per-market /dcpi/<slug> pages are intentionally free (SEO/citation) — the
+    # scored CARDS are what stays gated to 25 for anon.
+    if _gated_to_anon:
+        resp.headers["Cache-Control"] = "public, max-age=120, s-maxage=300, stale-while-revalidate=86400"
+    else:
+        resp.headers["Cache-Control"] = "private, no-store, max-age=0"
+        resp.headers["CDN-Cache-Control"] = "no-store"
     return resp
 
 
