@@ -350,7 +350,9 @@ def _today_flow_html() -> str:
     chips = []
     wn = _get("https://dchub.cloud/api/v1/whats-new")
     if wn and wn.get("total_added"):
-        chips.append(f'<span class="chip"><b>{wn["total_added"]}</b> new this week</span>')
+        # total_added = live additions across ALL infra layers (rolling 7d per
+        # the API note) — NOT new facilities. Label it honestly as data updates.
+        chips.append(f'<span class="chip"><b>{int(wn["total_added"]):,}</b> live updates · 7d</span>')
     dg = _get("https://dchub.cloud/api/v1/digest/today")
     if dg:
         if dg.get("deals_count_7d"):
