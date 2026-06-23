@@ -3910,6 +3910,14 @@ footer a:hover { color: var(--acc-light); }
     <strong style="color:var(--acc-light);">Excess Power Score</strong> is the contrarian metric: reserve-margin headroom, generation additions queued &lt;12mo, renewable curtailment volume, queue approval rate, stranded interconnection at retiring plants, and behind-the-meter industrial generation. Updated daily from ISO public filings + DC Hub's grid extractors.
   </p>
 
+  {% if all_market_links %}
+  <div class="section-h"><span class="pip"></span>🗺️ All {{ all_market_links|length }} Markets</div>
+  <p style="color:var(--tx2);font-size:0.88rem;max-width:720px;margin-bottom:8px;">Every market in the DC Hub Power Index — open any market's free detail page:</p>
+  <div style="display:flex;flex-wrap:wrap;gap:4px 12px;font-size:0.9rem;line-height:1.85;max-width:960px;">
+    {% for m in all_market_links %}<a href="/dcpi/{{ m.slug }}" style="color:var(--tx2);text-decoration:none;white-space:nowrap;">{{ m.name }}</a>{% if not loop.last %}<span style="color:#555;">·</span>{% endif %}{% endfor %}
+  </div>
+  {% endif %}
+
   <footer>
     <p>This is the free preview. Full methodology + raw data via <a href="/api-docs">API</a>. Press inquiries: <a href="/dcpi/press">press kit</a>.</p>
     <p>© 2026 DC Hub · Data Center Intelligence Platform · <a href="/about">About</a> · <a href="/pricing">Pricing</a> · <a href="/openapi.json">OpenAPI</a></p>
@@ -4623,6 +4631,18 @@ def public_dashboard():
     from flask import request as _req
     _has_key = bool((_req.headers.get('X-API-Key') or _req.args.get('api_key') or '').strip())
     _total_rows = len(rows)
+    # r-deorphan (2026-06-23): capture EVERY published market (slug+name only, NO
+    # scores) BEFORE the anon teaser slice below, so the page renders a crawlable link
+    # to every /dcpi/<slug> for anonymous crawlers too. The per-market pages are
+    # already free (AI-citation) and names+links aren't the paid moat (county drill /
+    # >5pt alerts / branded PDF are) — this de-orphans the ~200 market pages the anon
+    # 25-card cap hid from crawlers, with ZERO new data exposure. The brain's sentinel
+    # flagged these as the bulk of its orphan-pages finding; internal links feed the
+    # one acquisition channel that's actually growing (SEO).
+    all_market_links = sorted(
+        ({'slug': r.get('market_slug'), 'name': (r.get('market_name') or r.get('market_slug'))}
+         for r in rows if r.get('market_slug')),
+        key=lambda m: (m['name'] or '').lower())
     # 2026-05-30: keep the full 300+-market catalog for AUTHENTICATED viewers
     # (API key OR a logged-in session cookie — incl. the operator), but a
     # truly-anonymous visitor gets the capped r42ab teaser so we don't give the
@@ -4661,6 +4681,7 @@ def public_dashboard():
         count_low_signal=count_low_signal,
         gated_to_anon=_gated_to_anon,
         total_rows=_total_rows,
+        all_market_links=all_market_links,
     )
     # phase 284: ship a Content-Security-Policy header on /dcpi so the
     # dchub-frontend qa-csp-parse preflight CI doesn't fail on this page.
