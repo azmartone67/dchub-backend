@@ -3824,6 +3824,17 @@ def get_facilities():
         rows = cur.fetchall()
         cols = [d[0] for d in cur.description]
         data = [dict(zip(cols, row)) for row in rows]
+        # Audit #6/#7: this endpoint also feeds the map — the gating.js MW blur was
+        # cosmetic (the real power_mw was in the network response). Strip each row to
+        # the tier's allowlist for anon/free (mirrors search_facilities). Paid → full.
+        try:
+            from api_tier_gating import get_request_tier as _grt_fac, FACILITY_VISIBLE_FIELDS as _fvf_fac
+            _fac_vis = _fvf_fac.get((_grt_fac() or 'anon').lower())
+            if _fac_vis:
+                _fac_keep = set(_fac_vis)
+                data = [{k: v for k, v in f.items() if k in _fac_keep} for f in data]
+        except Exception:
+            pass  # fail-open on import error (non-blocking)
         cur.execute("""SELECT COUNT(*) FROM discovered_facilities
             WHERE latitude IS NOT NULL AND longitude IS NOT NULL
               AND latitude != 0 AND longitude != 0""" + _filt_sql, tuple(_filt_params))

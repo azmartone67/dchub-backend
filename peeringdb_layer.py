@@ -92,6 +92,14 @@ def get_peeringdb_facilities():
 
     facilities = query_peeringdb('fac', params)
     
+    # Audit #8: net_count/ix_count (network-density signal) is a Developer+ feature
+    # (api_tier_gating connectivity_score) — strip for non-privileged callers.
+    try:
+        from api_tier_gating import get_request_tier as _grt_conn
+        _conn_priv = (_grt_conn() or 'anon').lower() in ('developer', 'pro', 'enterprise', 'admin', 'founding', 'team')
+    except Exception:
+        _conn_priv = False
+
     features = []
     for fac in facilities:
         lat = fac.get('latitude')
@@ -114,8 +122,8 @@ def get_peeringdb_facilities():
                 'country': fac.get('country', ''),
                 'zipcode': fac.get('zipcode', ''),
                 'website': fac.get('website', ''),
-                'net_count': fac.get('net_count', 0),
-                'ix_count': fac.get('ix_count', 0),
+                'net_count': (fac.get('net_count', 0) if _conn_priv else None),
+                'ix_count': (fac.get('ix_count', 0) if _conn_priv else None),
                 'floor_space': fac.get('available_voltage_services', ''),
                 'diverse_serving_substations': fac.get('diverse_serving_substations', False),
                 'property': fac.get('property', ''),
