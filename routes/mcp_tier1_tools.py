@@ -455,15 +455,19 @@ def score_facility():
                 f.setdefault('certifications', None)
                 f.setdefault('connectivity', None)
 
-                # Get market context (count of facilities + avg MW in market)
+                # Get market context (count of facilities + avg MW in market).
+                # CAST id to text: a facilities-table fallback gives f["id"] a STRING
+                # slug (e.g. 'aligned-phoenix-az-exp') while discovered_facilities.id is
+                # INTEGER — `id != <string>` threw InvalidTextRepresentation. Text-compare
+                # works for both (a string id simply never matches an int id → no exclude).
                 cur.execute("""
                     SELECT COUNT(*) AS n, AVG(power_mw) AS avg_mw,
                            COUNT(DISTINCT provider) AS operators
                       FROM discovered_facilities
                      WHERE city = %s AND state = %s
                        AND COALESCE(is_duplicate, 0) = 0
-                       AND id != %s
-                """, (f["city"], f["state"], f["id"]))
+                       AND CAST(id AS TEXT) != %s
+                """, (f["city"], f["state"], str(f["id"])))
                 market = cur.fetchone() or {"n": 0, "avg_mw": 0, "operators": 0}
         except Exception as e:
             return jsonify({"error": f"query_failed: {type(e).__name__}: {str(e)[:200]}"}), 500
