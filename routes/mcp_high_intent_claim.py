@@ -112,6 +112,60 @@ def _is_internal_claim_client(mcp_client: str | None, user_agent: str | None) ->
     return bool(_INTERNAL_CLAIM_CLIENT_RE.search(blob))
 
 
+# r-claim-script-guard (2026-06-23): the internal-client guard above catches our
+# NAMED automation (dchub-/regression/brain) but NOT raw HTTP-library traffic —
+# python-httpx / Python-urllib / curl scripts that hit paid tools, cross the
+# high-intent threshold, mint a claim URL, and then NEVER open it because there
+# is no human and no browser. Live audit (2026-06-23): of 123 claims minted in
+# 30d, ~93 were raw httpx/urllib scripts (client names "clawith","gating-audit",
+# "p",…) and only ~13 were real agents-with-humans (claude/cursor/opencode).
+# Counting the scripts faked a -99% "leak". A genuine prospect always connects
+# THROUGH an MCP client (Claude/Cursor/Cline/…), never raw httpx — so a raw
+# scripting UA is a reliable "no human here" signal. We neither MINT for them nor
+# COUNT them. (Bare 'node' is mcp-remote — a REAL transport — deliberately NOT in
+# the list.) The SQL twin _SCRIPT_UA_SQL is used by the step-drop metric query so
+# the gate and the dashboard agree by construction.
+_SCRIPT_UA_TOKENS = (
+    "python-httpx", "python-urllib", "urllib", "curl/", "wget", "libwww",
+    "node-fetch", "undici", "axios", "got/", "go-http", "okhttp", "java/",
+    "requests/", "aiohttp", "scrapy", "postman", "httpie", "restsharp",
+)
+_SCRIPT_UA_RE  = re.compile("|".join(re.escape(t) for t in _SCRIPT_UA_TOKENS), re.I)
+_SCRIPT_UA_SQL = "(" + "|".join(_SCRIPT_UA_TOKENS) + ")"   # POSIX ~* alternation
+
+
+def _is_non_human_client(mcp_client: str | None, user_agent: str | None) -> bool:
+    """True for traffic with no human able to open a /claim browser link —
+    our own internal automation OR a raw HTTP-library/scripting UA. Used to
+    keep both the MINT decision and the funnel METRIC honest (same predicate)."""
+    if _is_internal_claim_client(mcp_client, user_agent):
+        return True
+    return bool(_SCRIPT_UA_RE.search(user_agent or ""))
+
+
+# SQL twin of _is_non_human_client for the step-drop METRIC query, so the
+# dashboard counts exactly the real prospects the mint gate admits. POSIX ~*
+# has no \b, so internal tokens are bare; this errs toward UNDER-counting (a
+# borderline client is dropped, never fake-inflated). Includes this-session
+# test labels (audit/fix2/gating/adv-check/hi-claim/funnel-diag).
+_INTERNAL_CLIENT_SQL = (
+    "(dchub|self.?heal|regression|verify|trial.?test|smoke|e2e|sweep|probe|"
+    "monitor|health.?check|watchdog|canary|uptimerobot|fleet.?view|headless|"
+    "brain|audit|fix2|gating|adv.?check|hi.?claim|funnel-diag)"
+)
+
+
+def _hi_real_sql(prefix: str = "") -> str:
+    """SQL boolean (no leading AND) TRUE for real human-bearing high-intent
+    rows. prefix = optional table alias incl trailing dot (e.g. 'h.')."""
+    p = prefix
+    return (
+        f"COALESCE({p}mcp_client,'') !~* '{_INTERNAL_CLIENT_SQL}' "
+        f"AND COALESCE({p}user_agent,'') !~* '{_INTERNAL_CLIENT_SQL}' "
+        f"AND COALESCE({p}user_agent,'') !~* '{_SCRIPT_UA_SQL}'"
+    )
+
+
 def _hmac_secret() -> bytes:
     s = (os.environ.get("DCHUB_HMAC_SECRET") or "").strip()
     if not s:
@@ -301,13 +355,16 @@ def track_paid_hit():
         return jsonify(ok=False, error="missing_session_or_tool"), 400
     ua = str(body.get("user_agent") or "")[:300] or None
     mcp_client = str(body.get("mcp_client") or "")[:80] or None
-    # r-claim-internal-guard (2026-06-21): never enter our OWN automated traffic
-    # (self-heal / regression / QA / probe / brain) into the high-intent funnel —
-    # it crossed the threshold and minted ~81% of all claims with no human to open
-    # them, faking a 98.2% drop. Skip recording so the funnel = real prospects only.
-    if _is_internal_claim_client(mcp_client, ua):
+    # r-claim-internal-guard (2026-06-21) + r-claim-script-guard (2026-06-23):
+    # never enter no-human traffic into the high-intent funnel — our OWN automation
+    # (self-heal / regression / QA / probe / brain) OR raw HTTP-library scripts
+    # (python-httpx / urllib / curl). Both cross the threshold and mint claims with
+    # no human to ever open the link, faking a ~99% drop. Skip recording entirely so
+    # the funnel = real, browser-bearing prospects only.
+    if _is_non_human_client(mcp_client, ua):
+        _why = "internal_client" if _is_internal_claim_client(mcp_client, ua) else "scripting_ua"
         return jsonify(ok=True, count=0, is_high_intent=False,
-                       threshold=HIGH_INTENT_THRESHOLD, skipped="internal_client")
+                       threshold=HIGH_INTENT_THRESHOLD, skipped=_why)
     # Round 2 (2026-06-07): platform-derived variant for the A/B test. The
     # mcp-server sends this on every call so we can store it the FIRST time
     # we see the (sid, tool) pair (per-row stickiness — a user's first
@@ -1210,46 +1267,55 @@ def high_intent_step_drop():
                 except Exception: pass
                 return 0
 
+        # r-claim-script-guard (2026-06-23): every step now filters to REAL
+        # human-bearing prospects (_hi_real_sql) — the SAME exclusion the mint
+        # gate applies — so this card stops counting raw-script/self-test traffic
+        # as a -99% "leak". Base-table queries use no alias; join queries use 'h.'.
         n_minted = _scalar(
-            """SELECT COUNT(*) FROM mcp_high_intent_sessions
+            ("""SELECT COUNT(*) FROM mcp_high_intent_sessions
                 WHERE claim_minted_at IS NOT NULL
                   AND claim_minted_at >= NOW() - INTERVAL '%s days'""" % days)
+            + " AND " + _hi_real_sql())
 
         # Step 2: we don't yet track raw page-views separately from POSTs.
         # As a conservative proxy: claim_used_at IS NOT NULL (form-submit).
         # The brain can compare n_used vs n_minted directly — that's the
         # 19/0/0 alarm we just lived through.
         n_used = _scalar(
-            """SELECT COUNT(*) FROM mcp_high_intent_sessions
+            ("""SELECT COUNT(*) FROM mcp_high_intent_sessions
                 WHERE claim_used_at IS NOT NULL
                   AND claim_used_at >= NOW() - INTERVAL '%s days'""" % days)
+            + " AND " + _hi_real_sql())
         n_page_viewed = n_used  # conservative under-count; see note above.
 
         n_email = _scalar(
-            """SELECT COUNT(*) FROM mcp_high_intent_sessions
+            ("""SELECT COUNT(*) FROM mcp_high_intent_sessions
                 WHERE claim_email IS NOT NULL
                   AND claim_used_at IS NOT NULL
                   AND claim_used_at >= NOW() - INTERVAL '%s days'""" % days)
+            + " AND " + _hi_real_sql())
 
         n_key = _scalar(
-            """SELECT COUNT(*) FROM mcp_high_intent_sessions
+            ("""SELECT COUNT(*) FROM mcp_high_intent_sessions
                 WHERE minted_api_key IS NOT NULL
                   AND claim_used_at IS NOT NULL
                   AND claim_used_at >= NOW() - INTERVAL '%s days'""" % days)
+            + " AND " + _hi_real_sql())
 
         # Step 5: trial key actually made an API call. Join to auto_trial_keys
         # (where the trial keys live with a last_used_at column).
         n_first_call = _scalar(
-            """SELECT COUNT(DISTINCT h.minted_api_key)
+            ("""SELECT COUNT(DISTINCT h.minted_api_key)
                  FROM mcp_high_intent_sessions h
                  JOIN auto_trial_keys a ON a.api_key = h.minted_api_key
                 WHERE h.minted_api_key IS NOT NULL
                   AND h.claim_used_at >= NOW() - INTERVAL '%s days'
                   AND a.last_used_at IS NOT NULL""" % days)
+            + " AND " + _hi_real_sql("h."))
 
         # Step 6: same email later hit Stripe checkout.
         n_upgrade_click = _scalar(
-            """SELECT COUNT(DISTINCT LOWER(h.claim_email))
+            ("""SELECT COUNT(DISTINCT LOWER(h.claim_email))
                  FROM mcp_high_intent_sessions h
                  JOIN mcp_upgrade_signals u
                    ON LOWER(u.operator_email) = LOWER(h.claim_email)
@@ -1258,15 +1324,17 @@ def high_intent_step_drop():
                   AND u.stripe_clicked_at IS NOT NULL
                   AND u.stripe_clicked_at >= h.claim_used_at - INTERVAL '1 day'
                   AND u.stripe_clicked_at <= h.claim_used_at + INTERVAL '14 days'""" % days)
+            + " AND " + _hi_real_sql("h."))
 
         # Step 7: same email is paying.
         n_paid = _scalar(
-            """SELECT COUNT(DISTINCT LOWER(h.claim_email))
+            ("""SELECT COUNT(DISTINCT LOWER(h.claim_email))
                  FROM mcp_high_intent_sessions h
                  JOIN users u ON LOWER(u.email) = LOWER(h.claim_email)
                 WHERE h.claim_email IS NOT NULL
                   AND h.claim_used_at >= NOW() - INTERVAL '%s days'
                   AND COALESCE(u.plan, 'free') NOT IN ('free','')""" % days)
+            + " AND " + _hi_real_sql("h."))
 
         raw_steps = [
             ("claims_minted",   "Claim URL minted + sent to agent",   n_minted),

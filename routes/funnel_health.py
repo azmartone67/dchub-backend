@@ -145,6 +145,50 @@ def _deloop_calls_where() -> str:
     return " COALESCE(LOWER(client_name),'') NOT LIKE 'dchub-%' "
 
 
+# ── High-intent claim funnel: real-prospect exclusion ─────────────────────
+# 2026-06-23: the high-intent headline ("N claims minted, 0 converted") was
+# inflated by self-test + scripting traffic, not real prospects. Live audit:
+# of 123 claims minted/30d, ~93 were raw python-httpx/Python-urllib/curl
+# scripts (+ this-session gating/funnel tests) and only ~24 were real,
+# browser-bearing agents (claude/cursor/opencode + anonymous mcp-remote).
+# Counting the noise made the funnel read like a ~99% leak.
+#
+# We DELEGATE to the ONE predicate the mint gate and the step-drop endpoint
+# already use — routes.mcp_high_intent_claim._hi_real_sql() — so the mint
+# decision, that endpoint, and this dashboard agree by construction (no second
+# list to drift). It reads mcp_client + user_agent directly and KEEPS bare
+# 'node' (mcp-remote, a real transport) while dropping our automation + raw
+# scripting UAs. (An earlier draft here reused the tool-call de-loop classifier
+# instead; that wrongly dropped the mcp-remote 'node' agents — 16 vs the correct
+# 24 — which is exactly why we share the high-intent-specific predicate.)
+def _high_intent_real_where(prefix: str = "") -> str:
+    """Real-prospect SQL boolean (no leading AND) for mcp_high_intent_sessions.
+    Lazily delegates to the shared _hi_real_sql() so the dashboard never drifts
+    from the mint gate; the import is lazy (per-call) to avoid any route-module
+    circular import at load. Minimal script-UA fallback keeps the page alive if
+    the import is unavailable. `prefix` = optional alias incl. trailing dot."""
+    try:
+        from routes.mcp_high_intent_claim import _hi_real_sql
+        return _hi_real_sql(prefix)
+    except Exception:  # pragma: no cover - defensive: never blank the page
+        p = prefix
+        return (f"COALESCE({p}user_agent,'') !~* "
+                f"'(python-httpx|python-urllib|urllib|curl/|wget|node-fetch|undici|axios)'")
+
+
+def _hi_real_from() -> str:
+    """A real-prospect-FILTERED derived table over mcp_high_intent_sessions,
+    aliased `h`, exposing every column via SELECT *. The exclusion is applied
+    INSIDE over `_z`, so callers may JOIN `h` to users / auto_trial_keys /
+    mcp_upgrade_signals without the predicate's columns ever going ambiguous.
+    Use as:
+        SELECT ... FROM {_hi_real_from()} WHERE <business conditions> …
+    or  SELECT ... FROM {_hi_real_from()} JOIN users u ON … WHERE …
+    """
+    return ("(SELECT * FROM mcp_high_intent_sessions _z "
+            " WHERE " + _high_intent_real_where("_z.") + ") h")
+
+
 # ── DB ────────────────────────────────────────────────────────────────
 
 def _conn():
@@ -613,8 +657,10 @@ def _build_data() -> dict:
         # the public stats endpoint) so the dashboard works during the
         # rollout window before the endpoint is necessarily deployed.
         try:
+            # All high-intent counts run over the REAL-traffic derived table
+            # (probe/self-test excluded) — see _hi_real_from / _high_intent_real_where.
             v = _scalar(cur,
-                "SELECT COUNT(*) FROM mcp_high_intent_sessions "
+                "SELECT COUNT(*) FROM " + _hi_real_from() +
                 " WHERE last_hit_at >= NOW() - INTERVAL '30 days' "
                 "   AND paid_call_count_24h >= 3")
             if v is None:
@@ -622,11 +668,11 @@ def _build_data() -> dict:
             else:
                 out["high_intent"]["sessions_30d"] = int(v or 0)
                 out["high_intent"]["claims_minted_30d"] = int(_scalar(cur,
-                    "SELECT COUNT(*) FROM mcp_high_intent_sessions "
+                    "SELECT COUNT(*) FROM " + _hi_real_from() +
                     " WHERE claim_minted_at IS NOT NULL "
                     "   AND claim_minted_at >= NOW() - INTERVAL '30 days'") or 0)
                 out["high_intent"]["claims_used_30d"] = int(_scalar(cur,
-                    "SELECT COUNT(*) FROM mcp_high_intent_sessions "
+                    "SELECT COUNT(*) FROM " + _hi_real_from() +
                     " WHERE claim_used_at IS NOT NULL "
                     "   AND claim_used_at >= NOW() - INTERVAL '30 days'") or 0)
                 # claim_to_paid: joined to users.email. Skips silently if
@@ -634,7 +680,7 @@ def _build_data() -> dict:
                 try:
                     cur.execute(
                         "SELECT COUNT(DISTINCT h.claim_email) "
-                        "  FROM mcp_high_intent_sessions h "
+                        "  FROM " + _hi_real_from() +
                         "  JOIN users u "
                         "    ON LOWER(u.email) = LOWER(h.claim_email) "
                         " WHERE h.claim_used_at IS NOT NULL "
@@ -673,30 +719,30 @@ def _build_data() -> dict:
         # the try/except + per-row column-present check keeps the page green.
         try:
             cur.execute(
-                """SELECT
-                       COALESCE(NULLIF(claim_variant,''), 'generic') AS variant,
-                       COUNT(*) FILTER (WHERE claim_minted_at IS NOT NULL
-                                        AND claim_minted_at >= NOW() - INTERVAL '30 days') AS minted,
-                       COUNT(*) FILTER (WHERE claim_used_at IS NOT NULL
-                                        AND claim_used_at   >= NOW() - INTERVAL '30 days') AS used
-                     FROM mcp_high_intent_sessions
-                    GROUP BY 1
-                    ORDER BY minted DESC, used DESC""")
+                "SELECT "
+                "    COALESCE(NULLIF(claim_variant,''), 'generic') AS variant, "
+                "    COUNT(*) FILTER (WHERE claim_minted_at IS NOT NULL "
+                "                     AND claim_minted_at >= NOW() - INTERVAL '30 days') AS minted, "
+                "    COUNT(*) FILTER (WHERE claim_used_at IS NOT NULL "
+                "                     AND claim_used_at   >= NOW() - INTERVAL '30 days') AS used "
+                "  FROM " + _hi_real_from() +
+                " GROUP BY 1 "
+                " ORDER BY minted DESC, used DESC")
             v_rows = cur.fetchall() or []
             # Paid join is a SEPARATE query so a missing 'users' table or
             # email-column mismatch doesn't blow away the minted/used numbers.
             paid_by_variant = {}
             try:
                 cur.execute(
-                    """SELECT COALESCE(NULLIF(h.claim_variant,''), 'generic'),
-                              COUNT(DISTINCT LOWER(h.claim_email))
-                         FROM mcp_high_intent_sessions h
-                         JOIN users u
-                           ON LOWER(u.email) = LOWER(h.claim_email)
-                        WHERE h.claim_used_at IS NOT NULL
-                          AND h.claim_used_at >= NOW() - INTERVAL '30 days'
-                          AND COALESCE(u.plan, 'free') NOT IN ('free','')
-                        GROUP BY 1""")
+                    "SELECT COALESCE(NULLIF(h.claim_variant,''), 'generic'), "
+                    "       COUNT(DISTINCT LOWER(h.claim_email)) "
+                    "  FROM " + _hi_real_from() +
+                    "  JOIN users u "
+                    "    ON LOWER(u.email) = LOWER(h.claim_email) "
+                    " WHERE h.claim_used_at IS NOT NULL "
+                    "   AND h.claim_used_at >= NOW() - INTERVAL '30 days' "
+                    "   AND COALESCE(u.plan, 'free') NOT IN ('free','') "
+                    " GROUP BY 1")
                 for v_name, paid_n in (cur.fetchall() or []):
                     paid_by_variant[v_name or "generic"] = int(paid_n or 0)
             except Exception:
@@ -746,29 +792,34 @@ def _build_data() -> dict:
                         try: conn.rollback()
                         except Exception: pass
                         return 0
-                _m = _ds("SELECT COUNT(*) FROM mcp_high_intent_sessions WHERE claim_minted_at IS NOT NULL AND claim_minted_at >= NOW() - INTERVAL '30 days'")
-                _u = _ds("SELECT COUNT(*) FROM mcp_high_intent_sessions WHERE claim_used_at   IS NOT NULL AND claim_used_at   >= NOW() - INTERVAL '30 days'")
-                _e = _ds("SELECT COUNT(*) FROM mcp_high_intent_sessions WHERE claim_email     IS NOT NULL AND claim_used_at   >= NOW() - INTERVAL '30 days'")
-                _k = _ds("SELECT COUNT(*) FROM mcp_high_intent_sessions WHERE minted_api_key  IS NOT NULL AND claim_used_at   >= NOW() - INTERVAL '30 days'")
-                _f = _ds("""SELECT COUNT(DISTINCT h.minted_api_key)
-                              FROM mcp_high_intent_sessions h
-                              JOIN auto_trial_keys a ON a.api_key = h.minted_api_key
-                             WHERE h.minted_api_key IS NOT NULL
-                               AND h.claim_used_at >= NOW() - INTERVAL '30 days'
-                               AND a.last_used_at IS NOT NULL""")
-                _c = _ds("""SELECT COUNT(DISTINCT LOWER(h.claim_email))
-                              FROM mcp_high_intent_sessions h
-                              JOIN mcp_upgrade_signals u
-                                ON LOWER(u.operator_email) = LOWER(h.claim_email)
-                             WHERE h.claim_email IS NOT NULL
-                               AND h.claim_used_at >= NOW() - INTERVAL '30 days'
-                               AND u.stripe_clicked_at IS NOT NULL""")
-                _p = _ds("""SELECT COUNT(DISTINCT LOWER(h.claim_email))
-                              FROM mcp_high_intent_sessions h
-                              JOIN users u ON LOWER(u.email) = LOWER(h.claim_email)
-                             WHERE h.claim_email IS NOT NULL
-                               AND h.claim_used_at >= NOW() - INTERVAL '30 days'
-                               AND COALESCE(u.plan, 'free') NOT IN ('free','')""")
+                # Waterfall runs over the SAME real-traffic table as the headline
+                # (probe/self-test excluded) so the step-drop matches the KPIs.
+                _hf = "SELECT COUNT(*) FROM " + _hi_real_from() + " WHERE "
+                _m = _ds(_hf + "claim_minted_at IS NOT NULL AND claim_minted_at >= NOW() - INTERVAL '30 days'")
+                _u = _ds(_hf + "claim_used_at   IS NOT NULL AND claim_used_at   >= NOW() - INTERVAL '30 days'")
+                _e = _ds(_hf + "claim_email     IS NOT NULL AND claim_used_at   >= NOW() - INTERVAL '30 days'")
+                _k = _ds(_hf + "minted_api_key  IS NOT NULL AND claim_used_at   >= NOW() - INTERVAL '30 days'")
+                _f = _ds("SELECT COUNT(DISTINCT h.minted_api_key) FROM " + _hi_real_from() +
+                         " JOIN auto_trial_keys a ON a.api_key = h.minted_api_key "
+                         " WHERE h.minted_api_key IS NOT NULL "
+                         "   AND h.claim_used_at >= NOW() - INTERVAL '30 days' "
+                         "   AND a.last_used_at IS NOT NULL")
+                # "Stripe click" step ≈ viewed the redeem/checkout URL. The old
+                # query referenced u.operator_email + u.stripe_clicked_at — NEITHER
+                # column exists on mcp_upgrade_signals (verified 2026-06-23), so it
+                # silently returned 0 forever. Real columns: user_email +
+                # signal_type='redeem_url_viewed' (the genuine upgrade-intent event).
+                _c = _ds("SELECT COUNT(DISTINCT LOWER(h.claim_email)) FROM " + _hi_real_from() +
+                         " JOIN mcp_upgrade_signals u "
+                         "   ON LOWER(u.user_email) = LOWER(h.claim_email) "
+                         " WHERE h.claim_email IS NOT NULL "
+                         "   AND h.claim_used_at >= NOW() - INTERVAL '30 days' "
+                         "   AND u.signal_type = 'redeem_url_viewed'")
+                _p = _ds("SELECT COUNT(DISTINCT LOWER(h.claim_email)) FROM " + _hi_real_from() +
+                         " JOIN users u ON LOWER(u.email) = LOWER(h.claim_email) "
+                         " WHERE h.claim_email IS NOT NULL "
+                         "   AND h.claim_used_at >= NOW() - INTERVAL '30 days' "
+                         "   AND COALESCE(u.plan, 'free') NOT IN ('free','')")
             raw = [("claims_minted", "Claim URL minted", _m),
                    ("page_viewed",   "Page opened",      _u),
                    ("email_submitted","Email submitted", _e),
@@ -1353,7 +1404,7 @@ def _render_html(data: dict, admin_key: str) -> str:
     <div class="hero">
       <div class="hero-l">MRR</div>
       <div class="hero-v">${_fmt_n(k['mrr_usd'])}</div>
-      <div class="hero-d">/mo — sum of active subscriptions × plan price</div>
+      <div class="hero-d">/mo plan-based run-rate · counts annual/comped as monthly — not Stripe cash-recurring</div>
     </div>
     <div class="hero">
       <div class="hero-l">Conversions 30d</div>
@@ -1367,8 +1418,8 @@ def _render_html(data: dict, admin_key: str) -> str:
     </div>
     <div class="hero">
       <div class="hero-l">Tool calls 7d (external)</div>
-      <div class="hero-v">{_fmt_n(k.get('tool_calls_7d_real', 0))}</div>
-      <div class="hero-d">de-looped · {_fmt_n(k.get('tool_calls_7d_incl_loops', k.get('tool_calls_7d', 0)))} incl-loops</div>
+      <div class="hero-v">{(_fmt_n(k['tool_calls_7d_real']) if k.get('tool_calls_7d_real') is not None else '—')}</div>
+      <div class="hero-d">{('de-looped · ' + _fmt_n(k.get('tool_calls_7d_incl_loops', k.get('tool_calls_7d', 0))) + ' incl-loops') if k.get('tool_calls_7d_real') is not None else 'refreshing — de-loop query timed out (transient DB load); auto-retries in 60s'}</div>
     </div>
   </div>
 
