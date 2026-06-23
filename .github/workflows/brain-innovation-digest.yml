@@ -22,7 +22,7 @@ name: brain innovation digest email
 
 on:
   schedule:
-    - cron: '0 13 * * *'   # ~09:00 ET, daily
+    - cron: '7 13 * * *'   # ~09:07 ET, daily (staggered off evolve-cron's :00 top-of-hour)
   workflow_dispatch: {}
 
 permissions:

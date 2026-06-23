@@ -30,7 +30,7 @@ import threading
 # "*_phrase()" helpers. Never set these above the true live numbers.
 _FALLBACK = {
     "facilities": 21000,            # raw "tracked" floor (discovery pile, incl unmerged dupes)
-    "facilities_verified": 1800,    # deduped/active floor — citation-safe. 2026-06-21: live=1,903 (kept dropping 3,141->2,848->1,903 as re-ingestion churns dedup flags), so the old 2,800 seed had gone STALE-HIGH and a DB-failure fallback would OVERSTATE by ~47% (this is the canonical_floor_above_live_reality finding). MUST stay <= reality — floors round DOWN; re-floor whenever live drops below it. [flag: verified set is shrinking fast — investigate whether dedup is over-merging.]
+    "facilities_verified": 1000,    # deduped/active floor — citation-safe. 2026-06-23: re-floored 1800->1000 (live=1,066, so 1800 was a ~69% over-claim on DB-failure — the canonical_floor_above_live_reality finding). Trend kept dropping 3,141->2,848->1,903->1,066 as re-ingestion churns dedup flags. MUST stay <= reality — floors round DOWN; re-floor whenever live drops below it. [flag: verified set is shrinking fast — investigate whether dedup is over-merging.]
     "countries": 170,
     "countries_verified": 30,       # deduped/active distinct floor (live ~33; country field dirty -> conservative)
     "markets": 300,          # 2026-06-08: Neon-verified COUNT(DISTINCT market_name) minus 3 aggregates = 300 (grew from 232 via intl expansion). Live query below; this is the fallback.

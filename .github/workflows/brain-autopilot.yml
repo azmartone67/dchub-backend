@@ -20,7 +20,7 @@ name: Brain Autopilot
 
 on:
   schedule:
-    - cron: '*/30 * * * *'   # every 30 min
+    - cron: '15,45 * * * *'   # every 30 min (offset from brain-autonomy's :00,:30)
   workflow_dispatch: {}
 
 permissions:

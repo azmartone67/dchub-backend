@@ -190,7 +190,13 @@ SKIP_PATHS = frozenset([
 # PATCH 2026-04-24 (jm): Added '/mcp/' prefix so any MCP sub-paths
 # (e.g. /mcp/sessions/xyz if future transport uses them) also bypass the
 # Flask-level rate limiter.
-SKIP_PREFIXES = ('/static/', '/assets/', '/js/', '/css/', '/images/', '/mcp/')
+SKIP_PREFIXES = ('/static/', '/assets/', '/js/', '/css/', '/images/', '/mcp/',
+                 # r-wellknown (2026-06-23): registry crawlers fetch the manifest +
+                 # tool catalog under /.well-known/* (mcp.json, mcp-tools.json). They
+                 # were tripping the anonymous 20rpm cap → HTTP 429 → registries saw
+                 # NO manifest (the mcp_health_*_unreachable findings). Public metadata
+                 # must never be rate-limited; exempt the whole prefix.
+                 '/.well-known/')
 
 # Phase FF (2026-05-22): public showcase/content HTML pages get the generous
 # 'public_content' tier instead of the strict anonymous IP cap, so crawlers +
