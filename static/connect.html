@@ -228,6 +228,25 @@ export BACKEND_BASE_URL=https://dchub.cloud
 python dchub_mcp_server.py --port 8888</code><button class="copy-btn" onclick="copyCode(this)">Copy</button></pre>
         </div>
 
+        <!-- r-deorphan (2026-06-23): internal links to the per-client setup pages.
+             These /connect/<client> pages rendered fine but had NO inbound internal
+             links (the brain's sentinel flagged them as orphans, ~36% of the site) —
+             invisible to crawlers, hurting the SEO that's our one growing channel. -->
+        <h2>Per-Client Setup Guides</h2>
+        <div class="links-section">
+            <p style="color:#8899aa; margin-bottom:12px;">Step-by-step walkthroughs for each AI client:</p>
+            <table class="tools-table">
+                <tbody>
+                    <tr><td>Claude Desktop</td><td><a href="/connect/claude-desktop">/connect/claude-desktop</a></td></tr>
+                    <tr><td>Cursor</td><td><a href="/connect/cursor">/connect/cursor</a></td></tr>
+                    <tr><td>Cline</td><td><a href="/connect/cline">/connect/cline</a></td></tr>
+                    <tr><td>Continue</td><td><a href="/connect/continue">/connect/continue</a></td></tr>
+                    <tr><td>ChatGPT</td><td><a href="/connect/chatgpt">/connect/chatgpt</a></td></tr>
+                    <tr><td>Gemini</td><td><a href="/connect/gemini">/connect/gemini</a></td></tr>
+                </tbody>
+            </table>
+        </div>
+
         <h2>Available Tools</h2>
 
         <table class="tools-table">
