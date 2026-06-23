@@ -2668,6 +2668,29 @@ def _grid_intel_fetch(region, rto_code):
     except Exception as e:
         out['eia_genmix_error'] = type(e).__name__ + ': ' + str(e)[:200]
 
+    # FRESHNESS DIVERGENCE (2026-06-23): EIA's fuel-type feed lags the demand feed,
+    # often by many hours (verified: ERCO fuel mix latest 04:00 while demand was
+    # 23:00 — a 19h gap). The picker above correctly takes EIA's freshest RELIABLE
+    # fuel hour, but a consumer must NOT narrate a stale overnight mix as the CURRENT
+    # mix (caught live: an agent said "wind 38% right now" off a 04:00 snapshot 19h
+    # behind demand). Make the gap EXPLICIT so the honest framing is unmissable.
+    # Additive fields only — no change to the actual numbers.
+    try:
+        from datetime import datetime as _dt
+        _dp, _gp = out.get('demand_period'), out.get('generation_mix_period')
+        if _dp and _gp:
+            _gap = round((_dt.strptime(_dp[:13], '%Y-%m-%dT%H')
+                          - _dt.strptime(_gp[:13], '%Y-%m-%dT%H')).total_seconds() / 3600)
+            out['generation_mix_stale_hours'] = _gap
+            if _gap >= 3:
+                out['generation_mix_note'] = (
+                    f"Fuel mix is EIA's latest PUBLISHED hour ({_gp}) — it lags the demand "
+                    f"reading ({_dp}) by ~{_gap}h because EIA publishes the fuel-type breakdown "
+                    f"slower than aggregate demand. Treat the mix / renewable + gas shares as a "
+                    f"recent snapshot, NOT the current minute's mix; demand_mw IS current.")
+    except Exception:
+        pass
+
     # 3) Our own grid-headroom endpoint for substation context.
     # r43-H (2026-05-28): call it on LOCALHOST, not the public dchub.cloud URL —
     # this is a server-to-server call, so going out through Cloudflare and back
@@ -7652,11 +7675,11 @@ _MCP_LANDING_HTML = """<!DOCTYPE html>
 <html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>DC Hub MCP Server · Connect to Claude, Cursor, Cline, Windsurf</title>
-<meta name="description" content="Add DC Hub's Model Context Protocol server to any AI agent runtime. 46 tools. Auto-trial keys mean you start in 60 seconds.">
+<meta name="description" content="Add DC Hub's Model Context Protocol server to any AI agent runtime. 48 tools. Auto-trial keys mean you start in 60 seconds.">
 <link rel="canonical" href="https://dchub.cloud/mcp">
 <meta property="og:title" content="DC Hub MCP Server">
 <script type="application/ld+json">
-{"@context":"https://schema.org","@type":"SoftwareApplication","name":"DC Hub MCP Server","applicationCategory":"DeveloperApplication","operatingSystem":"MCP (Streamable HTTP)","url":"https://dchub.cloud/mcp","description":"Model Context Protocol server giving AI agents live, citable data-center, power-grid (DCPI), fiber and M&A intelligence — 46 tools across 21,000+ facilities, 232 markets and 10 ISOs.","offers":{"@type":"Offer","price":"0","priceCurrency":"USD","description":"Free tier: 10 calls/day, no signup required"},"provider":{"@type":"Organization","name":"DC Hub","url":"https://dchub.cloud"},"sameAs":["https://smithery.ai/servers/azmartone67/dchub"]}
+{"@context":"https://schema.org","@type":"SoftwareApplication","name":"DC Hub MCP Server","applicationCategory":"DeveloperApplication","operatingSystem":"MCP (Streamable HTTP)","url":"https://dchub.cloud/mcp","description":"Model Context Protocol server giving AI agents live, citable data-center, power-grid (DCPI), fiber and M&A intelligence — 48 tools across 21,000+ facilities, 232 markets and 10 ISOs.","offers":{"@type":"Offer","price":"0","priceCurrency":"USD","description":"Free tier: 10 calls/day, no signup required"},"provider":{"@type":"Organization","name":"DC Hub","url":"https://dchub.cloud"},"sameAs":["https://smithery.ai/servers/azmartone67/dchub"]}
 </script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -7703,10 +7726,10 @@ _MCP_LANDING_HTML = """<!DOCTYPE html>
 <header>
   <div class="eyebrow">Model Context Protocol · MCP Server</div>
   <h1>Drop DC Hub into any AI agent.</h1>
-  <p>Native MCP server. 46 tools covering 21,000+ facilities, 2,000+ tracked M&amp;A deals, grid intelligence, fiber routes, water risk, tax incentives. Auto-trial keys mean your agent starts working in 60 seconds &mdash; no signup flow, no manual auth.</p>
+  <p>Native MCP server. 48 tools covering 21,000+ facilities, 2,000+ tracked M&amp;A deals, grid intelligence, fiber routes, water risk, tax incentives. Auto-trial keys mean your agent starts working in 60 seconds &mdash; no signup flow, no manual auth.</p>
   <div class="badges">
     <span class="badge">Streamable HTTP</span>
-    <span class="badge">46 tools</span>
+    <span class="badge">48 tools</span>
     <span class="badge">Free tier 1k calls/day</span>
     <span class="badge">Cited by 15+ AI platforms</span>
   </div>
@@ -7832,7 +7855,7 @@ X-API-Key: your-key
 
 <section>
   <h2>What you can ask</h2>
-  <p class="lead">All 46 tools land directly in your AI's tool menu. Example asks:</p>
+  <p class="lead">All 48 tools land directly in your AI's tool menu. Example asks:</p>
   <div class="tool-grid">
     <div class="tool"><div class="tname">search_facilities</div><div class="tdesc">"Find data centers in Ashburn over 50 MW"</div></div>
     <div class="tool"><div class="tname">analyze_site</div><div class="tdesc">"Score lat 39.0, lon -77.4 for hyperscaler suitability"</div></div>
@@ -12565,7 +12588,16 @@ def handle_checkout_completed(session):
             # still provision (never block the customer) but alert an admin
             # to verify the tier.
             _amount_ambiguous = False
-            if amount_dollars == 49 or (45 <= amount_dollars <= 55):
+            # r-starter9 (2026-06-22): a $9 Starter payment previously matched NO
+            # band and fell through to the else→'pro' default — silently
+            # provisioning a $9 buyer with full $299 Pro access. Classify $9 as
+            # 'starter' so it stops masquerading as Pro. (starter is NOT in the
+            # _paid_mcp_tier map, so it does not stamp a full mcp_dev_keys tier —
+            # the $9→full-MCP leak is closed without enforcing the rest of the
+            # ladder, which is deferred.)
+            if amount_dollars == 9 or (8 <= amount_dollars <= 11):
+                plan_name, api_tier = 'starter', 'starter'
+            elif amount_dollars == 49 or (45 <= amount_dollars <= 55):
                 plan_name, api_tier = 'developer', 'developer'
             elif amount_dollars == 99 or (95 <= amount_dollars <= 105):
                 plan_name, api_tier = 'founding', 'pro'
@@ -16608,9 +16640,45 @@ def search_facilities():
     limit    = min(request.args.get('limit', 25, type=int), 100)
     offset   = request.args.get('offset', 0, type=int)
 
-    # Need at least one filter
-    if not any([query, operator, city, state, country, min_mw, max_mw, tier]):
-        return jsonify({'error': 'Provide at least one filter: q, operator, city, state, country, min_capacity_mw, tier'}), 400
+    # r-dbsort (2026-06-22): server-side sort for the Data Center Database surface
+    # (/database). The column is interpolated into SQL, so it MUST come from this
+    # whitelist — never from raw user input. Default preserves prior ordering.
+    SORT_COLUMNS = {
+        'power_mw': 'power_mw', 'capacity': 'power_mw',
+        'name': 'name', 'provider': 'provider', 'operator': 'provider',
+        'confidence': 'confidence_score', 'confidence_score': 'confidence_score',
+        'state': 'state', 'market': 'market',
+    }
+    sort_req     = request.args.get('sort', '').strip().lower()
+    sort_dir_sql = 'ASC' if request.args.get('dir', 'desc').strip().lower() == 'asc' else 'DESC'
+    if sort_req in SORT_COLUMNS:
+        _col = SORT_COLUMNS[sort_req]
+        order_by_sql = f"ORDER BY {_col} {sort_dir_sql} NULLS LAST, confidence_score DESC, power_mw DESC"
+    else:
+        order_by_sql = "ORDER BY confidence_score DESC, power_mw DESC"
+
+    # r-dbiso (2026-06-22): ISO/RTO facet for /database. discovered_facilities has no
+    # ISO column, so approximate by the states each ISO serves (boundaries don't follow
+    # state lines exactly, but it's a useful, honest filter). Whitelisted keys only.
+    iso = request.args.get('iso', '').strip().upper()
+    ISO_STATES = {
+        'PJM':    ['DE','IL','IN','KY','MD','MI','NJ','NC','OH','PA','TN','VA','WV','DC'],
+        'ERCOT':  ['TX'],
+        'CAISO':  ['CA'],
+        'MISO':   ['AR','IL','IN','IA','LA','MI','MN','MS','MO','MT','ND','SD','TX','WI'],
+        'SPP':    ['AR','KS','LA','MO','NE','NM','OK','SD','TX','ND'],
+        'NYISO':  ['NY'],
+        'ISO-NE': ['CT','ME','MA','NH','RI','VT'], 'ISONE': ['CT','ME','MA','NH','RI','VT'],
+    }
+    iso_states = ISO_STATES.get(iso)
+
+    # Need at least one filter. NOTE: min_mw=0 is falsy but IS a deliberate "show all"
+    # signal from the /database default view — treat an explicitly-present min_mw param
+    # (even =0) as a filter so the browse-everything view doesn't 400. A truly bare call
+    # (no params at all) still gets the 400 below.
+    has_min = ('min_mw' in request.args) or ('min_capacity_mw' in request.args)
+    if not any([query, operator, city, state, country, min_mw, max_mw, tier, iso_states, has_min]):
+        return jsonify({'error': 'Provide at least one filter: q, operator, city, state, country, min_capacity_mw, tier, iso'}), 400
 
     conn = get_read_db()
     try:
@@ -16657,6 +16725,11 @@ def search_facilities():
             conditions.append('country = %s')
             params.append(country.upper())
 
+        if iso_states:
+            _ph = ','.join(['%s'] * len(iso_states))
+            conditions.append(f'state IN ({_ph})')
+            params.extend(iso_states)
+
         if min_mw:
             conditions.append('power_mw >= %s')
             params.append(min_mw)
@@ -16682,7 +16755,7 @@ def search_facilities():
             SELECT * FROM discovered_facilities
             {where}
             {RAILWAY_EXCLUSION.replace('AND', 'AND') if where else 'WHERE ' + RAILWAY_EXCLUSION.lstrip('AND').lstrip()}
-            ORDER BY confidence_score DESC, power_mw DESC
+            {order_by_sql}
             LIMIT %s OFFSET %s
         """, params)
 
@@ -22148,6 +22221,7 @@ def serve_sitemap_xml():
         ('/ai-agents', '0.7', 'weekly'),
         ('/ai-inventory', '0.7', 'daily'),
         ('/assets', '0.7', 'daily'),
+        ('/database',       '0.9', 'daily'),   # r-database (2026-06-22): Data Center Database — facility research surface (21,800+ facilities)
         ('/for-ai', '0.7', 'weekly'),
         ('/connect', '0.7', 'weekly'),
         # r-seo-coverage (2026-06-19): live 200 + index public pages that were
@@ -22197,6 +22271,11 @@ def serve_sitemap_xml():
         ('/sample/pe',        '0.8', 'daily'),
         ('/sample/agent',     '0.8', 'daily'),
         ('/reports/monthly',  '0.9', 'daily'),
+        # r-research-hub (2026-06-22): /research reframed into the analyst desk
+        # (named franchises: DCPI Power Report, Grid Headroom/Time-to-Power, AI
+        # Deal Tracker, Tenant Brief) over the now-crawlable press archive. Was
+        # an orphan (not in nav or sitemap); now linked + indexed. priority 0.9.
+        ('/research',         '0.9', 'daily'),
         ('/reports/quarterly-deep', '0.9', 'daily'),
         ('/reports/energy/monthly',   '0.9', 'daily'),
         ('/reports/energy/quarterly', '0.9', 'daily'),
@@ -22249,6 +22328,20 @@ def serve_sitemap_xml():
         ('/partners/gemini',                          '0.8', 'weekly'),
         ('/partners/nlr',                             '0.7', 'monthly'),
         ('/openapi-vertex.yaml',                      '0.5', 'monthly'),
+        # r-vs-sitemap (2026-06-21 growth audit): the /vs competitive hub +
+        # 6 canonical comparison pages (routes/competitive_seo.py) were live
+        # (200) and JSON-LD'd but ABSENT from the crawled sitemap and had ~1
+        # inbound link — an orphaned high-intent SEO/LLM surface for
+        # "<competitor> alternative" / "X vs Y" queries. All 7 verified 200 on
+        # the apex 2026-06-21. Slugs are the canonical _PUBLIC_TO_RADAR keys
+        # (no aliases → no redirect-chain entries in the sitemap).
+        ('/vs',                          '0.8', 'weekly'),
+        ('/vs/datacenterhawk',           '0.8', 'weekly'),
+        ('/vs/dc-byte',                  '0.8', 'weekly'),
+        ('/vs/baxtel',                   '0.8', 'weekly'),
+        ('/vs/datacenterdynamics',       '0.8', 'weekly'),
+        ('/vs/data-center-frontier',     '0.8', 'weekly'),
+        ('/vs/datacenters-com',          '0.8', 'weekly'),
     ]
     for path, pri, freq in static_pages:
         urls.append(f'  <url><loc>https://dchub.cloud{path}</loc><lastmod>{today}</lastmod><changefreq>{freq}</changefreq><priority>{pri}</priority></url>')
@@ -22282,6 +22375,49 @@ def serve_sitemap_xml():
     except Exception as _dcpi_sitemap_err:
         logger.warning(f"sitemap dcpi-markets DB fetch failed: {_dcpi_sitemap_err}")
     logger.info(f"sitemap: {_dcpi_added} DCPI market pages added")
+
+    # r-press-sitemap (2026-06-21 growth audit): the 86+ published analyst
+    # press releases (/press-release/<slug>, the de-facto Research archive)
+    # were 100% ABSENT from this sitemap despite every slug returning 200 —
+    # so DC Hub's best, most citation-worthy content had zero crawl surface
+    # (the single biggest unforced miss against the REACH constraint). Emit
+    # one URL per published release, newest first, using the release's own
+    # date as <lastmod> when it's a real YYYY-MM-DD. Own try/except + cap so a
+    # schema/date hiccup can never break the sitemap (same guard pattern as
+    # the DCPI loop above). NOTE: /press-release/<slug> is the canonical
+    # public URL (the live zone worker rewrites it to /news/<slug> → backend);
+    # both resolve 200, /press-release/* is the indexed form.
+    _press_added = 0
+    try:
+        _pr_conn = get_read_db()
+        _prc = _pr_conn.cursor()
+        _prc.execute("""
+            SELECT slug, date
+            FROM press_releases
+            WHERE published = TRUE AND slug IS NOT NULL AND slug != ''
+            ORDER BY id DESC
+            LIMIT 1000
+        """)
+        for (_pslug, _pdate) in _prc.fetchall():
+            _plast = today
+            try:
+                _ds = str(_pdate or "")[:10]
+                if _re.match(r'^\d{4}-\d{2}-\d{2}$', _ds):
+                    _plast = _ds
+            except Exception:
+                _plast = today
+            urls.append(
+                f'  <url><loc>https://dchub.cloud/press-release/{_pslug}</loc>'
+                f'<lastmod>{_plast}</lastmod>'
+                f'<changefreq>monthly</changefreq>'
+                f'<priority>0.7</priority></url>'
+            )
+            _press_added += 1
+        try: _pr_conn.close()
+        except Exception: pass
+    except Exception as _press_sitemap_err:
+        logger.warning(f"sitemap press-releases DB fetch failed: {_press_sitemap_err}")
+    logger.info(f"sitemap: {_press_added} press-release pages added")
 
     # ---- Market pages ----
     markets = [
@@ -22609,8 +22745,8 @@ def _canonical_pricing():
                           "tools_unlocked": "all 33 + SSO + SLA",
                           "contact": "enterprise@dchub.cloud"},
         "legacy_strings": {
-            "free":       "10 calls/day, truncated results, 38 tools (preview)",
-            "developer":  "$49/mo · 500/day, 29 of 38 tools, full results",
+            "free":       "10 calls/day, truncated results, 48 tools (preview)",
+            "developer":  "$49/mo · 500/day, 29 of 48 tools, full results",
             "pro":        "$199/mo · 2,000/day + all 33 incl Pro-only tools",
             "enterprise": "$499/mo · 100,000/day + SSO + SLA",
         },
@@ -26627,6 +26763,17 @@ try:
 except Exception as e:
     print(f"🔑 Keys Recover: ⚠️ Failed to load: {e}")
 
+# Marketing opt-in capture (2026-06-22) — records the EXPLICIT consent the winback
+# digest reads (metadata.marketing_opt_in). bind_email is transactional only and
+# nothing ever set this flag, so the opt-in pool was 0. Suppression + unsubscribe
+# still gate every marketing send downstream.
+try:
+    from routes.marketing_consent import marketing_consent_bp
+    app.register_blueprint(marketing_consent_bp)
+    print("📧 Marketing Consent: ✅ Registered (POST /api/v1/keys/marketing-consent)")
+except Exception as e:
+    print(f"📧 Marketing Consent: ⚠️ Failed to load: {e}")
+
 # Map-CTA click tracking (2026-06-18) — the MCP map upsell links through a
 # logging 302 so we can see whether it actually drives human clicks.
 try:
@@ -27121,6 +27268,91 @@ def get_press_release(slug):
         er = _mr(jsonify({"error": str(e)}), 500)
         er.headers["Access-Control-Allow-Origin"] = "*"
         return er
+
+# r-press-rss (2026-06-21 growth audit): the press-release RSS feed advertised
+# at routes/agent_capabilities_feed.py ("press_rss") 404'd — agents and readers
+# were told to subscribe to a dead URL. Ship a real RSS 2.0 feed of the
+# published analyst archive so every news reader, LLM training crawler, and
+# agent-monitoring system can ingest the stream (the lowest-friction
+# subscription mechanism — directly serves the REACH constraint).
+#
+# Routing: the CANONICAL/advertised path is /api/v1/press/rss because /api/* is
+# reliably forwarded to this origin by the live zone worker. We ALSO register
+# /news/rss and /press-release/rss as aliases: the worker rewrites
+# /press-release/* → /news/* before it reaches Flask, so /news/rss is what the
+# originally-advertised /press-release/rss collapses to; registering both (plus
+# the direct /press-release/rss in case the worker forwards it verbatim) makes
+# the feed resolve under every routing behavior. Static segments outrank the
+# /news/<slug> and /press-release/<slug> converters in Werkzeug, so no slug
+# collision.
+@app.route("/api/v1/press/rss", methods=["GET"])
+@app.route("/news/rss", methods=["GET"])
+@app.route("/press-release/rss", methods=["GET"])
+def press_release_rss():
+    from datetime import datetime as _dtp, timezone as _tzp
+    import re as _rep
+    _now_rfc822 = _dtp.now(_tzp.utc).strftime("%a, %d %b %Y %H:%M:%S +0000")
+
+    def _esc(s):
+        return (str(s or "")
+                .replace("&", "&amp;").replace("<", "&lt;")
+                .replace(">", "&gt;").replace('"', "&quot;"))
+
+    items_xml = []
+    try:
+        import psycopg2
+        conn = psycopg2.connect(os.getenv("DATABASE_URL"))
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT title,slug,category,date,subheadline,meta_description "
+            "FROM press_releases WHERE published=TRUE ORDER BY id DESC LIMIT 100"
+        )
+        for (title, slug, category, date, subheadline, meta) in cur.fetchall():
+            pub = _now_rfc822
+            try:
+                ds = str(date or "")[:10]
+                if _rep.match(r'^\d{4}-\d{2}-\d{2}$', ds):
+                    pub = _dtp.strptime(ds, "%Y-%m-%d").replace(tzinfo=_tzp.utc).strftime(
+                        "%a, %d %b %Y 00:00:00 +0000")
+            except Exception:
+                pub = _now_rfc822
+            link = f"https://dchub.cloud/press-release/{slug}"
+            desc = subheadline or meta or ""
+            items_xml.append(
+                "    <item>\n"
+                f"      <title>{_esc(title)}</title>\n"
+                f"      <link>{link}</link>\n"
+                f"      <guid isPermaLink=\"true\">{link}</guid>\n"
+                f"      <description>{_esc(desc)}</description>\n"
+                f"      <category>{_esc(category or 'Press Release')}</category>\n"
+                f"      <pubDate>{pub}</pubDate>\n"
+                "    </item>"
+            )
+        cur.close(); conn.close()
+    except Exception as e:
+        import logging
+        logging.warning(f"[press-rss] {e}")
+
+    rss = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">\n'
+        '  <channel>\n'
+        '    <title>DC Hub Research — Data Center Power, Grid &amp; Infrastructure Intelligence</title>\n'
+        '    <link>https://dchub.cloud/press</link>\n'
+        '    <description>Live, cited analyst research on AI-infrastructure: DCPI power-market rankings, grid headroom, interconnection queues, fiber, gas, tenants and M&amp;A — published by DC Hub.</description>\n'
+        '    <language>en-us</language>\n'
+        f'    <lastBuildDate>{_now_rfc822}</lastBuildDate>\n'
+        '    <generator>DC Hub · dchub.cloud</generator>\n'
+        '    <atom:link href="https://dchub.cloud/api/v1/press/rss" rel="self" type="application/rss+xml"/>\n'
+        + "\n".join(items_xml) + "\n"
+        '  </channel>\n'
+        '</rss>'
+    )
+    resp = make_response(rss)
+    resp.headers["Content-Type"] = "application/rss+xml; charset=utf-8"
+    resp.headers["Cache-Control"] = "public, max-age=600, stale-while-revalidate=1200"
+    resp.headers["Access-Control-Allow-Origin"] = "*"
+    return resp
 
 @app.route("/api/admin/press-releases", methods=["POST"])
 def create_press_release():
