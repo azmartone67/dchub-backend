@@ -387,21 +387,37 @@ def _gather_paid_reconciliation() -> list[dict]:
                     except Exception: pass
                     return None
             specs = [
-                ("Accounts on a paid plan (billing)",
+                # NOTE: users.plan is a BILLING FLAG, not proof of payment — it
+                # is stamped on founding/dev grants, outreach prospects
+                # (partnerships@…), and test accounts. So plan-count != customers.
+                # The honest denominator is invoices_paid_count>0. (2026-06-23)
+                ("Accounts flagged paid-plan (billing flag — incl. grants/prospects/test, NOT all paying)",
                  f"SELECT COUNT(*) FROM users WHERE plan IN {_PAID_PLANS}",
                  "users.plan"),
-                ("Accounts with >=1 real paid invoice (true revenue)",
+                ("Accounts with >=1 real paid invoice (TRUE paying customers)",
                  "SELECT COUNT(*) FROM users WHERE COALESCE(invoices_paid_count,0) > 0",
                  "users.invoices_paid_count"),
+                ("Paid-plan FLAGS with NO real invoice (grants/prospects/test — exclude from conversion math)",
+                 f"SELECT COUNT(*) FROM users WHERE plan IN {_PAID_PLANS} AND COALESCE(invoices_paid_count,0) = 0",
+                 "users.plan + invoices_paid_count"),
                 ("Paid MCP keys (the paywall population)",
                  "SELECT COUNT(*) FROM mcp_dev_keys WHERE COALESCE(status,'active')='active' "
                  "AND tier IN ('paid','enterprise')",
                  "mcp_dev_keys.tier"),
-                ("Paid-plan accounts WITHOUT a paid MCP key (activation gap)",
-                 "SELECT COUNT(*) FROM users u LEFT JOIN mcp_dev_keys k "
-                 "ON lower(k.email)=lower(u.email) AND COALESCE(k.status,'active')='active' "
-                 f"WHERE u.plan IN {_PAID_PLANS} AND (k.tier IS NULL OR k.tier NOT IN ('paid','enterprise'))",
-                 "users LEFT JOIN mcp_dev_keys (email)"),
+                # TRUE activation gap = a REAL payer (has an invoice) who has NO
+                # usable key in EITHER table (mcp_dev_keys OR api_keys). The old
+                # query counted plan-flags (incl. phantom) and only looked at
+                # mcp_dev_keys, missing the api_keys row that actually grants MCP
+                # via the validate cross-check — so it over-reported ~27 when the
+                # real gap is ~0. (2026-06-23)
+                ("REAL payers (>=1 invoice) with NO usable key in either table (TRUE activation gap)",
+                 f"SELECT COUNT(*) FROM users u WHERE u.plan IN {_PAID_PLANS} "
+                 "AND COALESCE(u.invoices_paid_count,0) > 0 "
+                 "AND NOT EXISTS (SELECT 1 FROM mcp_dev_keys k WHERE lower(k.email)=lower(u.email) "
+                 "  AND COALESCE(k.status,'active')='active' AND k.tier IN ('paid','enterprise')) "
+                 "AND NOT EXISTS (SELECT 1 FROM api_keys ak WHERE ak.user_id::text = u.id::text "
+                 "  AND COALESCE(ak.is_active,1) <> 0)",
+                 "users(real-invoice) minus keys in both tables"),
             ]
             for claim, sql, src in specs:
                 v = scalar(sql)
