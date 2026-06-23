@@ -31895,6 +31895,25 @@ try:
 except Exception as _wins_reg_e:
     print(f"[main] wins_poster_bp register failed: {_wins_reg_e}", file=sys.stderr)
 
+# r-media-autonomy (2026-06-23): 5 new autonomous media capability modules — ALL
+# DARK by default (each gated on its own *_ENABLED flag; off => no-op), draft-to-
+# review-queue (nothing auto-sends or auto-publishes), routed through the
+# disparagement + claim-verify + fact-check guards. Registered defensively so a
+# single import problem can NEVER crash app boot.
+for _mmod, _mbp in [
+    ("routes.media_fact_check_guard",   "media_fact_check_guard_bp"),
+    ("routes.media_data_story_factory", "media_data_story_factory_bp"),
+    ("routes.media_journalist_lane",    "media_journalist_lane_bp"),
+    ("routes.media_citation_gap",       "media_citation_gap_bp"),
+    ("routes.media_recurring_formats",  "media_recurring_formats_bp"),
+]:
+    try:
+        _mm = __import__(_mmod, fromlist=[_mbp])
+        app.register_blueprint(getattr(_mm, _mbp))
+        print(f"[main] {_mbp} registered (DARK — flag-gated)", flush=True)
+    except Exception as _media_reg_e:
+        print(f"[main] {_mmod} register skipped: {_media_reg_e}", file=sys.stderr)
+
 # === Brain v2 · Layer 3 freshness fields ===
 try:
     from flask import jsonify as _bv2_jsonify
