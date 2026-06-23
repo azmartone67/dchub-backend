@@ -247,13 +247,17 @@ def _pull_hyperscaler_drama() -> dict:
                 SELECT title, source, url, published_date
                   FROM news
                  WHERE published_date > NOW() - INTERVAL '3 days'
+                   -- r-no-disparage (2026-06-23): dropped openai + anthropic from
+                   -- this pull. The "contrarian take" prompt turned a partner-LAB
+                   -- news headline ("Anthropic Mythos mess") into a published
+                   -- partner-bashing post. Keep infra/hardware capex stories
+                   -- (stargate/coreweave/amd/nvidia/microsoft) which are fair for a
+                   -- DCPI angle; never frame a peer AI lab as the foil.
                    AND (LOWER(title) LIKE '%%stargate%%'
-                        OR LOWER(title) LIKE '%%openai%%'
                         OR LOWER(title) LIKE '%%coreweave%%'
                         OR LOWER(title) LIKE '%%amd%%'
                         OR LOWER(title) LIKE '%%nvidia%%'
-                        OR LOWER(title) LIKE '%%microsoft%%'
-                        OR LOWER(title) LIKE '%%anthropic%%')
+                        OR LOWER(title) LIKE '%%microsoft%%')
                  ORDER BY published_date DESC LIMIT 1
             """)
             news = cur.fetchone()

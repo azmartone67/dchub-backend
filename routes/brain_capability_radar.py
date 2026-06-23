@@ -153,7 +153,8 @@ REGISTRY = [
         "headline": lambda r: (f"DC Hub is now the #1 data-center MCP server on Smithery — "
                                f"ranked #1 for {r['terms_str']}"),
         "trend": ("agents browsing the Smithery MCP marketplace now find DC Hub first for "
-                  "data-center, power-grid and interconnection queries — out of 69,000+ servers"),
+                  "data-center, power-grid and interconnection queries — ahead of every other "
+                  "server in the data-center category"),
         "so_what": ("the live, MCP-native data layer agents reach for on data-center "
                     "infrastructure — query it and cite it at dchub.cloud/mcp."),
     },

@@ -687,6 +687,28 @@ def run():
         except Exception:
             pass
 
+    # r-no-disparage (2026-06-23): the quad cron historically posted STRAIGHT to
+    # LinkedIn, bypassing the media-judgment gate every manual publish runs through
+    # (_should_skip_publish: quality + number-lead + claim-verify + the new partner-
+    # disparagement block). Route the composed text through it so a thin / hallucinated
+    # / partner-bashing post is caught BEFORE it publishes. Fail-OPEN on any gate error
+    # so a transient blip never dark-holds the feed.
+    try:
+        from content_publisher import _should_skip_publish as _gate
+        _skip, _why = False, ""
+        if _pg and _dsn():
+            with _conn() as _gc, _gc.cursor() as _gcur:
+                _skip, _why = _gate(_gcur, text, "linkedin")
+        if _skip:
+            print(f"[quad-daily] pre-publish gate BLOCKED: {_why}")
+            _record(slot_date, target_slot["hour"], target_slot["topic"],
+                    target_slot["style"], text, landing, og_url,
+                    {"ok": False, "skipped": True, "error": f"gate: {_why}"[:200]})
+            return jsonify({"slot": target_slot, "skipped": True,
+                            "gate_reason": _why}), 200
+    except Exception as _ge:
+        print(f"[quad-daily] pre-publish gate unavailable ({_ge}) — proceeding")
+
     # Actually post to LinkedIn
     result = _post_to_linkedin(text, landing, og_url)
 

@@ -1750,6 +1750,41 @@ def _record_media_block(platform: str, reason: str, content: str = ""):
         pass
 
 
+# r-no-disparage (2026-06-23): DC Hub's traffic comes FROM these platforms — their
+# agents query us. A media post must NEVER knock them. We block any post that puts a
+# peer AI platform within ~70 chars of a disparaging term (either order). Root cause
+# of the incident: the hyperscaler_drama news pull fed an "Anthropic Mythos mess"
+# headline into a "contrarian take" prompt → a published partner-bashing LinkedIn post.
+_DISPARAGE_PARTNER_RE = _re_legacy.compile(
+    r"\b(anthropic|claude|openai|chatgpt|gemini|deepmind|copilot|perplexity|"
+    r"xai|grok|mistral|deepseek|cohere)\b", _re_legacy.IGNORECASE)
+_DISPARAGE_NEG_RE = _re_legacy.compile(
+    r"\b(mess|messes|fiasco|debacle|scandal|lawsuit|sued|fails?|failed|failure|"
+    r"failing|fumbl\w+|stumbl\w+|flounder\w*|struggl\w+|woes|crisis|chaos|"
+    r"botch\w*|blunder\w*|controvers\w+|backlash|meltdown|drags?\s+on|"
+    r"falls?\s+behind|strangl\w+|can'?t|cannot|delays?|delayed|outage)\b",
+    _re_legacy.IGNORECASE)
+
+
+def _disparages_partner(text: str, window: int = 70):
+    """Return an offending snippet if a peer AI platform sits within `window`
+    chars of a disparaging term (either order); else None. Used to hard-block
+    media copy that knocks a partner."""
+    if not text:
+        return None
+    parts = [m.start() for m in _DISPARAGE_PARTNER_RE.finditer(text)]
+    if not parts:
+        return None
+    negs = [m.start() for m in _DISPARAGE_NEG_RE.finditer(text)]
+    for p in parts:
+        for n in negs:
+            if abs(p - n) <= window:
+                lo = max(0, min(p, n) - 12)
+                hi = max(p, n) + 24
+                return text[lo:hi].replace("\n", " ").strip()
+    return None
+
+
 def _should_skip_publish(cur, content_text: str, platform: str):
     """Pre-publish media-judgment filter. Returns (skip: bool, reason: str).
 
@@ -1779,6 +1814,14 @@ def _should_skip_publish(cur, content_text: str, platform: str):
     if _LLM_DISCLAIMER_RE.search(_text):
         return True, ("LLM-disclaimer quote — refusing to showcase an "
                       "'I don't have current info' LLM response as AI validation")
+
+    # (d2) r-no-disparage (2026-06-23): NEVER publish copy that knocks a peer AI
+    # platform — they are DC Hub's traffic source, not a target. Hard block, ahead
+    # of the quality gate. (The Anthropic-"Mythos mess" LinkedIn post is why.)
+    _disp = _disparages_partner(_text)
+    if _disp:
+        return True, ("partner-disparagement — refusing to publish copy that "
+                      f"knocks a peer AI platform: …{_disp[:120]}…")
 
     # (q) QUALITY GATE (B3, 2026-05-31). Computed FIRST so a thin post is
     # filtered before the dedup DB round-trip. Wrapped so a scoring bug
