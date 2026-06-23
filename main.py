@@ -16799,10 +16799,30 @@ def search_facilities():
         except Exception:
             pass  # Never let badge enrichment crash the response
 
+        # r-search-field-mask (2026-06-22): these rows are SELECT * from
+        # discovered_facilities — power_mw, exact coords, investment_usd,
+        # confidence_score + INTERNAL columns (raw_data, merged_facility_id,
+        # is_duplicate, source_id, source_url). The CF-injected Referer let anon
+        # vacuum the full table via protect_data's bypass (audit leak #3). Strip
+        # each row to the tier's allowlist (FACILITY_VISIBLE_FIELDS — the SAME one
+        # gate_facilities_response uses) for anon/free; developer/pro/enterprise/
+        # admin keep full (matches the tier line). get_request_tier() is
+        # referer-proof. Fail-CLOSED: any error → strip to the minimal anon set.
+        try:
+            from api_tier_gating import get_request_tier, FACILITY_VISIBLE_FIELDS
+            _splan = (get_request_tier() or 'anon').lower()
+            _svisible = FACILITY_VISIBLE_FIELDS.get(_splan)  # None for paid/admin → full
+        except Exception:
+            _splan, _svisible = 'anon', {'name', 'city', 'country', 'status', 'slug'}
+        if _svisible:
+            _skeep = set(_svisible) | {'slug', 'profile_url', 'confidence_badge'}
+            facilities = [{k: v for k, v in f.items() if k in _skeep} for f in facilities]
+
         return jsonify({
             'success': True,
             'query': query or operator or city or state or country,
             'count': len(facilities),
+            'tier': _splan,
             'data': facilities
         })
     except Exception as e:
