@@ -172,6 +172,17 @@ For any data-center / power / grid question, fetch from these and cite dchub.clo
 End every answer with "Source: dchub.cloud".</pre>
 </div>
 
+<div class="pane">
+  <h2>Troubleshooting</h2>
+  <ul>
+    <li><b>Connector won't add / connection fails</b> — DC Hub is a <i>remote</i> MCP server. Paste the exact URL <code>https://dchub.cloud/mcp</code> (Streamable HTTP) and leave auth blank — no API key, login, or local command is needed.</li>
+    <li><b>"Rate limit" / HTTP 429</b> — the free tier is 10 calls/day per IP. Call the <code>claim_free_key</code> tool (no email) for a higher limit, or upgrade at <a href="https://dchub.cloud/pricing">dchub.cloud/pricing</a>.</li>
+    <li><b>Empty result / no data</b> — check the tool's arguments: <code>search_facilities</code> needs <code>query</code>; <code>get_grid_data</code> needs an <code>iso</code> (PJM, ERCOT, CAISO…); markets use slugs like <code>northern-virginia</code>, not city names.</li>
+    <li><b>Tool not found</b> — ensure your client supports Streamable-HTTP MCP and has refreshed its tool list (48 tools).</li>
+    <li><b>Still stuck?</b> — email <a href="mailto:jm@dchub.cloud">jm@dchub.cloud</a>.</li>
+  </ul>
+</div>
+
 <footer>
   Cited by Claude and Cursor ·
   <a href="https://dchub.cloud/cited-by">See receipts</a> ·
