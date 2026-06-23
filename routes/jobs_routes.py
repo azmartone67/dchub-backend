@@ -269,48 +269,67 @@ def job_news_refresh():
                 pass
 
 
+import threading as _threading
+_discovery_running = _threading.Lock()
+
+
 @jobs_bp.route('/api/jobs/discovery', methods=['POST'])
 def job_discovery():
-    """Cron: Run facility discovery (PeeringDB, OSM, datacentermap)"""
+    """Cron: Run facility discovery (PeeringDB, OSM, datacentermap) — FIRE-AND-FORGET (202).
+    r-async (2026-06-23): ran the 3 sources SYNCHRONOUSLY (up to 3×120s; 77s observed),
+    holding a gunicorn worker the whole time — the same pool-saturation class as
+    news/refresh + sentinel scan. Now runs in a background thread and returns 202
+    immediately (the cron doesn't need the synchronous result); a non-blocking lock
+    prevents overlapping crawls from piling up workers."""
     auth_err = _require_admin_key()
     if auth_err:
         return auth_err
-    try:
-        import concurrent.futures
-        total_added = 0
-        total_found = 0
-        errors = []
-        try:
-            from routes.discovery_routes import (run_peeringdb_discovery,
-                                                  run_osm_discovery, run_datacentermap_discovery)
-            sources = [('peeringdb', run_peeringdb_discovery),
-                       ('openstreetmap', run_osm_discovery),
-                       ('datacentermap', run_datacentermap_discovery)]
-        except ImportError:
-            return jsonify({'success': True, 'job': 'discovery', 'found': 0, 'added': 0,
-                            'note': 'discovery_routes not available', 'ts': datetime.utcnow().isoformat()})
-        for source_name, run_func in sources:
-            try:
-                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                    future = executor.submit(run_func)
-                    result = future.result(timeout=120)
-                total_found += result.get('found', 0)
-                total_added += result.get('added', 0)
-            except concurrent.futures.TimeoutError:
-                errors.append(f"{source_name}: timed out after 120s")
-                logger.warning("JOB discovery: %s timed out after 120s", source_name)
-            except Exception as e:
-                errors.append(f"{source_name}: {str(e)[:100]}")
+    if not _discovery_running.acquire(blocking=False):
+        return jsonify({'success': True, 'job': 'discovery', 'started': False,
+                        'note': 'discovery already running', 'ts': datetime.utcnow().isoformat()}), 202
 
-        _reg_update('facility_discovery')
-        if 'facility_discovery' in _scheduler_registry:
-            _scheduler_registry['facility_discovery']['last_success'] = datetime.utcnow().isoformat()
-            _scheduler_registry['facility_discovery']['items_last_cycle'] = total_added
-        logger.info("JOB discovery: ✅ found=%d added=%d errors=%d", total_found, total_added, len(errors))
-        return jsonify({'success': True, 'job': 'discovery', 'found': total_found, 'added': total_added, 'errors': errors or None, 'ts': datetime.utcnow().isoformat()})
-    except Exception as e:
-        logger.error("JOB discovery: ❌ %s", e)
-        return jsonify({'success': False, 'job': 'discovery', 'error': str(e)}), 500
+    def _bg():
+        try:
+            import concurrent.futures
+            total_added = 0
+            total_found = 0
+            errors = []
+            try:
+                from routes.discovery_routes import (run_peeringdb_discovery,
+                                                      run_osm_discovery, run_datacentermap_discovery)
+                sources = [('peeringdb', run_peeringdb_discovery),
+                           ('openstreetmap', run_osm_discovery),
+                           ('datacentermap', run_datacentermap_discovery)]
+            except ImportError:
+                logger.info("JOB discovery: discovery_routes not available")
+                return
+            for source_name, run_func in sources:
+                try:
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                        future = executor.submit(run_func)
+                        result = future.result(timeout=120)
+                    total_found += result.get('found', 0)
+                    total_added += result.get('added', 0)
+                except concurrent.futures.TimeoutError:
+                    errors.append(f"{source_name}: timed out after 120s")
+                    logger.warning("JOB discovery: %s timed out after 120s", source_name)
+                except Exception as e:
+                    errors.append(f"{source_name}: {str(e)[:100]}")
+
+            _reg_update('facility_discovery')
+            if 'facility_discovery' in _scheduler_registry:
+                _scheduler_registry['facility_discovery']['last_success'] = datetime.utcnow().isoformat()
+                _scheduler_registry['facility_discovery']['items_last_cycle'] = total_added
+            logger.info("JOB discovery: ✅ found=%d added=%d errors=%d", total_found, total_added, len(errors))
+        except Exception as e:
+            logger.error("JOB discovery: ❌ %s", e)
+        finally:
+            try: _discovery_running.release()
+            except Exception: pass
+
+    _threading.Thread(target=_bg, daemon=True, name='job-discovery').start()
+    return jsonify({'success': True, 'job': 'discovery', 'started': True,
+                    'note': 'discovery started in background', 'ts': datetime.utcnow().isoformat()}), 202
 
 
 @jobs_bp.route('/api/jobs/auto-approve', methods=['POST'])
