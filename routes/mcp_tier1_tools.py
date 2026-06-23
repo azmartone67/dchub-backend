@@ -428,6 +428,25 @@ def score_facility():
                 f = cur.fetchone()
 
                 if not f:
+                    # r-search2score (2026-06-23): the AUTHED search_facilities returns
+                    # rows from the `facilities` table (NOT discovered_facilities), so
+                    # its id/slug 404'd here and the agent had to guess the name-slug
+                    # (caught live: score_facility worked only with the slug, not the
+                    # search id). Fall back to `facilities` with the same id/slug/name
+                    # resolution so the search→score round-trip just works.
+                    cur.execute("""
+                        SELECT id, name, provider, city, state, country,
+                               latitude, longitude, power_mw, status,
+                               source, source_url, confidence_score
+                          FROM facilities
+                         WHERE CAST(id AS TEXT) = %s
+                            OR LOWER(slug) = LOWER(%s)
+                            OR TRIM(BOTH '-' FROM REGEXP_REPLACE(LOWER(name), '[^a-z0-9]+', '-', 'g')) = LOWER(%s)
+                         LIMIT 1
+                    """, (str(facility_id), str(facility_id), str(facility_id)))
+                    f = cur.fetchone()
+
+                if not f:
                     return jsonify({"error": "facility not found", "facility_id": facility_id}), 404
 
                 # Default missing columns so the rest of the scoring works
