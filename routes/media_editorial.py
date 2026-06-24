@@ -603,13 +603,15 @@ def brain_insight_leads_endpoint():
     slate before flipping the live gate. Draft-only — nothing here publishes."""
     import os as _os
     try:
-        from routes.brain_media_bridge import brain_insight_leads, _enabled
+        from routes.brain_media_bridge import brain_insight_leads, _enabled, leads_diagnostics
         leads = brain_insight_leads(preview=True)
+        _dbg = leads_diagnostics() if request.args.get("debug") in ("1", "true") else None
         return jsonify({
             "ok": True,
             "gate_enabled_live": _enabled(),
             "candidate_count": len(leads),
             "leads": leads,
+            "diagnostics": _dbg,
             "note": ("Draft-only candidates. When the gate is live these compete in "
                      "editorial_decision() and still pass claim-verify + "
                      "partner-disparagement guards + human approval before publish."),

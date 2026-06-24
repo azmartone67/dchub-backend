@@ -95,6 +95,80 @@ def _refutation_survived(j) -> bool:
         return True
 
 
+def leads_diagnostics() -> dict:
+    """READ-ONLY introspection for tuning: per source table, the distribution of
+    area/grade/status over the lookback window and how many rows survive each
+    filter stage. Returns enum values + counts only (no row payloads). Powers the
+    preview endpoint's ?debug=1 so the operator can see WHY the candidate set is
+    what it is, without admin/DB access."""
+    out = {"min_conf": _MIN_CONF, "lookback_days": _LOOKBACK_DAYS,
+           "publishable_areas": sorted(PUBLISHABLE_AREAS), "sources": {}}
+    if psycopg2 is None:
+        out["error"] = "psycopg2 unavailable"
+        return out
+    dsn = _dsn()
+    if not dsn:
+        out["error"] = "no DATABASE_URL"
+        return out
+    from collections import Counter
+    try:
+        conn = psycopg2.connect(dsn, sslmode="require", connect_timeout=8)
+        conn.autocommit = True
+        try:
+            with conn.cursor() as cur:
+                for table, jcol in (("brain_self_agenda", "result_json"),
+                                    ("brain_enhancement_proposals", "proposal_json")):
+                    s = {"total": 0, "grade": Counter(), "status": Counter(),
+                         "area": Counter(), "passes": Counter(), "publishable_titles": []}
+                    try:
+                        cur.execute(
+                            f"SELECT title, area, confidence, grade, status, {jcol} "
+                            f"FROM {table} "
+                            f"WHERE created_at >= NOW() - (%s || ' days')::interval "
+                            f"ORDER BY created_at DESC LIMIT 200",
+                            (str(_LOOKBACK_DAYS),))
+                        rows = cur.fetchall() or []
+                    except Exception as e:
+                        s["query_error"] = str(e)[:160]
+                        out["sources"][table] = s
+                        continue
+                    for title, area, conf, grade, status, jdoc in rows:
+                        s["total"] += 1
+                        s["grade"][str(grade)] += 1
+                        s["status"][str(status)] += 1
+                        s["area"][str(area)] += 1
+                        in_area = area in PUBLISHABLE_AREAS
+                        graded = str(grade or "").lower() in ("good", "approved")
+                        appr = str(status or "").lower() == "approved"
+                        if in_area:
+                            s["passes"]["area"] += 1
+                            if graded or appr:
+                                s["passes"]["graded_or_approved"] += 1
+                            hl = _clean_headline(title)
+                            has_num = bool(_HAS_NUMBER.search(hl))
+                            crit = bool(_SELF_CRITICAL.search(hl))
+                            surv = _refutation_survived(jdoc)
+                            if has_num:
+                                s["passes"]["has_number"] += 1
+                            if not crit:
+                                s["passes"]["not_self_critical"] += 1
+                            if surv:
+                                s["passes"]["survived"] += 1
+                            s["publishable_titles"].append(
+                                {"title": hl[:70], "grade": grade, "status": status,
+                                 "conf": conf, "has_num": has_num,
+                                 "self_critical": crit, "survived": surv})
+                    s["grade"] = dict(s["grade"]); s["status"] = dict(s["status"])
+                    s["area"] = dict(s["area"]); s["passes"] = dict(s["passes"])
+                    out["sources"][table] = s
+        finally:
+            try: conn.close()
+            except Exception: pass
+    except Exception as e:
+        out["error"] = str(e)[:200]
+    return out
+
+
 def brain_insight_leads(preview: bool = False) -> list:
     """READ-ONLY. Return analyst-voice LEADS for the brain's graded, publishable
     DATA insights. Shape matches media_editorial.rank_data_events() leads:
