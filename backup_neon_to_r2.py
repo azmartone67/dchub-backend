@@ -29,12 +29,20 @@ def dump_and_compress_to_file(database_url):
     flat (pipe pg_dump | gzip straight to disk); only the runner's ~14GB disk grows."""
     fd, path = tempfile.mkstemp(suffix=".sql.gz", prefix="neon_dump_")
     os.close(fd)
-    log.info("Starting pg_dump (streaming -> gzip -> %s)...", path)
+    # Neon defaults a statement_timeout on the role; the COPY of a big table
+    # (agent_requests) blows past it → "canceling statement due to statement
+    # timeout" (the REAL failure the OOM was masking). Disable the timeout for
+    # the dump session via PGOPTIONS, and connect to the DIRECT (non-pooled)
+    # endpoint — pg_dump's long single-session COPYs don't play well with the
+    # PgBouncer pooler, and Neon recommends the direct endpoint for dumps.
+    direct_url = database_url.replace("-pooler.", ".")
+    env = {**os.environ, "PGOPTIONS": "-c statement_timeout=0 -c idle_in_transaction_session_timeout=0"}
+    log.info("Starting pg_dump (direct endpoint, statement_timeout=0; streaming -> gzip -> %s)...", path)
     with open(path, "wb") as out:
         p1 = subprocess.Popen(
-            ["pg_dump", database_url, "--no-owner", "--no-acl", "--clean",
+            ["pg_dump", direct_url, "--no-owner", "--no-acl", "--clean",
              "--if-exists", "--format=plain"],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
         p2 = subprocess.Popen(["gzip", "-6"], stdin=p1.stdout, stdout=out)
         p1.stdout.close()              # so gzip gets EOF when pg_dump exits
         _, err = p1.communicate()
