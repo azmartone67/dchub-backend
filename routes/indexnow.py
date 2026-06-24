@@ -178,8 +178,9 @@ def _recent_facility_urls(n=2000):
     The sitemap stamps a uniform lastmod (every URL = today), so 'recent by
     lastmod' can't surface new content. discovered_facilities.id is a serial PK,
     so ORDER BY id DESC = most-recently-discovered. The slug is built EXACTLY like
-    main.py's sitemap (provider-slug + name-slug + md5(id)[:8]) so each URL is a
-    strict subset of the canonical sitemap. Read-only, fail-soft → []."""
+    main.py's sitemap: provider-slug + name-slug + stable_hash8(provider|name)
+    (r-stable-slug 2026-06-16 — NOT md5(id), which churned every re-ingestion);
+    each URL is a strict subset of the canonical sitemap. Read-only, fail-soft → []."""
     db = (os.environ.get("DATABASE_URL")
           or os.environ.get("NEON_DATABASE_URL") or "")
     if not db:
