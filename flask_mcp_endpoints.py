@@ -1371,6 +1371,24 @@ def mcp_signal_paywall():
     tier_current = body.get('tier_current') or 'free'
     tier_required = body.get('tier_required') or 'paid'
 
+    # Brain L6 #1264 — paid-intent ledger. Capture FIRST + INDEPENDENTLY: this used
+    # to sit after fire_upgrade_signal's except-return, so any telemetry failure
+    # silently skipped the lead capture (the 0-rows bug). Now it always runs. This
+    # handler is the LIVE hook the Node MCP server calls on every grid/fiber paywall
+    # (signalPaywall) — capturing the real ANON traffic the Flask _gate_mcp_result
+    # path never sees. Fire-and-forget; grid/fiber-filtered inside; never blocks.
+    try:
+        from routes.paid_intent_ledger import record_from_signal
+        record_from_signal(
+            tool=tool, signal_type=signal_type, api_key=api_key, email=user_email,
+            ip=(request.headers.get("CF-Connecting-IP")
+                or (request.headers.get("X-Forwarded-For", "") or "").split(",")[0].strip()
+                or request.remote_addr or ""),
+            user_agent=user_agent, session_id=session_id,
+            args=(body.get("args") or body.get("arguments") or {}))
+    except Exception as _pie:
+        print(f"[paid_intent] hook error: {_pie}", flush=True)
+
     try:
         from mcp_upgrade_gate import fire_upgrade_signal
         fire_upgrade_signal(
@@ -1388,26 +1406,6 @@ def mcp_signal_paywall():
     except Exception as e:
         # Telemetry is fire-and-forget — never 500 the MCP request path.
         return jsonify({"ok": False, "error": str(e)}), 200
-
-    # Brain L6 #1264 — paid-intent ledger. This handler is the LIVE hook the Node
-    # MCP server calls on every grid/fiber paywall (signalPaywall), so it captures
-    # the real public traffic the Flask _gate_mcp_result path never sees. Record
-    # the lead (caller + tool + tier + site query) into mcp_paid_intent. The
-    # `args` site-context (region/MW) is populated once the MCP server forwards it
-    # in the payload; until then caller+tool+tier still make a re-targetable lead.
-    # Fire-and-forget; filters to grid/fiber internally; never blocks.
-    try:
-        from routes.paid_intent_ledger import record_from_signal
-        record_from_signal(
-            tool=tool, signal_type=signal_type, api_key=api_key,
-            email=user_email,
-            ip=(request.headers.get("CF-Connecting-IP")
-                or (request.headers.get("X-Forwarded-For", "") or "").split(",")[0].strip()
-                or request.remote_addr or ""),
-            user_agent=user_agent, session_id=session_id,
-            args=(body.get("args") or body.get("arguments") or {}))
-    except Exception:
-        pass
 
     return jsonify({"ok": True}), 200
 

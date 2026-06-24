@@ -94,6 +94,7 @@ def _insert(payload: dict):
     """Runs on a daemon thread — never touches the request context."""
     dsn = _dsn()
     if not dsn or psycopg2 is None:
+        print("[paid_intent] insert skipped: no DSN / psycopg2", flush=True)
         return
     try:
         conn = psycopg2.connect(dsn, sslmode="require", connect_timeout=6)
@@ -113,8 +114,10 @@ def _insert(payload: dict):
         finally:
             try: conn.close()
             except Exception: pass
+        # print() (not logger) so it surfaces in Railway deploy logs reliably.
+        print(f"[paid_intent] inserted tool={payload['tool']} tier={payload['tier']} region={payload['region']}", flush=True)
     except Exception as e:
-        logger.warning("[paid_intent] insert failed: %s", str(e)[:160])
+        print(f"[paid_intent] insert FAILED: {str(e)[:200]}", flush=True)
 
 
 def record_intent(tool_name: str, tier, req) -> None:
@@ -183,6 +186,7 @@ def record_from_signal(tool, signal_type, api_key=None, email=None, ip=None,
     server forwards it. Filters to grid/fiber; never raises."""
     try:
         tool = (tool or "").strip()
+        print(f"[paid_intent] signal received tool={tool} signal_type={signal_type}", flush=True)
         if _disabled() or tool not in INTENT_TOOLS:
             return
         a = args if isinstance(args, dict) else {}
