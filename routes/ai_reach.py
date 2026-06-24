@@ -19,7 +19,12 @@ import psycopg2, psycopg2.extras
 ai_reach_bp = Blueprint("ai_reach_r86", __name__)
 
 # private/loopback ranges = definitely internal; public IPs = real external reach.
-_PRIVATE_IP = r"^(10\.|127\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.|169\.254\.|::1|fc|fd|0\.0\.0\.0|$)"
+# 100.64.0.0/10 = CGNAT (RFC 6598) = Railway's INTERNAL proxy fleet — a server only
+# sees a 100.64.x source via an internal proxy, never a real client. agent_requests
+# recorded ONLY these (no X-Forwarded-For), which is why its "reach" was ~16 proxy
+# nodes; reach now sources from mcp_tool_calls (real client IPs). Keep CGNAT excluded
+# everywhere as defense-in-depth.
+_PRIVATE_IP = r"^(10\.|127\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.|169\.254\.|100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.|::1|fc|fd|0\.0\.0\.0|$)"
 _INTERNAL_PLAT = ('internal', 'mcp_generic', 'direct', 'unknown', 'unknown_ai', 'mcp', 'Unknown', '')
 _cache = {"ts": 0.0, "data": None}
 _TTL = 1800  # 30 min — the scan is heavy; stale-on-error below covers the cold-refresh window
@@ -102,40 +107,35 @@ def ai_reach():
                 _cache["ts"] = now
                 return jsonify(out), 200
 
-            # ── COLD-START FALLBACK: rollup empty → one capped live scan ──
-            cur.execute("SET statement_timeout = '15000'")
-            # id-bounded recent window (~7d of traffic) — avoids the slow TEXT-timestamp cast
-            cur.execute("SELECT MAX(id) AS m FROM agent_requests")
-            maxid = (cur.fetchone() or {}).get("m") or 0
-            lo = maxid - 900000
-            plats = "(" + ",".join("%s" for _ in _INTERNAL_PLAT) + ")"
-            cur.execute(f"""
-                SELECT platform_id,
-                       COUNT(DISTINCT ip_address) AS agents,
-                       COUNT(*)                   AS requests
-                FROM agent_requests
-                WHERE id > %s
-                  AND ip_address IS NOT NULL AND ip_address <> ''
-                  AND COALESCE(platform_id,'') NOT IN {plats}
-                GROUP BY platform_id
-                HAVING COUNT(DISTINCT ip_address) >= 1
-                ORDER BY agents DESC, requests DESC
-                LIMIT 25
-            """, (lo, *_INTERNAL_PLAT))
+            # ── COLD-START FALLBACK (rollup empty): live query over mcp_tool_calls ──
+            # r-reach-mcp-source (2026-06-24): mcp_tool_calls captures REAL public client
+            # IPs (agent_requests only ever had CGNAT proxy IPs), is small + created_at-
+            # indexed → a 7d live query is fast. Inlined predicate (no bound params) so
+            # the literal % in PLATFORM_CASE's ILIKE patterns are left alone; reuse the
+            # canonical de-loop (real_calls_predicate) so this == the funnel's real reach.
+            cur.execute("SET statement_timeout = '8000'")
+            from mcp_calls_deloop import PLATFORM_CASE as _PC, real_calls_predicate as _rcp
+            _w = ("created_at >= NOW() - INTERVAL '7 days' "
+                  "AND ip_address IS NOT NULL AND ip_address <> '' "
+                  "AND ip_address !~ '" + _PRIVATE_IP + "' "
+                  "AND (" + _rcp() + ")")
+            cur.execute(
+                "SELECT (" + _PC.strip() + ") AS platform_id, "
+                "       COUNT(DISTINCT ip_address) AS agents, COUNT(*) AS requests "
+                "FROM mcp_tool_calls WHERE " + _w +
+                " GROUP BY 1 HAVING COUNT(DISTINCT ip_address) >= 1 "
+                " ORDER BY agents DESC, requests DESC LIMIT 25")
             rows = [dict(r) for r in cur.fetchall()]
             out["per_platform"] = rows
             out["distinct_platforms"] = len(rows)
             # overall distinct external agents (an IP can span platforms — count once)
-            cur.execute(f"""
-                SELECT COUNT(DISTINCT ip_address) AS agents, COUNT(*) AS reqs
-                FROM agent_requests
-                WHERE id > %s AND ip_address IS NOT NULL AND ip_address <> ''
-                  AND COALESCE(platform_id,'') NOT IN {plats}
-            """, (lo, *_INTERNAL_PLAT))
+            cur.execute(
+                "SELECT COUNT(DISTINCT ip_address) AS agents, COUNT(*) AS reqs "
+                "FROM mcp_tool_calls WHERE " + _w)
             tot = cur.fetchone() or {}
             out["distinct_agents_7d"] = int(tot.get("agents") or 0)
             out["requests_7d"] = int(tot.get("reqs") or 0)
-            out["source"] = "live_scan_coldstart"
+            out["source"] = "live_scan_mcp_tool_calls"
     except Exception:
         return _soft()   # fail-soft: never 5xx (last-good cache, else degraded 200)
     finally:

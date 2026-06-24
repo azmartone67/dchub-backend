@@ -136,60 +136,54 @@ def _id_for_instant(cur, target_dt: datetime, lo: int, hi: int) -> int | None:
     return ans
 
 
-def _compute_week(cur, week_start: date, id_lo: int, id_hi: int) -> dict:
-    """One id-bounded GROUP BY scan → counts + the week's external IP set; then
-    fold the IP set into reach_ip_seen and derive new_external_ips from
-    first_seen_week (idempotent on re-run)."""
-    # Scan the week's id-range in bounded CHUNKS, merging in Python. A single
-    # GROUP BY over a dense week (~1M+ wide rows, heap fetches for ip/platform)
-    # blew the statement timeout; chunking keeps every statement small while the
-    # distinct-IP/platform SETS accumulate across chunks. Filter private IPs +
-    # internal platforms in Python (same _PRIVATE_IP / _INTERNAL_PLAT as the live
-    # /ai/reach — no drift).
-    ips, plats, reqs = set(), set(), 0
-    plat_ips: dict = {}   # platform_id -> set(ip)  → per-platform distinct-agent counts
-    plat_reqs: dict = {}  # platform_id -> request count
-    # Drop the internal platform buckets ('unknown' etc. — the ~732K-row flood) in
-    # SQL. This is an equality IN-list, NOT the per-row private-IP REGEX (that one
-    # stays in Python — a SQL `ip !~ regex` over dense rows is what blew the timeout).
-    # Filtering the flood here collapses the GROUP BY to real external platforms only,
-    # so a dense recent week no longer cancels on the statement timeout under load.
-    _plat_ph = "(" + ",".join("%s" for _ in _INTERNAL_PLAT) + ")"
-    cl = id_lo
-    while cl <= id_hi:
-        ch = min(cl + _SCAN_CHUNK - 1, id_hi)
-        cur.execute(f"""
-            SELECT ip_address, platform_id, COUNT(*) AS reqs
-            FROM agent_requests
-            WHERE id BETWEEN %s AND %s
-              AND ip_address IS NOT NULL AND ip_address <> ''
-              AND COALESCE(platform_id,'') NOT IN {_plat_ph}
-            GROUP BY ip_address, platform_id
-        """, (cl, ch, *_INTERNAL_PLAT))
-        for ip, plat, n in cur.fetchall():
-            if _PRIV_RE.match(ip or ''):              # private/loopback = internal
-                continue
-            if (plat or '') in _INT_PLAT:             # defensive (SQL already excludes)
-                continue
-            ips.add(ip)
-            if plat:
-                plats.add(plat)
-                plat_ips.setdefault(plat, set()).add(ip)
-                plat_reqs[plat] = plat_reqs.get(plat, 0) + int(n or 0)
-            reqs += int(n or 0)
-        cl = ch + 1
+def _compute_week(cur, week_start: date, week_end: date) -> dict:
+    """One created_at-bounded scan of mcp_tool_calls → REAL-IP counts + per-platform,
+    then fold the IP set into reach_ip_seen → new_external_ips (idempotent on re-run).
 
-    # per-platform breakdown — same shape the live /api/v1/ai/reach used to scan for
-    # ([{platform_id, agents, requests}], distinct IPs per platform, top 25).
+    r-reach-mcp-source (2026-06-24): source switched from `agent_requests` to
+    `mcp_tool_calls`. agent_requests.ip_address only ever held the Railway CGNAT
+    proxy IP (100.64/10) — never the real client (no X-Forwarded-For column) — so the
+    old reach counted ~16 proxy nodes and the per-platform breakdown collapsed to
+    "agents == week total" for every platform (a non-bug over bad data). mcp_tool_calls
+    .ip_address IS the real public client IP, the table is small (~1.4K calls/7d) and
+    created_at-indexed, so NO chunking / id-binary-search / timeout dance is needed.
+    Platform = the canonical PLATFORM_CASE classifier and probes/self-traffic are
+    excluded by real_calls_predicate() (the SAME de-loop the funnel uses) → reach ==
+    the funnel's unique_ips_7d_real, no drift. The query is INLINED (no bound params)
+    because PLATFORM_CASE's ILIKE patterns contain literal % that would collide with
+    psycopg2 %-substitution; week_start/week_end are controlled date literals."""
+    from mcp_calls_deloop import PLATFORM_CASE, real_calls_predicate
+    ips, plats, reqs = set(), set(), 0
+    plat_ips: dict = {}   # platform -> set(ip)  → per-platform distinct-agent counts
+    plat_reqs: dict = {}  # platform -> request count
+    ws, we = week_start.isoformat(), week_end.isoformat()
+    cur.execute(
+        "SELECT (" + PLATFORM_CASE.strip() + ") AS plat, ip_address, COUNT(*) AS n "
+        "FROM mcp_tool_calls "
+        "WHERE created_at >= '" + ws + "'::timestamptz "
+        "  AND created_at <  '" + we + "'::timestamptz "
+        "  AND ip_address IS NOT NULL AND ip_address <> '' "
+        "  AND (" + real_calls_predicate() + ") "
+        "GROUP BY 1, ip_address")
+    for plat, ip, n in cur.fetchall():
+        if _PRIV_RE.match(ip or ''):      # private + CGNAT 100.64/10 (now in _PRIVATE_IP)
+            continue
+        ips.add(ip)
+        if plat:
+            plats.add(plat)
+            plat_ips.setdefault(plat, set()).add(ip)
+            plat_reqs[plat] = plat_reqs.get(plat, 0) + int(n or 0)
+        reqs += int(n or 0)
+
+    # per-platform breakdown — [{platform_id, agents=distinct-IPs, requests}], top 25.
     per_platform = sorted(
         ({"platform_id": p, "agents": len(s), "requests": plat_reqs.get(p, 0)}
          for p, s in plat_ips.items()),
         key=lambda d: (-d["agents"], -d["requests"]),
     )[:25]
 
-    # Fold this week's IPs into the cumulative seen-set. Only IPs not seen in an
-    # EARLIER week get first_seen_week = this week (weeks are processed ascending),
-    # so new_external_ips is honest and re-run-safe.
+    # Fold this week's IPs into the cumulative seen-set → new_external_ips (weeks are
+    # processed ascending, so first_seen_week is honest + re-run-safe).
     if ips:
         psycopg2.extras.execute_values(
             cur,
@@ -204,18 +198,17 @@ def _compute_week(cur, week_start: date, id_lo: int, id_hi: int) -> dict:
         INSERT INTO reach_weekly
             (week_start, distinct_external_ips, distinct_platforms,
              new_external_ips, requests, id_lo, id_hi, per_platform, computed_at)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW())
+        VALUES (%s, %s, %s, %s, %s, NULL, NULL, %s, NOW())
         ON CONFLICT (week_start) DO UPDATE SET
             distinct_external_ips = EXCLUDED.distinct_external_ips,
             distinct_platforms    = EXCLUDED.distinct_platforms,
             new_external_ips      = EXCLUDED.new_external_ips,
             requests              = EXCLUDED.requests,
-            id_lo                 = EXCLUDED.id_lo,
-            id_hi                 = EXCLUDED.id_hi,
+            id_lo                 = NULL,
+            id_hi                 = NULL,
             per_platform          = EXCLUDED.per_platform,
             computed_at           = NOW()
-    """, (week_start, len(ips), len(plats), new_ips, reqs, id_lo, id_hi,
-          json.dumps(per_platform)))
+    """, (week_start, len(ips), len(plats), new_ips, reqs, json.dumps(per_platform)))
 
     return {"week_start": week_start.isoformat(), "distinct_external_ips": len(ips),
             "distinct_platforms": len(plats), "new_external_ips": new_ips,
@@ -238,68 +231,29 @@ def run_reach_rollup() -> dict:
             return {"ok": False, "error": "no_db"}
         try:
             with c.cursor() as cur:
-                cur.execute(f"SET statement_timeout = '{_CHUNK_TIMEOUT_MS}'")  # fail-fast per statement
-                cur.execute("SELECT MIN(id), MAX(id) FROM agent_requests")
-                minid, maxid = cur.fetchone()
-                if not maxid:
-                    return {"ok": True, "weeks": [], "note": "no agent_requests rows"}
-
-                # earliest timestamp (for the data's first week)
-                cur.execute("SELECT timestamp FROM agent_requests WHERE id = %s", (minid,))
-                first_dt = _parse_ts((cur.fetchone() or [None])[0]) or datetime.utcnow()
+                cur.execute("SET statement_timeout = '20000'")
                 today = datetime.utcnow().date()
                 cur_week = _monday(today)
-                data_first_week = _monday(first_dt.date())
-
-                # Always recompute the full trailing window (UPSERT-idempotent).
-                # The per-week scan is now cheap (no SQL regex), so this is ~tens
-                # of seconds/day in a background thread and it SELF-HEALS any gap
-                # left by a prior partial/timed-out run.
-                start_week = max(data_first_week, cur_week - timedelta(weeks=BACKFILL_WEEKS - 1))
-
+                start_week = cur_week - timedelta(weeks=BACKFILL_WEEKS - 1)
                 weeks = []
                 w = start_week
                 while w <= cur_week:
                     weeks.append(w)
                     w += timedelta(weeks=1)
-
-                # NOTE: we deliberately do NOT pre-seed reach_ip_seen from the
-                # pre-window range — that DISTINCT+regex scan over millions of
-                # rows exceeds the statement timeout. Weeks are processed
-                # ASCENDING so the seen-set builds chronologically; the EARLIEST
-                # backfilled week's new_external_ips may be slightly inflated
-                # (nothing was seeded before it), but the external-IP universe is
-                # tiny (~tens) so it self-corrects within a week or two, and every
-                # week from the first live run forward is exact (cumulative set).
-
-                # resolve id boundaries for each week start (ascending)
-                results = []
-                bounds = {}
-                for wk in weeks + [cur_week + timedelta(weeks=1)]:
-                    bounds[wk] = _id_for_instant(cur, datetime.combine(wk, datetime.min.time()),
-                                                 minid, maxid)
-                skipped = []
-                for i, wk in enumerate(weeks):
-                    id_lo = bounds.get(wk) or minid
-                    nxt = bounds.get(wk + timedelta(weeks=1))
-                    id_hi = (nxt - 1) if nxt else maxid
-                    if id_hi < id_lo:
-                        continue
-                    # Per-week resilience: a single dense week that still cancels on
-                    # the statement timeout must NOT abort the whole backfill (which
-                    # left every later week — incl. the current one — unwritten, so
-                    # per_platform never filled). The conn is autocommit, so it
-                    # survives a QueryCanceled; skip the bad week and keep going.
+                # Per-week resilience: one bad week must not abort the backfill (the
+                # conn is autocommit → survives a QueryCanceled). Weeks ascending so
+                # the cumulative reach_ip_seen set + new_external_ips stay honest.
+                results, skipped = [], []
+                for wk in weeks:
                     try:
-                        results.append(_compute_week(cur, wk, id_lo, id_hi))
+                        results.append(_compute_week(cur, wk, wk + timedelta(weeks=1)))
                     except Exception as e:
                         skipped.append({"week": wk.isoformat(), "error": str(e)[:120]})
                         continue
-
                 return {"ok": True, "weeks_computed": len(results),
                         "weeks_skipped": len(skipped), "skipped": skipped,
                         "window_weeks": len(weeks), "current_week": cur_week.isoformat(),
-                        "weeks": results}
+                        "source": "mcp_tool_calls", "weeks": results}
         finally:
             try: c.close()
             except Exception: pass
