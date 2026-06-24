@@ -1005,6 +1005,158 @@ def claim_submit(token: str):
         except Exception: pass
 
 
+# ── POST /api/v1/mcp/high-intent/redeem ──────────────────────────────
+# r-agent-redeem (2026-06-24): the AGENT-COMPLETABLE twin of the human
+# POST /claim/<token> form. That form is the 95.8%-drop cliff — 24 claims
+# minted in 30d, ~1 human ever opened the page (no human, no browser behind
+# most agents). This lets the AGENT redeem the claim_token itself and bind the
+# SAME 7d/50-call trial key, returning JSON it can save into its MCP config.
+# Email is OPTIONAL here (the human-contact bridge becomes a secondary relay,
+# not the gate). Security is IDENTICAL to the form — same HMAC
+# verify_claim_token, same single-use (claim_used_at) idempotency, same per-IP
+# rate-limit, same mint_trial_for_request grant — so it is no more abusable than
+# the form that is already public. Token = body.token / ?token= / body.claim_token.
+
+def _redeem_meta() -> dict:
+    """The trial grant + next-step copy returned to a redeeming agent."""
+    return {
+        "tier": "trial",
+        "calls_total": 50,
+        "expires_days": 7,
+        "save_instruction": ("Save this X-API-Key into your MCP client config so "
+                             "every future session reuses it — no re-minting."),
+        "upgrade_note": ("Need more than the trial? Call unlock_more_data for a "
+                         "one-click checkout link to relay to your human."),
+    }
+
+
+@mcp_high_intent_claim_bp.route("/api/v1/mcp/high-intent/redeem", methods=["POST"])
+def claim_redeem_agent():
+    """Agent-side redemption of a high-intent claim token → binds the 7d/50-call
+    trial key with NO human page-open. JSON in/out; email optional. Mirrors the
+    security of POST /claim/<token> (see the block comment above)."""
+    ip = _client_ip(request)
+    # The trusted gateway (X-Internal-Key) auto-redeems for many agents from ONE
+    # IP — exempt it from the per-IP brake (its volume is already bounded by the
+    # mint-gate). Direct (un-keyed) agent calls stay rate-limited 10/hr/IP.
+    if not _internal_ok(request) and not _rate_limit_ok(ip):
+        return jsonify(ok=False, error="rate_limited",
+                       hint="Too many redemptions from this IP; try again within the hour."), 429
+    body = request.get_json(silent=True) or {}
+    token = (request.args.get("token") or body.get("token")
+             or body.get("claim_token") or "").strip()
+    if not token:
+        return jsonify(ok=False, error="missing_token"), 400
+    payload = verify_claim_token(token)
+    if not payload:
+        return jsonify(ok=False, error="invalid_or_expired_token"), 400
+    sid = payload["session_id"]
+    tool = payload["tool"]
+    # Email is OPTIONAL on this path; a malformed one is ignored, not rejected.
+    email = (body.get("email") or "").strip().lower()
+    if email and not _EMAIL_RE.match(email):
+        email = ""
+
+    c = _conn()
+    if c is None:
+        return jsonify(ok=False, error="db_unavailable"), 503
+    try:
+        _ensure_schema(c)
+        row = _lookup_claim_row(c, sid, tool)
+        if not row:
+            return jsonify(ok=False, error="claim_not_found_or_expired"), 410
+        # Idempotent: already redeemed → return the existing key, never re-mint.
+        if row[2] is not None:  # claim_used_at
+            with c.cursor() as cur:
+                cur.execute("SELECT minted_api_key FROM mcp_high_intent_sessions "
+                            "WHERE mcp_session_id=%s AND tool_name=%s", (sid, tool))
+                r = cur.fetchone() or (None,)
+            if r[0]:
+                return jsonify(ok=True, api_key=r[0], already_redeemed=True, **_redeem_meta()), 200
+            return jsonify(ok=False, error="already_used_no_key"), 410
+
+        # Mint the trial key — SAME path as the human form.
+        api_key = None
+        mint_error = None
+        try:
+            from routes.auto_trial import mint_trial_for_request as _mint
+            mr = _mint(req=request, tool_name=tool,
+                       client_name="high-intent-agent-redeem",
+                       operator_email=email)  # "" when absent — matches the str contract
+            if isinstance(mr, dict) and mr.get("ok"):
+                api_key = mr.get("api_key")
+            else:
+                mint_error = (mr or {}).get("error") if isinstance(mr, dict) else None
+        except Exception as e:
+            mint_error = f"{type(e).__name__}: {e}"
+            logger.warning("[redeem-agent] mint failed: %s", e)
+        if not api_key:
+            # Same never-empty-handed fallback as the form.
+            api_key = "dch_trial_" + secrets.token_urlsafe(24).replace("_", "x").replace("-", "x")[:32]
+            try:
+                with c.cursor() as cur:
+                    cur.execute(
+                        """INSERT INTO auto_trial_keys
+                             (api_key, minted_for_tool, request_ip_hash, request_ua,
+                              expires_at, operator_email, client_name)
+                           VALUES (%s, %s, %s, %s, NOW() + INTERVAL '7 days', %s, %s)
+                           ON CONFLICT (api_key) DO NOTHING""",
+                        (api_key, tool, hashlib.sha256(ip.encode()).hexdigest()[:16],
+                         (request.headers.get("User-Agent") or "")[:200],
+                         (email or None), "high-intent-agent-redeem-fallback"))
+            except Exception as e:
+                logger.warning("[redeem-agent] fallback insert failed: %s", e)
+
+        # Optional email — only if the agent passed one (secondary contact bridge).
+        if email and api_key:
+            try:
+                from routes.redeem_routes import _p99_send_email as _send
+                _send(email, api_key, [tool])
+            except Exception as e:
+                logger.warning("[redeem-agent] optional email failed: %s", e)
+
+        # Mark used + persist — ATOMIC guard (claim_used_at IS NULL) so two
+        # concurrent redeems of the same token can't both mint (TOCTOU). The
+        # loser (rowcount 0) re-reads and returns the winner's already-bound key.
+        won = True
+        try:
+            with c.cursor() as cur:
+                cur.execute(
+                    """UPDATE mcp_high_intent_sessions
+                          SET claim_used_at = NOW(), claim_email = %s, minted_api_key = %s
+                        WHERE mcp_session_id = %s AND tool_name = %s
+                          AND claim_used_at IS NULL""",
+                    ((email or None), api_key, sid, tool))
+                won = (cur.rowcount == 1)
+        except Exception as e:
+            logger.warning("[redeem-agent] mark-used failed: %s", e)
+        if not won:
+            with c.cursor() as cur:
+                cur.execute("SELECT minted_api_key FROM mcp_high_intent_sessions "
+                            "WHERE mcp_session_id=%s AND tool_name=%s", (sid, tool))
+                r = cur.fetchone() or (None,)
+            if r[0]:
+                logger.info("[redeem-agent] lost mint race; returning winner key tool=%s", tool)
+                return jsonify(ok=True, api_key=r[0], already_redeemed=True, **_redeem_meta()), 200
+
+        # CRM bridge — only when the agent supplied an email (mirrors the form).
+        if email:
+            try:
+                from routes.crm_reverse_etl import capture_event as _crm_capture
+                _crm_capture("mcp_high_intent", {"email": email, "session_id": sid,
+                                                 "tool": tool, "claim_token": token[:16],
+                                                 "source": "agent_redeem"})
+            except Exception as _e_crm:
+                logger.debug("[redeem-agent] crm capture skipped: %s", _e_crm)
+
+        logger.info("[redeem-agent] minted key=%s tool=%s email=%s mint_error=%s",
+                    (api_key or "")[:16] + "...", tool, bool(email), mint_error)
+        return jsonify(ok=True, api_key=api_key, already_redeemed=False, **_redeem_meta()), 200
+    finally:
+        try: c.close()
+        except Exception: pass
+
+
 # ── GET /api/v1/mcp/high-intent/stats ────────────────────────────────
 
 @mcp_high_intent_claim_bp.route("/api/v1/mcp/high-intent/stats", methods=["GET"])
