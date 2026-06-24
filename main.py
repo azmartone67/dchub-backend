@@ -31914,6 +31914,16 @@ for _mmod, _mbp in [
     except Exception as _media_reg_e:
         print(f"[main] {_mmod} register skipped: {_media_reg_e}", file=sys.stderr)
 
+# r-sarender (2026-06-24): Phase-4 render-path probe (admin-gated). Renders the real
+# A1 "Site Analysis" CSS via weasyprint to learn if the premium form needs Chrome-on-
+# Railway BEFORE building the full feature. Defensive — cannot crash boot.
+try:
+    from routes.site_analysis_rendertest import site_analysis_rendertest_bp
+    app.register_blueprint(site_analysis_rendertest_bp)
+    print("[main] site_analysis_rendertest_bp registered (admin): /api/v1/admin/site-analysis-rendertest", flush=True)
+except Exception as _sar_e:
+    print(f"[main] site_analysis_rendertest register skipped: {_sar_e}", file=sys.stderr)
+
 # === Brain v2 · Layer 3 freshness fields ===
 try:
     from flask import jsonify as _bv2_jsonify
