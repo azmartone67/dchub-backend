@@ -186,7 +186,6 @@ def record_from_signal(tool, signal_type, api_key=None, email=None, ip=None,
     server forwards it. Filters to grid/fiber; never raises."""
     try:
         tool = (tool or "").strip()
-        print(f"[paid_intent] signal received tool={tool} signal_type={signal_type}", flush=True)
         if _disabled() or tool not in INTENT_TOOLS:
             return
         a = args if isinstance(args, dict) else {}
