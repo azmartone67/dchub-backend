@@ -1687,24 +1687,21 @@ def site_report():
 
     if fmt == "pdf":
         try:
-            from weasyprint import HTML as _WHTML  # lazy — keeps module importable
-            pdf_bytes = _WHTML(string=_render_html(survey), base_url="https://dchub.cloud/").write_pdf()
-        except (ImportError, OSError) as e:
-            # weasyprint's native stack (libpango/cairo/gobject) isn't loadable in
-            # the current Railway image — a known infra gap (also affects the
-            # market-brief PDF). Degrade honestly to a 503 and point at the HTML
-            # report, which is print-to-PDF ready (Cmd/Ctrl-P). Never a 500.
+            # r-pdfrender (2026-06-24): render via the private Gotenberg (chromium)
+            # service — weasyprint is dead on Railway (libgobject can't load). The
+            # _render_html(survey) output is the same HTML the &format=html path serves.
+            from routes.pdf_render import html_to_pdf
+            pdf_bytes = html_to_pdf(_render_html(survey))
+        except Exception as e:
+            # Render service unreachable → degrade honestly to a 503 that points at the
+            # print-to-PDF-ready HTML report. Never a 500.
             return jsonify({
                 "error": "pdf_engine_unavailable",
-                "message": ("Server-side PDF export is being provisioned. The full HTML report "
+                "message": ("Server-side PDF export is temporarily unavailable. The full HTML report "
                             "is available now and is print-to-PDF ready (Cmd/Ctrl-P → Save as PDF)."),
                 "html_url": f"/api/v1/site-report?lat={lat}&lon={lon}",
                 "detail": f"{type(e).__name__}: {str(e)[:160]}",
-                "_diag": _pdf_diag(),
             }), 503
-        except Exception as e:
-            return jsonify({"error": "pdf_render_failed",
-                            "detail": f"{type(e).__name__}: {str(e)[:200]}"}), 500
         fn = f"DC_Hub_Site_Report_{lat:.4f}_{lon:.4f}.pdf"
         return Response(pdf_bytes, mimetype="application/pdf", headers={
             "Content-Disposition": f'attachment; filename="{fn}"',
