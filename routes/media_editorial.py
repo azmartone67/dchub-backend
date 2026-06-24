@@ -266,6 +266,18 @@ def rank_data_events() -> list[dict]:
     except Exception as e:
         logger.warning("[editorial] capability radar failed: %s", str(e)[:160])
 
+    # 0b) Brain insight bridge (2026-06-24) — the brain's graded, refutation-
+    # survived DATA-coverage findings (e.g. "311 DCPI markets across 7 live ISOs")
+    # become candidate leads so the analyst can tell the data story the brain
+    # vetted. READ-ONLY + DRAFT-ONLY + dark by default (BRAIN_MEDIA_BRIDGE_ENABLED);
+    # they compete in the same ranked slate and pass the same publish guards +
+    # human approval. Module: routes/brain_media_bridge.
+    try:
+        from routes.brain_media_bridge import brain_insight_leads
+        leads += brain_insight_leads() or []
+    except Exception as e:
+        logger.warning("[editorial] brain insight bridge failed: %s", str(e)[:160])
+
     # Core signals (movers, deals, facilities) — reuse the tested collector.
     sig = {}
     try:
@@ -579,6 +591,30 @@ def data_leads_endpoint():
     try:
         return jsonify({"ok": True, "leads": rank_data_events(),
                         "generated_at": _dt.datetime.utcnow().isoformat() + "Z"}), 200
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)[:200]}), 200
+
+
+@media_editorial_bp.route("/api/v1/brain/media/insight-leads", methods=["GET"])
+def brain_insight_leads_endpoint():
+    """Preview the brain-insight bridge: the graded, refutation-survived DATA
+    findings that WOULD become candidate analyst leads. preview=True shows them
+    even while BRAIN_MEDIA_BRIDGE_ENABLED is off, so the operator can review the
+    slate before flipping the live gate. Draft-only — nothing here publishes."""
+    import os as _os
+    try:
+        from routes.brain_media_bridge import brain_insight_leads, _enabled
+        leads = brain_insight_leads(preview=True)
+        return jsonify({
+            "ok": True,
+            "gate_enabled_live": _enabled(),
+            "candidate_count": len(leads),
+            "leads": leads,
+            "note": ("Draft-only candidates. When the gate is live these compete in "
+                     "editorial_decision() and still pass claim-verify + "
+                     "partner-disparagement guards + human approval before publish."),
+            "generated_at": _dt.datetime.utcnow().isoformat() + "Z",
+        }), 200
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)[:200]}), 200
 
