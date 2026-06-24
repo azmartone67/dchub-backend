@@ -52,10 +52,13 @@ def _area_ok(area) -> bool:
 
 _MIN_CONF = float(os.environ.get("BRAIN_MEDIA_BRIDGE_MIN_CONF", "0.30") or 0.30)
 _LOOKBACK_DAYS = int(os.environ.get("BRAIN_MEDIA_BRIDGE_LOOKBACK_DAYS", "30") or 30)
-# Evergreen, human-vetted facts → modest score so they fill QUIET slots without
-# crowding out real-time breaking news (DCPI movers, deals). Tunable up if you
-# want the brain to lead more often.
-_BASE_SCORE = float(os.environ.get("BRAIN_MEDIA_BRIDGE_BASE_SCORE", "12") or 12)
+# 2026-06-24: default 12 -> 40 (operator wants the brain to LEAD, not just fill).
+# Score landscape: routine DCPI movers 6-24, build-leaders/interconnection ~36-50,
+# capability milestones 70, big M&A deals up to 120, post bar 8. At 40 (+conf+graded
+# => ~42-58) the brain's vetted facts WIN routine slots but still YIELD to breaking
+# deals/milestones — and the 9-day recently-posted dedup caps repetition (each fact
+# leads ~once/9d, never spams). Push to 60+ via env to make it dominate harder.
+_BASE_SCORE = float(os.environ.get("BRAIN_MEDIA_BRIDGE_BASE_SCORE", "40") or 40)
 # Strict mode: only surface items the human GRADED good/approved (default off —
 # survived-refutation + content filters are the quality bar; a good grade boosts).
 _REQUIRE_GRADE = (os.environ.get("BRAIN_MEDIA_BRIDGE_REQUIRE_GRADE", "0") or "0").lower() in (
