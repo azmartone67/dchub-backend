@@ -178,13 +178,40 @@ def external_platform_predicate() -> str:
             f"AND {p} NOT LIKE '%audit%')")
 
 
+# ── Raw-scripting / internal UA exclusion (2026-06-24) ────────────────────
+# PLATFORM_CASE keys on client_name FIRST, so test/probe traffic that SETS a
+# client_name slips past the classifier even though its USER-AGENT is a dead
+# giveaway. Live audit (2026-06-24): the top two "platforms" in the de-looped
+# 7d reach were value-harness (client='value-harness', UA 'dchub-value-harness/1.0',
+# ~69 IPs — OUR OWN test harness) and clawith (UA 'python-httpx', ~28), plus
+# rv/final/funnel-diag3 (UA 'curl'). Counting them ~3x-inflated the de-looped
+# reach (104 vs the real ~30) on every funnel surface. This guard excludes by
+# USER-AGENT regardless of client_name. Bare 'node' is mcp-remote (a real
+# transport) and is deliberately NOT matched. Mirrors
+# routes/mcp_high_intent_claim._hi_real_sql's UA guard — keep the two aligned.
+_SCRIPT_INTERNAL_UA = (
+    "python-httpx|python-urllib|urllib|curl/|wget|libwww|node-fetch|undici|axios|"
+    "got/|go-http|okhttp|java/|requests/|aiohttp|scrapy|httpie|restsharp|"
+    "dchub-|dchubhealer|self.?heal|value-harness|regression|brain-radar|uptimerobot"
+)
+
+
+def real_ua_predicate() -> str:
+    """TRUE when user_agent is NOT a raw-scripting client or an internal/self UA.
+    Fires regardless of client_name (the gap PLATFORM_CASE leaves). Inlined SQL
+    literal — no bound params, so the literal patterns are safe next to ILIKE."""
+    return f"COALESCE(user_agent,'') !~* '({_SCRIPT_INTERNAL_UA})'"
+
+
 def real_calls_predicate() -> str:
     """Boolean SQL fragment that is TRUE for a real external tool call:
-    `<PLATFORM_CASE> NOT IN (<probe list>) AND <external platform>`. This is the
-    exact filter the /api/v1/mcp/funnel endpoint FILTERs `tool_calls_7d_real` on.
-    Reads mcp_tool_calls columns client_name + user_agent + platform."""
+    `<PLATFORM_CASE> NOT IN (<probe list>) AND <external platform> AND <real UA>`.
+    This is the exact filter the /api/v1/mcp/funnel endpoint FILTERs
+    `tool_calls_7d_real` on. Reads mcp_tool_calls columns client_name +
+    user_agent + platform."""
     return (f"(({PLATFORM_CASE.strip()} NOT IN ({_probe_in_list()})) "
-            f"AND {external_platform_predicate()})")
+            f"AND {external_platform_predicate()} "
+            f"AND {real_ua_predicate()})")
 
 
 def probe_calls_predicate() -> str:
