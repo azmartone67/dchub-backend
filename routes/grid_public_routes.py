@@ -26,10 +26,49 @@ FREE_TIER_ISOS = {'PJM', 'ERCOT'}
 
 
 def _user_tier(req):
-    """Best-effort tier detection. Default 'free'."""
-    # Cookie / header / session-based — adapt to existing auth
-    tier = req.cookies.get('dch_tier') or req.headers.get('X-Tier') or 'free'
-    return tier.lower()
+    """Resolve the caller's REAL plan tier for the paid-ISO gate.
+
+    r-gridauth (2026-06-23): the old impl trusted `req.headers.get('X-Tier')` and a
+    plaintext `dch_tier` cookie — BOTH client-spoofable. Anyone could send
+    `X-Tier: pro` (or `Cookie: dch_tier=pro`) and unlock every paid ISO's live grid
+    render directly (a trivial paywall bypass; it's also what let the edge/worker cache
+    get poisoned with a full render and replayed to anon). Now resolve from real,
+    unforgeable credentials only:
+      1. paid MCP key  → mcp_dev_keys via _resolve_key_tier (free/identified → None)
+      2. signed session → dchub_token JWT via _detect_caller_tier (JWT_SECRET-verified)
+    Everything else (incl. a bare X-Tier header or plaintext dch_tier cookie) = 'free'.
+    Returns 'free' for all free-class callers so the `tier == 'free'` gate fires.
+    """
+    # 1. Paid API key (canonical MCP table)
+    try:
+        api_key = (req.headers.get('X-API-Key') or req.args.get('api_key') or '').strip()
+        if api_key:
+            from api_data_protection import _resolve_key_tier
+            t = _resolve_key_tier(api_key)
+            if t:
+                return str(t).lower()
+    except Exception:
+        pass
+    # 2. Signed logged-in session (JWT cookie) — verified, not a plaintext tier cookie
+    try:
+        from map_tier_gating import _detect_caller_tier
+
+        def _dec(_t):
+            try:
+                import jwt as _j
+                from main import JWT_SECRET
+                return _j.decode(_t, JWT_SECRET, algorithms=['HS256'])
+            except Exception:
+                return None
+        ct, _ = _detect_caller_tier(decode_jwt_func=_dec)
+        ctl = str(ct or '').lower()
+        if ctl and ctl not in (
+                '', 'anonymous', 'anon', 'free', 'identified',
+                'trial', 'trial_taste', 'trial_preview', 'preview'):
+            return ctl
+    except Exception:
+        pass
+    return 'free'
 
 
 # Phase JJ (2026-05-14): in-process TTL cache for _fetch_live.
