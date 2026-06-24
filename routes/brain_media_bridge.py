@@ -48,6 +48,10 @@ _LOOKBACK_DAYS = int(os.environ.get("BRAIN_MEDIA_BRIDGE_LOOKBACK_DAYS", "30") or
 # crowding out real-time breaking news (DCPI movers, deals). Tunable up if you
 # want the brain to lead more often.
 _BASE_SCORE = float(os.environ.get("BRAIN_MEDIA_BRIDGE_BASE_SCORE", "12") or 12)
+# Strict mode: only surface items the human GRADED good/approved (default off —
+# survived-refutation + content filters are the quality bar; a good grade boosts).
+_REQUIRE_GRADE = (os.environ.get("BRAIN_MEDIA_BRIDGE_REQUIRE_GRADE", "0") or "0").lower() in (
+    "1", "true", "yes", "on")
 
 # A self-critical data fact is a BAD public story — it advertises our own gaps,
 # errors, or low conversion. The analyst leads with strength, NEVER a weakness
@@ -198,15 +202,19 @@ def brain_insight_leads(preview: bool = False) -> list:
             with conn.cursor() as cur:
                 for table, jcol in sources:
                     try:
+                        # Quality gate is the REFUTATION + content filters below, NOT
+                        # the brain's self-confidence (inherently low, 0.2–0.4). We only
+                        # EXCLUDE items the human graded 'bad'; a 'good'/'approved' grade
+                        # is a score BOOST (set BRAIN_MEDIA_BRIDGE_REQUIRE_GRADE=1 to make
+                        # a positive grade mandatory). No hard confidence floor.
                         cur.execute(
-                            f"SELECT id, title, area, confidence, {jcol} "
+                            f"SELECT id, title, area, confidence, grade, {jcol} "
                             f"FROM {table} "
-                            f"WHERE LOWER(COALESCE(grade,'')) IN ('good','approved') "
-                            f"  AND area = ANY(%s) "
-                            f"  AND COALESCE(confidence,0) >= %s "
+                            f"WHERE area = ANY(%s) "
+                            f"  AND LOWER(COALESCE(grade,'')) <> 'bad' "
                             f"  AND created_at >= NOW() - (%s || ' days')::interval "
-                            f"ORDER BY created_at DESC LIMIT 25",
-                            (list(PUBLISHABLE_AREAS), _MIN_CONF, str(_LOOKBACK_DAYS)),
+                            f"ORDER BY created_at DESC LIMIT 40",
+                            (list(PUBLISHABLE_AREAS), str(_LOOKBACK_DAYS)),
                         )
                         rows = cur.fetchall() or []
                     except Exception as e:
@@ -214,8 +222,11 @@ def brain_insight_leads(preview: bool = False) -> list:
                                        table, str(e)[:160])
                         continue
 
-                    for rid, title, area, conf, jdoc in rows:
+                    for rid, title, area, conf, grade, jdoc in rows:
                         try:
+                            graded_good = str(grade or "").lower() in ("good", "approved")
+                            if _REQUIRE_GRADE and not graded_good:
+                                continue
                             if not _refutation_survived(jdoc):
                                 continue
                             headline = _clean_headline(title)
@@ -223,11 +234,15 @@ def brain_insight_leads(preview: bool = False) -> list:
                                 continue  # must lead with a number (ANALYST_VOICE)
                             if _SELF_CRITICAL.search(headline):
                                 continue  # never publish our own weaknesses
-                            key = re.sub(r"\W+", "", headline.lower())[:48]
+                            # Dedup on the NUMBER-STRIPPED headline so "177 countries"
+                            # and "178 countries" collapse to one candidate.
+                            key = re.sub(r"\d+", "#", re.sub(r"\W+", "", headline.lower()))[:48]
                             if key in seen_headlines:
                                 continue
                             seen_headlines.add(key)
                             c = float(conf or 0.0)
+                            # base + small confidence input + a boost for human-graded-good.
+                            score = _BASE_SCORE + 8.0 * c + (10.0 if graded_good else 0.0)
                             leads.append({
                                 "kind": "brain_insight",
                                 "headline_number": headline,
@@ -237,7 +252,8 @@ def brain_insight_leads(preview: bool = False) -> list:
                                             "breakdown at dchub.cloud."),
                                 "source_url": "https://dchub.cloud",
                                 "dedup_key": f"brain_insight:{table[:4]}:{rid}",
-                                "score": round(_BASE_SCORE + 8.0 * c, 2),
+                                "graded_good": graded_good,
+                                "score": round(score, 2),
                             })
                         except Exception:
                             continue
