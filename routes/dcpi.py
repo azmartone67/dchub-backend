@@ -3784,9 +3784,17 @@ footer a:hover { color: var(--acc-light); }
   <div style="background:linear-gradient(135deg,rgba(99,102,241,.10),rgba(168,85,247,.06));border:1px solid rgba(99,102,241,.35);border-radius:10px;padding:20px 24px;margin:0 0 24px;display:flex;justify-content:space-between;align-items:center;gap:20px;flex-wrap:wrap">
     <div style="flex:1;min-width:280px">
       <div style="font-family:'JetBrains Mono',monospace;font-size:11px;text-transform:uppercase;letter-spacing:.12em;color:#a855f7;margin-bottom:6px">Showing {{ count }} of {{ total_rows }} markets</div>
-      <div style="font-size:15px;line-height:1.5;color:#e5e7eb">You're viewing the <strong>top 5 BUILD + top 20 AVOID/CAUTION</strong>. Claim a free DC Hub dev key (60 sec, just your email) to unlock all {{ total_rows }} scored markets + ISO drill + daily refresh.</div>
+      {% if tier_state == 'free' %}
+      <div style="font-size:15px;line-height:1.5;color:#e5e7eb">You're on the <strong>free tier</strong> — viewing the top {{ count }} ranked markets. Upgrade to Pro to unlock all <strong>{{ total_rows }}</strong> scored markets + ISO drill + daily refresh + market alerts.</div>
+      {% else %}
+      <div style="font-size:15px;line-height:1.5;color:#e5e7eb">You're viewing the <strong>top {{ count }}</strong> ranked markets. Claim a free DC Hub dev key (60 sec, just your email) to see the top 50 — or go Pro to unlock all <strong>{{ total_rows }}</strong> scored markets + ISO drill + daily refresh.</div>
+      {% endif %}
     </div>
+    {% if tier_state == 'free' %}
+    <a href="https://dchub.cloud/pricing?source=dcpi_free_cap" style="background:#6366f1;color:#fff;padding:11px 22px;border-radius:6px;font-weight:600;text-decoration:none;font-size:14px;white-space:nowrap">Upgrade to Pro →</a>
+    {% else %}
     <a href="https://dchub.cloud/signup?source=dcpi_anon_cap" style="background:#6366f1;color:#fff;padding:11px 22px;border-radius:6px;font-weight:600;text-decoration:none;font-size:14px;white-space:nowrap">Claim free key →</a>
+    {% endif %}
   </div>
   {% endif %}
 
@@ -4649,8 +4657,27 @@ def public_dashboard():
     # whole catalog away (the prior commit removed the cap for EVERYONE, which
     # re-opened the anon leak). resolve_tier/_has_key miss the website session
     # cookie, so consult the same cookie-aware resolver /pockets uses.
-    _authed = _has_key
-    if not _authed:
+    # r-freecap (2026-06-23): gate the SCORED-CARD count on the REAL tier, not just
+    # "has a key". Before, _authed=_has_key handed the FULL 317 to ANY key — incl. a
+    # no-cost free/identified key minted by claim_free_key — which gutted the upgrade
+    # pull (why pay if a free key shows every ranked market?). New 3-tier funnel:
+    #   anon  → 25-card teaser  (the crawlable SEO surface; unchanged)
+    #   free  → 50-card teaser  (rewards claiming a key, still leaves a reason to pay)
+    #   paid  → all 317         (mcp_dev_keys enterprise/paid/developer/pro/founding/
+    #                            starter, OR a paid logged-in session)
+    # The names-only "All N Markets" list (all_market_links) is still emitted for
+    # EVERYONE, so this caps SCORES, not discovery. _paid is resolved from the canonical
+    # MCP table (mcp_dev_keys via _resolve_key_tier — free/identified map to None) with a
+    # cookie-tier fallback for logged-in browser sessions.
+    _paid = False
+    if _has_key:
+        try:
+            from api_data_protection import _resolve_key_tier
+            _paid = bool(_resolve_key_tier(
+                (_req.headers.get('X-API-Key') or _req.args.get('api_key') or '').strip()))
+        except Exception:
+            _paid = False
+    if not _paid:
         try:
             from map_tier_gating import _detect_caller_tier
             def _dec(_t):
@@ -4661,15 +4688,21 @@ def public_dashboard():
                 except Exception:
                     return None
             _ct, _ = _detect_caller_tier(decode_jwt_func=_dec)
-            _authed = bool(_ct and str(_ct).lower() not in ('anonymous', 'anon'))
+            _ctl = str(_ct or '').lower()
+            _paid = bool(_ctl and _ctl not in (
+                '', 'anonymous', 'anon', 'free', 'identified',
+                'trial', 'trial_taste', 'trial_preview', 'preview'))
         except Exception:
             pass
-    _gated_to_anon = not _authed
+    _gated_to_anon = not _paid                       # name kept; now means "not paid"
+    _tier_state = 'paid' if _paid else ('free' if _has_key else 'anon')
     if _gated_to_anon:
-        # Anon teaser: top 5 BUILD + top 20 others = 25 cards (full count still
-        # shown in the header + verdict tabs as the breadth hook).
-        _builds = [r for r in rows if (r.get('verdict') or '') == 'BUILD'][:5]
-        _others = [r for r in rows if (r.get('verdict') or '') != 'BUILD'][:20]
+        # Teaser: free-keyed callers get a bigger slice (10 BUILD + 40 others = 50)
+        # than truly-anon (5 BUILD + 20 others = 25); the full count stays in the header
+        # + verdict tabs as the breadth hook, and the unlock CTA points up a tier.
+        _cap_b, _cap_o = (10, 40) if _has_key else (5, 20)
+        _builds = [r for r in rows if (r.get('verdict') or '') == 'BUILD'][:_cap_b]
+        _others = [r for r in rows if (r.get('verdict') or '') != 'BUILD'][:_cap_o]
         rows = _builds + _others
         rows.sort(key=lambda r: -(r.get("excess_power_score") or 0))
 
@@ -4682,6 +4715,7 @@ def public_dashboard():
         gated_to_anon=_gated_to_anon,
         total_rows=_total_rows,
         all_market_links=all_market_links,
+        tier_state=_tier_state,
     )
     # phase 284: ship a Content-Security-Policy header on /dcpi so the
     # dchub-frontend qa-csp-parse preflight CI doesn't fail on this page.
@@ -4701,8 +4735,13 @@ def public_dashboard():
     # authed (hasAuth), so an authed visitor still gets their full render — not a
     # cached anon teaser. NOTE: the 317 market name+link list is names-only (no scores)
     # and the per-market /dcpi/<slug> pages are intentionally free (SEO/citation) — the
-    # scored CARDS are what stays gated to 25 for anon.
-    if _gated_to_anon:
+    # scored CARDS are what stays gated for anon/free.
+    # r-freecap (2026-06-23): only the PURE-ANON render (25-card teaser = the crawlable
+    # SEO surface) is publicly edge-cacheable. The free render (50 cards) and the paid
+    # render (317) both VARY from anon, so they're private/no-store — otherwise the free
+    # 50-card render could be edge-shared to anon (over-exposure) or the anon 25 served
+    # to a free/paid caller (under-served). Keyed/cookie callers bypass the edge cache.
+    if _tier_state == 'anon':
         resp.headers["Cache-Control"] = "public, max-age=120, s-maxage=300, stale-while-revalidate=86400"
     else:
         resp.headers["Cache-Control"] = "private, no-store, max-age=0"
