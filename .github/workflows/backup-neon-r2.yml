@@ -22,7 +22,7 @@ concurrency:
 jobs:
   backup:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30   # streaming dump removed the OOM; headroom for a large dump+upload
     steps:
       - uses: actions/checkout@v4
 

@@ -123,6 +123,9 @@ _MARKETING_SENDERS = frozenset({
 # --- TRANSACTIONAL senders: NOT marketing; allowed to stay direct -----------
 _TRANSACTIONAL_SENDERS = frozenset({
     "main.py",                       # shared _resend_email + transactional/ops mail
+    "paid_intent_ledger.py",         # weekly grid/fiber intent digest to the OPERATOR
+                                     # (ops report, recipients=owner) — mirrors
+                                     # brain_weekly_digest/morning_briefing, not customer marketing
     "brain_innovation_email.py",     # operator innovation digest — transactional, not marketing
     "enterprise_inquiry.py",         # enterprise data-licensing inquiry receipts
     "feedback_triage.py",            # routes /feedback to operator (ops, not promo)

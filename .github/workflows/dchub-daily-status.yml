@@ -6,6 +6,13 @@ on:
     - cron: "0 9 * * *"
   workflow_dispatch:  # lets you run it manually from the GitHub UI
 
+# The "Open issue on regression" step uses actions/github-script to create a
+# GitHub issue, which needs issues:write. The default GITHUB_TOKEN is read-only
+# on scheduled runs unless declared here → "Resource not accessible by integration".
+permissions:
+  contents: read
+  issues: write
+
 jobs:
   status:
     runs-on: ubuntu-latest
