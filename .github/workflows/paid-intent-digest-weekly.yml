@@ -1,0 +1,38 @@
+name: Paid-Intent Digest (weekly)
+
+# Brain #1264 follow-through: every grid/fiber paywall hit is captured as a
+# re-targetable lead in mcp_paid_intent. This emails the operator a weekly
+# digest of that demand (top regions/ISOs/tools, distinct agents, recent leads)
+# so the captured intent turns into action instead of sitting in a table.
+# Hits the Railway ORIGIN directly with the DCHUB_ADMIN_KEY GitHub secret
+# (same value as Railway) — mirrors strategic-briefing-weekly.yml.
+# Manual run: the "Run workflow" button. Kill: PAID_INTENT_LEDGER_DISABLE=1.
+
+on:
+  schedule:
+    - cron: "25 14 * * 1"     # Monday 14:25 UTC (5m after the strategic briefing)
+  workflow_dispatch:
+    inputs:
+      days:
+        description: "Lookback window (days)"
+        required: false
+        default: "7"
+
+concurrency:
+  group: paid-intent-digest
+  cancel-in-progress: false
+
+jobs:
+  digest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Send the weekly grid/fiber intent digest
+        run: |
+          DAYS="${{ github.event.inputs.days || '7' }}"
+          echo "Sending paid-intent digest (last ${DAYS}d)..."
+          curl -sS -m 60 -X POST \
+            -H "X-Admin-Key: ${{ secrets.DCHUB_ADMIN_KEY }}" \
+            "https://dchub-backend-production.up.railway.app/api/v1/admin/paid-intent/digest/send?days=${DAYS}" \
+            | head -c 800
+          echo ""
