@@ -1031,12 +1031,21 @@ def high_intent_stats():
     try:
         _ensure_schema(c)
         with c.cursor() as cur:
-            # All rows where the count crossed threshold in last 30d.
+            # r-claim-script-guard followup (2026-06-23): this PUBLIC stats route
+            # was missed by f2c595bc (which applied _hi_real_sql to the mint gate,
+            # the admin step-drop, and funnel_health). Without it these COUNT(*)s
+            # reported the script/self-test-inflated 585/123 instead of the ~24
+            # real pool, and brain_qa + press/dashboard surfaces re-ingested the
+            # vanity number. Wrap the three counts with the SAME real-traffic
+            # predicate (bare table → no prefix, like the step-drop base queries).
+            # claim_to_paid below is left as-is: it JOINs on claim_email, which a
+            # script never has, so it is already real-only.
             try:
                 cur.execute(
                     """SELECT COUNT(*) FROM mcp_high_intent_sessions
                         WHERE last_hit_at >= NOW() - INTERVAL '30 days'
-                          AND paid_call_count_24h >= %s""",
+                          AND paid_call_count_24h >= %s"""
+                    + " AND " + _hi_real_sql(),
                     (HIGH_INTENT_THRESHOLD,),
                 )
                 out["high_intent_sessions_30d"] = int((cur.fetchone() or [0])[0] or 0)
@@ -1045,7 +1054,8 @@ def high_intent_stats():
                 cur.execute(
                     """SELECT COUNT(*) FROM mcp_high_intent_sessions
                         WHERE claim_minted_at IS NOT NULL
-                          AND claim_minted_at >= NOW() - INTERVAL '30 days'""",
+                          AND claim_minted_at >= NOW() - INTERVAL '30 days'"""
+                    + " AND " + _hi_real_sql(),
                 )
                 out["claims_minted_30d"] = int((cur.fetchone() or [0])[0] or 0)
             except Exception: pass
@@ -1053,7 +1063,8 @@ def high_intent_stats():
                 cur.execute(
                     """SELECT COUNT(*) FROM mcp_high_intent_sessions
                         WHERE claim_used_at IS NOT NULL
-                          AND claim_used_at >= NOW() - INTERVAL '30 days'""",
+                          AND claim_used_at >= NOW() - INTERVAL '30 days'"""
+                    + " AND " + _hi_real_sql(),
                 )
                 out["claims_used_30d"] = int((cur.fetchone() or [0])[0] or 0)
             except Exception: pass
