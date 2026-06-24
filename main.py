@@ -7035,6 +7035,16 @@ def _gate_mcp_result(result_content, tool_name, tier):
 
     # ── Teaser tools: return degraded results with upgrade CTA ──
     if tool_name in MCP_TEASER_TOOLS:
+        # Brain L6 #1264: a non-paid caller hitting the grid/fiber paywall is a
+        # silent lost lead today. Record it (tool + tier + hashed caller + the
+        # exact site query: region/ISO/MW/lat-lon) into mcp_paid_intent so each
+        # 402 becomes re-targetable. Fire-and-forget; filters to grid/fiber +
+        # non-paid internally; never alters the response. Kill: PAID_INTENT_LEDGER_DISABLE=1.
+        try:
+            from routes.paid_intent_ledger import record_intent
+            record_intent(tool_name, tier, request)
+        except Exception:
+            pass
         return _inject_agent_claim(_gate_teaser_result(result_content, tool_name))
 
     # ── Facility tools: parse the text content, gate results ──
@@ -29564,6 +29574,15 @@ try:
     print("[main] media_editorial_bp registered: /api/v1/brain/media/editorial-decision", flush=True)
 except Exception as _med_e:
     print(f"[main] media_editorial_bp register failed: {_med_e}", flush=True)
+
+# Brain L6 #1264 — paid-intent ledger: grid/fiber paywall hits become
+# re-targetable leads (capture only; _gate_mcp_result calls record_intent).
+try:
+    from routes.paid_intent_ledger import paid_intent_bp
+    app.register_blueprint(paid_intent_bp)
+    print("[main] paid_intent_bp registered: GET /api/v1/admin/paid-intent (+/summary) (kill: PAID_INTENT_LEDGER_DISABLE=1)", flush=True)
+except Exception as _pil_e:
+    print(f"[main] paid_intent_bp register failed: {_pil_e}", flush=True)
 
 # Competitive moat radar — factual, agent-first positioning. Surfaces
 # DC Hub's verifiable edges + competitors' OBSERVED agent-readiness gaps
