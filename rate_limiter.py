@@ -349,6 +349,7 @@ def rate_limit_before():
     if tier == 'anonymous' and path.startswith(PUBLIC_CONTENT_PREFIXES):
         tier = 'public_content'
     limits = LIMITS[tier]
+    g._rl_limit = limits['rpm']  # stash early so the 429 path can emit X-RateLimit-Limit too
 
     # Per-minute check
     ok, remaining, retry = _check(f"{key}:min", limits['rpm'], 60)
@@ -364,24 +365,36 @@ def rate_limit_before():
             logger.warning(f"Hourly limit hit: {key} tier={tier} path={path} ip={_get_client_ip()}")
         return _resp(retry_h)
 
-    # Stash for after_request headers
+    # Stash for after_request headers (standard X-RateLimit-* — platform clients
+    # back off BEFORE hitting 429).
     g._rl_remaining = remaining
+    g._rl_reset = int(time.time()) + (60 - int(time.time()) % 60)  # next per-minute window (epoch s)
     return None
 
 
 def rate_limit_after(response):
     """
     Register as: app.after_request(rate_limit_after)
-    Adds X-RateLimit-Remaining header to all responses.
+    Adds the standard X-RateLimit-Limit / -Remaining / -Reset headers so platform
+    clients (and AI-agent runtimes, e.g. xAI/Grok, Mistral) can back off BEFORE
+    hitting 429.
     """
     rem = getattr(g, '_rl_remaining', None)
+    lim = getattr(g, '_rl_limit', None)
+    rst = getattr(g, '_rl_reset', None)
     if rem is not None:
         response.headers['X-RateLimit-Remaining'] = str(rem)
+    if lim is not None:
+        response.headers['X-RateLimit-Limit'] = str(lim)
+    if rst is not None:
+        response.headers['X-RateLimit-Reset'] = str(rst)
     return response
 
 
 def _resp(retry_after):
-    """429 Too Many Requests response."""
+    """429 Too Many Requests — with the standard rate-limit headers so a client
+    knows the cap (Limit), that it's exhausted (Remaining 0), and exactly when to
+    retry (Retry-After + Reset)."""
     r = jsonify({
         'error': 'rate_limit_exceeded',
         'message': f'Too many requests. Retry after {retry_after}s.',
@@ -389,6 +402,11 @@ def _resp(retry_after):
     })
     r.status_code = 429
     r.headers['Retry-After'] = str(retry_after)
+    lim = getattr(g, '_rl_limit', None)
+    if lim is not None:
+        r.headers['X-RateLimit-Limit'] = str(lim)
+    r.headers['X-RateLimit-Remaining'] = '0'
+    r.headers['X-RateLimit-Reset'] = str(int(time.time()) + int(retry_after or 60))
     return r
 
 
