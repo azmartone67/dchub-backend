@@ -470,15 +470,25 @@ def handle_agentic_commerce_order(session):
                                 "emailed": emailed})
             elif sku == _AGENTIC_SKU_DEV:
                 key = _agentic_key_for_email(email)
+                # The agentic "developer" SKU maps to the 'paid' ACCESS tier.
+                # mcp_dev_keys.tier CHECK allows only free/identified/paid/enterprise
+                # (NOT 'developer'), and the MCP gate fully unlocks 'paid'/'enterprise'.
+                # Writing 'developer' threw a constraint violation that the except
+                # below swallowed -> buyer paid but key stayed un-upgraded (same bug
+                # class as r77/r88h). Mirror _qty_to_tier / redeem_pair_code
+                # (pair_code.py:336): developer -> 'paid'.
                 try:
                     with _conn() as c, c.cursor() as cur:
-                        cur.execute("UPDATE mcp_dev_keys SET tier='developer' "
+                        cur.execute("UPDATE mcp_dev_keys SET tier='paid' "
                                     "WHERE api_key=%s", (key,))
                         c.commit()
-                except Exception:
-                    pass
+                except Exception as e:
+                    import logging
+                    logging.getLogger("dchub.stripe_metered").warning(
+                        "[agentic] dev-SKU tier upgrade failed key=%s: %s",
+                        (key or "")[:14], e)
                 results.append({"sku": sku, "key": (key or "")[:14] + "…",
-                                "tier": "developer",
+                                "tier": "paid",
                                 "emailed": _agentic_email_key(email, key)})
             else:
                 results.append({"sku": sku, "skipped": "unknown_sku"})
