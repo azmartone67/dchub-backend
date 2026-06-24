@@ -589,7 +589,11 @@ def fix_backfill_press_releases():
 
 
 def fix_backfill_testimonials():
-    """If ai_testimonials is empty, seed industry-voice testimonials."""
+    """DISABLED 2026-06-24: this previously seeded invented-persona "industry
+    voice" testimonials with randomized fake-recent timestamps. Manufacturing
+    social proof is dishonest — it is now a permanent no-op. Real testimonials
+    come only from captured, human-approved entries."""
+    return True, "backfill disabled — no fabricated seeds inserted"
     if not DATABASE_URL: return False, "no DATABASE_URL"
     try:
         with _conn() as c, c.cursor() as cur:
