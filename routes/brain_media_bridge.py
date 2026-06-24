@@ -36,11 +36,19 @@ try:
 except Exception:  # pragma: no cover
     psycopg2 = None
 
-# Areas whose findings are EXTERNALLY publishable as data stories. Internal
-# plumbing (reliability, performance, developer_ux) is deliberately EXCLUDED —
-# that's ops work, not analyst content. brain_capability_radar already announces
-# shipped enhancements; this bridge fills the DATA-COVERAGE gap.
-PUBLISHABLE_AREAS = {"data_coverage", "conversion_revenue"}
+# Areas to draw from. DEFAULT = ALL areas (2026-06-24, operator: "extend
+# everywhere") — the internal/ops findings (reliability/performance) are kept out
+# NOT by area but by the _SELF_CRITICAL filter + has-number + survived gates +
+# human approval, because the area label alone is too coarse (a data_coverage win
+# and a reliability bug can share an area). Set BRAIN_MEDIA_BRIDGE_AREAS to a
+# comma list to restrict (e.g. "data_coverage,conversion_revenue").
+_AREAS_ENV = (os.environ.get("BRAIN_MEDIA_BRIDGE_AREAS", "") or "").strip()
+PUBLISHABLE_AREAS = {a.strip() for a in _AREAS_ENV.split(",") if a.strip()}  # empty = ALL
+
+
+def _area_ok(area) -> bool:
+    return (not PUBLISHABLE_AREAS) or (area in PUBLISHABLE_AREAS)
+
 
 _MIN_CONF = float(os.environ.get("BRAIN_MEDIA_BRIDGE_MIN_CONF", "0.30") or 0.30)
 _LOOKBACK_DAYS = int(os.environ.get("BRAIN_MEDIA_BRIDGE_LOOKBACK_DAYS", "30") or 30)
@@ -58,11 +66,23 @@ _REQUIRE_GRADE = (os.environ.get("BRAIN_MEDIA_BRIDGE_REQUIRE_GRADE", "0") or "0"
 # (ANALYST_VOICE: "real metrics only", reputation rests on being early+right).
 # Skip any headline whose framing exposes a deficiency. Belt-and-suspenders on
 # top of the human approval gate downstream.
+# NOTE: deliberately AVOID broad infra words that ALSO appear in great data
+# stories — "pipeline" (369 GW construction pipeline), "queue" (interconnection
+# queue), "cache", "cron". Those are caught (if internal) by has-number/survived
+# + human approval, not here. This list targets clearly NEGATIVE/INTERNAL framings
+# only, so opening all areas can't surface an embarrassing ops finding as a story.
 _SELF_CRITICAL = re.compile(
-    r"verified vs|unverified|discovery pile|backlog|dormant|leak|divergence|"
-    r"_fallback|fallback|error|fail|refut|stale|drift|\bgap\b|unconverted|"
+    r"verified vs|unverified|discovery pile|backlog|dormant|\bleak|divergence|"
+    r"_fallback|fallback|error|\bfail|refut|stale|drift|\bgap\b|unconverted|"
     r"unaddressed|not growing|0 (?:converted|paid)|leakage|over-?count|"
-    r"\(unknown\)|orphan|broken|missing|defect|bug",
+    r"\(unknown\)|orphan|broken|missing|defect|\bbug\b|"
+    # internal-ops / negative vocabulary (opened all areas 2026-06-24):
+    r"abort|exception|timeout|\bslow\b|retry|collision|\bflap|replica|"
+    r"runtime_error|heartbeat|self-?heal|deprecat|schema|serializer|"
+    r"allow-?list|\bDTO\b|detector|normaliz|dedup|merge[d ]|INSERT|"
+    r"churn|deficit|shortfall|friction|activation gap|paid-plan|"
+    r"decline|dropp|deadlock|stuck|degrad|outage|unreachable|throttl|"
+    r"rate.?limit|429|memory high|aborted|null\b|mismatch|regression",
     re.I,
 )
 _HAS_NUMBER = re.compile(r"\d")
@@ -106,7 +126,7 @@ def leads_diagnostics() -> dict:
     preview endpoint's ?debug=1 so the operator can see WHY the candidate set is
     what it is, without admin/DB access."""
     out = {"min_conf": _MIN_CONF, "lookback_days": _LOOKBACK_DAYS,
-           "publishable_areas": sorted(PUBLISHABLE_AREAS), "sources": {}}
+           "publishable_areas": (sorted(PUBLISHABLE_AREAS) or "ALL"), "sources": {}}
     if psycopg2 is None:
         out["error"] = "psycopg2 unavailable"
         return out
@@ -141,7 +161,7 @@ def leads_diagnostics() -> dict:
                         s["grade"][str(grade)] += 1
                         s["status"][str(status)] += 1
                         s["area"][str(area)] += 1
-                        in_area = area in PUBLISHABLE_AREAS
+                        in_area = _area_ok(area)
                         graded = str(grade or "").lower() in ("good", "approved")
                         appr = str(status or "").lower() == "approved"
                         if in_area:
@@ -158,10 +178,11 @@ def leads_diagnostics() -> dict:
                                 s["passes"]["not_self_critical"] += 1
                             if surv:
                                 s["passes"]["survived"] += 1
-                            s["publishable_titles"].append(
-                                {"title": hl[:70], "grade": grade, "status": status,
-                                 "conf": conf, "has_num": has_num,
-                                 "self_critical": crit, "survived": surv})
+                            if len(s["publishable_titles"]) < 30:
+                                s["publishable_titles"].append(
+                                    {"title": hl[:70], "grade": grade, "status": status,
+                                     "conf": conf, "has_num": has_num,
+                                     "self_critical": crit, "survived": surv})
                     s["grade"] = dict(s["grade"]); s["status"] = dict(s["status"])
                     s["area"] = dict(s["area"]); s["passes"] = dict(s["passes"])
                     out["sources"][table] = s
@@ -207,14 +228,16 @@ def brain_insight_leads(preview: bool = False) -> list:
                         # EXCLUDE items the human graded 'bad'; a 'good'/'approved' grade
                         # is a score BOOST (set BRAIN_MEDIA_BRIDGE_REQUIRE_GRADE=1 to make
                         # a positive grade mandatory). No hard confidence floor.
+                        _area_clause = "AND area = ANY(%s) " if PUBLISHABLE_AREAS else ""
+                        _params = ([list(PUBLISHABLE_AREAS)] if PUBLISHABLE_AREAS else []) + [str(_LOOKBACK_DAYS)]
                         cur.execute(
                             f"SELECT id, title, area, confidence, grade, {jcol} "
                             f"FROM {table} "
-                            f"WHERE area = ANY(%s) "
-                            f"  AND LOWER(COALESCE(grade,'')) <> 'bad' "
+                            f"WHERE LOWER(COALESCE(grade,'')) <> 'bad' "
+                            f"  {_area_clause}"
                             f"  AND created_at >= NOW() - (%s || ' days')::interval "
-                            f"ORDER BY created_at DESC LIMIT 40",
-                            (list(PUBLISHABLE_AREAS), str(_LOOKBACK_DAYS)),
+                            f"ORDER BY created_at DESC LIMIT 60",
+                            tuple(_params),
                         )
                         rows = cur.fetchall() or []
                     except Exception as e:
