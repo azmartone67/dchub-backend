@@ -216,10 +216,20 @@ def get_query_hash(params_dict):
 # 2. MANDATORY FILTER ENFORCEMENT
 # ===========================================================================
 
-# Endpoints that MUST have at least one substantive filter
+# Endpoints that MUST have at least one substantive filter.
+# r-database-browse (2026-06-23): /api/v1/search backs the PUBLIC /database browse
+# surface, which is designed to never be empty — it sends min_mw=0 as a "show all"
+# signal (matching main.py search_facilities' has_min logic). Previously this layer
+# ignored min_mw/iso/status, so the bare browse load 400'd 'search_filter_required'
+# UNLESS a dchub.cloud Referer bypass fired — fragile (privacy modes / external
+# referers strip it → blank page on arrival). Count the facet params the page uses
+# as valid filters. The real anti-scrape defenses stay intact: anon is still row-
+# capped (FACILITY_TIER_LIMITS) and field-stripped (FACILITY_VISIBLE_FIELDS keeps
+# MW/operator/tenants out of anon responses), so this only un-blanks the browse.
 FILTERED_ENDPOINTS = {
     "/api/v1/facilities/search": ["q", "country", "state", "city", "provider"],
-    "/api/v1/search": ["q", "country", "state", "city", "provider"],
+    "/api/v1/search": ["q", "country", "state", "city", "provider",
+                       "min_mw", "max_mw", "iso", "status"],
     "/api/v1/transactions": ["year", "buyer", "seller"],
     "/api/v1/market-intel": ["market"],
 }
