@@ -166,6 +166,45 @@ def record_intent(tool_name: str, tier, req) -> None:
         logger.warning("[paid_intent] record_intent skipped: %s", str(e)[:160])
 
 
+# Map the MCP server's signal_type → a tier label for the ledger.
+_SIGNAL_TIER = {
+    "trial_preview": "free", "anon_preview": "free", "daily_limit_hit": "free",
+    "paid_tool_blocked": "identified", "blocked_paid_only": "identified",
+}
+
+
+def record_from_signal(tool, signal_type, api_key=None, email=None, ip=None,
+                       user_agent=None, session_id=None, args=None) -> None:
+    """Fire-and-forget. Called by the LIVE signal-paywall handler
+    (flask_mcp_endpoints.mcp_signal_paywall), which the Node MCP server hits on
+    EVERY grid/fiber paywall — so this captures real public traffic the Flask
+    _gate_mcp_result path never sees. Plain-value inputs (no request context).
+    `args` is the tool's arguments dict (region/ISO/MW/lat-lon) when the MCP
+    server forwards it. Filters to grid/fiber; never raises."""
+    try:
+        tool = (tool or "").strip()
+        if _disabled() or tool not in INTENT_TOOLS:
+            return
+        a = args if isinstance(args, dict) else {}
+        payload = {
+            "tool": tool,
+            "tier": _SIGNAL_TIER.get((signal_type or "").strip(), "free"),
+            "api_key_hash": _hash((api_key or "").strip()) or _hash((session_id or "").strip()),
+            "ip_hash": _hash((ip or "").strip()),
+            "email": ((email or a.get("email") or "") or "")[:200] or None,
+            "region": (str(a.get("region") or a.get("region_id") or "")[:120] or None),
+            "iso": (str(a.get("iso") or "")[:40] or None),
+            "mw": _f(a.get("mw") or a.get("capacity_mw") or a.get("min_mw")),
+            "lat": _f(a.get("lat")),
+            "lon": _f(a.get("lon") or a.get("lng")),
+            "raw_args": a,
+            "user_agent": (user_agent or "")[:300],
+        }
+        threading.Thread(target=_insert, args=(payload,), daemon=True).start()
+    except Exception as e:
+        logger.warning("[paid_intent] record_from_signal skipped: %s", str(e)[:160])
+
+
 # ── Admin read surface (the "queryable intent table" the spec asks for) ──────
 def _admin_ok() -> bool:
     expected = (os.environ.get("DCHUB_ADMIN_KEY") or os.environ.get("ADMIN_KEY") or "").strip()

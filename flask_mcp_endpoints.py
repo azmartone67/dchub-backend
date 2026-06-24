@@ -1389,6 +1389,26 @@ def mcp_signal_paywall():
         # Telemetry is fire-and-forget — never 500 the MCP request path.
         return jsonify({"ok": False, "error": str(e)}), 200
 
+    # Brain L6 #1264 — paid-intent ledger. This handler is the LIVE hook the Node
+    # MCP server calls on every grid/fiber paywall (signalPaywall), so it captures
+    # the real public traffic the Flask _gate_mcp_result path never sees. Record
+    # the lead (caller + tool + tier + site query) into mcp_paid_intent. The
+    # `args` site-context (region/MW) is populated once the MCP server forwards it
+    # in the payload; until then caller+tool+tier still make a re-targetable lead.
+    # Fire-and-forget; filters to grid/fiber internally; never blocks.
+    try:
+        from routes.paid_intent_ledger import record_from_signal
+        record_from_signal(
+            tool=tool, signal_type=signal_type, api_key=api_key,
+            email=user_email,
+            ip=(request.headers.get("CF-Connecting-IP")
+                or (request.headers.get("X-Forwarded-For", "") or "").split(",")[0].strip()
+                or request.remote_addr or ""),
+            user_agent=user_agent, session_id=session_id,
+            args=(body.get("args") or body.get("arguments") or {}))
+    except Exception:
+        pass
+
     return jsonify({"ok": True}), 200
 
 
