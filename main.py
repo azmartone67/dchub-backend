@@ -11210,6 +11210,48 @@ def stripe_webhook():
                     tu_result = redeem_topup_token(
                         ref, stripe_session_id=data.get('id'))
                     print(f"💸 Top-up redemption: {tu_result}")
+                elif ref.lower().startswith('pk-'):
+                    # r-move3-pack (2026-06-24): KEY-BOUND $5 credit pack. The
+                    # /upgrade?key=…&pack=5 route minted 'pk-<api_key_hash>' (hash
+                    # only — raw key never reaches Stripe). Grant 1,000 credits to
+                    # THAT key-hash so get_credit_balance lifts the wall durably for
+                    # the agent's own key, not just the ephemeral session. Idempotent
+                    # on the Stripe session id (grant_credit_pack dedupes).
+                    from routes.mcp_conversion_plays import (
+                        grant_credit_pack as _gcp, PACK5_CREDITS as _p5c,
+                        PACK5_EXPIRY_DAYS as _p5e, PACK5_PRICE_CENTS as _p5pc)
+                    # SECURITY (adversarial review 2026-06-24): client_reference_id is
+                    # attacker-controllable, so VERIFY the buyer actually paid the $5
+                    # pack price (mode=payment + amount==PACK5_PRICE_CENTS pre/post-tax,
+                    # mirroring the amount-based pack5 block) before crediting — else a
+                    # pk- ref ridden on a cheaper Stripe link would grant 1,000 for less.
+                    _pk_mode = (data.get('mode') or '').lower()
+                    _pk_amt  = int(data.get('amount_total') or 0)
+                    _pk_sub  = int(data.get('amount_subtotal') or 0)
+                    _pk_grant = None
+                    if _pk_mode == 'payment' and _p5pc in (_pk_sub, _pk_amt):
+                        _pk_grant = _gcp(None, None, _p5c,
+                                         stripe_session_id=data.get('id'),
+                                         source='pack5_keybound', expires_days=_p5e,
+                                         api_key_hash=ref[3:].strip())
+                        print(f"💳 Key-bound pack5 redemption: {_pk_grant}")
+                    else:
+                        print(f"⚠️ pk- ref ignored (non-pack5 amount/mode: "
+                              f"mode={_pk_mode} sub={_pk_sub} amt={_pk_amt})")
+                    if _pk_grant and _pk_grant.get('ok'):
+                        try:
+                            _pg_execute(
+                                """INSERT INTO mcp_conversions
+                                     (user_email, caller_id, stripe_customer_id,
+                                      stripe_subscription_id, plan_to, mrr_cents, source)
+                                   VALUES (NULL, NULL, %s, %s, 'pack_1000', 0,
+                                           'stripe_webhook_pack5_keybound')
+                                   ON CONFLICT (stripe_subscription_id)
+                                   DO UPDATE SET plan_to='pack_1000',
+                                                 source='stripe_webhook_pack5_keybound'""",
+                                (data.get('customer'), data.get('id')))
+                        except Exception as _pkce:
+                            print(f"⚠️ pk- conversion-record error (non-fatal): {_pkce}")
             except Exception as _pce:
                 print(f"⚠️ Conversion-play redemption error (non-fatal): {_pce}")
 
@@ -11261,6 +11303,7 @@ def stripe_webhook():
                 _p5_ref  = (data.get('client_reference_id') or '').strip()
                 _p5_reserved = (_p5_ref.upper().startswith('DCM-')
                                 or _p5_ref.lower().startswith('tu-')
+                                or _p5_ref.lower().startswith('pk-')
                                 or _p5_ref.startswith('ref_'))
                 if (_p5_mode == 'payment'
                         and PACK5_PRICE_CENTS in (_p5_sub, _p5_amt)

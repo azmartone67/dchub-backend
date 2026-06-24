@@ -655,6 +655,26 @@ def upgrade_redirect():
         if tool: utm += f"&utm_content={tool}"
         return redirect(f"https://dchub.cloud/pricing{utm}", code=302)
 
+    # r-move3-pack (2026-06-24): KEY-BOUND $5 credit pack (move #3 step 2). The $5
+    # pack is a CREDITS product, not a tier — so the DCM- pair-code path (which
+    # flips tier) is wrong for it. Carry the caller's key as a
+    # 'pk-<sha256(key)[:32]>' client_reference_id (HASH ONLY — the raw key never
+    # reaches Stripe) and 302 straight to the pack checkout; the webhook's pk-
+    # branch grants 1,000 credits to THAT key-hash, so get_credit_balance lifts the
+    # wall durably for the agent's own key (not just the ephemeral session that the
+    # session-bound CREDITS_URL would credit).
+    if (request.args.get("pack") in ("5", "pack5", "1")
+            or request.args.get("plan") == "pack5"
+            or request.args.get("credits") == "1"):
+        try:
+            from routes.mcp_conversion_plays import _hash_key as _hk, PACK5_URL as _p5url
+            _kh = _hk(api_key)
+            if _kh and _p5url:
+                _sep = "&" if "?" in _p5url else "?"
+                return redirect(f"{_p5url}{_sep}client_reference_id=pk-{_kh}", code=302)
+        except Exception:
+            pass  # any error → fall through to the subscription/pricing path below
+
     # Fast path: cached code OR mint completes in <500ms.
     result = _fast_get_code(api_key, tool, market, agent, deadline_ms=500)
     if result and result.get("code"):

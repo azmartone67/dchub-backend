@@ -419,13 +419,19 @@ def redeem_topup_token(token: str, stripe_session_id: str | None = None) -> dict
 # Reuses the mcp_topups storage + decrement shape; keys on api_key OR mcp session.
 # ═══════════════════════════════════════════════════════════════════════════
 def grant_credit_pack(api_key, mcp_session_id, credits,
-                      stripe_session_id=None, source="pack5", expires_days=90):
+                      stripe_session_id=None, source="pack5", expires_days=90,
+                      api_key_hash=None):
     """Grant a one-time credit pack. IDEMPOTENT on stripe_session_id so a Stripe
        webhook retry never double-grants. Keys the balance on BOTH the durable
        api_key AND the buying mcp session (same-session instant unlock +
-       durable-key reuse). Returns {ok, credits_granted, topup_id, idempotent}."""
+       durable-key reuse). Returns {ok, credits_granted, topup_id, idempotent}.
+       Pass api_key_hash (a precomputed _hash_key(key) = sha256[:32]) to credit a
+       key by its HASH without the raw key — the move-#3 key-bound $5 pack path,
+       where the 'pk-<hash>' Stripe ref carries only the hash (raw key never
+       reaches Stripe). get_credit_balance hashes the caller's key the same way,
+       so the balance is found."""
     out = {"ok": False}
-    h = _hash_key(api_key)
+    h = api_key_hash or _hash_key(api_key)
     if not h:
         out["error"] = "missing_api_key"; return out
     sid = (mcp_session_id or "").strip()[:200] or None
