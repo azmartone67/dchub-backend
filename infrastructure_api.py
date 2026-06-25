@@ -305,6 +305,12 @@ def get_substations():
       - utility: Filter by utility name
       - min_lat, max_lat, min_lng, max_lng: Bounding box
     """
+    # 2026-06-25 (QA): this legacy route served 4 hardcoded Arizona SAMPLE_SUBSTATIONS
+    # for ANY lat/lng (a fabrication — a NYC query returned Palo Verde/Pinnacle Peak).
+    # Redirect to the live, anon-readable, Neon-backed v2 HIFLD spatial handler.
+    from flask import redirect as _redirect
+    _qs = request.query_string.decode()
+    return _redirect('/api/v2/infrastructure/hifld/substations' + (('?' + _qs) if _qs else ''), code=308)
     subs = INFRASTRUCTURE_DATA['substations']
     
     # Filter by voltage
