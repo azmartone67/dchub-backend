@@ -4244,6 +4244,34 @@ DCPI_MARKET_TEMPLATE = """<!DOCTYPE html>
   ]
 }
 </script>
+<!-- r-geo-dcpi-faq (2026-06-25): BreadcrumbList (crawl context) + FAQPage (the schema
+     AI engines lift verbatim into cited answers, e.g. "Is Ashburn BUILD or AVOID?").
+     Q&A generated from the live score via |tojson so it can never contradict the page. -->
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "BreadcrumbList",
+  "itemListElement": [
+    {"@type": "ListItem", "position": 1, "name": "DC Hub", "item": "https://dchub.cloud/"},
+    {"@type": "ListItem", "position": 2, "name": "Power Index (DCPI)", "item": "https://dchub.cloud/dcpi"},
+    {"@type": "ListItem", "position": 3, "name": {{ s.market_name|tojson }}, "item": "https://dchub.cloud/dcpi/{{ s.market_slug }}"}
+  ]
+}
+</script>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  "mainEntity": [
+    {"@type": "Question", "name": {{ ("What is the DCPI score for " ~ s.market_name ~ "?")|tojson }},
+     "acceptedAnswer": {"@type": "Answer", "text": {{ (s.market_name ~ " has a DC Hub Power Index (DCPI) verdict of " ~ (s.verdict or "LOW_SIGNAL") ~ ", with an Excess Power score of " ~ ((s.excess_power_score or 0)|round(1)) ~ "/100 and a Grid Constraint score of " ~ ((s.constraint_score or 0)|round(1)) ~ "/100. Recomputed daily by DC Hub.")|tojson }}}},
+    {"@type": "Question", "name": {{ ("Is " ~ s.market_name ~ " a good market to build a data center?")|tojson }},
+     "acceptedAnswer": {"@type": "Answer", "text": {{ ("DC Hub rates " ~ s.market_name ~ " as " ~ (s.verdict or "LOW_SIGNAL") ~ " for new data-center builds, based on an Excess Power score of " ~ ((s.excess_power_score or 0)|round(1)) ~ "/100 and a Grid Constraint score of " ~ ((s.constraint_score or 0)|round(1)) ~ "/100" ~ (", in the " ~ s.iso ~ " grid region" if s.iso else "") ~ ".")|tojson }}}}{% if s.iso %},
+    {"@type": "Question", "name": {{ ("Which grid operator (ISO) serves " ~ s.market_name ~ "?")|tojson }},
+     "acceptedAnswer": {"@type": "Answer", "text": {{ (s.market_name ~ " is in the " ~ s.iso ~ " ISO/RTO grid region.")|tojson }}}}{% endif %}
+  ]
+}
+</script>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <style>
 :root {
