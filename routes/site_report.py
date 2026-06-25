@@ -982,6 +982,19 @@ def _build_survey_data(lat, lon, latency_target, capacity_mw):
     _mkt_state = (market.get("state") or "").upper()
     if _mkt_state in _FIPS:
         state = _mkt_state
+        # The air scorer's _ap_resolve_state (main._ap_score_site) has the SAME
+        # near-border bbox bug (smallest-box-wins → "Maryland context" on a VA
+        # site). Re-key the air section's state + regulatory context to match.
+        if (air or {}).get("risk") not in (None, "—"):
+            try:
+                from air_permitting_extras import STATE_CONTEXT as _AP_CTX
+                _ac = (_AP_CTX or {}).get(_mkt_state) or {}
+            except Exception:
+                _ac = {}
+            air["state"] = _mkt_state
+            air["context_label"] = f"{_STATE_NAME.get(_mkt_state, _mkt_state)} context"
+            if _ac.get("description"):
+                air["context"] = _ac["description"]
 
     # Auto satellite site map for the Power page — every report gets a visual of
     # the parcel (a POST upload from the submission portal overrides this).
