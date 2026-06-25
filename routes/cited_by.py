@@ -249,6 +249,7 @@ def cited_by_page():
  "@context":"https://schema.org","@type":"Dataset",
  "name":"DC Hub AI Citation Telemetry",
  "description":"Real-time log of AI platforms calling DC Hub's MCP server.",
+ "creator":{{"@type":"Organization","name":"DC Hub","url":"https://dchub.cloud"}},
  "publisher":{{"@type":"Organization","name":"DC Hub","url":"https://dchub.cloud"}},
  "license":"https://creativecommons.org/licenses/by/4.0/",
  "isAccessibleForFree":true

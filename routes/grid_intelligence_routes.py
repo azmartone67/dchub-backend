@@ -647,6 +647,7 @@ def grid_intelligence_landing():
         '{"@context":"https://schema.org","@graph":['
         '{"@type":"Dataset",'
         '"name":"DC Hub Grid Intelligence — Per-ISO Capacity, Queue & Headroom",'
+        '"license":"https://creativecommons.org/licenses/by/4.0/",'
         '"alternateName":["Grid Headroom Intelligence","ISO Interconnection Queue Tracker"],'
         '"description":"Live per-ISO grid intelligence covering PJM, ERCOT, CAISO, MISO, NYISO, ISO-NE, and SPP. '
         'Tracks interconnection queue depth, capacity factor by fuel source, real-time headroom, '

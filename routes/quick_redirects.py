@@ -158,6 +158,7 @@ _ISO_INDEX_HTML = '''<!DOCTYPE html><html lang="en"><head>
 <script type="application/ld+json">
 {"@context":"https://schema.org","@graph":[
  {"@type":"Dataset","name":"DC Hub ISO Index — Per-Region Grid Snapshot",
+ "license":"https://creativecommons.org/licenses/by/4.0/",
   "alternateName":["ISO Index","US ISO Grid Data"],
   "description":"Live snapshots of every major US ISO and balancing authority: PJM, ERCOT, CAISO, MISO, NYISO, ISO-NE, SPP. Covers interconnection queue depth, current load vs. firm capacity, fuel mix, and data-center-suitable headroom per market.",
   "url":"https://dchub.cloud/iso","sameAs":"https://dchub.cloud/iso",

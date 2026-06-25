@@ -685,6 +685,7 @@ def ai_schema_facility():
         "@type": "Dataset",
         "name": "DC Hub Data Center Database",
         "description": "Comprehensive database of 10,400+ data center facilities worldwide",
+        "license": "https://creativecommons.org/licenses/by/4.0/",
         "url": "https://dchub.cloud",
         "creator": {
             "@type": "Organization",

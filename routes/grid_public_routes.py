@@ -319,6 +319,7 @@ def grid_iso(iso):
         "name": f"{iso} Real-Time Grid Intelligence",
         "description": f"Live demand, generation mix, and headroom for {meta['name']} ({meta['states']}).",
         "url": f"https://dchub.cloud/grid/{iso}",
+        "license": "https://creativecommons.org/licenses/by/4.0/",
         "creator": {"@type": "Organization", "name": "DC Hub"},
         "isAccessibleForFree": iso in FREE_TIER_ISOS,
         "temporalCoverage": str(datetime.datetime.utcnow().isoformat()) + 'Z',

@@ -106,6 +106,7 @@ def setup_google_routes(app):
                     "@id": f"{FRONTEND_URL}/#facilities-dataset",
                     "name": "Global Data Center Facilities Database",
                     "description": "Comprehensive database of 21,000+ data center facilities across 170+ countries.",
+                    "license": "https://creativecommons.org/licenses/by/4.0/",
                     "url": f"{FRONTEND_URL}/facilities",
                     "keywords": ["data centers", "colocation", "cloud infrastructure", "facility database"],
                     "creator": {"@id": f"{FRONTEND_URL}/#organization"},

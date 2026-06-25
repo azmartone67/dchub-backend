@@ -695,7 +695,7 @@ def market_short_html(slug):
                      "url": "https://dchub.cloud/markets",
                      "description": ("Live supply, vacancy, pricing, and pipeline "
                                      "intelligence for global data center markets, "
-                                     "updated daily by DC Hub.")},
+                                     "updated daily by DC Hub."), "license": "https://creativecommons.org/licenses/by/4.0/", "creator": {"@type": "Organization", "name": "DC Hub", "url": "https://dchub.cloud"}},
     }
     if _has(md.get('region')):
         _market_ld["containedInPlace"] = {"@type": "Place", "name": md.get('region')}
