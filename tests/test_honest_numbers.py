@@ -41,6 +41,10 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # r-accuracy-md-json (2026-06-05): the fence now ALSO scans .md + .json (agent
 # configs, skill manifests, docs) — not just .py — after inflated served files
 # (static/.well-known, integrations/, skill.json) slipped past the .py-only scan.
+# r-accuracy-txt (2026-06-25): + .txt — served static/ai.txt carried stale JSON
+# metadata (50,000 facilities / 140 countries) the .py/.md/.json scan never saw,
+# and the ChatGPT integration instructions.txt understated facilities. The legacy
+# Replit DEPLOY-CHECKLIST.txt (dead "DC Hub Nexus" brand) is excluded below.
 # The stale ~/dchub-backend/dchub-frontend/ MIRROR is excluded (the LIVE frontend
 # is a separate repo with its own accuracy_fence.py), as are internal drafts /
 # baselines / guard-docs that quote old values in an explanatory way.
@@ -64,6 +68,7 @@ _EXCLUDE_FILES = (
     "mcp_registry_submissions.md", "pr_queue.json",
     "gauntlet_round1.json",            # eval RESULTS — summaries critique AI inflation ("actual ~20,534"), not a live claim
     "PHASE_FF_DESIGN.md",              # design doc quoting the historical "I see 12,553" question that triggered the fix
+    "DEPLOY-CHECKLIST.txt",            # legacy Replit deploy checklist — references the dead "DC Hub Nexus" brand in defunct setup steps (live deploy is Railway+CF)
 )
 
 
@@ -72,7 +77,7 @@ def _live_py_files():
         if any(x in (dp + "/") for x in _EXCLUDE_DIRS):
             continue
         for f in fn:
-            if f.endswith((".py", ".md", ".json", ".yml", ".yaml")) and f not in _EXCLUDE_FILES:
+            if f.endswith((".py", ".md", ".json", ".yml", ".yaml", ".txt")) and f not in _EXCLUDE_FILES:
                 yield os.path.join(dp, f)
 
 
