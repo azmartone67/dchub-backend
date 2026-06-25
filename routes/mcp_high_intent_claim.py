@@ -325,6 +325,11 @@ ALTER TABLE mcp_high_intent_sessions
 CREATE INDEX IF NOT EXISTS ix_mhis_page_opened_at
     ON mcp_high_intent_sessions(claim_page_opened_at DESC)
     WHERE claim_page_opened_at IS NOT NULL;
+-- r-claim-notify (2026-06-25): stamp the moment we fire the out-of-band operator
+-- notification for a fresh mint, so it fires EXACTLY ONCE per claim (the mint path
+-- claims it via a conditional UPDATE ... WHERE claim_notified_at IS NULL).
+ALTER TABLE mcp_high_intent_sessions
+    ADD COLUMN IF NOT EXISTS claim_notified_at TIMESTAMPTZ;
 """
 
 
@@ -552,6 +557,26 @@ def should_mint_claim():
                     WHERE mcp_session_id = %s AND tool_name = %s""",
                 (token, locked_variant, sid, tool),
             )
+            # r-claim-notify (2026-06-25): fire ONE out-of-band operator notification
+            # per fresh mint. The claim URL otherwise only reaches the AI agent, which
+            # rarely surfaces it to a human (the root of the 18-day dead-funnel streak).
+            # Claim the notify slot atomically so a racing call can't double-send, then
+            # hand off fire-and-forget. No-op unless DCHUB_CLAIM_NOTIFY=1. Never blocks
+            # or breaks the mint (autocommit conn; fully wrapped).
+            try:
+                cur.execute(
+                    """UPDATE mcp_high_intent_sessions
+                          SET claim_notified_at = NOW()
+                        WHERE mcp_session_id = %s AND tool_name = %s
+                          AND claim_notified_at IS NULL
+                        RETURNING 1""",
+                    (sid, tool),
+                )
+                if cur.fetchone():
+                    from routes.claim_notify import notify_operator_of_claim
+                    notify_operator_of_claim(sid, tool, token, count, locked_variant)
+            except Exception as _ne:
+                logger.warning("[should_mint_claim] claim-notify hook failed: %s", _ne)
             return jsonify(
                 should_mint=True,
                 count=count,
