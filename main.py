@@ -11677,7 +11677,14 @@ def stripe_webhook():
             print(f"[stripe_webhook] subscription.deleted handler error: {_e_sub}")
         last_webhook_time = datetime.utcnow().isoformat() + 'Z'
         last_webhook_status = 'ok'
-    elif event_type == 'invoice.paid':
+    elif event_type in ('invoice.paid', 'invoice.payment_succeeded'):
+        # Stripe emits BOTH event names for a paid invoice depending on API
+        # version / dashboard event-filter config. Handle either so payment
+        # counting never hinges on one brittle event string (a missed
+        # 'invoice.paid' subscription is part of what left real payers at
+        # invoices_paid_count=0 and got Carl Braun wrongly demoted).
+        # handle_invoice_paid recomputes the count from Stripe, so receiving
+        # both names for the same invoice is idempotent (no double-count).
         handle_invoice_paid(data)
         last_webhook_time = datetime.utcnow().isoformat() + 'Z'
         last_webhook_status = 'ok'
@@ -13321,16 +13328,44 @@ def handle_invoice_paid(invoice):
     if not customer_id:
         return
 
+    # r-billingcount (2026-06-25): make invoices_paid_count AUTHORITATIVE from
+    # Stripe instead of a blind +1. The old +1 under-counted real payers — the
+    # first/create charge is provisioned by handle_checkout_completed (which
+    # never increments it) and any invoice paid before the dunning code shipped
+    # (Phase r26) was never counted — so the guard in handle_payment_failed
+    # misread paid_count==0 and wrongly demoted 3-month payers (Carl Braun).
+    # Recomputing from Stripe also makes this handler IDEMPOTENT, so dispatching
+    # it on both invoice.paid and invoice.payment_succeeded can't double-count.
+    # GREATEST(...) keeps it strictly upgrade-only; falls back to the legacy +1
+    # if Stripe is unavailable.
+    stripe_paid_n = None
+    try:
+        if STRIPE_AVAILABLE and customer_id:
+            stripe_paid_n = len(stripe.Invoice.list(
+                customer=customer_id, status='paid', limit=100).data)
+    except Exception as e:
+        print(f"[dunning] invoice_paid Stripe count failed for {customer_id}: {e}")
+
     # Postgres (canonical)
     try:
-        _pg_execute(
-            """UPDATE users
-                  SET invoices_paid_count = COALESCE(invoices_paid_count, 0) + 1,
-                      payment_failed_count = 0,
-                      subscription_status = 'active'
-                WHERE stripe_customer_id = %s""",
-            (customer_id,),
-        )
+        if stripe_paid_n:
+            _pg_execute(
+                """UPDATE users
+                      SET invoices_paid_count = GREATEST(COALESCE(invoices_paid_count, 0), %s),
+                          payment_failed_count = 0,
+                          subscription_status = 'active'
+                    WHERE stripe_customer_id = %s""",
+                (stripe_paid_n, customer_id),
+            )
+        else:
+            _pg_execute(
+                """UPDATE users
+                      SET invoices_paid_count = COALESCE(invoices_paid_count, 0) + 1,
+                          payment_failed_count = 0,
+                          subscription_status = 'active'
+                    WHERE stripe_customer_id = %s""",
+                (customer_id,),
+            )
     except Exception as e:
         print(f"[dunning] invoice_paid pg update failed for {customer_id}: {e}")
 
@@ -13469,6 +13504,30 @@ def handle_payment_failed(invoice):
         user_id, paid_count, failed_count, plan, email = row
         paid_count = int(paid_count or 0)
         failed_count = int(failed_count or 0)
+        # r-billingcount (2026-06-25): invoices_paid_count under-counts real
+        # payers (see handle_invoice_paid), so a stale 0 here wrongly demoted
+        # 3-month payers as 'first_charge_never_succeeded' (Carl Braun). Before
+        # the never-paid demote, verify against Stripe ground truth: if Stripe
+        # shows ANY paid invoice, backfill the counter and DON'T treat them as
+        # never-paid — they fall through to the prior-payer path, which only
+        # fires at >=4 fails and auto-restores on the next successful retry.
+        if paid_count == 0 and failed_count >= DEMOTE_AFTER_N_FAILURES and customer_id:
+            try:
+                if STRIPE_AVAILABLE:
+                    real_n = len(stripe.Invoice.list(
+                        customer=customer_id, status='paid', limit=100).data)
+                    if real_n > 0:
+                        _pg_execute(
+                            """UPDATE users
+                                  SET invoices_paid_count = GREATEST(COALESCE(invoices_paid_count, 0), %s)
+                                WHERE id = %s""",
+                            (real_n, user_id),
+                        )
+                        print(f"[dunning] Stripe shows {real_n} paid invoice(s) for "
+                              f"{email} — backfilled count, NOT applying first-charge demote")
+                        paid_count = real_n
+            except Exception as e:
+                print(f"[dunning] Stripe paid-invoice crosscheck failed for {email}: {e}")
         demote_reason = None
         if paid_count == 0 and failed_count >= DEMOTE_AFTER_N_FAILURES:
             demote_reason = 'first_charge_never_succeeded'
@@ -13614,6 +13673,68 @@ def create_portal_session():
             conn.close()
         except Exception:
             pass
+
+@app.route('/api/v1/admin/billing/reconcile-paid-counts', methods=['POST'])
+def reconcile_paid_counts():
+    """Recompute users.invoices_paid_count from Stripe (the source of truth)
+    for every linked customer, strictly upgrade-only. Closes the gap where the
+    webhook +1 path under-counts real payers — the first/create charge is never
+    counted, pre-r26 invoices were never counted, and a missed invoice.paid
+    delivery leaves the counter at 0 — which is what let the dunning guard
+    wrongly demote 3-month payers (Carl Braun). Admin-gated (X-Admin-Key);
+    intended to run nightly via .github/workflows/billing-reconcile-daily.yml.
+    COUNT-ONLY: never changes plan/role/tier and never reverses a demote —
+    access restoration stays event-driven so canceled/fraud accounts are not
+    silently re-granted. Idempotent."""
+    admin_key = (os.environ.get('DCHUB_ADMIN_KEY') or '').strip()
+    provided = (request.headers.get('X-Admin-Key') or '').strip()
+    if not admin_key or provided != admin_key:
+        return jsonify({'error': 'unauthorized'}), 401
+    if not STRIPE_AVAILABLE or not STRIPE_SECRET_KEY:
+        return jsonify({'error': 'Stripe not configured'}), 503
+
+    try:
+        limit = max(1, min(int(request.args.get('limit', '5000')), 20000))
+    except Exception:
+        limit = 5000
+
+    checked = 0
+    corrected = 0
+    changes = []
+    try:
+        _, rows = _pg_execute(
+            """SELECT id, email, stripe_customer_id, COALESCE(invoices_paid_count, 0)
+                 FROM users
+                WHERE stripe_customer_id IS NOT NULL AND stripe_customer_id <> ''
+                ORDER BY id
+                LIMIT %s""",
+            (limit,),
+            fetch=True,
+        )
+        for uid, email, cust, local_n in (rows or []):
+            checked += 1
+            try:
+                real_n = len(stripe.Invoice.list(
+                    customer=cust, status='paid', limit=100).data)
+            except Exception as e:
+                print(f"[reconcile] Stripe list failed for {email}: {e}")
+                continue
+            if real_n > int(local_n or 0):
+                _pg_execute(
+                    """UPDATE users
+                          SET invoices_paid_count = %s
+                        WHERE id = %s AND COALESCE(invoices_paid_count, 0) < %s""",
+                    (real_n, uid, real_n),
+                )
+                corrected += 1
+                changes.append({'email': email, 'from': int(local_n or 0), 'to': real_n})
+        print(f"[reconcile] checked={checked} corrected={corrected}")
+        return jsonify({'ok': True, 'checked': checked,
+                        'corrected': corrected, 'changes': changes[:100]})
+    except Exception as e:
+        print(f"[reconcile] failed: {e}")
+        return jsonify({'error': str(e)}), 500
+
 
 # =============================================================================
 # MARKET COMPARISON ENDPOINTS
