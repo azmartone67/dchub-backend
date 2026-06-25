@@ -797,6 +797,9 @@ def _build_data() -> dict:
                 _hf = "SELECT COUNT(*) FROM " + _hi_real_from() + " WHERE "
                 _m = _ds(_hf + "claim_minted_at IS NOT NULL AND claim_minted_at >= NOW() - INTERVAL '30 days'")
                 _u = _ds(_hf + "claim_used_at   IS NOT NULL AND claim_used_at   >= NOW() - INTERVAL '30 days'")
+                # r-claim-page-open (2026-06-24): REAL page-open (GET /claim), now
+                # distinct from form-submit (_u). Graceful 0 if column missing.
+                _v = _ds(_hf + "claim_page_opened_at IS NOT NULL AND claim_page_opened_at >= NOW() - INTERVAL '30 days'")
                 _e = _ds(_hf + "claim_email     IS NOT NULL AND claim_used_at   >= NOW() - INTERVAL '30 days'")
                 _k = _ds(_hf + "minted_api_key  IS NOT NULL AND claim_used_at   >= NOW() - INTERVAL '30 days'")
                 _f = _ds("SELECT COUNT(DISTINCT h.minted_api_key) FROM " + _hi_real_from() +
@@ -821,7 +824,7 @@ def _build_data() -> dict:
                          "   AND h.claim_used_at >= NOW() - INTERVAL '30 days' "
                          "   AND COALESCE(u.plan, 'free') NOT IN ('free','')")
             raw = [("claims_minted", "Claim URL minted", _m),
-                   ("page_viewed",   "Page opened",      _u),
+                   ("page_viewed",   "Page opened",      _v),
                    ("email_submitted","Email submitted", _e),
                    ("key_issued",    "Trial key issued", _k),
                    ("first_api_call","Key made API call",_f),

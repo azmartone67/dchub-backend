@@ -317,6 +317,14 @@ ALTER TABLE mcp_high_intent_sessions
 UPDATE mcp_high_intent_sessions
     SET claim_variant = 'generic'
     WHERE claim_variant IS NULL;
+-- r-claim-page-open (2026-06-24): record the FIRST time a human opens the /claim
+-- page (GET), so the funnel can separate "opened the page" from "submitted the
+-- email". Runs in prod because _ensure_schema uses raw psycopg2 (no SKIP_DDL gate).
+ALTER TABLE mcp_high_intent_sessions
+    ADD COLUMN IF NOT EXISTS claim_page_opened_at TIMESTAMPTZ;
+CREATE INDEX IF NOT EXISTS ix_mhis_page_opened_at
+    ON mcp_high_intent_sessions(claim_page_opened_at DESC)
+    WHERE claim_page_opened_at IS NOT NULL;
 """
 
 
@@ -790,6 +798,18 @@ def claim_form(token: str):
             # Token verifies but no row — could happen if the row was purged.
             return Response(_render_form(tool, 3),
                             status=200, mimetype="text/html")
+        # r-claim-page-open (2026-06-24): stamp the FIRST open of this claim page
+        # (COALESCE so repeat opens don't overwrite). This is the GET = "human
+        # opened the page" signal, distinct from POST = "submitted email". Never
+        # block form render on a write error (conn is autocommit).
+        try:
+            with c.cursor() as cur:
+                cur.execute(
+                    "UPDATE mcp_high_intent_sessions "
+                    "SET claim_page_opened_at = COALESCE(claim_page_opened_at, NOW()) "
+                    "WHERE mcp_session_id = %s AND tool_name = %s", (sid, tool))
+        except Exception:
+            pass
         count = int(row[0] or 0)
         used_at = row[2]
         if used_at is not None:
@@ -1464,7 +1484,14 @@ def high_intent_step_drop():
                 WHERE claim_used_at IS NOT NULL
                   AND claim_used_at >= NOW() - INTERVAL '%s days'""" % days)
             + " AND " + _hi_real_sql())
-        n_page_viewed = n_used  # conservative under-count; see note above.
+        # r-claim-page-open (2026-06-24): REAL page-open signal (GET /claim),
+        # now distinct from form-submit (n_used). Graceful 0 if the column is
+        # missing or a row predates tracking (NULL = not-opened).
+        n_page_viewed = _scalar(
+            ("""SELECT COUNT(*) FROM mcp_high_intent_sessions
+                WHERE claim_page_opened_at IS NOT NULL
+                  AND claim_page_opened_at >= NOW() - INTERVAL '%s days'""" % days)
+            + " AND " + _hi_real_sql())
 
         n_email = _scalar(
             ("""SELECT COUNT(*) FROM mcp_high_intent_sessions
