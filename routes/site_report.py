@@ -976,6 +976,13 @@ def _build_survey_data(lat, lon, latency_target, capacity_mw):
         energy = mkt.get("energy") or {}
         tax = mkt.get("tax") or {}
 
+    # The resolved DCPI market's state is authoritative near borders — _state_for()
+    # (rectangular bbox + nearest-center tiebreak) mis-buckets Northern Virginia
+    # (Ashburn) → Maryland: MD's box overlaps NoVA and its center sits closer.
+    _mkt_state = (market.get("state") or "").upper()
+    if _mkt_state in _FIPS:
+        state = _mkt_state
+
     # Auto satellite site map for the Power page — every report gets a visual of
     # the parcel (a POST upload from the submission portal overrides this).
     power["site_map"] = _static_site_map(lat, lon)

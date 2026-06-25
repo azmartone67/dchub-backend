@@ -388,8 +388,11 @@ def _latency_map(fiber, lat, lon, caption):
         url = _arc_url(ARC_REF, bbox)
         return _mapwrap(url, _pin_svg(_MAP_W / 2, _MAP_H / 2, "#ff8a1f", "Site"), caption)
     hlat, hlon, hlabel = hub
-    pad_x = abs(hlon - lon) * 0.35 + 0.5
-    pad_y = abs(hlat - lat) * 0.35 + 0.5
+    # Scale padding to the site↔hotel separation so a CLOSE carrier hotel (e.g.
+    # Ashburn's is ~1.6 mi) zooms in enough to separate the two pins, while a
+    # distant one (rural → metro hotel) still shows the full route.
+    pad_x = abs(hlon - lon) * 0.45 + 0.03
+    pad_y = abs(hlat - lat) * 0.45 + 0.03
     bbox = _fit_aspect((min(lon, hlon) - pad_x, min(lat, hlat) - pad_y,
                         max(lon, hlon) + pad_x, max(lat, hlat) + pad_y))
     url = _arc_url(ARC_REF, bbox)
