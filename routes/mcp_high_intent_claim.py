@@ -1490,7 +1490,7 @@ def high_intent_step_drop():
         n_page_viewed = _scalar(
             ("""SELECT COUNT(*) FROM mcp_high_intent_sessions
                 WHERE claim_page_opened_at IS NOT NULL
-                  AND claim_page_opened_at >= NOW() - INTERVAL '%s days'""" % days)
+                  AND claim_page_opened_at >= NOW() - %s * INTERVAL '1 day'""" % days)
             + " AND " + _hi_real_sql())
 
         n_email = _scalar(
