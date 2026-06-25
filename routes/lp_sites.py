@@ -223,12 +223,28 @@ def _require_pro_user():
     return user_id, None
 
 
+def _require_keyed_user():
+    """r-free-shortlist (2026-06-24): FREE-allowed variant of _require_pro_user.
+    Any IDENTIFIED key (free+) may persist + read its OWN shortlist
+    (save_site / list_saved_sites) — the retention 'reason to come back'. Still
+    requires a key (for the per-account user_id); anon has nowhere to persist.
+    No tier gate and NO email destination here, so there is no abuse vector —
+    unlike alerts, which stay PRO until their destination is bound-email-locked."""
+    user_id = _user_id_from_request()
+    if not user_id:
+        from flask import jsonify as _j
+        return None, (_j(error="auth_required",
+                          message="A DC Hub key identifies your shortlist. "
+                                  "Call claim_free_key (free, no email) then retry."), 401)
+    return user_id, None
+
+
 # ── REST endpoints ────────────────────────────────────────────────
 
 @lp_sites_bp.route("/api/v1/lp/save", methods=["POST"])
 @_rl(per_minute=30)
 def lp_save():
-    user_id, gate = _require_pro_user()
+    user_id, gate = _require_keyed_user()   # r-free-shortlist: save is free with a key
     if gate is not None: return gate
     d = request.get_json(silent=True) or {}
     try:
@@ -282,7 +298,7 @@ def lp_save():
 @lp_sites_bp.route("/api/v1/lp/saved", methods=["GET"])
 @_rl(per_minute=60)
 def lp_list_saved():
-    user_id, gate = _require_pro_user()
+    user_id, gate = _require_keyed_user()   # r-free-shortlist: read-back is free with a key
     if gate is not None: return gate
     c = _conn()
     if c is None: return jsonify(error="no_database"), 503
@@ -324,7 +340,7 @@ def lp_list_saved():
 @lp_sites_bp.route("/api/v1/lp/saved/<int:site_id>", methods=["GET", "DELETE"])
 @_rl(per_minute=30)
 def lp_site_detail_or_delete(site_id):
-    user_id, gate = _require_pro_user()
+    user_id, gate = _require_keyed_user()   # r-free-shortlist: manage your own saved site, free with a key
     if gate is not None: return gate
     if request.method == "DELETE":
         return _lp_unsave_impl(site_id, user_id)
