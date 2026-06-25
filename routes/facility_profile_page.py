@@ -334,10 +334,21 @@ def _render_profile(fac: dict, slug: str) -> str:
     lng = fac.get("longitude")
 
     loc_short = ", ".join([p for p in (city, state, country) if p])
-    title = f"{name} | DC Hub"
-    desc = (f"{name} data center by {provider} in {loc_short}. "
+    # r-geo-facility-title (2026-06-24): rich, entity-bearing title/desc/h1 instead
+    # of city-only "{name} | DC Hub". The on-demand renderer serves ~90% of facility
+    # pages (only ~2,002 have static files), and a city-only title (a) drops the
+    # OPERATOR — the strongest signal an AI crawler uses to identify+cite a facility —
+    # and (b) duplicates across every facility in a city. Prepend the operator unless
+    # it's already in the name.
+    _op = "" if (not provider or provider == "Operator" or provider.lower() in name.lower()) else f"{provider} "
+    _disp = f"{_op}{name}".strip()
+    title = (f"{_disp} — {loc_short} Data Center | DC Hub" if loc_short
+             else f"{_disp} Data Center | DC Hub")
+    desc = (f"{_disp} is a data center"
+            f"{f' operated by {provider}' if _op else ''}"
+            f"{f' in {loc_short}' if loc_short else ''}. "
             f"{f'Power capacity: {power} MW. ' if power else ''}"
-            f"View specs, location, and connectivity on DC Hub.")
+            f"View specs, location, power & connectivity on DC Hub.")
 
     canonical = f"https://dchub.cloud/facilities/{slug}"
 
@@ -346,7 +357,7 @@ def _render_profile(fac: dict, slug: str) -> str:
     schema = {
         "@context": "https://schema.org",
         "@type": "Place",
-        "name": name,
+        "name": _disp,
         "description": f"Data center facility operated by {provider} in {loc_short}",
         "address": {
             "@type": "PostalAddress",
@@ -463,7 +474,7 @@ def _render_profile(fac: dict, slug: str) -> str:
 <meta name="description" content="{_esc(desc)}">
 <meta name="robots" content="index, follow">
 <link rel="canonical" href="{_esc(canonical)}">
-<meta property="og:title" content="{_esc(name)} - Data Center">
+<meta property="og:title" content="{_esc(_disp)} — Data Center">
 <meta property="og:description" content="{_esc(desc)}">
 <meta property="og:type" content="place">
 <meta property="og:url" content="{_esc(canonical)}">
@@ -534,7 +545,7 @@ def _render_profile(fac: dict, slug: str) -> str:
 
   <div class="container">
     <div class="hero">
-      <h1>{_esc(name)}</h1>
+      <h1>{_esc(_disp)}</h1>
       {f'<div class="prov">{_esc(provider)}</div>' if (provider and provider.strip().lower() != name.strip().lower()) else ''}
       <div class="loc">📍 {_esc(loc_short)}</div>
     </div>

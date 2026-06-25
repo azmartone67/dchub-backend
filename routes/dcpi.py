@@ -5359,8 +5359,7 @@ def embed_widget(slug):
         s.get('excess_power_score'), s.get('constraint_score'),
         s.get('time_to_power_months'), s.get('verdict'),
     )
-    _jsonld = _json_jl.dumps({
-        "@context": "https://schema.org",
+    _dataset = {
         "@type": "Dataset",
         "name": f"DCPI Score — {s['market_name']}",
         "description": (f"Data Center Power Index (DCPI) score for "
@@ -5393,6 +5392,47 @@ def embed_widget(slug):
         "dateModified": (s.get('computed_at').isoformat()
                           if hasattr(s.get('computed_at'), 'isoformat')
                           else str(s.get('computed_at') or '')),
+    }
+    # r-geo-dcpi-faq (2026-06-25): add BreadcrumbList (crawl context) + FAQPage
+    # (the schema AI engines lift verbatim into cited answers, e.g. "Is Ashburn
+    # BUILD or AVOID?"). Q&A is generated from the live DCPI score so it never
+    # contradicts the page. Emitted as one @graph to keep a single JSON-LD block.
+    _breadcrumb = {
+        "@type": "BreadcrumbList",
+        "itemListElement": [
+            {"@type": "ListItem", "position": 1, "name": "DC Hub",
+             "item": "https://dchub.cloud/"},
+            {"@type": "ListItem", "position": 2, "name": "Power Index (DCPI)",
+             "item": "https://dchub.cloud/dcpi"},
+            {"@type": "ListItem", "position": 3, "name": s['market_name'],
+             "item": f"https://dchub.cloud/dcpi/{slug}"},
+        ],
+    }
+    _faq = {
+        "@type": "FAQPage",
+        "mainEntity": [
+            {"@type": "Question",
+             "name": f"What is the DCPI score for {s['market_name']}?",
+             "acceptedAnswer": {"@type": "Answer",
+                "text": (f"{s['market_name']} has a DC Hub Power Index (DCPI) "
+                         f"composite score of {_composite}/100 with a "
+                         f"{s['verdict']} verdict.")}},
+            {"@type": "Question",
+             "name": f"Is {s['market_name']} a good market to build a data center?",
+             "acceptedAnswer": {"@type": "Answer",
+                "text": (f"DC Hub rates {s['market_name']} as {s['verdict']}: "
+                         f"excess-power score {excess_score}/100, grid-constraint "
+                         f"score {constraint_score}/100, and modeled time-to-power "
+                         f"~{ttp} months. It is served by the {s['iso']} grid region.")}},
+            {"@type": "Question",
+             "name": f"Which grid operator (ISO) serves {s['market_name']}?",
+             "acceptedAnswer": {"@type": "Answer",
+                "text": f"{s['market_name']} is in the {s['iso']} ISO/RTO grid region."}},
+        ],
+    }
+    _jsonld = _json_jl.dumps({
+        "@context": "https://schema.org",
+        "@graph": [_dataset, _breadcrumb, _faq],
     }, separators=(',', ':'))
     html = f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
