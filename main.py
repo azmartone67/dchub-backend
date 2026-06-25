@@ -18073,6 +18073,7 @@ def market_intelligence_page():
                         f"across {_market_count or 'global'} data center "
                         "markets, updated continuously."),
         "url": "https://dchub.cloud/markets",
+        "license": "https://creativecommons.org/licenses/by/4.0/",
         "isAccessibleForFree": True,
         "creator": {"@type": "Organization", "name": "DC Hub",
                     "url": "https://dchub.cloud"},
