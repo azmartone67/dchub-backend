@@ -90,6 +90,22 @@ _ZONES = {
     "NO_1":   ("10YNO-1--------2", "Norway (NO1)",        "Oslo"),
     "FI":     ("10YFI-1--------U", "Finland",             "Helsinki"),
     "DK_1":   ("10YDK-1--------W", "Denmark (DK1)",       "Copenhagen"),
+    # r-eu-expand (2026-06-25): +13 verified ENTSO-E zones. The key is live, so
+    # each is one parallel call (rate limit 400/min, well under). EIC codes
+    # verified against the entsoe-py canonical mapping. DC-growth zones first.
+    "IT_NORD": ("10Y1001A1001A73I", "Italy North",       "Milan"),
+    "CH":      ("10YCH-SWISSGRIDZ", "Switzerland",        "Zurich"),
+    "PT":      ("10YPT-REN------W", "Portugal",           "Lisbon"),
+    "CZ":      ("10YCZ-CEPS-----N", "Czech Republic",     "Prague"),
+    "SE_4":    ("10Y1001A1001A47J", "Sweden (SE4)",       "Malmo"),
+    "NO_2":    ("10YNO-2--------T", "Norway (NO2)",       "Stavanger"),
+    "DK_2":    ("10YDK-2--------M", "Denmark (DK2)",      "Copenhagen E"),
+    "GR":      ("10YGR-HTSO-----Y", "Greece",             "Athens"),
+    "RO":      ("10YRO-TEL------P", "Romania",            "Bucharest"),
+    "HU":      ("10YHU-MAVIR----U", "Hungary",            "Budapest"),
+    "SK":      ("10YSK-SEPS-----K", "Slovakia",           "Bratislava"),
+    "BG":      ("10YCA-BULGARIA-R", "Bulgaria",           "Sofia"),
+    "SI":      ("10YSI-ELES-----O", "Slovenia",           "Ljubljana"),
 }
 
 
@@ -97,6 +113,7 @@ def _token():
     """ENTSO-E security token from env. Several name variants so it works
     however the operator saved it on Railway. None if unset (→ LIVE-only no-op)."""
     return (os.environ.get("ENTSOE_API_Token")
+            or os.environ.get("ENTSOE_API_KEY")   # r-entso-fix (2026-06-25): the name the operator set on Railway + Render
             or os.environ.get("ENTSOE_TOKEN")
             or os.environ.get("ENTSOE_API_TOKEN")
             or os.environ.get("ENTSOE_SECURITY_TOKEN")

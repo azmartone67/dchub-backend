@@ -2856,6 +2856,25 @@ def phase19b_grid_intelligence(region):
         'SRP': 'SRP', 'SALTRIVER': 'SRP',
         'NEVP': 'NEVP', 'NVENERGY': 'NEVP', 'NVE': 'NEVP', 'LASVEGAS': 'NEVP',
         'BPA': 'BPAT', 'BPAT': 'BPAT', 'BONNEVILLE': 'BPAT', 'PACNW': 'BPAT', 'PACIFICNW': 'BPAT',
+        # r-ba-national (2026-06-25): expose the 40+ EIA-930 balancing authorities
+        # ALREADY ingested live by routes/eia_utility_bas.py — every major non-ISO
+        # US DC corridor on the SAME hourly-RTO EIA path (no new ingestion). Verified
+        # live: SOCO/DUK/FPL/PACE. Any code that 0-rows post-deploy gets pruned.
+        'SOCO': 'SOCO', 'SOUTHERN': 'SOCO', 'ATLANTA': 'SOCO', 'GEORGIA': 'SOCO',
+        'DUK': 'DUK', 'DUKE': 'DUK', 'CAROLINAS': 'DUK', 'CHARLOTTE': 'DUK',
+        'CPLE': 'CPLE', 'CPLW': 'CPLW', 'SCEG': 'SCEG', 'SC': 'SC', 'SANTEE': 'SC',
+        'AEC': 'AEC', 'LGEE': 'LGEE', 'KENTUCKY': 'LGEE', 'TVA': 'TVA', 'TENNESSEE': 'TVA',
+        'FPL': 'FPL', 'FLORIDA': 'FPL', 'MIAMI': 'FPL', 'FPC': 'FPC',
+        'TEC': 'TEC', 'TAMPA': 'TEC', 'JEA': 'JEA', 'JACKSONVILLE': 'JEA',
+        'TAL': 'TAL', 'TALLAHASSEE': 'TAL', 'GVL': 'GVL', 'GAINESVILLE': 'GVL', 'SEC': 'SEC',
+        'PACE': 'PACE', 'PACW': 'PACW', 'PSCO': 'PSCO', 'COLORADO': 'PSCO', 'DENVER': 'PSCO',
+        'IPCO': 'IPCO', 'IDAHO': 'IPCO', 'PNM': 'PNM', 'NEWMEXICO': 'PNM', 'EPE': 'EPE', 'ELPASO': 'EPE',
+        'TEPC': 'TEPC', 'TUCSON': 'TEPC', 'AECI': 'AECI', 'SPA': 'SPA',
+        'PGE': 'PGE', 'PORTLAND': 'PGE', 'PSEI': 'PSEI', 'SCL': 'SCL', 'SEATTLE': 'SCL',
+        'TPWR': 'TPWR', 'TACOMA': 'TPWR', 'AVA': 'AVA', 'SPOKANE': 'AVA', 'NWMT': 'NWMT', 'MONTANA': 'NWMT',
+        'CHPD': 'CHPD', 'WENATCHEE': 'CHPD', 'DOPD': 'DOPD', 'GCPD': 'GCPD', 'QUINCY': 'GCPD',
+        'LDWP': 'LDWP', 'LADWP': 'LDWP', 'LOSANGELES': 'LDWP', 'BANC': 'BANC', 'SMUD': 'BANC', 'SACRAMENTO': 'BANC',
+        'IID': 'IID', 'TIDC': 'TIDC', 'WACM': 'WACM', 'WALC': 'WALC', 'WAUW': 'WAUW',
     }
     # Normalize separators so PJM / iso-ne / iso_ne / "iso ne" all resolve.
     rto_code = EIA_RTO_MAP.get(region) or EIA_RTO_MAP.get(region.replace('-', '').replace('_', '').replace(' ', ''))
