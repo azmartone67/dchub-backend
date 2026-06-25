@@ -648,7 +648,11 @@ def _gather_latency(lat, lon, target_arg):
     note_default = ""
     t = (target_arg or "").strip().lower()
     if not t:
-        tlat, tlon, label = LATENCY_TARGETS[DEFAULT_TARGET]
+        # Smart default: the NEAREST major carrier-hotel / cloud on-ramp by
+        # great-circle distance (not a fixed city) — far more relevant than
+        # always defaulting to Dallas for a Midwest / Northeast / West site.
+        tlat, tlon, label = min(LATENCY_TARGETS.values(),
+                                key=lambda v: _haversine_mi(lat, lon, v[0], v[1]))
     elif t in LATENCY_TARGETS:
         tlat, tlon, label = LATENCY_TARGETS[t]
     elif "," in t:
@@ -1606,7 +1610,7 @@ def site_report():
     # secret; admins always reach their own product. Used to confirm the weasyprint→
     # Gotenberg fix end-to-end against the Railway origin (gate + CF edge sidestepped).
     import os as _os_sr
-    _sr_ak = (request.headers.get("X-Admin-Key") or request.args.get("admin_key") or "").strip()
+    _sr_ak = (request.headers.get("X-Admin-Key") or "").strip()  # header-only: a secret in a URL would leak to logs/referers
     _sr_admin = bool(_sr_ak) and _sr_ak == (_os_sr.environ.get("DCHUB_ADMIN_KEY", "") or "").strip()
     # PRO gate (premium deliverable). Anon/FREE → 402 + upgrade JSON.
     try:

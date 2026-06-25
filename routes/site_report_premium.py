@@ -440,6 +440,8 @@ def render_premium_html(S, lat=None, lon=None):
     coords = _dash(S.get("coords")) or "—"
     date = _dash(S.get("date")) or ""
     client = (S.get("prepared_for") or "").strip()
+    preparer = (S.get("prepared_by") or "DC Hub").strip() or "DC Hub"
+    branded = preparer.lower().replace("·", "").replace(" ", "") not in ("dchub",)  # non-DC-Hub preparer -> top billing
     use_case = _dash(S.get("use_case")) or ("Data-center / AI-infrastructure site "
                                             "evaluation (power, gas, water, air, fiber, latency).")
     bottom = _dash((summary or {}).get("bottom_line")) or ""
@@ -457,8 +459,12 @@ def render_premium_html(S, lat=None, lon=None):
         except (TypeError, ValueError):
             return "Load study"
 
-    foot_brand = ("Prepared by DC Hub" + (f" for {_h(client)}" if client else "")
-                  + " &middot; data-center &amp; energy intelligence &middot; dchub.cloud")
+    if branded:
+        foot_brand = (f"Prepared by {_h(preparer)}" + (f" for {_h(client)}" if client else "")
+                      + " &middot; DC Hub data-center &amp; energy intelligence &middot; dchub.cloud")
+    else:
+        foot_brand = ("Prepared by DC Hub" + (f" for {_h(client)}" if client else "")
+                      + " &middot; data-center &amp; energy intelligence &middot; dchub.cloud")
     short = f"{_h(location)} &middot; {_h(coords)}"
 
     # ── Page 1 · COVER ──────────────────────────────────────────────────────
@@ -467,7 +473,11 @@ def render_premium_html(S, lat=None, lon=None):
               _html.escape((sc.get("unit") or "").strip(), quote=False),  # empty unit stays empty (not em-dash)
               _status(sc.get("color")), _h(_dash(sc.get("sub")) or "—"))
         for sc in (S.get("scorecards") or [])[:6])
-    brand = '<div class="wordmark">DC<span>&middot;Hub</span></div>'
+    if branded:
+        brand = (f'<div class="wordmark">{_h(preparer)}</div>'
+                 f'<div class="preparedfor">Powered by DC Hub &middot; dchub.cloud</div>')
+    else:
+        brand = '<div class="wordmark">DC<span>&middot;Hub</span></div>'
     if client:
         brand += f'<div class="preparedfor">Prepared for {_h(client)}</div>'
     h1 = f"{_h(site_name)}<br>{cap} MW Site"
@@ -661,7 +671,7 @@ def render_premium_html(S, lat=None, lon=None):
   {latency_map}
   <div class="grid3" style="margin-top:13px;">{net_cards}</div>""", "DC Hub &middot; Fiber Routes &amp; Latency &middot; dchub.cloud", short)
 
-    title = f"{site_name} — Site Analysis · DC Hub"
+    title = f"{site_name} — Site Analysis · {preparer}"
     return _head(title) + "\n<body>\n" + "\n".join([p1, p2, p3, p4, p5]) + "\n</body>\n</html>\n"
 
 
