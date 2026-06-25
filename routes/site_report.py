@@ -1585,6 +1585,19 @@ def site_report_portal():
                     headers={"Cache-Control": "public, max-age=300"})
 
 
+def _render_for(form, survey, lat, lon):
+    """Pick the renderer. form=premium -> the branded 5-page Martone Advisors Site
+    Analysis (routes.site_report_premium); anything else -> the standard report.
+    Fail-safe: a premium-render error degrades to the standard report, never a 500."""
+    if (form or "").strip().lower() == "premium":
+        try:
+            from routes.site_report_premium import render_premium_html
+            return render_premium_html(survey, lat, lon)
+        except Exception:
+            pass  # fall through to the always-available standard renderer
+    return _render_html(survey)
+
+
 @site_report_bp.route("/api/v1/site-report", methods=["GET", "POST"])
 @site_report_bp.route("/api/v1/site-study", methods=["GET", "POST"])
 def site_report():
@@ -1651,6 +1664,7 @@ def site_report():
     except (TypeError, ValueError):
         capacity_mw = 100.0
     fmt = (vals.get("format") or "html").lower()
+    form = (vals.get("form") or "").strip().lower()  # "premium" -> Martone Advisors Site Analysis
 
     try:
         survey = _get_or_build_survey(lat, lon, use_case, latency_target,
@@ -1698,7 +1712,9 @@ def site_report():
             # service — weasyprint is dead on Railway (libgobject can't load). The
             # _render_html(survey) output is the same HTML the &format=html path serves.
             from routes.pdf_render import html_to_pdf
-            pdf_bytes = html_to_pdf(_render_html(survey))
+            # premium has more pages + map fetches -> a longer Gotenberg timeout.
+            pdf_bytes = html_to_pdf(_render_for(form, survey, lat, lon),
+                                    timeout=90 if form == "premium" else 60)
         except Exception as e:
             # Render service unreachable → degrade honestly to a 503 that points at the
             # print-to-PDF-ready HTML report. Never a 500.
@@ -1709,14 +1725,15 @@ def site_report():
                 "html_url": f"/api/v1/site-report?lat={lat}&lon={lon}",
                 "detail": f"{type(e).__name__}: {str(e)[:160]}",
             }), 503
-        fn = f"DC_Hub_Site_Report_{lat:.4f}_{lon:.4f}.pdf"
+        fn = (f"Martone_Advisors_Site_Analysis_{lat:.4f}_{lon:.4f}.pdf" if form == "premium"
+              else f"DC_Hub_Site_Report_{lat:.4f}_{lon:.4f}.pdf")
         return Response(pdf_bytes, mimetype="application/pdf", headers={
             "Content-Disposition": f'attachment; filename="{fn}"',
             "Cache-Control": "private, no-store",
             "X-Content-Type-Options": "nosniff",
         })
 
-    return Response(_render_html(survey), mimetype="text/html; charset=utf-8", headers={
+    return Response(_render_for(form, survey, lat, lon), mimetype="text/html; charset=utf-8", headers={
         "Cache-Control": "private, no-store",
         "X-Content-Type-Options": "nosniff",
     })
