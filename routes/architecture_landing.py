@@ -70,11 +70,12 @@ AI agents query all of it directly. Here's how it fits together.</p>
   <div class="stat"><div class="stat-num" id="s-gw">369 GW</div><div class="stat-label">Pipeline tracked</div></div>
 </div>
 
-<h2>1. Data ingestion — live grids on 4 continents + 43 US utility BAs + 11 federal sources</h2>
-<p>DC Hub ingests grid-level data from <b>live grid operators on 4 continents</b> — the 7 live US ISOs (PJM, ERCOT,
-CAISO, MISO, SPP, NYISO, ISO-NE) plus TVA, BPA and Ontario's IESO — and <b>43 US utility balancing authorities</b>
-(live EIA-930), with live UK/EU/Taiwan/Australia grids (AESO Alberta, Hydro-Québec, Nord Pool across 15 Nordic + Baltic zones)
-modeled. Federal data flows in from EIA-860, HIFLD, FERC, FCC Form 477, and ArcGIS
+<h2>1. Data ingestion — live grids on 4 continents + US ISOs/balancing authorities + 11 federal sources</h2>
+<p>DC Hub ingests grid-level data from <b>live grid operators on 4 continents</b> — the 7 US ISOs (PJM, ERCOT,
+CAISO, MISO, SPP, NYISO, ISO-NE) plus the AZPS (Phoenix), SRP, NEVP (Las Vegas) and BPAT (Pacific NW) balancing
+authorities via live EIA-930, and internationally Great Britain (NESO), ~12 European bidding zones (ENTSO-E),
+Taiwan (Taipower) and Australia NEM (AEMO). <b>Hydro-Québec, AESO and Nord Pool are modeled DCPI baselines, not live
+telemetry.</b> Federal data flows in from EIA-860, HIFLD, FERC, FCC Form 477, and ArcGIS
 FeatureServers. PeeringDB provides carrier facility presence. OSM Overpass supplements fiber routes where
 state KMZ sources are thin.</p>
 
@@ -96,7 +97,7 @@ spare power capacity, ISO interconnect time-to-power, grid constraint, operator 
 demand pressure. Markets get one of four verdicts: <code>BUILD</code> (14 today), <code>CAUTION</code> (141),
 <code>AVOID</code> (63), or <code>LOW_SIGNAL</code> (67). Today's top BUILD: Cheyenne, WY. Today's top AVOID:
 Northern Virginia.</p>
-<p>International coverage: <a href="/dcpi/intl">AESO + Hydro-Québec + Nord Pool</a>.</p>
+<p>International coverage: live grids in <a href="/dcpi/intl">GB, the EU (ENTSO-E), Taiwan and Australia</a>; Hydro-Québec, AESO and Nord Pool are modeled baselines.</p>
 
 <h2>3. MCP server — 48 tools for AI agents</h2>
 <p>The <a href="/mcp">DC Hub MCP server</a> exposes the full intelligence catalog to Claude, ChatGPT, Cursor,
