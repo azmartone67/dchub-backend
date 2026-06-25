@@ -4211,7 +4211,7 @@ def handle_well_known():
                                 "checkout_url": "https://buy.stripe.com/14k14og7w7Zz9KJ8i6aZi02",
                                 "value_pitch": "Replaces ~2h/call of manual research from CBRE/DCD/EIA reports. At $150/hr analyst rate that's $300+ per call."},
                 "PRO":        {"description": "2,000 calls/day + multi-site comparator + alerts. For broker/buyer teams.",
-                                "tools_count": 33, "monthly_price_usd": 199,
+                                "tools_count": 46, "monthly_price_usd": 299,
                                 "checkout_url": "https://buy.stripe.com/00w28o7BqaXLeP31QIaZi04",
                                 "value_pitch": "Replaces $30-80K per multi-site comparison from CBRE/Cushman/JLL."}
             },
@@ -4402,7 +4402,7 @@ def handle_well_known():
                 ],
                 "press_release":       "https://dchub.cloud/press/releases/dcpi-international.html",
                 "filter_by_iso":       "GET /api/v1/dcpi/scores?iso=<NGESO|AEMO|ENTSOE-DE|...>",
-                "compare_isos_tool":   "MCP tool compare_isos — head-to-head ranking across all 10 ISOs/grid operators (7 US + Hydro-Quebec, AESO, Nord Pool)",
+                "compare_isos_tool":   "MCP tool compare_isos — head-to-head ranking across the 7 US ISOs plus modeled international baselines (Hydro-Québec, AESO, Nord Pool)",
             },
             "homepage": "https://dchub.cloud",
             "url": "https://dchub.cloud",
@@ -4444,7 +4444,7 @@ def handle_well_known():
                     # /.well-known/ai-agents.json — keep all three in sync.
                     # r78: was 30 — drifted 8 behind the live server
                     # (deal_autopsy through site_selection_canvas below).
-                    "tools_count": 38,
+                    "tools_count": 46,
                     "tools": [
                         "search_facilities", "get_facility", "get_market_intel",
                         "get_market_dcpi_rank", "get_gas_index", "get_grid_scoreboard",
@@ -14444,8 +14444,8 @@ def get_marketing_stats():
             "success": False,
             "error": str(e),
             "stats": {
-                "facilities": 10000,
-                "countries": 100,
+                "facilities": 21000,
+                "countries": 170,
                 "pipeline_gw": 0,
                 "pipeline_projects": 0,
                 "deal_volume": "$85B+",
@@ -14926,7 +14926,7 @@ def mcp_platforms_status():
             ],
             "mcp_endpoint": "https://dchub.cloud/mcp",
             "server_card": "https://dchub.cloud/.well-known/mcp/server-card.json",
-            "tools_count": 38,
+            "tools_count": 46,
             "server_version": "2.2.5"
         })
     except Exception as e:
@@ -17652,8 +17652,8 @@ def ai_discover_endpoint():
             {"method": "GET", "path": "/api/site-score", "description": "Multi-factor site scoring"}
         ],
         "data_coverage": {
-            "facilities": "20000+",
-            "countries": 169,
+            "facilities": "21,000+",
+            "countries": "170+",
             "providers": "2500+",
             "verified_deals": "470+",
             "news_sources": "60+",
@@ -22919,7 +22919,7 @@ def _canonical_mcp_manifest():
         {"name": "get_tax_incentives",       "description": "State + federal DC tax incentives"},
         {"name": "rank_markets",             "description": "DCPI-driven ranking of 300+ markets"},
         {"name": "score_facility",           "description": "Composite single-facility score"},
-        {"name": "compare_isos",             "description": "Head-to-head across 10 ISOs (7 US + Hydro-Quebec, AESO, Nord Pool)"},
+        {"name": "compare_isos",             "description": "Head-to-head across the 7 US ISOs + modeled baselines (Hydro-Québec, AESO, Nord Pool)"},
         {"name": "get_grid_scoreboard",      "description": "All 7 US ISO grids ranked live by renewable share — fuel mix, gas %, demand"},
         {"name": "get_market_dcpi_rank",     "description": "DCPI rank + verdict for a single market"},
         {"name": "get_gas_index",            "description": "DCGI — per-state natural-gas suitability (0-100), gas analog to DCPI"},

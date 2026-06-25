@@ -83,7 +83,7 @@ def get_live_dchub_config():
         return {
             "version": "v88",
             "facilities_count": 21000,
-            "countries": 100,
+            "countries": 170,
             "markets_count": 50,
             "pipeline_gw": 13.0,
             "vacancy_rate": 1.6,

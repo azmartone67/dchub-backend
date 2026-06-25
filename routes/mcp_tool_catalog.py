@@ -114,7 +114,7 @@ TOOLS = [
      "USGS water stress index + Drought Monitor risk for any US location by state, county, or lat/lon. Returns stress score (0-100), drought category (D0-D4), 12-month outlook, and cooling-water sustainability.",
      'get_water_risk(state="AZ")'),
     ("get_energy_prices",     "infrastructure", "identified",
-     "Energy pricing across 10 ISOs (7 US + Hydro-Quebec, AESO, Nord Pool): retail rates, natural gas, and real-time grid status. Filter by state or ISO to compare delivered power costs for site selection.",
+     "Energy pricing across the 7 US ISOs + modeled baselines (Hydro-Québec, AESO, Nord Pool): retail rates, natural gas, and real-time grid status. Filter by state or ISO to compare delivered power costs for site selection.",
      'get_energy_prices(state="VA", iso="PJM")'),
     ("get_renewable_energy",  "infrastructure", "identified",
      "Use when siting a renewable-powered data center, sizing a PPA, or assessing RE100/24-7-CFE feasibility for one US state. Example: 'What is Texas wind+solar capacity and how much utility-scale solar is operating today?'. Params: energy_type one of solar|wind|combined (omit for all); state = 2-letter US code (TX, VA, AZ); lat+lon (optional) for nearest projects within 50mi. Returns: {capacity_mw_total, by_fuel:{solar_utility, solar_rooftop, wind_onshore, wind_offshore}, capacity_factor_pct, top_projects[{name, mw, operator, cod}], state_rps_target_pct, source:'EIA-860 + state RPS'}. Do NOT use for live grid generation (use get_grid_data) or non-US (use get_grid_scoreboard).",

@@ -327,3 +327,20 @@ def test_canonical_stats_is_dedup_aware():
         f"verified floor {fb['facilities_verified']} must be <= tracked floor {fb['facilities']}")
     assert fb["countries_verified"] <= fb["countries"], (
         f"verified-country floor {fb['countries_verified']} must be <= tracked {fb['countries']}")
+
+
+def test_no_field_form_or_iso_fabrication_drift():
+    """JSON-FIELD-FORM drift the phrase patterns above miss — served metadata as
+    "key": value (e.g. "countries": 140, "tools_count": 38). Same blind spot that
+    hid stale values in static/ai.txt + the backend's served dicts (handle_well_known,
+    the ai-agents.json route). Also bans the "7 US + Hydro-Quebec, AESO, Nord Pool"
+    framing: HQ/AESO/Nord Pool are MODELED baselines, not live ISOs. (2026-06-25.)"""
+    pats = [
+        re.compile(r'"countries"\s*:\s*"?1[0-6][0-9]\b'),                   # understated countries <170
+        re.compile(r'"tools_count"\s*:\s*(19|20|24|30|31|33|38|40|42)\b'),  # stale total tool count (46 ok)
+        re.compile(r'7 US \+ Hydro-?Qu', re.I),                             # HQ/AESO/Nord-Pool framed as live ISOs
+    ]
+    hits = _scan(pats)
+    assert not hits, ("Field-form drift or HQ/AESO/Nord-Pool 'live ISO' fabrication — "
+                      "canonical: countries 170+, tools 46; HQ/AESO/Nord Pool are modeled "
+                      "baselines, not live ISOs:\n" + _fmt(hits))

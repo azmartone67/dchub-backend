@@ -1699,7 +1699,7 @@ class MCPGateway:
                     if live_counts.get("facilities")
                     else "21,000+"
                 ),
-                "countries": "140+",
+                "countries": "170+",
                 "capacity_tracked_mw": "19,500+",
                 "news_articles": (
                     f"{live_counts['news_articles']:,}"

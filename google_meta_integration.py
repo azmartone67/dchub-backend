@@ -137,7 +137,7 @@ def gemini_discovery():
         ],
         "data_summary": {
             "total_facilities": 21000,
-            "countries": 140,
+            "countries": 170,
             "verified_deals": 132,
             "data_sources": 15,
             "update_frequency": "real-time"
@@ -240,7 +240,7 @@ def meta_ai_discovery():
         },
         "data_coverage": {
             "facilities": 21000,
-            "countries": 140,
+            "countries": 170,
             "deals": 132,
             "providers": 500
         },

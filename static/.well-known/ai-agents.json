@@ -18,7 +18,7 @@
     "transport": "streamable-http",
     "server_card": "https://dchub.cloud/.well-known/mcp/server-card.json",
     "config": "https://dchub.cloud/.well-known/mcp.json",
-    "tools_count": 30,
+    "tools_count": 46,
     "resources_count": 2,
     "prompts_count": 2,
     "client_config": {
@@ -75,7 +75,7 @@
       {"name": "get_news", "description": "Curated data center industry news from 40+ trade sources, refreshed every 30 min."},
       {"name": "get_pipeline", "description": "Construction pipeline — 540+ projects, 369 GW under-construction or planned across 232 markets."},
       {"name": "get_interconnection_queue", "description": "ISO interconnection queue snapshot: large-load MW queued, DC share %, BUILD subregions + time-to-power."},
-      {"name": "get_grid_data", "description": "Real-time electricity grid data across 10 ISOs (7 US + Hydro-Quebec + AESO + Nord Pool)."},
+      {"name": "get_grid_data", "description": "Real-time electricity grid data across the 7 US ISOs + modeled baselines (Hydro-Québec, AESO, Nord Pool)."},
       {"name": "analyze_site", "description": "Score any location for data center suitability (0-100) across grid, fiber, water, climate, tax. (Developer+)"},
       {"name": "compare_sites", "description": "Side-by-side comparison of 2-4 candidate sites with a recommended winner. (Pro)"},
       {"name": "get_infrastructure", "description": "Nearby substations, transmission lines, gas pipelines, and power plants for a location."},
@@ -245,7 +245,7 @@
   },
   "data_coverage": {
     "facilities": "50,000+",
-    "countries": "140+",
+    "countries": "170+",
     "transactions_tracked": "$51B+",
     "construction_pipeline": "21 GW",
     "news_sources": "60+ RSS feeds",

@@ -1264,7 +1264,7 @@ def check_mcp_tool_description_drift() -> list[dict]:
         claimed_iso = int(iso_match.group(1))
         # Hard-coded ground truth for now: 10 ISOs (7 US + HQ + AESO + Nord Pool).
         # When more ISOs land (CENACE etc.), update here.
-        actual_iso = 10
+        actual_iso = 7
         if claimed_iso < actual_iso:
             findings.append({
                 "issue":  "mcp_description_drift:iso_count",
@@ -1272,7 +1272,7 @@ def check_mcp_tool_description_drift() -> list[dict]:
                 "count":  actual_iso - claimed_iso,
                 "detail": (f"Manifest description claims {claimed_iso} ISOs "
                            f"but we now cover {actual_iso} "
-                           f"(7 US + Hydro-Quebec + AESO + Nord Pool). "
+                           f"(7 US ISOs + modeled baselines: Hydro-Québec, AESO, Nord Pool). "
                            f"AI crawlers reading the manifest get a "
                            f"stale picture of our coverage. Update "
                            f"MCP_SERVER_INFO.description in the latest "

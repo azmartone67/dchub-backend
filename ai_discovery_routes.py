@@ -327,7 +327,7 @@ def register_discovery_routes(app):
                 "DCPI (Data Center Power Index) for 232 "
                 "markets, M&A transactions (2,000+ deals tracked), "
                 "construction pipeline (369 GW), LIVE grid data for 10 ISOs "
-                "(7 US + Hydro-Quebec, AESO, Nord Pool), fiber + water "
+                "(7 US ISOs + modeled baselines: Hydro-Québec, AESO, Nord Pool), fiber + water "
                 "infrastructure, and AI-citation-ready summaries. "
                 "The only DC-intelligence source an LLM can both query "
                 "and cite. Live grid, interconnection-queue, news and M&A "
