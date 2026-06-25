@@ -85,19 +85,35 @@ jobs:
             const claimed = '${{ steps.mirror.outputs.claimed }}';
             const verdict = '${{ steps.mirror.outputs.verdict }}';
             const backlog = '${{ steps.mirror.outputs.backlog }}';
-            const title = `Brain Mirror — honest_score ${honest}/4 (claimed ${claimed})`;
-            // De-dup against any open mirror issue
+            const now = new Date().toISOString().slice(0, 16).replace('T', ' ') + ' UTC';
+            // STABLE, score-independent title so this UPDATES one issue in place
+            // instead of filing a fresh issue every time the score changes (the
+            // old title embedded the score, so the de-dup never matched and the
+            // mirror piled up 8 near-identical issues — closed 2026-06-25).
+            const title = 'Brain Mirror — honest_score below threshold';
+            const body = [
+              `Mirror's honest grading is **${honest}/4** (Brain v2 claims ${claimed}). Verdict: **${verdict}**.`,
+              `Actionable findings: ${backlog}.`,
+              ``,
+              `_Last updated ${now} — auto-maintained in place by .github/workflows/brain-mirror.yml._`,
+              ``,
+              `Full payload + hypotheses: https://dchub.cloud/api/v1/brain/mirror/report`,
+            ].join('\n');
             const existing = await github.rest.issues.listForRepo({
               owner: context.repo.owner, repo: context.repo.repo,
               state: 'open', labels: ['brain-mirror'],
             });
-            if (existing.data.some(i => i.title === title)) {
-              console.log('Open issue already exists — skip');
-              return;
+            const open = existing.data.find(i => i.title === title);
+            if (open) {
+              await github.rest.issues.update({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: open.number, body,
+              });
+              console.log(`Updated mirror issue #${open.number} in place`);
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner, repo: context.repo.repo,
+                title, labels: ['brain-mirror', 'auto'], body,
+              });
+              console.log('Created the single in-place mirror issue');
             }
-            await github.rest.issues.create({
-              owner: context.repo.owner, repo: context.repo.repo,
-              title,
-              labels: ['brain-mirror', 'auto'],
-              body: `Mirror's honest grading is ${honest}/4 (Brain v2 claims ${claimed}). Verdict: **${verdict}**. Actionable findings: ${backlog}.\n\nSee https://dchub.cloud/api/v1/brain/mirror/report for the full payload + hypotheses.\n\nAuto-filed by .github/workflows/brain-mirror.yml.`,
-            });

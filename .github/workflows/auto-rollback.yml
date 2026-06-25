@@ -4,7 +4,9 @@ on:
     branches: [main]   # run 5 min after every deploy
   workflow_dispatch:
   schedule:
-    - cron: '2-59/5 * * * *'   # safety net ~every 5 min (offset from uptime-probe's :00,:05…)
+    - cron: '4-59/5 * * * *'   # safety net ~every 5 min — staggered to :04,:09… so it no
+                               # longer collides with health-check.yml (:02,:07…) or
+                               # uptime-probe (:00,:05…). Fixes brain-l22 #1247.
 # r71-stabilize: prevent run-stacking (the 5-min sample loop overlapped the next
 # */5 trigger → continuous self-probe of the single replica). Latest run wins.
 concurrency:
