@@ -1,0 +1,33 @@
+name: Billing reconcile (daily invoices_paid_count vs Stripe)
+on:
+  schedule:
+    # r-billingcount (2026-06-25): recompute users.invoices_paid_count from
+    # Stripe nightly so real payers can never sit at a stale 0 (the gap that
+    # got Carl Braun wrongly demoted). Upgrade-only + count-only — it never
+    # touches plan/tier or reverses a demote. 08:23 UTC, staggered off the herd.
+    - cron: '23 8 * * *'
+  workflow_dispatch: {}
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Recompute invoices_paid_count from Stripe
+        # Hits Railway directly to avoid the CF Worker 15s timeout. Idempotent
+        # and safe to retry within the same day.
+        run: |
+          if [ -z "${{ secrets.DCHUB_ADMIN_KEY }}" ]; then
+            echo "::warning::DCHUB_ADMIN_KEY secret missing — skipping"
+            exit 0
+          fi
+          echo "─── Reconciling invoices_paid_count against Stripe ───"
+          RESPONSE=$(curl -sS -X POST --max-time 300 \
+            "https://dchub-backend-production.up.railway.app/api/v1/admin/billing/reconcile-paid-counts" \
+            -H "X-Admin-Key: ${{ secrets.DCHUB_ADMIN_KEY }}")
+          echo "${RESPONSE}" | python3 -m json.tool || echo "::warning::Non-JSON response"
+          CHECKED=$(echo "${RESPONSE}" | python3 -c "import sys,json; print((json.load(sys.stdin) or {}).get('checked',0))" 2>/dev/null || echo "0")
+          CORR=$(echo "${RESPONSE}" | python3 -c "import sys,json; print((json.load(sys.stdin) or {}).get('corrected',0))" 2>/dev/null || echo "0")
+          echo "═══════════════════════════════════════════════"
+          echo "Customers checked: ${CHECKED}"
+          echo "Counts corrected:  ${CORR}"
+          echo "═══════════════════════════════════════════════"
