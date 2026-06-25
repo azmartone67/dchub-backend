@@ -32,11 +32,9 @@ SAFETY
 """
 from __future__ import annotations
 import os
-import json
 import html as _html
 import logging
 import threading
-import urllib.request
 
 log = logging.getLogger("claim_notify")
 
@@ -73,13 +71,10 @@ def _send_email(to: str, subject: str, body_html: str) -> bool:
 
 def _post_slack(webhook: str, text: str) -> bool:
     try:
-        data = json.dumps({"text": text}).encode("utf-8")
-        req = urllib.request.Request(
-            webhook, data=data,
-            headers={"Content-Type": "application/json",
-                     "User-Agent": "dchub-claim-notify/1.0"})
-        urllib.request.urlopen(req, timeout=8).read()
-        return True
+        import requests  # repo standardizes on requests (urllib egress is flaky on Railway)
+        r = requests.post(webhook, json={"text": text}, timeout=8,
+                          headers={"User-Agent": "dchub-claim-notify/1.0"})
+        return r.status_code < 300
     except Exception as e:
         log.warning("claim_notify: slack post failed: %s", e)
         return False
