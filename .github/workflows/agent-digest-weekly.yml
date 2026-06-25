@@ -1,0 +1,20 @@
+name: Agent Win-Back Digest (weekly)
+# r-digest-cron (2026-06-24): fire the agent win-back digest weekly. It sends ONLY
+# to marketing_opt_in='true' keys (suppression-gated, idempotent per (email,week),
+# List-Unsubscribe), so it is safe even while the opt-in audience is ~0 — it sends
+# nothing until the in-context digest_offer (server.mjs _NEXT_SESSION) fills the list,
+# then scales automatically. Live send also requires env DCHUB_AGENT_DIGEST_DRY_RUN=0
+# on Railway; with that unset the run is a no-op dry-run (logs intended recipients).
+on:
+  schedule:
+    - cron: '25 15 * * 1'   # Mondays 15:25 UTC — offset from the 14:xx digest cluster to avoid collisions
+  workflow_dispatch: {}
+jobs:
+  send:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send weekly agent digest (opt-in only)
+        run: |
+          curl -sS -X POST "https://dchub.cloud/api/v1/admin/agent-digest/send?live=1" \
+            -H "X-Admin-Key: ${{ secrets.DCHUB_ADMIN_KEY }}" \
+            | python3 -m json.tool

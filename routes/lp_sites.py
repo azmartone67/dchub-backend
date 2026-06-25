@@ -239,6 +239,29 @@ def _require_keyed_user():
     return user_id, None
 
 
+def _bound_email_from_request():
+    """The verified email bound to the caller's key (mcp_dev_keys.email), or None.
+    r-free-alerts (2026-06-24): FREE-tier alerts are LOCKED to this address so a
+    free caller can never relay alert mail to a third party (no spam relay)."""
+    from flask import request as _rq
+    ak = (_rq.headers.get("X-API-Key") or _rq.args.get("api_key") or "").strip()
+    if not ak:
+        return None
+    c = _conn()
+    if c is None:
+        return None
+    try:
+        with c.cursor() as cur:
+            cur.execute("SELECT email FROM mcp_dev_keys WHERE api_key = %s", (ak,))
+            r = cur.fetchone()
+        return (r[0] or "").strip().lower() if r and r[0] else None
+    except Exception:
+        return None
+    finally:
+        try: c.close()
+        except Exception: pass
+
+
 # ── REST endpoints ────────────────────────────────────────────────
 
 @lp_sites_bp.route("/api/v1/lp/save", methods=["POST"])
@@ -450,7 +473,7 @@ def _lp_unsave_impl(site_id, user_id):
 @lp_sites_bp.route("/api/v1/lp/alerts", methods=["GET", "POST"])
 @_rl(per_minute=30)
 def lp_alerts_handler():
-    user_id, gate = _require_pro_user()
+    user_id, gate = _require_keyed_user()   # r-free-alerts: free with a key; destination is locked to the bound email below
     if gate is not None: return gate
 
     if request.method == "GET":
@@ -501,6 +524,18 @@ def lp_alerts_handler():
     try: threshold = float(d.get("threshold") or 5.0)
     except (ValueError, TypeError): threshold = 5.0
     email = (d.get("notify_email") or "").strip().lower()
+    # r-free-alerts (2026-06-24): a FREE caller may only alert their OWN bound
+    # email — no third-party destinations (= no spam relay). PRO/ENT keep an
+    # arbitrary notify_email (low-abuse, paying, e.g. a team distro).
+    from routes.tier_gate import _resolve_caller_tier as _rct
+    _tier, _ = _rct()
+    if (_tier or "free").lower() not in ("pro", "enterprise"):
+        _bound = _bound_email_from_request()
+        if not _bound:
+            return jsonify(error="bind_email_first",
+                           message="Free alerts are delivered to your bound email. "
+                                   "Call bind_email with your email first, then set the alert."), 403
+        email = _bound
     if "@" not in email or len(email) > 200:
         return jsonify(error="invalid_email"), 400
 

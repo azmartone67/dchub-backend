@@ -187,6 +187,21 @@ def _norm_slug(s):
     return re.sub(r"[^a-z0-9-]+", "-", (s or "").strip().lower()).strip("-")
 
 
+def _bound_email(api_key):
+    """The verified email bound to this key (mcp_dev_keys.email), or None.
+    r-free-alerts (2026-06-24): free email alerts are LOCKED to this so a free
+    caller can never relay alert mail to a third party (no spam relay)."""
+    if not api_key:
+        return None
+    try:
+        with _conn() as c, c.cursor() as cur:
+            cur.execute("SELECT email FROM mcp_dev_keys WHERE api_key = %s", (api_key,))
+            r = cur.fetchone()
+        return (r[0] or "").strip().lower() if r and r[0] else None
+    except Exception:
+        return None
+
+
 @market_alerts_bp.route("/api/v1/alerts/subscribe", methods=["POST"])
 def subscribe():
     """Subscribe a destination to movement alerts for a market.
@@ -210,6 +225,26 @@ def subscribe():
         return jsonify(ok=False, error="missing market"), 400
     if channel not in ("email", "webhook"):
         return jsonify(ok=False, error="channel must be 'email' or 'webhook'"), 400
+    # r-free-alerts (2026-06-24): set_market_alert is now free-with-a-key, but a
+    # FREE caller may ONLY alert their OWN bound email (no third-party destination
+    # = no spam relay), and webhooks stay Pro (SSRF surface). PRO/ENT unchanged.
+    # The web path (no api_key) is left as-is — out of scope of the MCP opening.
+    if api_key:
+        try:
+            from routes.tier_gate import _resolve_caller_tier as _rct
+            _tier, _ = _rct()
+        except Exception:
+            _tier = "free"
+        _is_paid = (_tier or "free").lower() in ("pro", "enterprise")
+        if channel == "webhook" and not _is_paid:
+            return jsonify(ok=False, error="webhook_requires_pro",
+                           message="Webhook alerts require Pro. Free alerts are delivered by email to your bound address."), 403
+        if channel == "email" and not _is_paid:
+            _bound = _bound_email(api_key)
+            if not _bound:
+                return jsonify(ok=False, error="bind_email_first",
+                               message="Free email alerts are delivered to your bound email. Call bind_email with your email first, then subscribe."), 403
+            destination = _bound
     if channel == "email":
         if not _EMAIL_RE.match(destination) or len(destination) > 254:
             return jsonify(ok=False, error="invalid email destination"), 400
