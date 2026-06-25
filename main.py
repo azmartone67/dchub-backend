@@ -28950,6 +28950,15 @@ try:
     print("[main] dcgi registered: /api/v1/dcgi/* + /pipeline-report", flush=True)
 except Exception as _dcgi_e:
     print(f"[main] dcgi register failed: {_dcgi_e}", flush=True)
+# 2026-06-24: get_gas_intelligence synthesizer — the gas analogue of
+# get_grid_intelligence. Fuses DCGI + gas economics + pipeline presence +
+# live ISO gas share into one per-state behind-the-meter-vs-grid brief.
+try:
+    from routes.gas_intelligence import register_gas_intelligence
+    register_gas_intelligence(app)
+    print("[main] gas_intelligence registered: /api/v1/gas/intelligence/<region>", flush=True)
+except Exception as _gas_intel_e:
+    print(f"[main] gas_intelligence register failed: {_gas_intel_e}", flush=True)
 app.register_blueprint(grid_snapshot_bp)
 app.register_blueprint(sec_edgar_bp)
 app.register_blueprint(extractor_brain_bp)
