@@ -1,6 +1,9 @@
-# Weekly MCP registry sync + coverage report.
+# DAILY MCP registry sync + coverage report.
+# (2026-06-25: moved weekly -> daily so the official-registry mirror, Smithery
+# re-scan, and coverage report refresh EVERY day. The official republish stays
+# version-gated, so a daily run is a safe no-op unless server.json bumped.)
 #
-# What it does every Monday (and on-demand):
+# What it does every day (and on-demand):
 #   1. Reads the LIVE server (dchub.cloud/mcp via /health) → tool count + version.
 #   2. OFFICIAL registry (registry.modelcontextprotocol.io): if server.json's
 #      version is ahead of what's published, re-publishes (mcp-publisher + the
@@ -18,11 +21,11 @@
 #
 # Secrets used: MCP_REGISTRY_PRIVATE_KEY (already set). Optional: SMITHERY_TOKEN.
 
-name: MCP Registry Weekly Sync
+name: MCP Registry Daily Sync
 
 on:
   schedule:
-    - cron: "40 14 * * 1"   # Mondays 14:40 UTC
+    - cron: "40 14 * * *"   # DAILY 14:40 UTC (was Mondays; daily multi-registry refresh)
   workflow_dispatch: {}
 
 concurrency:
