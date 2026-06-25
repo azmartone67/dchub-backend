@@ -2697,13 +2697,103 @@ def _grid_intel_fetch(region, rto_code):
     # to Railway was a pointless edge round-trip (and a self-through-edge
     # deadlock risk on 1 replica). Supplementary data, so keep it best-effort
     # with a short timeout.
+    #
+    # ⚠️ HONESTY (2026-06-24): /api/v1/grid-headroom/<region> ignores the ISO/region
+    # path entirely (nlr_intelligence.grid_headroom reads only lat/lon/state query
+    # params and DEFAULTS to lat 39.7405 / lon -105.1686 / state CO — NREL Golden,
+    # Colorado). So for EVERY ISO it returns substations near Golden CO, not the
+    # caller's region. We must NEVER surface that as the region's real headroom.
+    # Detect the CO-default signature and demote it to a clearly-flagged
+    # `headroom_preview` (estimated + note) instead of shipping it as `headroom`.
     try:
         r = _rq.get(f'http://127.0.0.1:8080/api/v1/grid-headroom/{region}',
                     headers=H, timeout=4)
         if r.ok:
-            out['headroom'] = r.json()
+            _hr = r.json() or {}
+            _loc = (_hr.get('location') or {}) if isinstance(_hr, dict) else {}
+            try:
+                _has_loc = (_loc.get('lat') is not None and _loc.get('lon') is not None)
+                _is_co_default = (not _has_loc) or (
+                    round(float(_loc.get('lat', 0)), 2) == 39.74
+                    and round(float(_loc.get('lon', 0)), 2) == -105.17
+                ) or str(_loc.get('state', '')).upper() == 'CO'
+            except (TypeError, ValueError):
+                _is_co_default = True  # unparseable location -> treat as untrusted
+            # Only ERCOT-region callers asking about Colorado would legitimately
+            # see CO here, and this endpoint never resolves an ISO to a real
+            # bbox anyway, so for any RTO region the CO location == the bug.
+            if _is_co_default and region not in ('CO', 'COLORADO'):
+                out['headroom_preview'] = {
+                    'estimated': True,
+                    'note': ('NOT region-specific. The upstream grid-headroom estimator '
+                             'does not resolve an ISO/region to a bounding box and returns '
+                             'substations near its default location (NREL Golden, Colorado) '
+                             'regardless of the ISO requested. Shown as an unverified preview '
+                             'only — do NOT cite as ' + str(region) + ' headroom. Per-ISO '
+                             'queue capacity is in data_center_load / the interconnection '
+                             'queue (/api/v1/interconnection-queue/snapshot).'),
+                    'default_location': _loc,
+                }
+            else:
+                out['headroom'] = _hr
     except Exception as e:
         out['headroom_error'] = type(e).__name__ + ': ' + str(e)[:200]
+
+    # 4) Derived demand statistics from the 24h series we already built (P2 above).
+    # Cheap, no extra upstream call: peak / min / load_factor (min/peak) over the
+    # SETTLED hours only — preliminary partials are excluded so the cliff at the
+    # leading edge can't fake a tiny "min". Identified+ consumers can chart shape
+    # and read utilization without re-deriving it.
+    try:
+        _series = out.get('demand_24h') or []
+        _vals = [pt.get('mw') for pt in _series
+                 if isinstance(pt, dict) and pt.get('mw') is not None and not pt.get('preliminary')]
+        if _vals:
+            _peak = max(_vals)
+            _min = min(_vals)
+            out['peak_mw'] = _peak
+            out['min_mw'] = _min
+            out['load_factor'] = round(_min / _peak, 3) if _peak else None
+    except Exception:
+        pass
+
+    # 5) ERCOT data-center load from the interconnection-queue snapshot.
+    # ERCOT is the one US ISO whose public queue classifies large-load (data
+    # center) interconnection requests, so iso_queue_snapshots carries a real
+    # queued_load_data_center_gw for ERCOT (null elsewhere by design — see
+    # routes/interconnection_queues.py honest-null note). Wire it in for ERCOT
+    # only; leave the field off other ISOs rather than fabricate a 0.
+    if rto_code == 'ERCO':
+        try:
+            r = _rq.get('http://127.0.0.1:8080/api/v1/interconnection-queue/snapshot',
+                        headers={'User-Agent': 'dchub-grid-intel/1.0',
+                                 'X-Internal-Request': '1'}, timeout=4)
+            if r.ok:
+                _snap = r.json() or {}
+                _erc = None
+                for _row in (_snap.get('by_iso') or []):
+                    if str(_row.get('iso', '')).upper() in ('ERCOT', 'ERCO'):
+                        _erc = _row
+                        break
+                if _erc and _erc.get('queued_load_data_center_gw') is not None:
+                    _dc = _erc.get('queued_load_data_center_gw')
+                    _tot = _erc.get('queued_load_total_gw')
+                    _share = _erc.get('queued_load_dc_share_pct')
+                    if _share is None and _dc is not None and _tot:
+                        try:
+                            _share = round(100.0 * float(_dc) / float(_tot), 1)
+                        except (TypeError, ValueError, ZeroDivisionError):
+                            _share = None
+                    out['data_center_load'] = {
+                        'queued_load_data_center_gw': _dc,
+                        'queued_load_total_gw': _tot,
+                        'data_center_share_pct': _share,
+                        'as_of': _erc.get('as_of'),
+                        'source': 'ERCOT GIS large-load interconnection queue',
+                        'source_url': 'https://dchub.cloud/api/v1/interconnection-queue/snapshot',
+                    }
+        except Exception as e:
+            out['data_center_load_error'] = type(e).__name__ + ': ' + str(e)[:160]
 
     out['note'] = 'EIA hourly RTO data via api.eia.gov/v2/electricity/rto. ' + \
                   ('Set EIA_API_KEY env var on Railway for higher rate limits.' if not os.environ.get('EIA_API_KEY') else '')
@@ -2827,8 +2917,12 @@ def phase19b_grid_intelligence(region):
             'demand_period': out.get('demand_period'),
             # Truncated views — headline numbers only.
             'demand_24h':   '<gated: identified-tier or higher>',
+            'peak_mw':      '<gated: identified-tier or higher>',
+            'min_mw':       '<gated: identified-tier or higher>',
+            'load_factor':  '<gated: identified-tier or higher>',
             'gen_mix':      '<gated: identified-tier or higher>',
-            'headroom':     '<gated: identified-tier or higher>',
+            'generation_mix_stale_hours': '<gated: identified-tier or higher>',
+            'data_center_load': '<gated: identified-tier or higher>',
             'gated': True,
             'tier_required': 'identified',
             'message': (

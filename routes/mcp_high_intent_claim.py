@@ -1018,15 +1018,23 @@ def claim_submit(token: str):
 # the form that is already public. Token = body.token / ?token= / body.claim_token.
 
 def _redeem_meta() -> dict:
-    """The trial grant + next-step copy returned to a redeeming agent."""
+    """The trial grant + next-step copy returned to a redeeming agent.
+    r-capture (2026-06-25): identity + upgrade are the PRIMARY next steps now,
+    not a footnote. A bare key with no email is dropped by header-less hosts
+    (Claude.ai web, ChatGPT) — so it cannot be reused next session AND cannot be
+    attributed to a conversion. Pushing bind_email turns this high-intent moment
+    into a capture event instead of an anonymous giveaway."""
     return {
         "tier": "trial",
         "calls_total": 50,
         "expires_days": 7,
-        "save_instruction": ("Save this X-API-Key into your MCP client config so "
-                             "every future session reuses it — no re-minting."),
-        "upgrade_note": ("Need more than the trial? Call unlock_more_data for a "
-                         "one-click checkout link to relay to your human."),
+        "next_step": ("MAKE THIS DURABLE: call bind_email with your operator's email. "
+                      "A bare key is dropped by header-less hosts (Claude.ai web, "
+                      "ChatGPT) and cannot be reused next session — email/OAuth is the "
+                      "only thing that persists. Want more than the 50-call trial? Call "
+                      "unlock_more_data for a one-click checkout link to relay to your human."),
+        "save_instruction": ("Also save this X-API-Key into your MCP client config "
+                             "for the rest of this session."),
     }
 
 
@@ -1212,26 +1220,33 @@ def high_intent_stats():
                 out["claims_minted_30d"] = int((cur.fetchone() or [0])[0] or 0)
             except Exception: pass
             try:
+                # DISTINCT session — a single looping registry client (e.g. one
+                # Smithery session crossing threshold on 10 tools) was inflating
+                # this 10x via COUNT(*). Count real redeeming sessions, not rows.
                 cur.execute(
-                    """SELECT COUNT(*) FROM mcp_high_intent_sessions
+                    """SELECT COUNT(DISTINCT mcp_session_id)
+                         FROM mcp_high_intent_sessions
                         WHERE claim_used_at IS NOT NULL
                           AND claim_used_at >= NOW() - INTERVAL '30 days'"""
                     + " AND " + _hi_real_sql(),
                 )
                 out["claims_used_30d"] = int((cur.fetchone() or [0])[0] or 0)
             except Exception: pass
-            # claim → paid conversion: the human entered email X on a claim
-            # in last 30d, and there's an mcp_conversions row OR users row
-            # with same email + plan != 'free' (created at-or-after claim_used_at).
+            # claim → paid conversion (DISTINCT session). Attribute on the captured
+            # claim_email landing in the canonical mcp_conversions table after the
+            # redeem. NOTE: this honestly reads ~0 until the redeem actually captures
+            # an email (see _redeem_meta r-capture) — the agent-redeem path stored
+            # NULL email, so anonymous redemptions are correctly un-attributable, not
+            # faked. As bind_email capture lands, this starts tracking real conversions.
             try:
                 cur.execute(
-                    """SELECT COUNT(DISTINCT h.claim_email)
+                    """SELECT COUNT(DISTINCT h.mcp_session_id)
                          FROM mcp_high_intent_sessions h
-                         JOIN users u ON LOWER(u.email) = LOWER(h.claim_email)
+                         JOIN mcp_conversions mc ON LOWER(mc.email) = LOWER(h.claim_email)
                         WHERE h.claim_used_at IS NOT NULL
                           AND h.claim_used_at >= NOW() - INTERVAL '30 days'
-                          AND COALESCE(u.plan, 'free') NOT IN ('free','')
-                          AND COALESCE(u.created_at, NOW()) >= h.claim_used_at - INTERVAL '7 days'
+                          AND h.claim_email IS NOT NULL AND h.claim_email <> ''
+                          AND mc.created_at >= h.claim_used_at - INTERVAL '7 days'
                     """,
                 )
                 out["claim_to_paid_30d"] = int((cur.fetchone() or [0])[0] or 0)
