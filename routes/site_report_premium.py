@@ -368,7 +368,18 @@ def _latency_map(fiber, lat, lon, caption):
     src = _dash(fiber.get("latency_map"))
     if src:
         return _mapwrap(src, "", caption)
-    hub = _hub_for(fiber.get("latency_target"))
+    # Prefer the explicit target coords the gatherer resolved (the nearest carrier
+    # hotel); fall back to the metro-hub lookup only if they're absent.
+    hub = None
+    _tlat, _tlon = fiber.get("latency_target_lat"), fiber.get("latency_target_lng")
+    if _tlat is not None and _tlon is not None:
+        try:
+            hub = (float(_tlat), float(_tlon),
+                   _short_target(fiber.get("latency_target_name") or fiber.get("latency_target")))
+        except (TypeError, ValueError):
+            hub = None
+    if not hub:
+        hub = _hub_for(fiber.get("latency_target"))
     if lat is None or lon is None or not hub:
         # No coords/hub: a wider street basemap centered on the site, site pin only.
         if lat is None or lon is None:
@@ -394,7 +405,7 @@ def _latency_map(fiber, lat, lon, caption):
         f'<rect x="{mid_x-tw/2:.0f}" y="{mid_y-17:.0f}" rx="5" width="{tw:.0f}" height="28" fill="rgba(0,0,0,0.72)"/>'
         f'<text x="{mid_x:.0f}" y="{mid_y+2:.0f}" text-anchor="middle" font-family="monospace" '
         f'font-size="19" font-weight="700" fill="#fff">{cap_txt}</text>'
-        + _pin_svg(hx, hy, "#0ea5e9", _short_target(hlabel))
+        + _pin_svg(hx, hy, "#0ea5e9", (str(hlabel or "hub"))[:20])
         + _pin_svg(sx, sy, "#ff8a1f", "Site"))
     return _mapwrap(url, overlay, caption)
 
@@ -449,7 +460,7 @@ def render_premium_html(S, lat=None, lon=None):
     cost_html = (f"{ind}&cent;/kWh" if ind not in (None, "") else "&mdash;")
     cost_num_html = (f"{ind}" if ind not in (None, "") else "&mdash;")
     mname_h = _h(_dash(market.get("name")) or location)
-    short_t = _short_target(fiber.get("latency_target"))
+    short_t = _short_target(fiber.get("latency_target_name") or fiber.get("latency_target"))
     lat_ms = _dash(fiber.get("latency_ms"))
 
     def ttp_str():

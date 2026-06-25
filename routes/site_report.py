@@ -64,6 +64,9 @@ DEFAULT_TARGET = "dallas"
 FIBER_ROUTE_FACTOR = 1.4
 # Light in fiber ≈ 2/3 c ≈ 200,000 km/s one-way → ~5 µs/km → RTT ≈ km/100 ms.
 KM_PER_MS_RTT = 100.0
+# Operator convention (2026-06-25): screening latency to the nearest carrier hotel
+# ≈ 1 ms per ~50 measured miles (site → closest carrier-hotel building).
+MILES_PER_MS = 50.0
 
 # ── Water composite constants (ported verbatim from water-drought-layer.js) ──
 _SEVERITY = {"None": 100, "D0": 80, "D1": 60, "D2": 40, "D3": 20, "D4": 0}
@@ -577,6 +580,100 @@ def _gather_air(lat, lon, capacity_mw):
     return out
 
 
+# Real transport/access carriers vs. DC operators, hyperscalers, content & IX
+# aggregates that pollute fiber_routes.provider (r-fiber-carriers 2026-06-25:
+# Ashburn was showing "Equinix · Meta · CyrusOne · Digital Realty" as carriers).
+_NON_CARRIER_TOKENS = {
+    "equinix", "cyrusone", "coresite", "databank", "vantage", "edgeconnex", "sabey",
+    "flexential", "aligned", "switchds", "compass", "meta", "facebook", "amazon",
+    "aws", "google", "microsoft", "azure", "oracle", "apple", "alibaba", "tencent",
+    "cloudflare", "akamai", "fastly", "netflix", "peeringdb", "ixp", "ix",
+    "edison", "entergy", "ameren", "evergy", "exelon", "firstenergy", "pseg", "xcel",
+}
+_NON_CARRIER_PHRASES = ("digital realty", "digitalrealty", "iron mountain",
+                        "stack infrastructure", "qts ", "& power", "electric power",
+                        "power company", "power co", "electric coop", "electric co-op",
+                        "rural electric", "municipal")
+
+
+def _is_real_carrier(name):
+    """True for actual transport/access carriers; False for DC operators,
+    hyperscalers, content networks and IX aggregates."""
+    if not name:
+        return False
+    n = str(name).lower().strip()
+    if not n:
+        return False
+    import re as _re
+    if _re.match(r"^\d+\+?\s*carrier", n):      # aggregate label e.g. "20+ Carriers"
+        return False
+    if "/ix" in n or "peeringdb" in n:
+        return False
+    if any(p in n for p in _NON_CARRIER_PHRASES):
+        return False
+    toks = set(_re.findall(r"[a-z0-9.&]+", n))
+    return not (toks & _NON_CARRIER_TOKENS)
+
+
+def _carrier_key(name):
+    """Collapse name variants so 'Summit IG'/'SummitIG' and 'GTT Communications
+    (AS3257)'/'GTT Communications, Inc.' dedupe to one carrier."""
+    import re as _re
+    n = _re.sub(r"\(as\d+\)", "", str(name).lower())
+    n = _re.sub(r",?\s*\b(inc|llc|ltd|corp|communications|networks?|global|wholesale|"
+                r"technologies|telecom|fibre|fiber|group|company)\b.*$", "", n)
+    n = _re.sub(r"[^a-z0-9]", "", n)
+    return n[:12] or str(name).lower()
+
+
+def _nearest_carrier_hotel(lat, lon, min_carriers=25, max_mi=400):
+    """Nearest REAL carrier hotel = nearest carrier_facility_presence facility with
+    a high distinct-carrier count (a true interconnection building, e.g. NTT
+    Ashburn VA8 / Equinix Ashburn — NOT a single-tenant cloud on-ramp). Used as the
+    latency target and named in the fiber section. Failure-isolated → None."""
+    try:
+        from site_planner import execute_query
+    except Exception:
+        return None
+    # Bounding-box prefilter (carrier_facility_presence is ~600K global rows with no
+    # spatial index — a full GROUP BY over all of it times out). Prune to a regional
+    # box first so the distance/COUNT only runs on nearby facilities.
+    deg_lat = max_mi / 69.0
+    deg_lng = max_mi / (69.0 * max(0.1, abs(math.cos(math.radians(lat)))))
+    d = ("3959*acos(LEAST(1.0, GREATEST(-1.0, "
+         "cos(radians(%s))*cos(radians(facility_lat))*cos(radians(facility_lng)-radians(%s)) "
+         "+ sin(radians(%s))*sin(radians(facility_lat)))))")
+    q = (f"WITH f AS (SELECT facility_name, facility_city, facility_state, facility_lat, "
+         f"facility_lng, COUNT(DISTINCT carrier_name) ncar, MIN({d}) dist "
+         f"FROM carrier_facility_presence WHERE facility_lat IS NOT NULL "
+         f"AND facility_lat BETWEEN %s AND %s AND facility_lng BETWEEN %s AND %s "
+         f"GROUP BY 1,2,3,4,5) "
+         f"SELECT facility_name, facility_city, facility_state, facility_lat, facility_lng, "
+         f"ncar, dist FROM f WHERE ncar >= %s AND dist <= %s ORDER BY dist ASC LIMIT 1")
+    try:
+        rows = execute_query(q, (lat, lon, lat,
+                                 lat - deg_lat, lat + deg_lat,
+                                 lon - deg_lng, lon + deg_lng,
+                                 min_carriers, max_mi)) or []
+    except Exception:
+        return None
+    if not rows:
+        return None
+    r = rows[0]
+    try:
+        return {
+            "name": (r.get("facility_name") or "carrier hotel").strip(),
+            "city": (r.get("facility_city") or "").strip(),
+            "state": (r.get("facility_state") or "").strip(),
+            "lat": float(r.get("facility_lat")),
+            "lng": float(r.get("facility_lng")),
+            "carriers": int(r.get("ncar") or 0),
+            "distance_mi": float(r.get("dist")),
+        }
+    except (TypeError, ValueError):
+        return None
+
+
 def _fiber_nearby_providers(lat, lon, radius_miles=25, limit=8):
     try:
         from site_planner import execute_query
@@ -610,31 +707,47 @@ def _fiber_nearby_providers(lat, lon, radius_miles=25, limit=8):
 
 def _gather_fiber(lat, lon):
     out = {"_score": None}
-    rows = _fiber_nearby_providers(lat, lon, radius_miles=50, limit=8)
-    adj, near = [], []
+    rows = _fiber_nearby_providers(lat, lon, radius_miles=50, limit=40)
+    # Keep only real transport/access carriers (drop DC operators / hyperscalers /
+    # IX aggregates), dedupe name variants, nearest first.
+    seen = {}  # carrier_key -> [display_name, nearest_dist_mi]
     for r in rows:
+        name = r.get("provider")
+        if not _is_real_carrier(name):
+            continue
         try:
             d = float(r.get("dist_mi"))
         except (TypeError, ValueError):
             d = 99.0
-        (adj if d < 5 else near).append(r.get("provider"))
-    out["adjacent"] = " · ".join(adj[:4]) if adj else "—"
-    out["nearby"] = " · ".join(near[:4]) if near else "—"
+        k = _carrier_key(name)
+        if k not in seen:
+            seen[k] = [name, d]
+        else:
+            if len(name) < len(seen[k][0]):
+                seen[k][0] = name        # cleaner (shorter) display variant
+            if d < seen[k][1]:
+                seen[k][1] = d           # keep nearest distance
+    carriers = sorted(seen.values(), key=lambda x: x[1])
+    adj = [c[0] for c in carriers if c[1] < 5]
+    near = [c[0] for c in carriers if c[1] >= 5]
+    out["adjacent"] = " · ".join(adj[:5]) if adj else "—"
+    out["nearby"] = " · ".join(near[:5]) if near else "—"
     out["nearby_dist"] = "Within ~50 mi"
-    out["source"] = "DC Hub fiber routes · carrier maps"
-    n = len(rows)
+    out["source"] = "DC Hub fiber routes · PeeringDB carrier presence"
+    n = len(carriers)
     out["_count"] = n
     out["_score"] = (90 if n >= 4 else 72 if n >= 2 else 45 if n >= 1 else 20)
     if n:
+        lead = (f" — including {adj[0]} adjacent" if adj else (f" — nearest {near[0]}" if near else ""))
         out["assessment"] = (
-            f"DC Hub maps {n} carrier route{'s' if n != 1 else ''} within ~50 mi of the site"
-            + (f" — including {adj[0]} adjacent" if adj else "")
+            f"DC Hub maps {n} fiber carrier{'s' if n != 1 else ''} within ~50 mi of the site"
+            + lead
             + ". For exact entrance-facility distances and dark-fiber / wave availability, pair this "
             "with a fiber-locator route export (attachable to this report)."
         )
     else:
         out["assessment"] = (
-            "No carrier routes are mapped within ~50 mi in DC Hub's fiber layer for this point. "
+            "No transport carriers are mapped within ~50 mi in DC Hub's fiber layer for this point. "
             "Carrier presence may still exist — confirm with a fiber-locator export, which can be "
             "appended to this report."
         )
@@ -643,14 +756,38 @@ def _gather_fiber(lat, lon):
 
 def _gather_latency(lat, lon, target_arg):
     out = {}
-    tlat = tlon = None
-    label = None
-    note_default = ""
     t = (target_arg or "").strip().lower()
+
+    # Default (no explicit target): measure to the NEAREST real carrier hotel
+    # (interconnection building), not a metro centroid, at ~MILES_PER_MS mi/ms.
     if not t:
-        # Smart default: the NEAREST major carrier-hotel / cloud on-ramp by
-        # great-circle distance (not a fixed city) — far more relevant than
-        # always defaulting to Dallas for a Midwest / Northeast / West site.
+        hotel = _nearest_carrier_hotel(lat, lon)
+        if hotel:
+            gc_mi = _haversine_mi(lat, lon, hotel["lat"], hotel["lng"])
+            rtt_ms = gc_mi / MILES_PER_MS
+            loc = ", ".join(x for x in (hotel["city"], hotel["state"]) if x)
+            out["latency_target"] = hotel["name"] + (f" — {loc}" if loc else "")
+            out["latency_target_name"] = hotel["name"]
+            out["latency_target_lat"] = hotel["lat"]
+            out["latency_target_lng"] = hotel["lng"]
+            out["latency_carriers"] = hotel["carriers"]
+            out["latency_ms"] = (f"{rtt_ms:.2f}" if rtt_ms < 1 else f"{rtt_ms:.1f}")
+            out["latency_distance"] = f"{gc_mi:.1f} mi to carrier hotel · {hotel['carriers']} carriers"
+            out["latency_transport"] = "Fiber · to nearest carrier hotel"
+            out["latency_note"] = (
+                f"Latency to the nearest major carrier hotel — {hotel['name']}"
+                + (f" ({loc})" if loc else "")
+                + f" hosting {hotel['carriers']} networks — at ~{MILES_PER_MS:.0f} miles per ms "
+                f"({gc_mi:.1f} mi to the building). A measured fiber-locator route supersedes this estimate."
+            )
+            out["_ms"] = rtt_ms
+            out["_score"] = (95 if rtt_ms < 1 else 88 if rtt_ms < 3 else 75 if rtt_ms < 6
+                             else 60 if rtt_ms < 12 else 40 if rtt_ms < 25 else 25)
+            return out
+
+    # Explicit target, or no carrier hotel within range → metro-hub fallback.
+    note_default = ""
+    if not t:
         tlat, tlon, label = min(LATENCY_TARGETS.values(),
                                 key=lambda v: _haversine_mi(lat, lon, v[0], v[1]))
     elif t in LATENCY_TARGETS:
@@ -669,15 +806,16 @@ def _gather_latency(lat, lon, target_arg):
 
     gc_mi = _haversine_mi(lat, lon, tlat, tlon)
     route_mi = gc_mi * FIBER_ROUTE_FACTOR
-    rtt_ms = (route_mi * 1.609) / KM_PER_MS_RTT
+    rtt_ms = route_mi / MILES_PER_MS
     out["latency_target"] = label
+    out["latency_target_lat"] = tlat
+    out["latency_target_lng"] = tlon
     out["latency_ms"] = f"{rtt_ms:.1f}"
     out["latency_distance"] = f"~{route_mi:.0f} mi route (gc {gc_mi:.0f} mi × {FIBER_ROUTE_FACTOR})"
-    out["latency_transport"] = "Fiber · est. RTT"
+    out["latency_transport"] = "Fiber · est."
     out["latency_note"] = (
-        "Estimated round-trip latency: great-circle distance × "
-        f"{FIBER_ROUTE_FACTOR} route factor, fiber at ~⅔c.{note_default} A measured fiber-locator "
-        "route map (attachable) supersedes this screening estimate."
+        f"Estimated latency to {label} at ~{MILES_PER_MS:.0f} miles per ms over a great-circle × "
+        f"{FIBER_ROUTE_FACTOR} route.{note_default} A measured fiber-locator route supersedes this estimate."
     )
     out["_ms"] = rtt_ms
     out["_score"] = (90 if rtt_ms < 10 else 75 if rtt_ms < 20 else 55 if rtt_ms < 40 else 35 if rtt_ms < 70 else 20)
