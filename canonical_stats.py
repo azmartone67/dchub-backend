@@ -38,11 +38,14 @@ _FALLBACK = {
     "grid_operators": 10,    # 10 North-American grid operators w/ live data (7 US ISOs + TVA + BPA + IESO)
     "utility_bas": 43,       # 43 US utility balancing authorities (live EIA-930)
     # #60 (2026-06-02): live grid telemetry is now GLOBAL — 4 continents.
-    # Intl live grids beyond N. America: Great Britain (NESO/Elexon), ~12 EU
+    # Intl live grids beyond N. America: Great Britain (NESO/Elexon), 24 EU
     # bidding zones (ENTSO-E), Taiwan (Taipower), Australia (AEMO); plus EU gas
     # transmission flows (ENTSOG, 10 countries). All LIVE, not modeled.
     "grid_continents": 4,
-    "intl_grid_regions": 15,  # GB(1) + EU(~12) + Taiwan(1) + Australia(1)
+    "intl_grid_regions": 27,  # GB(1) + EU(24) + Taiwan(1) + Australia(1)
+    "eu_zones": 24,           # live ENTSO-E bidding zones (verified get_grid_scoreboard 2026-06-25; was ~12)
+    "substations": 126427,    # HIFLD substations (had no SoT home before)
+    "pipeline_gw": 369,       # construction pipeline GW (had no SoT home before)
 }
 
 _TTL_S = 600          # 10-minute cache; these move slowly
@@ -216,7 +219,7 @@ def grid_coverage_phrase(style: str = "full") -> str:
         return "live grid telemetry on 4 continents (US, UK, EU, Taiwan, Australia)"
     return ("live grid telemetry across 4 continents — 7 US ISOs (ERCOT, PJM, "
             "CAISO, MISO, SPP, NYISO, ISO-NE) + TVA/BPA + 43 US balancing "
-            "authorities, Great Britain (NESO), ~12 EU bidding zones (ENTSO-E), "
+            "authorities, Great Britain (NESO), 24 EU bidding zones (ENTSO-E), "
             "Taiwan (Taipower) and Australia (AEMO) — all live; plus EU gas "
             "transmission flows (ENTSOG). (Hydro-Québec, AESO, Nord Pool remain "
             "modeled baselines.)")
