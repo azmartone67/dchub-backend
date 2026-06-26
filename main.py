@@ -5931,8 +5931,10 @@ _CACHE_PATHS: dict = {
     '/api/v1/site/stats':         (300,  'site stats'),
     '/health.json':               (180,  'audit dashboard root'),
     '/data/growth.json':          (300,  'audit growth roll-up'),
-    '/api/v1/markets/list':       (1800, 'markets list — stable catalog'),
-    '/api/v1/markets/list-rich':  (1800, 'markets list rich'),
+    # 2026-06-25: REMOVED markets/list + markets/list-rich from the CDN cache allowlist —
+    # they are TIER-VARYING (anon gets FEWER markets than pro; confirmed by the gated-route
+    # audit), so edge-caching leaked the pro body to anon (same rule as the power-plants /
+    # transmission exclusion below). The worker force-origins them (tier:'none' + no-store).
     # r47.31 (2026-05-26): agent-facing feeds need to be CDN-cacheable.
     # The endpoints set their own Cache-Control headers (24h / 1h) but
     # this after_request hook above wins; without these entries the
