@@ -644,11 +644,12 @@ _CLAIM_FORM_HTML = r"""<!DOCTYPE html>
 <body>
   <span class="badge"><span class="dot"></span>High-intent claim · 1 click</span>
   <h1>You've been using <code>__TOOL__</code></h1>
-  <p class="sub">Your agent hit this tool __COUNT__ times in the last 24h — clearly the data is useful.
-  One email and your trial key is in your inbox in ~60 seconds.</p>
+  <p class="sub">Your agent hit this tool __COUNT__ times in the last 24h — it's clearly load-bearing.
+  Your trial unlocks __VALUE__.</p>
 
-  <div class="ctx"><strong>What you'll get:</strong> a working <code>dch_trial_</code> key (50 calls/day for 7 days),
-  plus a copy-paste MCP config for Claude Desktop / Cursor / Cline / Continue.</div>
+  <div class="ctx">📍 <strong>__BLINDSPOT__</strong> — your agent can read the numbers, but the full
+  interactive view only renders here. One email → a working <code>dch_trial_</code> key
+  (50 calls/day, 7 days) + a copy-paste MCP config for Claude Desktop / Cursor / Cline, in ~60 seconds.</div>
 
   __ERR__
 
@@ -718,11 +719,39 @@ _CLAIM_SUCCESS_HTML = r"""<!DOCTYPE html>
 """
 
 
+# r-claim-resultforward (2026-06-26): the /claim page showed only the tool name +
+# a 24h count — a context-free email gate. Map each high-intent tool to (a) the
+# concrete value the trial unlocks and (b) the VISUAL layer the agent can't render
+# in a chat window (the honest, true hook — no fabricated results, no fake scarcity).
+_TOOL_VALUE = {
+    "get_grid_intelligence":     ("the full per-substation headroom, interconnection-queue depth and time-to-power for your market", "The live grid map + load curves"),
+    "get_fiber_intel":           ("every carrier, route and IX within reach of your site, with redundancy scoring", "The dark-fiber route overlay"),
+    "get_fiber_readiness":       ("the full connectivity score — carriers, routes, IXs and a lead-in plan for your site", "The fiber route + lead-in map"),
+    "plan_fiber_leadin":         ("the full lead-in plan — routes, carriers and build estimate for your site", "The fiber lead-in map"),
+    "analyze_site":              ("the complete site score — power, fiber, water, gas, tax and hazard layers for your coordinates", "The interactive Land & Power map for your parcel"),
+    "compare_sites":             ("the full side-by-side scorecard across every layer for your shortlist", "The comparative map view"),
+    "site_selection_canvas":     ("the ranked shortlist with every layer scored against your criteria", "The interactive Site Selection Canvas"),
+    "get_market_intel":          ("the complete market brief — capacity pipeline, DCPI, M&A and grid headroom", "The market dashboards + maps"),
+    "get_market_dcpi_rank":      ("the full DC Hub Power Index breakdown for every market", "The DCPI map + rankings"),
+    "rank_markets":              ("the full ranked market table across every DCPI layer", "The market ranking map"),
+    "search_facilities":         ("the full facility set with power, operator, tenants and specs", "The facility map"),
+    "get_facility":              ("the complete facility profile — power, tenants, specs and connectivity", "The facility map + layers"),
+    "hyperscaler_deals":         ("the full deal tracker with values, structures and counterparties", "The deal map + timeline"),
+    "get_interconnection_queue": ("the full live interconnection queue — projects, MW, status and time-to-power", "The queue map + load curves"),
+    "get_gas_intelligence":      ("the full gas-suitability index — pipelines, capacity and economics for your site", "The gas pipeline + DCGI map"),
+    "get_grid_scoreboard":       ("the full ranked grid scoreboard — fuel mix, headroom and DCPI across every ISO", "The live ISO scoreboard + maps"),
+}
+_TOOL_VALUE_DEFAULT = ("the complete result set this tool returns", "The interactive maps and layers")
+
+
 def _render_form(tool: str, count: int, err: str = "") -> str:
     err_html = (f'<div class="err">{_esc(err)}</div>') if err else ""
+    _val, _blind = _TOOL_VALUE.get((tool or "").strip(), _TOOL_VALUE_DEFAULT)
     return (_CLAIM_FORM_HTML
             .replace("__TOOL__", _esc(tool or "this tool"))
             .replace("__COUNT__", str(count) if count else "several")
+            .replace("__VALUE__", _esc(_val))
+            .replace("__BLINDSPOT__", _esc(_blind))
             .replace("__ERR__", err_html))
 
 
