@@ -4,3 +4,17 @@
 package.json
 package-lock.json
 node_modules/
+
+# r-connect (2026-06-25): the local tree had grown to 1.2 GB and `railway up`
+# was timing out mid-upload. None of the below is built or served at runtime
+# (Flask serves only from static/; the git self-heal at main.py:351 is gated
+# to REPLIT_ENVIRONMENT and never runs on Railway). Excluding them cuts the
+# upload by ~700 MB. Do NOT add routes/, scripts/, static/, or templates/ —
+# those ARE imported/served.
+.git/
+__pycache__/
+*.pyc
+infrastructure_output/
+dchub-frontend/
+docs/
+backups/

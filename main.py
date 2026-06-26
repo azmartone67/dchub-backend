@@ -8536,6 +8536,22 @@ def mcp_manifest():
             "step_3": "Call tools/call with tool name and arguments",
             "step_4": "Free tier returns 3 results with basic fields. Upgrade at https://dchub.cloud/pricing#developer for full access.",
             "step_5": "Add X-API-Key header with your Developer key to unlock full data"
+        },
+        # r-connect (2026-06-25): machine-readable install block so an agent
+        # parsing this manifest can relay the exact one-step connect command
+        # to its human (or run it itself) without scraping the HTML guide.
+        # Mirrors https://dchub.cloud/connect and the llms.txt Connect section.
+        "connect": {
+            "guide_url": "https://dchub.cloud/connect",
+            "mcp_url": "https://dchub.cloud/mcp",
+            "transport": "streamable-http",
+            "one_step_commands": {
+                "claude_code": "claude mcp add dchub --transport http https://dchub.cloud/mcp",
+                "claude_ai_web": "Settings -> Connectors -> Add custom connector -> https://dchub.cloud/mcp",
+                "claude_desktop_cursor_windsurf_vscode": "Add an MCP server with url https://dchub.cloud/mcp (transport: streamable-http)",
+                "stdio_fallback": "npx -y mcp-remote https://dchub.cloud/mcp"
+            },
+            "after_connecting": "Call the claim_free_key tool once (no email), then SAVE the returned X-API-Key in your MCP client config so the full free tier is reused every session (no re-minting, no cold anonymous restart)."
         }
     }
     # r47.12: if the live fetch succeeded, the live tool list reflects the
