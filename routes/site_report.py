@@ -1760,6 +1760,54 @@ def _render_for(form, survey, lat, lon):
     return _render_html(survey)
 
 
+# ── Signed PDF links (r-sigurl 2026-06-25) ───────────────────────────────────
+# The generate_site_analysis MCP tool mints a short-lived HMAC-signed link so the
+# agent's HUMAN can download the premium PDF without a Pro session. The signature
+# is scoped to one exact lat/lon premium-PDF report + expiry — it grants access to
+# nothing else, and only PRO callers ever receive one (the tool is PRO-gated).
+def _report_sig_secret():
+    import os as _o
+    return (_o.environ.get("JWT_SECRET") or _o.environ.get("DCHUB_ADMIN_KEY") or "").encode()
+
+
+def _report_sig(lat, lon, exp):
+    import hmac as _hm, hashlib as _hl, base64 as _b64
+    secret = _report_sig_secret()
+    if not secret:
+        return None
+    msg = f"{round(float(lat), 4)}|{round(float(lon), 4)}|premium|pdf|{int(exp)}".encode()
+    mac = _hm.new(secret, msg, _hl.sha256).digest()
+    return _b64.urlsafe_b64encode(mac).decode().rstrip("=")
+
+
+def _verify_report_sig(lat, lon, exp, sig):
+    import time as _t, hmac as _hm
+    try:
+        if not sig or int(exp) < int(_t.time()):
+            return False
+        expected = _report_sig(lat, lon, exp)
+        return bool(expected) and _hm.compare_digest(expected, str(sig))
+    except Exception:
+        return False
+
+
+def _signed_pdf_url(lat, lon, extra=None, ttl_days=7, base="https://dchub.cloud"):
+    """Full signed premium-PDF URL. Sig covers lat/lon/exp (access control); extra
+    params (capacity_mw, prepared_by, …) shape the report and ride along unsigned."""
+    import time as _t
+    exp = int(_t.time()) + int(ttl_days) * 86400
+    sig = _report_sig(lat, lon, exp)
+    if not sig:
+        return None
+    url = (f"{base}/api/v1/site-report?lat={float(lat):.4f}&lon={float(lon):.4f}"
+           f"&form=premium&format=pdf&exp={exp}&sig={sig}")
+    for k, v in (extra or {}).items():
+        if v not in (None, ""):
+            from urllib.parse import quote as _q
+            url += f"&{k}={_q(str(v))}"
+    return url
+
+
 @site_report_bp.route("/api/v1/site-report", methods=["GET", "POST"])
 @site_report_bp.route("/api/v1/site-study", methods=["GET", "POST"])
 def site_report():
@@ -1770,11 +1818,16 @@ def site_report():
     import os as _os_sr
     _sr_ak = (request.headers.get("X-Admin-Key") or "").strip()  # header-only: a secret in a URL would leak to logs/referers
     _sr_admin = bool(_sr_ak) and _sr_ak == (_os_sr.environ.get("DCHUB_ADMIN_KEY", "") or "").strip()
+    # Signed-URL bypass: a valid HMAC sig (minted for a PRO generate_site_analysis
+    # call) lets the human download THIS lat/lon premium PDF with no Pro session.
+    _sr_signed = bool(request.args.get("sig") and request.args.get("exp")) and _verify_report_sig(
+        request.args.get("lat"), request.args.get("lon"),
+        request.args.get("exp"), request.args.get("sig"))
     # PRO gate (premium deliverable). Anon/FREE → 402 + upgrade JSON.
     try:
         from routes.tier_gate import _resolve_caller_tier, _gate_response
         tier, _ = _resolve_caller_tier()
-        if not _sr_admin and (tier or "FREE").upper() not in ("PRO", "ENTERPRISE", "FOUNDING", "RESEARCH_SEED", "ADMIN"):
+        if not _sr_admin and not _sr_signed and (tier or "FREE").upper() not in ("PRO", "ENTERPRISE", "FOUNDING", "RESEARCH_SEED", "ADMIN"):
             # A logged-in user's dchub_token JWT lives in localStorage, but a
             # top-level browser navigation to /api/* only sends it as a COOKIE,
             # which the CF proxy may not forward → the gate sees FREE. For an
@@ -1866,7 +1919,17 @@ def site_report():
             if isinstance(o, list):
                 return [clean(x) for x in o]
             return o
-        return jsonify({"ok": True, "lat": lat, "lon": lon, "survey": clean(survey)})
+        _resp = {"ok": True, "lat": lat, "lon": lon, "survey": clean(survey)}
+        if form == "premium":
+            # Signed link the agent's human can open to download the branded PDF
+            # (no Pro session needed); valid ~7 days, scoped to this report.
+            _resp["pdf_report_url"] = _signed_pdf_url(lat, lon, extra={
+                "capacity_mw": (int(capacity_mw) if capacity_mw else None),
+                "prepared_for": prepared_for, "prepared_by": prepared_by,
+                "latency_target": latency_target,
+            })
+            _resp["deliverable"] = "Branded 5-page Site Analysis PDF"
+        return jsonify(_resp)
 
     if fmt == "pdf":
         try:
