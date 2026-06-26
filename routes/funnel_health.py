@@ -211,9 +211,19 @@ def _conn():
 
 def _scalar(cur, sql: str, params: tuple = ()) -> Optional[int]:
     """Run a COUNT(*)/SUM(...)/scalar SELECT, return int or None on error.
-    Each probe is isolated so one missing table never blanks the page."""
+    Each probe is isolated so one missing table never blanks the page.
+
+    ★ When there are NO bind params, execute WITHOUT a params arg. Passing an
+    empty tuple makes psycopg2 run %-substitution over the SQL, which trips on
+    the 91 literal % in the de-loop's ILIKE predicates (IndexError: tuple index
+    out of range) — that silently blanked tool_calls_*_real EVERY render and was
+    mislabeled as a transient 'de-loop timeout' (the query is really 0.1-0.5s;
+    statement_timeout is 30s). See reference_psycopg2_empty_tuple_percent_trap."""
     try:
-        cur.execute(sql, params)
+        if params:
+            cur.execute(sql, params)
+        else:
+            cur.execute(sql)
         r = cur.fetchone()
         if not r:
             return 0
@@ -233,9 +243,13 @@ def _scalar(cur, sql: str, params: tuple = ()) -> Optional[int]:
 
 
 def _rows(cur, sql: str, params: tuple = ()) -> list[tuple]:
-    """Run a SELECT, return rows or [] on error."""
+    """Run a SELECT, return rows or [] on error.
+    Same empty-tuple %-substitution trap guard as _scalar (above)."""
     try:
-        cur.execute(sql, params)
+        if params:
+            cur.execute(sql, params)
+        else:
+            cur.execute(sql)
         return list(cur.fetchall() or [])
     except Exception as e:
         logger.debug("funnel_health _rows failed: %s -- %s", sql[:60], e)
