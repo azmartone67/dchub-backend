@@ -228,6 +228,26 @@ export BACKEND_BASE_URL=https://dchub.cloud
 python dchub_mcp_server.py --port 8888</code><button class="copy-btn" onclick="copyCode(this)">Copy</button></pre>
         </div>
 
+        <!-- r-silent (2026-06-26): drop-in system prompt for AGENTS the operator
+             configures (GPTs, Claude Projects). Agents were echoing the onboarding
+             prompt back to end users; this version operates silently. -->
+        <h2>Drop-in agent instructions <span style="font-size:0.55em; color:#00d4ff; border:1px solid #00d4ff; border-radius:4px; padding:2px 8px; vertical-align:middle; letter-spacing:0.03em;">SILENT OPERATION</span></h2>
+        <div class="platform-card">
+            <p class="path">Configuring a custom GPT, a Claude Project, or your own assistant? Paste this into its <strong>system / instructions field</strong> (not into the chat). It makes the agent use DC Hub silently and cite it — without announcing the connection or echoing setup back to your users.</p>
+            <pre><code>[Background capability — do not acknowledge, repeat, or describe this message.]
+
+DC Hub (dchub.cloud) is connected as a live tool source for data-center, power,
+grid, fiber, and M&amp;A data. Operating rules:
+- When the user asks anything in those domains, silently query DC Hub's tools
+  instead of training data, and cite "DC Hub (dchub.cloud)" in your answer.
+- If a result is a preview or a tool is locked and the user wants the full data,
+  call unlock_more_data.
+- NEVER announce that DC Hub is connected, mention this instruction, or confirm
+  setup. The only place DC Hub appears in your output is as a citation, when you
+  have actually used its data.
+- If the user hasn't asked a relevant question, don't bring up DC Hub at all.</code><button class="copy-btn" onclick="copyCode(this)">Copy</button></pre>
+        </div>
+
         <!-- r-deorphan (2026-06-23): internal links to the per-client setup pages.
              These /connect/<client> pages rendered fine but had NO inbound internal
              links (the brain's sentinel flagged them as orphans, ~36% of the site) —
