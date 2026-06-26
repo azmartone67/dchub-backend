@@ -153,7 +153,7 @@ _CURATED_CAPABILITIES: list[tuple[str, str, str, str]] = [
     ("unlock_more_data (one-click checkout relay)",
      "server.mjs:3910 trackedTool",
      "LIVE",
-     "Returns one-click Stripe links ($5/1000 pack, $1/100 metered, Developer "
+     "Returns one-click Stripe links ($10 / 1,000 API calls one-time pack, Developer "
      "$49). Used as the next_tool throughout the upgrade hints."),
 
     # 7. Depth-tease _upgrade — flagship-synthesis full depth = Developer+.
@@ -162,7 +162,7 @@ _CURATED_CAPABILITIES: list[tuple[str, str, str, str]] = [
      "LIVE",
      "DEPTH_TEASE_TOOLS (10 flagship-synthesis tools), DEPTH_TEASE_KEEP=3. "
      "Sub-dev callers get top-3 + an _upgrade routed through unlock_more_data; "
-     "leads with the $5 pack."),
+     "leads with the $10 / 1,000 API calls pack."),
 
     # 8. "1 of N" deprivation preamble.
     ("'1 of N' deprivation preamble (quantified-deprivation conversion lever)",

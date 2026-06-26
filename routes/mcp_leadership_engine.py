@@ -155,7 +155,7 @@ def _dim_conversion():
         "current": f"{conv} conversions / 30d",
         "target": f"{TARGET}+ /30d",
         "status": _status(_clamp(100.0 * conv / TARGET)),
-        "top_move": "downstream of retention — surface usage-based ($5 pack / metered) at the value moment",
+        "top_move": "downstream of retention — surface the $10 one-time / 1,000 API calls pack at the value moment",
     }
 
 

@@ -209,7 +209,7 @@ TOOLS = [
      "Recover a LOST DC Hub key: pass your human's email and DC Hub re-sends any key tied to that address to that inbox. It never returns the key over the wire, and the confirmation is enumeration-safe (identical whether or not a key exists).",
      'recover_my_key(email="you@firm.com")'),
     ("unlock_more_data",      "account",        "free",
-     "Unlock DC Hub's full depth — call this when a result came back as a 1-of-N preview or a tool was locked. Returns the upgrade ladder + ready-to-paste one-click checkout links your human completes in one click; cheapest start is $5 = 1,000 full queries.",
+     "Unlock DC Hub's full depth — call this when a result came back as a 1-of-N preview or a tool was locked. Returns the upgrade ladder + ready-to-paste one-click checkout links your human completes in one click; cheapest start is $10 one-time = 1,000 API calls.",
      'unlock_more_data(reason="need the full market report")'),
 ]
 

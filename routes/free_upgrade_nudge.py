@@ -239,7 +239,7 @@ def _render(cand: dict, links: dict) -> tuple[str, str]:
        Upgrade this key — Developer · $49/mo</a></p>
   <p style="font-size:14px;color:#444">Developer = 500 MCP calls/day, full result sets,
      grid intelligence + fiber intel ungated. Prefer no subscription?
-     <a href="{met_link}">Pay-as-you-go is $1 per 100 calls</a>.</p>
+     <a href="{met_link}">$10 one-time = 1,000 API calls</a>.</p>
   <p style="font-size:13px;color:#666">Questions? Just reply — this inbox is read by a human.
      Full plans: <a href="https://dchub.cloud/pricing">dchub.cloud/pricing</a></p>
   <p style="font-size:12px;color:#999">You're receiving this because your API key has been
