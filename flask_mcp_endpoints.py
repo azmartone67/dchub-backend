@@ -213,6 +213,14 @@ def handoff_funnel():
                       "where claim_minted_at is not null and first_hit_at > now() - interval '%s'" % iv)
         used    = one("select count(distinct mcp_session_id) from mcp_high_intent_sessions "
                       "where claim_used_at is not null and first_hit_at > now() - interval '%s'" % iv)
+        # r-funnel-honest (2026-06-25): 'human_acted' previously read claim_used_at,
+        # but that is dominated by the SERVER-SIDE auto-redeem (server.mjs
+        # _autoRedeemClaim stamps it ~1s after mint — no human, no browser; the real
+        # human-click instrument claim_page_opened_at has fired 0× all-time). Read
+        # the GET-/claim instrument for human_acted; keep claim_used_at as a separate
+        # 'redeemed' diagnostic (human form-submit OR machine auto-redeem).
+        opened  = one("select count(distinct mcp_session_id) from mcp_high_intent_sessions "
+                      "where claim_page_opened_at is not null and first_hit_at > now() - interval '%s'" % iv)
         emailed = one("select count(distinct mcp_session_id) from mcp_high_intent_sessions "
                       "where claim_email is not null and claim_email <> '' "
                       "and first_hit_at > now() - interval '%s'" % iv)
@@ -224,18 +232,20 @@ def handoff_funnel():
         def pct(n, d):
             return round(100.0 * n / d, 2) if (n is not None and d) else None
         steps = {"paywall_hit": paywall, "high_intent": high, "relay_minted": minted,
-                 "human_acted": used, "identified": emailed, "paid_attributed": paid}
+                 "human_acted": opened, "redeemed": used,
+                 "identified": emailed, "paid_attributed": paid}
         return {
             "steps": steps,
             "rates": {
                 "paywall_to_relay_pct": pct(minted, paywall),
-                "relay_to_human_pct": pct(used, minted),
+                "relay_to_human_pct": pct(opened, minted),
+                "relay_to_redeemed_pct": pct(used, minted),
                 "paywall_to_paid_pct": pct(paid, paywall),
             },
             "biggest_leak": (
                 "paywall→relay_mint" if (paywall and (minted or 0) < paywall * 0.5)
-                else "relay→human_action" if ((minted or 0) and (used or 0) < (minted or 0) * 0.5)
-                else "human_action→paid"),
+                else "relay→human_click" if ((minted or 0) and (opened or 0) < (minted or 0) * 0.5)
+                else "human_click→paid"),
         }
     out = {"ok": True, "metric": "agent_to_human_handoff_funnel", "unit": "distinct_sessions"}
     try:
@@ -897,6 +907,25 @@ def identify_key():
         email = _norm or email
     except Exception:
         # Validator absent/broke — never block identify on our own check.
+        pass
+
+    # r-funnel-identify (2026-06-25): bind_email/identify writes the email onto the
+    # KEY tables (mcp_dev_keys/auto_trial_keys), but the handoff funnel's 'identified'
+    # stage counts mcp_high_intent_sessions.claim_email — a DIFFERENT table it never
+    # joined, so ~16 real binds/30d were captured yet the dashboard read 0. Stamp the
+    # high-intent session row too (server.mjs callAPIWrite forwards X-MCP-Session).
+    # Fully isolated best-effort side-write — never blocks or alters the identify path.
+    try:
+        _mcp_sess = (request.headers.get('X-MCP-Session')
+                     or request.headers.get('Mcp-Session-Id') or '').strip()
+        if _mcp_sess:
+            with _pool.connection() as _sc, _sc.cursor() as _scur:
+                _scur.execute(
+                    "UPDATE mcp_high_intent_sessions SET claim_email = %s "
+                    "WHERE mcp_session_id = %s AND (claim_email IS NULL OR claim_email = '')",
+                    (email, _mcp_sess))
+                _sc.commit()
+    except Exception:
         pass
 
     try:
