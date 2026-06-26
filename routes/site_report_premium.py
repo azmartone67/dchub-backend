@@ -480,6 +480,10 @@ def render_premium_html(S, lat=None, lon=None):
         foot_brand = ("Prepared by DC Hub" + (f" for {_h(client)}" if client else "")
                       + " &middot; data-center &amp; energy intelligence &middot; dchub.cloud")
     short = f"{_h(location)} &middot; {_h(coords)}"
+    # Inner-page footer attribution: the preparer when branded (e.g. Martone
+    # Advisors), else DC Hub. dchub.cloud stays on the footer + the cover credits
+    # "DC Hub data-center & energy intelligence", so DC Hub attribution is preserved.
+    foot_src = _h(preparer) if branded else "DC Hub"
 
     # ── Page 1 · COVER ──────────────────────────────────────────────────────
     cover_cards = "".join(
@@ -551,7 +555,7 @@ def render_premium_html(S, lat=None, lon=None):
         per-substation transfer headroom &mdash; treat capacity as a screening target, not commissioned capacity.</div>
     </div>
   </div>
-  <p class="assess"><b>Power basis.</b> {ramp_assess}</p>""", "DC Hub &middot; Site Analysis", short)
+  <p class="assess"><b>Power basis.</b> {ramp_assess}</p>""", f"{foot_src} &middot; Site Analysis", short)
 
     # ── Page 3 · INFRASTRUCTURE (power / economics / air / fiber) ────────────
     power_dc = dict(accent="v", label="Power &middot; Transmission", title=_h(volt),
@@ -609,7 +613,7 @@ def render_premium_html(S, lat=None, lon=None):
     <div class="grid3" style="margin-top:11px;">{hcards}</div>
     <div class="hnote">Capacity, cost and timing are screening figures &mdash; confirm transfer capacity, tariff
       and queue position with the utility, ISO and regulator before commitment.</div>
-  </div>""", "DC Hub &middot; Site Analysis", short)
+  </div>""", f"{foot_src} &middot; Site Analysis", short)
 
     # ── Page 4 · MARKET INTELLIGENCE (DCPI / DCGI) ──────────────────────────
     mkt_cards = "".join([
@@ -659,7 +663,7 @@ def render_premium_html(S, lat=None, lon=None):
     <div class="lcard"><div class="lh">DC Hub Market Read</div><ul>{why_html}</ul></div>
     <div class="lcard"><div class="lh">What It Means For This Site</div><ul>{sig_html}</ul></div>
   </div>
-  <p class="assess"><b>Market read.</b> {assess4}</p>""", "DC Hub &middot; DCPI / DCGI &middot; dchub.cloud", short)
+  <p class="assess"><b>Market read.</b> {assess4}</p>""", f"{foot_src} &middot; DCPI / DCGI &middot; dchub.cloud", short)
 
     # ── Page 5 · NETWORK (fiber routes & latency) ───────────────────────────
     fiber_cap = _h(_dash(fiber.get("fiber_map_caption")) or _dash(fiber.get("assessment")) or
@@ -683,7 +687,7 @@ def render_premium_html(S, lat=None, lon=None):
   {fiber_map}
   <div class="maplabel" style="margin-top:13px;">Latency Route &middot; <span>{_h(lat_ms or "—")} ms &rarr; {_h(short_t)}</span></div>
   {latency_map}
-  <div class="grid3" style="margin-top:13px;">{net_cards}</div>""", "DC Hub &middot; Fiber Routes &amp; Latency &middot; dchub.cloud", short)
+  <div class="grid3" style="margin-top:13px;">{net_cards}</div>""", f"{foot_src} &middot; Fiber Routes &amp; Latency &middot; dchub.cloud", short)
 
     title = f"{site_name} — Site Analysis · {preparer}"
     return _head(title) + "\n<body>\n" + "\n".join([p1, p2, p3, p4, p5]) + "\n</body>\n</html>\n"
