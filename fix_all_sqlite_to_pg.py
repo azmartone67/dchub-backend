@@ -475,7 +475,7 @@ def main():
             '?' in content and ('.execute' in content or 'VALUES' in content.upper()),
             'INSERT OR IGNORE' in content.upper(),
             'INSERT OR REPLACE' in content.upper(),
-            "datetime('now')" in content,
+            "NOW()" in content,
             'sqlite3.Row' in content,
             'PRAGMA' in content and '.execute' in content,
             'AUTOINCREMENT' in content.upper(),
