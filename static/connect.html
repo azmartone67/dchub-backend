@@ -180,6 +180,40 @@
             <span class="transport-badge">Streamable HTTP</span>
         </div>
 
+        <!-- r-reach-badge (2026-06-26): honest live social proof, auto-fetched from
+             /api/v1/ai/reach (distinct agent sources, NOT loop-inflated volume). -->
+        <div id="dchub-reach-badge" style="background:#09090b;border:0.5px solid rgba(255,255,255,0.08);border-radius:16px;padding:24px;margin:8px 0 32px;display:none;">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:16px;">
+            <span style="width:8px;height:8px;border-radius:50%;background:#00d4ff;display:inline-block;"></span>
+            <span style="font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:#71717a;">Live agent reach &middot; updated weekly</span>
+          </div>
+          <div style="display:flex;flex-wrap:wrap;gap:28px;align-items:flex-end;margin-bottom:18px;">
+            <div><div id="dchub-reach-platforms" style="font-size:48px;font-weight:600;color:#fafafa;line-height:1;">&mdash;</div>
+              <div style="font-size:13px;color:#a1a1aa;margin-top:6px;">AI platforms run on<br>DC Hub's live data</div></div>
+            <div style="width:1px;background:rgba(255,255,255,.1);align-self:stretch;"></div>
+            <div><div id="dchub-reach-agents" style="font-size:48px;font-weight:600;color:#00d4ff;line-height:1;">&mdash;</div>
+              <div style="font-size:13px;color:#a1a1aa;margin-top:6px;">distinct AI agents queried<br>live data this week</div></div>
+          </div>
+          <div id="dchub-reach-chips" style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:16px;"></div>
+          <div style="font-size:14px;color:#a1a1aa;">Your AI is competing with agents that already answer from live infrastructure data &mdash; connect yours above.</div>
+          <div style="font-size:11px;color:#52525b;margin-top:14px;">Distinct agent sources (real public IPs per platform), not cumulative request volume. Source: /api/v1/ai/reach.</div>
+        </div>
+        <script>
+        (function(){
+          fetch('/api/v1/ai/reach').then(function(r){return r.json();}).then(function(d){
+            if(!d||!d.distinct_platforms){return;}
+            document.getElementById('dchub-reach-platforms').textContent=d.distinct_platforms;
+            document.getElementById('dchub-reach-agents').textContent=d.distinct_agents_7d||'—';
+            var pretty={'anthropic/claudeai':'Claude.ai','claude':'Claude','claude-code':'Claude Code','smithery connect':'Smithery','opencode':'OpenCode','cursor':'Cursor'};
+            var top=(d.per_platform||[]).slice(0,5),chips=document.getElementById('dchub-reach-chips');
+            top.forEach(function(p){var s=document.createElement('span');s.textContent=pretty[p.platform_id]||p.platform_id;s.style.cssText='font-size:13px;color:#e4e4e7;background:#18181b;border:0.5px solid rgba(255,255,255,.08);border-radius:8px;padding:5px 12px;';chips.appendChild(s);});
+            var more=(d.distinct_platforms||0)-top.length;
+            if(more>0){var m=document.createElement('span');m.textContent='+'+more+' more';m.style.cssText='font-size:13px;color:#71717a;border:0.5px solid rgba(255,255,255,.06);border-radius:8px;padding:5px 12px;';chips.appendChild(m);}
+            document.getElementById('dchub-reach-badge').style.display='block';
+          }).catch(function(){});
+        })();
+        </script>
+
         <h2>Setup Instructions</h2>
 
         <div class="platform-card" style="border:1px solid #00d4ff; background:#0e1b2a;">
