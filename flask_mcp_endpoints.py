@@ -224,6 +224,15 @@ def handoff_funnel():
         emailed = one("select count(distinct mcp_session_id) from mcp_high_intent_sessions "
                       "where claim_email is not null and claim_email <> '' "
                       "and first_hit_at > now() - interval '%s'" % iv)
+        # r-funnel-honest2 (2026-06-26): the per-session 'identified' (emailed) only
+        # counts emails bound INSIDE a high-intent session — but most identity capture
+        # happens on the key tables (claim_free_key, direct bind_email) with NO session
+        # link, so 'identified' structurally undercounts. Surface the REAL distinct-email
+        # capture as a sibling top-line so the dashboard stops implying zero identity
+        # (verified: ~12 distinct emails/30d the per-session funnel never saw).
+        captured = one("select count(distinct lower(email)) from mcp_dev_keys "
+                       "where email is not null and email <> '' "
+                       "and created_at > now() - interval '%s'" % iv)
         paid_su = one("select count(distinct mcp_session_id) from mcp_session_upgrades "
                       "where upgraded_at > now() - interval '%s'" % iv)
         paid_tp = one("select count(distinct mcp_session_id) from mcp_topups "
@@ -236,6 +245,7 @@ def handoff_funnel():
                  "identified": emailed, "paid_attributed": paid}
         return {
             "steps": steps,
+            "emails_captured_total": captured,
             "rates": {
                 "paywall_to_relay_pct": pct(minted, paywall),
                 "relay_to_human_pct": pct(opened, minted),
