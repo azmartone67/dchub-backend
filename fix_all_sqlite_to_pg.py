@@ -499,7 +499,7 @@ def main():
     print(f"  conn.execute fixes:    {stats['execute_fixes']}")
     print(f"  INSERT OR IGNORE:      {stats['insert_or_ignore_fixes']}")
     print(f"  INSERT OR REPLACE:     {stats['insert_or_replace_fixes']}")
-    print(f"  datetime('now'):       {stats['datetime_now_fixes']}")
+    print(f"  NOW():       {stats['datetime_now_fixes']}")
     print(f"  PRAGMA removals:       {stats['pragma_fixes']}")
     print(f"  AUTOINCREMENT:         {stats['autoincrement_fixes']}")
     print(f"  sqlite3.Row:           {stats['sqlite3_row_fixes']}")
