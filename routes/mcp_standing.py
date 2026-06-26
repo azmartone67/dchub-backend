@@ -39,6 +39,7 @@ CONFIRMED_REGISTRIES = [
     {"registry": "PulseMCP",              "url": "https://www.pulsemcp.com/servers/dchub"},
     {"registry": "LobeHub",               "url": "https://lobehub.com/mcp/dchub-mcp-server"},
     {"registry": "Official MCP Registry", "url": "https://github.com/modelcontextprotocol/registry"},
+    {"registry": "GitHub MCP Registry",   "url": "https://github.com/mcp"},
 ]
 
 # The recognizable AI platforms that reach DC Hub (homepage-verified by request volume).
@@ -50,7 +51,7 @@ CONNECTED_PLATFORMS = [
     "Claude", "ChatGPT", "Gemini", "Perplexity", "Grok", "Copilot", "Meta AI",
     "DeepSeek", "Mistral", "Cohere", "Poe", "HuggingFace", "Groq", "You.com",
 ]
-TOOLS_COUNT = 31
+TOOLS_COUNT = 49  # canonical (server.json _meta toolCount / mcp-server.json); keep in sync
 
 
 def _registries_live():
