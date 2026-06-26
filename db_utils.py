@@ -29,7 +29,7 @@ SQLITE_TO_PG_FUNC = {
     "datetime('now', '-6 hours')": "(NOW() - INTERVAL '6 hours')",
     "datetime('now', '-12 hours')": "(NOW() - INTERVAL '12 hours')",
     "datetime('now', '-48 hours')": "(NOW() - INTERVAL '48 hours')",
-    "datetime('now', '-90 days')": "(NOW() - INTERVAL '90 days')",
+    "NOW() - INTERVAL '90 days'": "(NOW() - INTERVAL '90 days')",
     "datetime('now', '-365 days')": "(NOW() - INTERVAL '365 days')",
     "NOW()": "NOW()",
 }
