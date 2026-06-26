@@ -355,8 +355,10 @@ def init_free_tier_gate(app, get_db_conn):
                     '/api/v1/connectivity/score',
                     '/api/v1/grid/overview',
                     '/api/v1/grid/status',
-                    '/api/v1/markets/compare',
-                    '/api/v1/pipeline/summary',
+                    # 2026-06-25: removed markets/compare + pipeline/summary here to SYNC with
+                    # api_tier_gating._MAP_BYPASS_PATHS (r36 removed them there). No-op in this layer
+                    # anyway (neither matches a GATED_PREFIX -> is_gated()=False -> already allowed);
+                    # pipeline/summary is Pro (api_tier_gating + worker force-origin), markets/compare freemium.
                     '/api/v1/oilgas/search',
                     '/api/v1/deals',
                     '/api/v1/power-plants/nearby',

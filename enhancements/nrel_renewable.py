@@ -27,7 +27,7 @@ class NRELClient:
     Get API key at: https://developer.nrel.gov/signup/
     """
     
-    BASE_URL = "https://developer.nrel.gov/api"
+    BASE_URL = os.environ.get("NREL_API_BASE", "https://dchub.cloud/api/_ext/nrel")  # 2026-06-25: Railway can't resolve developer.nrel.gov (.gov egress block); route via the CF worker proxy. Set NREL_API_BASE to revert.
     
     def __init__(self, api_key: Optional[str] = None):
         self.api_key = api_key or os.environ.get("NREL_API_KEY", "DEMO_KEY")
@@ -93,7 +93,15 @@ class NRELClient:
                 return data
                 
         except requests.exceptions.RequestException as e:
-            return {"error": str(e), "status": "failed"}
+            # 2026-06-25: degrade cleanly. Anon-reachable via the map bypass, so never
+            # leak the upstream URL / api_key / stacktrace to callers.
+            try:
+                import logging; logging.getLogger(__name__).warning("NREL solar fetch failed: %s", e)
+            except Exception:
+                pass
+            return {"type": "solar", "latitude": lat, "longitude": lon,
+                    "available": False, "status": "unavailable", "source": "NREL PVWatts",
+                    "note": "Renewable solar potential is temporarily unavailable."}
     
     def _format_solar_response(self, data: Dict, lat: float, lon: float) -> Dict:
         """Format PVWatts response for DC Hub"""
@@ -545,6 +553,11 @@ def register_nrel_routes(app):
     nrel_client = NRELClient()
     layer_generator = RenewableLayerGenerator(nrel_client)
     
+    # NOTE (2026-06-25): /api/renewable/{solar,wind,combined} are FREE for the dchub.cloud
+    # map. They are whitelisted in _MAP_BYPASS_PATHS (api_tier_gating + free_tier_gate), so the
+    # @require_plan('pro') below is OVERRIDDEN for map/anon callers (public NREL PVWatts data).
+    # The decorator only gates non-dchub.cloud API callers. The bulk /api/renewable/layer/*
+    # routes are NOT whitelisted and stay Pro. Map caller: js/site-scoring-integration.js.
     @app.route('/api/renewable/solar', methods=['GET'])
     @require_plan('pro')
     def get_solar_potential():
@@ -569,6 +582,7 @@ def register_nrel_routes(app):
         )
         return jsonify(result)
     
+    # Free for the map (see /api/renewable/solar) — _MAP_BYPASS_PATHS overrides @require_plan.
     @app.route('/api/renewable/wind', methods=['GET'])
     @require_plan('pro')
     def get_wind_potential():
@@ -607,6 +621,7 @@ def register_nrel_routes(app):
         'WI': (43.78, -88.79), 'WY': (43.08, -107.29)
     }
 
+    # Free for the map (see /api/renewable/solar) — _MAP_BYPASS_PATHS overrides @require_plan.
     @app.route('/api/renewable/combined', methods=['GET'])
     @require_plan('pro')
     def get_combined_renewable():
