@@ -274,6 +274,9 @@ def _build_data() -> dict:
         "kpis": {"mrr_usd": 0, "conversions_30d": 0, "active_dev_keys": 0,
                  "tool_calls_7d": 0, "tool_calls_7d_incl_loops": 0,
                  "tool_calls_7d_real": 0, "tool_calls_30d_real": 0,
+                 "tool_calls_30d_total": 0,
+                 "reach_total_served": 0, "reach_external_ai": 0,
+                 "real_conversions_30d": 0,
                  "dev_keys_by_tier": {}},
         "calls_by_week": [],
         "calls_week_trend": {},
@@ -432,6 +435,60 @@ def _build_data() -> dict:
                 "tool_calls_*_real de-loop query timed out (transient DB load, NOT a schema gap)")
         out["kpis"]["tool_calls_7d_real"]  = int(v_real7) if v_real7 is not None else None
         out["kpis"]["tool_calls_30d_real"] = int(v_real30) if v_real30 is not None else None
+
+        # ── KPI 4d: gross 30d tool-call denominator (no de-loop) ──────
+        # The USAGE bifurcation needs total-vs-real. tool_calls_30d_real
+        # (above) is the de-looped numerator; this is the gross denominator.
+        # Plain COUNT over an indexed created_at — fast, unlike the de-loop.
+        v_total30 = _scalar(cur,
+            "SELECT COUNT(*) FROM mcp_tool_calls "
+            " WHERE created_at >= NOW() - INTERVAL '30 days'")
+        out["kpis"]["tool_calls_30d_total"] = (
+            int(v_total30) if v_total30 is not None else None)
+
+        # ── KPI 4e: REACH (AI-platform discovery) — live, zero-drift ──
+        # Mirrors the /ai page: "Total Requests Served" (all sources) and
+        # "from external AI platforms" (the AI_PLATFORMS allowlist subset),
+        # both summed from the SAME ai_cumulative table /ai reads, so this
+        # header can never drift from /ai. DEFENSIVE local import: any
+        # ai_tracking failure degrades only this one card — never the whole
+        # dashboard (a module-level import error would make the blueprint
+        # register try/except 404 BOTH routes silently).
+        try:
+            from ai_tracking import _execute as _ai_execute, AI_PLATFORMS
+            _ai_rows = _ai_execute(
+                "SELECT platform, total_requests FROM ai_cumulative",
+                fetchall=True) or []
+            _reach_total = sum(int(r.get("total_requests") or 0)
+                               for r in _ai_rows)
+            _reach_external = sum(
+                int(r.get("total_requests") or 0) for r in _ai_rows
+                if str(r.get("platform") or "").strip().lower() in AI_PLATFORMS)
+            out["kpis"]["reach_total_served"] = int(_reach_total)
+            out["kpis"]["reach_external_ai"] = int(_reach_external)
+        except Exception as e:
+            logger.debug("reach probe failed: %s", e)
+            out["kpis"]["reach_total_served"] = None
+            out["kpis"]["reach_external_ai"] = None
+
+        # ── KPI 4f: HONEST conversion FLOW — real Stripe payments (30d) ──
+        # Count of real Stripe-backed conversions (subs + $10 packs) in the
+        # last 30d, with seed/comp/NLR rows stripped. We deliberately do NOT
+        # synthesize an MRR here: mcp_conversions has no active/churned status
+        # and users.plan 'active' is comp-inflated (prior ★finding: real cash-
+        # recurring is a fraction of the plan run-rate), so any single MRR
+        # number would be contestable. The existing mrr_usd card already shows
+        # the plan run-rate WITH its honest caveat. %-free SQL (no LIKE) to
+        # dodge the _scalar empty-params %-substitution trap.
+        real_conv30 = _scalar(cur,
+            "SELECT COUNT(*) FROM mcp_conversions "
+            " WHERE created_at >= NOW() - INTERVAL '30 days' "
+            "   AND stripe_customer_id IS NOT NULL "
+            "   AND LOWER(COALESCE(plan_to,'')) NOT IN "
+            "       ('comp','complimentary','research_seed_nlr','seed') "
+            "   AND LOWER(COALESCE(source,'')) <> 'seed'")
+        out["kpis"]["real_conversions_30d"] = (
+            int(real_conv30) if real_conv30 is not None else None)
 
         # ── KPI 4c: WEEKLY TREND (de-looped) so a real decline is visible ──
         # Last ~8 ISO weeks of de-looped calls + DISTINCT external callers
@@ -1172,6 +1229,50 @@ def _render_html(data: dict, admin_key: str) -> str:
                                                    key=lambda x: -int(x[1] or 0))
     ) or "no keys"
 
+    # ── Unified funnel header: reach → usage → conversion, bifurcated ──
+    # One honest strip connecting the /ai reach number to real tool-call
+    # usage to real Stripe cash, so reach (mostly crawlers) is never read
+    # as usage. Every value computed live in _build_data; None → '—'.
+    def _vn(x):
+        return _fmt_n(x) if x is not None else "—"
+    _reach_ext = k.get("reach_external_ai")
+    _reach_tot = k.get("reach_total_served")
+    _use_real  = k.get("tool_calls_30d_real")
+    _use_tot   = k.get("tool_calls_30d_total")
+    _real_conv = k.get("real_conversions_30d")
+    _paid_keys = int(keys_by_tier.get("paid") or 0) + int(keys_by_tier.get("enterprise") or 0)
+    _use_int_pct = (round(100 * (1 - (_use_real / _use_tot)))
+                    if (_use_real is not None and _use_tot) else None)
+    _r2u = (round(100 * _use_real / _reach_ext, 1)
+            if (_use_real and _reach_ext) else None)
+    unified_funnel_html = f"""
+  <div style="display:flex;align-items:baseline;gap:10px;margin:4px 0 10px;flex-wrap:wrap">
+    <span style="font-size:13px;font-weight:600;letter-spacing:0.04em;color:var(--ink)">UNIFIED FUNNEL — reach → usage → conversion</span>
+    <span style="font-size:11px;color:var(--muted)">honest · internal noise stripped · 60s cache</span>
+  </div>
+  <div class="heros">
+    <div class="hero">
+      <div class="hero-l">1 · Reach (AI platforms)</div>
+      <div class="hero-v">{_vn(_reach_ext)}</div>
+      <div class="hero-d">external AI · of {_vn(_reach_tot)} total served — mostly crawlers indexing you for citations</div>
+    </div>
+    <div class="hero">
+      <div class="hero-l">2 · Usage (tools invoked)</div>
+      <div class="hero-v">{_vn(_use_real)}</div>
+      <div class="hero-d">real external · 30d · of {_vn(_use_tot)} calls{(' · ' + str(_use_int_pct) + '% internal self-heal stripped') if _use_int_pct is not None else ''}</div>
+    </div>
+    <div class="hero">
+      <div class="hero-l">3 · Conversion (real paid · 30d)</div>
+      <div class="hero-v">{_vn(_real_conv)}</div>
+      <div class="hero-d">real Stripe payments · {_fmt_n(_paid_keys)} active paid keys · the $10 pack converts (MRR card below = plan run-rate)</div>
+    </div>
+    <div class="hero">
+      <div class="hero-l">⟂ Bottleneck: reach → usage</div>
+      <div class="hero-v">{(str(_r2u) + '%') if _r2u is not None else '—'}</div>
+      <div class="hero-d">of AI platforms that find you actually invoke a tool — the leak is here, not the offer</div>
+    </div>
+  </div>"""
+
     # Funnel waterfall (vertical).
     stages = [
         ("Tool calls (30d)",          f["calls_30d"],
@@ -1401,6 +1502,8 @@ def _render_html(data: dict, admin_key: str) -> str:
      Generated {_esc(data['generated_at'])}</p>
 
   {miss_html}
+
+  {unified_funnel_html}
 
   <!-- HERO KPIS -->
   <div class="heros">
