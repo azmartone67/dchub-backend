@@ -12810,12 +12810,25 @@ def handle_checkout_completed(session):
                 plan_name, api_tier = 'enterprise', 'enterprise'
             elif amount_dollars == 5990 or (5985 <= amount_dollars <= 5995):
                 plan_name, api_tier = 'enterprise', 'enterprise'
+            elif amount_dollars == 9 or (8 <= amount_dollars <= 10):
+                plan_name, api_tier = 'starter', 'starter'   # $9 Starter (rank 2)
             elif amount_dollars >= 500:
                 plan_name, api_tier = 'enterprise', 'enterprise'
                 _amount_ambiguous = True  # >=500 but not an exact enterprise price
             else:
-                plan_name, api_tier = 'pro', 'pro'
-                _amount_ambiguous = True  # unrecognized amount → default guess
+                # SECURITY (2026-06-25): this branch used to default to 'pro' —
+                # so a $1 card-testing charge on the PUBLIC Stripe payment links
+                # minted a FULL Pro account + paid MCP keys (amber.berg8184 /
+                # aaron.ross641 each paid $1 with a stolen card and got Pro).
+                # An UNRECOGNIZED amount must NEVER grant a paid tier. Default to
+                # 'free' + the admin alert below: a genuine odd-amount payer is
+                # provisioned safe and flagged for a manual upgrade, while a
+                # fraudulent micro-charge gets nothing of value. (Known small
+                # SKUs like the $9 Starter are matched explicitly above; the
+                # $1 metered / $5 pack are one-time mode=payment flows handled
+                # elsewhere.)
+                plan_name, api_tier = 'free', 'free'
+                _amount_ambiguous = True  # unrecognized amount → SAFE default (was 'pro')
             print(f"💰 Plan from amount (${amount_dollars}): {plan_name}")
             if _amount_ambiguous:
                 try:
