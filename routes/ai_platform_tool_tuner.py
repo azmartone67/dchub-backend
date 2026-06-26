@@ -208,8 +208,50 @@ GENERIC_DESCRIPTIONS = {
 
 
 # ── Claude-driven generator ──────────────────────────────────────────
+def _outcome_signal(c) -> dict:
+    """r-tuner-loop (2026-06-26): close the tuner loop. Per-(platform, tool)
+    ADOPTION signal — calls in the last 30d — so the reseed tunes UNDER-adopted
+    (platform, tool) cells toward more calls. A tool DESCRIPTION's job is
+    ADOPTION (getting an agent to choose the tool); response-level retention/$10
+    conversion is tuned separately in the gateway. Returns {(platform, tool):
+    calls}. Fail-soft → {} so the seed loop falls back to the prior no-signal
+    behavior and never breaks on this best-effort read."""
+    out: dict = {}
+    try:
+        with c.cursor() as cur:
+            cur.execute(
+                "SELECT lower(coalesce(platform,'')) AS p, tool AS t, count(*) AS n "
+                "FROM mcp_call_log "
+                "WHERE (\"timestamp\")::timestamptz > now() - interval '30 days' "
+                "  AND tool IS NOT NULL AND tool <> '' "
+                "GROUP BY 1, 2")
+            for p, t, n in cur.fetchall():
+                if p and t:
+                    out[(PLATFORM_MAP.get(p, p), t)] = int(n or 0)
+    except Exception:
+        try: c.rollback()
+        except Exception: pass
+        return {}
+    return out
+
+
+def _fmt_adoption(calls: int, tool_max: int, platform: str) -> str:
+    """One (platform, tool) cell's adoption numbers → a short tuning instruction
+    the rewrite prompt acts on. Empty when there's no signal yet (rewrite then
+    behaves exactly as before)."""
+    if not tool_max:
+        return ""
+    if calls <= max(2, int(tool_max * 0.1)):
+        return (f"{platform} agents called this tool only {calls}x in 30d vs {tool_max}x "
+                f"on its strongest platform — UNDER-ADOPTED on {platform}. Make the wording "
+                f"unmistakably concrete and useful for a {platform} agent's workflow so more "
+                f"of them choose to call it.")
+    return (f"{platform} agents already call this tool {calls}x/30d — adopted here; keep "
+            f"what works and only sharpen clarity.")
+
+
 def _claude_rewrite(tool_name: str, generic_desc: str, platform: str,
-                    voice_cue: str) -> str | None:
+                    voice_cue: str, outcome: str = "") -> str | None:
     """Generate a per-platform-tuned tool description via Claude. Returns
     None on failure (caller falls back to generic)."""
     api_key = (os.environ.get("ANTHROPIC_API_KEY") or "").strip()
@@ -239,7 +281,9 @@ def _claude_rewrite(tool_name: str, generic_desc: str, platform: str,
         "  - Preserve all data the generic claims (counts, scope)\n"
         "  - Lead with action (verb-first when natural)\n"
         "  - Do NOT include the tool name in the description\n\n"
-        "Output ONLY the rewritten description, nothing else."
+        + (f"ADOPTION CONTEXT (use ONLY to decide emphasis/clarity — do NOT put any "
+           f"numbers or this note in your output): {outcome}\n\n" if outcome else "")
+        + "Output ONLY the rewritten description, nothing else."
     )
     for i, model in enumerate(models[:3]):
         try:
@@ -396,6 +440,15 @@ def seed_variants():
     failed: list = []
     api_key_present = bool(os.environ.get("ANTHROPIC_API_KEY"))
 
+    # r-tuner-loop: pull the per-(platform, tool) adoption signal ONCE, and the
+    # per-tool max across platforms, so each rewrite knows whether its cell is
+    # under-adopted on that platform. Fail-soft (empty → no-signal rewrites).
+    _adopt = _outcome_signal(c)
+    _tool_max: dict = {}
+    for (_p, _t), _n in _adopt.items():
+        if _n > _tool_max.get(_t, 0):
+            _tool_max[_t] = _n
+
     for tool_name in TOP_10_TOOLS:
         generic = GENERIC_DESCRIPTIONS.get(tool_name, tool_name)
         for canon, _aliases, voice in TOP_5_PLATFORMS:
@@ -413,7 +466,10 @@ def seed_variants():
                 written.append({"platform": canon, "tool": tool_name,
                                 "via": "deterministic"})
                 continue
-            tuned = _claude_rewrite(tool_name, generic, canon, voice)
+            tuned = _claude_rewrite(
+                tool_name, generic, canon, voice,
+                _fmt_adoption(_adopt.get((canon, tool_name), 0),
+                              _tool_max.get(tool_name, 0), canon))
             if tuned:
                 _upsert(c, canon, tool_name, tuned, "claude")
                 written.append({"platform": canon, "tool": tool_name,
