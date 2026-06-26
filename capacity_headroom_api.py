@@ -461,10 +461,10 @@ def save_snapshot(result):
                     INSERT INTO headroom_trend_daily (market, date, avg_spare_mw, peak_demand_mw, min_spare_pct, avg_readiness_score)
                     VALUES (%s, %s, %s, %s, %s, %s)
                     ON CONFLICT(market, date) DO UPDATE SET
-                        avg_spare_mw = (avg_spare_mw + excluded.avg_spare_mw) / 2,
-                        peak_demand_mw = MAX(peak_demand_mw, excluded.peak_demand_mw),
-                        min_spare_pct = MIN(min_spare_pct, excluded.min_spare_pct),
-                        avg_readiness_score = (avg_readiness_score + excluded.avg_readiness_score) / 2
+                        avg_spare_mw = (headroom_trend_daily.avg_spare_mw + excluded.avg_spare_mw) / 2,
+                        peak_demand_mw = GREATEST(headroom_trend_daily.peak_demand_mw, excluded.peak_demand_mw),
+                        min_spare_pct = LEAST(headroom_trend_daily.min_spare_pct, excluded.min_spare_pct),
+                        avg_readiness_score = (headroom_trend_daily.avg_readiness_score + excluded.avg_readiness_score) / 2
                 """, (
                     result['market'], today,
                     result['grid']['spare_capacity_mw'],
