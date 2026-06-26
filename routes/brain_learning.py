@@ -878,25 +878,44 @@ def brain_self_assessment():
     grade_components = {}
     try:
         with _conn() as c, c.cursor() as cur:
-            # Fix-success rate (most important — 35% of grade)
+            # Fix-success rate (most important — 35% of grade).
+            # HONESTY (2026-06-26): grade on the VERIFIED REAL-EFFECT rate
+            # (autopilot_outcomes.succeeded) — the SAME signal /brain/self-model
+            # reports — NOT the brain_fix_outcomes re-check-pass rate, which mixed
+            # easy link/schema re-checks in and overstated success (~72% = grade A)
+            # while real verified effect was ~33% (self-model: "degraded"). The two
+            # public surfaces now agree. The re-check rate stays visible, labeled.
             rows = _safe(cur, """
+                SELECT COUNT(*) FILTER (WHERE succeeded IS TRUE
+                                         AND verified_at >= NOW() - INTERVAL '30 days'),
+                       COUNT(*) FILTER (WHERE succeeded IS FALSE
+                                         AND verified_at >= NOW() - INTERVAL '30 days')
+                  FROM autopilot_outcomes""")
+            v_ok = int(rows[0][0] or 0) if rows and rows[0] else 0
+            v_fail = int(rows[0][1] or 0) if rows and rows[0] else 0
+            v_sample = v_ok + v_fail
+            if v_sample >= 5:
+                rate = v_ok / v_sample
+                metrics["fix_success_rate"] = round(rate * 100, 1)      # verified real-effect
+                metrics["verified_effect_sample_30d"] = v_sample
+                grade_components["fix_success"] = (
+                    4 if rate >= 0.85 else
+                    3 if rate >= 0.70 else
+                    2 if rate >= 0.50 else
+                    1 if rate >= 0.30 else 0)
+            else:
+                metrics["fix_success_rate"] = None
+                grade_components["fix_success"] = None
+            # Secondary, labeled: the endpoint re-check-pass rate (does NOT drive the grade).
+            rrows = _safe(cur, """
                 SELECT COUNT(*) FILTER (WHERE still_broken = FALSE),
                        COUNT(*) FILTER (WHERE still_broken = TRUE)
                   FROM brain_fix_outcomes
                  WHERE checked_at > NOW() - INTERVAL '30 days'""")
-            if rows and rows[0]:
-                worked = int(rows[0][0] or 0); failed = int(rows[0][1] or 0)
-                if (worked + failed) > 0:
-                    rate = worked / (worked + failed)
-                    metrics["fix_success_rate"] = round(rate * 100, 1)
-                    grade_components["fix_success"] = (
-                        4 if rate >= 0.85 else
-                        3 if rate >= 0.70 else
-                        2 if rate >= 0.50 else
-                        1 if rate >= 0.30 else 0)
-                else:
-                    metrics["fix_success_rate"] = None
-                    grade_components["fix_success"] = None
+            if rrows and rrows[0]:
+                rw = int(rrows[0][0] or 0); rf = int(rrows[0][1] or 0)
+                if (rw + rf) > 0:
+                    metrics["recheck_pass_rate"] = round(rw / (rw + rf) * 100, 1)
 
             # Human-rejection rate (25% — lower is better)
             rows = _safe(cur, """
