@@ -8536,6 +8536,22 @@ def mcp_manifest():
             "step_3": "Call tools/call with tool name and arguments",
             "step_4": "Free tier returns 3 results with basic fields. Upgrade at https://dchub.cloud/pricing#developer for full access.",
             "step_5": "Add X-API-Key header with your Developer key to unlock full data"
+        },
+        # r-connect (2026-06-25): machine-readable install block so an agent
+        # parsing this manifest can relay the exact one-step connect command
+        # to its human (or run it itself) without scraping the HTML guide.
+        # Mirrors https://dchub.cloud/connect and the llms.txt Connect section.
+        "connect": {
+            "guide_url": "https://dchub.cloud/connect",
+            "mcp_url": "https://dchub.cloud/mcp",
+            "transport": "streamable-http",
+            "one_step_commands": {
+                "claude_code": "claude mcp add dchub --transport http https://dchub.cloud/mcp",
+                "claude_ai_web": "Settings -> Connectors -> Add custom connector -> https://dchub.cloud/mcp",
+                "claude_desktop_cursor_windsurf_vscode": "Add an MCP server with url https://dchub.cloud/mcp (transport: streamable-http)",
+                "stdio_fallback": "npx -y mcp-remote https://dchub.cloud/mcp"
+            },
+            "after_connecting": "Call the claim_free_key tool once (no email), then SAVE the returned X-API-Key in your MCP client config so the full free tier is reused every session (no re-minting, no cold anonymous restart)."
         }
     }
     # r47.12: if the live fetch succeeded, the live tool list reflects the
@@ -11407,6 +11423,7 @@ def stripe_webhook():
             try:
                 from routes.mcp_conversion_plays import (
                     PACK5_PRICE_CENTS, PACK5_CREDITS, PACK5_EXPIRY_DAYS,
+                    PACK10_PRICE_CENTS, PACK10_CREDITS, PACK10_EXPIRY_DAYS,
                     grant_credit_pack)
                 _p5_mode = (data.get('mode') or '').lower()
                 _p5_amt  = int(data.get('amount_total') or 0)
@@ -11420,8 +11437,18 @@ def stripe_webhook():
                                 or _p5_ref.lower().startswith('tu-')
                                 or _p5_ref.lower().startswith('pk-')
                                 or _p5_ref.startswith('ref_'))
+                # r-pack10 (2026-06-25): recognize a 2nd one-time credit pack —
+                # the repurposed ex-metered link ($10 one-time = 1,000 calls,
+                # price_1TmOic…). Match either pack by its PRE-TAX subtotal (or
+                # total) and grant that pack's credits/expiry. Both currently
+                # grant 1,000 / 90-day; each is env-configurable so they can
+                # diverge without more code.
+                _p10 = PACK10_PRICE_CENTS in (_p5_sub, _p5_amt)
+                _pack_credits = PACK10_CREDITS if _p10 else PACK5_CREDITS
+                _pack_src = 'pack10' if _p10 else 'pack5'
+                _pack_expiry = PACK10_EXPIRY_DAYS if _p10 else PACK5_EXPIRY_DAYS
                 if (_p5_mode == 'payment'
-                        and PACK5_PRICE_CENTS in (_p5_sub, _p5_amt)
+                        and (PACK5_PRICE_CENTS in (_p5_sub, _p5_amt) or _p10)
                         and not _p5_reserved):
                     import secrets as _p5sec
                     _p5_email = (
@@ -11444,13 +11471,13 @@ def stripe_webhook():
                             "tier, status, metadata) VALUES (%s,%s,%s,'free','active',%s::jsonb) "
                             "ON CONFLICT (api_key) DO NOTHING",
                             (_p5_key, "dev_" + _p5sec.token_hex(8), _p5_email or None,
-                             json.dumps({"source": "pack5",
+                             json.dumps({"source": _pack_src,
                                          "stripe_session_id": data.get('id')})))
                     _p5_grant = grant_credit_pack(
-                        _p5_key, _p5_ref or None, PACK5_CREDITS,
-                        stripe_session_id=data.get('id'), source='pack5',
-                        expires_days=PACK5_EXPIRY_DAYS)
-                    print(f"💳 Pack5 grant: key={_p5_key[:14]}… email={_p5_email or '(none)'} "
+                        _p5_key, _p5_ref or None, _pack_credits,
+                        stripe_session_id=data.get('id'), source=_pack_src,
+                        expires_days=_pack_expiry)
+                    print(f"💳 Pack grant ({_pack_src}): key={_p5_key[:14]}… email={_p5_email or '(none)'} "
                           f"newmint={_p5_newmint} grant={_p5_grant}")
                     # r-pack5-conv (2026-06-17): RECORD the pack sale as an
                     # mcp_conversions row. The grant above mints credits + emails

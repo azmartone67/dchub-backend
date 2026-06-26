@@ -85,6 +85,13 @@ PACK5_CREDITS = int(os.environ.get('DCHUB_PACK5_CREDITS', '1000'))
 PACK5_PRICE_CENTS = int(os.environ.get('DCHUB_PACK5_PRICE_CENTS', '500'))
 PACK5_EXPIRY_DAYS = int(os.environ.get('DCHUB_PACK5_EXPIRY_DAYS', '90'))
 
+# r-pack10 (2026-06-25): a 2nd one-time credit pack — the repurposed ex-metered
+# link ($10 one-time = 1,000 API calls, price_1TmOic…). Separate env knobs so
+# the two packs can diverge in price/credits/expiry without code changes.
+PACK10_CREDITS = int(os.environ.get('DCHUB_PACK10_CREDITS', '1000'))
+PACK10_PRICE_CENTS = int(os.environ.get('DCHUB_PACK10_PRICE_CENTS', '1000'))
+PACK10_EXPIRY_DAYS = int(os.environ.get('DCHUB_PACK10_EXPIRY_DAYS', '90'))
+
 
 def _conn():
     if not DATABASE_URL: return None
