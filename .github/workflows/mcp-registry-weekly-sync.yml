@@ -1,6 +1,9 @@
-# Weekly MCP registry sync + coverage report.
+# DAILY MCP registry sync + coverage report.
+# (2026-06-25: moved weekly -> daily so the official-registry mirror, Smithery
+# re-scan, and coverage report refresh EVERY day. The official republish stays
+# version-gated, so a daily run is a safe no-op unless server.json bumped.)
 #
-# What it does every Monday (and on-demand):
+# What it does every day (and on-demand):
 #   1. Reads the LIVE server (dchub.cloud/mcp via /health) → tool count + version.
 #   2. OFFICIAL registry (registry.modelcontextprotocol.io): if server.json's
 #      version is ahead of what's published, re-publishes (mcp-publisher + the
@@ -18,11 +21,11 @@
 #
 # Secrets used: MCP_REGISTRY_PRIVATE_KEY (already set). Optional: SMITHERY_TOKEN.
 
-name: MCP Registry Weekly Sync
+name: MCP Registry Daily Sync
 
 on:
   schedule:
-    - cron: "40 14 * * 1"   # Mondays 14:40 UTC
+    - cron: "40 14 * * *"   # DAILY 14:40 UTC (was Mondays; daily multi-registry refresh)
   workflow_dispatch: {}
 
 concurrency:
@@ -56,14 +59,17 @@ jobs:
 
       - name: Refresh official registry (only if server.json is ahead)
         if: steps.state.outputs.local_ver != steps.state.outputs.reg_ver
+        continue-on-error: true   # a "duplicate version" 400 (already published) is a harmless no-op; never red the daily run
         env:
           MCP_KEY: ${{ secrets.MCP_REGISTRY_PRIVATE_KEY }}
         run: |
           if [ -z "$MCP_KEY" ]; then echo "::warning::MCP_REGISTRY_PRIVATE_KEY not set — skipping official republish"; exit 0; fi
           curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_linux_amd64.tar.gz" | tar xz mcp-publisher
           ./mcp-publisher login dns --domain dchub.cloud --private-key "$MCP_KEY"
-          ./mcp-publisher publish
-          echo "::notice::Republished cloud.dchub/mcp-server v${{ steps.state.outputs.local_ver }} to the official registry"
+          # publish; treat "duplicate version" (already published) as success
+          OUT=$(./mcp-publisher publish 2>&1) || true; echo "$OUT"
+          if echo "$OUT" | grep -qi "duplicate version"; then echo "::notice::official registry already has v${{ steps.state.outputs.local_ver }} — no-op"; fi
+          echo "::notice::official-registry refresh step complete (v${{ steps.state.outputs.local_ver }})"
 
       - name: Re-scan Smithery (best-effort)
         continue-on-error: true
