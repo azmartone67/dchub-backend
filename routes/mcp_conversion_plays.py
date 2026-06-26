@@ -80,10 +80,17 @@ TOPUP_PRICE_CENTS = int(os.environ.get('DCHUB_TOPUP_PRICE_CENTS', '500'))
 # the emailed durable key. Both burn the same balance (consume_credits, value-
 # tiered cost). Reuses the proven mcp_topups storage — NOT a 2nd credits system.
 PACK5_URL = os.environ.get(
-    'DCHUB_PACK5_URL', 'https://buy.stripe.com/8x26oIbRg7ZzbSR7e2aZi0j').strip()
+    'DCHUB_PACK5_URL', 'https://buy.stripe.com/9B69AU08y2FfbSR55UaZi0i').strip()
 PACK5_CREDITS = int(os.environ.get('DCHUB_PACK5_CREDITS', '1000'))
 PACK5_PRICE_CENTS = int(os.environ.get('DCHUB_PACK5_PRICE_CENTS', '500'))
 PACK5_EXPIRY_DAYS = int(os.environ.get('DCHUB_PACK5_EXPIRY_DAYS', '90'))
+
+# r-pack10 (2026-06-25): a 2nd one-time credit pack — the repurposed ex-metered
+# link ($10 one-time = 1,000 API calls, price_1TmOic…). Separate env knobs so
+# the two packs can diverge in price/credits/expiry without code changes.
+PACK10_CREDITS = int(os.environ.get('DCHUB_PACK10_CREDITS', '1000'))
+PACK10_PRICE_CENTS = int(os.environ.get('DCHUB_PACK10_PRICE_CENTS', '1000'))
+PACK10_EXPIRY_DAYS = int(os.environ.get('DCHUB_PACK10_EXPIRY_DAYS', '90'))
 
 
 def _conn():

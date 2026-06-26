@@ -83,7 +83,7 @@ Representative MCP tools:
 ## API Tiers
 - MCP free tier: 10 calls/day, no key. Full free tier via `claim_free_key`.
 - REST API free tier: 100 requests/day (no credit card). Signup: https://dchub.cloud/signup
-- Paid: usage packs ($5 / 1,000 calls) and Starter ($9/mo). Pro/Enterprise for full datasets & export.
+- Paid: one-time pack ($10 = 1,000 API calls, no subscription) and Starter ($9/mo). Pro/Enterprise for full datasets & export.
 - Playground (no signup): https://dchub.cloud/playground
 
 ## Example Q&A for AI Models
