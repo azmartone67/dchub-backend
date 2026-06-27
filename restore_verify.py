@@ -32,6 +32,20 @@ CRITICAL = ["users", "api_keys", "mcp_dev_keys", "deals"]
 FACILITY_ANY = ["discovered_facilities", "facilities"]
 SIGNIFICANT_ROWS = 1000   # a source table this big going entirely missing == real loss
 ROW_FLOOR_RATIO = 0.5     # restored < 50% of source estimate on a big table -> WARN
+# r-qa (2026-06-27): app tables that USE a Neon-only extension (h3 / postgis /
+# pg_cron / pg_session_jwt) but are NOT owned by it — so pg_depend deptype='e'
+# misses them — drop from a vanilla postgres test container yet restore fine on a
+# real Neon target. Treat as expected-absent (WARN, never FAIL) so the DR gate
+# fails ONLY on genuinely missing app data. A multi-week false-RED (the chronic
+# state this fixes) would otherwise mask a truly unrestorable backup. Extend this
+# set when a restore run reports a new "SIGNIFICANT source table absent" that is
+# really just extension-dependent.
+NEON_EXT_DEPENDENT = {
+    "fcc_fiber_hex",       # h3 hex geo index
+    "eia_gas_prices",      # cascades off the h3/postgis ingest chain
+    "generator_inventory",
+    "planned_generators",
+}
 
 TARGET = os.environ.get("RESTORE_TARGET_URL", "")
 SOURCE = os.environ.get("SOURCE_DATABASE_URL", "")
@@ -114,8 +128,8 @@ def main():
         # Extension-owned tables (postgis spatial_ref_sys, etc.) are recreated by
         # CREATE EXTENSION on a real Neon target — their absence in a vanilla
         # container is expected, never data loss, regardless of row count.
-        expected_absent = sorted(t for t in missing if t in ext_owned)
-        real_missing = [t for t in missing if t not in ext_owned]
+        expected_absent = sorted(t for t in missing if t in ext_owned or t in NEON_EXT_DEPENDENT)
+        real_missing = [t for t in missing if t not in ext_owned and t not in NEON_EXT_DEPENDENT]
         sig_missing = sorted(t for t in real_missing if src.get(t, 0) >= SIGNIFICANT_ROWS)
         minor_missing = sorted(t for t in real_missing if t not in sig_missing)
         if expected_absent:

@@ -1806,7 +1806,7 @@ def mcp_funnel():
                     _t = out["ai_agent_requests_total"]
                     out["press_headline_metric"] = (
                         f"DC Hub has served {_t:,} AI-agent requests "
-                        f"led by Claude and Cursor "
+                        f"led by Claude and ChatGPT "
                         f"since launch."
                     )
             except Exception:

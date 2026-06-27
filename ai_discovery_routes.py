@@ -871,7 +871,6 @@ Allow: /
 # Steer crawlers away from both so the quota goes to real pages.
 Disallow: /*?
 Allow: /sitemap.xml
-Allow: /sitemap-index.xml
 Disallow: /api/
 Disallow: /admin/
 Disallow: /cdn-cgi/

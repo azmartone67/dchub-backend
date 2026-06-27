@@ -158,10 +158,10 @@ _MANIFEST: list[dict] = [
     # /grid-intelligence in Flask but the Pages worker doesn't proxy
     # that path → 404 via dchub.cloud. /grid-hub is the canonical
     # CDN-reachable grid surface (10K+ bytes, healthy in sentinel).
-    # r42ad (2026-05-27): /grid-hub returned 404 on origin — route was
-    # removed without updating the manifest. Point at /grid (the canonical
-    # ISO index page) which serves the actual grid surface.
-    {"path": "/grid",   "category":"normal","min_bytes": 2000,"label": "Grid Intel"},
+    # r-qa (2026-06-27): removed a DUPLICATE "/grid" entry here (was "Grid Intel").
+    # /grid is already monitored above as "Grid Hub"; the results PK on path +
+    # INSERT ON CONFLICT collapsed the two scans into one row, making the headline
+    # read a permanent "99/100" (one page looked perpetually down). One path = one entry.
     {"path": "/press",                   "category": "normal", "min_bytes": 2000, "label": "Press"},
     {"path": "/gdci",                    "category": "normal", "min_bytes": 2000, "label": "GDCI"},
     {"path": "/testimonials",            "category": "normal", "min_bytes": 2000, "label": "Testimonials"},

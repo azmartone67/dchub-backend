@@ -80,11 +80,22 @@ def get_live_dchub_config():
         }
     except Exception as e:
         print(f"Error getting live config: {e}")
+        # r-qa (2026-06-27): pull facilities/countries/markets from the SINGLE
+        # canonical source so this DB-failure fallback can't diverge from
+        # canonical_stats (the cross_surface_metric_divergence finding the brain
+        # kept re-flagging). Other fields have no canonical equivalent yet, so
+        # they remain conservative literals. Fully graceful — if canonical_stats
+        # is itself unavailable, _cs is {} and the literals below apply.
+        try:
+            from canonical_stats import get_canonical_stats
+            _cs = get_canonical_stats()
+        except Exception:
+            _cs = {}
         return {
             "version": "v88",
-            "facilities_count": 21000,
-            "countries": 170,
-            "markets_count": 50,
+            "facilities_count": _cs.get("facilities", 21000),
+            "countries": _cs.get("countries", 170),
+            "markets_count": _cs.get("markets", 50),
             "pipeline_gw": 13.0,
             "vacancy_rate": 1.6,
             "deal_volume": "$85B+",
