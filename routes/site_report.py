@@ -987,19 +987,22 @@ def _build_survey_data(lat, lon, latency_target, capacity_mw):
     _mkt_close = isinstance(_mkt_dist, (int, float)) and _mkt_dist <= 60
     if _mkt_state in _FIPS and _mkt_state != state and (state is None or _mkt_close):
         state = _mkt_state
-        # The air scorer's _ap_resolve_state (main._ap_score_site) has the SAME
-        # near-border bbox bug (smallest-box-wins → "Maryland context" on a VA
-        # site). Re-key the air section's state + regulatory context to match.
-        if (air or {}).get("risk") not in (None, "—"):
-            try:
-                from air_permitting_extras import STATE_CONTEXT as _AP_CTX
-                _ac = (_AP_CTX or {}).get(_mkt_state) or {}
-            except Exception:
-                _ac = {}
-            air["state"] = _mkt_state
-            air["context_label"] = f"{_STATE_NAME.get(_mkt_state, _mkt_state)} context"
-            if _ac.get("description"):
-                air["context"] = _ac["description"]
+
+    # Align the air section's state + regulatory context with the survey's resolved
+    # state. The air scorer's _ap_resolve_state (main._ap_score_site) has its OWN
+    # near-border bbox bug (smallest-box-wins → Carrier Mills IL→Kentucky, Ashburn
+    # VA→Maryland), so without this the report shows e.g. "Illinois" location but
+    # "Kentucky context".
+    if state in _FIPS and (air or {}).get("risk") not in (None, "—") and air.get("state") != state:
+        try:
+            from air_permitting_extras import STATE_CONTEXT as _AP_CTX
+            _ac = (_AP_CTX or {}).get(state) or {}
+        except Exception:
+            _ac = {}
+        air["state"] = state
+        air["context_label"] = f"{_STATE_NAME.get(state, state)} context"
+        if _ac.get("description"):
+            air["context"] = _ac["description"]
 
     # Auto satellite site map for the Power page — every report gets a visual of
     # the parcel (a POST upload from the submission portal overrides this).
