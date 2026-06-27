@@ -6147,7 +6147,13 @@ def check_frontend_critical_endpoints() -> list[dict]:
         ("/api/v1/usage",                    "/dashboard",         5, "user usage dashboard"),
         ("/api/v1/observability/snapshot",   "/pricing",           5, "pricing observability snapshot"),
         ("/api/v1/discovery/last-7d",        "/snapshot",          5, "snapshot last-7d discoveries"),
-        ("/api/v1/me/tier",                  "/snapshot",          3, "snapshot tier resolution"),
+        # r-probe-falsepos (2026-06-27): REMOVED ("/api/v1/me/tier","/snapshot",3,...).
+        # /api/v1/me/tier is intentionally per-user → private/no-store/force-origin
+        # (worker ROUTE_CACHE_MAP tier 'none', _worker.js:424), so it can NEVER be
+        # edge-fast and structurally always trips the 3s "frontend_endpoint_slow"
+        # cap → a permanent false-positive finding. Its accidental-edge-cache risk
+        # is still guarded by the dedicated me_tier_edge_cached check elsewhere in
+        # this radar, so dropping it from the latency probe set weakens nothing.
         ("/api/v1/dcpi/scores?limit=300",    "/state-of-the-data-center", 8, "DCPI scores grid"),
         ("/api/v1/status",                   "/system-status",     5, "system-status uptime"),
         ("/api/v1/tax-incentives?limit=50",  "/tax-incentives",    5, "tax-incentives table"),
@@ -6162,9 +6168,10 @@ def check_frontend_critical_endpoints() -> list[dict]:
         ("/api/v1/listings",                 "/listings",          5, "listings marketplace"),
     ]
 
-    # r41-frontend-parallel (2026-05-25): parallelize the 24-probe loop.
+    # r41-frontend-parallel (2026-05-25): parallelize the probe loop
+    # (23 probes after r-probe-falsepos dropped the /api/v1/me/tier probe).
     # Pre-fix this was serial — observed wall time ~37s (slowest single
-    # detector in the radar scan). At 24 probes × ~1.5s avg = ~36s
+    # detector in the radar scan). At ~1.5s avg/probe ≈ ~35s
     # serially, but the scan_all() outer ThreadPoolExecutor only gives
     # each detector a 20s budget, so this detector was getting truncated
     # past the deadline and its findings were dropped half the time.

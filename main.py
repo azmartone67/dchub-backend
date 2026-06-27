@@ -9986,7 +9986,25 @@ def add_security_headers(response):
     # set Cache-Control: private themselves are honored as-is; this prevents
     # the blanket public/max-age=300 fallback below from overwriting them.
     _existing_cc = (response.headers.get('Cache-Control') or '').lower()
-    if 'private' in _existing_cc or 'no-store' in _existing_cc:
+    # r-stats-edge-cache (2026-06-27): three TIER-INVARIANT public stats endpoints
+    # (the homepage / /snapshot / /by-the-numbers data) get stamped
+    # `private, max-age=3600` upstream, which (a) the private-respect guard below
+    # honors and (b) the CF worker treats as no-store (_worker.js:3812) → pinned at
+    # cf-cache-status:DYNAMIC, the ~21% hit rate, and a full origin recompute on
+    # every brain frontend-probe. These bodies do NOT vary by caller/tier (stats
+    # COUNT distinct only — verified tier-invariant), so force them PUBLIC + drop
+    # Vary:Cookie so CF can shared-cache. EXACT paths only — never a prefix that
+    # could catch a future per-tier endpoint. Necessary-but-not-sufficient: pair
+    # with the worker attachSessionCookie allowlist + the CF dashboard Cache Rule
+    # (#3) for /api/v1/*, which is the final edge gate (verify with a live curl).
+    if (response.status_code == 200 and request.method in ('GET', 'HEAD')
+            and path in ('/api/v1/stats', '/api/v1/site/stats',
+                         '/api/v1/discovery/last-7d')):
+        response.headers['Cache-Control'] = (
+            'public, max-age=120, s-maxage=600, stale-while-revalidate=86400')
+        response.headers['CDN-Cache-Control'] = 'public, max-age=600'
+        response.headers['Vary'] = 'Accept-Encoding'  # drop Cookie — no per-caller variance
+    elif 'private' in _existing_cc or 'no-store' in _existing_cc:
         pass  # respect the view's explicit private/no-store directive
     elif _matched_curated is not None:
         secs = _matched_curated[0] if isinstance(_matched_curated, tuple) else _matched_curated
@@ -22632,9 +22650,13 @@ def serve_sitemap_xml():
         ('/ai-deals', '0.8', 'daily'),
         ('/ai-agents', '0.7', 'weekly'),
         ('/ai-inventory', '0.7', 'daily'),
-        ('/assets', '0.7', 'daily'),
+        # r-seo-redirect (2026-06-27): /assets REMOVED — it 301s to /database
+        # (listed below). A sitemap URL that 3xx's is filed by Google as
+        # "Redirect error"; list only the final 200 canonical. (Verified live
+        # 2026-06-27: /assets 301→/database, /database 200.)
         ('/database',       '0.9', 'daily'),   # r-database (2026-06-22): Data Center Database — facility research surface (21,800+ facilities)
-        ('/for-ai', '0.7', 'weekly'),
+        # r-seo-redirect (2026-06-27): /for-ai REMOVED — it 301s to /ai (listed
+        # below; verified live 301→/ai). Don't sitemap a redirecting URL.
         ('/connect', '0.7', 'weekly'),
         # r-seo-coverage (2026-06-19): live 200 + index public pages that were
         # ABSENT from this CRAWLED sitemap (they existed only in the unadvertised
@@ -22677,7 +22699,7 @@ def serve_sitemap_xml():
         # makes /dcpi a top SEO target for "data center power index".
         ('/dcpi',             '1.0', 'daily'),
         ('/dcpi/totals',      '0.9', 'daily'),
-        ('/dcpi/methodology', '0.7', 'monthly'),
+        ('/dcpi/methodology/', '0.7', 'monthly'),  # r-seo-redirect (2026-06-27): trailing slash IS the 200 canonical; bare /dcpi/methodology 308s to it (verified live), which Google files as "Redirect error".
         ('/sample',           '0.9', 'daily'),
         ('/sample/journalist','0.8', 'daily'),
         ('/sample/pe',        '0.8', 'daily'),

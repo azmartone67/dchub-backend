@@ -128,6 +128,17 @@ except Exception:  # pragma: no cover - defensive: never let an import blank the
     _shared_deloop_where = None
     _PROBE_CLIENT_NAMES = ()
 
+# r-canonical-funnel (2026-06-27): ONE source of truth for funnel KPIs (active
+# keys / MRR / conversions), so /admin/funnel-health, /api/v1/mcp/funnel,
+# /api/v1/site/stats and mcp_funnel_diag stop disagreeing (the
+# cross_surface_metric_divergence finding). Defensive import — a module error
+# must never blank this page.
+try:
+    from canonical_funnel import get_canonical_funnel as _canonical_funnel
+except Exception:  # pragma: no cover
+    def _canonical_funnel():
+        return {}
+
 
 def _deloop_calls_where() -> str:
     """Return the SQL boolean fragment (no leading AND) that keeps ONLY real
@@ -391,21 +402,22 @@ def _build_data() -> dict:
         out["kpis"]["conversions_30d"] = int(conv_30d or 0)
 
         # ── KPI 3: Active dev keys + per-tier breakdown ───────────────
+        # r-canonical-funnel (2026-06-27): read from canonical_funnel (the ONE
+        # SoT) instead of an inline COALESCE(status,'active')='active' query. The
+        # old COALESCE counted NULL-status rows as active (inflation); canonical
+        # is status='active' (NULL excluded), matching flask_mcp_endpoints +
+        # site_stats so the three surfaces finally agree. NOTE: this will move the
+        # admin number DOWN from the COALESCE-inflated count to the honest active
+        # count — that is the intended correction, not a regression.
         try:
-            cur.execute(
-                "SELECT tier, COUNT(*) FROM mcp_dev_keys "
-                " WHERE COALESCE(status,'active') = 'active' "
-                " GROUP BY tier")
-            total = 0
-            tiers: dict = {}
-            for tier, n in cur.fetchall() or []:
-                n = int(n or 0)
-                tiers[str(tier or "unknown")] = n
-                total += n
-            out["kpis"]["active_dev_keys"] = total
-            out["kpis"]["dev_keys_by_tier"] = tiers
+            _cf = _canonical_funnel()
+            out["kpis"]["active_dev_keys"]  = _cf.get("active_dev_keys", 0)
+            out["kpis"]["dev_keys_by_tier"] = _cf.get("dev_keys_by_tier", {})
+            out["kpis"]["paid_keys"]        = _cf.get("paid_keys", 0)
+            out["kpis"]["mcp_dev_keys_registered"] = _cf.get("mcp_dev_keys_registered", 0)
+            out["kpis"]["mrr_invoiced_usd"] = _cf.get("mrr_invoiced_usd", 0.0)
         except Exception as e:
-            logger.debug("dev_keys probe failed: %s", e)
+            logger.debug("canonical dev_keys read failed: %s", e)
             out["missing_tables"].append("mcp_dev_keys")
 
         # ── KPI 4: Tool calls 7d ──────────────────────────────────────
@@ -895,7 +907,16 @@ def _build_data() -> dict:
                          "   AND h.claim_used_at >= NOW() - INTERVAL '30 days' "
                          "   AND COALESCE(u.plan, 'free') NOT IN ('free','')")
             raw = [("claims_minted", "Claim URL minted", _m),
-                   ("page_viewed",   "Page opened",      _v),
+                   # r-claim-honest (2026-06-27): this step was claim_page_opened_at
+                   # (_v) — a HUMAN browser GET on /claim. But agents auto-redeem the
+                   # signed token server-side (server.mjs _autoRedeemClaim → /redeem)
+                   # with no browser, so _v is structurally ~0 while every downstream
+                   # step (keyed on claim_used_at) lights up → a FALSE 100% "killer
+                   # drop". The real "claim acted on" event is claim_used_at (_u), set
+                   # by BOTH the agent auto-redeem and a human form-submit. Show that
+                   # honest step; the genuine human-open count is preserved as a
+                   # separate diagnostic (human_page_opens) below.
+                   ("claim_redeemed","Claim redeemed (agent/human)", _u),
                    ("email_submitted","Email submitted", _e),
                    ("key_issued",    "Trial key issued", _k),
                    ("first_api_call","Key made API call",_f),
@@ -918,6 +939,11 @@ def _build_data() -> dict:
                     killer = name
                 prev = count
             out["high_intent"]["step_drop"] = steps
+            # r-claim-honest (2026-06-27): genuine human browser opens of /claim,
+            # kept as a diagnostic now that the waterfall step measures the real
+            # agent-or-human redeem (claim_used_at). Expected ~0 by design — agents
+            # auto-redeem server-side — so this is NOT an alarm, just visibility.
+            out["high_intent"]["human_page_opens"] = _v
             out["step_drop_alarm"] = (_m > 5 and _u == 0) or killer_drop > 95.0
             out["step_drop_killer"] = killer
             out["step_drop_killer_pct"] = round(killer_drop, 2) if killer else 0.0
