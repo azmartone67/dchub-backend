@@ -447,6 +447,17 @@ def _compose_with_claude(story_type: str, data: dict, landing: str,
 
 def _build_user_prompt(story_type: str, data: dict, landing: str) -> str:
     """Per-story-type user prompt with the real data."""
+    # r-qa (2026-06-27): pull the standing totals from canonical_stats so the
+    # prompt's market/facility counts match what the editor-review gate trusts
+    # (both read canonical_stats). A hardcoded "232 US power markets" tripped the
+    # editor's internal-consistency check against the canonical 311.
+    try:
+        from canonical_stats import get_canonical_stats as _gcs
+        _c = _gcs() or {}
+    except Exception:
+        _c = {}
+    _t_fac = f"{int(_c.get('facilities', 21000)):,}+"
+    _t_mkt = f"{int(_c.get('markets', 300))}+"
     if story_type == "capability_spotlight":
         tool = data.get("tool") or {}
         sample = data.get("sample_markets") or data.get("sample_facility") or {}
@@ -508,7 +519,7 @@ RULES:
   refresh quarterly — a new interconnect filing or closed deal is queryable in
   hours, not next quarter.
 - Anchor on the standing totals (use these EXACT figures, do not invent others):
-  21,000+ facilities, 232 US power markets, 2,000+ tracked deals — updated daily.
+  {_t_fac} facilities, {_t_mkt} US power markets, 2,000+ tracked deals — updated daily.
 - Confident, factual, no hype words. If the adds data is empty, lead with the
   standing totals + "updated daily" instead.
 End with the value line + CTA: {landing}. Hashtags: #DataCenter #AIInfrastructure #DCPI."""
