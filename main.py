@@ -14159,7 +14159,23 @@ def get_market_stats(market):
         recent_cols = [d[0] for d in c.description]
         recent = [dict(zip(recent_cols, r)) for r in recent_rows]
 
-        return jsonify({
+        # r-gate-everywhere (2026-06-27): the COARSE market total (facility_count,
+        # total_power_mw, provider_count) stays free (SEO breadth hook), but the
+        # GRANULAR per-provider + per-facility MW (and avg) are decision-grade and
+        # gated for non-paid.
+        try:
+            from routes.dcpi import _dcpi_is_paid
+            _mk_paid = _dcpi_is_paid()
+        except Exception:
+            _mk_paid = False  # fail-closed
+        if not _mk_paid:
+            for _p in top_providers:
+                if isinstance(_p, dict):
+                    _p['power_mw'] = None
+            for _r in recent:
+                if isinstance(_r, dict) and 'power_mw' in _r:
+                    _r['power_mw'] = None
+        resp = jsonify({
             'success': True,
             'market': {
                 'id': market_lower,
@@ -14169,13 +14185,17 @@ def get_market_stats(market):
             'stats': {
                 'facility_count': stats['facility_count'],
                 'total_power_mw': round(stats['total_power'], 1),
-                'avg_power_mw': round(stats['avg_power'], 1),
+                'avg_power_mw': (round(stats['avg_power'], 1) if _mk_paid else None),
                 'provider_count': stats['provider_count']
             },
             'top_providers': top_providers,
             'by_status': by_status,
-            'recent_facilities': recent
+            'recent_facilities': recent,
+            '_gated': (not _mk_paid)
         })
+        if not _mk_paid:
+            resp.headers['Cache-Control'] = 'private, no-store'
+        return resp
     except Exception as e:
         import traceback
         logger.error(f"get_market_stats('{market}') error: {traceback.format_exc()}")
@@ -20037,8 +20057,36 @@ def land_power_consolidated():
 @app.route('/api/v1/capacity/heatmap/public', methods=['GET'])
 @require_plan('pro')
 def capacity_heatmap_public():
-    """Capacity heatmap -- requires at least a free account"""
-    return jsonify({"success": True, "data": CAPACITY_HEATMAP_MARKETS})
+    """Capacity heatmap — the numeric grid MW headroom + readiness scores are
+    DC Hub Pro; non-paid get grade/label/signal only (r-gate-everywhere)."""
+    _data = CAPACITY_HEATMAP_MARKETS
+    try:
+        from routes.dcpi import _dcpi_is_paid
+        _paid = _dcpi_is_paid()
+    except Exception:
+        _paid = False  # fail-closed
+    if not _paid:
+        import copy as _cp
+        _data = _cp.deepcopy(CAPACITY_HEATMAP_MARKETS)
+        _iter = _data if isinstance(_data, list) else (
+            _data.get('markets') if isinstance(_data, dict) else [])
+        for _m in (_iter or []):
+            if not isinstance(_m, dict):
+                continue
+            for _sect, _keys in (('readiness', ['score']),
+                                 ('grid', ['spare_capacity_pct', 'spare_capacity_mw']),
+                                 ('gas', ['headroom_mdth']),
+                                 ('power', ['local_capacity_mw', 'local_plants']),
+                                 ('cost', ['electricity_rate_cents_kwh'])):
+                if isinstance(_m.get(_sect), dict):
+                    for _k in _keys:
+                        if _k in _m[_sect]:
+                            _m[_sect][_k] = None
+            _m['locked'] = True
+    resp = jsonify({"success": True, "data": _data, "_gated": (not _paid)})
+    if not _paid:
+        resp.headers['Cache-Control'] = 'private, no-store'
+    return resp
 
 logger.info("✅ Consolidated Land & Power endpoint registered: /api/v1/land-power/data")
 logger.info("✅ Public heatmap endpoint registered: /api/v1/capacity/heatmap/public")

@@ -219,7 +219,7 @@ def transactions_index():
     # free. After row N_FREE we redact $value + add a "sign up free"
     # callout to capture leads. Page 1 first 25 stays unredacted so SEO/
     # AI indexing still works AND the user gets a real teaser.
-    N_FREE_ROWS    = 25
+    N_FREE_ROWS    = 10  # r-gate-everywhere (2026-06-27): tightened 25→10 — smaller free $-teaser, sign up free for the rest (still SEO-indexable)
     # Treat any non-authenticated visitor as needing the gate.
     # r33-J round 10 (2026-05-21): user reported enterprise license
     # still seeing the free-preview banner. The old check ONLY looked
