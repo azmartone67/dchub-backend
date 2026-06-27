@@ -142,10 +142,16 @@ _REGISTRIES = [
         "probe":        "official_registry",
     },
     {
+        # Cursor has no submittable registry — it's a docs page + a
+        # community forum, so there's no PR path to "fix" being absent.
+        # actionable=False keeps it visible in the audit but excludes it
+        # from the "missing" alarm count, so the weekly watch workflow
+        # stops opening an un-actionable issue every Monday forever.
         "id":           "cursor_mcp",
         "name":         "Cursor MCP catalog",
         "url":          "https://docs.cursor.com/context/model-context-protocol",
         "submission_url": "https://forum.cursor.com",
+        "actionable":   False,
     },
 ]
 
@@ -171,6 +177,7 @@ def _probe_all() -> Dict[str, dict]:
             "submission_url": r["submission_url"],
             "verdict":        verdict,
             "http_status":    status,
+            "actionable":     r.get("actionable", True),
         }
     return out
 
@@ -183,6 +190,10 @@ def _file_findings_for_missing(results: Dict[str, dict]) -> List[dict]:
     """
     findings = []
     for rid, info in results.items():
+        # Skip registries with no submission path — flagging them is noise,
+        # not an action item (e.g. Cursor: docs page + forum, no PR).
+        if not info.get("actionable", True):
+            continue
         if info["verdict"] in ("missing", "fetch_error"):
             findings.append({
                 "kind":     "mcp_registry_missing",
@@ -324,11 +335,22 @@ def mcp_registries_status():
     """
     results = _probe_all()
     present_count = sum(1 for r in results.values() if r["verdict"] == "present")
+    # "missing" counts only ACTIONABLE absences (a registry we could
+    # actually submit to). Non-actionable surfaces (no PR path, e.g.
+    # Cursor) are surfaced separately so the weekly watch workflow,
+    # which alarms on missing>0, doesn't nag about un-fixable gaps.
+    missing_actionable = sum(
+        1 for r in results.values()
+        if r["verdict"] != "present" and r.get("actionable", True))
+    not_actionable = sum(
+        1 for r in results.values()
+        if r["verdict"] != "present" and not r.get("actionable", True))
     return jsonify({
         "ok":             True,
         "total":          len(results),
         "present":        present_count,
-        "missing":        len(results) - present_count,
+        "missing":        missing_actionable,
+        "not_actionable": not_actionable,
         "results":        results,
         "doc":            "https://dchub.cloud/api/v1/brain/mcp-registries",
         "submission_pattern": (
