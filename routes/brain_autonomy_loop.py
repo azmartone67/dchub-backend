@@ -877,6 +877,16 @@ def make_blueprint():
 
     bp = Blueprint("brain_autonomy", __name__)
 
+    @bp.after_request
+    def _no_store(resp):
+        # These admin status/JSON endpoints carry an admin key in the URL and
+        # report live autonomy/automerge state — never let CF edge-cache a 200
+        # and serve stale state to operators. (CF caches `private, max-age` on
+        # /api/v1/* anyway; only `no-store` is honored. Mirrors the other admin
+        # brain dashboards' _no_store after_request.)
+        resp.headers["Cache-Control"] = "no-store, private"
+        return resp
+
     @bp.post("/api/v1/brain/autonomy/tick")
     def _tick():
         if not _admin_ok():
