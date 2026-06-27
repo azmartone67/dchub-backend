@@ -1518,7 +1518,13 @@ def _post_headline_signature(text: str) -> dict:
 # generated posts shipped; the operator wants fewer, sharper posts. 0.72 means a
 # post must clear a clearly-above-average bar (data specificity + freshness +
 # hook) to publish. Override with CONTENT_QUALITY_MIN env if you want to retune.
-QUALITY_MIN = float(os.environ.get('CONTENT_QUALITY_MIN', '0.72'))
+# r-qa (2026-06-27): 0.72 default lowered to 0.60. At 0.72 the LinkedIn quad fed
+# 0 posts/wk (500 blocked) — the heuristic _quality_score rarely awards the
+# literal link(0.20)+freshness(0.20) points for the composer's output, so even a
+# good stat+novelty post tops out ~0.60. 0.60 = stat + (novelty|freshness|link):
+# substantive without demanding all four signals. Env CONTENT_QUALITY_MIN still
+# overrides (set it on Railway to retune without a deploy).
+QUALITY_MIN = float(os.environ.get('CONTENT_QUALITY_MIN', '0.60'))
 
 # Phrases that signal the post references something recent (freshness). Kept
 # in sync with the cadence language marketing_engine leads with ("in the last
