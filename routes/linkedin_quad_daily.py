@@ -593,18 +593,22 @@ def run():
     # slot rather than spray filler — this is the core fix for the 4-posts/day
     # repetition. `force`/ignore_slot bypasses (explicit operator override).
     _ed_lead = None
-    if not bypass:
-        try:
-            from routes.media_editorial import editorial_decision
-            _ed = editorial_decision(target_slot.get("topic"))
-            if not _ed.get("post"):
-                return jsonify({"skipped": True,
-                                "reason": "editorial_suppress_no_novel_event",
-                                "detail": _ed.get("reason"),
-                                "slot": target_slot}), 200
-            _ed_lead = _ed.get("lead")
-        except Exception:
-            _ed_lead = None  # fail-open: editorial hiccup never blocks the slot
+    try:
+        from routes.media_editorial import editorial_decision
+        _ed = editorial_decision(target_slot.get("topic"))
+        # Scheduled (non-bypass) cron SUPPRESSES when there's no novel event.
+        # Forced/off-hour (bypass) publishes anyway — but STILL take the lead so
+        # the LLM composer gets the number+trend+so-what context. Without it,
+        # forced posts compose thin and bounce off the quality gate (0.72). The
+        # lead-fetch now lives OUTSIDE `if not bypass`, so BOTH paths feed it in.
+        if not bypass and not _ed.get("post"):
+            return jsonify({"skipped": True,
+                            "reason": "editorial_suppress_no_novel_event",
+                            "detail": _ed.get("reason"),
+                            "slot": target_slot}), 200
+        _ed_lead = _ed.get("lead")
+    except Exception:
+        _ed_lead = None  # fail-open: editorial hiccup never blocks the slot
 
     # r49 (2026-05-25): use the new Claude-composed content engine.
     # Engine rotates through 6 story types (capability_spotlight,
