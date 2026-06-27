@@ -959,6 +959,20 @@ def get_request_tier():
                 if role == 'admin':
                     return 'admin'
                 return info.get('plan', 'free')
+            # r-fix10 (2026-06-27): api_keys does NOT hold mcp_dev_keys (dch_* keys),
+            # so a paying Developer/Pro/Enterprise on an MCP key fell through to 'anon'
+            # and got thin facility data on the REST API. Resolve via the canonical
+            # mcp_dev_keys mapper (paid→developer, enterprise→enterprise; free/identified
+            # →None so they stay preview). Full facility DATA is developer-class, so this
+            # delivers the advertised "full DB via API" without over-granting pro-only
+            # deliverables (those gate on mcp_gatekeeper separately).
+            try:
+                from api_data_protection import _resolve_key_tier as _rkt
+                _mt = _rkt(api_key)
+                if _mt:
+                    return _mt
+            except Exception:
+                pass
         session_token = (request.cookies.get('session_token') or request.cookies.get('dchub_session') or
                          request.cookies.get('dchub_token') or request.cookies.get('token'))
         if session_token:
