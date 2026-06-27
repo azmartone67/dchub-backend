@@ -467,6 +467,33 @@ def _estimate_headroom_mw(voltage_kv):
 
 @nlr_bp.route("/api/v1/grid-headroom")
 def grid_headroom():
+    # ★ HONESTY FIX (2026-06-26): this route is a POINT (lat/lon) substation-
+    # headroom estimator. It historically IGNORED iso/region and always
+    # analyzed substations around its hardcoded Golden, CO default — so the
+    # /grid-headroom/<ISO> and /grid/<ISO> aliases (which call it with
+    # ?iso=<region>) returned Colorado headroom mislabeled as that ISO's: a
+    # fabricated, citable number. There is no ISO→geometry resolver here, so
+    # when called for an ISO/region with NO explicit lat/lon point, do NOT
+    # substitute the CO default — return an honest "not region-specific"
+    # pointer to the endpoint that genuinely carries ISO-level data.
+    _iso = (request.args.get("iso") or request.args.get("region") or "").strip()
+    _has_point = ("lat" in request.args) or ("lon" in request.args)
+    if _iso and not _has_point:
+        _isou = _iso.upper()
+        return jsonify({
+            "success": True,
+            "region": _isou,
+            "available": False,
+            "reason": "not_region_specific",
+            "grid_headroom": None,
+            "note": ("Grid-headroom is a point estimator (needs a lat/lon) and "
+                     "does not resolve an ISO/region to real geography, so it "
+                     "cannot report headroom for an ISO. For ISO-level grid "
+                     "intelligence (demand, fuel mix, interconnection queue) use "
+                     "/api/v1/grid/intelligence/" + _isou + "."),
+            "see": "/api/v1/grid/intelligence/" + _isou,
+            "source": "DC Hub",
+        }), 200
     try:
         lat       = float(request.args.get("lat",   39.7405))
         lon       = float(request.args.get("lon",  -105.1686))
