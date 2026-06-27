@@ -1691,14 +1691,25 @@ def _editor_review(content_text: str):
         _cs = _gcs() or {}
     except Exception:
         _cs = {}
+    try:
+        import datetime as _dt
+        _today = _dt.datetime.utcnow().strftime("%B %d, %Y")
+    except Exception:
+        _today = "2026"
     _canon = (
-        "DC Hub's OWN platform metrics are VERIFIED ground truth from its live "
-        "database — do NOT flag them as unverifiable or fabricated under rule 3. "
-        f"Canonical (rounded): ~{int(_cs.get('facilities', 21000)):,}+ tracked "
-        f"facilities, {int(_cs.get('countries', 178))}+ countries, "
+        f"CONTEXT — treat as ground truth (do NOT call any of this fictional, "
+        f"future, or unverifiable): TODAY IS {_today}. Dates in 2025-2026 are "
+        "CURRENT/recent, never future or made-up. DC Hub's OWN platform metrics "
+        "are VERIFIED from its live database, and its MCP tools (search_facilities, "
+        "get_grid_intelligence, rank_markets, hyperscaler_deals, etc.) are REAL "
+        "shipped product features. NEVER reject a post for citing DC Hub's own "
+        "numbers/tools as 'unverifiable' or for a 2025-2026 date being 'future/"
+        "fictional'. Canonical (rounded): "
+        f"~{int(_cs.get('facilities', 21000)):,}+ tracked facilities, "
+        f"{int(_cs.get('countries', 178))}+ countries, "
         f"{int(_cs.get('markets', 230))}+ US power markets (DCPI), 2,000+ tracked "
-        "M&A deals, 7 live US ISOs. A post citing these (or figures consistent with "
-        "them) is accurate, not fabricated.\n"
+        "M&A deals, 7 live US ISOs. A post citing these (or consistent figures) is "
+        "accurate, not fabricated.\n"
     )
     sys_prompt = (
         "You are the Editor-in-Chief of DC Hub, a serious data-center & energy "
@@ -1716,8 +1727,11 @@ def _editor_review(content_text: str):
         "data company.\n"
         "5. It is thin, empty, or a broken template (placeholder text, bare "
         "'Deal - Company' with no value/MW, zero-value stats).\n"
-        "Otherwise APPROVE. Be strict: when in doubt about embarrassment or "
-        "accuracy, REJECT. Reply with STRICT JSON only, no prose: "
+        "Otherwise APPROVE. The deterministic gates already block every known-bad "
+        "class (disclaimers, partner attacks, thin/templated, missing number-lead), "
+        "so you are a LIGHT final check for NOVEL embarrassment only — when "
+        "genuinely uncertain, APPROVE. Reject ONLY for a clear, specific problem "
+        "from the list above. Reply with STRICT JSON only, no prose: "
         '{"publish": true|false, "reason": "<=12 words"}.'
     )
     try:
