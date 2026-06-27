@@ -671,16 +671,26 @@ def run():
     # Deterministically prepend the desk's headline_number (+ so-what) so it clears
     # r86c regardless of LLM behavior. Skipped when the text already leads with a
     # number, when there's no editorial lead, or when the operator gave manual copy.
-    if text and _ed_lead and not (_manual_copy and str(_manual_copy).strip()):
+    if text and not (_manual_copy and str(_manual_copy).strip()):
         try:
             from routes.media_editorial import leads_with_number
             if not leads_with_number(text):
-                _hn = (_ed_lead.get("headline_number") or "").strip()
-                if _hn:
-                    _sw = (_ed_lead.get("so_what") or "").strip()
-                    _opener = _hn if _hn[-1:] in ".!?" else _hn + "."
-                    text = _opener + (("\n\n" + _sw) if _sw else "") + "\n\n" + text
-                    payload["number_lead_prepended"] = True
+                _lead = _ed_lead if isinstance(_ed_lead, dict) else None
+                if not _lead:
+                    # force/ignore_slot bypassed the editorial fetch above — pull the
+                    # desk's lead now so a forced/off-hour post still leads with a number.
+                    try:
+                        from routes.media_editorial import editorial_decision
+                        _lead = (editorial_decision(target_slot.get("topic")) or {}).get("lead")
+                    except Exception:
+                        _lead = None
+                if isinstance(_lead, dict):
+                    _hn = (_lead.get("headline_number") or "").strip()
+                    if _hn:
+                        _sw = (_lead.get("so_what") or "").strip()
+                        _opener = _hn if _hn[-1:] in ".!?" else _hn + "."
+                        text = _opener + (("\n\n" + _sw) if _sw else "") + "\n\n" + text
+                        payload["number_lead_prepended"] = True
         except Exception:
             pass
 
