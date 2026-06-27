@@ -117,7 +117,11 @@ def rank_markets():
               FROM discovered_facilities
              WHERE city IS NOT NULL AND city != ''
                AND state IS NOT NULL AND state != ''
-               AND status = 'active'
+               -- 2026-06-27 (total_mw=0 fix): status='active' is a 0-MW stub/duplicate
+               -- set (10,178 rows, every power_mw=0); the REAL operational facilities
+               -- carry power_mw under status 'Operational' (verified: Ashburn 'active'
+               -- SUM=0 vs 'operational' 179 fac / 6,843 MW, no name duplication).
+               AND LOWER(status) = 'operational'
                {country_filter}
           GROUP BY city, state, country
             HAVING COUNT(*) >= 2 AND COALESCE(SUM(power_mw), 0) >= %s
