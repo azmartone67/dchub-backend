@@ -1680,10 +1680,30 @@ def _editor_review(content_text: str):
     text = (content_text or "").strip()
     if not key or not text:
         return True, "editor-skip:no-key-or-empty"
+    # r-qa (2026-06-27): the editor was rejecting DC Hub's OWN canonical platform
+    # numbers (21,000+ facilities / 230+ markets / 2,000+ deals) as "unverifiable"
+    # under rule 3 — a false positive that dark-held the entire LinkedIn feed
+    # (every post bounced here after clearing quality + number-lead). Tell the
+    # editor those figures are verified ground truth (pulled live so they track
+    # honest-numbers / canonical_stats).
+    try:
+        from canonical_stats import get_canonical_stats as _gcs
+        _cs = _gcs() or {}
+    except Exception:
+        _cs = {}
+    _canon = (
+        "DC Hub's OWN platform metrics are VERIFIED ground truth from its live "
+        "database — do NOT flag them as unverifiable or fabricated under rule 3. "
+        f"Canonical (rounded): ~{int(_cs.get('facilities', 21000)):,}+ tracked "
+        f"facilities, {int(_cs.get('countries', 178))}+ countries, "
+        f"{int(_cs.get('markets', 230))}+ US power markets (DCPI), 2,000+ tracked "
+        "M&A deals, 7 live US ISOs. A post citing these (or figures consistent with "
+        "them) is accurate, not fabricated.\n"
+    )
     sys_prompt = (
         "You are the Editor-in-Chief of DC Hub, a serious data-center & energy "
         "intelligence company. Approve or REJECT one draft social post before it "
-        "ships to LinkedIn. REJECT (publish=false) if ANY is true:\n"
+        "ships to LinkedIn. " + _canon + "REJECT (publish=false) if ANY is true:\n"
         "1. It quotes/paraphrases an AI or LLM DISCLAIMING knowledge or hedging "
         "(e.g. 'I don't have specific current information', 'I'm not sure', 'as of "
         "my last update', 'lacked current specifics'). Framing that as a citation "
