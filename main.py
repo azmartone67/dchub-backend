@@ -8802,6 +8802,13 @@ try:
     logger.info("✅ Autonomous Brain routes registered")
 
     _brain_enabled = os.environ.get('AUTONOMOUS_BRAIN_ENABLED', 'true').lower() == 'true'
+    # BRAIN_HOST (2026-06-27): when the brain is extracted to a dedicated worker
+    # service, set BRAIN_HOST=false on the web replicas so they serve HTTP only and
+    # never start the in-process brain loop (Opus-4-8 / 1M-context calls share the
+    # gunicorn process today). The worker runs with BRAIN_HOST=true. Leader-election
+    # (pg advisory lock) still guarantees exactly one active brain across services.
+    # Defaults to 'true' so existing single-service deploys are UNCHANGED.
+    _brain_host = os.environ.get('BRAIN_HOST', 'true').strip().lower() == 'true'
     # r33-Q (2026-05-21) — IS_FAILOVER must hard-veto the brain even when
     # AUTONOMOUS_BRAIN_ENABLED defaults to true. Before this guard,
     # Render (IS_FAILOVER=true) was running cycle 7300+ of the brain in
@@ -8810,6 +8817,8 @@ try:
     # only; primary owns all brain work.
     if IS_FAILOVER:
         logger.info("⏸️ Autonomous Brain scheduler PAUSED (IS_FAILOVER=true — primary owns brain)")
+    elif not _brain_host:
+        logger.info("⏸️ Autonomous Brain PAUSED (BRAIN_HOST=false — runs on the dedicated brain-worker service)")
     # r78: followers now START the brain thread too — the loop's r65
     # per-cycle is_current_leader() check keeps it idle until promoted.
     # The old import-time gate meant leader churn (gunicorn worker
@@ -12786,6 +12795,13 @@ def handle_checkout_completed(session):
             'plink_1SwK4sJ9ey2ATcQlL17UnoOf': 'enterprise_monthly',
             'plink_1SkfzGJ9ey2ATcQlYfUeHHkn': 'pro_annual',
             'plink_1SkfqMJ9ey2ATcQl1V0nbsmM': 'pro_monthly',
+            # r-annual50 (2026-06-26): NEW $1,794 one-time Pro Annual Prepay
+            # (50% off $299/mo list — price_1Tml5WJ9ey2ATcQlhqdF82z1). Maps to
+            # pro_annual → ('pro','pro') + 365-day tier_expires_at (one-time).
+            'plink_1Tml5XJ9ey2ATcQlAMDgpMI2': 'pro_annual',
+            # r-founder99 (2026-06-26): $99/mo Founding Member recurring
+            # (price_1Tml5XJ9ey2ATcQl0pbU4htM, limited-license campaign).
+            'plink_1Tml5YJ9ey2ATcQlbQSMZRu4': 'founding',
         }
 
         if plan_from_metadata and plan_from_metadata in plan_tier_map:
@@ -12832,6 +12848,14 @@ def handle_checkout_completed(session):
                 # routes correctly. Tier-expiry handling lives below.
                 plan_name, api_tier = 'pro', 'pro'
             elif amount_dollars == 1590 or (1585 <= amount_dollars <= 1595):
+                plan_name, api_tier = 'pro', 'pro'
+            elif amount_dollars == 1794 or (1788 <= amount_dollars <= 1800):
+                # r-annual50 (2026-06-26): $1,794 one-time Pro Annual Prepay
+                # (50% off $299/mo list). The payment_link map hits first;
+                # this band is the fallback so the amount never falls through
+                # to the >=500 ENTERPRISE catch (which would over-provision a
+                # Pro buyer + fire an ambiguous-amount alert). mode='payment'
+                # → 365-day tier_expires_at stamped below.
                 plan_name, api_tier = 'pro', 'pro'
             elif amount_dollars == 2990 or (2985 <= amount_dollars <= 2995):
                 plan_name, api_tier = 'pro', 'pro'

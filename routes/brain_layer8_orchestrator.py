@@ -59,6 +59,13 @@ def _enabled() -> bool:
     """The orchestrator's autonomous Claude refresh ships DARK. Default OFF so a
     cron-fired loop can't burn API budget until an operator flips the flag. When
     off, /refresh is a NO-OP that makes ZERO model calls."""
+    # BRAIN_HOST gate (2026-06-27): when the brain runs on a dedicated worker, the
+    # web replicas carry BRAIN_HOST=false and must NOT execute the ~56s Claude
+    # orchestrator call even if the external cron still POSTs here — that call is
+    # exactly what we moved off the request-serving process. Defaults 'true' so
+    # single-service deploys are unchanged.
+    if os.environ.get("BRAIN_HOST", "true").strip().lower() != "true":
+        return False
     return _truthy(os.environ.get(_ORCH_FLAG))
 
 
