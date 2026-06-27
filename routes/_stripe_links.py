@@ -28,6 +28,14 @@ STRIPE_LINKS = {
     "pro":             "https://buy.stripe.com/7sY7sM9J8enX7CB69YaZi0l",  # $299/mo (r-reprice; legacy $199: eVq5kE4oOfs13mleGuaZi0h)
     "team":            "https://buy.stripe.com/14AbJ2bRga7H0a98i6aZi0m",  # $699/mo, 5 seats (r-reprice; no prior link existed)
     "pro_annual":      "https://buy.stripe.com/dRm7sM6wW7Zz1edgOCaZi07",  # $1,188/yr (50% off $199/mo) - operator-provided link dRm7...07, 2026-06-04
+    # r-annual50 (2026-06-26): NEW $1,794/yr one-time = 50% off the current
+    # $299/mo Pro list ($3,588/yr). plink_1Tml5XJ9ey2ATcQlAMDgpMI2,
+    # price_1Tml5WJ9ey2ATcQlhqdF82z1. Webhook → pro_annual + 365-day expiry.
+    "pro_annual_promo": "https://buy.stripe.com/fZu14o1cCdjT5ut7e2aZi0n",  # $1,794/yr one-time (50% off $299/mo)
+    # r-founder99 (2026-06-26): $99/mo Founding Member recurring, limited
+    # licenses (see /api/founding-members counter). plink_1Tml5YJ9ey2ATcQlbQSMZRu4,
+    # price_1Tml5XJ9ey2ATcQl0pbU4htM. Webhook → founding → ('founding','pro').
+    "founding":        "https://buy.stripe.com/14A9AUcVk4Nn1edcymaZi0o",  # $99/mo (founding member)
     "metered":         "https://buy.stripe.com/9B69AU08y2FfbSR55UaZi0i",  # $10 one-time = 1,000 API calls (single one-time pack; 2026-06-25 repricing)
     "pack5":           "https://buy.stripe.com/9B69AU08y2FfbSR55UaZi0i",  # $10 one-time = 1,000 API calls (2026-06-25 repricing; env override DCHUB_PACK5_URL in mcp_conversion_plays.py)
     "enterprise":      "https://buy.stripe.com/fZueVe5sS6Vv7CB41QaZi0a",  # Custom

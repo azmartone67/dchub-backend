@@ -17,7 +17,10 @@ logger = logging.getLogger(__name__)
 APP_VERSION = "v91"
 APP_BUILD = 91
 RELEASE_NOTES = "Dynamic version banner, public API endpoints, 401 fixes"
-FOUNDING_TOTAL = 50
+# r-founder99 (2026-06-26): limited founding-license campaign. TOTAL is the
+# marketing scarcity knob — set so a "few more" remain (3 claimed today → 7
+# left at 10). Bump this to release more licenses.
+FOUNDING_TOTAL = 10
 FOUNDING_CLAIMED = 3
 
 public_bp = Blueprint('public_endpoints', __name__)
@@ -165,9 +168,13 @@ def founding_members_status():
         conn = get_read_db()
         cursor = conn.cursor()
         try:
-            cursor.execute("SELECT COUNT(*) FROM user_plans WHERE plan IN ('founding', 'pro')")
+            # r-founder99 (2026-06-26): count TRUE founding members only.
+            # Was `user_plans WHERE plan IN ('founding','pro')` — but user_plans
+            # is empty (real plan lives in `users`) AND lumping in every Pro
+            # user inflated "claimed" past TOTAL → remaining<0 → badge hidden.
+            cursor.execute("SELECT COUNT(*) FROM users WHERE plan = 'founding'")
             row = cursor.fetchone()
-            if row and row[0]:
+            if row and row[0] is not None:
                 claimed = row[0]
         except Exception:
             pass
