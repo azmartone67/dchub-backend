@@ -53,20 +53,17 @@ def init_intelligence_db():
             )
         """)
 
-        c.execute("""
-            CREATE TABLE IF NOT EXISTS linkedin_posts (
-                id TEXT PRIMARY KEY,
-                content TEXT NOT NULL,
-                post_type TEXT,
-                source_id TEXT,
-                status TEXT DEFAULT 'draft',
-                scheduled_at TEXT,
-                posted_at TEXT,
-                linkedin_post_id TEXT,
-                engagement TEXT,
-                created_at TEXT
-            )
-        """)
+        # linkedin_posts is reconciled by the canonical schema module. This used
+        # to declare `id TEXT PRIMARY KEY`, incompatible with the live bigserial
+        # id (poster/autopost) — and in any case db_utils.get_db() SKIPs DDL
+        # (SKIP_DDL=1), so this CREATE never actually ran. reconcile_schema()
+        # opens a real psycopg2 connection so the DDL + idempotent migration
+        # genuinely execute and existing prod rows are preserved.
+        try:
+            from linkedin_posts_schema import reconcile_schema
+            reconcile_schema()
+        except Exception as _ls_e:
+            print(f"[intelligence] linkedin_posts reconcile skipped: {_ls_e}")
 
         c.execute("""
             CREATE TABLE IF NOT EXISTS deal_alerts (
@@ -400,17 +397,24 @@ def post_to_linkedin(content: str) -> Dict:
             conn = get_db()
             try:
                 c = conn.cursor()
+                # Let the bigserial id auto-assign (the old md5-hex string id
+                # was a TEXT value that errored against the bigint id column).
+                # Mirror the LinkedIn id into both post_urn (so the engagement
+                # fetcher can track this post) and linkedin_post_id (legacy
+                # synonym read by dchub_daily_automation + media_accelerator).
+                now = datetime.utcnow()
                 c.execute("""
-                    INSERT INTO linkedin_posts  (id, content, post_type, status, posted_at, linkedin_post_id, created_at)
+                    INSERT INTO linkedin_posts
+                        (content, post_type, status, posted_at, post_urn, linkedin_post_id, created_at)
                     VALUES (%s, %s, %s, %s, %s, %s, %s)
                 """, (
-                    hashlib.md5(content.encode()).hexdigest()[:16],
                     content,
                     'daily_update',
                     'posted',
-                    datetime.now().isoformat(),
+                    now,
                     post_id,
-                    datetime.now().isoformat()
+                    post_id,
+                    now,
                 ))
                 conn.commit()
             finally:
