@@ -308,11 +308,15 @@ def _action_outbound_distribution(finding: dict) -> tuple[str | None, dict | Non
     the listing status refreshes on its own. Manual-submit-only registries
     record a queued no-op (the endpoint handles that); the AUDIT always runs.
     Same promotion pattern as Phase EEE data_freshness + Phase III cron."""
-    url = (finding.get("url") or "")
-    key = url.split("target:")[-1].strip() if "target:" in url else ""
-    if not key:
-        return None, None
-    return "/api/v1/admin/outreach/mcp-registry/submit", {"target": key}
+    # 2026-06-27 REVERT the r79 auto-submit. The targets (lobehub, mcp_hive,
+    # toolhive, yellowmcp, mcphub, awesome_mcp) are MANUAL-submit (web forms / PRs)
+    # the brain cannot actually complete, so the finding NEVER clears and re-POSTs
+    # this endpoint every radar cycle → ~81 rate_limited/24h hammering the single
+    # replica (a top contributor to the very flapping the brain keeps flagging as
+    # fast_qa read-timeouts). Back to escalation-only: log once for a human to
+    # submit. (A periodic listing AUDIT, if wanted, belongs on its own cron — not
+    # the per-cycle act-loop request path.)
+    return None, None
 
 
 def _action_competitor_gap(finding: dict) -> tuple[str | None, dict | None]:
