@@ -976,11 +976,16 @@ def _build_survey_data(lat, lon, latency_target, capacity_mw):
         energy = mkt.get("energy") or {}
         tax = mkt.get("tax") or {}
 
-    # The resolved DCPI market's state is authoritative near borders — _state_for()
+    # Near borders, the resolved DCPI market's state is authoritative — _state_for()
     # (rectangular bbox + nearest-center tiebreak) mis-buckets Northern Virginia
-    # (Ashburn) → Maryland: MD's box overlaps NoVA and its center sits closer.
+    # (Ashburn) → Maryland. BUT only trust it when that market is the site's OWN
+    # metro (close), or _state_for couldn't resolve — NOT when the nearest market is
+    # far in another state (Carrier Mills IL's nearest market is Nashville TN, 148 mi
+    # → must NOT relabel the site Tennessee).
     _mkt_state = (market.get("state") or "").upper()
-    if _mkt_state in _FIPS:
+    _mkt_dist = market.get("distance_mi")
+    _mkt_close = isinstance(_mkt_dist, (int, float)) and _mkt_dist <= 60
+    if _mkt_state in _FIPS and _mkt_state != state and (state is None or _mkt_close):
         state = _mkt_state
         # The air scorer's _ap_resolve_state (main._ap_score_site) has the SAME
         # near-border bbox bug (smallest-box-wins → "Maryland context" on a VA
