@@ -593,6 +593,46 @@ def _alert_operator(subject: str, html: str) -> bool:
         return False
 
 
+# Fail-loud cooldown: alert at most once per this many hours so a persistent
+# dead token doesn't email the operator every cron tick (every 30 min).
+_AUTH_ALERT_COOLDOWN_H = 12
+
+
+def _record_token_dead(detail: str) -> None:
+    """FAIL LOUD when GitHub auth is dead (no_token / 401 / 403). Root cause of the
+    2026-06-22..27 writer stall: both PATs expired, list_autofix_prs() returned
+    {ok:False} SILENTLY, and the auto-fix writer + auto-merge froze for 5 days with
+    no log row and no alert. This writes a kind='auth_error' row (so /status and the
+    L23 drift detector can see it) and emails the operator AT MOST once per
+    _AUTH_ALERT_COOLDOWN_H. Best-effort; never raises (telemetry, never blocks)."""
+    try:
+        import psycopg2
+        url = _db_url()
+        if not url or not _ensure_table():
+            return
+        recent = None
+        with psycopg2.connect(url, connect_timeout=5) as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT 1 FROM brain_automerge_log WHERE kind='auth_error' "
+                "AND merged_at > NOW() - make_interval(hours => %s) LIMIT 1",
+                (_AUTH_ALERT_COOLDOWN_H,))
+            recent = cur.fetchone()
+            cur.execute(
+                "INSERT INTO brain_automerge_log (kind, status, detail) "
+                "VALUES ('auth_error', 'token_dead', %s)", (str(detail)[:500],))
+            conn.commit()
+        if not recent:
+            _alert_operator(
+                "🔴 DC Hub brain auto-merge BLOCKED — GitHub token dead",
+                "<p>The brain auto-fix writer can't reach GitHub:</p>"
+                "<pre>" + str(detail)[:300] + "</pre>"
+                "<p>No auto-fix PRs will draft or merge until a live token is set. Fix:</p>"
+                "<p>Regenerate a classic PAT (scopes <code>repo</code> + <code>workflow</code>) and run:<br>"
+                "<code>railway variables --service dchub-backend --set PR_SUBMIT_TOKEN=ghp_NEW</code></p>")
+    except Exception:
+        pass
+
+
 # ════════════════════════════════════════════════════════════════════
 #  1) AUTO-MERGE
 # ════════════════════════════════════════════════════════════════════
@@ -621,8 +661,13 @@ def run_automerge() -> dict:
 
     listing = list_autofix_prs()
     if not listing.get("ok"):
-        return {"error": "list_failed:" + str(listing.get("error")),
-                "merged": [], "skipped": []}
+        _err = str(listing.get("error") or "")
+        # FAIL LOUD on a dead GitHub token (no_token / 401 / 403) — the silent
+        # swallow here is exactly what froze the writer for 5 days. Transient
+        # errors (timeouts / 5xx) still return quietly and self-heal next run.
+        if listing.get("error") == "no_token" or _err[:3] in ("401", "403"):
+            _record_token_dead("list_autofix_prs failed: " + _err)
+        return {"error": "list_failed:" + _err, "merged": [], "skipped": []}
 
     merged, skipped = [], []
     used = 0
