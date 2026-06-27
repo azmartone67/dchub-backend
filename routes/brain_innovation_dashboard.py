@@ -199,6 +199,53 @@ def _flatten(result: dict) -> dict:
     }
 
 
+# ── Map an innovation item → a Layer-5 directive (for approve→PR) ────
+_ITEM_SOURCES = {
+    # kind -> (table, json_column, heading_column)
+    "agenda": ("brain_self_agenda", "result_json", "title"),
+    "inv":    ("brain_investigations", "result_json", "question"),
+    "prop":   ("brain_enhancement_proposals", "proposal_json", "title"),
+}
+
+
+def _item_directive(kind: str, item_id: int) -> tuple[str, str]:
+    """Fetch one innovation item's human-facing recommendation to use as a
+    Layer-5 directive for approve→PR. Returns (directive_text, heading); ('', '')
+    on unknown kind / missing row / any DB error (best-effort, never raises).
+    Prefers 'decision_for_human', falling back to 'recommendation'."""
+    src = _ITEM_SOURCES.get(kind)
+    if not src:
+        return "", ""
+    # All three are constants from the whitelist above — never user input — so the
+    # f-string interpolation of table/column names carries no injection surface.
+    table, jcol, headcol = src
+    conn = _conn()
+    if conn is None:
+        return "", ""
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"SELECT {headcol}, {jcol} FROM {table} WHERE id = %s",
+                (int(item_id),),
+            )
+            row = cur.fetchone()
+        if not row:
+            return "", ""
+        heading = str(row[0] or "")
+        flat = _flatten(_as_obj(row[1]))
+        directive = (flat.get("decision_for_human")
+                     or flat.get("recommendation") or "").strip()
+        return directive, heading
+    except Exception as e:
+        logger.warning("brain_innovation_dashboard: _item_directive failed: %s", e)
+        try: conn.rollback()
+        except Exception: pass
+        return "", ""
+    finally:
+        try: conn.close()
+        except Exception: pass
+
+
 # ── Read each of the three streams (best-effort; [] not a crash) ─────
 def _recent_agenda(limit: int = 15) -> list[dict]:
     """Recent SELF-CHOSEN agenda items, newest first, flattened for display.
@@ -420,6 +467,7 @@ def innovation_approve():
     except (TypeError, ValueError):
         return jsonify(ok=False, error="id must be an integer"), 400
     decision = str(body.get("decision") or "approved").strip() or "approved"
+    open_pr = bool(body.get("open_pr"))
     conn = _conn()
     if conn is None:
         return jsonify(ok=False, error="database unavailable"), 503
@@ -441,7 +489,32 @@ def innovation_approve():
     finally:
         try: conn.close()
         except Exception: pass
-    return jsonify(ok=True, kind=kind, id=item_id, decision=decision), 200
+
+    resp = {"ok": True, "kind": kind, "id": item_id, "decision": decision}
+
+    # Optional one-click ACT: turn the item's 'decision for human' into a
+    # guardrailed Layer-5 draft PR (the dashboard's approve button sets open_pr).
+    # The approval row above is ALREADY committed, so a PR failure never loses the
+    # greenlight. Only fires on a real greenlight ('approved'); inherits
+    # can_open_pr() (kill switch + daily cap) and the drafter's REFUSE path, so an
+    # advisory insight that isn't a concrete single-file edit is recorded only.
+    if open_pr and decision == "approved":
+        try:
+            directive, heading = _item_directive(kind, item_id)
+            if not directive:
+                resp["pr_attempt"] = {
+                    "ok": True, "acted": False,
+                    "note": "no actionable 'decision for human' on this item — recorded only",
+                }
+            else:
+                from routes.brain_guardrails import draft_and_open_pr
+                resp["pr_attempt"] = draft_and_open_pr(
+                    directive, "", label=f"{kind} #{item_id}: {heading[:60]}")
+        except Exception as e:
+            logger.warning("brain_innovation_dashboard: approve→PR failed: %s", e)
+            resp["pr_attempt"] = {"ok": False, "acted": False, "error": str(e)}
+
+    return jsonify(**resp), 200
 
 
 @brain_innovation_dashboard_bp.route("/api/v1/brain/innovation/dashboard", methods=["GET"])
@@ -564,8 +637,10 @@ footer{margin-top:2.5rem;padding-top:1.25rem;border-top:1px solid var(--bd);
 <h1>What the brain is thinking</h1>
 <p class="sub">The brain's verified, adversarially-refuted analysis — the agenda it
 chose for itself, the investigations it ran, and the ranked improvements it proposed.
-Nothing here is acted on: each item is for you to read and <b>grade</b>, which closes
-the calibration loop the brain learns from. Read-only except the grade buttons.</p>
+<b>Grade</b> each item to close the calibration loop the brain learns from, or
+<b>approve + open PR</b> to turn an item's recommendation into a guardrailed draft PR
+(human-merged, daily-capped; advisory insights that aren't a concrete single-file edit
+are just recorded).</p>
 <div class="bar">
   <span id="status">Loading…</span>
   <span class="dot">·</span>
@@ -580,7 +655,7 @@ the calibration loop the brain learns from. Read-only except the grade buttons.<
   <div class="col"><h2>Investigations <span class="cnt" id="cnt-inv">0</span></h2><div id="col-inv"></div></div>
   <div class="col"><h2>Proposals <span class="cnt" id="cnt-prop">0</span></h2><div id="col-prop"></div></div>
 </div>
-<footer>READ-ONLY consolidated view · grades POST to the existing admin endpoints ·
+<footer>grade + approve→draft-PR (a human merges every PR · daily-capped · auto-merge OFF) ·
 brain_self_agenda · brain_investigations · brain_enhancement_proposals</footer>
 </div>
 <div class="toast" id="toast"></div>
@@ -653,7 +728,7 @@ brain_self_agenda · brain_investigations · brain_enhancement_proposals</footer
     if(APPROVED[kind+':'+it.id]){
       parts.push('<span class="approved-pill" data-approved-pill>✓ approved</span>');
     } else {
-      parts.push('<button class="approve" data-approve>✓ approve guidance</button>');
+      parts.push('<button class="approve" data-approve>✓ approve + open PR</button>');
     }
     parts.push('</div>');
     if(it.created_at) parts.push('<div class="meta">#'+esc(it.id)+' · '+esc(String(it.created_at).slice(0,19))+'</div>');
@@ -709,25 +784,42 @@ brain_self_agenda · brain_investigations · brain_enhancement_proposals</footer
     var card = btn.closest('.card'); if(!card) return;
     var kind = card.getAttribute('data-kind');
     var id   = card.getAttribute('data-id');
-    btn.disabled = true;
-    fetch(authq('/api/v1/brain/innovation/approve'), {method:'POST', headers:authh(), body:JSON.stringify({kind:kind, id:Number(id), decision:'approved'})})
+    btn.disabled = true; btn.textContent = '⏳ drafting…';
+    fetch(authq('/api/v1/brain/innovation/approve'), {method:'POST', headers:authh(), body:JSON.stringify({kind:kind, id:Number(id), decision:'approved', open_pr:true})})
       .then(function(r){ return r.json().catch(function(){return {};}).then(function(j){ return {ok:r.ok, j:j}; }); })
       .then(function(res){
         if(res.ok && res.j && res.j.ok!==false){
           APPROVED[kind+':'+id] = 'approved';
+          var pa = (res.j && res.j.pr_attempt) || {};
+          var pr = pa.pr || {};
+          var prUrl = pr.pr_url || pr.url || '';
           var pill = document.createElement('span');
           pill.className = 'approved-pill';
           pill.setAttribute('data-approved-pill','');
-          pill.textContent = '✓ approved';
+          if(pa.acted && prUrl){
+            pill.innerHTML = '✓ approved · <a href="'+esc(prUrl)+'" target="_blank" rel="noopener" style="color:inherit;text-decoration:underline">draft PR ↗</a>';
+            toast('Approved #'+id+' · draft PR opened', true);
+          } else if(pa.refused){
+            pill.textContent = '✓ approved (recorded)';
+            toast('Approved #'+id+' — not a single-file edit; recorded only', true);
+          } else if(pa.note){
+            pill.textContent = '✓ approved (recorded)';
+            toast('Approved #'+id+' — recorded (no code change)', true);
+          } else if(pa.error || pa.ok===false){
+            pill.textContent = '✓ approved';
+            toast('Approved #'+id+' · PR draft skipped: '+esc(pa.error||pa.reason||'gate closed'), false);
+          } else {
+            pill.textContent = '✓ approved';
+            toast('Approved #'+id, true);
+          }
           btn.parentNode.replaceChild(pill, btn);
-          toast('Approved #'+id, true);
         } else {
-          btn.disabled = false;
+          btn.disabled = false; btn.textContent = '✓ approve + open PR';
           toast('Approve failed: '+((res.j&&res.j.error)||'error'), false);
         }
       })
       .catch(function(e){
-        btn.disabled = false;
+        btn.disabled = false; btn.textContent = '✓ approve + open PR';
         toast('Approve failed: '+e, false);
       });
   });
