@@ -1,8 +1,33 @@
 # Brain → Dedicated Worker Extraction (peak-CPU / RSS isolation)
 
-**Status:** Design / proposal — not yet implemented
+**Status:** Code scaffolding landed (backward-compatible, dark). Cutover pending.
 **Branch:** `perf/brain-worker-extraction`
 **Author:** drafted via Claude Code (Railway agent session, 2026-06-27)
+
+## Premise confirmed (live env, 2026-06-27)
+
+`dchub-backend` (web) has `BRAIN_ORCHESTRATOR_ENABLED=1` plus the full brain fleet
+(`BRAIN_AUTONOMY_ENABLED`, `BRAIN_CAUSAL_ENABLED`, `BRAIN_NARRATIVE_ENABLED`,
+`BRAIN_SELF_DIRECT_ENABLED`, …) and `DCHUB_BRAIN_MODEL_*=claude-opus-4-8` with
+`DCHUB_BRAIN_1M_CONTEXT=1`. So the L8 ~56s Claude call IS live (4×/day) and heavy
+Opus/1M-context brain work runs in-process on the leader web replica. Extraction
+is justified, not speculative.
+
+## What landed in this branch (safe, dark)
+
+Backward-compatible `BRAIN_HOST` flag (defaults `true` → **zero behavior change**
+until envs are set at cutover):
+- `main.py` — `_brain_host` gate; web replicas with `BRAIN_HOST=false` skip the
+  in-process autonomous-brain thread.
+- `routes/brain_layer8_orchestrator.py` — `_enabled()` returns False when
+  `BRAIN_HOST=false`, so a web replica won't run the 56s call even if the external
+  cron still POSTs to it.
+
+STILL TODO before cutover (NOT in this branch): gate the other scheduler-triggered
+heavy layers (L2 narrative, L14 causal) the same way OR repoint the scheduler, and
+**confirm where `dchub-scheduler.py` runs** (its `DCHUB_API_BASE` →
+`dchub-backend-production.up.railway.app`; the worker's internal host is
+`<worker>.railway.internal`).
 
 ## Problem
 
