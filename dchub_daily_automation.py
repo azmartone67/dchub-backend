@@ -711,31 +711,39 @@ def run_linkedin_post(post_type='daily'):
 
 
 def _log_linkedin_post(post_type, text, post_id):
-    """Log LinkedIn post to database for tracking."""
+    """Append a published LinkedIn post to the shared history log.
+
+    `linkedin_posts` (Neon) is an APPEND-ONLY post-history log: post_type has no
+    UNIQUE constraint (many rows share 'manual' / 'auto_<topic>'), so this is a
+    plain INSERT — NOT an upsert. The previous ON CONFLICT (post_type) form
+    raised psycopg2 InvalidColumnReference ("no unique or exclusion constraint
+    matching the ON CONFLICT specification") and silently no-oped. The table
+    definition is owned by linkedin_posts_schema.reconcile_schema(); we never
+    CREATE/ALTER the canonical table here.
+    """
     conn, db_type = get_db_connection()
     if not conn:
         return
     try:
         cur = conn.cursor()
-        # Ensure table exists
         if db_type == 'postgres':
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS linkedin_posts (
-                    id SERIAL PRIMARY KEY,
-                    post_type VARCHAR(50),
-                    content TEXT,
-                    linkedin_post_id VARCHAR(255),
-                    posted_at TIMESTAMP DEFAULT NOW()
-                )
-            """)
+            # Converge the canonical superset schema (idempotent, own conn).
+            try:
+                from linkedin_posts_schema import reconcile_schema
+                reconcile_schema()
+            except Exception as e:
+                log.warning(f"linkedin_posts schema reconcile skipped: {e}")
             cur.execute(
-                "INSERT INTO linkedin_posts (post_type, content, linkedin_post_id) VALUES (%s, %s, %s) ON CONFLICT (post_type) DO UPDATE SET content = EXCLUDED.content, linkedin_post_id = EXCLUDED.linkedin_post_id",
+                "INSERT INTO linkedin_posts (post_type, content, linkedin_post_id, posted_at) "
+                "VALUES (%s, %s, %s, NOW())",
                 (post_type, text[:2000], post_id)
             )
         else:
+            # Local sqlite dev fallback — a separate file DB, not the shared Neon
+            # log, so it keeps its own minimal table here.
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS linkedin_posts (
-                    id SERIAL PRIMARY KEY,
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
                     post_type TEXT,
                     content TEXT,
                     linkedin_post_id TEXT,
@@ -743,7 +751,8 @@ def _log_linkedin_post(post_type, text, post_id):
                 )
             """)
             cur.execute(
-                "INSERT INTO linkedin_posts (post_type, content, linkedin_post_id) VALUES (%s, %s, %s) ON CONFLICT (post_type) DO UPDATE SET content = EXCLUDED.content, linkedin_post_id = EXCLUDED.linkedin_post_id",
+                "INSERT INTO linkedin_posts (post_type, content, linkedin_post_id, posted_at) "
+                "VALUES (?, ?, ?, CURRENT_TIMESTAMP)",
                 (post_type, text[:2000], post_id)
             )
             conn.commit()
@@ -1129,6 +1138,14 @@ def init_daily_tables():
             return
         cur = conn.cursor()
         if db_type == 'postgres':
+            # linkedin_posts is owned by the canonical schema module — converge
+            # the superset there instead of CREATE-ing a competing 4-col shape
+            # that would lose the upsert/upset race for the table definition.
+            try:
+                from linkedin_posts_schema import reconcile_schema
+                reconcile_schema()
+            except Exception as e:
+                log.warning(f"linkedin_posts schema reconcile skipped: {e}")
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS market_brief_subscribers (
                     id SERIAL PRIMARY KEY,
@@ -1137,15 +1154,6 @@ def init_daily_tables():
                     is_active BOOLEAN DEFAULT TRUE,
                     subscribed_at TIMESTAMP DEFAULT NOW(),
                     unsubscribed_at TIMESTAMP
-                )
-            """)
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS linkedin_posts (
-                    id SERIAL PRIMARY KEY,
-                    post_type VARCHAR(50),
-                    content TEXT,
-                    linkedin_post_id VARCHAR(255),
-                    posted_at TIMESTAMP DEFAULT NOW()
                 )
             """)
             cur.execute("""
@@ -1166,15 +1174,6 @@ def init_daily_tables():
                     is_active INTEGER DEFAULT 1,
                     subscribed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     unsubscribed_at TIMESTAMP
-                )
-            """)
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS linkedin_posts (
-                    id SERIAL PRIMARY KEY,
-                    post_type TEXT,
-                    content TEXT,
-                    linkedin_post_id TEXT,
-                    posted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
             cur.execute("""

@@ -97,23 +97,13 @@ def init_linkedin_tables():
                 updated_at TIMESTAMP DEFAULT NOW()
             )
         ''')
-        cur.execute('''
-            CREATE TABLE IF NOT EXISTS linkedin_posts (
-                id SERIAL PRIMARY KEY,
-                post_id VARCHAR(255),
-                post_type VARCHAR(50) NOT NULL,
-                content_text TEXT NOT NULL,
-                article_url TEXT,
-                status VARCHAR(50) DEFAULT 'draft',
-                scheduled_at TIMESTAMP,
-                published_at TIMESTAMP,
-                linkedin_response TEXT,
-                source_event VARCHAR(100),
-                source_data TEXT,
-                created_at TIMESTAMP DEFAULT NOW(),
-                error_message TEXT
-            )
-        ''')
+        # linkedin_posts is reconciled by the canonical schema module — it used
+        # to be CREATEd here with a content_text-NOT-NULL shape that was
+        # incompatible with linkedin_poster.py (content) and
+        # intelligence_engine.py (id TEXT). The reconciler is the single source
+        # of truth and idempotently migrates existing prod rows to the superset.
+        from linkedin_posts_schema import reconcile_schema
+        reconcile_schema()
         cur.execute('''
             CREATE TABLE IF NOT EXISTS linkedin_post_queue (
                 id SERIAL PRIMARY KEY,
@@ -346,12 +336,25 @@ def log_post(post_type, text, article_url, result):
         conn = get_pg_connection()
         cur = conn.cursor()
         status = 'published' if result.get('status_code') == 201 else 'failed'
+        # Write the canonical columns and mirror the legacy synonyms so this
+        # row is readable by every consumer regardless of which name they read:
+        #   post_urn  ← canonical id read by the engagement fetchers + readers
+        #   post_id   ← legacy synonym (autopost history endpoint)
+        #   content   ← canonical body (poster/intelligence + COALESCE readers)
+        #   content_text ← legacy synonym
+        # posted_at falls back to its DEFAULT NOW(); published_at stays
+        # success-only to preserve the "actually went live" semantic.
+        post_urn = result.get('post_id', '')
         cur.execute('''
-            INSERT INTO linkedin_posts (post_id, post_type, content_text, article_url, status, published_at, linkedin_response, media_topic_tags)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb)
+            INSERT INTO linkedin_posts
+                (post_urn, post_id, post_type, content, content_text,
+                 article_url, status, published_at, linkedin_response, media_topic_tags)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)
         ''', (
-            result.get('post_id', ''),
+            post_urn,
+            post_urn,
             post_type,
+            text,
             text,
             article_url,
             status,
@@ -758,7 +761,8 @@ def linkedin_status():
 
         # Get recent posts
         cur.execute('''
-            SELECT post_type, status, published_at, content_text
+            SELECT post_type, status, COALESCE(published_at, posted_at) AS published_at,
+                   COALESCE(content_text, content) AS content_text
             FROM linkedin_posts
             ORDER BY created_at DESC LIMIT 5
         ''')
@@ -890,8 +894,10 @@ def linkedin_post_history():
     cur = conn.cursor()
     try:
         cur.execute('''
-            SELECT id, post_id, post_type, content_text, article_url,
-                   status, published_at, created_at, error_message
+            SELECT id, COALESCE(post_id, post_urn) AS post_id, post_type,
+                   COALESCE(content_text, content) AS content_text, article_url,
+                   status, COALESCE(published_at, posted_at) AS published_at,
+                   created_at, COALESCE(error_message, error) AS error_message
             FROM linkedin_posts
             ORDER BY created_at DESC
             LIMIT %s

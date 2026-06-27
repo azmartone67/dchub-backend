@@ -114,7 +114,14 @@ def _execute(sql, params=None, fetch=False, fetchall=False):
 
 
 def _ensure_tables():
-    """Create LinkedIn tables if they don't exist."""
+    """Create LinkedIn tables if they don't exist.
+
+    linkedin_posts is owned by the canonical reconciler in
+    linkedin_posts_schema.py — three modules used to CREATE this table with
+    incompatible column sets; that module is now the single source of truth and
+    also runs an idempotent ADD COLUMN IF NOT EXISTS migration so existing prod
+    rows are preserved while the full superset is filled in.
+    """
     try:
         _execute("""
             CREATE TABLE IF NOT EXISTS linkedin_tokens (
@@ -128,17 +135,8 @@ def _ensure_tables():
                 CONSTRAINT single_row CHECK (id = 1)
             )
         """)
-        _execute("""
-            CREATE TABLE IF NOT EXISTS linkedin_posts (
-                id SERIAL PRIMARY KEY,
-                post_urn TEXT,
-                content TEXT,
-                post_type TEXT DEFAULT 'manual',
-                status TEXT DEFAULT 'success',
-                error TEXT,
-                posted_at TIMESTAMPTZ DEFAULT NOW()
-            )
-        """)
+        from linkedin_posts_schema import reconcile_schema
+        reconcile_schema()
         logger.info("[LinkedIn] ✅ Tables verified/created")
     except Exception as e:
         logger.error(f"[LinkedIn] Table creation error: {e}")
