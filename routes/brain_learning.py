@@ -543,6 +543,119 @@ def brain_stuck_findings():
 
 
 # ─────────────────────────────────────────────────────────────────────
+# Move 5b (2026-06-26) — needs-human escalation queue
+# Complements /stuck-findings (the tried-and-FAILED set) with the
+# DISTINCT population of findings the autopilot has NO autonomous action
+# for: it logs them as brain_autopilot_actions.outcome='escalated' and
+# moves on. Pure read view (no schema change, no autopilot hot-path edit)
+# joining those escalations to still-OPEN brain_findings, plus an admin
+# resolve action that reuses the finding's existing status/resolved_at.
+# Admin-gated — surfaces brain_findings.detail (internal context).
+# ─────────────────────────────────────────────────────────────────────
+@brain_learning_bp.route("/api/v1/brain/needs-human", methods=["GET"])
+@_require_admin
+def brain_needs_human():
+    """Read-only human-review queue: OPEN findings the autopilot escalated
+    because no autonomous action exists for their pattern (distinct from
+    /stuck-findings, which is the tried-and-failed set). Triggers NO action
+    and changes NO state. Query params:
+      hours  (default 168 = 7d)  only escalations within this window
+      limit  (default 50, max 200)
+    """
+    try:
+        hours = max(1, int(request.args.get("hours") or 168))
+    except Exception:
+        hours = 168
+    try:
+        limit = min(int(request.args.get("limit") or 50), 200)
+    except Exception:
+        limit = 50
+
+    out = []
+    try:
+        with _conn() as c, c.cursor() as cur:
+            cur.execute("""
+                SELECT * FROM (
+                  SELECT DISTINCT ON (f.id)
+                         f.id, f.issue, f.url, f.count, f.detail, f.detector,
+                         f.first_seen, f.last_seen, f.seen_count,
+                         COALESCE(f.status,'open') AS status,
+                         a.started_at AS escalated_at, a.error AS reason
+                    FROM brain_findings f
+                    JOIN brain_autopilot_actions a
+                      ON a.finding_issue = f.issue
+                     AND COALESCE(a.finding_url,'') = COALESCE(f.url,'')
+                     AND a.outcome = 'escalated'
+                   WHERE COALESCE(f.status,'open') = 'open'
+                     AND a.started_at > NOW() - make_interval(hours => %s)
+                   ORDER BY f.id, a.started_at DESC
+                ) q
+                ORDER BY q.escalated_at DESC
+                LIMIT %s
+            """, (hours, limit))
+            cols = [d[0] for d in cur.description]
+            for r in cur.fetchall():
+                row = dict(zip(cols, r))
+                for k in ("first_seen", "last_seen", "escalated_at"):
+                    if row.get(k) is not None:
+                        row[k] = row[k].isoformat()
+                out.append(row)
+    except Exception as e:
+        return jsonify(ok=False, error=str(e)[:200],
+                       generated_at=now_iso()), 200
+
+    return jsonify(
+        ok=True,
+        needs_human=out,
+        count=len(out),
+        criteria={"window_hours": hours, "limit": limit,
+                  "note": "OPEN findings the autopilot escalated (no autonomous "
+                          "action for the pattern); resolve via "
+                          "POST /api/v1/brain/needs-human/resolve"},
+        generated_at=now_iso(),
+    ), 200
+
+
+@brain_learning_bp.route("/api/v1/brain/needs-human/resolve", methods=["POST"])
+@_require_admin
+def brain_needs_human_resolve():
+    """Human operator marks an escalated finding resolved/dismissed. Sets the
+    finding's EXISTING status + resolved_at (no new columns). Body JSON:
+        finding_id : int   (required)
+        action     : 'resolved' | 'dismissed'   (default 'resolved')
+    """
+    body = request.get_json(silent=True) or {}
+    try:
+        finding_id = int(body.get("finding_id"))
+    except Exception:
+        return jsonify(ok=False, error="finding_id (int) required"), 400
+    action = (body.get("action") or "resolved").strip().lower()
+    if action not in ("resolved", "dismissed"):
+        return jsonify(ok=False,
+                       error="action must be 'resolved' or 'dismissed'"), 400
+
+    row = None
+    try:
+        with _conn() as c, c.cursor() as cur:
+            cur.execute("""
+                UPDATE brain_findings
+                   SET status = %s, resolved_at = NOW()
+                 WHERE id = %s
+             RETURNING id, issue, url
+            """, (action, finding_id))
+            row = cur.fetchone()
+    except Exception as e:
+        return jsonify(ok=False, error=str(e)[:200],
+                       generated_at=now_iso()), 200
+
+    if not row:
+        return jsonify(ok=False, error="no finding id=%s" % finding_id,
+                       generated_at=now_iso()), 200
+    return jsonify(ok=True, id=row[0], issue=row[1], url=row[2],
+                   action=action, generated_at=now_iso()), 200
+
+
+# ─────────────────────────────────────────────────────────────────────
 # 4A — Outcome prober (cron-callable)
 # ─────────────────────────────────────────────────────────────────────
 @brain_learning_bp.route("/api/v1/brain/probe-outcomes", methods=["POST", "GET"])
