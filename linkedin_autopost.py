@@ -335,7 +335,9 @@ def log_post(post_type, text, article_url, result):
             tags = []
         conn = get_pg_connection()
         cur = conn.cursor()
-        status = 'published' if result.get('status_code') == 201 else 'failed'
+        # Canonical success status is 'success' (what the engagement fetchers +
+        # media analytics filter on); 'failed' for non-201 responses.
+        status = 'success' if result.get('status_code') == 201 else 'failed'
         # Write the canonical columns and mirror the legacy synonyms so this
         # row is readable by every consumer regardless of which name they read:
         #   post_urn  ← canonical id read by the engagement fetchers + readers
@@ -358,7 +360,7 @@ def log_post(post_type, text, article_url, result):
             text,
             article_url,
             status,
-            datetime.utcnow() if status == 'published' else None,
+            datetime.utcnow() if status == 'success' else None,
             json.dumps(result),
             json.dumps(tags),
         ))

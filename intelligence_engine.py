@@ -103,7 +103,7 @@ def get_last_linkedin_post_time() -> Optional[datetime]:
     conn = get_db()
     c = conn.cursor()
     try:
-        c.execute("SELECT posted_at FROM linkedin_posts WHERE status = 'posted' ORDER BY posted_at DESC LIMIT 1")
+        c.execute("SELECT posted_at FROM linkedin_posts WHERE status = 'success' ORDER BY posted_at DESC LIMIT 1")
         result = c.fetchone()
         if result and result[0]:
             return datetime.fromisoformat(result[0])
@@ -410,7 +410,9 @@ def post_to_linkedin(content: str) -> Dict:
                 """, (
                     content,
                     'daily_update',
-                    'posted',
+                    'success',  # canonical success status (was 'posted' — a value
+                                # no other module wrote/read; engagement fetchers
+                                # + media analytics all filter status = 'success')
                     now,
                     post_id,
                     post_id,
@@ -651,7 +653,7 @@ def api_intelligence_stats():
 
         stats = {}
 
-        c.execute("SELECT COUNT(*) FROM linkedin_posts WHERE status = 'posted'")
+        c.execute("SELECT COUNT(*) FROM linkedin_posts WHERE status = 'success'")
         stats['linkedin_posts'] = c.fetchone()[0]
 
         c.execute("SELECT COUNT(*) FROM alert_subscriptions WHERE active = 1")
