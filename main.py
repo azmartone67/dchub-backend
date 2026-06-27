@@ -13995,10 +13995,13 @@ def list_markets():
                         tier = (plan.get('plan') or plan.get('tier') or 'free').lower()
             except Exception:
                 pass
-            # Heuristic: dev_ prefix → developer, pro_ prefix → pro, ent_ → enterprise
-            if api_key.startswith('dev_'):  tier = 'developer'
-            elif api_key.startswith('pro_'): tier = 'pro'
-            elif api_key.startswith('ent_'): tier = 'enterprise'
+            # Heuristic: the ACTUAL minted prefixes are dchub_dev_/dchub_pro_/dchub_ent_
+            # (api_tier_gating.generate_api_key). The old check used startswith('ent_')
+            # which NEVER matched 'dchub_ent_…' → every paid key fell through to free
+            # (10 markets). Anchor on the real prefixes; bare dev_/pro_/ent_ kept for legacy.
+            if api_key.startswith(('dchub_dev_', 'dev_')):    tier = 'developer'
+            elif api_key.startswith(('dchub_pro_', 'pro_')):  tier = 'pro'
+            elif api_key.startswith(('dchub_ent_', 'ent_')):  tier = 'enterprise'
 
         TIER_LIMITS = {
             'anonymous': 5,       # No signup yet — teaser to convert
