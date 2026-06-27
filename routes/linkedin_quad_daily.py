@@ -734,9 +734,15 @@ def run():
         import re as _re_enrich
         if text and not _re_enrich.search(r'https?://', text):
             text = text.rstrip() + f"\n\n→ {landing}"
+        # _quality_score STRIPS URLs before its freshness check, so a year that
+        # only appears inside a /news/<slug> link earns NO freshness credit (this
+        # is why an enriched post still scored 0.55). Check recency on the
+        # URL-stripped body and append a real dated cue when the human-readable
+        # text lacks one — guaranteeing the +0.20 freshness point.
+        _body_nourl = _re_enrich.sub(r'https?://[^\s)>\]]+', ' ', text)
         if text and not _re_enrich.search(
-                r'\b(20\d\d|this week|today|this month|this quarter|latest|just|now)\b',
-                text, _re_enrich.I):
+                r'\b(20[2-3]\d|this week|today|this month|this quarter|latest|just|now)\b',
+                _body_nourl, _re_enrich.I):
             text = text.rstrip() + f"\n\n(DC Hub data · {datetime.datetime.utcnow().strftime('%b %d, %Y')})"
     except Exception:
         pass
