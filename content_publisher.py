@@ -898,7 +898,7 @@ def _delete_linkedin_share(share_urn, access_token):
     return False, f"LinkedIn delete error {resp.status_code}: {resp.text[:300]}"
 
 
-def _persist_linkedin_urn(cur, post_id, urn, content_text, slug=None):
+def _persist_linkedin_urn(cur, post_id, urn, content_text, slug=None, article_url=None):
     """r72 (2026-06-05): close the URN capture gap that broke the engagement
     measure→learn loop.
        (1) UPDATE social_media_posts.linkedin_urn = <urn>  (column existed but
@@ -921,6 +921,17 @@ def _persist_linkedin_urn(cur, post_id, urn, content_text, slug=None):
         # the engagement API needs a real urn:li:share:* / urn:li:ugcPost:*.
         logger.info("r72 skip URN-persist (non-urn sentinel): %s", urn)
         return False
+    # Derive the press-release slug from the article URL when not supplied, so
+    # marketing_engine / og_cards (which JOIN auto_press_releases ON a.slug =
+    # linkedin_posts.slug) can correlate this post's engagement back to its
+    # story. _og_today_slug_for returns the last path segment, which equals the
+    # auto_press_releases.slug for /news/<slug> etc.; a non-press URL yields a
+    # non-matching slug (harmless — the joins simply find no match).
+    if not slug and article_url:
+        try:
+            slug = _og_today_slug_for(article_url)
+        except Exception:
+            slug = None
     try:
         cur.execute(
             "UPDATE social_media_posts SET linkedin_urn = %s WHERE id = %s",
@@ -1178,7 +1189,7 @@ def publish_linkedin():
             cur.execute("UPDATE social_media_posts SET status = 'published', posted_at = %s, published_at = %s, publish_platform = 'linkedin' WHERE id = %s", (now, now, post_id))
             # r72: capture the URN so we can later fetch engagement
             # (likes/comments/impressions) for this post.
-            _persist_linkedin_urn(cur, post_id, result, content_text)
+            _persist_linkedin_urn(cur, post_id, result, content_text, article_url=_art_url)
             conn.commit()
             conn.close()
             logger.info(f"Published post {post_id} to LinkedIn: {result}")
@@ -2011,7 +2022,7 @@ def enqueue_custom():
                                       publish_platform = 'linkedin'
                                 WHERE id = %s""", (now, now, new_id))
                 # r72: persist URN for engagement loop.
-                _persist_linkedin_urn(cur, new_id, result, content)
+                _persist_linkedin_urn(cur, new_id, result, content, article_url=_art_url)
                 conn.commit()
                 out['published'] = True
                 out['linkedin_post_id'] = result
@@ -2632,7 +2643,7 @@ def start_auto_publisher():
                         if success:
                             cur.execute("UPDATE social_media_posts SET status = 'published', posted_at = %s, published_at = %s, publish_platform = 'linkedin' WHERE id = %s", (now, now, post_id))
                             # r72: capture URN → engagement loop can find this post.
-                            _persist_linkedin_urn(cur, post_id, result, content_text)
+                            _persist_linkedin_urn(cur, post_id, result, content_text, article_url=_art_url)
                             conn.commit()
                             logger.info(f"Auto-published post {post_id} to LinkedIn (drain {_attempts+1}/{_drain_budget}, queued={_queued}, urn={result})")
                             _record_attempt("linkedin", "ok")
