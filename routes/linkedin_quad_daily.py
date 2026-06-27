@@ -662,6 +662,28 @@ def run():
         text = str(_manual_copy)
         payload["manual_copy_override"] = True
 
+    # r86c-safetynet (2026-06-27): GUARANTEE the post LEADS with the editorial
+    # desk's number, even when the LLM path didn't put it first (compose_story_post
+    # fell back to a brand-claim template, or opened with a hook). The publish gate
+    # runs QUALITY first, then the r86c number-lead gate — so a post reaching here
+    # without a metric-lead is otherwise quality-OK; it just needs the number up
+    # front. We were publishing 0/week because every slot bounced off this gate.
+    # Deterministically prepend the desk's headline_number (+ so-what) so it clears
+    # r86c regardless of LLM behavior. Skipped when the text already leads with a
+    # number, when there's no editorial lead, or when the operator gave manual copy.
+    if text and _ed_lead and not (_manual_copy and str(_manual_copy).strip()):
+        try:
+            from routes.media_editorial import leads_with_number
+            if not leads_with_number(text):
+                _hn = (_ed_lead.get("headline_number") or "").strip()
+                if _hn:
+                    _sw = (_ed_lead.get("so_what") or "").strip()
+                    _opener = _hn if _hn[-1:] in ".!?" else _hn + "."
+                    text = _opener + (("\n\n" + _sw) if _sw else "") + "\n\n" + text
+                    payload["number_lead_prepended"] = True
+        except Exception:
+            pass
+
     # r48 (2026-05-25): 14-day content dedup. Even with per-slot
     # uniqueness, the same TEXT can repeat if upstream data is stale.
     # Hash the post text, check against last 14 days of same-topic
