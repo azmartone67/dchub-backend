@@ -518,31 +518,48 @@ def _section_hero(cur, slug: str) -> dict | None:
     }
 
 
+def _facility_match(hero: dict):
+    """(_match_sql, _match_params) to match a market's rows in
+    discovered_facilities. Shared by KPIs / pipeline / operators so all three
+    use the SAME logic.
+
+    discovered_facilities.market holds CITY/METRO names ("Cheyenne",
+    "Northern Virginia", "Dallas") while the DCPI hero name carries a ", ST"
+    suffix ("Cheyenne, WY"). The old exact-equality (market = name) matched 0
+    rows for EVERY suffixed market — the systemic "Not tracked" gap. Match the
+    full name OR the comma-stripped city OR, when the market has coordinates, a
+    state + ~0.6° proximity box (robust to the DCPI city-level name, e.g.
+    "Ashburn", vs the facility metro tag, e.g. "Northern Virginia"; lights up
+    per-market as market_power_scores.latitude/longitude get backfilled)."""
+    name = (hero or {}).get("name") or ""
+    city = name.split(",")[0].strip()
+    mkt = list({v for v in (name.lower(), city.lower()) if v})
+    lat, lng, st = (hero or {}).get("lat"), (hero or {}).get("lng"), (hero or {}).get("state")
+    sql = "LOWER(COALESCE(market, '')) = ANY(%s)"
+    params = [mkt]
+    if lat is not None and lng is not None and st:
+        sql += (" OR (state = %s AND latitude IS NOT NULL AND longitude IS NOT NULL "
+                "AND (latitude-%s)*(latitude-%s)+(longitude-%s)*(longitude-%s) < 0.36)")
+        params += [st, lat, lat, lng, lng]
+    return sql, params
+
+
+def _deals_match(hero: dict):
+    """(_match_sql, _match_params) to match a market's rows in the deals table
+    by name/comma-stripped-city text on market OR region. (deals has no
+    lat/lng, so no proximity clause.) Replaces the exact LOWER(market)=LOWER(
+    name) match that missed every ', ST'-suffixed / metro-named market — the
+    same gap _facility_match fixes for discovered_facilities."""
+    name = (hero or {}).get("name") or ""
+    city = name.split(",")[0].strip()
+    mkt = list({v for v in (name.lower(), city.lower()) if v})
+    sql = "(LOWER(COALESCE(market, '')) = ANY(%s) OR LOWER(COALESCE(region, '')) = ANY(%s))"
+    return sql, [mkt, mkt]
+
+
 def _section_kpis(cur, hero: dict) -> dict:
     """Section 2: At-a-Glance KPIs (FREE)."""
-    name = (hero or {}).get("name") or ""
-    # discovered_facilities.market holds CITY/METRO names ("Cheyenne",
-    # "Northern Virginia", "Dallas") while DCPI market_name carries a ", ST"
-    # suffix ("Cheyenne, WY"). r-fix 2026-06-17: the old exact-equality
-    # (market = market_name) matched 0 rows for EVERY suffixed market — the
-    # systemic "Facilities Not tracked" gap the data WAS being ingested for
-    # (45 facilities tagged "Cheyenne"). Match the full name OR the
-    # comma-stripped city so real facilities actually surface.
-    _city = name.split(",")[0].strip()
-    _mkt_match = list({v for v in (name.lower(), _city.lower()) if v})
-    # Match facilities by (a) name/city text OR (b) geographic proximity —
-    # state + a ~0.6° box around the market's coords — when the market has
-    # coordinates. Proximity is robust to the DCPI(city-level name, e.g.
-    # "Ashburn") vs facility(metro tag, e.g. "Northern Virginia") vocabulary
-    # mismatch that leaves ~half the markets unmatched on text alone; it lights
-    # up per-market as market_power_scores.latitude/longitude get backfilled.
-    _lat, _lng, _st = (hero or {}).get("lat"), (hero or {}).get("lng"), (hero or {}).get("state")
-    _match_sql = "LOWER(COALESCE(market, '')) = ANY(%s)"
-    _match_params = [_mkt_match]
-    if _lat is not None and _lng is not None and _st:
-        _match_sql += (" OR (state = %s AND latitude IS NOT NULL AND longitude IS NOT NULL "
-                       "AND (latitude-%s)*(latitude-%s)+(longitude-%s)*(longitude-%s) < 0.36)")
-        _match_params += [_st, _lat, _lat, _lng, _lng]
+    _match_sql, _match_params = _facility_match(hero)
     out = {
         "operational_mw": None,
         "pipeline_mw":    None,
@@ -632,19 +649,20 @@ def _section_power_grid(cur, hero: dict) -> dict:
     return out
 
 
-def _section_pipeline(cur, name: str) -> list[dict]:
+def _section_pipeline(cur, hero: dict) -> list[dict]:
     """Section 4: Pipeline (PRO+). Under-construction + planned projects."""
+    _msql, _mp = _facility_match(hero)
     try:
         cur.execute("""
             SELECT provider, COALESCE(facility_name, name, address),
                    power_mw, status, eta_year
               FROM discovered_facilities
-             WHERE LOWER(COALESCE(market, '')) = LOWER(%s)
+             WHERE ({msql})
                AND (status ILIKE %s OR status ILIKE %s OR status ILIKE %s)
                AND merged_at IS NULL AND is_duplicate = 0
              ORDER BY power_mw DESC NULLS LAST
              LIMIT 12
-        """, (name, '%construction%', '%planned%', '%announced%'))
+        """.format(msql=_msql), _mp + ['%construction%', '%planned%', '%announced%'])
         return [{
             "operator": r[0],
             "facility": r[1],
@@ -660,12 +678,12 @@ def _section_pipeline(cur, name: str) -> list[dict]:
                 SELECT provider, COALESCE(name, address),
                        power_mw, status
                   FROM discovered_facilities
-                 WHERE LOWER(COALESCE(market, '')) = LOWER(%s)
+                 WHERE ({msql})
                    AND (status ILIKE %s OR status ILIKE %s)
                    AND merged_at IS NULL AND is_duplicate = 0
                  ORDER BY power_mw DESC NULLS LAST
                  LIMIT 12
-            """, (name, '%construction%', '%planned%'))
+            """.format(msql=_msql), _mp + ['%construction%', '%planned%'])
             return [{
                 "operator": r[0], "facility": r[1],
                 "power_mw": _as_float(r[2]), "status": r[3], "eta": None,
@@ -674,21 +692,22 @@ def _section_pipeline(cur, name: str) -> list[dict]:
             return []
 
 
-def _section_operators(cur, name: str) -> list[dict]:
+def _section_operators(cur, hero: dict) -> list[dict]:
     """Section 5: Operator Footprint (PRO+). Top 5 operators by total MW."""
+    _msql, _mp = _facility_match(hero)
     try:
         cur.execute("""
             SELECT provider,
                    COUNT(*) AS n,
                    COALESCE(SUM(power_mw), 0) AS mw
               FROM discovered_facilities
-             WHERE LOWER(COALESCE(market, '')) = LOWER(%s)
+             WHERE ({msql})
                AND provider IS NOT NULL AND provider <> ''
                AND merged_at IS NULL AND is_duplicate = 0
              GROUP BY provider
              ORDER BY mw DESC NULLS LAST, n DESC
              LIMIT 5
-        """, (name,))
+        """.format(msql=_msql), list(_mp))
         return [{
             "operator":       r[0],
             "facility_count": _as_int(r[1]),
@@ -698,18 +717,18 @@ def _section_operators(cur, name: str) -> list[dict]:
         return []
 
 
-def _section_ma(cur, name: str) -> list[dict]:
+def _section_ma(cur, hero: dict) -> list[dict]:
     """Section 6: M&A Activity (PRO+). Last 24 months."""
+    _dsql, _dp = _deals_match(hero)
     try:
         cur.execute("""
             SELECT date, buyer, seller, value, mw, type
               FROM deals
-             WHERE (LOWER(COALESCE(market, '')) = LOWER(%s)
-                    OR LOWER(COALESCE(region, '')) = LOWER(%s))
+             WHERE {dsql}
                AND (date IS NULL OR date >= (CURRENT_DATE - INTERVAL '24 months'))
              ORDER BY date DESC NULLS LAST
              LIMIT 15
-        """, (name, name))
+        """.format(dsql=_dsql), list(_dp))
         return [{
             "date":   d[0].isoformat() if hasattr(d[0], "isoformat") else (str(d[0]) if d[0] else None),
             "buyer":  d[1], "seller": d[2],
@@ -721,22 +740,22 @@ def _section_ma(cur, name: str) -> list[dict]:
         return []
 
 
-def _section_comps(cur, name: str) -> dict:
+def _section_comps(cur, hero: dict) -> dict:
     """Section 7: Comps (PRO+). Powered-shell + land transactions, filtered
     by deal type. Spec calls out `powered_shell` + `land_transactions` tables
     but those aren't standalone in this codebase — the canonical source is
     `deals` filtered by deal_type, per the spec line 'use what exists'."""
     out = {"powered_shell": [], "land": []}
+    _dsql, _dp = _deals_match(hero)
     try:
         cur.execute("""
             SELECT date, buyer, seller, value, mw, type, asset_name
               FROM deals
-             WHERE (LOWER(COALESCE(market, '')) = LOWER(%s)
-                    OR LOWER(COALESCE(region, '')) = LOWER(%s))
+             WHERE {dsql}
                AND (LOWER(COALESCE(type, '')) LIKE '%%powered%%'
                     OR LOWER(COALESCE(type, '')) LIKE '%%shell%%')
              ORDER BY date DESC NULLS LAST LIMIT 8
-        """, (name, name))
+        """.format(dsql=_dsql), list(_dp))
         out["powered_shell"] = [{
             "date":  d[0].isoformat() if hasattr(d[0], "isoformat") else (str(d[0]) if d[0] else None),
             "buyer": d[1], "seller": d[2],
@@ -749,12 +768,11 @@ def _section_comps(cur, name: str) -> dict:
         cur.execute("""
             SELECT date, buyer, seller, value, mw, type, asset_name
               FROM deals
-             WHERE (LOWER(COALESCE(market, '')) = LOWER(%s)
-                    OR LOWER(COALESCE(region, '')) = LOWER(%s))
+             WHERE {dsql}
                AND (LOWER(COALESCE(type, '')) LIKE '%%land%%'
                     OR LOWER(COALESCE(type, '')) LIKE '%%site%%')
              ORDER BY date DESC NULLS LAST LIMIT 8
-        """, (name, name))
+        """.format(dsql=_dsql), list(_dp))
         out["land"] = [{
             "date":  d[0].isoformat() if hasattr(d[0], "isoformat") else (str(d[0]) if d[0] else None),
             "buyer": d[1], "seller": d[2],
@@ -990,14 +1008,15 @@ def _build_brief(slug: str, tier: str) -> dict:
             # shape is stable; the HTML template handles blur/teaser display.
             if is_pro:
                 out["power_grid"] = _section_power_grid(cur, hero)
-                # r-fix 2026-06-17: pass the comma-stripped CITY ("Cheyenne", not
-                # "Cheyenne, WY") so these exact-name section matches stop missing
-                # every ", ST"-suffixed market (same gap _section_kpis fixed).
-                _bn = ((hero.get("name") or "").split(",")[0].strip()) or (hero.get("name") or "")
-                out["pipeline"]   = _section_pipeline(cur, _bn)
-                out["operators"]  = _section_operators(cur, _bn)
-                out["ma"]         = _section_ma(cur, _bn)
-                out["comps"]      = _section_comps(cur, _bn)
+                # r-fix 2026-06-26: these sections now use the shared
+                # _facility_match / _deals_match helpers (name/city ANY +
+                # state-proximity for facilities; market OR region for deals),
+                # so pass the full hero — no more exact-name matching that
+                # missed ", ST"-suffixed / metro-named markets.
+                out["pipeline"]   = _section_pipeline(cur, hero)
+                out["operators"]  = _section_operators(cur, hero)
+                out["ma"]         = _section_ma(cur, hero)
+                out["comps"]      = _section_comps(cur, hero)
                 out["risk"]       = _section_risk(cur, hero)
             else:
                 # Empty arrays / nulls so callers don't NPE on missing keys.
