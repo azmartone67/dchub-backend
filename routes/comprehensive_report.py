@@ -22,6 +22,11 @@ import os
 import datetime
 import json
 from contextlib import contextmanager
+try:
+    from routes.report_email_capture import report_capture_block
+except Exception:  # never let a CTA import break the public CC-BY report
+    def report_capture_block(*a, **k):
+        return ""
 from flask import Blueprint, Response, jsonify
 
 try:
@@ -588,7 +593,7 @@ DC Hub — the live data layer beneath the data-center research industry. ·
   "inLanguage": "en"
 }
 </script>
-</body></html>"""
+""" + report_capture_block('quarterly', '/api/v1/reports/quarterly-deep') + """</body></html>"""
 
 
 # r41-license-block (2026-05-25): declare CC-BY-4.0 inline + via Link

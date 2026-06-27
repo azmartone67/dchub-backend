@@ -34,6 +34,11 @@ import os
 from internal_auth import accepted_internal_keys
 import json
 import datetime
+try:
+    from routes.report_email_capture import report_capture_block
+except Exception:  # never let a CTA import break the public CC-BY report
+    def report_capture_block(*a, **k):
+        return ""
 import logging
 from flask import Blueprint, Response, jsonify, request
 
@@ -1227,6 +1232,7 @@ def _render_html(d: dict, *, partner: str = "") -> str:
   }}
   </script>
 </div>
+{report_capture_block('monthly', '/api/v1/reports/monthly')}
 </body>
 </html>"""
 

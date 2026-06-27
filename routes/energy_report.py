@@ -27,6 +27,11 @@ import json
 import time
 import logging
 import datetime as _dt
+try:
+    from routes.report_email_capture import report_capture_block
+except Exception:  # never let a CTA import break the public CC-BY report
+    def report_capture_block(*a, **k):
+        return ""
 import html as _html
 from concurrent.futures import ThreadPoolExecutor
 from flask import Blueprint, Response, jsonify, request
@@ -682,4 +687,5 @@ def _render_html(d: dict, window: str) -> str:
   <a href="/sample">Sample landing</a>
 </p>
 </div>
+{report_capture_block(window + ' energy', '/api/v1/reports/energy/' + window)}
 </body></html>"""
