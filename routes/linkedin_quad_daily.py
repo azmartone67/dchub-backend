@@ -732,17 +732,16 @@ def run():
     # touched. This is what lifts posts from ~0.55 to comfortably clear the bar.
     try:
         import re as _re_enrich
+        # (d) source LINK — append only when the post has no http link at all.
         if text and not _re_enrich.search(r'https?://', text):
             text = text.rstrip() + f"\n\n→ {landing}"
-        # _quality_score STRIPS URLs before its freshness check, so a year that
-        # only appears inside a /news/<slug> link earns NO freshness credit (this
-        # is why an enriched post still scored 0.55). Check recency on the
-        # URL-stripped body and append a real dated cue when the human-readable
-        # text lacks one — guaranteeing the +0.20 freshness point.
-        _body_nourl = _re_enrich.sub(r'https?://[^\s)>\]]+', ' ', text)
-        if text and not _re_enrich.search(
-                r'\b(20[2-3]\d|this week|today|this month|this quarter|latest|just|now)\b',
-                _body_nourl, _re_enrich.I):
+        # (b) FRESHNESS — append a dated cue UNCONDITIONALLY. _quality_score strips
+        # URLs then credits a recent year via _RECENT_YEAR_RE; a guaranteed non-URL
+        # "<Mon DD, YYYY>" is the only reliable way to earn the +0.20. Prior
+        # conditional checks kept mis-matching the scorer's regex (loose words like
+        # "now"/"just" appear in any prose → false "already fresh" → skip → stuck
+        # at 0.55). A trailing date stamp is harmless even if the body cites a date.
+        if text:
             text = text.rstrip() + f"\n\n(DC Hub data · {datetime.datetime.utcnow().strftime('%b %d, %Y')})"
     except Exception:
         pass
