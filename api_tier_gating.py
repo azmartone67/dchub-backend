@@ -924,6 +924,12 @@ FACILITY_VISIBLE_FIELDS = {
     'free': {'name', 'city', 'state', 'country', 'latitude', 'longitude', 'status', 'slug',
              'provider', 'operator', 'region', 'market'},
 }
+# All free-class tiers share 'free's preview (no MW/details). claim_free_key mints
+# 'identified' and the anon auto-trial mints 'trial'/'trial_taste' — without explicit
+# keys these fall to None=full. Per the advertised table, full facility data (incl
+# MW) starts at Starter; Free/Identified/Trial = preview only.
+for _ft in ('identified', 'trial', 'trial_taste'):
+    FACILITY_VISIBLE_FIELDS[_ft] = FACILITY_VISIBLE_FIELDS['free']
 
 def get_request_tier():
     """Non-blocking tier detection from JWT/API key/cookie. Returns plan or 'anon'."""
