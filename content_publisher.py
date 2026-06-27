@@ -934,9 +934,9 @@ def _persist_linkedin_urn(cur, post_id, urn, content_text, slug=None):
     try:
         cur.execute(
             """INSERT INTO linkedin_posts (post_urn, content, post_type, status,
-                                            posted_at)
-               VALUES (%s, %s, %s, %s, NOW())""",
-            (urn, (content_text or '')[:500], 'auto_press', 'success'),
+                                            slug, posted_at)
+               VALUES (%s, %s, %s, %s, %s, NOW())""",
+            (urn, (content_text or '')[:500], 'auto_press', 'success', slug),
         )
     except Exception as e:
         # Table may not exist in some dev DBs; linkedin_poster._ensure_tables

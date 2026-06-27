@@ -218,7 +218,7 @@ def gather_newsletter_context(now: datetime.datetime | None = None) -> dict:
                            impressions, posted_at
                       FROM linkedin_posts
                      WHERE posted_at >= NOW() - INTERVAL '7 days'
-                       AND status = 'posted'
+                       AND status = 'success'
                      ORDER BY (COALESCE(likes,0) + COALESCE(comments,0)*3
                                + COALESCE(shares,0)*5) DESC
                      LIMIT 3

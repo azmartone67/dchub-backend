@@ -69,6 +69,7 @@ CREATE TABLE IF NOT EXISTS linkedin_posts (
     error_message             TEXT,
     -- provenance / payload --
     article_url               TEXT,
+    slug                      TEXT,
     linkedin_response         TEXT,
     source_event              TEXT,
     source_data               TEXT,
@@ -112,6 +113,7 @@ ALTER TABLE linkedin_posts
     ADD COLUMN IF NOT EXISTS error                     TEXT,
     ADD COLUMN IF NOT EXISTS error_message             TEXT,
     ADD COLUMN IF NOT EXISTS article_url               TEXT,
+    ADD COLUMN IF NOT EXISTS slug                      TEXT,
     ADD COLUMN IF NOT EXISTS linkedin_response         TEXT,
     ADD COLUMN IF NOT EXISTS source_event              TEXT,
     ADD COLUMN IF NOT EXISTS source_data               TEXT,
