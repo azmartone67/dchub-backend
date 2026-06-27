@@ -304,8 +304,8 @@ def _format_post_base(slot, payload):
 
     if topic == "dcpi_mover" and payload:
         return (
-            f"🚀 {payload.get('market','?')} just hit DCPI score "
-            f"{payload.get('score','?')} ({payload.get('verdict','?')})\n\n"
+            f"🚀 {payload.get('market','?')} just hit {payload.get('score','?')}/100 "
+            f"on the DC Power Index ({payload.get('verdict','?')})\n\n"
             f"The DC Power Index ranks 285 US markets daily. This kind of move "
             f"signals where AI capex is actually flowing — not where the headlines say it is.\n\n"
             f"Top BUILD markets right now span 3 ISOs (WECC, SPP, ERCOT). Grid fundamentals "
