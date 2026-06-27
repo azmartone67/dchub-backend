@@ -445,6 +445,21 @@ def rank_data_events() -> list[dict]:
         f = weights.get(k, 1.0)
         l["eng_weight"] = f
         l["score"] = round(l["raw_score"] * f, 2)
+    # r86c-compliance (2026-06-27): a lead whose headline_number can't pass the
+    # number-lead PUBLISH gate (number not adjacent to a unit — e.g. a brain
+    # data-coverage finding title like "311 DCPI markets across 7 live ISOs",
+    # where "DCPI" sits between "311" and "markets") composes a post that then
+    # bounces off _should_skip_publish — wasting the slot. This is why the feed
+    # sat at 0 published / 500 blocked: on quiet days the only surviving lead was
+    # a malformed brain-insight title. Drop non-compliant leads so the desk only
+    # ever offers leads that WILL publish; the structured leads (dcpi_build
+    # "at 70/100", mover "12 pts", deal "$10B", interconnection "X GW") all pass.
+    _before = len(leads)
+    leads = [L for L in leads
+             if leads_with_number(str((L or {}).get("headline_number") or ""))]
+    if len(leads) != _before:
+        logger.info("[editorial] dropped %d non-number-lead-compliant lead(s) of %d",
+                    _before - len(leads), _before)
     leads.sort(key=lambda x: x.get("score", 0), reverse=True)
     return leads
 
