@@ -214,9 +214,77 @@ TOOLS = [
 ]
 
 
+# ── Auto-merge: keep this curated catalog from silently drifting BELOW the live
+# MCP server. r-catalog-autosync (2026-06-27): the live server (server.mjs) gained
+# tools faster than this hand list was updated (served 46 vs live 51), so discovery
+# surfaces under-advertised the inventory. We now MERGE — curated entries win (their
+# descriptions are hand-tuned), and any LIVE tool missing from the curated list is
+# auto-appended with its live description. So adding a tool to server.mjs needs ZERO
+# edits here. Cached 10 min; on any fetch error we fall back to the curated TOOLS
+# exactly as before (this file's "won't crash if the runtime changes" guarantee holds).
+import json as _json, time as _time, urllib.request as _urlreq
+
+_LIVE_TOOLS_CACHE: dict = {"map": None, "at": 0.0}
+_LIVE_TOOLS_TTL = 600  # seconds
+
+
+def _live_tools_map() -> dict:
+    """{name: description} from the live MCP server's tools/list. Cached; {} on error."""
+    now = _time.time()
+    c = _LIVE_TOOLS_CACHE
+    if c["map"] is not None and (now - c["at"]) < _LIVE_TOOLS_TTL:
+        return c["map"]
+    base = "https://dchub.cloud/mcp"
+    hdrs = {"Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream",
+            "User-Agent": "DCHub-CatalogSync/1.0"}
+    out: dict = {}
+    try:
+        init = _json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                            "params": {"protocolVersion": "2024-11-05", "capabilities": {},
+                                       "clientInfo": {"name": "catalog-sync", "version": "1"}}}).encode()
+        with _urlreq.urlopen(_urlreq.Request(base, data=init, headers=hdrs, method="POST"), timeout=8) as r:
+            sid = r.headers.get("Mcp-Session-Id") or r.headers.get("mcp-session-id")
+        if sid:
+            lp = _json.dumps({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}).encode()
+            with _urlreq.urlopen(_urlreq.Request(base, data=lp, headers={**hdrs, "Mcp-Session-Id": sid}, method="POST"), timeout=10) as r2:
+                for line in r2.read().decode("utf-8", "ignore").split("\n"):
+                    if line.startswith("data:"):
+                        try:
+                            d = _json.loads(line[5:].strip())
+                            for t in (d.get("result") or {}).get("tools") or []:
+                                nm = t.get("name")
+                                if nm:
+                                    out[nm] = (t.get("description") or "")
+                            break
+                        except Exception:
+                            pass
+        if out:
+            c["map"] = out
+            c["at"] = now
+    except Exception:
+        pass
+    return out or (c["map"] or {})
+
+
+def _merged_tools() -> list:
+    """Curated TOOLS + any LIVE tool not yet curated (auto-appended). Never drifts
+    below the live server; falls back to curated-only if the live fetch fails."""
+    curated = {name for name, _c, _t, _s, _e in TOOLS}
+    merged = list(TOOLS)
+    for nm, desc in _live_tools_map().items():
+        if nm not in curated:
+            tier = "pro" if nm in PRO_ONLY_TOOLS else "free"
+            merged.append((nm, "intelligence", tier,
+                           desc or f"{nm} — live DC Hub MCP tool (auto-synced from the server).",
+                           f"{nm}()"))
+    return merged
+
+
 def _build_manifest() -> dict:
+    _tools = _merged_tools()
     by_cat: dict[str, list] = {c[0]: [] for c in _CATEGORIES}
-    for name, cat, tier, summary, example in TOOLS:
+    for name, cat, tier, summary, example in _tools:
         by_cat.setdefault(cat, []).append({
             "name":     name,
             "category": cat,
@@ -239,7 +307,7 @@ def _build_manifest() -> dict:
         "categories": [
             {"id": c[0], "label": c[1], "description": c[2]} for c in _CATEGORIES
         ],
-        "tool_count": len(TOOLS),
+        "tool_count": len(_tools),
         "tools": {cat: by_cat.get(cat, []) for cat in by_cat},
     }
 
@@ -252,7 +320,7 @@ def flat_tools_for_card() -> list[dict]:
     Keeps every discovery surface from re-drifting into its own hand list.
     The `summary` field here is the >=80-char description used everywhere.
     """
-    return [{"name": name, "description": summary} for name, _cat, _tier, summary, _ex in TOOLS]
+    return [{"name": name, "description": summary} for name, _cat, _tier, summary, _ex in _merged_tools()]
 
 
 _WELL_KNOWN_TIER = {"free": "FREE", "identified": "IDENTIFIED", "pro": "PRO"}
@@ -268,7 +336,7 @@ def tools_for_well_known() -> list[dict]:
         {"name": name,
          "tier": _WELL_KNOWN_TIER.get(tier, "IDENTIFIED"),
          "description": summary}
-        for name, _cat, tier, summary, _ex in TOOLS
+        for name, _cat, tier, summary, _ex in _merged_tools()
     ]
 
 
