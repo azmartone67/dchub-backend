@@ -1627,9 +1627,16 @@ def recompute_all_scores(source: str = "manual",
                     json.dumps(risks), json.dumps(opps), verdict,
                     _data_basis_json,
                 )
+                # lat/lon via COALESCE: _load_markets_dynamic emits (slug, name,
+                # state, iso, None, None) for the ~200 dynamic markets, so a plain
+                # `latitude=%s` overwrite wiped any backfilled centroid/geocode on
+                # every recompute (the cause of 239/317 markets sitting NULL and the
+                # Market Brief proximity match never firing). COALESCE keeps the
+                # existing coord when the scorer has none, but a real value still wins.
                 cur.execute("""
                     UPDATE market_power_scores SET
-                        market_name=%s, state=%s, iso=%s, latitude=%s, longitude=%s,
+                        market_name=%s, state=%s, iso=%s,
+                        latitude=COALESCE(%s, latitude), longitude=COALESCE(%s, longitude),
                         constraint_score=%s, excess_power_score=%s, time_to_power_months=%s,
                         queue_capacity_mw=%s, queue_wait_months=%s, reserve_margin_pct=%s,
                         gen_additions_12mo_mw=%s, curtailment_pct=%s, stranded_capacity_mw=%s,
