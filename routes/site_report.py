@@ -141,6 +141,35 @@ def _state_for(lat, lon):
     return None
 
 
+def _reverse_geocode_state(lat, lon):
+    """Accurate coords→US state (2-letter) via ArcGIS reverse-geocode — replaces the
+    rectangular-bbox guess that mis-buckets BORDER parcels (Ashburn VA→MD, Carrier
+    Mills IL→KY, TX-panhandle→OK). Failure-isolated, short timeout → None so the
+    caller falls back to _state_for. Cached with the 1h survey, so ~1 call per build."""
+    try:
+        import requests
+        r = requests.get(
+            "https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/reverseGeocode",
+            params={"location": f"{lon},{lat}", "f": "json",
+                    "outFields": "RegionAbbr,Region,CountryCode"},
+            timeout=4)
+        addr = (r.json() or {}).get("address") or {}
+        cc = (addr.get("CountryCode") or "").upper()
+        if cc and cc not in ("USA", "US"):
+            return None  # non-US — _state_for / None handles it
+        ab = (addr.get("RegionAbbr") or "").strip().upper()
+        if len(ab) == 2 and ab in _FIPS:
+            return ab
+        reg = (addr.get("Region") or "").strip().lower()
+        if reg:
+            for code, name in _STATE_NAME.items():
+                if name.lower() == reg:
+                    return code
+    except Exception:
+        pass
+    return None
+
+
 def _fmt_kv(voltage):
     try:
         v = float(voltage)
@@ -944,7 +973,7 @@ def _compute_site_verdict(power, water, air, market):
 #  Survey assembly
 # ════════════════════════════════════════════════════════════════════════════
 def _build_survey_data(lat, lon, latency_target, capacity_mw):
-    state = _state_for(lat, lon)
+    state = _reverse_geocode_state(lat, lon) or _state_for(lat, lon)
     # Run the section gatherers concurrently — water (USDM) and power (HIFLD
     # fallback) are the long poles; overlapping them keeps the uncached build to
     # roughly the single slowest section instead of their sum. Each gatherer is
@@ -976,17 +1005,10 @@ def _build_survey_data(lat, lon, latency_target, capacity_mw):
         energy = mkt.get("energy") or {}
         tax = mkt.get("tax") or {}
 
-    # Near borders, the resolved DCPI market's state is authoritative — _state_for()
-    # (rectangular bbox + nearest-center tiebreak) mis-buckets Northern Virginia
-    # (Ashburn) → Maryland. BUT only trust it when that market is the site's OWN
-    # metro (close), or _state_for couldn't resolve — NOT when the nearest market is
-    # far in another state (Carrier Mills IL's nearest market is Nashville TN, 148 mi
-    # → must NOT relabel the site Tennessee).
-    _mkt_state = (market.get("state") or "").upper()
-    _mkt_dist = market.get("distance_mi")
-    _mkt_close = isinstance(_mkt_dist, (int, float)) and _mkt_dist <= 60
-    if _mkt_state in _FIPS and _mkt_state != state and (state is None or _mkt_close):
-        state = _mkt_state
+    # (The survey `state` above is now reverse-geocoded — accurate at borders. The
+    # old DCPI-market-state override was a bbox-bug patch and is removed: with
+    # accurate geocoding it would mis-fire on cross-border metros, e.g. a Jersey
+    # City NJ site whose nearest market "New York" is in NY.)
 
     # Align the air section's state + regulatory context with the survey's resolved
     # state. The air scorer's _ap_resolve_state (main._ap_score_site) has its OWN
