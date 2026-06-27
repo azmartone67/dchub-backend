@@ -535,8 +535,15 @@ def _facility_match(hero: dict):
     city = name.split(",")[0].strip()
     mkt = list({v for v in (name.lower(), city.lower()) if v})
     lat, lng, st = (hero or {}).get("lat"), (hero or {}).get("lng"), (hero or {}).get("state")
+    import re
     sql = "LOWER(COALESCE(market, '')) = ANY(%s)"
     params = [mkt]
+    if len(city) >= 4:
+        # Word-boundary substring catches metro-suffixed tags ('Dallas' ->
+        # 'Dallas-Fort Worth') while \y boundaries avoid false hits
+        # ('reno' does NOT match 'Moreno').
+        sql += " OR LOWER(COALESCE(market, '')) ~ %s"
+        params.append(r'\y' + re.escape(city.lower()) + r'\y')
     if lat is not None and lng is not None and st:
         sql += (" OR (state = %s AND latitude IS NOT NULL AND longitude IS NOT NULL "
                 "AND (latitude-%s)*(latitude-%s)+(longitude-%s)*(longitude-%s) < 0.36)")
@@ -553,8 +560,17 @@ def _deals_match(hero: dict):
     name = (hero or {}).get("name") or ""
     city = name.split(",")[0].strip()
     mkt = list({v for v in (name.lower(), city.lower()) if v})
-    sql = "(LOWER(COALESCE(market, '')) = ANY(%s) OR LOWER(COALESCE(region, '')) = ANY(%s))"
-    return sql, [mkt, mkt]
+    import re
+    sql = "(LOWER(COALESCE(market, '')) = ANY(%s) OR LOWER(COALESCE(region, '')) = ANY(%s)"
+    params = [mkt, mkt]
+    if len(city) >= 4:
+        # Word-boundary substring catches metro-named deal tags
+        # ('Dallas-Fort Worth', 'Atlanta, Phoenix') on market OR region.
+        wb = r'\y' + re.escape(city.lower()) + r'\y'
+        sql += " OR LOWER(COALESCE(market, '')) ~ %s OR LOWER(COALESCE(region, '')) ~ %s"
+        params += [wb, wb]
+    sql += ")"
+    return sql, params
 
 
 def _section_kpis(cur, hero: dict) -> dict:
@@ -718,15 +734,19 @@ def _section_operators(cur, hero: dict) -> list[dict]:
 
 
 def _section_ma(cur, hero: dict) -> list[dict]:
-    """Section 6: M&A Activity (PRO+). Last 24 months."""
+    """Section 6: M&A Activity (PRO+). Last ~2 years."""
     _dsql, _dp = _deals_match(hero)
     try:
+        # deals.date is TEXT (free-form, e.g. 'Q1 2024') so `date >= timestamp`
+        # threw `operator does not exist: text >= timestamp` and silently nulled
+        # this whole section for EVERY market. Filter on the clean integer
+        # `year` column instead.
         cur.execute("""
             SELECT date, buyer, seller, value, mw, type
               FROM deals
              WHERE {dsql}
-               AND (date IS NULL OR date >= (CURRENT_DATE - INTERVAL '24 months'))
-             ORDER BY date DESC NULLS LAST
+               AND (year IS NULL OR year >= EXTRACT(YEAR FROM CURRENT_DATE)::int - 2)
+             ORDER BY year DESC NULLS LAST, date DESC NULLS LAST
              LIMIT 15
         """.format(dsql=_dsql), list(_dp))
         return [{
@@ -749,7 +769,7 @@ def _section_comps(cur, hero: dict) -> dict:
     _dsql, _dp = _deals_match(hero)
     try:
         cur.execute("""
-            SELECT date, buyer, seller, value, mw, type, asset_name
+            SELECT date, buyer, seller, value, mw, type, assets
               FROM deals
              WHERE {dsql}
                AND (LOWER(COALESCE(type, '')) LIKE '%%powered%%'
@@ -766,7 +786,7 @@ def _section_comps(cur, hero: dict) -> dict:
         pass
     try:
         cur.execute("""
-            SELECT date, buyer, seller, value, mw, type, asset_name
+            SELECT date, buyer, seller, value, mw, type, assets
               FROM deals
              WHERE {dsql}
                AND (LOWER(COALESCE(type, '')) LIKE '%%land%%'
