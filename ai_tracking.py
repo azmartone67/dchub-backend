@@ -1146,35 +1146,54 @@ def _time_ago(ts):
 def init_ai_tracking(app: Flask):
     """Initialize AI tracking — call once in main.py after Flask app creation."""
 
-    # Init Neon tables (runs idempotent migrations)
-    db_ok = init_db()
-    if not db_ok:
-        logger.warning("AI Tracking running in degraded mode (no Neon)")
+    # r-qa (2026-06-27): init_db() runs idempotent ALTER TABLE migrations on the
+    # HOT, actively-written mcp_connections table. Each ALTER needs an ACCESS
+    # EXCLUSIVE lock, and under live MCP write traffic during a cold boot the lock
+    # wait can stall the gunicorn worker bind ~40s+ — long enough to trip Railway's
+    # deploy healthcheck (a real FAILED backend deploy was traced to this). Run the
+    # schema init/migration + drift check in a background daemon thread so the
+    # worker binds and serves routes IMMEDIATELY. Safe to defer: the migrations are
+    # idempotent (ADD COLUMN IF NOT EXISTS — already a no-op on live prod where the
+    # columns exist), log_mcp_connection already tolerates a not-yet-migrated table,
+    # and init_new_tables() (the bg deferred_db_init thread) also creates the table.
+    def _deferred_schema_init():
+        # Init Neon tables (runs idempotent migrations)
+        try:
+            db_ok = init_db()
+            if not db_ok:
+                logger.warning("AI Tracking running in degraded mode (no Neon)")
+        except Exception as e:
+            logger.error(f"AI Tracking: deferred init_db crashed: {e}")
+            return
 
-    # ── v4.2 startup schema check ──────────────────────────
-    # This fires AFTER init_db() so it sees the post-migration shape.
-    # If it still reports drift, init_db's ALTER TABLE migrations
-    # failed and log_mcp_connection will silently drop fields.
-    try:
-        schema_report = check_mcp_schema()
-        if schema_report["status"] == "ok":
-            logger.info(
-                "AI Tracking v%s: mcp_connections schema OK (%d cols)",
-                GATEWAY_VERSION, len(schema_report["actual"]),
-            )
-        elif schema_report["status"] == "drift":
-            logger.error(
-                "AI Tracking v%s: ⚠ SCHEMA DRIFT on mcp_connections — %s",
-                GATEWAY_VERSION, schema_report["message"],
-            )
-            logger.error("AI Tracking: missing columns = %s", schema_report["missing"])
-        else:
-            logger.error(
-                "AI Tracking v%s: schema check failed — %s",
-                GATEWAY_VERSION, schema_report["message"],
-            )
-    except Exception as e:
-        logger.error(f"AI Tracking: check_mcp_schema crashed: {e}")
+        # ── v4.2 startup schema check ──────────────────────────
+        # This fires AFTER init_db() so it sees the post-migration shape.
+        # If it still reports drift, init_db's ALTER TABLE migrations
+        # failed and log_mcp_connection will silently drop fields.
+        try:
+            schema_report = check_mcp_schema()
+            if schema_report["status"] == "ok":
+                logger.info(
+                    "AI Tracking v%s: mcp_connections schema OK (%d cols)",
+                    GATEWAY_VERSION, len(schema_report["actual"]),
+                )
+            elif schema_report["status"] == "drift":
+                logger.error(
+                    "AI Tracking v%s: ⚠ SCHEMA DRIFT on mcp_connections — %s",
+                    GATEWAY_VERSION, schema_report["message"],
+                )
+                logger.error("AI Tracking: missing columns = %s", schema_report["missing"])
+            else:
+                logger.error(
+                    "AI Tracking v%s: schema check failed — %s",
+                    GATEWAY_VERSION, schema_report["message"],
+                )
+        except Exception as e:
+            logger.error(f"AI Tracking: check_mcp_schema crashed: {e}")
+
+    threading.Thread(
+        target=_deferred_schema_init, name="ai-tracking-schema-init", daemon=True
+    ).start()
 
     # Start buffer sync thread
     _start_sync_thread()
