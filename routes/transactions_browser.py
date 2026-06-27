@@ -285,7 +285,10 @@ def transactions_index():
             f'<td>{(d.get("buyer") or "")[:50]}</td>'
             f'<td>{(d.get("seller") or "")[:50]}</td>'
             f'{value_cell}'
-            f'<td>{_fmt_mw(d.get("mw"))}</td>'
+            # r-gate-everywhere (2026-06-27): MW had NO gated_row guard (deal MW
+            # leaked on every locked row — Nvidia 10,000 MW etc.). Match the
+            # value/type cells: 🔒 past the free preview.
+            f'{("<td><span style=" + chr(34) + "color:#9ca3af" + chr(34) + ">🔒</span></td>") if gated_row else ("<td>" + _fmt_mw(d.get("mw")) + "</td>")}'
             f'{type_cell}'
             f'<td>{(d.get("region") or "")[:25]}</td>'
             f'<td>{(d.get("market") or "")[:25]}</td>'

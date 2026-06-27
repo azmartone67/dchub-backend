@@ -982,10 +982,41 @@ def _build_brief(slug: str, tier: str) -> dict:
             # Live-as-of BEFORE we drop the internal _computed_at_dt
             live = _live_as_of(cur, hero)
             hero_public = {k: v for k, v in hero.items() if not k.startswith("_")}
+            # r-gate-everywhere (2026-06-27): the numeric DCPI scores are Pro.
+            # hero_public previously stripped only _-keys → it still leaked
+            # excess_power / constraint_score / composite / time-to-power to
+            # non-pro. Null those (verdict / name / iso stay) and drive the
+            # outlook narrative off a masked hero (its prose embeds the excess
+            # score — L12). Verdict-bearing fields are preserved.
+            _BRIEF_SCORE_KEYS = ("excess_power", "excess_power_score", "constraint_score",
+                                 "composite_score", "time_to_power_months",
+                                 "queue_wait_months", "reserve_margin_pct",
+                                 "stranded_capacity_mw")
+            if not is_pro:
+                for _k in _BRIEF_SCORE_KEYS:
+                    if _k in hero_public:
+                        hero_public[_k] = None
+                hero_public["locked"] = True
+                _hero_outlook = {**dict(hero), **{k: None for k in _BRIEF_SCORE_KEYS}}
+            else:
+                _hero_outlook = hero
             out["hero"] = hero_public
             out["live_as_of"] = live
             out["kpis"]    = _section_kpis(cur, hero)
-            out["outlook"] = _section_outlook(canonical, hero)
+            out["outlook"] = _section_outlook(canonical, _hero_outlook)
+            # The stored Claude deep-dive narrative can quote the numeric scores in
+            # prose (masking the hero only fixes the stub path). For non-pro, force
+            # a verdict-only outlook — the deep-dive itself is paid analysis.
+            if not is_pro and isinstance(out.get("outlook"), dict):
+                _ov = (hero.get("verdict") or "CAUTION")
+                out["outlook"]["narrative_md"] = (
+                    f"**12-month outlook: {_ov}.** The numeric DCPI scores and the "
+                    f"full Claude-written deep-dive for "
+                    f"{hero.get('name', 'this market')} are available to DC Hub Pro "
+                    f"(dchub.cloud/pricing) — or to AI agents via the DC Hub MCP.")
+                out["outlook"]["rationale"] = "DCPI scores + deep-dive are DC Hub Pro."
+                out["outlook"]["_gated"] = True
+                out["outlook"]["_is_stub"] = False
             # PRO+ sections — anon/free callers get an empty stub so the JSON
             # shape is stable; the HTML template handles blur/teaser display.
             if is_pro:
@@ -2329,7 +2360,7 @@ def api_market_brief(slug):
     status = 200 if brief.get("ok") else (404 if brief.get("error") == "market_not_found" else 200)
     resp = jsonify(brief)
     # 6h edge cache per spec — section 6.
-    resp.headers["Cache-Control"] = "public, max-age=21600, s-maxage=21600"
+    resp.headers["Cache-Control"] = "private, no-store"  # r-gate-everywhere: tier-varying body, never CDN-shared
     resp.headers["Access-Control-Allow-Origin"] = "*"
     return resp, status
 
@@ -2814,7 +2845,7 @@ def html_market_brief(slug):
             pass
         html = _render_embed_html(brief, watermark_off=watermark_off)
         resp = Response(html, mimetype="text/html")
-        resp.headers["Cache-Control"] = "public, max-age=21600, s-maxage=21600"
+        resp.headers["Cache-Control"] = "private, no-store"  # r-gate-everywhere: tier-varying body, never CDN-shared
         resp.headers["X-Market-Brief-Tier"] = tier
         resp.headers["X-Market-Brief-Embed"] = "1"
         # Iframe-friendly: ALLOWALL + frame-ancestors *. The brief is
