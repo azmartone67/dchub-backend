@@ -117,7 +117,11 @@ def rank_markets():
               FROM discovered_facilities
              WHERE city IS NOT NULL AND city != ''
                AND state IS NOT NULL AND state != ''
-               AND status = 'active'
+               -- r-fix (2026-06-27): the lowercase 'active' bucket is 10k empty
+               -- crawl-shells with power_mw=0; real MW lives in 'Operational' +
+               -- pipeline statuses. Filtering status='active' summed 0 MW for
+               -- every market ("Albany 0 MW"). Exclude only the empty shells.
+               AND COALESCE(status,'') <> 'active'
                {country_filter}
           GROUP BY city, state, country
             HAVING COUNT(*) >= 2 AND COALESCE(SUM(power_mw), 0) >= %s
@@ -191,12 +195,12 @@ def rank_markets():
         "result_count":   len(results),
         "methodology":    {
             "cheapest_power":  "Proxy: largest markets typically have lowest LMP. Direct LMP integration coming Q3.",
-            "most_capacity":   "Sum of power_mw across all active facilities in market.",
+            "most_capacity":   "Sum of power_mw across operational + pipeline facilities in market.",
             "most_operators":  "Distinct operator count, tiebreaker by total MW.",
             "fastest_growing": "Proxy: facility count. Pipeline-weighted growth coming Q3.",
             "best_overall":    "Composite: 0.4×total_mw + 50×operators + 20×facilities.",
         }[criteria],
-        "data_source":    "DC Hub facility database, status='active'",
+        "data_source":    "DC Hub facility database (operational + pipeline)",
         "tier":           "developer",  # required tier for full results
     }), 200
 
