@@ -117,7 +117,7 @@ def _recent_linkedin_posts(cur) -> list[dict]:
         cur.execute(f"""
             SELECT id,
                    COALESCE(linkedin_post_id, post_urn, '')          AS li_id,
-                   COALESCE(content, content_text, '')              AS content,
+                   COALESCE(to_jsonb(linkedin_posts)->>'content', to_jsonb(linkedin_posts)->>'content_text', '') AS content,
                    posted_at,
                    impressions,
                    EXTRACT(EPOCH FROM (NOW() - posted_at))/3600.0   AS age_hours

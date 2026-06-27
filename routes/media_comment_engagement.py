@@ -268,7 +268,7 @@ def _recent_org_post_urns(days: int = LOOKBACK_DAYS_POSTS, limit: int = MAX_POST
         with conn, conn.cursor() as cur:
             cur.execute(f"""
                 SELECT id, post_urn, posted_at,
-                       COALESCE(content, content_text, '') AS content
+                       COALESCE(to_jsonb(linkedin_posts)->>'content', to_jsonb(linkedin_posts)->>'content_text', '') AS content
                   FROM linkedin_posts
                  WHERE post_urn IS NOT NULL AND post_urn <> ''
                    AND COALESCE(status,'') = 'success'

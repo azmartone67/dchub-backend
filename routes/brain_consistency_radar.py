@@ -1032,7 +1032,15 @@ def check_db_pool_pressure() -> list[dict]:
     findings: list[dict] = []
     import time as _t
     probes = [
-        ("freshness_radar",  "/api/v1/freshness/radar"),
+        # r-radarfix (2026-06-26): swapped /freshness/radar OUT — it runs
+        # scan_domains() (intrinsically 4s+), so as a DB-pool-pressure canary it
+        # false-timed-out EVERY scan (logging "[brain-radar] .../freshness/radar
+        # TimeoutError") AND piled self-inflicted load on the single replica — the
+        # same flapping class we dropped the quarterly-deep probe for above. Use a
+        # genuinely-light DB endpoint (/api/v1/site/stats, the proven-fast failover
+        # probe target) so this canary reflects REAL pool pressure, not the
+        # endpoint's own slowness.
+        ("site_stats",       "/api/v1/site/stats"),
         ("brain_memory",     "/api/v1/brain/memory/stats"),
         ("redeem_funnel",    "/api/v1/redeem/funnel-stats"),
     ]
