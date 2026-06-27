@@ -32,3 +32,14 @@ aptPkgs = [
   "libcairo2", "libgdk-pixbuf-2.0-0", "libglib2.0-0", "libffi8",
   "shared-mime-info", "fonts-liberation",
 ]
+
+# Build-cache (2026-06-26): persist pip's download cache across builds so a
+# code-only change does NOT re-download the entire requirements.txt on every
+# deploy (build logs showed "Downloading protobuf…" + ~50 wheels EACH build —
+# the main reason deploys take 3-5 min). This is an ADDITIVE BuildKit cache
+# mount — it does NOT override Nixpacks' auto-detected `pip install -r
+# requirements.txt` (same merge pattern as [phases.setup] above, which augments
+# rather than replaces the phase). The cache populates on the next build and
+# every build after it is faster.
+[phases.install]
+cacheDirectories = ["/root/.cache/pip"]
