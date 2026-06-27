@@ -225,6 +225,50 @@ def _recent_facility_urls(n=2000):
     return urls
 
 
+def _recent_dcpi_urls(n=400):
+    """Canonical /dcpi/<market_slug> URLs for PUBLISHED power markets — a strict
+    subset of the sitemap. Lever #3 (2026-06-26): re-engages crawlers (IndexNow
+    reaches Bing → which powers Copilot) on the DCPI market pages (the #1 tool
+    real agents use) after the recompute. Read-only, fail-soft → []. NOTE:
+    IndexNow is an orthogonal PUSH protocol — it does NOT stamp or forge any
+    sitemap lastmod (lastmod stays = real content age). Honest reach caveat:
+    Gemini & Perplexity expose NO submit/ping API, so this re-engages Copilot
+    directly and only nudges Google/Gemini via the existing GSC sitemap resubmit."""
+    db = (os.environ.get("DATABASE_URL")
+          or os.environ.get("NEON_DATABASE_URL") or "")
+    if not db:
+        return []
+    try:
+        import psycopg2  # lazy — avoid hard dep at import time
+        conn = psycopg2.connect(db, connect_timeout=10)
+    except Exception:
+        return []
+    urls, seen = [], set()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT DISTINCT ON (market_slug) market_slug
+                  FROM market_power_scores
+                 WHERE published = true AND market_slug IS NOT NULL AND market_slug != ''
+                 ORDER BY market_slug, computed_at DESC
+                 LIMIT %s
+                """, (max(1, min(int(n), 1000)),))
+            for (slug,) in cur.fetchall():
+                if slug in seen:
+                    continue
+                seen.add(slug)
+                urls.append(f"https://{HOST}/dcpi/{slug}")
+    except Exception:
+        urls = []
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+    return urls
+
+
 def _wants(name):
     return bool(request.args.get(name)
                 or (request.get_json(silent=True) or {}).get(name))
@@ -232,7 +276,7 @@ def _wants(name):
 
 @indexnow_bp.route("/api/v1/admin/indexnow", methods=["GET", "POST"])
 def indexnow_endpoint():
-    _submit_modes = ("recent", "facilities", "new_facilities")
+    _submit_modes = ("recent", "facilities", "new_facilities", "dcpi", "markets")
     # Public read: config + last status (no submit, no mode).
     if request.method == "GET" and not any(request.args.get(m) for m in _submit_modes):
         return jsonify(ok=True, host=HOST, key_location=KEY_LOCATION,
@@ -255,6 +299,10 @@ def indexnow_endpoint():
     # new-content stream that has no in-process publish hook.
     if _wants("facilities") or _wants("new_facilities"):
         urls += _recent_facility_urls(n or 2000)
+    # DCPI market pages (canonical /dcpi/<slug>, published only) — Lever #3:
+    # re-engage crawlers on the #1-tool content after the daily recompute.
+    if _wants("dcpi") or _wants("markets"):
+        urls += _recent_dcpi_urls(n or 400)
     # Recent sitemap URLs (news/press/static) as a belt-and-suspenders net.
     if _wants("recent"):
         urls += _sitemap_recent(n or 500)

@@ -1,0 +1,24 @@
+name: IndexNow — DCPI market pages
+
+# Lever #3 (2026-06-26): re-engage crawlers on the DCPI market pages (the #1
+# tool real agents use) after the daily recompute. IndexNow pushes to Bing →
+# which powers Copilot. Gemini & Perplexity expose no submit API (Google/Gemini
+# are nudged separately by the existing seo-sitemap-and-warm GSC resubmit).
+# This does NOT touch sitemap lastmods — IndexNow is an orthogonal push protocol.
+
+on:
+  schedule:
+    - cron: '10 8 * * *'   # daily 08:10 UTC, just after the 07:40 sitemap warm
+  workflow_dispatch: {}
+
+jobs:
+  indexnow-dcpi:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Submit published /dcpi/<slug> pages to IndexNow
+        run: |
+          curl -fsS --max-time 90 -X POST \
+            "https://dchub.cloud/api/v1/admin/indexnow?dcpi=1" \
+            -H "X-Admin-Key: ${{ secrets.DCHUB_ADMIN_KEY }}" \
+          && echo "IndexNow DCPI submit OK" \
+          || echo "IndexNow DCPI submit failed (non-fatal)"

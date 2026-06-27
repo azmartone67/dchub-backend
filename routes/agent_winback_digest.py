@@ -112,12 +112,35 @@ def _safeall(cur, sql, params=None):
 def _changes(cur) -> dict:
     """The 'what changed this week' payload. NOTE: deals.created_at and
     discovered_facilities.discovered_at are TEXT — must cast ::timestamptz."""
-    out = {"new_deals": 0, "deal_titles": [], "new_facilities": 0, "markets_tracked": 232}
+    out = {"new_deals": 0, "deal_titles": [], "new_facilities": 0, "markets_tracked": 232,
+           "dcpi_movers": [], "news": []}
     out["new_deals"] = int(_safe1(cur, "SELECT count(*) FROM deals WHERE created_at::timestamptz > NOW() - INTERVAL '7 days'", default=0) or 0)
     out["deal_titles"] = [r[0] for r in _safeall(cur,
         "SELECT COALESCE(title, company, target) FROM deals WHERE created_at::timestamptz > NOW() - INTERVAL '7 days' ORDER BY created_at::timestamptz DESC LIMIT 3") if r and r[0]]
     out["new_facilities"] = int(_safe1(cur, "SELECT count(*) FROM discovered_facilities WHERE discovered_at::timestamptz > NOW() - INTERVAL '7 days'", default=0) or 0)
     out["markets_tracked"] = int(_safe1(cur, "SELECT count(DISTINCT market) FROM dcpi_scores", default=232) or 232)
+    # Lever #2 (2026-06-26): the digest promised "DCPI movers + news" but shipped
+    # only counts. Both feeds are live in-DB — add them (fail-soft via _safeall;
+    # DCPI movers stay empty until 7d of dcpi_daily_snapshots accumulate).
+    out["dcpi_movers"] = [
+        {"market": r[0], "delta": float(r[1] or 0), "verdict": r[2]}
+        for r in _safeall(cur,
+            "SELECT t.market_name, (t.excess_power_score - p.excess_power_score) AS d, t.verdict "
+            "FROM dcpi_daily_snapshots t "
+            "JOIN dcpi_daily_snapshots p ON p.market_slug = t.market_slug "
+            "WHERE t.snapshot_date = (SELECT max(snapshot_date) FROM dcpi_daily_snapshots) "
+            "  AND p.snapshot_date = (SELECT max(snapshot_date) FROM dcpi_daily_snapshots "
+            "                         WHERE snapshot_date <= CURRENT_DATE - 7) "
+            "  AND t.excess_power_score IS NOT NULL AND p.excess_power_score IS NOT NULL "
+            "ORDER BY abs(t.excess_power_score - p.excess_power_score) DESC NULLS LAST LIMIT 3")
+        if r and r[0]]
+    out["news"] = [
+        {"title": r[0], "url": r[1], "source": r[2]}
+        for r in _safeall(cur,
+            "SELECT title, url, source FROM news "
+            "WHERE published_date::timestamptz > NOW() - INTERVAL '7 days' "
+            "ORDER BY published_date::timestamptz DESC LIMIT 3")
+        if r and r[0]]
     return out
 
 
@@ -139,6 +162,26 @@ def _html(email: str, interests: list, ch: dict) -> str:
              f'<code>get_changes</code> to pull just the delta.</p>') if pretty else (
              '<p style="margin:0 0 14px">Reconnect and call <code>get_changes</code> to pull only '
              'what shifted since your last session — DCPI market movers, new facilities, new deals.</p>')
+    _esc = lambda s: (str(s) if s is not None else "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    movers = ""
+    if ch.get("dcpi_movers"):
+        def _mv(m):
+            d = m.get("delta") or 0
+            arrow = "&#9650;" if d > 0 else ("&#9660;" if d < 0 else "&bull;")
+            return (f"<li style='margin:4px 0'><strong>{_esc(m.get('market'))}</strong> "
+                    f"{arrow} {abs(round(d, 1))} excess-power pts — <em>{_esc(m.get('verdict'))}</em></li>")
+        items = "".join(_mv(m) for m in ch["dcpi_movers"])
+        movers = ('<p style="margin:14px 0 4px"><strong>DCPI movers this week</strong> '
+                  '(where build-ability shifted):</p>'
+                  f'<ul style="margin:0 0 14px;padding-left:20px;color:#444">{items}</ul>')
+    news = ""
+    if ch.get("news"):
+        items = "".join(
+            f"<li style='margin:4px 0'><a href='{_esc(n.get('url'))}' style='color:#4F8FFF;text-decoration:none'>{_esc(n.get('title'))}</a>"
+            f"<span style='color:#999'> — {_esc(n.get('source'))}</span></li>"
+            for n in ch["news"] if n.get("title"))
+        news = ('<p style="margin:14px 0 4px"><strong>Top data-center news this week</strong>:</p>'
+                f'<ul style="margin:0 0 14px;padding-left:20px;color:#444">{items}</ul>')
     deals = ""
     if ch.get("deal_titles"):
         items = "".join(f"<li style='margin:4px 0'>{t}</li>" for t in ch["deal_titles"])
@@ -149,7 +192,7 @@ def _html(email: str, interests: list, ch: dict) -> str:
     return (f'<div style="font-family:-apple-system,Segoe UI,Inter,sans-serif;max-width:560px;margin:0 auto;color:#1a1a2e">'
             f'<h2 style="font-size:20px;margin:0 0 6px">What changed on DC Hub this week</h2>'
             f'<p style="color:#888;font-size:13px;margin:0 0 18px">The live data layer for AI agents — dchub.cloud</p>'
-            f'{yours}{deals}{fac}'
+            f'{yours}{movers}{news}{deals}{fac}'
             f'<p style="margin:18px 0 6px"><a href="https://dchub.cloud/mcp" style="background:#4F8FFF;color:#fff;padding:11px 22px;border-radius:8px;text-decoration:none;font-weight:600">Reconnect → call get_changes</a></p>'
             f'<p style="color:#999;font-size:12px;margin:16px 0 0">You\'re getting this because you bound this email to a DC Hub MCP key for change alerts.</p>'
             f'</div>')
