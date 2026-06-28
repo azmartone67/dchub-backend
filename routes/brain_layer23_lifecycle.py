@@ -1481,6 +1481,10 @@ Approved but not-yet-shipped proposals (consider proposing HOW to ship
 one of these instead of a brand-new capability):
 {pending_context}
 
+ALREADY SHIPPED + LIVE capabilities — do NOT re-propose these or close
+variants of them; they are BUILT. Propose something genuinely new:
+{shipped_context}
+
 Existing 23 MCP tools: search_facilities, get_facility, get_market_intel,
 rank_markets, find_alternatives, score_facility, get_pipeline,
 list_transactions, get_news, get_energy_prices, get_renewable_energy,
@@ -1573,6 +1577,75 @@ def _fetch_dismissed_context(max_chars: int = 800) -> str:
         except Exception: pass
 
 
+def _norm_cap_name(n: str) -> str:
+    """Normalize a capability name for dedupe (case/sep-insensitive)."""
+    return (n or "").strip().lower().replace("-", "_").replace(" ", "_")
+
+
+def _fetch_shipped_context(max_chars: int = 900) -> str:
+    """DISTINCT names of already-shipped capabilities (r81 2026-06-28) — the
+    curator was re-proposing the same temporal tools 30+ times because the
+    prompt never told it what's BUILT. Feeding shipped names in cuts the
+    duplicate noise (and the Opus/Sonnet spend) at the source."""
+    c = _conn()
+    if c is None:
+        return "(none — table unavailable)"
+    try:
+        with c.cursor() as cur:
+            cur.execute("""
+                SELECT proposal_text
+                  FROM brain_lifecycle_proposals
+                 WHERE shipped_at IS NOT NULL
+                 ORDER BY shipped_at DESC
+                 LIMIT 80
+            """)
+            rows = cur.fetchall()
+        seen, names = set(), []
+        for (text,) in rows:
+            try:
+                nm = (json.loads(text or "{}").get("name") or "").strip()
+            except Exception:
+                nm = ""
+            k = _norm_cap_name(nm)
+            if nm and k not in seen:
+                seen.add(k); names.append(nm)
+        if not names:
+            return "(none shipped yet)"
+        return ("  " + ", ".join(names))[:max_chars]
+    except Exception:
+        return "(shipped query failed)"
+    finally:
+        try: c.close()
+        except Exception: pass
+
+
+def _proposal_already_exists(cur, name: str) -> str | None:
+    """Return a reason if a same-named capability is already shipped, approved,
+    or still pending — so we don't re-file a duplicate. Returns None if novel
+    (or only previously DISMISSED, which may legitimately resurface)."""
+    norm = _norm_cap_name(name)
+    if not norm or norm == "?":
+        return None
+    cur.execute("""
+        SELECT id, shipped_at, approved, dismissed_at, proposal_text
+          FROM brain_lifecycle_proposals
+         ORDER BY proposed_at DESC LIMIT 400
+    """)
+    for pid, shipped_at, approved, dismissed_at, text in cur.fetchall():
+        try:
+            pn = _norm_cap_name(json.loads(text or "{}").get("name"))
+        except Exception:
+            pn = None
+        if pn and pn == norm:
+            if shipped_at is not None:
+                return f"already shipped (proposal #{pid})"
+            if approved is True:
+                return f"already approved (proposal #{pid})"
+            if approved is None and dismissed_at is None:
+                return f"already pending (proposal #{pid})"
+    return None
+
+
 def _fetch_pending_context(max_chars: int = 800) -> str:
     """Approved but unshipped proposals — Opus may propose how to ship."""
     c = _conn()
@@ -1625,12 +1698,14 @@ def _call_opus_for_proposal(audit_summary: str) -> tuple[dict | None, str | None
     trend_ctx = _fetch_trend_context()
     dismissed_ctx = _fetch_dismissed_context()
     pending_ctx = _fetch_pending_context()
+    shipped_ctx = _fetch_shipped_context()
 
     prompt = _LIFECYCLE_PROMPT.format(
         audit_summary=audit_summary[:3000],
         trend_context=trend_ctx,
         dismissed_context=dismissed_ctx,
         pending_context=pending_ctx,
+        shipped_context=shipped_ctx,
     )
     body = json.dumps({
         "model": model,
@@ -1846,6 +1921,29 @@ def lifecycle_propose():
     proposal, err = _call_opus_for_proposal(summary)
     if err:
         return jsonify(ok=False, error=err, audit=audit), 200
+
+    # r81 (2026-06-28): DEDUPE GUARD (safety net behind the prompt's shipped
+    # exclusion). The curator re-proposed the same ~4 temporal capabilities
+    # 30+ times because seeds expire and nothing checked what's already
+    # shipped/approved/pending. Skip filing (and skip the paid challenger
+    # pass + the INSERT) when a same-named capability already exists — kills
+    # the duplicate noise + Opus/Sonnet spend at the source. Previously-
+    # DISMISSED names may still resurface (the moat picture can change).
+    try:
+        _dc = _conn()
+        if _dc is not None:
+            try:
+                with _dc.cursor() as _cur:
+                    _dup = _proposal_already_exists(_cur, proposal.get("name"))
+            finally:
+                try: _dc.close()
+                except Exception: pass
+            if _dup:
+                return jsonify(ok=True, skipped="duplicate_capability",
+                               reason=_dup, proposal_name=proposal.get("name"),
+                               audit=audit), 200
+    except Exception:
+        pass  # never block proposal flow on the dedupe check
 
     # r47 (2026-05-25): challenger pass — Sonnet reviews Opus's proposal
     # for moat-value, novelty, and feasibility. Adds quality gate + a
