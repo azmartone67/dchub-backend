@@ -40,7 +40,7 @@ CANONICAL = {
     'pipeline_projects': '540+',
     'pipeline_gw': '369 GW',
     'mcp_tools': '31',
-    'markets': '232',
+    'markets': '311',
     'substations': '126,427',
     'news_sources': '40+',
     'news_articles': '13,900+',

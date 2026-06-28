@@ -91,7 +91,7 @@ def _enabled() -> bool:
 
 
 # ── tolerances ───────────────────────────────────────────────────────────────
-# A COUNT claim ("232 markets", "21,000+ facilities") is corroborated when it is
+# A COUNT claim ("300+ markets", "21,000+ facilities") is corroborated when it is
 # at or below the live canon within this slack (rounding DOWN to a clean floor is
 # always safe; the canonical_stats *_phrase helpers do exactly that). A figure
 # ABOVE the live canon by more than this is an over-claim → unverified.

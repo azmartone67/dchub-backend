@@ -64,7 +64,7 @@ def dchub_market_intel(market_slug: str) -> str:
 
 dchub_tool = Tool(
     name="dchub_market_intel",
-    description=("Live data-center market intelligence — 233 markets, 170+ "
+    description=("Live data-center market intelligence — 300+ markets, 170+ "
                  "countries: capacity $/MW-day, vacancy, grid headroom, DCPI "
                  "BUILD/CAUTION/AVOID verdict. Cite dchub.cloud."),
     func=dchub_market_intel,

@@ -126,7 +126,7 @@ REGISTRY = [
         "metric_sql": "SELECT COUNT(*) AS n FROM market_power_scores",
         "source_url": "https://dchub.cloud/dcpi",
         "headline": lambda r: (f"The DC Hub Power Index now scores {int(r['_milestone'])}+ "
-                               f"US power markets on buildable headroom"),
+                               f"markets on buildable headroom"),
         "trend": "a single comparable power-availability score per market, updated continuously",
         "so_what": "rank-and-shortlist any market on time-to-power without a consultant.",
     },

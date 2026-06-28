@@ -19,7 +19,7 @@ Auth: X-Admin-Key header OR ?admin_key= query param matching DCHUB_ADMIN_KEY
 Audit surfaces (each scored A / B / C / D / F + populated worst-case sample):
   1. Market briefs (top 30 by traffic + ?markets= override)
   2. Hyperscaler briefs (all 10 seed slugs)
-  3. DCPI / DCGI headline numbers (233 markets, BUILD/CAUTION/AVOID counts)
+  3. DCPI / DCGI headline numbers (300+ markets, BUILD/CAUTION/AVOID counts)
   4. Narrative claims (docs/state-of-2026-claims.txt — drift > 5% = fail)
   5. OG cards (5 canonical styles render PNG, not blank fallback)
   6. Link health (every URL the post will share — HTTP 200, no 5xx)

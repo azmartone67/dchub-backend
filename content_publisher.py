@@ -1707,7 +1707,7 @@ def _editor_review(content_text: str):
         "fictional'. Canonical (rounded): "
         f"~{int(_cs.get('facilities', 21000)):,}+ tracked facilities, "
         f"{int(_cs.get('countries', 178))}+ countries, "
-        f"{int(_cs.get('markets', 230))}+ US power markets (DCPI), 2,000+ tracked "
+        f"{int(_cs.get('markets', 230))}+ markets (DCPI), 2,000+ tracked "
         "M&A deals, 7 live US ISOs. A post citing these (or consistent figures) is "
         "accurate, not fabricated.\n"
     )

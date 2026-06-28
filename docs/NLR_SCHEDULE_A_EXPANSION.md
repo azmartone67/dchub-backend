@@ -50,7 +50,7 @@ Total new endpoints: **~27 high-value additions** to Schedule A, all live in pro
 | `/api/v1/site/value/methodology` | Valuation methodology documentation | ✅ Live |
 | `/api/v1/site-selection/canvas` | Site-selection canvas (multi-criteria evaluation) | ✅ Live |
 | `/api/v1/state-brief/<state>` | State-level data-center brief | ✅ Live |
-| `/api/v1/market-brief/<slug>` + `/all` + `/all.csv` + `/diff` | Per-market briefs across 232 markets | ✅ Live |
+| `/api/v1/market-brief/<slug>` + `/all` + `/all.csv` + `/diff` | Per-market briefs across 300+ markets | ✅ Live |
 | `/api/v1/operator-brief/<slug>` | Per-operator profile and footprint | ✅ Live |
 | `/api/v1/hyperscaler-brief/<slug>` | Per-hyperscaler footprint and pipeline | ✅ Live |
 | `/api/v1/operators/profiles` + `/operators/<canonical>/profile` | Operator profile data | ✅ Live |
@@ -91,7 +91,7 @@ Total new endpoints: **~27 high-value additions** to Schedule A, all live in pro
 |---|---|---|
 | `/api/v1/deal-autopsy` | Per-deal forensic analysis | ✅ Live |
 | `/api/v1/dcgi/scores` + `/<state>` | Data Center Geographic Intelligence scores | ✅ Live |
-| `/api/v1/dcpi/snapshot` + `/dcpi/total` | DCPI (Data Center Power Index) — 232 markets | ✅ Live |
+| `/api/v1/dcpi/snapshot` + `/dcpi/total` | DCPI (Data Center Power Index) — 300+ markets | ✅ Live |
 | `/api/v1/dcgi/methodology` + `/operators` | DCGI methodology + per-operator breakdown | ✅ Live |
 
 ---

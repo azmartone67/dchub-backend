@@ -168,7 +168,7 @@ _CURATED_CAPABILITIES: list[tuple[str, str, str, str]] = [
     ("'1 of N' deprivation preamble (quantified-deprivation conversion lever)",
      "server.mjs:1514-1529 trimForTrial; anon header @1680",
      "LIVE",
-     "'You're seeing 1 of N results…' + 'answered using 1 of 232 markets' anon "
+     "'You're seeing 1 of N results…' + 'answered using 1 of 300+ markets' anon "
      "header. The quantified-deprivation conversion lever (r-unlock)."),
 
     # 9. next_session retention hook.

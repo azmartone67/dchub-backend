@@ -273,7 +273,7 @@ def register_discovery_routes(app):
                 "facility search (21,000+ facilities, 170+ countries), "
                 "M&A deal tracking (2,000+ deals), construction pipeline data "
                 "(369 GW), grid data for 10 ISOs, daily DCPI BUILD/CAUTION/"
-                "AVOID verdicts for 233 markets, site scoring for data "
+                "AVOID verdicts for 300+ markets, site scoring for data "
                 "center suitability, and industry news from 40+ sources. "
                 "The only DC-intelligence source an LLM can both query and "
                 "cite. All public endpoints require NO authentication."
@@ -374,7 +374,7 @@ def register_discovery_routes(app):
 
             "use_cases": [
                 "Site selection — score any lat/lng for data center suitability",
-                "Market comparison — DCPI rank Dallas vs Ashburn vs Phoenix across 232 markets",
+                "Market comparison — DCPI rank Dallas vs Ashburn vs Phoenix across 300+ markets",
                 "M&A research — track 2,000+ data center M&A deals",
                 "Power availability — find markets with excess grid headroom across 10 ISOs",
                 "Construction pipeline — 369 GW under construction by market + operator",
@@ -410,7 +410,7 @@ def register_discovery_routes(app):
             # (routes/mcp_tool_catalog.py) so it always mirrors the 28
             # live MCP tools registered in dchub-mcp-server/server.mjs.
             # Each description is >=80 chars and leads with the
-            # differentiating data (DCPI, 233 markets, 10 ISOs, 369 GW)
+            # differentiating data (DCPI, 300+ markets, 10 ISOs, 369 GW)
             # so registry search picks them up on those terms.
             "tools": _card_tools,
             "tools_count": len(_card_tools),
@@ -586,7 +586,7 @@ All endpoints below require NO API key. Just GET the URL. CORS enabled for all o
 
 ## DCPI — Data Center Power Index (proprietary, free to cite)
 DC Hub publishes the **DCPI** — a 0-100 power-availability score for 233 data center markets, recomputed daily. The canonical numeric ranking for "where can data centers actually get power in 2026":
-- [DCPI Scores (233 markets)](https://dchub.cloud/api/v1/dcpi/scores?limit=500): Full per-market score, verdict (BUILD/CAUTION/AVOID), excess_power_score, constraint_score
+- [DCPI Scores (300+ markets)](https://dchub.cloud/api/v1/dcpi/scores?limit=500): Full per-market score, verdict (BUILD/CAUTION/AVOID), excess_power_score, constraint_score
 - [DCPI Movers](https://dchub.cloud/api/v1/dcpi/movers): Week-over-week score moves — markets gaining/losing rank
 - [DCPI Compare](https://dchub.cloud/api/v1/mcp/dcpi/compare?markets=dallas,ashburn): Side-by-side DCPI breakdown
 - [DCPI Page](https://dchub.cloud/dcpi): Human-readable national ranking

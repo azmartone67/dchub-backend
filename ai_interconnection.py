@@ -626,14 +626,14 @@ DC Hub provides a fully operational MCP server for AI agent interconnection.
 ### Available MCP Tools (33 total — full input schemas at https://dchub.cloud/.well-known/mcp.json)
 1. search_facilities - Search 21,000+ data center facilities by location, provider, capacity
 2. get_facility - Detailed facility profile (power, fiber, water, certifications)
-3. get_market_intel - Market intelligence + DCPI verdict for 233 markets
+3. get_market_intel - Market intelligence + DCPI verdict for 300+ markets
 4. list_transactions - 2,000+ tracked M&A transactions and deals
 5. get_news - Latest data center industry news
 6. analyze_site - [Pro] Multi-factor site suitability score (grid/fiber/water/tax)
 7. compare_sites - [Pro] Head-to-head site comparison
 8. get_grid_intelligence - [Pro] Real-time grid headroom + interconnection by ISO
 9. get_fiber_intel - [Pro] Long-haul + metro fiber routes by carrier
-10. rank_markets - DCPI-driven ranking of 233 markets
+10. rank_markets - DCPI-driven ranking of 300+ markets
 11. get_grid_scoreboard - All US ISO grids ranked live by renewable share
 12. get_gas_index - DCGI per-state natural-gas siting score (gas analog to DCPI)
 13. get_water_risk - USGS groundwater + drought risk

@@ -3777,7 +3777,7 @@ footer a:hover { color: var(--acc-light); }
        not the truncated `count` shown in the grid. Anon viewers see 5
        BUILD + 20 others = 25 rows, but the catalog is the full 233.
        Using {{ count }} here said "25 Markets Scored" — directly
-       contradicting the upgrade banner below ("Showing 25 of 233 markets").
+       contradicting the upgrade banner below ("Showing 25 of 300+ markets").
        Fixed to total_rows. #}
     <div class="stat"><div class="num">{{ total_rows }}</div><div class="label">Markets Scored</div></div>
     <div class="stat"><div class="num">8</div><div class="label">Inputs per Score</div></div>

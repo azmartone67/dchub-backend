@@ -106,7 +106,7 @@ def get_version():
         'build': APP_BUILD,
         'release_notes': RELEASE_NOTES,
         'facilities': 21432,
-        'markets': 232,
+        'markets': 311,
         'deals': 2000,
         'updated_at': datetime.utcnow().isoformat()
     }
@@ -128,7 +128,7 @@ def get_version():
         # facilities table. Use the canonical DCPI market count (232) instead.
         try:
             from canonical_stats import get_canonical_stats as _gcs
-            _m = int((_gcs() or {}).get('markets', 232) or 232)
+            _m = int((_gcs() or {}).get('markets', 311) or 232)
             if _m:
                 result['markets'] = _m
         except Exception:

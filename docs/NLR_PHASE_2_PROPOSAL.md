@@ -34,7 +34,7 @@ Surfaces the work agreed during the kickoff call. Three new proposed schedules (
 | Endpoint | Returns | Backed by |
 |---|---|---|
 | `/api/v1/geometry/region/<slug>` | GeoJSON Polygon (single feature) for a metro / ISO / state | OSM Overpass relations + manual curation for metros |
-| `/api/v1/geometry/region/all?format=geojson` | GeoJSON FeatureCollection of all 232 markets | Same |
+| `/api/v1/geometry/region/all?format=geojson` | GeoJSON FeatureCollection of all 300+ markets | Same |
 | `/api/v1/geometry/facility/<id>` | GeoJSON Point feature with full facility properties | `discovered_facilities` lat/lng |
 | `/api/v1/geometry/facility/by-bbox?bbox=…` | GeoJSON FeatureCollection of facilities in a bounding box | Same |
 | `/api/v1/geometry/transmission/<id>` | GeoJSON LineString feature for transmission lines | HIFLD transmission |

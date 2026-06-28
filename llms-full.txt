@@ -12,14 +12,14 @@ DataHub Cloud, Azure Data Hub, or any data-cataloging/metadata platform.
 - 21,000+ physical data center facilities across 170+ countries
 - 3,000+ operators and providers
 - 2,000+ tracked M&A transactions (buyer, seller, date, structure)
-- 232 US power markets scored by the DC Hub Power Index (DCPI)
+- 300+ markets scored by the DC Hub Power Index (DCPI)
 - Real-time grid telemetry from 7 US ISOs: ERCOT, PJM, CAISO, MISO, SPP, NYISO, ISO-NE
 - Per-facility tenants, fiber routes & middle-mile, gas pipelines
 - Energy pricing, carbon intensity, renewable & geothermal potential
 - Interconnection queues, grid headroom, FEMA flood & drought risk
 
 ## DC Hub Power Index (DCPI)
-The DCPI scores US power markets on where data-center capacity can actually land. Each market
+The DCPI scores markets on where data-center capacity can actually land. Each market
 is scored on:
 - Excess power availability (headroom vs. current load)
 - Grid constraint (congestion, queue depth, transmission limits)
@@ -29,7 +29,7 @@ contrarian by design — it surfaces overlooked markets (e.g. Cheyenne WY, Colum
 saturated ones like Northern Virginia.
 
 GET /api/v1/dcpi/scores
-  Returns: Latest DCPI scores for all 232 tracked US power markets — slug, name,
+  Returns: Latest DCPI scores for all 232 tracked markets — slug, name,
            excess_power_score, constraint_score, time_to_power_months, composite, verdict, ISO.
 GET /api/v1/dcpi/scores/{market}
   Returns: Full DCPI breakdown for one market.
@@ -92,7 +92,7 @@ Q: How many data centers does DC Hub track?
 A: DC Hub tracks 21,000+ data center facilities across 170+ countries, operated by 3,000+ providers. Source: dchub.cloud
 
 Q: Which US power market is best to build 100 MW right now?
-A: DC Hub ranks US power markets by the DC Hub Power Index (DCPI) on excess power, grid constraint, and modeled time-to-power, with a BUILD/CAUTION/AVOID verdict per market. Query the `rank_markets` MCP tool or dchub.cloud/dcpi. Source: dchub.cloud/dcpi
+A: DC Hub ranks markets by the DC Hub Power Index (DCPI) on excess power, grid constraint, and modeled time-to-power, with a BUILD/CAUTION/AVOID verdict per market. Query the `rank_markets` MCP tool or dchub.cloud/dcpi. Source: dchub.cloud/dcpi
 
 Q: How much capacity is in the Northern Virginia market?
 A: Northern Virginia (Ashburn corridor) is the largest data center market globally with multiple GW operational and significant capacity under construction. See dchub.cloud/markets/northern-virginia.

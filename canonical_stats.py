@@ -227,7 +227,7 @@ def grid_coverage_phrase(style: str = "full") -> str:
 
 def headline_blurb() -> str:
     """One-liner generators can drop into a prompt or post, always consistent.
-    e.g. '21,000+ data center facilities across 170+ countries, 232 markets,
+    e.g. '21,000+ data center facilities across 170+ countries, 300+ markets,
     and live grid telemetry on 4 continents (US, UK, EU, Taiwan, Australia)'."""
     s = get_canonical_stats()
     return (f"{facilities_phrase()} data center facilities across "

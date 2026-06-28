@@ -1549,7 +1549,7 @@ footer a{{color:var(--tx2);text-decoration:none}}
   <div class="cta">
     <div>
       <strong>Looking for grid alternatives?</strong>
-      <div style="color:var(--tx2);font-size:0.9rem;margin-top:0.2rem">DCPI scores 233 markets on interconnect-queue + reserve margin. DCGI scores gas-to-power. Use both for full siting analysis.</div>
+      <div style="color:var(--tx2);font-size:0.9rem;margin-top:0.2rem">DCPI scores 300+ markets on interconnect-queue + reserve margin. DCGI scores gas-to-power. Use both for full siting analysis.</div>
     </div>
     <a href="/dcpi">Open DCPI →</a>
   </div>

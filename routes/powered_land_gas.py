@@ -765,7 +765,7 @@ def _trim_for_free(payload: dict) -> dict:
         "human_message": (
             "Full 4-layer gas pricing + heat-rate $/MWh derivation is a "
             "PRO feature. You're seeing the hub identification and verdict. "
-            "Upgrade for the numeric values across all 233 DCPI markets."
+            "Upgrade for the numeric values across all 300+ DCPI markets."
         ),
         "stripe_url": "https://buy.stripe.com/00w28o7BqaXLeP31QIaZi04",
         "signup_url": "https://dchub.cloud/pricing",
@@ -963,7 +963,7 @@ def gas_pricing_methodology():
 
 
 # Marquee markets seeded by the nightly cron. Phase 2 will fan out across
-# all 233 DCPI markets via a JOIN against dcpi_metro_scores; Phase 1
+# all 300+ DCPI markets via a JOIN against dcpi_metro_scores; Phase 1
 # refreshes this curated list daily so the headline markets always have
 # fresh data even if the DCPI table query is slow / unavailable.
 _PHASE1_MARKETS = [

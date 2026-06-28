@@ -170,7 +170,7 @@ def _match_market(deal, idx, by_state):
 def _autopsy_read(deal, mk):
     """Deterministic 'what's the real play' read. PAID layer."""
     if not mk:
-        return ("Location not in DCPI's 233 scored markets — can't grid-check this one. "
+        return ("Location not in DCPI's 300+ scored markets — can't grid-check this one. "
                 "Treat the headline MW/$ with caution; the binding question is interconnection, "
                 "and we have no power verdict here.")
     v = (mk.get("verdict") or "").upper()

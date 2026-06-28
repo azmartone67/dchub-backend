@@ -1,7 +1,7 @@
 """
 Grid + Gas Transition Sentinel (2026-06-03)
 ===========================================
-The predictive companion to DCPI's full 233-market dump: instead of listing
+The predictive companion to DCPI's full 300+ market dump: instead of listing
 every market, the Sentinel surfaces ONLY the markets and ISOs with the strongest
 "emergence" signal — where hyperscale-friendly grid capacity is opening up RIGHT
 NOW (BUILD verdict + high excess-power headroom + short time-to-power).

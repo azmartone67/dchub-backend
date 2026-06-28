@@ -363,7 +363,7 @@ def _build_prompt(journalist: dict, story_text: str, facts: dict,
     if facts.get("countries_phrase"):
         lines.append(f"- Countries: {facts['countries_phrase']}")
     if facts.get("markets"):
-        lines.append(f"- US power markets (DCPI): {facts['markets']}")
+        lines.append(f"- markets (DCPI): {facts['markets']}")
     if facts.get("grid_coverage"):
         lines.append(f"- Grid coverage: {facts['grid_coverage']}")
     if verdict and verdict.get("market_name"):
@@ -445,7 +445,7 @@ def _template_draft(journalist: dict, story_text: str, facts: dict,
                     f"a {verdict['verdict']}"
                     + (f" (excess-power score {eps})" if eps is not None else "") + ".")
     elif facts.get("markets"):
-        headline = (f"DC Hub now scores {facts['markets']} US power markets on the "
+        headline = (f"DC Hub now scores {facts['markets']} markets on the "
                     f"Data Center Power Index (DCPI).")
     elif facts.get("facilities_phrase"):
         headline = (f"DC Hub tracks {facts['facilities_phrase']} data center "

@@ -4381,7 +4381,7 @@ def handle_well_known():
             "description": (
                 "Live data-center, energy, and grid intelligence. 21,000+ facilities "
                 "in 170+ countries, 369 GW pipeline, real-time DCPI scoring for "
-                "233 markets across the U.S., UK, EU, Japan, Australia, Singapore, "
+                "300+ markets across the U.S., UK, EU, Japan, Australia, Singapore, "
                 "and Canada. The only DC-intelligence source an LLM can both query "
                 "and cite. Designed for AI agents to discover, cite, and act on."
             ),
@@ -7820,7 +7820,7 @@ _MCP_LANDING_HTML = """<!DOCTYPE html>
 <link rel="canonical" href="https://dchub.cloud/mcp">
 <meta property="og:title" content="DC Hub MCP Server">
 <script type="application/ld+json">
-{"@context":"https://schema.org","@type":"SoftwareApplication","name":"DC Hub MCP Server","applicationCategory":"DeveloperApplication","operatingSystem":"MCP (Streamable HTTP)","url":"https://dchub.cloud/mcp","description":"Model Context Protocol server giving AI agents live, citable data-center, power-grid (DCPI), fiber and M&A intelligence — 48 tools across 21,000+ facilities, 232 markets and 10 ISOs.","offers":{"@type":"Offer","price":"0","priceCurrency":"USD","description":"Free tier: 10 calls/day, no signup required"},"provider":{"@type":"Organization","name":"DC Hub","url":"https://dchub.cloud"},"sameAs":["https://smithery.ai/servers/azmartone67/dchub"]}
+{"@context":"https://schema.org","@type":"SoftwareApplication","name":"DC Hub MCP Server","applicationCategory":"DeveloperApplication","operatingSystem":"MCP (Streamable HTTP)","url":"https://dchub.cloud/mcp","description":"Model Context Protocol server giving AI agents live, citable data-center, power-grid (DCPI), fiber and M&A intelligence — 48 tools across 21,000+ facilities, 300+ markets and 10 ISOs.","offers":{"@type":"Offer","price":"0","priceCurrency":"USD","description":"Free tier: 10 calls/day, no signup required"},"provider":{"@type":"Organization","name":"DC Hub","url":"https://dchub.cloud"},"sameAs":["https://smithery.ai/servers/azmartone67/dchub"]}
 </script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -16302,7 +16302,7 @@ def get_stats():
         # (live COUNT(DISTINCT market_slug) FROM market_power_scores, cached; 232 floor).
         try:
             from canonical_stats import get_canonical_stats as _gcs
-            _canon_markets = int(_gcs().get('markets', 232)) or 232
+            _canon_markets = int(_gcs().get('markets', 311)) or 232
         except Exception:
             _canon_markets = 232
         result = {

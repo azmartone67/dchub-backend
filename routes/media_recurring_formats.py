@@ -416,7 +416,7 @@ def _movers_facts_block(movers: list[dict], counts: dict) -> str:
     lines = []
     n = counts.get("markets")
     if isinstance(n, int) and n > 0:
-        lines.append(f"DCPI tracks {n} US power markets.")
+        lines.append(f"DCPI tracks {n} markets.")
     lines.append(f"{len(movers)} markets flipped DCPI verdict in the last "
                  f"{_LOOKBACK_DAYS} days:")
     for m in movers[:20]:
@@ -440,7 +440,7 @@ def _monthly_facts_block(state: dict, counts: dict) -> str:
     lines = []
     n = counts.get("markets")
     if isinstance(n, int) and n > 0:
-        lines.append(f"DCPI tracks {n} US power markets.")
+        lines.append(f"DCPI tracks {n} markets.")
     dist = state.get("verdict_distribution") or {}
     if dist:
         lines.append("Verdict distribution (latest score per market): "
@@ -464,7 +464,7 @@ def _monthly_template(state: dict, counts: dict) -> str:
     dist = state.get("verdict_distribution") or {}
     total = sum(dist.values()) if dist else 0
     if total > 0:
-        head = (f"{total} US power markets scored this month: "
+        head = (f"{total} markets scored this month: "
                 + ", ".join(f"{v} {k}" for k, v in dist.items()) + ".")
     else:
         head = "State of Data-Center Power — monthly DCPI report."

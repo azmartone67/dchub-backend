@@ -4,7 +4,7 @@
 > fact-checked against the live origin on 2026-06-02 and the stale figures were
 > replaced. Confirmed live: **38 tools** (`/.well-known/mcp.json` → `tools_count: 31`,
 > tool list refreshed verbatim below), **21,422 facilities** (`/api/v1/stats` →
-> `facilities: 21422`, stated as "21,000+"), **233 markets US+intl** (DCPI
+> `facilities: 21422`, stated as "21,000+"), **300+ markets US+intl** (DCPI
 > `total_available`), **~1,980 tracked M&A deals**, **7 US ISOs live** (PJM, ERCOT,
 > CAISO, MISO, SPP, NYISO, ISO-NE). Do **not** reintroduce "25 tools", "29 tools",
 > "286 markets", or "96+/269 platforms" — those are stale/inflated and forbidden.
@@ -62,18 +62,18 @@ Markets covered:              233 (US + international)
 
 **One-line description (≤160 chars, for compact fields):**
 ```
-Data-center + energy intelligence for AI agents: 21,000+ facilities, 233 markets, DCPI/DCGI indices, live ISO grid telemetry, fiber, and M&A.
+Data-center + energy intelligence for AI agents: 21,000+ facilities, 300+ markets, DCPI/DCGI indices, live ISO grid telemetry, fiber, and M&A.
 ```
 
 **Short description (~300 chars, for tweet/bio fields):**
 ```
-DC Hub is the MCP server for data-center & energy intelligence. 38 tools over 21,000+ facilities and 233 markets (US+intl), the DC Hub Power Index (DCPI) + DC Hub Gas Index (DCGI), live ISO grid telemetry, fiber routes, and ~1,980 M&A deals. For site selection, market analysis, and AI-load siting.
+DC Hub is the MCP server for data-center & energy intelligence. 38 tools over 21,000+ facilities and 300+ markets (US+intl), the DC Hub Power Index (DCPI) + DC Hub Gas Index (DCGI), live ISO grid telemetry, fiber routes, and ~1,980 M&A deals. For site selection, market analysis, and AI-load siting.
 ```
 
 **Long description (use when the field allows >500 chars):**
 ```
 DC Hub is a data-center and energy intelligence MCP server for AI agents. It exposes
-38 tools covering 21,000+ data-center facilities across 233 markets (US +
+38 tools covering 21,000+ data-center facilities across 300+ markets (US +
 international), the proprietary DC Hub Power Index (DCPI) and DC Hub Gas Index (DCGI)
 for ranking markets, live ISO grid telemetry (PJM, ERCOT, CAISO, MISO, SPP, NYISO,
 ISO-NE), fiber-route and carrier intelligence, energy and tax-incentive data,
@@ -151,7 +151,7 @@ Name:            DC Hub
 Identifier:      cloud.dchub/mcp-server
 GitHub repo URL: https://github.com/azmartone67/dchub-backend
 Homepage:        https://dchub.cloud
-Description:     Data-center + energy intelligence for AI agents: 21,000+ facilities, 233 markets, DCPI/DCGI indices, live ISO grid telemetry, fiber, and M&A.
+Description:     Data-center + energy intelligence for AI agents: 21,000+ facilities, 300+ markets, DCPI/DCGI indices, live ISO grid telemetry, fiber, and M&A.
 Category:        Data & APIs  (also tag: Infrastructure, Energy)
 Tags:            data-center, energy, grid, iso, dcpi, dcgi, site-selection, m-and-a, fiber
 ```
@@ -181,7 +181,7 @@ Tags:            data-center, energy, grid, iso, dcpi, dcgi, site-selection, m-a
 - **Manifest:** https://dchub.cloud/.well-known/mcp.json
 - **Tools:** 31
 - **Description:** Data-center + energy intelligence for AI agents — 21,000+ facilities
-  across 233 markets (US+intl), the DC Hub Power Index (DCPI) + DC Hub Gas Index (DCGI),
+  across 300+ markets (US+intl), the DC Hub Power Index (DCPI) + DC Hub Gas Index (DCGI),
   live ISO grid telemetry, fiber routes, and ~1,980 M&A deals. For site selection,
   market analysis, and AI-load siting.
 - **Auth:** Optional `X-API-Key` header. Free anonymous tier; paid tiers unlock full data.
@@ -216,7 +216,7 @@ Homepage:      https://dchub.cloud
 Repository:    https://github.com/azmartone67/dchub-backend
 Category:      Data & APIs / Infrastructure
 Tags:          data-center, energy, grid, iso, dcpi, dcgi, site-selection, m-and-a, fiber
-Description:   Data-center + energy intelligence for AI agents: 21,000+ facilities, 233 markets (US+intl), DCPI/DCGI indices, live ISO grid telemetry, fiber, and ~1,980 M&A deals. 38 tools. Optional X-API-Key; free anonymous tier.
+Description:   Data-center + energy intelligence for AI agents: 21,000+ facilities, 300+ markets (US+intl), DCPI/DCGI indices, live ISO grid telemetry, fiber, and ~1,980 M&A deals. 38 tools. Optional X-API-Key; free anonymous tier.
 Contact:       api@dchub.cloud
 ```
 
@@ -261,7 +261,7 @@ Contact:       api@dchub.cloud
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.stacklok/dchub-remote",
   "title": "DC Hub (Remote)",
-  "description": "Data-center & energy intelligence: 21,000+ facilities, 233 markets (US+intl), DCPI/DCGI indices, live ISO grid telemetry, fiber, and ~1,980 M&A deals",
+  "description": "Data-center & energy intelligence: 21,000+ facilities, 300+ markets (US+intl), DCPI/DCGI indices, live ISO grid telemetry, fiber, and ~1,980 M&A deals",
   "version": "2.2.0",
   "repository": {
     "url": "https://github.com/azmartone67/dchub-backend",
@@ -283,7 +283,7 @@ Contact:       api@dchub.cloud
             "contact": "api@dchub.cloud",
             "license": "Proprietary — free for AI citation; data per https://dchub.cloud/terms"
           },
-          "overview": "## DC Hub (Remote)\n\nDC Hub is a data-center and energy intelligence MCP server for AI agents. It exposes 38 tools over 21,000+ data-center facilities across 233 markets (US + international), the proprietary DC Hub Power Index (DCPI) and DC Hub Gas Index (DCGI) for ranking markets, live ISO grid telemetry (PJM, ERCOT, CAISO, MISO, SPP, NYISO, ISO-NE), fiber-route and carrier intelligence, energy and tax-incentive data, water/drought risk, interconnection-queue headroom, and ~1,980 tracked data-center M&A transactions. Used for site selection, market analysis, capacity/pipeline tracking, grid-risk modeling, and AI-load siting. Streamable-HTTP transport with optional X-API-Key authentication; free anonymous tier.",
+          "overview": "## DC Hub (Remote)\n\nDC Hub is a data-center and energy intelligence MCP server for AI agents. It exposes 38 tools over 21,000+ data-center facilities across 300+ markets (US + international), the proprietary DC Hub Power Index (DCPI) and DC Hub Gas Index (DCGI) for ranking markets, live ISO grid telemetry (PJM, ERCOT, CAISO, MISO, SPP, NYISO, ISO-NE), fiber-route and carrier intelligence, energy and tax-incentive data, water/drought risk, interconnection-queue headroom, and ~1,980 tracked data-center M&A transactions. Used for site selection, market analysis, capacity/pipeline tracking, grid-risk modeling, and AI-load siting. Streamable-HTTP transport with optional X-API-Key authentication; free anonymous tier.",
           "status": "Active",
           "tier": "Community",
           "tags": [
@@ -324,7 +324,7 @@ Title: Add DC Hub (remote) — data-center & energy intelligence MCP server
 
 Body:
 Adds DC Hub, a hosted streamable-http MCP server for data-center and energy
-intelligence (38 tools, 21,000+ facilities across 233 markets (US+intl), DCPI/DCGI
+intelligence (38 tools, 21,000+ facilities across 300+ markets (US+intl), DCPI/DCGI
 indices, live ISO grid data, fiber, ~1,980 M&A deals).
 
 - Endpoint: https://dchub.cloud/mcp  (streamable-http)
@@ -368,7 +368,7 @@ Filed against issue #<NNN> (issue-first flow). All commits DCO-signed (git commi
 - Manifest: https://dchub.cloud/.well-known/mcp.json
 - Homepage: https://dchub.cloud
 - GitHub: https://github.com/azmartone67/dchub-backend
-- Tools: 31 — 21,000+ facilities across 233 markets (US+intl), DC Hub Power Index
+- Tools: 31 — 21,000+ facilities across 300+ markets (US+intl), DC Hub Power Index
   (DCPI) + DC Hub Gas Index (DCGI), live ISO grid telemetry, fiber routes, ~1,980 M&A deals.
 - Auth: optional X-API-Key; free anonymous tier.
 - Contact: api@dchub.cloud
@@ -418,7 +418,7 @@ Filed against issue #<NNN> (issue-first flow). All commits DCO-signed (git commi
 ### (c) After claiming, update these listing attributes in the Glama admin
 ```
 Display name:  DC Hub
-Description:   Data-center + energy intelligence for AI agents: 21,000+ facilities, 233 markets (US+intl), DCPI/DCGI indices, live ISO grid telemetry, fiber, and ~1,980 M&A deals. 38 tools, streamable-http, optional X-API-Key.
+Description:   Data-center + energy intelligence for AI agents: 21,000+ facilities, 300+ markets (US+intl), DCPI/DCGI indices, live ISO grid telemetry, fiber, and ~1,980 M&A deals. 38 tools, streamable-http, optional X-API-Key.
 Homepage:      https://dchub.cloud
 Endpoint:      https://dchub.cloud/mcp
 Tags:          data-center, energy, grid, iso, dcpi, dcgi, site-selection, m-and-a, fiber
@@ -451,7 +451,7 @@ URL to paste at smithery.ai/new:   https://dchub.cloud/mcp
 ### (b) Listing metadata (fill/refresh on the Smithery listing page)
 ```
 Name:          DC Hub
-Description:   Data-center + energy intelligence for AI agents: 21,000+ facilities, 233 markets (US+intl), DCPI/DCGI indices, live ISO grid telemetry, fiber, and ~1,980 M&A deals. 38 tools.
+Description:   Data-center + energy intelligence for AI agents: 21,000+ facilities, 300+ markets (US+intl), DCPI/DCGI indices, live ISO grid telemetry, fiber, and ~1,980 M&A deals. 38 tools.
 Homepage:      https://dchub.cloud
 Categories:    Data & APIs / Infrastructure
 Tags:          data-center, energy, grid, iso, dcpi, dcgi, site-selection, m-and-a, fiber
@@ -492,7 +492,7 @@ Smithery flow asks how auth is supplied, the answer is: **HTTP header `X-API-Key
 
 ### (a) EXACT README line to add (under `🔎 Search & Data Extraction`, alphabetized)
 ```markdown
-- [DC Hub](https://github.com/azmartone67/dchub-backend) 🐍 ☁️ - Data-center & energy intelligence: 21,000+ facilities across 233 markets, DCPI/DCGI indices, live ISO grid telemetry, fiber routes, and ~1,980 M&A deals — for site selection, market analysis, and AI-load siting.
+- [DC Hub](https://github.com/azmartone67/dchub-backend) 🐍 ☁️ - Data-center & energy intelligence: 21,000+ facilities across 300+ markets, DCPI/DCGI indices, live ISO grid telemetry, fiber routes, and ~1,980 M&A deals — for site selection, market analysis, and AI-load siting.
 ```
 > Format mirrors the repo's canonical example line verbatim in structure:
 > `` `[cswkim/discogs-mcp-server](https://github.com/cswkim/discogs-mcp-server) 📇 ☁️ - MCP server to interact with the Discogs API` ``
@@ -504,7 +504,7 @@ Title: Add DC Hub — data-center & energy intelligence MCP server
 Body:
 Adds DC Hub under "Search & Data Extraction". DC Hub is a hosted streamable-http MCP
 server (38 tools) for data-center and energy intelligence: 21,000+ facilities across
-233 markets (US+intl), the DC Hub Power Index (DCPI) + DC Hub Gas Index (DCGI), live ISO
+300+ markets (US+intl), the DC Hub Power Index (DCPI) + DC Hub Gas Index (DCGI), live ISO
 grid telemetry, fiber routes, and ~1,980 M&A deals.
 
 - Repo: https://github.com/azmartone67/dchub-backend

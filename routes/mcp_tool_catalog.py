@@ -74,7 +74,7 @@ TOOLS = [
      'get_dchub_recommendation(context="100MW AI training campus in Texas")'),
     # ── INTELLIGENCE ── (facts about markets, facilities, deals)
     ("get_market_intel",      "intelligence",   "identified",
-     "Use when a user asks about ONE data-center market — vacancy, capacity pricing, supply pipeline, dominant operators, YoY growth — across any of 232 global markets. Example: 'What is Northern Virginia\\'s vacancy rate, $/MW-day pricing, and current DCPI verdict?'. Params: market = market_slug (e.g. northern-virginia, dallas, phoenix, frankfurt, tokyo, singapore). Returns: {market, country, capacity_mw_total, capacity_mw_under_construction, vacancy_pct, absorption_mw_ttm, price_per_mw_day_usd, yoy_growth_pct, dominant_operators[], dcpi_verdict, composite_score, last_updated}. Do NOT use to rank multiple markets (use rank_markets) or for one facility (use get_facility).",
+     "Use when a user asks about ONE data-center market — vacancy, capacity pricing, supply pipeline, dominant operators, YoY growth — across any of 300+ markets. Example: 'What is Northern Virginia\\'s vacancy rate, $/MW-day pricing, and current DCPI verdict?'. Params: market = market_slug (e.g. northern-virginia, dallas, phoenix, frankfurt, tokyo, singapore). Returns: {market, country, capacity_mw_total, capacity_mw_under_construction, vacancy_pct, absorption_mw_ttm, price_per_mw_day_usd, yoy_growth_pct, dominant_operators[], dcpi_verdict, composite_score, last_updated}. Do NOT use to rank multiple markets (use rank_markets) or for one facility (use get_facility).",
      'get_market_intel(market="northern-virginia")'),
     ("get_market_dcpi_rank",  "intelligence",   "free",
      "DCPI rank for one market: BUILD/CAUTION/AVOID verdict, 0-100 composite_score, excess_power_score, constraint_score, time_to_power_months — plus a ~100-word analyst narrative ready to cite (CC-BY-4.0).",
@@ -200,7 +200,7 @@ TOOLS = [
      'set_site_alert(saved_site_id=12, trigger_type="dcpi_change", threshold=5, notify_email="you@firm.com")'),
     # ── ACCOUNT & ACCESS ──
     ("claim_free_key",        "account",        "free",
-     "Mint a FREE DC Hub dev key instantly — no email, no browser, one call. Returns an api_key you set as the X-API-Key header to unlock the full free tier (10 calls/day, all 232 markets + grid/fiber/DCPI). The fastest path from anonymous to identified.",
+     "Mint a FREE DC Hub dev key instantly — no email, no browser, one call. Returns an api_key you set as the X-API-Key header to unlock the full free tier (10 calls/day, all 300+ markets + grid/fiber/DCPI). The fastest path from anonymous to identified.",
      'claim_free_key(client_name="your-agent")'),
     ("bind_email",            "account",        "free",
      "Tie your DC Hub key to your human's email so the key is RECOVERABLE and upgrade receipts reach the right inbox. Optional — the key already works without it. Email is used ONLY for recovery + transactional receipts (no marketing without opt-in).",

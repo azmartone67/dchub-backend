@@ -16,7 +16,7 @@ You're enrolled as an **Enterprise-tier** user under the NLR Research Seed engag
 | 🗺️ **Land & Power Map** | Interactive map with 20+ live data layers — substations, fiber, water, gas, climate, drought, solar/wind resource, social acceptance |
 | 📊 **Site-level reports** | Pre-computed analytical reports for any lat/lon — composite siting score, 2030-2050 deployment forecasts, risk assessment, BUILD / CAUTION / BLOCK verdicts |
 | 🌍 **Global infrastructure** | 1,300+ Internet exchanges (IXPs), submarine cables, cable landing points, global power plants, gas networks, hazard overlays |
-| 📈 **Market intelligence** | Per-market briefs across 232 global markets, per-state briefs, per-operator profiles, hyperscaler footprint maps |
+| 📈 **Market intelligence** | Per-market briefs across 300+ markets, per-state briefs, per-operator profiles, hyperscaler footprint maps |
 | 🔌 **Real-time grid data** | Live ISO load + reserve margin + queue depth for all major US ISOs (PJM, ERCOT, CAISO, MISO, ISO-NE, NYISO, SPP) |
 | 🛠️ **MCP server** | Conversational data access through Claude, ChatGPT, Cursor, or any MCP-compatible AI tool |
 | 📋 **API + Data Dictionary** | Direct programmatic access for reVeal integration, with machine-readable schema documentation |
@@ -153,7 +153,7 @@ The layer list is grouped into categories. Here's what each does, in the order y
 |---|---|---|
 | **Tax incentives** | 50-state DC tax abatement programs | DC Hub curated |
 | **Energy prices** | EIA state-level retail electricity rates | EIA |
-| **DCPI markets** | The 232 markets in our Data Center Power Index, colored by composite score | DC Hub composite |
+| **DCPI markets** | The 300+ markets in our Data Center Power Index, colored by composite score | DC Hub composite |
 
 ### Searching for a specific site
 
@@ -467,7 +467,7 @@ A: Yes. Use `/api/v1/exports/build` to kick off a bulk export job, or use the as
 A: Email `partnerships@dchub.cloud` with the facility ID + the field that's wrong + your source for the correction. We update within 1 business day and you'll see the change reflected in the next refresh cycle.
 
 **Q: Does DC Hub work for international markets?**
-A: Yes, increasingly so. The 232-market DCPI is global. The Land & Power Map's `/global-*` layers cover infrastructure outside the US (IXPs, submarine cables, gas networks, hazard data). International coverage continues to grow.
+A: Yes, increasingly so. The 300+ market DCPI is global. The Land & Power Map's `/global-*` layers cover infrastructure outside the US (IXPs, submarine cables, gas networks, hazard data). International coverage continues to grow.
 
 **Q: How do I see what's new in DC Hub?**
 A: We maintain a changelog at `dchub.cloud/changelog`. Material changes to your licensed endpoint surface are also summarized in the monthly NLR briefing email.

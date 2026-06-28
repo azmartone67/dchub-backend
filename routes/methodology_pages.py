@@ -112,7 +112,7 @@ _INDEX_HTML = """
 </ul>
 
 <h2><span class=num>02</span>DC Hub Power Index (DCPI)</h2>
-<p>BUILD / CAUTION / AVOID verdicts across 233 markets. Composite scoring framework.</p>
+<p>BUILD / CAUTION / AVOID verdicts across 300+ markets. Composite scoring framework.</p>
 <ul>
   <li><a href="/dcpi#methodology">DCPI methodology anchor</a> · maintained on /dcpi · <span class=pill>active</span></li>
 </ul>

@@ -1903,7 +1903,7 @@ def _build_canonical_description(registry_name: str) -> str:
     n = _canonical_numbers()
     tools     = n.get("tools", 33)
     facs      = n.get("facilities", 21433)
-    mkts      = n.get("markets", 232)
+    mkts      = n.get("markets", 311)
     deals_p   = n.get("deals_phrase", "2,000+ tracked deals")
     cap = _DESCRIPTION_CHAR_CAPS.get(registry_name,
                                      _DESCRIPTION_CHAR_CAPS["_default"])

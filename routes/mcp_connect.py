@@ -72,7 +72,7 @@ _CLIENTS = {
         "deep_link_label": "",
         "examples": [
             "What's the gas pipeline capacity within 50 miles of Northern Virginia data centers?",
-            "Rank the top 10 US power markets by DCPI for build readiness in Q4 2026.",
+            "Rank the top 10 markets by DCPI for build readiness in Q4 2026.",
             "Find me 50MW+ powered shell sites available in PJM with substation co-location.",
         ],
     },
@@ -167,7 +167,7 @@ In ChatGPT: Settings -> Connectors -> Add custom connector -> paste the URL.""",
         "deep_link":      "",
         "deep_link_label": "",
         "examples": [
-            "Rank the top 10 US power markets by DCPI for 2026 build readiness.",
+            "Rank the top 10 markets by DCPI for 2026 build readiness.",
             "What's the interconnection-queue depth in PJM vs ERCOT right now?",
             "Show me the latest hyperscaler data-center M&A deals this quarter.",
         ],

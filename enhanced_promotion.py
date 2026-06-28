@@ -374,7 +374,7 @@ class EnhancedPromotionEngine:
                 "facilities": "21,000+",
                 "fiber_routes": "128+",
                 "substations": "126,427",
-                "markets": "232",
+                "markets": "311",
                 "countries": "170+"
             }
         }
