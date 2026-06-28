@@ -653,6 +653,11 @@ _CLAIM_FORM_HTML = r"""<!DOCTYPE html>
 
   __ERR__
 
+  <a href="https://buy.stripe.com/9B69AU08y2FfbSR55UaZi0i?client_reference_id=mcp%3Atool%3D__TOOL__%3Aref%3Dclaim"
+     style="display:block;background:linear-gradient(135deg,#22d3ee,#a855f7);color:#0a0f1f;text-align:center;padding:15px;border-radius:10px;font-weight:700;text-decoration:none;font-size:1.02rem;margin-bottom:6px">⚡ Get instant full access — $10 · 1,000 calls →</a>
+  <div style="text-align:center;color:#94a3b8;font-size:.78rem;margin-bottom:18px">One-time · no subscription · <strong>no email needed</strong></div>
+
+  <div style="text-align:center;color:#64748b;font-size:.8rem;margin:0 0 10px">— or get a free 7-day trial key by email —</div>
   <form method="post" action="">
     <input type="email" name="email" placeholder="you@company.com" required autofocus>
     <button type="submit">Get my trial key →</button>
