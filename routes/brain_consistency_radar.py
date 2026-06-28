@@ -2409,6 +2409,27 @@ def check_surface_health_critical() -> list[dict]:
     return findings
 
 
+def _platform_conversions_30d() -> int:
+    """Account-level conversions in the last 30d (ANY tool). A paid key unlocks
+    ALL tools, so conversion is account-level — used to sanity-check a per-tool
+    'ZERO converted' signal before alarming. Returns -1 on DB miss (don't
+    suppress on a miss)."""
+    c = _db()
+    if c is None:
+        return -1
+    try:
+        with c.cursor() as cur:
+            cur.execute("SELECT COUNT(*) FROM mcp_pair_codes "
+                        "WHERE redeemed_at IS NOT NULL "
+                        "AND redeemed_at >= NOW() - INTERVAL '30 days'")
+            return int((cur.fetchone() or [0])[0])
+    except Exception:
+        return -1
+    finally:
+        try: c.close()
+        except Exception: pass
+
+
 # ── Phase GGG (2026-05-16) — per-tool funnel leak detector ────────
 def check_mcp_funnel_leak() -> list[dict]:
     """Flag any tool with >50 paywall signals where a single funnel
@@ -2427,6 +2448,17 @@ def check_mcp_funnel_leak() -> list[dict]:
     # the separate mcp_pair_codes flow (≠ per-tool signals) so EVERY tool showed
     # a fake ~100% leak. _compute_funnel now reports honest distinct_callers +
     # the signal's own converted flag; per-tool conversion is genuinely 10-45%.
+    # r88 (2026-06-28): account-level + lag HONESTY gate. Conversion lags a
+    # median ~2.6 days and a paid key unlocks ALL tools, so a per-tool,
+    # same-14d-window `converted`==0 is an ATTRIBUTION ARTIFACT whenever the
+    # platform is converting at all. The old detail screamed "ZERO converted —
+    # NO MONETIZATION" for grid/fiber/market intel while the platform did 9
+    # conversions/30d — a false alarm of the same class as the demand-gap FP.
+    # Only the genuine "the upgrade path converts NOBODY platform-wide" state
+    # is an actionable broken-funnel finding. When the platform IS monetizing,
+    # the high per-tool demand is an OPTIMIZATION (addressable_demand_
+    # unconverted already covers it honestly), not a broken funnel.
+    platform_conv = _platform_conversions_30d()
     for f in funnels:
         distinct  = f.get("distinct_callers") or 0
         converted = (f.get("stages") or {}).get("5_converted") or 0
@@ -2434,16 +2466,18 @@ def check_mcp_funnel_leak() -> list[dict]:
             continue
         if converted > 0:           # any conversion = a normal funnel, not "broken"
             continue
+        if platform_conv > 0:       # account-level conversion exists → not "no monetization"
+            continue                # (per-tool 0 is lag + account-level attribution noise)
         findings.append({
             "issue":  f"mcp_funnel_leak:{f['tool']}",
             "url":    f"mcp_funnel: tool={f['tool']}",
             "count":  int(distinct),
             "detail": (f"Tool '{f['tool']}' had {distinct} DISTINCT callers hit its "
-                       f"paywall in 14d but ZERO converted — real demand, no "
-                       f"monetization. Investigate the upgrade path "
-                       f"(/api/v1/mcp/conversion-funnel/{f['tool']}). Per-tool "
-                       f"conversion is now measured honestly (signal's converted "
-                       f"flag, distinct callers); most paid tools convert 10-45%."),
+                       f"paywall in 14d AND the platform recorded ZERO conversions "
+                       f"account-wide in 30d — the upgrade path converts nobody. "
+                       f"Investigate /api/v1/mcp/conversion-funnel/{f['tool']}. "
+                       f"(Per-tool conversion is account-level + lags ~2.6 days; "
+                       f"this fires only when platform-wide conversion is also 0.)"),
         })
         if len(findings) >= 3:
             break
