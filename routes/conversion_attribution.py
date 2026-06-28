@@ -66,26 +66,53 @@ def parse_tool(client_reference_id: str | None) -> str | None:
     return None if tool in ("none", "billing", "", "unknown") else tool
 
 
+def _tool_from_session(cur, client_reference_id: str | None) -> str | None:
+    """METERED path: the $10 owner_purchase_url binds client_reference_id to the
+    mcp_session_id (Fix E), NOT tool=. Recover the driving tool from
+    mcp_high_intent_sessions, which records (mcp_session_id, tool_name) at the
+    moment the agent hit a paid tool's paywall (same session that saw the CTA).
+    Read-only — no change to the session-binding plumbing."""
+    sid = (client_reference_id or "").strip()
+    if not sid or "tool=" in sid:   # subscription path is handled by parse_tool
+        return None
+    try:
+        cur.execute(
+            "SELECT tool_name FROM mcp_high_intent_sessions "
+            "WHERE mcp_session_id = %s "
+            "ORDER BY paid_call_count_24h DESC NULLS LAST LIMIT 1", (sid,))
+        r = cur.fetchone()
+        t = (r[0] if r else "") or ""
+        return t.strip().lower() or None
+    except Exception:
+        return None
+
+
 def record_conversion(client_reference_id: str | None, stripe_session_id: str | None,
                       source: str = "stripe_checkout") -> dict:
     """Best-effort: record a per-tool conversion. Idempotent on the Stripe
-    session id. NEVER raises — returns a small status dict. Called from the
-    checkout.session.completed webhook."""
+    session id. NEVER raises. Called from checkout.session.completed.
+    Subscription path → tool from client_reference_id ('mcp:tool=…'); metered
+    $10 path → tool from the session_id lookup (mcp_high_intent_sessions)."""
     tool = parse_tool(client_reference_id)
-    if not tool:
-        return {"ok": False, "skipped": "no_tool_in_ref"}
+    src = source
     try:
         with _conn() as c:
             with c.cursor() as cur:
                 _ensure_table(cur)
+                if not tool:
+                    tool = _tool_from_session(cur, client_reference_id)
+                    if tool:
+                        src = source + ":session_lookup"
+                if not tool:
+                    return {"ok": False, "skipped": "no_tool"}
                 cur.execute(
                     """INSERT INTO conversion_attribution
                          (tool, source, client_reference_id, stripe_session_id)
                        VALUES (%s, %s, %s, %s)
                        ON CONFLICT (stripe_session_id) DO NOTHING""",
-                    (tool, source, (client_reference_id or "")[:300], stripe_session_id))
+                    (tool, src, (client_reference_id or "")[:300], stripe_session_id))
             c.commit()
-        return {"ok": True, "tool": tool}
+        return {"ok": True, "tool": tool, "source": src}
     except Exception as e:
         return {"ok": False, "error": f"{type(e).__name__}: {str(e)[:120]}"}
 
