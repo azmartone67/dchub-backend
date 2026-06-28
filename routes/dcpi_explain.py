@@ -75,7 +75,7 @@ def dcpi_explain():
     try:
         with _conn() as c, c.cursor() as cur:
             cur.execute("""
-                SELECT market_slug, market_name, iso, state, composite_score,
+                SELECT market_slug, market_name, iso, state,
                        excess_power_score, constraint_score, time_to_power_months,
                        verdict, top_risks_json, top_opportunities_json
                   FROM market_power_scores
@@ -144,7 +144,7 @@ def dcpi_explain():
         "ok": True,
         "market": row["market_name"], "market_slug": row["market_slug"],
         "iso": row["iso"], "state": row["state"],
-        "dcpi_composite": row["composite_score"],
+        "dcpi_composite": recomputed,   # canonical compute_composite (computed live)
         "verdict": verdict or None,
         "explanation": {
             "formula": "composite = (power×0.60 + grid_headroom×0.30 + time_to_power×0.10) × verdict_multiplier",
@@ -153,8 +153,8 @@ def dcpi_explain():
                                    "why": "quality gate — discounts markets with missing/unreliable data "
                                           "(BUILD 1.0 · CAUTION 0.85 · AVOID 0.60 · LOW_SIGNAL 0.35)."},
             "raw_before_gate": round(raw, 1),
-            "recomputed_composite": recomputed,
-            "matches_stored": (abs(recomputed - _f(row["composite_score"])) <= 1.5),
+            "composite": recomputed,
+            "note": "composite is computed live from the factors above via the canonical DCPI formula — the parts sum to the whole, by construction.",
         },
         "top_risks": _drivers(row["top_risks_json"]),
         "top_opportunities": _drivers(row["top_opportunities_json"]),
