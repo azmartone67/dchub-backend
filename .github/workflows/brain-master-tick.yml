@@ -37,7 +37,11 @@ jobs:
             echo "::warning ::DCHUB_ADMIN_KEY secret not set — skipping (fail-safe)"
             exit 0
           fi
-          URL="https://dchub.cloud/api/v1/admin/brain/master-tick?dry=${DRY}&tiers=${TIERS}"
+          # Hit the Railway origin directly (not dchub.cloud) — CF zone/cache
+          # can shadow or cache a stale 404 on POST admin paths. Cache-buster
+          # for belt-and-suspenders. Override base via DCHUB_BACKEND_BASE.
+          BASE="${DCHUB_BACKEND_BASE:-https://dchub-backend-production.up.railway.app}"
+          URL="$BASE/api/v1/admin/brain/master-tick?dry=${DRY}&tiers=${TIERS}&cb=${GITHUB_RUN_ID}"
           echo "POST $URL"
           body=$(curl -sS --max-time 300 -X POST "$URL" \
                    -H "X-Admin-Key: $ADMIN_KEY" \
