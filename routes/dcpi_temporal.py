@@ -113,6 +113,117 @@ def dcpi_history():
     }), 200
 
 
+def _linfit(xs, ys):
+    """Least-squares slope+intercept. Returns (slope_per_day, intercept, resid_std)."""
+    n = len(xs)
+    if n < 2:
+        return 0.0, (ys[-1] if ys else 0.0), 0.0
+    mx = sum(xs) / n
+    my = sum(ys) / n
+    den = sum((x - mx) ** 2 for x in xs)
+    if den == 0:
+        return 0.0, my, 0.0
+    slope = sum((xs[i] - mx) * (ys[i] - my) for i in range(n)) / den
+    intercept = my - slope * mx
+    resid = [ys[i] - (slope * xs[i] + intercept) for i in range(n)]
+    var = sum(r * r for r in resid) / n
+    return slope, intercept, var ** 0.5
+
+
+def _clamp(v, lo=0.0, hi=100.0):
+    return max(lo, min(hi, v))
+
+
+@dcpi_temporal_bp.route("/api/v1/dcpi/forecast", methods=["GET"])
+def dcpi_forecast():
+    """Forward DCPI-score projection (L23 proposal get_dcpi_forecast #1139).
+
+    HONEST: this is a TREND EXTRAPOLATION over the available snapshot history,
+    not a guarantee. Projects excess_power_score / constraint_score forward by
+    quarter with a confidence band that widens with horizon. Distinct from
+    /api/v1/power-availability-forecast (#404), which forecasts deliverable MW
+    timing; this forecasts the DCPI score trajectory."""
+    market = (request.args.get("market") or "").strip().lower()
+    if not market:
+        return jsonify({"ok": False, "error": "market_required",
+                        "hint": "Pass ?market=<dcpi slug> (see /api/v1/dcpi/scores)."}), 400
+    try:
+        horizon_q = max(1, min(8, int(request.args.get("horizon", 4))))  # quarters
+    except (TypeError, ValueError):
+        horizon_q = 4
+    try:
+        with _conn() as c, c.cursor() as cur:
+            meta = _depth_meta(cur)
+            cur.execute("""
+                SELECT snapshot_date, market_name, excess_power_score, constraint_score
+                  FROM dcpi_daily_snapshots
+                 WHERE lower(market_slug) = %s
+                 ORDER BY snapshot_date ASC
+            """, (market,))
+            rows = cur.fetchall() or []
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"{type(e).__name__}: {str(e)[:140]}"}), 503
+
+    pts = [(r["snapshot_date"], r["excess_power_score"], r["constraint_score"]) for r in rows
+           if r["excess_power_score"] is not None]
+    if len(pts) < 3:
+        return jsonify({"ok": False, "error": "insufficient_history",
+                        "market": market, "snapshot_record": meta,
+                        "points_available": len(pts),
+                        "hint": "Need ≥3 snapshots to extrapolate a trend. The daily "
+                                "snapshot cron is accumulating; forecast unlocks as "
+                                "history deepens."}), 422
+
+    d0 = pts[0][0]
+    xs = [(p[0] - d0).days for p in pts]
+    exc = [float(p[1]) for p in pts]
+    con = [float(p[2]) if p[2] is not None else 0.0 for p in pts]
+    span_days = xs[-1] - xs[0] or 1
+    e_slope, e_int, e_resid = _linfit(xs, exc)
+    c_slope, c_int, c_resid = _linfit(xs, con)
+    last_x = xs[-1]
+
+    projection = []
+    for q in range(1, horizon_q + 1):
+        days_ahead = q * 91
+        fx = last_x + days_ahead
+        # band widens with horizon AND with how far we extrapolate beyond observed span
+        widen = (1.0 + days_ahead / max(span_days, 1)) ** 0.5
+        e_band = round((e_resid + 1.0) * widen, 1)
+        c_band = round((c_resid + 1.0) * widen, 1)
+        e_val = _clamp(e_slope * fx + e_int)
+        c_val = _clamp(c_slope * fx + c_int)
+        projection.append({
+            "quarter_out": q,
+            "excess_power_score": round(e_val, 1),
+            "excess_power_band": [round(_clamp(e_val - e_band), 1), round(_clamp(e_val + e_band), 1)],
+            "constraint_score": round(c_val, 1),
+            "constraint_band": [round(_clamp(c_val - c_band), 1), round(_clamp(c_val + c_band), 1)],
+        })
+
+    trend = ("improving" if e_slope > 0.02 else "declining" if e_slope < -0.02 else "flat")
+    return jsonify({
+        "ok": True,
+        "market": pts[-1] and rows[-1]["market_name"],
+        "market_slug": market,
+        "method": "linear trend extrapolation (least-squares) over snapshot history",
+        "basis": {
+            "history_points": len(pts),
+            "history_span_days": span_days,
+            "excess_power_slope_per_day": round(e_slope, 4),
+            "current_excess_power_score": round(exc[-1], 1),
+            "trend": trend,
+        },
+        "horizon_quarters": horizon_q,
+        "projection": projection,
+        "caveat": ("Trend extrapolation, NOT a guarantee — confidence band widens with "
+                   "horizon. Short history → wide bands. Re-query as snapshots deepen."),
+        "snapshot_record": meta,
+        "as_of": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+        "cite": "DC Hub (dchub.cloud)",
+    }), 200
+
+
 @dcpi_temporal_bp.route("/api/v1/dcpi/changes", methods=["GET"])
 def dcpi_changes():
     """Change-feed: markets that moved between the two most recent snapshot dates."""

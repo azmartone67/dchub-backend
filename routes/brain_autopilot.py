@@ -495,6 +495,19 @@ def _action_inspector_l22_handoff(finding: dict) -> tuple[str | None, dict | Non
     _detail = (finding.get("detail") or "").lower()
     if "recipe:" in _detail and "route_alias_404" not in _detail:
         return (None, None)
+    # r80 (2026-06-28): route_alias_404 adds a Flask @app.route alias for a
+    # MISSING (404) path. It CANNOT fix a page_content_drift (the path already
+    # exists — its content changed) nor a /.well-known/ path served by the
+    # out-of-repo CF zone worker. brief #150 carried exactly such a mis-
+    # classified recipe (route_alias_404 · /.well-known/mcp.json ·
+    # page_content_drift): every tick POSTed a doomed draft-prs that returned
+    # drafted_count=0, the recipe never cleared, the finding re-emitted, and
+    # the handoff burned the autopilot's 3/hr rate-limit budget in a permanent
+    # no-op loop (49/50 recent actions were this + the worklist re-firer).
+    # Escalate ONCE (surface for a human) instead of looping when the recipe
+    # isn't actually route-alias-fixable.
+    if "page_content_drift" in _detail or "/.well-known/" in _detail:
+        return (None, None)
     return (
         f"/api/v1/brain/brief/{brief_id}/draft-prs",
         {"trigger": "consistency_radar"},
