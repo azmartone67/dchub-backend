@@ -1658,6 +1658,15 @@ try:
     except Exception as _dte:
         import logging
         logging.getLogger(__name__).warning('dcpi_temporal wiring failed: %s', _dte)
+    # 2026-06-28: per-tool conversion attribution (reads tool back from the
+    # Stripe client_reference_id at checkout). GET /api/v1/mcp/conversion-attribution
+    try:
+        from routes.conversion_attribution import conversion_attribution_bp
+        app.register_blueprint(conversion_attribution_bp)
+        print("[main] conversion_attribution_bp registered: GET /api/v1/mcp/conversion-attribution", flush=True)
+    except Exception as _cabe:
+        import logging
+        logging.getLogger(__name__).warning('conversion_attribution wiring failed: %s', _cabe)
     try:
         from routes.brain_narrative import brain_narrative_bp
         app.register_blueprint(brain_narrative_bp)
@@ -11448,6 +11457,20 @@ def stripe_webhook():
                             print(f"⚠️ pk- conversion-record error (non-fatal): {_pkce}")
             except Exception as _pce:
                 print(f"⚠️ Conversion-play redemption error (non-fatal): {_pce}")
+
+            # r89-conv (2026-06-28): PER-TOOL conversion ATTRIBUTION. The
+            # /upgrade→checkout path encodes the driving tool into
+            # client_reference_id ('mcp:tool=<tool>:ref=<ref>'); until now
+            # nothing read it back, so per-tool conversion was 0 across ALL
+            # tools (anonymous signals + dead converted flag). Record it so the
+            # funnel can finally show TRUE per-tool conversion. Best-effort.
+            try:
+                from routes.conversion_attribution import record_conversion as _rconv
+                _ca = _rconv(data.get('client_reference_id'), data.get('id'))
+                if _ca.get("ok"):
+                    print(f"🎯 Conversion attributed to tool: {_ca.get('tool')}")
+            except Exception as _cae:
+                print(f"⚠️ conversion-attribution error (non-fatal): {_cae}")
 
             # r62-conv (2026-06-01): self-serve auto-key for the usage-based
             # (metered) payment link (prod_UccyUrO1iq7LrN). Issues + emails a
