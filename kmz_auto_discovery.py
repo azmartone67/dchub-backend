@@ -1027,7 +1027,11 @@ class KMZAutoDiscovery:
                 query_url = (
                     f"{url}/query?where=1%3D1&outFields=*"
                     f"&resultRecordCount={BATCH_SIZE}&resultOffset={offset}"
-                    f"&returnGeometry=true&f=json"
+                    # r-qa (2026-06-27): outSR=4326 forces WGS84 degrees. Without it
+                    # ArcGIS returns native Web Mercator METERS (EPSG:3857); meter
+                    # coords fed to the haversine inflated each distance ~1,400x —
+                    # the "1.68-billion-km new routes" log bug.
+                    f"&returnGeometry=true&outSR=4326&f=json"
                 )
 
                 try:
@@ -1313,6 +1317,11 @@ class KMZAutoDiscovery:
         for i in range(len(coordinates) - 1):
             lat1, lng1 = coordinates[i]
             lat2, lng2 = coordinates[i + 1]
+            # r-qa (2026-06-27): defense-in-depth — skip any point that isn't valid
+            # WGS84 degrees (e.g. Web Mercator meters from a source missing
+            # outSR=4326), so a non-degree coord can't re-poison the km total.
+            if abs(lat1) > 90 or abs(lat2) > 90 or abs(lng1) > 180 or abs(lng2) > 180:
+                continue
             R = 6371
             lat1, lng1, lat2, lng2 = map(radians, [lat1, lng1, lat2, lng2])
             dlat = lat2 - lat1

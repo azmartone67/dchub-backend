@@ -142,6 +142,29 @@ def register_internal_bot_circuit_breaker(app):
         # UAs arriving via the public edge still hit the breaker.
         if (request.remote_addr or "") in ("127.0.0.1", "::1"):
             return None
+        # r-qa (2026-06-27): the platform's OWN authenticated/identified probes
+        # (brain-radar, site-sentinel, self-heal, autopilot) arrive NON-loopback
+        # via the public edge but carry internal credentials — exempt them, or this
+        # 30/min breaker 429-floods the brain's own fan-out (the radar 429 storm
+        # seen on fiber/intel, grid/intelligence, dcpi/scores, etc.). Mirrors the
+        # internal bypasses rate_limiter.py already honors. All are server-derived
+        # (key validation / probe header / Railway egress), not spoofable for free.
+        try:
+            from internal_auth import is_valid_internal_key
+            if is_valid_internal_key(request.headers.get("X-Internal-Key", "")):
+                return None
+        except Exception:
+            pass
+        if (request.headers.get("X-DC-Probe") or "").strip().lower() in (
+                "brain-radar", "site-sentinel", "self-heal", "autopilot",
+                "dc-brain-site-probe", "dc-security-audit", "dc-healer"):
+            return None
+        try:
+            from railway_egress import is_railway_egress
+            if is_railway_egress(request.remote_addr or ""):
+                return None
+        except Exception:
+            pass
         ua = request.headers.get("User-Agent") or ""
         bucket = _is_internal_ua(ua)
         if not bucket:
