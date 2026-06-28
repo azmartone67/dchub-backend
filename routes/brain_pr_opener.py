@@ -51,6 +51,61 @@ def _gh(method: str, path: str, body=None):
     return r
 
 
+def open_pr_exists(title: str) -> bool:
+    """True if an OPEN PR with this exact title already exists. The brain's
+    L5/L6 drafters re-propose the same ideas every cycle, piling up a 'draft
+    graveyard' (28 stale drafts as of 2026-06-28). Call this before opening a
+    draft so the same idea isn't re-drafted — the same dedupe fix that worked
+    for the L23 capability proposals. Fail-open (returns False) on any error so
+    a transient GitHub blip never silently blocks legitimate drafts."""
+    t = (title or "").strip()
+    if not t:
+        return False
+    try:
+        r = _gh("GET", f"/repos/{_GITHUB_REPO}/pulls?state=open&per_page=100")
+        if r.status_code == 200:
+            return any((p.get("title") or "").strip() == t for p in r.json())
+    except Exception:
+        pass
+    return False
+
+
+def expire_stale_draft_prs(days: int = 14,
+                           prefixes=("[brain-l5 draft]", "[brain-l6 strategic-draft]")) -> dict:
+    """Auto-close brain DRAFT PRs older than `days` whose title starts with one
+    of the brain prefixes — the auto-expire half of the draft-graveyard fix.
+    Only touches drafts (never a human-readied PR). Best-effort; returns a
+    summary. Safe to cron daily."""
+    import datetime as _dt
+    closed, scanned = [], 0
+    try:
+        r = _gh("GET", f"/repos/{_GITHUB_REPO}/pulls?state=open&per_page=100")
+        if r.status_code != 200:
+            return {"ok": False, "error": f"list {r.status_code}"}
+        cutoff = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=days)
+        for p in r.json():
+            scanned += 1
+            title = (p.get("title") or "")
+            if not p.get("draft"):
+                continue
+            if not any(title.startswith(pre) for pre in prefixes):
+                continue
+            try:
+                created = _dt.datetime.fromisoformat(
+                    (p.get("created_at") or "").replace("Z", "+00:00"))
+            except Exception:
+                continue
+            if created < cutoff:
+                cr = _gh("PATCH", f"/repos/{_GITHUB_REPO}/pulls/{p['number']}",
+                         {"state": "closed"})
+                if cr.status_code == 200:
+                    closed.append(p["number"])
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {str(e)[:120]}"}
+    return {"ok": True, "scanned": scanned, "closed": closed,
+            "closed_count": len(closed), "older_than_days": days}
+
+
 def _get_default_branch_sha() -> str | None:
     r = _gh("GET", f"/repos/{_GITHUB_REPO}/git/refs/heads/main")
     if r.status_code != 200: return None
