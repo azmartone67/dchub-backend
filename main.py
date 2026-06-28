@@ -20374,9 +20374,29 @@ def fiber_routes_api():
     3-route teaser otherwise. The in-handler gate fails closed regardless of
     how the caller reached here (require_plan has a map-Referer bypass that
     previously leaked the full 645KB set to any anonymous curl)."""
+    # r-fibercache2 (2026-06-28): get_fiber_intel hits THIS route and was paying
+    # the full ~5s _build_fiber_routes_geojson() DB build on EVERY call (p50 5.7s,
+    # the top remaining Smithery-latency tool). The /api/v1/fiber/intel ALIAS
+    # already caches the full build (r-fibercache, 5 min) — but this route was
+    # missed. The full FeatureCollection is IDENTICAL for every access-granted
+    # caller, so reuse the same in-process cache. Teaser callers never touch it →
+    # no paywall bypass. Also add the no-store edge headers this route was missing
+    # (tier-varying full-vs-teaser body must never edge-cache cross-tier).
     if _fiber_full_access_ok():
-        return jsonify(_build_fiber_routes_geojson())
-    return jsonify(_fiber_teaser_response())
+        _now = time.time()
+        if (_FIBER_INTEL_CACHE["data"] is not None
+                and (_now - _FIBER_INTEL_CACHE["at"]) < _FIBER_INTEL_TTL):
+            payload = _FIBER_INTEL_CACHE["data"]
+        else:
+            payload = _build_fiber_routes_geojson()
+            _FIBER_INTEL_CACHE["data"] = payload
+            _FIBER_INTEL_CACHE["at"] = _now
+    else:
+        payload = _fiber_teaser_response()
+    resp = jsonify(payload)
+    resp.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+    resp.headers['CDN-Cache-Control'] = 'no-store'
+    return resp
 
 
 @app.route('/api/v1/fiber/routes/public', methods=['GET'])
