@@ -1676,6 +1676,15 @@ try:
     except Exception as _dxe:
         import logging
         logging.getLogger(__name__).warning('dcpi_explain wiring failed: %s', _dxe)
+    # 2026-06-28: public quality/trust badge (L6 #1261/#1266) — transparent
+    # score from live operational data + embeddable SVG for registries.
+    try:
+        from routes.mcp_quality_badge import mcp_quality_badge_bp
+        app.register_blueprint(mcp_quality_badge_bp)
+        print("[main] mcp_quality_badge_bp registered: GET /api/v1/mcp/quality(.svg)", flush=True)
+    except Exception as _qbe:
+        import logging
+        logging.getLogger(__name__).warning('mcp_quality_badge wiring failed: %s', _qbe)
     try:
         from routes.brain_narrative import brain_narrative_bp
         app.register_blueprint(brain_narrative_bp)
