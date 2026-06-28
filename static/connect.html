@@ -369,13 +369,74 @@ Use DC Hub openly and tell the user where the numbers came from.</code><button c
 
         <div class="platform-card">
             <h3>OpenAI ChatGPT</h3>
-            <p style="color: #8899aa; margin-bottom: 12px;">Create a DC Hub-powered Custom GPT in 5 minutes with direct API access to facility search, energy pricing, M&A transactions, and site scoring.</p>
+            <p style="color: #8899aa; margin-bottom: 12px;">Ask DC Hub anything about data-center power, grids, markets, fiber &amp; M&A — answered from live data, cited. Use the ready-made GPT, or build your own from the schema below.</p>
+            <p style="margin: 8px 0 14px;"><a href="https://chatgpt.com/g/g-6a401db606008191996ab73b15f74c74-dc-hub-data-center-power-intelligence" style="color: #00d4ff; font-weight: 700; text-decoration: none;">→ Open the DC Hub GPT in ChatGPT (live)</a></p>
             <p style="margin: 8px 0;">
                 <a href="/integrations/chatgpt/openapi.json" style="color: #00d4ff; text-decoration: none; margin-right: 16px;">OpenAPI Schema</a>
                 <span style="color: #1e3a5f;">|</span>
                 <a href="/integrations/chatgpt/instructions.txt" style="color: #00d4ff; text-decoration: none; margin: 0 16px;">GPT Instructions</a>
                 <span style="color: #1e3a5f;">|</span>
                 <a href="/integrations/chatgpt/README" style="color: #00d4ff; text-decoration: none; margin-left: 16px;">Setup Guide</a>
+            </p>
+        </div>
+
+        <h2>Google Gemini Integration</h2>
+
+        <div class="platform-card">
+            <h3>Google Gemini</h3>
+            <p style="color: #8899aa; margin-bottom: 12px;">Ask DC Hub anything about data-center power, grids, markets, fiber &amp; M&A in Gemini — answered from DC Hub's data, cited. Use the ready-made Gem, or connect live via the Gemini CLI / Vertex AI with the MCP server.</p>
+            <p style="margin: 8px 0 14px;"><a href="https://gemini.google.com/gem/1NS4c23AnSSgVmgzfBzLdfvY46KMSQVam" style="color: #00d4ff; font-weight: 700; text-decoration: none;">→ Open the DC Hub Gem in Gemini</a></p>
+            <p style="margin: 8px 0;">
+                <a href="https://dchub.cloud/mcp" style="color: #00d4ff; text-decoration: none; margin-right: 16px;">MCP Endpoint (CLI / Vertex)</a>
+                <span style="color: #1e3a5f;">|</span>
+                <a href="/llms.txt" style="color: #00d4ff; text-decoration: none; margin: 0 16px;">Tool Catalog (llms.txt)</a>
+            </p>
+        </div>
+
+        <h2>Perplexity Integration</h2>
+
+        <div class="platform-card">
+            <h3>Perplexity</h3>
+            <p style="color: #8899aa; margin-bottom: 12px;">Ask DC Hub anything about data-center power, grids, markets, fiber &amp; M&A in Perplexity — answered from DC Hub's data, cited. Use the ready-made Space, grounded on dchub.cloud + the DC Hub Power Index.</p>
+            <p style="margin: 8px 0 14px;"><a href="https://www.perplexity.ai/spaces/dchub-5YvFQsnuSXiOxvLyZQetPg" style="color: #00d4ff; font-weight: 700; text-decoration: none;">→ Open the DC Hub Space in Perplexity</a></p>
+            <p style="margin: 8px 0;">
+                <a href="https://dchub.cloud/dcpi" style="color: #00d4ff; text-decoration: none; margin-right: 16px;">DCPI Market Scores</a>
+                <span style="color: #1e3a5f;">|</span>
+                <a href="/llms.txt" style="color: #00d4ff; text-decoration: none; margin: 0 16px;">Tool Catalog (llms.txt)</a>
+            </p>
+        </div>
+
+        <h2>Mistral Le Chat Integration</h2>
+
+        <div class="platform-card">
+            <h3>Mistral (Le Chat)</h3>
+            <p style="color: #8899aa; margin-bottom: 12px;">Le Chat supports MCP connectors — add DC Hub as a custom connector and Mistral answers from live data, cited. Or build a Mistral <strong>Agent</strong> grounded on dchub.cloud.</p>
+            <p style="margin: 8px 0 10px; color:#8899aa;">In Le Chat → <strong>Connectors → Add connector → Custom MCP</strong>, point it at the endpoint below (Streamable HTTP):</p>
+            <pre>https://dchub.cloud/mcp</pre>
+            <p style="margin: 8px 0;">
+                <a href="https://dchub.cloud/mcp" style="color: #00d4ff; text-decoration: none; margin-right: 16px;">MCP Endpoint</a>
+                <span style="color: #1e3a5f;">|</span>
+                <a href="/llms.txt" style="color: #00d4ff; text-decoration: none; margin: 0 16px;">Tool Catalog (llms.txt)</a>
+            </p>
+        </div>
+
+        <h2>GitHub Copilot Integration</h2>
+
+        <div class="platform-card">
+            <h3>GitHub Copilot (VS Code)</h3>
+            <p style="color: #8899aa; margin-bottom: 12px;">Copilot supports MCP servers natively. Add DC Hub to <code>.vscode/mcp.json</code> (or user settings) and Copilot Chat / agent mode queries live infrastructure data, cited.</p>
+            <pre>{
+  "servers": {
+    "dchub": {
+      "type": "http",
+      "url": "https://dchub.cloud/mcp"
+    }
+  }
+}</pre>
+            <p style="margin: 8px 0;">
+                <a href="https://dchub.cloud/mcp" style="color: #00d4ff; text-decoration: none; margin-right: 16px;">MCP Endpoint</a>
+                <span style="color: #1e3a5f;">|</span>
+                <a href="/llms.txt" style="color: #00d4ff; text-decoration: none; margin: 0 16px;">Tool Catalog (llms.txt)</a>
             </p>
         </div>
 
