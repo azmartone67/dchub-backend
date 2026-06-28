@@ -311,14 +311,35 @@ def media_self_critique():
                     {"category": _media_block_category(r.get('reason') if hasattr(r, 'get') else r[0]),
                      "reason": ((r.get('reason') if hasattr(r, 'get') else r[0]) or "")[:140]}
                     for r in rows[:8]]
+                _smp = 0
                 try:
                     cur.execute("""SELECT COUNT(*) FROM social_media_posts
                         WHERE status='published' AND publish_platform='linkedin'
                           AND published_at >= (NOW() - INTERVAL '7 days')""")
                     pr = cur.fetchone()
-                    out["published_7d"] = int((pr.get('count') if hasattr(pr, 'get') else pr[0]) or 0)
+                    _smp = int((pr.get('count') if hasattr(pr, 'get') else pr[0]) or 0)
                 except Exception:
                     pass
+                # r-quad-visibility (2026-06-28): the 4x/day LinkedIn quad cron records
+                # its successes ONLY to linkedin_quad_posts (linkedin_quad_daily._record),
+                # never backfilling a social_media_posts row — so the query above was
+                # structurally BLIND to the dominant LinkedIn publisher and pinned
+                # published_7d=0 / reject_rate=1.0 even while ~11 posts/7d actually shipped.
+                # Add the quad successes so this panel reflects reality. Disjoint tables:
+                # social_media_posts = Bluesky/other; linkedin_quad_posts = the quad arm.
+                _quad = 0
+                try: conn.rollback()          # clear any aborted tx from the probe above
+                except Exception: pass
+                try:
+                    cur.execute("""SELECT COUNT(*) FROM linkedin_quad_posts
+                        WHERE success = TRUE
+                          AND posted_at >= (NOW() - INTERVAL '7 days')""")
+                    qr = cur.fetchone()
+                    _quad = int((qr.get('count') if hasattr(qr, 'get') else qr[0]) or 0)
+                except Exception:
+                    try: conn.rollback()
+                    except Exception: pass
+                out["published_7d"] = _smp + _quad
         finally:
             try: conn.close()
             except Exception: pass

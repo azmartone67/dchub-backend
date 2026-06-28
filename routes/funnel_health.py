@@ -1984,3 +1984,132 @@ def admin_funnel_health_kill_ab():
         next_step=("Set PRICING_AB_DISABLE=1 in Railway env vars to "
                    "persist across replica restarts."),
     ), 200
+
+
+@funnel_health_bp.route("/api/v1/admin/funnel-health/per-platform-joined",
+                         methods=["GET"])
+def admin_funnel_health_per_platform_joined():
+    """Honest per-platform funnel via a session→platform JOIN.
+
+    Kills the 0%-everywhere artifact in the main panel's per-platform block (which
+    matched platform names by raw LIKE on UA strings that header-less agents never
+    populate, so signals/conversions read ~0 across ALL platforms). Builds a
+    modal-platform-per-session map from mcp_tool_calls via the canonical PLATFORM_CASE
+    classifier, then keys requests / upgrade-signals / conversions onto that SAME
+    session identity:
+      requests:    mcp_tool_calls       (session_id → platform)
+      signals:     mcp_upgrade_signals  (session_id → platform)
+      conversions: mcp_conversions → mcp_upgrade_signals(id) → session_id → platform
+    Read-only + additive (a NEW endpoint — the live panel is untouched). Reports an
+    explicit 'unknown' bucket: the header-less majority is genuinely ~unknown, a true
+    finding, not dropped. See reference_dchub_funnel_redesign_0628.
+    """
+    if not _admin_ok(request):
+        return jsonify(error="unauthorized"), 401
+    out = {
+        "window_days": 30, "platforms": [],
+        "attribution_coverage_pct": None,
+        "note": ("session-keyed join (mcp_tool_calls PLATFORM_CASE) — supersedes the "
+                 "raw-LIKE per-platform block in /api/v1/admin/funnel-health"),
+    }
+    conn = _conn()
+    if conn is None:
+        out["error"] = "no_db"
+        return jsonify(out), 200
+    try:
+        from mcp_calls_deloop import PLATFORM_CASE as _pcase
+        # NB: execute() is called with NO params arg so psycopg2 does NOT run
+        # %-substitution over the literal % in PLATFORM_CASE's ILIKE patterns
+        # (the empty-tuple %-trap — see reference_psycopg2_empty_tuple_percent_trap).
+        sql = ("""
+        WITH sess_platform AS (
+          SELECT session_id, client_platform FROM (
+            SELECT session_id,
+                   %PCASE% AS client_platform,
+                   ROW_NUMBER() OVER (
+                     PARTITION BY session_id
+                     ORDER BY (CASE WHEN %PCASE% = 'unknown' THEN 0 ELSE 1 END) DESC,
+                              COUNT(*) DESC) AS rn
+            FROM mcp_tool_calls
+            WHERE created_at >= NOW() - INTERVAL '30 days'
+              AND session_id IS NOT NULL
+            GROUP BY session_id, %PCASE%
+          ) t WHERE rn = 1
+        ),
+        req AS (
+          SELECT sp.client_platform AS platform,
+                 COUNT(*)                       AS requests,
+                 COUNT(DISTINCT tc.session_id)  AS sessions
+          FROM mcp_tool_calls tc
+          JOIN sess_platform sp USING (session_id)
+          WHERE tc.created_at >= NOW() - INTERVAL '30 days'
+          GROUP BY sp.client_platform
+        ),
+        sig AS (
+          SELECT sp.client_platform AS platform, COUNT(*) AS signals
+          FROM mcp_upgrade_signals s
+          JOIN sess_platform sp ON sp.session_id = s.session_id
+          WHERE s.created_at >= NOW() - INTERVAL '30 days'
+          GROUP BY sp.client_platform
+        ),
+        conv AS (
+          SELECT sp.client_platform AS platform, COUNT(*) AS conversions
+          FROM mcp_conversions c
+          JOIN mcp_upgrade_signals s ON s.id = c.attribution_signal_id
+          JOIN sess_platform sp ON sp.session_id = s.session_id
+          WHERE c.created_at >= NOW() - INTERVAL '30 days'
+          GROUP BY sp.client_platform
+        )
+        SELECT COALESCE(req.platform, sig.platform, conv.platform) AS platform,
+               COALESCE(req.requests, 0)     AS requests,
+               COALESCE(req.sessions, 0)     AS sessions,
+               COALESCE(sig.signals, 0)      AS signals,
+               COALESCE(conv.conversions, 0) AS conversions
+        FROM req
+        FULL OUTER JOIN sig  ON sig.platform  = req.platform
+        FULL OUTER JOIN conv ON conv.platform = COALESCE(req.platform, sig.platform)
+        ORDER BY 2 DESC NULLS LAST
+        """).replace("%PCASE%", _pcase)
+        with conn.cursor() as cur:
+            cur.execute(sql)
+            rows = cur.fetchall() or []
+
+        def _c(r, idx, key):
+            return (r.get(key) if hasattr(r, "get") else r[idx])
+
+        tot_sig = kn_sig = tot_conv = kn_conv = 0
+        for r in rows:
+            plat = (_c(r, 0, "platform") or "unknown")
+            rec = {
+                "platform": plat,
+                "requests_30d": int(_c(r, 1, "requests") or 0),
+                "sessions_30d": int(_c(r, 2, "sessions") or 0),
+                "signals_30d": int(_c(r, 3, "signals") or 0),
+                "conversions_30d": int(_c(r, 4, "conversions") or 0),
+            }
+            rec["conv_rate_pct"] = (round(100.0 * rec["conversions_30d"]
+                                          / rec["sessions_30d"], 2)
+                                    if rec["sessions_30d"] else 0.0)
+            tot_sig += rec["signals_30d"]
+            tot_conv += rec["conversions_30d"]
+            if plat not in ("unknown", "internal-dchub"):
+                kn_sig += rec["signals_30d"]
+                kn_conv += rec["conversions_30d"]
+            out["platforms"].append(rec)
+        # Attribution coverage = share of signals+conversions that resolve to a NAMED
+        # (non-unknown, non-internal) platform. The honest headline: how much of the
+        # funnel we can actually attribute, vs the raw-LIKE block's ~0%.
+        _den = tot_sig + tot_conv
+        out["attribution_coverage_pct"] = (round(100.0 * (kn_sig + kn_conv) / _den, 1)
+                                           if _den else None)
+        out["totals"] = {"signals_30d": tot_sig, "conversions_30d": tot_conv,
+                         "named_signals_30d": kn_sig,
+                         "named_conversions_30d": kn_conv}
+    except Exception as e:
+        out["error"] = str(e)[:200]
+        try: conn.rollback()
+        except Exception: pass
+    finally:
+        try: conn.close()
+        except Exception: pass
+    return jsonify(out), 200
