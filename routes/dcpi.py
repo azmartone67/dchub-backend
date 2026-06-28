@@ -1980,9 +1980,16 @@ def api_scores():
         pass
 
     if not _paid:
-        # Truly-anonymous is also row-capped to the preview size; identified
-        # keeps the full catalog (names + verdicts) with the numbers masked.
-        if _PLAN_RANK.get(_plan, 0) < 1 and _total_rows > _PREVIEW_CAP:
+        # r-free-breadth (2026-06-27): TRULY-anonymous (no key) is row-capped to
+        # the preview; ANY keyed caller (free/identified) keeps the FULL catalog
+        # (all market names + verdicts) with the numbers masked — that's the
+        # reason to sign up free. Was gated on plan-rank<1, which ALSO capped a
+        # free key (resolves to rank-0 'free'), making anon and free identical.
+        # Gate on key PRESENCE instead.
+        _has_key = bool(request.headers.get("X-API-Key")
+                        or (request.headers.get("Authorization") or "").lower().startswith("bearer ")
+                        or request.args.get("api_key") or request.args.get("key"))
+        if (not _has_key) and _total_rows > _PREVIEW_CAP:
             rows = rows[:_PREVIEW_CAP]
         _masked = []
         for _r in rows:
@@ -4926,13 +4933,15 @@ def public_dashboard():
     _gated_to_anon = not _paid                       # name kept; now means "not paid"
     _tier_state = 'paid' if _paid else ('free' if _has_key else 'anon')
     if _gated_to_anon:
-        # Teaser: free-keyed callers get a bigger slice (10 BUILD + 40 others = 50)
-        # than truly-anon (5 BUILD + 20 others = 25); the full count stays in the header
-        # + verdict tabs as the breadth hook, and the unlock CTA points up a tier.
-        _cap_b, _cap_o = (10, 40) if _has_key else (5, 20)
-        _builds = [r for r in rows if (r.get('verdict') or '') == 'BUILD'][:_cap_b]
-        _others = [r for r in rows if (r.get('verdict') or '') != 'BUILD'][:_cap_o]
-        rows = _builds + _others
+        # r-free-breadth (2026-06-27): a free signup (any key) now unlocks the
+        # FULL map — ALL markets, names + verdicts — with the numbers still
+        # masked below; the scores are the paid line. Truly-anon stays a capped
+        # teaser (5 BUILD + 20 others = 25) with the full count in the header +
+        # verdict tabs as the "sign up free to see them all" hook.
+        if not _has_key:
+            _builds = [r for r in rows if (r.get('verdict') or '') == 'BUILD'][:5]
+            _others = [r for r in rows if (r.get('verdict') or '') != 'BUILD'][:20]
+            rows = _builds + _others
         rows.sort(key=lambda r: -(r.get("excess_power_score") or 0))
         # r-gate-everywhere (2026-06-27): null the numeric scores on the teaser
         # cards (was leaking excess/constraint/time-to-power in the card divs AND
