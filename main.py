@@ -1639,6 +1639,16 @@ try:
     except Exception as _bmoe:
         import logging
         logging.getLogger(__name__).warning('brain_master_orchestrator wiring failed: %s', _bmoe)
+    # 2026-06-28: v1 of L23 capability proposal #404 — power-availability
+    # forecast (current DCPI signals + lead-time estimate; forward MW
+    # projection marked as a data gap). GET /api/v1/power-availability-forecast
+    try:
+        from routes.power_availability_forecast import power_availability_forecast_bp
+        app.register_blueprint(power_availability_forecast_bp)
+        print("[main] power_availability_forecast_bp registered: GET /api/v1/power-availability-forecast", flush=True)
+    except Exception as _pafe:
+        import logging
+        logging.getLogger(__name__).warning('power_availability_forecast wiring failed: %s', _pafe)
     try:
         from routes.brain_narrative import brain_narrative_bp
         app.register_blueprint(brain_narrative_bp)
