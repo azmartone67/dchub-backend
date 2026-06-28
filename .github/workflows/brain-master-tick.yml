@@ -1,0 +1,45 @@
+name: Brain Master Tick (orchestrated discovery→action loop)
+
+# The "master shell": one orchestrated cycle that ticks the whole brain
+# flywheel in tiers — Tier 1 auto-fix (autopilot), Tier 2 auto-draft-PR
+# (L15 + L22, never auto-merge), Tier 3 human-gated proposals (L23 +
+# money digest), then verify. Each layer keeps its own kill-switches,
+# rate-limits and diff-caps; this just chains them and returns one report.
+#
+# Kill switch: set BRAIN_MASTER_DISABLED=1 on Railway to halt the tick.
+# Existing per-layer crons stay in place; this is the unified sweep.
+
+on:
+  schedule:
+    - cron: '17 */2 * * *'   # every 2 hours at :17 — distinct minute, off-peak
+  workflow_dispatch:
+    inputs:
+      dry:
+        description: 'dry run (preview only, no Tier-1 execution / drafting)'
+        required: false
+        default: '0'
+      tiers:
+        description: 'comma list: 1,2,3,verify'
+        required: false
+        default: '1,2,3,verify'
+
+jobs:
+  master-tick:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Run one orchestrated brain cycle
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+          DRY:   ${{ github.event.inputs.dry || '0' }}
+          TIERS: ${{ github.event.inputs.tiers || '1,2,3,verify' }}
+        run: |
+          if [ -z "$ADMIN_KEY" ]; then
+            echo "::warning ::DCHUB_ADMIN_KEY secret not set — skipping (fail-safe)"
+            exit 0
+          fi
+          URL="https://dchub.cloud/api/v1/admin/brain/master-tick?dry=${DRY}&tiers=${TIERS}"
+          echo "POST $URL"
+          body=$(curl -sS --max-time 300 -X POST "$URL" \
+                   -H "X-Admin-Key: $ADMIN_KEY" \
+                 || echo '{"ok":false,"error":"curl_fail"}')
+          echo "$body" | python3 -c "import json,sys; d=json.load(sys.stdin); h=d.get('headline',{}); print('tiers:', d.get('tiers_run')); print('steps_ok:', h.get('steps_ok'),'/',h.get('steps_total')); print('human_decisions_pending:', h.get('human_decisions_pending')); [print(' ',s.get('step'),'->','ok' if s.get('ok') else s.get('error')) for s in d.get('steps',[])]" || echo "$body"
