@@ -3846,6 +3846,22 @@ def emit_auto_issued_key_header(response):
     return response
 
 
+@app.after_request
+def _track_paid_rest_key_usage(response):
+    """Best-effort: count `dchub_` REST key calls so GPT/partner usage is
+    measurable (the read endpoints never incremented api_keys counters, so paid
+    keys showed 0). Fires off-request in a daemon thread; never blocks/breaks."""
+    try:
+        if request.path.startswith('/api/'):
+            raw = request.headers.get('X-API-Key') or request.args.get('api_key')
+            if raw and raw.startswith('dchub_'):
+                from api_key_usage_tracker import track_rest_key_usage
+                track_rest_key_usage(raw)
+    except Exception:
+        pass
+    return response
+
+
 # =============================================================================
 # GRACEFUL DEGRADATION CACHE - Serve cached data when DB is down
 # =============================================================================
