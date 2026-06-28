@@ -2139,21 +2139,47 @@ def _proposal_action(proposal_id: int, action: str) -> tuple[dict, int]:
         except Exception: pass
 
 
+def _action_html(body: dict, action: str) -> str:
+    """One-click confirmation page for email approve/dismiss links (GET)."""
+    ok = body.get("ok")
+    if not ok:
+        title, msg, color = "Couldn't record that", body.get("error", "unknown error"), "#dc2626"
+    elif action == "approve":
+        title, msg, color = "✅ Approved", ("This product move is approved. The brain will pick "
+                                            "it up for implementation in its next build round."), "#16a34a"
+    else:
+        title, msg, color = "✕ Dismissed", "This proposal is dismissed — the brain won't pursue it.", "#6b7280"
+    return f"""<!doctype html><html><body style="font-family:-apple-system,sans-serif;
+max-width:520px;margin:3rem auto;padding:2rem;text-align:center;color:#1f2937">
+<div style="font-size:1.6rem;font-weight:700;color:{color};margin-bottom:.75rem">{title}</div>
+<div style="color:#475569;line-height:1.5">{msg}</div>
+<div style="margin-top:1rem;font-size:.85rem;color:#94a3b8">Proposal #{body.get('proposal_id','?')} ·
+DC Hub Brain · you can close this tab.</div>
+<div style="margin-top:1.5rem"><a href="https://dchub.cloud/api/v1/brain/lifecycle/proposals"
+style="color:#6366f1;font-size:.85rem">View all proposals →</a></div>
+</body></html>"""
+
+
 @brain_lifecycle_bp.route(
     "/api/v1/brain/lifecycle/proposals/<int:proposal_id>/approve",
-    methods=["POST"])
+    methods=["POST", "GET"])
 def lifecycle_proposal_approve(proposal_id: int):
-    """Mark a proposal as approved by a reviewer."""
+    """Mark a proposal as approved. GET = one-click from the brain digest email
+    (returns an HTML confirmation); POST = API/JSON."""
     body, code = _proposal_action(proposal_id, "approve")
+    if request.method == "GET":
+        return _action_html(body, "approve"), (200 if body.get("ok") else code)
     return jsonify(body), code
 
 
 @brain_lifecycle_bp.route(
     "/api/v1/brain/lifecycle/proposals/<int:proposal_id>/dismiss",
-    methods=["POST"])
+    methods=["POST", "GET"])
 def lifecycle_proposal_dismiss(proposal_id: int):
-    """Mark a proposal as dismissed (not pursuing)."""
+    """Mark a proposal as dismissed. GET = one-click from the digest email."""
     body, code = _proposal_action(proposal_id, "dismiss")
+    if request.method == "GET":
+        return _action_html(body, "dismiss"), (200 if body.get("ok") else code)
     return jsonify(body), code
 
 

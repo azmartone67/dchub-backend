@@ -209,6 +209,94 @@ def _render_section_html(label: str, kind: str, items: list) -> str:
     return head + body
 
 
+def _l23_open_proposals(limit: int = 6) -> list:
+    """The brain's open L23 capability proposals = its NEXT PRODUCT MOVES,
+    awaiting the operator's approve/dismiss. Best-effort; [] on any failure.
+    Separate source from build_digest() (which reads brain_enhancement_proposals,
+    the Layer-5 code tweaks) — these are the product-capability proposals."""
+    du = (os.environ.get("NEON_DATABASE_URL") or os.environ.get("DATABASE_URL", "")).strip()
+    if not du:
+        return []
+    out = []
+    try:
+        import json as _json
+        import psycopg2
+        with psycopg2.connect(du, connect_timeout=8) as conn:
+            with conn.cursor() as cur:
+                try:
+                    cur.execute("""
+                        SELECT id, proposal_text, challenger_approved, challenger_critique
+                          FROM brain_lifecycle_proposals
+                         WHERE approved IS NULL AND dismissed_at IS NULL AND shipped_at IS NULL
+                         ORDER BY proposed_at DESC LIMIT %s
+                    """, (limit,))
+                    rows = cur.fetchall(); have_ch = True
+                except Exception:
+                    conn.rollback()
+                    cur.execute("""
+                        SELECT id, proposal_text
+                          FROM brain_lifecycle_proposals
+                         WHERE approved IS NULL AND shipped_at IS NULL
+                         ORDER BY proposed_at DESC LIMIT %s
+                    """, (limit,))
+                    rows = cur.fetchall(); have_ch = False
+        for r in rows:
+            try:
+                prop = _json.loads(r[1] or "{}")
+            except Exception:
+                prop = {}
+            out.append({
+                "id": r[0],
+                "name": prop.get("name") or prop.get("title") or "(unnamed capability)",
+                "rationale": (prop.get("moat_rationale") or prop.get("description") or "")[:280],
+                "kind": prop.get("kind") or "mcp_tool",
+                "challenger_approved": (r[2] if have_ch else None),
+                "challenger_critique": ((r[3] or "")[:180] if have_ch else ""),
+            })
+    except Exception as e:
+        logger.warning("_l23_open_proposals failed: %s", e)
+        return []
+    return out
+
+
+def _render_product_moves_html(items: list) -> str:
+    """Render the 'Next Product Moves' section with one-click approve/dismiss
+    links (GET endpoints carry ?admin_key=, matching the existing digest pattern)."""
+    if not items:
+        return ""
+    base = (os.environ.get("DCHUB_PUBLIC_BASE") or "https://dchub.cloud").rstrip("/")
+    ak = (os.environ.get("DCHUB_ADMIN_KEY") or os.environ.get("DCHUB_INTERNAL_KEY") or "").strip()
+    cards = []
+    for it in items:
+        pid = it["id"]
+        approve = f"{base}/api/v1/brain/lifecycle/proposals/{pid}/approve?admin_key={ak}&by=email"
+        dismiss = f"{base}/api/v1/brain/lifecycle/proposals/{pid}/dismiss?admin_key={ak}&by=email"
+        ch = it.get("challenger_approved")
+        if ch is True:
+            badge = ("<span style='background:#dcfce7;color:#166534;padding:.15rem .5rem;"
+                     "border-radius:4px;font-size:.72rem;font-weight:600'>✔ challenger: build it</span>")
+        elif ch is False:
+            badge = ("<span style='background:#fef3c7;color:#92400e;padding:.15rem .5rem;"
+                     "border-radius:4px;font-size:.72rem;font-weight:600'>⚠ challenger: verify first</span>")
+        else:
+            badge = ""
+        crit = (f"<div style='color:#94a3b8;font-size:.78rem;margin-top:.3rem;font-style:italic'>"
+                f"Adversary: {_esc(it['challenger_critique'])}…</div>") if it.get("challenger_critique") else ""
+        cards.append(f"""<div style="border:1px solid #e5e7eb;border-radius:10px;padding:1rem;margin-bottom:.75rem">
+ <div style="font-weight:700;font-size:1.02rem;color:#111827">{_esc(it['name'])}
+ <span style="font-size:.7rem;color:#94a3b8;font-weight:400">· {_esc(it['kind'])}</span></div>
+ <div style="color:#475569;font-size:.9rem;margin:.35rem 0">{_esc(it['rationale'])}…</div>
+ {badge}{crit}
+ <div style="margin-top:.65rem">
+  <a href="{approve}" style="background:#16a34a;color:#fff;padding:.45rem 1rem;border-radius:6px;
+  text-decoration:none;font-weight:600;font-size:.85rem">✅ Approve</a>
+  &nbsp;&nbsp;<a href="{dismiss}" style="color:#6b7280;font-size:.85rem;text-decoration:none">✕ Dismiss</a>
+ </div></div>""")
+    return (f"""<div style="margin:1.5rem 0 .6rem;font-weight:700;font-size:1.1rem;color:#1e1b4b">
+🚀 Next Product Moves <span style="font-weight:400;color:#94a3b8;font-size:.85rem">
+— awaiting your approval</span></div>""" + "".join(cards))
+
+
 def compose_innovation_email() -> dict:
     """Compose {subject, html, text} from the SAME digest the dashboard uses.
 
@@ -236,8 +324,12 @@ def compose_innovation_email() -> dict:
     date_pretty = now.strftime("%A, %B %d, %Y")
     subject = f"DC Hub · Brain Innovation Digest · {now.strftime('%Y-%m-%d')}"
 
+    # Next Product Moves (L23 capability proposals) lead the email — these are
+    # the founder-decision items: one-click approve/dismiss right from the inbox.
+    product_moves = _l23_open_proposals()
     sections = (
-        _render_section_html("Self-directed agenda", "agenda", digest.get("agenda"))
+        _render_product_moves_html(product_moves)
+        + _render_section_html("Self-directed agenda", "agenda", digest.get("agenda"))
         + _render_section_html("Investigations", "inv", digest.get("investigations"))
         + _render_section_html("Proposals", "prop", digest.get("proposals"))
     )

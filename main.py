@@ -1649,6 +1649,15 @@ try:
     except Exception as _pafe:
         import logging
         logging.getLogger(__name__).warning('power_availability_forecast wiring failed: %s', _pafe)
+    # 2026-06-28: DCPI temporal tools (L23 proposals #1131/#1138) — history +
+    # change-feed, the brain's "temporal data = durable moat" thesis.
+    try:
+        from routes.dcpi_temporal import dcpi_temporal_bp
+        app.register_blueprint(dcpi_temporal_bp)
+        print("[main] dcpi_temporal_bp registered: GET /api/v1/dcpi/history + /api/v1/dcpi/changes", flush=True)
+    except Exception as _dte:
+        import logging
+        logging.getLogger(__name__).warning('dcpi_temporal wiring failed: %s', _dte)
     try:
         from routes.brain_narrative import brain_narrative_bp
         app.register_blueprint(brain_narrative_bp)
