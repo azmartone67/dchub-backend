@@ -316,7 +316,7 @@ def fix_datetime_now(content, filename):
     content = content.replace("datetime('now')", "NOW()")
     content = content.replace('datetime("now")', 'NOW()')
     if content != old:
-        fixes = old.count("datetime('now')") + old.count('datetime("now")')
+        fixes = old.count("NOW()") + old.count('NOW()')
     stats['datetime_now_fixes'] += fixes
     return content
 
