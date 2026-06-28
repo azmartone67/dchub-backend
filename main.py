@@ -1629,6 +1629,16 @@ try:
     except Exception as _bpre:
         import logging
         logging.getLogger(__name__).warning('brain_pr_opener wiring failed: %s', _bpre)
+    # 2026-06-28: the "master shell" — one orchestrator that ticks the whole
+    # discovery→action loop in tiers (autopilot / L15 / L22 / L23 / verify)
+    # and returns a unified report. POST /api/v1/admin/brain/master-tick.
+    try:
+        from routes.brain_master_orchestrator import brain_master_orchestrator_bp
+        app.register_blueprint(brain_master_orchestrator_bp)
+        print("[main] brain_master_orchestrator_bp registered: POST /api/v1/admin/brain/master-tick", flush=True)
+    except Exception as _bmoe:
+        import logging
+        logging.getLogger(__name__).warning('brain_master_orchestrator wiring failed: %s', _bmoe)
     try:
         from routes.brain_narrative import brain_narrative_bp
         app.register_blueprint(brain_narrative_bp)

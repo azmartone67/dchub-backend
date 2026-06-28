@@ -622,11 +622,25 @@ def api_demand_gaps():
             except Exception:
                 pass
 
-            # 3. Tools called repeatedly but NEVER succeeding
+            # 3. Tools called repeatedly but GENUINELY erroring.
+            # 2026-06-28 fix: the old logic counted "ok" only when
+            # status IN ('ok','success','200') and flagged anything else as
+            # a failure. That false-flagged every PAYWALLED flagship tool as
+            # "broken" — get_intelligence_index / compare_sites /
+            # get_dchub_recommendation / ai_capacity_index all return a valid
+            # trial PREVIEW (the tool worked; the result was trimmed for the
+            # free tier), logged with a preview/paywall status, not an error.
+            # Counting those as failures created bogus "fix it or remove it"
+            # findings AND polluted the brain's action queue. Now we score on
+            # REAL error statuses only (exec errors / 5xx / exception /
+            # timeout), and treat preview/paywall/partial/ok as served.
+            # Auth/rate-limit (4xx/429) are gating, not breakage — excluded.
             try:
                 cur.execute("""
                     SELECT tool, COUNT(*) AS total,
-                           SUM(CASE WHEN status IN ('ok','success','200') THEN 1 ELSE 0 END) AS ok_n
+                           SUM(CASE WHEN lower(coalesce(status::text,'')) ~
+                                    '(error|exception|timeout|unavailable|crash|traceback|fail|^5[0-9][0-9]$)'
+                                    THEN 1 ELSE 0 END) AS err_n
                       FROM mcp_call_log
                      WHERE timestamp >= NOW() - INTERVAL '14 days'
                        AND tool IS NOT NULL
@@ -635,10 +649,10 @@ def api_demand_gaps():
                 rows = cur.fetchall()
                 out["always_failing_tools"] = [
                     {"tool": r["tool"], "total_calls_14d": int(r["total"]),
-                     "ok_calls_14d": int(r["ok_n"] or 0),
-                     "ok_pct": round(100.0 * int(r["ok_n"] or 0) / int(r["total"]), 1)}
+                     "ok_calls_14d": int(r["total"]) - int(r["err_n"] or 0),
+                     "ok_pct": round(100.0 * (int(r["total"]) - int(r["err_n"] or 0)) / int(r["total"]), 1)}
                     for r in rows
-                    if int(r["ok_n"] or 0) / int(r["total"]) < 0.05
+                    if int(r["err_n"] or 0) / int(r["total"]) >= 0.95
                 ]
             except Exception:
                 pass
