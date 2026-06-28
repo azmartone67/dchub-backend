@@ -1667,6 +1667,15 @@ try:
     except Exception as _cabe:
         import logging
         logging.getLogger(__name__).warning('conversion_attribution wiring failed: %s', _cabe)
+    # 2026-06-28: explain_dcpi_score (L23 proposal #191, founder-approved) —
+    # exact factor decomposition behind a market's DCPI score.
+    try:
+        from routes.dcpi_explain import dcpi_explain_bp
+        app.register_blueprint(dcpi_explain_bp)
+        print("[main] dcpi_explain_bp registered: GET /api/v1/dcpi/explain", flush=True)
+    except Exception as _dxe:
+        import logging
+        logging.getLogger(__name__).warning('dcpi_explain wiring failed: %s', _dxe)
     try:
         from routes.brain_narrative import brain_narrative_bp
         app.register_blueprint(brain_narrative_bp)
