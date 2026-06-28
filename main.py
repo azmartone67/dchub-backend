@@ -1629,6 +1629,26 @@ try:
     except Exception as _bpre:
         import logging
         logging.getLogger(__name__).warning('brain_pr_opener wiring failed: %s', _bpre)
+    # 2026-06-28: the "master shell" — one orchestrator that ticks the whole
+    # discovery→action loop in tiers (autopilot / L15 / L22 / L23 / verify)
+    # and returns a unified report. POST /api/v1/admin/brain/master-tick.
+    try:
+        from routes.brain_master_orchestrator import brain_master_orchestrator_bp
+        app.register_blueprint(brain_master_orchestrator_bp)
+        print("[main] brain_master_orchestrator_bp registered: POST /api/v1/admin/brain/master-tick", flush=True)
+    except Exception as _bmoe:
+        import logging
+        logging.getLogger(__name__).warning('brain_master_orchestrator wiring failed: %s', _bmoe)
+    # 2026-06-28: v1 of L23 capability proposal #404 — power-availability
+    # forecast (current DCPI signals + lead-time estimate; forward MW
+    # projection marked as a data gap). GET /api/v1/power-availability-forecast
+    try:
+        from routes.power_availability_forecast import power_availability_forecast_bp
+        app.register_blueprint(power_availability_forecast_bp)
+        print("[main] power_availability_forecast_bp registered: GET /api/v1/power-availability-forecast", flush=True)
+    except Exception as _pafe:
+        import logging
+        logging.getLogger(__name__).warning('power_availability_forecast wiring failed: %s', _pafe)
     try:
         from routes.brain_narrative import brain_narrative_bp
         app.register_blueprint(brain_narrative_bp)
