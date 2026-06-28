@@ -26,7 +26,7 @@ SQLITE_TO_PG_FUNC = {
     "datetime('now', '-1 day')": "(NOW() - INTERVAL '1 day')",
     "datetime('now', '-24 hours')": "(NOW() - INTERVAL '24 hours')",
     "datetime('now', '-1 hour')": "(NOW() - INTERVAL '1 hour')",
-    "datetime('now', '-6 hours')": "(NOW() - INTERVAL '6 hours')",
+    "NOW() - INTERVAL '6 hours'": "(NOW() - INTERVAL '6 hours')",
     "datetime('now', '-12 hours')": "(NOW() - INTERVAL '12 hours')",
     "datetime('now', '-48 hours')": "(NOW() - INTERVAL '48 hours')",
     "datetime('now', '-90 days')": "(NOW() - INTERVAL '90 days')",
