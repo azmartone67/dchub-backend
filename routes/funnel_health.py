@@ -2113,3 +2113,73 @@ def admin_funnel_health_per_platform_joined():
         try: conn.close()
         except Exception: pass
     return jsonify(out), 200
+
+
+@funnel_health_bp.route("/api/v1/admin/agent-pay-events", methods=["GET"])
+def admin_agent_pay_events():
+    """WATCHER endpoint for autonomous agent-native payment events (Wave-1 MPP rail).
+
+    Reads mcp_call_log.status — the column the MCP gateway's /api/v1/mcp/track callback
+    writes (flask_mcp_endpoints.py) — for the agent-pay statuses server.mjs sets on the
+    MPP/x402 settle+challenge paths: mpp_challenge (an agent OPTED IN to pay, leading
+    indicator), mpp_paid (settled — real $, the conversion), mpp_verify_failed, x402_paid,
+    x402_failed. Lets a cron watcher detect the FIRST real agent-pay with no DB access.
+    Read-only; ?days=N (default 30, capped 120). first_paid_at = the all-time first
+    settled agent-pay (null until it happens — that's the headline the watcher waits on).
+    """
+    if not _admin_ok(request):
+        return jsonify(error="unauthorized"), 401
+    try:
+        win = max(1, min(120, int(request.args.get("days", "30"))))
+    except Exception:
+        win = 30
+    out = {"window_days": win, "by_status_tool": {},
+           "totals": {"challenges": 0, "paid": 0, "failed": 0},
+           "recent": [], "first_paid_at": None,
+           "note": "mpp_challenge=agent opted in; mpp_paid/x402_paid=settled real payment"}
+    _ST = ['mpp_challenge', 'mpp_paid', 'mpp_verify_failed', 'x402_paid', 'x402_failed']
+    conn = _conn()
+    if conn is None:
+        out["error"] = "no_db"
+        return jsonify(out), 200
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT status, tool, COUNT(*) AS n FROM mcp_call_log "
+                " WHERE status = ANY(%s) AND timestamp > NOW() - make_interval(days => %s) "
+                " GROUP BY status, tool ORDER BY n DESC",
+                (_ST, win))
+            for r in (cur.fetchall() or []):
+                st = r.get("status") if hasattr(r, "get") else r[0]
+                tool = r.get("tool") if hasattr(r, "get") else r[1]
+                n = int((r.get("n") if hasattr(r, "get") else r[2]) or 0)
+                out["by_status_tool"].setdefault(st, {})[tool or "?"] = n
+                if st in ("mpp_paid", "x402_paid"):
+                    out["totals"]["paid"] += n
+                elif st == "mpp_challenge":
+                    out["totals"]["challenges"] += n
+                elif st in ("mpp_verify_failed", "x402_failed"):
+                    out["totals"]["failed"] += n
+            cur.execute(
+                "SELECT timestamp, status, tool, tier, platform FROM mcp_call_log "
+                " WHERE status = ANY(%s) AND timestamp > NOW() - make_interval(days => %s) "
+                " ORDER BY timestamp DESC LIMIT 25",
+                (_ST, win))
+            for r in (cur.fetchall() or []):
+                g = (lambda k, i: r.get(k) if hasattr(r, "get") else r[i])
+                out["recent"].append({"at": str(g("timestamp", 0)), "status": g("status", 1),
+                                      "tool": g("tool", 2), "tier": g("tier", 3),
+                                      "platform": g("platform", 4)})
+            cur.execute("SELECT MIN(timestamp) FROM mcp_call_log "
+                        " WHERE status IN ('mpp_paid', 'x402_paid')")
+            r = cur.fetchone()
+            v = (r.get("min") if hasattr(r, "get") else r[0]) if r else None
+            out["first_paid_at"] = str(v) if v else None
+    except Exception as e:
+        out["error"] = str(e)[:200]
+        try: conn.rollback()
+        except Exception: pass
+    finally:
+        try: conn.close()
+        except Exception: pass
+    return jsonify(out), 200
