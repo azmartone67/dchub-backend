@@ -251,9 +251,24 @@ def _gather_funnel() -> dict:
     # Verdict: derive a yellow/green/red from the numbers we have.
     sig30 = int(f.get("signals_30d") or 0)
     conv30 = int(f.get("conversions_30d") or 0)
+    claims30 = int(k.get("high_intent_claims_30d") or su.get("high_intent_claims_30d") or 0)
+    emails30 = int(k.get("emails_captured_30d") or 0)
     verdict_color = "green"
     verdict_text = "healthy"
-    if sig30 >= 100 and conv30 == 0:
+    # 2026-06-28: AGENT-FUNNEL LEAK is the top-priority verdict. A handful of
+    # web subs converting (conv30>0) used to paint the brief green while the
+    # agent funnel — high-intent agents → email → paid — captured ~0 emails for
+    # weeks (the brain's recurring "conversion dead" narrative). Check it FIRST
+    # so the headline stops lying about a 0-capturing agent funnel.
+    if claims30 >= 20 and emails30 == 0:
+        verdict_color = "red"
+        verdict_text = (f"agent funnel leak — {claims30} high-intent agents, "
+                        f"0 emails captured (web subs converting separately)")
+    elif claims30 >= 20 and emails30 < max(1, claims30 // 10):
+        verdict_color = "yellow"
+        verdict_text = (f"agent funnel weak — {claims30} high-intent agents, "
+                        f"only {emails30} email{'s' if emails30 != 1 else ''} captured")
+    elif sig30 >= 100 and conv30 == 0:
         verdict_color = "red"
         verdict_text = "funnel leak — 100+ signals, 0 conversions"
     elif sig30 >= 50 and conv30 == 0:
@@ -264,6 +279,11 @@ def _gather_funnel() -> dict:
         verdict_text = "quiet — no recent conversions"
     return {
         "mrr_usd":            int(k.get("mrr_usd") or 0),
+        # 2026-06-28: headline REAL recurring (stripe-linked); comp shown apart.
+        "mrr_real_usd":       int(k.get("mrr_real_usd") or k.get("mrr_usd") or 0),
+        "mrr_comp_usd":       int(k.get("mrr_comp_usd") or 0),
+        "emails_captured_30d": emails30,
+        "high_intent_claims_30d": claims30,
         "conversions_30d":    int(k.get("conversions_30d") or 0),
         "active_dev_keys":    int(k.get("active_dev_keys") or 0),
         # Honest-numbers fence: the operator brief headlines the DE-LOOPED
@@ -599,7 +619,11 @@ margin:0 auto;padding:1.25rem;color:#1f2937;line-height:1.5;background:#ffffff">
   </div>
   <div style="display:flex;justify-content:space-between;margin-bottom:.3rem">
    <span><strong>Conversions:</strong> {_fmt_num(f['conversions_30d'])} <span style="color:#94a3b8;font-size:.85rem">(30d)</span></span>
-   <span><strong>MRR:</strong> ${_fmt_num(f['mrr_usd'])}</span>
+   <span><strong>MRR:</strong> ${_fmt_num(f['mrr_real_usd'])} <span style="color:#94a3b8;font-size:.85rem">real{f" +${_fmt_num(f['mrr_comp_usd'])} comp" if f.get('mrr_comp_usd') else ""}</span></span>
+  </div>
+  <div style="display:flex;justify-content:space-between;margin-bottom:.3rem">
+   <span><strong>Emails captured:</strong> {_fmt_num(f['emails_captured_30d'])} <span style="color:#94a3b8;font-size:.85rem">(30d)</span></span>
+   <span><strong>High-intent agents:</strong> {_fmt_num(f['high_intent_claims_30d'])} <span style="color:#94a3b8;font-size:.85rem">(30d)</span></span>
   </div>
   <div style="display:flex;justify-content:space-between;margin-bottom:.3rem">
    <span><strong>Active dev keys:</strong> {_fmt_num(f['active_dev_keys'])}</span>

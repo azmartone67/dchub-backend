@@ -73,6 +73,17 @@ TRIAL_DAILY_CALLS  = 50
 # enough to protect the "agents reach for DC Hub" moat while making heavy
 # power-users (the real leads) bind. Tune via env without a deploy.
 TRIAL_DAILY_UNBOUND = int(os.environ.get("TRIAL_DAILY_CALLS_UNBOUND", "15"))
+# 2026-06-28 forcing function — EMAIL-GATE THE TAIL (founder-set). After this many
+# CUMULATIVE calls, an UNBOUND trial must bind an operator/signed-up email to keep
+# full-data access. The first N calls stay free + frictionless (protects the "agents
+# reach for DC Hub" taste); past N the call drops to FREE tier → the agent sees the
+# paywall + bind CTA. Bound trials (signed_up_email/operator_email) are unaffected.
+# WHY: the soft-nudge lever (DCHUB_HIGH_INTENT_THRESHOLD) was already maxed at 1 and
+# produced 0 binds / 0 upgrades over 1,885 trials (329 active, 131 power-users) —
+# the free taste never ran out, so nothing forced a bind. This is the only lever
+# with teeth. Tunable WITHOUT a deploy via TRIAL_FREE_CALLS_UNBOUND; set very high
+# (e.g. 99999) to effectively disable the gate and revert to pure soft-nudge.
+TRIAL_FREE_CALLS_UNBOUND = int(os.environ.get("TRIAL_FREE_CALLS_UNBOUND", "10"))
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS auto_trial_keys (
@@ -329,7 +340,8 @@ def validate_trial_key(api_key: str) -> tuple[bool, str]:
                 # unbound cap is the moment the agent asks its human for an email.
                 cur.execute("""
                     SELECT expires_at, signed_up_email, operator_email,
-                           COALESCE(daily_count, 0), daily_date
+                           COALESCE(daily_count, 0), daily_date,
+                           COALESCE(call_count, 0)
                       FROM auto_trial_keys WHERE api_key = %s
                 """, (api_key,))
                 r = cur.fetchone()
@@ -338,6 +350,12 @@ def validate_trial_key(api_key: str) -> tuple[bool, str]:
                 if r[0] and r[0] < now:
                     return False, "expired"
                 bound = bool(r[1]) or bool(r[2])
+                # EMAIL-GATE THE TAIL: first TRIAL_FREE_CALLS_UNBOUND cumulative calls
+                # are free; past that an UNBOUND trial must bind email. Dropping to FREE
+                # (not a hard error) means the agent still gets the paywall + bind CTA —
+                # the forcing function that turns active trials into captured leads.
+                if not bound and int(r[5] or 0) >= TRIAL_FREE_CALLS_UNBOUND:
+                    return False, "bind_email_required"
                 cap   = TRIAL_DAILY_CALLS if bound else TRIAL_DAILY_UNBOUND
                 today = now.date()
                 used_today = r[3] if r[4] == today else 0

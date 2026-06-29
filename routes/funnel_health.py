@@ -358,18 +358,34 @@ def _build_data() -> dict:
         # Stripe — the canonical source for "is this customer paying" is
         # users.plan + users.subscription_status.
         try:
+            # 2026-06-28 honest-MRR split: the headline mrr_usd was inflated
+            # ~60% by COMP subscriptions — the NLR research grant (3× enterprise
+            # @nlr.gov), internal @dchub.cloud keys, and AI-lab onboarding comp
+            # (developer keys @coreweave/deepmind/groq/nvidia/… with no Stripe).
+            # A REAL recurring payer has a stripe_customer_id (went through
+            # checkout); comp grants don't. Split so the brief can headline real
+            # recurring and show comp separately instead of one inflated number.
             cur.execute(
-                "SELECT plan, COUNT(*) FROM users "
+                "SELECT plan, "
+                "  COUNT(*) FILTER (WHERE stripe_customer_id IS NOT NULL "
+                "                     AND stripe_customer_id <> '') AS paid, "
+                "  COUNT(*) FILTER (WHERE stripe_customer_id IS NULL "
+                "                     OR  stripe_customer_id = '')  AS comp "
+                " FROM users "
                 " WHERE COALESCE(subscription_status, 'active') = 'active' "
                 "   AND plan IN ('starter','developer','pro','pro_annual',"
                 "                'enterprise','enterprise_annual',"
                 "                'research_seed_nlr') "
                 " GROUP BY plan"
             )
-            mrr = 0
-            for plan, n in cur.fetchall() or []:
-                mrr += int(n or 0) * _PLAN_MONTHLY_USD.get(str(plan) or "", 0)
-            out["kpis"]["mrr_usd"] = mrr
+            mrr_real = mrr_comp = 0
+            for plan, paid_n, comp_n in cur.fetchall() or []:
+                price = _PLAN_MONTHLY_USD.get(str(plan) or "", 0)
+                mrr_real += int(paid_n or 0) * price
+                mrr_comp += int(comp_n or 0) * price
+            out["kpis"]["mrr_usd"]      = mrr_real + mrr_comp  # back-compat (gross)
+            out["kpis"]["mrr_real_usd"] = mrr_real             # stripe-linked recurring
+            out["kpis"]["mrr_comp_usd"] = mrr_comp             # comp/internal/seed (not revenue)
         except Exception as e:
             logger.debug("MRR probe failed: %s", e)
             out["missing_tables"].append("users (MRR probe)")
@@ -389,6 +405,29 @@ def _build_data() -> dict:
             if conv_30d is None:
                 conv_30d = 0
         out["kpis"]["conversions_30d"] = int(conv_30d or 0)
+
+        # ── KPI 2b: Emails captured 30d (the AGENT-funnel lead signal) ──
+        # 2026-06-28: ~0 here while signals/high-intent claims are high = the
+        # agent funnel is leaking (the brain's recurring "conversion dead"
+        # narrative). Web subs converting doesn't mean the agent funnel is
+        # healthy. Sum the explicit capture table + auto-trial email binds
+        # (the new email-gate-the-tail path). Best-effort; missing table → 0.
+        emails_cap = _scalar(cur,
+            "SELECT COUNT(*) FROM mcp_email_capture "
+            " WHERE created_at >= NOW() - INTERVAL '30 days'") or 0
+        trial_binds = _scalar(cur,
+            "SELECT COUNT(*) FROM auto_trial_keys "
+            " WHERE signed_up_email IS NOT NULL AND signed_up_email <> '' "
+            "   AND minted_at >= NOW() - INTERVAL '30 days'") or 0
+        out["kpis"]["emails_captured_30d"] = int(emails_cap) + int(trial_binds)
+
+        # Agent demand (denominator for the agent-funnel-leak verdict): how many
+        # high-intent agent sessions minted a claim in 30d, and active trials.
+        out["kpis"]["high_intent_claims_30d"] = int(_scalar(cur,
+            "SELECT COUNT(*) FROM mcp_high_intent_sessions "
+            " WHERE claim_minted_at >= NOW() - INTERVAL '30 days'") or 0)
+        out["kpis"]["trial_keys_active"] = int(_scalar(cur,
+            "SELECT COUNT(*) FROM auto_trial_keys WHERE expires_at > NOW()") or 0)
 
         # ── KPI 3: Active dev keys + per-tier breakdown ───────────────
         try:
