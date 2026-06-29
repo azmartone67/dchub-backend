@@ -584,7 +584,37 @@ def _upload_image_to_linkedin(image_bytes, access_token, org_id):
                 "r51 image PUT failed: %s %s",
                 put_resp.status_code, put_resp.text[:200])
             return None
-        return image_urn
+        # r-img-ready (2026-06-29): WAIT for the image to finish processing
+        # before returning its urn. LinkedIn will NOT publish a post whose image
+        # is still WAITING_UPLOAD/PROCESSING — it creates the post, returns a
+        # share urn, but the post never appears in the feed (the urn 404s). Both
+        # this path and linkedin_poster posted IMMEDIATELY after the PUT, racing
+        # image processing (~2s to AVAILABLE); content_publisher lost that race
+        # ~every time, so its DCPI market-alert posts silently never published
+        # for weeks. Poll until AVAILABLE (≤10s); on timeout/failure return None
+        # so the caller falls back to a text/article share, which publishes fine.
+        import urllib.parse as _up
+        status_url = ("https://api.linkedin.com/rest/images/"
+                      + _up.quote(image_urn, safe=''))
+        s_headers = {'Authorization': f'Bearer {access_token}',
+                     'LinkedIn-Version': '202601',
+                     'X-Restli-Protocol-Version': '2.0.0'}
+        for _attempt in range(10):
+            try:
+                sr = requests.get(status_url, headers=s_headers, timeout=10)
+                st = (sr.json() or {}).get('status') if sr.status_code == 200 else None
+            except Exception:
+                st = None
+            if st == 'AVAILABLE':
+                return image_urn
+            if st in ('PROCESSING_FAILED', 'FAILED'):
+                logger.warning("r-img-ready: image %s processing %s", image_urn, st)
+                return None
+            time.sleep(1)
+        logger.warning(
+            "r-img-ready: image %s not AVAILABLE after wait — falling back "
+            "to text/article share", image_urn)
+        return None
     except Exception as e:
         logger.warning("r51 image upload exception: %s", e)
         return None
