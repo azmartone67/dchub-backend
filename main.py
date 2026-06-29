@@ -32457,6 +32457,7 @@ for _mmod, _mbp in [
     ("routes.media_journalist_lane",    "media_journalist_lane_bp"),
     ("routes.media_citation_gap",       "media_citation_gap_bp"),
     ("routes.media_recurring_formats",  "media_recurring_formats_bp"),
+    ("routes.media_reactive_news",      "media_reactive_news_bp"),
 ]:
     try:
         _mm = __import__(_mmod, fromlist=[_mbp])
