@@ -207,7 +207,20 @@ def _compute_funnel(tool_filter: str | None = None, days: int = 14) -> list[dict
                     converted_signals = int(rr.get("converted") or 0)
                 except Exception:
                     pass
-                entry["stages"]["5_converted"] = converted_signals
+                # 2026-06-28: the signal `converted` flag is dead (nothing ever
+                # set it — mark_signals_converted() never existed), so per-tool
+                # conversion read 0 for EVERY tool. The real per-tool signal is
+                # conversion_attribution (tool parsed from the Stripe
+                # client_reference_id at checkout). Prefer it; fall back to the
+                # signal flag if attribution has no row yet.
+                attr_conv = 0
+                try:
+                    from routes.conversion_attribution import per_tool_conversions as _ptc
+                    attr_conv = int((_ptc(days) or {}).get(tool, 0))
+                except Exception:
+                    attr_conv = 0
+                entry["stages"]["5_converted"] = max(converted_signals, attr_conv)
+                entry["converted_attributed"]  = attr_conv
                 entry["distinct_callers"]      = distinct_callers
                 # pair-code stages kept as supplementary context, NOT in the leak
                 entry["pair_code_stages"] = {

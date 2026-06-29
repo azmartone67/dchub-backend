@@ -219,7 +219,7 @@ def transactions_index():
     # free. After row N_FREE we redact $value + add a "sign up free"
     # callout to capture leads. Page 1 first 25 stays unredacted so SEO/
     # AI indexing still works AND the user gets a real teaser.
-    N_FREE_ROWS    = 25
+    N_FREE_ROWS    = 10  # r-gate-everywhere (2026-06-27): tightened 25→10 — smaller free $-teaser, sign up free for the rest (still SEO-indexable)
     # Treat any non-authenticated visitor as needing the gate.
     # r33-J round 10 (2026-05-21): user reported enterprise license
     # still seeing the free-preview banner. The old check ONLY looked
@@ -285,7 +285,10 @@ def transactions_index():
             f'<td>{(d.get("buyer") or "")[:50]}</td>'
             f'<td>{(d.get("seller") or "")[:50]}</td>'
             f'{value_cell}'
-            f'<td>{_fmt_mw(d.get("mw"))}</td>'
+            # r-gate-everywhere (2026-06-27): MW had NO gated_row guard (deal MW
+            # leaked on every locked row — Nvidia 10,000 MW etc.). Match the
+            # value/type cells: 🔒 past the free preview.
+            f'{("<td><span style=" + chr(34) + "color:#9ca3af" + chr(34) + ">🔒</span></td>") if gated_row else ("<td>" + _fmt_mw(d.get("mw")) + "</td>")}'
             f'{type_cell}'
             f'<td>{(d.get("region") or "")[:25]}</td>'
             f'<td>{(d.get("market") or "")[:25]}</td>'

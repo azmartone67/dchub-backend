@@ -167,8 +167,20 @@ def _build_stats() -> dict:
                     " FROM mcp_tool_calls WHERE created_at > NOW() - INTERVAL '7 days'" + _ext))
             except Exception:
                 s["mcp_unique_callers_7d"] = 0
+            # mcp_developers = LIFETIME registered dev keys (every key ever
+            # minted, incl. revoked/expired) — the public social-proof number,
+            # intentionally cumulative, NOT "active keys". r-canonical-funnel
+            # (2026-06-27): keep it unchanged (don't lower a public trust number),
+            # but ALSO surface the canonical ACTIVE count so this surface stops
+            # being mis-read as a disagreeing "active keys" figure vs
+            # /admin/funnel-health (the cross_surface_metric_divergence finding).
             s["mcp_developers"]    = int(_scalar(cur,
                 "SELECT COUNT(*) FROM mcp_dev_keys"))
+            try:
+                from canonical_funnel import get_canonical_funnel as _cfunnel
+                s["mcp_active_dev_keys"] = int(_cfunnel().get("active_dev_keys", 0) or 0)
+            except Exception:
+                pass
 
             # ── Trust signals ──────────────────────────────────────
             s["testimonials"]      = int(_scalar(cur,

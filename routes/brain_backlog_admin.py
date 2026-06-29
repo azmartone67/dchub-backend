@@ -259,7 +259,7 @@ def _open_draft_pr_for_proposal(prop: dict) -> dict:
     try:
         from routes.brain_pr_opener import (
             _get_file, _get_default_branch_sha, _create_branch,
-            _commit_file, _open_pr, _GITHUB_TOKEN, _GITHUB_REPO,
+            _commit_file, _open_pr, _GITHUB_TOKEN, _GITHUB_REPO, open_pr_exists,
         )
     except Exception as e:
         return {"ok": False, "error": f"brain_pr_opener import: {e}"}
@@ -268,6 +268,10 @@ def _open_draft_pr_for_proposal(prop: dict) -> dict:
         return {"ok": False, "error": "GITHUB_TOKEN unset on backend"}
 
     pid = prop.get("id")
+    # 2026-06-28: DEDUPE — skip if this proposal already has an open draft PR
+    # (the brain re-ran the drafter over the same backlog, piling up drafts).
+    if open_pr_exists(f"[brain-l5 draft] {prop.get('loop_name', '?')} — #{pid}"):
+        return {"ok": True, "skipped": "duplicate_open_pr", "pid": pid}
     changes = prop.get("changes") or []
     if not changes:
         # legacy single-file proposal
@@ -446,6 +450,25 @@ def draft_prs_preview():
             "rationale": (p.get("rationale") or "")[:200],
         } for p in high_conf],
     ), 200
+
+
+@brain_backlog_admin_bp.route("/api/v1/admin/brain/draft-prs/expire",
+                               methods=["POST"])
+def draft_prs_expire():
+    """Auto-close brain DRAFT PRs older than ?days (default 14) — the
+    auto-expire half of the draft-graveyard fix. Only touches drafts with a
+    brain title prefix; never a human-readied PR. Admin-gated. Safe to cron."""
+    if not _admin_ok():
+        return jsonify(ok=False, error="unauthorized"), 401
+    try:
+        days = max(1, min(120, int(request.args.get("days", 14))))
+    except (TypeError, ValueError):
+        days = 14
+    try:
+        from routes.brain_pr_opener import expire_stale_draft_prs
+        return jsonify(expire_stale_draft_prs(days=days)), 200
+    except Exception as e:
+        return jsonify(ok=False, error=f"{type(e).__name__}: {str(e)[:120]}"), 200
 
 
 @brain_backlog_admin_bp.route("/api/v1/admin/brain/draft-prs/run",

@@ -323,6 +323,7 @@ _PAGE_TEMPLATE = """<!DOCTYPE html>
 <p class="tagline">{TAGLINE} &middot; 48 tools, free tier, 30 seconds to install.</p>
 
 <div class="badges">
+  <a href="/api/v1/mcp/quality" title="Live DC Hub operational quality score (transparent breakdown)" style="text-decoration:none"><img src="/api/v1/mcp/quality/badge.svg" alt="DC Hub quality score" style="height:22px;vertical-align:middle"></a>
   <span class="badge"><b>21,000+</b> facilities</span>
   <span class="badge"><b>232</b> DCPI markets</span>
   <span class="badge"><b>43</b> US ISO/BA grids live</span>

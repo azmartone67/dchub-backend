@@ -52,7 +52,7 @@ def preview():
                        COUNT(DISTINCT provider) AS operator_count
                 FROM discovered_facilities
                 WHERE LOWER(REPLACE(city, ' ', '-')) = %s
-                  AND status = 'active'
+                  AND COALESCE(status,'') <> 'active'  -- r-fix 2026-06-27: 'active'=empty shells (0 MW)
                 GROUP BY city, state LIMIT 1
             """, (market,))
             row = cur.fetchone()

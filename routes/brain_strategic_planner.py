@@ -990,7 +990,7 @@ def _open_scaffold_pr(rec: dict) -> dict:
     try:
         from routes.brain_pr_opener import (
             _get_default_branch_sha, _create_branch, _commit_file,
-            _gh, _GITHUB_TOKEN, _GITHUB_REPO,
+            _gh, _GITHUB_TOKEN, _GITHUB_REPO, open_pr_exists,
         )
     except Exception as e:
         return {"ok": False, "error": f"pr_opener import: {e}"}
@@ -1001,6 +1001,13 @@ def _open_scaffold_pr(rec: dict) -> dict:
     title = (rec.get("title") or "").strip()
     if not title:
         return {"ok": False, "skipped": "no_title"}
+
+    # 2026-06-28: DEDUPE — don't re-draft an idea that already has an open PR.
+    # The L6 drafter re-proposed the same strategic ideas every cycle (self-
+    # serve checkout 3×, minted-claim repair 2×…), creating a draft graveyard.
+    # Skip BEFORE committing a branch so we don't leave orphan branches either.
+    if open_pr_exists(f"[brain-l6 strategic-draft] {title}"):
+        return {"ok": True, "skipped": "duplicate_open_pr", "title": title}
 
     slug = _slugify(title)
     week_of = rec.get("week_of") or str(_week_of_iso())

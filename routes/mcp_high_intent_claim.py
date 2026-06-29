@@ -653,6 +653,11 @@ _CLAIM_FORM_HTML = r"""<!DOCTYPE html>
 
   __ERR__
 
+  <a href="https://buy.stripe.com/9B69AU08y2FfbSR55UaZi0i?client_reference_id=mcp%3Atool%3D__TOOL__%3Aref%3Dclaim"
+     style="display:block;background:linear-gradient(135deg,#22d3ee,#a855f7);color:#0a0f1f;text-align:center;padding:15px;border-radius:10px;font-weight:700;text-decoration:none;font-size:1.02rem;margin-bottom:6px">⚡ Get instant full access — $10 · 1,000 calls →</a>
+  <div style="text-align:center;color:#94a3b8;font-size:.78rem;margin-bottom:18px">One-time · no subscription · <strong>no email needed</strong></div>
+
+  <div style="text-align:center;color:#64748b;font-size:.8rem;margin:0 0 10px">— or get a free 7-day trial key by email —</div>
   <form method="post" action="">
     <input type="email" name="email" placeholder="you@company.com" required autofocus>
     <button type="submit">Get my trial key →</button>
@@ -1572,17 +1577,21 @@ def high_intent_step_drop():
                   AND a.last_used_at IS NOT NULL""" % days)
             + " AND " + _hi_real_sql("h."))
 
-        # Step 6: same email later hit Stripe checkout.
+        # Step 6: same email later viewed the redeem/checkout URL.
+        # r-claim-honest (2026-06-27): the prior query joined u.operator_email +
+        # u.stripe_clicked_at — NEITHER column exists on mcp_upgrade_signals
+        # (verified 2026-06-23), so it silently returned 0 forever, making this a
+        # permanent false 100% drop (the next "killer" after page_viewed is fixed).
+        # Real columns: user_email + signal_type='redeem_url_viewed' (the genuine
+        # upgrade-intent event) — matches the corrected query in funnel_health.py:886.
         n_upgrade_click = _scalar(
             ("""SELECT COUNT(DISTINCT LOWER(h.claim_email))
                  FROM mcp_high_intent_sessions h
                  JOIN mcp_upgrade_signals u
-                   ON LOWER(u.operator_email) = LOWER(h.claim_email)
+                   ON LOWER(u.user_email) = LOWER(h.claim_email)
                 WHERE h.claim_email IS NOT NULL
                   AND h.claim_used_at >= NOW() - INTERVAL '%s days'
-                  AND u.stripe_clicked_at IS NOT NULL
-                  AND u.stripe_clicked_at >= h.claim_used_at - INTERVAL '1 day'
-                  AND u.stripe_clicked_at <= h.claim_used_at + INTERVAL '14 days'""" % days)
+                  AND u.signal_type = 'redeem_url_viewed'""" % days)
             + " AND " + _hi_real_sql("h."))
 
         # Step 7: same email is paying.
@@ -1597,11 +1606,19 @@ def high_intent_step_drop():
 
         raw_steps = [
             ("claims_minted",   "Claim URL minted + sent to agent",   n_minted),
-            ("page_viewed",     "Human opened the claim page",        n_page_viewed),
+            # r-claim-honest (2026-06-27): was n_page_viewed (claim_page_opened_at,
+            # a HUMAN browser GET). Agents auto-redeem the token server-side
+            # (server.mjs _autoRedeemClaim → /redeem) with no browser, so that count
+            # is structurally ~0 while every downstream step (keyed on claim_used_at)
+            # lights up → a FALSE 100% killer drop that makes this brain-monitored
+            # page scream every cycle. The honest "claim acted on" event is
+            # claim_used_at (n_used), set by BOTH agent auto-redeem and human
+            # form-submit. Genuine human opens preserved as human_page_opens below.
+            ("claim_redeemed",  "Claim redeemed (agent/human)",       n_used),
             ("email_submitted", "Human submitted email",              n_email),
             ("key_issued",      "Trial key issued",                   n_key),
             ("first_api_call",  "Trial key made first API call",      n_first_call),
-            ("upgrade_click",   "Human clicked Stripe checkout",      n_upgrade_click),
+            ("upgrade_click",   "Redeem/checkout URL viewed",         n_upgrade_click),
             ("paid",            "Conversion: plan != 'free'",          n_paid),
         ]
 
@@ -1641,6 +1658,10 @@ def high_intent_step_drop():
             killer_step=killer,
             killer_drop_pct=round(killer_drop, 2) if killer else 0.0,
             alarm=alarm,
+            # r-claim-honest (2026-06-27): genuine human browser opens of /claim,
+            # kept as a diagnostic now that the waterfall step measures the real
+            # agent-or-human redeem (claim_used_at). Expected ~0 by design.
+            human_page_opens=n_page_viewed,
             threshold=HIGH_INTENT_THRESHOLD,
             generated_at=datetime.now(timezone.utc).isoformat(),
         )

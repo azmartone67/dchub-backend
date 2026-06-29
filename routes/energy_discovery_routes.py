@@ -495,6 +495,31 @@ def capacity_heatmap():
                 'cost': {'electricity_rate_cents_kwh': round(6 + m['tier'] * 1.5, 2)}
             })
 
+        # r-gate-everywhere (2026-06-27): this is the ungated dup that shadows the
+        # @require_plan('pro') twin (first-rule-wins). The per-market grid MW
+        # headroom + readiness score is the PAID product. Gate in place (safer
+        # than reshuffling route registration): for non-paid, null the numeric
+        # MW/score and keep grade/label/signal (the free traffic-light teaser).
+        # Fail-closed — an unresolved caller is treated as gated.
+        _paid = False
+        try:
+            from routes.dcpi import _dcpi_is_paid
+            _paid = _dcpi_is_paid()
+        except Exception:
+            _paid = False
+        if not _paid:
+            for _m in markets:
+                _m.get('readiness', {}).update({'score': None})
+                _m.get('grid', {}).update({'spare_capacity_pct': None, 'spare_capacity_mw': None})
+                _m.get('gas', {}).update({'headroom_mdth': None})
+                _m.get('power', {}).update({'local_capacity_mw': None})
+                _m.get('cost', {}).update({'electricity_rate_cents_kwh': None})
+                _m['locked'] = True
+            resp = jsonify({'success': True, 'markets': markets, 'count': len(markets),
+                            '_gated': True, '_required_tier': 'pro',
+                            '_upgrade_cta': 'Grid capacity headroom (MW) + readiness scores are DC Hub Pro — https://dchub.cloud/pricing'})
+            resp.headers['Cache-Control'] = 'private, no-store'
+            return resp
         return jsonify({'success': True, 'markets': markets, 'count': len(markets)})
     except Exception as e:
         logger.error(f"Capacity heatmap error: {e}")

@@ -34,8 +34,8 @@ power_availability_forecast_bp = Blueprint("power_availability_forecast", __name
 
 # The forward-looking fields the full oracle will add once the ingest lands.
 _DATA_GAPS = [
-    "quarterly_deliverable_mw (8q projection) — needs interconnection-queue ingest",
-    "interconnection_queue_mw — table not yet populated",
+    "quarterly_deliverable_mw (8q projection) — needs per-project queue modeling",
+    "per_market_queue_mw — queue depth is ISO-level; per-market project geometry pending",
     "utility_atc_mw (available transfer capability) — not yet ingested",
     "substation_headroom_mw — substation-geometry gap",
     "announced_transmission_upgrades (with ISO docket IDs) — not yet ingested",
@@ -92,12 +92,13 @@ def power_availability_forecast():
         limit = 25
 
     rows = []
+    queue_by_iso = {}
     err = None
     try:
         with _conn() as c, c.cursor() as cur:
             if market:
                 cur.execute("""
-                    SELECT market_slug, market_name, excess_power_score,
+                    SELECT market_slug, market_name, iso, excess_power_score,
                            constraint_score, verdict
                       FROM market_power_scores
                      WHERE COALESCE(published, true) = true
@@ -107,7 +108,7 @@ def power_availability_forecast():
             else:
                 # Rank by readiness: most excess power, least constrained first.
                 cur.execute("""
-                    SELECT market_slug, market_name, excess_power_score,
+                    SELECT market_slug, market_name, iso, excess_power_score,
                            constraint_score, verdict
                       FROM market_power_scores
                      WHERE COALESCE(published, true) = true
@@ -117,6 +118,18 @@ def power_availability_forecast():
                      LIMIT %s
                 """, (limit,))
             rows = cur.fetchall() or []
+            # 2026-06-28: wire in the LIVE interconnection-queue ingest
+            # (iso_queue_snapshots, daily cron). Latest snapshot per ISO →
+            # queued total GW + the data-center-specific GW. This closes the
+            # interconnection_queue_mw data gap the v1 forecast flagged.
+            cur.execute("""
+                SELECT iso, as_of, queued_load_total_gw, queued_load_data_center_gw
+                  FROM iso_queue_snapshots
+                 WHERE (iso, as_of) IN (
+                    SELECT iso, MAX(as_of) FROM iso_queue_snapshots GROUP BY iso)
+            """)
+            for q in cur.fetchall() or []:
+                queue_by_iso[(q["iso"] or "").upper()] = q
     except Exception as e:
         err = f"{type(e).__name__}: {str(e)[:160]}"
 
@@ -129,25 +142,45 @@ def power_availability_forecast():
     now = _dt.datetime.now(_dt.timezone.utc).isoformat()
     forecasts = []
     for r in rows:
+        iso = (r.get("iso") or "").upper()
+        q = queue_by_iso.get(iso)
+        interconnection = None
+        if q:
+            total_gw = q.get("queued_load_total_gw")
+            dc_gw = q.get("queued_load_data_center_gw")
+            interconnection = {
+                "iso": iso,
+                "queued_total_mw": round(float(total_gw) * 1000, 1) if total_gw is not None else None,
+                "queued_data_center_mw": round(float(dc_gw) * 1000, 1) if dc_gw is not None else None,
+                "as_of": str(q.get("as_of")) if q.get("as_of") else None,
+                "source": "ISO interconnection queue (dchub.cloud/interconnection-queues)",
+            }
         forecasts.append({
             "market_slug":   r["market_slug"],
             "market":        r["market_name"],
+            "iso":           iso or None,
             "excess_power_score":  r["excess_power_score"],
             "constraint_score":    r["constraint_score"],
             "verdict":             r["verdict"],
             "availability_outlook": _outlook(r["excess_power_score"]),
             "power_to_pad_lead_time_months": _lead_time_months(r["constraint_score"]),
-            "confidence": "moderate (DCPI-derived; not interconnection-queue backed)",
+            # NOW queue-backed at the ISO level (per-market project geometry is
+            # the remaining gap — see data_gaps).
+            "interconnection_queue": interconnection,
+            "confidence": ("moderate (DCPI signals + ISO interconnection-queue depth)"
+                           if interconnection else
+                           "low (DCPI-derived; no ISO queue match)"),
             "as_of": now,
             "source": "DC Hub Power Index (dchub.cloud/dcpi)",
         })
 
     return jsonify({
         "ok": True,
-        "version": "v1-dcpi-derived",
-        "forecast_basis": ("Current DCPI power signals + a heuristic power-to-pad "
-                           "lead-time. The forward quarterly deliverable-MW projection "
-                           "is NOT yet ingested — see data_gaps."),
+        "version": "v2-queue-backed",
+        "forecast_basis": ("DCPI power signals + a heuristic power-to-pad lead-time, "
+                           "NOW backed by live ISO interconnection-queue depth (total + "
+                           "data-center MW). Per-market project geometry + the forward "
+                           "quarterly deliverable-MW projection remain — see data_gaps."),
         "data_gaps": _DATA_GAPS,
         "count": len(forecasts),
         "forecasts": forecasts if not market else (forecasts[0] if forecasts else None),

@@ -1649,6 +1649,42 @@ try:
     except Exception as _pafe:
         import logging
         logging.getLogger(__name__).warning('power_availability_forecast wiring failed: %s', _pafe)
+    # 2026-06-28: DCPI temporal tools (L23 proposals #1131/#1138) — history +
+    # change-feed, the brain's "temporal data = durable moat" thesis.
+    try:
+        from routes.dcpi_temporal import dcpi_temporal_bp
+        app.register_blueprint(dcpi_temporal_bp)
+        print("[main] dcpi_temporal_bp registered: GET /api/v1/dcpi/history + /api/v1/dcpi/changes", flush=True)
+    except Exception as _dte:
+        import logging
+        logging.getLogger(__name__).warning('dcpi_temporal wiring failed: %s', _dte)
+    # 2026-06-28: per-tool conversion attribution (reads tool back from the
+    # Stripe client_reference_id at checkout). GET /api/v1/mcp/conversion-attribution
+    try:
+        from routes.conversion_attribution import conversion_attribution_bp
+        app.register_blueprint(conversion_attribution_bp)
+        print("[main] conversion_attribution_bp registered: GET /api/v1/mcp/conversion-attribution", flush=True)
+    except Exception as _cabe:
+        import logging
+        logging.getLogger(__name__).warning('conversion_attribution wiring failed: %s', _cabe)
+    # 2026-06-28: explain_dcpi_score (L23 proposal #191, founder-approved) —
+    # exact factor decomposition behind a market's DCPI score.
+    try:
+        from routes.dcpi_explain import dcpi_explain_bp
+        app.register_blueprint(dcpi_explain_bp)
+        print("[main] dcpi_explain_bp registered: GET /api/v1/dcpi/explain", flush=True)
+    except Exception as _dxe:
+        import logging
+        logging.getLogger(__name__).warning('dcpi_explain wiring failed: %s', _dxe)
+    # 2026-06-28: public quality/trust badge (L6 #1261/#1266) — transparent
+    # score from live operational data + embeddable SVG for registries.
+    try:
+        from routes.mcp_quality_badge import mcp_quality_badge_bp
+        app.register_blueprint(mcp_quality_badge_bp)
+        print("[main] mcp_quality_badge_bp registered: GET /api/v1/mcp/quality(.svg)", flush=True)
+    except Exception as _qbe:
+        import logging
+        logging.getLogger(__name__).warning('mcp_quality_badge wiring failed: %s', _qbe)
     try:
         from routes.brain_narrative import brain_narrative_bp
         app.register_blueprint(brain_narrative_bp)
@@ -10031,7 +10067,25 @@ def add_security_headers(response):
     # set Cache-Control: private themselves are honored as-is; this prevents
     # the blanket public/max-age=300 fallback below from overwriting them.
     _existing_cc = (response.headers.get('Cache-Control') or '').lower()
-    if 'private' in _existing_cc or 'no-store' in _existing_cc:
+    # r-stats-edge-cache (2026-06-27): three TIER-INVARIANT public stats endpoints
+    # (the homepage / /snapshot / /by-the-numbers data) get stamped
+    # `private, max-age=3600` upstream, which (a) the private-respect guard below
+    # honors and (b) the CF worker treats as no-store (_worker.js:3812) → pinned at
+    # cf-cache-status:DYNAMIC, the ~21% hit rate, and a full origin recompute on
+    # every brain frontend-probe. These bodies do NOT vary by caller/tier (stats
+    # COUNT distinct only — verified tier-invariant), so force them PUBLIC + drop
+    # Vary:Cookie so CF can shared-cache. EXACT paths only — never a prefix that
+    # could catch a future per-tier endpoint. Necessary-but-not-sufficient: pair
+    # with the worker attachSessionCookie allowlist + the CF dashboard Cache Rule
+    # (#3) for /api/v1/*, which is the final edge gate (verify with a live curl).
+    if (response.status_code == 200 and request.method in ('GET', 'HEAD')
+            and path in ('/api/v1/stats', '/api/v1/site/stats',
+                         '/api/v1/discovery/last-7d')):
+        response.headers['Cache-Control'] = (
+            'public, max-age=120, s-maxage=600, stale-while-revalidate=86400')
+        response.headers['CDN-Cache-Control'] = 'public, max-age=600'
+        response.headers['Vary'] = 'Accept-Encoding'  # drop Cookie — no per-caller variance
+    elif 'private' in _existing_cc or 'no-store' in _existing_cc:
         pass  # respect the view's explicit private/no-store directive
     elif _matched_curated is not None:
         secs = _matched_curated[0] if isinstance(_matched_curated, tuple) else _matched_curated
@@ -11430,6 +11484,20 @@ def stripe_webhook():
                             print(f"⚠️ pk- conversion-record error (non-fatal): {_pkce}")
             except Exception as _pce:
                 print(f"⚠️ Conversion-play redemption error (non-fatal): {_pce}")
+
+            # r89-conv (2026-06-28): PER-TOOL conversion ATTRIBUTION. The
+            # /upgrade→checkout path encodes the driving tool into
+            # client_reference_id ('mcp:tool=<tool>:ref=<ref>'); until now
+            # nothing read it back, so per-tool conversion was 0 across ALL
+            # tools (anonymous signals + dead converted flag). Record it so the
+            # funnel can finally show TRUE per-tool conversion. Best-effort.
+            try:
+                from routes.conversion_attribution import record_conversion as _rconv
+                _ca = _rconv(data.get('client_reference_id'), data.get('id'))
+                if _ca.get("ok"):
+                    print(f"🎯 Conversion attributed to tool: {_ca.get('tool')}")
+            except Exception as _cae:
+                print(f"⚠️ conversion-attribution error (non-fatal): {_cae}")
 
             # r62-conv (2026-06-01): self-serve auto-key for the usage-based
             # (metered) payment link (prod_UccyUrO1iq7LrN). Issues + emails a
@@ -14037,10 +14105,13 @@ def list_markets():
                         tier = (plan.get('plan') or plan.get('tier') or 'free').lower()
             except Exception:
                 pass
-            # Heuristic: dev_ prefix → developer, pro_ prefix → pro, ent_ → enterprise
-            if api_key.startswith('dev_'):  tier = 'developer'
-            elif api_key.startswith('pro_'): tier = 'pro'
-            elif api_key.startswith('ent_'): tier = 'enterprise'
+            # Heuristic: the ACTUAL minted prefixes are dchub_dev_/dchub_pro_/dchub_ent_
+            # (api_tier_gating.generate_api_key). The old check used startswith('ent_')
+            # which NEVER matched 'dchub_ent_…' → every paid key fell through to free
+            # (10 markets). Anchor on the real prefixes; bare dev_/pro_/ent_ kept for legacy.
+            if api_key.startswith(('dchub_dev_', 'dev_')):    tier = 'developer'
+            elif api_key.startswith(('dchub_pro_', 'pro_')):  tier = 'pro'
+            elif api_key.startswith(('dchub_ent_', 'ent_')):  tier = 'enterprise'
 
         TIER_LIMITS = {
             'anonymous': 5,       # No signup yet — teaser to convert
@@ -14201,7 +14272,23 @@ def get_market_stats(market):
         recent_cols = [d[0] for d in c.description]
         recent = [dict(zip(recent_cols, r)) for r in recent_rows]
 
-        return jsonify({
+        # r-gate-everywhere (2026-06-27): the COARSE market total (facility_count,
+        # total_power_mw, provider_count) stays free (SEO breadth hook), but the
+        # GRANULAR per-provider + per-facility MW (and avg) are decision-grade and
+        # gated for non-paid.
+        try:
+            from routes.dcpi import _dcpi_is_paid
+            _mk_paid = _dcpi_is_paid()
+        except Exception:
+            _mk_paid = False  # fail-closed
+        if not _mk_paid:
+            for _p in top_providers:
+                if isinstance(_p, dict):
+                    _p['power_mw'] = None
+            for _r in recent:
+                if isinstance(_r, dict) and 'power_mw' in _r:
+                    _r['power_mw'] = None
+        resp = jsonify({
             'success': True,
             'market': {
                 'id': market_lower,
@@ -14211,13 +14298,17 @@ def get_market_stats(market):
             'stats': {
                 'facility_count': stats['facility_count'],
                 'total_power_mw': round(stats['total_power'], 1),
-                'avg_power_mw': round(stats['avg_power'], 1),
+                'avg_power_mw': (round(stats['avg_power'], 1) if _mk_paid else None),
                 'provider_count': stats['provider_count']
             },
             'top_providers': top_providers,
             'by_status': by_status,
-            'recent_facilities': recent
+            'recent_facilities': recent,
+            '_gated': (not _mk_paid)
         })
+        if not _mk_paid:
+            resp.headers['Cache-Control'] = 'private, no-store'
+        return resp
     except Exception as e:
         import traceback
         logger.error(f"get_market_stats('{market}') error: {traceback.format_exc()}")
@@ -20079,8 +20170,36 @@ def land_power_consolidated():
 @app.route('/api/v1/capacity/heatmap/public', methods=['GET'])
 @require_plan('pro')
 def capacity_heatmap_public():
-    """Capacity heatmap -- requires at least a free account"""
-    return jsonify({"success": True, "data": CAPACITY_HEATMAP_MARKETS})
+    """Capacity heatmap — the numeric grid MW headroom + readiness scores are
+    DC Hub Pro; non-paid get grade/label/signal only (r-gate-everywhere)."""
+    _data = CAPACITY_HEATMAP_MARKETS
+    try:
+        from routes.dcpi import _dcpi_is_paid
+        _paid = _dcpi_is_paid()
+    except Exception:
+        _paid = False  # fail-closed
+    if not _paid:
+        import copy as _cp
+        _data = _cp.deepcopy(CAPACITY_HEATMAP_MARKETS)
+        _iter = _data if isinstance(_data, list) else (
+            _data.get('markets') if isinstance(_data, dict) else [])
+        for _m in (_iter or []):
+            if not isinstance(_m, dict):
+                continue
+            for _sect, _keys in (('readiness', ['score']),
+                                 ('grid', ['spare_capacity_pct', 'spare_capacity_mw']),
+                                 ('gas', ['headroom_mdth']),
+                                 ('power', ['local_capacity_mw', 'local_plants']),
+                                 ('cost', ['electricity_rate_cents_kwh'])):
+                if isinstance(_m.get(_sect), dict):
+                    for _k in _keys:
+                        if _k in _m[_sect]:
+                            _m[_sect][_k] = None
+            _m['locked'] = True
+    resp = jsonify({"success": True, "data": _data, "_gated": (not _paid)})
+    if not _paid:
+        resp.headers['Cache-Control'] = 'private, no-store'
+    return resp
 
 logger.info("✅ Consolidated Land & Power endpoint registered: /api/v1/land-power/data")
 logger.info("✅ Public heatmap endpoint registered: /api/v1/capacity/heatmap/public")
@@ -20297,9 +20416,29 @@ def fiber_routes_api():
     3-route teaser otherwise. The in-handler gate fails closed regardless of
     how the caller reached here (require_plan has a map-Referer bypass that
     previously leaked the full 645KB set to any anonymous curl)."""
+    # r-fibercache2 (2026-06-28): get_fiber_intel hits THIS route and was paying
+    # the full ~5s _build_fiber_routes_geojson() DB build on EVERY call (p50 5.7s,
+    # the top remaining Smithery-latency tool). The /api/v1/fiber/intel ALIAS
+    # already caches the full build (r-fibercache, 5 min) — but this route was
+    # missed. The full FeatureCollection is IDENTICAL for every access-granted
+    # caller, so reuse the same in-process cache. Teaser callers never touch it →
+    # no paywall bypass. Also add the no-store edge headers this route was missing
+    # (tier-varying full-vs-teaser body must never edge-cache cross-tier).
     if _fiber_full_access_ok():
-        return jsonify(_build_fiber_routes_geojson())
-    return jsonify(_fiber_teaser_response())
+        _now = time.time()
+        if (_FIBER_INTEL_CACHE["data"] is not None
+                and (_now - _FIBER_INTEL_CACHE["at"]) < _FIBER_INTEL_TTL):
+            payload = _FIBER_INTEL_CACHE["data"]
+        else:
+            payload = _build_fiber_routes_geojson()
+            _FIBER_INTEL_CACHE["data"] = payload
+            _FIBER_INTEL_CACHE["at"] = _now
+    else:
+        payload = _fiber_teaser_response()
+    resp = jsonify(payload)
+    resp.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+    resp.headers['CDN-Cache-Control'] = 'no-store'
+    return resp
 
 
 @app.route('/api/v1/fiber/routes/public', methods=['GET'])
@@ -22692,9 +22831,13 @@ def serve_sitemap_xml():
         ('/ai-deals', '0.8', 'daily'),
         ('/ai-agents', '0.7', 'weekly'),
         ('/ai-inventory', '0.7', 'daily'),
-        ('/assets', '0.7', 'daily'),
+        # r-seo-redirect (2026-06-27): /assets REMOVED — it 301s to /database
+        # (listed below). A sitemap URL that 3xx's is filed by Google as
+        # "Redirect error"; list only the final 200 canonical. (Verified live
+        # 2026-06-27: /assets 301→/database, /database 200.)
         ('/database',       '0.9', 'daily'),   # r-database (2026-06-22): Data Center Database — facility research surface (21,800+ facilities)
-        ('/for-ai', '0.7', 'weekly'),
+        # r-seo-redirect (2026-06-27): /for-ai REMOVED — it 301s to /ai (listed
+        # below; verified live 301→/ai). Don't sitemap a redirecting URL.
         ('/connect', '0.7', 'weekly'),
         # r-seo-coverage (2026-06-19): live 200 + index public pages that were
         # ABSENT from this CRAWLED sitemap (they existed only in the unadvertised
@@ -22737,7 +22880,7 @@ def serve_sitemap_xml():
         # makes /dcpi a top SEO target for "data center power index".
         ('/dcpi',             '1.0', 'daily'),
         ('/dcpi/totals',      '0.9', 'daily'),
-        ('/dcpi/methodology', '0.7', 'monthly'),
+        ('/dcpi/methodology/', '0.7', 'monthly'),  # r-seo-redirect (2026-06-27): trailing slash IS the 200 canonical; bare /dcpi/methodology 308s to it (verified live), which Google files as "Redirect error".
         ('/sample',           '0.9', 'daily'),
         ('/sample/journalist','0.8', 'daily'),
         ('/sample/pe',        '0.8', 'daily'),

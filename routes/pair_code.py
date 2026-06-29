@@ -868,6 +868,10 @@ _STRIPE_TIER_LINKS = {
     "developer":    STRIPE_DEVELOPER_LINK,                              # $49/mo
     "pro_monthly":  "https://buy.stripe.com/eVq5kE4oOfs13mleGuaZi0h",  # $199/mo
     "pro_annual":   "https://buy.stripe.com/dRm7sM6wW7Zz1edgOCaZi07",  # $1,188/yr
+    # 2026-06-28: the $10 one-time / 1,000-call pack — the LOW-FRICTION
+    # converter the funnel data shows actually converts. Now leadable from
+    # the redeem CTA (?plan=metered) so we stop fronting a $49/mo wall.
+    "metered":      "https://buy.stripe.com/9B69AU08y2FfbSR55UaZi0i",
 }
 
 
@@ -1116,16 +1120,19 @@ h1{{font-size:1.6rem;margin:0 0 8px;letter-spacing:-0.02em;font-weight:800}}
     <div class="ctx-row"><span>Pair code:</span><b>{_h(code)}</b></div>
     <div class="ctx-row"><span>Trying to access:</span><b>{_h(pretty_tool)}</b></div>
     {market_line}
-    <div class="ctx-row"><span>Plan:</span><b>Developer · $49/mo</b></div>
+    <div class="ctx-row"><span>Unlock:</span><b>$10 one-time · 1,000 calls</b></div>
   </div>
 
   <!-- The /api/v1/redeem/<code>/click proxy stamps stripe_clicked_at
        server-side then 302s to Stripe. No beacon needed — the redirect
        IS the response, so the DB stamp can't race the navigation. -->
-  <a href="{stripe_url}" class="cta" id="cta">
-    Unlock for $49/mo →
+  <a href="/api/v1/redeem/{_h(code)}/click?plan=metered" class="cta" id="cta">
+    ⚡ Unlock now — $10 for 1,000 calls →
   </a>
-  <div class="cta-sub">Secure checkout via Stripe · 7-day money-back</div>
+  <div class="cta-sub">One-time · no subscription · instant access · secure Stripe checkout</div>
+  <div style="text-align:center;margin-top:10px">
+    <a href="/api/v1/redeem/{_h(code)}/click?plan=developer" style="color:var(--tx2);font-size:0.82rem;text-decoration:underline">Power user? Go unlimited — Developer $49/mo →</a>
+  </div>
 
   <!-- Play 3 + Play 5 alternative paths -->
   <div class="alts">

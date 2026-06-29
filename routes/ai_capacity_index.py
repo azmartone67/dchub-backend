@@ -69,7 +69,7 @@ def _compute_index(horizon_days=90, limit=20):
                 FROM discovered_facilities
                 WHERE city IS NOT NULL AND city != ''
                   AND state IS NOT NULL AND state != ''
-                  AND status = 'active'
+                  AND COALESCE(status,'') <> 'active'  -- r-fix 2026-06-27: 'active'=empty shells (0 MW); real MW in Operational/pipeline
                 GROUP BY city, state, country
                 -- Power data is sparse (only ~35pct of discovered_facilities
                 -- have power_mw populated). Filtering on SUM(power_mw) excludes

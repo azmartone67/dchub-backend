@@ -226,6 +226,38 @@ _BATCH = [
     ("auto_agent_card", "Agent Card",
      "/.well-known/agent.json — agent capability card",
      ["/.well-known/agent.json"], [], ["api_call"]),
+    # r91 (2026-06-28): the 26 high-value pages that were ORPHANED in
+    # page-integrity (healthy + serving traffic but no surface_brain
+    # registration — added since the r33 batch). Registering graduates each
+    # orphan→tracked (score 70→85), lifts site_score (→ the quality badge),
+    # and makes them visible in /api/v1/surfaces. Metadata-only.
+    ("auto_connect_guides", "Connect Guides",
+     "/connect/* — per-client MCP install guides",
+     ["/connect/claude-desktop", "/connect/cline", "/connect/continue",
+      "/connect/cursor"], [], ["view", "connect"]),
+    ("auto_hyperscaler_briefs", "Hyperscaler Briefs",
+     "/hyperscalers/<name>/brief — per-hyperscaler infrastructure briefs",
+     ["/hyperscalers/aws/brief", "/hyperscalers/azure/brief",
+      "/hyperscalers/google-cloud/brief", "/hyperscalers/meta/brief",
+      "/hyperscalers/oracle/brief"], [], ["view"]),
+    ("auto_market_briefs", "Market Briefs",
+     "/markets/<market>/brief — per-market power/capacity briefs",
+     ["/markets/atlanta/brief", "/markets/chicago/brief",
+      "/markets/dallas/brief", "/markets/northern-virginia",
+      "/markets/northern-virginia/brief", "/markets/phoenix/brief"], [], ["view"]),
+    ("auto_operator_briefs", "Operator Briefs",
+     "/operators/<operator>/brief — per-operator data-center briefs",
+     ["/operators/aligned/brief", "/operators/digital-realty/brief",
+      "/operators/equinix/brief", "/operators/qts/brief",
+      "/operators/vantage/brief"], [], ["view"]),
+    ("auto_state_briefs", "State Briefs",
+     "/states/<state>/brief — per-state infrastructure briefs",
+     ["/states/california/brief", "/states/georgia/brief",
+      "/states/ohio/brief", "/states/texas/brief",
+      "/states/virginia/brief"], [], ["view"]),
+    ("auto_dcpi_market_page", "DCPI Market Page",
+     "/dcpi/<market> — per-market DC Hub Power Index page",
+     ["/dcpi/ashburn"], [], ["view"]),
 ]
 
 

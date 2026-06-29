@@ -137,6 +137,16 @@ def funnel_diag():
     except Exception as e:
         out["stages"]["5_conversions_30d"] = {"_error": type(e).__name__}
 
+    # r-canonical-funnel (2026-06-27): surface the ONE source-of-truth funnel
+    # KPIs so this diag endpoint reports the SAME active-keys / MRR / conversions
+    # numbers as /admin/funnel-health (the per-plan stage-5 breakdown above stays
+    # as detail). Defensive: a failure here never breaks the rest of the diag.
+    try:
+        from canonical_funnel import get_canonical_funnel
+        out["canonical_funnel"] = get_canonical_funnel()
+    except Exception as e:
+        out["canonical_funnel"] = {"_error": type(e).__name__}
+
     # Top tools triggering paywall hits (sales lead intel)
     try:
         with _conn() as c, c.cursor() as cur:
