@@ -2487,21 +2487,35 @@ def _compute_heartbeat_sync():
                                         AND started_at >= NOW() - INTERVAL '24 hours') AS escalated_24h,
                       COUNT(*) FILTER (WHERE outcome = 'rate_limited'
                                         AND started_at >= NOW() - INTERVAL '24 hours') AS rate_limited_24h,
+                      COUNT(*) FILTER (WHERE outcome = 'cooldown_active'
+                                        AND started_at >= NOW() - INTERVAL '24 hours') AS cooldown_active_24h,
                       COUNT(*) FILTER (WHERE outcome = 'execution_failed'
                                         AND started_at >= NOW() - INTERVAL '24 hours') AS errors_24h,
                       MAX(started_at) AS last_action_at
                       FROM brain_autopilot_actions
                 """)
                 r = cur.fetchone() or {}
+                _rl = int(r.get("rate_limited_24h") or 0)
+                _cd = int(r.get("cooldown_active_24h") or 0)
                 out["autopilot"] = {
                     "actioned_24h":      int(r.get("actioned_24h") or 0),
                     "escalated_24h":     int(r.get("escalated_24h") or 0),
-                    "rate_limited_24h":  int(r.get("rate_limited_24h") or 0),
+                    "rate_limited_24h":  _rl,
+                    "cooldown_noops_24h": _rl + _cd,
                     "errors_24h":        int(r.get("errors_24h") or 0),
                     "last_action_at":    r["last_action_at"].isoformat() if r.get("last_action_at") else None,
                     "disabled":          _is_disabled(),
                     "dry_run":           _is_dry_run(),
                     "pattern_library_size": len(_PATTERN_LIBRARY),
+                    # r-metric-honesty (2026-06-28): rate_limited/cooldown_active are
+                    # EXPECTED throttle BOOKKEEPING — the autopilot CORRECTLY not
+                    # re-firing patterns on cooldown — NOT failures or blocked work
+                    # (it's mostly the re-fire volume of un-fixable strategic patterns,
+                    # which the cooldown/quarantine then throttles). Reading
+                    # rate_limited_24h as a health/regression metric is wrong: real
+                    # throughput = actioned_24h, real failures = errors_24h,
+                    # cooldown_noops_24h is the benign throttle total.
+                    "rate_limited_is_bookkeeping": True,
                 }
     except Exception as e:
         out["autopilot"] = {"error": str(e)[:160]}
