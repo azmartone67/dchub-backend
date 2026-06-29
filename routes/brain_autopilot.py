@@ -1616,6 +1616,160 @@ def _effect_quarantine_disabled() -> bool:
     return str(os.environ.get("BRAIN_EFFECT_QUARANTINE_DISABLED", "")).lower() in ("1", "true", "yes")
 
 
+# ── Feature #4 (2026-06-28): PROMOTE-ON-FAILURE ──────────────────────
+# Loop 3c BENCHES an effect-unfixable pattern (0 verified success / >=5
+# verified fail) so the brain stops looping on it — but a benched pattern
+# just goes quiet; nothing tells a human "this class of fix is structurally
+# wrong, re-channel it". This detector closes that gap: for the SAME set of
+# demonstrably-unfixable patterns it ADDITIVELY files a brain_findings row
+# (issue='pattern_unfixable_needs_rechannel') so the item surfaces in the
+# human digest / investigator as a propose-only hand-off. It NEVER fires,
+# suppresses, merges, or escalates an action — it only writes one deduped
+# finding per pattern (dedupe key = url, which encodes pattern_name; the
+# canonical constraint-agnostic upsert collapses repeats).
+#
+# STRICT preservation of the Loop 3c bench predicate so the digest never
+# names a pattern the bench wouldn't also bench:
+#   * ZERO executed_ok-with-effect  (succeeded IS TRUE) == 0   — REQUIRED
+#   * total_verified (TRUE+FALSE) >= _EFFECT_FAIL_THRESHOLD (5)  OR
+#     cannot_verify (succeeded IS NULL) >= _PROMOTE_CANNOT_VERIFY_MIN (10)
+#     — no thin-sample promotions.
+#   * NULL / empty pattern_name excluded.
+#
+# DARK-BY-DEFAULT: the whole pass is gated behind
+# BRAIN_PROMOTE_ON_FAILURE_ENABLED (default OFF). When off this is a no-op.
+# FAIL-SAFE: own short-lived connection, never touches a tick transaction,
+# and every step is wrapped so any error degrades to today's behavior.
+_PROMOTE_CANNOT_VERIFY_MIN = _env_int("BRAIN_PROMOTE_CANNOT_VERIFY_MIN", 10)
+def _promote_on_failure_enabled() -> bool:
+    return str(os.environ.get("BRAIN_PROMOTE_ON_FAILURE_ENABLED", "")).lower() in ("1", "true", "yes")
+
+
+def promote_unfixable_patterns() -> dict:
+    """Detector: file a deduped brain_findings row for each pattern the
+    effect-aware quarantine would bench as structurally unfixable, so the
+    human digest / investigator can RE-CHANNEL it (propose-only).
+
+    Returns a small summary dict; NEVER raises. No-op (and reports so) when
+    BRAIN_PROMOTE_ON_FAILURE_ENABLED is not set. Read + additive-write only:
+    it does NOT fire, suppress, merge, escalate, or quarantine anything.
+    """
+    if not _promote_on_failure_enabled():
+        return {"ok": True, "enabled": False, "promoted": 0}
+
+    promoted = 0
+    candidates: list[dict] = []
+    c = _conn()
+    if c is None:
+        return {"ok": False, "enabled": True, "promoted": 0, "error": "no_db"}
+    try:
+        # autocommit=True on _conn(); turn it off so the writer's SAVEPOINT
+        # machinery has a real transaction to roll back into, then commit.
+        try:
+            c.autocommit = False
+        except Exception:
+            pass
+        # 1. Find the demonstrably-unfixable patterns (mirror Loop 3c bench
+        #    predicate + the cannot_verify thin-sample guard). Read-only.
+        try:
+            with c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT pattern_name,
+                           COUNT(*) FILTER (WHERE succeeded IS FALSE) AS verified_fail,
+                           COUNT(*) FILTER (WHERE succeeded IS TRUE)  AS verified_ok,
+                           COUNT(*) FILTER (WHERE succeeded IS NULL)  AS cannot_verify
+                      FROM autopilot_outcomes
+                     WHERE verified_at >= NOW() - make_interval(days => %s)
+                       AND pattern_name IS NOT NULL AND pattern_name <> ''
+                     GROUP BY pattern_name
+                    HAVING COUNT(*) FILTER (WHERE succeeded IS TRUE) = 0
+                       AND (
+                            COUNT(*) FILTER (WHERE succeeded IS FALSE) >= %s
+                         OR COUNT(*) FILTER (WHERE succeeded IS NULL)  >= %s
+                       )
+                """, (_EFFECT_FAIL_DAYS, _EFFECT_FAIL_THRESHOLD, _PROMOTE_CANNOT_VERIFY_MIN))
+                candidates = [dict(r) for r in (cur.fetchall() or [])]
+        except Exception:
+            candidates = []
+
+        if not candidates:
+            try: c.commit()
+            except Exception:
+                try: c.rollback()
+                except Exception: pass
+            return {"ok": True, "enabled": True, "promoted": 0, "candidates": 0}
+
+        # 2. Best-effort fix_type guess (purely descriptive — the human/
+        #    investigator decides; no behavior keys off this).
+        def _fix_type_guess(name: str) -> str:
+            n = (name or "").lower()
+            if any(k in n for k in ("unsent", "distribution", "outbound", "trend", "digest", "newsletter")):
+                return "delivery/send-path"
+            if any(k in n for k in ("handoff", "inspector", "l22", "l15", "escalat")):
+                return "handoff/escalation"
+            if any(k in n for k in ("brand", "schema", "uniform", "coverage", "page")):
+                return "content/markup"
+            return "unknown"
+
+        # 3. Additive deduped INSERT via the canonical constraint-agnostic
+        #    writer (dedupe key = (issue, url); url encodes pattern_name).
+        try:
+            from routes.brain_findings_writer import upsert_brain_finding
+        except Exception:
+            upsert_brain_finding = None
+
+        if upsert_brain_finding is not None:
+            try:
+                with c.cursor() as cur:
+                    for cand in candidates:
+                        try:
+                            pname = (cand.get("pattern_name") or "").strip()
+                            if not pname:
+                                continue
+                            vf = int(cand.get("verified_fail") or 0)
+                            cv = int(cand.get("cannot_verify") or 0)
+                            ft = _fix_type_guess(pname)
+                            detail = (
+                                f"Pattern '{pname}' is benched as effect-unfixable: "
+                                f"{vf} verified-fail / 0 verified-success "
+                                f"(cannot_verify={cv}) over {_EFFECT_FAIL_DAYS}d. "
+                                f"Looping/benching will not fix it — RE-CHANNEL "
+                                f"(fix_type guess: {ft}). Propose-only hand-off."
+                            )
+                            res = upsert_brain_finding(
+                                cur,
+                                issue="pattern_unfixable_needs_rechannel",
+                                url=f"pattern:{pname}",   # dedupe key keyed on pattern_name
+                                count=vf or cv or 1,
+                                detail=detail,
+                                detector="promote_on_failure",
+                            )
+                            if res == "inserted":
+                                promoted += 1
+                        except Exception:
+                            continue
+                c.commit()
+            except Exception:
+                try: c.rollback()
+                except Exception: pass
+        else:
+            try: c.commit()
+            except Exception: pass
+    except Exception:
+        try: c.rollback()
+        except Exception: pass
+    finally:
+        try: c.close()
+        except Exception: pass
+
+    return {
+        "ok": True,
+        "enabled": True,
+        "candidates": len(candidates),
+        "promoted": promoted,
+    }
+
+
 def _ensure_quarantine_table():
     c = _conn()
     if c is None:
@@ -2287,6 +2441,27 @@ def autopilot_status():
         dry_run=_is_dry_run(),
         pattern_library_size=len(_PATTERN_LIBRARY),
     ), 200
+
+
+@brain_autopilot_bp.route("/api/v1/brain/autopilot/promote-on-failure", methods=["POST", "GET"])
+def autopilot_promote_on_failure():
+    """Feature #4: run the PROMOTE-ON-FAILURE detector on demand.
+
+    Admin-gated. Respects BRAIN_PROMOTE_ON_FAILURE_ENABLED (dark by default):
+    when the flag is off this returns enabled=false and writes nothing.
+    Additive + propose-only — it only files deduped brain_findings rows
+    (issue='pattern_unfixable_needs_rechannel'); it fires/escalates nothing.
+    """
+    admin = _admin_key()
+    supplied = request.headers.get("X-Admin-Key") or request.args.get("admin_key")
+    if admin and supplied != admin:
+        return jsonify(error="unauthorized"), 401
+    try:
+        result = promote_unfixable_patterns()
+    except Exception as e:
+        # FAIL-SAFE: a detector error degrades to a no-op report.
+        return jsonify(ok=False, enabled=_promote_on_failure_enabled(), error=str(e)[:200]), 200
+    return jsonify(result), 200
 
 
 @brain_autopilot_bp.route("/api/v1/brain/autopilot/library", methods=["GET"])
