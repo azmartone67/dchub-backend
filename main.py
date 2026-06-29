@@ -32629,15 +32629,23 @@ except NameError:
 try:
     @app.route("/api/v1/iso/zones", methods=["GET"])
     def _v1_iso_zones():
-        """Aggregate zone-level LMP data from frontend snapshot files."""
+        """Global grid coverage: latest per-ISO/zone metrics across every region
+        DC Hub ingests, read from the grid_data table the ISO extractors write to.
+
+        r-entsoe-fix (2026-06-29): this endpoint used to HTTP-fetch static edge
+        files at /iso/<iso>/zones.json over a hardcoded 10-ISO North-American
+        list. Those files were never published (all 404), and a bare-except
+        swallowed every failure -> count:0 for ALL isos, making it look like DC
+        Hub had ZERO global grid coverage. In reality the ENTSO-E (EU: iso=ENTSOE
+        + EU_<code> x25), Great Britain (NGESO), Australia (AEMO), Taiwan
+        (TAIPOWER), Nordics (NORDPOOL) + US/CA/MX feeds are LIVE in grid_data,
+        refreshed every 15 min via data-pulse.yml -> iso_orchestrator. The serving
+        layer simply pointed at a dead source. This now reads grid_data directly.
+        """
         from flask import jsonify, request
-        import urllib.request, json, time as _t
-        iso_filter = request.args.get("iso", "").lower()
+        import time as _t
+        iso_filter = request.args.get("iso", "").upper()
         country_filter = request.args.get("country", "").upper()
-        # r-boot (2026-06-18): cache the aggregate 300s + cap total build at 6s.
-        # This loops up to 10 sequential urlopen() calls to the public edge; with
-        # the old 8s/fetch timeout a cold or 404ing edge could stall ~80s and hold
-        # a gunicorn thread → CF 522. Cache + deadline + 3s/fetch removes it.
         _cache = getattr(_v1_iso_zones, "_cache", None)
         if _cache is None:
             _cache = _v1_iso_zones._cache = {}
@@ -32645,43 +32653,59 @@ try:
         _hit = _cache.get(_ck)
         if _hit is not None and (_t.time() - _hit[1]) < 300:
             return jsonify(_hit[0])
-        _deadline = _t.time() + 6.0
-        _truncated = False
-        out = {"zones": [], "count": 0, "source": "rto-region-data",
+        # Map every ingested iso code to a country so "countries" reflects the
+        # real global footprint. EU_<code> per-zone rows roll up under EU/ENTSOE.
+        _ISO_COUNTRY = {
+            "ERCOT": "US", "CAISO": "US", "PJM": "US", "MISO": "US",
+            "NYISO": "US", "ISONE": "US", "ISO-NE": "US", "SPP": "US",
+            "IESO": "CA", "AESO": "CA", "HYDROQUEBEC": "CA", "CENACE": "MX",
+            "ENTSOE": "EU", "NORDPOOL": "EU", "NGESO": "GB",
+            "AEMO": "AU", "TAIPOWER": "TW",
+        }
+        out = {"zones": [], "count": 0, "source": "grid_data",
                "isos_covered": [], "countries": {}}
-        # Phase ZZZZZ-round4 (2026-05-23): expanded from 7 US ISOs to 10
-        # incl. Canada (IESO, AESO) and Mexico (CENACE). The frontend
-        # snapshot at /iso/<iso>/zones.json may carry a "country" field;
-        # if present, it's surfaced for filtering.
-        iso_list = ["caiso", "ercot", "pjm", "miso", "nyiso", "isone", "spp",
-                    "ieso", "aeso", "cenace"]
-        if iso_filter and iso_filter in iso_list:
-            iso_list = [iso_filter]
-        for iso in iso_list:
-            if _t.time() > _deadline:
-                _truncated = True
-                break
-            url = f"https://dchub.cloud/iso/{iso}/zones.json"
+        try:
+            from routes._iso_common import conn
+            with conn() as c, c.cursor() as cur:
+                # Latest snapshot per (iso, metric) within the last 2 days, so a
+                # stale/retired feed can't inflate the coverage map.
+                cur.execute(
+                    """SELECT g.iso, g.metric_name, g.metric_value, g.unit, g.timestamp
+                         FROM grid_data g
+                         JOIN (SELECT iso, MAX(timestamp) AS mx FROM grid_data
+                                WHERE timestamp > NOW() - INTERVAL '2 days'
+                                GROUP BY iso) m
+                           ON g.iso = m.iso AND g.timestamp = m.mx
+                        ORDER BY g.iso, g.metric_name""")
+                rows = cur.fetchall()
+        except Exception:
+            rows = []
+        by_iso = {}
+        for iso, name, val, unit, ts in rows:
+            d = by_iso.setdefault(iso, {"metrics": {}, "fetched_at": None})
             try:
-                req = urllib.request.Request(url, headers={"User-Agent": "dchub-iso-aggregator/1.0"})
-                with urllib.request.urlopen(req, timeout=3) as r:
-                    summary = json.loads(r.read().decode("utf-8", errors="replace"))
-                country = summary.get("country") or "US"
-                if country_filter and country != country_filter:
-                    continue
-                out["isos_covered"].append(iso)
-                out["countries"][country] = out["countries"].get(country, 0) + len(summary.get("zones", []))
-                for z in summary.get("zones", []):
-                    out["zones"].append({**z, "iso": iso, "country": country,
-                                          "fetched_at": summary.get("fetched_at")})
-            except Exception as e:
-                # Quietly skip if a zones.json doesn't exist yet
-                pass
+                d["metrics"][name] = {"value": float(val) if val is not None else None, "unit": unit}
+            except (TypeError, ValueError):
+                d["metrics"][name] = {"value": val, "unit": unit}
+            if ts and not d["fetched_at"]:
+                d["fetched_at"] = ts.isoformat()
+        seen = set()
+        for iso, d in sorted(by_iso.items()):
+            if iso.startswith("EU_"):
+                parent, zone, country = "ENTSOE", iso[3:], "EU"
+            else:
+                parent, zone, country = iso, iso, _ISO_COUNTRY.get(iso, "US")
+            if iso_filter and iso_filter not in (iso, parent):
+                continue
+            if country_filter and country != country_filter:
+                continue
+            out["zones"].append({"iso": parent, "zone": zone, "country": country,
+                                 "metrics": d["metrics"], "fetched_at": d["fetched_at"]})
+            out["countries"][country] = out["countries"].get(country, 0) + 1
+            seen.add(parent)
+        out["isos_covered"] = sorted(seen)
         out["count"] = len(out["zones"])
-        # Only cache a COMPLETE aggregate — a deadline-truncated partial would
-        # otherwise be served as-if-complete for the full 300s TTL.
-        if not _truncated:
-            _cache[_ck] = (out, _t.time())
+        _cache[_ck] = (out, _t.time())
         return jsonify(out)
 except NameError:
     pass
