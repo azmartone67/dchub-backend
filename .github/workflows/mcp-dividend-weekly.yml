@@ -1,0 +1,65 @@
+# MCP Dividend — weekly tracker email to the founder (2026-06-29).
+# Answers two questions every Monday: is REACH growing per channel, and is the
+# trial→email bridge TURNING (the bind metric that was ~0). Self-contained:
+# queries Neon directly + emails via Resend. Read-only. Manual run: Actions →
+# "MCP Dividend Weekly" → Run workflow.
+name: MCP Dividend Weekly
+on:
+  schedule:
+    - cron: '40 15 * * 1'   # Mondays 15:40 UTC — offset from the 15:25 agent-digest
+  workflow_dispatch: {}
+jobs:
+  dividend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.11' }
+      - run: pip install --quiet psycopg2-binary
+      - name: Build report + email
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+        run: |
+          python3 - <<'PY'
+          import os, json, urllib.request, psycopg2
+          c=psycopg2.connect(os.environ["DATABASE_URL"], sslmode="require", connect_timeout=15)
+          c.autocommit=True; cur=c.cursor()
+          REAL=('claude','chatgpt','gemini','perplexity','grok','copilot','meta',
+                'smitheryconnect','glama','cursor','opencode','deepseek','anthropicapi','openai-mcp')
+          cur.execute("""WITH b AS (SELECT lower(platform) p, session_id,
+              timestamp>NOW()-INTERVAL '7 days' cur,
+              timestamp BETWEEN NOW()-INTERVAL '14 days' AND NOW()-INTERVAL '7 days' prev
+              FROM mcp_call_log WHERE timestamp>NOW()-INTERVAL '14 days' AND lower(platform)=ANY(%s))
+            SELECT p, COUNT(DISTINCT session_id) FILTER(WHERE cur),
+                      COUNT(DISTINCT session_id) FILTER(WHERE prev)
+              FROM b GROUP BY p ORDER BY 2 DESC""", (list(REAL),))
+          rows=cur.fetchall()
+          def sc(q):
+              cur.execute(q); r=cur.fetchone(); return (r[0] if r else 0) or 0
+          minted7  = sc("SELECT COUNT(*) FROM auto_trial_keys WHERE minted_at>NOW()-INTERVAL '7 days'")
+          active   = sc("SELECT COUNT(*) FROM auto_trial_keys WHERE call_count>0")
+          bound    = sc("SELECT COUNT(*) FROM auto_trial_keys WHERE (signed_up_email IS NOT NULL AND signed_up_email<>'') OR (operator_email IS NOT NULL AND operator_email<>'')")
+          emails30 = sc("SELECT COUNT(*) FROM mcp_email_capture WHERE created_at>NOW()-INTERVAL '30 days'")
+          paid30   = sc("SELECT COUNT(*) FROM mcp_conversions WHERE created_at>NOW()-INTERVAL '30 days'")
+          L=["<b>Reach by channel — 7d vs prior 7d (distinct sessions)</b>"]
+          for p,s7,sp in rows:
+              s7,sp=s7 or 0, sp or 0
+              a="&#8593;" if s7>sp else ("&#8595;" if s7<sp else "&#8594;")
+              L.append(f"&nbsp;&nbsp;{p}: <b>{s7}</b> (was {sp}) {a}")
+          if not rows: L.append("&nbsp;&nbsp;(no named-platform sessions in window)")
+          L += ["<br><b>Trial &#8594; email bridge (the dividend)</b>",
+                f"&nbsp;&nbsp;trial keys minted (7d): {minted7}",
+                f"&nbsp;&nbsp;trial keys ever used: {active}",
+                f"&nbsp;&nbsp;<b>trial keys email-bound: {bound}</b> &#8592; the metric to watch (was ~0)",
+                f"&nbsp;&nbsp;emails captured (30d): {emails30}",
+                f"&nbsp;&nbsp;paid conversions (30d): {paid30}",
+                "<br><i>Bridge is converting when email-bound climbs. If it stays flat while reach grows, tighten the gate (TRIAL_FREE_CALLS_UNBOUND) / CTA.</i>"]
+          html="<div style='font-family:ui-monospace,monospace;font-size:14px;line-height:1.6'>"+"<br>".join(L)+"</div>"
+          payload=json.dumps({"from":"DC Hub <jonathan@dchub.cloud>","to":["azmartone@gmail.com"],
+                              "subject":"DC Hub · MCP Dividend (weekly)","html":html}).encode()
+          req=urllib.request.Request("https://api.resend.com/emails", data=payload,
+              headers={"Authorization":"Bearer "+os.environ["RESEND_API_KEY"],
+                       "Content-Type":"application/json","User-Agent":"dchub-dividend/1.0"})
+          with urllib.request.urlopen(req, timeout=25) as r:
+              print("Resend", r.status, r.read().decode()[:120])
+          PY
