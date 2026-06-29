@@ -919,6 +919,33 @@ def _delete_linkedin_share(share_urn, access_token):
     return False, f"LinkedIn delete error {resp.status_code}: {resp.text[:300]}"
 
 
+def _li_post_type_for(article_url):
+    """Classify linkedin_posts.post_type from the article-URL section.
+
+    The old code hardcoded 'auto_press' for EVERY mirror insert, which
+    mislabeled DCPI / market-movement alerts (which link to /dcpi/<city> or
+    /markets/<metro>) as press releases — that's why "auto_press" rows were
+    showing market slugs like 'boise'/'calgary'. Still 'auto_'-prefixed so the
+    existing `post_type LIKE 'auto_%'` filters (e.g. linkedin_poster's
+    scheduled-poster dedupe) keep matching."""
+    if not article_url:
+        return 'auto_share'
+    try:
+        from urllib.parse import urlparse as _up
+        path = (_up(article_url).path or '').lower()
+    except Exception:
+        return 'auto_share'
+    if path.startswith('/dcpi/'):
+        return 'auto_dcpi'
+    if path.startswith('/markets/'):
+        return 'auto_market'
+    if path.startswith(('/news/', '/press/')):
+        return 'auto_press'
+    if '/facilit' in path:
+        return 'auto_facility'
+    return 'auto_share'
+
+
 def _persist_linkedin_urn(cur, post_id, urn, content_text, slug=None, article_url=None):
     """r72 (2026-06-05): close the URN capture gap that broke the engagement
     measure→learn loop.
@@ -953,6 +980,11 @@ def _persist_linkedin_urn(cur, post_id, urn, content_text, slug=None, article_ur
             slug = _og_today_slug_for(article_url)
         except Exception:
             slug = None
+    # Accurate content-type label (replaces the old hardcoded 'auto_press' —
+    # see _li_post_type_for). For /dcpi/ and /markets/ posts the slug above is
+    # the market slug, correlated to engagement by marketing_engine's
+    # _market_performance(); for /news/ press posts it stays the press slug.
+    post_type = _li_post_type_for(article_url)
     try:
         cur.execute(
             "UPDATE social_media_posts SET linkedin_urn = %s WHERE id = %s",
@@ -968,7 +1000,7 @@ def _persist_linkedin_urn(cur, post_id, urn, content_text, slug=None, article_ur
             """INSERT INTO linkedin_posts (post_urn, content, post_type, status,
                                             slug, posted_at)
                VALUES (%s, %s, %s, %s, %s, NOW())""",
-            (urn, (content_text or '')[:500], 'auto_press', 'success', slug),
+            (urn, (content_text or '')[:500], post_type, 'success', slug),
         )
     except Exception as e:
         # Table may not exist in some dev DBs; linkedin_poster._ensure_tables

@@ -3395,6 +3395,91 @@ def og_performance():
     return resp, 200
 
 
+def _market_performance(days: int = 30) -> list:
+    """Per-MARKET LinkedIn engagement.
+
+    The topic bandit (_topic_performance) joins auto_press_releases.slug and so
+    only sees press-release posts; the DCPI / market-movement alerts (which link
+    to /dcpi/<city> or /markets/<metro>) are invisible to it. This surfaces
+    that signal instead: it groups market posts by their URL slug and LEFT JOINs
+    dcpi_markets so each market gets its real name/state/iso/tier where the slug
+    resolves ('boise' -> 'boise-id'). Markets not in dcpi_markets (metros,
+    AESO/Canada) still appear, keyed by slug, with matched_dcpi=false.
+
+    Press-release posts are excluded (their slug is a YYYY-MM-DD-headline, which
+    _topic_performance already covers). Read-only; never raises."""
+    conn = _conn()
+    if conn is None:
+        return []
+    out = []
+    try:
+        with conn, conn.cursor() as cur:
+            cur.execute("""
+                SELECT p.slug,
+                       MAX(d.name)  AS market_name,
+                       MAX(d.state) AS state,
+                       MAX(d.iso)   AS iso,
+                       MAX(d.tier)  AS tier,
+                       COUNT(*)                                   AS n_posts,
+                       COALESCE(SUM(p.impressions), 0)            AS impressions,
+                       COALESCE(SUM(COALESCE(p.likes,0)
+                                  + COALESCE(p.comments,0)
+                                  + COALESCE(p.shares,0)), 0)     AS engagement
+                  FROM linkedin_posts p
+                  LEFT JOIN dcpi_markets d
+                         ON d.slug = p.slug
+                         OR d.slug LIKE p.slug || '-%%'
+                 WHERE p.slug IS NOT NULL
+                   AND p.slug !~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}-'
+                   AND p.posted_at > NOW() - make_interval(days => %s)
+                 GROUP BY p.slug
+                 ORDER BY impressions DESC, n_posts DESC
+            """, (int(days),))
+            for slug, name, state, iso, tier, n, imp, eng in cur.fetchall():
+                out.append({
+                    "market_slug": slug,
+                    "market":      name or slug,
+                    "state":       state,
+                    "iso":         iso,
+                    "tier":        tier,
+                    "matched_dcpi": bool(name),
+                    "n_posts":     int(n or 0),
+                    "impressions": int(imp or 0),
+                    "engagement":  int(eng or 0),
+                })
+    except Exception as e:
+        print(f"[market-perf] _market_performance query failed: {e}",
+              file=sys.stderr)
+        return []
+    finally:
+        try: conn.close()
+        except Exception: pass
+    return out
+
+
+@marketing_bp.get("/api/v1/marketing/market-performance")
+def market_performance():
+    """Engagement per market for DCPI / market-alert LinkedIn posts — the market
+    analog of og-performance (which only covers press releases). Read-only."""
+    try:
+        days = max(7, min(int(request.args.get("days", "30")), 180))
+    except ValueError:
+        days = 30
+    data = _market_performance(days)
+    resp = jsonify({
+        "as_of": datetime.now(timezone.utc).isoformat(),
+        "window_days": days,
+        "markets_tracked": len(data),
+        "by_market": data,
+        "note": ("LinkedIn engagement per market for /dcpi/ + /markets/ posts, "
+                 "keyed by URL slug and enriched from dcpi_markets where the slug "
+                 "resolves (matched_dcpi=true). Press releases are covered by "
+                 "og-performance / _topic_performance instead."),
+    })
+    resp.headers["Cache-Control"] = "public, max-age=300, stale-while-revalidate=600"
+    return resp, 200
+
+
 @marketing_bp.route("/api/v1/marketing/track", methods=["GET", "POST"])
 def track_event():
     """Pixel-style engagement tracking. Public, rate-limit-friendly.
