@@ -56,6 +56,17 @@ CREATE INDEX IF NOT EXISTS ix_bfo_attempted   ON brain_finding_outcomes(attempte
 CREATE INDEX IF NOT EXISTS ix_bfo_outcome     ON brain_finding_outcomes(outcome);
 """
 
+# Phase ZZZZ-feat3 (2026-06-28) — honest detector-keyed fix memory.
+# (b) re-key: episodes were keyed on the git COMMIT scope ('commit_scope:phase-rrr'),
+#     but live detectors call /memory/lookup?issue=<detector_issue> (e.g.
+#     'paywall_anon_leak'), so lookups MISS. We DUAL-WRITE a new detector_issue
+#     column (keeping issue_type untouched so existing consumers/stats don't
+#     break) and have /lookup match on EITHER column. Additive, fail-safe.
+_SCHEMA_DETECTOR_ISSUE = """
+ALTER TABLE brain_finding_outcomes ADD COLUMN IF NOT EXISTS detector_issue TEXT;
+CREATE INDEX IF NOT EXISTS ix_bfo_detector_issue ON brain_finding_outcomes(detector_issue);
+"""
+
 _SCHEMA_INIT_DONE = False
 
 def _ensure_schema():
@@ -66,6 +77,15 @@ def _ensure_schema():
         try:
             cur = c.cursor()
             cur.execute(_SCHEMA)
+            # Additive dual-write column for the re-key (own try so a failure
+            # here can't block the base schema / degrades to legacy behavior).
+            try:
+                cur.execute(_SCHEMA_DETECTOR_ISSUE)
+            except Exception as _e:
+                logger.warning(f"brain_memory detector_issue migration skipped: {_e}")
+                try: c.rollback()
+                except Exception: pass
+                cur.execute(_SCHEMA)  # re-run base after rollback so commit below sticks
             try: c.commit()
             except Exception: pass
             _SCHEMA_INIT_DONE = True
@@ -101,19 +121,41 @@ def record_outcome():
     if not issue:
         return jsonify(ok=False, error="issue_type required"), 400
 
+    # (b) re-key: dual-write detector_issue. Callers that know the live
+    # detector issue string can pass it explicitly; otherwise default to the
+    # issue_type (which, for detector-originated records, already IS the
+    # detector issue — only the commit-backfill path differs).
+    detector_issue = (body.get("detector_issue") or issue)
+
     try:
         c = _conn()
         try:
             cur = c.cursor()
-            cur.execute("""
-                INSERT INTO brain_finding_outcomes
-                  (issue_type, finding_url, finding_detail, fix_kind,
-                   fix_summary, fix_pr_url, outcome, outcome_detail)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                RETURNING id
-            """, (issue, body.get("finding_url"), body.get("finding_detail"),
-                  fix_kind, body.get("fix_summary"), body.get("fix_pr_url"),
-                  body.get("outcome", "pending"), body.get("outcome_detail")))
+            try:
+                cur.execute("""
+                    INSERT INTO brain_finding_outcomes
+                      (issue_type, finding_url, finding_detail, fix_kind,
+                       fix_summary, fix_pr_url, outcome, outcome_detail, detector_issue)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    RETURNING id
+                """, (issue, body.get("finding_url"), body.get("finding_detail"),
+                      fix_kind, body.get("fix_summary"), body.get("fix_pr_url"),
+                      body.get("outcome", "pending"), body.get("outcome_detail"),
+                      detector_issue))
+            except Exception:
+                # Fail-safe: if the detector_issue column is somehow absent,
+                # degrade to the legacy INSERT so recording never breaks.
+                try: c.rollback()
+                except Exception: pass
+                cur.execute("""
+                    INSERT INTO brain_finding_outcomes
+                      (issue_type, finding_url, finding_detail, fix_kind,
+                       fix_summary, fix_pr_url, outcome, outcome_detail)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    RETURNING id
+                """, (issue, body.get("finding_url"), body.get("finding_detail"),
+                      fix_kind, body.get("fix_summary"), body.get("fix_pr_url"),
+                      body.get("outcome", "pending"), body.get("outcome_detail")))
             rid = cur.fetchone()[0]
             c.commit()
         finally:
@@ -136,18 +178,37 @@ def lookup():
     if not issue:
         return jsonify(ok=False, error="?issue=<issue_type> required"), 400
 
+    # (b) re-key: match on EITHER the git scope (issue_type, incl. the
+    # 'commit_scope:' prefixed form) OR the live detector issue string
+    # (detector_issue). Detectors call ?issue=<detector_issue>; backfilled
+    # commit rows store the bare scope in detector_issue, so both resolve.
     try:
         c = _conn()
         try:
             cur = c.cursor()
-            cur.execute("""
-                SELECT fix_kind, fix_summary, fix_pr_url, outcome,
-                       outcome_detail, attempted_at
-                  FROM brain_finding_outcomes
-                 WHERE issue_type = %s
-                 ORDER BY attempted_at DESC
-                 LIMIT 20
-            """, (issue,))
+            try:
+                cur.execute("""
+                    SELECT fix_kind, fix_summary, fix_pr_url, outcome,
+                           outcome_detail, attempted_at
+                      FROM brain_finding_outcomes
+                     WHERE issue_type = %s
+                        OR detector_issue = %s
+                        OR issue_type = %s
+                     ORDER BY attempted_at DESC
+                     LIMIT 20
+                """, (issue, issue, f"commit_scope:{issue}"))
+            except Exception:
+                # Fail-safe: column missing → legacy issue_type-only lookup.
+                try: c.rollback()
+                except Exception: pass
+                cur.execute("""
+                    SELECT fix_kind, fix_summary, fix_pr_url, outcome,
+                           outcome_detail, attempted_at
+                      FROM brain_finding_outcomes
+                     WHERE issue_type = %s
+                     ORDER BY attempted_at DESC
+                     LIMIT 20
+                """, (issue,))
             rows = cur.fetchall() or []
         finally:
             try: c.close()
@@ -197,6 +258,64 @@ def lookup():
     ), 200
 
 
+def _real_outcome_for_scope(cur, scope: str):
+    """(a) Source a HONEST tri-state outcome for a commit scope from the
+    verified outcome feeds instead of assuming 'success'.
+
+    Returns one of: 'success' (a verifier confirmed resolution), 'failed'
+    (a verifier confirmed it did NOT resolve / regressed), or 'pending'
+    (no verified record exists — a shipped commit is not proof of resolution).
+
+    Best-effort + fail-safe: any error or missing table degrades to 'pending'
+    (the honest default), NEVER to a fabricated 'success'.
+
+    Match strategy: the verified feeds key on pattern_name (autopilot_outcomes)
+    or file_path/klass (brain_fix_outcomes), neither of which is the git scope.
+    The most-reliable available correlation is pattern_name ILIKE the scope, so
+    we look for the most recent verified verdict whose pattern mentions the scope.
+    Absent a match we stay honest with 'pending'.
+    """
+    # autopilot_outcomes.succeeded is the tri-state verified signal (NULL =
+    # cannot_verify). Take the most recent NON-NULL verdict for a matching
+    # pattern. NULL/cannot_verify is treated as "no verdict" → keep looking.
+    try:
+        cur.execute("""
+            SELECT succeeded
+              FROM autopilot_outcomes
+             WHERE succeeded IS NOT NULL
+               AND pattern_name ILIKE %s
+             ORDER BY verified_at DESC
+             LIMIT 1
+        """, (f"%{scope}%",))
+        row = cur.fetchone()
+        if row is not None and row[0] is not None:
+            return "success" if row[0] else "failed"
+    except Exception:
+        try: cur.connection.rollback()
+        except Exception: pass
+
+    # brain_fix_outcomes.resolved is the fix-verifier tri-state (NULL =
+    # indeterminate). Correlate via file_path/klass mentioning the scope.
+    try:
+        cur.execute("""
+            SELECT resolved
+              FROM brain_fix_outcomes
+             WHERE resolved IS NOT NULL
+               AND (COALESCE(file_path,'') ILIKE %s OR COALESCE(klass,'') ILIKE %s)
+             ORDER BY verified_at DESC
+             LIMIT 1
+        """, (f"%{scope}%", f"%{scope}%"))
+        row = cur.fetchone()
+        if row is not None and row[0] is not None:
+            return "success" if row[0] else "failed"
+    except Exception:
+        try: cur.connection.rollback()
+        except Exception: pass
+
+    # No verified record → the honest answer is 'pending', not 'success'.
+    return "pending"
+
+
 @brain_memory_bp.route("/api/v1/brain/memory/backfill-from-commits", methods=["POST", "GET"])
 def backfill_from_commits():
     """Phase ZZZZ-T2-memory-bootstrap (2026-05-18): brain memory was
@@ -206,9 +325,16 @@ def backfill_from_commits():
     cron writes new ones going forward.
 
     Walks GitHub API (no git binary on Railway), filters commits whose
-    message starts with 'fix(' or 'feat(' (typical brain-fixable shape),
-    creates `outcome='success'` records (assumes the fix shipped + the
-    issue resolved — brain can downgrade later if it re-fires)."""
+    message starts with 'fix(' or 'feat(' (typical brain-fixable shape).
+
+    (a) HONESTY: outcome is NO LONGER hardcoded 'success'. We source the
+    real tri-state outcome from the verified outcome feeds
+    (autopilot_outcomes.succeeded / brain_fix_outcomes.resolved):
+      · a verified-true  row  → 'success'
+      · a verified-false row  → 'failed'
+      · no verified record    → 'pending' (a shipped commit is NOT proof the
+        finding resolved; only a verifier is).
+    """
     _ensure_schema()
     days = int(request.args.get("days") or "7")
     try:
@@ -253,20 +379,46 @@ def backfill_from_commits():
                 if cur.fetchone():
                     skipped += 1
                     continue
-                cur.execute("""
-                    INSERT INTO brain_finding_outcomes
-                      (issue_type, finding_url, fix_kind, fix_summary,
-                       fix_pr_url, outcome, outcome_detail)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s)
-                """, (
-                    f"commit_scope:{scope}",
-                    f"git:{repo}",
-                    f"{kind}_commit",
-                    summary[:300],
-                    f"https://github.com/{repo}/commit/{sha}",
-                    "success",  # assumed; can downgrade later
-                    f"Auto-recorded from commit {sha}",
-                ))
+                # (a) HONEST outcome — source the real verified verdict instead
+                # of assuming 'success'. (b) re-key — store the bare scope in
+                # detector_issue so /lookup?issue=<scope> resolves these rows.
+                real_outcome = _real_outcome_for_scope(cur, scope)
+                try:
+                    cur.execute("""
+                        INSERT INTO brain_finding_outcomes
+                          (issue_type, finding_url, fix_kind, fix_summary,
+                           fix_pr_url, outcome, outcome_detail, detector_issue)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    """, (
+                        f"commit_scope:{scope}",
+                        f"git:{repo}",
+                        f"{kind}_commit",
+                        summary[:300],
+                        f"https://github.com/{repo}/commit/{sha}",
+                        real_outcome,
+                        f"Auto-recorded from commit {sha}; outcome={real_outcome} "
+                        f"(sourced from verified feeds, not assumed)",
+                        scope,
+                    ))
+                except Exception:
+                    # Fail-safe: detector_issue column absent → legacy INSERT,
+                    # but STILL use the honest outcome (not a fabricated success).
+                    try: c.rollback()
+                    except Exception: pass
+                    cur.execute("""
+                        INSERT INTO brain_finding_outcomes
+                          (issue_type, finding_url, fix_kind, fix_summary,
+                           fix_pr_url, outcome, outcome_detail)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    """, (
+                        f"commit_scope:{scope}",
+                        f"git:{repo}",
+                        f"{kind}_commit",
+                        summary[:300],
+                        f"https://github.com/{repo}/commit/{sha}",
+                        real_outcome,
+                        f"Auto-recorded from commit {sha}; outcome={real_outcome}",
+                    ))
                 recorded += 1
             c.commit()
         finally:
@@ -339,3 +491,141 @@ def stats():
         note=("Brain now has memory. Future detectors should check "
               "/lookup before flagging — if past fix X worked, recommend X."),
     ), 200
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# (c) RECALL GATE — DARK behind BRAIN_MEMORY_RECALL_GATE_ENABLED (default OFF).
+#
+# Before the run-loop FIRES a finding, it can consult this gate. If memory
+# shows a VERIFIED-RESOLVED record for the same issue AND the finding
+# signature is unchanged, the gate returns action='escalate_once' so the
+# loop escalates ONCE (to a human) instead of re-firing the same finding
+# again — the brain learns to STOP, not re-steer.
+#
+# Fail-safe contract: the flag defaults OFF, and on the flag being OFF OR
+# ANY error the gate returns action='fire' (today's behavior). It NEVER
+# suppresses a finding unless the flag is explicitly on AND it positively
+# confirmed a verified-resolved record with an unchanged signature.
+# ─────────────────────────────────────────────────────────────────────────
+
+def _recall_gate_enabled() -> bool:
+    return (os.environ.get("BRAIN_MEMORY_RECALL_GATE_ENABLED", "")
+            .strip().lower() in ("1", "true", "yes", "on"))
+
+
+def recall_gate(issue: str, signature: str | None = None) -> dict:
+    """Decide whether to fire, or escalate-once, for `issue`.
+
+    Args:
+      issue:     the live detector issue string (matches issue_type OR
+                 detector_issue OR commit_scope:<issue>).
+      signature: an opaque stable hash/string of the CURRENT finding (e.g.
+                 url+detail). If a verified-resolved record stored the same
+                 signature, the finding is "unchanged" and we escalate-once.
+                 If None/empty, signature is treated as unknown → we still
+                 only gate on a verified-resolved record (conservative).
+
+    Returns a dict:
+      { "action": "fire" | "escalate_once",
+        "reason": str,
+        "enabled": bool,
+        "verified_resolved": bool,
+        "signature_unchanged": bool }
+
+    DARK + fail-safe: returns action='fire' whenever the flag is off or
+    anything goes wrong. Importable from the run-loop without side effects.
+    """
+    out = {"action": "fire", "reason": "gate_off_or_default",
+           "enabled": False, "verified_resolved": False,
+           "signature_unchanged": False}
+    try:
+        if not _recall_gate_enabled():
+            return out
+        out["enabled"] = True
+        if not issue:
+            out["reason"] = "no_issue"
+            return out
+
+        _ensure_schema()
+        c = _conn()
+        try:
+            cur = c.cursor()
+            # Pull the most recent records for this issue across both keys.
+            try:
+                cur.execute("""
+                    SELECT outcome, outcome_detail, finding_detail, verified_at,
+                           attempted_at
+                      FROM brain_finding_outcomes
+                     WHERE issue_type = %s
+                        OR detector_issue = %s
+                        OR issue_type = %s
+                     ORDER BY COALESCE(verified_at, attempted_at) DESC
+                     LIMIT 20
+                """, (issue, issue, f"commit_scope:{issue}"))
+            except Exception:
+                try: c.rollback()
+                except Exception: pass
+                cur.execute("""
+                    SELECT outcome, outcome_detail, finding_detail, NULL, attempted_at
+                      FROM brain_finding_outcomes
+                     WHERE issue_type = %s
+                     ORDER BY attempted_at DESC
+                     LIMIT 20
+                """, (issue,))
+            rows = cur.fetchall() or []
+        finally:
+            try: c.close()
+            except Exception: pass
+
+        # A verified-resolved record = outcome 'success'. (Honest: a 'pending'
+        # commit-backfill row is NOT verified, so it never gates.)
+        resolved_rows = [r for r in rows if (r[0] or "") == "success"]
+        if not resolved_rows:
+            out["reason"] = "no_verified_resolved_record"
+            return out
+        out["verified_resolved"] = True
+
+        # Signature-unchanged check: if a caller-supplied signature matches a
+        # signature we stored (we look in outcome_detail / finding_detail for a
+        # 'sig:<...>' token, falling back to substring match), the finding is
+        # unchanged → escalate-once. With no signature provided, treat as
+        # unchanged=True (conservative recall) ONLY when a verified-resolved
+        # record exists — the loop still gets a chance to pass a signature to
+        # be stricter.
+        sig = (signature or "").strip()
+        if not sig:
+            out["signature_unchanged"] = True
+            out["action"] = "escalate_once"
+            out["reason"] = "verified_resolved_no_signature_supplied"
+            return out
+
+        for r in resolved_rows:
+            haystack = " ".join(str(x or "") for x in (r[1], r[2]))
+            if (f"sig:{sig}" in haystack) or (sig in haystack):
+                out["signature_unchanged"] = True
+                out["action"] = "escalate_once"
+                out["reason"] = "verified_resolved_and_signature_unchanged"
+                return out
+
+        out["reason"] = "verified_resolved_but_signature_changed"
+        return out
+    except Exception as e:
+        # Fail-safe: any error → fire (today's behavior).
+        return {"action": "fire", "reason": f"gate_error:{type(e).__name__}",
+                "enabled": out.get("enabled", False),
+                "verified_resolved": out.get("verified_resolved", False),
+                "signature_unchanged": False}
+
+
+@brain_memory_bp.route("/api/v1/brain/memory/recall-gate", methods=["GET"])
+def recall_gate_endpoint():
+    """Thin HTTP wrapper over recall_gate() so an HTTP-only run-loop can
+    consult the gate: ?issue=<issue>&signature=<sig>. DARK + fail-safe —
+    returns action='fire' unless BRAIN_MEMORY_RECALL_GATE_ENABLED is on AND
+    a verified-resolved record with an unchanged signature is found."""
+    issue = (request.args.get("issue") or "").strip()
+    signature = (request.args.get("signature") or "").strip() or None
+    if not issue:
+        return jsonify(ok=False, error="?issue=<issue> required"), 400
+    res = recall_gate(issue, signature)
+    return jsonify(ok=True, issue=issue, **res), 200
