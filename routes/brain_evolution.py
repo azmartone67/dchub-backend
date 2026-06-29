@@ -330,6 +330,20 @@ def compute_evolution_snapshot() -> dict:
                    AND status IN ('rejected','reverted','dismissed')
             """, default=0)
 
+            # R3-honesty (2026-06-28): the dominant "is the brain getting smarter"
+            # signal is VERIFIED EFFECT (fixes that actually LANDED), not raw action
+            # count. SAME query self-model runs (brain_self_model.py:135) so the two
+            # verdicts can no longer disagree (the 74-"ascending"-vs-34%-real split).
+            # succeeded IS TRUE/FALSE; NULL (no verifier for that pattern) excluded.
+            verified_ok_30d, verified_fail_30d = _safe_dual(cur, """
+                SELECT
+                  COUNT(*) FILTER (WHERE succeeded IS TRUE
+                                    AND verified_at >= NOW() - INTERVAL '30 days'),
+                  COUNT(*) FILTER (WHERE succeeded IS FALSE
+                                    AND verified_at >= NOW() - INTERVAL '30 days')
+                  FROM autopilot_outcomes
+            """, default=(0, 0))
+
             # ── Heal cache hits (24h) ──
             # Each row in heal_findings_cache represents one cron-driven
             # refresh that wrote to DB. Treat each row as a "cache hit
@@ -376,56 +390,71 @@ def compute_evolution_snapshot() -> dict:
         try: c.close()
         except Exception: pass
 
-    # ── Evolution score (0-100) ──
-    # Composite of three normalised components, each capped at 1.0:
-    #   self_resolve_ratio = findings_resolved_7d / max(7, baseline)
-    #     — caps when brain self-resolves 35+ findings in 7d
-    #   autonomy_ratio     = autonomous_actions_24h / baseline (5 actions/day)
-    #     — caps when 5+ autonomous actions happen daily
+    # ── Evolution score (0-100) — R3-honesty re-base (2026-06-28) ──
+    # Composite weighted toward VERIFIED EFFECT (does the brain's work actually
+    # LAND), not raw action volume:
+    #   effect_ratio       = verified_ok_30d / verified_sample (autopilot_outcomes;
+    #                        sample<5 → 0.0) — the SAME signal self-model reports.
     #   learning_ratio     = l5_accepted_30d / max(l5_proposed_30d, 1)
-    #     — proportion of code proposals that landed
-    #
-    # Weights: 40% self-resolve (the core "brain heals itself" signal)
-    #          30% autonomy (the "doing things" signal)
-    #          30% learning (the "getting better at code" signal)
+    #   self_resolve_ratio = findings_resolved_7d / 35 — weak/noisy secondary
+    # Weights: 50% verified-effect · 30% learning · 20% self-resolve.
+    # REMOVED: the old autonomy_ratio (actions/5) vanity term — it made the score
+    # read 74 "ascending" while real verified effect was ~34% (contradicting
+    # self-model on the same replica). Now the two agree by construction.
     fr_7d = int(findings_resolved_7d or 0)
+    # R3-honesty (2026-06-28): re-based off raw action-count vanity onto VERIFIED
+    # EFFECT. effect_ratio = verified fixes that LANDED / verified sample (the same
+    # signal self-model reports) — guard a tiny sample (<5) to 0.0 so the score
+    # can't spike on noise. The old autonomy_ratio (ap_24h/5 — "did things"
+    # regardless of whether they worked) is REMOVED: it was what made this read 74
+    # "ascending" while real verified effect was ~34%. self_resolve (finding-
+    # disappearance) is a noisy proxy → demoted to a weak secondary.
+    _vsample = int(verified_ok_30d or 0) + int(verified_fail_30d or 0)
+    effect_ratio = (int(verified_ok_30d or 0) / _vsample) if _vsample >= 5 else 0.0
     self_resolve_ratio = min(1.0, fr_7d / 35.0)
-    autonomy_ratio = min(1.0, int(ap_24h or 0) / 5.0)
     learning_ratio = (
         (int(l5_accepted_30d or 0) / max(int(l5_proposed_30d or 1), 1))
         if int(l5_proposed_30d or 0) > 0 else 0.0
     )
+    # Weights: 50% verified-effect (does the brain's work actually LAND — the core
+    # "getting smarter" signal), 30% learning (code proposals that landed), 20%
+    # self-resolve (finding-disappearance, weak/noisy secondary).
     evolution_score = round(
-        (self_resolve_ratio * 40.0)
-        + (autonomy_ratio    * 30.0)
-        + (learning_ratio    * 30.0),
+        (effect_ratio        * 50.0)
+        + (learning_ratio    * 30.0)
+        + (self_resolve_ratio * 20.0),
         1,
     )
 
     # Verdict ladder mirrors heartbeat style for consistency
+    _eff_note = (
+        f"{round(effect_ratio * 100.0, 1)}% verified-effect "
+        f"({int(verified_ok_30d or 0)}/{_vsample})"
+        if _vsample >= 5 else "verified-effect not yet measurable (sample<5)"
+    )
     if evolution_score >= 70.0:
         verdict = "ascending"
         verdict_detail = (
-            f"score {evolution_score}/100 — brain self-resolved {fr_7d} "
-            f"findings + ran {int(ap_24h or 0)} autonomous actions in last 24h"
+            f"score {evolution_score}/100 — {_eff_note}; "
+            f"{fr_7d} findings self-resolved in 7d"
         )
     elif evolution_score >= 40.0:
         verdict = "steady"
         verdict_detail = (
-            f"score {evolution_score}/100 — moderate autonomy, "
+            f"score {evolution_score}/100 — {_eff_note}; "
             f"{fr_7d} findings resolved in 7d"
         )
     elif evolution_score >= 15.0:
         verdict = "warming"
         verdict_detail = (
-            f"score {evolution_score}/100 — some signal but most "
-            "decisions still need human action"
+            f"score {evolution_score}/100 — {_eff_note}; real effect still "
+            "low, most decisions need human action"
         )
     else:
         verdict = "quiet"
         verdict_detail = (
-            f"score {evolution_score}/100 — brain is not autonomously "
-            "doing much; check cron health + autopilot disable env"
+            f"score {evolution_score}/100 — {_eff_note}; brain not landing "
+            "verified fixes autonomously — check the effect verifier + autopilot"
         )
 
     out.update({
@@ -433,9 +462,11 @@ def compute_evolution_snapshot() -> dict:
         "verdict_detail": verdict_detail,
         "evolution_score": evolution_score,
         "components": {
-            "self_resolve_ratio": round(self_resolve_ratio, 3),
-            "autonomy_ratio":     round(autonomy_ratio, 3),
-            "learning_ratio":     round(learning_ratio, 3),
+            "effect_ratio":        round(effect_ratio, 3),
+            "verified_ok_30d":     int(verified_ok_30d or 0),
+            "verified_sample_30d": _vsample,
+            "self_resolve_ratio":  round(self_resolve_ratio, 3),
+            "learning_ratio":      round(learning_ratio, 3),
         },
         "findings_resolved_7d":    fr_7d,
         "findings_resolved_30d":   int(findings_resolved_30d or 0),

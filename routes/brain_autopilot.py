@@ -1472,15 +1472,36 @@ def _finding_priority(f: dict) -> int:
 
 
 def _prioritize_issues(issues: list) -> list:
-    """Stable-sort `issues` so high-value findings act first, preserving
-    the incoming (last_seen DESC) order WITHIN each tier. Fail-safe: on
-    ANY error return the list untouched (old behaviour)."""
+    """Stable-sort `issues` so high-value findings act first. PRIMARY key = the
+    static value tier (coarse; revenue-first preserved). SECONDARY key = the
+    pattern's VERIFIED-EFFECT weight from brain_work_selector's soft-greedy bandit
+    (class_success_weight, [FLOOR..CAP], anti-starvation) so WITHIN a tier the
+    patterns that actually LAND fire first and chronic-low-effect patterns sink —
+    turning the per-tick action budget from FIFO into yield-weighted, using effect
+    data the brain already collects (autopilot_outcomes). Weights are precomputed
+    ONCE per distinct pattern (not per comparison) so the sort costs O(distinct)
+    DB reads, not O(n log n). Fail-safe: ANY error → today's pure-tier sort
+    (stability still preserves the incoming last_seen-DESC order within equal keys).
+    REORDER-ONLY: never benches a pattern — the bandit FLOOR keeps 0%-effect
+    patterns explored, so no starvation and no safety invariant is touched."""
     try:
-        return sorted(
-            issues,
-            key=lambda f: _finding_priority(f) if isinstance(f, dict)
-            else _PRIORITY_DEFAULT,
-        )
+        def _base(f):
+            iss = (f.get("issue") or "") if isinstance(f, dict) else ""
+            return (iss.split(":", 1)[0] if iss else "") or iss
+        weights = {}
+        try:
+            from routes.brain_work_selector import class_success_weight as _csw
+            for b in {_base(f) for f in issues if isinstance(f, dict)}:
+                try:    weights[b] = float(_csw(b))
+                except Exception: weights[b] = 1.0
+        except Exception:
+            weights = {}   # bandit unavailable → degrade to pure tier sort
+        def _key(f):
+            if not isinstance(f, dict):
+                return (_PRIORITY_DEFAULT, 0.0)
+            # negate the weight so a HIGHER verified-effect sorts EARLIER
+            return (_finding_priority(f), -weights.get(_base(f), 1.0))
+        return sorted(issues, key=_key)
     except Exception:
         return issues
 
