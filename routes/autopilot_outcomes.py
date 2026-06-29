@@ -435,6 +435,14 @@ def verify_pending(window_minutes: int = 30, max_actions: int = 50) -> dict:
                         if succeeded and (evidence or "").strip():
                             did = _bs.mark_resolved(f_issue, f_url, evidence)
                             out["resolved"] = out.get("resolved", 0) + (1 if did else 0)
+                            # #3: persist verified-resolved MEMORY (deepens the
+                            # fix-memory depth metric + arms recall_gate). Own
+                            # guard — a memory write must never break verify.
+                            try:
+                                from routes.brain_memory import record_verified_resolved
+                                record_verified_resolved(f_issue, f_url, evidence)
+                            except Exception:
+                                pass
                         elif not succeeded:
                             _bs.mark_attempted_failed(f_issue, f_url, evidence)
                     except Exception as _we:

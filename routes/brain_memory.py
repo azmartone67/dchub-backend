@@ -168,6 +168,75 @@ def record_outcome():
                     note="Recorded. Future brain runs will see this in /lookup."), 200
 
 
+def record_verified_resolved(issue, url="", evidence="", *, fix_kind="auto_verified"):
+    """Fail-safe, deduped writer for a VERIFIED-RESOLVED finding.
+
+    Writes a brain_finding_outcomes row with outcome='success' carrying the
+    recall-gate signature token `sig:<issue>|<url>`. This does two jobs:
+      1. DEEPENS the fix-memory (the self-assessment 'memory depth' dimension
+         reads verified-resolved outcomes — without these the store is mostly
+         'pending' commit-backfill rows).
+      2. ARMS recall_gate() — the gate matches a 'success' row whose
+         outcome_detail contains `sig:<sig>`; nothing wrote one before, which
+         is why #3 was inert.
+
+    Idempotent: at most one success row per (issue, url) so repeated verify
+    passes don't pile up (which would also skew fix_kind_performance). Never
+    raises — mirrors the module's fail-safe contract. Returns
+    'inserted' | 'exists' | 'skipped'. Keep the signature formula identical to
+    the autopilot fire side (brain_autopilot.py INV2): sig = f"{issue}|{url}".
+    """
+    try:
+        issue = (issue or "").strip()[:200]   # parity with autopilot fire side + _record_action[:200]
+        if not issue:
+            return "skipped"
+        url = (url or "")[:500]
+        detail = f"verified-resolved by outcome verifier; sig:{issue}|{url}"
+        ev = (evidence or "")[:300]
+        _ensure_schema()
+        c = _conn()
+        if c is None:
+            return "skipped"
+        try:
+            cur = c.cursor()
+            # Dedupe: one success row per (issue,url) is all the gate needs.
+            try:
+                cur.execute(
+                    "SELECT 1 FROM brain_finding_outcomes "
+                    "WHERE outcome='success' AND COALESCE(finding_url,'')=%s "
+                    "AND (issue_type=%s OR detector_issue=%s) LIMIT 1",
+                    (url, issue, issue))
+                if cur.fetchone():
+                    return "exists"
+            except Exception:
+                try: c.rollback()
+                except Exception: pass
+            try:
+                cur.execute("""
+                    INSERT INTO brain_finding_outcomes
+                      (issue_type, finding_url, finding_detail, fix_kind,
+                       fix_summary, fix_pr_url, outcome, outcome_detail, detector_issue)
+                    VALUES (%s,%s,%s,%s,%s,%s,'success',%s,%s)
+                """, (issue, url, ev, fix_kind, "verified_resolved", None, detail, issue))
+            except Exception:
+                # detector_issue column absent → legacy INSERT (mirror record_outcome).
+                try: c.rollback()
+                except Exception: pass
+                cur.execute("""
+                    INSERT INTO brain_finding_outcomes
+                      (issue_type, finding_url, finding_detail, fix_kind,
+                       fix_summary, fix_pr_url, outcome, outcome_detail)
+                    VALUES (%s,%s,%s,%s,%s,%s,'success',%s)
+                """, (issue, url, ev, fix_kind, "verified_resolved", None, detail))
+            c.commit()
+            return "inserted"
+        finally:
+            try: c.close()
+            except Exception: pass
+    except Exception:
+        return "skipped"
+
+
 @brain_memory_bp.route("/api/v1/brain/memory/lookup", methods=["GET"])
 def lookup():
     """Given ?issue=<issue_type>, return past attempts + success rate.
