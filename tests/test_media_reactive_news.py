@@ -102,6 +102,22 @@ def test_market_from_news(title, expect):
     assert rn._market_from_news(title, "") == expect
 
 
+# ── advisory vs hard guard classification ────────────────────────────────────
+@pytest.mark.parametrize("why,advisory", [
+    # ADVISORY — editor verifiability + fact-check flags (queue with a warning)
+    ("editor rejected — Specific grid metrics (36mo TTP, 35.6) unverifiable; citation", True),
+    ("fact-check: 716.7 MW preleased unverifiable", True),
+    ("could not verify the cited figure", True),
+    # HARD — must still hard-block
+    ("duplicate market+verdict 'northern-virginia|AVOID' already posted to linkedin", False),
+    ("partner-disparagement detected", False),
+    ("must open with a number", False),
+    ("", False),
+])
+def test_is_advisory_guard(why, advisory):
+    assert rn._is_advisory_guard(why) is advisory
+
+
 # ── dark-by-default invariant ────────────────────────────────────────────────
 def test_disabled_by_default(monkeypatch):
     monkeypatch.delenv("MEDIA_REACTIVE_NEWS_ENABLED", raising=False)
