@@ -90,6 +90,21 @@ _SELF_CRITICAL = re.compile(
 )
 _HAS_NUMBER = re.compile(r"\d")
 
+# Cumulative coverage/inventory stats — "311 markets across 7 ISOs",
+# "facilities span 178 countries" — are not movers. They repeat on every tick,
+# carry no delta, and read as marketing boilerplate, yet they clear _HAS_NUMBER
+# and can out-score genuine data-desk movers on a slow news day. Drop them so the
+# brain only competes for a media slot with real change findings. Matches the
+# "<inventory-noun> across/spanning N" totality shape; deliberately does NOT match
+# deltas like "added 3 facilities in Q2" or "ERCOT queue rose 127 GW".
+_COVERAGE_STAT = re.compile(
+    r"(?:markets?|facilities?|countries?|operators?|isos?|providers?|regions?|data[\s-]?centers?)\s+"
+    r"(?:across|spanning|span|cover(?:ing|s)?|within)\s+\d"
+    r"|\b\d[\d,.]*\s+(?:dcpi\s+)?(?:markets?|facilities?|operators?|isos?|providers?|regions?)\s+"
+    r"(?:across|spanning|within)\b",
+    re.I,
+)
+
 
 def _enabled() -> bool:
     return (os.environ.get("BRAIN_MEDIA_BRIDGE_ENABLED", "0") or "0").lower() in (
@@ -260,6 +275,8 @@ def brain_insight_leads(preview: bool = False) -> list:
                                 continue  # must lead with a number (ANALYST_VOICE)
                             if _SELF_CRITICAL.search(headline):
                                 continue  # never publish our own weaknesses
+                            if _COVERAGE_STAT.search(headline):
+                                continue  # inventory snapshot, not a mover — skip
                             # Dedup on the NUMBER-STRIPPED headline so "177 countries"
                             # and "178 countries" collapse to one candidate.
                             key = re.sub(r"\d+", "#", re.sub(r"\W+", "", headline.lower()))[:48]
