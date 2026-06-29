@@ -203,6 +203,10 @@ def _gather_predictions() -> list[dict]:
             "trend":       trend,
             "slope_per_day": round(slope, 3),
             "forecast_7d": round(forecast_7d, 1),
+            # Additive keys used by the (dark-by-default) forecast→finding
+            # bridge below. Harmless to existing consumers.
+            "threshold":   threshold,
+            "samples":     v.get("samples", 0),
         }
         # Alert logic
         if threshold and forecast_7d < threshold and trend == "falling":
@@ -224,9 +228,150 @@ def _gather_predictions() -> list[dict]:
     return predictions
 
 
+# ── Forecast → finding bridge + opportunity arm (Feature #7) ───────────
+# DARK-BY-DEFAULT: emission gated behind BRAIN_FORECAST_FINDINGS_ENABLED.
+# Read-only / disabled path is the current behavior. When ON, a forecast
+# that crosses a threshold N days out files an ADDITIVE brain_findings row
+# (deduped on (issue,url) by the canonical writer's UPDATE-then-INSERT).
+
+# Minimum snapshots required before a forecast is trustworthy enough to
+# file a finding. The velocity fit itself needs 3; we want a touch more
+# signal before acting on the extrapolation.
+_FORECAST_MIN_SAMPLES = int(os.environ.get("BRAIN_FORECAST_MIN_SAMPLES", "5") or 5)
+
+
+def _forecast_findings_enabled() -> bool:
+    return os.environ.get(
+        "BRAIN_FORECAST_FINDINGS_ENABLED", "").lower() in ("1", "true", "yes")
+
+
+def _emit_forecast_findings(preds: list[dict]) -> dict:
+    """Bridge predictions → brain_findings (gated, fail-safe, deduped).
+
+    For each forecasted metric:
+      (a) FALLING through a downside threshold within the forecast window
+          → issue='forecast_breach:<metric>'.
+      (b) RISING through a positive threshold within the forecast window
+          → issue='forecast_opportunity:<metric>'.
+
+    Gated on a min-confidence sample check. Deduped via the canonical
+    writer (constraint-agnostic upsert on issue+url). Never raises — any
+    failure degrades to today's behavior (no findings emitted)."""
+    out = {"enabled": False, "emitted": 0, "results": []}
+    if not _forecast_findings_enabled():
+        return out
+    out["enabled"] = True
+
+    # Build the candidate findings first (pure, side-effect-free).
+    candidates: list[dict] = []
+    try:
+        for p in preds or []:
+            if p.get("status") == "waiting":
+                continue
+            threshold = p.get("threshold")
+            if threshold is None:
+                continue
+            samples = int(p.get("samples", 0) or 0)
+            if samples < _FORECAST_MIN_SAMPLES:
+                continue  # min-confidence gate
+            metric = p.get("metric")
+            current = p.get("current")
+            forecast = p.get("forecast_7d")
+            slope = p.get("slope_per_day")
+            trend = p.get("trend")
+            if metric is None or forecast is None or current is None:
+                continue
+
+            # (a) Downside breach: falling AND projected below the floor,
+            #     but not already below it (the binary detector owns that).
+            if trend == "falling" and forecast < threshold and current >= threshold:
+                candidates.append({
+                    "issue":  f"forecast_breach:{metric}",
+                    "url":    "/api/v1/brain/predictions",
+                    "detail": (
+                        f"L6 forecast: {p.get('label', metric)} trending toward "
+                        f"{forecast:.0f} within 7d (current {current:.0f}, floor "
+                        f"{threshold}, slope {slope}/day, {samples} samples). "
+                        f"Projected to breach BEFORE the binary detector fires."),
+                })
+            # (b) Opportunity: rising AND projected above the positive
+            #     threshold, but not already above it.
+            elif trend == "rising" and forecast > threshold and current <= threshold:
+                candidates.append({
+                    "issue":  f"forecast_opportunity:{metric}",
+                    "url":    "/api/v1/brain/predictions",
+                    "detail": (
+                        f"L6 forecast: {p.get('label', metric)} rising toward "
+                        f"{forecast:.0f} within 7d (current {current:.0f}, "
+                        f"threshold {threshold}, slope {slope}/day, {samples} "
+                        f"samples). Positive-trajectory opportunity to lean in."),
+                })
+    except Exception as e:
+        logger.warning(f"L6 forecast-finding candidate build failed: {e}")
+        return out
+
+    if not candidates:
+        return out
+
+    # Persist (deduped) via the canonical writer. Single connection/tx.
+    try:
+        from routes.brain_findings_writer import upsert_brain_finding
+    except Exception as e:
+        logger.warning(f"L6 forecast-finding writer import failed: {e}")
+        return out
+
+    try:
+        c = _conn()
+        try:
+            cur = c.cursor()
+            for cand in candidates:
+                try:
+                    res = upsert_brain_finding(
+                        cur,
+                        issue=cand["issue"],
+                        url=cand["url"],
+                        count=1,
+                        detail=cand["detail"],
+                        detector="brain_l6_forecast",
+                        status="open")
+                    out["results"].append({"issue": cand["issue"], "result": res})
+                    if res in ("inserted", "updated"):
+                        out["emitted"] += 1
+                except Exception as ie:
+                    logger.warning(f"L6 forecast-finding upsert failed: {ie}")
+            try:
+                c.commit()
+            except Exception:
+                pass
+        finally:
+            try: c.close()
+            except Exception: pass
+    except Exception as e:
+        logger.warning(f"L6 forecast-finding persist failed: {e}")
+    return out
+
+
+def forecast_findings_tick() -> dict:
+    """Master-tick entrypoint: gather predictions then (gated) emit
+    forecast findings. Safe to call unconditionally — does nothing unless
+    BRAIN_FORECAST_FINDINGS_ENABLED is set. Never raises."""
+    try:
+        preds = _gather_predictions()
+        return _emit_forecast_findings(preds)
+    except Exception as e:
+        logger.warning(f"L6 forecast_findings_tick failed: {e}")
+        return {"enabled": _forecast_findings_enabled(), "emitted": 0,
+                "error": str(e)[:200]}
+
+
 @brain_layer6_bp.route("/api/v1/brain/predictions", methods=["GET"])
 def predictions_json():
     preds = _gather_predictions()
+    # Forecast→finding bridge (dark-by-default; no-op unless flag is on).
+    try:
+        _emit_forecast_findings(preds)
+    except Exception:
+        pass
     alerts = [p for p in preds if p.get("alert")]
     return jsonify(
         ok=True,
