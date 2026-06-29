@@ -883,6 +883,7 @@ def sitemap_landings():
     # crawlers + AI retrieval find it. /answers/ is CF-routable (verified 200).
     for _ans_slug in (
         'live-data-center-capacity-for-ai-agents',
+        'interconnection-queue-data-for-ai-agents',
     ):
         urls.append(f'  <url><loc>https://dchub.cloud/answers/{_ans_slug}</loc><changefreq>monthly</changefreq><priority>0.85</priority></url>')
     items = '\n'.join(urls)
