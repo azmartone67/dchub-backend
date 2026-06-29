@@ -1657,7 +1657,8 @@ def promote_unfixable_patterns() -> dict:
     if not _promote_on_failure_enabled():
         return {"ok": True, "enabled": False, "promoted": 0}
 
-    promoted = 0
+    promoted = 0    # newly inserted findings
+    refreshed = 0   # existing findings re-stamped (dedup hit)
     candidates: list[dict] = []
     c = _conn()
     if c is None:
@@ -1746,6 +1747,8 @@ def promote_unfixable_patterns() -> dict:
                             )
                             if res == "inserted":
                                 promoted += 1
+                            elif res == "updated":
+                                refreshed += 1
                         except Exception:
                             continue
                 c.commit()
@@ -1766,7 +1769,9 @@ def promote_unfixable_patterns() -> dict:
         "ok": True,
         "enabled": True,
         "candidates": len(candidates),
-        "promoted": promoted,
+        "promoted": promoted,      # newly filed this run
+        "refreshed": refreshed,    # already-open findings re-stamped (dedup)
+        "filed_total": promoted + refreshed,  # honest "rows maintained" count
     }
 
 
