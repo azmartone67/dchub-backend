@@ -238,6 +238,7 @@ def _base_html(*, title: str, description: str, canonical: str,
 <footer>
   <p>This data is provided by <a href="https://dchub.cloud">DC Hub Intelligence</a> — real-time data center market intelligence for AI agents and humans.
   Free MCP API: <code>https://dchub.cloud/mcp</code> · <a href="https://dchub.cloud/signup">Get free dev key</a></p>
+  <p class="dc-browse">Browse: <a href="/facilities">All facilities by country</a> · <a href="/dcpi">DC Hub Power Index</a> · <a href="/markets">Markets</a> · <a href="/grid">Grid</a></p>
   <p>21,000+ facilities · 7 ISO grid feeds · 2,000+ M&amp;A deals tracked · 540+ project pipeline</p>
 </footer>
 </body>
@@ -393,9 +394,13 @@ def _render_facility(f: dict, nearby: list) -> str:
     if lat and lon:
         map_link = f'<a href="https://www.openstreetmap.org/?mlat={lat}&mlon={lon}&zoom=15" target="_blank" rel="noopener">View on map ↗</a>'
 
+    # Breadcrumb now links UP to the /facilities hub (un-orphans this page for
+    # crawl: facility → /facilities/in/<country> → /facilities).
+    _country_crumb = (f' · <a href="/facilities/in/{_esc_attr(country.lower().strip())}">{_h(country)}</a>'
+                      if country else '')
     body = f"""<header class="dc-seo">
   <nav class="breadcrumb">
-    <a href="/">DC Hub</a> · <a href="/markets/{_esc_attr(_slug(city + '-' + state))}">{_h(city)}, {_h(state)}</a> · {_h(name)}
+    <a href="/">DC Hub</a> · <a href="/facilities">Facilities</a>{_country_crumb} · <a href="/markets/{_esc_attr(_slug(city + '-' + state))}">{_h(city)}, {_h(state)}</a> · {_h(name)}
   </nav>
   <h1>{_h(name)}</h1>
   <p class="lede">{_h(operator)} data center in {_h(location)}.</p>

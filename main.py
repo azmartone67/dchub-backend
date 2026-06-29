@@ -23192,6 +23192,18 @@ def serve_sitemap_xml():
             seen_slugs.add(full_slug)
             urls.append(f'  <url><loc>https://dchub.cloud/facilities/{full_slug}</loc><lastmod>{_lm}</lastmod><changefreq>monthly</changefreq><priority>0.5</priority></url>')
 
+    # ---- Facilities hub (2026-06-29) — countries index + per-country lists ----
+    # The geography hub (facilities_hub.py) that un-orphans the /facilities/<slug>
+    # pages above: give Google the shallow crawl path it was missing.
+    urls.append(f'  <url><loc>https://dchub.cloud/facilities</loc><lastmod>{today}</lastmod><changefreq>weekly</changefreq><priority>0.7</priority></url>')
+    _hub_countries = set()
+    for _frow in fac_rows:
+        _hc = (_frow[4] or '').strip().lower() if len(_frow) > 4 else ''
+        if _hc:
+            _hub_countries.add(_hc)
+    for _hc in sorted(_hub_countries):
+        urls.append(f'  <url><loc>https://dchub.cloud/facilities/in/{_hc}</loc><lastmod>{today}</lastmod><changefreq>weekly</changefreq><priority>0.6</priority></url>')
+
     # NOTE: do NOT use an f-string here — '<?xml ... ?>' contains '?', and a prior
     # regression replaced '?' with '%s' (the same bug class fixed in task #4).
     # Use a plain string so '<?xml' renders literally.
