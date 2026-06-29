@@ -710,6 +710,46 @@ SCHEMA_STATEMENTS = [
         "CREATE INDEX IF NOT EXISTS ix_bpo_merged_at ON brain_pr_outcomes(merged_at DESC) WHERE merged_at IS NOT NULL",
         "CREATE INDEX IF NOT EXISTS ix_bpo_brain_authored ON brain_pr_outcomes(brain_authored) WHERE brain_authored = TRUE",
     ]),
+    ("brain_strategic_outcomes table", [
+        # Feature #8 (2026-06-28): STRATEGIC-OUTCOME LEDGER. The weekly L6
+        # synthesis records whether a rec's PR shipped, but never whether
+        # the business METRIC it targeted actually moved. This table holds
+        # one row per *verifiable* rec: a derived target_metric + a baseline
+        # snapshot captured at persist time. A Tier-3 master-tick step
+        # (brain_strategic_ledger.stamp_strategic_outcomes) re-reads the
+        # metric 14d/30d later and stamps moved/flat/regressed. Recs with no
+        # deterministic target_metric land verifiable=FALSE so a vague rec
+        # is never falsely credited. Mirrors the canonical DDL in
+        # routes/brain_strategic_ledger.py (which also self-creates).
+        """CREATE TABLE IF NOT EXISTS brain_strategic_outcomes (
+            id              BIGSERIAL PRIMARY KEY,
+            rec_id          BIGINT,
+            run_id          TEXT,
+            week_of         DATE,
+            kind            TEXT,
+            title           TEXT,
+            target_metric   TEXT,
+            metric_source   TEXT,
+            verifiable      BOOLEAN NOT NULL DEFAULT FALSE,
+            baseline_value  DOUBLE PRECISION,
+            baseline_at     TIMESTAMPTZ,
+            check_14d_value DOUBLE PRECISION,
+            check_14d_at    TIMESTAMPTZ,
+            check_30d_value DOUBLE PRECISION,
+            check_30d_at    TIMESTAMPTZ,
+            outcome         TEXT NOT NULL DEFAULT 'pending',
+            direction       TEXT,
+            delta_pct       DOUBLE PRECISION,
+            note            TEXT,
+            created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )""",
+        "CREATE UNIQUE INDEX IF NOT EXISTS ix_bso_rec_id ON brain_strategic_outcomes(rec_id) WHERE rec_id IS NOT NULL",
+        "CREATE INDEX IF NOT EXISTS ix_bso_outcome ON brain_strategic_outcomes(outcome)",
+        "CREATE INDEX IF NOT EXISTS ix_bso_kind ON brain_strategic_outcomes(kind)",
+        "CREATE INDEX IF NOT EXISTS ix_bso_week_of ON brain_strategic_outcomes(week_of DESC)",
+        "CREATE INDEX IF NOT EXISTS ix_bso_verifiable ON brain_strategic_outcomes(verifiable) WHERE verifiable = TRUE",
+    ]),
     ("brain_self_perception table", [
         # Task #161 (2026-06-07): brain reads its own dashboards.
         # Closes the verification loop. Once a day at 04:00 UTC the brain

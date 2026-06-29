@@ -641,6 +641,25 @@ def _build_prompt(ctx: dict) -> str:
                     + _truncate(ctx.get("self_perception"),
                                 _CTX_BUDGET["self_perception"]))
 
+    # Feature #8 (DARK): per-rec-type STRATEGIC-OUTCOME LEDGER feedback.
+    # Only spliced when BRAIN_STRATEGIC_LEDGER_FEEDBACK_ENABLED is set;
+    # otherwise the prompt is byte-identical to today. Fully fail-soft —
+    # any error leaves the prompt unchanged.
+    try:
+        from routes import brain_strategic_ledger as _ledger
+        if _ledger.ledger_feedback_enabled():
+            _fb = _ledger.gather_ledger_feedback(lookback_days=120)
+            _fb_txt = _ledger.format_feedback_for_prompt(_fb, budget=1500)
+            sections.append(
+                "STRATEGIC-OUTCOME LEDGER (did past recs of each type "
+                "actually MOVE their target metric 14/30d later? Favour "
+                "rec-types with a real hit-rate; discount types that "
+                "consistently went flat/regressed; vague recs with no "
+                "target_metric are UNVERIFIABLE — propose measurable "
+                "recs with an explicit target_metric):\n" + _fb_txt)
+    except Exception as _lfe:
+        logger.debug("L6 strategic: ledger feedback splice skipped: %s", _lfe)
+
     return ("\n\n".join(sections) +
             "\n\n──── End context. Reply with the JSON object ONLY. ────")
 
@@ -739,13 +758,28 @@ _KIND_FIELD_MAP = [
 
 
 def _persist_recommendations(payload: dict, week_of: _dt.date,
-                              run_id: str) -> int:
-    """Write one row per recommendation. Returns count inserted."""
+                              run_id: str,
+                              ctx: Optional[dict] = None) -> int:
+    """Write one row per recommendation. Returns count inserted.
+
+    `ctx` (the in-memory synthesis context) is optional and additive: when
+    provided, each verifiable rec also gets a STRATEGIC-OUTCOME LEDGER row
+    capturing a baseline metric snapshot (feature #8). The ledger write is
+    fully fail-safe — any miss is swallowed and never blocks rec persist.
+    """
     if not payload:
         return 0
     c = _get_db()
     if c is None:
         return 0
+    # Feature #8: load the ledger module fail-soft. If it isn't deployed
+    # yet (or import fails), baseline capture is silently skipped and
+    # persistence behaves exactly as before.
+    try:
+        from routes import brain_strategic_ledger as _ledger
+    except Exception as _le:
+        _ledger = None
+        logger.debug("L6 strategic: ledger module not loaded: %s", _le)
     inserted = 0
     try:
         with c.cursor() as cur:
@@ -775,11 +809,25 @@ def _persist_recommendations(payload: dict, week_of: _dt.date,
                             evidence_keys, status, strategy_payload
                           ) VALUES (
                             %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
-                          )""",
+                          ) RETURNING id""",
                         (run_id, week_of, kind, title, spec,
                          json.dumps(scaffold), dollar, conf_num,
                          json.dumps(evid), "new", json.dumps(item)))
+                    _rec_id = None
+                    try:
+                        _row = cur.fetchone()
+                        _rec_id = _row[0] if _row else None
+                    except Exception:
+                        _rec_id = None
                     inserted += 1
+                    # Feature #8: capture a baseline ledger row (shares
+                    # this tx). Verifiable recs snapshot their metric;
+                    # vague recs land verifiable=FALSE (never auto-credited).
+                    if _ledger is not None and ctx is not None:
+                        _ledger.record_baseline(
+                            cur, rec_id=_rec_id, run_id=run_id,
+                            week_of=week_of, kind=kind, title=title,
+                            item=item, ctx=ctx)
             # Wildcard bet (singleton)
             wc = payload.get("wildcard_bet") or {}
             if isinstance(wc, dict) and (wc.get("title") or "").strip():
@@ -1178,7 +1226,7 @@ def run_strategic_synthesis(force: bool = False,
                 "prompt_chars": prompt_chars,
                 "prompt_tokens_est": prompt_tokens_est}
 
-    inserted = _persist_recommendations(payload, week_of, run_id)
+    inserted = _persist_recommendations(payload, week_of, run_id, ctx=ctx)
     recs = _read_recs_for(week_of)
 
     # Optionally open scaffold PRs
