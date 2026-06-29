@@ -191,6 +191,9 @@ def _ensure_tables(conn) -> None:
                 CREATE INDEX IF NOT EXISTS media_reactive_queue_source_url
                     ON media_reactive_queue (source_url)
             """)
+            # advisory guard notes (added 2026-06-28) — backfill existing tables
+            cur.execute("ALTER TABLE media_reactive_queue "
+                        "ADD COLUMN IF NOT EXISTS guard_warnings TEXT")
         conn.commit()
     except Exception as e:
         logger.warning("[reactive] _ensure_tables failed: %s", str(e)[:200])
@@ -457,49 +460,78 @@ def _draft_reframe(external: dict, dcpi: dict) -> str | None:
     return _llm(_SYSTEM, user, max_tokens=600)
 
 
-# ── guard gauntlet (every draft must clear ALL of these) ─────────────────────
-def _guard_check(cur, text: str) -> tuple[bool, str]:
-    if not text or not text.strip():
-        return False, "empty draft"
+# Publish-guard reasons treated as ADVISORY in the reactive lane (queue the draft
+# with a warning instead of hard-rejecting): the LLM editor's verifiability calls
+# + fact-check flags on attributed external numbers. These collide with the lane's
+# premise — it carries a third party's number ("per CBRE, 1.8%") plus live DCPI
+# figures the text can't self-verify — so a human reviewer adjudicates rather than
+# an auto-reject. Disparagement and entity-dedup stay HARD (see _guard_check).
+_ADVISORY_GUARD_SIGNALS = (
+    "editor rejected", "unverifiable", "uncited", "citation",
+    "fact-check", "cannot verify", "can't verify", "could not verify",
+)
 
-    # (0) reactive-lane-specific: never disparage the cited source.
+
+def _is_advisory_guard(why: str) -> bool:
+    w = (why or "").lower()
+    return any(sig in w for sig in _ADVISORY_GUARD_SIGNALS)
+
+
+# ── guard gauntlet ───────────────────────────────────────────────────────────
+def _guard_check(cur, text: str) -> tuple[bool, str, list]:
+    """Returns (passed, hard_reason, warnings).
+
+    HARD blocks (never queue): empty draft, analyst-respect disparagement, the
+    hard checks inside _should_skip_publish (partner-disparagement, entity dedup,
+    number-lead, zero-stat, quality, LLM-disclaimer), and claim-verify
+    over-claimed DC Hub canonical stats.
+
+    ADVISORY (queue anyway, attach a warning for the human reviewer): the LLM
+    'editor' verifiability gate and the fact-check guard."""
+    warnings: list = []
+    if not text or not text.strip():
+        return False, "empty draft", warnings
+
+    # (0) reactive-lane-specific: never disparage the cited source. HARD.
     ok, why = _analyst_respect_ok(text)
     if not ok:
-        return False, why
+        return False, why, warnings
 
-    # (1) content_publisher._should_skip_publish — partner-disparagement,
-    #     LLM-disclaimer, quality, zero-stat. Platform 'linkedin' so the
-    #     number-lead gate applies (this IS a social post).
+    # (1) _should_skip_publish — HARD for disparagement/dedup/number-lead/
+    #     zero-stat/quality; ADVISORY for the editor verifiability gate.
     try:
         from content_publisher import _should_skip_publish
         skip, w = _should_skip_publish(cur, text, "linkedin")
         if skip:
-            return False, f"publish-guard: {w}"
+            if _is_advisory_guard(w):
+                warnings.append(f"publish-guard(advisory): {w}"[:300])
+            else:
+                return False, f"publish-guard: {w}", warnings
     except Exception as e:
         logger.warning("[reactive] _should_skip_publish unavailable: %s", str(e)[:160])
 
-    # (2) claim-verify — any block (over-claimed / retired #) drops it.
+    # (2) claim-verify — HARD (over-claimed / retired DC Hub canonical stats).
     try:
         from routes.media_claim_verify import verify_claims
         cv = verify_claims(text)
         if cv.get("blocks"):
-            return False, "claim-verify: " + "; ".join(cv["blocks"])[:240]
+            return False, "claim-verify: " + "; ".join(cv["blocks"])[:240], warnings
     except Exception as e:
         logger.warning("[reactive] verify_claims unavailable: %s", str(e)[:160])
 
-    # (3) fact-check guard — only if this deployment ships it.
+    # (3) fact-check guard — ADVISORY (flags attributed external numbers).
     try:
         from routes.media_fact_check_guard import verify_media_text  # type: ignore
         res = verify_media_text(text)
         if isinstance(res, dict) and (res.get("blocks") or res.get("ok") is False):
-            return False, "fact-check-guard: " + str(
-                res.get("blocks") or res.get("reason") or "flagged")[:240]
+            warnings.append("fact-check(advisory): " + str(
+                res.get("blocks") or res.get("reason") or "flagged")[:240])
     except ImportError:
         pass
     except Exception as e:
         logger.warning("[reactive] verify_media_text raised: %s", str(e)[:160])
 
-    return True, ""
+    return True, "", warnings
 
 
 # ── shared core: react to ONE external claim ─────────────────────────────────
@@ -520,10 +552,11 @@ def _react_one(cur, external: dict) -> dict:
     if not draft:
         return {"status": "rejected", "reason": "draft composition failed (LLM unavailable)",
                 "market_slug": slug, "market_name": name, "our_data": dcpi}
-    passed, reason = _guard_check(cur, draft)
+    passed, reason, warnings = _guard_check(cur, draft)
     return {
         "status": "queued" if passed else "rejected",
         "reason": None if passed else reason,
+        "warnings": warnings or None,
         "market_slug": slug,
         "market_name": dcpi.get("market_name") or name,
         "our_data": dcpi,
@@ -536,14 +569,15 @@ def _persist(cur, conn, external: dict, res: dict) -> int | None:
         cur.execute("""
             INSERT INTO media_reactive_queue
                 (source, source_url, external_claim, market_slug, market_name,
-                 our_data, post_draft, status, reject_reason)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                 our_data, post_draft, status, reject_reason, guard_warnings)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             RETURNING id
         """, (
             external.get("source"), external.get("source_url"),
             external.get("claim"), res.get("market_slug"), res.get("market_name"),
             json.dumps(res.get("our_data"), default=str) if res.get("our_data") else None,
             res.get("post_draft"), res.get("status"), res.get("reason"),
+            "; ".join(res.get("warnings")) if res.get("warnings") else None,
         ))
         row = cur.fetchone()
         conn.commit()
@@ -639,6 +673,7 @@ def react():
         "status": res.get("status"),
         "market": res.get("market_name"),
         "reason": res.get("reason"),
+        "warnings": res.get("warnings"),
         "post_draft": res.get("post_draft") if res.get("status") == "queued" else None,
         "note": "draft written to review queue. NOTHING was published.",
     })
@@ -718,7 +753,7 @@ def list_queue():
                 cur.execute("""
                     SELECT id, source, source_url, external_claim, market_slug,
                            market_name, our_data, post_draft, status, reject_reason,
-                           created_at, reviewed_at, reviewed_by
+                           guard_warnings, created_at, reviewed_at, reviewed_by
                       FROM media_reactive_queue
                      ORDER BY created_at DESC LIMIT 200
                 """)
@@ -726,7 +761,7 @@ def list_queue():
                 cur.execute("""
                     SELECT id, source, source_url, external_claim, market_slug,
                            market_name, our_data, post_draft, status, reject_reason,
-                           created_at, reviewed_at, reviewed_by
+                           guard_warnings, created_at, reviewed_at, reviewed_by
                       FROM media_reactive_queue
                      WHERE status = %s
                      ORDER BY created_at DESC LIMIT 200
