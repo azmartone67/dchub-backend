@@ -34,7 +34,10 @@ def _pub_admin_ok():
             _keys.add(_v)
     _sent = (request.headers.get("X-Internal-Key")
              or request.headers.get("X-Admin-Key")
-             or request.args.get("admin_key") or "").strip()
+             or request.args.get("admin_key")
+             or request.args.get("key")              # browser-friendly shorthand
+             or request.cookies.get("dchub_admin")   # set once via ?key=, then bookmarkable
+             or "").strip()
     return bool(_sent) and _sent in _keys
 
 
@@ -253,6 +256,8 @@ h1 .grad{background:var(--gradient);-webkit-background-clip:text;background-clip
   {{verdict_banner}}
 
   {{grade_block}}
+
+  {{control_room}}
 
   <div class="section">
     <h2 class="section-title">Layer 5 — Code Proposals</h2>
@@ -499,12 +504,119 @@ def brain_public_page():
     return Response("".join(parts), mimetype="text/html")
 
 
+def _control_room_html():
+    """Self-contained, fail-safe 'autonomy control room' block for /brain:
+    the last full master-tick step health, the LLM reasoning lane's latest
+    typed decisions (propose-only), and the maturing-organ counts (#3/#4/#7/#8).
+    Reads the DB directly (the in-process test client can't auth the admin
+    master-tick endpoint). Returns '' on ANY error so the page never breaks."""
+    try:
+        import os as _os, json as _json
+        import psycopg2 as _pg
+        dsn = _os.environ.get("DATABASE_URL")
+        if not dsn:
+            return ""
+        conn = _pg.connect(dsn)
+        cur = conn.cursor()
+
+        def _q(sql, args=None):
+            # NB: call execute(sql) with NO args when there are none — passing
+            # () makes psycopg2 %-substitute and trip on the literal % in LIKE.
+            try:
+                cur.execute(sql, args) if args else cur.execute(sql)
+                return cur.fetchall()
+            except Exception:
+                try: conn.rollback()
+                except Exception: pass
+                return []
+
+        mt = _q("SELECT ran_at, report FROM brain_master_ticks "
+                "WHERE tiers LIKE '%1%' OR tiers LIKE '%verify%' "
+                "ORDER BY ran_at DESC LIMIT 1")
+        steps = []; ran_at = None
+        if mt:
+            ran_at = mt[0][0]
+            rep = mt[0][1] if isinstance(mt[0][1], dict) else (_json.loads(mt[0][1]) if mt[0][1] else {})
+            steps = rep.get("steps", []) or []
+        cands = _q("SELECT finding_issue, candidate_type, routing, confidence, action "
+                   "FROM brain_reasoning_candidates ORDER BY created_at DESC LIMIT 6")
+        unfix   = (_q("SELECT count(*) FROM brain_findings WHERE issue='pattern_unfixable_needs_rechannel'") or [[0]])[0][0]
+        fcount  = (_q("SELECT count(*) FROM brain_findings WHERE issue LIKE 'forecast_%'") or [[0]])[0][0]
+        ledger  = (_q("SELECT count(*) FROM brain_strategic_outcomes") or [[0]])[0][0]
+        recallg = (_q("SELECT count(*) FROM brain_autopilot_actions WHERE error LIKE 'recall-gate:%'") or [[0]])[0][0]
+        try: conn.close()
+        except Exception: pass
+
+        _nice = {"tier1.autopilot_run": "autopilot", "tier2.l15_auto_action": "L15 actions",
+                 "tier2.l22_draft_prs": "L22 draft-PRs", "tier3.l23_lifecycle": "L23 lifecycle",
+                 "tier3.promote_on_failure": "promote-on-failure #4", "tier3.forecast_findings": "forecast #7",
+                 "tier3.strategic_ledger_stamp": "ledger #8", "tier3.reasoning_lane_drain": "reasoning #6",
+                 "verify.autopilot": "verify"}
+        pills = []
+        for s in steps:
+            if not isinstance(s, dict): continue
+            nm = _nice.get(s.get("step"), s.get("step") or "?")
+            dot = "var(--green)" if s.get("ok") else "var(--red)"
+            ms = s.get("ms")
+            tail = f" · {round(ms / 1000, 1)}s" if isinstance(ms, (int, float)) else ""
+            pills.append(
+                '<span style="display:inline-flex;align-items:center;gap:6px;background:var(--bg2);'
+                'border:1px solid var(--bd);border-radius:99px;padding:0.3rem 0.7rem;font-size:0.78rem;color:var(--tx2);">'
+                f'<span style="width:7px;height:7px;border-radius:50%;background:{dot};"></span>{_h(nm)}'
+                f'<span style="color:var(--tx3);font-family:\'JetBrains Mono\',monospace;">{_h(tail)}</span></span>')
+        pills_html = "".join(pills) or '<span style="color:var(--tx3)">No tick recorded yet.</span>'
+        try:
+            when = ran_at.strftime("%H:%M UTC · %b %d") if ran_at else "—"
+        except Exception:
+            when = "—"
+
+        _route = {"pr_drafted_pending": ("draft PR", "var(--amber)", "rgba(245,158,11,0.12)"),
+                  "human_digest": ("digest", "var(--acc-light)", "rgba(99,102,241,0.14)"),
+                  "require_human": ("human", "var(--tx2)", "rgba(255,255,255,0.05)")}
+        cblocks = []
+        for row in cands:
+            fi, ctype, routing, conf, action = row
+            lbl, col, bg = _route.get(routing or "", ("review", "var(--tx2)", "rgba(255,255,255,0.05)"))
+            try: cpct = f"{round(float(conf) * 100)}%"
+            except Exception: cpct = "—"
+            cblocks.append(
+                '<div class="proposal"><div class="head">'
+                f'<span class="label">{_h(fi or "?")}</span>'
+                f'<span class="badge" style="background:{bg};color:{col};border:1px solid {bg};">{_h(ctype or "?")} &rarr; {_h(lbl)}</span>'
+                '</div>'
+                f'<div style="color:var(--tx);font-size:0.92rem;line-height:1.5;">{_h((action or "")[:240])}</div>'
+                f'<div class="meta">confidence {cpct}</div></div>')
+        cands_html = "\n".join(cblocks) or '<div class="empty">No reasoning candidates yet — the lane drains the top leverage-ranked findings each tick.</div>'
+
+        return (
+            '<div class="section">'
+            '<h2 class="section-title">Autonomy control room</h2>'
+            '<p style="color:var(--tx2);font-size:14px;margin:-6px 0 14px">A tiered self-improvement tick runs about every 2 hours. '
+            'Below: the last full tick\'s step health, the LLM reasoning lane\'s latest typed decisions (propose-only — auto-merge is off), '
+            'and the organs still arming as data accrues.</p>'
+            '<div style="background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:1.1rem 1.3rem;margin-bottom:0.8rem;">'
+            f'<div style="font-family:\'JetBrains Mono\',monospace;font-size:0.74rem;color:var(--tx2);text-transform:uppercase;letter-spacing:0.08em;margin-bottom:0.7rem;">Last full tick &middot; {_h(when)}</div>'
+            f'<div style="display:flex;flex-wrap:wrap;gap:0.5rem;">{pills_html}</div></div>'
+            '<div class="kpis" style="margin:0.8rem 0;">'
+            f'<div class="kpi"><div class="v amber">{unfix}</div><div class="l">Unfixable flagged (#4)</div></div>'
+            f'<div class="kpi"><div class="v">{fcount}</div><div class="l">Forecast findings (#7)</div></div>'
+            f'<div class="kpi"><div class="v">{ledger}</div><div class="l">Strategic outcomes (#8)</div></div>'
+            f'<div class="kpi"><div class="v">{recallg}</div><div class="l">Recall-gate escalations (#3)</div></div>'
+            '</div>'
+            '<h3 style="font-size:1rem;font-weight:700;margin:1.2rem 0 0.7rem;">Reasoning lane &mdash; latest decisions (#6)</h3>'
+            f'<div class="card-list">{cands_html}</div>'
+            '</div>')
+    except Exception:
+        return ""
+
+
 @brain_v2_public_bp.route("/brain", methods=["GET"])
 @brain_v2_public_bp.route("/brain/", methods=["GET"])  # r-slash (2026-06-18): bare "/brain" is strict-slash → "/brain/" 404'd outright (no 308). Explicit trailing-slash alias.
 def brain_page():
     if not _pub_admin_ok():
         return Response(_PUB_ADMIN_ONLY_HTML, mimetype="text/html", status=403)
     state = _get_state()
+    control_room_html = _control_room_html()
     proposals = state["proposed"]
     log = state["log"][-30:]  # last 30 entries
 
@@ -1019,6 +1131,7 @@ def brain_page():
             .replace("{{log_count}}", str(len(state["log"])))
             .replace("{{verdict_banner}}", verdict_banner)
             .replace("{{grade_block}}", grade_block + value_shipped_block + integrity_block + lifecycle_block)
+            .replace("{{control_room}}", control_room_html)
             .replace("{{code_proposals_html}}", code_proposals_html)
             .replace("{{proposals_html}}", proposals_html)
             .replace("{{persistence_html}}", persistence_html)
@@ -1026,4 +1139,10 @@ def brain_page():
             .replace("{{as_of}}", datetime.now(timezone.utc).isoformat()))
     resp = Response(html, mimetype="text/html")
     resp.headers["Cache-Control"] = "public, max-age=60, must-revalidate"
+    # If admin came in via ?key=/?admin_key=, drop a cookie so the URL is
+    # bookmarkable as a bare /brain afterwards (the key stays out of later logs).
+    _qk = (request.args.get("admin_key") or request.args.get("key") or "").strip()
+    if _qk:
+        resp.set_cookie("dchub_admin", _qk, max_age=2592000,
+                        httponly=True, secure=True, samesite="Lax")
     return resp
