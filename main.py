@@ -6164,10 +6164,10 @@ _MARKETS_CSP = (
     "default-src 'self'; "
     "script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com "
         "https://unpkg.com https://cdn.jsdelivr.net https://www.googletagmanager.com "
-        "https://accounts.google.com https://static.cloudflareinsights.com https://plausible.io; "
+        "https://accounts.google.com https://static.cloudflareinsights.com https://plausible.io https://www.clarity.ms; "
     "script-src-elem 'self' 'unsafe-inline' https://cdnjs.cloudflare.com "
         "https://unpkg.com https://cdn.jsdelivr.net https://www.googletagmanager.com "
-        "https://accounts.google.com https://static.cloudflareinsights.com https://plausible.io; "
+        "https://accounts.google.com https://static.cloudflareinsights.com https://plausible.io https://www.clarity.ms; "
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com "
         "https://cdnjs.cloudflare.com https://accounts.google.com; "
     "style-src-elem 'self' 'unsafe-inline' https://fonts.googleapis.com "
@@ -6186,7 +6186,8 @@ _MARKETS_CSP = (
         "https://overpass.kumi.systems https://overpass.private.coffee https://*.arcgis.com "
         "https://geo.dot.gov https://*.usgs.gov https://carto.nationalmap.gov "
         "https://hazards.fema.gov https://geodata.epa.gov https://geocoding.geo.census.gov "
-        "https://*.r2.dev https://pub-1870647-1a3884f1eae0fc54ed7d41341.r2.dev; "
+        "https://*.r2.dev https://pub-1870647-1a3884f1eae0fc54ed7d41341.r2.dev "
+        "https://*.clarity.ms; "
     "frame-src 'self' https://accounts.google.com; "
     "frame-ancestors 'self'; base-uri 'self'; form-action 'self'; "
     "report-uri /api/csp-report"
@@ -6204,6 +6205,44 @@ def add_markets_csp(response):
                 and 'Content-Security-Policy' not in response.headers
                 and 'text/html' in (response.headers.get('Content-Type') or '')):
             response.headers['Content-Security-Policy'] = _MARKETS_CSP
+    except Exception:
+        pass
+    return response
+
+
+# ── Microsoft Clarity (xelf48xxzx) — site-wide injection (2026-06-29) ──
+# Backend HTML has NO shared base template (~4 independent head builders:
+# seo_pages._base_html, dcpi.py templates, _brand_shell, facilities_hub._shell),
+# so a single after_request hook is the reliable chokepoint for the tag. CSP
+# (worker STATIC_PAGE_CSP + _headers + _MARKETS_CSP) now allows www.clarity.ms.
+_CLARITY_SNIPPET = (
+    '<script type="text/javascript">'
+    '(function(c,l,a,r,i,t,y){c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};'
+    't=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;'
+    'y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);'
+    '})(window,document,"clarity","script","xelf48xxzx");'
+    '</script>'
+)
+
+
+@app.after_request
+def _inject_clarity(response):
+    """Inject the Microsoft Clarity tag into backend-rendered HTML. Defensive:
+    only 200 text/html that has a </head> and doesn't already carry Clarity;
+    never buffers a streamed/passthrough response; never raises."""
+    try:
+        if response.status_code != 200:
+            return response
+        if 'text/html' not in (response.headers.get('Content-Type') or '').lower():
+            return response
+        if getattr(response, 'direct_passthrough', False):
+            return response
+        html = response.get_data(as_text=True)
+        if not html or '</head>' not in html:
+            return response
+        if 'clarity.ms/tag' in html or 'xelf48xxzx' in html:
+            return response  # idempotent — already present
+        response.set_data(html.replace('</head>', _CLARITY_SNIPPET + '</head>', 1))
     except Exception:
         pass
     return response
