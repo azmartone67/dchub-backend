@@ -877,6 +877,14 @@ def sitemap_landings():
         'oracle', 'tiktok-bytedance', 'tencent', 'alibaba', 'softbank',
     ):
         urls.append(f'  <url><loc>https://dchub.cloud/hyperscalers/{_hs_slug}/brief</loc><changefreq>daily</changefreq><priority>0.9</priority></url>')
+    # GEO answer pages (2026-06-29): the Audience Master Shell targets the broad
+    # high-intent developer queries where DC Hub is invisible ("how do I get this
+    # data into my agent"). Each shipped /answers/ page gets sitemapped here so
+    # crawlers + AI retrieval find it. /answers/ is CF-routable (verified 200).
+    for _ans_slug in (
+        'live-data-center-capacity-for-ai-agents',
+    ):
+        urls.append(f'  <url><loc>https://dchub.cloud/answers/{_ans_slug}</loc><changefreq>monthly</changefreq><priority>0.85</priority></url>')
     items = '\n'.join(urls)
     xml = f'<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n{items}\n</urlset>'
     return Response(xml, mimetype='application/xml',
