@@ -310,7 +310,7 @@ def fix_insert_or_replace(content, filename):
 
 
 def fix_datetime_now(content, filename):
-    """Fix datetime('now') → NOW()."""
+    """Fix NOW() → NOW()."""
     fixes = 0
     old = content
     content = content.replace("datetime('now')", "NOW()")
