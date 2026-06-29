@@ -66,7 +66,7 @@ import json
 import logging
 from datetime import datetime
 
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, request, jsonify, Response
 
 logger = logging.getLogger("media_reactive_news")
 
@@ -842,6 +842,117 @@ def approve_item(item_id):
             conn.close()
         except Exception:
             pass
+
+
+# ── operator review page (self-contained HTML; admin key entered in-browser) ──
+_REVIEW_HTML = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Reactive-news review queue · DC Hub</title>
+<style>
+:root{--bg:#0f1419;--card:#1a2029;--line:#2a323d;--ink:#e6edf3;--mut:#8b98a5;
+--accent:#3b82f6;--ok:#16a34a;--warn:#d97706;--bad:#dc2626;--queued:#2563eb}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);
+font:14px/1.5 -apple-system,Segoe UI,Roboto,sans-serif}
+header{position:sticky;top:0;background:#0f1419ee;backdrop-filter:blur(6px);
+border-bottom:1px solid var(--line);padding:14px 18px;display:flex;gap:10px;
+align-items:center;flex-wrap:wrap}
+header h1{font-size:16px;margin:0 12px 0 0}
+input,select,button{font:inherit;background:var(--card);color:var(--ink);
+border:1px solid var(--line);border-radius:7px;padding:7px 10px}
+input{min-width:230px}button{cursor:pointer}button:hover{border-color:var(--accent)}
+.wrap{max-width:920px;margin:18px auto;padding:0 16px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;
+padding:16px;margin:0 0 16px}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:8px}
+.badge{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;
+padding:3px 9px;border-radius:999px}
+.b-queued{background:#1e3a8a;color:#bfdbfe}.b-approved{background:#14532d;color:#bbf7d0}
+.b-rejected{background:#3f1d1d;color:#fecaca}
+.mut{color:var(--mut)}.mkt{font-weight:700;font-size:15px}
+.warn{background:#3a2a0c;border:1px solid #5b430f;color:#fcd34d;border-radius:8px;
+padding:8px 11px;font-size:12.5px;margin:8px 0}
+.rej{background:#3a1212;border:1px solid #5b1818;color:#fca5a5;border-radius:8px;
+padding:8px 11px;font-size:12.5px;margin:8px 0}
+textarea{width:100%;min-height:150px;background:#0d1117;color:var(--ink);
+border:1px solid var(--line);border-radius:8px;padding:11px;resize:vertical;
+font:13px/1.55 ui-monospace,Menlo,monospace}
+.act{display:flex;gap:8px;margin-top:10px}
+.btn-ok{background:#14532d;border-color:#1f7a43}.btn-ok:hover{border-color:#22c55e}
+#status{color:var(--mut);margin-left:auto}.empty{color:var(--mut);padding:40px;text-align:center}
+.note{color:var(--mut);font-size:12px;margin:0 0 14px}
+</style></head><body>
+<header>
+  <h1>Reactive-news review</h1>
+  <input id="key" type="password" placeholder="X-Admin-Key" autocomplete="off">
+  <select id="filter">
+    <option value="queued">Queued (ready)</option>
+    <option value="all">All</option>
+    <option value="approved">Approved</option>
+    <option value="rejected">Rejected</option>
+  </select>
+  <button onclick="load()">Refresh</button>
+  <span id="status"></span>
+</header>
+<div class="wrap">
+  <p class="note">Approving records a human decision. It only publishes if
+  MEDIA_REACTIVE_AUTOPOST_ON_APPROVE=1 (otherwise use Copy and post manually).
+  Nothing here is live until you act on it.</p>
+  <div id="list"></div>
+</div>
+<script>
+var K=document.getElementById('key'),F=document.getElementById('filter'),
+S=document.getElementById('status'),L=document.getElementById('list');
+K.value=localStorage.getItem('dchub_admin_key')||'';
+K.addEventListener('change',function(){localStorage.setItem('dchub_admin_key',K.value.trim())});
+F.addEventListener('change',load);
+function esc(s){var d=document.createElement('div');d.textContent=s||'';return d.innerHTML}
+function hdrs(){return {'X-Admin-Key':(K.value||'').trim()}}
+function load(){
+  var st=F.value; S.textContent='loading…'; L.innerHTML='';
+  fetch('queue?status='+st+'&_='+Date.now(),{headers:hdrs()})
+   .then(function(r){return r.json()})
+   .then(function(d){
+     if(!d.ok){S.textContent=d.error||'error';return}
+     S.textContent=d.count+' item(s)';
+     if(!d.items.length){L.innerHTML='<div class="empty">No '+st+' drafts.</div>';return}
+     L.innerHTML=d.items.map(card).join('');
+   }).catch(function(e){S.textContent='fetch failed (check key / use direct origin)'});
+}
+function card(it){
+  var w=it.guard_warnings?'<div class="warn">⚠ '+esc(it.guard_warnings)+'</div>':'';
+  var rj=it.reject_reason?'<div class="rej">✕ '+esc(it.reject_reason)+'</div>':'';
+  var ap=it.status==='queued'?'<button class="btn-ok" onclick="approve('+it.id+')">Approve</button>':'';
+  return '<div class="card" id="c'+it.id+'">'
+    +'<div class="row"><span class="badge b-'+it.status+'">'+it.status+'</span>'
+    +'<span class="mkt">'+esc(it.market_name)+'</span>'
+    +'<span class="mut">#'+it.id+' · '+esc(it.source||'')+'</span></div>'
+    +'<div class="mut">claim: '+esc(it.external_claim||'')+'</div>'
+    +w+rj
+    +'<textarea readonly id="t'+it.id+'">'+esc(it.post_draft||'(no draft)')+'</textarea>'
+    +'<div class="act"><button onclick="cp('+it.id+')">Copy draft</button>'+ap+'</div></div>';
+}
+function cp(id){var t=document.getElementById('t'+id);t.select();
+  navigator.clipboard.writeText(t.value).then(function(){S.textContent='copied #'+id});}
+function approve(id){
+  if(!confirm('Mark draft #'+id+' approved? (Does not publish unless autopost is on.)'))return;
+  fetch('approve/'+id,{method:'POST',headers:hdrs()})
+   .then(function(r){return r.json()})
+   .then(function(d){if(d.ok){S.textContent=d.note||'approved';load()}
+     else S.textContent=d.error||'approve failed'});
+}
+load();
+</script></body></html>"""
+
+
+@media_reactive_news_bp.route("/api/v1/media/reactive-news/review", methods=["GET"])
+def review_page():
+    """Self-contained operator review UI. The page is harmless without a key —
+    the data endpoints it calls (queue / approve) enforce the admin gate. Open it
+    on the DIRECT origin to avoid the CF /api/v1/* cache."""
+    if not _enabled():
+        return _skipped_response()
+    return Response(_REVIEW_HTML, mimetype="text/html")
 
 
 # ── PHASE 2: editorial integration (importable collector) ────────────────────
