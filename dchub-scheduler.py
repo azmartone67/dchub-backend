@@ -127,6 +127,20 @@ JOBS = {
         'minute': 0,
         'timeout': 300,
     },
+    'reactive_news': {
+        # Phase-1 of the reactive-news lane: scan recent analyst-firm news,
+        # draft DCPI reframes, drop them in the review queue (status=queued).
+        # NEVER auto-publishes — a human approves on the review page. Runs ~1h
+        # after the midday/evening news refreshes. Admin-key in the URL mirrors
+        # the drip-check job; the scan endpoint is itself MEDIA_REACTIVE_NEWS_
+        # ENABLED-gated, so this no-ops while that flag is off.
+        'name': 'Reactive-News Lane (analyst reframes -> review queue)',
+        'endpoint': f'/api/v1/media/reactive-news/scan?admin_key={os.environ.get("DCHUB_ADMIN_KEY", "")}',
+        'method': 'POST',
+        'hours': [9, 15, 21],
+        'minute': 30,
+        'timeout': 300,
+    },
     'discovery': {
         'name': 'Facility Discovery',
         'endpoint': '/api/jobs/discovery',
