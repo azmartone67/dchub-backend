@@ -6215,7 +6215,7 @@ def add_markets_csp(response):
 # seo_pages._base_html, dcpi.py templates, _brand_shell, facilities_hub._shell),
 # so a single after_request hook is the reliable chokepoint for the tag. CSP
 # (worker STATIC_PAGE_CSP + _headers + _MARKETS_CSP) now allows www.clarity.ms.
-_CLARITY_SNIPPET = (
+_CLARITY_BOOTSTRAP = (
     '<script type="text/javascript">'
     '(function(c,l,a,r,i,t,y){c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};'
     't=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;'
@@ -6223,6 +6223,31 @@ _CLARITY_SNIPPET = (
     '})(window,document,"clarity","script","xelf48xxzx");'
     '</script>'
 )
+# Custom segmentation tags (client-side so the SAME block works on static +
+# backend pages): page_type from the path, tier from localStorage('dchub-tier')
+# → lets you filter Clarity recordings/heatmaps by e.g. "paid users on a
+# facility page". The marker /* dchub-clarity-tags */ keeps the codemod idempotent.
+_CLARITY_TAGS = """<script type="text/javascript">/* dchub-clarity-tags */
+(function(){function p(){var x=location.pathname;
+if(x==='/'||x==='/index.html')return'home';
+if(x==='/facilities'||x.indexOf('/facilities/in/')===0)return'facilities-hub';
+if(x.indexOf('/facilities/')===0||x.indexOf('/facility/')===0)return'facility';
+if(x.indexOf('/dcpi')===0)return'dcpi';
+if(x.indexOf('/markets')===0)return'market';
+if(x.indexOf('/grid')===0)return'grid';
+if(x.indexOf('/news')===0||x.indexOf('/press')===0)return'press';
+if(x==='/pricing')return'pricing';
+if(x.indexOf('/connect')===0)return'connect';
+if(x==='/map'||x.indexOf('/land-power')===0)return'map';
+if(x.indexOf('/dashboard')===0||x.indexOf('/admin')===0)return'app';
+return'marketing';}
+function t(){try{var v=localStorage.getItem('dchub-tier');if(v)return v;}catch(e){}
+try{var d=(document.body&&document.body.getAttribute('data-tier'))||document.documentElement.getAttribute('data-tier');if(d)return d;}catch(e){}return'anon';}
+function go(){try{window.clarity&&window.clarity('set','page_type',p());}catch(e){}
+try{window.clarity&&window.clarity('set','tier',t());}catch(e){}}
+go();setTimeout(go,2500);})();
+</script>"""
+_CLARITY_SNIPPET = _CLARITY_BOOTSTRAP + _CLARITY_TAGS
 
 
 @app.after_request
