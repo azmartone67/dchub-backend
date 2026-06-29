@@ -548,76 +548,92 @@ def _upload_image_to_linkedin(image_bytes, access_token, org_id):
     """
     if not image_bytes or not access_token or not org_id:
         return None
-    try:
-        author = f"urn:li:organization:{org_id}"
-        init_headers = {
-            'Authorization': f'Bearer {access_token}',
-            'LinkedIn-Version': '202601',
-            'X-Restli-Protocol-Version': '2.0.0',
-            'Content-Type': 'application/json',
-        }
-        init_resp = requests.post(
-            'https://api.linkedin.com/rest/images?action=initializeUpload',
-            headers=init_headers,
-            json={'initializeUploadRequest': {'owner': author}},
-            timeout=15,
-        )
-        if init_resp.status_code not in (200, 201):
-            logger.warning(
-                "r51 image initializeUpload failed: %s %s",
-                init_resp.status_code, init_resp.text[:200])
+    import urllib.parse as _up
+    author = f"urn:li:organization:{org_id}"
+    init_headers = {
+        'Authorization': f'Bearer {access_token}',
+        'LinkedIn-Version': '202601',
+        'X-Restli-Protocol-Version': '2.0.0',
+        'Content-Type': 'application/json',
+    }
+    s_headers = {'Authorization': f'Bearer {access_token}',
+                 'LinkedIn-Version': '202601',
+                 'X-Restli-Protocol-Version': '2.0.0'}
+
+    def _one_attempt():
+        """init + PUT + poll-to-AVAILABLE. Returns one of:
+           ('OK', urn)      — image is AVAILABLE, safe to attach
+           ('RETRY', None)  — transient failure (PUT hiccup / PROCESSING_FAILED /
+                              processing timeout); a fresh re-upload may succeed
+           ('GIVEUP', None) — config/auth/shape error; retrying won't help
+        """
+        try:
+            init_resp = requests.post(
+                'https://api.linkedin.com/rest/images?action=initializeUpload',
+                headers=init_headers,
+                json={'initializeUploadRequest': {'owner': author}},
+                timeout=15,
+            )
+            if init_resp.status_code not in (200, 201):
+                logger.warning("r51 image initializeUpload failed: %s %s",
+                               init_resp.status_code, init_resp.text[:200])
+                return ('GIVEUP', None)
+            v = (init_resp.json() or {}).get('value', {})
+            upload_url = v.get('uploadUrl')
+            image_urn = v.get('image')
+            if not (upload_url and image_urn):
+                logger.warning("r51 init response missing uploadUrl/image: %s", v)
+                return ('GIVEUP', None)
+            put_resp = requests.put(
+                upload_url,
+                headers={'Authorization': f'Bearer {access_token}'},
+                data=image_bytes, timeout=30,
+            )
+            if put_resp.status_code not in (200, 201):
+                logger.warning("r51 image PUT failed: %s %s",
+                               put_resp.status_code, put_resp.text[:200])
+                return ('RETRY', None)
+            # WAIT for AVAILABLE — LinkedIn won't PUBLISH a post whose image is
+            # still WAITING_UPLOAD/PROCESSING (it returns a share urn that 404s
+            # and never hits the feed — this silently killed content_publisher's
+            # posts for weeks, racing image processing ~2s to AVAILABLE).
+            status_url = ("https://api.linkedin.com/rest/images/"
+                          + _up.quote(image_urn, safe=''))
+            for _ in range(10):  # ≤~10s
+                try:
+                    sr = requests.get(status_url, headers=s_headers, timeout=10)
+                    st = (sr.json() or {}).get('status') if sr.status_code == 200 else None
+                except Exception:
+                    st = None
+                if st == 'AVAILABLE':
+                    return ('OK', image_urn)
+                if st in ('PROCESSING_FAILED', 'FAILED'):
+                    # NOT a format problem — LinkedIn's processor fails valid
+                    # PNGs intermittently; a fresh re-upload usually succeeds.
+                    logger.warning("r-img-ready: image %s %s — will retry",
+                                   image_urn, st)
+                    return ('RETRY', None)
+                time.sleep(1)
+            logger.warning("r-img-ready: image %s not AVAILABLE after wait — "
+                           "will retry", image_urn)
+            return ('RETRY', None)
+        except Exception as e:
+            logger.warning("r51 image upload exception: %s", e)
+            return ('GIVEUP', None)
+
+    # Retry transient PROCESSING_FAILED/timeouts up to 3x (each retry re-inits +
+    # re-PUTs — a failed image asset can't be reused). On persistent failure
+    # return None so the caller falls back to a text/article share, which
+    # publishes reliably (and still gets a rich card via LinkedIn's OG-scrape).
+    for _try in range(3):
+        outcome, urn = _one_attempt()
+        if outcome == 'OK':
+            return urn
+        if outcome == 'GIVEUP':
             return None
-        v = (init_resp.json() or {}).get('value', {})
-        upload_url = v.get('uploadUrl')
-        image_urn = v.get('image')
-        if not (upload_url and image_urn):
-            logger.warning("r51 init response missing uploadUrl/image: %s", v)
-            return None
-        put_resp = requests.put(
-            upload_url,
-            headers={'Authorization': f'Bearer {access_token}'},
-            data=image_bytes,
-            timeout=30,
-        )
-        if put_resp.status_code not in (200, 201):
-            logger.warning(
-                "r51 image PUT failed: %s %s",
-                put_resp.status_code, put_resp.text[:200])
-            return None
-        # r-img-ready (2026-06-29): WAIT for the image to finish processing
-        # before returning its urn. LinkedIn will NOT publish a post whose image
-        # is still WAITING_UPLOAD/PROCESSING — it creates the post, returns a
-        # share urn, but the post never appears in the feed (the urn 404s). Both
-        # this path and linkedin_poster posted IMMEDIATELY after the PUT, racing
-        # image processing (~2s to AVAILABLE); content_publisher lost that race
-        # ~every time, so its DCPI market-alert posts silently never published
-        # for weeks. Poll until AVAILABLE (≤10s); on timeout/failure return None
-        # so the caller falls back to a text/article share, which publishes fine.
-        import urllib.parse as _up
-        status_url = ("https://api.linkedin.com/rest/images/"
-                      + _up.quote(image_urn, safe=''))
-        s_headers = {'Authorization': f'Bearer {access_token}',
-                     'LinkedIn-Version': '202601',
-                     'X-Restli-Protocol-Version': '2.0.0'}
-        for _attempt in range(10):
-            try:
-                sr = requests.get(status_url, headers=s_headers, timeout=10)
-                st = (sr.json() or {}).get('status') if sr.status_code == 200 else None
-            except Exception:
-                st = None
-            if st == 'AVAILABLE':
-                return image_urn
-            if st in ('PROCESSING_FAILED', 'FAILED'):
-                logger.warning("r-img-ready: image %s processing %s", image_urn, st)
-                return None
-            time.sleep(1)
-        logger.warning(
-            "r-img-ready: image %s not AVAILABLE after wait — falling back "
-            "to text/article share", image_urn)
-        return None
-    except Exception as e:
-        logger.warning("r51 image upload exception: %s", e)
-        return None
+    logger.warning("r-img-ready: image upload failed after 3 attempts — "
+                   "falling back to text/article share")
+    return None
 
 
 def _og_today_slug_for(article_url):

@@ -271,6 +271,8 @@ def post_to_linkedin(text, link_url=None, link_title=None, link_desc=None, image
             # the earlier os.environ.get("LINKEDIN_SKIP_IMAGE_UPLOAD")
             # check with UnboundLocalError.
             import requests
+            import logging as _l; _lg = _l.getLogger("linkedin")
+            import urllib.parse as _up2
             _token = os.environ.get("LINKEDIN_ACCESS_TOKEN", "").strip()
             _company = os.environ.get("LINKEDIN_COMPANY_ID", "").strip()
             if _token and _company:
@@ -281,35 +283,59 @@ def post_to_linkedin(text, link_url=None, link_title=None, link_desc=None, image
                     "X-Restli-Protocol-Version": "2.0.0",
                     "Content-Type":      "application/json",
                 }
-                # Step 1: initialize upload — returns uploadUrl + image URN
-                _reg = requests.post(
-                    "https://api.linkedin.com/rest/images?action=initializeUpload",
-                    headers=_h_init,
-                    json={"initializeUploadRequest": {"owner": _author}},
-                    timeout=15,
-                )
-                if _reg.status_code in (200, 201):
+                _h_stat = {"Authorization": f"Bearer {_token}",
+                           "LinkedIn-Version": "202601",
+                           "X-Restli-Protocol-Version": "2.0.0"}
+                # r-img-ready (2026-06-29): upload, then WAIT for the image to be
+                # AVAILABLE before using it. LinkedIn won't PUBLISH a post whose
+                # image is still WAITING_UPLOAD/PROCESSING (the bug that silently
+                # killed content_publisher's posts — share urn returned but 404s,
+                # never hits the feed). LinkedIn's processor also fails valid PNGs
+                # intermittently (PROCESSING_FAILED), so retry a fresh upload up to
+                # 3x; on persistent failure leave _image_urn=None → post
+                # text/article (still publishes, still gets a card via OG-scrape).
+                for _try in range(3):
+                    _reg = requests.post(
+                        "https://api.linkedin.com/rest/images?action=initializeUpload",
+                        headers=_h_init,
+                        json={"initializeUploadRequest": {"owner": _author}},
+                        timeout=15,
+                    )
+                    if _reg.status_code not in (200, 201):
+                        _lg.warning(f"r50 initializeUpload failed: {_reg.status_code} {_reg.text[:160]}")
+                        break  # config/auth issue — retry won't help
                     _v = (_reg.json() or {}).get("value", {})
                     _upload_url = _v.get("uploadUrl")
-                    _image_urn  = _v.get("image")  # urn:li:image:*
-                    if _upload_url and _image_urn:
-                        # Step 2: PUT bytes
-                        _put = requests.put(
-                            _upload_url,
-                            headers={"Authorization": f"Bearer {_token}"},
-                            data=image_bytes,
-                            timeout=30,
-                        )
-                        if _put.status_code not in (200, 201):
-                            import logging as _l; _l.getLogger("linkedin").warning(
-                                f"r50 image PUT failed: {_put.status_code} {_put.text[:160]}")
-                            _image_urn = None  # don't reference an unuploaded image
-                    else:
-                        import logging as _l; _l.getLogger("linkedin").warning(
-                            f"r50 init missing uploadUrl/image: {_v}")
-                else:
-                    import logging as _l; _l.getLogger("linkedin").warning(
-                        f"r50 initializeUpload failed: {_reg.status_code} {_reg.text[:160]}")
+                    _cand_urn = _v.get("image")  # urn:li:image:*
+                    if not (_upload_url and _cand_urn):
+                        _lg.warning(f"r50 init missing uploadUrl/image: {_v}")
+                        break
+                    _put = requests.put(
+                        _upload_url,
+                        headers={"Authorization": f"Bearer {_token}"},
+                        data=image_bytes,
+                        timeout=30,
+                    )
+                    if _put.status_code not in (200, 201):
+                        _lg.warning(f"r50 image PUT failed: {_put.status_code} {_put.text[:160]}")
+                        continue  # transient — retry a fresh upload
+                    _surl = "https://api.linkedin.com/rest/images/" + _up2.quote(_cand_urn, safe="")
+                    _status = None
+                    for _ in range(10):  # ≤~10s for AVAILABLE
+                        try:
+                            _sr = requests.get(_surl, headers=_h_stat, timeout=10)
+                            _status = (_sr.json() or {}).get("status") if _sr.status_code == 200 else None
+                        except Exception:
+                            _status = None
+                        if _status in ("AVAILABLE", "PROCESSING_FAILED", "FAILED"):
+                            break
+                        _time.sleep(1)
+                    if _status == "AVAILABLE":
+                        _image_urn = _cand_urn  # ready — safe to attach
+                        break
+                    _lg.warning(f"r-img-ready: image {_cand_urn} status={_status} — retrying")
+                if _image_urn is None:
+                    _lg.warning("r-img-ready: no AVAILABLE image after retries — posting text/article")
         except Exception as _e:
             import logging as _l; _l.getLogger("linkedin").warning(f"r50 image upload err: {_e}")
 
