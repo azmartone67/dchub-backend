@@ -2203,6 +2203,46 @@ def autopilot_run():
             try:
                 from routes import brain_v2_store as _bs
                 if _bs.is_verified_resolved(issue, _url):
+                    # #3 recall-gate (dark behind BRAIN_MEMORY_RECALL_GATE_ENABLED):
+                    # if this re-emergence is signature-UNCHANGED (flapping /
+                    # identical to the resolved state) escalate ONCE instead of
+                    # reopening + re-attacking. A CHANGED signature, flag-off, or
+                    # any error falls through to the genuine regression path below.
+                    try:
+                        if os.environ.get("BRAIN_MEMORY_RECALL_GATE_ENABLED", "").lower() in ("1", "true", "yes"):
+                            from routes.brain_memory import recall_gate as _rgate
+                            _sig = f"{_url}|{(f.get('detail') or '')[:200]}"
+                            if (_rgate(issue, _sig) or {}).get("action") == "escalate_once":
+                                # Escalate ONCE, then stay quiet: skip the reattack on
+                                # EVERY subsequent tick, but write the audit row + bump
+                                # the counter only on the FIRST escalation of (issue,url)
+                                # — mirrors the r80 first-escalation guard below so we
+                                # don't re-spam the action table. recall_gate is
+                                # stateless, so this guard is what makes "once" true.
+                                _rg_first = True
+                                try:
+                                    with c.cursor() as _rgcur:
+                                        _rgcur.execute(
+                                            "SELECT 1 FROM brain_autopilot_actions "
+                                            "WHERE pattern_name = %s AND COALESCE(finding_url,'') = %s "
+                                            "AND outcome = 'escalated' LIMIT 1",
+                                            (issue, _url))
+                                        _rg_first = _rgcur.fetchone() is None
+                                except Exception:
+                                    try: c.rollback()
+                                    except Exception: pass
+                                if _rg_first:
+                                    summary["escalated"] = summary.get("escalated", 0) + 1
+                                    _record_action(f, issue, None, None,
+                                                   dry_run=_is_dry_run(), escalated=True,
+                                                   http_code=None, body=None,
+                                                   error="recall-gate: verified-resolved finding "
+                                                         "re-emerged UNCHANGED; escalated once "
+                                                         "(not re-attacked)",
+                                                   outcome="escalated")
+                                continue
+                    except Exception:
+                        pass
                     # Re-emergence of a resolved finding = regression.
                     sig = _bs.bump_persistence_ex(issue, _url)  # flips → reopened
                     summary["reopened"] = summary.get("reopened", 0) + 1

@@ -230,6 +230,28 @@ def master_tick():
         # additive (deduped) findings; dark no-op unless BRAIN_PROMOTE_ON_FAILURE_ENABLED.
         report["steps"].append(_summarize("tier3.promote_on_failure",
                                            _call("POST", "/api/v1/brain/autopilot/promote-on-failure")))
+        # #7 L6 forecast→finding bridge (dark unless BRAIN_FORECAST_FINDINGS_ENABLED).
+        report["steps"].append(_summarize("tier3.forecast_findings",
+                                           _call("GET", "/api/v1/brain/predictions")))
+        # #8 strategic-outcome ledger: re-read baselined rec metrics 14/30d later +
+        # stamp moved/flat/regressed. Additive ledger UPDATE only; prompt-feedback
+        # it powers is gated by BRAIN_STRATEGIC_LEDGER_FEEDBACK_ENABLED in the planner.
+        try:
+            from routes.brain_strategic_ledger import stamp_strategic_outcomes
+            _led = stamp_strategic_outcomes(max_rows=200) or {}
+            report["steps"].append({"step": "tier3.strategic_ledger_stamp",
+                                    "ok": bool(_led.get("ok", True)),
+                                    "stamped": (_led.get("checked_14d") or 0) + (_led.get("checked_30d") or 0),
+                                    "detail": _led})
+        except Exception as _led_e:
+            report["steps"].append({"step": "tier3.strategic_ledger_stamp", "ok": False,
+                                    "error": str(_led_e)[:160]})
+        # #6 reasoning lane: top leverage-ranked findings → typed candidates
+        # (endpoint→digest / code→L22 draft-PR, auto-merge OFF). Dark + ZERO cost
+        # unless BRAIN_REASONING_LANE_ENABLED; spends LLM budget when on → skip dry.
+        if not dry:
+            report["steps"].append(_summarize("tier3.reasoning_lane_drain",
+                                               _call("POST", "/api/v1/brain/reasoning-lane/drain")))
         # Money/positioning findings the brain must NOT auto-act on.
         report["human_decisions"] = _human_gated_digest()
 

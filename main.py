@@ -30712,6 +30712,15 @@ try:
 except Exception as _baq_e:
     print(f"[main] brain_action_queue_bp register failed: {_baq_e}", flush=True)
 try:
+    # #6 LLM-reasoning lane: first consumer of the action-queue/leverage_score.
+    # Dark behind BRAIN_REASONING_LANE_ENABLED; registration is import-safe +
+    # idempotent (init_reasoning_lane_schema is best-effort, never raises).
+    from routes.brain_reasoning_lane import register_brain_reasoning_lane
+    register_brain_reasoning_lane(app)
+    print("[main] brain_reasoning_lane registered: POST /api/v1/brain/reasoning-lane/drain", flush=True)
+except Exception as _brl_e:
+    print(f"[main] brain_reasoning_lane register failed: {_brl_e}", flush=True)
+try:
     from routes.brain_work_selector import brain_work_selector_bp
     if brain_work_selector_bp is not None:
         app.register_blueprint(brain_work_selector_bp)
