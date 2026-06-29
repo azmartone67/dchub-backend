@@ -1685,6 +1685,17 @@ try:
     except Exception as _qbe:
         import logging
         logging.getLogger(__name__).warning('mcp_quality_badge wiring failed: %s', _qbe)
+    # 2026-06-29: Audience master shell — tiered top-of-funnel orchestrator
+    # (measure real audience → GEO discoverability audit → human-gated content
+    # brief → verify). Attacks the binding constraint (~21 real agents/wk) +
+    # fixes the un-instrumented discovery funnel. POST /api/v1/admin/audience/master-tick
+    try:
+        from routes.audience_master_shell import audience_master_shell_bp
+        app.register_blueprint(audience_master_shell_bp)
+        print("[main] audience_master_shell_bp registered: POST /api/v1/admin/audience/master-tick", flush=True)
+    except Exception as _ams:
+        import logging
+        logging.getLogger(__name__).warning('audience_master_shell wiring failed: %s', _ams)
     try:
         from routes.brain_narrative import brain_narrative_bp
         app.register_blueprint(brain_narrative_bp)
