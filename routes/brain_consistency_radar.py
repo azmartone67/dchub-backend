@@ -8663,6 +8663,21 @@ def scan_all() -> list[dict]:
         print(f"[radar] brain_mcp_health detector skipped: {_e_mcp}",
               file=_sys.stderr)
 
+    # Feature #5 (2026-06-28) — SELF-AUDIT / HONESTY-RECONCILIATION.
+    # READ-ONLY detector: cross-checks the brain's own evolution verdict
+    # vs self-model verdict (fires on a >=2-rank optimism gap) and flags
+    # per-pattern "acting but never landing" (executed_ok>=5 AND
+    # total_verified>=5 with 0% verified success). No autopilot action map
+    # → findings escalate to the human digest. Import-guarded so the
+    # module can never break the radar.
+    try:
+        from routes.brain_honesty_reconciliation import check_honesty_reconciliation
+        detectors.append(check_honesty_reconciliation)
+    except Exception as _e_honesty:
+        import sys as _sys
+        print(f"[radar] brain_honesty_reconciliation detector skipped: {_e_honesty}",
+              file=_sys.stderr)
+
     # Phase ZZZZZ-round17 (2026-05-23) — security/breach detectors.
     # The user explicitly asked: "can we also enhance brain to detect any
     # bugs or gate breaches or security breaches for that matter, want
