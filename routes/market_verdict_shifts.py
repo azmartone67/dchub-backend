@@ -74,6 +74,7 @@ market_verdict_shifts_bp = Blueprint("market_verdict_shifts", __name__)
 SHIFT_WINDOW_DAYS    = 7    # compare today's verdict vs 7 days ago
 MAX_POSTS_PER_RUN    = 3    # don't flood LinkedIn
 SOFT_RECENT_HOURS    = 48   # belt-and-suspenders anti-spam per slug
+ENGAGEMENT_WINDOW_DAYS = 30 # window for the per-market engagement bias
 
 
 # Dramatic shifts (one side BUILD or AVOID). CAUTION↔CAUTION is the
@@ -499,6 +500,56 @@ def _record_post(cur, shift: dict, blurb: str, smp_id: int | None) -> bool:
 
 
 # ── Core scan ─────────────────────────────────────────────────────────
+def _rank_shifts_by_engagement(cur, shifts: list[dict]) -> list[dict]:
+    """Order qualifying shifts so the MAX_POSTS_PER_RUN cap KEEPS the markets
+    that historically drive the most LinkedIn engagement (reach), rather than an
+    arbitrary computed_at order. This is the consumer of the per-market
+    engagement signal (cf. marketing_engine._market_performance) — closing the
+    measure→act loop for DCPI market alerts.
+
+    Weight = 30d impressions + 10×(likes+comments+shares) per market, joined on
+    linkedin_posts.slug == market_power_scores.market_slug (same bare-city slug).
+    Markets with NO engagement history get the MEDIAN weight, so brand-new
+    markets still earn a fair slot (built-in exploration — avoids permanently
+    starving never-posted markets the way a pure exploit would). Stable sort, so
+    equal-weight ties preserve the detector's computed_at order. Never raises —
+    falls back to the input order on any hiccup or when there's no signal yet."""
+    if len(shifts) <= 1:
+        return shifts
+    try:
+        cur.execute("""
+            SELECT slug,
+                   COALESCE(SUM(impressions), 0)
+                   + 10 * COALESCE(SUM(COALESCE(likes,0)
+                                     + COALESCE(comments,0)
+                                     + COALESCE(shares,0)), 0) AS weight
+              FROM linkedin_posts
+             WHERE slug IS NOT NULL
+               AND posted_at > NOW() - make_interval(days => %s)
+             GROUP BY slug
+        """, (ENGAGEMENT_WINDOW_DAYS,))
+        weights = {row[0]: float(row[1] or 0) for row in (cur.fetchall() or [])}
+    except Exception as e:
+        _log(f"engagement_rank_query_failed: {e}")
+        return shifts
+    # Only ranks once engagement data exists; until then keep detector order.
+    if not any(weights.values()):
+        return shifts
+    seen = sorted(weights.values())
+    median = seen[len(seen) // 2] if seen else 0.0
+    ranked = sorted(
+        shifts,
+        key=lambda s: weights.get(s.get("market_slug"), median),
+        reverse=True,
+    )
+    try:
+        _log("ranked %d shifts by 30d engagement (top=%s)"
+             % (len(ranked), ranked[0].get("market_slug")))
+    except Exception:
+        pass
+    return ranked
+
+
 def scan_verdict_shifts(live: bool = False) -> dict[str, Any]:
     """Main detector. Returns a result dict. When live=False, computes
     everything (including the blurb) but does NOT enqueue / log."""
@@ -527,6 +578,10 @@ def scan_verdict_shifts(live: bool = False) -> dict[str, Any]:
             except Exception: pass
 
             shifts = _detect_shifts(cur)
+            # Engagement-bias: when more markets shift than the per-run cap, post
+            # the ones that historically drive the most engagement first.
+            shifts = _rank_shifts_by_engagement(cur, shifts)
+            result["ranked_by"] = "engagement"
             result["scanned"] = len(shifts)
 
             for s in shifts:
