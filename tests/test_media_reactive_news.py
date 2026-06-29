@@ -28,12 +28,24 @@ class _RaisingCursor:
     "CBRE got this wrong — DC Hub data shows the real picture.",
     "JLL is outdated; our grid data is fresher.",
     "The CBRE report is flawed and misses the grid story.",
-    "DataCenterHawk is behind on time-to-power.",
+    "DataCenterHawk is out of touch on time-to-power.",
 ])
 def test_analyst_respect_blocks_disparagement(text):
     ok, reason = rn._analyst_respect_ok(text)
     assert ok is False
     assert "analyst-respect" in reason
+
+
+@pytest.mark.parametrize("text", [
+    # Regression: the exact live draft that was wrongly rejected — "behind" is
+    # neutral grid language ("60-month explanation behind it"), not a dig at CBRE.
+    "0.3% vacancy in Northern Virginia—CBRE's Q1 number—is a demand signal with "
+    "a 60-month explanation behind it. DC Hub's grid data shows why.",
+    "The markets CBRE flags are behind on interconnection, lagging the queue.",
+])
+def test_analyst_respect_allows_neutral_grid_language(text):
+    ok, _ = rn._analyst_respect_ok(text)
+    assert ok is True
 
 
 @pytest.mark.parametrize("text", [

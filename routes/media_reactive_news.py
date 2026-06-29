@@ -333,9 +333,13 @@ def _extract_claim(title: str, summary: str) -> str | None:
 
 
 # ── analyst-respect guard (REACTIVE-LANE-SPECIFIC) ───────────────────────────
+# NOTE: deliberately excludes domain-neutral words that read as disparagement
+# in isolation but are normal grid language ("behind on interconnection",
+# "lagging the queue", "60-month explanation behind it"). Including them caused
+# a live false-positive that rejected a perfectly respectful CBRE reframe.
 _DISPARAGE_TERMS = (
     "wrong", "inaccurate", "outdated", "stale", "missed", "misses", "flawed",
-    "failed", "fails", "behind", "lagging", "lagging", "clueless", "doesn't get",
+    "failed", "fails", "clueless", "doesn't get",
     "does not get", "can't see", "cannot see", "blind to", "gets it wrong",
     "out of touch", "obsolete", "useless", "garbage", "nonsense",
 )
