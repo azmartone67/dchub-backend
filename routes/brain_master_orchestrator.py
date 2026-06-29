@@ -225,6 +225,11 @@ def master_tick():
         # L23 capability proposals (seeds, never auto-built).
         report["steps"].append(_summarize("tier3.l23_lifecycle",
                                            _call("GET", "/api/v1/brain/lifecycle/audit")))
+        # Effect-unfixable patterns the autopilot keeps failing on: surface them
+        # for human re-channeling instead of bounce-looping forever. Propose-only,
+        # additive (deduped) findings; dark no-op unless BRAIN_PROMOTE_ON_FAILURE_ENABLED.
+        report["steps"].append(_summarize("tier3.promote_on_failure",
+                                           _call("POST", "/api/v1/brain/autopilot/promote-on-failure")))
         # Money/positioning findings the brain must NOT auto-act on.
         report["human_decisions"] = _human_gated_digest()
 
