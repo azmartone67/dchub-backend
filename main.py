@@ -32541,6 +32541,15 @@ try:
 except Exception as _sar_e:
     print(f"[main] site_analysis_rendertest register skipped: {_sar_e}", file=sys.stderr)
 
+# SEO facilities hub — fixes /facilities (was 503) + un-orphans the ~13.8K
+# /facilities/<slug> pages stuck "Discovered – currently not indexed".
+try:
+    from facilities_hub import register_facilities_hub
+    register_facilities_hub(app)
+    print("[main] facilities_hub registered: /facilities, /facilities/in/<country>", flush=True)
+except Exception as _fh_e:
+    print(f"[main] facilities_hub register skipped: {_fh_e}", file=sys.stderr)
+
 # === Brain v2 · Layer 3 freshness fields ===
 try:
     from flask import jsonify as _bv2_jsonify
