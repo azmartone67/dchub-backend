@@ -884,6 +884,7 @@ def sitemap_landings():
     for _ans_slug in (
         'live-data-center-capacity-for-ai-agents',
         'interconnection-queue-data-for-ai-agents',
+        'natural-gas-data-for-ai-data-center-siting',
     ):
         urls.append(f'  <url><loc>https://dchub.cloud/answers/{_ans_slug}</loc><changefreq>monthly</changefreq><priority>0.85</priority></url>')
     items = '\n'.join(urls)
