@@ -1570,6 +1570,83 @@ def dev_signup():
     }), 200
 
 
+# ── POST /api/v1/admin/billing/reconcile-keys ─ recover stuck paid keys ───
+# Root cause (billing tier-table gap): the Stripe webhook
+# (handle_checkout_completed, main.py) upgrades mcp_dev_keys.tier ONLY by an
+# email match on an ALREADY-active key. mcp_dev_keys has no user_id FK — email
+# is the only link — so pay-then-claim races / email mismatches leave real
+# payers stuck at tier='free' despite paying. This endpoint finds real payers
+# (paid plan + a Stripe customer + active sub) whose email-matched active key
+# is below the paid tier and (with apply=1) upgrades it. GET or apply=0 = safe
+# dry-run report. Admin-gated. Idempotent — safe to run on a schedule.
+@mcp_bp.get("/api/v1/admin/billing/reconcile-keys")
+@mcp_bp.post("/api/v1/admin/billing/reconcile-keys")
+def admin_reconcile_keys():
+    try:
+        from routes.funnel_health import _admin_ok
+        if not _admin_ok(request):
+            return jsonify(ok=False, error="unauthorized"), 401
+    except Exception:
+        return jsonify(ok=False, error="auth_unavailable"), 503
+    apply = (request.args.get("apply") in ("1", "true", "yes"))
+    PAID_PLANS = ("starter", "developer", "pro", "founding", "enterprise")
+    def _redact(e):
+        try:
+            u, d = e.split("@", 1)
+            return (u[:2] + "***@" + d)
+        except Exception:
+            return "***"
+    out = {"ok": True, "apply": apply, "keys_upgraded": 0,
+           "real_payers": 0,
+           "buckets": {"already_paid_key": 0, "key_upgraded": 0,
+                       "unlinked_no_matching_key": 0},
+           "samples": {"upgraded": [], "unlinked": []}}
+    try:
+        with _pool.connection() as conn, conn.cursor() as cur:
+            cur.execute("""
+                SELECT id, LOWER(email) AS email, LOWER(COALESCE(plan,'')) AS plan
+                  FROM users
+                 WHERE LOWER(COALESCE(plan,'')) IN %s
+                   AND COALESCE(stripe_customer_id,'') <> ''
+                   AND LOWER(COALESCE(subscription_status,'active'))
+                       IN ('active','trialing','past_due')
+                   AND COALESCE(email,'') <> ''
+            """, (PAID_PLANS,))
+            payers = cur.fetchall()
+            out["real_payers"] = len(payers)
+            for uid, email, plan in payers:
+                want = "enterprise" if plan == "enterprise" else "paid"
+                cur.execute(
+                    "SELECT tier FROM mcp_dev_keys "
+                    " WHERE LOWER(COALESCE(email,'')) = %s AND status='active'",
+                    (email,))
+                tiers = [(r[0] or "").lower() for r in cur.fetchall()]
+                if not tiers:
+                    out["buckets"]["unlinked_no_matching_key"] += 1
+                    if len(out["samples"]["unlinked"]) < 25:
+                        out["samples"]["unlinked"].append({"email": _redact(email), "plan": plan})
+                    continue
+                if any(t in ("paid", "enterprise") for t in tiers):
+                    out["buckets"]["already_paid_key"] += 1
+                    continue
+                out["buckets"]["key_upgraded"] += 1
+                if len(out["samples"]["upgraded"]) < 50:
+                    out["samples"]["upgraded"].append(
+                        {"email": _redact(email), "plan": plan, "want_tier": want})
+                if apply:
+                    cur.execute(
+                        "UPDATE mcp_dev_keys SET tier=%s "
+                        " WHERE LOWER(COALESCE(email,''))=%s AND status='active' "
+                        "   AND COALESCE(tier,'') NOT IN ('paid','enterprise')",
+                        (want, email))
+                    out["keys_upgraded"] += (cur.rowcount or 0)
+            if apply:
+                conn.commit()
+        return jsonify(out)
+    except Exception as e:
+        return jsonify(ok=False, error=str(e)[:200]), 500
+
+
 # ── GET /api/v1/mcp/funnel — Public aggregate stats for the dashboard ─────
 
 @mcp_bp.get("/api/v1/mcp/funnel")
