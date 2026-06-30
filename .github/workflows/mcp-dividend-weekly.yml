@@ -38,8 +38,11 @@ jobs:
               cur.execute(q); r=cur.fetchone(); return (r[0] if r else 0) or 0
           minted7  = sc("SELECT COUNT(*) FROM auto_trial_keys WHERE minted_at>NOW()-INTERVAL '7 days'")
           active   = sc("SELECT COUNT(*) FROM auto_trial_keys WHERE call_count>0")
-          bound    = sc("SELECT COUNT(*) FROM auto_trial_keys WHERE (signed_up_email IS NOT NULL AND signed_up_email<>'') OR (operator_email IS NOT NULL AND operator_email<>'')")
-          emails30 = sc("SELECT COUNT(*) FROM mcp_email_capture WHERE created_at>NOW()-INTERVAL '30 days'")
+          # Exclude test/QA addresses so the metric is HONEST (the prior version
+          # counted example./test/deleteme/qa- binds and reported "5" when REAL=0).
+          TEST = r"(example\.|test|deleteme|invalid|qa-|funnel|bridge|@dchub\.cloud)"
+          bound    = sc(f"SELECT COUNT(*) FROM auto_trial_keys WHERE ((signed_up_email IS NOT NULL AND signed_up_email<>'') OR (operator_email IS NOT NULL AND operator_email<>'')) AND COALESCE(signed_up_email,operator_email) !~* '{TEST}'")
+          emails30 = sc(f"SELECT COUNT(*) FROM mcp_email_capture WHERE created_at>NOW()-INTERVAL '30 days' AND COALESCE(email,'') !~* '{TEST}'")
           paid30   = sc("SELECT COUNT(*) FROM mcp_conversions WHERE created_at>NOW()-INTERVAL '30 days'")
           L=["<b>Reach by channel — 7d vs prior 7d (distinct sessions)</b>"]
           for p,s7,sp in rows:
