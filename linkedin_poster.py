@@ -446,6 +446,19 @@ def post_to_linkedin(text, link_url=None, link_title=None, link_desc=None, image
                 INSERT INTO linkedin_posts (post_urn, content, post_type, status)
                 VALUES (%s, %s, %s, 'success')
             """, (post_urn, text[:500], 'manual'))
+            # Render-drift probe (off unless LINKEDIN_RENDER_DRIFT_PROBE=1) —
+            # fetch this share back by URN and compare LinkedIn's rendered
+            # commentary vs the FULL `text` we sent, to catch a recurrence of the
+            # "Guam " truncation at the render layer (dab60cc1). Reuses the ONE
+            # detector + linkedin_render_drift table in content_publisher so both
+            # publishers funnel into a single forensic trail. Fail-soft +
+            # isolated; never blocks or undoes this already-successful post.
+            try:
+                if post_urn:
+                    from content_publisher import _verify_linkedin_render_drift
+                    _verify_linkedin_render_drift(post_urn, text, access_token)
+            except Exception:
+                pass
             # r-image-required (2026-05-30): expose whether an image actually
             # made it onto this post. _image_urn is set ONLY when the image
             # upload (initializeUpload + PUT bytes) succeeded AND was attached
