@@ -1044,7 +1044,7 @@ def identify_key():
                       FROM users u
                      WHERE k.api_key = %s
                        AND LOWER(u.email) = LOWER(%s)
-                       AND u.plan IN ('pro','founding','enterprise')
+                       AND u.plan IN ('developer','pro','founding','enterprise')
                        AND COALESCE(u.subscription_status,'') = 'active'
                        AND COALESCE(k.tier,'free') NOT IN ('paid','enterprise')""",
                 (api_key, email),
@@ -1589,7 +1589,7 @@ def admin_reconcile_keys():
     except Exception:
         return jsonify(ok=False, error="auth_unavailable"), 503
     apply = (request.args.get("apply") in ("1", "true", "yes"))
-    PAID_PLANS = ("starter", "developer", "pro", "founding", "enterprise")
+    PAID_PLANS = ("developer", "pro", "founding", "enterprise")  # starter is web-only, not MCP-paid
     def _redact(e):
         try:
             u, d = e.split("@", 1)
