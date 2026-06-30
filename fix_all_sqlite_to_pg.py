@@ -9,7 +9,7 @@ Fixes:
   2. db.execute() / conn.execute() → cursor.execute() (where appropriate)
   3. INSERT OR IGNORE → INSERT...ON CONFLICT DO NOTHING
   4. INSERT OR REPLACE → INSERT...ON CONFLICT DO UPDATE (best-effort)
-  5. datetime('now') → NOW()
+  5. NOW() → NOW()
   6. sqlite3.Row factory → dict cursor pattern
   7. PRAGMA statements → PostgreSQL equivalents or removal
   8. AUTOINCREMENT → SERIAL PRIMARY KEY
