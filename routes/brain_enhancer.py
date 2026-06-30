@@ -413,6 +413,25 @@ def _scan_findings(out: list[dict], limit: int = 12) -> None:
         if not claim:
             continue
         cnt = r.get("value")
+        # r-brain-loop (2026-06-30): some findings carry a metric VALUE here
+        # (latency ms / backlog size), not a recurrence count. Render those as a
+        # value so the agenda stops claiming they were "detected N times" and the
+        # investigator isn't handed a mislabeled scalar that forces a refutation.
+        try:
+            from routes.brain_work_selector import is_value_not_count
+            _is_value = is_value_not_count(claim) or is_value_not_count(r.get("issue"))
+        except Exception:
+            _is_value = False
+        if _is_value:
+            out.append(_opportunity(
+                "reliability",
+                f"brain_findings: {claim}"
+                + (f" (value {cnt:,})" if isinstance(cnt, (int, float)) and cnt else ""),
+                f"This finding reports a metric VALUE of {cnt} (not an occurrence "
+                f"count): '{claim[:140]}'. What underlying change moves that value "
+                "into a healthy range, rather than re-detecting the same condition?",
+            ))
+            continue
         # A high-recurrence finding reads as reliability; everything else as a
         # developer_ux/quality opportunity. Either way it is a REAL signal.
         area = "reliability" if (isinstance(cnt, int) and cnt and cnt >= 3) else "developer_ux"

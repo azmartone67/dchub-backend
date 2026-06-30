@@ -775,7 +775,9 @@ _REFUTE_SYSTEM = (
     "  {\"weaknesses_found\": [\"<each concrete weakness>\"],\n"
     "   \"survives_scrutiny\": <true|false: does the core recommendation still "
     "hold despite the weaknesses?>,\n"
-    "   \"confidence_adjustment\": <-0.5..0.0: how much to LOWER confidence>,\n"
+    "   \"confidence_adjustment\": <-0.5..+0.2: how much to adjust confidence; "
+    "negative to LOWER for unaddressed weaknesses, a small POSITIVE only if the "
+    "recommendation genuinely survives scrutiny AND the evidence corroborates it>,\n"
     "   \"added_caveats\": [\"<caveats the operator must hear>\"]}\n"
 )
 
@@ -915,7 +917,15 @@ def investigate(question: str, *, depth: str = "default") -> dict:
                 adj = float(adj)
             except Exception:
                 adj = 0.0
-            adj = max(-0.5, min(0.0, adj))
+            # r-brain-loop (2026-06-30): two-directional. The clamp used to be
+            # min(0.0,...) — confidence could only ever fall, a paralysis ratchet
+            # that flattened every item to 0.2-0.4 so nothing ever looked
+            # strong/new. Now a recommendation that genuinely SURVIVES refutation
+            # with corroboration may rise modestly (+0.2 cap); anything not
+            # clearly survived still cannot rise, and the survived-False cap below
+            # still holds refuted items at <=0.35.
+            _pos_cap = 0.2 if (survived is True) else 0.0
+            adj = max(-0.5, min(_pos_cap, adj))
             refutation["weaknesses_found"] = weaknesses
             refutation["survived"] = bool(survived) if survived is not None else None
             refutation["model"] = fmodel

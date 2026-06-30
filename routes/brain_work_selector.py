@@ -276,6 +276,21 @@ def _age_days_from_ts(candidate: dict) -> float:
     return 0.0
 
 
+# r-brain-loop (2026-06-30): some detectors emit a metric VALUE under "count"
+# (frontend_endpoint_slow count=latency_ms; dedup_backlog_large count=backlog
+# size). The scorer used to read that as a recurrence count, which fake-inflated
+# leverage (a 21,415-row backlog or 3,094ms latency hit the occ cap 1.6x) so
+# these items re-won the agenda every tick and the enhancer rendered them as
+# "detected N times". These issues carry a value, not an occurrence.
+VALUE_NOT_COUNT_ISSUES = ("frontend_endpoint_slow", "dedup_backlog_large")
+
+
+def is_value_not_count(text) -> bool:
+    """True when the finding's numeric signal is a metric value, not a count."""
+    t = str(text or "").lower()
+    return any(k in t for k in VALUE_NOT_COUNT_ISSUES)
+
+
 def impact_weight(candidate: dict) -> tuple[float, dict]:
     """How much this proposal MATTERS, independent of how likely it is to land.
 
@@ -295,14 +310,20 @@ def impact_weight(candidate: dict) -> tuple[float, dict]:
     sev_tag, sev_mult = _severity_impact(sev_text)
 
     # Occurrence / how-many-times-seen signal (any of several common keys).
+    # Skip findings whose "count" is actually a metric value (see
+    # VALUE_NOT_COUNT_ISSUES) so a latency/backlog magnitude can't masquerade as
+    # thousands of occurrences and pin itself to the top of the agenda forever.
     occ = 0
-    for k in ("occurrence", "occurrences", "seen_count", "count", "n_seen"):
-        v = candidate.get(k)
-        if v is not None:
-            try:
-                occ = max(occ, int(v))
-            except Exception:
-                pass
+    _occ_text = " ".join(str(candidate.get(k) or "")
+                         for k in ("issue", "claim", "rationale", "detail"))
+    if not is_value_not_count(_occ_text):
+        for k in ("occurrence", "occurrences", "seen_count", "count", "n_seen"):
+            v = candidate.get(k)
+            if v is not None:
+                try:
+                    occ = max(occ, int(v))
+                except Exception:
+                    pass
     # Diminishing returns: each ~order of magnitude adds ~0.15, capped at +0.6.
     occ_mult = 1.0
     if occ > 1:

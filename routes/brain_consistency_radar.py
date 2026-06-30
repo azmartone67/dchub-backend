@@ -5457,6 +5457,7 @@ def check_dedup_backlog_growing() -> list[dict]:
         "issue":  "dedup_backlog_large",
         "url":    "/api/v1/facilities/delta",
         "count":  gap,
+        "count_kind": "backlog_size",  # VALUE not a recurrence count (see brain_work_selector.VALUE_NOT_COUNT_ISSUES)
         "detail": (f"Facility dedup backlog: {gap:,} candidates "
                    f"awaiting dedup ({verified:,} verified of {total:,} raw). "
                    f"Not yet flagged as stalled — need 7d of snapshots for "
@@ -6265,6 +6266,7 @@ def check_frontend_critical_endpoints() -> list[dict]:
                 "issue":  "frontend_endpoint_slow",
                 "url":    page_path,
                 "count":  int(elapsed * 1000),
+                "count_kind": "latency_ms",  # VALUE not a recurrence count (see brain_work_selector.VALUE_NOT_COUNT_ISSUES)
                 "detail": (f"Public page `{page_path}` API call to `{api_path}` "
                            f"({label}) took {elapsed:.1f}s (cap {max_sec}s). "
                            f"Visitors abandon before render."),
