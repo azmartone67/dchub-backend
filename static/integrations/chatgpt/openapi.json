@@ -456,6 +456,78 @@
         }
       }
     },
+    "/api/v1/ai-capacity-index": {
+      "get": {
+        "operationId": "findDeployableCapacity",
+        "summary": "Find where N MW of AI compute can land — markets ranked by deployable capacity",
+        "description": "THE endpoint for 'find me 100 MW in <market>' or 'where can I deploy N MW'. Returns the AI Compute Capacity Index: US markets ranked by deployable MW within a 30/60/90-day horizon, each with deployable_mw, facility_count, operator_count, hyperscale_ready and a score. Covers Dallas (market='dallas-tx'), Northern Virginia, Phoenix, Atlanta, etc. Use this FIRST for any capacity-availability question. Free tier, no auth.",
+        "parameters": [
+          {
+            "name": "horizon",
+            "in": "query",
+            "required": false,
+            "description": "Time-to-power horizon in days: 30, 60, or 90. Default 90.",
+            "schema": { "type": "integer", "default": 90 }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Markets ranked by deployable capacity",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "index_name": { "type": "string" },
+                    "horizon_days": { "type": "integer" },
+                    "markets": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "market": { "type": "string" },
+                          "city": { "type": "string" },
+                          "state": { "type": "string" },
+                          "deployable_mw": { "type": "number" },
+                          "facility_count": { "type": "integer" },
+                          "operator_count": { "type": "integer" },
+                          "hyperscale_ready": { "type": "boolean" },
+                          "score": { "type": "number" },
+                          "rank": { "type": "integer" }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/market-brief/{slug}": {
+      "get": {
+        "operationId": "getMarketBrief",
+        "summary": "Full market brief for one market — power, grid, pipeline, operators, M&A",
+        "description": "Live brief for a single market slug (dallas, northern-virginia, phoenix, atlanta, chicago, silicon-valley, ...). Includes hero KPIs, power & grid capacity in MW, construction pipeline, operator landscape, and M&A. Anon/free get hero + KPIs + outlook; Pro unlocks full depth. Use this for 'how much capacity is in <market>' after findDeployableCapacity.",
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "description": "Market slug, e.g. dallas, northern-virginia, phoenix, atlanta, chicago",
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Market brief JSON (hero, kpis, power_grid, pipeline, operators, ma)",
+            "content": { "application/json": { "schema": { "type": "object" } } }
+          },
+          "404": { "description": "market not found" }
+        }
+      }
+    },
     "/api/agent/capabilities": {
       "get": {
         "operationId": "getCapabilities",
