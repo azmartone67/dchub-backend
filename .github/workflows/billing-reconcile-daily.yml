@@ -31,3 +31,22 @@ jobs:
           echo "Customers checked: ${CHECKED}"
           echo "Counts corrected:  ${CORR}"
           echo "═══════════════════════════════════════════════"
+
+      - name: Reconcile MCP key tiers (paid users stuck at free)
+        # r-keytier (2026-06-30): upgrade any real payer's email-matched MCP key
+        # that sits below its paid tier (the billing tier-table gap). Idempotent;
+        # apply=1. Dry-run is GET/apply=0. Hits Railway directly (CF 15s timeout).
+        run: |
+          if [ -z "${{ secrets.DCHUB_ADMIN_KEY }}" ]; then
+            echo "::warning::DCHUB_ADMIN_KEY secret missing — skipping"
+            exit 0
+          fi
+          echo "─── Reconciling MCP key tiers against paid plans ───"
+          RESP=$(curl -sS -X POST --max-time 120 \
+            "https://dchub-backend-production.up.railway.app/api/v1/admin/billing/reconcile-keys?apply=1" \
+            -H "X-Admin-Key: ${{ secrets.DCHUB_ADMIN_KEY }}")
+          echo "${RESP}" | python3 -m json.tool || echo "::warning::Non-JSON response"
+          UP=$(echo "${RESP}" | python3 -c "import sys,json; print((json.load(sys.stdin) or {}).get('keys_upgraded',0))" 2>/dev/null || echo "0")
+          echo "═══════════════════════════════════════════════"
+          echo "MCP keys upgraded to paid tier: ${UP}"
+          echo "═══════════════════════════════════════════════"

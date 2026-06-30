@@ -1589,8 +1589,11 @@ def admin_reconcile_keys():
     except Exception:
         return jsonify(ok=False, error="auth_unavailable"), 503
     apply = (request.args.get("apply") in ("1", "true", "yes"))
+    _full = (request.args.get("full") in ("1", "true", "yes"))  # admin-only: un-redact for outreach
     PAID_PLANS = ("developer", "pro", "founding", "enterprise")  # starter is web-only, not MCP-paid
     def _redact(e):
+        if _full:
+            return e
         try:
             u, d = e.split("@", 1)
             return (u[:2] + "***@" + d)
