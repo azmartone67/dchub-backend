@@ -44,6 +44,10 @@ jobs:
           bound    = sc(f"SELECT COUNT(*) FROM auto_trial_keys WHERE ((signed_up_email IS NOT NULL AND signed_up_email<>'') OR (operator_email IS NOT NULL AND operator_email<>'')) AND COALESCE(signed_up_email,operator_email) !~* '{TEST}'")
           emails30 = sc(f"SELECT COUNT(*) FROM mcp_email_capture WHERE created_at>NOW()-INTERVAL '30 days' AND COALESCE(email,'') !~* '{TEST}'")
           paid30   = sc("SELECT COUNT(*) FROM mcp_conversions WHERE created_at>NOW()-INTERVAL '30 days'")
+          # web/direct experiment: WHERE conversions came from (30d) — watch
+          # web:pricing-page / stripe_webhook_pack5 / stripe_webhook_mcp climb.
+          cur.execute("SELECT COALESCE(source,'?'), COUNT(*), COALESCE(SUM(mrr_cents),0)/100 FROM mcp_conversions WHERE created_at>NOW()-INTERVAL '30 days' GROUP BY 1 ORDER BY 2 DESC")
+          by_src=cur.fetchall()
           L=["<b>Reach by channel — 7d vs prior 7d (distinct sessions)</b>"]
           for p,s7,sp in rows:
               s7,sp=s7 or 0, sp or 0
@@ -57,6 +61,11 @@ jobs:
                 f"&nbsp;&nbsp;emails captured (30d): {emails30}",
                 f"&nbsp;&nbsp;paid conversions (30d): {paid30}",
                 "<br><i>Bridge is converting when email-bound climbs. If it stays flat while reach grows, tighten the gate (TRIAL_FREE_CALLS_UNBOUND) / CTA.</i>"]
+          L += ["<br><b>Where conversions came from (30d) — the web/direct experiment</b>"]
+          if by_src:
+              for src,n,usd in by_src: L.append(f"&nbsp;&nbsp;{src}: <b>{n}</b> (${usd}/mo)")
+          else: L.append("&nbsp;&nbsp;(no conversions in window)")
+          L.append("<br><i>Doubling down on web: watch web:pricing-page + stripe_webhook_pack5 ($10) + stripe_webhook_mcp climb as the free-web CTA + registry hook drive humans to checkout.</i>")
           html="<div style='font-family:ui-monospace,monospace;font-size:14px;line-height:1.6'>"+"<br>".join(L)+"</div>"
           payload=json.dumps({"from":"DC Hub <jonathan@dchub.cloud>","to":["azmartone@gmail.com"],
                               "subject":"DC Hub · MCP Dividend (weekly)","html":html}).encode()
