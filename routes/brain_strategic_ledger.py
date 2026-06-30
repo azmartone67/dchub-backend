@@ -482,7 +482,7 @@ def gather_ledger_feedback(lookback_days: int = 120) -> dict:
             cur.execute(
                 """SELECT kind, outcome, COUNT(*)
                      FROM brain_strategic_outcomes
-                    WHERE created_at > NOW() - INTERVAL '%s days'
+                    WHERE created_at > NOW() - %s * INTERVAL '1 day'
                     GROUP BY kind, outcome""", (lookback_days,))
             for kind, outcome, n in cur.fetchall() or []:
                 k = kind or "unknown"
