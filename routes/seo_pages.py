@@ -1570,3 +1570,101 @@ def seo_health():
         aws_codes=list(AWS_REGION_MAP.keys()),
         addresses=list(ADDRESS_MAP.keys()),
     )
+
+
+# ── FACILITIES DIRECTORY — server-rendered crawlable index (2026-06-29) ──
+# Fixes "discovered – not indexed": the /facilities hub is a JS UI with 0
+# server-rendered links, so the ~4,833 real (non-duplicate) facility pages were
+# orphans Google deprioritized. This paginated directory links every non-dup
+# facility via its CANONICAL /facilities/<slug> URL (the same form the sitemap +
+# page canonical use), with full all-pages nav so Googlebot can reach the whole
+# set from page 1. Added to the sitemap; linked from the facility breadcrumb.
+import re as _re_dir
+from routes.facility_slug import stable_hash8 as _stable_hash8
+
+_DIR_PER_PAGE = 1000
+
+
+def _fac_slugify(t):
+    s = (t or "").lower().strip()
+    s = _re_dir.sub("[^a-z0-9 -]", "", s)
+    s = _re_dir.sub("[- ]+", "-", s)
+    return s.strip("-")
+
+
+def _facility_canonical_slug(provider, name):
+    ns = _fac_slugify(name)
+    if not ns or len(ns) < 3:
+        return None
+    ps = _fac_slugify(provider or "")
+    h = _stable_hash8(provider, name)
+    return f"{ps}-{ns}-{h}" if ps else f"{ns}-{h}"
+
+
+@seo_pages_bp.get("/facilities/directory", strict_slashes=False)
+@seo_pages_bp.get("/facilities/directory/<int:page>", strict_slashes=False)
+def facilities_directory(page: int = 1):
+    page = max(1, int(page or 1))
+    c = _conn()
+    if c is None:
+        return _error_page("Database temporarily unavailable", 503)
+    total = 0
+    rows = []
+    try:
+        import psycopg2.extras
+        with c.cursor() as cur:
+            cur.execute("SELECT COUNT(*) FROM discovered_facilities "
+                        "WHERE name IS NOT NULL AND name <> '' "
+                        "  AND COALESCE(is_duplicate,0) = 0")
+            total = int((cur.fetchone() or [0])[0] or 0)
+            cur.execute("""
+                SELECT name, provider, city, state, country
+                  FROM discovered_facilities
+                 WHERE name IS NOT NULL AND name <> ''
+                   AND COALESCE(is_duplicate,0) = 0
+                 ORDER BY power_mw DESC NULLS LAST, name ASC
+                 LIMIT %s OFFSET %s
+            """, (_DIR_PER_PAGE, (page - 1) * _DIR_PER_PAGE))
+            rows = cur.fetchall()
+    except Exception:
+        return _error_page("Directory temporarily unavailable", 503)
+    finally:
+        try: c.close()
+        except Exception: pass
+
+    pages = max(1, (total + _DIR_PER_PAGE - 1) // _DIR_PER_PAGE)
+    if page > pages:
+        return _error_page("Page out of range", 404)
+    items = []
+    for name, provider, city, state, country in rows:
+        slug = _facility_canonical_slug(provider, name)
+        if not slug:
+            continue
+        loc = ", ".join([x for x in (city, state, country) if x])
+        prov = (provider or "").strip()
+        meta = " · ".join([x for x in (prov, loc) if x and x.lower() != "unknown"])
+        items.append(f'<li><a href="/facilities/{slug}">{_h(name)}</a>'
+                     f'{(" — " + _h(meta)) if meta else ""}</li>')
+    nav = []
+    if page > 1:
+        nav.append(f'<a href="/facilities/directory/{page-1}">← Prev</a>')
+    if page < pages:
+        nav.append(f'<a href="/facilities/directory/{page+1}">Next →</a>')
+    allp = " · ".join(
+        f'<a href="/facilities/directory/{p}">{p}</a>' if p != page else f"<strong>{p}</strong>"
+        for p in range(1, pages + 1))
+    canon = "https://dchub.cloud/facilities/directory" + (f"/{page}" if page > 1 else "")
+    html_out = f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Data Center Facilities Directory — page {page} of {pages} | DC Hub</title>
+<meta name="description" content="Browse {total:,} data center facilities across 170+ countries — operator, location and capacity, each with a live DC Hub profile (grid, fiber, DCPI verdict).">
+<link rel="canonical" href="{canon}">
+</head><body>
+<nav class="breadcrumb"><a href="/">DC Hub</a> · <a href="/facilities">Facilities</a> · Directory (page {page}/{pages})</nav>
+<h1>Data Center Facilities Directory</h1>
+<p>{total:,} tracked data center facilities — page {page} of {pages}. Each links to a live DC Hub profile with grid, fiber, power and DCPI data.</p>
+<ul class="facility-list">{''.join(items)}</ul>
+<nav class="pager">{' '.join(nav)}</nav>
+<p style="font-size:.8rem;color:#64748b">All pages: {allp}</p>
+</body></html>"""
+    return Response(html_out, mimetype="text/html; charset=utf-8")

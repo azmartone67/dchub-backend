@@ -22904,10 +22904,17 @@ def serve_sitemap_xml():
         #      facilities sort fresh. Guarded with a fallback so a schema mismatch
         #      can never break the sitemap.
         try:
+            # 2026-06-29 SEO fix (discovered-not-indexed): exclude is_duplicate=1.
+            # 17,028 of 21,861 facility rows are duplicates (same facility, varying
+            # provider strings → different MD5(provider|name) slugs → competing dup
+            # URLs). Sitemapping all ~14K fed Google a mostly-duplicate set it won't
+            # index; only ~4,833 are canonical. Excluding dupes concentrates crawl
+            # budget on the real facilities (no good URL changes — dupes only).
             c.execute("""
                 SELECT name, provider, city, state, country, id, first_seen
                 FROM discovered_facilities
                 WHERE name IS NOT NULL AND name != ''
+                  AND COALESCE(is_duplicate, 0) = 0
                 LIMIT 50000
             """)
             fac_rows = c.fetchall()
@@ -22921,6 +22928,7 @@ def serve_sitemap_xml():
                 SELECT name, provider, city, state, country, id
                 FROM discovered_facilities
                 WHERE name IS NOT NULL AND name != ''
+                  AND COALESCE(is_duplicate, 0) = 0
                 LIMIT 50000
             """)
             fac_rows = c.fetchall()
@@ -22944,6 +22952,9 @@ def serve_sitemap_xml():
     # ---- Static pages ----
     static_pages = [
         ('/', '1.0', 'daily'),
+        # 2026-06-29: the crawlable facilities directory hub (page 1 self-links all
+        # pages) — gives Google a server-rendered path to every non-dup facility.
+        ('/facilities/directory', '0.8', 'weekly'),
         ('/land-power', '0.9', 'daily'),
         ('/site-selection', '0.8', 'weekly'),
         ('/grid-transition', '0.8', 'weekly'),
