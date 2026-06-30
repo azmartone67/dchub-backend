@@ -6473,6 +6473,183 @@ def check_rest_endpoint_leakage() -> list[dict]:
 
 
 # =============================================================================
+# 2026-06-29 — two FAIL-CLOSED read-only coaching/drop detectors.
+#
+# Both mirror check_rest_endpoint_leakage: read-only, cheap, and they
+# return [] on ANY error. Returning [] (rather than a synthetic crash
+# finding) is deliberate — the radar's resolve-on-absence sweep auto-
+# closes findings that DON'T re-appear. If these detectors raised a
+# crash-finding or partial result on a transient error, a real finding
+# could be auto-resolved on the next clean pass. Failing silently to []
+# means: on error, we neither file a false finding NOR auto-close a real
+# one (the existing finding simply persists until the detector succeeds).
+# =============================================================================
+
+# Gated endpoints that MUST carry agent-coaching (claim_free_key) + an
+# email_capture hook when they return a gated/teaser body. If a gated
+# response is missing BOTH, an AI agent has no machine-readable path to
+# upgrade and the human conversion CTA is invisible.
+_COACHING_PROBE_ENDPOINTS = [
+    "/api/v1/dcpi/scores",
+    "/api/v1/interconnection/queue?iso=PJM",
+    "/api/v1/fiber/intel?market=ashburn",
+    "/api/v1/market-brief/all",
+    "/api/v1/grid/intelligence/PJM",
+]
+
+# Markers that indicate a response is gated / a teaser / a preview.
+_COACHING_GATED_MARKERS = (
+    "_gated", "_locked_fields", "_preview_only", "_teaser",
+    "_upgrade_cta", "_upgrade_hint", "tier_required", "total_available",
+)
+
+
+def check_gated_endpoint_coaching_missing() -> list[dict]:
+    """Probe each gated endpoint with NO API key. For any response that is
+    GATED (body contains a gating marker) but is MISSING both an
+    `agent_action` block (carrying `claim_free_key`) AND an
+    `email_capture` hook → file `gated_endpoint_missing_coaching`.
+
+    Read-only. FAIL-CLOSED: returns [] on ANY error so the resolve-on-
+    absence sweep can never auto-close a genuine missing-coaching finding
+    on a transient network blip. Per-endpoint probe failures are skipped
+    individually (a network error on one endpoint != "coaching present").
+    """
+    findings: list[dict] = []
+    try:
+        import requests as _req
+        import concurrent.futures as _cf
+
+        def _probe_one(path):
+            try:
+                # No API key on purpose — we want the anon/gated response.
+                r = _req.get(f"https://dchub.cloud{path}",
+                             timeout=10,
+                             headers={"User-Agent": "dchub-coaching-detector/1.0"})
+                return (path, r.status_code, r.text or "", None)
+            except Exception as e:  # noqa: BLE001 — per-endpoint, fail-closed
+                return (path, None, "", e)
+
+        with _cf.ThreadPoolExecutor(max_workers=5,
+                                     thread_name_prefix="coach-probe") as ex:
+            results = list(ex.map(_probe_one, _COACHING_PROBE_ENDPOINTS))
+
+        for path, status, body, err in results:
+            if err is not None:
+                continue  # per-endpoint network noise — fail-closed, skip
+            if not body:
+                continue
+            # Is the response gated/teaser?
+            is_gated = any(m in body for m in _COACHING_GATED_MARKERS)
+            if not is_gated:
+                continue  # not gated → coaching not required here
+            # Does it carry agent coaching + an email-capture hook?
+            has_agent_action = ('"agent_action"' in body
+                                 and "claim_free_key" in body)
+            has_email_capture = '"email_capture"' in body
+            if has_agent_action and has_email_capture:
+                continue  # fully coached — good
+            missing = []
+            if not has_agent_action:
+                missing.append("agent_action(claim_free_key)")
+            if not has_email_capture:
+                missing.append("email_capture")
+            findings.append({
+                "issue":  "gated_endpoint_missing_coaching",
+                "url":    path,
+                "count":  1,
+                "detail": (f"Gated endpoint `{path}` returns a gated/teaser body "
+                           f"(matched one of {list(_COACHING_GATED_MARKERS)}) but "
+                           f"is MISSING: {', '.join(missing)}. A gated response "
+                           f"must include BOTH an `agent_action` block carrying "
+                           f"`claim_free_key` (so AI agents have a machine-readable "
+                           f"upgrade path) AND an `email_capture` hook (so the human "
+                           f"conversion CTA is present). Add both to the soft-paywall "
+                           f"payload for this surface."),
+            })
+    except Exception:  # noqa: BLE001 — FAIL-CLOSED: never crash, never auto-close
+        return []
+    return findings
+
+
+# Per-platform crawl-drop detector thresholds.
+_AI_CRAWL_PRIOR_MIN = 140      # prior-7d must be >= this (≈20/day active)
+_AI_CRAWL_DROP_FRAC = 0.80     # flag if current-7d dropped >= 80% vs prior
+
+
+def check_ai_platform_crawl_drop() -> list[dict]:
+    """Per AI platform, compare last-7d crawl/request count vs the prior
+    7d (from the `ai_requests` table; cols: platform, created_at). For any
+    platform that was ACTIVE in the prior window (prior_7d >= 140, i.e.
+    ~20/day) and then dropped >= 80% in the current window → file
+    `ai_platform_crawl_drop:<platform>`.
+
+    Uses its OWN DB connection (via _db()). Read-only single SELECT.
+    FAIL-CLOSED: returns [] on ANY error so the resolve-on-absence sweep
+    can never auto-close a genuine crawl-drop finding on a transient DB
+    blip.
+    """
+    findings: list[dict] = []
+    c = None
+    try:
+        c = _db()
+        if c is None:
+            return []
+        with c.cursor() as cur:
+            # Table may not exist yet on a fresh DB — fail-closed to [].
+            cur.execute("SELECT to_regclass('public.ai_requests')")
+            if not cur.fetchone()[0]:
+                return []
+            cur.execute("""
+                SELECT platform,
+                       COUNT(*) FILTER (
+                           WHERE created_at >= NOW() - INTERVAL '7 days')
+                           AS cur_7d,
+                       COUNT(*) FILTER (
+                           WHERE created_at >= NOW() - INTERVAL '14 days'
+                             AND created_at <  NOW() - INTERVAL '7 days')
+                           AS prior_7d
+                  FROM ai_requests
+                 WHERE created_at >= NOW() - INTERVAL '14 days'
+                   AND platform IS NOT NULL
+                   AND platform <> ''
+                 GROUP BY platform
+            """)
+            for row in cur.fetchall():
+                platform, cur_7d, prior_7d = row
+                cur_7d = int(cur_7d or 0)
+                prior_7d = int(prior_7d or 0)
+                if prior_7d < _AI_CRAWL_PRIOR_MIN:
+                    continue  # wasn't active enough in the prior window
+                drop_frac = (prior_7d - cur_7d) / float(prior_7d)
+                if drop_frac < _AI_CRAWL_DROP_FRAC:
+                    continue  # not a big-enough drop
+                findings.append({
+                    "issue":  f"ai_platform_crawl_drop:{platform}",
+                    "url":    "ai_requests",
+                    "count":  cur_7d,
+                    "detail": (f"AI platform `{platform}` crawl/request volume "
+                               f"dropped {drop_frac*100:.0f}% week-over-week: "
+                               f"prior 7d = {prior_7d}, current 7d = {cur_7d}. "
+                               f"This platform was active (>= {_AI_CRAWL_PRIOR_MIN} "
+                               f"in the prior window) and has nearly gone silent. "
+                               f"Likely causes: a crawl surface broke (robots/"
+                               f"llms.txt/sitemap), the platform stopped fetching, "
+                               f"or a gating/WAF change started blocking it. Check "
+                               f"the live render paths and recent CF/WAF changes."),
+                })
+    except Exception:  # noqa: BLE001 — FAIL-CLOSED: never crash, never auto-close
+        return []
+    finally:
+        if c is not None:
+            try:
+                c.close()
+            except Exception:
+                pass
+    return findings
+
+
+# =============================================================================
 # Phase QQQ (2026-05-17) — Stability Guardrails (4 new detectors)
 #
 # The brain has 50 detectors but the user kept finding bugs the brain
@@ -8506,6 +8683,15 @@ def scan_all() -> list[dict]:
                check_autopilot_verifier_backlog,
                # Phase XX (2026-05-17) — breach prevention
                check_rest_endpoint_leakage,
+               # 2026-06-29 — two FAIL-CLOSED read-only detectors:
+               # (1) gated endpoints that forgot agent_action(claim_free_key)
+               #     + email_capture coaching (no upgrade path for agents,
+               #     no human CTA), and (2) per-platform AI crawl drop-off
+               #     (a crawl surface broke / WAF started blocking). Both
+               #     return [] on ANY error so resolve-on-absence can't
+               #     auto-close a real finding.
+               check_gated_endpoint_coaching_missing,
+               check_ai_platform_crawl_drop,
                # Phase KKK (2026-05-17) — package install velocity drop
                check_package_install_velocity_drop,
                # Phase OOO (2026-05-17) — frontend-critical endpoint health
