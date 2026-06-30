@@ -305,6 +305,13 @@ def _gather_funnel() -> dict:
             "arm_a_conversions": int(ab.get("arm_a_conversions") or 0),
             "arm_b_conversions": int(ab.get("arm_b_conversions") or 0),
         },
+        # r-attribution (2026-06-30): real per-engine reach from ai_cumulative
+        # (the 30d mcp_tool_calls per-platform view is ~85% 'unknown'). Answers
+        # "which engine drives usage" in the daily brief instead of all-zeros.
+        "top_engines": [
+            {"label": e.get("label"), "requests": int(e.get("requests_lifetime") or 0)}
+            for e in (d.get("ai_platforms_reach") or [])[:5]
+        ],
     }
 
 

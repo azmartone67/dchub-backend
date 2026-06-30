@@ -1062,6 +1062,28 @@ def _build_data() -> dict:
                     / row["distinct_sessions_30d"], 2)
             out["platforms"].append(row)
 
+        # r-attribution (2026-06-30): the per-platform 30d view above reads
+        # mcp_tool_calls, where ~85% of rows are platform='unknown' (the
+        # session_id->mcp_sessions recovery fails upstream) so it shows all
+        # zeros. The CORRECT, populated per-engine source is ai_cumulative
+        # (same as /api/v1/mcp/funnel ai_agent_top_platforms). Surface it as
+        # lifetime reach-by-engine so the dashboard/briefing stop reading 0.
+        try:
+            _eng_keys = {k for k, _, _ in _AI_PLATFORMS}
+            cur.execute("SELECT platform, name, total_requests FROM ai_cumulative "
+                        "ORDER BY total_requests DESC")
+            out["ai_platforms_reach"] = [
+                {"key": str(r[0]).strip().lower(),
+                 "label": r[1] or r[0],
+                 "requests_lifetime": int(r[2] or 0)}
+                for r in cur.fetchall()
+                if str(r[0] or "").strip().lower() in _eng_keys
+            ]
+        except Exception:
+            try: conn.rollback()
+            except Exception: pass
+            out["ai_platforms_reach"] = []
+
         # ── Pricing A/B status ────────────────────────────────────────
         try:
             from routes.pricing_ab import (_ab_active, _ab_disabled,
