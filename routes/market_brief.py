@@ -3588,6 +3588,14 @@ def api_market_brief_bulk():
         "streamed":        False,
         "briefs":          briefs,
     }
+    try:
+        if (tier or "").lower() in ("anon", "free", "identified"):
+            from routes.email_capture import build_agent_coaching
+            payload.update(build_agent_coaching(
+                "get_market_intel",
+                "Retry GET /api/v1/market-brief/all with X-API-Key"))
+    except Exception:
+        pass
     resp = jsonify(payload)
     resp.headers["Cache-Control"]      = "public, max-age=21600, s-maxage=21600"
     resp.headers["Access-Control-Allow-Origin"] = "*"

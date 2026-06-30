@@ -20516,11 +20516,20 @@ def _fiber_teaser_response():
     sample = _build_fiber_routes_geojson(max_features=3)
     feats = (sample.get('features') or [])[:3] if isinstance(sample, dict) else []
     total = int(sample.get('_full_total', sample.get('total', 0)) or 0)
+    _coach = {}
+    try:
+        from routes.email_capture import build_agent_coaching
+        _coach = build_agent_coaching(
+            "get_fiber_intel",
+            "Retry GET /api/v1/fiber/intel?market=<m> with X-API-Key") or {}
+    except Exception:
+        _coach = {}
     return {
         'type': 'FeatureCollection',
         'features': feats,
         '_teaser': True,
         '_total_features_behind_paywall': max(0, total - len(feats)),
+        **_coach,
         '_upgrade_hint': {
             'agent_quotable': (
                 f"DC Hub returned {len(feats)} of {total:,} fiber routes as a "

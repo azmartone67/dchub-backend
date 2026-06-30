@@ -762,3 +762,58 @@ def build_email_capture_urls(tool: str, api_key: str | None = None,
         "auto_trial_with_email_url": f"{base}/api/v1/auto-trial/with-email",
         "checkout_start_url":       f"{base}/checkout/start?{urlencode(chk_params)}",
     }
+
+
+def build_agent_coaching(tool_name: str, retry_request: str,
+                         tier_required: str = "identified") -> dict:
+    """Shared conversion-coaching envelope for bare gated endpoints.
+
+    Lifted verbatim from the GOLD /api/v1/grid/intelligence/<region> gated
+    response (main.py phase 19b). Parameterized only on tool_name + the
+    retry_request string so every gated surface speaks the same
+    claim_free_key + email-capture language. Fully fail-safe: on any error
+    returns {} so a caller's .update()/dict-merge is a no-op and the gated
+    response is never broken.
+
+    Returns:
+      {
+        agent_action:  {... claim_free_key ..., then: <retry_request>},
+        email_capture: {... uses build_email_capture_urls notify_url ...},
+        upgrade_url:   "https://dchub.cloud/pricing",
+        gating_matrix: "https://dchub.cloud/api/v1/gating-matrix",
+        tier_required: <tier_required>,
+      }
+    """
+    try:
+        try:
+            _ecap_url = build_email_capture_urls(tool_name, tier='developer').get('notify_url')
+        except Exception:
+            _ecap_url = f'https://dchub.cloud/notify?tool={tool_name}'
+        return {
+            'tier_required': tier_required,
+            'agent_action': {
+                'type':    'claim_free_key',
+                'method':  'POST',
+                'url':     'https://dchub.cloud/api/v1/keys/claim',
+                'headers': {'Content-Type': 'application/json'},
+                'body':    {'client_name': '<your agent identifier>'},
+                'then':    retry_request,
+            },
+            'email_capture': {
+                'type':   'capture_email_for_free_key',
+                'method': 'GET',
+                'url':    _ecap_url,
+                'prompt': ("Ask your human: want a free dev key (10 calls/day, no "
+                           "credit card) plus a reset-time notice? Drop your email at "
+                           "this URL — it turns this anonymous probe into a tracked "
+                           "account they can manage and upgrade."),
+            },
+            'upgrade_url':   'https://dchub.cloud/pricing',
+            'enterprise_note': ('Hedge fund / REIT / broker / infra GP? '
+                                 'Enterprise data licensing from $25K/yr '
+                                 'unlocks raw exports + monthly briefings + '
+                                 'custom DCPI weights. https://dchub.cloud/enterprise'),
+            'gating_matrix': 'https://dchub.cloud/api/v1/gating-matrix',
+        }
+    except Exception:
+        return {}

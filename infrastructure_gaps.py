@@ -374,6 +374,14 @@ def interconnection_queue_summary():
         result['data'] = LBNL_QUEUE_SUMMARY
 
     result['queried_at'] = datetime.utcnow().isoformat()
+    try:
+        if not (request.headers.get('X-API-Key') or request.args.get('api_key')):
+            from routes.email_capture import build_agent_coaching
+            result.update(build_agent_coaching(
+                "get_interconnection_queue",
+                "Retry GET /api/v1/interconnection/queue?iso=<iso> with X-API-Key"))
+    except Exception:
+        pass
     return jsonify(result)
 
 

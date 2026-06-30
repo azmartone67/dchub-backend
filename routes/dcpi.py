@@ -1796,6 +1796,13 @@ def _dcpi_gated_meta(total_available=None):
                           "https://dchub.cloud/pricing.")}
     if total_available is not None:
         m["_total_available"] = total_available
+    try:
+        from routes.email_capture import build_agent_coaching
+        m.update(build_agent_coaching(
+            "get_market_dcpi_rank",
+            "Retry GET /api/v1/dcpi/scores with header X-API-Key: <api_key>"))
+    except Exception:
+        pass
     return m
 
 
