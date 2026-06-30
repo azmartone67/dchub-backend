@@ -2041,6 +2041,16 @@ def api_scores():
         )
         payload["_signup_url"] = "https://dchub.cloud/pricing"
         payload["_playground_url"] = "https://dchub.cloud/playground"  # r80 #3: human can see what is gated, no signup
+        # Conversion coaching: api_scores builds its gated payload INLINE (it does
+        # NOT call _dcpi_gated_meta), so the shared claim_free_key/email_capture
+        # bridge must be merged here too. Additive + fail-safe.
+        try:
+            from routes.email_capture import build_agent_coaching
+            payload.update(build_agent_coaching(
+                "get_market_dcpi_rank",
+                "Retry GET /api/v1/dcpi/scores with header X-API-Key: <api_key>"))
+        except Exception:
+            pass
 
     resp = jsonify(**payload)
     resp.headers["ETag"] = etag

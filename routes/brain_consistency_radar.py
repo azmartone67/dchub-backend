@@ -6523,9 +6523,14 @@ def check_gated_endpoint_coaching_missing() -> list[dict]:
         def _probe_one(path):
             try:
                 # No API key on purpose — we want the anon/gated response.
-                r = _req.get(f"https://dchub.cloud{path}",
+                # Cache-bust (/api/v1/* sits behind CF Cache Rule #3) so we read
+                # the live origin, not a stale cached body → no false positives.
+                import time as _t
+                _sep = "&" if "?" in path else "?"
+                r = _req.get(f"https://dchub.cloud{path}{_sep}_radarcb={int(_t.time())}",
                              timeout=10,
-                             headers={"User-Agent": "dchub-coaching-detector/1.0"})
+                             headers={"User-Agent": "dchub-coaching-detector/1.0",
+                                      "Cache-Control": "no-cache"})
                 return (path, r.status_code, r.text or "", None)
             except Exception as e:  # noqa: BLE001 — per-endpoint, fail-closed
                 return (path, None, "", e)
