@@ -63,7 +63,7 @@ def init_ai_tracking_table():
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS ai_usage_tracking (
                 id SERIAL PRIMARY KEY,
-                timestamp TEXT NOT NULL,
+                timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 platform TEXT,
                 endpoint TEXT NOT NULL,
                 query TEXT,
