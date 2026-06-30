@@ -354,18 +354,29 @@ def _render_profile(fac: dict, slug: str) -> str:
 
     # Schema.org JSON-LD
     import json as _json
+    # 2026-06-29: enrich for AI-answer-engine citation (Copilot already cites these
+    # pages). Add @id/url/identifier/license + drop null address keys (was emitting
+    # literal null). Only data already on the page — no fabricated fields.
+    _hash8 = slug.rsplit("-", 1)[-1] if "-" in slug else slug
+    _addr = {k: v for k, v in {
+        "@type": "PostalAddress",
+        "streetAddress": address or None,
+        "addressLocality": city or None,
+        "addressRegion": state or None,
+        "addressCountry": country or None,
+    }.items() if v is not None}
     schema = {
         "@context": "https://schema.org",
         "@type": "Place",
+        "@id": canonical + "#place",
+        "url": canonical,
         "name": _disp,
-        "description": f"Data center facility operated by {provider} in {loc_short}",
-        "address": {
-            "@type": "PostalAddress",
-            "streetAddress": address or None,
-            "addressLocality": city or None,
-            "addressRegion": state or None,
-            "addressCountry": country or None,
-        },
+        "description": f"Data center facility operated by {provider} in {loc_short}. Source: DC Hub (dchub.cloud), CC-BY-4.0.",
+        "identifier": _hash8,
+        "isAccessibleForFree": True,
+        "license": "https://creativecommons.org/licenses/by/4.0/",
+        "address": _addr,
+        "additionalType": "https://schema.org/DataCenter",
     }
     if lat and lng:
         schema["geo"] = {
@@ -373,6 +384,20 @@ def _render_profile(fac: dict, slug: str) -> str:
             "latitude": float(lat),
             "longitude": float(lng),
         }
+    # Dataset node = the explicit "you may cite/reproduce this" signal AI engines
+    # look for (CC-BY-4.0, DC Hub as creator). Additive; references the Place @id.
+    dataset_ld = _json.dumps({
+        "@context": "https://schema.org",
+        "@type": "Dataset",
+        "@id": canonical + "#dataset",
+        "name": f"{_disp} — facility intelligence record",
+        "description": f"Structured data-center facility record (location, operator, power & connectivity context) for {_disp}.",
+        "url": canonical,
+        "license": "https://creativecommons.org/licenses/by/4.0/",
+        "isAccessibleForFree": True,
+        "creator": {"@type": "Organization", "name": "DC Hub", "url": "https://dchub.cloud"},
+        "spatialCoverage": {"@id": canonical + "#place"},
+    }, indent=2)
 
     # Enriched stat cards — only render values we actually have (sparse rows
     # with power_mw=0 / blank fields used to render a wall of empties).
@@ -495,6 +520,7 @@ def _render_profile(fac: dict, slug: str) -> str:
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <script type="application/ld+json">{_json.dumps(schema, indent=2)}</script>
+<script type="application/ld+json">{dataset_ld}</script>
 <script type="application/ld+json">{_breadcrumb_ld}</script>
 <style>
   :root{{--bg:#0a0a0f;--surf:#131319;--surf2:#1a1a22;--b:rgba(255,255,255,0.08);--tx:#fafafa;--mut:#a1a1aa;--dim:#71717a;--ind:#818cf8;--indd:#6366f1;--vio:#a855f7;--grad:linear-gradient(135deg,#6366f1,#a855f7)}}

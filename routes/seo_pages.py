@@ -1668,3 +1668,83 @@ def facilities_directory(page: int = 1):
 <p style="font-size:.8rem;color:#64748b">All pages: {allp}</p>
 </body></html>"""
     return Response(html_out, mimetype="text/html; charset=utf-8")
+
+
+# ── MARKETS DIRECTORY — crawlable hub for /markets/<slug> (2026-06-29) ──
+# /markets is a DEAD crawl path (the SPA emits the literal un-interpolated
+# href="/markets/${slug}" token → crawlers reach ZERO market pages), yet the
+# 100+ per-market roll-ups render fine server-side at /markets/<slug>. This
+# server-rendered, paginated index links every market via its canonical URL —
+# the markets twin of /facilities/directory. Added to the sitemap.
+_MKT_DIR_PER_PAGE = 100
+
+
+@seo_pages_bp.get("/markets/directory", strict_slashes=False)
+@seo_pages_bp.get("/markets/directory/<int:page>", strict_slashes=False)
+def markets_directory(page: int = 1):
+    page = max(1, int(page or 1))
+    c = _conn()
+    if c is None:
+        return _error_page("Database temporarily unavailable", 503)
+    markets = []
+    try:
+        with c.cursor() as cur:
+            cur.execute("""
+                SELECT LOWER(REPLACE(city,' ','-')) || '-' || LOWER(state) AS slug,
+                       city, state, COUNT(*) AS n_fac, COALESCE(SUM(power_mw),0) AS total_mw
+                  FROM discovered_facilities
+                 WHERE city IS NOT NULL AND city <> ''
+                   AND state IS NOT NULL AND state <> ''
+                   AND COALESCE(is_duplicate,0) = 0
+                 GROUP BY city, state
+                HAVING COUNT(*) >= 1
+                 ORDER BY total_mw DESC NULLS LAST, COUNT(*) DESC
+            """)
+            markets = cur.fetchall()
+    except Exception:
+        return _error_page("Directory temporarily unavailable", 503)
+    finally:
+        try: c.close()
+        except Exception: pass
+
+    # Drop empty/trailing-hyphen slugs (thin-page guard, mirrors sitemap).
+    markets = [m for m in markets if m[0] and not m[0].startswith('-') and not m[0].endswith('-') and len(m[0]) > 2]
+    total = len(markets)
+    pages = max(1, (total + _MKT_DIR_PER_PAGE - 1) // _MKT_DIR_PER_PAGE)
+    if page > pages:
+        return _error_page("Page out of range", 404)
+    chunk = markets[(page - 1) * _MKT_DIR_PER_PAGE: page * _MKT_DIR_PER_PAGE]
+    items = []
+    for slug, city, state, n_fac, total_mw in chunk:
+        mw = f"{int(total_mw):,} MW" if total_mw else ""
+        meta = " · ".join([x for x in (f"{n_fac} facilities", mw) if x])
+        items.append(f'<li><a href="/markets/{slug}">{_h(city)}, {_h(state)}</a>'
+                     f'{(" — " + _h(meta)) if meta else ""}</li>')
+    nav = []
+    if page > 1:
+        nav.append(f'<a href="/markets/directory/{page-1}">← Prev</a>')
+    if page < pages:
+        nav.append(f'<a href="/markets/directory/{page+1}">Next →</a>')
+    allp = " · ".join(
+        f'<a href="/markets/directory/{p}">{p}</a>' if p != page else f"<strong>{p}</strong>"
+        for p in range(1, pages + 1))
+    canon = "https://dchub.cloud/markets/directory" + (f"/{page}" if page > 1 else "")
+    rel = ""
+    if page > 1:
+        rel += f'<link rel="prev" href="https://dchub.cloud/markets/directory{("/"+str(page-1)) if page>2 else ""}">'
+    if page < pages:
+        rel += f'<link rel="next" href="https://dchub.cloud/markets/directory/{page+1}">'
+    html_out = f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Data Center Markets Directory — page {page} of {pages} | DC Hub</title>
+<meta name="description" content="Browse {total:,} data center markets — facility count, total MW capacity and live DCPI verdict, each with a live DC Hub market roll-up.">
+<link rel="canonical" href="{canon}">{rel}
+</head><body>
+<nav class="breadcrumb"><a href="/">DC Hub</a> · <a href="/markets">Markets</a> · Directory (page {page}/{pages})</nav>
+<h1>Data Center Markets Directory</h1>
+<p>{total:,} tracked data center markets — page {page} of {pages}. Each links to a live DC Hub market roll-up (supply, pricing, operators, DCPI verdict).</p>
+<ul class="facility-list">{''.join(items)}</ul>
+<nav class="pager">{' '.join(nav)}</nav>
+<p style="font-size:.8rem;color:#64748b">All pages: {allp}</p>
+</body></html>"""
+    return Response(html_out, mimetype="text/html; charset=utf-8")

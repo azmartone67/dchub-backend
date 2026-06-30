@@ -22964,6 +22964,7 @@ def serve_sitemap_xml():
         # 2026-06-29: the crawlable facilities directory hub (page 1 self-links all
         # pages) — gives Google a server-rendered path to every non-dup facility.
         ('/facilities/directory', '0.8', 'weekly'),
+        ('/markets/directory', '0.8', 'weekly'),
         ('/land-power', '0.9', 'daily'),
         ('/site-selection', '0.8', 'weekly'),
         ('/grid-transition', '0.8', 'weekly'),
