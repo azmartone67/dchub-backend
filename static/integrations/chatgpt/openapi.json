@@ -528,6 +528,84 @@
         }
       }
     },
+    "/api/v1/markets": {
+      "get": {
+        "operationId": "rankMarkets",
+        "summary": "Rank / list data-center markets by power capacity",
+        "description": "Data-center markets ranked by total power capacity (MW), each with name, cities, facility_count, total_power_mw. Use for 'rank the top US markets by power capacity' or to list markets. Free tier, no auth.",
+        "responses": {
+          "200": {
+            "description": "Markets ranked by capacity",
+            "content": { "application/json": { "schema": { "type": "object", "properties": {
+              "count": { "type": "integer" },
+              "data": { "type": "array", "items": { "type": "object", "properties": {
+                "id": { "type": "string" },
+                "name": { "type": "string" },
+                "cities": { "type": "array", "items": { "type": "string" } },
+                "facility_count": { "type": "integer" },
+                "total_power_mw": { "type": "number" }
+              } } }
+            } } } }
+          }
+        }
+      }
+    },
+    "/api/v1/markets/compare": {
+      "get": {
+        "operationId": "compareMarkets",
+        "summary": "Compare two or more data-center markets side by side",
+        "description": "Side-by-side comparison of markets (power MW, facility counts, operators, pricing context). Use for 'compare Dallas vs Phoenix'. Pass comma-separated market slugs. Free tier, no auth.",
+        "parameters": [
+          {
+            "name": "markets",
+            "in": "query",
+            "required": true,
+            "description": "Comma-separated market slugs, e.g. dallas,phoenix or northern-virginia,dallas,phoenix",
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Market comparison",
+            "content": { "application/json": { "schema": { "type": "object", "properties": {
+              "success": { "type": "boolean" },
+              "comparison": { "type": "object" },
+              "generated_at": { "type": "string" }
+            } } } }
+          }
+        }
+      }
+    },
+    "/api/v1/interconnection-queue/by-iso": {
+      "get": {
+        "operationId": "getInterconnectionQueue",
+        "summary": "Grid interconnection queue + time-to-power for an ISO",
+        "description": "Live interconnection queue for a US ISO: queued_load_total_gw, queued_load_data_center_gw, DC share %, project_count, historical_completion_pct. Use for 'what is the grid wait / queue in ERCOT'. Free tier, no auth.",
+        "parameters": [
+          {
+            "name": "iso",
+            "in": "query",
+            "required": true,
+            "description": "US ISO code: ERCOT, PJM, MISO, SPP, CAISO, NYISO, ISO-NE",
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Interconnection queue for the ISO",
+            "content": { "application/json": { "schema": { "type": "object", "properties": {
+              "iso": { "type": "string" },
+              "project_count": { "type": "integer" },
+              "queued_load_total_gw": { "type": "number" },
+              "queued_load_data_center_gw": { "type": "number" },
+              "queued_load_dc_share_pct": { "type": "number" },
+              "historical_completion_pct": { "type": "number" },
+              "as_of": { "type": "string" }
+            } } } }
+          }
+        }
+      }
+    },
     "/api/agent/capabilities": {
       "get": {
         "operationId": "getCapabilities",
