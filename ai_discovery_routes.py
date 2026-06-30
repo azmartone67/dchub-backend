@@ -918,6 +918,19 @@ Allow: /
 User-agent: CCBot
 Allow: /
 
+# Search/answer crawlers behind AI assistants — override the wildcard
+# Disallows so they keep fetching /api/* (their only paths). Gemini crawls as
+# Googlebot/GoogleOther; Copilot crawls as Bingbot. Restored 2026-06-28 after
+# the 2026-06-13 generic crawl-budget Disallows silently cut them off.
+User-agent: Googlebot
+Allow: /
+
+User-agent: GoogleOther
+Allow: /
+
+User-agent: Bingbot
+Allow: /
+
 # Discovery files
 # llms.txt: https://dchub.cloud/llms.txt
 # llms-full.txt: https://dchub.cloud/llms-full.txt
