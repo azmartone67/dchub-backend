@@ -18460,6 +18460,24 @@ def grok_integration():
     return send_from_directory('static/integrations/grok', 'dchub-grok-integration.py',
                                mimetype='text/plain')
 
+# 2026-06-30: publish the canonical "connect Grok" surface (mirrors how
+# /integrations/chatgpt/openapi.json is served) so there's a fetchable MCP
+# config + README to point xAI/Grok users at. Grok MCP connect is verified live.
+@app.route('/integrations/grok/mcp-config.json')
+def grok_mcp_config():
+    return send_from_directory('static/integrations/grok', 'mcp-config.json',
+                               mimetype='application/json')
+
+@app.route('/integrations/grok/README')
+def grok_readme():
+    return send_from_directory('static/integrations/grok', 'README.md',
+                               mimetype='text/markdown')
+
+@app.route('/integrations/grok/function-calling.json')
+def grok_function_calling():
+    return send_from_directory('static/integrations/grok', 'function-calling.json',
+                               mimetype='application/json')
+
 # Phase WW (2026-05-15): removed /dashboard from this multi-decorator
 # block — it was a shadow of the dedicated serve_dashboard handler at
 # main.py:10841 (which serves the enterprise dashboard.html). The
