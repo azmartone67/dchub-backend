@@ -83,6 +83,7 @@ from __future__ import annotations
 import os
 import re
 import sys
+from linkedin_text import escape_li_commentary  # /rest/posts commentary escaping
 import json
 import time
 import random
@@ -700,7 +701,7 @@ def _publish_root_post(text: str) -> tuple[bool, dict]:
         actor = f"urn:li:organization:{company}"
         payload = {
             "author": actor,
-            "commentary": text,
+            "commentary": escape_li_commentary(text),
             "visibility": "PUBLIC",
             "distribution": {
                 "feedDistribution": "MAIN_FEED",

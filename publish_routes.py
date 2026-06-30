@@ -27,6 +27,7 @@ def _phase30c_landing_url(d=None):
 import os
 import json
 import logging
+from linkedin_text import escape_li_commentary  # /rest/posts commentary escaping
 from datetime import date, datetime
 from typing import Optional
 
@@ -77,7 +78,7 @@ async def _post_to_linkedin(text: str) -> tuple[bool, Optional[str], Optional[st
         return (False, None, "linkedin_not_configured")
     body = {
         "author": LINKEDIN_ACTOR,
-        "commentary": text,
+        "commentary": escape_li_commentary(text),
         "visibility": "PUBLIC",
         "distribution": {"feedDistribution": "MAIN_FEED"},
         "lifecycleState": "PUBLISHED",

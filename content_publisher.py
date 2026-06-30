@@ -14,6 +14,7 @@ from contextlib import contextmanager, ExitStack
 from datetime import datetime, timedelta
 from flask import Blueprint, request, jsonify
 from utils.anthropic_helper import anthropic_messages_url
+from linkedin_text import escape_li_commentary  # /rest/posts commentary escaping
 
 # phase57_landing — daily landing URL helper for LinkedIn rich-card preview
 def _phase30c_landing_url(d=None):
@@ -821,7 +822,7 @@ def _post_to_linkedin(content_text, access_token, article_url=None,
                     }
                     _payload = {
                         'author': f'urn:li:organization:{DCHUB_ORG_ID}',
-                        'commentary': content_text,
+                        'commentary': escape_li_commentary(content_text),
                         'visibility': 'PUBLIC',
                         'distribution': {
                             'feedDistribution': 'MAIN_FEED',
@@ -901,7 +902,7 @@ def _post_to_linkedin(content_text, access_token, article_url=None,
                 }
                 _payload = {
                     'author': f'urn:li:organization:{DCHUB_ORG_ID}',
-                    'commentary': content_text,
+                    'commentary': escape_li_commentary(content_text),
                     'visibility': 'PUBLIC',
                     'distribution': {
                         'feedDistribution': 'MAIN_FEED',
@@ -1148,14 +1149,23 @@ def _verify_linkedin_render_drift(urn, sent_text, access_token=None):
             return out
         out["ran"] = True
         sent = sent_text or ''
-        if rendered == sent:
-            out["drift"] = False
-            logger.info("[LinkedIn drift probe] OK — rendered commentary matches "
-                        "sent (%d chars) for %s", len(sent), urn)
-            return out
-        # ── DRIFT DETECTED ───────────────────────────────────────────────────
-        out["drift"] = True
+        rendered = rendered or ''
+        # We compare against the RAW sent text, but LinkedIn returns commentary
+        # in "little" format (hashtags as {hashtag|\#|tag}, reserved chars
+        # escaped), so an exact mismatch is EXPECTED and benign. Only flag the
+        # signature we actually care about: TRUNCATION — rendered is a strict,
+        # meaningfully-shorter PREFIX of what we sent (the "Guam "/"(CAUTION)"
+        # cut). Format-only differences are not drift.
         _is_prefix = bool(rendered) and sent.startswith(rendered)
+        _is_trunc = _is_prefix and (len(sent) - len(rendered) > 8)
+        if not _is_trunc:
+            out["drift"] = False
+            logger.info("[LinkedIn drift probe] OK — no truncation "
+                        "(sent=%d rendered=%d, prefix=%s) for %s",
+                        len(sent), len(rendered), _is_prefix, urn)
+            return out
+        # ── TRUNCATION DETECTED ──────────────────────────────────────────────
+        out["drift"] = True
         logger.error(
             "[LinkedIn RENDER DRIFT] urn=%s sent_len=%d rendered_len=%d prefix=%s\n"
             "  SENT:     %r\n"

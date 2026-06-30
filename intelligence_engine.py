@@ -13,6 +13,7 @@ Features:
 import os
 import json
 import hashlib
+from linkedin_text import escape_li_commentary  # /rest/posts commentary escaping
 import requests
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
@@ -369,7 +370,7 @@ def post_to_linkedin(content: str) -> Dict:
         # Use LinkedIn's newer Posts API (v202401)
         post_data = {
             "author": author_urn,
-            "commentary": content,
+            "commentary": escape_li_commentary(content),
             "visibility": "PUBLIC",
             "distribution": {
                 "feedDistribution": "MAIN_FEED",

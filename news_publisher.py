@@ -36,6 +36,7 @@ How to find your KV namespace ID:
 import os
 import json
 import hmac
+from linkedin_text import escape_li_commentary  # /rest/posts commentary escaping
 import logging
 from datetime import datetime, timezone
 
@@ -189,7 +190,7 @@ def publish_to_linkedin(text: str, article_url: str = "", article_title: str = "
             "targetEntities": [],
             "thirdPartyDistributionChannels": [],
         },
-        "commentary": text,
+        "commentary": escape_li_commentary(text),
     }
 
     # Attach article link card if URL provided

@@ -31,6 +31,7 @@ import os
 import json
 import time
 import logging
+from linkedin_text import escape_li_commentary  # /rest/posts commentary escaping
 import requests
 import threading
 from datetime import datetime, timedelta
@@ -257,7 +258,7 @@ def create_text_post(text, access_token=None):
 
     payload = {
         'author': f'urn:li:organization:{LINKEDIN_ORG_ID}',
-        'commentary': text,
+        'commentary': escape_li_commentary(text),
         'visibility': 'PUBLIC',
         'distribution': {
             'feedDistribution': 'MAIN_FEED',
@@ -297,7 +298,7 @@ def create_article_post(text, article_url, access_token=None):
 
     payload = {
         'author': f'urn:li:organization:{LINKEDIN_ORG_ID}',
-        'commentary': text,
+        'commentary': escape_li_commentary(text),
         'visibility': 'PUBLIC',
         'distribution': {
             'feedDistribution': 'MAIN_FEED',

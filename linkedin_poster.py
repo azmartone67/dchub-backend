@@ -42,6 +42,7 @@ Tables (created automatically):
 import os
 import json
 import logging
+from linkedin_text import escape_li_commentary  # /rest/posts commentary escaping
 import threading
 import time as _time
 from datetime import datetime, timedelta, timezone
@@ -396,7 +397,7 @@ def post_to_linkedin(text, link_url=None, link_title=None, link_desc=None, image
     # Build the post payload
     payload = {
         "author": author,
-        "commentary": text,
+        "commentary": escape_li_commentary(text),
         "visibility": "PUBLIC",
         "distribution": {
             "feedDistribution": "MAIN_FEED",

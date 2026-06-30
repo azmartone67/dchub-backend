@@ -28,6 +28,7 @@ REQUIRED ENV VARS:
 import os
 import json
 import logging
+from linkedin_text import escape_li_commentary  # /rest/posts commentary escaping
 import traceback
 from datetime import datetime, timedelta, timezone
 from flask import Blueprint, request, jsonify
@@ -108,7 +109,7 @@ def post_to_linkedin(text, article_url=None):
 
     payload = {
         "author": f"urn:li:organization:{LINKEDIN_ORG_ID}",
-        "commentary": text,
+        "commentary": escape_li_commentary(text),
         "visibility": "PUBLIC",
         "distribution": {
             "feedDistribution": "MAIN_FEED",
