@@ -203,6 +203,16 @@ _DISPATCH = [
      "POST",
      lambda now: now.weekday() == 1 and now.hour == 13 and now.minute < 10),
 
+    # 2026-06-30: DC Hub Media auto-showcase — weekly VERIFIED market-pulse
+    # (top deployable markets + live ISO-queue stats), the Grok-quality data
+    # post the machine should write itself. Thu 14:00 UTC = 10 AM ET (peak
+    # LinkedIn). Endpoint defaults kind=market_pulse, is fact-check-gated, and
+    # dedups any kind within 12h → the 5-min fire window is safe.
+    ("media_showcase_market_pulse_weekly",
+     f"{BASE}/api/v1/admin/media/showcase/publish",
+     "POST",
+     lambda now: now.weekday() == 3 and now.hour == 14 and now.minute < 5),
+
     # r47.26 (2026-05-26): hourly agent broadcast — re-pings MCP registries
     # + our own discovery surfaces so other agents pick up changes within
     # 1 hour. Fires every hour at :05 past the hour.
