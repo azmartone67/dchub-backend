@@ -6281,6 +6281,19 @@ def _inject_clarity(response):
             return response
         if getattr(response, 'direct_passthrough', False):
             return response
+        # SECURITY (2026-06-30): NEVER track admin/internal surfaces. Those URLs
+        # carry secrets in the query string (?admin_key=…) which Clarity would
+        # store + show in its UI, and session-replay would ship internal brain/
+        # admin dashboards (PII history) to a third party. Skip when an admin
+        # secret is present OR the path is an internal surface.
+        try:
+            if (request.args.get('admin_key')
+                    or (request.path or '').startswith((
+                        '/api/v1/brain', '/brain', '/admin', '/api/v1/admin',
+                        '/internal', '/api/v1/internal'))):
+                return response
+        except Exception:
+            pass
         html = response.get_data(as_text=True)
         if not html or '</head>' not in html:
             return response
