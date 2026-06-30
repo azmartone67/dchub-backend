@@ -7,18 +7,24 @@
         "X-API-Key": "dchub_grok_2026_verify",
         "User-Agent": "Grok-DC-Hub/1.0"
       },
-      "description": "DC Hub — 10,706+ data centers, $185B+ M&A, 7 ISO energy markets",
+      "description": "DC Hub — 21,000+ data centers (170+ countries), 300+ power markets (DCPI), 7 US ISO grids, interconnection queues, fiber, gas & 2,000+ M&A deals. 51 MCP tools.",
       "tools": [
         "search_facilities",
         "get_facility",
-        "get_market_data",
-        "search_deals",
-        "get_news",
-        "analyze_site"
+        "get_market_intel",
+        "rank_markets",
+        "get_grid_intelligence",
+        "get_interconnection_queue",
+        "get_fiber_intel",
+        "list_transactions",
+        "analyze_site",
+        "compare_sites",
+        "get_news"
       ],
+      "tools_note": "11 of 51 shown — full tool list at https://dchub.cloud/llms.txt",
       "metadata": {
         "provider": "DC Hub",
-        "version": "2.1.0",
+        "version": "2.2.0",
         "tier": "pro",
         "rate_limit": "300 req/min",
         "platform": "grok",

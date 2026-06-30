@@ -57,25 +57,30 @@ response = client.chat(
 
 | Endpoint | Description |
 |----------|-------------|
-| `GET /api/agent/facilities` | Search 10,706+ data centers |
+| `GET /api/agent/facilities` | Search 21,000+ data centers |
 | `GET /api/agent/stats` | Platform statistics |
-| `GET /api/transactions` | M&A deals ($185B+ tracked) |
+| `GET /api/transactions` | 2,000+ tracked M&A deals |
 | `GET /api/news` | Industry news (40+ sources) |
 | `GET /api/stats` | High-level stats |
-| `GET /api/v1/markets/list` | 35+ tracked markets |
+| `GET /api/v1/markets/list` | 300+ tracked power markets (DCPI) |
 | `GET /api/v1/lmp/prices` | Energy pricing (7 ISOs: PJM, ERCOT, CAISO, NYISO, ISO-NE, MISO, SPP) |
-| `GET /api/v1/pipeline` | Construction pipeline (~7.8 GW) |
+| `GET /api/v1/pipeline` | Construction pipeline |
 
-## MCP Tools
+## MCP Tools (11 of 51 — full list at https://dchub.cloud/llms.txt)
 
 | Tool | Description |
 |------|-------------|
 | `search_facilities` | Search by market, operator, tier, capacity |
 | `get_facility` | Detailed facility profile |
-| `get_market_data` | Vacancy rates, pricing, inventory |
-| `search_deals` | M&A transactions with filters |
-| `get_news` | Latest industry news |
+| `get_market_intel` | Market analytics, DCPI, pricing |
+| `rank_markets` | Top markets by criteria (capacity, etc.) |
+| `get_grid_intelligence` | Per-ISO grid headroom + BUILD/CAUTION/AVOID |
+| `get_interconnection_queue` | Live ISO interconnection-queue depth |
+| `get_fiber_intel` | Dark fiber routes + carriers |
+| `list_transactions` | M&A transactions with filters |
 | `analyze_site` | Lat/lng scoring for DC suitability |
+| `compare_sites` | Side-by-side market/site comparison |
+| `get_news` | Latest industry news |
 
 ## Citation Policy
 
