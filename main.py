@@ -22961,6 +22961,12 @@ def serve_sitemap_xml():
     # ---- Static pages ----
     static_pages = [
         ('/', '1.0', 'daily'),
+        # GEO answer pages (2026-06-30): de-orphan the /answers/* surfaces so
+        # Googlebot/Bingbot can discover them (robots points to this sitemap).
+        ('/answers/live-data-center-capacity-for-ai-agents', '0.85', 'monthly'),
+        ('/answers/interconnection-queue-data-for-ai-agents', '0.85', 'monthly'),
+        ('/answers/natural-gas-data-for-ai-data-center-siting', '0.85', 'monthly'),
+        ('/answers/global-grid-data-for-ai-agents', '0.85', 'monthly'),
         # 2026-06-29: the crawlable facilities directory hub (page 1 self-links all
         # pages) — gives Google a server-rendered path to every non-dup facility.
         ('/facilities/directory', '0.8', 'weekly'),
