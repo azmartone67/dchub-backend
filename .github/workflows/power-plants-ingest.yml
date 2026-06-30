@@ -14,7 +14,7 @@ name: Power Plants Ingest (EIA → power_plants_eia)
 
 on:
   schedule:
-    - cron: '37 6 * * 1'   # Mondays 06:37 UTC (off-peak; staggered from other layers)
+    - cron: '39 6 * * 1'   # Mondays 06:37 UTC (off-peak; staggered from other layers)
   workflow_dispatch:
     inputs:
       cap:

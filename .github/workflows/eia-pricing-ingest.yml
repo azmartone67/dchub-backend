@@ -17,7 +17,7 @@ name: EIA Pricing Ingest — electricity rates + natural gas + gas storage
 
 on:
   schedule:
-    - cron: "23 6 * * *"      # daily 06:23 UTC (off-peak)
+    - cron: "24 6 * * *"      # daily 06:23 UTC (off-peak)
   workflow_dispatch: {}
   repository_dispatch:
     types: [iso-ingest, brain-v2-stale-iso, eia-pricing]

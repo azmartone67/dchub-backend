@@ -20,7 +20,7 @@ name: fcc-fiber-refresh-weekly
 
 on:
   schedule:
-    - cron: '23 8 * * 3'   # Wednesdays 08:23 UTC (off-peak, clear of other crons)
+    - cron: '26 8 * * 3'   # Wednesdays 08:23 UTC (off-peak, clear of other crons)
   workflow_dispatch:
     inputs:
       force_all:

@@ -30,7 +30,7 @@ on:
     # All four slots fire at :05 — 5 min past the hour gives the slot
     # router's minute<15 window plenty of margin.
     - cron: '5 8 * * *'    # DCPI Mover
-    - cron: '5 12 * * *'   # Hyperscaler Deal
+    - cron: '9 12 * * *'   # Hyperscaler Deal
     - cron: '5 16 * * *'   # AI Capex Index
     - cron: '5 20 * * *'   # Industry Pulse
   workflow_dispatch:

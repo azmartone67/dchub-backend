@@ -7,7 +7,7 @@ name: Agent Win-Back Digest (weekly)
 # on Railway; with that unset the run is a no-op dry-run (logs intended recipients).
 on:
   schedule:
-    - cron: '25 15 * * 1'   # Mondays 15:25 UTC — offset from the 14:xx digest cluster to avoid collisions
+    - cron: '27 15 * * 1'   # Mondays 15:25 UTC — offset from the 14:xx digest cluster to avoid collisions
   workflow_dispatch: {}
 jobs:
   send:

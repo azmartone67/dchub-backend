@@ -7,7 +7,7 @@ on:
   schedule:
     # Monday 14:45 UTC — after agent_vendor_digest (14:00) +
     # weekly_media_digest (14:30) so operator inbox doesn't pile up
-    - cron: '45 14 * * 1'
+    - cron: '48 14 * * 1'
   workflow_dispatch: {}
 jobs:
   deliver:

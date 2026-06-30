@@ -16,7 +16,7 @@ on:
   schedule:
     # 06:43 UTC daily — distinct minute, after news ingestion crons and
     # off the 06:00/06:05/06:17/06:23 herd (no cron_schedule_collision).
-    - cron: '43 6 * * *'
+    - cron: '42 6 * * *'
   workflow_dispatch:
     inputs:
       days:

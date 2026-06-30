@@ -10,7 +10,7 @@ name: infra-growth-tracker
 
 on:
   schedule:
-    - cron: '5 6 * * *'   # daily 06:05 UTC (after the 04:00 infra-sync)
+    - cron: '9 6 * * *'   # daily 06:05 UTC (after the 04:00 infra-sync)
   workflow_dispatch: {}
 
 concurrency:

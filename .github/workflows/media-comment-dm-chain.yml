@@ -20,7 +20,7 @@ name: Media comment→DM follow-up chain (dry-run safe)
 
 on:
   schedule:
-    - cron: '17 11,23 * * *'   # 11:17 & 23:17 UTC, twice daily
+    - cron: '19 11,23 * * *'   # 11:17 & 23:17 UTC, twice daily
   workflow_dispatch: {}
 
 permissions:

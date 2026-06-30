@@ -4,7 +4,7 @@ name: L+P Alerts Nightly Firing
 # Per-alert 24h cooldown + per-email 5/day cap built into the endpoint.
 on:
   schedule:
-    - cron: '17 7 * * *'   # 07:17 UTC daily (staggered off dchub-jobs 0 7)
+    - cron: '19 7 * * *'   # 07:17 UTC daily (staggered off dchub-jobs 0 7)
   workflow_dispatch: {}
 jobs:
   fire-alerts:

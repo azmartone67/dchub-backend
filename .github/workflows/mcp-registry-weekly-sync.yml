@@ -25,7 +25,7 @@ name: MCP Registry Daily Sync
 
 on:
   schedule:
-    - cron: "40 14 * * *"   # DAILY 14:40 UTC (was Mondays; daily multi-registry refresh)
+    - cron: "44 14 * * *"   # DAILY 14:40 UTC (was Mondays; daily multi-registry refresh)
   workflow_dispatch: {}
 
 concurrency:

@@ -5,7 +5,7 @@ name: Facility Count Daily Snapshot
 # would never fire because there's no historical baseline.
 on:
   schedule:
-    - cron: '17 5 * * *'   # 05:17 UTC daily — offset from DCPI/news crons
+    - cron: '19 5 * * *'   # 05:17 UTC daily — offset from DCPI/news crons
   workflow_dispatch: {}
 jobs:
   snapshot:
