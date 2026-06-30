@@ -452,8 +452,14 @@ def _render_profile(fac: dict, slug: str) -> str:
     # Marking it up earns a rich breadcrumb trail in Google AND Bing results
     # and reinforces the facility↔market mesh. Home › <market hub> › <facility>.
     _crumb_items = [{"@type": "ListItem", "position": 1, "name": "Home",
-                     "item": "https://dchub.cloud/"}]
-    _pos = 2
+                     "item": "https://dchub.cloud/"},
+                    {"@type": "ListItem", "position": 2, "name": "Facilities",
+                     "item": "https://dchub.cloud/facilities"}]
+    _pos = 3
+    if country:
+        _crumb_items.append({"@type": "ListItem", "position": _pos, "name": country,
+                             "item": f"https://dchub.cloud/facilities/in/{country.lower().strip()}"})
+        _pos += 1
     if _mkt_crumb and _mslug:
         _crumb_items.append({"@type": "ListItem", "position": _pos,
                              "name": _mname,
@@ -461,6 +467,10 @@ def _render_profile(fac: dict, slug: str) -> str:
         _pos += 1
     _crumb_items.append({"@type": "ListItem", "position": _pos,
                          "name": name, "item": canonical})
+    # Visual breadcrumb crumb for the country hub (the /facilities + per-country
+    # mesh — un-orphans this page; the on-demand renderer is ~90% of facility pages).
+    _country_crumb = (f'<a href="/facilities/in/{_esc(country.lower().strip())}">{_esc(country)}</a> · '
+                      if country else '')
     _breadcrumb_ld = _json.dumps({
         "@context": "https://schema.org", "@type": "BreadcrumbList",
         "itemListElement": _crumb_items}, ensure_ascii=False)
@@ -540,7 +550,7 @@ def _render_profile(fac: dict, slug: str) -> str:
   </header>
 
   <div class="breadcrumb">
-    <a href="/">Home</a> · <a href="/land-power-map">Map</a> · {_mkt_crumb}{_esc(name)}
+    <a href="/">Home</a> · <a href="/facilities">Facilities</a> · {_country_crumb}{_mkt_crumb}{_esc(name)}
   </div>
 
   <div class="container">
