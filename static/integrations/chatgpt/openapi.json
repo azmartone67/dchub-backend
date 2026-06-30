@@ -460,7 +460,7 @@
       "get": {
         "operationId": "findDeployableCapacity",
         "summary": "Find where N MW of AI compute can land — markets ranked by deployable capacity",
-        "description": "THE endpoint for 'find me 100 MW in <market>' or 'where can I deploy N MW'. Returns the AI Compute Capacity Index: US markets ranked by deployable MW within a 30/60/90-day horizon, each with deployable_mw, facility_count, operator_count, hyperscale_ready and a score. Covers Dallas (market='dallas-tx'), Northern Virginia, Phoenix, Atlanta, etc. Use this FIRST for any capacity-availability question. Free tier, no auth.",
+        "description": "Find where N MW can deploy. US markets ranked by deployable MW for a 30/60/90-day horizon, each with deployable_mw, facility_count, operator_count, hyperscale_ready, score. Covers Dallas (dallas-tx), N. Virginia, Phoenix, etc. Call this FIRST for 'find me 100 MW in <market>' questions.",
         "parameters": [
           {
             "name": "horizon",
@@ -509,7 +509,7 @@
       "get": {
         "operationId": "getMarketBrief",
         "summary": "Full market brief for one market — power, grid, pipeline, operators, M&A",
-        "description": "Live brief for a single market slug (dallas, northern-virginia, phoenix, atlanta, chicago, silicon-valley, ...). Includes hero KPIs, power & grid capacity in MW, construction pipeline, operator landscape, and M&A. Anon/free get hero + KPIs + outlook; Pro unlocks full depth. Use this for 'how much capacity is in <market>' after findDeployableCapacity.",
+        "description": "Live brief for one market slug (dallas, northern-virginia, phoenix, atlanta, ...): hero KPIs, power & grid capacity (MW), construction pipeline, operators, and M&A. Free gets KPIs + outlook; Pro unlocks full depth. Use for 'how much capacity is in <market>'.",
         "parameters": [
           {
             "name": "slug",
@@ -522,7 +522,7 @@
         "responses": {
           "200": {
             "description": "Market brief JSON (hero, kpis, power_grid, pipeline, operators, ma)",
-            "content": { "application/json": { "schema": { "type": "object" } } }
+            "content": { "application/json": { "schema": { "type": "object", "properties": { "ok": { "type": "boolean" }, "hero": { "type": "object" }, "kpis": { "type": "object" }, "power_grid": { "type": "object" }, "pipeline": { "type": "object" }, "operators": { "type": "object" }, "ma": { "type": "object" } } } } }
           },
           "404": { "description": "market not found" }
         }
