@@ -16854,6 +16854,30 @@ def facility_by_slug(slug):
         except Exception as _e_fd:
             return jsonify({'success': False, 'error': 'delta handler unavailable',
                             'detail': str(_e_fd)[:200]}), 503
+    # r-1348 (2026-06-30): bare numeric-id fallback. This <path:slug> rule
+    # (registered first) SHADOWS get_facility_by_id, so /api/v1/facilities/<id>
+    # like 11342 dispatched here and hit "Invalid slug". Resolve numeric ids by
+    # df.id so the list endpoint's `id` field round-trips. Additive: numeric
+    # slugs previously always 404'd, so no existing 200 changes.
+    if slug.isdigit():
+        _conn_id = None
+        try:
+            _conn_id = get_read_db()
+            _c = _conn_id.cursor()
+            _c.execute("""
+                SELECT id, name, provider, city, state, country, market AS region,
+                       latitude, longitude, power_mw, status, address
+                FROM discovered_facilities WHERE id = %s LIMIT 1
+            """, (int(slug),))
+            _r = _c.fetchone()
+            if _r:
+                _cols = [d[0] for d in _c.description]
+                return jsonify({'success': True, 'data': dict(zip(_cols, _r))})
+            return jsonify({'success': False, 'error': 'Facility not found', 'id': slug}), 404
+        except Exception as _e_id:
+            return jsonify({'success': False, 'error': str(_e_id)}), 500
+        finally:
+            if _conn_id: _conn_id.close()
     parts = slug.rsplit('-', 1)
     if len(parts) != 2 or len(parts[1]) != 8:
         return jsonify({'success': False, 'error': 'Invalid slug'}), 404
@@ -17101,6 +17125,25 @@ def _list_facilities_full():
         c.execute(sql, params)
         facilities = [dict_from_row(row) for row in c.fetchall()]
 
+        # r-1348 (2026-06-30): canonical resolvable slug + profile_url (mirror
+        # /api/v1/search); the authed path has the same name-only-slug defect.
+        try:
+            import re as _re_s2
+            from routes.facility_slug import stable_hash8 as _shash2
+            def _slugify2(t):
+                if not t: return ''
+                _x = _re_s2.sub(r'[^a-z0-9\s-]', '', str(t).lower().strip())
+                return _re_s2.sub(r'[\s-]+', '-', _x).strip('-')
+            for _f in facilities:
+                _ps, _ns = _slugify2(_f.get('provider')), _slugify2(_f.get('name'))
+                _h = _shash2(_f.get('provider'), _f.get('name'))
+                _cs = f"{_ps}-{_ns}-{_h}" if (_ps and _ns) else (f"{_ns}-{_h}" if _ns else None)
+                if _cs:
+                    _f['slug'] = _cs
+                    _f['profile_url'] = f"https://dchub.cloud/facilities/{_cs}"
+        except Exception:
+            pass
+
         # Enrich with confidence badge and resolved location names
         try:
             for f in facilities:
@@ -17244,6 +17287,27 @@ def _list_facilities_free():
                 fac.get('city'), fac.get('state'), fac.get('country')
             )
         facilities.append(fac)
+
+    # r-1348 (2026-06-30): emit the CANONICAL resolvable slug + profile_url
+    # (mirror /api/v1/search). Stored df.slug is name-only (no provider prefix /
+    # hash8) so list->detail round-trips 404'd. stable_hash8 = MD5(provider|name)[:8],
+    # byte-identical to the sitemap/page slug. Fail-open: keep stored slug on error.
+    try:
+        import re as _re_s1
+        from routes.facility_slug import stable_hash8 as _shash1
+        def _slugify1(t):
+            if not t: return ''
+            _x = _re_s1.sub(r'[^a-z0-9\s-]', '', str(t).lower().strip())
+            return _re_s1.sub(r'[\s-]+', '-', _x).strip('-')
+        for _f in facilities:
+            _ps, _ns = _slugify1(_f.get('provider')), _slugify1(_f.get('name'))
+            _h = _shash1(_f.get('provider'), _f.get('name'))
+            _cs = f"{_ps}-{_ns}-{_h}" if (_ps and _ns) else (f"{_ns}-{_h}" if _ns else None)
+            if _cs:
+                _f['slug'] = _cs
+                _f['profile_url'] = f"https://dchub.cloud/facilities/{_cs}"
+    except Exception:
+        pass
 
     return jsonify({
         'success': True,
