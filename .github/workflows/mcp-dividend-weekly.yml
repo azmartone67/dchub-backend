@@ -48,6 +48,13 @@ jobs:
           # web:pricing-page / stripe_webhook_pack5 / stripe_webhook_mcp climb.
           cur.execute("SELECT COALESCE(source,'?'), COUNT(*), COALESCE(SUM(mrr_cents),0)/100 FROM mcp_conversions WHERE created_at>NOW()-INTERVAL '30 days' GROUP BY 1 ORDER BY 2 DESC")
           by_src=cur.fetchall()
+          # web/direct experiment: VISITS to the free-web CTA (playground?ref=mcp-<tool>) — the
+          # intermediate signal above conversion. Table created lazily by /api/v1/web/ref.
+          try:
+              cur.execute("SELECT ref, COUNT(*), COUNT(DISTINCT ip_hash) FROM web_ref_visits WHERE created_at>NOW()-INTERVAL '7 days' GROUP BY 1 ORDER BY 2 DESC LIMIT 12")
+              by_ref=cur.fetchall()
+          except Exception:
+              by_ref=[]
           L=["<b>Reach by channel — 7d vs prior 7d (distinct sessions)</b>"]
           for p,s7,sp in rows:
               s7,sp=s7 or 0, sp or 0
@@ -66,6 +73,10 @@ jobs:
               for src,n,usd in by_src: L.append(f"&nbsp;&nbsp;{src}: <b>{n}</b> (${usd}/mo)")
           else: L.append("&nbsp;&nbsp;(no conversions in window)")
           L.append("<br><i>Doubling down on web: watch web:pricing-page + stripe_webhook_pack5 ($10) + stripe_webhook_mcp climb as the free-web CTA + registry hook drive humans to checkout.</i>")
+          L += ["<br><b>Free-web CTA visits — playground?ref=&lt;src&gt; (7d)</b>"]
+          if by_ref:
+              for ref,n,ips in by_ref: L.append(f"&nbsp;&nbsp;{ref}: <b>{n}</b> visits ({ips} distinct)")
+          else: L.append("&nbsp;&nbsp;(no ?ref visits yet — the funnel above conversion; agents are surfacing the link, watch this fill)")
           html="<div style='font-family:ui-monospace,monospace;font-size:14px;line-height:1.6'>"+"<br>".join(L)+"</div>"
           payload=json.dumps({"from":"DC Hub <jonathan@dchub.cloud>","to":["azmartone@gmail.com"],
                               "subject":"DC Hub · MCP Dividend (weekly)","html":html}).encode()

@@ -1667,6 +1667,14 @@ try:
     except Exception as _cabe:
         import logging
         logging.getLogger(__name__).warning('conversion_attribution wiring failed: %s', _cabe)
+    # 2026-06-29: web/direct experiment — log ?ref visits (playground?ref=mcp-<tool>)
+    try:
+        from routes.web_ref_visit import web_ref_bp
+        app.register_blueprint(web_ref_bp)
+        print("[main] web_ref_bp registered: GET /api/v1/web/ref", flush=True)
+    except Exception as _wrbe:
+        import logging
+        logging.getLogger(__name__).warning('web_ref wiring failed: %s', _wrbe)
     # 2026-06-28: explain_dcpi_score (L23 proposal #191, founder-approved) —
     # exact factor decomposition behind a market's DCPI score.
     try:
