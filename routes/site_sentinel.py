@@ -70,7 +70,8 @@ _MANIFEST: list[dict] = [
     {"path": "/intelligence",            "category": "critical", "min_bytes":  3000, "label": "Live Pulse"},
     {"path": "/pricing",                 "category": "critical", "min_bytes":  3000, "label": "Pricing",          "wants_nav": True},
     {"path": "/api/v1/power/totals",     "category": "critical", "min_bytes":   300, "label": "Power Totals API"},
-    {"path": "/api/v1/vs/claims",        "category": "critical", "min_bytes":   500, "label": "Claims API"},
+        {"path": "/api/v1/vs/claims",        "category": "critical", "min_bytes":   500, "label": "Claims API"},
+    {"path": "/api/v1/iso/zones",      "category": "high",     "min_bytes":   200, "label": "ISO Zones API"},
 
     # High-value intelligence pages — wants_nav AND max_age_days because
     # the user explicitly flagged staleness on ai-deals, ai-inventory,
