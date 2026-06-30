@@ -243,6 +243,10 @@ def post_to_linkedin(text, link_url=None, link_title=None, link_desc=None, image
                      "(%d chars / %d words): %r", len(_ct), _wc, _ct[:120])
         return False, {'error': 'content_quality_gate',
                        'reason': f'too short: {len(_ct)} chars / {_wc} words'}
+    # Forensic trail (2026-06-30): log the EXACT commentary sent to LinkedIn so a
+    # future "full-stored-but-rendered-as-fragment" incident is captured.
+    logger.info("[LinkedIn] SENDING commentary: %d chars / %d words | %r",
+                len(_ct), _wc, _ct[:110])
 
     # r50 (2026-05-25): MODERN /rest/images?action=initializeUpload flow.
     # The old /v2/assets?action=registerUpload returns a urn:li:digitalmedia

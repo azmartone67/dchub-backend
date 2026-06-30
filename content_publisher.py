@@ -716,6 +716,12 @@ def _post_to_linkedin(content_text, access_token, article_url=None,
                      "(%d chars / %d words): %r", len(_ct), _wc, _ct[:120])
         return False, {"error": "content_quality_gate",
                        "reason": f"too short: {len(_ct)} chars / {_wc} words"}
+    # Forensic trail (2026-06-30): the "Guam " incident stored the FULL blurb but
+    # rendered one word, with NO backend truncation found. Log the EXACT
+    # commentary we hand to LinkedIn so the next occurrence is captured with
+    # proof (rules backend in/out vs the LinkedIn render layer).
+    logger.info("[LinkedIn] SENDING commentary: %d chars / %d words | %r",
+                len(_ct), _wc, _ct[:110])
     _dry = (os.environ.get('LINKEDIN_PUBLISHER_DRY_RUN', '') or '').strip().lower()
     if _dry in ('1', 'true', 'yes', 'on'):
         _preview = (content_text or '')[:240].replace('\n', ' / ')

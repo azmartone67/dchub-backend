@@ -245,6 +245,11 @@ def linkedin_headers(access_token):
 
 def create_text_post(text, access_token=None):
     """Create a text-only post on the DC Hub company page."""
+    _ct = (text or '').strip()
+    if len(_ct.split()) < 6 or len(_ct) < 25:   # quality gate — no fragment posts
+        logger.error("[LinkedIn] QUALITY GATE (autopost): refused too-short text "
+                     "(%d chars / %d words): %r", len(_ct), len(_ct.split()), _ct[:120])
+        return {'error': 'content_quality_gate', 'reason': f'too short: {len(_ct)} chars'}
     if not access_token:
         access_token = get_valid_token()
     if not access_token:
@@ -279,6 +284,11 @@ def create_text_post(text, access_token=None):
 
 
 def create_article_post(text, article_url, access_token=None):
+    _ctx = (text or '').strip()
+    if len(_ctx.split()) < 6 or len(_ctx) < 25:   # quality gate — no fragment posts
+        logger.error("[LinkedIn] QUALITY GATE (autopost article): refused too-short "
+                     "text (%d chars / %d words): %r", len(_ctx), len(_ctx.split()), _ctx[:120])
+        return {'error': 'content_quality_gate', 'reason': f'too short: {len(_ctx)} chars'}
     """Create a post with an article link on the DC Hub company page."""
     if not access_token:
         access_token = get_valid_token()
