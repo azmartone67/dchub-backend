@@ -1606,12 +1606,12 @@ def admin_reconcile_keys():
             cur.execute("""
                 SELECT id, LOWER(email) AS email, LOWER(COALESCE(plan,'')) AS plan
                   FROM users
-                 WHERE LOWER(COALESCE(plan,'')) IN %s
+                 WHERE LOWER(COALESCE(plan,'')) = ANY(%s)
                    AND COALESCE(stripe_customer_id,'') <> ''
                    AND LOWER(COALESCE(subscription_status,'active'))
-                       IN ('active','trialing','past_due')
+                       = ANY(ARRAY['active','trialing','past_due'])
                    AND COALESCE(email,'') <> ''
-            """, (PAID_PLANS,))
+            """, (list(PAID_PLANS),))
             payers = cur.fetchall()
             out["real_payers"] = len(payers)
             for uid, email, plan in payers:
