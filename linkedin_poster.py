@@ -231,6 +231,18 @@ def _get_valid_token():
 # ── Posting ──────────────────────────────────────────────────
 
 def post_to_linkedin(text, link_url=None, link_title=None, link_desc=None, image_bytes=None):
+    # ── Content-quality gate (2026-06-30) ─────────────────────────────────
+    # NEVER ship an incomplete/amateur post (a publish path once posted just
+    # "Guam " to the company page). Refuse word-poor / fragment commentary —
+    # DC Hub Media is an analyst, not a one-word headline. Returns the standard
+    # (False, dict) so callers log + skip rather than share garbage.
+    _ct = (text or '').strip()
+    _wc = len(_ct.split())
+    if _wc < 6 or len(_ct) < 25:
+        logger.error("[LinkedIn] QUALITY GATE: refused too-short post "
+                     "(%d chars / %d words): %r", len(_ct), _wc, _ct[:120])
+        return False, {'error': 'content_quality_gate',
+                       'reason': f'too short: {len(_ct)} chars / {_wc} words'}
 
     # r50 (2026-05-25): MODERN /rest/images?action=initializeUpload flow.
     # The old /v2/assets?action=registerUpload returns a urn:li:digitalmedia

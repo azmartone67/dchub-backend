@@ -703,6 +703,19 @@ def _post_to_linkedin(content_text, access_token, article_url=None,
     Kill-switch: LINKEDIN_ATTACH_IMAGES=0 disables image upload
     entirely (returns to pre-r51 behaviour). Default = enabled.
     """
+    # ── Content-quality gate (2026-06-30) ─────────────────────────────────
+    # NEVER ship an incomplete/amateur post. A publish-path bug once posted just
+    # "Guam " (the market name, truncated before the analyst blurb) to the
+    # company page. Refuse word-poor / fragment commentary — DC Hub Media is an
+    # analyst, not a one-word headline. False return = non-fatal skip (logged),
+    # so a bad payload is DROPPED, never shared.
+    _ct = (content_text or '').strip()
+    _wc = len(_ct.split())
+    if _wc < 6 or len(_ct) < 25:
+        logger.error("LINKEDIN QUALITY GATE: refused too-short post "
+                     "(%d chars / %d words): %r", len(_ct), _wc, _ct[:120])
+        return False, {"error": "content_quality_gate",
+                       "reason": f"too short: {len(_ct)} chars / {_wc} words"}
     _dry = (os.environ.get('LINKEDIN_PUBLISHER_DRY_RUN', '') or '').strip().lower()
     if _dry in ('1', 'true', 'yes', 'on'):
         _preview = (content_text or '')[:240].replace('\n', ' / ')
