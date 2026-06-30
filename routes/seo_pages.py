@@ -398,6 +398,18 @@ def _render_facility(f: dict, nearby: list) -> str:
     # crawl: facility → /facilities/in/<country> → /facilities).
     _country_crumb = (f' · <a href="/facilities/in/{_esc_attr(country.lower().strip())}">{_h(country)}</a>'
                       if country else '')
+    # Onward links (analytics 2026-06-29: facility pages had pages/session=1 +
+    # dead clicks on plain-text fields). Only ALWAYS-RESOLVING targets:
+    #  - /markets/<city-state> (the market always has ≥1 facility — this one) ✓
+    #  - /facilities/in/<country> (hub returns 200 for any country) ✓
+    # NOT operator (/operators/<slug> 404s for long-tail ops) or /dcpi/<city>
+    # (404 for non-DCPI cities) — verified — so those stay plain text.
+    _market_href = f"/markets/{_esc_attr(_slug(city + '-' + state))}" if city else ""
+    _loc_cell = (f'<a href="{_market_href}">{_h(location)}</a>' if _market_href else _h(location))
+    _country_browse = (
+        f'<p class="dc-browse" style="margin-top:14px">'
+        f'<a href="/facilities/in/{_esc_attr(country.lower().strip())}">'
+        f'← Browse all data centers in {_h(country)}</a></p>' if country else '')
     body = f"""<header class="dc-seo">
   <nav class="breadcrumb">
     <a href="/">DC Hub</a> · <a href="/facilities">Facilities</a>{_country_crumb} · <a href="/markets/{_esc_attr(_slug(city + '-' + state))}">{_h(city)}, {_h(state)}</a> · {_h(name)}
@@ -411,7 +423,7 @@ def _render_facility(f: dict, nearby: list) -> str:
   <h2>Overview</h2>
   <table>
     <tr><th>Operator</th><td>{_h(operator)}</td></tr>
-    <tr><th>Location</th><td>{_h(location)} {map_link}</td></tr>
+    <tr><th>Location</th><td>{_loc_cell} {map_link}</td></tr>
     <tr><th>Power capacity</th><td>{_h(str(power_mw) + ' MW' if power_mw else 'Not disclosed')}</td></tr>
     <tr><th>Floor space</th><td>{_h(f'{int(sqft):,} sq ft' if sqft else 'Not disclosed')}</td></tr>
     <tr><th>Tier</th><td>{_h('Tier ' + str(int(tier)) if tier and int(tier) > 0 else 'Not disclosed')}</td></tr>
@@ -424,9 +436,10 @@ def _render_facility(f: dict, nearby: list) -> str:
 
 <section id="cta">
   <h2>Get more facility intelligence</h2>
-  <p>This page shows the public summary. The full facility profile includes M&amp;A history, lease comparables, power profile breakdown, fiber carrier presence, water risk score, and competitive analysis.</p>
-  <a href="/pricing?ref=facility&tool={_esc_attr(fac_id)}" class="cta">Generate full PDF report</a>
-  <a href="/signup?from=facility-{_esc_attr(fac_id)}" class="cta secondary">Or: free MCP API access</a>
+  <p>This page shows the public summary. The full profile adds M&amp;A history, lease comparables, power profile, fiber carrier presence, water risk, and competitive analysis — live and machine-readable.</p>
+  <a href="/connect?ref=facility-{_esc_attr(fac_id)}" class="cta">Get live data free via the DC Hub MCP API →</a>
+  <a href="/pricing?ref=facility&tool={_esc_attr(fac_id)}" class="cta secondary">Or generate a full PDF report</a>
+  {_country_browse}
 </section>
 
 <section id="api">
