@@ -247,6 +247,25 @@ def post_to_linkedin(text, link_url=None, link_title=None, link_desc=None, image
     # future "full-stored-but-rendered-as-fragment" incident is captured.
     logger.info("[LinkedIn] SENDING commentary: %d chars / %d words | %r",
                 len(_ct), _wc, _ct[:110])
+    # Exact-duplicate gate (2026-06-29): refuse content whose normalized opening
+    # already shipped within DCHUB_LINKEDIN_DUP_DAYS (default 7). Fail-OPEN.
+    try:
+        _dd = int(os.environ.get('DCHUB_LINKEDIN_DUP_DAYS', '7') or '7')
+        if _dd > 0:
+            _row = _execute(
+                "SELECT 1 AS hit FROM linkedin_posts "
+                " WHERE posted_at > NOW() - make_interval(days => %s) "
+                "   AND COALESCE(status,'') = 'success' "
+                "   AND LEFT(regexp_replace(btrim(COALESCE(content,'')), '\\s+', ' ', 'g'), 80) = %s "
+                " LIMIT 1",
+                (_dd, ' '.join(_ct.split())[:80]), fetch=True)
+            if _row:
+                logger.warning("[LinkedIn] DUPLICATE GATE: skipping repost (same "
+                               "content within %dd): %r", _dd, _ct[:80])
+                return False, {'error': 'duplicate_gate',
+                               'reason': f'already posted within {_dd} days'}
+    except Exception as _e:
+        logger.warning("[LinkedIn] dup-check failed (fail-open): %s", _e)
 
     # r50 (2026-05-25): MODERN /rest/images?action=initializeUpload flow.
     # The old /v2/assets?action=registerUpload returns a urn:li:digitalmedia

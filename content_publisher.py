@@ -665,6 +665,33 @@ def _og_today_slug_for(article_url):
         return default
 
 
+def _is_recent_linkedin_duplicate(content_text, days=7):
+    """True if this EXACT post body already shipped to LinkedIn within `days`.
+    Catches the repeat-post bug (same content fired 3-4x in a day — the
+    class-based dedup misses it) regardless of which generator/path produced it.
+    Matches on the whitespace-normalized first 80 chars (what distinguishes a
+    post; the date IS in daily-intelligence openers so different days differ).
+    Fail-OPEN — a check error never blocks a legit post."""
+    try:
+        norm = ' '.join((content_text or '').split())
+        if len(norm) < 25:
+            return False
+        key = norm[:80]
+        with _db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT 1 FROM linkedin_posts "
+                " WHERE posted_at > NOW() - make_interval(days => %s) "
+                "   AND COALESCE(status,'') = 'success' "
+                "   AND LEFT(regexp_replace(btrim(COALESCE(content,'')), '\\s+', ' ', 'g'), 80) = %s "
+                " LIMIT 1",
+                (int(days), key))
+            return cur.fetchone() is not None
+    except Exception as e:
+        logger.warning("[LinkedIn] dup-check failed (fail-open): %s", e)
+        return False
+
+
 def _post_to_linkedin(content_text, access_token, article_url=None,
                        article_title=None, article_description=None,
                        article_thumbnail_url=None):
@@ -722,6 +749,19 @@ def _post_to_linkedin(content_text, access_token, article_url=None,
     # proof (rules backend in/out vs the LinkedIn render layer).
     logger.info("[LinkedIn] SENDING commentary: %d chars / %d words | %r",
                 len(_ct), _wc, _ct[:110])
+    # Exact-duplicate gate (2026-06-29): the class-based dedup misses same-day
+    # repeats (e.g. the same blurb fired 3-4x in one day). Refuse content whose
+    # normalized opening already shipped to LinkedIn within the window. Env knob
+    # DCHUB_LINKEDIN_DUP_DAYS (default 7); set 0 to disable.
+    try:
+        _dup_days = int(os.environ.get('DCHUB_LINKEDIN_DUP_DAYS', '7') or '7')
+    except Exception:
+        _dup_days = 7
+    if _dup_days > 0 and _is_recent_linkedin_duplicate(_ct, days=_dup_days):
+        logger.warning("[LinkedIn] DUPLICATE GATE: skipping repost (same content "
+                       "shipped within %dd): %r", _dup_days, _ct[:80])
+        return False, {"error": "duplicate_gate",
+                       "reason": f"already posted within {_dup_days} days"}
     _dry = (os.environ.get('LINKEDIN_PUBLISHER_DRY_RUN', '') or '').strip().lower()
     if _dry in ('1', 'true', 'yes', 'on'):
         _preview = (content_text or '')[:240].replace('\n', ' / ')
@@ -1011,6 +1051,153 @@ def _li_post_type_for(article_url):
     return 'auto_share'
 
 
+def _verify_linkedin_render_drift(urn, sent_text, access_token=None):
+    """Render-drift probe (2026-06-29) — closes the "elusive root cause" gap
+    flagged in commit dab60cc1.
+
+    The "Guam " incident: the company page rendered ONE word ("Guam ") while
+    BOTH the linkedin_posts row and the social_media_posts row held the FULL
+    analyst sentence ("Guam (GPA) just shifted to AVOID …") plus a real share
+    URN (urn:li:share:7477514527392047105). Every Python code path passes the
+    full text to LinkedIn's `commentary`/`shareCommentary`, and no truncation
+    was ever found in this backend — so the loss happened OUTSIDE Python, at
+    LinkedIn's API/render layer or an out-of-repo worker.
+
+    This probe fetches the just-created share BACK from LinkedIn by its URN and
+    compares the rendered `commentary` char-for-char against what we sent. On a
+    mismatch (rendered is typically a prefix/fragment of sent) it logs an ERROR
+    with both strings and writes a row to linkedin_render_drift — so the NEXT
+    occurrence is captured with hard proof instead of going cold.
+
+    Design contract (all four matter):
+      • OFF by default — runs only when LINKEDIN_RENDER_DRIFT_PROBE is truthy.
+      • FAIL-SOFT — never raises; a successful post is never blocked or undone
+        by a probe failure (caller ignores the return value).
+      • ISOLATED DB write — uses its OWN short-lived connection so a bad INSERT
+        cannot poison the caller's (already-successful) post transaction.
+      • Reuses LINKEDIN_ACCESS_TOKEN + the LinkedIn-Version header exactly as the
+        poster paths do.
+
+    Returns a small dict for tests/observability (never consumed in prod).
+    """
+    out = {"ran": False, "drift": None, "reason": None}
+    try:
+        _flag = (os.environ.get('LINKEDIN_RENDER_DRIFT_PROBE', '') or '').strip().lower()
+        if _flag not in ('1', 'true', 'yes', 'on'):
+            out["reason"] = "disabled"
+            return out
+        # Only real shares are fetchable — skip DRY_RUN + non-urn sentinels
+        # (caller already filters these, but double-guard so the probe is safe
+        # to call from anywhere).
+        if (not urn or not isinstance(urn, str)
+                or not urn.startswith('urn:li:') or 'DRY_RUN' in urn):
+            out["reason"] = "non_real_urn"
+            return out
+        token = (access_token
+                 or os.environ.get('LINKEDIN_ACCESS_TOKEN', '') or '').strip()
+        if not token:
+            out["reason"] = "no_token"
+            return out
+        # Optional settle delay — LinkedIn's render can lag the create by a beat.
+        # Default 0 (lightweight, non-blocking); operator can set a couple of
+        # seconds while actively hunting the drift. Capped at 10s.
+        try:
+            _delay = float(os.environ.get('LINKEDIN_RENDER_DRIFT_PROBE_DELAY', '0') or '0')
+        except (ValueError, TypeError):
+            _delay = 0.0
+        if _delay > 0:
+            time.sleep(min(_delay, 10.0))
+        import urllib.parse as _up
+        api_ver = (os.environ.get('LINKEDIN_API_VERSION', '202601') or '202601').strip()
+        headers = {
+            'Authorization': f'Bearer {token}',
+            'X-Restli-Protocol-Version': '2.0.0',
+            'LinkedIn-Version': api_ver,
+        }
+        enc = _up.quote(urn, safe='')
+        rendered = None
+        # Primary: GET /rest/posts/{urn} — returns the post's `commentary`,
+        # i.e. exactly what LinkedIn rendered from what we sent.
+        try:
+            resp = requests.get(f'https://api.linkedin.com/rest/posts/{enc}',
+                                headers=headers, timeout=10)
+            if resp.status_code == 200:
+                rendered = (resp.json() or {}).get('commentary')
+            else:
+                out["reason"] = f"posts_status_{resp.status_code}: {resp.text[:160]}"
+        except Exception as _e:
+            out["reason"] = f"posts_exc: {str(_e)[:160]}"
+        # Fallback: some surfaces answer on /rest/socialActions for the share's
+        # social object. Commentary isn't guaranteed there, so best-effort only,
+        # and only when /rest/posts gave us nothing to compare.
+        if rendered is None:
+            try:
+                resp2 = requests.get(
+                    f'https://api.linkedin.com/rest/socialActions/{enc}',
+                    headers=headers, timeout=10)
+                if resp2.status_code == 200:
+                    d2 = resp2.json() or {}
+                    rendered = (d2.get('commentary')
+                                or (d2.get('message') or {}).get('text'))
+            except Exception:
+                pass
+        if rendered is None:
+            out["reason"] = out["reason"] or "no_rendered_commentary"
+            logger.info("[LinkedIn drift probe] could not read back commentary "
+                        "for %s (%s)", urn, out["reason"])
+            return out
+        out["ran"] = True
+        sent = sent_text or ''
+        if rendered == sent:
+            out["drift"] = False
+            logger.info("[LinkedIn drift probe] OK — rendered commentary matches "
+                        "sent (%d chars) for %s", len(sent), urn)
+            return out
+        # ── DRIFT DETECTED ───────────────────────────────────────────────────
+        out["drift"] = True
+        _is_prefix = bool(rendered) and sent.startswith(rendered)
+        logger.error(
+            "[LinkedIn RENDER DRIFT] urn=%s sent_len=%d rendered_len=%d prefix=%s\n"
+            "  SENT:     %r\n"
+            "  RENDERED: %r",
+            urn, len(sent), len(rendered), _is_prefix, sent, rendered)
+        # Persist on an ISOLATED connection so a write error can never roll back
+        # the caller's already-committed-or-about-to-commit successful post.
+        try:
+            with _db_conn() as _c:
+                _cur = _c.cursor()
+                _cur.execute("""
+                    CREATE TABLE IF NOT EXISTS linkedin_render_drift (
+                        id            SERIAL PRIMARY KEY,
+                        urn           TEXT,
+                        sent_text     TEXT,
+                        rendered_text TEXT,
+                        sent_len      INT,
+                        rendered_len  INT,
+                        detected_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    )""")
+                _cur.execute("""
+                    INSERT INTO linkedin_render_drift
+                        (urn, sent_text, rendered_text, sent_len, rendered_len)
+                    VALUES (%s, %s, %s, %s, %s)""",
+                    (urn, sent, rendered, len(sent), len(rendered)))
+                _c.commit()
+            logger.info("[LinkedIn drift probe] drift row written for %s", urn)
+        except Exception as _e:
+            logger.warning("[LinkedIn drift probe] drift detected but row-write "
+                           "failed (urn=%s): %s", urn, _e)
+        return out
+    except Exception as _e:
+        # Absolute backstop — the probe must NEVER surface to the post path.
+        try:
+            logger.warning("[LinkedIn drift probe] unexpected error "
+                           "(fail-soft): %s", _e)
+        except Exception:
+            pass
+        out["reason"] = f"exc: {str(_e)[:160]}"
+        return out
+
+
 def _persist_linkedin_urn(cur, post_id, urn, content_text, slug=None, article_url=None):
     """r72 (2026-06-05): close the URN capture gap that broke the engagement
     measure→learn loop.
@@ -1072,6 +1259,16 @@ def _persist_linkedin_urn(cur, post_id, urn, content_text, slug=None, article_ur
         # creates it on backend boot — log + continue (engagement sync will
         # no-op for that row, but the share itself was already posted).
         logger.warning("r72 linkedin_posts INSERT failed (urn=%s): %s", urn, e)
+    # Render-drift probe — off unless LINKEDIN_RENDER_DRIFT_PROBE=1. Fetches this
+    # share back by URN and compares LinkedIn's rendered commentary vs what we
+    # sent, to catch a recurrence of the "Guam " truncation at the render layer
+    # (dab60cc1). Fully fail-soft + isolated DB write; cannot affect this
+    # successful post. Uses the FULL content_text (not the [:500] truncation
+    # above) so the char-for-char compare is exact.
+    try:
+        _verify_linkedin_render_drift(urn, content_text)
+    except Exception:
+        pass
     return True
 
 
