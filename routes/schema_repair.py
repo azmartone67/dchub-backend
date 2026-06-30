@@ -1354,20 +1354,26 @@ def funnel_leakage():
                 try: c.rollback()
                 except Exception: pass
 
-            # Compute drop rates
+            # Compute drop rates. NB: a stage query can silently fail and never
+            # set its key; `.get(k, 0) is not None` is ALWAYS True (0 is not
+            # None), so the old direct stages[k] indexing KeyError'd the whole
+            # endpoint (the `5_paid_keys` crash that killed /funnel/leakage).
+            # Resolve every stage via .get first, then gate each rate on real
+            # upstream volume.
             stages = out["stages"]
-            if stages.get("1_tool_calls", 0) > 0 and stages.get("2_paywall_signals", 0) > 0:
-                out["drop_calls_to_signals_pct"] = round(
-                    100 * (1 - stages["2_paywall_signals"] / stages["1_tool_calls"]), 2)
-            if stages.get("2_paywall_signals", 0) > 0 and stages.get("3_codes_minted", 0) is not None:
-                out["drop_signals_to_codes_pct"] = round(
-                    100 * (1 - stages["3_codes_minted"] / max(1, stages["2_paywall_signals"])), 2)
-            if stages.get("3_codes_minted", 0) > 0 and stages.get("4_codes_redeemed", 0) is not None:
-                out["drop_codes_to_redeemed_pct"] = round(
-                    100 * (1 - stages["4_codes_redeemed"] / max(1, stages["3_codes_minted"])), 2)
-            if stages.get("4_codes_redeemed", 0) is not None and stages.get("5_paid_keys", 0) is not None:
-                out["drop_redeemed_to_paid_pct"] = round(
-                    100 * (1 - stages["5_paid_keys"] / max(1, stages.get("4_codes_redeemed", 1))), 2)
+            _tc = stages.get("1_tool_calls", 0) or 0
+            _ps = stages.get("2_paywall_signals", 0) or 0
+            _cm = stages.get("3_codes_minted", 0) or 0
+            _cr = stages.get("4_codes_redeemed", 0) or 0
+            _pk = stages.get("5_paid_keys", 0) or 0
+            if _tc > 0 and _ps > 0:
+                out["drop_calls_to_signals_pct"] = round(100 * (1 - _ps / _tc), 2)
+            if _ps > 0:
+                out["drop_signals_to_codes_pct"] = round(100 * (1 - _cm / max(1, _ps)), 2)
+            if _cm > 0:
+                out["drop_codes_to_redeemed_pct"] = round(100 * (1 - _cr / max(1, _cm)), 2)
+            if _cr > 0:
+                out["drop_redeemed_to_paid_pct"] = round(100 * (1 - _pk / max(1, _cr)), 2)
 
         return jsonify(ok=True, **out)
     finally:
