@@ -260,6 +260,7 @@ def _send_resend(to_email, subject, html, text):
 
 def _record_send(slug, to_email, subject, personal_note, status, detail):
     try:
+        from routes.news_digests_read import _conn
         with _conn() as c, c.cursor() as cur:
             cur.execute("""
                 INSERT INTO partnership_emails_sent
