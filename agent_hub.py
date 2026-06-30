@@ -906,7 +906,7 @@ Use this real-time data and expert knowledge to make your responses compelling a
             elif any(word in message_lower for word in ['ai', 'gpu', 'ml', 'machine learning']):
                 response = "AI/GPU workloads are driving unprecedented demand - 5-10x power density vs traditional compute. Markets like Phoenix and Dallas are seeing 35%+ growth. DC Hub tracks AI-ready capacity specifically. Interested in AI infrastructure data%s"
             elif any(word in message_lower for word in ['equinix', 'digital realty', 'operator']):
-                response = "Equinix leads in interconnection with 260+ facilities in 71 markets. Digital Realty focuses on wholesale + hyperscale with 300+ facilities. DC Hub tracks all major operators plus emerging players like Stack, Compass, and Vantage. Which operators are you researching%s"
+                response = "Equinix leads in interconnection with 260+ facilities across 70+ metros. Digital Realty focuses on wholesale + hyperscale with 300+ facilities. DC Hub tracks all major operators plus emerging players like Stack, Compass, and Vantage. Which operators are you researching%s"
             elif any(word in message_lower for word in ['market', 'trend', 'hot', 'growing', 'virginia', 'dallas', 'phoenix']):
                 trending = orch_context.get('trending_markets', ['Dallas', 'Phoenix', 'Northern Virginia'])[:3]
                 response = f"Hot markets right now: {', '.join(trending)}. Northern Virginia leads at 3.5 GW but faces power constraints. Phoenix and Dallas growing 22-35%. Emerging: Columbus, Nashville, Salt Lake City. What's your focus area?"
