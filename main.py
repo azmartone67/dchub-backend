@@ -1704,6 +1704,17 @@ try:
     except Exception as _ams:
         import logging
         logging.getLogger(__name__).warning('audience_master_shell wiring failed: %s', _ams)
+    # 2026-06-30: DC Hub Media auto-showcase — compelling + VERIFIED market-pulse
+    # / milestone content (every number pulled live + a fact-check gate), so the
+    # media machine showcases the data as well as Grok did, but without Grok's
+    # hallucinations. GET /api/v1/admin/media/showcase/preview, POST .../publish
+    try:
+        from routes.media_showcase import media_showcase_bp
+        app.register_blueprint(media_showcase_bp)
+        print("[main] media_showcase_bp registered: /api/v1/admin/media/showcase/{preview,publish}", flush=True)
+    except Exception as _msh:
+        import logging
+        logging.getLogger(__name__).warning('media_showcase wiring failed: %s', _msh)
     try:
         from routes.brain_narrative import brain_narrative_bp
         app.register_blueprint(brain_narrative_bp)
