@@ -508,8 +508,27 @@ def innovation_approve():
                 }
             else:
                 from routes.brain_guardrails import draft_and_open_pr
-                resp["pr_attempt"] = draft_and_open_pr(
+                _pr = draft_and_open_pr(
                     directive, "", label=f"{kind} #{item_id}: {heading[:60]}")
+                # r-brain-loop (2026-06-30): ACTUATOR FALLBACK (#4). If the code
+                # drafter REFUSED (the directive is a 'build/instrument/gather'
+                # PLAN, not a single-file edit — the common case that made every
+                # approval 'recorded only'), file the approved plan as a DRAFT
+                # spec PR instead. Doc-only, draft, human-merged — so the approval
+                # becomes a visible, trackable, human-implementable PR.
+                if isinstance(_pr, dict) and _pr.get("acted") is False:
+                    try:
+                        from routes.brain_pr_opener import open_spec_pr
+                        _spec = open_spec_pr(directive, heading, kind, item_id,
+                                             label=f"{kind} #{item_id}")
+                        if isinstance(_spec, dict) and _spec.get("acted"):
+                            _pr = {**_pr, "acted": True,
+                                   "note": "filed as draft spec PR for a human",
+                                   "fallback_spec_pr": _spec}
+                    except Exception as _se:
+                        logger.warning(
+                            "brain_innovation_dashboard: approve→spec-PR fallback failed: %s", _se)
+                resp["pr_attempt"] = _pr
         except Exception as e:
             logger.warning("brain_innovation_dashboard: approve→PR failed: %s", e)
             resp["pr_attempt"] = {"ok": False, "acted": False, "error": str(e)}

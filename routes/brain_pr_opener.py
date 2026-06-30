@@ -149,6 +149,70 @@ def _open_pr(title: str, head: str, body: str) -> dict | None:
     return r.json()
 
 
+def open_spec_pr(directive: str, heading: str = "", kind: str = "item",
+                 item_id=0, label: str = "") -> dict:
+    """r-brain-loop (2026-06-30): the actuator FALLBACK that turns an approval
+    into a shippable artifact. When draft_and_open_pr REFUSES a directive (it's a
+    'build X / instrument Y / gather Z' PLAN, not a single-file find/replace), this
+    captures the APPROVED directive as a DRAFT spec PR — a markdown file under
+    docs/brain-proposals/ with the recommendation + a human checklist. It adds a
+    DOC only (zero code execution), opens as a draft, and a human merges — so the
+    approval becomes a visible, trackable, human-implementable PR instead of
+    'recorded only'. Inherits can_open_pr() (kill switch + daily cap), dedups by
+    title. NEVER raises — always returns a dict."""
+    directive = (directive or "").strip()
+    if not directive:
+        return {"ok": False, "acted": False, "error": "empty directive"}
+    try:
+        from routes.brain_guardrails import can_open_pr
+        ok_gate, why = can_open_pr()
+        if not ok_gate:
+            return {"ok": False, "acted": False, "error": "autonomy_gate_closed", "reason": why}
+    except Exception:
+        pass
+    import re as _re, datetime as _dt
+    _slug = (_re.sub(r"[^a-z0-9]+", "-", (heading or directive)[:48].lower())
+             .strip("-") or "proposal")
+    title = f"[brain-spec] {kind} #{item_id}: {(heading or directive)[:70]}"
+    try:
+        if open_pr_exists(title):
+            return {"ok": True, "acted": False, "note": "spec PR already open (dedup)"}
+    except Exception:
+        pass
+    base = _get_default_branch_sha()
+    if not base:
+        return {"ok": False, "acted": False, "error": "no base sha"}
+    branch = f"brain-spec/{kind}-{item_id}-{_slug}"[:90]
+    path = f"docs/brain-proposals/{kind}-{item_id}-{_slug}.md"
+    content = (
+        f"# Brain proposal — {(heading or directive[:80])}\n\n"
+        f"> Auto-captured from an **approved** brain {kind} item (#{item_id}). The brain's\n"
+        f"> recommendation couldn't be expressed as a single-file edit, so it's filed here\n"
+        f"> as a spec for a human to implement (or close). **Draft PR — a human merges.**\n\n"
+        f"_Filed {_dt.datetime.utcnow().isoformat()}Z · {label}_\n\n"
+        f"## The approved recommendation\n\n{directive}\n\n"
+        f"## Human checklist\n\n"
+        f"- [ ] Confirm this is still worth doing\n"
+        f"- [ ] Scope it to a concrete change (file(s) + approach)\n"
+        f"- [ ] Implement + verify\n"
+        f"- [ ] Or close this PR if superseded / not worth it\n"
+    )
+    if not _create_branch(branch, base):
+        return {"ok": False, "acted": False, "error": "create_branch failed"}
+    if not _commit_file(path, content, f"brain-spec: {(heading or directive)[:60]}",
+                        branch, None):
+        return {"ok": False, "acted": False, "error": "commit_file failed"}
+    # Open as a DRAFT PR (draft=true so it can't be merged without a human flip).
+    r = _gh("POST", f"/repos/{_GITHUB_REPO}/pulls",
+            {"title": title, "head": branch, "base": "main", "draft": True,
+             "body": content[:4000]})
+    if r.status_code not in (200, 201):
+        return {"ok": False, "acted": False, "error": f"open_pr failed ({r.status_code})"}
+    pr = r.json() or {}
+    return {"ok": True, "acted": True, "spec_pr": True,
+            "pr": {"number": pr.get("number"), "url": pr.get("html_url")}}
+
+
 # ─── Fix templates ──────────────────────────────────────────────────────
 
 def _fix_blueprint_silent_failure(finding: dict) -> tuple[str | None, str | None, str]:
