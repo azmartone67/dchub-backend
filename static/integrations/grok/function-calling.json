@@ -6,7 +6,7 @@
       "type": "function",
       "function": {
         "name": "search_facilities",
-        "description": "Search DC Hub's database of 10,706+ data center facilities across 170+ countries.",
+        "description": "Search DC Hub's database of 21,000+ data center facilities across 170+ countries.",
         "parameters": {
           "type": "object",
           "properties": {
@@ -36,7 +36,7 @@
     {
       "type": "function",
       "function": {
-        "name": "get_market_data",
+        "name": "get_market_intel",
         "description": "Get market intelligence — vacancy rates, pricing, inventory, capacity under construction.",
         "parameters": {
           "type": "object",
@@ -50,8 +50,8 @@
     {
       "type": "function",
       "function": {
-        "name": "search_deals",
-        "description": "Search M&A transactions from DC Hub's $185B+ deal database.",
+        "name": "list_transactions",
+        "description": "Search M&A transactions from DC Hub's database of 2,000+ tracked data-center deals.",
         "parameters": {
           "type": "object",
           "properties": {
@@ -100,8 +100,8 @@
     "endpoint_mapping": {
       "search_facilities": "/agent/facilities",
       "get_facility": "/agent/facilities/{facility_id}",
-      "get_market_data": "/v1/markets/list",
-      "search_deals": "/transactions",
+      "get_market_intel": "/v1/markets/list",
+      "list_transactions": "/transactions",
       "get_news": "/news",
       "analyze_site": "/v1/analyze-site"
     }
