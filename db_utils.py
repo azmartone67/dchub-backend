@@ -23,7 +23,7 @@ def _is_ddl(sql):
 SQLITE_TO_PG_FUNC = {
     "datetime('now', '-7 days')": "(NOW() - INTERVAL '7 days')",
     "datetime('now', '-30 days')": "(NOW() - INTERVAL '30 days')",
-    "datetime('now', '-1 day')": "(NOW() - INTERVAL '1 day')",
+    "NOW() - INTERVAL '1 days'": "(NOW() - INTERVAL '1 day')",
     "datetime('now', '-24 hours')": "(NOW() - INTERVAL '24 hours')",
     "NOW() - INTERVAL '1 hours'": "(NOW() - INTERVAL '1 hour')",
     "datetime('now', '-6 hours')": "(NOW() - INTERVAL '6 hours')",
