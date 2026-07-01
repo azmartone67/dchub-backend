@@ -1204,6 +1204,98 @@ def broadcast_to_ai_platforms():
     return results
 
 
+# Self-onboarding markers to EXCLUDE (honest: never onboard our own infra, probes,
+# health-checkers, or generic transport buckets — the signal-inflation rule).
+_AUTO_ONBOARD_EXCLUDE = (
+    'mcp', 'unknown', 'direct', 'selfheal', 'self-heal', 'probe', 'healthcheck',
+    'monitor', 'curl', 'postman', 'python-requests', 'node-fetch', 'node', 'fetch',
+    'test', 'funnel', 'internal', 'dchub', 'scoringengine', 'researchclient',
+    'agentdiscovery', 'smitheryconnect', 'client',
+)
+
+
+def discover_new_platforms():
+    """Self-onboarding (2026-07-01) — the missing autonomy. The outreach roster was
+    hand-maintained, so a NEW platform that started querying DC Hub stayed invisible
+    until someone added it (why Mistral/HF/base44 needed a manual roster edit). This
+    detects platforms with REAL recent MCP traffic that aren't rostered/connected yet
+    and auto-onboards them into connected_ai_platforms, so the loop encourages them.
+    HONEST: only onboards platforms with genuine traffic (>=3 distinct sessions AND
+    >=10 calls in 30d); excludes internal/probe/UUID/generic; marks status
+    'auto_discovered' for a human glance. Never invents a platform or a number."""
+    newly, conn = [], None
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT LOWER(COALESCE(platform, '')) AS p,
+                   COUNT(*) AS calls, COUNT(DISTINCT session_id) AS sessions
+            FROM mcp_tool_calls
+            WHERE created_at >= NOW() - INTERVAL '30 days'
+            GROUP BY p
+            HAVING COUNT(DISTINCT session_id) >= 3 AND COUNT(*) >= 10
+            ORDER BY sessions DESC
+        """)
+        rows = cur.fetchall() or []
+        known = {str(k).lower() for k in AI_PLATFORMS.keys()}
+        for row in rows:
+            p = (row[0] or '').lower().strip()
+            calls, sessions = int(row[1] or 0), int(row[2] or 0)
+            if not p or len(p) < 3:
+                continue
+            if len(p) == 36 and p.count('-') == 4:            # UUID-shaped session leakage
+                continue
+            if any(m in p for m in _AUTO_ONBOARD_EXCLUDE):
+                continue
+            if p in known:
+                continue
+            try:
+                cur.execute("SELECT 1 FROM connected_ai_platforms WHERE LOWER(name) = %s LIMIT 1", (p,))
+                if cur.fetchone():
+                    continue
+            except Exception:
+                try: conn.rollback()
+                except Exception: pass
+            fit = min(100, 45 + sessions)                     # more distinct callers -> higher fit
+            card = (f"Auto-discovered from live MCP traffic: {sessions} distinct sessions / "
+                    f"{calls} calls in the last 30 days. Queued into the outreach loop.")
+            try:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS connected_ai_platforms (
+                        id SERIAL PRIMARY KEY, name TEXT NOT NULL, url TEXT, type TEXT,
+                        integration_card TEXT, fit_score INTEGER,
+                        status TEXT NOT NULL DEFAULT 'auto_approved', source TEXT,
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), UNIQUE(name))
+                """)
+                cur.execute("""
+                    INSERT INTO connected_ai_platforms
+                        (name, type, integration_card, fit_score, status, source)
+                    VALUES (%s, 'ai_platform', %s, %s, 'auto_discovered', 'auto_discovery')
+                    ON CONFLICT (name) DO NOTHING
+                """, (p.title(), card, fit))
+                conn.commit()
+            except Exception:
+                try: conn.rollback()
+                except Exception: pass
+                continue
+            try:
+                log_outreach(p, 'auto_discovered', message=f'{sessions} sessions / {calls} calls (30d) -> onboarded')
+            except Exception:
+                pass
+            newly.append({'platform': p, 'sessions': sessions, 'calls': calls, 'fit': fit})
+        if newly:
+            logger.info(f"   🌱 SELF-ONBOARDED {len(newly)} new platform(s): {[n['platform'] for n in newly]}")
+    except Exception as e:
+        logger.warning(f"discover_new_platforms failed: {e}")
+    finally:
+        try:
+            if conn:
+                conn.close()
+        except Exception:
+            pass
+    return newly
+
+
 def run_outreach_cycle():
     """Run a complete outreach cycle"""
     timestamp = datetime.now(timezone.utc).isoformat()
@@ -1226,7 +1318,13 @@ def run_outreach_cycle():
         logger.info(f"   🎉 ORGANIC TRAFFIC: {len(organic)} new requests!")
     else:
         logger.info(f"   ⏳ No organic traffic yet")
-    
+
+    # 2026-07-01: self-onboard any NEW platform with real MCP traffic that isn't
+    # rostered yet (the missing autonomy — see discover_new_platforms).
+    newly_onboarded = discover_new_platforms()
+    if newly_onboarded:
+        logger.info(f"   🌱 Self-onboarded {len(newly_onboarded)} platform(s) from live traffic")
+
     broadcast_results = broadcast_to_ai_platforms()
     successful_broadcasts = sum(1 for r in broadcast_results if r.get('success'))
     logger.info(f"   ✅ AI platform broadcasts: {successful_broadcasts}/{len(broadcast_results)}")
@@ -1239,6 +1337,7 @@ def run_outreach_cycle():
         'platforms_broadcast': broadcast_results,
         'platforms_notified': len(AI_PLATFORMS),
         'organic_traffic': organic,
+        'newly_onboarded': newly_onboarded,
         'summary': {
             'discovery': f'{successful_discovery}/{len(discovery_results)}',
             'directories': f'{successful_dirs}/{len(directory_results)}',
