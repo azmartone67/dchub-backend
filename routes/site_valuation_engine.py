@@ -111,6 +111,24 @@ _CCGT_HEAT_RATE_BTU_PER_KWH         = 6800     # avg modern CCGT
 _PEAKER_HEAT_RATE_BTU_PER_KWH       = 10500    # simple-cycle
 _GAS_PRICE_FALLBACK_USD_PER_MMBTU   = 3.50     # if EIA data missing
 
+# r-om (2026-06-30): the 3-scenario LCOE previously counted fuel/energy cost
+# ONLY. Real all-in $/MWh must also carry fixed O&M (staff, insurance, major
+# maintenance — paid per kW of nameplate regardless of dispatch) and variable
+# O&M (consumables/wear per MWh generated). Omitting them understated the
+# gas-BTM LCOE by ~$6-8/MWh (~$44 → ~$50-52). Grid delivery carries a smaller
+# but non-zero fixed O&M. Ranking (gas-BTM cheapest) is unchanged — this is a
+# realism/defensibility fix. All three are TUNABLE via the overrides dict.
+_CCGT_FIXED_OM_USD_PER_KW_YR        = 30       # $25-40/kW-yr typical CCGT
+_CCGT_VARIABLE_OM_USD_PER_MWH       = 3.0      # $2-4/MWh consumables/wear
+_GRID_FIXED_OM_USD_PER_KW_YR        = 5        # transmission/delivery fixed O&M
+
+# r-cf (2026-06-30): annual_mwh was mw × 8760 (a 100% capacity factor), which
+# is unrealistic — a dedicated BTM plant reserves ~5-10% for maintenance/reserve
+# downtime. A lower CF both trims fuel MWh AND shrinks the denominator that
+# amortizes capex, raising every scenario's levelized $/MWh. Applied uniformly
+# to annual_mwh so all three scenarios stay compared on the same delivered-MWh.
+_CAPACITY_FACTOR                     = 0.92    # ~92% avg availability; 0<cf<=1
+
 # NPV horizon + discount rate
 _NPV_HORIZON_YEARS                   = 10
 _DISCOUNT_RATE                       = 0.08    # standard infrastructure WACC
@@ -792,11 +810,21 @@ def _compute_scenarios(target_mw: int, dcpi: dict, gas: dict,
     test scenarios against their own LMP/discount/heat-rate beliefs:
       grid_lmp_usd_per_mwh   — replaces _GRID_AVG_LMP_USD_PER_MWH ($45)
       discount_rate          — replaces _DISCOUNT_RATE (0.08)
+
+    r-om / r-cf (2026-06-30) new all-in-LCOE overrides:
+      capacity_factor        — replaces _CAPACITY_FACTOR (0.92); clamped (0,1]
+      ccgt_fixed_om_usd_per_kw_yr    — replaces _CCGT_FIXED_OM_USD_PER_KW_YR
+      ccgt_variable_om_usd_per_mwh   — replaces _CCGT_VARIABLE_OM_USD_PER_MWH
+      grid_fixed_om_usd_per_kw_yr    — replaces _GRID_FIXED_OM_USD_PER_KW_YR
     """
     overrides = overrides or {}
     mw = max(1, int(target_mw))
     kw = mw * 1000
-    annual_mwh = mw * _HOURS_PER_YEAR
+    # r-cf — annual generation is nameplate throttled by capacity factor, not a
+    # 100% duty cycle. Clamp to (0,1] so a bad override can't zero the denominator.
+    capacity_factor = float(overrides.get("capacity_factor") or _CAPACITY_FACTOR)
+    capacity_factor = min(1.0, max(0.01, capacity_factor))
+    annual_mwh = mw * _HOURS_PER_YEAR * capacity_factor
 
     # v2.1 item 4 — substation capex from HIFLD proximity (with fallback)
     sub_capex = float(overrides.get("substation_capex_usd")
@@ -809,6 +837,13 @@ def _compute_scenarios(target_mw: int, dcpi: dict, gas: dict,
                      or _GRID_AVG_LMP_USD_PER_MWH)
     discount_rate = float(overrides.get("discount_rate")
                           or _DISCOUNT_RATE)
+    # r-om — fixed O&M ($/kW-yr, dispatch-independent) + variable O&M ($/MWh).
+    ccgt_fixed_om = float(overrides.get("ccgt_fixed_om_usd_per_kw_yr")
+                          or _CCGT_FIXED_OM_USD_PER_KW_YR)
+    ccgt_var_om = float(overrides.get("ccgt_variable_om_usd_per_mwh")
+                        or _CCGT_VARIABLE_OM_USD_PER_MWH)
+    grid_fixed_om = float(overrides.get("grid_fixed_om_usd_per_kw_yr")
+                          or _GRID_FIXED_OM_USD_PER_KW_YR)
     # v2.1 item 1 — utility-tariff override for gas $/MWh in opex calc.
     # If supplied, recomputes $/MWh = ($/MMBtu × heat_rate × annual_mwh).
     gas_mmbtu_override = overrides.get("gas_usd_mmbtu_override")
@@ -832,7 +867,9 @@ def _compute_scenarios(target_mw: int, dcpi: dict, gas: dict,
                 or (dcpi.get("time_to_power_months", 36)
                     if dcpi.get("available") else 36))
     grid_capex = kw * _CAPEX_GRID_INTERCONNECT_USD_PER_KW + sub_capex
-    grid_opex_yr = annual_mwh * grid_lmp
+    # r-om — LMP energy + delivery-side fixed O&M (no plant-side variable O&M;
+    # the LMP already embeds generation costs).
+    grid_opex_yr = annual_mwh * grid_lmp + kw * grid_fixed_om
     grid_npv = -(grid_capex + _npv([grid_opex_yr] * _NPV_HORIZON_YEARS,
                                     discount_rate))
     grid_levelized = abs(grid_npv) / discounted_mwh
@@ -840,7 +877,9 @@ def _compute_scenarios(target_mw: int, dcpi: dict, gas: dict,
     # ── Gas BTM (CCGT) ───────────────────────────────────────────
     btm_ttp = 14  # typical CCGT build + tap, faster than ISO queue
     btm_capex = kw * _CAPEX_GAS_CCGT_USD_PER_KW + _CAPEX_GAS_PIPELINE_TAP_USD
-    btm_opex_yr = annual_mwh * ccgt_dollars_per_mwh
+    # r-om — fuel + variable O&M (per generated MWh) + fixed O&M (per nameplate kW).
+    btm_opex_yr = (annual_mwh * (ccgt_dollars_per_mwh + ccgt_var_om)
+                   + kw * ccgt_fixed_om)
     btm_npv = -(btm_capex + _npv([btm_opex_yr] * _NPV_HORIZON_YEARS,
                                   discount_rate))
     btm_levelized = abs(btm_npv) / discounted_mwh
@@ -855,7 +894,11 @@ def _compute_scenarios(target_mw: int, dcpi: dict, gas: dict,
     # r-hybrid (2026-06-30): a 70/30 gas+grid blend pays for BOTH fuels — the
     # old formula fueled only 70% and subtracted a phantom 10%×LMP "sell credit"
     # with no offtake, artificially suppressing opex. Blend both costs.
-    hybrid_opex_yr = annual_mwh * (0.7 * ccgt_dollars_per_mwh + 0.3 * grid_lmp)
+    # r-om — energy blended 70/30; variable O&M only on the gas-generated share;
+    # fixed O&M split across the gas (70%) and grid (30%) nameplate fractions.
+    hybrid_opex_yr = (annual_mwh * (0.7 * (ccgt_dollars_per_mwh + ccgt_var_om)
+                                    + 0.3 * grid_lmp)
+                      + kw * (0.7 * ccgt_fixed_om + 0.3 * grid_fixed_om))
     hybrid_npv = -(hybrid_capex + _npv([hybrid_opex_yr] * _NPV_HORIZON_YEARS,
                                        discount_rate))
     hybrid_levelized = abs(hybrid_npv) / discounted_mwh
@@ -893,11 +936,24 @@ def _compute_scenarios(target_mw: int, dcpi: dict, gas: dict,
             "ccgt_gas_default":      gas.get("$/MWh_ccgt_avg", 25),
             "discount_rate":         round(discount_rate, 4),
             "discount_rate_default": _DISCOUNT_RATE,
+            # r-cf / r-om — all-in LCOE tunables (capacity factor + O&M)
+            "capacity_factor":              round(capacity_factor, 3),
+            "capacity_factor_default":      _CAPACITY_FACTOR,
+            "ccgt_fixed_om_usd_per_kw_yr":  round(ccgt_fixed_om, 2),
+            "ccgt_fixed_om_default":        _CCGT_FIXED_OM_USD_PER_KW_YR,
+            "ccgt_variable_om_usd_per_mwh": round(ccgt_var_om, 2),
+            "ccgt_variable_om_default":     _CCGT_VARIABLE_OM_USD_PER_MWH,
+            "grid_fixed_om_usd_per_kw_yr":  round(grid_fixed_om, 2),
+            "grid_fixed_om_default":        _GRID_FIXED_OM_USD_PER_KW_YR,
             "edited": any([
                 bool(overrides.get("grid_lmp_usd_per_mwh")),
                 bool(overrides.get("heat_rate_ccgt")),
                 bool(overrides.get("gas_usd_mmbtu_override")),
                 bool(overrides.get("discount_rate")),
+                bool(overrides.get("capacity_factor")),
+                bool(overrides.get("ccgt_fixed_om_usd_per_kw_yr")),
+                bool(overrides.get("ccgt_variable_om_usd_per_mwh")),
+                bool(overrides.get("grid_fixed_om_usd_per_kw_yr")),
             ]),
         },
     }
@@ -1489,6 +1545,10 @@ def site_value_methodology():
             "ccgt_heat_rate_btu_per_kwh":           _CCGT_HEAT_RATE_BTU_PER_KWH,
             "peaker_heat_rate_btu_per_kwh":         _PEAKER_HEAT_RATE_BTU_PER_KWH,
             "grid_avg_lmp_usd_per_mwh":             _GRID_AVG_LMP_USD_PER_MWH,
+            "ccgt_fixed_om_usd_per_kw_yr":          _CCGT_FIXED_OM_USD_PER_KW_YR,
+            "ccgt_variable_om_usd_per_mwh":         _CCGT_VARIABLE_OM_USD_PER_MWH,
+            "grid_fixed_om_usd_per_kw_yr":          _GRID_FIXED_OM_USD_PER_KW_YR,
+            "capacity_factor":                      _CAPACITY_FACTOR,
             "npv_discount_rate":                    _DISCOUNT_RATE,
             "npv_horizon_years":                    _NPV_HORIZON_YEARS,
             "value_per_mw_usd_base":                _VALUE_PER_MW_USD_BASE,
@@ -1579,6 +1639,27 @@ th { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spa
 .hidden { display: none; }
 .error { color: #dc2626; padding: 12px; background: rgba(220, 38, 38, 0.1); border-radius: 8px; }
 @media (max-width: 768px) { .scen-grid { grid-template-columns: 1fr; } h1 { font-size: 28px; } }
+.methcard { background: var(--panel); border: 1px solid var(--accent2); border-radius: 12px; padding: 20px 22px; margin: 24px 0; }
+.methcard h3 { font-size: 17px; }
+.methgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; }
+@media (max-width: 768px) { .methgrid { grid-template-columns: 1fr; } }
+.methh { font-size: 11px; font-weight: 700; color: var(--accent2); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 8px; }
+.methul { margin: 0; padding-left: 18px; font-size: 12.5px; line-height: 1.55; }
+.methul li { margin-bottom: 5px; }
+.printbtn { background: var(--accent); color: #000; border: 0; border-radius: 6px; padding: 8px 14px; font-size: 12px; font-weight: 700; cursor: pointer; font-family: inherit; }
+@media print {
+  @page { margin: 14mm; }
+  body { background: #fff !important; color: #111 !important; }
+  header, .header, nav, .nav, form, #valForm, .presets, .preset, .upgrade, .no-print,
+    #readiness-grid, .readiness-toggles, .adjust-panel { display: none !important; }
+  .hero .prov, .hero .loc { color: #111 !important; }
+  #results { display: block !important; }
+  .card, .section, .scen-card, .methcard, table { break-inside: avoid; page-break-inside: avoid;
+    background: #fff !important; color: #111 !important; border-color: #bbb !important; }
+  .methcard { border: 1.5px solid #333 !important; }
+  .num, .stat, h1, h3, h4, b { color: #111 !important; }
+  a { color: #111 !important; text-decoration: none; }
+}
 </style>
 </head>
 <body>
@@ -2077,6 +2158,50 @@ function renderResults(d) {
     });
     html += '</table>';
   }
+
+  // ── Indicative Valuation — Methodology & Caveats (client-readable + printable) ──
+  const _v = d.valuation || {}, _mc = d.market_context || {}, _in = d.input || {};
+  const _saturated = _v['$/mw_band_status'] === 'ceiling_saturated';
+  html += `
+    <div class="methcard" id="methcard">
+      <div style="display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap">
+        <h3 style="margin:0">Indicative Valuation — Methodology &amp; Caveats</h3>
+        <button onclick="window.print()" class="printbtn no-print">🖨 Print / Save PDF</button>
+      </div>
+      <p style="font-size:13px;color:var(--muted);margin:8px 0 12px">
+        This is a <b>model-based indicative valuation</b> for screening and negotiation — <b>not a certified (USPAP) appraisal</b>.
+        Use the <b>range</b>, not a single point.${_saturated ? ' The midpoint sits at a modeled ceiling — treat it as an upper anchor.' : ''}
+      </p>
+      <div style="font-size:24px;font-weight:700">${fmtM$(_v.site_value_usd_low)} – ${fmtM$(_v.site_value_usd_high)}</div>
+      <div style="font-size:12px;color:var(--muted);margin:2px 0 16px">midpoint ${fmtM$(_v.site_value_usd_mid)} · ±50% envelope · ${_in.target_mw || ''} MW · ${_mc.site_state || ''} · verdict ${(d.dcpi_context && d.dcpi_context.verdict) || ''} · best path: ${(typeof bestName !== 'undefined' ? bestName : '').replace(/_/g, ' ')}</div>
+      <div class="methgrid">
+        <div>
+          <div class="methh">Grounded in real data</div>
+          <ul class="methul">
+            <li>Site state + geography — FCC geocode (${_mc.site_state || ''})</li>
+            <li>Power cost — EIA per-state${_mc.power_cost_usd_mwh ? (' ($' + _mc.power_cost_usd_mwh + '/MWh, large-load)') : ''}</li>
+            <li>Gas — per-hub basis model</li>
+            <li>Market verdict — nearest DCPI market${_mc.miles_from_centroid ? (' (' + Math.round(_mc.miles_from_centroid) + ' mi)') : ''}</li>
+            <li>Tax incentive — state record</li>
+            <li>3-scenario NPV — exact discounted math</li>
+          </ul>
+        </div>
+        <div>
+          <div class="methh">Model assumptions — confirm before relying</div>
+          <ul class="methul">
+            <li><b>No land comps</b> — base $/MW is model-derived (DCPI demand), not comp-anchored.</li>
+            <li>The entitled ceiling ($1.2M/MW) is an <b>assumed cap</b> for zoned+permitted sites, not an observed price.</li>
+            <li>LCOE = energy + amortized capex at 100% CF; <b>excludes O&amp;M</b> (~$3–5/MWh) — an energy floor. CapEx is screening-grade.</li>
+            <li>Tax abatement uses the <b>state record</b> — confirm the parcel's actual term.</li>
+            <li>Land sufficiency assumes ${_in.stories || 1} building stor${(_in.stories || 1) == 1 ? 'y' : 'ies'}.</li>
+          </ul>
+        </div>
+      </div>
+      <p style="font-size:11.5px;color:var(--muted);margin:12px 0 0;border-top:1px solid var(--border);padding-top:10px">
+        <b>How to use:</b> a screening range + negotiating anchor. For a term-sheet number, corroborate with 1–2 broker/appraiser comparables.
+        &nbsp;·&nbsp; Source: DC Hub · Engine ${d.engine_version || 'v2.2'} · ${(d.as_of || '').slice(0, 10)} · DCPI, EIA, tax-incentives, deals (M&A context).
+      </p>
+    </div>`;
 
   if (d.upgrade_hint) {
     html += `<div class="upgrade">
