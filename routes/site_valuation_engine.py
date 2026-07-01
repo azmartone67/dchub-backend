@@ -963,18 +963,43 @@ def _compute_scenarios(target_mw: int, dcpi: dict, gas: dict,
     }
 
 
-def _pick_best_fit(scenarios: dict, dcpi: dict, deadline_months: int) -> dict:
+def _pick_best_fit(scenarios: dict, dcpi: dict, deadline_months: int,
+                    power_source: str = "auto", firm_grid: bool = False) -> dict:
     """Choose the best scenario based on:
       1. Lowest levelized $/MWh that meets deadline_months
       2. Tiebreak: NPV (less negative wins)
       3. If grid TTP > deadline → exclude grid_only
-      4. If DCPI verdict is AVOID → prefer BTM (don't trust grid)
+      4. If DCPI verdict is AVOID → prefer BTM (don't trust grid),
+         UNLESS the grid is FIRM (interconnect ready + near-term TTP) or the
+         caller explicitly asked to value on grid.
+
+    power_source: "auto" (default), "grid" (value on the actual grid, no on-site
+    gas assumed), or "gas" (force gas-BTM). A firm-grid site should not be
+    auto-wrapped in gas just because the market verdict is AVOID.
     """
     # v2.1b shipped a `_assumptions` metadata key inside scenarios dict.
     # Filter out anything starting with `_` so we only iterate real
     # scenarios — otherwise we KeyError on s["time_to_power_months"]
     # when the iterator hits the metadata entry.
     real_scenarios = {k: v for k, v in scenarios.items() if not k.startswith("_")}
+
+    # Explicit caller override — value on the requested power path.
+    if power_source == "grid" and "grid_only" in real_scenarios:
+        g = real_scenarios["grid_only"]
+        return {
+            "scenario":   "grid_only",
+            "rationale":  (f"Grid-based valuation (by request) — firm interconnect, "
+                            f"{g['time_to_power_months']:.0f}-mo to full power at "
+                            f"${g['levelized_usd_per_mwh']:.2f}/MWh; on-site gas not assumed."),
+        }
+    if power_source == "gas" and "gas_btm" in real_scenarios:
+        s = real_scenarios["gas_btm"]
+        return {
+            "scenario":   "gas_btm",
+            "rationale":  (f"Gas-BTM (by request) — ${s['levelized_usd_per_mwh']:.2f}/MWh, "
+                            f"{s['time_to_power_months']:.0f}-mo to power."),
+        }
+
     candidates = []
     for name, s in real_scenarios.items():
         if s["time_to_power_months"] > deadline_months:
@@ -991,7 +1016,12 @@ def _pick_best_fit(scenarios: dict, dcpi: dict, deadline_months: int) -> dict:
                             f"selected fastest ({best_s['time_to_power_months']:.0f} months). "
                             f"Consider extending deadline."),
         }
-    if dcpi.get("verdict") == "AVOID" and "gas_btm" in dict(candidates):
+    # A firm grid (interconnect ready + meets deadline) is trustworthy — don't
+    # force gas on it even in an AVOID market.
+    _g = dict(candidates).get("grid_only")
+    _grid_is_firm = bool(firm_grid and _g and _g["time_to_power_months"] <= deadline_months)
+    if (dcpi.get("verdict") == "AVOID" and "gas_btm" in dict(candidates)
+            and not _grid_is_firm):
         return {
             "scenario":   "gas_btm",
             "rationale":  (f"DCPI verdict AVOID + grid time-to-power "
@@ -1360,6 +1390,15 @@ def site_value():
     except (TypeError, ValueError):
         user_grid_ttp = None
 
+    # power_source: how to value the site's power path. "auto" (default) lets the
+    # engine pick lowest-cost/feasible; "grid" values on the actual firm grid
+    # (no on-site gas assumed); "gas" forces gas-BTM. A firm-grid site in an AVOID
+    # market should NOT be auto-wrapped in gas — that contradicts having the grid.
+    power_source = (payload.get("power_source") or "auto")
+    power_source = str(power_source).strip().lower()
+    if power_source not in ("auto", "grid", "gas"):
+        power_source = "auto"
+
     # Gather data
     slug, state, dist = _nearest_market(lat, lon)
     # r-sitestate: the nearest MARKET centroid can be 100+ mi off (Millville→NoVA),
@@ -1391,7 +1430,10 @@ def site_value():
     }
 
     scenarios = _compute_scenarios(target_mw, dcpi, gas, overrides=overrides)
-    best_fit = _pick_best_fit(scenarios, dcpi, deadline_months)
+    # firm grid = interconnect ready AND a user-stated near-term time-to-power
+    _firm_grid = bool(readiness.get("grid_interconnect_ready") and user_grid_ttp)
+    best_fit = _pick_best_fit(scenarios, dcpi, deadline_months,
+                              power_source=power_source, firm_grid=_firm_grid)
     valuation = _compute_valuation(target_mw, acres, dcpi, best_fit,
                                      scenarios, readiness=readiness,
                                      market_baseline=market_baseline,
@@ -1722,6 +1764,7 @@ th { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spa
     <label>Deadline (months)<br><input id="deadline_months" type="number" step="1" min="1" max="120" value="24"></label>
     <label>Building stories &nbsp;<span style="color:var(--accent2);font-size:11px">1 = single-story · 2-3 = AI hall</span><br><input id="stories" type="number" step="1" min="1" max="6" value="1"></label>
     <label>Firm power (months) &nbsp;<span style="color:var(--accent2);font-size:11px">months to firm/delivered MW · blank = market queue</span><br><input id="grid_ttp_months" type="number" step="1" min="0" max="120" placeholder="e.g. 12" inputmode="numeric"></label>
+    <label>Power basis &nbsp;<span style="color:var(--accent2);font-size:11px">how to value the power path</span><br><select id="power_source"><option value="auto">Auto (lowest-cost)</option><option value="grid">Grid only (no gas)</option><option value="gas">Gas-BTM</option></select></label>
     <label>CCGT heat rate (Btu/kWh) &nbsp;<span style="color:var(--accent2);font-size:11px">optional · default 6800</span><br><input id="heat_rate_ccgt" type="number" step="50" min="5500" max="12000" placeholder="6800"></label>
     <label>Utility gas tariff ($/MMBtu) &nbsp;<span style="color:var(--accent2);font-size:11px">optional · default = state avg</span><br><input id="utility_gas_usd_mmbtu" type="number" step="0.05" min="0" max="40" placeholder="3.50"></label>
     <label>API Key (PRO unlock)<br><input id="api_key" type="password" placeholder="dchub_..." autocomplete="off"></label>
@@ -1927,6 +1970,7 @@ document.getElementById('valForm').addEventListener('submit', async (e) => {
     deadline_months: parseInt(document.getElementById('deadline_months').value || 24),
     stories: parseInt(document.getElementById('stories').value || 1),
     grid_ttp_months: (function(){ const g = parseInt(document.getElementById('grid_ttp_months').value); return Number.isFinite(g) && g > 0 ? g : undefined; })(),
+    power_source: (document.getElementById('power_source') || {}).value || 'auto',
     readiness: readiness,
   };
   if (Number.isFinite(hr) && hr > 0)  body.heat_rate_ccgt        = hr;
