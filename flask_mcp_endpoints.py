@@ -888,6 +888,31 @@ def identify_key():
     """
     body = request.get_json(silent=True) or {}
     api_key = (str(body.get("api_key") or "")).strip()
+    # keystone / item-7 seam (2026-06-30): the MCP bind_email tool binds "the key
+    # already active on this session" and omits api_key from the BODY, but this
+    # endpoint only read body.api_key → agents got "Pass the api_key you claimed".
+    # Resolve the caller's key from the request when the body doesn't carry it:
+    # the X-API-Key header (the keystone binds the session's live key into ctx,
+    # forwarded here), else the key this Mcp-Session-Id is bound to
+    # (metadata.session_id — the keystone bind). Fail-soft.
+    if not api_key:
+        api_key = (request.headers.get("X-API-Key") or "").strip()
+    if not api_key:
+        _sid = (request.headers.get("X-MCP-Session") or "").strip()[:200]
+        if _sid:
+            try:
+                with _pool.connection() as _c, _c.cursor() as _cur:
+                    _cur.execute(
+                        """SELECT api_key FROM mcp_dev_keys
+                           WHERE metadata->>'session_id' = %s AND status = 'active'
+                             AND created_at > NOW() - INTERVAL '24 hours'
+                           ORDER BY created_at DESC LIMIT 1""",
+                        (_sid,))
+                    _r = _cur.fetchone()
+                    if _r and _r[0]:
+                        api_key = str(_r[0]).strip()
+            except Exception:
+                pass
     email = (str(body.get("email") or "")).strip().lower()
     # Phase 3 (2026-06-18) — explicit marketing opt-in. CONSENT-SAFE DEFAULT:
     # only an EXPLICIT boolean true (or the strings "true"/"1"/"yes") flips

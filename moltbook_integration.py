@@ -1365,7 +1365,6 @@ def agent_capabilities():
             "platform": "DC Hub",
             "version": "2.1",
             "agent_id": "b3a94f93-48a6-454b-807c-9d16f5cc99d1",
-            "moltbook_handle": "aqua-43Q7",
             "portal": "https://dchub.cloud/agent-portal"
         },
         "capabilities": [
