@@ -429,7 +429,12 @@ def _llm(system: str, user: str, max_tokens: int = 600) -> str | None:
 
 
 def _market_url(slug: str) -> str:
-    return f"https://dchub.cloud/dcpi/{slug}" if slug else "https://dchub.cloud"
+    # url-registry chokepoint (2026-06-30): route dcpi links through the registry
+    # instead of a raw f-string (test_no_raw_public_url_fstrings_in_emitters). Same
+    # output for a real slug (https://dchub.cloud/dcpi/<slug>); keep the bare-homepage
+    # fallback when there is no slug (the registry would substitute a placeholder).
+    from routes.url_registry import build_public_url
+    return build_public_url("dcpi", slug) if slug else "https://dchub.cloud"
 
 
 def _draft_reframe(external: dict, dcpi: dict) -> str | None:
