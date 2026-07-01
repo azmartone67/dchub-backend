@@ -6281,6 +6281,22 @@ def _inject_clarity(response):
             return response
         if getattr(response, 'direct_passthrough', False):
             return response
+        # SECURITY (2026-06-30): NEVER track admin/internal/transactional surfaces.
+        # Those URLs carry secrets/PII in the query string (?admin_key=…, and
+        # unsubscribe links carry ?email=/?token=) that Clarity would store + show
+        # in its UI, and session-replay would ship internal dashboards (brain, mcp,
+        # admin — PII history) to a third party. Clarity is for PUBLIC content
+        # surfaces (/facilities, /markets, /dcpi, /pricing, /ai, home) — none of
+        # which live under /api/. Skip when a secret/PII param is present OR the
+        # path is an API endpoint / admin / internal surface.
+        try:
+            if (any(request.args.get(_k) for _k in
+                    ('admin_key', 'token', 'email', 'key', 'secret'))
+                    or (request.path or '').startswith((
+                        '/api/', '/admin', '/brain', '/internal'))):
+                return response
+        except Exception:
+            pass
         html = response.get_data(as_text=True)
         if not html or '</head>' not in html:
             return response
