@@ -1262,6 +1262,8 @@ def track_tool_call():
         elif 'cline'      in ua: _r_platform = 'cline'
         elif 'windsurf'   in ua: _r_platform = 'windsurf'
         elif 'grok'       in ua: _r_platform = 'grok'
+        elif 'mistral'    in ua or 'le chat' in ua or 'lechat' in ua: _r_platform = 'mistral'
+        elif 'cohere'     in ua: _r_platform = 'cohere'
         elif 'curl' in ua or 'postman' in ua: _r_platform = 'curl'
         else: _r_platform = 'unknown-ua'
     if _client_was_uuid and _looks_generic(_r_client):

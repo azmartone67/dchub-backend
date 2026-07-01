@@ -6635,6 +6635,8 @@ MCP_PLATFORM_MAP = {
     'cursor': 'Cursor', 'copilot': 'Copilot',
     'windsurf': 'Windsurf', 'cline': 'Cline',
     'groq': 'Groq', 'deepseek': 'DeepSeek',
+    'mistral': 'Mistral', 'le chat': 'Mistral', 'lechat': 'Mistral',
+    'cohere': 'Cohere',
     'poe': 'Poe', 'youcom': 'You.com',
 }
 
