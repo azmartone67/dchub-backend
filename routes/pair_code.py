@@ -1090,6 +1090,15 @@ h1{{font-size:1.6rem;margin:0 0 8px;letter-spacing:-0.02em;font-weight:800}}
 .cta{{display:block;background:var(--gradient);color:#fff;text-decoration:none;text-align:center;padding:16px 24px;border-radius:10px;font-weight:700;font-size:1.05rem;letter-spacing:0.01em;transition:transform .1s ease}}
 .cta:hover{{transform:translateY(-1px)}}
 .cta-sub{{color:var(--tx2);font-size:0.82rem;text-align:center;margin-top:10px}}
+.free-hero{{background:rgba(16,185,129,0.07);border:1px solid rgba(16,185,129,0.30);border-radius:12px;padding:18px}}
+.free-hero label{{display:block;font-weight:800;color:#fff;font-size:1.05rem;margin-bottom:10px}}
+.free-row{{display:flex;gap:8px}}
+.free-row input{{flex:1;background:rgba(255,255,255,0.05);border:1px solid var(--bd);border-radius:8px;color:var(--tx);padding:12px 14px;font-size:0.95rem;font-family:inherit}}
+.cta-free{{background:var(--green);color:#04110b;border:none;border-radius:8px;padding:12px 22px;font-weight:800;cursor:pointer;font-size:0.95rem;white-space:nowrap;transition:filter .1s ease}}
+.cta-free:hover{{filter:brightness(1.06)}}
+.cta-secondary{{display:inline-block;background:rgba(255,255,255,0.04);border:1px solid var(--bd);color:var(--tx);text-decoration:none;text-align:center;padding:12px 22px;border-radius:9px;font-weight:600;font-size:0.95rem}}
+.cta-secondary:hover{{border-color:rgba(99,102,241,0.5)}}
+@media(max-width:480px){{.free-row{{flex-direction:column}}}}
 .alts{{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:18px}}
 @media(max-width:480px){{.alts{{grid-template-columns:1fr}}}}
 .alt{{padding:12px 14px;border:1px solid var(--bd);border-radius:8px;text-decoration:none;color:var(--tx);background:rgba(255,255,255,0.02);transition:.15s;display:block}}
@@ -1120,51 +1129,40 @@ h1{{font-size:1.6rem;margin:0 0 8px;letter-spacing:-0.02em;font-weight:800}}
     <div class="ctx-row"><span>Pair code:</span><b>{_h(code)}</b></div>
     <div class="ctx-row"><span>Trying to access:</span><b>{_h(pretty_tool)}</b></div>
     {market_line}
-    <div class="ctx-row"><span>Unlock:</span><b>$10 one-time · 1,000 calls</b></div>
+    <div class="ctx-row"><span>Unlock:</span><b>Free with email · or $10 one-time</b></div>
   </div>
 
-  <!-- The /api/v1/redeem/<code>/click proxy stamps stripe_clicked_at
-       server-side then 302s to Stripe. No beacon needed — the redirect
-       IS the response, so the DB stamp can't race the navigation. -->
-  <a href="/api/v1/redeem/{_h(code)}/click?plan=metered" class="cta" id="cta">
-    ⚡ Unlock now — $10 for 1,000 calls →
-  </a>
-  <div class="cta-sub">One-time · no subscription · instant access · secure Stripe checkout</div>
-  <div style="text-align:center;margin-top:10px">
-    <a href="/api/v1/redeem/{_h(code)}/click?plan=developer" style="color:var(--tx2);font-size:0.82rem;text-decoration:underline">Power user? Go unlimited — Developer $49/mo →</a>
-  </div>
-
-  <!-- Play 3 + Play 5 alternative paths -->
-  <div class="alts">
-    <a href="javascript:void(0)" class="alt" id="topup-link">
-      <b>💸 One-time top-up</b>
-      <span>50 extra calls for $5 · no subscription</span>
-    </a>
-    <a href="javascript:void(0)" class="alt" id="trial-toggle">
-      <b>🎯 Try 7 days free</b>
-      <span>Full Developer access · email magic link</span>
-    </a>
-  </div>
-
-  <div class="trial" id="trial-form" style="display:none">
-    <strong style="color:#fff;font-size:0.9rem">Get 7 days of full Developer access</strong>
-    <div style="font-size:0.78rem;color:var(--tx2);margin-top:4px">
-      No credit card. We'll send a one-click activation link.
-    </div>
-    <form id="trial-form-el" onsubmit="return submitTrial(event)">
-      <input type="text" name="website" style="display:none" tabindex="-1" autocomplete="off">
+  <!-- PRIMARY (2026-07-01): free email capture, promoted from a buried alt to
+       the hero. Cold agent-referred humans won't pull out a card for one
+       dataset, but they'll give an email — so lead with free, demote the
+       paywall. Posts to the existing /api/v1/trial/start magic-link flow. -->
+  <form id="trial-form-el" class="free-hero" onsubmit="return submitTrial(event)">
+    <input type="text" name="website" style="display:none" tabindex="-1" autocomplete="off">
+    <label>⚡ Get your agent working again — free</label>
+    <div class="free-row">
       <input type="email" id="trial-email" placeholder="you@company.com" required>
-      <button type="submit">Send link →</button>
-    </form>
+      <button type="submit" class="cta-free">Start free →</button>
+    </div>
+    <div class="cta-sub" style="text-align:left;margin-top:8px">No credit card · 7 days of full Developer access · one-click activation link to your inbox</div>
     <div class="msg" id="trial-msg"></div>
+  </form>
+
+  <!-- SECONDARY: pay-now options, demoted below the free CTA. The click proxy
+       stamps stripe_clicked_at server-side then 302s to Stripe. -->
+  <div style="text-align:center;margin-top:20px">
+    <div style="color:var(--tx2);font-size:0.8rem;margin-bottom:10px">Rather not share an email? Pay once, no account:</div>
+    <a href="/api/v1/redeem/{_h(code)}/click?plan=metered" class="cta-secondary" id="cta">$10 · 1,000 calls, one-time →</a>
+    <div style="margin-top:10px">
+      <a href="/api/v1/redeem/{_h(code)}/click?plan=developer" style="color:var(--tx2);font-size:0.82rem;text-decoration:underline">Power user? Go unlimited — Developer $49/mo →</a>
+    </div>
   </div>
 
   <hr class="divider">
   <div class="explainer">
     <strong style="color:#fff">How it works:</strong>
     <ol class="steps">
-      <li>Click <b>Unlock</b> above, complete Stripe checkout.</li>
-      <li>Your AI agent's API key (the one already in its config) gets promoted instantly.</li>
+      <li>Enter your email above for instant free access — or pay once, your call.</li>
+      <li>You get a key + activation link; your AI agent's access is promoted.</li>
       <li>Tell your agent "try again" — its next call returns the data it was blocked on.</li>
     </ol>
     <p style="margin-top:18px;font-size:0.82rem;color:var(--tx2)">
@@ -1178,21 +1176,8 @@ h1{{font-size:1.6rem;margin:0 0 8px;letter-spacing:-0.02em;font-weight:800}}
   </div>
 </div>
 <script>
-  // Top-up flow: generate a token for this api_key via API, then redirect
-  // to /topup/{{token}} which has the Stripe button.
-  document.getElementById('topup-link').addEventListener('click', async () => {{
-    try {{
-      // We don't have the api_key on the client. Best UX: route to /pricing#topup
-      // which has the top-up explainer + manual instructions for now.
-      window.location.href = '/pricing#topup';
-    }} catch (e) {{ /* silent */ }}
-  }});
-  // Trial form toggle
-  document.getElementById('trial-toggle').addEventListener('click', () => {{
-    const f = document.getElementById('trial-form');
-    f.style.display = f.style.display === 'none' ? 'block' : 'none';
-    document.getElementById('trial-email')?.focus();
-  }});
+  // 2026-07-01: the free-email form is now the always-visible hero (no toggle),
+  // and the top-up/trial alt-links were removed, so their listeners are gone.
   async function submitTrial(ev) {{
     ev.preventDefault();
     const email = document.getElementById('trial-email').value;
