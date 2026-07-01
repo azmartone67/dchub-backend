@@ -1410,9 +1410,9 @@ th { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spa
   </div>
 
   <form id="valForm">
-    <label>Lat &nbsp;<span style="color:var(--accent2);font-size:11px">[-90 → 90]</span><br><input id="lat" type="number" step="0.0001" min="-90" max="90" value="33.45" required></label>
-    <label>Lon &nbsp;<span style="color:var(--accent2);font-size:11px">[-180 → 180, W is negative]</span><br><input id="lon" type="number" step="0.0001" min="-180" max="180" value="-112.07" required></label>
-    <label>Acres &nbsp;<span style="color:var(--accent2);font-size:11px">> 0</span><br><input id="acres" type="number" step="0.1" min="0.1" value="50" required></label>
+    <label>Lat &nbsp;<span style="color:var(--accent2);font-size:11px">[-90 → 90]</span><br><input id="lat" type="number" step="any" min="-90" max="90" value="33.45" inputmode="decimal" required></label>
+    <label>Lon &nbsp;<span style="color:var(--accent2);font-size:11px">[-180 → 180, W is negative]</span><br><input id="lon" type="number" step="any" min="-180" max="180" value="-112.07" inputmode="decimal" required></label>
+    <label>Acres &nbsp;<span style="color:var(--accent2);font-size:11px">> 0</span><br><input id="acres" type="number" step="any" min="0.1" value="50" inputmode="decimal" required></label>
     <label>Target MW &nbsp;<span style="color:var(--accent2);font-size:11px">> 0</span><br><input id="target_mw" type="number" step="1" min="1" value="100" required></label>
     <label>Deadline (months)<br><input id="deadline_months" type="number" step="1" min="1" max="120" value="24"></label>
     <label>CCGT heat rate (Btu/kWh) &nbsp;<span style="color:var(--accent2);font-size:11px">optional · default 6800</span><br><input id="heat_rate_ccgt" type="number" step="50" min="5500" max="12000" placeholder="6800"></label>
@@ -1630,21 +1630,43 @@ document.getElementById('valForm').addEventListener('submit', async (e) => {
   const headers = { 'Content-Type': 'application/json' };
   if (apiKey) headers['X-API-Key'] = apiKey;
 
-  try {
-    const r = await fetch('/api/v1/site/value', {
-      method: 'POST', headers, body: JSON.stringify(body),
-    });
-    const d = await r.json();
-    if (!d.ok) {
-      showFieldError(`<b>${d.error || 'error'}:</b> ${d.hint || 'Unknown error'}`);
-      return;
+  // The valuation POST is a heavy idempotent calc; a cold/flapping backend can
+  // trip the edge failover 503 once, then succeed. Retry transient 5xx/network
+  // failures transparently (up to 3 attempts, backoff) instead of surfacing a
+  // scary 503 the user has to manually re-click.
+  const _btn = document.querySelector('button[form="valForm"][type="submit"]');
+  const _btnTxt = _btn ? _btn.textContent : '';
+  if (_btn) { _btn.disabled = true; _btn.textContent = 'Calculating…'; }
+  let d = null, lastErr = null;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const r = await fetch('/api/v1/site/value', {
+        method: 'POST', headers, body: JSON.stringify(body),
+      });
+      if (r.status >= 500 && attempt < 3) {   // transient origin/failover — retry
+        await new Promise(res => setTimeout(res, 800 * attempt));
+        continue;
+      }
+      d = await r.json();
+      break;
+    } catch (err) {
+      lastErr = err;
+      if (attempt >= 3) break;
+      await new Promise(res => setTimeout(res, 800 * attempt));
     }
-    document.getElementById('results').innerHTML = renderResults(d);
-    document.getElementById('results').classList.remove('hidden');
-    document.getElementById('results').scrollIntoView({behavior:'smooth', block:'start'});
-  } catch (err) {
-    showFieldError('<b>Request failed:</b> ' + err.message);
   }
+  if (_btn) { _btn.disabled = false; _btn.textContent = _btnTxt; }
+  if (!d) {
+    showFieldError('<b>Service busy.</b> The valuation engine was warming up — please click Calculate valuation again.');
+    return;
+  }
+  if (!d.ok) {
+    showFieldError(`<b>${d.error || 'error'}:</b> ${d.hint || 'Unknown error'}`);
+    return;
+  }
+  document.getElementById('results').innerHTML = renderResults(d);
+  document.getElementById('results').classList.remove('hidden');
+  document.getElementById('results').scrollIntoView({behavior:'smooth', block:'start'});
 });
 
 function fmt$(v) { return '$' + Math.round(v).toLocaleString(); }

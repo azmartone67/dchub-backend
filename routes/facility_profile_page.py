@@ -412,15 +412,29 @@ def _render_profile(fac: dict, slug: str) -> str:
     if _has(country):                  stats.append(("Country", country))
     if lat and lng:                    stats.append(("Coordinates", f"{float(lat):.4f}, {float(lng):.4f}"))
     if _has(address):                  stats.append(("Address", address))
-    stats_html = "".join(
-        f'<div class="stat-card"><div class="stat-label">{_esc(label)}</div>'
-        f'<div class="stat-value">{_esc(value)}</div></div>'
-        for label, value in stats
-    )
+    # r82 (2026-06-30): Clarity showed DEAD CLICKS on the metric tiles — they're
+    # styled like buttons but were plain <div>s. Make the tap-worthy ones real
+    # links (Market → its DCPI page, Coordinates → the map). Doubles as onward-nav
+    # (lifts the ~1.19 pages/session). _dcpi is fetched here (moved up) so the
+    # Market tile can point at the same guaranteed-resolving /dcpi/<slug>.
+    _dcpi = _market_dcpi(city, state)
+    _mslug0 = (_dcpi.get("market_slug") or "") if _dcpi else ""
+    _osm_href = (f"https://www.openstreetmap.org/?mlat={lat}&mlon={lng}#map=14/{lat}/{lng}"
+                 if (lat and lng) else "")
+
+    def _tile(label, value):
+        _in = (f'<div class="stat-label">{_esc(label)}</div>'
+               f'<div class="stat-value">{_esc(value)}</div>')
+        _href = (f"/dcpi/{_esc(_mslug0)}" if (label == "Market" and _mslug0)
+                 else _osm_href if (label == "Coordinates" and _osm_href) else "")
+        if _href:
+            _t = ' target="_blank" rel="noopener"' if _href.startswith("http") else ""
+            return f'<a class="stat-card stat-link" href="{_href}"{_t}>{_in}</a>'
+        return f'<div class="stat-card">{_in}</div>'
+    stats_html = "".join(_tile(label, value) for label, value in stats)
 
     # DCPI market-intelligence block (best-effort — this is an intelligence
     # platform, so a facility page should carry its market's DCPI verdict).
-    _dcpi = _market_dcpi(city, state)
     dcpi_html = ""
     _mkt_crumb = ""   # r81: facility→hub breadcrumb (completes the SEO mesh —
                       # r80 added hub→facility links; this is the return half)
@@ -434,8 +448,13 @@ def _render_profile(fac: dict, slug: str) -> str:
         if _dcpi.get("excess_power_score") is not None:   _chips.append(("Excess-power", _esc(_dcpi.get("excess_power_score"))))
         if _dcpi.get("constraint_score") is not None:     _chips.append(("Constraint", _esc(_dcpi.get("constraint_score"))))
         if _dcpi.get("time_to_power_months") is not None: _chips.append(("Time-to-power", f'{_esc(_dcpi.get("time_to_power_months"))} mo'))
+        # r82: chips + verdict pill were dead clicks (button-styled, no handler).
+        # Link them to the same guaranteed /dcpi/<slug> as the breakdown link.
+        _chip_open = (f'<a href="/dcpi/{_esc(_mslug)}" class="chip chip-link">'
+                      if _mslug else '<div class="chip">')
+        _chip_close = '</a>' if _mslug else '</div>'
         _chips_html = "".join(
-            f'<div class="chip"><span class="chip-l">{l}</span><span class="chip-v">{v}</span></div>'
+            f'{_chip_open}<span class="chip-l">{l}</span><span class="chip-v">{v}</span>{_chip_close}'
             for l, v in _chips)
         _dlink = f'<a href="/dcpi/{_esc(_mslug)}" class="link">Full DCPI breakdown &rarr;</a>' if _mslug else ""
         # /dcpi/<mslug> is guaranteed to resolve (same slug the DCPI page keys
@@ -443,10 +462,13 @@ def _render_profile(fac: dict, slug: str) -> str:
         # which uses inverse metro slugs (the slug-convention trap).
         if _mslug:
             _mkt_crumb = f'<a href="/dcpi/{_esc(_mslug)}">{_esc(_mname)}</a> · '
+        _verdict_pill = f'<span class="verdict" style="color:{_vcolor};border-color:{_vcolor}">{_esc(_verdict or "NEUTRAL")}</span>'
+        if _mslug:
+            _verdict_pill = f'<a href="/dcpi/{_esc(_mslug)}" class="verdict-link" title="Full DCPI breakdown">{_verdict_pill}</a>'
         dcpi_html = (
             '<div class="section"><div class="section-head">'
             '<h2>Market intelligence</h2>'
-            f'<span class="verdict" style="color:{_vcolor};border-color:{_vcolor}">{_esc(_verdict or "NEUTRAL")}</span>'
+            f'{_verdict_pill}'
             '</div>'
             f'<p class="section-sub">Data Center Power Index verdict for {_esc(_mname)} &mdash; the market this facility sits in.</p>'
             f'<div class="chips">{_chips_html}</div>{_dlink}</div>'
@@ -459,15 +481,22 @@ def _render_profile(fac: dict, slug: str) -> str:
     if lat and lng:
         # Cheap inline map preview via OpenStreetMap static tile
         bbox = f"{float(lng)-0.05},{float(lat)-0.04},{float(lng)+0.05},{float(lat)+0.04}"
+        # r82: the static map iframe (scrolling=no) ate every tap → dead click.
+        # Overlay a full-size transparent link so tapping the map opens OSM.
         map_block = f"""
         <div class="section">
           <div class="section-head"><h2>Location</h2></div>
-          <iframe width="100%" height="320" frameborder="0" scrolling="no" loading="lazy"
-            marginheight="0" marginwidth="0"
-            src="https://www.openstreetmap.org/export/embed.html?bbox={bbox}&layer=mapnik&marker={lat},{lng}"
-            style="border:1px solid var(--b);border-radius:12px;display:block;margin-top:8px"></iframe>
+          <div style="position:relative;margin-top:8px">
+            <iframe width="100%" height="320" frameborder="0" scrolling="no" loading="lazy"
+              marginheight="0" marginwidth="0" title="Facility location map"
+              src="https://www.openstreetmap.org/export/embed.html?bbox={bbox}&layer=mapnik&marker={lat},{lng}"
+              style="border:1px solid var(--b);border-radius:12px;display:block"></iframe>
+            <a href="{_osm_href}" target="_blank" rel="noopener"
+               aria-label="Open location in OpenStreetMap"
+               style="position:absolute;inset:0;z-index:2;border-radius:12px"></a>
+          </div>
           <p style="margin-top:10px">
-            <a href="https://www.openstreetmap.org/?mlat={lat}&amp;mlon={lng}#map=14/{lat}/{lng}"
+            <a href="{_osm_href}"
                target="_blank" class="link" style="margin-top:0">Open in OpenStreetMap &rarr;</a>
           </p>
         </div>
@@ -538,10 +567,17 @@ def _render_profile(fac: dict, slug: str) -> str:
   .container{{padding-top:4px;padding-bottom:64px}}
   .hero{{padding:34px 0 6px}}
   .hero h1{{font-size:34px;font-weight:700;letter-spacing:-.02em;margin-bottom:6px}}
-  .hero .prov{{color:var(--ind);font-size:16px;font-weight:500;margin-bottom:12px}}
+  .hero .prov{{color:var(--tx);font-size:16px;font-weight:500;margin-bottom:12px}}
   .hero .loc{{color:var(--mut);font-size:15px}}
+  .hero .loc .loc-link{{color:inherit;text-decoration:none;border-bottom:1px dotted var(--dim)}}
+  .hero .loc .loc-link:hover{{color:var(--ind);border-bottom-color:var(--ind)}}
   .stats-grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:14px;margin:24px 0}}
   .stat-card{{background:var(--surf);border:1px solid var(--b);border-radius:14px;padding:18px 20px}}
+  a.stat-card.stat-link{{text-decoration:none;color:inherit;cursor:pointer;transition:border-color .15s}}
+  a.stat-card.stat-link:hover{{border-color:var(--ind)}}
+  a.chip.chip-link{{display:block;text-decoration:none;color:inherit;cursor:pointer;transition:border-color .15s}}
+  a.chip.chip-link:hover{{border-color:var(--ind)}}
+  .verdict-link{{text-decoration:none}}
   .stat-label{{color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px;font-family:'JetBrains Mono',monospace}}
   .stat-value{{font-size:19px;font-weight:600;font-family:'JetBrains Mono',monospace;word-break:break-word}}
   .section{{background:var(--surf);border:1px solid var(--b);border-radius:16px;padding:24px;margin:18px 0}}
@@ -583,7 +619,7 @@ def _render_profile(fac: dict, slug: str) -> str:
     <div class="hero">
       <h1>{_esc(_disp)}</h1>
       {f'<div class="prov">{_esc(provider)}</div>' if (provider and provider.strip().lower() != name.strip().lower()) else ''}
-      <div class="loc">📍 {_esc(loc_short)}</div>
+      <div class="loc">📍 {f'<a href="/dcpi/{_esc(_mslug0)}" class="loc-link">{_esc(loc_short)}</a>' if _mslug0 else _esc(loc_short)}</div>
     </div>
 
     {narrative_html}
