@@ -160,6 +160,10 @@ _VALUE_PER_MW_CEIL_USD               = 800_000   # industry ceiling (methodology
 # ceiling. When both entitlement flags are set the ceiling lifts to this, so
 # zoning + permits show as real dollars instead of vanishing under the $800K cap.
 _VALUE_PER_MW_CEIL_ENTITLED_USD      = 1_200_000  # ceiling for zoned + permitted sites
+# r-powered (2026-06-30): FIRM near-term power (grid TTP <=18mo — delivered/near-
+# firm MW, not a multi-year queue) is the market's scarcest asset; powered PJM
+# land trades above just-entitled. Ceiling for an entitled site WITH firm power.
+_VALUE_PER_MW_CEIL_POWERED_USD       = 1_600_000  # ceiling for entitled + firm-powered sites
 
 # Site-readiness premium stack (multiplicative). A fully-shovel-ready
 # parcel (all 6 flags TRUE) gets a 3.35x premium over raw land:
@@ -1167,7 +1171,17 @@ def _compute_valuation(target_mw: int, acres: float, dcpi: dict,
     # ceiling — the de-risking (12-24 mo + entitlement cost) is real value that
     # would otherwise vanish under the $800K raw-land cap.
     _entitled = bool(readiness.get("zoning_approved") and readiness.get("permits_in_hand"))
-    per_mw_ceiling = _VALUE_PER_MW_CEIL_ENTITLED_USD if _entitled else _VALUE_PER_MW_CEIL_USD
+    # r-powered: firm near-term power (grid time-to-power <= 18 mo — delivered/
+    # near-firm MW, not a multi-year queue) on an entitled site lifts the ceiling
+    # again (powered land is the scarcest asset).
+    _grid_ttp = (scenarios.get("grid_only") or {}).get("time_to_power_months") or 99
+    _firm_powered = bool(_entitled and _grid_ttp <= 18)
+    if _firm_powered:
+        per_mw_ceiling = _VALUE_PER_MW_CEIL_POWERED_USD
+    elif _entitled:
+        per_mw_ceiling = _VALUE_PER_MW_CEIL_ENTITLED_USD
+    else:
+        per_mw_ceiling = _VALUE_PER_MW_CEIL_USD
     per_mw_mid = max(_VALUE_PER_MW_FLOOR_USD,
                      min(per_mw_ceiling, per_mw_uncapped))
     if per_mw_mid >= per_mw_ceiling - 1:
@@ -1203,13 +1217,19 @@ def _compute_valuation(target_mw: int, acres: float, dcpi: dict,
 
     entitlement = {
         "entitled":       _entitled,
+        "firm_powered":   _firm_powered,
+        "grid_ttp_months": _grid_ttp,
         "ceiling_used":   per_mw_ceiling,
         "raw_ceiling":    _VALUE_PER_MW_CEIL_USD,
         "lift_per_mw":    _entitlement_lift_per_mw,
         "lift_usd":       round(_entitlement_lift_per_mw * target_mw, 0),
-        "note": ("Zoned + permitted — entitlement removes ~12-24 mo and the "
-                 "entitlement cost/risk, so the site prices above the "
-                 f"${_VALUE_PER_MW_CEIL_USD:,.0f}/MW raw-land ceiling."
+        "note": ((f"Firm near-term power ({int(_grid_ttp)}-mo to target MW) + "
+                  "zoned & permitted — powered land is the scarcest asset; prices "
+                  f"to the ${_VALUE_PER_MW_CEIL_POWERED_USD:,.0f}/MW powered ceiling."
+                  if _firm_powered else
+                  "Zoned + permitted — entitlement removes ~12-24 mo and the "
+                  "entitlement cost/risk, so the site prices above the "
+                  f"${_VALUE_PER_MW_CEIL_USD:,.0f}/MW raw-land ceiling.")
                  if _entitled else
                  "Needs BOTH zoning approved AND permits in hand to price above "
                  f"the ${_VALUE_PER_MW_CEIL_USD:,.0f}/MW raw-land ceiling."),
@@ -1331,6 +1351,14 @@ def site_value():
     # v2.1b — new tunables surfaced in the "Adjust assumptions" panel
     user_grid_lmp       = payload.get("grid_lmp_usd_per_mwh")   # $/MWh
     user_discount_rate  = payload.get("discount_rate")          # 0.0-1.0
+    # r-powered: months until the site's target MW is firm/delivered. Overrides
+    # the DCPI/queue grid time-to-power — a POWERED site (firm near-term MW) is
+    # NOT a multi-year-queue site, and short TTP unlocks the powered-land ceiling.
+    try:
+        user_grid_ttp = payload.get("grid_ttp_months")
+        user_grid_ttp = int(user_grid_ttp) if user_grid_ttp not in (None, "", 0) else None
+    except (TypeError, ValueError):
+        user_grid_ttp = None
 
     # Gather data
     slug, state, dist = _nearest_market(lat, lon)
@@ -1350,8 +1378,9 @@ def site_value():
 
     overrides = {
         "substation_capex_usd":  sub_proximity.get("capex_usd"),
-        "live_queue_ttp_months": (live_queue.get("months_to_power")
-                                    if live_queue.get("available") else None),
+        "live_queue_ttp_months": (user_grid_ttp
+                                    or (live_queue.get("months_to_power")
+                                        if live_queue.get("available") else None)),
         "heat_rate_ccgt":        user_heat_rate_ccgt,  # item 5
         "gas_usd_mmbtu_override": user_gas_mmbtu,      # item 1
         # v2.1b — the two new user-tunable assumptions from the UI panel.
@@ -1692,6 +1721,7 @@ th { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spa
     <label>Target MW &nbsp;<span style="color:var(--accent2);font-size:11px">> 0</span><br><input id="target_mw" type="number" step="1" min="1" value="100" required></label>
     <label>Deadline (months)<br><input id="deadline_months" type="number" step="1" min="1" max="120" value="24"></label>
     <label>Building stories &nbsp;<span style="color:var(--accent2);font-size:11px">1 = single-story · 2-3 = AI hall</span><br><input id="stories" type="number" step="1" min="1" max="6" value="1"></label>
+    <label>Firm power (months) &nbsp;<span style="color:var(--accent2);font-size:11px">months to firm/delivered MW · blank = market queue</span><br><input id="grid_ttp_months" type="number" step="1" min="0" max="120" placeholder="e.g. 12" inputmode="numeric"></label>
     <label>CCGT heat rate (Btu/kWh) &nbsp;<span style="color:var(--accent2);font-size:11px">optional · default 6800</span><br><input id="heat_rate_ccgt" type="number" step="50" min="5500" max="12000" placeholder="6800"></label>
     <label>Utility gas tariff ($/MMBtu) &nbsp;<span style="color:var(--accent2);font-size:11px">optional · default = state avg</span><br><input id="utility_gas_usd_mmbtu" type="number" step="0.05" min="0" max="40" placeholder="3.50"></label>
     <label>API Key (PRO unlock)<br><input id="api_key" type="password" placeholder="dchub_..." autocomplete="off"></label>
@@ -1896,6 +1926,7 @@ document.getElementById('valForm').addEventListener('submit', async (e) => {
     lat, lon, acres, target_mw,
     deadline_months: parseInt(document.getElementById('deadline_months').value || 24),
     stories: parseInt(document.getElementById('stories').value || 1),
+    grid_ttp_months: (function(){ const g = parseInt(document.getElementById('grid_ttp_months').value); return Number.isFinite(g) && g > 0 ? g : undefined; })(),
     readiness: readiness,
   };
   if (Number.isFinite(hr) && hr > 0)  body.heat_rate_ccgt        = hr;
