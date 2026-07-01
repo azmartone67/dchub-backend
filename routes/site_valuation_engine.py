@@ -453,6 +453,65 @@ def _fetch_gas_economics(slug: str, state: str) -> dict:
         }
 
 
+# ── Power cost + tax abatement (real per-state operating economics) ───────
+_NATIONAL_IND_POWER_USD_MWH = 87.0   # EIA industrial median $/MWh (2026-04), refreshable
+
+
+def _fetch_power_cost_usd_mwh(state: str) -> dict:
+    """Per-state ALL-IN industrial power cost ($/MWh) from EIA
+    (eia_electricity_rates). r-power (2026-06-30): replaces the flat $45/MWh
+    'grid LMP' — which was wholesale-energy-only and sat BELOW every real state
+    ($59 cheapest) — with the delivered industrial rate a grid-powered load
+    actually pays (TX $63 · WA $70 · VA $99 · NJ $152 · CA $199). This is where
+    power cost belongs: the operating NPV, NOT the land base (premium markets
+    like NoVA have pricey power AND the highest land value). Falls back
+    COM -> ALL -> national median."""
+    try:
+        with _db_conn() as c:
+            cur = c.cursor()
+            for sector in ('IND', 'COM', 'ALL'):
+                cur.execute(
+                    "SELECT price_cents_kwh FROM eia_electricity_rates "
+                    " WHERE state=%s AND sector=%s AND price_cents_kwh>0 "
+                    " ORDER BY period DESC LIMIT 1", (state, sector))
+                r = cur.fetchone()
+                if r and r[0]:
+                    return {"usd_mwh": round(float(r[0]) * 10, 1),
+                            "sector": sector, "source": "eia_electricity_rates"}
+    except Exception:
+        pass
+    return {"usd_mwh": _NATIONAL_IND_POWER_USD_MWH,
+            "sector": "default", "source": "national_median"}
+
+
+def _fetch_tax_abatement(state: str) -> dict:
+    """Property-tax abatement value factor from tax_incentives_neon (50 states).
+    A DC-specific, long-duration abatement de-risks a decade+ of opex → a modest,
+    transferable site-value premium (capped +8%)."""
+    try:
+        with _db_conn() as c:
+            cur = c.cursor()
+            cur.execute(
+                "SELECT property_tax_abatement, COALESCE(duration_years,0), "
+                "       COALESCE(data_center_specific,false), COALESCE(max_benefit,'') "
+                "  FROM tax_incentives_neon WHERE state_abbr=%s LIMIT 1", (state,))
+            r = cur.fetchone()
+            if r and r[0]:
+                dur = int(r[1] or 0); dc = bool(r[2]); maxb = (r[3] or '')
+                pct = 0.03 + min(0.04, (dur / 20.0) * 0.04) + (0.02 if dc else 0.0)
+                pct = round(min(0.08, pct), 3)
+                return {"abatement": True, "factor": round(1 + pct, 3), "pct": pct,
+                        "duration_years": dur, "data_center_specific": dc,
+                        "max_benefit": maxb,
+                        "note": (f"{'Data-center-specific ' if dc else ''}property-tax "
+                                 f"abatement ({dur} yr{'s' if dur != 1 else ''}"
+                                 f"{', ' + maxb if maxb else ''}) — +{round(pct*100)}% site value.")}
+    except Exception:
+        pass
+    return {"abatement": False, "factor": 1.0, "pct": 0.0,
+            "note": "No property-tax abatement on record for this state."}
+
+
 # ── Comparable sales lookup ───────────────────────────────────────
 
 def _fetch_comparable_sales(slug: str, state: str, limit: int = 10) -> list:
@@ -906,7 +965,8 @@ def _compute_valuation(target_mw: int, acres: float, dcpi: dict,
                         best_fit: dict, scenarios: dict,
                         readiness: dict = None,
                         market_baseline: dict = None,
-                        stories: int = 1) -> dict:
+                        stories: int = 1,
+                        abatement: dict = None) -> dict:
     """Compute $-range valuation. v2.0 (2026-06-04) recalibrated to the
     user-supplied $150K-$800K/MW industry range. Uses:
       - $475K/MW baseline (midpoint of industry range)
@@ -1020,7 +1080,14 @@ def _compute_valuation(target_mw: int, acres: float, dcpi: dict,
     # marketable as industrial land.
     suff = _site_sufficiency(int(target_mw), float(acres), stories=stories)
     surplus_residual = float(suff.get("residual_land_value") or 0)
-    site_value_mid = per_mw_mid * target_mw + surplus_residual
+    # r-abate (2026-06-30): a property-tax abatement de-risks a decade+ of opex →
+    # a modest, transferable premium ON TOP of the $/MW × MW (post-clamp, so it's
+    # not eaten by the ceiling), surfaced as its own line.
+    _abate = abatement or {}
+    _abate_factor = float(_abate.get("factor") or 1.0)
+    _mw_value = per_mw_mid * target_mw
+    _abate_premium = round(_mw_value * (_abate_factor - 1.0), 0)
+    site_value_mid = _mw_value * _abate_factor + surplus_residual
 
     entitlement = {
         "entitled":       _entitled,
@@ -1046,6 +1113,12 @@ def _compute_valuation(target_mw: int, acres: float, dcpi: dict,
         "$/mw_band_ceiling":   per_mw_ceiling,
         "$/mw_band_status":    band_status,
         "entitlement":         entitlement,
+        "tax_abatement":       {
+            "applied":     bool(_abate.get("abatement")),
+            "factor":      _abate_factor,
+            "premium_usd": _abate_premium,
+            "note":        _abate.get("note", ""),
+        },
         # v2.2 — $/acre is INFORMATIONAL only (not summed into site_value_mid).
         # Data-center comps trade by the MW; land is implicit in $/MW.
         # Kept for context — these are the residual land values per acre,
@@ -1151,6 +1224,9 @@ def site_value():
     slug, state, dist = _nearest_market(lat, lon)
     dcpi = _fetch_dcpi(slug)
     gas = _fetch_gas_economics(slug, state)
+    # r-power / r-abate (2026-06-30): real per-state operating economics.
+    power = _fetch_power_cost_usd_mwh(state)
+    abatement = _fetch_tax_abatement(state)
 
     # v2.1 Phase 3 overrides — each falls back to v2.0 behavior silently
     sub_proximity = _fetch_nearest_substation(lat, lon)       # item 4
@@ -1163,8 +1239,10 @@ def site_value():
                                     if live_queue.get("available") else None),
         "heat_rate_ccgt":        user_heat_rate_ccgt,  # item 5
         "gas_usd_mmbtu_override": user_gas_mmbtu,      # item 1
-        # v2.1b — the two new user-tunable assumptions from the UI panel
-        "grid_lmp_usd_per_mwh":  user_grid_lmp,
+        # v2.1b — the two new user-tunable assumptions from the UI panel.
+        # grid power cost defaults to the REAL per-state industrial rate (was a
+        # flat $45); the user panel still overrides it.
+        "grid_lmp_usd_per_mwh":  user_grid_lmp or power.get("usd_mwh"),
         "discount_rate":         user_discount_rate,
     }
 
@@ -1173,7 +1251,7 @@ def site_value():
     valuation = _compute_valuation(target_mw, acres, dcpi, best_fit,
                                      scenarios, readiness=readiness,
                                      market_baseline=market_baseline,
-                                     stories=stories)
+                                     stories=stories, abatement=abatement)
     comps = _fetch_comparable_sales(slug, state)
 
     base = {
@@ -1195,6 +1273,8 @@ def site_value():
             "nearest_market_slug":  slug,
             "nearest_market_state": state,
             "miles_from_centroid":  round(dist, 1),
+            "power_cost_usd_mwh":   power.get("usd_mwh"),
+            "power_cost_source":    f"{power.get('sector')} · {power.get('source')}",
         },
         "dcpi_context":   {
             "verdict":              dcpi.get("verdict"),
@@ -1802,6 +1882,13 @@ function renderResults(d) {
     } else if (ent.entitled) {
       bandNote += `<div style="margin-top:8px;font-size:11px;color:#10b981;opacity:0.85">✓ Zoned + permitted — entitlement is already priced into the $/MW (site sits below the raw-land ceiling, no lift needed).</div>`;
     }
+    // Tax-abatement premium (property-tax abatement de-risks opex)
+    const ta = d.valuation.tax_abatement || {};
+    if (ta.applied && (ta.premium_usd || 0) > 0) {
+      bandNote += `<div style="margin-top:8px;background:rgba(14,165,233,0.10);border:1px solid #0ea5e9;border-radius:6px;padding:8px 10px;font-size:12px;color:#0ea5e9">
+        <b>Tax-abatement premium: +${fmtM$(ta.premium_usd)}</b> — ${ta.note}
+      </div>`;
+    }
     // v2.2 — site sufficiency block + MW-only breakdown
     const bd = d.valuation.site_value_breakdown || {};
     const suff = d.valuation.site_sufficiency || {};
@@ -1871,7 +1958,7 @@ function renderResults(d) {
     if (a && typeof a.grid_lmp_usd_per_mwh !== 'undefined') {
       html += `<div style="margin:6px 0 14px;font-size:12px;color:var(--muted);display:flex;flex-wrap:wrap;align-items:center;gap:0">
         <span style="margin-right:8px">Assumptions used:</span>
-        ${editChip('Grid LMP',     a.grid_lmp_usd_per_mwh, a.grid_lmp_default, '/MWh')}
+        ${editChip('Grid power',   a.grid_lmp_usd_per_mwh, a.grid_lmp_default, '/MWh')}${(d.market_context && d.market_context.power_cost_usd_mwh) ? `<span style="color:var(--muted);font-size:10px;margin-right:8px">(${d.market_context.nearest_market_state} industrial rate, EIA)</span>` : ''}
         ${editChip('CCGT gas',     a.ccgt_gas_usd_per_mwh, a.ccgt_gas_default, '/MWh')}
         ${editChip('CCGT heat',    a.ccgt_heat_rate,       a.ccgt_heat_rate_default, ' Btu/kWh')}
         ${editChip('Discount',     (a.discount_rate*100).toFixed(2), (a.discount_rate_default*100).toFixed(2), '%')}
