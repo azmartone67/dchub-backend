@@ -512,6 +512,28 @@ def _fetch_tax_abatement(state: str) -> dict:
             "note": "No property-tax abatement on record for this state."}
 
 
+def _site_state(lat: float, lon: float, fallback: str) -> tuple:
+    """Resolve the site's ACTUAL state from lat/lon via the free FCC Area API.
+    r-sitestate (2026-06-30): _nearest_market returns the nearest of ~30 hand-
+    seeded market centroids + ITS state, which can be 100+ mi off (Millville NJ
+    resolved to NoVA/VA). Power cost + tax abatement are STATE-keyed, so use the
+    real site state. Fail-soft: 3s timeout → fall back to the nearest-market
+    state so a geocode hiccup never breaks (or slows) the valuation."""
+    try:
+        import requests
+        r = requests.get("https://geo.fcc.gov/api/census/area",
+                         params={"lat": lat, "lon": lon, "format": "json"},
+                         timeout=3)
+        if r.status_code == 200:
+            for res in (r.json().get("results") or []):
+                st = res.get("state_code")
+                if st:
+                    return st, "fcc_geocode"
+    except Exception:
+        pass
+    return fallback, "nearest_market_fallback"
+
+
 # ── Comparable sales lookup ───────────────────────────────────────
 
 def _fetch_comparable_sales(slug: str, state: str, limit: int = 10) -> list:
@@ -1222,11 +1244,14 @@ def site_value():
 
     # Gather data
     slug, state, dist = _nearest_market(lat, lon)
+    # r-sitestate: the nearest MARKET centroid can be 100+ mi off (Millville→NoVA),
+    # so resolve the site's ACTUAL state for the STATE-keyed factors below.
+    site_state, site_state_src = _site_state(lat, lon, state)
     dcpi = _fetch_dcpi(slug)
-    gas = _fetch_gas_economics(slug, state)
+    gas = _fetch_gas_economics(slug, site_state)
     # r-power / r-abate (2026-06-30): real per-state operating economics.
-    power = _fetch_power_cost_usd_mwh(state)
-    abatement = _fetch_tax_abatement(state)
+    power = _fetch_power_cost_usd_mwh(site_state)
+    abatement = _fetch_tax_abatement(site_state)
 
     # v2.1 Phase 3 overrides — each falls back to v2.0 behavior silently
     sub_proximity = _fetch_nearest_substation(lat, lon)       # item 4
@@ -1273,6 +1298,8 @@ def site_value():
             "nearest_market_slug":  slug,
             "nearest_market_state": state,
             "miles_from_centroid":  round(dist, 1),
+            "site_state":           site_state,
+            "site_state_source":    site_state_src,
             "power_cost_usd_mwh":   power.get("usd_mwh"),
             "power_cost_source":    f"{power.get('sector')} · {power.get('source')}",
         },
