@@ -81,7 +81,13 @@ ADMIN_KEY = os.environ.get('DCHUB_ADMIN_KEY', '')
 def _get_conn():
     import psycopg2
     db_url = os.environ.get('NEON_DATABASE_URL', '') or os.environ.get('DATABASE_URL', '')
-    return psycopg2.connect(db_url, connect_timeout=10)
+    _c = psycopg2.connect(db_url, connect_timeout=10)
+    try:
+        from db_utils import cap_lock_wait
+        cap_lock_wait(_c)   # boot-DDL fail-fast on lock contention
+    except Exception:
+        pass
+    return _c
 
 
 def _execute(sql, params=None, fetch=False, fetchall=False):

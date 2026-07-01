@@ -164,7 +164,13 @@ def _conn():
     db_url = os.environ.get("NEON_DATABASE_URL", "") or os.environ.get("DATABASE_URL", "")
     if not db_url:
         raise RuntimeError("no NEON_DATABASE_URL / DATABASE_URL in env")
-    return psycopg2.connect(db_url, connect_timeout=10)
+    _c = psycopg2.connect(db_url, connect_timeout=10)
+    try:
+        from db_utils import cap_lock_wait
+        cap_lock_wait(_c)   # boot-DDL fail-fast on lock contention
+    except Exception:
+        pass
+    return _c
 
 
 def reconcile_schema(force: bool = False):

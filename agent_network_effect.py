@@ -32,7 +32,7 @@ _PLATFORM_DISPLAY = {
     "gemini": "Gemini", "copilot": "Copilot", "perplexity": "Perplexity",
     "grok": "Grok", "deepseek": "DeepSeek", "cursor": "Cursor",
     "cline": "Cline", "windsurf": "Windsurf", "meta": "Meta AI",
-    "mistral": "Mistral", "cohere": "Cohere",
+    "mistral": "Mistral", "cohere": "Cohere", "opencode": "OpenCode",
 }
 
 _UUID_RE_STR = (r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-"
@@ -69,7 +69,7 @@ _KNOWN_AI_TOKENS = (
     "claude", "anthropic", "chatgpt", "openai", "gpt", "gemini", "bard",
     "copilot", "perplexity", "grok", "deepseek", "cursor", "cline",
     "windsurf", "mistral", "cohere", "llama", "meta", "nvidia", "groq",
-    "huggingface", "phind", "you.com", "poe", "replit",
+    "huggingface", "phind", "you.com", "poe", "replit", "opencode",
 )
 def _is_recognized_platform(p):
     if not p:
