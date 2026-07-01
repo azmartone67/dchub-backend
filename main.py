@@ -6647,6 +6647,10 @@ MCP_PLATFORM_MAP = {
     'mistral': 'Mistral', 'le chat': 'Mistral', 'lechat': 'Mistral',
     'cohere': 'Cohere',
     'poe': 'Poe', 'youcom': 'You.com',
+    # 2026-07-01 onboarding round: attribute HuggingFace + base44 agent traffic
+    # (Mistral/You.com already mapped above). Grok/Meta-style: roster + attribute.
+    'huggingface': 'Hugging Face', 'hf': 'Hugging Face', 'hugging face': 'Hugging Face',
+    'base44': 'base44',
 }
 
 # Session-to-platform cache: maps MCP session IDs to detected platforms

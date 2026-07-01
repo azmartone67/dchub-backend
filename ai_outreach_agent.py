@@ -318,6 +318,37 @@ AI_PLATFORMS = {
             'https://www.meta.ai/robots.txt',
         ]
     },
+    # 2026-07-01 onboarding round — wire Mistral / Hugging Face / base44 into the
+    # outreach + GEO-target loop the same way Grok/Meta/You.com were onboarded
+    # (You.com already above). Each entry targets the platform's crawl surface +
+    # points its agents at a DC Hub discovery hint; the outreach cron does the rest.
+    'mistral': {
+        'name': 'Mistral (Le Chat)',
+        'discovery_hint': f'{BASE_URL}/llms-full.txt',
+        'pitch': 'DC Hub is an MCP connector for Le Chat — query 21,000+ facilities, 300+ markets & live ISO grids at dchub.cloud/mcp (free, no key).',
+        'crawl_endpoints': [
+            'https://chat.mistral.ai/robots.txt',
+            'https://mistral.ai/robots.txt',
+        ]
+    },
+    'huggingface': {
+        'name': 'Hugging Face',
+        'discovery_hint': f'{BASE_URL}/llms-full.txt',
+        'pitch': 'DC Hub live on Hugging Face — MCP server (dchub.cloud/mcp) + a Space demo for data-center, power & grid intelligence.',
+        'agent_url': 'https://huggingface.co/spaces/dchubcloud/dchub',
+        'crawl_endpoints': [
+            'https://huggingface.co/robots.txt',
+        ]
+    },
+    'base44': {
+        'name': 'base44',
+        'discovery_hint': f'{BASE_URL}/openapi.json',
+        'pitch': 'DC Hub is a ready tool/API for base44 agents — 53 MCP tools + OpenAPI over 21,000+ facilities at dchub.cloud/mcp.',
+        'crawl_endpoints': [
+            'https://base44.com/robots.txt',
+            'https://app.base44.com/robots.txt',
+        ]
+    },
 }
 
 
