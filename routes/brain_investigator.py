@@ -826,10 +826,15 @@ def investigate(question: str, *, depth: str = "default") -> dict:
     evidence_block = _evidence_block(evidence)
 
     # ── Step 1: DECOMPOSE ────────────────────────────────────────────
+    # 2026-07-01: caps raised 700/1500 → 2000/4000. On fable-5 (reasoning tier
+    # since the r85j auto-promote) thinking tokens count toward max_tokens, so
+    # the old caps hit stop_reason=max_tokens mid-JSON → unparseable → every
+    # investigation died with model_returned_no_recommendation. Same lesson as
+    # brain_v2_layer4's "4000, not 800".
     dtext, derr, dmodel = _call_model(
         _DECOMPOSE_SYSTEM,
         f"Operator question: {question}\n\nDecompose it.",
-        tier="reasoning", max_tokens=700,
+        tier="reasoning", max_tokens=2000,
     )
     if derr:
         base["cannot_investigate"] = derr
@@ -851,7 +856,7 @@ def investigate(question: str, *, depth: str = "default") -> dict:
         f"Reason from the evidence to a draft recommendation."
     )
     rtext, rerr, rmodel = _call_model(
-        _REASON_SYSTEM, reason_prompt, tier="reasoning", max_tokens=1500)
+        _REASON_SYSTEM, reason_prompt, tier="reasoning", max_tokens=4000)
     if rerr:
         base["cannot_investigate"] = rerr
         return base
@@ -878,7 +883,7 @@ def investigate(question: str, *, depth: str = "default") -> dict:
     # and a tight cap truncates the JSON mid-object → unparseable → a refutation
     # that silently contributes nothing while still claiming it ran.
     ftext, ferr, fmodel = _call_model(
-        _REFUTE_SYSTEM, refute_prompt, tier="challenger", max_tokens=1800)
+        _REFUTE_SYSTEM, refute_prompt, tier="challenger", max_tokens=4000)
     # 2026-06-20: the adversarial pass IS the brain's trust signal — a confidence
     # that never got refuted (survived=null) is worth far less than one that did.
     # A TRANSIENT failure (read timeout) was silently leaving recommendations
@@ -888,7 +893,7 @@ def investigate(question: str, *, depth: str = "default") -> dict:
     # state + the confidence dock below.
     if ferr:
         ftext, ferr, fmodel = _call_model(
-            _REFUTE_SYSTEM, refute_prompt, tier="challenger", max_tokens=1800)
+            _REFUTE_SYSTEM, refute_prompt, tier="challenger", max_tokens=4000)
     refutation = {"attempted": True, "weaknesses_found": [], "survived": None}
     if ferr:
         # The refutation pass failed — be HONEST about it (don't pretend the

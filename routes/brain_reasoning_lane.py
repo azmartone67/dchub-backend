@@ -225,7 +225,9 @@ def _structured_action(finding: dict) -> dict:
     )
     try:
         text, err, model = _call_model(
-            _LANE_SYSTEM, prompt, tier="reasoning", max_tokens=700)
+            # 2026-07-01: 700 → 2500 — fable-5 (reasoning tier) spends thinking
+            # tokens inside max_tokens; 700 truncated the JSON mid-object.
+            _LANE_SYSTEM, prompt, tier="reasoning", max_tokens=2500)
     except Exception as e:
         out["error"] = f"call_fail:{type(e).__name__}"
         return out
