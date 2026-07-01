@@ -23366,7 +23366,31 @@ def serve_sitemap_xml():
     # ---- Facility pages (from DB) ----
     # URL format: /facilities/{provider-slug}-{name-slug}-{hash8}
     # Matches frontend: /facilities/databank-ltd-databank-minneapolis-msp1-8c8fb870
+    #
+    # r-sitemap-coverage (2026-06-30): FIX ~21% coverage. The /facilities/<slug>
+    # hash8 = MD5(provider|name)[:8], and the resolver (facility_by_slug +
+    # facility_page) matches that hash with LIMIT 1. So EVERY facility that
+    # shares a (provider, name) pair collapses to ONE slug + ONE resolvable
+    # page. With ~21.8k rows collapsing to ~4.6k unique (provider|name) pairs,
+    # ~17k facilities were silently DROPPED from the sitemap (Google never saw
+    # them). We can't hand those losers a second /facilities/<slug> URL — it
+    # would resolve to the SAME page (the self-canonical dupes the CF worker
+    # retired sitemap-facilities.xml over). Instead give each collision-loser
+    # its UNIQUE, self-canonical /facility/<id> page (integer id, resolved 1:1
+    # by CAST(id AS TEXT)=%s in routes.seo_pages.facility_page; verified live
+    # 200 with X-DC-Page-Source: seo-facility + its own <link rel=canonical>
+    # /facility/<id>). Winners keep their /facilities/<slug> URL unchanged.
+    # Net: coverage ~4.6k -> ~21.8k with ZERO new duplicate-content URLs.
+    #
+    # Safety: a sitemap file caps at 50,000 URLs / 50MB. Total here is ~21.8k
+    # facility URLs + ~5.6k other URLs (~27k) — comfortably under 50k, so a
+    # single file is still valid (no sharding needed yet). Guard with a hard
+    # cap anyway so a data blow-up can never emit an oversized/invalid sitemap;
+    # if the eligible count ever pushes the total past the cap, shard into a
+    # sitemap index (see risks in the PR notes).
+    _SITEMAP_MAX_URLS = 49000  # keep headroom below the 50,000 hard limit
     seen_slugs = set()
+    _fallback_id_urls = []  # collision-losers routed to unique /facility/<id>
     for row in fac_rows:
         name = row[0] if row[0] else ''
         provider = row[1] if row[1] else ''
@@ -23399,6 +23423,18 @@ def serve_sitemap_xml():
         if full_slug not in seen_slugs:
             seen_slugs.add(full_slug)
             urls.append(f'  <url><loc>https://dchub.cloud/facilities/{full_slug}</loc><lastmod>{_lm}</lastmod><changefreq>monthly</changefreq><priority>0.5</priority></url>')
+        elif fac_id:
+            # Slug already claimed by another facility with the same
+            # provider|name — this one would be invisible under the slug URL.
+            # Emit its unique self-canonical /facility/<id> page instead.
+            _fallback_id_urls.append(f'  <url><loc>https://dchub.cloud/facility/{fac_id}</loc><lastmod>{_lm}</lastmod><changefreq>monthly</changefreq><priority>0.4</priority></url>')
+
+    # Append the id-fallback URLs, respecting the per-file URL cap so the
+    # sitemap stays valid even if the facility table grows unexpectedly large.
+    if _fallback_id_urls:
+        _room = _SITEMAP_MAX_URLS - len(urls)
+        if _room > 0:
+            urls.extend(_fallback_id_urls[:_room])
 
     # ---- Facilities hub (2026-06-29) — countries index + per-country lists ----
     # The geography hub (facilities_hub.py) that un-orphans the /facilities/<slug>
