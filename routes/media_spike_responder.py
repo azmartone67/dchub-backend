@@ -114,7 +114,15 @@ def _db_conn():
         import psycopg2
         url = (os.environ.get("DATABASE_URL")
                or os.environ.get("NEON_DATABASE_URL"))
-        return psycopg2.connect(url, connect_timeout=5) if url else None
+        if not url:
+            return None
+        _c = psycopg2.connect(url, connect_timeout=5)
+        try:
+            from db_utils import cap_lock_wait
+            cap_lock_wait(_c)   # boot-DDL fail-fast on lock contention
+        except Exception:
+            pass
+        return _c
     except Exception:
         return None
 

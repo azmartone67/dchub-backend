@@ -269,6 +269,11 @@ def _get_pg():
     # New connection
     conn = psycopg2.connect(DATABASE_URL, connect_timeout=5)
     conn.autocommit = False
+    try:
+        from db_utils import cap_lock_wait
+        cap_lock_wait(conn)   # boot-DDL fail-fast on lock contention
+    except Exception:
+        pass
     _pg_local.conn = conn
     return conn
 

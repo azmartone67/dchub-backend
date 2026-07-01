@@ -335,6 +335,30 @@ class PGConnectionWrapper:
         pass
 
 
+def cap_lock_wait(conn, ms=3000):
+    """Cap how long a connection WAITS for a lock (Postgres SET lock_timeout) so
+    boot-time schema migrations FAIL FAST under contention — e.g. the still-serving
+    old replica holds table locks during a deploy — instead of hanging until
+    statement_timeout (~15s) per ALTER and blowing the 5-min healthcheck window (the
+    2026-07-01 failed deploy). Session-level + isolated to THIS raw migration
+    connection (NOT the pooled runtime path), so runtime/brain/bulk-load lock
+    behavior is unchanged. Idempotent, never raises. Returns conn."""
+    try:
+        c = conn.cursor()
+        c.execute(f"SET lock_timeout = '{int(ms)}ms'")
+        try:
+            conn.commit()
+        except Exception:
+            pass
+        c.close()
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+    return conn
+
+
 def _get_pg_connection():
     try:
         from main import get_pg_connection, return_pg_connection

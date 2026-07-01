@@ -49,6 +49,11 @@ def _get_db(retries=3):
             # auto-publish loops reference row['id'], row['content'])
             conn = psycopg2.connect(neon_url, connect_timeout=10,
                                     cursor_factory=psycopg2.extras.RealDictCursor)
+            try:
+                from db_utils import cap_lock_wait
+                cap_lock_wait(conn)   # boot-DDL fail-fast on lock contention
+            except Exception:
+                pass
             return conn
         except Exception as e:
             logger.warning(f"Neon connect failed, falling back to sqlite: {e}")

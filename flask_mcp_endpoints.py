@@ -3031,7 +3031,7 @@ _LP_KNOWN_AI_TOKENS = (
     "claude", "anthropic", "chatgpt", "openai", "gpt", "gemini", "bard",
     "copilot", "perplexity", "grok", "deepseek", "cursor", "cline",
     "windsurf", "mistral", "cohere", "llama", "meta", "nvidia", "groq",
-    "huggingface", "phind", "you.com", "poe", "replit",
+    "huggingface", "phind", "you.com", "poe", "replit", "opencode",
 )
 def _lp_is_recognized(p):
     if not p:
