@@ -413,32 +413,34 @@ def _fetch_dcpi(slug: str) -> dict:
 def _fetch_gas_economics(slug: str, state: str) -> dict:
     """Use the existing powered_land_gas helpers to derive gas $/MMBtu
     and $/MWh for the slug. Falls back to representative values."""
+    # r-gasfix (2026-06-30): the old import names (_HUB_FOR_STATE,
+    # _HUB_DEFINITIONS, _fetch_gas_price_basis) NEVER existed in
+    # powered_land_gas — the ImportError was swallowed by the except below, so
+    # EVERY market silently fell back to a flat $3.50/MMBtu. Use the real hub
+    # model: Henry Hub seed + the hub's basis differential (Waha discount,
+    # Algonquin premium, …). Pure in-memory maps — instant, per-hub, no live EIA
+    # call in the valuation hot path (keeps the POST fast; a live-EIA refresh of
+    # the HH seed belongs on the gas endpoint / a cron, not here).
     try:
         from routes.powered_land_gas import (
-            _HUB_FOR_STATE, _HUB_DEFINITIONS,
-            _fetch_gas_price_basis,
+            _STATE_TO_HUB, _MARKET_HUB_OVERRIDE, _HUB_NAME,
+            SYNTHETIC_HENRY_HUB_USD_MMBTU, SYNTHETIC_BASIS_BY_HUB,
         )
-        hub_key = _HUB_FOR_STATE.get(state, "henry_hub")
-        hub_def = _HUB_DEFINITIONS.get(hub_key, {})
-        hub_name = hub_def.get("name", "Henry Hub")
-        prices = _fetch_gas_price_basis(slug, state, hub_key)
-        delivered = (prices.get("delivered_electric_usd_mmbtu")
-                      or prices.get("delivered_industrial_usd_mmbtu")
-                      or prices.get("hub_spot_usd_mmbtu")
-                      or prices.get("henry_hub_spot_usd_mmbtu"))
-        if delivered is None:
-            delivered = _GAS_PRICE_FALLBACK_USD_PER_MMBTU
-            data_basis = "fallback"
-        else:
-            data_basis = prices.get("data_basis", "live")
+        _s = (slug or "").lower()
+        hub_key = (_MARKET_HUB_OVERRIDE.get(_s)
+                   or _STATE_TO_HUB.get((state or "").upper(), "henry_hub"))
+        hub_name = _HUB_NAME.get(hub_key, "Henry Hub")
+        basis = float(SYNTHETIC_BASIS_BY_HUB.get(hub_key, 0.0))
+        delivered = max(1.0, SYNTHETIC_HENRY_HUB_USD_MMBTU + basis)
         return {
             "available":         True,
             "hub_key":           hub_key,
             "hub_name":          hub_name,
-            "gas_$/MMBtu":       round(float(delivered), 2),
-            "data_basis":        data_basis,
-            "$/MWh_ccgt_avg":    round(float(delivered) * _CCGT_HEAT_RATE_BTU_PER_KWH / 1000, 2),
-            "$/MWh_peaker":      round(float(delivered) * _PEAKER_HEAT_RATE_BTU_PER_KWH / 1000, 2),
+            "basis_vs_hh":       round(basis, 2),
+            "gas_$/MMBtu":       round(delivered, 2),
+            "data_basis":        f"hub_model (HH ${SYNTHETIC_HENRY_HUB_USD_MMBTU:.2f} + {basis:+.2f} basis)",
+            "$/MWh_ccgt_avg":    round(delivered * _CCGT_HEAT_RATE_BTU_PER_KWH / 1000, 2),
+            "$/MWh_peaker":      round(delivered * _PEAKER_HEAT_RATE_BTU_PER_KWH / 1000, 2),
         }
     except Exception as e:
         return {
@@ -718,6 +720,12 @@ def _compute_scenarios(target_mw: int, dcpi: dict, gas: dict,
     else:
         ccgt_dollars_per_mwh = gas.get("$/MWh_ccgt_avg", 25)
 
+    # r-lcoe (2026-06-30): levelized cost must divide DISCOUNTED cost by
+    # DISCOUNTED energy. The old denominator (annual_mwh × 10) was undiscounted,
+    # producing LCOE BELOW the fuel cost (grid $33 < its own $45/MWh fuel —
+    # impossible). Discount the MWh on the same 8% curve as the cash flows.
+    discounted_mwh = _npv([annual_mwh] * _NPV_HORIZON_YEARS, discount_rate)
+
     # ── Grid-only ────────────────────────────────────────────────
     # v2.1 item 3 — prefer live queue depth over DCPI's TTP if available
     grid_ttp = (overrides.get("live_queue_ttp_months")
@@ -727,7 +735,7 @@ def _compute_scenarios(target_mw: int, dcpi: dict, gas: dict,
     grid_opex_yr = annual_mwh * grid_lmp
     grid_npv = -(grid_capex + _npv([grid_opex_yr] * _NPV_HORIZON_YEARS,
                                     discount_rate))
-    grid_levelized = abs(grid_npv) / (annual_mwh * _NPV_HORIZON_YEARS)
+    grid_levelized = abs(grid_npv) / discounted_mwh
 
     # ── Gas BTM (CCGT) ───────────────────────────────────────────
     btm_ttp = 14  # typical CCGT build + tap, faster than ISO queue
@@ -735,7 +743,7 @@ def _compute_scenarios(target_mw: int, dcpi: dict, gas: dict,
     btm_opex_yr = annual_mwh * ccgt_dollars_per_mwh
     btm_npv = -(btm_capex + _npv([btm_opex_yr] * _NPV_HORIZON_YEARS,
                                   discount_rate))
-    btm_levelized = abs(btm_npv) / (annual_mwh * _NPV_HORIZON_YEARS)
+    btm_levelized = abs(btm_npv) / discounted_mwh
 
     # ── Gas-to-Grid Hybrid ───────────────────────────────────────
     hybrid_ttp = 24  # gas-first + grid follow-on
@@ -744,11 +752,13 @@ def _compute_scenarios(target_mw: int, dcpi: dict, gas: dict,
                     + _CAPEX_GAS_PIPELINE_TAP_USD
                     + sub_capex * 0.5)
     # 70% gas-fueled, 30% sold-to-grid as ancillary
-    hybrid_opex_yr = annual_mwh * ccgt_dollars_per_mwh * 0.7 \
-                      - annual_mwh * grid_lmp * 0.10  # grid sell credit
+    # r-hybrid (2026-06-30): a 70/30 gas+grid blend pays for BOTH fuels — the
+    # old formula fueled only 70% and subtracted a phantom 10%×LMP "sell credit"
+    # with no offtake, artificially suppressing opex. Blend both costs.
+    hybrid_opex_yr = annual_mwh * (0.7 * ccgt_dollars_per_mwh + 0.3 * grid_lmp)
     hybrid_npv = -(hybrid_capex + _npv([hybrid_opex_yr] * _NPV_HORIZON_YEARS,
                                        discount_rate))
-    hybrid_levelized = abs(hybrid_npv) / (annual_mwh * _NPV_HORIZON_YEARS)
+    hybrid_levelized = abs(hybrid_npv) / discounted_mwh
 
     return {
         "grid_only": {
