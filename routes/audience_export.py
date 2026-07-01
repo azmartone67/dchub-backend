@@ -90,15 +90,14 @@ def _gather():
             # Free users with a real email, newest signup first for dedup.
             cur.execute(
                 """
-                SELECT email, name, company, tier, plan, created_at
+                SELECT email, name, company, plan, created_at
                   FROM users
                  WHERE email IS NOT NULL AND email <> '' AND position('@' in email) > 1
                    AND COALESCE(lower(plan), '') <> ALL(%s)
-                   AND COALESCE(lower(tier), '') <> ALL(%s)
                  ORDER BY created_at DESC NULLS LAST
-                """, (list(_PAID), list(_PAID)))
-            for email, name, company, tier, plan, created in cur.fetchall():
-                users.append((email, name, company, tier or plan, created))
+                """, (list(_PAID),))
+            for email, name, company, plan, created in cur.fetchall():
+                users.append((email, name, company, plan, created))
     except Exception as e:
         _return(c, error=True)
         return [], {"error": f"{type(e).__name__}: {str(e)[:160]}"}
