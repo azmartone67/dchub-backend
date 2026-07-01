@@ -476,6 +476,14 @@ def _fetch_gas_economics(slug: str, state: str) -> dict:
 
 # ── Power cost + tax abatement (real per-state operating economics) ───────
 _NATIONAL_IND_POWER_USD_MWH = 87.0   # EIA industrial median $/MWh (2026-04), refreshable
+# r-largeload (2026-06-30): a 100MW+ transmission-connected data center pays FAR
+# less than the EIA industrial RETAIL rate — it connects at transmission voltage
+# (bypassing distribution), buys near wholesale + capacity/transmission adders,
+# and negotiates. ~0.60× retail lands in the realistic $60-100/MWh all-in band
+# (NJ $152→$91, VA $99→$59, TX $63→$38) instead of an implausible $150+ grid LCOE.
+# TUNABLE. Floored so it never drops below a wholesale-ish $35.
+_LARGE_LOAD_POWER_FACTOR = 0.60
+_LARGE_LOAD_POWER_FLOOR_USD = 35.0
 
 
 def _fetch_power_cost_usd_mwh(state: str) -> dict:
@@ -497,12 +505,17 @@ def _fetch_power_cost_usd_mwh(state: str) -> dict:
                     " ORDER BY period DESC LIMIT 1", (state, sector))
                 r = cur.fetchone()
                 if r and r[0]:
-                    return {"usd_mwh": round(float(r[0]) * 10, 1),
-                            "sector": sector, "source": "eia_electricity_rates"}
+                    retail = round(float(r[0]) * 10, 1)   # cents/kWh → $/MWh
+                    adj = round(max(_LARGE_LOAD_POWER_FLOOR_USD,
+                                    retail * _LARGE_LOAD_POWER_FACTOR), 1)
+                    return {"usd_mwh": adj, "retail_usd_mwh": retail,
+                            "sector": sector, "source": "eia_electricity_rates (large-load adj)"}
     except Exception:
         pass
-    return {"usd_mwh": _NATIONAL_IND_POWER_USD_MWH,
-            "sector": "default", "source": "national_median"}
+    _def = round(max(_LARGE_LOAD_POWER_FLOOR_USD,
+                     _NATIONAL_IND_POWER_USD_MWH * _LARGE_LOAD_POWER_FACTOR), 1)
+    return {"usd_mwh": _def, "retail_usd_mwh": _NATIONAL_IND_POWER_USD_MWH,
+            "sector": "default", "source": "national_median (large-load adj)"}
 
 
 def _fetch_tax_abatement(state: str) -> dict:
@@ -1592,8 +1605,8 @@ th { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spa
       Site readiness &nbsp;·&nbsp; toggle what's actually in place
     </div>
     <div style="font-size:12px;color:var(--muted);margin-bottom:14px;">
-      Each toggle is a multiplicative premium. Raw land = 1.00×; fully shovel-ready = ~3.35×.
-      A 100 MW Phoenix AVOID parcel goes from ~$20M raw to ~$68M shovel-ready.
+      Each toggle is a premium. Raw land = 1.00×; fully shovel-ready ≈ 2.4× (grid +
+      substation are de-correlated, and stacked premiums show diminishing returns).
     </div>
     <div id="readiness-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;">
       <label class="rcb"><input type="checkbox" id="r_grid"><span><b>Grid interconnect ready</b><br><span class="rcb-sub">ISA signed / queue cleared &nbsp;·&nbsp; +30%</span></span></label>
@@ -1679,10 +1692,17 @@ const READINESS_PREMIUMS = {
   r_fiber:   1.20,  r_zoning:  1.30,  r_permits: 1.20,
 };
 function updateReadinessMult() {
-  let m = 1.0;
+  let m = 1.0, n = 0;
   Object.entries(READINESS_PREMIUMS).forEach(([id, premium]) => {
-    if (document.getElementById(id) && document.getElementById(id).checked) m *= premium;
+    if (document.getElementById(id) && document.getElementById(id).checked) { m *= premium; n++; }
   });
+  // mirror the backend: de-correlate grid×substation (both proxy grid access)
+  const gc = document.getElementById('r_grid'), sc = document.getElementById('r_sub');
+  if (gc && gc.checked && sc && sc.checked) {
+    m *= (1.45 / (READINESS_PREMIUMS.r_grid * READINESS_PREMIUMS.r_sub));
+  }
+  // diminishing returns on 3+ stacked premiums
+  if (m > 1.0 && n >= 3) m = 1.0 + (m - 1.0) * Math.pow(0.95, n - 2);
   const el = document.getElementById('r-mult');
   if (el) el.textContent = m.toFixed(3) + '×';
 }
@@ -1989,7 +2009,7 @@ function renderResults(d) {
     if (a && typeof a.grid_lmp_usd_per_mwh !== 'undefined') {
       html += `<div style="margin:6px 0 14px;font-size:12px;color:var(--muted);display:flex;flex-wrap:wrap;align-items:center;gap:0">
         <span style="margin-right:8px">Assumptions used:</span>
-        ${editChip('Grid power',   a.grid_lmp_usd_per_mwh, a.grid_lmp_default, '/MWh')}${(d.market_context && d.market_context.power_cost_usd_mwh) ? `<span style="color:var(--muted);font-size:10px;margin-right:8px">(${d.market_context.nearest_market_state} industrial rate, EIA)</span>` : ''}
+        ${editChip('Grid power',   a.grid_lmp_usd_per_mwh, a.grid_lmp_default, '/MWh')}${(d.market_context && d.market_context.power_cost_usd_mwh) ? `<span style="color:var(--muted);font-size:10px;margin-right:8px">(${d.market_context.site_state || ''} large-load rate, EIA industrial ×0.6)</span>` : ''}
         ${editChip('CCGT gas',     a.ccgt_gas_usd_per_mwh, a.ccgt_gas_default, '/MWh')}
         ${editChip('CCGT heat',    a.ccgt_heat_rate,       a.ccgt_heat_rate_default, ' Btu/kWh')}
         ${editChip('Discount',     (a.discount_rate*100).toFixed(2), (a.discount_rate_default*100).toFixed(2), '%')}
