@@ -153,6 +153,36 @@ _REGISTRIES = [
         "submission_url": "https://forum.cursor.com",
         "actionable":   False,
     },
+    # 2026-07-01: added the four community registries DC Hub is verifiably
+    # listed on but which were NOT monitored — so "listed on Glama/PulseMCP/
+    # LobeHub/mcphub.io" is now a CHECKED fact, not a hardcoded /ai claim.
+    # All four probe "present" via the generic _fetch + _present_in_body path
+    # (verified live 2026-07-01). Glama uses the canonical /servers/<owner>/<repo>
+    # page; PulseMCP uses its JSON API (the HTML server page bot-blocks 403).
+    {
+        "id":           "glama_ai",
+        "name":         "Glama.ai MCP directory",
+        "url":          "https://glama.ai/mcp/servers/azmartone67/dchub",
+        "submission_url": "https://glama.ai/mcp/servers",
+    },
+    {
+        "id":           "pulsemcp",
+        "name":         "PulseMCP directory",
+        "url":          "https://api.pulsemcp.com/v0beta/servers?query=dchub",
+        "submission_url": "https://www.pulsemcp.com/",
+    },
+    {
+        "id":           "lobehub",
+        "name":         "LobeHub MCP marketplace",
+        "url":          "https://lobehub.com/mcp/azmartone67-dchub",
+        "submission_url": "https://github.com/lobehub/lobe-chat-agents",
+    },
+    {
+        "id":           "mcphub_io",
+        "name":         "mcphub.io directory",
+        "url":          "https://mcphub.io/servers/dchub",
+        "submission_url": "https://mcphub.io/",
+    },
 ]
 
 
