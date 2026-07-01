@@ -3012,6 +3012,7 @@ _LP_INTERNAL_MARKERS = (
     "scanner", "checker", "monitor", "health", "heartbeat", "loop",
     "local-agent", "localhost", "127.0.0.1", "smoke", "warmup", "sentinel",
     "remote0", "remote1", "step2", "step3", "_test", "-test", "test-", "test_",
+    "verify",  # 'verify' probes (e.g. claude-code-verify-0701) were passing as real
 )
 def _lp_is_internal(p):
     if not p:
@@ -3168,29 +3169,40 @@ def stats_live_proof():
 # The 2026-06-30 growth audit's #1 finding: DC Hub could not MEASURE its binding
 # constraint (real AI agents reaching the MCP server) from inside — get_agent_registry
 # returned a static roster and the public headline conflated real agents with probe
-# noise. This is the honest measurement: it splits mcp_tool_calls into REAL external-
-# agent traffic vs internal/probe/self-heal noise (same allowlist as /stats/live-proof)
-# and reports real-agents/wk, the real-vs-probe split, the platform + tool breakdown,
-# week-over-week deltas, and citations/wk. Every number is a live DB read; a missing
-# table fails soft to 0 + a flag (never a placeholder). Public + no PII.
+# noise. r-reach-identity (2026-07-01) fixed two further inflations, verified live:
+#   (1) "agents" was COUNT(DISTINCT session_id), but session_id rotates per MCP
+#       connection (real-external sessions average ~1.2 calls; 1 of 7,933 sessions
+#       in 30d spanned more than one day), so agents ≈ calls (96 calls read as 67
+#       "agents" from ~14 real IPs). Agent identity is now the first token of
+#       ip_address (some rows hold raw X-Forwarded-For chains), private/CGNAT
+#       excluded — the same identity as the mcp_calls_identity /
+#       mcp_agent_retention_30d views.
+#   (2) the real-vs-probe split was a local platform-column allowlist with no
+#       user-agent guard, so curl/urllib probes self-labelled 'claude-desktop' /
+#       'ChatGPT' / 'openai-eval' passed as real. The split now uses
+#       mcp_calls_deloop.real_calls_predicate() — the same canonical filter as
+#       /api/v1/mcp/funnel and routes/funnel_health.
+# Every number is a live DB read; a missing table fails soft to 0 + a flag
+# (never a placeholder). Public + no PII (IPs are aggregated, never returned).
 @mcp_bp.get("/api/v1/reach")
 def reach_dashboard_data():
-    def _is_real(p):
-        p = (p or "").lower()
-        return bool(_lp_is_recognized(p) and not _lp_is_internal(p) and not _UUID_RE_MOD.match(p))
+    # Same private/CGNAT exclusion as routes/ai_reach. Function-level import:
+    # ai_reach is a standalone blueprint module — no import-order coupling at boot.
+    from routes.ai_reach import _PRIVATE_IP as _reach_private_ip
 
-    def _split(rows):
-        real_calls = real_agents = probe_calls = probe_agents = 0
-        real_platforms = []
-        for (p, calls, callers) in rows:
-            calls = int(calls or 0); callers = int(callers or 0)
-            if _is_real(p):
-                real_calls += calls; real_agents += callers
-                real_platforms.append({"platform": (p or "").lower(), "calls": calls, "agents": callers})
-            else:
-                probe_calls += calls; probe_agents += callers
-        real_platforms.sort(key=lambda x: x["calls"], reverse=True)
-        return real_calls, real_agents, probe_calls, probe_agents, real_platforms
+    _real = _deloop_real_calls_predicate()
+    # public client IP only — the regex's `|$)` branch also drops '' (NULL folds to '')
+    _pub = "client_ip !~ '" + _reach_private_ip + "'"
+
+    def _from(window_sql):
+        # first X-Forwarded-For token = the client; some rows store the raw chain
+        return ("(SELECT client_name, user_agent, platform, tool_name, "
+                "        TRIM(SPLIT_PART(COALESCE(ip_address,''), ',', 1)) AS client_ip "
+                "   FROM mcp_tool_calls WHERE " + window_sql + ") t")
+
+    _7d = "created_at >= NOW() - (7 * INTERVAL '1 day')"
+    _prev7d = ("created_at >= NOW() - (14 * INTERVAL '1 day') "
+               "AND created_at < NOW() - (7 * INTERVAL '1 day')")
 
     out = {
         "ok": True,
@@ -3201,54 +3213,71 @@ def reach_dashboard_data():
         "probe_agents_7d": 0, "probe_calls_7d": 0,
         "real_share_pct": None,          # real_calls / (real+probe) — how much traffic is genuine
         "wow": {"real_agents_pct": None, "real_calls_pct": None},
-        "platforms_7d": [],              # recognized-external platforms only
+        "platforms_7d": [],              # real (de-looped) traffic only
         "top_tools_7d": [],              # real traffic only
         "citations_7d": 0, "citation_engines_7d": 0,
         "flags": {"calls_available": False, "citations_available": False},
         "source_columns": {
-            "real_agents_7d": "SUM over recognized-external platforms of COUNT(DISTINCT session_id) mcp_tool_calls (7d); internal/probe/self-heal/UUID excluded",
-            "real_calls_7d":  "COUNT(*) mcp_tool_calls (7d) on recognized-external platforms",
-            "probe_calls_7d": "COUNT(*) mcp_tool_calls (7d) on internal/probe/self-heal/UUID platforms",
+            "real_agents_7d": "COUNT(DISTINCT TRIM(SPLIT_PART(ip_address,',',1))) mcp_tool_calls (7d) over real_calls_predicate() rows; private/CGNAT/empty IPs excluded",
+            "real_calls_7d":  "COUNT(*) mcp_tool_calls (7d) WHERE mcp_calls_deloop.real_calls_predicate()",
+            "probe_calls_7d": "COUNT(*) mcp_tool_calls (7d) WHERE NOT real_calls_predicate() (internal/probe/self-heal/scripted-UA)",
             "citations_7d":   "COUNT(*) ai_citations (7d) WHERE dchub_cited = true",
         },
-        "note": ("Real vs probe split uses the same allowlist as /stats/live-proof. "
-                 "real_agents_7d sums distinct callers per real platform (a caller active on "
-                 "two platforms counts once per platform — an honest breadth measure). "
+        "note": ("Real vs probe uses mcp_calls_deloop.real_calls_predicate() — the same "
+                 "canonical filter as /api/v1/mcp/funnel and funnel_health (client_name + "
+                 "user_agent + platform, so a self-applied platform label can't make a "
+                 "curl/urllib probe count as real). Agents = distinct public client IPs "
+                 "(first X-Forwarded-For token), never session_id — session_id rotates per "
+                 "MCP connection so it tracks call volume, not agents (see views "
+                 "mcp_calls_identity / mcp_agent_retention_30d). "
                  "0 with a false flag means no data, never a placeholder."),
     }
     try:
         with _pool.connection() as conn, conn.cursor() as cur:
+            # 7d totals — real vs probe; agents = distinct public client IPs.
+            # Inlined predicate over trusted constants (no bound params) so the
+            # literal % in the classifier's ILIKE patterns are left alone.
             cur.execute(
-                "SELECT LOWER(COALESCE(platform,'')) AS p, COUNT(*), COUNT(DISTINCT session_id) "
-                "FROM mcp_tool_calls WHERE created_at >= NOW() - (7 * INTERVAL '1 day') GROUP BY p")
-            rc, rag, pc, pag, rplat = _split(cur.fetchall() or [])
+                "SELECT COUNT(*) FILTER (WHERE (" + _real + ")), "
+                "       COUNT(DISTINCT client_ip) FILTER (WHERE (" + _real + ") AND " + _pub + "), "
+                "       COUNT(*) FILTER (WHERE NOT (" + _real + ")), "
+                "       COUNT(DISTINCT client_ip) FILTER (WHERE NOT (" + _real + ") AND " + _pub + ") "
+                "FROM " + _from(_7d))
+            r = cur.fetchone() or (0, 0, 0, 0)
+            rc, rag, pc, pag = (int(v or 0) for v in r)
             out["real_calls_7d"], out["real_agents_7d"] = rc, rag
             out["probe_calls_7d"], out["probe_agents_7d"] = pc, pag
-            out["platforms_7d"] = rplat[:20]
             tot = rc + pc
             out["real_share_pct"] = round(100.0 * rc / tot, 1) if tot else None
+            # platform breakdown — real traffic only, canonical classifier
+            cur.execute(
+                "SELECT (" + _DELOOP_PLATFORM_CASE.strip() + ") AS p, COUNT(*) AS calls, "
+                "       COUNT(DISTINCT client_ip) FILTER (WHERE " + _pub + ") AS agents "
+                "FROM " + _from(_7d) + " WHERE (" + _real + ") "
+                "GROUP BY 1 ORDER BY calls DESC LIMIT 20")
+            out["platforms_7d"] = [
+                {"platform": p, "calls": int(calls or 0), "agents": int(agents or 0)}
+                for (p, calls, agents) in (cur.fetchall() or [])]
             # prior 7d (days 7-14) for week-over-week
             cur.execute(
-                "SELECT LOWER(COALESCE(platform,'')) AS p, COUNT(*), COUNT(DISTINCT session_id) "
-                "FROM mcp_tool_calls WHERE created_at >= NOW() - (14 * INTERVAL '1 day') "
-                "AND created_at < NOW() - (7 * INTERVAL '1 day') GROUP BY p")
-            prc, prag, _p1, _p2, _p3 = _split(cur.fetchall() or [])
+                "SELECT COUNT(*) FILTER (WHERE (" + _real + ")), "
+                "       COUNT(DISTINCT client_ip) FILTER (WHERE (" + _real + ") AND " + _pub + ") "
+                "FROM " + _from(_prev7d))
+            r = cur.fetchone() or (0, 0)
+            prc, prag = int(r[0] or 0), int(r[1] or 0)
             def _delta(cur_v, prev_v):
                 return round(100.0 * (cur_v - prev_v) / prev_v, 1) if prev_v else None
             out["wow"]["real_agents_pct"] = _delta(rag, prag)
             out["wow"]["real_calls_pct"] = _delta(rc, prc)
             # top tools among real traffic only
             cur.execute(
-                "SELECT tool_name, LOWER(COALESCE(platform,'')) AS p, COUNT(*), COUNT(DISTINCT session_id) "
-                "FROM mcp_tool_calls WHERE created_at >= NOW() - (7 * INTERVAL '1 day') "
-                "AND tool_name IS NOT NULL GROUP BY tool_name, p")
-            tools = {}
-            for (tname, p, calls, callers) in (cur.fetchall() or []):
-                if not _is_real(p):
-                    continue
-                t = tools.setdefault(tname, {"tool": tname, "calls": 0, "agents": 0})
-                t["calls"] += int(calls or 0); t["agents"] += int(callers or 0)
-            out["top_tools_7d"] = sorted(tools.values(), key=lambda x: x["calls"], reverse=True)[:12]
+                "SELECT tool_name, COUNT(*) AS calls, "
+                "       COUNT(DISTINCT client_ip) FILTER (WHERE " + _pub + ") AS agents "
+                "FROM " + _from(_7d) + " WHERE (" + _real + ") AND tool_name IS NOT NULL "
+                "GROUP BY tool_name ORDER BY calls DESC LIMIT 12")
+            out["top_tools_7d"] = [
+                {"tool": t, "calls": int(calls or 0), "agents": int(agents or 0)}
+                for (t, calls, agents) in (cur.fetchall() or [])]
         out["flags"]["calls_available"] = True
         out["data_available"] = True
     except Exception as e:
