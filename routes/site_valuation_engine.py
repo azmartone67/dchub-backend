@@ -1757,6 +1757,7 @@ th { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spa
   </div>
 
   <form id="valForm">
+    <label>Site label &nbsp;<span style="color:var(--accent2);font-size:11px">optional · PDF title, e.g. "A1 Campus — Millville NJ"</span><br><input id="site_label" type="text" maxlength="80" placeholder="Powered-Land Site"></label>
     <label>Lat &nbsp;<span style="color:var(--accent2);font-size:11px">[-90 → 90]</span><br><input id="lat" type="number" step="any" min="-90" max="90" value="33.45" inputmode="decimal" required></label>
     <label>Lon &nbsp;<span style="color:var(--accent2);font-size:11px">[-180 → 180, W is negative]</span><br><input id="lon" type="number" step="any" min="-180" max="180" value="-112.07" inputmode="decimal" required></label>
     <label>Acres &nbsp;<span style="color:var(--accent2);font-size:11px">> 0</span><br><input id="acres" type="number" step="any" min="0.1" value="50" inputmode="decimal" required></label>
@@ -2024,6 +2025,7 @@ document.getElementById('valForm').addEventListener('submit', async (e) => {
     showFieldError(`<b>${d.error || 'error'}:</b> ${d.hint || 'Unknown error'}`);
     return;
   }
+  window.__dcLast = d; window.__dcBody = body; window.__dcHeaders = headers;
   document.getElementById('results').innerHTML = renderResults(d);
   document.getElementById('results').classList.remove('hidden');
   document.getElementById('results').scrollIntoView({behavior:'smooth', block:'start'});
@@ -2031,6 +2033,253 @@ document.getElementById('valForm').addEventListener('submit', async (e) => {
 
 function fmt$(v) { return '$' + Math.round(v).toLocaleString(); }
 function fmtM$(v) { return '$' + (v / 1_000_000).toFixed(1) + 'M'; }
+
+// ===== Owner one-pager exports (branded PDF) =====
+// Branded owner one-pager builders — pure (no DOM). These exact function bodies
+// get embedded into routes/site_valuation_engine.py (_PAGE_HTML <script>).
+// dcOnePager(d, title)         -> single-valuation branded HTML doc
+// dcTwoTier(rawD, entD, title) -> two-tier (pre-dev vs entitled) branded HTML doc
+
+function dcMoney(x){ const n=Number(x); if(!isFinite(n)) return '—';
+  return Math.abs(n)>=1e6 ? '$'+(n/1e6).toFixed(1)+'M' : '$'+Math.round(n).toLocaleString(); }
+function dcD0(x){ const n=Number(x); return isFinite(n) ? '$'+Math.round(n).toLocaleString() : '—'; }
+function esc(s){ return String(s==null?'':s).replace(/[&<>]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+function titleCase(s){ return String(s||'').replace(/[-_]+/g,' ').split(' ').map(w=> w ? w.charAt(0).toUpperCase()+w.slice(1) : w).join(' '); }
+
+function dcCss(){ return `
+@page { size: letter; margin: 8mm; }
+* { margin:0; padding:0; box-sizing:border-box; -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+body { font-family:-apple-system,'Segoe UI',Helvetica,Arial,sans-serif; background:#0a0a0f; color:#fafafa; font-size:10.5px; line-height:1.36; }
+.wrap { padding:1px 3px; }
+.top { display:flex; justify-content:space-between; align-items:baseline; border-bottom:1px solid rgba(255,255,255,.12); padding-bottom:7px; margin-bottom:9px; }
+.brand { font-weight:800; letter-spacing:.02em; font-size:15px; } .brand span { color:#818cf8; }
+.tag { font-family:'JetBrains Mono',monospace; font-size:9.5px; color:#a1a1aa; letter-spacing:.13em; text-transform:uppercase; }
+h1 { font-size:21px; font-weight:700; letter-spacing:-.02em; margin-bottom:3px; }
+.sub { color:#c4c4cc; font-size:11px; margin-bottom:9px; }
+.pillg { display:inline-block; border:1px solid #10b981; color:#10b981; border-radius:999px; padding:1px 8px; font-size:9px; font-weight:700; font-family:'JetBrains Mono',monospace; }
+.pill { display:inline-block; border:1px solid #f59e0b; color:#f59e0b; border-radius:999px; padding:1px 8px; font-size:9px; font-weight:700; font-family:'JetBrains Mono',monospace; }
+.hero { background:linear-gradient(135deg,rgba(99,102,241,.15),rgba(168,85,247,.06)); border:1px solid rgba(99,102,241,.35); border-radius:13px; padding:12px 16px; margin-bottom:9px; }
+.range { font-size:28px; font-weight:800; letter-spacing:-.02em; }
+.range small { font-size:13px; color:#a1a1aa; font-weight:500; }
+.mid { color:#a1a1aa; font-size:11px; margin-top:3px; }
+.bar { display:flex; gap:7px; margin-top:9px; flex-wrap:wrap; }
+.chip { background:rgba(255,255,255,.05); border:1px solid rgba(255,255,255,.1); border-radius:8px; padding:6px 10px; font-size:10px; }
+.chip b { display:block; font-size:12.5px; margin-top:2px; }
+.grid2 { display:grid; grid-template-columns:1fr 1fr; gap:9px; margin-bottom:9px; }
+.card { background:#131319; border:1px solid rgba(255,255,255,.09); border-radius:11px; padding:11px 14px; margin-bottom:9px; }
+.card h3 { font-size:10.5px; text-transform:uppercase; letter-spacing:.07em; color:#818cf8; margin-bottom:8px; }
+.build div { display:flex; justify-content:space-between; padding:3px 0; font-size:11.5px; }
+.build .subk { color:#a1a1aa; font-size:10px; }
+.build .tot { border-top:1px solid rgba(255,255,255,.14); margin-top:3px; padding-top:6px; font-weight:700; font-size:12.5px; }
+.build .up { color:#10b981; }
+.tiers { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:9px; }
+.tier { border-radius:13px; padding:12px 15px; }
+.tierA { background:linear-gradient(135deg,rgba(148,163,184,.13),rgba(148,163,184,.04)); border:1px solid rgba(148,163,184,.4); }
+.tierB { background:linear-gradient(135deg,rgba(16,185,129,.14),rgba(16,185,129,.05)); border:1px solid rgba(16,185,129,.45); }
+.tlabel { font-size:9.5px; text-transform:uppercase; letter-spacing:.07em; font-weight:700; margin-bottom:4px; }
+.tierA .tlabel { color:#94a3b8; } .tierB .tlabel { color:#10b981; }
+.big { font-size:26px; font-weight:800; letter-spacing:-.02em; }
+.rng { color:#a1a1aa; font-size:10.5px; margin-top:2px; }
+.perm { font-family:'JetBrains Mono',monospace; font-size:10px; color:#c4c4cc; margin-top:1px; }
+.bd { margin-top:8px; border-top:1px solid rgba(255,255,255,.1); padding-top:6px; }
+.bd div { display:flex; justify-content:space-between; padding:2px 0; font-size:10.5px; }
+.bd .tot { font-weight:700; border-top:1px solid rgba(255,255,255,.12); margin-top:3px; padding-top:4px; }
+.bd .up { color:#10b981; }
+.unlock { background:#131319; border:1px dashed rgba(16,185,129,.55); border-radius:11px; padding:8px 14px; margin-bottom:9px; display:flex; justify-content:space-between; align-items:center; }
+.unlock .l { font-size:11px; } .unlock .l b { color:#10b981; } .unlock .r { font-size:19px; font-weight:800; color:#10b981; }
+table { width:100%; border-collapse:collapse; font-size:11px; }
+th { text-align:left; color:#71717a; font-weight:600; font-size:9.5px; text-transform:uppercase; letter-spacing:.05em; padding:3px 6px; border-bottom:1px solid rgba(255,255,255,.1); }
+td { padding:5px 6px; border-bottom:1px solid rgba(255,255,255,.05); font-family:'JetBrains Mono',monospace; }
+tr.best td { color:#10b981; font-weight:700; }
+.disc { font-size:10.5px; color:#c4c4cc; }
+.meth { background:#131319; border:1px solid #818cf8; border-radius:11px; padding:9px 14px; margin-bottom:5px; }
+.meth h3 { font-size:12px; margin-bottom:5px; }
+.mrow { display:grid; grid-template-columns:1fr 1fr; gap:15px; margin-top:5px; }
+.mrow ul { padding-left:15px; font-size:10px; line-height:1.34; } .mrow li { margin-bottom:1px; }
+.mh { font-size:9.5px; font-weight:700; text-transform:uppercase; letter-spacing:.05em; color:#818cf8; margin-bottom:3px; }
+.foot { color:#71717a; font-size:8.5px; text-align:center; margin-top:4px; border-top:1px solid rgba(255,255,255,.1); padding-top:6px; }
+.pbar { text-align:center; margin:10px 0 4px; }
+.pbtn { background:#818cf8; color:#0a0a0f; border:0; border-radius:7px; padding:8px 18px; font-weight:700; font-size:12px; cursor:pointer; font-family:inherit; }
+@media print { .pbar { display:none; } }
+`; }
+
+function scenRows(sc, bf){
+  const order = ['gas_btm','grid_only','gas_to_grid_hybrid'];
+  const labels = { gas_btm:'Gas-BTM (CCGT)', grid_only:'Grid (interconnect)', gas_to_grid_hybrid:'Gas-to-grid hybrid' };
+  return order.filter(k=>sc[k]).map(k=>{ const s=sc[k]||{}; const star = k===bf?' ★':'';
+    return `<tr class="${k===bf?'best':''}"><td>${labels[k]}${star}</td><td>${dcD0(s.levelized_usd_per_mwh)}/MWh</td><td>${dcMoney(s.capex_usd)}</td><td>${Math.round(s.time_to_power_months||0)} mo</td></tr>`;
+  }).join(''); }
+
+function methCard(d){
+  const mc=d.market_context||{}, inp=d.input||{}, v=d.valuation||{};
+  const stories = inp.stories||1;
+  return `<div class="meth"><h3>Indicative Valuation — Methodology &amp; Caveats</h3>
+    <div class="disc">A <b>model-based indicative valuation</b> for screening &amp; negotiation — <b>not a certified (USPAP) appraisal</b>. Use the range, not a single point.</div>
+    <div class="mrow">
+      <div><div class="mh">Grounded in real data</div><ul>
+        <li>Geography — FCC geocode (${esc(mc.site_state||'')})</li><li>Power — EIA per-state, large-load adjusted${mc.power_cost_usd_mwh?(' ($'+mc.power_cost_usd_mwh+'/MWh)'):''}</li>
+        <li>Gas — per-hub basis model</li><li>Verdict + moat — nearest PJM/DCPI market</li><li>NPV / LCOE — exact discounted math</li></ul></div>
+      <div><div class="mh">Confirm before relying</div><ul>
+        <li><b>No land comps</b> — base $/MW is model-derived, not comp-anchored</li>
+        <li>Ceilings ($0.8M raw / $1.2M entitled / $1.6M powered per MW) are assumed caps, not observed prices</li>
+        <li>LCOE = energy + capex floor (excl. O&amp;M ~$3–5/MWh); capex screening-grade</li>
+        <li>Tax abatement is the <b>state</b> record — confirm the parcel's actual term</li>
+        <li>Land fit assumes ${stories} building stor${stories==1?'y':'ies'}</li></ul></div>
+    </div>
+    <div class="disc" style="margin-top:6px;border-top:1px solid rgba(255,255,255,.1);padding-top:6px"><b>How to use:</b> a screening range &amp; negotiating anchor. For a term-sheet number, corroborate with 1–2 broker/appraiser comparables.</div>
+  </div>`; }
+
+function foot(d){ const mc=d.market_context||{}; const as_of=(d.as_of||'').slice(0,10);
+  return `<div class="foot">Prepared with DC Hub data-center &amp; energy intelligence · Engine ${esc(d.engine_version||'v2.3')} · Market ${esc(titleCase(mc.nearest_market_slug||''))}, ${esc(mc.site_state||'')} · Sources: DCPI, EIA, tax-incentives · ${as_of}</div>`; }
+
+function shell(title, tag, bodyHtml, withPrint){
+  return `<!doctype html><html><head><meta charset="utf-8"><title>${esc(title)}</title><style>${dcCss()}</style></head><body><div class="wrap">
+    <div class="top"><div class="brand">DC HUB <span>SITE VALUATION</span></div><div class="tag">${esc(tag)}</div></div>
+    ${bodyHtml}
+    ${withPrint?'<div class="pbar"><button class="pbtn" onclick="window.print()">🖨 Print / Save as PDF</button></div>':''}
+  </div></body></html>`; }
+
+function dcOnePager(d, title){
+  const v=d.valuation||{}, mc=d.market_context||{}, dcpi=d.dcpi_context||{}, sc=d.scenarios||{}, inp=d.input||{};
+  const bf=(d.best_fit||{}).scenario||'', ent=v.entitlement||{}, ab=v.tax_abatement||{}, suf=v.site_sufficiency||{}, mm=v.multipliers||{};
+  const mw=inp.target_mw||0;
+  const mwContrib = Number((v.site_value_breakdown||{}).mw_contribution_usd || (Number(v['$/mw_mid'])||0)*mw);
+  const entLift = Number(ent.lift_usd||0);
+  const rawLand = mwContrib - entLift;
+  const abPrem = Number(ab.premium_usd||0);
+  const abPct = ab.factor ? Math.round((Number(ab.factor)-1)*100) : 0;
+  const g = sc.grid_only||{};
+  const pills = [];
+  if (ent.firm_powered) pills.push('<span class="pillg">FIRM POWER</span>');
+  else if (ent.entitled) pills.push('<span class="pillg">ENTITLED</span>');
+  if (dcpi.verdict) pills.push(`<span class="pill">${esc(dcpi.verdict)}${mm.moat_flags_active>=2?' · moat':''}</span>`);
+  const build = [];
+  build.push(`<div><span>${entLift>0?'Raw-land value (capped $800K/MW)':('Powered raw-land ('+dcD0(v['$/mw_mid'])+'/MW)')}</span><b>${dcMoney(rawLand)}</b></div>`);
+  if (entLift>0) build.push(`<div class="subk"><span>+ Entitlement${ent.firm_powered?' + firm power':''} → ${dcD0(v['$/mw_mid'])}/MW</span><b class="up">+${dcMoney(entLift)}</b></div>`);
+  if (abPrem>0) build.push(`<div><span>+ Tax abatement (+${abPct}%)</span><b class="up">+${dcMoney(abPrem)}</b></div>`);
+  build.push(`<div class="tot"><span>Indicative midpoint</span><b>${dcMoney(v.site_value_usd_mid)}</b></div>`);
+  const whyMoat = mm.moat_flags_active>=2 ? ` A constraint <b>moat</b> (shovel-ready in a saturated cluster) lifts the verdict multiplier to ${(mm.verdict_mult||1).toFixed(2)}×.` : '';
+  const body = `
+  <h1>${esc(title)}</h1>
+  <div class="sub">${mw} MW · ${suf.effective_acres_per_mw||''} eff. ac/MW · ${esc(titleCase(mc.nearest_market_slug||''))} · ${esc(mc.site_state||'')} ${pills.join(' ')}</div>
+  <div class="hero">
+    <div class="range">${dcMoney(v.site_value_usd_low)} – ${dcMoney(v.site_value_usd_high)} <small>indicative range · ${mw} MW</small></div>
+    <div class="mid">midpoint <b>${dcMoney(v.site_value_usd_mid)}</b> · ${dcD0(v['$/mw_mid'])}/MW × ${mw} MW · ±50% envelope</div>
+    <div class="bar">
+      <div class="chip">Market<b>${esc(titleCase(mc.nearest_market_slug||''))} · ${esc(mc.site_state||'')}</b></div>
+      <div class="chip">Power (large-load)<b>$${mc.power_cost_usd_mwh||'—'}/MWh</b></div>
+      <div class="chip">Best path<b>${esc(titleCase(bf))} · ${Math.round((sc[bf]||{}).time_to_power_months||0)} mo</b></div>
+      <div class="chip">Land fit<b>${esc(titleCase(suf.category||''))} (${suf.effective_acres_per_mw||''} ac/MW)</b></div>
+    </div>
+  </div>
+  <div class="grid2">
+    <div class="card"><h3>Value build-up (${mw} MW)</h3><div class="build">${build.join('')}</div></div>
+    <div class="card"><h3>Why this number</h3><div class="disc">${esc(dcpi.verdict||'')} verdict from the nearest market.${whyMoat} ${ent.entitled?'Zoned + permitted prices above the raw-land ceiling.':'Pre-entitlement (raw powered land).'} ${ab.applied?('The '+(mc.site_state||'')+' tax abatement de-risks opex (+'+abPct+'%).'):''}</div></div>
+  </div>
+  <div class="card"><h3>Power path — scenarios (10-yr NPV)</h3>
+    <table><tr><th>Scenario</th><th>Levelized cost</th><th>CapEx</th><th>Time-to-power</th></tr>${scenRows(sc,bf)}</table></div>
+  ${methCard(d)}
+  ${foot(d)}`;
+  return shell(title, 'Indicative Valuation', body, true);
+}
+
+function dcTwoTier(rawD, entD, title){
+  const va=rawD.valuation||{}, vb=entD.valuation||{};
+  const mc=entD.market_context||{}, sc=entD.scenarios||{}, inp=entD.input||{};
+  const g=sc.grid_only||{}, gas=sc.gas_btm||{}, bf=(entD.best_fit||{}).scenario||'';
+  const mw=inp.target_mw||0;
+  const aLand = Number((va.site_value_breakdown||{}).mw_contribution_usd||0) - Number((va.entitlement||{}).lift_usd||0);
+  const aAb = Number((va.tax_abatement||{}).premium_usd||0);
+  const bMw = Number((vb.site_value_breakdown||{}).mw_contribution_usd||0);
+  const bLift = Number((vb.entitlement||{}).lift_usd||0);
+  const bLand = bMw - bLift;
+  const bAb = Number((vb.tax_abatement||{}).premium_usd||0);
+  const gap = Number(vb.site_value_usd_mid||0) - Number(va.site_value_usd_mid||0);
+  const powerLabel = bf==='grid_only' ? 'actual firm grid (no on-site gas)' : 'lowest-cost power path';
+  const body = `
+  <h1>${esc(title)} · ${mw} MW</h1>
+  <div class="sub">${esc(titleCase(mc.nearest_market_slug||''))} · ${esc(mc.site_state||'')} · <span class="pillg">${bf==='grid_only'?'GRID-POWERED (no gas)':esc(titleCase(bf))}</span></div>
+  <div class="tiers">
+    <div class="tier tierA">
+      <div class="tlabel">Tier A · Pre-development (as-is, not zoned)</div>
+      <div class="big">${dcMoney(va.site_value_usd_mid)}</div>
+      <div class="rng">range ${dcMoney(va.site_value_usd_low)} – ${dcMoney(va.site_value_usd_high)}</div>
+      <div class="perm">${dcD0(va['$/mw_mid'])}/MW × ${mw} MW</div>
+      <div class="bd">
+        <div><span>Powered raw-land</span><b>${dcMoney(aLand)}</b></div>
+        ${aAb>0?`<div><span>+ Tax abatement</span><b>+${dcMoney(aAb)}</b></div>`:''}
+        <div class="tot"><span>Midpoint</span><b>${dcMoney(va.site_value_usd_mid)}</b></div>
+      </div>
+    </div>
+    <div class="tier tierB">
+      <div class="tlabel">Tier B · Fully zoned, entitled &amp; permitted</div>
+      <div class="big">${dcMoney(vb.site_value_usd_mid)}</div>
+      <div class="rng">range ${dcMoney(vb.site_value_usd_low)} – ${dcMoney(vb.site_value_usd_high)}</div>
+      <div class="perm">${dcD0(vb['$/mw_mid'])}/MW × ${mw} MW</div>
+      <div class="bd">
+        <div><span>Raw-land (capped $800K/MW)</span><b>${dcMoney(bLand)}</b></div>
+        ${bLift>0?`<div><span>+ Entitlement (→${dcD0(vb['$/mw_mid'])}/MW)</span><b class="up">+${dcMoney(bLift)}</b></div>`:''}
+        ${bAb>0?`<div><span>+ Tax abatement</span><b class="up">+${dcMoney(bAb)}</b></div>`:''}
+        <div class="tot"><span>Midpoint</span><b>${dcMoney(vb.site_value_usd_mid)}</b></div>
+      </div>
+    </div>
+  </div>
+  <div class="unlock">
+    <div class="l">⬆ <b>Entitlement is the value-creation play</b> — zoning + permits on the same power roughly <b>doubles</b> the site. Highest-ROI action before a sale.</div>
+    <div class="r">+${dcMoney(gap)}</div>
+  </div>
+  <div class="card"><h3>Power basis — ${esc(powerLabel)}</h3>
+    <div class="bar">
+      <div class="chip">Levelized energy<b>${dcD0(g.levelized_usd_per_mwh)}/MWh</b></div>
+      <div class="chip">Time to full ${mw} MW<b>${Math.round(g.time_to_power_months||0)} mo</b></div>
+      <div class="chip">Interconnect capex<b>${dcMoney(g.capex_usd)}</b></div>
+      <div class="chip">Large-load power<b>$${mc.power_cost_usd_mwh||'—'}/MWh</b></div>
+    </div>
+    ${bf==='grid_only'&&gas.capex_usd?`<div class="disc" style="margin-top:7px">Valued on the site's real grid — on-site gas <b>not assumed</b>; grid interconnect (${dcMoney(g.capex_usd)}) avoids the ~${dcMoney(gas.capex_usd)} a CCGT build would add.</div>`:''}
+  </div>
+  ${methCard(entD)}
+  ${foot(entD)}`;
+  return shell(title, 'Grid Valuation · Two-Tier', body, true);
+}
+
+// ── Owner one-pager export — DOM wiring (A: single, B: two-tier) ──
+function dcOpenPrint(htmlDoc){
+  var w = window.open('', '_blank');
+  if(!w){ alert('Popup blocked — allow popups on this site to download the one-pager.'); return; }
+  w.document.open(); w.document.write(htmlDoc); w.document.close(); w.focus();
+}
+function dcTitle(d){
+  var el = document.getElementById('site_label');
+  var lbl = (el && el.value) ? el.value.trim() : '';
+  if(lbl) return lbl;
+  var mc = (d && d.market_context) || {};
+  var mk = titleCase(mc.nearest_market_slug || 'Site');
+  return 'Powered-Land Site — ' + mk + (mc.site_state ? ', ' + mc.site_state : '');
+}
+function dcExportOnePager(){
+  var d = window.__dcLast;
+  if(!d || !d.valuation){ alert('Run a valuation first, then download the one-pager.'); return; }
+  dcOpenPrint(dcOnePager(d, dcTitle(d)));
+}
+async function dcExportTwoTier(btn){
+  var base = window.__dcBody, headers = window.__dcHeaders;
+  if(!base){ alert('Run a valuation first, then generate the two-tier sheet.'); return; }
+  var txt = btn ? btn.textContent : '';
+  if(btn){ btn.disabled = true; btn.textContent = 'Generating…'; }
+  try {
+    var rd = Object.assign({}, base.readiness || {});
+    var rawBody = Object.assign({}, base, { readiness: Object.assign({}, rd, { zoning_approved:false, permits_in_hand:false }) });
+    var entBody = Object.assign({}, base, { readiness: Object.assign({}, rd, { zoning_approved:true,  permits_in_hand:true  }) });
+    var results = await Promise.all([
+      fetch('/api/v1/site/value', { method:'POST', headers: headers, body: JSON.stringify(rawBody) }).then(function(r){ return r.json(); }),
+      fetch('/api/v1/site/value', { method:'POST', headers: headers, body: JSON.stringify(entBody) }).then(function(r){ return r.json(); })
+    ]);
+    var rawR = results[0], entR = results[1];
+    if(!rawR || !rawR.ok || !entR || !entR.ok){ alert('Could not generate the two-tier sheet — please try again.'); return; }
+    dcOpenPrint(dcTwoTier(rawR, entR, dcTitle(entR)));
+  } catch(e){ alert('Two-tier export failed: ' + e); }
+  finally { if(btn){ btn.disabled = false; btn.textContent = txt; } }
+}
 function renderResults(d) {
   const dcpi = d.dcpi_context || {};
   const verdictClass = 'verdict-' + (dcpi.verdict || 'UNKNOWN');
@@ -2241,7 +2490,9 @@ function renderResults(d) {
     <div class="methcard" id="methcard">
       <div style="display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap">
         <h3 style="margin:0">Indicative Valuation — Methodology &amp; Caveats</h3>
-        <button onclick="window.print()" class="printbtn no-print">🖨 Print / Save PDF</button>
+        <button onclick="dcExportOnePager()" class="printbtn no-print">⬇ Owner one-pager (PDF)</button>
+        <button onclick="dcExportTwoTier(this)" class="printbtn no-print">⬇ Two-tier: pre-dev vs entitled</button>
+        <button onclick="window.print()" class="printbtn no-print" style="background:transparent;color:var(--accent2);border:1px solid var(--border)">🖨 Print page</button>
       </div>
       <p style="font-size:13px;color:var(--muted);margin:8px 0 12px">
         This is a <b>model-based indicative valuation</b> for screening and negotiation — <b>not a certified (USPAP) appraisal</b>.
