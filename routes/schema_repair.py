@@ -1308,6 +1308,30 @@ def funnel_leakage():
             except Exception:
                 try: c.rollback()
                 except Exception: pass
+            # Stage 3b: human landed on the /redeem page (of codes minted in window)
+            try:
+                cur.execute(
+                    "SELECT COUNT(*) FROM mcp_pair_codes "
+                    "WHERE redeem_viewed_at IS NOT NULL "
+                    "AND created_at >= NOW() - INTERVAL %s",
+                    (f"{days} days",),
+                )
+                out["stages"]["3b_redeem_page_viewed"] = int((cur.fetchone() or [0])[0] or 0)
+            except Exception:
+                try: c.rollback()
+                except Exception: pass
+            # Stage 3c: human clicked "Upgrade" → Stripe (of codes minted in window)
+            try:
+                cur.execute(
+                    "SELECT COUNT(*) FROM mcp_pair_codes "
+                    "WHERE stripe_clicked_at IS NOT NULL "
+                    "AND created_at >= NOW() - INTERVAL %s",
+                    (f"{days} days",),
+                )
+                out["stages"]["3c_stripe_clicked"] = int((cur.fetchone() or [0])[0] or 0)
+            except Exception:
+                try: c.rollback()
+                except Exception: pass
             # Stage 4: codes redeemed
             try:
                 cur.execute(
