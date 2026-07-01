@@ -248,7 +248,28 @@ def _haversine_miles(lat1, lon1, lat2, lon2) -> float:
 
 
 def _nearest_market(lat: float, lon: float) -> Tuple[str, str, float]:
-    """Return (slug, state, distance_miles) for the closest centroid."""
+    """Return (slug, state, distance_miles) for the closest DCPI market.
+    r-nearestmkt (2026-06-30): query the 119 DCPI markets that carry real
+    lat/lng (market_power_scores) instead of only ~30 hand-seeded centroids — a
+    site was snapping to a market 100+ mi away and borrowing its verdict
+    (Millville NJ → NoVA/VA, 130 mi). Also guarantees the returned slug EXISTS in
+    market_power_scores so _fetch_dcpi resolves it. Falls back to the hardcoded
+    centroids on any DB issue."""
+    try:
+        with _db_conn() as c:
+            cur = c.cursor()
+            cur.execute("SELECT market_slug, state, latitude, longitude "
+                        "  FROM market_power_scores "
+                        " WHERE latitude IS NOT NULL AND longitude IS NOT NULL")
+            best = None
+            for slug, st, mlat, mlon in cur.fetchall():
+                d = _haversine_miles(lat, lon, float(mlat), float(mlon))
+                if best is None or d < best[2]:
+                    best = (slug, st, d)
+            if best:
+                return best
+    except Exception:
+        pass
     best = None
     for slug, (state, mlat, mlon) in _MARKET_CENTROIDS.items():
         d = _haversine_miles(lat, lon, mlat, mlon)
@@ -547,15 +568,23 @@ def _fetch_comparable_sales(slug: str, state: str, limit: int = 10) -> list:
         with c.cursor() as cur:
             # Try several deal table names — schema isn't fully unified
             # across the codebase. Use a list of fallbacks.
+            # r-comps (2026-06-30): the real `deals` columns are seller/buyer/
+            # value($M)/mw/market/type (NOT target/acquirer/value_usd/
+            # announced_date) — the old query threw on EVERY call and was
+            # swallowed, so comps never rendered. These are M&A/JV transactions
+            # (enterprise value), shown as market CONTEXT — NOT land comps and
+            # NOT the price anchor (deals price whole operating companies at
+            # $M-per-MW, the wrong reference class for raw land).
             for tbl in ("deals", "transactions", "discovered_deals"):
                 try:
                     cur.execute(f"""
-                        SELECT target, acquirer, value_usd, announced_date,
-                               market, deal_type
+                        SELECT seller, buyer, value, mw, market,
+                               COALESCE(type,''), COALESCE(deal_date::text, date::text, '')
                           FROM {tbl}
-                         WHERE LOWER(COALESCE(market, '')) LIKE %s
-                            OR LOWER(COALESCE(market, '')) LIKE %s
-                         ORDER BY announced_date DESC NULLS LAST
+                         WHERE (LOWER(COALESCE(market, '')) LIKE %s
+                                OR LOWER(COALESCE(market, '')) LIKE %s)
+                           AND value > 0
+                         ORDER BY COALESCE(deal_date::text, date::text, '') DESC
                          LIMIT %s
                     """, ("%" + slug + "%",
                           "%" + (slug.replace("-", " ")) + "%",
@@ -564,13 +593,17 @@ def _fetch_comparable_sales(slug: str, state: str, limit: int = 10) -> list:
                     if rows:
                         out = []
                         for r in rows:
+                            _vm = float(r[2]) if r[2] is not None else None   # $ millions
+                            _mw = float(r[3]) if r[3] else None
                             out.append({
-                                "target":         r[0],
-                                "acquirer":       r[1],
-                                "value_usd":      float(r[2]) if r[2] is not None else None,
-                                "announced_date": r[3].isoformat() if r[3] else None,
+                                "target":         r[0],   # seller / acquired
+                                "acquirer":       r[1],   # buyer
+                                "value_usd":      round(_vm * 1e6, 0) if _vm else None,
+                                "mw":             _mw,
                                 "market":         r[4],
                                 "deal_type":      r[5],
+                                "announced_date": r[6] or None,
+                                "context_only":   True,   # M&A context, NOT a land comp
                             })
                         return out
                 except Exception:
@@ -652,59 +685,15 @@ def _fetch_nearest_substation(lat: float, lon: float,
 
 
 def _fetch_market_comp_baseline(slug: str, state: str) -> dict:
-    """v2.1 item 2 — regression-fit per-MW baseline from comparable_sales.
-    Queries deals table for transactions in this market with both value_usd
-    and MW info (from name/text parse or explicit column). If we have
-    >= _MIN_COMPS_FOR_REGRESSION sized comps, returns the median per-MW
-    as a market-specific override of the global $475K baseline.
-    """
-    c = _db_conn()
-    if c is None:
-        return {"available": False, "reason": "db_unavailable"}
-    try:
-        with c.cursor() as cur:
-            # Try the canonical deals/transactions tables. Look for rows
-            # with explicit MW (mw_purchased or mw or capacity_mw column)
-            # AND a value_usd. Fall back to text-extraction of MW from the
-            # target/title if structured field missing.
-            for tbl in ("deals", "transactions", "discovered_deals"):
-                try:
-                    cur.execute(f"""
-                        SELECT value_usd, COALESCE(mw, mw_purchased, capacity_mw, 0)::float
-                          FROM {tbl}
-                         WHERE LOWER(COALESCE(market, '')) LIKE %s
-                            AND value_usd > 0
-                            AND COALESCE(mw, mw_purchased, capacity_mw, 0) > 0
-                    """, ("%" + slug + "%",))
-                    rows = cur.fetchall() or []
-                    if rows:
-                        # Compute per-MW for each comp; take median.
-                        per_mws = sorted([float(r[0]) / float(r[1])
-                                            for r in rows
-                                            if r[0] and r[1] and r[1] > 0])
-                        n = len(per_mws)
-                        if n >= _MIN_COMPS_FOR_REGRESSION:
-                            median = per_mws[n // 2]
-                            return {
-                                "available":     True,
-                                "n_comps":       n,
-                                "median_per_mw": round(median, 0),
-                                "p25_per_mw":    round(per_mws[max(0, n // 4)], 0),
-                                "p75_per_mw":    round(per_mws[min(n - 1, (n * 3) // 4)], 0),
-                                "table":         tbl,
-                            }
-                        return {"available": False,
-                                  "reason": f"only_{n}_comps",
-                                  "min_required": _MIN_COMPS_FOR_REGRESSION}
-                except Exception:
-                    continue
-            return {"available": False, "reason": "no_table_matched"}
-    except Exception as e:
-        return {"available": False, "reason": "query_error",
-                  "error": str(e)[:200]}
-    finally:
-        _safe_close(c)
-
+    """r-comps (2026-06-30): NEUTRALIZED. This was meant to override the base
+    $/MW with a regression on 'comparable' deals, but (a) it queried columns that
+    never existed (value_usd/mw_purchased) so it always failed silently, and
+    (b) the only transaction data (deals) is M&A ENTERPRISE value ($4-14M/MW —
+    ~100x raw land), the wrong reference class; land_parcels (real land comps) is
+    empty. The base is intentionally MODEL-driven (DCPI demand + operating
+    economics), NOT comp-anchored — so this returns unavailable by design."""
+    return {"available": False, "reason": "no_land_comps",
+            "note": "Base is model-driven; M&A deals are enterprise value, not land comps."}
 
 def _fetch_live_queue_ttp(iso: str, slug: str) -> dict:
     """v2.1 item 3 — derive months-to-energization from the live ISO queue
@@ -1056,6 +1045,21 @@ def _compute_valuation(target_mw: int, acres: float, dcpi: dict,
         if readiness.get(flag):
             readiness_mult *= premium
             readiness_applied[flag] = premium
+    # r-decorr (2026-06-30): grid_interconnect_ready (+30%) and substation_on_site
+    # (+25%) both proxy "grid access" — stacking them multiplicatively (1.30×1.25
+    # = 1.625×) double-counts. When BOTH are set, correct their combined premium
+    # down to a single grid-access factor (~+45%).
+    if (readiness.get("grid_interconnect_ready")
+            and readiness.get("substation_on_site")):
+        _combined_raw = (_READINESS_PREMIUMS["grid_interconnect_ready"]
+                         * _READINESS_PREMIUMS["substation_on_site"])
+        readiness_mult *= (1.45 / _combined_raw)   # ×0.892
+    # r-diminish: 4+ stacked premiums are correlated (a shovel-ready site tends to
+    # have several at once), so multiplicative stacking overstates. Dampen the
+    # premium ABOVE 1.0, scaling with how many are stacked. TUNABLE.
+    _n = len(readiness_applied)
+    if readiness_mult > 1.0 and _n >= 3:
+        readiness_mult = 1.0 + (readiness_mult - 1.0) * (0.95 ** (_n - 2))
     readiness_mult = round(readiness_mult, 3)
 
     # v2.1 item 2 — regression-fit per-MW baseline if we have ≥8 sized
@@ -2027,10 +2031,11 @@ function renderResults(d) {
   }
 
   if (d.comparable_sales && d.comparable_sales.length > 0) {
-    html += '<h3 style="margin-top:24px">Comparable transactions</h3>';
-    html += '<table><tr><th>Date</th><th>Target</th><th>Acquirer</th><th>Value</th><th>Type</th></tr>';
+    html += '<h3 style="margin-top:24px">Recent M&A in this market</h3>';
+    html += '<div style="font-size:11px;color:var(--muted);margin:-4px 0 8px">Market <b>context</b> — these are company / portfolio M&A (enterprise value), <b>not land comps</b>. The site value above is model-derived, not anchored to these.</div>';
+    html += '<table><tr><th>Date</th><th>Seller</th><th>Buyer</th><th>Deal value</th><th>MW</th><th>Type</th></tr>';
     d.comparable_sales.forEach(c => {
-      html += `<tr><td>${c.announced_date || '—'}</td><td>${c.target || '—'}</td><td>${c.acquirer || '—'}</td><td>${c.value_usd ? fmtM$(c.value_usd) : '—'}</td><td>${c.deal_type || '—'}</td></tr>`;
+      html += `<tr><td>${c.announced_date || '—'}</td><td>${c.target || '—'}</td><td>${c.acquirer || '—'}</td><td>${c.value_usd ? fmtM$(c.value_usd) : '—'}</td><td>${c.mw ? Math.round(c.mw) : '—'}</td><td>${c.deal_type || '—'}</td></tr>`;
     });
     html += '</table>';
   }
