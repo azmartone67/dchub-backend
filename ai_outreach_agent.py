@@ -501,7 +501,11 @@ def log_outreach(platform, action, endpoint=None, status='success', response_cod
         cursor.execute('''
             INSERT INTO ai_outreach_stats (platform, total_pings, successful_pings, last_ping, last_success)
             VALUES (%s, 1, %s, %s, %s)
-            ON CONFLICT DO NOTHING --
+            ON CONFLICT (platform) DO UPDATE SET
+                total_pings      = ai_outreach_stats.total_pings + 1,
+                successful_pings = ai_outreach_stats.successful_pings + EXCLUDED.successful_pings,
+                last_ping        = EXCLUDED.last_ping,
+                last_success     = COALESCE(EXCLUDED.last_success, ai_outreach_stats.last_success)
         ''', (
             platform,
             1 if status == 'success' else 0,
@@ -533,7 +537,7 @@ def _update_channel_scores():
                    COUNT(*) as total,
                    SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as successes
             FROM ai_outreach_log
-            WHERE created_at > datetime('now', '-7 days')
+            WHERE created_at::timestamptz > NOW() - INTERVAL '7 days'
             GROUP BY platform
         ''')
         rows = cursor.fetchall()
@@ -542,8 +546,8 @@ def _update_channel_scores():
         organic_total = cursor.fetchone()[0]
         
         cursor.execute('''
-            SELECT platform, COUNT(*) FROM organic_traffic_alerts 
-            WHERE is_organic = 1 AND detected_at > NOW() - INTERVAL '7 days'
+            SELECT platform, COUNT(*) FROM organic_traffic_alerts
+            WHERE is_organic = 1 AND detected_at::timestamptz > NOW() - INTERVAL '7 days'
             GROUP BY platform
         ''')
         organic_by_platform = {r[0]: r[1] for r in cursor.fetchall()}
@@ -569,7 +573,14 @@ def _update_channel_scores():
             cursor.execute('''
                 INSERT INTO outreach_channel_scores (channel, success_rate, total_attempts, total_successes, organic_signals, score, trend, last_updated)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT DO NOTHING --
+                ON CONFLICT (channel) DO UPDATE SET
+                    success_rate    = EXCLUDED.success_rate,
+                    total_attempts  = EXCLUDED.total_attempts,
+                    total_successes = EXCLUDED.total_successes,
+                    organic_signals = EXCLUDED.organic_signals,
+                    score           = EXCLUDED.score,
+                    trend           = EXCLUDED.trend,
+                    last_updated    = EXCLUDED.last_updated
             ''', (platform, success_rate, total, successes, organic_signals, score, trend, now))
         
         conn.commit()
@@ -722,8 +733,8 @@ def _get_adaptive_interval() -> int:
         cursor = conn.cursor()
         
         cursor.execute('''
-            SELECT COUNT(*) FROM organic_traffic_alerts 
-            WHERE is_organic = 1 AND detected_at > datetime('now', '-24 hours')
+            SELECT COUNT(*) FROM organic_traffic_alerts
+            WHERE is_organic = 1 AND detected_at::timestamptz > NOW() - INTERVAL '24 hours'
         ''')
         recent_organic = cursor.fetchone()[0]
         
@@ -1062,58 +1073,62 @@ def ping_discovery_endpoints():
 
 
 def check_for_organic_traffic():
-    """Check if we've received any organic (non-simulated) AI traffic"""
+    """Detect REAL external AI traffic (organic pickup) in the last ~30 min from the
+    CANONICAL source (mcp_tool_calls) and log it to organic_traffic_alerts, so the
+    self-learning engine (channel scores + adaptive interval) rewards channels that
+    actually convert. 'Organic' = a RECOGNIZED external AI platform that is NOT our own
+    internal/probe traffic — the same honest recognizer /reach + discovery use. Was
+    DEAD: it read a nonexistent `ai_requests` table with SQLite datetime() syntax."""
+    try:
+        from agent_network_effect import _is_recognized_platform, _is_internal_caller
+    except Exception:
+        return []
     conn = None
     try:
         conn = get_db()
         cursor = conn.cursor()
-        cursor.execute("SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'ai_requests')")
-        if not cursor.fetchone()[0]:
-            return {'organic_count': 0, 'recent_requests': [], 'note': 'ai_requests table not found'}
-        
-        cursor.execute('''
-            SELECT platform, user_agent, endpoint, created_at
-            FROM ai_requests
-            WHERE platform != 'direct'
-            AND created_at > datetime('now', '-5 minutes')
-            ORDER BY created_at DESC
-        ''')
-        
-        recent_requests = cursor.fetchall()
-        organic_traffic = []
-        
-        for req in recent_requests:
-            platform, user_agent, endpoint, created_at = req
-            is_organic = False
-            
-            if user_agent and (
-                '+http' in user_agent.lower() or 
-                'compatible' in user_agent.lower() or
-                len(user_agent) > 50
-            ):
-                is_organic = True
-                organic_traffic.append({
-                    'platform': platform,
-                    'user_agent': user_agent,
-                    'endpoint': endpoint,
-                    'detected_at': created_at
-                })
-                
-                cursor.execute('''
-                    INSERT INTO organic_traffic_alerts (platform, user_agent, endpoint, is_organic, detected_at)
-                    VALUES (%s, %s, %s, 1, %s)
-                ''', (platform, user_agent, endpoint, created_at))
-        
+        # Recent real tool calls aggregated per platform. 30-min window ~ cron cadence;
+        # the dedup below keeps at most one alert per platform per window.
+        cursor.execute("""
+            SELECT LOWER(COALESCE(platform, '')) AS p,
+                   MAX(COALESCE(user_agent, '')) AS ua,
+                   COUNT(*)                      AS calls
+            FROM mcp_tool_calls
+            WHERE created_at > NOW() - INTERVAL '30 minutes'
+            GROUP BY p
+        """)
+        organic = []
+        for p, ua, calls in (cursor.fetchall() or []):
+            p = (p or '').strip()
+            if not _is_recognized_platform(p) or _is_internal_caller(p):
+                continue
+            # one alert per platform per ~25 min so repeated cycles don't double-log
+            cursor.execute("""
+                SELECT 1 FROM organic_traffic_alerts
+                WHERE platform = %s
+                  AND detected_at::timestamptz > NOW() - INTERVAL '25 minutes'
+                LIMIT 1
+            """, (p,))
+            if cursor.fetchone():
+                continue
+            detected = datetime.now(timezone.utc).isoformat()
+            cursor.execute("""
+                INSERT INTO organic_traffic_alerts (platform, user_agent, endpoint, is_organic, detected_at)
+                VALUES (%s, %s, %s, 1, %s)
+            """, (p, (ua or '')[:300], 'mcp_tool_calls', detected))
+            organic.append({'platform': p, 'user_agent': ua, 'endpoint': 'mcp', 'detected_at': detected})
         conn.commit()
-        
-        if organic_traffic:
-            logger.info(f"🎉 ORGANIC AI TRAFFIC DETECTED: {len(organic_traffic)} requests!")
-            for traffic in organic_traffic:
-                logger.info(f"   Platform: {traffic['platform']}, Endpoint: {traffic['endpoint']}")
-        
-        return organic_traffic
+        if organic:
+            plats = sorted({o['platform'] for o in organic})
+            logger.info(f"🎉 ORGANIC AI TRAFFIC: {len(organic)} real external platform(s) active: {plats}")
+        return organic
     except Exception as e:
         logger.error(f"Error checking organic traffic: {e}")
+        try:
+            if conn:
+                conn.rollback()
+        except Exception:
+            pass
         return []
     finally:
         if conn:
@@ -1472,14 +1487,14 @@ def get_outreach_stats():
         
         cursor.execute('''
             SELECT COUNT(*) FROM ai_outreach_log 
-            WHERE created_at > datetime('now', '-24 hours')
+            WHERE created_at::timestamptz > NOW() - INTERVAL '24 hours'
         ''')
         last_24h = cursor.fetchone()[0]
         
         cursor.execute('''
             SELECT platform, COUNT(*) as count 
             FROM ai_outreach_log 
-            WHERE created_at > datetime('now', '-24 hours')
+            WHERE created_at::timestamptz > NOW() - INTERVAL '24 hours'
             GROUP BY platform
         ''')
         by_platform = {row[0]: row[1] for row in cursor.fetchall()}
