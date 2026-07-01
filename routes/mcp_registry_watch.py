@@ -168,7 +168,10 @@ _REGISTRIES = [
     {
         "id":           "pulsemcp",
         "name":         "PulseMCP directory",
-        "url":          "https://api.pulsemcp.com/v0beta/servers?query=dchub",
+        # 2026-07-01: the api.pulsemcp.com v0beta query endpoint now 410s
+        # (deprecated/rate-limited for everyone) — probe the canonical HTML
+        # server page instead (200 + contains "dchub", verified live).
+        "url":          "https://www.pulsemcp.com/servers/dchub",
         "submission_url": "https://www.pulsemcp.com/",
     },
     {
