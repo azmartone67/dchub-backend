@@ -23053,6 +23053,35 @@ def serve_sitemap_xml():
             """)
             fac_rows = c.fetchall()
 
+        # SEO coverage (2026-07-01): union the curated legacy `facilities` table
+        # (~15.8k facilities) into the facility URL set. It was NEVER in the sitemap
+        # (only discovered_facilities was), yet those pages render live 200 under the
+        # IDENTICAL slug scheme (provider-slug + name-slug + stable_hash8 — verified
+        # byte-identical). Their absence = the bulk of GSC's ~30k "not indexed". The
+        # seen_slugs dedup in the facility loop below drops any overlap with discovered.
+        try:
+            c.execute("""
+                SELECT name, provider, city, state, country, id, first_seen
+                FROM facilities
+                WHERE name IS NOT NULL AND name != ''
+                LIMIT 50000
+            """)
+            fac_rows = list(fac_rows) + list(c.fetchall())
+        except Exception:
+            try: conn.rollback()
+            except Exception: pass
+            try:
+                c.execute("""
+                    SELECT name, provider, NULL, NULL, NULL, id, NULL
+                    FROM facilities
+                    WHERE name IS NOT NULL AND name != ''
+                    LIMIT 50000
+                """)
+                fac_rows = list(fac_rows) + list(c.fetchall())
+            except Exception:
+                try: conn.rollback()
+                except Exception: pass
+
         # Get unique country/state combos for location pages
         c.execute("""
             SELECT DISTINCT country, state
