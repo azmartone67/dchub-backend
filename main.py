@@ -1715,6 +1715,15 @@ try:
     except Exception as _msh:
         import logging
         logging.getLogger(__name__).warning('media_showcase wiring failed: %s', _msh)
+    # 2026-07-01: free-tier audience export for upsell campaigns (CSV of free
+    # users w/ email, name split, paid + suppressed excluded).
+    try:
+        from routes.audience_export import audience_export_bp
+        app.register_blueprint(audience_export_bp)
+        print("[main] audience_export_bp registered: /api/v1/admin/audience/free-users[.csv]", flush=True)
+    except Exception as _aex:
+        import logging
+        logging.getLogger(__name__).warning('audience_export wiring failed: %s', _aex)
     try:
         from routes.brain_narrative import brain_narrative_bp
         app.register_blueprint(brain_narrative_bp)
