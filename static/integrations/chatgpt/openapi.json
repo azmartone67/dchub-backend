@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "DC Hub — Data Center Intelligence Platform",
-    "description": "DC Hub is a global data center intelligence platform tracking 21,000+ facilities across 170+ countries. Provides real-time energy pricing, grid fuel mix, carbon intensity, M&A transactions, capacity pipeline, site scoring, and market intelligence for AI agents and investment analysts. Free tier endpoints require no authentication. Pro tier endpoints require a Bearer token.",
+    "description": "DC Hub is a global data center intelligence platform tracking 21,000+ facilities across 170+ countries. Provides real-time energy pricing, grid fuel mix, carbon intensity, M&A transactions, capacity pipeline, site scoring, and market intelligence for AI agents and investment analysts. Free tier endpoints require no authentication. Full-data endpoints require an X-API-Key header (claim a free key via the claim_free_key MCP tool or POST /api/v1/keys/claim).",
     "version": "1.0.0",
     "contact": {
       "name": "DC Hub",
@@ -631,5 +631,16 @@
         }
       }
     }
-  }
+  },
+  "components": {
+    "securitySchemes": {
+      "apiKey": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-API-Key",
+        "description": "DC Hub API key. Claim a free key (no email) via the claim_free_key MCP tool at https://dchub.cloud/mcp or POST https://dchub.cloud/api/v1/keys/claim. Free tier works without a key (10 calls/day)."
+      }
+    }
+  },
+  "security": [ {}, { "apiKey": [] } ]
 }

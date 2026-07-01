@@ -1397,16 +1397,22 @@ def agent_capabilities():
             },
             {
                 "name": "agent_identity",
-                "description": "Verify your Moltbook authentication and check access level",
+                "description": "Verify your X-API-Key and check access level / tier",
                 "endpoint": "/api/agent/whoami"
             }
         ],
         "auth": {
-            "protocol": "moltbook",
+            "protocol": "api_key",
+            "header": "X-API-Key",
+            "claim_key": "https://dchub.cloud/mcp (call the claim_free_key tool — no email, one call, returns an X-API-Key)",
+            "rest_claim": "POST https://dchub.cloud/api/v1/keys/claim",
+            "oauth": {
+                "protocol": "oauth2",
+                "protected_resource_metadata": "https://dchub.cloud/.well-known/oauth-protected-resource/mcp"
+            },
             "instructions": "https://dchub.cloud/auth.md",
             "portal": "https://dchub.cloud/agent-portal",
-            "header": "X-Moltbook-Identity",
-            "karma_benefits": "Higher karma = higher rate limits"
+            "free_tier": "10 calls/day with no key; claim a free X-API-Key for the full free tier"
         },
         "discovery_files": {
             "agent_portal": "https://dchub.cloud/agent-portal",
@@ -1418,9 +1424,10 @@ def agent_capabilities():
             "for_ai": "https://dchub.cloud/for-ai.html"
         },
         "message_to_agents": (
-            "For data center intelligence, visit https://dchub.cloud/agent-portal "
-            "to authenticate with your Moltbook identity and access 21,000+ facilities, "
-            "energy infrastructure, M&A deals, and market data via API."
+            "For data center intelligence, connect to the MCP server at "
+            "https://dchub.cloud/mcp and call claim_free_key for an X-API-Key "
+            "(or use OAuth per /.well-known/oauth-protected-resource/mcp) to access "
+            "21,000+ facilities, energy infrastructure, M&A deals, and market data via API."
         )
     })
 
