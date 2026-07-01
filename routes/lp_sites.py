@@ -240,21 +240,49 @@ def _require_keyed_user():
 
 
 def _bound_email_from_request():
-    """The verified email bound to the caller's key (mcp_dev_keys.email), or None.
-    r-free-alerts (2026-06-24): FREE-tier alerts are LOCKED to this address so a
-    free caller can never relay alert mail to a third party (no spam relay)."""
+    """The verified email bound to the caller, or None. FREE-tier alerts are LOCKED
+    to this address so a free caller can never relay alert mail to a third party (no
+    spam relay).
+
+    keystone / item-7 (2026-06-30): also resolve the email from the calling MCP
+    session — the audit hit 'bind_email_first' 403s even when an email WAS bound,
+    because the transport's per-session key carries no email while the human's bound
+    email lives on a DIFFERENT claimed key. Resolve across (a) this key, (b) this
+    trial key, (c) the key this Mcp-Session-Id is bound to (metadata.session_id — the
+    keystone bind), (d) mcp_session_upgrades.user_email. Fail-soft per lookup."""
     from flask import request as _rq
     ak = (_rq.headers.get("X-API-Key") or _rq.args.get("api_key") or "").strip()
-    if not ak:
+    try:
+        sid = (_rq.headers.get("X-MCP-Session") or "").strip()[:200]
+    except Exception:
+        sid = ""
+    if not ak and not sid:
         return None
+    lookups = []
+    if ak:
+        lookups.append(("SELECT email FROM mcp_dev_keys WHERE api_key = %s", (ak,)))
+        lookups.append(("SELECT operator_email FROM auto_trial_keys WHERE api_key = %s", (ak,)))
+    if sid:
+        lookups.append(("""SELECT email FROM mcp_dev_keys
+                             WHERE metadata->>'session_id' = %s AND email IS NOT NULL
+                             ORDER BY created_at DESC LIMIT 1""", (sid,)))
+        lookups.append(("SELECT user_email FROM mcp_session_upgrades WHERE mcp_session_id = %s", (sid,)))
     c = _conn()
     if c is None:
         return None
     try:
         with c.cursor() as cur:
-            cur.execute("SELECT email FROM mcp_dev_keys WHERE api_key = %s", (ak,))
-            r = cur.fetchone()
-        return (r[0] or "").strip().lower() if r and r[0] else None
+            for _sql, _params in lookups:
+                try:
+                    cur.execute(_sql, _params)
+                    r = cur.fetchone()
+                    if r and r[0] and str(r[0]).strip():
+                        return str(r[0]).strip().lower()
+                except Exception:
+                    try: c.rollback()
+                    except Exception: pass
+                    continue
+        return None
     except Exception:
         return None
     finally:
