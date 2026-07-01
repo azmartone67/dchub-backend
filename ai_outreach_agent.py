@@ -1204,89 +1204,134 @@ def broadcast_to_ai_platforms():
     return results
 
 
-# Self-onboarding markers to EXCLUDE (honest: never onboard our own infra, probes,
-# health-checkers, or generic transport buckets — the signal-inflation rule).
-_AUTO_ONBOARD_EXCLUDE = (
-    'mcp', 'unknown', 'direct', 'selfheal', 'self-heal', 'probe', 'healthcheck',
-    'monitor', 'curl', 'postman', 'python-requests', 'node-fetch', 'node', 'fetch',
-    'test', 'funnel', 'internal', 'dchub', 'scoringengine', 'researchclient',
-    'agentdiscovery', 'smitheryconnect', 'client',
-)
-
-
 def discover_new_platforms():
     """Self-onboarding (2026-07-01) — the missing autonomy. The outreach roster was
     hand-maintained, so a NEW platform that started querying DC Hub stayed invisible
     until someone added it (why Mistral/HF/base44 needed a manual roster edit). This
-    detects platforms with REAL recent MCP traffic that aren't rostered/connected yet
-    and auto-onboards them into connected_ai_platforms, so the loop encourages them.
-    HONEST: only onboards platforms with genuine traffic (>=3 distinct sessions AND
-    >=10 calls in 30d); excludes internal/probe/UUID/generic; marks status
-    'auto_discovered' for a human glance. Never invents a platform or a number."""
+    closes the loop by reusing the CANONICAL honest recognizer that already powers
+    /api/v1/reach, /api/agents/registry and /stats/live-proof — so what we onboard is
+    exactly what the reach dashboard counts (no parallel, drifting logic; and no junk
+    buckets like 'anonymous'/'mcp' that a hand-rolled denylist would miss).
+
+    Two honest tiers:
+      TIER 1 (auto-onboard): a RECOGNIZED external AI platform (known-vendor token)
+        with real 30d traffic that isn't rostered/connected yet -> UPSERT into
+        connected_ai_platforms (status 'auto_discovered'). Safe: it's a known vendor,
+        never a fabricated one.
+      TIER 2 (flag-for-review): an UNrecognized, non-internal, non-UUID platform
+        string with high volume -> logged as 'discovery_candidate' for a human to vet
+        + add to the allowlist. NEVER auto-onboarded (no invented vendors).
+    Never invents a platform or a number."""
+    # Lazy import so this module never hard-depends on the flask blueprint module.
+    try:
+        from agent_network_effect import (
+            _live_agent_rows, _is_recognized_platform, _is_internal_caller,
+            _PLATFORM_DISPLAY, _UUID_RE_STR,
+        )
+        import re as _re_disc
+        _uuid_re = _re_disc.compile(_UUID_RE_STR)
+    except Exception as e:
+        logger.warning(f"discover_new_platforms: canonical recognizer unavailable ({e}); skipping")
+        return []
+
+    # "Already handled" = every roster platform, by BOTH its key and its display name,
+    # so openai/chatgpt-style aliases don't get re-onboarded as duplicates.
+    handled = set()
+    for k in AI_PLATFORMS.keys():
+        lk = str(k).lower().strip()
+        handled.add(lk)
+        handled.add(_PLATFORM_DISPLAY.get(lk, lk.title()).lower())
+
     newly, conn = [], None
     try:
         conn = get_db()
         cur = conn.cursor()
         cur.execute("""
-            SELECT LOWER(COALESCE(platform, '')) AS p,
-                   COUNT(*) AS calls, COUNT(DISTINCT session_id) AS sessions
-            FROM mcp_tool_calls
-            WHERE created_at >= NOW() - INTERVAL '30 days'
-            GROUP BY p
-            HAVING COUNT(DISTINCT session_id) >= 3 AND COUNT(*) >= 10
-            ORDER BY sessions DESC
+            CREATE TABLE IF NOT EXISTS connected_ai_platforms (
+                id SERIAL PRIMARY KEY, name TEXT NOT NULL, url TEXT, type TEXT,
+                integration_card TEXT, fit_score INTEGER,
+                status TEXT NOT NULL DEFAULT 'auto_approved', source TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), UNIQUE(name))
         """)
-        rows = cur.fetchall() or []
-        known = {str(k).lower() for k in AI_PLATFORMS.keys()}
-        for row in rows:
-            p = (row[0] or '').lower().strip()
-            calls, sessions = int(row[1] or 0), int(row[2] or 0)
-            if not p or len(p) < 3:
+        conn.commit()
+
+        # ---- TIER 1: recognized platforms with real traffic, not yet handled ----
+        rows, available = _live_agent_rows()   # canonical: allowlist + internal/UUID filtered
+        for r in ((rows or []) if available else []):
+            key = str(r.get('platform_key') or '').lower().strip()
+            display = str(r.get('agent') or key.title()).strip()
+            calls = int(r.get('tool_calls_30d') or 0)
+            if not key or calls < 3:
                 continue
-            if len(p) == 36 and p.count('-') == 4:            # UUID-shaped session leakage
-                continue
-            if any(m in p for m in _AUTO_ONBOARD_EXCLUDE):
-                continue
-            if p in known:
+            if key in handled or display.lower() in handled:
                 continue
             try:
-                cur.execute("SELECT 1 FROM connected_ai_platforms WHERE LOWER(name) = %s LIMIT 1", (p,))
+                cur.execute("SELECT 1 FROM connected_ai_platforms WHERE LOWER(name) = %s LIMIT 1",
+                            (display.lower(),))
                 if cur.fetchone():
                     continue
             except Exception:
                 try: conn.rollback()
                 except Exception: pass
-            fit = min(100, 45 + sessions)                     # more distinct callers -> higher fit
-            card = (f"Auto-discovered from live MCP traffic: {sessions} distinct sessions / "
-                    f"{calls} calls in the last 30 days. Queued into the outreach loop.")
+            fit = min(100, 55 + min(calls, 40))
+            card = (f"Auto-discovered from live MCP traffic: {calls} tool calls in the last "
+                    f"30 days (recognized AI platform). Queued into the outreach loop.")
             try:
-                cur.execute("""
-                    CREATE TABLE IF NOT EXISTS connected_ai_platforms (
-                        id SERIAL PRIMARY KEY, name TEXT NOT NULL, url TEXT, type TEXT,
-                        integration_card TEXT, fit_score INTEGER,
-                        status TEXT NOT NULL DEFAULT 'auto_approved', source TEXT,
-                        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), UNIQUE(name))
-                """)
                 cur.execute("""
                     INSERT INTO connected_ai_platforms
                         (name, type, integration_card, fit_score, status, source)
                     VALUES (%s, 'ai_platform', %s, %s, 'auto_discovered', 'auto_discovery')
                     ON CONFLICT (name) DO NOTHING
-                """, (p.title(), card, fit))
+                """, (display, card, fit))
                 conn.commit()
             except Exception:
                 try: conn.rollback()
                 except Exception: pass
                 continue
             try:
-                log_outreach(p, 'auto_discovered', message=f'{sessions} sessions / {calls} calls (30d) -> onboarded')
+                log_outreach(key, 'auto_discovered',
+                             message=f'{calls} calls/30d (recognized) -> onboarded as "{display}"')
             except Exception:
                 pass
-            newly.append({'platform': p, 'sessions': sessions, 'calls': calls, 'fit': fit})
+            newly.append({'platform': key, 'display': display, 'calls': calls, 'fit': fit})
+
+        # ---- TIER 2: UNrecognized high-volume strings -> flag for human review ----
+        try:
+            cur.execute("""
+                SELECT LOWER(COALESCE(platform,'')) AS p,
+                       COUNT(*) AS calls, COUNT(DISTINCT session_id) AS sessions
+                FROM mcp_tool_calls
+                WHERE created_at >= NOW() - INTERVAL '30 days'
+                GROUP BY p
+                HAVING COUNT(*) >= 25 AND COUNT(DISTINCT session_id) >= 5
+                ORDER BY sessions DESC
+                LIMIT 25
+            """)
+            for p, calls, sessions in (cur.fetchall() or []):
+                p = str(p or '').strip()
+                if not p or len(p) < 3:
+                    continue
+                if _is_recognized_platform(p) or _is_internal_caller(p) or _uuid_re.match(p):
+                    continue
+                try:
+                    log_outreach(p, 'discovery_candidate',
+                                 message=(f'UNrecognized platform, {sessions} sessions / {calls} calls in '
+                                          f'30d — human: add to allowlist if a real AI platform'))
+                except Exception:
+                    pass
+        except Exception as _e2:
+            try: conn.rollback()
+            except Exception: pass
+            logger.warning(f"discover_new_platforms tier-2 failed: {_e2}")
+
         if newly:
-            logger.info(f"   🌱 SELF-ONBOARDED {len(newly)} new platform(s): {[n['platform'] for n in newly]}")
+            logger.info(f"   🌱 SELF-ONBOARDED {len(newly)} recognized platform(s): "
+                        f"{[n['platform'] for n in newly]}")
     except Exception as e:
         logger.warning(f"discover_new_platforms failed: {e}")
+        try:
+            if conn: conn.rollback()
+        except Exception: pass
     finally:
         try:
             if conn:
