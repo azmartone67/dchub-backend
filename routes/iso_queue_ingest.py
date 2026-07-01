@@ -55,6 +55,9 @@ PARSER_STATUS = {
     "CAISO":  "real (PublicQueueReport.xlsx 'Grid GenerationQueue'; Net MWs to Grid, status=ACTIVE)",
     "NYISO":  "real (public queue XLSX 'Interconnection Queue' sheet, SP MW via openpyxl)",
     "ISO-NE": "real (public IRTT Public Queue HTML table, Status=A active, Summer MW)",
+    "NESO":   "real (UK NESO TEC Register CKAN JSON; active non-Built, per-project MW Increase)",
+    "IESO":   "real (Ontario IESO CAA applicationstatusdata.json; active pipeline summer MW)",
+    "AESO":   "real (Alberta AESO monthly Connection Project List XLSX; active EN1 STS+DTS MW)",
 }
 
 
@@ -737,6 +740,226 @@ def ingest_iso_ne():
         return False, None, "; ".join(debug + [f"error: {type(e).__name__}: {str(e)[:100]}"])
 
 
+# ══════════════════════════════════════════════════════════════════════
+# INTERNATIONAL queues (2026-07-01) — extend the US-only queue globally.
+# Each writes into the same iso_queue_snapshots table via _upsert, so the
+# public /interconnection-queue/snapshot + get_grid_scoreboard surface them
+# with no extra wiring (the snapshot reads DISTINCT iso dynamically). All
+# three fetch server-side from public, no-auth sources (verified 2026-07-01);
+# Australia AEMO is intentionally absent — every AEMO path is behind a
+# Cloudflare bot-challenge WAF that a server/runner fetch cannot defeat.
+# ══════════════════════════════════════════════════════════════════════
+def ingest_neso():
+    """UK NESO (National Energy System Operator) — the GB transmission
+    connections queue = the TEC Register, served from the NESO CKAN data
+    portal as a public no-auth JSON datastore. Verified 2026-07-01: 2,215
+    projects; active (Project Status != 'Built', i.e. not yet in service)
+    ~610 GW — the largest single connections queue we track. Per-project
+    capacity = 'MW Increase / Decrease' (the MW this project adds;
+    'Cumulative Total Capacity' is a running site total → would double-count).
+    Demand-type projects (Plant Type contains 'Demand' — data centres / large
+    load) feed the DC-load share. Same (ok, parsed, debug) shape as the US
+    ingestors."""
+    debug = []
+    parsed = {}
+    rid = "17becbab-e3e8-473f-b303-3806f43a6a10"
+    url = ("https://api.neso.energy/api/3/action/datastore_search"
+           f"?resource_id={rid}&limit=5000")
+    try:
+        body, st = _fetch(url, timeout=30, accept="application/json")
+        debug.append(f"neso http_{st} kb={len(body)//1024}")
+        if st != 200:
+            return False, None, "; ".join(debug + ["fetch_failed"])
+        recs = (json.loads(body).get("result") or {}).get("records") or []
+        debug.append(f"records={len(recs)}")
+        if not recs:
+            return True, parsed, "; ".join(debug + ["no_records"])
+
+        def _num(v):
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                return 0.0
+
+        total_mw = dc_mw = 0.0
+        active_n = 0
+        for r in recs:
+            if (r.get("Project Status") or "") == "Built":
+                continue  # already energized — not queue
+            mw = _num(r.get("MW Increase / Decrease"))
+            if mw <= 0:
+                continue
+            total_mw += mw
+            active_n += 1
+            if "demand" in str(r.get("Plant Type") or "").lower():
+                dc_mw += mw
+        debug.append(f"active_n={active_n} total_mw={total_mw:.0f} dc_mw={dc_mw:.0f}")
+        if active_n > 0 and total_mw > 100:
+            parsed["queued_load_total_gw"] = round(total_mw / 1000.0, 1)
+            parsed["source_url"] = ("https://www.neso.energy/data-portal/"
+                                    "transmission-entry-capacity-tec-register")
+            parsed["source_name"] = ("UK NESO TEC Register "
+                                     "(active connections queue, per-project MW)")
+        if dc_mw > 0 and total_mw > 0:
+            parsed["queued_load_data_center_gw"] = round(dc_mw / 1000.0, 1)
+            parsed["queued_load_dc_share_pct"] = round(100.0 * dc_mw / total_mw, 1)
+        return True, parsed, "; ".join(debug)
+    except urllib.error.HTTPError as e:
+        return False, None, "; ".join(debug + [f"http_error: {e.code}"])
+    except Exception as e:
+        return False, None, "; ".join(debug + [f"error: {type(e).__name__}: {str(e)[:120]}"])
+
+
+def ingest_ieso():
+    """Ontario IESO — the Connection Assessment & Application (CAA) queue,
+    published as a public no-auth JSON file. Verified 2026-07-01: 2,032
+    applications; active pipeline (SiaStatus in Active / On-Hold / Part 1
+    SIA Comp) ~15.9 GW, of which ~9 GW is Type='Load' (data-centre / large
+    industrial) — a strong Ontario DC-demand signal. 'Complete' = energized,
+    'Withdrawn' = dead (both excluded). Size is a string like '85.1 MW<br>'
+    or '-' (equipment upgrades carry no MW) → strip tags/units; '-' = null."""
+    debug = []
+    parsed = {}
+    url = "https://www.ieso.ca/-/media/files/IESO/files/applicationstatusdata.json"
+    active_set = {"Active", "On-Hold", "Part 1 SIA Comp"}
+    try:
+        body, st = _fetch(url, timeout=30, accept="application/json")
+        debug.append(f"ieso http_{st} kb={len(body)//1024}")
+        if st != 200:
+            return False, None, "; ".join(debug + ["fetch_failed"])
+        rows = json.loads(body)
+        if not isinstance(rows, list):
+            return True, parsed, "; ".join(debug + ["not_a_list"])
+        debug.append(f"rows={len(rows)}")
+
+        def _psize(v):
+            if not v:
+                return None
+            s = re.sub(r"<[^>]+>", "", str(v)).replace("MW", "").replace(",", "").strip()
+            if s in ("", "-"):
+                return None
+            m = re.search(r"-?\d+(?:\.\d+)?", s)
+            return float(m.group(0)) if m else None
+
+        total_mw = dc_mw = 0.0
+        active_n = 0
+        for r in rows:
+            if r.get("SiaStatus") not in active_set:
+                continue
+            mw = _psize(r.get("Size"))
+            if not mw or mw <= 0:
+                continue
+            total_mw += mw
+            active_n += 1
+            if "load" in (str(r.get("Type") or "") + str(r.get("Name") or "")).lower():
+                dc_mw += mw
+        debug.append(f"active_n={active_n} total_mw={total_mw:.0f} dc_mw={dc_mw:.0f}")
+        if active_n > 0 and total_mw > 100:
+            parsed["queued_load_total_gw"] = round(total_mw / 1000.0, 1)
+            parsed["source_url"] = ("https://www.ieso.ca/en/Get-Involved/"
+                                    "Connection-Assessments/Connection-Application-Status")
+            parsed["source_name"] = "Ontario IESO CAA connection queue (active, summer MW)"
+        if dc_mw > 0 and total_mw > 0:
+            parsed["queued_load_data_center_gw"] = round(dc_mw / 1000.0, 1)
+            parsed["queued_load_dc_share_pct"] = round(100.0 * dc_mw / total_mw, 1)
+        return True, parsed, "; ".join(debug)
+    except urllib.error.HTTPError as e:
+        return False, None, "; ".join(debug + [f"http_error: {e.code}"])
+    except Exception as e:
+        return False, None, "; ".join(debug + [f"error: {type(e).__name__}: {str(e)[:120]}"])
+
+
+def ingest_aeso():
+    """Alberta AESO — the monthly Connection Project List (XLSX). AESO uniquely
+    tags 'Data Load' projects (Alberta's data-centre rush), so it carries a
+    first-class DC-load signal. Active pipeline = Status in Active / ISD Under
+    Review (Recently Energized = in service, Recently Cancelled = dead).
+    Capacity per project = EN1 STS MW (generation) + EN1 DTS MW (load). The
+    filename is month-dated (e.g. June-2026-Project-List.xlsx) and the current
+    month is often not published yet, so we walk back up to 4 months."""
+    debug = []
+    parsed = {}
+    months = ["January", "February", "March", "April", "May", "June",
+              "July", "August", "September", "October", "November", "December"]
+    now = datetime.datetime.now(datetime.timezone.utc)
+    xlsx_bytes = used = None
+    y, m = now.year, now.month
+    for _ in range(4):
+        fn = f"{months[m-1]}-{y}-Project-List.xlsx"
+        url = f"https://www.aeso.ca/assets/Uploads/project-reporting/{fn}"
+        try:
+            b, st = _fetch(url, timeout=40, return_bytes=True)
+            if st == 200 and len(b) > 8000:
+                xlsx_bytes, used = b, fn
+                break
+        except Exception as e:
+            debug.append(f"{fn}:{type(e).__name__}")
+        m -= 1
+        if m == 0:
+            m, y = 12, y - 1
+    if not xlsx_bytes:
+        return False, None, "; ".join(debug + ["no_monthly_file_found"])
+    debug.append(f"file={used} kb={len(xlsx_bytes)//1024}")
+    wb = _try_openpyxl(xlsx_bytes)
+    if not wb:
+        return True, parsed, "; ".join(debug + ["openpyxl_failed"])
+    ws = None
+    for nm in wb.sheetnames:
+        if "connection project" in str(nm).strip().lower():
+            ws = wb[nm]
+            break
+    if ws is None:
+        ws = wb.active
+    header = [str(c or "").strip().lower()
+              for c in next(ws.iter_rows(min_row=1, max_row=1, values_only=True))]
+
+    def _find(*kw):
+        for i, h in enumerate(header):
+            if all(k in h for k in kw):
+                return i
+        return None
+
+    c_sts, c_dts = _find("en1", "sts"), _find("en1", "dts")
+    c_status, c_type = _find("status"), _find("mw", "type")
+    debug.append(f"sheet='{ws.title}' sts={c_sts} dts={c_dts} status={c_status} type={c_type}")
+    if c_status is None or (c_sts is None and c_dts is None):
+        return True, parsed, "; ".join(debug + ["cols_not_found"])
+    active_set = {"active", "isd under review"}
+
+    def _cell(row, i):
+        try:
+            return float(row[i]) if i is not None and i < len(row) and row[i] is not None else 0.0
+        except (ValueError, TypeError):
+            return 0.0
+
+    total_mw = dc_mw = 0.0
+    active_n = 0
+    for row in ws.iter_rows(min_row=2, values_only=True):
+        stat = (str(row[c_status]).strip().lower()
+                if c_status < len(row) and row[c_status] else "")
+        if stat not in active_set:
+            continue
+        mw = _cell(row, c_sts) + _cell(row, c_dts)
+        if mw <= 0:
+            continue
+        total_mw += mw
+        active_n += 1
+        mtype = (str(row[c_type]).lower()
+                 if c_type is not None and c_type < len(row) and row[c_type] else "")
+        if "data" in mtype or "load" in mtype:
+            dc_mw += mw
+    debug.append(f"active_n={active_n} total_mw={total_mw:.0f} dc_mw={dc_mw:.0f}")
+    if active_n > 0 and total_mw > 50:
+        parsed["queued_load_total_gw"] = round(total_mw / 1000.0, 1)
+        parsed["source_url"] = ("https://www.aeso.ca/grid/connecting-to-the-grid/"
+                                "connection-project-reporting/")
+        parsed["source_name"] = f"Alberta AESO Connection Project List (active; {used})"
+    if dc_mw > 0 and total_mw > 0:
+        parsed["queued_load_data_center_gw"] = round(dc_mw / 1000.0, 1)
+        parsed["queued_load_dc_share_pct"] = round(100.0 * dc_mw / total_mw, 1)
+    return True, parsed, "; ".join(debug)
+
+
 INGESTORS = {
     "ERCOT":  ingest_ercot,
     "PJM":    ingest_pjm,
@@ -745,6 +968,10 @@ INGESTORS = {
     "CAISO":  ingest_caiso,
     "NYISO":  ingest_nyiso,
     "ISO-NE": ingest_iso_ne,
+    # International (2026-07-01)
+    "NESO":   ingest_neso,   # United Kingdom (NESO TEC Register)
+    "IESO":   ingest_ieso,   # Canada — Ontario
+    "AESO":   ingest_aeso,   # Canada — Alberta
 }
 
 
@@ -843,9 +1070,10 @@ def ingest_all():
         "isos_with_new_data": with_data,
         "isos_failed":  len(INGESTORS) - healthy,
         "results": results,
-        "note": "Real parsers: ERCOT/PJM/NYISO/CAISO (XLSX), MISO (JSON), "
-                "SPP (CSV) — 6 of 7. ISO-NE heartbeat-only (queue file URL moved). "
-                "Empty parse result -> heartbeat_touch (no NULL rows inserted).",
+        "note": "US: ERCOT/PJM/NYISO/CAISO (XLSX), MISO (JSON), SPP (CSV), "
+                "ISO-NE (HTML). International: UK NESO (CKAN JSON), Ontario IESO "
+                "(JSON), Alberta AESO (XLSX). Empty parse -> heartbeat_touch "
+                "(no NULL rows). Australia AEMO absent (Cloudflare bot-WAF).",
     }), 200 if healthy == len(INGESTORS) else 207
 
 
