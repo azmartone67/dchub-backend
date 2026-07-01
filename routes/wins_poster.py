@@ -502,6 +502,16 @@ def compose_win_post(lead: dict, platform: str = "linkedin") -> str | None:
     if not _fence_safe(text):
         log.warning(f"[wins] composed post hit a banned over-claim, skipping: {lead.get('win_key')}")
         return None
+    # Item 8 (2026-06-30): append the one canonical reach CTA so every win post
+    # ends with a connect line ("free, call claim_free_key · $10 = 1,000 calls").
+    # Appended AFTER the fence/number-lead guards so those still validate the
+    # analyst body; the CTA itself is known fence-safe. Fail-soft: if the shared
+    # module can't import, the post still ships without the CTA.
+    try:
+        from media_cta import append_reach_cta
+        text = append_reach_cta(text, short=(platform in ("twitter", "x", "bluesky")))
+    except Exception:
+        pass
     return text
 
 

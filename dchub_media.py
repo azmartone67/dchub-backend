@@ -98,7 +98,15 @@ class Generator:
         lines.append("Track every market live → dchub.cloud/dcpi")
         lines.append("")
         lines.append("#DataCenters #DCPI #PowerInfrastructure #AI")
-        return "\n".join(lines)
+        text = "\n".join(lines)
+        # Item 8 (2026-06-30): append the one canonical reach CTA (connect line).
+        # Fail-soft — the daily brief still ships if the shared module is missing.
+        try:
+            from media_cta import append_reach_cta
+            text = append_reach_cta(text)
+        except Exception:
+            pass
+        return text
 
     def generate_chart_png(self, payload):
         try:

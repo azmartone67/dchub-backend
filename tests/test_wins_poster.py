@@ -171,7 +171,11 @@ def test_ship_post_prefers_clean_llm_draft():
         "_metric_snippet": "Real-time grid headroom for 38 ISO markets",
         "_llm_draft": clean,
     }, "linkedin")
-    assert text == clean, "a number-led, fence-safe LLM draft should be used verbatim"
+    # Item 8 (2026-06-30): a clean LLM draft is used verbatim as the BODY, then
+    # the one canonical reach CTA is appended (every generated post ends with it).
+    assert text.startswith(clean), "a number-led, fence-safe LLM draft should lead the post verbatim"
+    from media_cta import REACH_CTA
+    assert text.endswith(REACH_CTA), "the canonical reach CTA should be appended to the post"
 
 
 def test_detect_ship_win_is_in_autopilot_loop():

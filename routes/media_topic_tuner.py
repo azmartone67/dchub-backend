@@ -858,6 +858,13 @@ def create_build_top10_series(start_date: datetime.date | None = None) -> dict[s
                     + "\n\nFull live ranking & methodology:\n" + li_url
                     + "\n\n#datacenter #DCPI #infrastructure"
                 )
+                # Item 8 (2026-06-30): append the one canonical reach CTA so the
+                # BUILD-top10 series posts also end with a connect line. Fail-soft.
+                try:
+                    from media_cta import append_reach_cta
+                    body = append_reach_cta(body)
+                except Exception:
+                    pass
                 # Persist the series row + enqueue social_media_posts.
                 try:
                     cur.execute("""
