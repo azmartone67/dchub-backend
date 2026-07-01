@@ -1555,6 +1555,17 @@ def _last_action_age_minutes(cur, pattern: str, url: str | None) -> int | None:
 # no human in the loop. Internal-only effect (suppresses actions; never adds any).
 _QUARANTINE_FAIL_THRESHOLD = 3      # verify-failures in 24h with 0 verified fixes
 _QUARANTINE_WINDOW_HOURS   = 24     # bench duration before auto-retry
+# Runaway auto-immunize (item 16, 2026-06-30): a pattern whose fail_count has
+# crossed this bar is a proven runaway (e.g. 7 patterns at >=200) — the plain
+# 24h auto-release just lets it re-fire, re-flood, and re-quarantine forever.
+# Keep any row at/over this fail_count benched regardless of the 24h window
+# (still releasable via released_at set by a human). Matches
+# brain_findings_writer.RUNAWAY_SEEN_THRESHOLD=200. Plain env read (not
+# _env_int, which is defined below this line at module-load time).
+try:
+    _QUARANTINE_RUNAWAY_FAIL = int(os.environ.get("BRAIN_QUARANTINE_RUNAWAY_FAIL", "200"))
+except Exception:
+    _QUARANTINE_RUNAWAY_FAIL = 200
 _QUAR_CACHE = {"set": frozenset(), "ts": 0.0}
 _QUAR_TTL_S = 60.0
 
@@ -1815,10 +1826,15 @@ def _quarantined_patterns() -> frozenset:
     if c is not None:
         try:
             with c.cursor() as cur:
+                # Item 16 (2026-06-30): runaway rows (fail_count >= RUNAWAY bar)
+                # stay benched regardless of the 24h auto-release window — the
+                # plain window otherwise lets a proven runaway re-fire/re-flood
+                # forever. released_at (human release) still frees them.
                 cur.execute("""SELECT pattern_name FROM brain_pattern_quarantine
                                 WHERE released_at IS NULL
-                                  AND quarantined_at >= NOW() - make_interval(hours => %s)""",
-                            (_QUARANTINE_WINDOW_HOURS,))
+                                  AND (quarantined_at >= NOW() - make_interval(hours => %s)
+                                       OR fail_count >= %s)""",
+                            (_QUARANTINE_WINDOW_HOURS, _QUARANTINE_RUNAWAY_FAIL))
                 _set = set(r[0] for r in cur.fetchall())
                 # Loop 3c: effect-aware bench — patterns that return 2xx but whose
                 # verified-effect record is chronically all-failure (0 successes).
