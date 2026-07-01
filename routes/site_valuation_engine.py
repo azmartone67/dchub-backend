@@ -1410,9 +1410,9 @@ th { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spa
   </div>
 
   <form id="valForm">
-    <label>Lat &nbsp;<span style="color:var(--accent2);font-size:11px">[-90 → 90]</span><br><input id="lat" type="number" step="0.0001" min="-90" max="90" value="33.45" required></label>
-    <label>Lon &nbsp;<span style="color:var(--accent2);font-size:11px">[-180 → 180, W is negative]</span><br><input id="lon" type="number" step="0.0001" min="-180" max="180" value="-112.07" required></label>
-    <label>Acres &nbsp;<span style="color:var(--accent2);font-size:11px">> 0</span><br><input id="acres" type="number" step="0.1" min="0.1" value="50" required></label>
+    <label>Lat &nbsp;<span style="color:var(--accent2);font-size:11px">[-90 → 90]</span><br><input id="lat" type="number" step="any" min="-90" max="90" value="33.45" inputmode="decimal" required></label>
+    <label>Lon &nbsp;<span style="color:var(--accent2);font-size:11px">[-180 → 180, W is negative]</span><br><input id="lon" type="number" step="any" min="-180" max="180" value="-112.07" inputmode="decimal" required></label>
+    <label>Acres &nbsp;<span style="color:var(--accent2);font-size:11px">> 0</span><br><input id="acres" type="number" step="any" min="0.1" value="50" inputmode="decimal" required></label>
     <label>Target MW &nbsp;<span style="color:var(--accent2);font-size:11px">> 0</span><br><input id="target_mw" type="number" step="1" min="1" value="100" required></label>
     <label>Deadline (months)<br><input id="deadline_months" type="number" step="1" min="1" max="120" value="24"></label>
     <label>CCGT heat rate (Btu/kWh) &nbsp;<span style="color:var(--accent2);font-size:11px">optional · default 6800</span><br><input id="heat_rate_ccgt" type="number" step="50" min="5500" max="12000" placeholder="6800"></label>
