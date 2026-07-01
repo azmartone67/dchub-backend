@@ -137,6 +137,11 @@ _VALUE_RANGE_SPREAD                  = 0.50      # ±50% low/high envelope
 # real signal between premium tiers.
 _VALUE_PER_MW_FLOOR_USD              = 150_000   # industry floor
 _VALUE_PER_MW_CEIL_USD               = 800_000   # industry ceiling (methodology footer)
+# r-entitled (2026-06-30): a FULLY ENTITLED site (zoned + permitted) is de-risked
+# — 12-24 mo + entitlement cost/risk removed — and trades ABOVE the raw-land
+# ceiling. When both entitlement flags are set the ceiling lifts to this, so
+# zoning + permits show as real dollars instead of vanishing under the $800K cap.
+_VALUE_PER_MW_CEIL_ENTITLED_USD      = 1_200_000  # ceiling for zoned + permitted sites
 
 # Site-readiness premium stack (multiplicative). A fully-shovel-ready
 # parcel (all 6 flags TRUE) gets a 3.35x premium over raw land:
@@ -832,40 +837,52 @@ def _pick_best_fit(scenarios: dict, dcpi: dict, deadline_months: int) -> dict:
     }
 
 
-def _site_sufficiency(target_mw: int, acres: float) -> dict:
+def _site_sufficiency(target_mw: int, acres: float, stories: int = 1) -> dict:
     """v2.2 — Acres-per-MW sufficiency check + surplus calculation.
     Surfaces 'is this parcel right-sized for the build?' as a separate
-    signal from the headline $/MW valuation."""
+    signal from the headline $/MW valuation.
+
+    r-density (2026-06-30): a MULTI-STORY campus fits more MW on the same land,
+    so the effective land per MW scales with `stories`. A 2-3 story AI hall
+    (~6 MW/acre) should NOT read 'undersized' at its raw single-story ac/MW.
+    Category is judged on the EFFECTIVE (story-adjusted) ratio; the raw ac/MW
+    is still reported."""
     if target_mw <= 0:
         return {"category": "invalid", "acres_per_mw": None}
-    actual_ratio = acres / target_mw
-    if actual_ratio < _ACRES_PER_MW_UNDERSIZED:
+    stories = max(1, int(stories or 1))
+    raw_ratio = acres / target_mw
+    eff_ratio = (acres * stories) / target_mw          # story-adjusted
+    _sn = f" (×{stories} stories → {eff_ratio:.2f} effective ac/MW)" if stories > 1 else ""
+    if eff_ratio < _ACRES_PER_MW_UNDERSIZED:
         category = "undersized"
-        note = (f"Only {actual_ratio:.2f} ac/MW — below the 1.0 ac/MW "
+        note = (f"Only {raw_ratio:.2f} ac/MW{_sn} — below the 1.0 ac/MW "
                   f"minimum needed to fit the campus + transformer + "
                   f"buffer. Buyer may not be able to build full {target_mw} MW.")
-    elif actual_ratio < _ACRES_PER_MW_TYPICAL_MIN:
+    elif eff_ratio < _ACRES_PER_MW_TYPICAL_MIN:
         category = "tight"
-        note = (f"{actual_ratio:.2f} ac/MW — workable for single-story "
-                  f"Tier III, no room for solar/expansion.")
-    elif actual_ratio <= _ACRES_PER_MW_TYPICAL_MAX:
+        note = (f"{raw_ratio:.2f} ac/MW{_sn} — workable, tight footprint; "
+                  f"little room for solar/expansion.")
+    elif eff_ratio <= _ACRES_PER_MW_TYPICAL_MAX:
         category = "typical"
-        note = (f"{actual_ratio:.2f} ac/MW — typical hyperscale campus "
+        note = (f"{raw_ratio:.2f} ac/MW{_sn} — typical hyperscale campus "
                   f"sizing with normal support footprint.")
-    elif actual_ratio <= _SURPLUS_THRESHOLD_ACRES_PER_MW:
+    elif eff_ratio <= _SURPLUS_THRESHOLD_ACRES_PER_MW:
         category = "comfortable"
-        note = (f"{actual_ratio:.2f} ac/MW — comfortable; room for "
+        note = (f"{raw_ratio:.2f} ac/MW{_sn} — comfortable; room for "
                   f"solar, substation, and modest expansion.")
     else:
         category = "surplus"
-        note = (f"{actual_ratio:.2f} ac/MW — surplus land. Acres above "
+        note = (f"{raw_ratio:.2f} ac/MW{_sn} — surplus land. Acres above "
                   f"{_SURPLUS_THRESHOLD_ACRES_PER_MW:.1f} ac/MW have "
                   f"separate residual industrial-land value.")
-    surplus_acres = max(0.0, acres - target_mw * _SURPLUS_THRESHOLD_ACRES_PER_MW)
+    # multi-story needs less land, so the surplus threshold per MW divides by stories
+    surplus_acres = max(0.0, acres - target_mw * _SURPLUS_THRESHOLD_ACRES_PER_MW / stories)
     return {
         "acres":                 acres,
+        "stories":               stories,
         "target_mw":             target_mw,
-        "acres_per_mw":          round(actual_ratio, 2),
+        "acres_per_mw":          round(raw_ratio, 2),
+        "effective_acres_per_mw": round(eff_ratio, 2),
         "typical_band":          [_ACRES_PER_MW_TYPICAL_MIN,
                                      _ACRES_PER_MW_TYPICAL_MAX],
         "category":              category,
@@ -878,7 +895,8 @@ def _site_sufficiency(target_mw: int, acres: float) -> dict:
 def _compute_valuation(target_mw: int, acres: float, dcpi: dict,
                         best_fit: dict, scenarios: dict,
                         readiness: dict = None,
-                        market_baseline: dict = None) -> dict:
+                        market_baseline: dict = None,
+                        stories: int = 1) -> dict:
     """Compute $-range valuation. v2.0 (2026-06-04) recalibrated to the
     user-supplied $150K-$800K/MW industry range. Uses:
       - $475K/MW baseline (midpoint of industry range)
@@ -962,17 +980,24 @@ def _compute_valuation(target_mw: int, acres: float, dcpi: dict,
     per_mw_uncapped = base_per_mw * verdict_mult * bestfit_mult * readiness_mult
     per_acre_uncapped = _VALUE_PER_ACRE_USD_BASE * verdict_mult * readiness_mult
 
-    # v2.1b clamp: keep per-MW inside the published $150K-$800K industry
-    # band. Note which boundary (if any) we hit so the UI can show a
-    # "saturated at ceiling" note for hyperscale-ready premium markets.
+    # v2.1b clamp: keep per-MW inside the published industry band. r-entitled
+    # (2026-06-30): a FULLY entitled site (zoned AND permitted) lifts the
+    # ceiling — the de-risking (12-24 mo + entitlement cost) is real value that
+    # would otherwise vanish under the $800K raw-land cap.
+    _entitled = bool(readiness.get("zoning_approved") and readiness.get("permits_in_hand"))
+    per_mw_ceiling = _VALUE_PER_MW_CEIL_ENTITLED_USD if _entitled else _VALUE_PER_MW_CEIL_USD
     per_mw_mid = max(_VALUE_PER_MW_FLOOR_USD,
-                     min(_VALUE_PER_MW_CEIL_USD, per_mw_uncapped))
-    if per_mw_mid >= _VALUE_PER_MW_CEIL_USD - 1:
+                     min(per_mw_ceiling, per_mw_uncapped))
+    if per_mw_mid >= per_mw_ceiling - 1:
         band_status = "ceiling_saturated"
     elif per_mw_mid <= _VALUE_PER_MW_FLOOR_USD + 1:
         band_status = "floor_saturated"
     else:
         band_status = "in_band"
+    # Entitlement premium = dollars the ceiling-lift unlocked for a zoned +
+    # permitted site (value above what the raw-land $800K cap would allow).
+    _raw_cap_price = min(_VALUE_PER_MW_CEIL_USD, per_mw_uncapped)
+    _entitlement_lift_per_mw = round(max(0.0, per_mw_mid - _raw_cap_price), 0)
     # Per-acre figure kept informational (shown in response) but NOT
     # summed into site_value_mid — see v2.2 rationale above.
     scale_factor = per_mw_mid / per_mw_uncapped if per_mw_uncapped > 0 else 1.0
@@ -983,9 +1008,23 @@ def _compute_valuation(target_mw: int, acres: float, dcpi: dict,
     # Surplus land (acres beyond ~3× target_mw) is added as a small
     # residual via the site_sufficiency block — those acres ARE separately
     # marketable as industrial land.
-    suff = _site_sufficiency(int(target_mw), float(acres))
+    suff = _site_sufficiency(int(target_mw), float(acres), stories=stories)
     surplus_residual = float(suff.get("residual_land_value") or 0)
     site_value_mid = per_mw_mid * target_mw + surplus_residual
+
+    entitlement = {
+        "entitled":       _entitled,
+        "ceiling_used":   per_mw_ceiling,
+        "raw_ceiling":    _VALUE_PER_MW_CEIL_USD,
+        "lift_per_mw":    _entitlement_lift_per_mw,
+        "lift_usd":       round(_entitlement_lift_per_mw * target_mw, 0),
+        "note": ("Zoned + permitted — entitlement removes ~12-24 mo and the "
+                 "entitlement cost/risk, so the site prices above the "
+                 f"${_VALUE_PER_MW_CEIL_USD:,.0f}/MW raw-land ceiling."
+                 if _entitled else
+                 "Needs BOTH zoning approved AND permits in hand to price above "
+                 f"the ${_VALUE_PER_MW_CEIL_USD:,.0f}/MW raw-land ceiling."),
+    }
 
     spread = _VALUE_RANGE_SPREAD
     return {
@@ -994,8 +1033,9 @@ def _compute_valuation(target_mw: int, acres: float, dcpi: dict,
         "$/mw_high":           round(per_mw_mid * (1 + spread), 0),
         "$/mw_uncapped":       round(per_mw_uncapped, 0),
         "$/mw_band_floor":     _VALUE_PER_MW_FLOOR_USD,
-        "$/mw_band_ceiling":   _VALUE_PER_MW_CEIL_USD,
+        "$/mw_band_ceiling":   per_mw_ceiling,
         "$/mw_band_status":    band_status,
+        "entitlement":         entitlement,
         # v2.2 — $/acre is INFORMATIONAL only (not summed into site_value_mid).
         # Data-center comps trade by the MW; land is implicit in $/MW.
         # Kept for context — these are the residual land values per acre,
@@ -1065,6 +1105,9 @@ def site_value():
         acres = float(payload.get("acres") or 0)
         target_mw = int(payload.get("target_mw") or 0)
         deadline_months = int(payload.get("deadline_months") or 24)
+        # r-density (2026-06-30): build stories (1 = single-story). A multi-story
+        # AI campus fits more MW per acre, so this drives the sufficiency check.
+        stories = max(1, min(6, int(payload.get("stories") or 1)))
     except (TypeError, ValueError):
         return jsonify({
             "ok": False,
@@ -1119,7 +1162,8 @@ def site_value():
     best_fit = _pick_best_fit(scenarios, dcpi, deadline_months)
     valuation = _compute_valuation(target_mw, acres, dcpi, best_fit,
                                      scenarios, readiness=readiness,
-                                     market_baseline=market_baseline)
+                                     market_baseline=market_baseline,
+                                     stories=stories)
     comps = _fetch_comparable_sales(slug, state)
 
     base = {
@@ -1415,6 +1459,7 @@ th { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spa
     <label>Acres &nbsp;<span style="color:var(--accent2);font-size:11px">> 0</span><br><input id="acres" type="number" step="any" min="0.1" value="50" inputmode="decimal" required></label>
     <label>Target MW &nbsp;<span style="color:var(--accent2);font-size:11px">> 0</span><br><input id="target_mw" type="number" step="1" min="1" value="100" required></label>
     <label>Deadline (months)<br><input id="deadline_months" type="number" step="1" min="1" max="120" value="24"></label>
+    <label>Building stories &nbsp;<span style="color:var(--accent2);font-size:11px">1 = single-story · 2-3 = AI hall</span><br><input id="stories" type="number" step="1" min="1" max="6" value="1"></label>
     <label>CCGT heat rate (Btu/kWh) &nbsp;<span style="color:var(--accent2);font-size:11px">optional · default 6800</span><br><input id="heat_rate_ccgt" type="number" step="50" min="5500" max="12000" placeholder="6800"></label>
     <label>Utility gas tariff ($/MMBtu) &nbsp;<span style="color:var(--accent2);font-size:11px">optional · default = state avg</span><br><input id="utility_gas_usd_mmbtu" type="number" step="0.05" min="0" max="40" placeholder="3.50"></label>
     <label>API Key (PRO unlock)<br><input id="api_key" type="password" placeholder="dchub_..." autocomplete="off"></label>
@@ -1487,7 +1532,7 @@ th { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spa
   <div id="results" class="hidden"></div>
 
   <p style="font-size:12px;color:var(--muted);margin-top:32px;">
-    Methodology: <a href="/api/v1/site/value/methodology" style="color:var(--accent2)">/api/v1/site/value/methodology</a> · Engine v2.1c (2026-06-04) — per-MW <b>hard-clamped to $150K-$800K industry band</b>; <b>verdict subtype</b> (constrained / weak_demand / developing) distinguishes Ashburn-class AVOID from rust-belt AVOID; <b>constraint-moat attenuation</b> lifts AVOID-by-constraint sites with grid+sub+permits in hand (Ashburn shovel-ready → ceiling-saturated again, not the AVOID floor); 4 editable assumptions via the ⚙ panel; 6 site-readiness premiums; ±50% envelope.
+    Methodology: <a href="/api/v1/site/value/methodology" style="color:var(--accent2)">/api/v1/site/value/methodology</a> · Engine v2.2 (2026-06-30) — per-MW clamped to a $150K raw floor and an $800K industry ceiling that <b>lifts to $1.2M for a fully entitled site</b> (zoned + permitted — de-risking prices above raw land); <b>verdict subtype</b> (constrained / weak_demand / developing) distinguishes Ashburn-class AVOID from rust-belt AVOID; <b>constraint-moat attenuation</b> lifts AVOID-by-constraint sites with grid+sub+permits in hand; <b>multi-story density</b> factor judges land sufficiency at ~stories×; 4 editable assumptions via the ⚙ panel; 6 site-readiness premiums; ±50% envelope.
   </p>
 </div>
 
@@ -1611,6 +1656,7 @@ document.getElementById('valForm').addEventListener('submit', async (e) => {
   const body = {
     lat, lon, acres, target_mw,
     deadline_months: parseInt(document.getElementById('deadline_months').value || 24),
+    stories: parseInt(document.getElementById('stories').value || 1),
     readiness: readiness,
   };
   if (Number.isFinite(hr) && hr > 0)  body.heat_rate_ccgt        = hr;
@@ -1720,10 +1766,14 @@ function renderResults(d) {
     const floor = d.valuation['$/mw_band_floor'] || 150000;
     const ceil  = d.valuation['$/mw_band_ceiling'] || 800000;
     const uncapped = d.valuation['$/mw_uncapped'];
+    const ent = d.valuation.entitlement || {};
     let bandNote = '';
     if (bandStatus === 'ceiling_saturated') {
+      const capMsg = ent.entitled
+        ? `raw stack would price at ${fmt$(uncapped)}/MW; a zoned + permitted site is de-risked and prices <b>above</b> the ${fmt$(ent.raw_ceiling || 800000)}/MW raw-land ceiling — clamped to the entitled cap ${fmt$(ceil)}/MW.`
+        : `raw stack would price at ${fmt$(uncapped)}/MW; clamped to industry cap ${fmt$(ceil)}/MW. Adding zoning + permits would lift this ceiling.`;
       bandNote = `<div style="margin-top:10px;background:rgba(245,158,11,0.08);border:1px solid var(--warn);border-radius:6px;padding:8px 10px;font-size:12px;color:var(--warn)">
-        <b>Saturated at ceiling:</b> raw stack would price at ${fmt$(uncapped)}/MW; clamped to industry cap ${fmt$(ceil)}/MW. Premium-tier hyperscale sites all land here — additional readiness past this point adds no signal.
+        <b>Saturated at ceiling:</b> ${capMsg}
       </div>`;
     } else if (bandStatus === 'floor_saturated') {
       bandNote = `<div style="margin-top:10px;background:rgba(220,38,38,0.08);border:1px solid #dc2626;border-radius:6px;padding:8px 10px;font-size:12px;color:#fca5a5">
@@ -1733,6 +1783,14 @@ function renderResults(d) {
       bandNote = `<div style="margin-top:8px;font-size:11px;color:var(--muted);opacity:0.7">
         In-band: per-MW ${fmt$(d.valuation['$/mw_mid'])} sits between industry floor ${fmt$(floor)} and ceiling ${fmt$(ceil)}.
       </div>`;
+    }
+    // Entitlement premium — the dollars zoning + permits unlock above the raw cap
+    if (ent.entitled && (ent.lift_usd || 0) > 0) {
+      bandNote += `<div style="margin-top:8px;background:rgba(16,185,129,0.10);border:1px solid #10b981;border-radius:6px;padding:8px 10px;font-size:12px;color:#10b981">
+        <b>Entitlement premium: +${fmtM$(ent.lift_usd)}</b> &nbsp;(${fmt$(ent.lift_per_mw)}/MW) — zoned + permitted removes ~12-24 mo and the entitlement cost/risk, pricing the site above the ${fmt$(ent.raw_ceiling || 800000)}/MW raw-land ceiling.
+      </div>`;
+    } else if (ent.entitled) {
+      bandNote += `<div style="margin-top:8px;font-size:11px;color:#10b981;opacity:0.85">✓ Zoned + permitted — entitlement is already priced into the $/MW (site sits below the raw-land ceiling, no lift needed).</div>`;
     }
     // v2.2 — site sufficiency block + MW-only breakdown
     const bd = d.valuation.site_value_breakdown || {};
