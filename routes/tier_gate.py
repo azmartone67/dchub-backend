@@ -99,6 +99,16 @@ def _resolve_caller_tier() -> tuple[str, dict]:
     IDENTIFIED/DEVELOPER/PRO/ENTERPRISE. Best-effort across multiple
     auth surfaces; defaults to FREE."""
     debug = {}
+    # r-tiermax (2026-06-30): collect EVERY tier signal (api-key + logged-in
+    # cookie/JWT) and return the HIGHEST, instead of short-circuiting on the
+    # api-key. A paying PRO user whose key tier lags (the billing tier-gap:
+    # Stripe sets users.plan=pro but the key's rate_limit_tier stays free) was
+    # stranded on the FREE teaser even while logged in as PRO — the api-key
+    # path returned first and the verified PRO cookie was never consulted.
+    # Max is safe: the cookie is a signature-VERIFIED JWT (can't be forged up),
+    # and require_tier needs only the access ceiling (per-key call quota is
+    # enforced separately).
+    candidates = []  # (TIER_NAME_UPPER, source)
 
     # 1. X-API-Key path — delegate to mcp_gatekeeper resolver
     api_key = request.headers.get("X-API-Key") or request.args.get("api_key")
@@ -106,8 +116,7 @@ def _resolve_caller_tier() -> tuple[str, dict]:
         try:
             from mcp_gatekeeper import resolve_tier, TIER_NAME
             tier_enum = resolve_tier(api_key)
-            tier_name = TIER_NAME.get(tier_enum, "FREE").upper()
-            return tier_name, {"source": "x-api-key", **debug}
+            candidates.append((TIER_NAME.get(tier_enum, "FREE").upper(), "x-api-key"))
         except Exception as e:
             debug["api_key_resolve_err"] = str(e)[:80]
 
@@ -132,44 +141,54 @@ def _resolve_caller_tier() -> tuple[str, dict]:
                     _p = _pyjwt.decode(token, _secret, algorithms=["HS256"])
                     _plan = (_p.get("plan") or _p.get("tier") or "").strip()
                     if _plan:
-                        return _plan.upper(), {"source": "cookie:jwt"}
+                        candidates.append((_plan.upper(), "cookie:jwt"))
             except Exception as e:
                 debug["jwt_decode_err"] = str(e)[:80]
-        try:
-            import os, psycopg2
-            db = os.environ.get("DATABASE_URL")
-            if db:
-                with psycopg2.connect(db, sslmode="require", connect_timeout=3) as c:
-                    with c.cursor() as cur:
-                        # Token can be a session token OR a raw api key.
-                        # Try api_keys table first (most common case).
-                        try:
-                            cur.execute("""
-                                SELECT COALESCE(rate_limit_tier, 'free')
-                                  FROM api_keys
-                                 WHERE key_prefix = %s OR key_hash = %s
-                                 LIMIT 1
-                            """, (token[:16], token))
-                            r = cur.fetchone()
-                            if r and r[0]:
-                                return str(r[0]).upper(), {"source": "cookie:api_keys"}
-                        except Exception:
-                            pass
-                        # Then users.plan
-                        try:
-                            cur.execute("""
-                                SELECT plan FROM users
-                                 WHERE session_token = %s OR id::text = %s
-                                 LIMIT 1
-                            """, (token, token))
-                            r = cur.fetchone()
-                            if r and r[0]:
-                                return str(r[0]).upper(), {"source": "cookie:users"}
-                        except Exception:
-                            pass
-        except Exception as e:
-            debug["cookie_resolve_err"] = str(e)[:80]
+        # DB fallback — only when we don't already hold a PRO+ signal (keeps the
+        # common logged-in path DB-free while still catching a plan that lives
+        # only in api_keys.rate_limit_tier / users.plan).
+        _have = max([_TIER_RANK.get(t, 0) for t, _ in candidates], default=0)
+        if _have < _TIER_RANK.get("PRO", 3):
+            try:
+                import os, psycopg2
+                db = os.environ.get("DATABASE_URL")
+                if db:
+                    with psycopg2.connect(db, sslmode="require", connect_timeout=3) as c:
+                        with c.cursor() as cur:
+                            # Token can be a session token OR a raw api key.
+                            # Try api_keys table first (most common case).
+                            try:
+                                cur.execute("""
+                                    SELECT COALESCE(rate_limit_tier, 'free')
+                                      FROM api_keys
+                                     WHERE key_prefix = %s OR key_hash = %s
+                                     LIMIT 1
+                                """, (token[:16], token))
+                                r = cur.fetchone()
+                                if r and r[0]:
+                                    candidates.append((str(r[0]).upper(), "cookie:api_keys"))
+                            except Exception:
+                                pass
+                            # Then users.plan
+                            try:
+                                cur.execute("""
+                                    SELECT plan FROM users
+                                     WHERE session_token = %s OR id::text = %s
+                                     LIMIT 1
+                                """, (token, token))
+                                r = cur.fetchone()
+                                if r and r[0]:
+                                    candidates.append((str(r[0]).upper(), "cookie:users"))
+                            except Exception:
+                                pass
+            except Exception as e:
+                debug["cookie_resolve_err"] = str(e)[:80]
 
+    # Highest tier across all signals wins (see r-tiermax rationale above).
+    if candidates:
+        _b = max(candidates, key=lambda cc: _TIER_RANK.get(cc[0], 0))
+        debug["candidates"] = [f"{t}:{s}" for t, s in candidates]
+        return _b[0], {"source": _b[1], **debug}
     return "FREE", {"source": "anonymous", **debug}
 
 
