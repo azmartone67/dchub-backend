@@ -203,8 +203,11 @@ def countries_verified_phrase() -> str:
 
 
 def markets_phrase() -> str:
-    n = get_canonical_stats().get("markets", _FALLBACK["markets"])
-    return f"{n}"
+    # Floor DOWN to a clean "300+" so we never over-claim as markets grow
+    # (232->300->311 via intl expansion). Matches mcp_facts_export._markets_floor
+    # and countries_phrase() — citation-safe rounding, never above reality.
+    n = int(get_canonical_stats().get("markets", _FALLBACK["markets"]))
+    return f"{(n // 100) * 100}+"
 
 
 def grid_coverage_phrase(style: str = "full") -> str:
