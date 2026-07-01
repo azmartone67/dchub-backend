@@ -19,6 +19,29 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 logger = logging.getLogger(__name__)
 
+
+def _hdr_safe(s):
+    """HTTP header values must be latin-1 encodable. Roster pitches carry
+    typographic punctuation (em-dash —, smart quotes, ...) that makes
+    `requests` raise UnicodeEncodeError while building a header — which was
+    silently killing the discovery-hint check for base44/huggingface/mistral/
+    you.com (the platforms added 2026-07-01). Normalize to ASCII-safe
+    punctuation, then drop any residual non-latin-1 so a header build can
+    never crash the cycle."""
+    if not s:
+        return ''
+    for a, b in (('—', '-'), ('–', '-'), ('’', "'"), ('‘', "'"),
+                 ('“', '"'), ('”', '"'), ('…', '...'), (' ', ' ')):
+        s = s.replace(a, b)
+    return s.encode('latin-1', 'ignore').decode('latin-1')
+
+
+# QA/test-harness platform-string markers — our OWN audit traffic, not an external
+# AI platform. Skipped in discovery Tier-2 so human-review candidates aren't drowned
+# by our probes. Kept LOCAL (not in the canonical reach recognizer) so honest reach
+# counts are unaffected.
+_DISCOVERY_QA_NOISE = ('audit', 'verify', 'harness', 'gating', 'recheck', 'smoke', 'sweep', 'e2e')
+
 DB_PATH = 'ai_tracking.db'
 BASE_URL = 'https://dchub.cloud'
 GPT_URL = 'https://chatgpt.com/g/g-697feda0b7b081918b4ea498536d738c-data-center-intelligence'
@@ -1183,7 +1206,7 @@ def broadcast_to_ai_platforms():
             try:
                 response = requests.get(hint_url, timeout=15, allow_redirects=True, headers={
                     'User-Agent': 'DCHub-MCP-Agent/1.0 (+https://dchub.cloud; MCP-enabled data center intelligence)',
-                    'X-Service-Description': adaptive_pitch[:200] if adaptive_pitch else 'DC Hub Data Center Intelligence',
+                    'X-Service-Description': _hdr_safe(adaptive_pitch)[:200] or 'DC Hub Data Center Intelligence',
                 })
                 results.append({
                     'platform': platform_id, 'name': platform['name'],
@@ -1312,6 +1335,8 @@ def discover_new_platforms():
                 if not p or len(p) < 3:
                     continue
                 if _is_recognized_platform(p) or _is_internal_caller(p) or _uuid_re.match(p):
+                    continue
+                if any(m in p for m in _DISCOVERY_QA_NOISE):   # our own QA/audit probes
                     continue
                 try:
                     log_outreach(p, 'discovery_candidate',
