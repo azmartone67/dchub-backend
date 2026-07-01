@@ -189,6 +189,16 @@ def main():
     inserted = 0
 
     for pr in PRESS_RELEASES:
+        # Item 8 (2026-06-30): append the one canonical reach CTA to every press
+        # body so the release ends with a connect line. Done in the loop (not on
+        # each hardcoded string) and idempotent via append_reach_cta, so re-runs /
+        # the ON CONFLICT re-upsert never double-stamp. Fail-soft import.
+        body = pr["body"]
+        try:
+            from media_cta import append_reach_cta
+            body = append_reach_cta(body)
+        except Exception:
+            pass
         cur.execute("""
             INSERT INTO press_releases
                 (title, slug, category, date, subheadline, body, meta_description, published)
@@ -202,7 +212,7 @@ def main():
             RETURNING id
         """, (
             pr["title"], pr["slug"], pr["category"], pr["date"],
-            pr["subheadline"], pr["body"], pr["meta_description"]
+            pr["subheadline"], body, pr["meta_description"]
         ))
         row = cur.fetchone()
         print(f"✅  id={row[0]} — {pr['title'][:55]}")

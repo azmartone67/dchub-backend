@@ -1787,7 +1787,18 @@ def _queue_distribution_posts(rel: dict, press_id: int, today: str) -> None:
             # regex `INSERT INTO ... [^;"']*` traverses the entire SQL
             # string and sees the ON CONFLICT clause — same pattern as
             # the source + category parameterization in _write_release.
+            # Item 8 (2026-06-30): append the one canonical reach CTA to every
+            # distribution body at the single enqueue chokepoint (covers all three
+            # composer return paths — pre-generated / Claude / static — without
+            # touching each). Long-form CTA for LinkedIn; short + 280-cap-aware for
+            # X; short + 300-cap-aware for Bluesky. Fail-soft import.
+            try:
+                from media_cta import append_reach_cta as _cta
+            except Exception:
+                _cta = None
+
             li_text = _format_linkedin_post(rel)
+            if _cta: li_text = _cta(li_text)
             cur.execute("""
                 INSERT INTO social_media_posts
                     (platform, content, status, press_release_id, created_at)
@@ -1796,6 +1807,7 @@ def _queue_distribution_posts(rel: dict, press_id: int, today: str) -> None:
             """, ("linkedin", li_text, "approved", press_id))
 
             tw_text = _format_twitter_post(rel)
+            if _cta: tw_text = _cta(tw_text, short=True, max_chars=280)
             cur.execute("""
                 INSERT INTO social_media_posts
                     (platform, content, status, press_release_id, created_at)
@@ -1814,6 +1826,7 @@ def _queue_distribution_posts(rel: dict, press_id: int, today: str) -> None:
             # function; this just makes sure the queue HAS rows so
             # when the loop activates there's work to do.
             bsky_text = _format_twitter_post(rel)  # same short-form
+            if _cta: bsky_text = _cta(bsky_text, short=True, max_chars=300)
             cur.execute("""
                 INSERT INTO social_media_posts
                     (platform, content, status, press_release_id, created_at)

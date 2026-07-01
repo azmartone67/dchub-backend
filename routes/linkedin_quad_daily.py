@@ -293,7 +293,17 @@ def _format_post(slot, payload):
                 break
         else:
             lines.append(arc_line.strip())
-    return "\n".join(lines)
+    text = "\n".join(lines)
+    # Item 8 (2026-06-30): append the one canonical reach CTA so every quad-daily
+    # LinkedIn body ends with a connect line. Done here (the single outer composer)
+    # rather than in each style branch of _format_post_base. Fail-soft import; the
+    # post still ships if the shared module is unavailable.
+    try:
+        from media_cta import append_reach_cta
+        text = append_reach_cta(text)
+    except Exception:
+        pass
+    return text
 
 
 def _format_post_base(slot, payload):

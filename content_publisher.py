@@ -128,6 +128,14 @@ def init_content_tables():
                 "linkedin_urn TEXT",
                 "accelerate BOOLEAN DEFAULT FALSE",
                 "viral_score NUMERIC DEFAULT NULL",
+                # Item 17 (2026-06-30): queue-drain priority + content dedupe.
+                # priority — higher drains first (fresh wins/citations can jump
+                #   ahead of a stale backlog instead of waiting behind FIFO).
+                #   Default 0 so every existing row keeps today's created_at order.
+                # content_hash — sha256 of the body; lets the drain skip a row whose
+                #   text already published (near-dup floods were shipping twice).
+                "priority INTEGER DEFAULT 0",
+                "content_hash TEXT",
             ]:
                 col = col_def.split()[0]
                 try:
@@ -136,6 +144,25 @@ def init_content_tables():
                     except Exception: pass
                 except Exception:
                     pass
+            # Item 17 (2026-06-30): supporting indexes for the priority-ordered,
+            # dedupe-aware drain. Both IF NOT EXISTS (idempotent, cheap on PG).
+            #  * (status, priority DESC, created_at ASC) matches the new drain
+            #    ORDER BY so the queue picks the highest-priority oldest row.
+            #  * (content_hash) speeds the "did this exact body already publish?"
+            #    lookup the drain uses to skip near-dup floods.
+            for _idx_sql in (
+                "CREATE INDEX IF NOT EXISTS social_media_posts_drain_idx "
+                "ON social_media_posts(status, priority DESC, created_at ASC)",
+                "CREATE INDEX IF NOT EXISTS social_media_posts_content_hash_idx "
+                "ON social_media_posts(content_hash)",
+            ):
+                try:
+                    cur.execute(_idx_sql)
+                    try: conn.commit()
+                    except Exception: pass
+                except Exception:
+                    try: conn.rollback()
+                    except Exception: pass
             logger.info("Content publishing tables initialized (Neon)")
         finally:
             try: conn.close()
@@ -2905,10 +2932,14 @@ def start_auto_publisher():
                         pass
                     while _attempts < _drain_budget:
                         # Find next approved post that's not a duplicate class
-                        cur.execute("SELECT id, content FROM social_media_posts WHERE status = 'approved' AND platform = 'linkedin' ORDER BY created_at ASC LIMIT 20")
+                        # Item 17 (2026-06-30): priority-first drain — a fresh win /
+                        # citation (priority>0) jumps ahead of a stale FIFO backlog;
+                        # priority defaults to 0 so same-priority rows keep the
+                        # existing oldest-first order (idempotent for legacy rows).
+                        cur.execute("SELECT id, content FROM social_media_posts WHERE status = 'approved' AND platform = 'linkedin' ORDER BY priority DESC, created_at ASC LIMIT 20")
                         candidates = cur.fetchall() or []
                         if not candidates:
-                            cur.execute("SELECT id, content FROM social_media_posts WHERE status = 'approved' ORDER BY created_at ASC LIMIT 20")
+                            cur.execute("SELECT id, content FROM social_media_posts WHERE status = 'approved' ORDER BY priority DESC, created_at ASC LIMIT 20")
                             candidates = cur.fetchall() or []
 
                         row = None
@@ -3058,9 +3089,31 @@ def start_twitter_publisher():
     if _twitter_publisher_running:
         return
     if os.environ.get('TWITTER_PUBLISHER_ENABLED', 'false').lower() not in ('1', 'true', 'yes'):
-        logger.info("X/Twitter auto-publisher DISABLED — set TWITTER_PUBLISHER_ENABLED=true to re-enable once app is in a Project")
-        _record_boot("twitter", False,
-                      reason="TWITTER_PUBLISHER_ENABLED missing or false")
+        # Item 17 (2026-06-30): make the DARK-with-backlog case LOUD. The publisher
+        # was silently gated off at INFO while approved X rows piled up (the
+        # "0 posts/7d, 221 queued" symptom). If there IS a queued backlog, escalate
+        # to a WARNING that names the count + the exact env var to flip, and stamp
+        # the reason with the depth so the boot record shows it. Fail-soft: any DB
+        # hiccup falls back to the original INFO line — never fake a post.
+        _queued = None
+        try:
+            with _db_conn() as _c:
+                _qc = _c.cursor()
+                _qc.execute("SELECT COUNT(*) AS n FROM social_media_posts WHERE status = 'approved' AND platform = 'twitter'")
+                _r = _qc.fetchone() or {}
+                _queued = _r.get('n', 0) if hasattr(_r, 'get') else (_r[0] if _r else 0)
+        except Exception:
+            _queued = None
+        if _queued:
+            logger.warning(
+                "X/Twitter auto-publisher DISABLED but %s approved X post(s) are "
+                "QUEUED and going DARK — set TWITTER_PUBLISHER_ENABLED=true (once "
+                "the X app is migrated into a Project) to drain them", _queued)
+            _reason = f"TWITTER_PUBLISHER_ENABLED missing/false; {_queued} approved X posts queued (DARK)"
+        else:
+            logger.info("X/Twitter auto-publisher DISABLED — set TWITTER_PUBLISHER_ENABLED=true to re-enable once app is in a Project")
+            _reason = "TWITTER_PUBLISHER_ENABLED missing or false"
+        _record_boot("twitter", False, reason=_reason)
         return
     _twitter_publisher_running = True
     _record_boot("twitter", True)
@@ -3134,7 +3187,9 @@ def start_twitter_publisher():
                         logger.info(f"Twitter auto-publisher: already {pub_today} today, skipping")
                         _record_attempt("twitter", "skipped_cap")
                         continue
-                    cur.execute("SELECT id, content FROM social_media_posts WHERE status = 'approved' AND platform = 'twitter' ORDER BY created_at ASC LIMIT 1")
+                    # Item 17 (2026-06-30): priority-first drain (priority defaults
+                    # to 0 so legacy rows keep oldest-first order).
+                    cur.execute("SELECT id, content FROM social_media_posts WHERE status = 'approved' AND platform = 'twitter' ORDER BY priority DESC, created_at ASC LIMIT 1")
                     row = cur.fetchone()
                     if not row:
                         logger.debug("Twitter auto-publisher: no approved Twitter posts")
@@ -3142,6 +3197,26 @@ def start_twitter_publisher():
                         continue
                     post_id = row['id']
                     content_text = row['content']
+                    # Item 17 (2026-06-30): content_hash dedupe — if this exact body
+                    # already published (on ANY platform), don't re-ship it. Cheap
+                    # sha256 lookup against the content_hash index; advances the
+                    # queue by marking the dup 'rejected' (same terminal-advance the
+                    # r78 skip path uses) so the LIMIT-1 head never wedges. Fail-soft:
+                    # any error here just falls through to the normal publish path.
+                    try:
+                        import hashlib as _hl
+                        _chash = _hl.sha256((content_text or '').strip().encode('utf-8')).hexdigest()
+                        cur.execute("UPDATE social_media_posts SET content_hash = %s WHERE id = %s AND content_hash IS DISTINCT FROM %s", (_chash, post_id, _chash))
+                        cur.execute("SELECT 1 FROM social_media_posts WHERE content_hash = %s AND status = 'published' LIMIT 1", (_chash,))
+                        if cur.fetchone():
+                            logger.warning("Twitter auto-publisher: SKIPPED post %s — content_hash already published (dedupe)", post_id)
+                            cur.execute("UPDATE social_media_posts SET status = 'rejected' WHERE id = %s", (post_id,))
+                            conn.commit()
+                            _record_attempt("twitter", "skipped_cap")
+                            continue
+                    except Exception:
+                        try: conn.rollback()
+                        except Exception: pass
                     # r63 (2026-05-29): same entity-level + zero-stat judgment as
                     # the LinkedIn loop. Twitter picks a single oldest row, so a
                     # skip just defers to the next cycle (no rotation here).
@@ -3266,9 +3341,11 @@ def start_bluesky_publisher():
                     _drain_budget = (DAILY_CAP - pub_today) if _queued > 10 else 1
                     _attempts = 0
                     while _attempts < _drain_budget:
+                        # Item 17 (2026-06-30): priority-first drain (priority
+                        # defaults to 0 so legacy rows keep oldest-first order).
                         cur.execute("SELECT id, content FROM social_media_posts "
                                      "WHERE status = 'approved' AND platform = 'bluesky' "
-                                     "ORDER BY created_at ASC LIMIT 1")
+                                     "ORDER BY priority DESC, created_at ASC LIMIT 1")
                         row = cur.fetchone()
                         if not row:
                             # Fallback: any approved post that hasn't been
@@ -3278,7 +3355,7 @@ def start_bluesky_publisher():
                                 "SELECT id, content FROM social_media_posts "
                                 "WHERE status = 'approved' "
                                 "AND (publish_platform IS NULL OR publish_platform != 'bluesky') "
-                                "ORDER BY created_at ASC LIMIT 1")
+                                "ORDER BY priority DESC, created_at ASC LIMIT 1")
                             row = cur.fetchone()
                         if not row:
                             logger.debug("Bluesky auto-publisher: no approved posts")
