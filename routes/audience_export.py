@@ -61,6 +61,15 @@ def _return(c, error=False):
         except Exception: pass
 
 
+def _fmt_date(v):
+    if not v:
+        return ""
+    try:
+        return v.date().isoformat()   # datetime/date object
+    except AttributeError:
+        return str(v)[:10]            # TEXT column → 'YYYY-MM-DD...'
+
+
 def _split_name(name: str):
     n = (name or "").strip()
     if not n or "@" in n:          # skip empties / emails-as-name
@@ -118,7 +127,7 @@ def _gather():
         rows.append({
             "first_name": fn, "last_name": ln, "email": email.strip(),
             "company": company or "", "tier": (tier or "free"),
-            "signed_up": (created.date().isoformat() if created else ""),
+            "signed_up": _fmt_date(created),
         })
     meta = {"total": len(rows), "with_name": with_name,
             "suppressed_excluded": suppressed_hits}
