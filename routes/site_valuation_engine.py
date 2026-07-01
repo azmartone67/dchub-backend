@@ -431,7 +431,7 @@ def _fetch_dcpi(slug: str) -> dict:
 
 # ── Gas pricing lookup ────────────────────────────────────────────
 
-def _fetch_gas_economics(slug: str, state: str) -> dict:
+def _fetch_gas_economics(slug: str, state: str, lat: float = None) -> dict:
     """Use the existing powered_land_gas helpers to derive gas $/MMBtu
     and $/MWh for the slug. Falls back to representative values."""
     # r-gasfix (2026-06-30): the old import names (_HUB_FOR_STATE,
@@ -448,8 +448,15 @@ def _fetch_gas_economics(slug: str, state: str) -> dict:
             SYNTHETIC_HENRY_HUB_USD_MMBTU, SYNTHETIC_BASIS_BY_HUB,
         )
         _s = (slug or "").lower()
+        _st = (state or "").upper()
         hub_key = (_MARKET_HUB_OVERRIDE.get(_s)
-                   or _STATE_TO_HUB.get((state or "").upper(), "henry_hub"))
+                   or _STATE_TO_HUB.get(_st, "henry_hub"))
+        # r-southnj (2026-06-30, client-audit): NJ maps state-wide to Transco
+        # Zone 6 NY — a NORTH-Jersey/NYC delivery zone. SOUTH Jersey (Millville/
+        # Cumberland, ~lat<40.2) prices off Tetco M3 (South Jersey Gas / PA
+        # basin), cheaper + not NYC-constrained. Correct the basin by latitude.
+        if _st == "NJ" and lat is not None and lat < 40.2:
+            hub_key = "tetco_m3"
         hub_name = _HUB_NAME.get(hub_key, "Henry Hub")
         basis = float(SYNTHETIC_BASIS_BY_HUB.get(hub_key, 0.0))
         delivered = max(1.0, SYNTHETIC_HENRY_HUB_USD_MMBTU + basis)
@@ -539,7 +546,10 @@ def _fetch_tax_abatement(state: str) -> dict:
                         "max_benefit": maxb,
                         "note": (f"{'Data-center-specific ' if dc else ''}property-tax "
                                  f"abatement ({dur} yr{'s' if dur != 1 else ''}"
-                                 f"{', ' + maxb if maxb else ''}) — +{round(pct*100)}% site value.")}
+                                 f"{', ' + maxb if maxb else ''}) — +{round(pct*100)}% site value. "
+                                 + ("" if dc else "★ Generic STATE incentive (not DC-specific, "
+                                    "not site-verified) — confirm the parcel's actual abatement "
+                                    "term; a longer site-specific deal is worth more."))}
     except Exception:
         pass
     return {"abatement": False, "factor": 1.0, "pct": 0.0,
@@ -725,7 +735,14 @@ def _fetch_live_queue_ttp(iso: str, slug: str) -> dict:
             return {"available": False, "reason": f"HTTP {r.status_code}"}
         d = r.json() or {}
         by_iso = d.get("by_iso") or {}
-        iso_data = by_iso.get(iso) or by_iso.get(iso.upper()) or {}
+        # r-queuefix (2026-06-30, client-audit): the endpoint returns by_iso as a
+        # LIST of ISO records, not a dict — `.get(iso)` threw ('list' has no .get)
+        # and silently fell back to the DCPI TTP. Handle both shapes.
+        if isinstance(by_iso, list):
+            iso_data = next((x for x in by_iso if isinstance(x, dict)
+                             and str(x.get("iso", "")).upper() == (iso or "").upper()), {})
+        else:
+            iso_data = by_iso.get(iso) or by_iso.get((iso or "").upper()) or {}
         depth_mw = iso_data.get("active_queue_mw") or iso_data.get("total_mw")
         velocity = iso_data.get("avg_completions_per_year_mw") or iso_data.get("90d_velocity_mw_per_year")
         if depth_mw and velocity and velocity > 0:
@@ -1265,7 +1282,7 @@ def site_value():
     # so resolve the site's ACTUAL state for the STATE-keyed factors below.
     site_state, site_state_src = _site_state(lat, lon, state)
     dcpi = _fetch_dcpi(slug)
-    gas = _fetch_gas_economics(slug, site_state)
+    gas = _fetch_gas_economics(slug, site_state, lat)
     # r-power / r-abate (2026-06-30): real per-state operating economics.
     power = _fetch_power_cost_usd_mwh(site_state)
     abatement = _fetch_tax_abatement(site_state)
@@ -2015,6 +2032,7 @@ function renderResults(d) {
         ${editChip('Discount',     (a.discount_rate*100).toFixed(2), (a.discount_rate_default*100).toFixed(2), '%')}
       </div>`;
     }
+    html += '<div style="font-size:11px;color:var(--muted);margin:0 0 10px">LCOE = fuel/energy + amortized CapEx at 100% capacity factor; excludes fixed/variable O&M (~$3–5/MWh) — an energy-cost <b>floor</b>, not an all-in bid. CapEx multiples are screening-grade.</div>';
     html += '<div class="scen-grid">';
     [['grid_only', 'Grid-only'], ['gas_btm', 'Gas BTM (CCGT)'], ['gas_to_grid_hybrid', 'Gas-to-Grid Hybrid']].forEach(([key, label]) => {
       const s = d.scenarios[key];
