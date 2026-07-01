@@ -781,6 +781,13 @@ def claim_key():
         "claim_id": claim_id,
         "claimed_at": datetime.now(timezone.utc).isoformat(),
         "email_captured": bool(email),
+        # keystone (audit item 1, 2026-06-30): bind this key to the calling MCP
+        # session so a later same-session call on ANY replica resolves it durably.
+        # The in-memory sessionMeta bind was lost across replicas, which is why
+        # claim_free_key returned auto_applied_to_session:false and the next call
+        # came back _bind-only. trial_check reads this session_id back (below) and
+        # hands the key to server.mjs to bind the session for real.
+        "session_id": ((request.headers.get("X-MCP-Session") or "").strip()[:200] or None),
     }
 
     try:
@@ -2892,6 +2899,33 @@ def trial_check():
                                 except Exception: pass
             except Exception:
                 # Table may not exist yet (pre-schema-repair) — soft-fail.
+                try: conn.rollback()
+                except Exception: pass
+
+            # keystone (audit item 1, 2026-06-30): FREE-IDENTIFIED session bind.
+            # claim_key stamps metadata.session_id onto the key it mints. If THIS
+            # session has such a key, hand server.mjs the api_key + its tier so it
+            # binds the session durably (cross-replica) on the next call — the fix
+            # for claim_free_key returning auto_applied_to_session:false / next call
+            # _bind-only. Recency-bounded (24h) so the scan stays cheap; only fills
+            # in when a stronger PAID upgrade wasn't already resolved above.
+            try:
+                if not out.get("tier_upgrade") or str(out.get("tier_upgrade")).lower() == "identified":
+                    cur.execute(
+                        """SELECT api_key, tier FROM mcp_dev_keys
+                           WHERE metadata->>'session_id' = %s
+                             AND status = 'active'
+                             AND created_at > NOW() - INTERVAL '24 hours'
+                           ORDER BY created_at DESC
+                           LIMIT 1""",
+                        (session_id,),
+                    )
+                    _sk = cur.fetchone()
+                    if _sk and _sk[0]:
+                        out["session_api_key"] = _sk[0]
+                        out["tier_upgrade"] = (_sk[1] or "identified")
+                        out["session_bound_free"] = True
+            except Exception:
                 try: conn.rollback()
                 except Exception: pass
 

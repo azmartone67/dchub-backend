@@ -188,18 +188,40 @@ def _norm_slug(s):
 
 
 def _bound_email(api_key):
-    """The verified email bound to this key (mcp_dev_keys.email), or None.
-    r-free-alerts (2026-06-24): free email alerts are LOCKED to this so a free
-    caller can never relay alert mail to a third party (no spam relay)."""
-    if not api_key:
-        return None
+    """The verified email bound to this caller, or None. Free email alerts are
+    LOCKED to this so a free caller can never relay alert mail to a third party
+    (no spam relay).
+
+    keystone / item-7 (2026-06-30): the audit hit 'bind_email_first' 403s EVEN WHEN
+    an email was bound, because the MCP transport presents a per-session key with no
+    email while the human's bound email lives on a DIFFERENT claimed key. Resolve the
+    email across (a) this key (mcp_dev_keys), (b) this trial key (auto_trial_keys),
+    (c) the key this Mcp-Session-Id is bound to (metadata.session_id — the keystone
+    bind), and (d) mcp_session_upgrades.user_email (paid session). Each lookup is
+    fail-soft (a missing table/column is skipped)."""
     try:
-        with _conn() as c, c.cursor() as cur:
-            cur.execute("SELECT email FROM mcp_dev_keys WHERE api_key = %s", (api_key,))
-            r = cur.fetchone()
-        return (r[0] or "").strip().lower() if r and r[0] else None
+        sid = (request.headers.get("X-MCP-Session") or "").strip()[:200]
     except Exception:
-        return None
+        sid = ""
+    lookups = []
+    if api_key:
+        lookups.append(("SELECT email FROM mcp_dev_keys WHERE api_key = %s", (api_key,)))
+        lookups.append(("SELECT operator_email FROM auto_trial_keys WHERE api_key = %s", (api_key,)))
+    if sid:
+        lookups.append(("""SELECT email FROM mcp_dev_keys
+                             WHERE metadata->>'session_id' = %s AND email IS NOT NULL
+                             ORDER BY created_at DESC LIMIT 1""", (sid,)))
+        lookups.append(("SELECT user_email FROM mcp_session_upgrades WHERE mcp_session_id = %s", (sid,)))
+    for _sql, _params in lookups:
+        try:
+            with _conn() as c, c.cursor() as cur:
+                cur.execute(_sql, _params)
+                r = cur.fetchone()
+            if r and r[0] and str(r[0]).strip():
+                return str(r[0]).strip().lower()
+        except Exception:
+            continue
+    return None
 
 
 @market_alerts_bp.route("/api/v1/alerts/subscribe", methods=["POST"])
