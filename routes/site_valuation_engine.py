@@ -1630,21 +1630,43 @@ document.getElementById('valForm').addEventListener('submit', async (e) => {
   const headers = { 'Content-Type': 'application/json' };
   if (apiKey) headers['X-API-Key'] = apiKey;
 
-  try {
-    const r = await fetch('/api/v1/site/value', {
-      method: 'POST', headers, body: JSON.stringify(body),
-    });
-    const d = await r.json();
-    if (!d.ok) {
-      showFieldError(`<b>${d.error || 'error'}:</b> ${d.hint || 'Unknown error'}`);
-      return;
+  // The valuation POST is a heavy idempotent calc; a cold/flapping backend can
+  // trip the edge failover 503 once, then succeed. Retry transient 5xx/network
+  // failures transparently (up to 3 attempts, backoff) instead of surfacing a
+  // scary 503 the user has to manually re-click.
+  const _btn = document.querySelector('button[form="valForm"][type="submit"]');
+  const _btnTxt = _btn ? _btn.textContent : '';
+  if (_btn) { _btn.disabled = true; _btn.textContent = 'Calculating…'; }
+  let d = null, lastErr = null;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const r = await fetch('/api/v1/site/value', {
+        method: 'POST', headers, body: JSON.stringify(body),
+      });
+      if (r.status >= 500 && attempt < 3) {   // transient origin/failover — retry
+        await new Promise(res => setTimeout(res, 800 * attempt));
+        continue;
+      }
+      d = await r.json();
+      break;
+    } catch (err) {
+      lastErr = err;
+      if (attempt >= 3) break;
+      await new Promise(res => setTimeout(res, 800 * attempt));
     }
-    document.getElementById('results').innerHTML = renderResults(d);
-    document.getElementById('results').classList.remove('hidden');
-    document.getElementById('results').scrollIntoView({behavior:'smooth', block:'start'});
-  } catch (err) {
-    showFieldError('<b>Request failed:</b> ' + err.message);
   }
+  if (_btn) { _btn.disabled = false; _btn.textContent = _btnTxt; }
+  if (!d) {
+    showFieldError('<b>Service busy.</b> The valuation engine was warming up — please click Calculate valuation again.');
+    return;
+  }
+  if (!d.ok) {
+    showFieldError(`<b>${d.error || 'error'}:</b> ${d.hint || 'Unknown error'}`);
+    return;
+  }
+  document.getElementById('results').innerHTML = renderResults(d);
+  document.getElementById('results').classList.remove('hidden');
+  document.getElementById('results').scrollIntoView({behavior:'smooth', block:'start'});
 });
 
 function fmt$(v) { return '$' + Math.round(v).toLocaleString(); }
