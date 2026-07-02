@@ -2246,7 +2246,7 @@ def admin_funnel_health_per_platform_joined():
         FULL OUTER JOIN conv ON conv.platform = COALESCE(req.platform, sig.platform)
         ORDER BY 2 DESC NULLS LAST
         """).replace("%PCASE%", _pcase)
-        with conn.cursor() as cur:
+        with conn.cursor() as cur:  # lint-ok: cursor-shadow (no function-wide cur in this handler)
             cur.execute(sql)
             rows = cur.fetchall() or []
 
@@ -2319,7 +2319,7 @@ def admin_agent_pay_events():
         out["error"] = "no_db"
         return jsonify(out), 200
     try:
-        with conn.cursor() as cur:
+        with conn.cursor() as cur:  # lint-ok: cursor-shadow (no function-wide cur in this handler)
             cur.execute(
                 "SELECT status, tool, COUNT(*) AS n FROM mcp_call_log "
                 " WHERE status = ANY(%s) AND timestamp > NOW() - make_interval(days => %s) "

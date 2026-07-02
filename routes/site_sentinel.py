@@ -71,7 +71,13 @@ _MANIFEST: list[dict] = [
     {"path": "/pricing",                 "category": "critical", "min_bytes":  3000, "label": "Pricing",          "wants_nav": True},
     {"path": "/api/v1/power/totals",     "category": "critical", "min_bytes":   300, "label": "Power Totals API"},
         {"path": "/api/v1/vs/claims",        "category": "critical", "min_bytes":   500, "label": "Claims API"},
-    {"path": "/api/v1/iso/zones",      "category": "high",     "min_bytes":   200, "label": "ISO Zones API"},
+    # r-fixpack (2026-07-02): removed a DUPLICATE "/api/v1/iso/zones" entry
+    # here (was "ISO Zones API", min_bytes 200). The path is already
+    # monitored below as "ISO Zones Aggregator" with the documented 80-byte
+    # floor (healthy empty-state is ~83 bytes) — same one-path-one-entry
+    # rule as the r-qa 2026-06-27 duplicate-"/grid" removal: the results
+    # PK on path collapses two scans into one row, and this entry's
+    # 200-byte floor false-flagged the honest empty state.
 
     # High-value intelligence pages — wants_nav AND max_age_days because
     # the user explicitly flagged staleness on ai-deals, ai-inventory,
@@ -258,6 +264,17 @@ _MANIFEST: list[dict] = [
     {"path": "/api/v1/dcpi/scores",                 "category": "high",   "min_bytes":  500, "label": "DCPI Scores API (full)"},
     {"path": "/api/v1/dcpi/leaderboard",            "category": "high",   "min_bytes":  500, "label": "DCPI Leaderboard API"},
     {"path": "/api/v1/mcp/funnel",                  "category": "high",   "min_bytes":  300, "label": "MCP Funnel API"},
+
+    # ── r-fixpack (2026-07-02) — growth-loop telemetry canaries.
+    # /api/v1/reach is THE reach scoreboard (distinct external agent IPs
+    # via real_calls_predicate); it silently re-broke once already
+    # (fixed f247fce7, 2026-07-01) and a regression here blinds the
+    # weekly growth loop. /api/v1/brain/mcp-registries is the registry-
+    # coverage snapshot the weekly registry watch alarms on. Both are
+    # public JSON, ~2.1-2.5KB when healthy — a 500-byte floor catches an
+    # empty/error shell without false-flagging honest empty states.
+    {"path": "/api/v1/reach",                       "category": "high",   "min_bytes":  500, "label": "Reach Scoreboard API"},
+    {"path": "/api/v1/brain/mcp-registries",        "category": "high",   "min_bytes":  500, "label": "MCP Registry Coverage API"},
 ]
 
 

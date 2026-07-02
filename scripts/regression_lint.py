@@ -18,6 +18,8 @@ Triggers on these patterns (same as before, all AST-based):
   3. sys.exit() inside async def
   4. urllib.request.urlopen call
   5. Duplicate @app.route decorator (real AST decorators, not strings)
+  6. cursor-shadow — `with conn.cursor() as cur:` shadowing a
+     function-wide cursor (HARD rule: always blocking, see HARD_RULES)
 
 Usage: python3 scripts/regression_lint.py [--mode delta|audit] [--base BRANCH]
 """
@@ -50,9 +52,101 @@ WHITELIST_TABLES = {
     'market_movement_events',
 }
 
+# ── HARD rules (r-fixpack 2026-07-02) ────────────────────────────────
+# Rules listed here are ALWAYS blocking: they fail the run in BOTH delta
+# and audit mode, regardless of whether the offending line was touched
+# by the current PR. Reserve HARD status for bug classes that have
+# shipped repeatedly AND have a zero-violation baseline today (so the
+# gate stays green until someone actually reintroduces the bug).
+HARD_RULES = {'cursor-shadow'}
+
+# Inline opt-out for hard rules: append `# lint-ok: <rule>` to the
+# flagged line after a human has verified it is safe, e.g.
+#   with conn.cursor() as cur:  # lint-ok: cursor-shadow (no outer cur)
+CURSOR_SHADOW_OPTOUT = 'lint-ok: cursor-shadow'
+
 
 def add(p, line, rule, msg):
     VIOLATIONS.append({'path': str(p), 'line': line, 'rule': rule, 'msg': msg})
+
+
+def lint_cursor_shadow(p, src):
+    """cursor-shadow — routes/funnel_health.py shipped the SAME bug three
+    times (last fixed in commit 2ac9b095): an inner
+    `with conn.cursor() as cur:` shadows the function-wide cursor `cur`
+    opened earlier in the function, and the with-block CLOSES it on exit,
+    so every later cur.execute() raises InterfaceError('cursor already
+    closed') — silently swallowed into zeros by the fail-soft except
+    blocks. Enforcement (routes/ only):
+
+      * funnel_health.py (three-time offender): ANY
+        `with <x>.cursor(...) as cur:` is flagged. Use a private cursor
+        name (e.g. `as _sd_cur` — see the r-cursor-shadow fix) instead.
+      * every other routes/*.py: flagged only when the SAME function also
+        binds a plain `cur = <x>.cursor(...)` on an earlier line (true
+        shadowing risk).
+
+    Opt-out (after human verification that no function-wide `cur` is
+    live): append `# lint-ok: cursor-shadow` to the flagged line.
+    """
+    path = pathlib.Path(p)
+    if 'routes' not in path.parts:
+        return
+    lines = src.split('\n')
+    with_re = re.compile(r'\bwith\s+[\w.]+\.cursor\([^)]*\)\s+as\s+cur\s*:')
+
+    def _flag(lineno):
+        if CURSOR_SHADOW_OPTOUT in lines[lineno - 1]:
+            return
+        add(p, lineno, 'cursor-shadow',
+            "`with ....cursor() as cur:` shadows/CLOSES the function-wide "
+            "cursor named 'cur' — every later cur.execute() silently returns "
+            "zeros (bug class hit routes/funnel_health.py 3x; see commit "
+            "2ac9b095). Rename the inner cursor (e.g. `as _sd_cur`) or, if "
+            "verified safe, append `# lint-ok: cursor-shadow` to the line.")
+
+    if path.name == 'funnel_health.py':
+        for i, line in enumerate(lines, 1):
+            if with_re.search(line):
+                _flag(i)
+        return
+
+    # AST pass for the rest of routes/: only flag TRUE shadowing — a
+    # `with X.cursor() as cur:` inside a function that already bound
+    # `cur = <x>.cursor(...)` on an earlier line.
+    try:
+        tree = ast.parse(src)
+    except Exception:
+        return
+
+    def _is_cursor_call(node):
+        return (isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == 'cursor')
+
+    for fn in ast.walk(tree):
+        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        assigns, withs = [], []
+        stack = list(fn.body)
+        while stack:
+            n = stack.pop()
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue   # nested defs = own scope (ast.walk visits them)
+            if isinstance(n, ast.Assign) and _is_cursor_call(n.value):
+                if any(isinstance(t, ast.Name) and t.id == 'cur'
+                       for t in n.targets):
+                    assigns.append(n.lineno)
+            if isinstance(n, (ast.With, ast.AsyncWith)):
+                for item in n.items:
+                    if (_is_cursor_call(item.context_expr)
+                            and isinstance(item.optional_vars, ast.Name)
+                            and item.optional_vars.id == 'cur'):
+                        withs.append(n.lineno)
+            stack.extend(ast.iter_child_nodes(n))
+        for wl in withs:
+            if any(a < wl for a in assigns):
+                _flag(wl)
 
 
 def changed_lines_per_file(base='origin/main'):
@@ -99,6 +193,7 @@ def changed_lines_per_file(base='origin/main'):
 
 def lint_file(p, src):
     routes = []
+    lint_cursor_shadow(p, src)
     for i, line in enumerate(src.split('\n'), 1):
         if re.search(r"['\"]/api/[^'\"]*%s[^'\"]*['\"]", line):
             if 'f"' not in line and "f'" not in line:
@@ -153,7 +248,10 @@ def main():
     targets = []
     for r in args.paths:
         for dp, dirs, files in os.walk(r):
-            if any(s in dp for s in ('.git', 'node_modules', '__pycache__', '.venv', 'site-packages')):
+            # '.claude' excluded (r-fixpack 2026-07-02): local session
+            # worktrees under .claude/worktrees/ carry full repo copies
+            # that would double-report every violation.
+            if any(s in dp for s in ('.git', 'node_modules', '__pycache__', '.venv', 'site-packages', '.claude')):
                 continue
             for f in files:
                 if f.endswith('.py'):
@@ -190,7 +288,9 @@ def main():
             # Normalize file path
             p = v['path'].lstrip('./')
             file_changes = delta_filter.get(p, set()) if delta_filter else set()
-            if v['line'] in file_changes:
+            # HARD rules bypass the delta filter: they block even when
+            # the offending line pre-dates this PR (zero-baseline rules).
+            if v['line'] in file_changes or v['rule'] in HARD_RULES:
                 relevant.append(v)
             else:
                 pre_existing.append(v)
@@ -218,7 +318,13 @@ def main():
         if len(items) > 8:
             print(f"  ... +{len(items)-8} more")
     print(f"\nTOTAL NEW: {len(relevant)} (pre-existing not counted: {len(pre_existing)})")
-    return 1 if args.mode == 'delta' else 0
+    # HARD-rule violations fail the run in ANY mode (audit included) —
+    # they are zero-baseline regression fences, not advisories.
+    hard_hits = [v for v in relevant if v['rule'] in HARD_RULES]
+    if hard_hits and args.mode != 'delta':
+        print(f"BLOCKING even in audit mode: {len(hard_hits)} HARD-rule "
+              f"violation(s) ({', '.join(sorted({v['rule'] for v in hard_hits}))})")
+    return 1 if (args.mode == 'delta' or hard_hits) else 0
 
 
 if __name__ == '__main__':

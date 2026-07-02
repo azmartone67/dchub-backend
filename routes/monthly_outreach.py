@@ -322,7 +322,7 @@ def send_outreach():
     c = _get_db()
     if c is not None:
         try:
-            with c.cursor() as cur:
+            with c.cursor() as cur:  # lint-ok: cursor-shadow (earlier cur is on the short-lived per-recipient conn `cc`, already closed; nothing reads cur after this block)
                 cur.execute("""
                     INSERT INTO monthly_outreach_log
                       (year, month, recipients, succeeded, failed,

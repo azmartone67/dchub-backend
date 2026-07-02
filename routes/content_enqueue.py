@@ -202,7 +202,10 @@ def _shape_linkedin(mover: dict, arc: dict | None) -> str:
         f"{opener}\n\n"
         f"{implication}\n\n"
         f"Daily-refreshed score, methodology + sources on the live page: "
-        f"https://dchub.cloud/dcpi/{slug}"
+        # r-fixpack (2026-07-02): registry chokepoint, not a raw f-string
+        # URL — tests/test_url_registry_chokepoint.py fails CI on the raw
+        # form (this line was the red gauntlet on main).
+        f"{build_public_url('dcpi', slug)}"
         f"{arc_line}\n\n"
         f"#datacenter #DCPI #{iso.replace('-','').lower()}"
     )
@@ -257,7 +260,7 @@ def _shape_bluesky(mover: dict, arc: dict | None) -> str:
         f"{mover['name']} ({mover['iso']}) rates BUILD on the DC Hub Power "
         f"Index — excess power {mover['excess']:.0f}/100, one of the "
         f"strongest headroom readings we track this week.\n\n"
-        f"Daily-refreshing scorecard: https://dchub.cloud/dcpi/{mover['slug']}"
+        f"Daily-refreshing scorecard: {build_public_url('dcpi', mover['slug'])}"
     )[:300]
 
 
