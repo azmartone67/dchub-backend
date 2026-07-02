@@ -31884,6 +31884,16 @@ try:
 except Exception as _cs_e:
     print(f"[main] connectivity_score register failed: {_cs_e}", file=sys.stderr)
 
+# Durable MCP full-answer cap counter (/api/v1/mcp/full-cap/*) — persists the
+# per-identity per-tool daily full-answer count in Postgres so the MCP server's
+# cap survives worker restarts. Table pre-exists in Neon (no DDL here).
+try:
+    from routes.mcp_full_cap import mcp_full_cap_bp
+    app.register_blueprint(mcp_full_cap_bp)
+    print("[main] mcp_full_cap_bp registered: /api/v1/mcp/full-cap/*", flush=True)
+except Exception as _mfc_e:
+    print(f"[main] mcp_full_cap register failed: {_mfc_e}", file=sys.stderr)
+
 # Phase GGG-MMM (2026-05-16) — master shell: 6 new builds in one go.
 # Each blueprint isolated with its own try/except so any single failure
 # doesn't block app startup. See routes/*.py docstrings for per-phase rationale.
