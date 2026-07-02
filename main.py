@@ -1855,6 +1855,15 @@ try:
     except Exception as _aums:
         import logging
         logging.getLogger(__name__).warning('agent_usefulness_master_shell wiring failed: %s', _aums)
+    # 2026-07-02: REST/MCP parity manifest (Grok feedback) — maps every MCP tool
+    # to its public REST endpoint so REST-only agents have a discovery map.
+    try:
+        from routes.tools_manifest import tools_manifest_bp
+        app.register_blueprint(tools_manifest_bp)
+        print("[main] tools_manifest_bp registered: GET /api/v1/agent/tools-manifest", flush=True)
+    except Exception as _tm:
+        import logging
+        logging.getLogger(__name__).warning('tools_manifest wiring failed: %s', _tm)
     # 2026-06-30: DC Hub Media auto-showcase — compelling + VERIFIED market-pulse
     # / milestone content (every number pulled live + a fact-check gate), so the
     # media machine showcases the data as well as Grok did, but without Grok's

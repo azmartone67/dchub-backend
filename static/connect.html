@@ -239,7 +239,8 @@
 
         <div class="platform-card">
             <h3>Cursor</h3>
-            <p class="path">.cursor/mcp.json in your project or global config</p>
+            <p class="path"><a href="cursor://anysphere.cursor-deeplink/mcp/install?name=dchub&amp;config=eyJ1cmwiOiJodHRwczovL2RjaHViLmNsb3VkL21jcCJ9" style="display:inline-block;background:#6366f1;color:#fff;padding:8px 16px;border-radius:8px;text-decoration:none;font-weight:600">➕ Add DC Hub to Cursor (one click)</a></p>
+            <p class="path">Or paste into .cursor/mcp.json (project or global):</p>
             <pre><code>{
   "mcpServers": {
     "dchub": {
@@ -248,6 +249,13 @@
     }
   }
 }</code><button class="copy-btn" onclick="copyCode(this)">Copy</button></pre>
+        </div>
+
+        <div class="platform-card">
+            <h3>VS Code (GitHub Copilot)</h3>
+            <p class="path"><a href="vscode:mcp/install?%7B%22name%22%3A%22dchub%22%2C%22url%22%3A%22https%3A//dchub.cloud/mcp%22%7D" style="display:inline-block;background:#6366f1;color:#fff;padding:8px 16px;border-radius:8px;text-decoration:none;font-weight:600">➕ Add DC Hub to VS Code (one click)</a></p>
+            <p class="path">Requires VS Code 1.101+ with MCP enabled. Or run:</p>
+            <pre><code>code --add-mcp '{"name":"dchub","url":"https://dchub.cloud/mcp"}'</code><button class="copy-btn" onclick="copyCode(this)">Copy</button></pre>
         </div>
 
         <div class="platform-card">
