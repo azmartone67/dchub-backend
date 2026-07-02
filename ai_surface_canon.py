@@ -165,6 +165,15 @@ def canon_funnel_metrics(cur=None) -> dict:
             from main import get_pg_connection, return_pg_connection
             own_conn = get_pg_connection()
             cur = own_conn.cursor()
+            # Bound the identity-view scans so a slow-Neon window can't
+            # hold this pooled connection hostage. SET LOCAL only (plain
+            # SET doesn't stick on the pooled endpoint); scoped to our own
+            # tx — never applied to a caller-provided cursor, whose
+            # transaction settings belong to the caller.
+            try:
+                cur.execute("SET LOCAL statement_timeout = 8000")
+            except Exception:
+                pass
         except Exception as e:
             out["_error"] = f"db_connect: {str(e)[:100]}"
             return out

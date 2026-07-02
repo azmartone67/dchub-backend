@@ -55,13 +55,23 @@ def _dry_run() -> bool:
 
 
 def _safe_run(cmd: list[str], cwd: str | None = None) -> tuple[int, str]:
-    """Run subprocess; return (returncode, stdout+stderr). Mirrors L22."""
+    """Run subprocess; return (returncode, stdout+stderr). Mirrors L22.
+    Output is TOKEN-REDACTED before it leaves this function: git prints the
+    remote URL (with the embedded x-access-token) on clone/auth failures,
+    and these strings flow into logs and API responses — this repo has a
+    leaked-secret incident history, so redact at the single choke point."""
     try:
         r = subprocess.run(cmd, cwd=cwd, capture_output=True,
                            text=True, timeout=60)
-        return r.returncode, (r.stdout or "") + (r.stderr or "")
+        out = (r.stdout or "") + (r.stderr or "")
+        if GH_TOKEN:
+            out = out.replace(GH_TOKEN, "***REDACTED***")
+        return r.returncode, out
     except Exception as e:
-        return 1, f"{type(e).__name__}: {str(e)[:200]}"
+        msg = f"{type(e).__name__}: {str(e)[:200]}"
+        if GH_TOKEN:
+            msg = msg.replace(GH_TOKEN, "***REDACTED***")
+        return 1, msg
 
 
 def _path_refused(path: str) -> str | None:
