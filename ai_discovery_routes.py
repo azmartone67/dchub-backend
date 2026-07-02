@@ -71,11 +71,19 @@ def register_discovery_routes(app):
     # =========================================================================
     @app.route('/openapi.json')
     def serve_openapi_json():
+        # 2026-07-01: info.version from canon (was hand-typed 2.1.0). This is the
+        # ROOT /openapi.json — backend-served (the CF worker just proxies it), so
+        # no dchubapiproxy edit needed.
+        try:
+            from ai_surface_canon import PINNED as _C
+            _ver = _C["version"]
+        except Exception:
+            _ver = "2.4.3"
         spec = {
             "openapi": "3.1.0",
             "info": {
                 "title": "DC Hub — Data Center Intelligence API",
-                "version": "2.1.0",
+                "version": _ver,
                 "description": (
                     "DC Hub provides real-time data center intelligence: "
                     "facility search (21,000+ facilities, 170+ countries), "
