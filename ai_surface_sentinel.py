@@ -1,0 +1,180 @@
+"""
+ai_surface_sentinel.py — AI-Surface Freshness Sentinel (Phase 1: read-only audit).
+==================================================================================
+
+Keeps every AI-agent-facing surface consistent with ai_surface_canon (the one
+source of truth). This session proved the need: the manifest chain disagreed
+with itself (v2.1.22 / 2.3.3 / 2.1.0), AGENTS.md said both "24 tools" and "48
+tools", /connect claimed "50,000+ facilities", robots.txt served stale.
+
+Phase 1 = the read-only AUDIT (zero write-risk): fetch each surface cache-
+bypassed, diff against canon, return a scorecard. AUTO-FIX is scaffolded but
+gated OFF by default (observe-first, matching the brain auto-merge-OFF pattern) —
+flip AI_SURFACE_SENTINEL_AUTOFIX=1 later once the scorecard is trusted.
+
+  GET  /api/v1/admin/ai-surface/audit    → drift scorecard (no writes)
+  GET  /api/v1/admin/ai-surface/canon    → the resolved canon (live numbers)
+  POST /api/v1/admin/ai-surface/refresh  → autofix (gated; today just audits)
+
+Kill: AI_SURFACE_SENTINEL_ENABLED (cron), AI_SURFACE_SENTINEL_AUTOFIX (writes).
+"""
+from __future__ import annotations
+
+import json
+import os
+import random
+import urllib.request
+
+from flask import Blueprint, jsonify, request
+
+ai_surface_sentinel_bp = Blueprint("ai_surface_sentinel", __name__)
+
+_PUBLIC = "https://dchub.cloud"
+
+# (key, url, kind) — the surfaces to audit each run.
+_SURFACES = [
+    ("llms_txt",             f"{_PUBLIC}/llms.txt",                              "text"),
+    ("llms_full",            f"{_PUBLIC}/llms-full.txt",                         "text"),
+    ("agents_md",            f"{_PUBLIC}/AGENTS.md",                             "text"),
+    ("mcp_server_json",      f"{_PUBLIC}/.well-known/mcp-server.json",           "json"),
+    ("server_card",          f"{_PUBLIC}/.well-known/mcp/server-card.json",      "json"),
+    ("openapi",              f"{_PUBLIC}/openapi.json",                          "json"),
+    ("chatgpt_instructions", f"{_PUBLIC}/integrations/chatgpt/instructions.txt", "text"),
+    ("grok_config",          f"{_PUBLIC}/integrations/grok/mcp-config.json",     "text"),
+    ("robots",               f"{_PUBLIC}/robots.txt",                            "text"),
+    ("connect",              f"{_PUBLIC}/connect",                               "text"),
+    ("ai_page",              f"{_PUBLIC}/ai",                                    "text"),
+]
+
+
+def _admin_ok() -> bool:
+    import hmac
+    ak = (os.environ.get("DCHUB_ADMIN_KEY") or "").strip()
+    ik = (os.environ.get("DCHUB_INTERNAL_KEY") or "").strip()
+    ga = (request.headers.get("X-Admin-Key") or request.args.get("admin_key") or "").strip()
+    gi = (request.headers.get("X-Internal-Key") or "").strip()
+    if ak and ga and hmac.compare_digest(ga, ak):
+        return True
+    if ik and gi and hmac.compare_digest(gi, ik):
+        return True
+    return False
+
+
+def _fetch(url, timeout=15):
+    sep = "&" if "?" in url else "?"
+    u = f"{url}{sep}cb={str(random.random())[2:9]}"
+    req = urllib.request.Request(u, method="GET")
+    req.add_header("Cache-Control", "no-cache")
+    req.add_header("User-Agent", "dchub-ai-surface-sentinel/1")
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return r.getcode(), r.read().decode("utf-8", "replace")
+
+
+_HIGH = {"10,706", "10706", "50,000+", "2.1.22", "2.3.3", "2.1.0",
+         "24 tools", "48 tools", "49 tools"}
+
+
+def _audit_surface(key, url, kind, canon):
+    drifts = []
+    try:
+        code, body = _fetch(url)
+    except Exception as e:
+        return {"surface": key, "live_url": url, "verdict": "unreachable",
+                "drifts": [{"field": "fetch", "live": f"{type(e).__name__}: {str(e)[:70]}",
+                            "expected": "200", "severity": "medium"}]}
+    if code != 200:
+        return {"surface": key, "live_url": url, "verdict": "unreachable",
+                "drifts": [{"field": "http", "live": str(code), "expected": "200",
+                            "severity": "medium"}]}
+
+    def add(field, live, expected, sev):
+        drifts.append({"field": field, "live": live, "expected": expected, "severity": sev})
+
+    # 1) known-stale markers present in the served body
+    for m in canon.get("stale_markers", []):
+        if m in body:
+            add("stale_value", m, "update-from-canon", "high" if m in _HIGH else "medium")
+    # 2) fake tool names
+    for f in canon.get("fake_tool_denylist", []):
+        if f in body:
+            add("fake_tool_name", f, "real tool name", "high")
+    # 3) manifests: precise version + tool-count check
+    if kind == "json":
+        try:
+            d = json.loads(body)
+            v = str(d.get("version") or (d.get("info") or {}).get("version") or "")
+            if v and v != canon["version"]:
+                add("version", v, canon["version"], "high")
+            tools = d.get("tools")
+            ok_counts = {canon.get("tools_live"), 51, 53}
+            if isinstance(tools, list) and len(tools) not in ok_counts:
+                add("tools[]_count", str(len(tools)), "51/53", "high")
+        except Exception:
+            add("json_parse", "invalid/HTML", "valid JSON", "high")
+    # 4) robots.txt must welcome the required crawlers
+    if key == "robots":
+        for cw in canon.get("crawlers_required", []):
+            if cw not in body:
+                add("crawler_missing", "absent", cw, "medium")
+    # 5) free-tier overstatement on human pages
+    if key in ("connect", "ai_page") and "100 calls/day" in body:
+        add("free_tier", "100 calls/day", "10 calls/day", "medium")
+
+    if not drifts:
+        verdict = "clean"
+    elif any(x["severity"] == "high" for x in drifts):
+        verdict = "major-drift"
+    else:
+        verdict = "minor-drift"
+    return {"surface": key, "live_url": url, "verdict": verdict, "drifts": drifts}
+
+
+def run_audit() -> dict:
+    from ai_surface_canon import resolve_canon
+    canon = resolve_canon()
+    results = [_audit_surface(k, u, kind, canon) for (k, u, kind) in _SURFACES]
+    counts = {"clean": 0, "minor-drift": 0, "major-drift": 0, "unreachable": 0}
+    total_drifts = 0
+    for r in results:
+        counts[r["verdict"]] = counts.get(r["verdict"], 0) + 1
+        total_drifts += len(r["drifts"])
+    return {
+        "canon": {k: canon.get(k) for k in
+                  ("version", "facilities_live", "markets_live", "tools_live", "deals_live")},
+        "summary": counts,
+        "total_drifts": total_drifts,
+        "surfaces": sorted(results, key=lambda r: {"major-drift": 0, "minor-drift": 1,
+                                                   "unreachable": 2, "clean": 3}[r["verdict"]]),
+    }
+
+
+@ai_surface_sentinel_bp.route("/api/v1/admin/ai-surface/audit", methods=["GET"])
+def ai_surface_audit():
+    if not _admin_ok():
+        return jsonify(error="unauthorized"), 401
+    return jsonify(ok=True, **run_audit()), 200
+
+
+@ai_surface_sentinel_bp.route("/api/v1/admin/ai-surface/canon", methods=["GET"])
+def ai_surface_canon_dump():
+    if not _admin_ok():
+        return jsonify(error="unauthorized"), 401
+    from ai_surface_canon import resolve_canon
+    return jsonify(ok=True, canon=resolve_canon()), 200
+
+
+@ai_surface_sentinel_bp.route("/api/v1/admin/ai-surface/refresh", methods=["POST"])
+def ai_surface_refresh():
+    if not _admin_ok():
+        return jsonify(error="unauthorized"), 401
+    audit = run_audit()
+    autofix_on = str(os.environ.get("AI_SURFACE_SENTINEL_AUTOFIX", "")).lower() in ("1", "true", "yes")
+    if not autofix_on:
+        # Observe-first: Phase-1 ships with autofix OFF. Return the audit + the
+        # plan of what WOULD be fixed, so a human can review before enabling.
+        return jsonify(ok=True, autofix="disabled",
+                       note="Set AI_SURFACE_SENTINEL_AUTOFIX=1 to enable auto-regeneration.",
+                       **audit), 200
+    # Phase-2 autofix lanes land here (regenerate machine surfaces from canon,
+    # CF cache-purge, file brain findings for human-facing ones, fetch-back verify).
+    return jsonify(ok=True, autofix="enabled_but_not_yet_implemented", **audit), 200

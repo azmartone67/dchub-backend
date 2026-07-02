@@ -1724,6 +1724,15 @@ try:
     except Exception as _aex:
         import logging
         logging.getLogger(__name__).warning('audience_export wiring failed: %s', _aex)
+    # 2026-07-01: AI-Surface Freshness Sentinel — read-only audit of every
+    # AI-agent surface vs one canon (ai_surface_canon). Auto-fix gated OFF.
+    try:
+        from ai_surface_sentinel import ai_surface_sentinel_bp
+        app.register_blueprint(ai_surface_sentinel_bp)
+        print("[main] ai_surface_sentinel_bp registered: /api/v1/admin/ai-surface/{audit,canon,refresh}", flush=True)
+    except Exception as _ass:
+        import logging
+        logging.getLogger(__name__).warning('ai_surface_sentinel wiring failed: %s', _ass)
     try:
         from routes.brain_narrative import brain_narrative_bp
         app.register_blueprint(brain_narrative_bp)
