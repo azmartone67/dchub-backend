@@ -611,6 +611,34 @@ DISABLED_JOBS = {
         'minute': 20,
         'timeout': 60,
     },
+    # 2026-07-01: the CLOSE half of the L15 loop. Closes brain-l15-auto
+    # issues whose causal chain dropped out of the current L14 analysis
+    # (resolved) or that went stale, plus stale L23 capability proposals.
+    # Fail-closed + capped; kill via BRAIN_ISSUE_JANITOR_DISABLE=1.
+    # Runs AFTER an L14 refresh (03:15/09:15/15:15/21:15) so the causal
+    # read is never hours stale. Hours 7/19 :40 are empty slots (no cron
+    # collision — see issue #1372).
+    'brain_issue_janitor': {
+        'name': 'Brain Issue Janitor — close resolved/stale auto-issues',
+        'endpoint': '/api/v1/brain/issue-janitor/run',
+        'method': 'POST',
+        'hours': [7, 19],
+        'minute': 40,
+        'timeout': 120,
+    },
+    # 2026-07-01: draft-PR expiry finally on the cron. The endpoint has
+    # existed since the 06-28 draft-graveyard fix but was never scheduled,
+    # so [brain-spec]/[brain-l5]/[brain-l6] drafts piled up unboundedly.
+    # Closes brain-titled DRAFT PRs older than 7 days (never a human PR,
+    # never a readied-for-review one).
+    'brain_draft_pr_expire': {
+        'name': 'Brain Draft-PR Expiry — close stale brain drafts',
+        'endpoint': '/api/v1/admin/brain/draft-prs/expire?days=7',
+        'method': 'POST',
+        'hours': [7],
+        'minute': 50,
+        'timeout': 120,
+    },
     # Phase FF+7-meta — Brain L16 Self-Critique. DISABLED 2026-05-19
     # 10:19 UTC — same crash-loop class as L8/L14. Re-enable after
     # refactoring to background-thread mode.

@@ -2015,6 +2015,16 @@ try:
     except Exception as _l15e:
         import logging
         logging.getLogger(__name__).warning('brain_layer15 wiring failed: %s', _l15e)
+    # 2026-07-01: Issue Janitor — the CLOSE half of the L15 loop. Closes
+    # brain-l15-auto issues whose causal chain is no longer re-detected by
+    # L14 (resolved) or that sat unactioned past the stale window, plus
+    # stale L23 capability proposals. Cron: dchub-scheduler 'brain_issue_janitor'.
+    try:
+        from routes.brain_issue_janitor import brain_issue_janitor_bp
+        app.register_blueprint(brain_issue_janitor_bp)
+    except Exception as _ije:
+        import logging
+        logging.getLogger(__name__).warning('brain_issue_janitor wiring failed: %s', _ije)
     # Phase RRR-newsletter-hotfix3 (2026-05-18): registering via a
     # routes/*.py module silently failed for reasons we couldn't
     # diagnose live. Switching to inline-route definitions on the

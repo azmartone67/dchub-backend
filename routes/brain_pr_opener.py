@@ -71,11 +71,14 @@ def open_pr_exists(title: str) -> bool:
 
 
 def expire_stale_draft_prs(days: int = 14,
-                           prefixes=("[brain-l5 draft]", "[brain-l6 strategic-draft]")) -> dict:
+                           prefixes=("[brain-l5 draft]", "[brain-l6 strategic-draft]",
+                                     "[brain-spec]")) -> dict:
     """Auto-close brain DRAFT PRs older than `days` whose title starts with one
     of the brain prefixes — the auto-expire half of the draft-graveyard fix.
     Only touches drafts (never a human-readied PR). Best-effort; returns a
-    summary. Safe to cron daily."""
+    summary. Safe to cron daily. 2026-07-01: added [brain-spec] — the spec-PR
+    actuator (open_spec_pr) became the dominant draft producer and its drafts
+    were invisible to this expiry, so they piled up 8-deep in a day."""
     import datetime as _dt
     closed, scanned = [], 0
     try:
@@ -96,6 +99,14 @@ def expire_stale_draft_prs(days: int = 14,
             except Exception:
                 continue
             if created < cutoff:
+                try:
+                    _gh("POST",
+                        f"/repos/{_GITHUB_REPO}/issues/{p['number']}/comments",
+                        {"body": (f"🤖 Auto-closed by the brain draft-PR expiry: "
+                                  f"draft sat unactioned for {days}+ days. The "
+                                  f"brain re-proposes anything still worth doing.")})
+                except Exception:
+                    pass
                 cr = _gh("PATCH", f"/repos/{_GITHUB_REPO}/pulls/{p['number']}",
                          {"state": "closed"})
                 if cr.status_code == 200:
