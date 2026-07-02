@@ -5285,11 +5285,28 @@ IS_PRIMARY = IS_RAILWAY and not IS_FAILOVER
 # posts, so failing open can never silence publishing.
 _LEADER_LOCK_ID = 911714323
 _LEADER_LOCK_CONN = None  # kept open for the process lifetime to hold the lock
+def _leader_lock_url():
+    """DB URL for the leader-lock connection ONLY — dialing Neon's DIRECT
+    (non-pooler) endpoint. DATABASE_URL / NEON_DATABASE_URL both point at Neon's
+    pgbouncer POOLER, and in transaction-mode pooling every txn ends with
+    DISCARD ALL, which wipes SESSION-level advisory locks. Consequence:
+    pg_try_advisory_lock() returns TRUE to EVERY replica, so election never
+    mutually excludes anything (verified 2026-07-02: pg_locks shows 0 advisory
+    locks while the app believes it holds one → past double-post incidents).
+    The direct host is the pooler host minus the '-pooler' label; the session
+    persists there so the lock is real. Plain substring swap — never a
+    decode/re-encode round-trip, so DB credentials are untouched; a no-op for
+    already-direct or non-Neon URLs. Returns None if no DB is configured."""
+    _u = os.environ.get("DATABASE_URL") or os.environ.get("NEON_DATABASE_URL")
+    if not _u:
+        return None
+    return _u.replace("-pooler.", ".")
+
 def _acquire_leader_lock():
     global _LEADER_LOCK_CONN
     try:
         import psycopg2 as _pgll
-        _u = os.environ.get("DATABASE_URL") or os.environ.get("NEON_DATABASE_URL")
+        _u = _leader_lock_url()
         if not _u:
             return True  # no DB configured → fail open
         _c = _pgll.connect(_u, connect_timeout=5,
@@ -5344,7 +5361,7 @@ def _leader_keepalive_loop():
             if IS_FAILOVER:
                 _LEADERSHIP['is_leader'] = False  # failover never leads
                 continue
-            _u = os.environ.get("DATABASE_URL") or os.environ.get("NEON_DATABASE_URL")
+            _u = _leader_lock_url()  # DIRECT (non-pooler) endpoint — see helper
             if not _u:
                 _LEADERSHIP['is_leader'] = True   # no DB → fail OPEN
                 continue
