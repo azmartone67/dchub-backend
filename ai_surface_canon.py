@@ -23,6 +23,7 @@ _BASE = os.environ.get("DCHUB_BACKEND_BASE",
 # ── Pinned structural canon (changes rarely; edit HERE, nowhere else) ──
 PINNED = {
     "version": "2.4.1",                       # == registry isLatest record
+    "tools_advertised": 51,                   # canonical advertised count (registry/llms.txt); live server = 53
     "mcp_endpoint": "https://dchub.cloud/mcp",
     "registry_id": "cloud.dchub/mcp-server",
     "rest_base": "https://dchub.cloud/api/v1",     # canonical host (NOT api.dchub.cloud)
