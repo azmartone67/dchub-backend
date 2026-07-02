@@ -22,7 +22,12 @@ export LD_LIBRARY_PATH="${NIXLIBS}${LD_LIBRARY_PATH:+$LD_LIBRARY_PATH:}/usr/lib/
 # detected on 0.0.0.0" → 502. Render is a READ failover; it does not serve /mcp
 # (that's the separate Node MCP server on Railway), so the sidecar is dead weight
 # here. Skip it on Render to fit in 512MB and let gunicorn bind cleanly.
-if [ -z "$RENDER" ] && [ -z "$RENDER_SERVICE_ID" ]; then
+# r-rolesplit (2026-07-02): the sidecar serves MCP traffic — web-only.
+# The DCHUB_ROLE=worker service binds gunicorn purely for its healthcheck
+# and gets no public traffic, so the sidecar is dead weight there.
+if [ "$DCHUB_ROLE" = "worker" ]; then
+  echo "start_web: DCHUB_ROLE=worker — skipping MCP sidecar (web role serves MCP)"
+elif [ -z "$RENDER" ] && [ -z "$RENDER_SERVICE_ID" ]; then
   bash start_mcp.sh &
 else
   echo "start_web: RENDER detected — skipping MCP sidecar to stay under the 512MB memory cap"

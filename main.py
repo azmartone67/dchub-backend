@@ -88,6 +88,27 @@ if _IS_FAILOVER:
     print("   (self_heal, L20-durability, L21-autopilot, HealthMonitor, HealthWatchdog)")
 
 # =================================================================
+# r-rolesplit (2026-07-02): DCHUB_ROLE — split HTTP serving from the
+# in-process background machinery so the monolith can run as TWO
+# Railway services from the same repo/start command:
+#   unset / "all" → today's single-service behavior (safe default)
+#   "web"    → serve HTTP only. Business schedulers, brain, publishers,
+#              crawlers, self-heal and L21 never start, and the process
+#              NEVER competes for the leader lock (a web leader would
+#              idle every leader-gated loop on the worker).
+#   "worker" → runs the background machinery. Still binds gunicorn so
+#              the Railway healthcheck passes, but gets no public
+#              domain/traffic and skips web-only warmers + MCP sidecar.
+# Per-process hygiene (conn-reclaim, write queue, DB init, HealthMonitor,
+# HealthWatchdog, L20-durability, periodic GC) runs in EVERY role.
+DCHUB_ROLE = (_ff_os.environ.get("DCHUB_ROLE", "all").strip().lower() or "all")
+_ROLE_RUNS_BG  = DCHUB_ROLE != "web"      # schedulers/brain/publishers/crawlers
+_ROLE_RUNS_WEB = DCHUB_ROLE != "worker"   # public-serving warmers/sidecars
+if DCHUB_ROLE != "all":
+    print(f"🎭 DCHUB_ROLE={DCHUB_ROLE} — bg-machinery={'ON' if _ROLE_RUNS_BG else 'OFF'}, "
+          f"web-warmers={'ON' if _ROLE_RUNS_WEB else 'OFF'}")
+
+# =================================================================
 # BOOT GUARD — Syntax self-check + Neon hostname monitor
 # Prevents crash-loops and detects silent DB migrations
 # Added: 2026-03-07 (Neon outage prevention) 1.0
@@ -1348,6 +1369,8 @@ app.wsgi_app = _make_fast_health_wsgi(app.wsgi_app)
 # that touches Postgres — adds latency to Render's port-bind window.
 if _IS_FAILOVER:
     print("self_heal scheduler: SKIPPED (failover mode)")
+elif not _ROLE_RUNS_BG:
+    print("self_heal scheduler: SKIPPED (DCHUB_ROLE=web — worker owns fix actions)")
 else:
     try:
         import dchub_self_heal
@@ -1961,6 +1984,8 @@ try:
         # endpoints still answer reads.
         if _IS_FAILOVER:
             print("L21 autopilot: SKIPPED (failover mode, BP still registered)")
+        elif not _ROLE_RUNS_BG:
+            print("L21 autopilot: SKIPPED (DCHUB_ROLE=web — recovery actions are worker-owned, BP still registered)")
         else:
             start_autopilot()
     except Exception as _l21e:
@@ -5273,10 +5298,16 @@ def _acquire_leader_lock():
         print(f"[leader-election] advisory-lock check failed, failing OPEN: {_e}", flush=True)
         return True
 
-IS_LEADER = (not IS_FAILOVER) and _acquire_leader_lock()
+# r-rolesplit: a DCHUB_ROLE=web process must NEVER acquire the lock —
+# every leader-gated loop (publishers, brain, package stats, mcp_gateway
+# health) lives on the worker, so a web leader would idle them all
+# silently while holding the crown.
+IS_LEADER = (not IS_FAILOVER) and _ROLE_RUNS_BG and _acquire_leader_lock()
 print(("👑 LEADER replica — owns publishers/brain/singleton crons" if IS_LEADER
        else ("⏸️ FAILOVER — singleton work vetoed" if IS_FAILOVER
-             else "🧍 FOLLOWER replica — publishers/brain deferred to the leader")),
+             else ("🧍 web role — leader election skipped (worker owns singleton work)"
+                   if not _ROLE_RUNS_BG else
+                   "🧍 FOLLOWER replica — publishers/brain deferred to the leader"))),
       flush=True)
 
 # ── r65 leader-lock self-heal ─────────────────────────────────────────────
@@ -5353,8 +5384,9 @@ def _leader_keepalive_loop():
             print(f"[leader-election] keepalive loop error: {_e}", flush=True)
 
 # Both leader and follower Railway replicas run the loop (follower can promote
-# if the leader dies). Not on failover, not local.
-if IS_RAILWAY and not IS_FAILOVER:
+# if the leader dies). Not on failover, not local, not DCHUB_ROLE=web
+# (web must never promote — see IS_LEADER comment above).
+if IS_RAILWAY and not IS_FAILOVER and _ROLE_RUNS_BG:
     try:
         import threading as _ll_threading
         _ll_threading.Thread(target=_leader_keepalive_loop, name="leader-keepalive",
@@ -8877,12 +8909,15 @@ except Exception as e:
 # runs the ingestion loop on its own cadence (defined in the module).
 # Daemon=True means it won't block Flask shutdown.
 try:
-    from deal_ingestion_scheduler import start_deal_scheduler
-    # get_db() is the standard pooled-connection accessor (line ~2639).
-    # We pass it as a callable so the scheduler can pull fresh connections
-    # from the pool on each run.
-    start_deal_scheduler(get_db)
-    logger.info("✅ Deal ingestion scheduler launched (item #9 fix)")
+    if _ROLE_RUNS_BG:
+        from deal_ingestion_scheduler import start_deal_scheduler
+        # get_db() is the standard pooled-connection accessor (line ~2639).
+        # We pass it as a callable so the scheduler can pull fresh connections
+        # from the pool on each run.
+        start_deal_scheduler(get_db)
+        logger.info("✅ Deal ingestion scheduler launched (item #9 fix)")
+    else:
+        logger.info("⏸️ Deal ingestion scheduler SKIPPED (DCHUB_ROLE=web)")
 except Exception as e:
     logger.warning(f"⚠️ Deal ingestion scheduler skipped: {e}")
 
@@ -8924,7 +8959,7 @@ try:
     # leadership per cycle (_is_publish_leader), so a follower's thread
     # idles until promoted. Import-time IS_LEADER gating left a promoted
     # follower with NO publisher thread at all (leader churn → dark).
-    if not IS_FAILOVER and _legacy_autopub:
+    if not IS_FAILOVER and _ROLE_RUNS_BG and _legacy_autopub:
         start_auto_publisher()
         logger.info("✅ LinkedIn legacy auto-publisher launched (DCHUB_AUTOPUB_LEGACY=1; leader-gated per cycle)")
     elif IS_FAILOVER:
@@ -8951,7 +8986,7 @@ try:
     _legacy_autopub_x = os.environ.get("DCHUB_AUTOPUB_LEGACY", "").strip().lower() in ("1", "true", "yes", "on", "enabled")
     # r78: start on every non-failover replica; per-cycle leader check
     # inside _twitter_loop owns dedup (see LinkedIn note above).
-    if not IS_FAILOVER and _legacy_autopub_x:
+    if not IS_FAILOVER and _ROLE_RUNS_BG and _legacy_autopub_x:
         start_twitter_publisher()
         logger.info("✅ Twitter/X legacy auto-publisher launched (leader-gated per cycle)")
     elif IS_FAILOVER:
@@ -8969,9 +9004,12 @@ try:
     from content_publisher import start_bluesky_publisher, _record_boot as _record_pub_boot_bs
     # r78: start on every non-failover replica; per-cycle leader check
     # inside _bsky_loop owns dedup.
-    if not IS_FAILOVER:
+    if not IS_FAILOVER and _ROLE_RUNS_BG:
         start_bluesky_publisher()
         logger.info("✅ Bluesky auto-publisher launched (Neon-migrated; leader-gated per cycle)")
+    elif not _ROLE_RUNS_BG:
+        logger.info("⏸️ Bluesky auto-publisher SKIPPED (DCHUB_ROLE=web — worker owns publishing)")
+        _record_pub_boot_bs("bluesky", False, reason="DCHUB_ROLE=web (worker owns publishing)")
     elif IS_FAILOVER:
         logger.info("⏸️ Bluesky auto-publisher PAUSED (IS_FAILOVER=true)")
         _record_pub_boot_bs("bluesky", False, reason="IS_FAILOVER=true (read-only replica)")
@@ -9069,7 +9107,8 @@ try:
     # gunicorn process today). The worker runs with BRAIN_HOST=true. Leader-election
     # (pg advisory lock) still guarantees exactly one active brain across services.
     # Defaults to 'true' so existing single-service deploys are UNCHANGED.
-    _brain_host = os.environ.get('BRAIN_HOST', 'true').strip().lower() == 'true'
+    # r-rolesplit: DCHUB_ROLE=web implies BRAIN_HOST=false (worker hosts the brain).
+    _brain_host = (os.environ.get('BRAIN_HOST', 'true').strip().lower() == 'true') and _ROLE_RUNS_BG
     # r33-Q (2026-05-21) — IS_FAILOVER must hard-veto the brain even when
     # AUTONOMOUS_BRAIN_ENABLED defaults to true. Before this guard,
     # Render (IS_FAILOVER=true) was running cycle 7300+ of the brain in
@@ -19626,8 +19665,11 @@ def daily_cron():
         # 2026-06-20: recompute the weekly REACH rollup once/day on the leader
         # replica only (UPSERT-on-week_start makes it idempotent even if both
         # raced). Piggybacks the already-scheduled daily trigger — no new cron.
+        # r-rolesplit: on the split topology the external cron hits the PUBLIC
+        # domain (web role), which by design never leads — so web runs the
+        # rollup unconditionally (still safe: UPSERT-idempotent, fired 1×/day).
         try:
-            if is_current_leader():
+            if is_current_leader() or not _ROLE_RUNS_BG:
                 from routes.ai_reach_rollup import run_reach_rollup
                 results['reach_rollup'] = run_reach_rollup()
                 logger.info(f"[daily_cron] reach_rollup: {results['reach_rollup'].get('weeks_computed')}")
@@ -26460,8 +26502,13 @@ def _surfaces_warm_loop():
             logger.warning("Surfaces warm failed (non-fatal): %s", str(_e)[:120])
         _t.sleep(480)
 try:
-    import threading as _surf_th
-    _surf_th.Thread(target=_surfaces_warm_loop, name="surfaces-warm", daemon=True).start()
+    # r-rolesplit: warms THIS process's _SURFACES_CACHE for public traffic —
+    # pointless on a worker that serves no visitors.
+    if _ROLE_RUNS_WEB:
+        import threading as _surf_th
+        _surf_th.Thread(target=_surfaces_warm_loop, name="surfaces-warm", daemon=True).start()
+    else:
+        logger.info("Surfaces warm loop SKIPPED (DCHUB_ROLE=worker)")
 except Exception as _e:
     logger.warning("surfaces warm loop start failed: %s", str(_e)[:120])
 
@@ -26495,9 +26542,25 @@ def _memory_guarded(name, target):
         target()
     return wrapper
 
+# r-rolesplit: the deferred list mixes per-process hygiene (Periodic GC,
+# Startup Health Check — every role needs these) with business/serving
+# tasks, so the launcher filters by name instead of being role-gated as
+# a whole. Market Report + ServerFarm Seed are worker work; Tier Gate
+# Verification self-probes the PUBLIC serving surface, so the worker
+# (no public traffic) skips it.
+_ROLE_SKIPPED_BG_TASKS = set()
+if not _ROLE_RUNS_BG:
+    _ROLE_SKIPPED_BG_TASKS |= {'Market Report', 'ServerFarm Seed'}
+if not _ROLE_RUNS_WEB:
+    _ROLE_SKIPPED_BG_TASKS |= {'Tier Gate Verification'}
+
 def _start_background_tasks():
     logger.info("🚀 STAGGERED STARTUP: Beginning background task launch (%d tasks queued)", len(_deferred_bg_threads))
     for i, (name, target) in enumerate(_deferred_bg_threads):
+        if name in _ROLE_SKIPPED_BG_TASKS:
+            logger.info("🚀 STAGGERED STARTUP [%d/%d]: Skipped '%s' (DCHUB_ROLE=%s)",
+                        i + 1, len(_deferred_bg_threads), name, DCHUB_ROLE)
+            continue
         if i > 0:
             time.sleep(15)
         try:
@@ -26584,7 +26647,7 @@ def _prewarm_caches():
 # r-perf 2026-06-07: default OFF. The serial self-request pre-warm logged
 # 0/16 warmed (the /dcpi /brain self-hits time out under 1-worker cold-boot
 # load) — pure boot load for zero benefit. Re-enable with PREWARM_ENABLE=1.
-if IS_RAILWAY and os.environ.get("PREWARM_ENABLE", "0") == "1":
+if IS_RAILWAY and _ROLE_RUNS_WEB and os.environ.get("PREWARM_ENABLE", "0") == "1":
     threading.Timer(_PREWARM_DELAY_S, _prewarm_caches).start()
     logger.info("🔥 Cache pre-warm scheduled (+%ds after boot, serial %.0fs stagger)",
                 _PREWARM_DELAY_S, _PREWARM_STAGGER_S)
@@ -26592,9 +26655,14 @@ if IS_RAILWAY and os.environ.get("PREWARM_ENABLE", "0") == "1":
 # --- Start Staggered Crawler Scheduler ---
 if CRAWLER_SCHEDULER_AVAILABLE:
     try:
+        # r-rolesplit: admin ROUTES register in every role (web must answer
+        # /api/crawlers/*); the scheduler threads are worker-only.
         register_crawler_admin(app)
-        start_scheduled_crawlers()
-        logger.info("📅 Crawler Scheduler: ✅ Started (twice-daily staggered crawls)")
+        if _ROLE_RUNS_BG:
+            start_scheduled_crawlers()
+            logger.info("📅 Crawler Scheduler: ✅ Started (twice-daily staggered crawls)")
+        else:
+            logger.info("📅 Crawler Scheduler: ⏸️ SKIPPED (DCHUB_ROLE=web — worker owns crawls; admin routes registered)")
     except Exception as e:
         logger.error(f"📅 Crawler Scheduler: ⚠️ Failed to start: {e}")
 else:
