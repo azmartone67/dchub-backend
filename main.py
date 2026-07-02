@@ -32713,6 +32713,17 @@ try:
 except Exception as _e:
     print(f"[main] gas_feeds_bp register failed: {_e}", file=sys.stderr)
 
+# 2026-07-01: real-time per-ISO LMP feed (MISO/NYISO/SPP/CAISO/PJM/ERCOT).
+# Mirrors iso_queue_ingest architecture: per-ISO ingestors -> iso_lmp_snapshots
+# (UTC intervals), public GET /api/v1/iso-lmp/snapshot reads DISTINCT ISOs.
+# ISO-NE absent (registration-gated real-time API).
+try:
+    from routes.iso_lmp_ingest import iso_lmp_ingest_bp
+    app.register_blueprint(iso_lmp_ingest_bp)
+    print("[main] iso_lmp_ingest_bp registered: /api/v1/iso-lmp/{ingest,ingest/<iso>,snapshot,parser-versions}")
+except Exception as _e:
+    print(f"[main] iso_lmp_ingest_bp register failed: {_e}", file=sys.stderr)
+
 # r-strategic (2026-06-06): Brain Layer-6 Strategic Synthesis. Weekly
 # Claude-backed pass that reads funnel + page-health + customer asks +
 # brain backlog + competitor signal + self-model, then writes 3 strategic
