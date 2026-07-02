@@ -34969,8 +34969,12 @@ def _mcp_conversion_funnel():
         # Step 4: clicked the Stripe button on the redeem page.
         # mcp_pair_codes.stripe_clicked_at is set by /api/v1/mcp/pair-code/<code>/clicked.
         "4_checkouts_started_7d": safe_count("SELECT COUNT(*) FROM mcp_pair_codes WHERE stripe_clicked_at IS NOT NULL AND stripe_clicked_at > NOW() - INTERVAL '7 days'"),
-        "5_conversions_30d":    safe_count("SELECT COUNT(*) FROM mcp_upgrade_signals WHERE tier_current IN ('pro','paid','enterprise') AND created_at > NOW() - INTERVAL '30 days'"),
-        "5b_total_paid_keys":   safe_count("SELECT COUNT(DISTINCT user_email) FROM mcp_upgrade_signals WHERE tier_current IN ('pro','paid','enterprise')"),
+        # #1376 (2026-07-02): read from mcp_funnel_real, NOT the raw table —
+        # sweep/devin/diag probe sessions were counted as "conversions"
+        # (sweep alone showed 56 converted / 93% conv rate). Same
+        # is_synthetic filter step 2 already uses.
+        "5_conversions_30d":    safe_count("SELECT COUNT(*) FROM mcp_funnel_real WHERE tier_current IN ('pro','paid','enterprise') AND created_at > NOW() - INTERVAL '30 days'"),
+        "5b_total_paid_keys":   safe_count("SELECT COUNT(DISTINCT user_email) FROM mcp_funnel_real WHERE tier_current IN ('pro','paid','enterprise')"),
         # Phase QQ — extra context counters so the dashboard tells a fuller story.
         "0_unique_callers_7d":  safe_count("SELECT COUNT(DISTINCT ip_address) FROM mcp_tool_calls WHERE created_at > NOW() - INTERVAL '7 days'"),
         # mcp_upgrade_signals columns (verified): user_email, tool_requested,

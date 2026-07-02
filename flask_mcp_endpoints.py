@@ -1788,7 +1788,9 @@ def mcp_funnel():
                                   'fabrique-noauth-probe','agentpulse',
                                   'mcpscoringengine','mcp-extractor',
                                   'curl','python-script','node-script',
-                                  'postman','insomnia','verify'
+                                  'postman','insomnia','verify',
+                                  'sweep','diag','audit','gating-audit','devin',
+                                  't','p','v','fv','test','internal-dchub'
                                 )
                                 OR COALESCE(LOWER(s.mcp_client),'') LIKE 'loop%%'
                                 OR COALESCE(LOWER(s.mcp_client),'') LIKE 'dchub-%%'
@@ -1799,6 +1801,18 @@ def mcp_funnel():
                                 OR COALESCE(LOWER(s.mcp_client),'') LIKE '%%-health'
                                 OR COALESCE(LOWER(s.mcp_client),'') LIKE '%%-scanner'
                                 OR COALESCE(LOWER(s.mcp_client),'') LIKE '%%-checker'
+                                OR COALESCE(LOWER(s.mcp_client),'') LIKE 'sweep%%'
+                                OR COALESCE(LOWER(s.mcp_client),'') LIKE 'diag%%'
+                                OR COALESCE(LOWER(s.mcp_client),'') LIKE 'audit%%'
+                                OR COALESCE(LOWER(s.mcp_client),'') LIKE 'anon-seed%%'
+                                OR COALESCE(LOWER(s.mcp_client),'') LIKE 'cap-%%'
+                                OR COALESCE(LOWER(s.mcp_client),'') LIKE 'adv-%%'
+                                OR COALESCE(LOWER(s.mcp_client),'') LIKE '%%-test'
+                                OR COALESCE(LOWER(s.mcp_client),'') LIKE 'test-%%'
+                                OR COALESCE(LOWER(s.mcp_client),'') IN ('probe','eval')
+                                OR COALESCE(LOWER(s.mcp_client),'') LIKE 'curl%%'
+                                OR COALESCE(LOWER(s.mcp_client),'') LIKE '%%verify%%'
+                                OR LENGTH(COALESCE(s.mcp_client,'')) <= 2
                             )
                     """)
                     conn.commit()

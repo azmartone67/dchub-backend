@@ -308,7 +308,9 @@ SCHEMA_STATEMENTS = [
                   'registry-health-checker','mcp-shield-scanner','yellowmcp-health',
                   'glama-health','chiark-prober','fabrique-noauth-probe',
                   'agentpulse','mcpscoringengine','mcp-extractor',
-                  'curl','python-script','node-script','postman','insomnia','verify'
+                  'curl','python-script','node-script','postman','insomnia','verify',
+                  'sweep','diag','audit','gating-audit','devin',
+                  't','p','v','fv','test','internal-dchub'
                 ) THEN TRUE
                 WHEN COALESCE(LOWER(s.mcp_client),'') LIKE 'loop%' THEN TRUE
                 WHEN COALESCE(LOWER(s.mcp_client),'') LIKE 'dchub-%' THEN TRUE
@@ -329,6 +331,18 @@ SCHEMA_STATEMENTS = [
                 WHEN COALESCE(LOWER(s.mcp_client),'') LIKE 'e2e-%' THEN TRUE
                 WHEN COALESCE(LOWER(s.mcp_client),'') LIKE 'recheck%' THEN TRUE
                 WHEN COALESCE(LOWER(s.mcp_client),'') LIKE 'healthcheck%' THEN TRUE
+                WHEN COALESCE(LOWER(s.mcp_client),'') LIKE 'sweep%' THEN TRUE
+                WHEN COALESCE(LOWER(s.mcp_client),'') LIKE 'diag%' THEN TRUE
+                WHEN COALESCE(LOWER(s.mcp_client),'') LIKE 'audit%' THEN TRUE
+                WHEN COALESCE(LOWER(s.mcp_client),'') LIKE 'anon-seed%' THEN TRUE
+                WHEN COALESCE(LOWER(s.mcp_client),'') LIKE 'cap-%' THEN TRUE
+                WHEN COALESCE(LOWER(s.mcp_client),'') LIKE 'adv-%' THEN TRUE
+                WHEN COALESCE(LOWER(s.mcp_client),'') LIKE '%-test' THEN TRUE
+                WHEN COALESCE(LOWER(s.mcp_client),'') LIKE 'test-%' THEN TRUE
+                WHEN COALESCE(LOWER(s.mcp_client),'') IN ('probe','eval') THEN TRUE
+                WHEN COALESCE(LOWER(s.mcp_client),'') LIKE 'curl%' THEN TRUE
+                WHEN COALESCE(LOWER(s.mcp_client),'') LIKE '%verify%' THEN TRUE
+                WHEN LENGTH(COALESCE(s.mcp_client,'')) <= 2 THEN TRUE
                 ELSE FALSE
               END AS is_synthetic
             FROM mcp_upgrade_signals s""",
