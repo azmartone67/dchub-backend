@@ -16975,6 +16975,22 @@ def facility_by_slug(slug):
         """, (hash8,))
         row = c.fetchone()
         if not row:
+            # r-slug-namespace (2026-07-02): the keyed search path serves rows from
+            # the `facilities` table, whose provider strings differ from
+            # discovered_facilities ("AWS" vs "Amazon Web Services") — so the
+            # MD5(provider|name) hash it emits can NEVER match above. Same
+            # building, two hash namespaces; every keyed search→get_facility
+            # chain 404'd. Fall back to the same hash over `facilities`.
+            c.execute("""
+                SELECT id, name, provider, city, state, country, market AS region,
+                       latitude, longitude, power_mw, status, address,
+                       NULL AS fiber_providers, 0 AS fiber_carrier_count
+                FROM facilities
+                WHERE """ + hash_sql('') + """ = %s
+                LIMIT 1
+            """, (hash8,))
+            row = c.fetchone()
+        if not row:
             return jsonify({'success': False, 'error': 'Not found'}), 404
         cols = [desc[0] for desc in c.description]
         data = dict(zip(cols, row))
