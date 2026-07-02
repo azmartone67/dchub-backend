@@ -2190,7 +2190,7 @@ try:
                     SELECT
                       COUNT(*) AS minted,
                       COUNT(*) FILTER (WHERE last_used_at IS NOT NULL OR call_count > 0) AS used,
-                      COUNT(*) FILTER (WHERE signed_up_email IS NOT NULL) AS signed_up,
+                      COUNT(*) FILTER (WHERE COALESCE(signed_up_email, operator_email) IS NOT NULL) AS signed_up,
                       COUNT(*) FILTER (WHERE upgraded_tier IS NOT NULL) AS upgraded
                     FROM auto_trial_keys
                     WHERE minted_at >= NOW() - INTERVAL '7 days'
@@ -2203,7 +2203,7 @@ try:
                     SELECT
                       COUNT(*) AS minted,
                       COUNT(*) FILTER (WHERE last_used_at IS NOT NULL OR call_count > 0) AS used,
-                      COUNT(*) FILTER (WHERE signed_up_email IS NOT NULL) AS signed_up,
+                      COUNT(*) FILTER (WHERE COALESCE(signed_up_email, operator_email) IS NOT NULL) AS signed_up,
                       COUNT(*) FILTER (WHERE upgraded_tier IS NOT NULL) AS upgraded
                     FROM auto_trial_keys
                 """)
@@ -2216,7 +2216,7 @@ try:
                       COALESCE(minted_for_tool, '(unknown)') AS tool,
                       COUNT(*) AS minted,
                       COUNT(*) FILTER (WHERE last_used_at IS NOT NULL OR call_count > 0) AS used,
-                      COUNT(*) FILTER (WHERE signed_up_email IS NOT NULL) AS signed_up
+                      COUNT(*) FILTER (WHERE COALESCE(signed_up_email, operator_email) IS NOT NULL) AS signed_up
                     FROM auto_trial_keys
                     WHERE minted_at >= NOW() - INTERVAL '30 days'
                     GROUP BY minted_for_tool
@@ -17091,9 +17091,10 @@ def _list_facilities_full():
     offset = (page - 1) * limit
 
     # Accept the MCP search_facilities tool's advertised param aliases
-    # (operator=→provider, market=→q, min_mw=→min_power) so keyed agents'
-    # filters actually apply — see _list_facilities_free (Devin QA 2026-06-07).
-    q = request.args.get('q', '').strip() or (request.args.get('market', '') or '').strip()
+    # (operator=→provider, query=/market=→q, min_mw=/min_capacity_mw=→min_power)
+    # so keyed agents' filters actually apply — see _list_facilities_free
+    # (Devin QA 2026-06-07).
+    q = (request.args.get('q') or request.args.get('query') or request.args.get('market') or '').strip()
     country = request.args.get('country')
     provider = request.args.get('provider') or request.args.get('operator')
     status = request.args.get('status')
@@ -17101,6 +17102,11 @@ def _list_facilities_full():
     min_power = request.args.get('min_power', type=float)
     if min_power is None:
         min_power = request.args.get('min_mw', type=float)
+    if min_power is None:
+        min_power = request.args.get('min_capacity_mw', type=float)
+    max_power = request.args.get('max_capacity_mw', type=float)
+    if max_power is None:
+        max_power = request.args.get('max_mw', type=float)
     source = request.args.get('source')
 
     sql = "SELECT * FROM facilities WHERE 1=1"
@@ -17147,6 +17153,10 @@ def _list_facilities_full():
         sql += " AND power_mw >= %s"
         count_sql += " AND power_mw >= %s"
         params.append(min_power)
+    if max_power:
+        sql += " AND power_mw <= %s"
+        count_sql += " AND power_mw <= %s"
+        params.append(max_power)
     if source:
         sql += " AND source = %s"
         count_sql += " AND source = %s"
@@ -17256,7 +17266,8 @@ def _list_facilities_free():
     # unfiltered default set (Devin QA 2026-06-07: "market=ashburn / operator=AWS
     # ignored → same 4 facilities; Ashburn returns non-Ashburn"). Map them so the
     # filters actually bite. market= flows through q's MARKET_ALIASES city-expansion.
-    q = request.args.get('q', '').strip() or (request.args.get('market', '') or '').strip()
+    # query= is another advertised alias for q= — accept it too.
+    q = (request.args.get('q') or request.args.get('query') or request.args.get('market') or '').strip()
     country = request.args.get('country')
     provider = request.args.get('provider') or request.args.get('operator')
 

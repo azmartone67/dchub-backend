@@ -238,7 +238,7 @@ def _funnel_signals():
                 cur.execute(
                     "SELECT COUNT(*) FROM auto_trial_keys "
                     "WHERE minted_at >= NOW() - INTERVAL '30 days' "
-                    "AND signed_up_email IS NOT NULL"
+                    "AND COALESCE(signed_up_email, operator_email) IS NOT NULL"
                 )
                 out["trials_signed_up"] = int(cur.fetchone()[0] or 0)
     except Exception as e:

@@ -2628,14 +2628,47 @@ def stripe_webhook_mcp():
     if not email:
         return jsonify({"ok": False, "error": "couldnt resolve customer email"}), 200
 
-    # Determine plan + MRR
+    # Determine plan + MRR — metered-aware (r-mrr 2026-07-01). The old code
+    # defaulted EVERY unlabeled subscription to plan_to='pro' / mrr_cents=4900,
+    # so the $10 metered pack and annual prepays inflated recurring MRR with
+    # fabricated fixed amounts. Rules now:
+    #   • usage_type=metered → 'metered_usage' / 0 MRR (revenue is usage-billed)
+    #   • yearly interval → normalize prepaid year to monthly (mirror the
+    #     pro_annual amount/12 normalization in checkout.session.completed above)
+    #   • label from lookup_key/nickname, else the price-id map, else 'unknown'
+    #     — NEVER default to 'pro'.
+    # Known price ids documented in routes/_stripe_links.py + routes/stripe_metered.py.
+    _PRICE_ID_PLAN = {
+        "price_1Tml5WJ9ey2ATcQlhqdF82z1": "pro_annual",     # $1,794/yr promo (_stripe_links.py)
+        "price_1Tml5XJ9ey2ATcQl0pbU4htM": "founding",       # $99/mo founding (_stripe_links.py)
+        "price_1TecqhJ9ey2ATcQl4Hmp99OU": "pro_annual",     # $1,188/yr campaign (campaign_halfprice_annual.py)
+        "price_1TdNixJ9ey2ATcQldRAdlc7z": "metered_usage",  # metered price (stripe_metered.py)
+    }
     items = obj.get("items", {}).get("data", []) if obj.get("items") else []
-    plan_to   = "pro"
-    mrr_cents = 4900
-    if items:
-        price = items[0].get("price", {}) if isinstance(items[0], dict) else {}
-        plan_to   = price.get("lookup_key") or price.get("nickname") or "pro"
-        mrr_cents = price.get("unit_amount") or 4900
+    plan_to   = "unknown"
+    mrr_cents = 0
+    _label_defaulted = True
+    _item0 = items[0] if (items and isinstance(items[0], dict)) else {}
+    price  = _item0.get("price") or {}
+    if price:
+        _rec = price.get("recurring") or {}
+        if _rec.get("usage_type") == "metered":
+            plan_to, mrr_cents = "metered_usage", 0
+            _label_defaulted = False
+        else:
+            mrr_cents = (price.get("unit_amount") or 0) * (_item0.get("quantity") or 1)
+            if _rec.get("interval") == "year":
+                mrr_cents = round(mrr_cents / 12)
+            _label = (price.get("lookup_key") or price.get("nickname")
+                      or _PRICE_ID_PLAN.get(price.get("id") or ""))
+            if _label:
+                plan_to, _label_defaulted = _label, False
+    if mrr_cents < 100 and _label_defaulted:
+        import logging as _lg
+        _lg.getLogger(__name__).warning(
+            "stripe subscription webhook: unlabeled plan (sub=%s price=%s) "
+            "recorded as plan_to='unknown' mrr_cents=%s — audit the price in Stripe",
+            sub_id, price.get("id"), mrr_cents)
 
     # Find most recent signal for this email (attribution)
     attribution_id = None
