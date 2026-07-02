@@ -213,20 +213,15 @@ def _conn():
                or os.environ.get("NEON_DATABASE_URL") or "")
         if not dsn:
             return None
-        # 502-fix (2026-07-01): bound EVERY probe at 8s. Without this the
-        # role-default statement_timeout (30s) applies, so a single stuck
-        # probe could push the whole ~30-query _build_data() past Railway's
-        # 30s gunicorn timeout → worker killed → CF edge 502 (the recurring
-        # red /admin/funnel-health in sentinel's page scan). A timed-out
-        # probe just returns None/[] and renders as a warning chip.
-        # NOTE: must be a post-connect SET, NOT options="-c statement_timeout"
-        # — Neon's POOLED endpoint (pgbouncer) rejects startup options
-        # ("unsupported startup parameter in options") and the connect fails,
-        # which would permanently blank this dashboard.
+        # 502-fix (2026-07-01): per-probe statement_timeout lives in
+        # _scalar/_rows (SET LOCAL inside an explicit transaction). It can
+        # NOT go here: Neon's POOLED endpoint (pgbouncer, transaction mode)
+        # rejects options="-c statement_timeout" at connect ("unsupported
+        # startup parameter"), and a plain post-connect SET lands on one
+        # backend connection while later probes run on others (verified
+        # live 2026-07-01: SET then SHOW returned the untouched default).
         c = _pg.connect(dsn, sslmode="require", connect_timeout=5)
         c.autocommit = True
-        with c.cursor() as _cur:
-            _cur.execute("SET statement_timeout = 8000")
         return c
     except Exception as e:
         logger.warning("funnel_health: db connect failed: %s", e)
@@ -244,11 +239,7 @@ def _scalar(cur, sql: str, params: tuple = ()) -> Optional[int]:
     mislabeled as a transient 'de-loop timeout' (the query is really 0.1-0.5s;
     statement_timeout is 30s). See reference_psycopg2_empty_tuple_percent_trap."""
     try:
-        if params:
-            cur.execute(sql, params)
-        else:
-            cur.execute(sql)
-        r = cur.fetchone()
+        r = _bounded(cur, sql, params, fetch="one")
         if not r:
             return 0
         v = r[0]
@@ -270,14 +261,42 @@ def _rows(cur, sql: str, params: tuple = ()) -> list[tuple]:
     """Run a SELECT, return rows or [] on error.
     Same empty-tuple %-substitution trap guard as _scalar (above)."""
     try:
+        return list(_bounded(cur, sql, params, fetch="all") or [])
+    except Exception as e:
+        logger.debug("funnel_health _rows failed: %s -- %s", sql[:60], e)
+        return []
+
+
+_PROBE_TIMEOUT_MS = 8000
+
+
+def _bounded(cur, sql: str, params: tuple, fetch: str):
+    """Execute ONE probe inside its own explicit transaction with
+    SET LOCAL statement_timeout — the only form that sticks on Neon's
+    POOLED endpoint (pgbouncer transaction mode: startup options are
+    rejected at connect, and a plain session SET lands on a different
+    backend connection than the queries; verified live 2026-07-01).
+    The connection is autocommit, so BEGIN/COMMIT here are explicit and
+    cheap; ROLLBACK on any error so a timed-out probe never poisons the
+    next one ("current transaction is aborted"). 502-fix: bounds every
+    probe at 8s so a slow-Neon window degrades to warning chips instead
+    of pushing _build_data() past Railway's 30s gunicorn timeout."""
+    cur.execute("BEGIN")
+    try:
+        cur.execute("SET LOCAL statement_timeout = %d" % _PROBE_TIMEOUT_MS)
         if params:
             cur.execute(sql, params)
         else:
             cur.execute(sql)
-        return list(cur.fetchall() or [])
-    except Exception as e:
-        logger.debug("funnel_health _rows failed: %s -- %s", sql[:60], e)
-        return []
+        result = cur.fetchone() if fetch == "one" else cur.fetchall()
+        cur.execute("COMMIT")
+        return result
+    except Exception:
+        try:
+            cur.execute("ROLLBACK")
+        except Exception:
+            pass
+        raise
 
 
 # ── Auth ──────────────────────────────────────────────────────────────
