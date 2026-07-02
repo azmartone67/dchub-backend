@@ -146,10 +146,12 @@ def run_extraction():
     return summary
 
 
+# AUTO-REPAIR: duplicate route '/run' also in enhanced_promotion.py:844 — review and remove one
 @iso_sg_nems_bp.route("/run", methods=["POST", "GET"])
 def http_run():
     return jsonify(run_extraction()), 200
 
+# AUTO-REPAIR: duplicate route '/snapshot' also in routes/iso_eu_entsoe.py:377 — review and remove one
 
 @iso_sg_nems_bp.route("/snapshot", methods=["GET"])
 def http_snapshot():
@@ -162,6 +164,7 @@ def http_snapshot():
                     "as_of_utc": snap["_as_of_utc"],
                     "age_seconds": snap["_age_s"],
                     "source": "NEMS half-hourly (nems.sn.sg mirror)"}), 200
+# AUTO-REPAIR: duplicate route '/health' also in index_api.py:617 — review and remove one
 
 
 @iso_sg_nems_bp.route("/health", methods=["GET"])

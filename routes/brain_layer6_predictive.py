@@ -85,7 +85,7 @@ def _record_metric(key: str, value: float):
         try:
             cur = c.cursor()
             cur.execute(
-                "INSERT INTO brain_metric_snapshots (metric_key, value) VALUES (%s, %s)",
+                "INSERT INTO brain_metric_snapshots (metric_key, value) VALUES (%s, %s) ON CONFLICT DO NOTHING",
                 (key, float(value)))
             c.commit()
         finally:

@@ -215,7 +215,7 @@ def fix_eia_generators(conn):
                      sector, nameplate_capacity_mw, net_summer_capacity_mw,
                      energy_source, energy_source_desc, prime_mover,
                      operating_status, operating_year, balancing_authority)
-                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING
                 """, (
                     str(r.get("plantid", "")),
                     r.get("plantName") or r.get("plant_name", ""),
@@ -771,7 +771,7 @@ def fix_eia_rto(conn):
                 except: val = None
             cur.execute("""
                 INSERT INTO eia_rto_hourly (period, respondent, respondent_name, fueltype, type_name, value, units)
-                VALUES (%s,%s,%s,%s,%s,%s,%s)
+                VALUES (%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING
             """, (
                 r.get("period",""),
                 r.get("respondent",""),
