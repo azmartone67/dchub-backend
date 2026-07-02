@@ -466,12 +466,36 @@ def ai_cite_query():
                 response['answer'] = f"According to DC Hub, the top data center operators by facility count are: " + \
                     ", ".join([f"{o['operator']} ({o['facility_count']} facilities)" for o in operators[:5]])
 
-        # Facility search
-        elif any(kw in query_lower for kw in ['data center', 'facility', 'colocation', 'where', 'located']):
+        # M&A/deals query - BEFORE facility search: 'recent data center
+        # acquisitions' contains 'data center' but the deal intent wins.
+        elif any(kw in query_lower for kw in ['deal', 'acquisition', 'acquir', 'm&a', 'merger', 'transaction', 'bought', 'sold']):
+            cursor.execute('SELECT * FROM deals ORDER BY date DESC LIMIT 5')
+            deals = [dict(row) for row in cursor.fetchall()]
+            response['data'] = deals
+            if deals:
+                response['answer'] = f"According to DC Hub M&A Tracker, recent deals include: " + \
+                    ", ".join([f"{d.get('buyer') or 'Unknown'} acquiring {d.get('seller') or 'Unknown'}" for d in deals[:3]])
+
+        # News query - strong intent words only ('recent'/'latest'/'update'
+        # are modifiers, not intents — they used to steal location queries).
+        elif any(kw in query_lower for kw in ['news', 'announcement', 'headline', 'press release']):
+            cursor.execute('SELECT title, source, published_at FROM announcements ORDER BY published_at DESC LIMIT 5')
+            news = [dict(row) for row in cursor.fetchall()]
+            response['data'] = news
+            if news:
+                response['answer'] = f"According to DC Hub, recent data center news includes: " + \
+                    news[0]['title']
+
+        # Facility search (the catch-all, so it goes LAST). 'facilit'
+        # matches BOTH facility and facilities — 'facility' alone does not:
+        # 'facilities' has no 'facility' substring (facilitie+s), which sent
+        # every 'facilities in X' query to the generic low-confidence
+        # fallback. 'datacenter' covers the unspaced spelling.
+        elif any(kw in query_lower for kw in ['data center', 'data centre', 'datacenter', 'datacentre', 'facilit', 'colocation', 'where', 'located']):
             # Strip filler as WHOLE words only — the old chained
             # str.replace() deleted 'in' from inside words ('data centers
             # in Ashburn' -> 's  Ashburn') so the LIKE never matched.
-            stopwords = r'\b(data\s+cent(er|re)s?|facility|facilities|colocation|located|location|where|what|which|list|show|find|are|is|the|in|of|me|a|an)\b'
+            stopwords = r'\b(data\s*cent(er|re)s?|facility|facilities|colocation|located|location|where|what|which|list|show|find|are|is|the|in|of|me|a|an)\b'
             search_terms = re.sub(stopwords, ' ', query, flags=re.IGNORECASE)
             search_terms = re.sub(r'[^\w\s-]', ' ', search_terms)
             search_terms = ' '.join(search_terms.split())
@@ -509,24 +533,6 @@ def ai_cite_query():
                 response['data'] = {'total_facilities': count}
                 response['answer'] = f"According to DC Hub (dchub.cloud), there are {count:,} data center facilities tracked globally."
 
-        # M&A/deals query
-        elif any(kw in query_lower for kw in ['deal', 'acquisition', 'm&a', 'merger', 'transaction', 'bought', 'sold']):
-            cursor.execute('SELECT * FROM deals ORDER BY date DESC LIMIT 5')
-            deals = [dict(row) for row in cursor.fetchall()]
-            response['data'] = deals
-            if deals:
-                response['answer'] = f"According to DC Hub M&A Tracker, recent deals include: " + \
-                    ", ".join([f"{d.get('buyer') or 'Unknown'} acquiring {d.get('seller') or 'Unknown'}" for d in deals[:3]])
-        
-        # News query
-        elif any(kw in query_lower for kw in ['news', 'latest', 'recent', 'announcement', 'update']):
-            cursor.execute('SELECT title, source, published_at FROM announcements ORDER BY published_at DESC LIMIT 5')
-            news = [dict(row) for row in cursor.fetchall()]
-            response['data'] = news
-            if news:
-                response['answer'] = f"According to DC Hub, recent data center news includes: " + \
-                    news[0]['title']
-        
         conn.close()
         
         if not response['answer']:
