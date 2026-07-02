@@ -50,6 +50,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 import time
 from datetime import datetime, timezone
 from html import escape as _esc
@@ -212,7 +213,14 @@ def _conn():
                or os.environ.get("NEON_DATABASE_URL") or "")
         if not dsn:
             return None
-        c = _pg.connect(dsn, sslmode="require", connect_timeout=5)
+        # 502-fix (2026-07-01): bound EVERY probe at 8s. Without this the
+        # role-default statement_timeout (30s) applies, so a single stuck
+        # probe could push the whole ~30-query _build_data() past Railway's
+        # 30s gunicorn timeout → worker killed → CF edge 502 (the recurring
+        # red /admin/funnel-health in sentinel's page scan). A timed-out
+        # probe just returns None/[] and renders as a warning chip.
+        c = _pg.connect(dsn, sslmode="require", connect_timeout=5,
+                        options="-c statement_timeout=8000")
         c.autocommit = True
         return c
     except Exception as e:
@@ -1272,14 +1280,55 @@ def _build_data() -> dict:
     return out
 
 
+_REFRESH_LOCK = threading.Lock()   # single-flight guard for the bg rebuild
+_REFRESH_RUNNING = False
+
+
+def _refresh_cache() -> None:
+    """Rebuild the blob and publish it. Runs in a daemon thread."""
+    global _REFRESH_RUNNING
+    try:
+        data = _build_data()
+        _CACHE["data"] = data
+        _CACHE["ts"] = time.time()
+    except Exception as e:  # _build_data is defensive, but never kill the flag
+        logger.warning("funnel_health background refresh failed: %s", e)
+    finally:
+        with _REFRESH_LOCK:
+            _REFRESH_RUNNING = False
+
+
 def _data_cached() -> dict:
-    """Return cached data if fresh (<60s); else re-build + cache."""
+    """Return cached data; refresh in the background when stale.
+
+    502-fix (2026-07-01): the old version re-ran the full ~30-query
+    _build_data() SYNCHRONOUSLY on every cache miss (TTL 60s → sentinel's
+    hourly page scan ALWAYS hit a cold cache). Cold build is ~5s on a good
+    day but unbounded when Neon is slow — past Railway's 30s gunicorn
+    timeout the worker gets killed and the edge returns 502 (the recurring
+    red page). Now: stale data is served instantly and ONE daemon thread
+    (single-flight) rebuilds off the request path — same
+    stale-while-revalidate shape as routes/surface_brain._SURFACES_TTL_S.
+    Only the first request after process boot still builds inline (bounded
+    by the 8s per-probe statement_timeout in _conn)."""
+    global _REFRESH_RUNNING
     now = time.time()
-    if _CACHE["data"] is not None and (now - _CACHE["ts"]) < _CACHE_TTL_S:
-        return _CACHE["data"]
+    data = _CACHE["data"]
+    if data is not None and (now - _CACHE["ts"]) < _CACHE_TTL_S:
+        return data
+    if data is not None:
+        # Stale: serve it now, rebuild in the background (single-flight).
+        with _REFRESH_LOCK:
+            if not _REFRESH_RUNNING:
+                _REFRESH_RUNNING = True
+                threading.Thread(target=_refresh_cache,
+                                 name="funnel-health-refresh",
+                                 daemon=True).start()
+        return data
+    # First build since boot — no stale copy to serve, run inline.
     data = _build_data()
     _CACHE["data"] = data
-    _CACHE["ts"] = now
+    _CACHE["ts"] = time.time()
     return data
 
 
