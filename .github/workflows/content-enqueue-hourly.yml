@@ -31,7 +31,11 @@ on:
     #   dcpi-recompute-missing(:37)
     #   ecosystem-watch       (:43)
     #   press-scan-daily      (13:00 daily only)
-    - cron: '17 */2 * * *'
+    # 2026-07-02 (#1372/#1380): :17 collided with brain-master-tick (17 */2)
+    # AND the hourly dchub-self-healing/sla-visitor :17 herd — same-minute
+    # contention breached master-tick's latency threshold. :29 only overlaps
+    # the lightweight 5-min safety nets.
+    - cron: '29 */2 * * *'
   workflow_dispatch: {}
 
 permissions:
