@@ -455,6 +455,7 @@ def ai_cite_query():
                 SELECT provider as operator, COUNT(*) as facility_count
                 FROM discovered_facilities
                 WHERE provider IS NOT NULL AND provider <> ''
+                  AND LOWER(provider) <> 'unknown'
                 GROUP BY provider
                 ORDER BY facility_count DESC
                 LIMIT 10
