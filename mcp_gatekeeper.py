@@ -391,13 +391,21 @@ def _resolve_from_db_hash(api_key: str) -> Optional[Tier]:
         conn = psycopg2.connect(url, connect_timeout=5)
         conn.autocommit = True
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            # PATCH 2026-07-01 (jm): dual key_hash match. Partner/admin/QA keys
+            # (partner_key_issuer, qa_canary_001) store key_hash = the RAW key
+            # string, not sha256 — the same convention util/tier_gate.py (r79.1)
+            # and /api/v1/me already handle with key_hash IN (hash, raw). The
+            # hash-only match here missed all 14 raw-stored active keys, so
+            # resolve_tier() fell through to FREE and every route gating via
+            # routes.tier_gate._resolve_caller_tier (e.g. hyperscaler-brief)
+            # served the free teaser to pro keys that /me/tier resolved as pro.
             cur.execute("""
                 SELECT ak.rate_limit_tier, ak.plan, COALESCE(u.plan, 'free') as user_plan
                 FROM api_keys ak
                 LEFT JOIN users u ON ak.user_id = u.id
-                WHERE ak.key_hash = %s AND (ak.is_active = 1 OR ak.is_active IS NULL)
+                WHERE ak.key_hash IN (%s, %s) AND (ak.is_active = 1 OR ak.is_active IS NULL)
                 LIMIT 1
-            """, (key_hash,))
+            """, (key_hash, api_key))
             row = cur.fetchone()
         conn.close()
         if row:
