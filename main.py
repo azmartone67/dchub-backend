@@ -14436,7 +14436,19 @@ def get_market_stats(market):
     market_lower = market.lower().replace('-', ' ')
 
     if market_lower not in MARKET_ALIASES:
-        return jsonify({'error': 'Market not found', 'code': 'NOT_FOUND'}), 404
+        # r-error-legibility (2026-07-02): self-correcting 404 so an agent can
+        # recover instead of guessing (Gemini feedback). List a sample of valid
+        # market slugs + point at the tool that enumerates them all.
+        _valid = sorted(k.replace(' ', '-') for k in MARKET_ALIASES)
+        return jsonify({
+            'error': f"Market '{market}' not found",
+            'code': 'NOT_FOUND',
+            'detail': ("Use a valid market slug. Call rank_markets (or GET "
+                       "/api/v1/markets) for the full list; DCPI market pages "
+                       "live at /dcpi/<slug>."),
+            'valid_markets_sample': _valid[:20],
+            'valid_markets_count': len(_valid),
+        }), 404
 
     cities = MARKET_ALIASES[market_lower]
 
