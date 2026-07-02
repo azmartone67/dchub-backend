@@ -46,6 +46,11 @@ _BASE = os.environ.get(
     "DCHUB_BACKEND_BASE",
     "https://dchub-backend-production.up.railway.app",
 )
+# The MCP server is a SEPARATE service (server.mjs), NOT the Flask backend —
+# the backend base does not serve the MCP protocol. tools/list must hit the
+# canonical public endpoint (dchub.cloud/mcp), else _mcp_tools() gets 0 tools
+# and the schema components score 0 against a perfectly-described live server.
+_MCP_ENDPOINT = os.environ.get("DCHUB_MCP_ENDPOINT", "https://dchub.cloud/mcp")
 _INT_MIN = -9007199254740991
 _INT_MAX = 9007199254740991
 
@@ -90,14 +95,14 @@ def _mcp_tools(timeout: int = 20) -> list[dict]:
     init = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize",
                        "params": {"protocolVersion": "2024-11-05", "capabilities": {},
                                   "clientInfo": {"name": "dchub-usefulness-probe", "version": "1"}}}).encode()
-    req = urllib.request.Request(_BASE.rstrip("/") + "/mcp", data=init, headers=hdr)
+    req = urllib.request.Request(_MCP_ENDPOINT, data=init, headers=hdr)
     with urllib.request.urlopen(req, timeout=timeout) as r:
         sid = r.headers.get("mcp-session-id")
     hdr2 = dict(hdr)
     if sid:
         hdr2["mcp-session-id"] = sid
     body = json.dumps({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}).encode()
-    req2 = urllib.request.Request(_BASE.rstrip("/") + "/mcp", data=body, headers=hdr2)
+    req2 = urllib.request.Request(_MCP_ENDPOINT, data=body, headers=hdr2)
     with urllib.request.urlopen(req2, timeout=timeout) as r:
         out = r.read().decode("utf-8", "replace")
     for ln in out.splitlines():
@@ -255,7 +260,7 @@ def _measure_surfaces() -> dict:
         pass
     try:
         code, txt = _call("/llms.txt")
-        flags["llms_txt_has_returns"] = bool(code == 200 and "returns:" in txt)
+        flags["llms_txt_has_returns"] = bool(code == 200 and "returns" in txt.lower())
     except Exception:
         pass
     return flags
