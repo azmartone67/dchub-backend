@@ -485,12 +485,37 @@ def _enqueued_within_days(platform: str, marker: str, days: int) -> bool:
         except Exception: pass
 
 
+_QUEUE_CAP = 50  # per-platform approved backlog beyond which enqueue refuses
+
+
 def _enqueue_post(content: str, platform: str) -> int | None:
-    """Insert a single approved row. Returns new id or None."""
+    """Insert a single approved row. Returns new id or None.
+
+    #1373 (2026-07-02): BOUNDED queue + staleness expiry. The X publisher
+    has been dark since 05-25 (app not enrolled in an X dev Project → 403)
+    while this enqueue kept adding 12 posts/day — 219 deep, all stale. Now:
+    (a) approved posts older than 14d expire (timely DCPI content is
+    worthless by then and must never zombie-fire months later), and
+    (b) a platform whose approved backlog is at _QUEUE_CAP stops accepting
+    new rows until the publisher drains it. Self-resuming, no env var."""
     c = _db_conn()
     if not c: return None
     try:
         with c.cursor() as cur:
+            cur.execute("""
+                UPDATE social_media_posts
+                   SET status = 'expired'
+                 WHERE status = 'approved'
+                   AND created_at < NOW() - INTERVAL '14 days'
+            """)
+            cur.execute("""
+                SELECT COUNT(*) FROM social_media_posts
+                 WHERE status = 'approved' AND platform = %s
+            """, (platform,))
+            backlog = int((cur.fetchone() or [0])[0] or 0)
+            if backlog >= _QUEUE_CAP:
+                c.commit()  # keep the expiry even when refusing the insert
+                return None
             cur.execute("""
                 INSERT INTO social_media_posts
                        (content, platform, status, created_at)
