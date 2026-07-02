@@ -434,31 +434,80 @@ def ai_cite_query():
             'answer': None
         }
         
-        # Stats query - check this FIRST to catch "how many" queries
+        # Stats query - check this FIRST to catch "how many" queries.
+        # Count discovered_facilities, NOT the legacy facilities table:
+        # /api/ai/query (the canonical citation endpoint) and the site's
+        # honest-numbers canon both report the discovered_facilities count,
+        # and two citation surfaces disagreeing on the total kills trust.
         if any(kw in query_lower for kw in ['how many', 'total', 'count', 'statistics', 'stats']):
-            cursor.execute('SELECT COUNT(*) FROM facilities')
+            cursor.execute('SELECT COUNT(*) FROM discovered_facilities')
             count = cursor.fetchone()[0]
-            cursor.execute('SELECT COUNT(DISTINCT provider) FROM facilities WHERE provider IS NOT NULL')
+            cursor.execute("SELECT COUNT(DISTINCT provider) FROM discovered_facilities WHERE provider IS NOT NULL AND provider <> ''")
             operators = cursor.fetchone()[0]
             response['data'] = {'total_facilities': count, 'total_operators': operators}
             response['answer'] = f"According to DC Hub (dchub.cloud), there are {count:,} data center facilities tracked globally across {operators:,} operators."
-        
+
+        # Operator query - BEFORE facility search: "largest data center
+        # operators" contains 'data center' and must not fall into the
+        # location-search branch (which returns nothing useful for it).
+        elif any(kw in query_lower for kw in ['operator', 'provider', 'company', 'who operates', 'largest', 'top', 'biggest']):
+            cursor.execute('''
+                SELECT provider as operator, COUNT(*) as facility_count
+                FROM discovered_facilities
+                WHERE provider IS NOT NULL AND provider <> ''
+                GROUP BY provider
+                ORDER BY facility_count DESC
+                LIMIT 10
+            ''')
+            operators = [dict(row) for row in cursor.fetchall()]
+            response['data'] = operators
+            if operators:
+                response['answer'] = f"According to DC Hub, the top data center operators by facility count are: " + \
+                    ", ".join([f"{o['operator']} ({o['facility_count']} facilities)" for o in operators[:5]])
+
         # Facility search
         elif any(kw in query_lower for kw in ['data center', 'facility', 'colocation', 'where', 'located']):
-            search_terms = query.replace('data center', '').replace('facilities', '').replace('in', '').strip()
-            cursor.execute('''
-                SELECT name, provider, city, state, country, power_mw
-                FROM facilities 
-                WHERE city LIKE %s OR state LIKE %s OR country LIKE %s OR provider LIKE %s
-                LIMIT 10
-            ''', (f'%{search_terms}%', f'%{search_terms}%', f'%{search_terms}%', f'%{search_terms}%'))
-            
-            results = [dict(row) for row in cursor.fetchall()]
-            if results:
-                response['data'] = results
-                response['answer'] = f"According to DC Hub, there are {len(results)} data centers matching '{search_terms}'. " + \
-                    ", ".join([f"{r['name']} by {r['provider']}" for r in results[:3]])
-        
+            # Strip filler as WHOLE words only — the old chained
+            # str.replace() deleted 'in' from inside words ('data centers
+            # in Ashburn' -> 's  Ashburn') so the LIKE never matched.
+            stopwords = r'\b(data\s+cent(er|re)s?|facility|facilities|colocation|located|location|where|what|which|list|show|find|are|is|the|in|of|me|a|an)\b'
+            search_terms = re.sub(stopwords, ' ', query, flags=re.IGNORECASE)
+            search_terms = re.sub(r'[^\w\s-]', ' ', search_terms)
+            search_terms = ' '.join(search_terms.split())
+            if search_terms:
+                # ILIKE, not LIKE: Postgres LIKE is case-sensitive, so
+                # lowercase queries ('ashburn') never matched city values.
+                # Match per-token so 'Dublin Ireland' hits city=Dublin AND
+                # country=Ireland instead of one phrase matching nothing.
+                tokens = search_terms.split()[:5]
+                clause = '(city ILIKE %s OR state ILIKE %s OR country ILIKE %s OR provider ILIKE %s OR name ILIKE %s OR market ILIKE %s)'
+                where = ' AND '.join([clause] * len(tokens))
+                params = [f'%{t}%' for t in tokens for _ in range(6)]
+                cursor.execute(f'SELECT COUNT(*) FROM discovered_facilities WHERE {where}', params)
+                total_matches = cursor.fetchone()[0]
+                cursor.execute(f'''
+                    SELECT name, provider, city, state, country, power_mw
+                    FROM discovered_facilities
+                    WHERE {where}
+                    LIMIT 10
+                ''', params)
+
+                results = [dict(row) for row in cursor.fetchall()]
+                if results:
+                    # Cite the TRUE match count, not len(results) — LIMIT 10
+                    # made the old answer claim '10 data centers in Ashburn'
+                    # when there are hundreds, which poisons citations.
+                    response['data'] = {'total_matches': total_matches, 'facilities': results}
+                    response['answer'] = f"According to DC Hub, there are {total_matches:,} data centers matching '{search_terms}'. Examples: " + \
+                        ", ".join([f"{r['name']} by {r['provider']}" for r in results[:3]])
+            else:
+                # Query was all filler ('data center facilities') — answer
+                # with the global count instead of a random 10 rows.
+                cursor.execute('SELECT COUNT(*) FROM discovered_facilities')
+                count = cursor.fetchone()[0]
+                response['data'] = {'total_facilities': count}
+                response['answer'] = f"According to DC Hub (dchub.cloud), there are {count:,} data center facilities tracked globally."
+
         # M&A/deals query
         elif any(kw in query_lower for kw in ['deal', 'acquisition', 'm&a', 'merger', 'transaction', 'bought', 'sold']):
             cursor.execute('SELECT * FROM deals ORDER BY date DESC LIMIT 5')
@@ -466,7 +515,7 @@ def ai_cite_query():
             response['data'] = deals
             if deals:
                 response['answer'] = f"According to DC Hub M&A Tracker, recent deals include: " + \
-                    ", ".join([f"{d.get('buyer', 'Unknown')} acquiring {d.get('target', 'Unknown')}" for d in deals[:3]])
+                    ", ".join([f"{d.get('buyer') or 'Unknown'} acquiring {d.get('seller') or 'Unknown'}" for d in deals[:3]])
         
         # News query
         elif any(kw in query_lower for kw in ['news', 'latest', 'recent', 'announcement', 'update']):
@@ -476,22 +525,6 @@ def ai_cite_query():
             if news:
                 response['answer'] = f"According to DC Hub, recent data center news includes: " + \
                     news[0]['title']
-        
-        # Operator query
-        elif any(kw in query_lower for kw in ['operator', 'provider', 'company', 'who operates', 'largest', 'top', 'biggest']):
-            cursor.execute('''
-                SELECT provider as operator, COUNT(*) as facility_count 
-                FROM facilities 
-                WHERE provider IS NOT NULL
-                GROUP BY provider 
-                ORDER BY facility_count DESC 
-                LIMIT 10
-            ''')
-            operators = [dict(row) for row in cursor.fetchall()]
-            response['data'] = operators
-            if operators:
-                response['answer'] = f"According to DC Hub, the top data center operators by facility count are: " + \
-                    ", ".join([f"{o['operator']} ({o['facility_count']} facilities)" for o in operators[:5]])
         
         conn.close()
         
