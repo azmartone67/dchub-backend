@@ -136,7 +136,7 @@ def record_outcome():
                     INSERT INTO brain_finding_outcomes
                       (issue_type, finding_url, finding_detail, fix_kind,
                        fix_summary, fix_pr_url, outcome, outcome_detail, detector_issue)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
                     RETURNING id
                 """, (issue, body.get("finding_url"), body.get("finding_detail"),
                       fix_kind, body.get("fix_summary"), body.get("fix_pr_url"),
@@ -151,7 +151,7 @@ def record_outcome():
                     INSERT INTO brain_finding_outcomes
                       (issue_type, finding_url, finding_detail, fix_kind,
                        fix_summary, fix_pr_url, outcome, outcome_detail)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
                     RETURNING id
                 """, (issue, body.get("finding_url"), body.get("finding_detail"),
                       fix_kind, body.get("fix_summary"), body.get("fix_pr_url"),
@@ -216,7 +216,7 @@ def record_verified_resolved(issue, url="", evidence="", *, fix_kind="auto_verif
                     INSERT INTO brain_finding_outcomes
                       (issue_type, finding_url, finding_detail, fix_kind,
                        fix_summary, fix_pr_url, outcome, outcome_detail, detector_issue)
-                    VALUES (%s,%s,%s,%s,%s,%s,'success',%s,%s)
+                    VALUES (%s,%s,%s,%s,%s,%s,'success',%s,%s) ON CONFLICT DO NOTHING
                 """, (issue, url, ev, fix_kind, "verified_resolved", None, detail, issue))
             except Exception:
                 # detector_issue column absent → legacy INSERT (mirror record_outcome).
@@ -226,7 +226,7 @@ def record_verified_resolved(issue, url="", evidence="", *, fix_kind="auto_verif
                     INSERT INTO brain_finding_outcomes
                       (issue_type, finding_url, finding_detail, fix_kind,
                        fix_summary, fix_pr_url, outcome, outcome_detail)
-                    VALUES (%s,%s,%s,%s,%s,%s,'success',%s)
+                    VALUES (%s,%s,%s,%s,%s,%s,'success',%s) ON CONFLICT DO NOTHING
                 """, (issue, url, ev, fix_kind, "verified_resolved", None, detail))
             c.commit()
             return "inserted"
@@ -457,7 +457,7 @@ def backfill_from_commits():
                         INSERT INTO brain_finding_outcomes
                           (issue_type, finding_url, fix_kind, fix_summary,
                            fix_pr_url, outcome, outcome_detail, detector_issue)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
                     """, (
                         f"commit_scope:{scope}",
                         f"git:{repo}",
@@ -478,7 +478,7 @@ def backfill_from_commits():
                         INSERT INTO brain_finding_outcomes
                           (issue_type, finding_url, fix_kind, fix_summary,
                            fix_pr_url, outcome, outcome_detail)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
                     """, (
                         f"commit_scope:{scope}",
                         f"git:{repo}",

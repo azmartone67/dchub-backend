@@ -267,7 +267,7 @@ def ingest_carriers(get_db):
                     INSERT INTO carrier_profiles
                         (pdb_id, name, aka, name_long, website, notes,
                          policy_url, policy_general, org_id, org_name, status, updated_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW() ON CONFLICT DO NOTHING)
                     ON CONFLICT (pdb_id) DO UPDATE SET
                         name = EXCLUDED.name,
                         aka = EXCLUDED.aka,
@@ -413,7 +413,7 @@ def ingest_carrier_facilities(get_db):
                         (carrier_pdb_id, carrier_name, facility_pdb_id, facility_name,
                          facility_city, facility_state, facility_country,
                          facility_lat, facility_lng, dchub_facility_id, updated_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW() ON CONFLICT DO NOTHING)
                     ON CONFLICT (carrier_pdb_id, facility_pdb_id) DO UPDATE SET
                         carrier_name = EXCLUDED.carrier_name,
                         facility_name = EXCLUDED.facility_name,
@@ -523,7 +523,7 @@ def build_fiber_coverage_zones(get_db):
                          center_lat, center_lng, provider_count,
                          lit_building_count, fiber_route_count,
                          carrier_list, data_sources, updated_at)
-                    VALUES (%s, %s, 'metro', %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                    VALUES (%s, %s, 'metro', %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW() ON CONFLICT DO NOTHING)
                     ON CONFLICT (zone_id) DO UPDATE SET
                         zone_name = EXCLUDED.zone_name,
                         center_lat = EXCLUDED.center_lat,
