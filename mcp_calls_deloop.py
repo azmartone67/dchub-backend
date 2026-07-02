@@ -153,6 +153,14 @@ def _probe_in_list() -> str:
 INTERNAL_PLATFORM_VALUES = (
     'mcp-probe', 'pipeline_mcp', 'probe', 'verify', 'dchubhealer',
     'capwall2', 'fv', 'v', 't', 'p', 'test',
+    # r-platform-tag-excl (2026-07-01): live-DB audit of platform tags passing
+    # is_real_external in mcp_calls_identity. value-harness was UA-excluded only
+    # (UA 'dchub-value-harness/1.0') — a harness UA change would leak ~100
+    # rotating cloud IPs/wk straight into the reach counts, so pin the write-time
+    # platform tag too. The rest are observed one-off internal test/QA tags that
+    # WERE passing (1 IP each, cumulatively ~15 fake "agents" over 3 weeks).
+    'value-harness', 'clawith', 'dbg', 'raw', 'full', 'f5r',
+    'mcp-vouch', 'qa-mozilla', 'qa', 'fix2-v2', 'rev', 'final', 'vinline',
 )
 
 
@@ -171,11 +179,26 @@ def external_platform_predicate() -> str:
     # vary (p1verify, gate-audit, mcp-probe, diag-*, …) without an ever-growing
     # exact list. Literal % is safe here — this clause is inlined (no bound
     # params), same as PLATFORM_CASE's ILIKE patterns.
-    return (f"({p} NOT LIKE 'dchub-%' "
+    # r-platform-tag-excl (2026-07-01) additions:
+    #   · '%dchub%' (was 'dchub-%') — catches devin-dchub-client /
+    #     local-agent-mode-dchubviamcp-* style tags anywhere in the name; no
+    #     external agent self-tags its platform with our own product name.
+    #   · '%harness%' / '%test%' / '%check%' / '%diag%' / '%sweep%' — the
+    #     recurring internal QA families (value-harness, paywall-test,
+    #     capcheck/fix5-recheck, cap-diag-fresh-*, sweep-test2, …).
+    #   · length ≤ 2 tags ('e','c','w','pw', …) are ad-hoc curl test params,
+    #     never a real client; NULL/empty stays KEPT via the p='' escape.
+    return (f"({p} NOT LIKE '%dchub%' "
             f"AND {p} NOT IN ({_internal_platform_list()}) "
             f"AND {p} NOT LIKE '%verify%' "
             f"AND {p} NOT LIKE '%probe%' "
-            f"AND {p} NOT LIKE '%audit%')")
+            f"AND {p} NOT LIKE '%audit%' "
+            f"AND {p} NOT LIKE '%harness%' "
+            f"AND {p} NOT LIKE '%test%' "
+            f"AND {p} NOT LIKE '%check%' "
+            f"AND {p} NOT LIKE '%diag%' "
+            f"AND {p} NOT LIKE '%sweep%' "
+            f"AND ({p} = '' OR LENGTH({p}) > 2))")
 
 
 # ── Raw-scripting / internal UA exclusion (2026-06-24) ────────────────────
