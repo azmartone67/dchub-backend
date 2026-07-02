@@ -44,8 +44,13 @@ PINNED = {
         "countries": "170+",
     },
     # Values known to be STALE/WRONG on some surface — the sentinel flags these.
+    # NB: DeepSeek/Mistral were REMOVED (2026-07-01) — they're legitimate
+    # available integrations (DC Hub ships /integrations/mistral/ etc.), so
+    # listing them isn't "wrong"; the blunt denylist caused false positives on
+    # /ai + llms.txt. "platforms" (the verified-active 7) stays the canon for
+    # the ACTIVE roll-call; availability is a broader, valid claim.
     "stale_markers": ["10,706", "10706", "50,000+", "50000", "317 ", "332 ",
-                      "232 ", "100 calls/day", "3,000+ M&A", "DeepSeek", "Mistral",
+                      "232 ", "100 calls/day", "3,000+ M&A",
                       "24 tools", "48 tools", "49 tools", "51 tools",
                       "2.1.22", "2.3.3", "2.1.0"],
 }
