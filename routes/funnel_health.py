@@ -219,9 +219,14 @@ def _conn():
         # 30s gunicorn timeout → worker killed → CF edge 502 (the recurring
         # red /admin/funnel-health in sentinel's page scan). A timed-out
         # probe just returns None/[] and renders as a warning chip.
-        c = _pg.connect(dsn, sslmode="require", connect_timeout=5,
-                        options="-c statement_timeout=8000")
+        # NOTE: must be a post-connect SET, NOT options="-c statement_timeout"
+        # — Neon's POOLED endpoint (pgbouncer) rejects startup options
+        # ("unsupported startup parameter in options") and the connect fails,
+        # which would permanently blank this dashboard.
+        c = _pg.connect(dsn, sslmode="require", connect_timeout=5)
         c.autocommit = True
+        with c.cursor() as _cur:
+            _cur.execute("SET statement_timeout = 8000")
         return c
     except Exception as e:
         logger.warning("funnel_health: db connect failed: %s", e)

@@ -63,11 +63,18 @@ def _validated(identity, tool, cap):
         return None, None, "identity must be a non-empty string <= 200 chars"
     if not isinstance(tool, str) or not tool.strip() or len(tool) > _MAX_LEN:
         return None, None, "tool must be a non-empty string <= 200 chars"
-    try:
-        cap_i = int(cap)
-    except (TypeError, ValueError):
+    # Accept a true int (JSON body) or an all-digits string (GET query param).
+    # Reject bools (masquerade as ints) and floats (int() would silently
+    # truncate 5.9 to 5) — both are caller bugs worth a loud 400.
+    if isinstance(cap, bool):
         return None, None, "cap must be an integer 0-1000"
-    if isinstance(cap, bool) or not (0 <= cap_i <= 1000):
+    if isinstance(cap, int):
+        cap_i = cap
+    elif isinstance(cap, str) and cap.strip().isdigit():
+        cap_i = int(cap.strip())
+    else:
+        return None, None, "cap must be an integer 0-1000"
+    if not (0 <= cap_i <= 1000):
         return None, None, "cap must be an integer 0-1000"
     return identity.strip(), tool.strip(), cap_i
 
