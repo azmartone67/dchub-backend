@@ -71,6 +71,7 @@ _DEFAULT_PAGE_LIMIT = int(os.environ.get("COMPETITOR_GAP_PAGE_LIMIT", "500"))
 _DEFAULT_BUDGET_S = float(os.environ.get("COMPETITOR_GAP_BUDGET_S", "90"))
 _FETCH_TIMEOUT_S = float(os.environ.get("COMPETITOR_GAP_FETCH_TIMEOUT_S", "20"))
 _MAX_INSERTS_PER_RUN = int(os.environ.get("COMPETITOR_GAP_MAX_INSERTS", "200"))
+_MAX_GAP_ONLY_PER_RUN = int(os.environ.get("COMPETITOR_GAP_MAX_GAP_ONLY", "150"))
 
 
 # ── LEGAL gap sources. method drives slug parsing.
@@ -485,8 +486,15 @@ def diff_gaps(parsed_rows: list[dict], cur) -> dict:
       (b) passes the NER real-entity gate (drops slug noise);
       (c) is geocodable (city/state/country parseable);
       (d) no fuzzy match in discovered_facilities AND facilities.
+
+    Rows that pass (a)+(b)+(d) but fail the geocode gate (c) — every
+    DCHawk facility slug, which carries operator+address but no
+    city/country — land in `gap_only` instead of being silently dropped:
+    they are recorded in coverage_gaps as intelligence but never staged
+    into discovered_facilities. Capped so the per-row existence probes
+    can't eat the run budget.
     """
-    res = {"true_gaps": [], "dropped_not_facility": 0,
+    res = {"true_gaps": [], "gap_only": [], "dropped_not_facility": 0,
            "dropped_ner": 0, "dropped_not_geocodable": 0,
            "dropped_existing": 0}
     seen_urls = set()
@@ -504,13 +512,18 @@ def diff_gaps(parsed_rows: list[dict], cur) -> dict:
         if not _passes_ner_gate(cand):
             res["dropped_ner"] += 1
             continue
-        if not _is_geocodable(cand):
+        geocodable = _is_geocodable(cand)
+        if not geocodable and len(res["gap_only"]) >= _MAX_GAP_ONLY_PER_RUN:
             res["dropped_not_geocodable"] += 1
             continue
         if _is_existing(cur, cand):
             res["dropped_existing"] += 1
             continue
-        res["true_gaps"].append(cand)
+        if geocodable:
+            res["true_gaps"].append(cand)
+        else:
+            res["gap_only"].append(cand)
+            res["dropped_not_geocodable"] += 1
     return res
 
 
@@ -568,6 +581,77 @@ def _insert_true_gaps(conn, slug: str, true_gaps: list[dict],
                 out["dup"] += 1  # dedup on source_url (already staged)
         except Exception:
             out["errors"] += 1
+    return out
+
+
+# ─────────────────────────────────────────────────────────────────────
+# COVERAGE_GAPS — persist gap intelligence rows (2026-07-02).
+# The coverage_gaps table (created by competitor_intelligence.py) sat at
+# 0 rows since creation: no code path ever inserted into it — gaps only
+# flowed to discovered_facilities + brain_findings, so the gap record
+# itself was invisible to SQL consumers. This writer closes that hole.
+# ─────────────────────────────────────────────────────────────────────
+
+def _gap_id_for(slug: str, source_url: str) -> str:
+    import hashlib as _hl
+    return f"{slug}:{_hl.sha256((source_url or '').encode()).hexdigest()[:16]}"
+
+
+def persist_coverage_gaps(conn, slug: str, source_name: str,
+                          gaps: list[dict], max_rows: int = 500) -> dict:
+    """Upsert one coverage_gaps row per gap facility. Idempotent on
+    gap_id (= slug + sha256(source_url)[:16]) so the daily re-crawl
+    can't duplicate. gap_type distinguishes staged facility gaps from
+    address-only leads that couldn't be geocoded."""
+    out = {"inserted": 0, "errors": 0}
+    try:
+        with conn.cursor() as cur:
+            for g in gaps[:max_rows]:
+                src_url = g.get("source_url") or ""
+                if not src_url:
+                    continue
+                loc = ", ".join(p for p in (g.get("city"), g.get("state"),
+                                            g.get("country")) if p)
+                desc = (f"{g.get('name')}"
+                        + (f" ({loc})" if loc else "")
+                        + f" — listed by {source_name} but missing from "
+                          f"DC Hub coverage. Source: {src_url}")[:1000]
+                if _is_geocodable(g):
+                    gap_type = "facility_coverage"
+                    adv = ("Staged into the discovery → auto-approve → "
+                           "facilities chain; rivals gate this listing "
+                           "behind a login, DC Hub serves it via API/MCP.")
+                else:
+                    gap_type = "facility_lead_ungeocodable"
+                    adv = ("Recorded as a coverage lead (operator+address "
+                           "only — no parseable geography in the source "
+                           "slug, so not auto-staged).")
+                try:
+                    cur.execute("""
+                        INSERT INTO coverage_gaps
+                          (gap_id, competitor, gap_type, description,
+                           dc_hub_advantage)
+                        VALUES (%s, %s, %s, %s, %s)
+                        ON CONFLICT (gap_id) DO NOTHING
+                    """, (_gap_id_for(slug, src_url), source_name,
+                          gap_type, desc, adv))
+                    if cur.rowcount > 0:
+                        out["inserted"] += 1
+                except Exception:
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
+                    out["errors"] += 1
+        conn.commit()
+    except Exception as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        out["errors"] += 1
+        logger.warning("competitor_gap: coverage_gaps persist failed for "
+                       "%s: %s", slug, str(e)[:160])
     return out
 
 
@@ -741,8 +825,9 @@ def run_competitor_gap_scan(limit: int = _DEFAULT_PAGE_LIMIT,
                     with conn.cursor() as cur:
                         d = diff_gaps(parsed, cur)
                     srec["true_gaps"] = len(d["true_gaps"])
+                    srec["gap_only"] = len(d.get("gap_only", []))
                     srec["drops"] = {k: v for k, v in d.items()
-                                     if k != "true_gaps"}
+                                     if k not in ("true_gaps", "gap_only")}
                     out["total_true_gaps"] += len(d["true_gaps"])
                 else:
                     pre = [c for c in parsed
@@ -765,8 +850,9 @@ def run_competitor_gap_scan(limit: int = _DEFAULT_PAGE_LIMIT,
             with conn.cursor() as cur:
                 d = diff_gaps(parsed, cur)
             srec["true_gaps"] = len(d["true_gaps"])
+            srec["gap_only"] = len(d.get("gap_only", []))
             srec["drops"] = {k: v for k, v in d.items()
-                             if k != "true_gaps"}
+                             if k not in ("true_gaps", "gap_only")}
             out["total_true_gaps"] += len(d["true_gaps"])
 
             ins = _insert_true_gaps(conn, src["slug"], d["true_gaps"])
@@ -774,6 +860,12 @@ def run_competitor_gap_scan(limit: int = _DEFAULT_PAGE_LIMIT,
             srec["dup"] = ins["dup"]
             out["total_inserted"] += ins["inserted"]
             out["total_dup"] += ins["dup"]
+
+            pg = persist_coverage_gaps(conn, src["slug"], src["name"],
+                                       d["true_gaps"] + d.get("gap_only", []))
+            srec["coverage_gap_rows"] = pg["inserted"]
+            out["total_coverage_gap_rows"] = (
+                out.get("total_coverage_gap_rows", 0) + pg["inserted"])
 
             sample = [g["name"] for g in d["true_gaps"][:8]]
             _file_finding(conn, src["slug"], len(d["true_gaps"]),

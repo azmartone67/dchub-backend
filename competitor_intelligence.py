@@ -328,6 +328,67 @@ class CompetitorAnalysis:
         }
 
 
+def seed_competitor_tables():
+    """Seed competitors + strategic coverage_gaps rows from the static
+    profiles above. Until 2026-07-02 these tables were created empty and
+    NOTHING ever inserted — the API served the Python constants while SQL
+    consumers (brain, dashboards) saw zero rows. Idempotent upserts keyed
+    on competitor_id / gap_id. Facility-level gap rows come from
+    routes/competitor_gap_crawler.persist_coverage_gaps, not from here."""
+    conn = get_db()
+    try:
+        c = conn.cursor()
+        for cid, comp in CompetitorAnalysis.COMPETITORS.items():
+            c.execute('''INSERT INTO competitors
+                (competitor_id, name, website, category,
+                 estimated_facilities, geographic_coverage, data_freshness,
+                 api_available, pricing_model, strengths, weaknesses,
+                 last_analyzed)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
+                        CURRENT_TIMESTAMP::text)
+                ON CONFLICT (competitor_id) DO UPDATE SET
+                  name = EXCLUDED.name,
+                  website = EXCLUDED.website,
+                  category = EXCLUDED.category,
+                  estimated_facilities = EXCLUDED.estimated_facilities,
+                  geographic_coverage = EXCLUDED.geographic_coverage,
+                  data_freshness = EXCLUDED.data_freshness,
+                  api_available = EXCLUDED.api_available,
+                  pricing_model = EXCLUDED.pricing_model,
+                  strengths = EXCLUDED.strengths,
+                  weaknesses = EXCLUDED.weaknesses,
+                  last_analyzed = CURRENT_TIMESTAMP::text''',
+                (cid, comp['name'], comp['website'], comp['category'],
+                 comp['estimated_facilities'], comp['geographic_coverage'],
+                 comp['data_freshness'], 1 if comp['api_available'] else 0,
+                 comp['pricing'], json.dumps(comp['strengths']),
+                 json.dumps(comp['weaknesses'])))
+        for g in CompetitorAnalysis.COVERAGE_GAPS:
+            gap_id = ('strategic:' + hashlib.md5(
+                (g['competitor'] + '|' + g['gap']).encode()
+            ).hexdigest()[:16])
+            c.execute('''INSERT INTO coverage_gaps
+                (gap_id, competitor, gap_type, description, dc_hub_advantage)
+                VALUES (%s,%s,%s,%s,%s)
+                ON CONFLICT (gap_id) DO UPDATE SET
+                  description = EXCLUDED.description,
+                  dc_hub_advantage = EXCLUDED.dc_hub_advantage''',
+                (gap_id, g['competitor'], 'strategic', g['gap'],
+                 g['dc_hub_advantage']))
+        conn.commit()
+        logger.info("✅ Competitor tables seeded (%d competitors, %d "
+                    "strategic gaps)", len(CompetitorAnalysis.COMPETITORS),
+                    len(CompetitorAnalysis.COVERAGE_GAPS))
+    except Exception as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        logger.warning("competitor table seed failed: %s", e)
+    finally:
+        conn.close()
+
+
 @competitor_bp.route('/api/competitors')
 def get_competitors():
     """Get all competitors"""
@@ -398,6 +459,10 @@ def get_competitor_summary():
 def register_competitor_intel(app):
     """Register competitor intelligence routes"""
     app.register_blueprint(competitor_bp)
+    try:
+        seed_competitor_tables()
+    except Exception as e:
+        logger.warning("competitor seed at register failed: %s", e)
     logger.info("✅ Competitor Intelligence registered")
     print("🕵️ Competitor Intelligence: ✅ Registered")
     print("   📊 Tracking: DCByte, DCHawk, DataCenters.com, DCD, DCK")
