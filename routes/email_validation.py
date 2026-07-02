@@ -65,6 +65,18 @@ ROLE_LOCALPARTS = frozenset({
     "automated", "robot", "daemon", "nobody", "null", "void", "test", "testing",
 })
 
+# Placeholder / documentation domains. These PASS the MX/A check (example.com
+# has real DNS) but no human reads them — AI agents copying a docs example bind
+# owner@example.com verbatim, which makes the key unrecoverable and pollutes
+# the identified-keys funnel metric (live audit 2026-07-01: 11 of 51 bound
+# mcp_dev_keys emails were @example.com). RFC 2606/6761 reserved names plus the
+# generic fill-ins agents actually send. Hard reject, reason='placeholder'.
+PLACEHOLDER_DOMAINS = frozenset({
+    "example.com", "example.org", "example.net", "example.edu",
+    "yourdomain.com", "yourcompany.com", "a.com",
+})
+_RESERVED_TLDS = (".test", ".invalid", ".localhost", ".example", ".local")
+
 # Curated disposable / throwaway / temp-mail domains. Vendored as a real set
 # (not a handful of substrings) so we catch the common throwaways without an
 # external dependency or network call. Binding to one of these makes key
@@ -263,6 +275,7 @@ def validate_email(email):
                     'format'        (not a valid email shape)
                     'role_account'  (postmaster/abuse/noreply/... localpart)
                     'disposable'    (known throwaway domain)
+                    'placeholder'   (RFC-2606 reserved / docs-example domain)
                     'no_mx'         (domain has no MX AND no A record)
 
     SOFT-FAIL: a resolver error/timeout (has_mx -> None) yields (True, None,
@@ -287,6 +300,9 @@ def validate_email(email):
 
     if domain in DISPOSABLE_DOMAINS:
         return False, "disposable", norm
+
+    if domain in PLACEHOLDER_DOMAINS or domain.endswith(_RESERVED_TLDS):
+        return False, "placeholder", norm
 
     mx = has_mx(domain)
     if mx is False:

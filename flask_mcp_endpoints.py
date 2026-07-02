@@ -998,15 +998,20 @@ def identify_key():
                         "purpose": "key_recovery_and_receipts",
                         "identify_source": "mcp_value_moment",
                     })
+                    # signed_up_email is the column every funnel metric counts
+                    # (weekly dividend tracker, funnel_health emails_captured,
+                    # flywheel sweeps) — this path wrote only operator_email,
+                    # so every successful bind read as 0 downstream.
                     cur.execute(
                         """UPDATE auto_trial_keys
                                SET operator_email = %s,
+                                   signed_up_email = COALESCE(NULLIF(signed_up_email, ''), %s),
                                    notes = CASE
                                              WHEN notes IS NULL OR notes NOT LIKE '%%consent_at%%'
                                              THEN %s ELSE notes END
                              WHERE api_key = %s
                          RETURNING expires_at""",
-                        (email, _consent_note, api_key),
+                        (email, email, _consent_note, api_key),
                     )
                     trow = cur.fetchone()
                     if trow:
