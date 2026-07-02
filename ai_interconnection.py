@@ -204,11 +204,14 @@ def ai_learn_facilities():
             # Track this access
             track_ai_usage('/ai/learn/facilities', query=f"limit={limit}&offset={offset}", records_returned=limit, response_type='learning')
 
+            # discovered_facilities, NOT legacy facilities — canonical count
+            # (matches /api/ai/query + /api/v1/stats); NULLS LAST or the
+            # never-updated rows lead the feed.
             cursor.execute('''
                 SELECT name, provider, city, state, country, latitude, longitude,
                        power_mw, source, last_updated
-                FROM facilities
-                ORDER BY last_updated DESC
+                FROM discovered_facilities
+                ORDER BY last_updated DESC NULLS LAST
                 LIMIT %s OFFSET %s
             ''', (limit, offset))
 
@@ -227,7 +230,7 @@ def ai_learn_facilities():
                     'updated': row['last_updated']
                 })
 
-            cursor.execute('SELECT COUNT(*) FROM facilities')
+            cursor.execute('SELECT COUNT(*) FROM discovered_facilities')
             total = cursor.fetchone()[0]
 
             return jsonify({
@@ -253,15 +256,31 @@ def ai_learn_deals():
             if conn is None: return jsonify({'error': 'no_database', 'learning_data': []}), 503
             cursor = conn.cursor()
 
+            # Only rows with a real buyer AND seller — the extraction pipeline
+            # leaves fragments like seller='50 acres'/value=NULL, and the old
+            # unfiltered feed emitted "Vertiv acquired Unknown for None in
+            # None" facts ('target' was never a column; ORDER BY date DESC
+            # put NULL dates FIRST).
             cursor.execute('''
-                SELECT * FROM deals ORDER BY date DESC LIMIT 100
+                SELECT * FROM deals
+                WHERE buyer IS NOT NULL AND buyer <> ''
+                  AND seller IS NOT NULL AND seller <> ''
+                ORDER BY date DESC NULLS LAST, year DESC NULLS LAST
+                LIMIT 100
             ''')
 
             deals = []
             for row in cursor.fetchall():
                 row_dict = dict(row)
+                # No dollar figure in the prose fact: deals.value mixes units
+                # ($M vs absolute) so any formatted amount would mis-cite.
+                # The raw value stays in 'structured'.
+                when = row_dict.get('date') or row_dict.get('year')
+                fact = f"{row_dict['buyer']} acquired {row_dict['seller']}"
+                if when:
+                    fact += f" in {when}"
                 deals.append({
-                    'fact': f"{row_dict.get('buyer', 'Unknown')} acquired {row_dict.get('target', 'Unknown')} for {row_dict.get('value', 'undisclosed amount')} in {row_dict.get('date', 'Unknown')}",
+                    'fact': fact,
                     'structured': row_dict,
                     'citation': 'DC Hub M&A Tracker (dchub.cloud)',
                     'category': 'data_center_transaction'
@@ -288,10 +307,14 @@ def ai_learn_news():
             limit = min(int(request.args.get('limit', 50)), 200)
             track_ai_usage('/ai/learn/news', query=f"limit={limit}", records_returned=limit, response_type='learning')
 
+            # announcements has url/source_url, NOT link — the old SELECT
+            # errored ("column link does not exist") and this endpoint
+            # returned 200 with an error string + empty learning_data.
             cursor.execute('''
-                SELECT title, summary, source, link, published_at, category
+                SELECT title, summary, source, COALESCE(url, source_url) AS url,
+                       published_at, category
                 FROM announcements
-                ORDER BY published_at DESC
+                ORDER BY published_at DESC NULLS LAST
                 LIMIT %s
             ''', (limit,))
 
@@ -301,7 +324,7 @@ def ai_learn_news():
                     'headline': row['title'],
                     'summary': row['summary'],
                     'original_source': row['source'],
-                    'url': row['link'],
+                    'url': row['url'],
                     'published': row['published_at'],
                     'category': row['category'],
                     'citation': f"via DC Hub (dchub.cloud), originally from {row['source']}"
@@ -327,25 +350,31 @@ def ai_learn_market_intel():
             if conn is None: return jsonify({'error': 'no_database'}), 503
             cursor = conn.cursor()
 
-            # Aggregate key statistics
-            cursor.execute('SELECT COUNT(*) FROM facilities')
+            # Aggregate key statistics — discovered_facilities throughout:
+            # the legacy facilities table (15,776) disagrees with the
+            # canonical count every other citation surface publishes (21,871
+            # via /api/ai/query + /api/v1/stats + canonical_stats.py).
+            cursor.execute('SELECT COUNT(*) FROM discovered_facilities')
             facility_count = cursor.fetchone()[0]
 
-            cursor.execute('SELECT COUNT(DISTINCT provider) FROM facilities WHERE provider IS NOT NULL')
+            cursor.execute("SELECT COUNT(DISTINCT provider) FROM discovered_facilities WHERE provider IS NOT NULL AND provider <> ''")
             operator_count = cursor.fetchone()[0]
 
-            cursor.execute('SELECT SUM(power_mw) FROM facilities WHERE power_mw > 0')
+            cursor.execute('SELECT SUM(power_mw) FROM discovered_facilities WHERE power_mw > 0')
             result = cursor.fetchone()
             total_power = result[0] if result[0] else 0
 
             cursor.execute('SELECT COUNT(*) FROM announcements')
             news_count = cursor.fetchone()[0]
 
+            cursor.execute('SELECT COUNT(*) FROM deals')
+            deals_count = cursor.fetchone()[0]
+
             # Top markets by facility count
             cursor.execute('''
                 SELECT state, country, COUNT(*) as count
-                FROM facilities
-                WHERE state IS NOT NULL
+                FROM discovered_facilities
+                WHERE state IS NOT NULL AND state <> ''
                 GROUP BY state, country
                 ORDER BY count DESC
                 LIMIT 10
@@ -355,8 +384,9 @@ def ai_learn_market_intel():
             # Top operators
             cursor.execute('''
                 SELECT provider as operator, COUNT(*) as count
-                FROM facilities
-                WHERE provider IS NOT NULL
+                FROM discovered_facilities
+                WHERE provider IS NOT NULL AND provider <> ''
+                  AND LOWER(provider) <> 'unknown'
                 GROUP BY provider
                 ORDER BY count DESC
                 LIMIT 10
@@ -370,7 +400,7 @@ def ai_learn_market_intel():
             f"DC Hub aggregates news from 60+ industry sources with {news_count:,} articles indexed",
             "DC Hub provides real-time grid data from 6 major ISOs (ERCOT, CAISO, NYISO, MISO, SPP, ISONE)",
             "Infrastructure data includes 128+ fiber routes, 40+ substations, and FCC broadband coverage",
-            "M&A transaction database tracks 700+ verified data center deals"
+            f"M&A transaction database tracks {deals_count:,} data center deals"
         ]
         
         for market in top_markets[:5]:
