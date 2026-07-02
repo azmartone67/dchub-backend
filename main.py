@@ -26638,6 +26638,29 @@ def get_facility_by_id(facility_id):
             """, (facility_id,))
             row = cur.fetchone()
         if not row:
+            # r-slug-namespace (2026-07-02): keyed search serves rows from the
+            # `facilities` table, whose provider strings differ from
+            # discovered_facilities ("AWS" vs "Amazon Web Services") — its
+            # MD5(provider|name)[:8] slugs match NEITHER the df hash above NOR
+            # facilities.id. Same building, two hash namespaces; every keyed
+            # search→get_facility chain 404'd. Final fallback: same hash over
+            # `facilities` itself.
+            _h8f = ""
+            _hpf = str(facility_id).rsplit('-', 1)
+            if len(_hpf) == 2 and len(_hpf[1]) == 8 and all(ch in '0123456789abcdef' for ch in _hpf[1].lower()):
+                _h8f = _hpf[1].lower()
+            if _h8f:
+                cur.execute("""
+                    SELECT id, name, provider, city, state, country, region,
+                           latitude, longitude, power_mw, status, address, source,
+                           permit_date, approval_date, co_date,
+                           permit_source, permit_confidence::float AS permit_confidence
+                    FROM facilities
+                    WHERE """ + hash_sql('') + """ = %s
+                    LIMIT 1
+                """, (_h8f,))
+                row = cur.fetchone()
+        if not row:
             return jsonify({"success": False, "error": "Facility not found", "id": facility_id}), 404
         cols = [d[0] for d in cur.description]
         full_data = dict(zip(cols, row))
