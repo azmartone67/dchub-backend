@@ -85,12 +85,39 @@ def _marker_set(pr_number: int, value: str) -> None:
         pass
 
 
+_MODULE_TOKEN_RE = re.compile(r"\b([a-z][a-z0-9]*(?:_[a-z0-9]+)+)\b")
+
+# snake_case tokens that are prose/domain vocabulary, not module names —
+# don't burn GitHub lookups probing routes/<these>.py.
+_TOKEN_STOPWORDS = {
+    "single_file", "draft_pr", "auto_merge", "human_checklist", "follow_up",
+    "high_level", "e_g", "end_to_end", "kill_switch", "rate_limit",
+}
+
+
 def _extract_candidate_paths(spec_text: str, cap: int = 5) -> list[str]:
-    """Ordered unique repo-relative path candidates named in the spec."""
+    """Ordered unique repo-relative path candidates named in the spec.
+
+    Two tiers: (1) explicit paths (routes/x.py); (2) bare snake_case module
+    names — specs usually say "the mcp_funnel handler", not
+    "routes/mcp_funnel.py" — mapped to routes/<token>.py. Both tiers are
+    grounded against live main by the caller, so a wrong guess is discarded,
+    never edited."""
     seen, out = set(), []
     for m in _PATH_RE.finditer(spec_text or ""):
         p = m.group(1).lstrip("/")
         if ".." in p or p in seen:
+            continue
+        seen.add(p)
+        out.append(p)
+        if len(out) >= cap:
+            return out
+    for m in _MODULE_TOKEN_RE.finditer(spec_text or ""):
+        tok = m.group(1)
+        if tok in _TOKEN_STOPWORDS or len(tok) < 6:
+            continue
+        p = f"routes/{tok}.py"
+        if p in seen:
             continue
         seen.add(p)
         out.append(p)
