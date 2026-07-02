@@ -199,16 +199,43 @@ def _user_from_api_key(api_key, get_db_conn):
             "SELECT tier, status, email FROM mcp_dev_keys WHERE api_key = %s",
             (api_key,))
         row = cur.fetchone()
+        if row:
+            tier, status, email = row
+            cur.close()
+            if status and status != 'active':
+                return None
+            plan = _PAID_KEY_TIERS.get((tier or 'free').lower())
+            if not plan:
+                return None  # free-tier key — not a bypass
+            return {'id': f'apikey:{api_key[:18]}', 'email': email or '',
+                    'plan': plan, 'via': 'api_key'}
+        # 2026-07-01: TWO-key-systems gap — this gate only knew mcp_dev_keys,
+        # so a paying customer's DASHBOARD key (api_keys table + users.plan,
+        # e.g. the dchub_pro_… keys we email out) got 401 on every map data
+        # endpoint. Mirror util.tier_gate.resolve_tier's cross-table fallback:
+        # dual key_hash match (standard keys store sha256(key); partner/QA
+        # keys store the RAW string), best plan across rate_limit_tier /
+        # ak.plan / users.plan. api_keys.is_active is INTEGER — compare = 1.
+        import hashlib as _hl
+        key_hash = _hl.sha256(api_key.encode('utf-8')).hexdigest()
+        cur.execute(
+            """SELECT ak.rate_limit_tier, ak.plan, u.plan, u.email
+                 FROM api_keys ak
+                 LEFT JOIN users u ON u.id = ak.user_id
+                WHERE ak.key_hash IN (%s, %s)
+                  AND (ak.is_active IS NULL OR ak.is_active = 1)
+                LIMIT 1""",
+            (key_hash, api_key))
+        arow = cur.fetchone()
         cur.close()
-        if not row:
+        if not arow:
             return None
-        tier, status, email = row
-        if status and status != 'active':
-            return None
-        plan = _PAID_KEY_TIERS.get((tier or 'free').lower())
+        plan = None
+        for _p in (arow[2], arow[1], arow[0]):  # users.plan wins, then ak.plan, then tier
+            plan = plan or _PAID_KEY_TIERS.get((_p or '').lower().strip())
         if not plan:
             return None  # free-tier key — not a bypass
-        return {'id': f'apikey:{api_key[:18]}', 'email': email or '',
+        return {'id': f'apikey:{api_key[:18]}', 'email': arow[3] or '',
                 'plan': plan, 'via': 'api_key'}
     except Exception as e:
         logger.error(f"API-key auth lookup error: {e}")
