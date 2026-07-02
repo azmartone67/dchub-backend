@@ -24,6 +24,8 @@ Dependencies:
 import json
 import os
 import secrets
+import threading
+import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from functools import wraps
@@ -3240,8 +3242,38 @@ def stats_live_proof():
 #       /api/v1/mcp/funnel and routes/funnel_health.
 # Every number is a live DB read; a missing table fails soft to 0 + a flag
 # (never a placeholder). Public + no PII (IPs are aggregated, never returned).
-@mcp_bp.get("/api/v1/reach")
-def reach_dashboard_data():
+_REACH_STMT_TIMEOUT_MS = 4000
+
+
+def _reach_bounded(cur, sql, fetch="all"):
+    """Run ONE aggregate inside its own explicit transaction with
+    SET LOCAL statement_timeout — the only form that sticks on Neon's
+    POOLED endpoint (pgbouncer transaction mode rejects startup options
+    at connect, and a plain session SET lands on a different backend
+    connection than the query; see routes/funnel_health._bounded,
+    verified live 2026-07-01). Deploy/DB-contention windows pushed this
+    endpoint to 43-55s (Railway HTTP logs 2026-07-02) — far past the
+    edge worker's 5s/15s attempt budget, so reach.html rendered a fetch
+    error. A stalled aggregate now fails at ~4s into the existing flags
+    envelope instead. The connection is autocommit, so BEGIN/COMMIT are
+    explicit; ROLLBACK on error so a timed-out query never poisons the
+    next one."""
+    cur.execute("BEGIN")
+    try:
+        cur.execute("SET LOCAL statement_timeout = %d" % _REACH_STMT_TIMEOUT_MS)
+        cur.execute(sql)
+        result = cur.fetchone() if fetch == "one" else cur.fetchall()
+        cur.execute("COMMIT")
+        return result
+    except Exception:
+        try:
+            cur.execute("ROLLBACK")
+        except Exception:
+            pass
+        raise
+
+
+def _reach_build_data():
     # r-reach-canonical-views (2026-07-01): agent counts read the CANONICAL
     # identity views (mcp_calls_identity / mcp_agent_retention_30d) instead of
     # re-deriving identity + real-vs-probe inline. One definition of "real
@@ -3295,47 +3327,45 @@ def reach_dashboard_data():
         with _pool.connection() as conn, conn.cursor() as cur:
             # 7d totals — real vs probe; agents = distinct agent_id from the
             # canonical identity view (md5 of the first public XFF token).
-            cur.execute(
+            r = _reach_bounded(cur,
                 "SELECT COUNT(*) FILTER (WHERE (" + _real + ")), "
                 "       COUNT(DISTINCT agent_id) FILTER (WHERE (" + _real + ") AND " + _pub + "), "
                 "       COUNT(*) FILTER (WHERE NOT (" + _real + ")), "
                 "       COUNT(DISTINCT agent_id) FILTER (WHERE NOT (" + _real + ") AND " + _pub + ") "
-                "FROM " + _from(_7d))
-            r = cur.fetchone() or (0, 0, 0, 0)
+                "FROM " + _from(_7d), fetch="one") or (0, 0, 0, 0)
             rc, rag, pc, pag = (int(v or 0) for v in r)
             out["real_calls_7d"], out["real_agents_7d"] = rc, rag
             out["probe_calls_7d"], out["probe_agents_7d"] = pc, pag
             tot = rc + pc
             out["real_share_pct"] = round(100.0 * rc / tot, 1) if tot else None
             # platform breakdown — real traffic only, canonical classifier
-            cur.execute(
+            rows = _reach_bounded(cur,
                 "SELECT (" + _DELOOP_PLATFORM_CASE.strip() + ") AS p, COUNT(*) AS calls, "
                 "       COUNT(DISTINCT agent_id) FILTER (WHERE " + _pub + ") AS agents "
                 "FROM " + _from(_7d) + " WHERE (" + _real + ") "
                 "GROUP BY 1 ORDER BY calls DESC LIMIT 20")
             out["platforms_7d"] = [
                 {"platform": p, "calls": int(calls or 0), "agents": int(agents or 0)}
-                for (p, calls, agents) in (cur.fetchall() or [])]
+                for (p, calls, agents) in (rows or [])]
             # prior 7d (days 7-14) for week-over-week
-            cur.execute(
+            r = _reach_bounded(cur,
                 "SELECT COUNT(*) FILTER (WHERE (" + _real + ")), "
                 "       COUNT(DISTINCT agent_id) FILTER (WHERE (" + _real + ") AND " + _pub + ") "
-                "FROM " + _from(_prev7d))
-            r = cur.fetchone() or (0, 0)
+                "FROM " + _from(_prev7d), fetch="one") or (0, 0)
             prc, prag = int(r[0] or 0), int(r[1] or 0)
             def _delta(cur_v, prev_v):
                 return round(100.0 * (cur_v - prev_v) / prev_v, 1) if prev_v else None
             out["wow"]["real_agents_pct"] = _delta(rag, prag)
             out["wow"]["real_calls_pct"] = _delta(rc, prc)
             # top tools among real traffic only
-            cur.execute(
+            rows = _reach_bounded(cur,
                 "SELECT tool_name, COUNT(*) AS calls, "
                 "       COUNT(DISTINCT agent_id) FILTER (WHERE " + _pub + ") AS agents "
                 "FROM " + _from(_7d) + " WHERE (" + _real + ") AND tool_name IS NOT NULL "
                 "GROUP BY tool_name ORDER BY calls DESC LIMIT 12")
             out["top_tools_7d"] = [
                 {"tool": t, "calls": int(calls or 0), "agents": int(agents or 0)}
-                for (t, calls, agents) in (cur.fetchall() or [])]
+                for (t, calls, agents) in (rows or [])]
         out["flags"]["calls_available"] = True
         out["data_available"] = True
     except Exception as e:
@@ -3343,10 +3373,9 @@ def reach_dashboard_data():
     # 30d retention — straight read of the canonical retention view.
     try:
         with _pool.connection() as conn, conn.cursor() as cur:
-            cur.execute(
+            r = _reach_bounded(cur,
                 "SELECT COUNT(*), COUNT(*) FILTER (WHERE returned_2nd_day) "
-                "FROM mcp_agent_retention_30d")
-            r = cur.fetchone() or (0, 0)
+                "FROM mcp_agent_retention_30d", fetch="one") or (0, 0)
             n30, ret = int(r[0] or 0), int(r[1] or 0)
             out["retention_30d"] = {
                 "agents": n30,
@@ -3359,16 +3388,74 @@ def reach_dashboard_data():
         out["flags"]["retention_error"] = str(e)[:160]
     try:
         with _pool.connection() as conn, conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*), COUNT(DISTINCT engine) FROM ai_citations "
-                        "WHERE observed_at >= NOW() - (7 * INTERVAL '1 day') AND dchub_cited = TRUE")
-            r = cur.fetchone() or (0, 0)
+            r = _reach_bounded(cur,
+                "SELECT COUNT(*), COUNT(DISTINCT engine) FROM ai_citations "
+                "WHERE observed_at >= NOW() - (7 * INTERVAL '1 day') AND dchub_cited = TRUE",
+                fetch="one") or (0, 0)
             out["citations_7d"] = int(r[0] or 0)
             out["citation_engines_7d"] = int(r[1] or 0)
         out["flags"]["citations_available"] = True
         out["data_available"] = True
     except Exception as e:
         out["flags"]["citations_error"] = str(e)[:160]
-    return jsonify(out), 200
+    return out
+
+
+_REACH_CACHE: dict = {"data": None, "ts": 0.0}
+_REACH_CACHE_TTL_S = 300   # reach numbers move on hour scales; 5 min is plenty fresh
+_REACH_REFRESH_LOCK = threading.Lock()   # single-flight guard for the bg rebuild
+_REACH_REFRESH_RUNNING = False
+
+
+def _reach_refresh_cache():
+    """Rebuild the reach payload and publish it. Runs in a daemon thread."""
+    global _REACH_REFRESH_RUNNING
+    try:
+        data = _reach_build_data()
+        _REACH_CACHE["data"] = data
+        _REACH_CACHE["ts"] = time.time()
+    except Exception as e:  # _reach_build_data is defensive, but never kill the flag
+        import logging as _lg
+        _lg.getLogger(__name__).warning("reach background refresh failed: %s", e)
+    finally:
+        with _REACH_REFRESH_LOCK:
+            _REACH_REFRESH_RUNNING = False
+
+
+@mcp_bp.get("/api/v1/reach")
+def reach_dashboard_data():
+    """Serve the reach payload from cache; refresh in the background when stale.
+
+    Latency fix (2026-07-02): during deploy/DB-contention windows the six
+    aggregate scans ran 43-55s (Railway HTTP logs, deployment 322e21fe) —
+    past the CF Pages worker's 5s attempt / 15s retry budget, so reach.html
+    rendered "could not load /api/v1/reach" even though the endpoint was
+    healthy minutes later. Same stale-while-revalidate shape as
+    routes/funnel_health._data_cached: fresh → serve; stale → serve
+    instantly + ONE daemon thread (single-flight) rebuilds off the request
+    path; only the first request after boot builds inline, bounded by the
+    4s per-query SET LOCAL statement_timeout in _reach_bounded."""
+    global _REACH_REFRESH_RUNNING
+    now = time.time()
+    data = _REACH_CACHE["data"]
+    if data is not None:
+        age = now - _REACH_CACHE["ts"]
+        if age >= _REACH_CACHE_TTL_S:
+            # Stale: serve it now, rebuild in the background (single-flight).
+            with _REACH_REFRESH_LOCK:
+                if not _REACH_REFRESH_RUNNING:
+                    _REACH_REFRESH_RUNNING = True
+                    threading.Thread(target=_reach_refresh_cache,
+                                     name="reach-refresh",
+                                     daemon=True).start()
+        payload = dict(data)   # shallow copy so the annotation never races the cache
+        payload["cache_age_s"] = round(age, 1)
+        return jsonify(payload), 200
+    # First build since boot — no stale copy to serve, run inline.
+    data = _reach_build_data()
+    _REACH_CACHE["data"] = data
+    _REACH_CACHE["ts"] = time.time()
+    return jsonify(data), 200
 
 
 # ── POST /api/v1/keys/claim/quote — OPT-IN testimonial capture ─────────────
