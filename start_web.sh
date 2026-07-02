@@ -47,6 +47,11 @@ if [ -n "$RENDER" ] || [ -n "$RENDER_SERVICE_ID" ]; then _THREADS=4; fi
 # over-cautious. 20000 keeps a slow safety-net recycle (every several hours)
 # without the storm. (preload + 2 workers is a separate follow-up PR — needs
 # the post-fork thread-start fix; NOT a config-only change.)
-exec gunicorn main:app --bind 0.0.0.0:"$PORT" \
+# r-workerproxy (2026-07-02): bind the IPv6 wildcard, not 0.0.0.0.
+# Railway private networking is IPv6-only — the web→worker job proxy
+# (DCHUB_WORKER_INTERNAL_URL → dchub-worker.railway.internal) can only
+# reach the worker if gunicorn listens on ::. Linux dual-stack
+# (bindv6only=0) means :: still accepts the IPv4/public-edge traffic.
+exec gunicorn main:app --bind "[::]:$PORT" \
   --workers 1 --threads "$_THREADS" --timeout 120 \
   --max-requests 20000 --max-requests-jitter 1000

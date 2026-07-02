@@ -1361,6 +1361,124 @@ def _make_fast_health_wsgi(downstream):
 app.wsgi_app = _make_fast_health_wsgi(app.wsgi_app)
 
 
+# =================================================================
+# r-workerproxy (2026-07-02): heavy HTTP-TRIGGERED jobs must EXECUTE
+# on the worker, not on web. r-rolesplit moved the in-process
+# schedulers off DCHUB_ROLE=web, but the external crons (off-repo
+# Replit scheduler + GitHub Actions) POST their trigger endpoints on
+# the PUBLIC domain — which only routes to web — so sync_news (34
+# RSS feeds), the discovery crawls and the HIFLD loaders still ran
+# in the web process and spiked it past MEMORY_GC_LIMIT_MB (observed
+# 1.9-2.2GB, 2026-07-02 22:13-22:56Z). When DCHUB_ROLE=web and
+# DCHUB_WORKER_INTERNAL_URL is set (Railway private networking,
+# e.g. http://dchub-worker.railway.internal:8080) the trigger paths
+# below are proxied verbatim to the worker and its response relayed
+# (usually a 202). Failure to reach the worker falls back to LOCAL
+# execution — a cron tick must never be dropped — and an unset env
+# var disables the gate entirely, so single-process deploys
+# (failover/Render, local dev, DCHUB_ROLE=all) are unaffected.
+# NOTE: private networking is IPv6-only — start_web.sh binds [::]
+# so the worker is actually reachable on the internal hostname.
+_WORKER_INTERNAL_URL = os.environ.get('DCHUB_WORKER_INTERNAL_URL', '').strip().rstrip('/')
+
+# Exact-path allowlist: every cron-triggered endpoint that crawls
+# feeds, runs discovery/HIFLD loaders, shells out to scrapers, or
+# publishes — the ones that allocate big transient objects. Status /
+# keep-alive / health-probe endpoints and cheap DB-only jobs
+# (auto-approve, alert-emails, simple-alerts, market-report,
+# mcp-rate-cleanup, news/sync/neon) stay local on purpose.
+_WORKER_PROXY_POST_PATHS = frozenset({
+    # main.py manual triggers
+    '/api/news/refresh',             # sync_news: 34 feeds, ~39s
+    '/api/transactions/refresh',
+    '/api/deals/refresh',
+    '/api/facilities/refresh',       # 3-source synchronous discovery crawl
+    '/api/jobs/fiber-sync',          # PeeringDB+HIFLD+OSM, observed 117s
+    '/api/jobs/permit-scraper',      # subprocess scraper
+    '/api/jobs/sec-parser',          # subprocess EDGAR parser
+    # routes/jobs_routes.py cron endpoints
+    '/api/jobs/news-refresh',        # synchronous sync_news, 90-150s
+    '/api/jobs/discovery',
+    '/api/jobs/autopilot',           # feedparser over 5 deal feeds
+    '/api/jobs/global-intelligence',
+    '/api/jobs/infrastructure-sync',
+    '/api/jobs/transmission-refresh',  # HIFLD loaders, 60-240s
+    '/api/jobs/gas-refresh',
+    '/api/jobs/substations-refresh',
+    '/api/jobs/energy-discovery',
+    '/api/jobs/capacity-headroom',
+    '/api/jobs/evolution',
+    '/api/jobs/ai-ecosystem',
+    '/api/jobs/ai-outreach',
+    '/api/jobs/autonomous-brain',    # brain is worker-owned (r-rolesplit)
+    '/api/jobs/ambassador',
+    '/api/jobs/backup',              # pg_dump → R2
+    '/api/jobs/db-backup',
+})
+# GET-capable triggers (cron-job.org defaults to GET): same delegation.
+_WORKER_PROXY_GET_PATHS = frozenset({
+    '/api/news/push-to-neon',        # fire-and-forget full RSS crawl
+    '/api/cron/daily',               # news sync + LinkedIn digest thread
+})
+
+
+def _delegate_to_worker():
+    """Proxy the current request to the worker over Railway private
+    networking and return the relayed response — or None, meaning
+    'run it locally' (gate off, worker unreachable, or already
+    delegated). Called from the before_request gate below."""
+    if DCHUB_ROLE != 'web' or not _WORKER_INTERNAL_URL:
+        return None
+    # Loop guard: never re-delegate a request the proxy already forwarded
+    # (only possible if both services were misconfigured as role=web).
+    if request.headers.get('X-Dchub-Delegated'):
+        return None
+    import requests as _rq
+    fwd_headers = {
+        k: v for k, v in request.headers.items()
+        if k.lower() not in ('host', 'content-length', 'connection',
+                             'transfer-encoding', 'accept-encoding')
+    }
+    fwd_headers['X-Dchub-Delegated'] = '1'
+    url = _WORKER_INTERNAL_URL + request.full_path.rstrip('?')
+    try:
+        upstream = _rq.request(request.method, url, data=request.get_data(),
+                               headers=fwd_headers, timeout=(5, 180),
+                               allow_redirects=False)
+    except _rq.exceptions.ReadTimeout:
+        # The worker accepted the request and is still executing (the
+        # synchronous jobs run 2-4 min; gthread finishes the handler even
+        # after we disconnect). The job is off web — that's the win — so
+        # answer the cron with an honest 202 instead of holding this
+        # thread any longer.
+        logger.info("workerproxy: %s still running on worker after 180s — 202", request.path)
+        return jsonify({'success': True, 'delegated_to': 'worker',
+                        'completed': False,
+                        'note': 'job still running on dchub-worker; check worker logs'}), 202
+    except Exception as e:
+        logger.warning("workerproxy: worker unreachable for %s (%s) — running LOCALLY",
+                       request.path, e)
+        return None
+    logger.info("workerproxy: %s %s → worker %s", request.method, request.path,
+                upstream.status_code)
+    resp = Response(upstream.content, status=upstream.status_code,
+                    content_type=upstream.headers.get('Content-Type', 'application/json'))
+    resp.headers['X-Dchub-Delegated-To'] = 'worker'
+    return resp
+
+
+@app.before_request
+def _worker_delegation_gate():
+    # Registered FIRST (right after app creation) so heavy triggers are
+    # relayed before any other before_request middleware runs on web.
+    path = request.path
+    if request.method == 'POST' and path in _WORKER_PROXY_POST_PATHS:
+        return _delegate_to_worker()
+    if request.method in ('GET', 'POST') and path in _WORKER_PROXY_GET_PATHS:
+        return _delegate_to_worker()
+    return None
+# === /r-workerproxy ===
+
 
 # === Phase 227: in-process self-healer ===
 # Phase FF+22-render-v2 (2026-05-20): skip on failover. self_heal runs
@@ -19707,6 +19825,8 @@ def daily_cron():
         # r-rolesplit: on the split topology the external cron hits the PUBLIC
         # domain (web role), which by design never leads — so web runs the
         # rollup unconditionally (still safe: UPSERT-idempotent, fired 1×/day).
+        # r-workerproxy: /api/cron/daily is now delegated to the worker, which
+        # IS the leader — both branches of this condition still fire it 1×/day.
         try:
             if is_current_leader() or not _ROLE_RUNS_BG:
                 from routes.ai_reach_rollup import run_reach_rollup
