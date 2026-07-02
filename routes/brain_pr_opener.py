@@ -70,51 +70,137 @@ def open_pr_exists(title: str) -> bool:
     return False
 
 
-def expire_stale_draft_prs(days: int = 14,
+_TITLE_STOPWORDS = frozenset((
+    "a", "an", "the", "and", "or", "of", "for", "to", "in", "on", "with",
+    "via", "into", "from", "by", "at", "as", "is", "are", "be", "that",
+))
+
+
+def _title_tokens(title: str) -> set:
+    """Lowercased alphanumeric tokens of a PR title, bracket prefix and
+    stopwords stripped — the comparison basis for fuzzy title dedup."""
+    t = re.sub(r"^\[[^\]]*\]\s*", "", (title or "").lower())
+    return set(re.findall(r"[a-z0-9]{3,}", t)) - _TITLE_STOPWORDS
+
+
+def titles_overlap(a: str, b: str, threshold: float = 0.6) -> bool:
+    """True when two PR titles share >= threshold of their tokens (measured
+    against the shorter title). The L6 planner paraphrases the same theme
+    slightly differently every run ("Self-serve checkout for MCP unlock" vs
+    "MCP unlock self-serve checkout flow"), so exact-match dedup missed
+    essentially every duplicate — token overlap catches the paraphrases."""
+    ta, tb = _title_tokens(a), _title_tokens(b)
+    if not ta or not tb:
+        return False
+    return len(ta & tb) / min(len(ta), len(tb)) >= threshold
+
+
+def open_similar_pr_exists(title: str, prefix: str = "",
+                           threshold: float = 0.6) -> bool:
+    """Fuzzy sibling of open_pr_exists: True if an OPEN PR whose title starts
+    with `prefix` overlaps `title` by >= threshold. Fail-open like
+    open_pr_exists — a GitHub blip never blocks a legitimate draft; the
+    supersede pass in expire_stale_draft_prs catches any dup that slips
+    through."""
+    t = (title or "").strip()
+    if not t:
+        return False
+    try:
+        r = _gh("GET", f"/repos/{_GITHUB_REPO}/pulls?state=open&per_page=100")
+        if r.status_code == 200:
+            for p in r.json():
+                pt = (p.get("title") or "").strip()
+                if prefix and not pt.startswith(prefix):
+                    continue
+                if titles_overlap(t, pt, threshold):
+                    return True
+    except Exception:
+        pass
+    return False
+
+
+def expire_stale_draft_prs(days: int = 5,
                            prefixes=("[brain-l5 draft]", "[brain-l6 strategic-draft]",
                                      "[brain-spec]")) -> dict:
-    """Auto-close brain DRAFT PRs older than `days` whose title starts with one
-    of the brain prefixes — the auto-expire half of the draft-graveyard fix.
+    """Auto-close brain DRAFT PRs whose title starts with one of the brain
+    prefixes — the drain half of the draft-graveyard fix. Two passes:
+
+    1. SUPERSEDE (2026-07-02): when two open drafts under the same prefix
+       have overlapping titles (token overlap >= 60%), close the OLDER one
+       as superseded. The L6 planner re-paraphrased the same themes across
+       runs (two 5-PR bursts on 07-02 alone), and nothing drained the
+       overlap until the 7-day expiry.
+    2. EXPIRE: close survivors older than `days` (default dropped 14 → 5 on
+       2026-07-02 — a strategic draft nobody touched in 5 days is stale, and
+       the brain re-proposes anything still worth doing).
+
     Only touches drafts (never a human-readied PR). Best-effort; returns a
-    summary. Safe to cron daily. 2026-07-01: added [brain-spec] — the spec-PR
-    actuator (open_spec_pr) became the dominant draft producer and its drafts
-    were invisible to this expiry, so they piled up 8-deep in a day."""
+    summary. Safe to cron daily."""
     import datetime as _dt
-    closed, scanned = [], 0
+    closed, superseded, scanned = [], [], 0
+
+    def _close(number: int, comment: str) -> bool:
+        try:
+            _gh("POST",
+                f"/repos/{_GITHUB_REPO}/issues/{number}/comments",
+                {"body": comment})
+        except Exception:
+            pass
+        cr = _gh("PATCH", f"/repos/{_GITHUB_REPO}/pulls/{number}",
+                 {"state": "closed"})
+        return cr.status_code == 200
+
     try:
         r = _gh("GET", f"/repos/{_GITHUB_REPO}/pulls?state=open&per_page=100")
         if r.status_code != 200:
             return {"ok": False, "error": f"list {r.status_code}"}
-        cutoff = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=days)
+        drafts = []
         for p in r.json():
             scanned += 1
             title = (p.get("title") or "")
             if not p.get("draft"):
                 continue
-            if not any(title.startswith(pre) for pre in prefixes):
+            prefix = next((pre for pre in prefixes
+                           if title.startswith(pre)), None)
+            if prefix is None:
                 continue
             try:
                 created = _dt.datetime.fromisoformat(
                     (p.get("created_at") or "").replace("Z", "+00:00"))
             except Exception:
                 continue
+            drafts.append((created, p["number"], title, prefix))
+
+        # Pass 1 — supersede: newest-first so the freshest phrasing of each
+        # theme survives and every older overlapping draft closes against it.
+        kept = []   # (created, number, title, prefix)
+        for created, number, title, prefix in sorted(drafts, reverse=True):
+            winner = next((k for k in kept
+                           if k[3] == prefix and titles_overlap(title, k[2])),
+                          None)
+            if winner is None:
+                kept.append((created, number, title, prefix))
+                continue
+            if _close(number, (f"🤖 Auto-closed by the brain draft-PR janitor: "
+                               f"superseded by the newer overlapping draft "
+                               f"#{winner[1]} ({winner[2]!r}).")):
+                superseded.append(number)
+            else:
+                kept.append((created, number, title, prefix))
+
+        # Pass 2 — expire survivors older than the TTL.
+        cutoff = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=days)
+        for created, number, title, prefix in kept:
             if created < cutoff:
-                try:
-                    _gh("POST",
-                        f"/repos/{_GITHUB_REPO}/issues/{p['number']}/comments",
-                        {"body": (f"🤖 Auto-closed by the brain draft-PR expiry: "
-                                  f"draft sat unactioned for {days}+ days. The "
-                                  f"brain re-proposes anything still worth doing.")})
-                except Exception:
-                    pass
-                cr = _gh("PATCH", f"/repos/{_GITHUB_REPO}/pulls/{p['number']}",
-                         {"state": "closed"})
-                if cr.status_code == 200:
-                    closed.append(p["number"])
+                if _close(number, (f"🤖 Auto-closed by the brain draft-PR expiry: "
+                                   f"draft sat unactioned for {days}+ days. The "
+                                   f"brain re-proposes anything still worth doing.")):
+                    closed.append(number)
     except Exception as e:
         return {"ok": False, "error": f"{type(e).__name__}: {str(e)[:120]}"}
     return {"ok": True, "scanned": scanned, "closed": closed,
-            "closed_count": len(closed), "older_than_days": days}
+            "closed_count": len(closed), "superseded": superseded,
+            "superseded_count": len(superseded), "older_than_days": days}
 
 
 def _get_default_branch_sha() -> str | None:

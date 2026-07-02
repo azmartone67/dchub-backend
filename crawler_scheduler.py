@@ -3027,7 +3027,11 @@ def _run_brain_strategic_synthesis_thu():
         # force=True so we recompute the same week_of_iso bucket with
         # mid-week funnel + feedback signal. Without force the planner
         # short-circuits on the existing Monday row.
-        result = _run(force=True) or {}
+        # open_prs=False (2026-07-02): the mid-week refresh only re-snapshots
+        # the rec bucket — Monday owns PR opening. A second force run each
+        # week opening its own PRs (paraphrased titles, so dedup missed them)
+        # was half of the 07-02 draft flood.
+        result = _run(force=True, open_prs=False) or {}
         logger.info(
             "🧠 brain_strategic_synthesis_thu: rec_count=%s prs_opened=%s "
             "model=%s cost_usd=%s from_cache=%s",

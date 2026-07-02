@@ -236,7 +236,10 @@ def master_tick():
                                         "error": str(_isj_e)[:160]})
             try:
                 from routes.brain_pr_opener import expire_stale_draft_prs as _expire
-                _exp = _expire(days=7) or {}
+                # days 7→5 (2026-07-02): with the L6 supersede pass draining
+                # overlapping drafts, 5 days untouched = stale; the brain
+                # re-proposes anything still worth doing.
+                _exp = _expire(days=5) or {}
                 report["steps"].append({"step": "tier2.draft_pr_expire",
                                         "ok": bool(_exp.get("ok")),
                                         "closed": _exp.get("closed_count", 0),

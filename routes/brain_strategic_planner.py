@@ -148,6 +148,19 @@ def _weekly_pr_cap() -> int:
         return 5
 
 
+def _daily_pr_cap() -> int:
+    """Hard per-UTC-day ceiling on strategic draft PRs (2026-07-02). The
+    weekly cap alone couldn't stop a burst day: it was charged per RUN, and
+    3 full runs in one day opened 3× the cap. Even with the weekly cap now
+    charged against the DB, a single bad day should never open more than
+    this many drafts."""
+    try:
+        return max(0, int(os.environ.get(
+            "BRAIN_STRATEGIC_DAILY_PR_CAP", "5")))
+    except Exception:
+        return 5
+
+
 def _admin_key() -> str:
     return (os.environ.get("DCHUB_ADMIN_KEY")
             or os.environ.get("ADMIN_KEY")
@@ -675,7 +688,6 @@ def _call_claude(prompt: str) -> Optional[dict]:
 
     try:
         from routes.brain_models import brain_model_for, resolve_chain
-        from utils.anthropic_helper import anthropic_messages_url
     except Exception as e:
         logger.warning("L6 strategic: model registry import failed: %s", e)
         return None
@@ -686,7 +698,14 @@ def _call_claude(prompt: str) -> Optional[dict]:
         try:
             import requests
             r = requests.post(
-                anthropic_messages_url(),
+                # 2026-07-02: DIRECT, not anthropic_messages_url(). This
+                # reasoning call runs 60-120s+ on fable-5; through the CF AI
+                # Gateway it died at the edge on EVERY run — burning the full
+                # client timeout, then falling back a model, so fable never
+                # actually answered. At <=2 runs/week the gateway's caching/
+                # observability is worth nothing here; go straight to
+                # Anthropic with a 180s budget (we run in a bg thread).
+                "https://api.anthropic.com/v1/messages",
                 headers={
                     "x-api-key":         _ANTHROPIC_KEY,
                     "anthropic-version": "2023-06-01",
@@ -705,7 +724,7 @@ def _call_claude(prompt: str) -> Optional[dict]:
                     "system":     _SYSTEM_PROMPT,
                     "messages":   [{"role": "user", "content": prompt}],
                 },
-                timeout=90,
+                timeout=180,
             )
             if r.status_code == 404:
                 last_err = f"{model}:404"
@@ -897,10 +916,17 @@ def _persist_recommendations(payload: dict, week_of: _dt.date,
     return inserted
 
 
-def _read_recs_for(week_of: _dt.date) -> list:
+def _read_recs_for(week_of: _dt.date) -> Optional[list]:
+    """This week's recommendation rows, or None when the DB can't answer.
+
+    2026-07-02 FAIL-CLOSED: this used to return [] on ANY DB error, which
+    run_strategic_synthesis read as "no recs yet this week" — so a transient
+    DB blip under the every-5-min heartbeat became a full Opus run + PR
+    burst (two 5-PR bursts on 07-02, 21 open drafts). None now means
+    "unknown" and the caller must abort, not recompute."""
     c = _get_db()
     if c is None:
-        return []
+        return None
     try:
         with c.cursor() as cur:
             cur.execute(
@@ -955,7 +981,34 @@ def _read_recs_for(week_of: _dt.date) -> list:
         return out
     except Exception as e:
         logger.error("L6 strategic: read failed: %s", e)
-        return []
+        return None
+    finally:
+        try:
+            c.close()
+        except Exception:
+            pass
+
+
+def _prs_opened_today() -> Optional[int]:
+    """How many strategic PRs were opened this UTC day. pr_url is stamped
+    only by _mark_pr_on_rec (which also sets updated_at=NOW()), so this
+    count backs the per-day cap. None on any DB error — callers treat
+    unknown as "open nothing" (fail-closed, same rule as _read_recs_for)."""
+    c = _get_db()
+    if c is None:
+        return None
+    try:
+        with c.cursor() as cur:
+            cur.execute(
+                """SELECT COUNT(*)
+                     FROM brain_strategic_recommendations
+                    WHERE pr_url IS NOT NULL
+                      AND updated_at >= date_trunc('day', NOW())""")
+            row = cur.fetchone()
+            return int(row[0]) if row else 0
+    except Exception as e:
+        logger.error("L6 strategic: daily PR count failed: %s", e)
+        return None
     finally:
         try:
             c.close()
@@ -1039,6 +1092,7 @@ def _open_scaffold_pr(rec: dict) -> dict:
         from routes.brain_pr_opener import (
             _get_default_branch_sha, _create_branch, _commit_file,
             _gh, _GITHUB_TOKEN, _GITHUB_REPO, open_pr_exists,
+            open_similar_pr_exists,
         )
     except Exception as e:
         return {"ok": False, "error": f"pr_opener import: {e}"}
@@ -1056,6 +1110,13 @@ def _open_scaffold_pr(rec: dict) -> dict:
     # Skip BEFORE committing a branch so we don't leave orphan branches either.
     if open_pr_exists(f"[brain-l6 strategic-draft] {title}"):
         return {"ok": True, "skipped": "duplicate_open_pr", "title": title}
+    # 2026-07-02: exact-match alone missed ~every dup — each Claude run
+    # PARAPHRASES the same themes, so titles never matched verbatim (the
+    # 07-02 twin bursts were paraphrase pairs). Fuzzy-match (token overlap
+    # >= 60%) against the open strategic drafts before opening another.
+    if open_similar_pr_exists(f"[brain-l6 strategic-draft] {title}",
+                              prefix="[brain-l6 strategic-draft]"):
+        return {"ok": True, "skipped": "similar_open_pr", "title": title}
 
     slug = _slugify(title)
     week_of = rec.get("week_of") or str(_week_of_iso())
@@ -1205,6 +1266,13 @@ def run_strategic_synthesis(force: bool = False,
     # Idempotency: if we already have rows for this week, just re-render
     # unless force=True. Saves the Claude call + repeated DB inserts.
     existing = _read_recs_for(week_of)
+    if existing is None:
+        # FAIL-CLOSED (2026-07-02): unknown ≠ empty. A DB blip here used to
+        # look like a fresh week, turning a heartbeat hit into a full Opus
+        # run + PR burst. Abort; the next heartbeat retries in 5 min.
+        return {"ok": False, "reason": "recs_read_failed",
+                "week_of": str(week_of), "run_id": run_id,
+                "note": "DB unreadable — aborted rather than recompute."}
     if existing and not force:
         return {"ok": True, "from_cache": True, "week_of": str(week_of),
                 "run_id": run_id, "rec_count": len(existing),
@@ -1231,9 +1299,27 @@ def run_strategic_synthesis(force: bool = False,
 
     # Optionally open scaffold PRs
     pr_results = []
+    pr_skip_reason = None
+    cap = 0
     do_prs = (_draft_pr_enabled() if open_prs is None else bool(open_prs))
+    if do_prs and recs is None:
+        # Fail-closed: without a readable rec list we can't know what
+        # already has a PR — open nothing this run.
+        do_prs, pr_skip_reason = False, "recs_read_failed"
     if do_prs:
-        cap = _weekly_pr_cap()
+        # 2026-07-02: `cap` was a per-RUN local counter, so the "weekly"
+        # cap reset on every run — 3 full runs in one day (Thursday force +
+        # heartbeat re-runs on DB blips) opened 3× the cap (21 open drafts).
+        # Charge PRs already opened this ISO week AND today against the
+        # caps; both counts come from the DB, not this process.
+        opened_this_week = sum(1 for r in recs if r.get("pr_url"))
+        opened_today = _prs_opened_today()
+        if opened_today is None:
+            do_prs, pr_skip_reason = False, "daily_pr_count_unavailable"
+        else:
+            cap = min(max(0, _weekly_pr_cap() - opened_this_week),
+                      max(0, _daily_pr_cap() - opened_today))
+    if do_prs:
         opened = 0
         # Only top_gaps_4w + competitor_lacks get PRs; funnel_optimization
         # is a config/copy change (no scaffold), wildcard is exploratory.
@@ -1244,7 +1330,9 @@ def run_strategic_synthesis(force: bool = False,
             if opened >= cap:
                 break
             res = _open_scaffold_pr(rec)
-            if res.get("ok"):
+            # NB: dedupe skips return ok=True WITHOUT pr_url — indexing
+            # res["pr_url"] there raised KeyError and killed the run.
+            if res.get("ok") and res.get("pr_url"):
                 _mark_pr_on_rec(rec["id"], res["pr_url"], res["pr_number"])
                 opened += 1
             pr_results.append({"rec_id": rec["id"],
@@ -1265,12 +1353,14 @@ def run_strategic_synthesis(force: bool = False,
         "prompt_tokens_est": prompt_tokens_est,
         "output_tokens_est": payload.get("_output_tokens_est"),
         "rec_inserted":      inserted,
-        "rec_count":         len(recs),
+        "rec_count":         len(recs or []),
         "pr_open_enabled":   do_prs,
+        "pr_skip_reason":    pr_skip_reason,
+        "pr_cap_this_run":   cap,
         "prs_attempted":     len(pr_results),
-        "prs_opened":        sum(1 for p in pr_results if p.get("ok")),
+        "prs_opened":        sum(1 for p in pr_results if p.get("pr_url")),
         "pr_results":        pr_results,
-        "recommendations":   recs,
+        "recommendations":   recs or [],
         "estimated_cost_usd": _estimate_cost(
             payload.get("_input_tokens_est") or prompt_tokens_est,
             payload.get("_output_tokens_est") or 0,
@@ -1399,7 +1489,7 @@ def strategic_latest():
     """Read-only: return this week's recommendations (or the most recent
     week with data). Public — read access only, no admin gate."""
     week_of = _week_of_iso()
-    recs = _read_recs_for(week_of)
+    recs = _read_recs_for(week_of) or []
     if not recs:
         c = _get_db()
         if c is not None:
@@ -1411,7 +1501,7 @@ def strategic_latest():
                     row = cur.fetchone()
                     if row and row[0]:
                         week_of = row[0]
-                        recs = _read_recs_for(week_of)
+                        recs = _read_recs_for(week_of) or []
             finally:
                 try:
                     c.close()
