@@ -218,6 +218,32 @@ def master_tick():
                                                _call("POST", "/api/v1/brain/auto-action/run")))
             report["steps"].append(_summarize("tier2.l22_draft_prs",
                                                _call("POST", "/api/v1/admin/brain/draft-prs/run")))
+            # 2026-07-01: the CLOSE half of both open loops. L15 files issues
+            # and the drafters open PRs, but nothing retired them — the open
+            # lists only grew. Direct in-process calls (not HTTP) so the tick
+            # works even if the blueprints failed to register. Both are
+            # idempotent, capped, and kill-switchable.
+            try:
+                from routes.brain_issue_janitor import janitor_sweep as _issue_sweep
+                _isj = _issue_sweep(dry_run=False) or {}
+                report["steps"].append({"step": "tier2.issue_janitor",
+                                        "ok": bool(_isj.get("ok")),
+                                        "closed": _isj.get("closed_count", 0),
+                                        "detail": {k: _isj.get(k) for k in
+                                                   ("closed", "errors", "dry_run", "disabled")}})
+            except Exception as _isj_e:
+                report["steps"].append({"step": "tier2.issue_janitor", "ok": False,
+                                        "error": str(_isj_e)[:160]})
+            try:
+                from routes.brain_pr_opener import expire_stale_draft_prs as _expire
+                _exp = _expire(days=7) or {}
+                report["steps"].append({"step": "tier2.draft_pr_expire",
+                                        "ok": bool(_exp.get("ok")),
+                                        "closed": _exp.get("closed_count", 0),
+                                        "detail": _exp})
+            except Exception as _exp_e:
+                report["steps"].append({"step": "tier2.draft_pr_expire", "ok": False,
+                                        "error": str(_exp_e)[:160]})
 
     # ── Tier 3 — HUMAN-GATED (propose only) ─────────────────────────
     if "3" in tiers:
