@@ -573,10 +573,89 @@ def _score_market_from_bulk(market, bulk, cfg):
     }
 
 
+# ── GDCI snapshot persistence (r-memfix, 2026-07-02) ──────────────────
+# _bulk_cache resets on every worker recycle (and is now also cleared by
+# main.py's memory watchdog). Each cold rebuild re-runs _load_bulk —
+# ~29K rows (facilities op+pipeline, power plants, deals, MI) plus a
+# full re-score of all MARKETS — a large transient allocation that,
+# repeated every recycle of the saw-toothing container, fed the memory
+# pressure it was recycled FOR. Persist the SCORED output (a ~300-entry
+# list, low-MB JSONB) and hydrate from it instead; only recompute when
+# the snapshot itself is older than BULK_TTL.
+
+def _exec_write(sql, params=()):
+    """Best-effort write on a fresh autocommit connection (same
+    shared-pool-bypass rationale as _run_query)."""
+    import psycopg2
+    db_url = (os.environ.get('DATABASE_URL') or
+              os.environ.get('POSTGRES_URL') or
+              os.environ.get('DB_URL') or
+              os.environ.get('NEON_DATABASE_URL'))
+    if not db_url:
+        return False
+    conn = None
+    try:
+        conn = psycopg2.connect(db_url)
+        conn.autocommit = True
+        cur = conn.cursor()
+        cur.execute(sql, params)
+        cur.close()
+        return True
+    except Exception as e:
+        logger.warning("GDCI snapshot write failed: %s | %s", e, sql[:80])
+        return False
+    finally:
+        if conn:
+            try: conn.close()
+            except Exception: pass
+
+
+def _save_snapshot(results):
+    import json
+    _exec_write("""CREATE TABLE IF NOT EXISTS gdci_snapshot (
+        id SMALLINT PRIMARY KEY CHECK (id = 1),
+        payload JSONB NOT NULL,
+        computed_at TIMESTAMPTZ NOT NULL DEFAULT NOW())""")
+    _exec_write(
+        "INSERT INTO gdci_snapshot (id, payload, computed_at) VALUES (1, %s, NOW()) "
+        "ON CONFLICT (id) DO UPDATE SET payload = EXCLUDED.payload, computed_at = NOW()",
+        (json.dumps(results),))
+
+
+def _delete_snapshot():
+    """Admin refresh must kill the snapshot too, or the 'refresh' would
+    just rehydrate the same stale scores from the DB."""
+    _exec_write("DELETE FROM gdci_snapshot WHERE id = 1")
+
+
+def _load_snapshot():
+    """Return (results, age_seconds) from gdci_snapshot, or (None, None).
+    Missing table → _run_query logs + returns [] → clean miss."""
+    rows = _run_query(
+        "SELECT payload::text, EXTRACT(EPOCH FROM (NOW() - computed_at)) "
+        "FROM gdci_snapshot WHERE id = 1")
+    if rows and rows[0] and rows[0][0]:
+        try:
+            import json
+            return json.loads(rows[0][0]), float(rows[0][1])
+        except Exception as e:
+            logger.warning("GDCI snapshot decode failed: %s", e)
+    return None, None
+
+
 def _get_all_markets_scored():
     global _bulk_cache, _bulk_ts
     now = time.time()
     if _bulk_cache and now - _bulk_ts < BULK_TTL:
+        return _bulk_cache
+    # Hydrate from the persisted snapshot before paying the ~29K-row
+    # _load_bulk + full re-score. Cold boots and watchdog cache clears
+    # land here; a fresh snapshot turns them into one JSONB read.
+    snap, age = _load_snapshot()
+    if snap and age is not None and age < BULK_TTL:
+        _bulk_cache = snap
+        _bulk_ts    = now - age   # expire in step with the snapshot's real age
+        logger.info("GDCI: hydrated %d markets from snapshot (age %.0fs)", len(snap), age)
         return _bulk_cache
     cfg  = _get_config()
     bulk = _load_bulk(cfg)
@@ -589,6 +668,7 @@ def _get_all_markets_scored():
     results.sort(key=lambda x: x.get('composite_score') or 0, reverse=True)
     _bulk_cache = results
     _bulk_ts    = now
+    _save_snapshot(results)
     return results
 
 
@@ -775,6 +855,7 @@ def admin_config_set():
         conn.commit(); cur.close()
         global _config_cache,_config_ts,_bulk_cache,_bulk_ts
         _config_cache={}; _config_ts=0; _bulk_cache=None; _bulk_ts=0
+        _delete_snapshot()
         return jsonify({'updated':list(data.keys()),'count':len(data),'note':'Cache cleared.'})
     except Exception as e:
         return jsonify({'error':str(e)}), 500
@@ -786,6 +867,7 @@ def admin_refresh():
     if err: return err
     global _config_cache,_config_ts,_bulk_cache,_bulk_ts
     _config_cache={}; _config_ts=0; _bulk_cache=None; _bulk_ts=0
+    _delete_snapshot()
     return jsonify({'cleared':True,'at':datetime.now(timezone.utc).isoformat()})
 
 @index_bp.route('/admin/sources')
