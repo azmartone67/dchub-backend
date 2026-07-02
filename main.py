@@ -32687,6 +32687,17 @@ try:
 except Exception as _e:
     print(f"[main] iso_queue_ingest_bp register failed: {_e}", file=sys.stderr)
 
+# 2026-07-01: gas data feeds — Henry Hub daily spot (EIA v2 RNGWHHD) +
+# LNG export terminals (EIA liquefaction-capacity XLSX). Ingest fired by
+# cron_heartbeat daily at 07:xx UTC; public GETs at /api/v1/gas/henry-hub
+# and /api/v1/gas/lng-terminals.
+try:
+    from routes.gas_price_feeds import gas_feeds_bp
+    app.register_blueprint(gas_feeds_bp)
+    print("[main] gas_feeds_bp registered: /api/v1/gas/{henry-hub,lng-terminals,feeds/ingest}")
+except Exception as _e:
+    print(f"[main] gas_feeds_bp register failed: {_e}", file=sys.stderr)
+
 # r-strategic (2026-06-06): Brain Layer-6 Strategic Synthesis. Weekly
 # Claude-backed pass that reads funnel + page-health + customer asks +
 # brain backlog + competitor signal + self-model, then writes 3 strategic

@@ -134,6 +134,17 @@ _DISPATCH = [
      "POST",
      lambda now: now.hour == 6 and now.minute < 5),
 
+    # 2026-07-01: gas data feeds ingest — Henry Hub daily spot (EIA v2
+    # RNGWHHD) + LNG export terminals (EIA liquefaction-capacity XLSX).
+    # Wide 07:xx window because the heartbeat is throttled to ~hourly at
+    # random minutes; both ingestors are idempotent upserts so re-fires
+    # within the hour are safe. No key -> henry_hub fails gracefully
+    # (never writes synthetic rows).
+    ("gas_feeds_ingest_daily",
+     f"{BASE}/api/v1/gas/feeds/ingest",
+     "POST",
+     lambda now: now.hour == 7 and now.minute < 55),
+
     # r47.11 (2026-05-25): LinkedIn quad rotation — 4 posts/day at fixed
     # UTC slots 08/12/16/20. Endpoint internally filters by current UTC
     # hour + idempotency-checks `linkedin_quad_posts.UNIQUE(slot_date,slot_hour)`,
