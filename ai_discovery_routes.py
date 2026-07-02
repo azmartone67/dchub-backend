@@ -912,6 +912,17 @@ Allow: /
 User-agent: meta-externalagent
 Allow: /
 
+# xAI / Grok — explicitly welcomed (documented UAs). Grok often rotates
+# residential IPs + spoofs browser UAs, so this is a welcome signal, not a gate.
+User-agent: GrokBot
+Allow: /
+
+User-agent: xAI-Grok
+Allow: /
+
+User-agent: Grok-DeepSearch
+Allow: /
+
 User-agent: Bytespider
 Allow: /
 
@@ -944,6 +955,7 @@ Allow: /
 # /sitemap-grids.xml — removed so Google stops re-crawling dead URLs (the
 # bulk of the ~13K "redirect/not-found" in Search Console).
 Sitemap: https://dchub.cloud/sitemap.xml
+Sitemap: https://dchub.cloud/answers/sitemap.xml
 
 # Host preference
 Host: dchub.cloud
