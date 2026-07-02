@@ -2606,7 +2606,59 @@ _HEARTBEAT_TTL_S         = 1800.0  # 30 min — fresh enough for dashboards
 _HEARTBEAT_STALE_GRACE_S = 14400.0 # 4h — serve stale rather than show warming
 # Phase ZZZZZ-round32 (2026-05-24): single-flight lock for cold-start
 # compute so concurrent cold requests don't pile up identical scans.
-_HEARTBEAT_COMPUTING = {"in_progress": False}
+# 2026-07-01: extended with started_ts (stale-hold force-release, so a
+# hung/died compute thread can't wedge the flag forever) + last_error
+# (async crashes become visible in the warming payload instead of only
+# a stderr line nobody reads).
+_HEARTBEAT_COMPUTING = {
+    "in_progress": False,
+    "started_ts": 0.0,
+    "last_error": None,
+    "last_error_at": None,
+}
+# Max seconds a background compute may hold the in-flight flag before a
+# later request treats it as dead and re-triggers. The sync compute is
+# ~10-30s (scan_summary single-flights internally); 10 min is generous.
+_HEARTBEAT_COMPUTE_MAX_S = 600.0
+
+
+def _kick_heartbeat_refresh() -> bool:
+    """Single-flight background heartbeat recompute. Returns True if a
+    refresh thread was spawned. 2026-07-01 root-cause fix: the
+    stale-while-revalidate promised by the Phase FFFF comment was never
+    wired — the stale-grace branch served the frozen payload WITHOUT
+    kicking a refresh, so a cached payload (checked_at and all) was
+    re-served verbatim for up to TTL+grace = 4.5h ('permanent warming'
+    when the cached verdict happened to be warming). Both the stale and
+    cold paths now come through here. Also force-releases an in-flight
+    flag older than _HEARTBEAT_COMPUTE_MAX_S so a wedged thread can't
+    block retries forever."""
+    import threading as _threading
+    now = _time.time()
+    if _HEARTBEAT_COMPUTING["in_progress"]:
+        held_for = now - (_HEARTBEAT_COMPUTING.get("started_ts") or 0.0)
+        if held_for < _HEARTBEAT_COMPUTE_MAX_S:
+            return False  # a live compute is already running
+        # Flag held past the compute budget — the thread hung or died
+        # without reaching its finally. Force-release and retry.
+        try:
+            print(f"[brain_heartbeat] force-releasing stale compute flag "
+                  f"(held {held_for:.0f}s)", flush=True)
+        except Exception:
+            pass
+    _HEARTBEAT_COMPUTING["in_progress"] = True
+    _HEARTBEAT_COMPUTING["started_ts"] = now
+    try:
+        _threading.Thread(target=_compute_heartbeat_async, daemon=True).start()
+        return True
+    except Exception as _te:
+        # Spawn failure must not wedge the flag — reset so the next
+        # request retries, and surface the error.
+        _HEARTBEAT_COMPUTING["in_progress"] = False
+        _HEARTBEAT_COMPUTING["last_error"] = f"thread spawn failed: {str(_te)[:160]}"
+        _HEARTBEAT_COMPUTING["last_error_at"] = (
+            datetime.datetime.utcnow().isoformat() + "Z")
+        return False
 
 
 # Phase ZZZZZ-round8 (2026-05-23): /api/v1/brain/heartbeat-alt is the
@@ -2654,11 +2706,14 @@ def brain_heartbeat():
         return _serve_cached(stale=False)
 
     if cached is not None and age < (_HEARTBEAT_TTL_S + _HEARTBEAT_STALE_GRACE_S):
-        # Stale but within grace — serve cache immediately. The NEXT
-        # request that lands AFTER the grace window will trigger a
-        # synchronous refresh. This pattern keeps responses fast for
-        # 99% of traffic; only the unlucky single request after the
-        # grace expires pays the full cold-start cost.
+        # Stale but within grace — serve cache immediately AND kick the
+        # background refresh. 2026-07-01 fix: this branch used to serve
+        # the frozen payload with NO refresh at all (the revalidate half
+        # of stale-while-revalidate was never wired), so a payload
+        # computed once — including one whose computed verdict was
+        # 'warming' — was re-served with the identical checked_at for up
+        # to 4.5h. Single-flight guarded, so this stays cheap.
+        _kick_heartbeat_refresh()
         return _serve_cached(stale=True)
 
     # Phase ZZZZZ-round32 (2026-05-24): cold-start used to compute
@@ -2671,10 +2726,7 @@ def brain_heartbeat():
     # request returns immediately with a "warming" payload. Subsequent
     # requests within 5 min get the freshly-computed cache. Worst case
     # is one user sees "warming" status for ~30s — they don't 503.
-    import threading as _threading
-    if not _HEARTBEAT_COMPUTING["in_progress"]:
-        _HEARTBEAT_COMPUTING["in_progress"] = True
-        _threading.Thread(target=_compute_heartbeat_async, daemon=True).start()
+    _kick_heartbeat_refresh()
     from flask import jsonify as _j2
     warming = {
         "checked_at": datetime.datetime.utcnow().isoformat() + "Z",
@@ -2683,6 +2735,11 @@ def brain_heartbeat():
         "_cache_age_seconds": None,
         "_cached": False,
         "_warming": True,
+        # 2026-07-01: surface the last async-compute failure so a broken
+        # recompute path is diagnosable from the payload instead of
+        # presenting as permanent silent 'warming'.
+        "_compute_last_error": _HEARTBEAT_COMPUTING.get("last_error"),
+        "_compute_last_error_at": _HEARTBEAT_COMPUTING.get("last_error_at"),
     }
     resp = _j2(warming)
     resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
@@ -2699,12 +2756,19 @@ def brain_heartbeat():
 
 def _compute_heartbeat_async():
     """Run the full heartbeat compute in a daemon thread. Writes result
-    to _HEARTBEAT_CACHE. Released the in-progress flag on completion
-    or error so subsequent cold-starts can re-trigger."""
+    to _HEARTBEAT_CACHE. Releases the in-progress flag on completion
+    or error so subsequent cold-starts can re-trigger. Crashes are
+    recorded in _HEARTBEAT_COMPUTING['last_error'] (surfaced in the
+    warming payload) so a broken compute path is visible, not silent."""
     try:
         _compute_heartbeat_sync()
+        _HEARTBEAT_COMPUTING["last_error"] = None
+        _HEARTBEAT_COMPUTING["last_error_at"] = None
     except Exception as _e:
         # Don't write to cache on failure — next request retries
+        _HEARTBEAT_COMPUTING["last_error"] = str(_e)[:300]
+        _HEARTBEAT_COMPUTING["last_error_at"] = (
+            datetime.datetime.utcnow().isoformat() + "Z")
         try:
             import sys as _s
             print(f"[brain_heartbeat] async compute crashed: {_e}",

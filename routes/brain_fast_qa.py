@@ -85,22 +85,49 @@ def _admin_ok() -> bool:
 
 # ── check 1: URL health ─────────────────────────────────────────────────
 
-def _check_urls() -> list[dict]:
-    """Fetch each curated URL end-to-end. Return a list of problem dicts
-    [{path, status, detail}] for any non-healthy URL. 2xx/3xx = healthy."""
+def _check_urls() -> tuple[list[dict], list[dict]]:
+    """Fetch each curated URL end-to-end. Return (problems, rate_limited):
+    problems = [{path, status, detail}] for any non-healthy URL (2xx/3xx =
+    healthy); rate_limited = HTTP 429 responses, which are self-inflicted
+    throttling, NOT outages, and never become findings."""
     problems: list[dict] = []
+    rate_limited: list[dict] = []
     try:
         import requests
     except Exception as e:  # pragma: no cover
         logger.warning("fast_qa: requests import failed: %s", e)
-        return problems
+        return problems, rate_limited
     sess = requests.Session()
-    sess.headers.update({"User-Agent": "dchub-brain-fastqa/1.0"})
+    # 2026-07-01: identify as an internal probe on BOTH rails the rate
+    # limiter recognises (rate_limiter.rate_limit_before): the dchub.cloud
+    # Origin exemption and the X-DC-Probe marker whitelist ('brain-radar'
+    # is an accepted value — same mechanism site_qa.py uses with
+    # 'self-heal'). Without these, the sweep 429'd itself through the edge
+    # and filed its own throttling as HIGH fast_qa_url_down outages
+    # (/sitemap.xml, /enterprise, /dcpi/ashburn, /api/v1/brain/action-queue
+    # sat in the action-queue for 2 weeks as false HTTP 429 findings).
+    sess.headers.update({
+        "User-Agent": "dchub-brain-fastqa/1.0",
+        "Origin": _BASE,
+        "X-DC-Probe": "brain-radar",
+    })
     for path in _PUBLIC_URLS:
         url = _BASE + path
         try:
             r = sess.get(url, timeout=_PER_URL_TIMEOUT, allow_redirects=True)
             status = r.status_code
+            if status == 429:
+                # Defense in depth: even if the exemption headers stop
+                # matching some day, a 429 is the platform rate-limiting
+                # its own probe — record it as 'rate_limited' (visible in
+                # the run summary) but NEVER file it as an outage finding.
+                rate_limited.append({
+                    "path": path,
+                    "status": status,
+                    "detail": f"[INFO] HTTP 429 on {path} — probe "
+                              f"rate-limited, not an outage",
+                })
+                continue
             if status >= 400:
                 sev = "CRIT" if path in ("/", "/pricing", "/mcp") else "HIGH"
                 problems.append({
@@ -114,7 +141,7 @@ def _check_urls() -> list[dict]:
                 "status": "ERR",
                 "detail": f"[HIGH] fetch error on {path}: {str(e)[:120]}",
             })
-    return problems
+    return problems, rate_limited
 
 
 # ── check 2: freshness drift ────────────────────────────────────────────
@@ -258,7 +285,7 @@ def _record_resolution_predictions(cur, problem_issues: list[str]) -> int:
 def run_fast_sweep() -> dict:
     """Run both checks, persist findings (upsert + resolve-on-absence),
     feed calibration. Returns a summary dict. Safe to call repeatedly."""
-    url_problems = _check_urls()
+    url_problems, url_rate_limited = _check_urls()
     fresh_problems = _check_freshness()
 
     # Build the canonical (issue -> detail) map for this run.
@@ -336,6 +363,7 @@ def run_fast_sweep() -> dict:
         "ran_at": datetime.datetime.utcnow().isoformat() + "Z",
         "urls_checked": len(_PUBLIC_URLS),
         "url_problems": url_problems,
+        "url_rate_limited": url_rate_limited,
         "freshness_problems": fresh_problems,
         "problems_total": len(current),
         "findings_upserted": persisted,

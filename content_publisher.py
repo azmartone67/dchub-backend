@@ -2962,17 +2962,28 @@ def start_auto_publisher():
                         # citation (priority>0) jumps ahead of a stale FIFO backlog;
                         # priority defaults to 0 so same-priority rows keep the
                         # existing oldest-first order (idempotent for legacy rows).
-                        cur.execute("SELECT id, content FROM social_media_posts WHERE status = 'approved' AND platform = 'linkedin' ORDER BY priority DESC, created_at ASC LIMIT 20")
+                        # 2026-07-01: candidate window 20 → 60 (still bounded —
+                        # never an unbounded scan). With ~74 approved posts the
+                        # OLDEST 20 were all being skipped by the class/hook/
+                        # judgment filters below, so the drain reported
+                        # 'no_queued' while publishable newer-class posts sat
+                        # invisible beyond position 20, silently aging toward the
+                        # TTL 'expired' sweep (soft starvation). Filters and the
+                        # approved/rejected/expired terminal-state contract are
+                        # unchanged; this only widens what the filters get to see.
+                        cur.execute("SELECT id, content FROM social_media_posts WHERE status = 'approved' AND platform = 'linkedin' ORDER BY priority DESC, created_at ASC LIMIT 60")
                         candidates = cur.fetchall() or []
                         if not candidates:
-                            cur.execute("SELECT id, content FROM social_media_posts WHERE status = 'approved' ORDER BY priority DESC, created_at ASC LIMIT 20")
+                            cur.execute("SELECT id, content FROM social_media_posts WHERE status = 'approved' ORDER BY priority DESC, created_at ASC LIMIT 60")
                             candidates = cur.fetchall() or []
 
                         row = None
+                        _filtered_skips = 0  # 2026-07-01: starvation visibility
                         for _cand in candidates:
                             _ctext = _cand.get('content') if hasattr(_cand, 'get') else (_cand[1] if _cand else '')
                             _cls = _classify_post_for_dedup(_ctext or '')
                             if _cls in _seen_classes_today:
+                                _filtered_skips += 1
                                 continue
                             # r65-qa: same-fire opening-hook guard — blocks a 2nd
                             # variant sharing the same hook within ONE drain, before
@@ -2981,6 +2992,7 @@ def start_auto_publisher():
                             if _chook and _chook in _seen_hooks_run:
                                 logger.warning("Auto-publisher: SKIPPED LinkedIn candidate (same-fire duplicate hook '%s')", _chook[:48])
                                 _record_media_block('linkedin', 'same-fire duplicate hook', _ctext)   # r66
+                                _filtered_skips += 1
                                 continue
                             # r63 (2026-05-29): entity-level + zero-stat judgment.
                             # Catches near-dupes the coarse class tag misses (two
@@ -2995,6 +3007,7 @@ def start_auto_publisher():
                                     (_cand.get('id') if hasattr(_cand, 'get') else (_cand[0] if _cand else '?')),
                                     _why)
                                 _record_media_block('linkedin', _why, _ctext)   # r66 evolving loop
+                                _filtered_skips += 1
                                 continue
                             row = _cand
                             _seen_classes_today.add(_cls)
@@ -3002,7 +3015,23 @@ def start_auto_publisher():
                                 _seen_hooks_run.add(_chook)
                             break
                         if not row:
-                            logger.debug("Auto-publisher: No approved posts to publish (or all classes/entities already fired)")
+                            if _filtered_skips > 3:
+                                # 2026-07-01: soft-starvation visibility — a whole
+                                # window skipped by filters is NOT an empty queue.
+                                # One loud line + a publisher-status field so the
+                                # backlog aging toward the TTL sweep is observable.
+                                logger.warning(
+                                    "Auto-publisher: STARVATION — %d approved LinkedIn candidate(s) in window all skipped by class/hook/judgment filters (queued=%s); none published this fire",
+                                    _filtered_skips, _queued)
+                                try:
+                                    _st = _PUBLISHER_STATE.get('linkedin')
+                                    if _st is not None:
+                                        _st['last_all_filtered_at'] = _utcnow_iso()
+                                        _st['last_all_filtered_count'] = _filtered_skips
+                                except Exception:
+                                    pass
+                            else:
+                                logger.debug("Auto-publisher: No approved posts to publish (or all classes/entities already fired)")
                             if _attempts == 0:
                                 _record_attempt("linkedin", "no_queued")
                             break
