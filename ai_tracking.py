@@ -443,6 +443,17 @@ def init_db():
             "ALTER TABLE mcp_connections ADD COLUMN IF NOT EXISTS protocol_version TEXT",
             "ALTER TABLE mcp_connections ADD COLUMN IF NOT EXISTS success BOOLEAN",
             "ALTER TABLE mcp_connections ADD COLUMN IF NOT EXISTS error_message TEXT",
+            # r-mcpconn-uniqdrop (2026-07-02): a rogue UNIQUE(platform)
+            # constraint appeared on live Neon (no repo code creates it —
+            # only commit d41df552 ever referenced the name). It capped this
+            # append-only event log at ONE row per platform: every direct
+            # INSERT for an already-seen platform raised 23505 into the
+            # SQLite buffer, and the poison rows head-of-line-blocked the
+            # 60s sync loop forever ("Key (platform)=(canon)" log spam).
+            # Dropped live 2026-07-02; kept here so any restore/replica or
+            # re-created constraint is removed again at boot.
+            "ALTER TABLE mcp_connections DROP CONSTRAINT IF EXISTS mcp_connections_platform_unique",
+            "DROP INDEX IF EXISTS mcp_connections_platform_unique",
         ]:
             try:
                 _execute(migration_sql)
@@ -601,6 +612,12 @@ def log_mcp_connection(
             success, error_message, now,
         ))
     except Exception as e:
+        if getattr(e, "pgcode", None) == "23505":
+            # Unique violation is PERMANENT — the same row can never insert,
+            # so buffering it would replay the failure every sync cycle and
+            # head-of-line-block all telemetry behind it. Drop it loudly.
+            logger.error(f"MCP connection log dropped (unique violation, not buffering): {e}")
+            return
         logger.warning(f"MCP connection log failed, buffering locally: {e}")
         try:
             buf = _get_buffer_db()
@@ -681,8 +698,15 @@ def _sync_buffer_to_neon():
 
                     synced_ids.append(row["id"])
                 except Exception as e:
+                    if getattr(e, "pgcode", None) == "23505":
+                        # Permanent duplicate — retrying can never succeed.
+                        # Mark it synced (dead-letter) so it stops
+                        # head-of-line-blocking every row behind it.
+                        logger.warning(f"Buffer sync row {row['id']} dead-lettered (unique violation): {e}")
+                        synced_ids.append(row["id"])
+                        continue
                     logger.warning(f"Buffer sync row failed: {e}")
-                    break  # Stop on first Neon failure, retry next cycle
+                    break  # Transient Neon failure — retry next cycle
 
             if synced_ids:
                 placeholders = ",".join("?" * len(synced_ids))
@@ -725,6 +749,13 @@ def _sync_buffer_to_neon():
                     ))
                     mcp_synced.append(row["id"])
                 except Exception as e:
+                    if getattr(e, "pgcode", None) == "23505":
+                        # Permanent duplicate (e.g. the rogue UNIQUE(platform)
+                        # constraint of 2026-07-02) — dead-letter it so it
+                        # stops replaying forever and blocking the queue.
+                        logger.warning(f"MCP buffer sync row {row['id']} dead-lettered (unique violation): {e}")
+                        mcp_synced.append(row["id"])
+                        continue
                     logger.warning(f"MCP buffer sync row failed: {e}")
                     break
 

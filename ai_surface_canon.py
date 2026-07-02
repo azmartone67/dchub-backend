@@ -70,7 +70,11 @@ def _mcp_tool_count(timeout=20):
            "Accept": "application/json, text/event-stream"}
     init = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize",
                        "params": {"protocolVersion": "2024-11-05", "capabilities": {},
-                                  "clientInfo": {"name": "canon", "version": "1"}}}).encode()
+                                  # Self-identify as OUR probe (was "canon", which
+                                  # passed through verbatim as a fake 'canon' platform
+                                  # in mcp_connections analytics). The dchub- prefix +
+                                  # PROBE_PLATFORMS entry keep it out of agent counts.
+                                  "clientInfo": {"name": "dchub-canon-probe", "version": "1"}}}).encode()
     req = urllib.request.Request(_BASE.rstrip("/") + "/mcp", data=init, headers=hdr)
     with urllib.request.urlopen(req, timeout=timeout) as r:
         sid = r.headers.get("mcp-session-id")

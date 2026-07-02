@@ -126,6 +126,11 @@ PROBE_PLATFORMS = (
     'curl', 'python-script', 'node-script',
     'node-http-client',
     'postman', 'insomnia', 'verify',
+    # AI-Surface sentinel's tools/list probe (ai_surface_canon.py). Its
+    # clientInfo.name wins PLATFORM_CASE's first branch (real client_name
+    # passes through verbatim), so it must be excluded here by name.
+    # 'canon' is the legacy name its rows carried before 2026-07-02.
+    'dchub-canon-probe', 'canon',
 )
 
 
