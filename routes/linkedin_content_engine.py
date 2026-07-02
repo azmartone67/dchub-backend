@@ -394,12 +394,43 @@ lands BEFORE the fold. Never open with an obscure market name or a setup clause.
 A landing URL may be included as a single optional source line after the insight."""
 
 
+def _recent_post_openings(days: int = 14, n: int = 12) -> list[str]:
+    """Openings (first ~180 chars) of recently PUBLISHED LinkedIn posts.
+    This is the composer's editorial memory (2026-07-02, operator "it tends
+    to share the same things"): the model sees what already ran and is told
+    to advance the story, not restate it. Best-effort — empty on any error."""
+    if not (_pg and _dsn()):
+        return []
+    try:
+        with _conn() as c, c.cursor() as cur:
+            cur.execute("""
+                SELECT LEFT(content, 180) FROM social_media_posts
+                 WHERE status = 'published' AND publish_platform = 'linkedin'
+                   AND created_at > NOW() - make_interval(days => %s)
+                 ORDER BY created_at DESC LIMIT %s
+            """, (days, n))
+            return [r[0].replace("\n", " ").strip()
+                    for r in (cur.fetchall() or []) if r and r[0]]
+    except Exception:
+        return []
+
+
+# The composer model. Default is Fable (the brain's model) — the operator
+# wants the media desk to lean on the strongest editorial judgment available.
+# Retries once on Sonnet if the primary model errors, so a model-access blip
+# never silences the desk. NOTE: do NOT enable thinking here — with thinking
+# on, reasoning tokens eat max_tokens and the post comes back truncated.
+_MEDIA_MODEL = os.environ.get("DCHUB_MEDIA_MODEL", "claude-fable-5")
+_MEDIA_MODEL_FALLBACK = "claude-sonnet-4-5"
+
+
 def _compose_with_claude(story_type: str, data: dict, landing: str,
                           lead: dict | None = None) -> str | None:
-    """Send a tailored prompt to Sonnet and return the post text.
+    """Compose the post with the brain model (Fable by default).
 
-    Returns None on any failure so the caller can fall back to a
-    static template.
+    Returns the post text, the literal string "SKIP" when the model judges
+    it has nothing genuinely new to add versus the recently-published feed,
+    or None on failure (caller falls back to a static template).
     """
     if not ANTHROPIC_API_KEY:
         return None
@@ -420,24 +451,43 @@ def _compose_with_claude(story_type: str, data: dict, landing: str,
         except Exception:
             pass
 
-    body = json.dumps({
-        "model": "claude-sonnet-4-5",
-        "max_tokens": 800,
-        "system": _VOICE_SYSTEM,
-        "messages": [{"role": "user", "content": user_prompt}],
-    }).encode("utf-8")
-    req = urllib.request.Request(
-        anthropic_messages_url(),
-        data=body,
-        headers={
-            "Content-Type": "application/json",
-            "X-API-Key": ANTHROPIC_API_KEY,
-            "User-Agent": "dchub-brain/1.0",
-            "Anthropic-Version": "2023-06-01",
-        },
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=30) as r:
+    # Editorial memory: the recently-published feed + the continuing-story
+    # contract. The SKIP escape hatch is what makes the desk intuitive —
+    # given the choice, the model can decline to repeat itself and the slot
+    # suppresses instead of shipping a rephrase.
+    recents = _recent_post_openings()
+    if recents:
+        user_prompt = (
+            "ALREADY PUBLISHED on the DC Hub feed recently (newest first):\n"
+            + "\n".join(f"- {r}" for r in recents)
+            + "\n\nYou are writing the NEXT installment of one continuing "
+            "analyst column, not an isolated post. Assume the reader saw the "
+            "posts above. Do not reuse their hooks, markets, headline metrics "
+            "or angles — advance the story with a genuinely different lead or "
+            "a second-order read the feed hasn't made yet. If the data below "
+            "offers nothing meaningfully new versus the feed above, reply with "
+            "exactly SKIP and nothing else.\n\n"
+            + user_prompt
+        )
+
+    def _call(model: str) -> str | None:
+        body = json.dumps({
+            "model": model,
+            "max_tokens": 1200,
+            "system": _VOICE_SYSTEM,
+            "messages": [{"role": "user", "content": user_prompt}],
+        }).encode("utf-8")
+        req = urllib.request.Request(
+            anthropic_messages_url(),
+            data=body,
+            headers={
+                "Content-Type": "application/json",
+                "X-API-Key": ANTHROPIC_API_KEY,
+                "User-Agent": "dchub-brain/1.0",
+                "Anthropic-Version": "2023-06-01",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=45) as r:
             payload = json.loads(r.read().decode("utf-8"))
         text_parts = payload.get("content") or []
         text = "".join(p.get("text", "") for p in text_parts if isinstance(p, dict))
@@ -446,8 +496,14 @@ def _compose_with_claude(story_type: str, data: dict, landing: str,
         if text.startswith('"') and text.endswith('"') and len(text) > 10:
             text = text[1:-1].strip()
         return text or None
+
+    try:
+        return _call(_MEDIA_MODEL)
     except Exception:
-        return None
+        try:
+            return _call(_MEDIA_MODEL_FALLBACK)
+        except Exception:
+            return None
 
 
 def _build_user_prompt(story_type: str, data: dict, landing: str) -> str:
@@ -820,6 +876,20 @@ def compose_story_post(slot_topic: str | None = None, lead: dict | None = None) 
 
     text = _compose_with_claude(story_type, data, landing, lead=lead)
     source = "claude"
+    # SKIP escape hatch (2026-07-02): the composer saw the recently-published
+    # feed and judged this data adds nothing new. Suppress the slot — do NOT
+    # fall through to the static template, which is exactly the repetitive
+    # filler the operator flagged.
+    if text and text.strip().upper().rstrip(".") == "SKIP":
+        return {
+            "story_type": story_type,
+            "text": None,
+            "skip": True,
+            "skip_reason": "composer judged nothing new vs recent feed",
+            "landing_url": landing,
+            "og_image_url": OG_IMAGE_BY_TYPE[story_type],
+            "source": "claude_skip",
+        }
     if not text or len(text) < 200:
         text = _static_fallback(story_type, data, landing)
         source = "fallback"

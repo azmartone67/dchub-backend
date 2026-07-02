@@ -522,24 +522,36 @@ def editorial_decision(slot: str | None = None) -> dict:
                    for w in _recently_posted_keys(days=4)}
     recent_blob.discard("")
 
-    def _is_novel(lead):
-        # market/iso/entity from the dedup_key shouldn't have LED a recent post
+    def _key_in(lead, blob):
+        # market/iso/entity from the dedup_key appears in the given window?
         tail = (lead.get("dedup_key") or "").split(":", 1)[-1]
         tail = re.sub(r"[^a-z0-9]+", "", tail.lower())
         if not tail:
-            return True
-        return tail not in recent_blob
+            return False
+        return tail in blob
+
+    def _is_novel(lead):
+        return not _key_in(lead, recent_blob)
 
     fresh = [l for l in ranked if _is_novel(l)]
     top = fresh[0] if fresh else None
 
-    # Never go dark on a genuinely strong day: if nothing reads as "novel" but
-    # the best-ranked lead clears the newsworthiness bar, post it anyway.
+    # Rerun-with-rest-period (2026-07-02, operator "it repeats itself"): the
+    # old fallback re-posted ranked[0] whenever nothing was novel. A STANDING
+    # total (ERCOT's 427 GW queue) never stops out-ranking daily movers, so
+    # that fallback posted the same lead ~6 times in a week. A stale lead may
+    # now rerun ONLY if it hasn't led a post in the last 12 days; otherwise
+    # the slot SUPPRESSES — silent beats repetitive, per the desk's own motto.
     stale_fallback = False
     if top is None and ranked:
-        cand = ranked[0]
-        if cand.get("raw_score", cand.get("score", 0)) >= _NEWSWORTHY_MIN:
-            top, stale_fallback = cand, True
+        rest_blob = {re.sub(r"[^a-z0-9]+", "", w.lower())
+                     for w in _recently_posted_keys(days=12)}
+        rest_blob.discard("")
+        for cand in ranked:
+            if (cand.get("raw_score", cand.get("score", 0)) >= _NEWSWORTHY_MIN
+                    and not _key_in(cand, rest_blob)):
+                top, stale_fallback = cand, True
+                break
 
     # r86d: judge the SUPPRESS bar on intrinsic newsworthiness (raw_score), so
     # the engagement weight only re-ORDERS leads — it never floors a genuinely

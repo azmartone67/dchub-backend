@@ -1806,7 +1806,24 @@ _METRIC_PATTERNS = [
     # below — DCPI posts dedup on market_verdict, not the shared label.
     ("dcpi_score",
      _re_legacy.compile(r'(?:DCPI|Excess[\s\-]?Power)(?:\s+score)?(?:\s+of)?\s+([\d]{1,3}(?:\.\d{1,2})?)\b', _re_legacy.I)),
+    # 2026-07-02 (operator "it repeats itself"): generic power/capital figures.
+    # The ERCOT "427 GW" queue post shipped ~6 times in a week because no
+    # pattern matched it → metric_label stayed None → entity dedup never saw
+    # it. These labels dedup on label AND value (see _VALUE_DEDUP_LABELS) so
+    # the same figure can't re-lead within the lookback while genuinely
+    # different GW/$B/MW stories still can. Keep these LAST — first match
+    # wins, so the specific labels above take priority.
+    ("gw_figure",
+     _re_legacy.compile(r'([\d,]+(?:\.\d+)?)\s*GW\b', _re_legacy.I)),
+    ("usd_billion",
+     _re_legacy.compile(r'\$\s*([\d,]+(?:\.\d+)?)\s*(?:B\b|billion)', _re_legacy.I)),
+    ("mw_figure",
+     _re_legacy.compile(r'([\d,]+(?:\.\d+)?)\s*MW\b', _re_legacy.I)),
 ]
+
+# Labels that dedup on label+VALUE (generic units where the label alone would
+# over-collapse distinct stories, but the same figure re-leading = a repeat).
+_VALUE_DEDUP_LABELS = {"gw_figure", "usd_billion", "mw_figure"}
 
 
 def _post_headline_signature(text: str) -> dict:
@@ -2400,9 +2417,23 @@ def _should_skip_publish(cur, content_text: str, platform: str):
                     # label, else every DCPI post after the first over-collapses.
                     and sig.get("metric_label") != "dcpi_score"
                     and psig.get("metric_label") == sig.get("metric_label")):
-                return True, (f"duplicate headline metric '{sig['metric_label']}' "
-                              f"already posted to {platform} within "
-                              f"{_DEDUP_LOOKBACK_DAYS}d")
+                # 2026-07-02: generic-unit labels (GW/$B/MW) require the VALUE
+                # to match too — same label with a different figure is a
+                # different story; the same figure re-leading is the repeat
+                # (the "427 GW × 6 posts" case).
+                _lbl = sig.get("metric_label")
+                _vals_match = True
+                if _lbl in _VALUE_DEDUP_LABELS:
+                    try:
+                        _a, _b = float(sig.get("metric_value") or 0), \
+                                 float(psig.get("metric_value") or 0)
+                        _vals_match = abs(_a - _b) <= max(abs(_a), abs(_b)) * 0.01
+                    except (TypeError, ValueError):
+                        _vals_match = False
+                if _vals_match:
+                    return True, (f"duplicate headline metric '{_lbl}' "
+                                  f"already posted to {platform} within "
+                                  f"{_DEDUP_LOOKBACK_DAYS}d")
 
     # (e) r66 EDITOR-IN-CHIEF — final holistic judgment on the survivors. Only
     # posts that already cleared every deterministic guard reach here, so the

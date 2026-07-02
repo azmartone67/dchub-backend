@@ -640,6 +640,16 @@ def run():
     try:
         from routes.linkedin_content_engine import compose_story_post
         composed = compose_story_post(slot_topic=target_slot["topic"], lead=_ed_lead)
+        # Composer SKIP (2026-07-02): the model saw the recently-published
+        # feed and judged this slot adds nothing new. Suppress like an
+        # editorial suppress — never fall through to legacy/static
+        # generators (that's the repetitive filler the operator flagged).
+        if composed.get("skip"):
+            return jsonify({"skipped": True,
+                            "reason": "composer_skip_nothing_new",
+                            "detail": composed.get("skip_reason"),
+                            "story_type": composed.get("story_type"),
+                            "slot": target_slot}), 200
         text = composed.get("text")
         # Engine returns its own landing + og_image per story-type —
         # prefer those when available (more accurate match).
