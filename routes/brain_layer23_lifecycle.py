@@ -1709,7 +1709,7 @@ def _call_opus_for_proposal(audit_summary: str) -> tuple[dict | None, str | None
     )
     body = json.dumps({
         "model": model,
-        "max_tokens": 1200,
+        "max_tokens": 4000,
         "messages": [{"role": "user", "content": prompt}],
     }).encode("utf-8")
     req = urllib.request.Request(
@@ -1804,7 +1804,7 @@ def _challenge_proposal(proposal: dict, audit_summary: str) -> dict:
     )
     body = json.dumps({
         "model": model,
-        "max_tokens": 600,
+        "max_tokens": 2000,
         "messages": [{"role": "user", "content": prompt}],
     }).encode("utf-8")
     req = urllib.request.Request(

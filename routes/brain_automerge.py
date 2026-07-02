@@ -73,6 +73,16 @@ def _enabled() -> bool:
     return os.environ.get("BRAIN_AUTOMERGE_ENABLED", "0") == "1"
 
 
+def _dry_run() -> bool:
+    """Shadow mode — DEFAULTS ON ("1") so flipping BRAIN_AUTOMERGE_ENABLED=1
+    alone runs the FULL gate pipeline (autofix-branch, mechanical re-classify,
+    exactly-once-on-main re-verify, CI-green) and reports what WOULD merge,
+    with ZERO GitHub writes and ZERO brain_automerge_log rows (the canary
+    reads that table — a phantom row would arm a revert of a merge that
+    never happened). Real merges require BOTH flags: ENABLED=1 + DRY_RUN=0."""
+    return os.environ.get("BRAIN_AUTOMERGE_DRY_RUN", "1") == "1"
+
+
 # Rate cap + canary timing (env-driven; conservative).
 def _max_per_run() -> int:
     return max(0, _env_int("BRAIN_AUTOMERGE_MAX_PER_RUN", 1))
@@ -669,7 +679,7 @@ def run_automerge() -> dict:
             _record_token_dead("list_autofix_prs failed: " + _err)
         return {"error": "list_failed:" + _err, "merged": [], "skipped": []}
 
-    merged, skipped = [], []
+    merged, skipped, would_merge = [], [], []
     used = 0
     for pr in listing.get("prs", []):
         if used >= cap:
@@ -727,6 +737,16 @@ def run_automerge() -> dict:
             skipped.append({"pr": num, "reason": "ci_not_green:" + str(ci.get("reason"))})
             continue
 
+        # ── DRY-RUN (shadow): every gate above ran for real; stop here.
+        # No mark-ready, no merge, no record_merge (a phantom log row would
+        # make the canary revert a merge that never happened). The would_merge
+        # list in the response is the whole output of shadow mode.
+        if _dry_run():
+            used += 1
+            would_merge.append({"pr": num, "klass": klass,
+                                "file_path": file_path, "ci": "green"})
+            continue
+
         # ── MERGE: mark ready (GraphQL) THEN squash-merge (REST). ────
         if pr.get("draft"):
             mr = mark_ready_for_review(pr.get("node_id"))
@@ -774,7 +794,8 @@ def run_automerge() -> dict:
         except Exception:
             pass
 
-    return {"merged": merged, "skipped": skipped, "rate_cap": cap}
+    return {"merged": merged, "skipped": skipped, "rate_cap": cap,
+            "dry_run": _dry_run(), "would_merge": would_merge}
 
 
 # ════════════════════════════════════════════════════════════════════

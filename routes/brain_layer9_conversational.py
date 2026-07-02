@@ -194,7 +194,7 @@ the founder."""
                          "anthropic-version": "2023-06-01",
                          "content-type": "application/json"},
                 json={"model": model,
-                      "max_tokens": 1500,
+                      "max_tokens": 3000,
                       "messages": [{"role": "user", "content": prompt}]},
                 timeout=45,
             )

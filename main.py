@@ -31129,6 +31129,15 @@ try:
 except Exception as _brl_e:
     print(f"[main] brain_reasoning_lane register failed: {_brl_e}", flush=True)
 try:
+    # Spec->code promotion: re-runs the L5 drafter on open [brain-spec] PRs
+    # WITH grounded file context. Dark behind BRAIN_SPEC_PROMOTE_ENABLED
+    # (endpoint dry-runs otherwise); lazy module, cannot break boot.
+    from routes.brain_spec_promoter import brain_spec_promoter_bp
+    app.register_blueprint(brain_spec_promoter_bp)
+    print("[main] brain_spec_promoter registered: POST /api/v1/admin/brain/spec-promote/run", flush=True)
+except Exception as _bsp_e:
+    print(f"[main] brain_spec_promoter register failed: {_bsp_e}", flush=True)
+try:
     from routes.brain_work_selector import brain_work_selector_bp
     if brain_work_selector_bp is not None:
         app.register_blueprint(brain_work_selector_bp)

@@ -774,7 +774,7 @@ def brief_draft_prs(bid: int):
 
 
 def _call_opus(system: str, user: str, model: str,
-                 max_tokens: int = 2400) -> tuple[str, dict]:
+                 max_tokens: int = 4000) -> tuple[str, dict]:
     """Call the Anthropic API. Returns (text, meta_dict). meta has
     tokens_in/out/duration_ms/error."""
     import urllib.request, urllib.error

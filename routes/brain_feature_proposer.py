@@ -441,15 +441,18 @@ def _call_claude(prompt: str) -> tuple[Optional[str], Optional[str]]:
     if not ANTHROPIC_API_KEY:
         return None, "no_api_key"
     try:
-        from routes.brain_models import resolve_chain
-        models = resolve_chain(BRAIN_MODEL)
+        # Tier-resolved (reachability-aware, honors DCHUB_BRAIN_PREFER_FABLE)
+        # instead of the static env pin — the pin froze this proposer on opus
+        # even after fable was restored on the reasoning tier.
+        from routes.brain_models import brain_model_for, resolve_chain
+        models = resolve_chain(brain_model_for("reasoning"))
     except Exception:
         models = [BRAIN_MODEL, "claude-sonnet-4-20250514"]
     last_err = None
     for i, model in enumerate(models):
         body = json.dumps({
             "model": model,
-            "max_tokens": 1200,
+            "max_tokens": 3000,
             "system": _PROPOSE_SYSTEM,
             "messages": [{"role": "user", "content": prompt}],
         }).encode("utf-8")

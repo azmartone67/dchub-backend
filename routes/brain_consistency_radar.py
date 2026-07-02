@@ -8192,9 +8192,18 @@ def check_social_publish_silent_failure() -> list[dict]:
     except Exception:
         return findings
 
+    # worker-status serves these as JSON null when the queue is empty/unknown.
+    # dict.get's default does NOT apply to an existing null key, and `None < 3`
+    # is the TypeError that crashed this detector on every sweep.
+    def _num(v, default=0.0):
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return float(default)
+
     dist = d.get("distribution") or {}
-    queued = dist.get("queued_unpublished", 0)
-    oldest_h = dist.get("oldest_queued_age_hours", 0)
+    queued = _num(dist.get("queued_unpublished"))
+    oldest_h = _num(dist.get("oldest_queued_age_hours"))
     pub7 = dist.get("published_7d") or {}
 
     # Only fire if there's a backlog WORTH publishing
@@ -8203,7 +8212,7 @@ def check_social_publish_silent_failure() -> list[dict]:
 
     for platform in ("linkedin", "twitter", "bluesky"):
         configured = dist.get(f"{platform}_configured", False)
-        published = (pub7 or {}).get(platform, 0)
+        published = _num((pub7 or {}).get(platform))
         if not configured: continue   # platform not set up — not a bug
         if published > 0: continue    # platform IS publishing — fine
         # Configured but 0 publishes in 7d + queue backed up → token issue

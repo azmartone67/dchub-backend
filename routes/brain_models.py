@@ -191,8 +191,15 @@ def brain_model_for(tier: str = "routine") -> str:
     so the preference is safe even before the first probe.
     """
     tier = (tier or "routine").lower().strip()
-    if _prefer_fable_on() and tier in ("inspector", "reasoning", "challenger"):
+    if _prefer_fable_on() and tier in ("inspector", "reasoning"):
         pref = "claude-fable-5"
+    elif _prefer_fable_on() and tier == "challenger":
+        # CROSS-MODEL CHALLENGE (restored 2026-07-01): when fable runs the
+        # reasoning tiers, the challenger must be a DIFFERENT model — the
+        # tier exists to give an independent second opinion, not the same
+        # model grading its own homework. Env pin wins; else opus-4-8.
+        pref = (os.environ.get("DCHUB_BRAIN_MODEL_CHALLENGER") or "").strip() \
+            or "claude-opus-4-8"
     else:
         env_specific = (os.environ.get(f"DCHUB_BRAIN_MODEL_{tier.upper()}") or "").strip()
         pref = env_specific or _GLOBAL_FALLBACK or {
@@ -224,10 +231,11 @@ def brain_model_for(tier: str = "routine") -> str:
 def brain_model_summary() -> dict:
     """For diagnostics: what model is each tier currently using?"""
     return {
-        "inspector": brain_model_for("inspector"),
-        "reasoning": brain_model_for("reasoning"),
-        "routine":   brain_model_for("routine"),
-        "voice":     brain_model_for("voice"),
+        "inspector":  brain_model_for("inspector"),
+        "reasoning":  brain_model_for("reasoning"),
+        "routine":    brain_model_for("routine"),
+        "voice":      brain_model_for("voice"),
+        "challenger": brain_model_for("challenger"),
         "_global_fallback_env": _GLOBAL_FALLBACK or None,
         "_fallback_chain":      _FALLBACK_CHAIN,
         "_prefer_fable":        _prefer_fable_on(),       # r85j auto-enable switch

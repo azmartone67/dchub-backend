@@ -707,7 +707,7 @@ def _call_claude(prompt: str) -> Optional[dict]:
                 },
                 json={
                     "model":      model,
-                    "max_tokens": 2200,
+                    "max_tokens": 4000,
                     "system":     _SYSTEM_PROMPT,
                     "messages":   [{"role": "user", "content": prompt}],
                 },

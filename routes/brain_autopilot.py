@@ -496,8 +496,15 @@ def _action_inspector_l22_handoff(finding: dict) -> tuple[str | None, dict | Non
     # layer (schema_drift_guard/cron_if_mismatched are docstring-only). The
     # downstream parser + scanner already whitelist, but don't trust them
     # blindly for an autonomous-code path.
+    # r79 (updated 2026-07-01): when r79 shipped, only route_alias_404 was
+    # real ("schema_drift_guard/cron_if_mismatched are docstring-only") —
+    # but r85h made cron_if_mismatched a real-PR recipe and r86 made
+    # schema_drift_guard a draft-issue recipe, and this guard was never
+    # updated. Every brief carrying only cron/schema recipes escalated
+    # forever ("no autonomous action") and the handoff never fired.
     _detail = (finding.get("detail") or "").lower()
-    if "recipe:" in _detail and "route_alias_404" not in _detail:
+    _implemented = ("route_alias_404", "cron_if_mismatched", "schema_drift_guard")
+    if "recipe:" in _detail and not any(r in _detail for r in _implemented):
         return (None, None)
     # r80 (2026-06-28): route_alias_404 adds a Flask @app.route alias for a
     # MISSING (404) path. It CANNOT fix a page_content_drift (the path already
@@ -1887,7 +1894,11 @@ def _execute_action(action_path: str, payload: dict, use_admin: bool) -> tuple[i
     """Returns (http_code, response_body_snippet, error_string)."""
     if _is_dry_run():
         return 0, "dry-run: action NOT executed", None
-    url = _BACKEND_BASE.rstrip("/") + action_path
+    # An action may return a COMPLETE external URL (render_restart hands back
+    # the Render deploy hook). Prepending _BACKEND_BASE to it built a garbage
+    # URL, so that action execution_failed on every fire since r33-C.
+    external = action_path.startswith(("http://", "https://"))
+    url = action_path if external else _BACKEND_BASE.rstrip("/") + action_path
     try:
         data = json.dumps(payload or {}).encode("utf-8") if payload else b"{}"
         req = urllib.request.Request(url, data=data, method="POST")
@@ -1899,7 +1910,9 @@ def _execute_action(action_path: str, payload: dict, use_admin: bool) -> tuple[i
         # both X-DC-Probe AND X-Admin-Key now bypass rate-limit.
         req.add_header("X-DC-Probe", "autopilot")
         req.add_header("User-Agent", "dchub-autopilot/1.0 (brain-recovery)")
-        if use_admin:
+        # Never send our admin key to an external host — the Render hook's
+        # authority is baked into its URL.
+        if use_admin and not external:
             ak = _admin_key()
             if ak: req.add_header("X-Admin-Key", ak)
         with urllib.request.urlopen(req, timeout=60) as resp:

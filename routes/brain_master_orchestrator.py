@@ -278,6 +278,12 @@ def master_tick():
         if not dry:
             report["steps"].append(_summarize("tier3.reasoning_lane_drain",
                                                _call("POST", "/api/v1/brain/reasoning-lane/drain")))
+        # Spec->code promotion: re-run the L5 drafter on open [brain-spec] PRs
+        # with grounded file context -> concrete code draft PRs (human merges).
+        # Dark unless BRAIN_SPEC_PROMOTE_ENABLED; spends LLM budget -> skip dry.
+        if not dry:
+            report["steps"].append(_summarize("tier3.spec_promote",
+                                               _call("POST", "/api/v1/admin/brain/spec-promote/run?dry=0")))
         # Money/positioning findings the brain must NOT auto-act on.
         report["human_decisions"] = _human_gated_digest()
 

@@ -203,6 +203,7 @@ def test_disabled_when_value_not_exactly_one(monkeypatch):
 # ══════════════════════════════════════════════════════════════════════
 def test_enabled_green_merges_marks_ready_then_squash(monkeypatch):
     monkeypatch.setenv("BRAIN_AUTOMERGE_ENABLED", "1")
+    monkeypatch.setenv("BRAIN_AUTOMERGE_DRY_RUN", "0")
     monkeypatch.setenv("BRAIN_AUTOMERGE_MAX_PER_RUN", "5")
     calls = _wire_merge_happy(monkeypatch, prs=[_autofix_pr()])
     res = am.run_automerge()
@@ -225,6 +226,7 @@ def test_enabled_green_merges_marks_ready_then_squash(monkeypatch):
 def test_ready_called_before_merge_ordering(monkeypatch):
     """markPullRequestReadyForReview MUST precede the squash merge."""
     monkeypatch.setenv("BRAIN_AUTOMERGE_ENABLED", "1")
+    monkeypatch.setenv("BRAIN_AUTOMERGE_DRY_RUN", "0")
     order = []
     monkeypatch.setattr(am, "breaker_tripped", lambda: False)
     monkeypatch.setattr(am, "health_db_green", lambda: True)
@@ -252,6 +254,7 @@ def test_ready_called_before_merge_ordering(monkeypatch):
                                     "no_ci_signals", "check_run_failure"])
 def test_ci_not_green_not_merged(monkeypatch, reason):
     monkeypatch.setenv("BRAIN_AUTOMERGE_ENABLED", "1")
+    monkeypatch.setenv("BRAIN_AUTOMERGE_DRY_RUN", "0")
     calls = _wire_merge_happy(monkeypatch, prs=[_autofix_pr()],
                               ci_green=False, ci_reason=reason)
     res = am.run_automerge()
@@ -305,6 +308,7 @@ def test_ci_checkruns_only_green_when_combined_status_empty(monkeypatch):
 # ══════════════════════════════════════════════════════════════════════
 def test_non_autofix_pr_ignored(monkeypatch):
     monkeypatch.setenv("BRAIN_AUTOMERGE_ENABLED", "1")
+    monkeypatch.setenv("BRAIN_AUTOMERGE_DRY_RUN", "0")
     # list_autofix_prs already filters, but defense-in-depth: feed a foreign
     # branch and confirm it is skipped, never merged.
     foreign = _autofix_pr(number=12, ref="feature/human-pr")
@@ -344,6 +348,7 @@ def test_list_autofix_prs_filters_foreign_branches(monkeypatch):
 # ══════════════════════════════════════════════════════════════════════
 def test_rate_cap_respected(monkeypatch):
     monkeypatch.setenv("BRAIN_AUTOMERGE_ENABLED", "1")
+    monkeypatch.setenv("BRAIN_AUTOMERGE_DRY_RUN", "0")
     monkeypatch.setenv("BRAIN_AUTOMERGE_MAX_PER_RUN", "1")
     prs = [_autofix_pr(number=n, ref=f"brain/autofix-interval_literal-{n}-aa",
                        sha=f"sha{n}") for n in (10, 11, 12)]
@@ -360,6 +365,7 @@ def test_rate_cap_respected(monkeypatch):
 # ══════════════════════════════════════════════════════════════════════
 def test_skip_when_search_not_exactly_once_in_main(monkeypatch):
     monkeypatch.setenv("BRAIN_AUTOMERGE_ENABLED", "1")
+    monkeypatch.setenv("BRAIN_AUTOMERGE_DRY_RUN", "0")
     # main no longer contains the search text (already fixed/drifted).
     calls = _wire_merge_happy(monkeypatch, prs=[_autofix_pr()],
                               main_content="def recent(days): return []\n")
@@ -371,6 +377,7 @@ def test_skip_when_search_not_exactly_once_in_main(monkeypatch):
 
 def test_skip_when_no_logged_proposal(monkeypatch):
     monkeypatch.setenv("BRAIN_AUTOMERGE_ENABLED", "1")
+    monkeypatch.setenv("BRAIN_AUTOMERGE_DRY_RUN", "0")
     monkeypatch.setattr(am, "breaker_tripped", lambda: False)
     monkeypatch.setattr(am, "health_db_green", lambda: True)
     monkeypatch.setattr(am, "list_autofix_prs",
@@ -388,6 +395,7 @@ def test_skip_when_no_logged_proposal(monkeypatch):
 # ══════════════════════════════════════════════════════════════════════
 def test_incident_skip_when_health_degraded(monkeypatch):
     monkeypatch.setenv("BRAIN_AUTOMERGE_ENABLED", "1")
+    monkeypatch.setenv("BRAIN_AUTOMERGE_DRY_RUN", "0")
     monkeypatch.setattr(am, "breaker_tripped", lambda: False)
     monkeypatch.setattr(am, "health_db_green", lambda: False)
     monkeypatch.setattr(am, "list_autofix_prs", _Boom("list_autofix_prs"))
@@ -402,6 +410,7 @@ def test_incident_skip_when_health_degraded(monkeypatch):
 # ══════════════════════════════════════════════════════════════════════
 def test_breaker_tripped_refuses(monkeypatch):
     monkeypatch.setenv("BRAIN_AUTOMERGE_ENABLED", "1")
+    monkeypatch.setenv("BRAIN_AUTOMERGE_DRY_RUN", "0")
     monkeypatch.setattr(am, "breaker_tripped", lambda: True)
     # everything else explodes — proves we never reach a GitHub call.
     monkeypatch.setattr(am, "health_db_green", _Boom("health_db_green"))
@@ -416,6 +425,7 @@ def test_breaker_tripped_refuses(monkeypatch):
 # ══════════════════════════════════════════════════════════════════════
 def test_canary_regression_reverts_trips_breaker_alerts(monkeypatch):
     monkeypatch.setenv("BRAIN_AUTOMERGE_ENABLED", "1")
+    monkeypatch.setenv("BRAIN_AUTOMERGE_DRY_RUN", "0")
     import time as _t
     now = _t.time()
     merged_row = {
@@ -490,6 +500,7 @@ def test_canary_regression_reverts_trips_breaker_alerts(monkeypatch):
 def test_canary_new_runtime_error_is_regression(monkeypatch):
     """A NEW runtime-error pattern after merge is, on its own, a regression."""
     monkeypatch.setenv("BRAIN_AUTOMERGE_ENABLED", "1")
+    monkeypatch.setenv("BRAIN_AUTOMERGE_DRY_RUN", "0")
     import time as _t
     now = _t.time()
     row = {"id": 6, "pr_number": 7, "file_path": "routes/example.py",
@@ -517,6 +528,7 @@ def test_canary_new_runtime_error_is_regression(monkeypatch):
 # ══════════════════════════════════════════════════════════════════════
 def test_canary_clean_after_window(monkeypatch):
     monkeypatch.setenv("BRAIN_AUTOMERGE_ENABLED", "1")
+    monkeypatch.setenv("BRAIN_AUTOMERGE_DRY_RUN", "0")
     import time as _t
     now = _t.time()
     row = {"id": 8, "pr_number": 5, "file_path": "routes/example.py",
@@ -538,6 +550,7 @@ def test_canary_within_window_healthy_keeps_watching(monkeypatch):
     """Within the window + healthy ⇒ 'watching' (re-check next pass), NOT
     clean yet, NO revert."""
     monkeypatch.setenv("BRAIN_AUTOMERGE_ENABLED", "1")
+    monkeypatch.setenv("BRAIN_AUTOMERGE_DRY_RUN", "0")
     import time as _t
     now = _t.time()
     row = {"id": 9, "pr_number": 5, "file_path": "routes/example.py",
@@ -557,6 +570,7 @@ def test_canary_within_window_healthy_keeps_watching(monkeypatch):
 def test_canary_warmup_skips(monkeypatch):
     """Too-fresh merge (< warmup) is left 'warming' — not judged yet."""
     monkeypatch.setenv("BRAIN_AUTOMERGE_ENABLED", "1")
+    monkeypatch.setenv("BRAIN_AUTOMERGE_DRY_RUN", "0")
     import time as _t
     row = {"id": 10, "pr_number": 5, "file_path": "routes/example.py",
            "search_text": _SEARCH, "replace_text": _REPLACE,
@@ -573,6 +587,7 @@ def test_canary_warmup_skips(monkeypatch):
 # ══════════════════════════════════════════════════════════════════════
 def test_canary_failed_revert_still_trips_and_pages(monkeypatch):
     monkeypatch.setenv("BRAIN_AUTOMERGE_ENABLED", "1")
+    monkeypatch.setenv("BRAIN_AUTOMERGE_DRY_RUN", "0")
     import time as _t
     row = {"id": 11, "pr_number": 999, "file_path": "routes/example.py",
            "search_text": _SEARCH, "replace_text": _REPLACE,
@@ -700,3 +715,40 @@ def test_off_gate_is_first_in_action_paths():
         # the guard's body returns immediately (no GitHub work before it).
         assert any(isinstance(s, ast.Return) for s in first.body), name
     print("OFF-gate is the FIRST statement in run_automerge + run_canary")
+
+
+# ══════════════════════════════════════════════════════════════════════
+# DRY-RUN shadow mode (BRAIN_AUTOMERGE_DRY_RUN defaults ON): all gates run,
+# the qualifying PR is reported in would_merge, and NOTHING is written —
+# no markReady, no merge, no record_merge (a phantom log row would arm the
+# canary to revert a merge that never happened).
+# ══════════════════════════════════════════════════════════════════════
+def test_dry_run_default_shadows_instead_of_merging(monkeypatch):
+    monkeypatch.setenv("BRAIN_AUTOMERGE_ENABLED", "1")
+    monkeypatch.delenv("BRAIN_AUTOMERGE_DRY_RUN", raising=False)  # default = "1"
+    monkeypatch.setenv("BRAIN_AUTOMERGE_MAX_PER_RUN", "5")
+    calls = _wire_merge_happy(monkeypatch, prs=[_autofix_pr()])
+    res = am.run_automerge()
+    assert res.get("dry_run") is True, res
+    assert res["merged"] == [], res
+    assert len(res["would_merge"]) == 1, res
+    wm = res["would_merge"][0]
+    assert wm["pr"] == 999 and wm["klass"] == "interval_literal", wm
+    # ZERO write primitives fired.
+    assert calls["mark_ready"] == [], calls["mark_ready"]
+    assert calls["merge"] == [], calls["merge"]
+    assert calls["record"] == [], calls["record"]
+    print("DRY-RUN shadow: would_merge ->", wm, "zero writes confirmed")
+
+
+def test_dry_run_zero_disables_shadow(monkeypatch):
+    monkeypatch.setenv("BRAIN_AUTOMERGE_ENABLED", "1")
+    monkeypatch.setenv("BRAIN_AUTOMERGE_DRY_RUN", "0")
+    monkeypatch.setenv("BRAIN_AUTOMERGE_MAX_PER_RUN", "5")
+    calls = _wire_merge_happy(monkeypatch, prs=[_autofix_pr()])
+    res = am.run_automerge()
+    assert res.get("dry_run") is False, res
+    assert res["would_merge"] == [], res
+    assert len(res["merged"]) == 1, res
+    assert len(calls["merge"]) == 1, calls["merge"]
+    print("DRY-RUN off: real merge path intact")
