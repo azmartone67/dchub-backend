@@ -5850,7 +5850,7 @@ def serve_tools_manifest():
         {"name": "list_transactions", "description": "M&A deals -- 2,000+ deals tracked with buyer, seller, price, date", "endpoint": "GET /api/transactions", "parameters": {"type": "object", "properties": {"limit": {"type": "integer"}, "deal_type": {"type": "string", "enum": ["acquisition", "investment", "merger"]}}}},
         {"name": "get_market_intel", "description": "Market vacancy rates, pricing, inventory across 35+ markets", "endpoint": "GET /api/v1/markets/list"},
         {"name": "get_news", "description": "Industry news from 40+ sources, updated every 5 minutes", "endpoint": "GET /api/news", "parameters": {"type": "object", "properties": {"limit": {"type": "integer", "default": 50}}}},
-        {"name": "get_energy_prices", "description": "LMP data across ERCOT, PJM, CAISO, MISO, NYISO, SPP, ISO-NE", "endpoint": "GET /api/v1/lmp/prices", "parameters": {"type": "object", "properties": {"iso": {"type": "string", "enum": ["ERCOT", "PJM", "CAISO", "MISO", "NYISO", "SPP", "ISONE"]}}}},
+        {"name": "get_energy_prices", "description": "Live 5-min real-time LMP across ERCOT, PJM, CAISO, MISO, NYISO, SPP (ISO-NE not covered — feed is registration-gated)", "endpoint": "GET /api/v1/lmp/prices", "parameters": {"type": "object", "properties": {"iso": {"type": "string", "enum": ["ERCOT", "PJM", "CAISO", "MISO", "NYISO", "SPP"]}}}},
         {"name": "get_pipeline", "description": "Construction pipeline (~7.8 GW) -- projects, markets, MW, developers", "endpoint": "GET /api/v1/pipeline"},
         {"name": "analyze_site", "description": "Score any location for data center suitability", "endpoint": "MCP tool via POST /mcp", "parameters": {"type": "object", "properties": {"latitude": {"type": "number"}, "longitude": {"type": "number"}}, "required": ["latitude", "longitude"]}},
         {"name": "get_stats", "description": "Platform-wide stats: facilities, countries, providers, deals", "endpoint": "GET /api/stats"},
@@ -19801,24 +19801,67 @@ def api_agent_chat():
             'model': 'fallback'
         })
 
+# Representative hub/zone per ISO for the legacy single-price shape of
+# /api/v1/lmp/prices. Location names match what routes/iso_lmp_ingest.py
+# writes to iso_lmp_snapshots, chosen to line up with the zones the old
+# sample payload advertised (NYISO Zone J = N.Y.C.). ISO-NE absent: its
+# real-time LMP feed is registration-gated.
+LMP_LEGACY_ZONE = {
+    'PJM': 'DOM',
+    'ERCOT': 'HB_NORTH',
+    'CAISO': 'TH_SP15_GEN-APND',
+    'MISO': 'INDIANA.HUB',
+    'SPP': 'SPPNORTH_HUB',
+    'NYISO': 'N.Y.C.',
+}
+
 @app.route('/api/v1/lmp/prices', methods=['GET'])
 def api_lmp_prices():
-    """Real-time LMP (Locational Marginal Pricing) data"""
-    # Return sample LMP data for major ISOs
-    lmp_data = {
+    """Real-time LMP (Locational Marginal Pricing) data.
+
+    Legacy shape ({timestamp, prices: {ISO: {price, unit, zone}}, note})
+    preserved for existing callers; data now read from iso_lmp_snapshots.
+    Full per-location detail lives at GET /api/v1/iso-lmp/snapshot."""
+    try:
+        from routes.iso_lmp_ingest import latest_by_iso
+        want = (request.args.get('iso') or '').upper().strip()
+        recs = latest_by_iso(want)
+    except Exception as e:
+        return jsonify({
+            'error': 'lmp_snapshot_unavailable',
+            'detail': str(e)[:200],
+        }), 503
+
+    rows_by_iso = {}
+    for rec in recs:
+        rows_by_iso.setdefault(rec[0], []).append(rec)
+
+    prices = {}
+    for iso, rows in rows_by_iso.items():
+        preferred = LMP_LEGACY_ZONE.get(iso)
+        pick = next((r for r in rows if r[1] == preferred), None)
+        if pick is None:
+            # No preferred hub in this interval: median-priced location
+            # (rows arrive ordered by lmp_usd_mwh DESC).
+            pick = rows[len(rows) // 2]
+        (_, loc, _ltype, lmp, _cong, _ene, _loss,
+         interval_ending, _fetched, _surl, sname) = pick
+        prices[iso] = {
+            'price': float(lmp),
+            'unit': '$/MWh',
+            'zone': loc,
+            'interval_ending_utc': interval_ending.astimezone(timezone.utc).isoformat(),
+            'source': sname,
+            'locations_available': len(rows),
+        }
+
+    return jsonify({
         'timestamp': datetime.utcnow().isoformat(),
-        'prices': {
-            'PJM': {'price': 32.45, 'unit': '$/MWh', 'zone': 'DOM'},
-            'ERCOT': {'price': 28.90, 'unit': '$/MWh', 'zone': 'NORTH'},
-            'CAISO': {'price': 45.20, 'unit': '$/MWh', 'zone': 'SP15'},
-            'MISO': {'price': 29.75, 'unit': '$/MWh', 'zone': 'INDIANA'},
-            'SPP': {'price': 26.30, 'unit': '$/MWh', 'zone': 'NORTH'},
-            'NYISO': {'price': 38.60, 'unit': '$/MWh', 'zone': 'ZONE_J'},
-            'ISONE': {'price': 35.80, 'unit': '$/MWh', 'zone': 'NEMASSBOST'}
-        },
-        'note': 'Sample data - live feed integration pending'
-    }
-    return jsonify(lmp_data)
+        'prices': prices,
+        'note': 'Live 5-min real-time hub/zone LMP (one representative location '
+                'per ISO). Full per-location detail: GET /api/v1/iso-lmp/snapshot. '
+                'ISO-NE not covered (real-time LMP API is registration-gated).',
+    })
 
 @app.route('/api/v1/facilities/stats', methods=['GET'])
 @require_plan('enterprise')

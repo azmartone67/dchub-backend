@@ -699,27 +699,36 @@ def ingest_one(iso):
     })
 
 
+def latest_by_iso(want=""):
+    """Latest-interval rows per ISO (all ISOs when want=''). Shared by the
+    /snapshot endpoint and the legacy /api/v1/lmp/prices route in main.py.
+    Returns tuples of (iso, location, location_type, lmp_usd_mwh,
+    congestion_usd_mwh, energy_usd_mwh, loss_usd_mwh, interval_ending,
+    fetched_at, source_url, source_name). Raises on DB/config failure."""
+    if not NEON_URL:
+        raise RuntimeError("no_neon_url")
+    with psycopg.connect(NEON_URL, autocommit=True) as conn, conn.cursor() as cur:
+        cur.execute("""
+            SELECT s.iso, s.location, s.location_type, s.lmp_usd_mwh,
+                   s.congestion_usd_mwh, s.energy_usd_mwh, s.loss_usd_mwh,
+                   s.interval_ending, s.fetched_at, s.source_url, s.source_name
+            FROM iso_lmp_snapshots s
+            JOIN (SELECT iso, MAX(interval_ending) AS mx
+                  FROM iso_lmp_snapshots GROUP BY iso) m
+              ON m.iso = s.iso AND m.mx = s.interval_ending
+            WHERE (%s = '' OR s.iso = %s)
+            ORDER BY s.iso, s.lmp_usd_mwh DESC
+        """, (want, want))
+        return cur.fetchall()
+
+
 @iso_lmp_ingest_bp.route("/snapshot", methods=["GET"])
 def snapshot():
     """Public: latest interval per ISO. Reads DISTINCT ISOs from the table —
     no hardcoded ISO list, so new ingestors surface automatically."""
-    if not NEON_URL:
-        return jsonify({"error": "no_neon_url"}), 500
     want = (request.args.get("iso") or "").upper().strip()
     try:
-        with psycopg.connect(NEON_URL, autocommit=True) as conn, conn.cursor() as cur:
-            cur.execute("""
-                SELECT s.iso, s.location, s.location_type, s.lmp_usd_mwh,
-                       s.congestion_usd_mwh, s.energy_usd_mwh, s.loss_usd_mwh,
-                       s.interval_ending, s.fetched_at, s.source_url, s.source_name
-                FROM iso_lmp_snapshots s
-                JOIN (SELECT iso, MAX(interval_ending) AS mx
-                      FROM iso_lmp_snapshots GROUP BY iso) m
-                  ON m.iso = s.iso AND m.mx = s.interval_ending
-                WHERE (%s = '' OR s.iso = %s)
-                ORDER BY s.iso, s.lmp_usd_mwh DESC
-            """, (want, want))
-            recs = cur.fetchall()
+        recs = latest_by_iso(want)
     except Exception as e:
         return jsonify({"error": str(e)[:200]}), 500
     by_iso = {}
