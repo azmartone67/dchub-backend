@@ -1377,10 +1377,12 @@ def gather_metrics_for_market(market: tuple) -> dict:
         slug,                                 # "cheyenne"      (dynamic)
         f"{slug}-{_state_lc}" if _state_lc else None,  # "cheyenne-wy"  (hardcoded shape)
     ]
+    _override_applied = False
     for _candidate in _slug_candidates:
         if _candidate and _candidate in slug_overrides:
             metrics.update({k: v for k, v in slug_overrides[_candidate].items()
                             if v is not None})
+            _override_applied = True
             break
 
     # ── r67 (2026-06-02): LIVE grid-headroom override of reserve_margin_pct ──
@@ -1423,6 +1425,65 @@ def gather_metrics_for_market(market: tuple) -> dict:
     # Demand growth default
     if metrics.get("demand_growth_yoy_pct") is None:
         metrics["demand_growth_yoy_pct"] = 4.0
+
+    # ── r-declone (2026-07-02): per-market differentiation from LOCAL DC
+    # saturation. The bug: most of the 317 markets have no slug_override, so
+    # they inherit the pure iso_defaults → every market in an ISO gets IDENTICAL
+    # queue_wait/scores (every WECC market showed 42mo/AVOID; master-shell
+    # iso_clone_ratio=0.23). Real per-market signal is available and currently
+    # discarded: the market list is BUILT from discovered_facilities, so each
+    # market has a real local DC footprint. A metro dense with data centers
+    # competes harder for the SAME ISO grid → longer effective interconnection
+    # wait + higher local demand growth than a sparse market in the same ISO.
+    # Apply as a BOUNDED delta ANCHORED on the ISO baseline (never replaces it),
+    # and ONLY for markets without a hand-calibrated override — so the ~40
+    # curated flagship markets stay byte-identical and only the cloned majority
+    # de-clone, using real data, without abandoning the grid grounding.
+    if not _override_applied:
+        try:
+            with _conn() as c, c.cursor() as cur:
+                cur.execute("""
+                    SELECT COUNT(*) AS fac,
+                           COALESCE(SUM(power_mw), 0) AS op_mw,
+                           COALESCE(SUM(power_mw) FILTER (WHERE status IN
+                             ('construction','planned','permitting',
+                              'Under Construction','Planned')), 0) AS pipe_mw
+                    FROM discovered_facilities
+                    WHERE LOWER(city) = LOWER(%s) AND UPPER(COALESCE(state,'')) = %s
+                      AND (country='US' OR country='USA'
+                           OR country IS NULL OR country='')
+                """, (name, (state or "").upper()))
+                _fr = cur.fetchone()
+            _fac = int((_fr[0] if _fr else 0) or 0)
+            _op_mw = float((_fr[1] if _fr else 0) or 0)
+            _pipe_mw = float((_fr[2] if _fr else 0) or 0)
+            # Saturation index 0..1: facility density + installed load + pipeline
+            # pressure (future demand). Denominators = "very saturated metro".
+            _sat = _clip(0.50 * (_fac / 80.0)
+                         + 0.30 * (_op_mw / 2000.0)
+                         + 0.20 * (_pipe_mw / 1500.0), 0.0, 1.0)
+            metrics["local_facility_count"] = _fac
+            metrics["local_operational_mw"] = round(_op_mw, 1)
+            metrics["local_pipeline_mw"] = round(_pipe_mw, 1)
+            metrics["_saturation_index"] = round(_sat, 3)
+            if _fac > 0 and _sat > 0:
+                _qw = metrics.get("queue_wait_months")
+                if _qw is not None:
+                    # up to +35% effective wait in the most-saturated metros
+                    metrics["queue_wait_months"] = round(float(_qw) * (1.0 + 0.35 * _sat), 1)
+                _dg = float(metrics.get("demand_growth_yoy_pct") or 4.0)
+                # up to +4pp local demand growth where DC density is high
+                metrics["demand_growth_yoy_pct"] = round(_dg + 4.0 * _sat, 1)
+                # a saturated metro also has less LOCAL behind-the-meter
+                # headroom left → down-weight btm (feeds excess) up to -40%, so
+                # excess_power_score de-clones in the same (correct) direction
+                # rather than staying ISO-identical.
+                _btm = metrics.get("btm_headroom_mw")
+                if _btm is not None:
+                    metrics["btm_headroom_mw"] = round(float(_btm) * (1.0 - 0.40 * _sat), 1)
+                metrics["_saturation_adjusted"] = True
+        except Exception:
+            pass
 
     # r65 (2026-06-02): attach honest provenance label, derived from the
     # ACTUAL code path above (not the region). Only queue_wait_months,
@@ -1475,6 +1536,17 @@ def gather_metrics_for_market(market: tuple) -> dict:
         # (modeled anchor + operating reserve + effective) is exposed below.
         data_basis["reserve_margin_basis"] = "modeled_anchor_adjusted_by_live_telemetry"
         data_basis["reserve_margin_live"] = _lg
+    # r-declone (2026-07-02): expose the per-market saturation adjustment so
+    # the de-cloned queue_wait/demand_growth are auditable, not silent.
+    if metrics.get("_saturation_adjusted"):
+        data_basis["local_saturation"] = {
+            "index": metrics.get("_saturation_index"),
+            "facility_count": metrics.get("local_facility_count"),
+            "operational_mw": metrics.get("local_operational_mw"),
+            "pipeline_mw": metrics.get("local_pipeline_mw"),
+            "adjusts": ["queue_wait_months", "demand_growth_yoy_pct"],
+            "basis": "iso_anchor_adjusted_by_local_dc_saturation",
+        }
     metrics["data_basis"] = data_basis
 
     return metrics
