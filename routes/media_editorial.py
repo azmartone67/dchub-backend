@@ -480,11 +480,20 @@ def _recently_posted_keys(days: int = 9) -> set:
     try:
         with c.cursor() as cur:
             cutoff = (_dt.datetime.utcnow() - _dt.timedelta(days=days)).isoformat()
+            # UNION both post ledgers (2026-07-02): posts shipped by the direct
+            # posters (showcase, media hub, wins poster) land ONLY in
+            # linkedin_posts — reading social_media_posts alone left the desk
+            # blind to them, so a deal that led TWO posts yesterday still
+            # ranked as novel today (the Brookfield $25B repeat).
             cur.execute(
                 "SELECT LOWER(COALESCE(content,'')) FROM social_media_posts "
                 "WHERE status='published' AND publish_platform='linkedin' "
-                "AND published_at >= %s ORDER BY published_at DESC LIMIT 60",
-                (cutoff,))
+                "AND published_at >= %s "
+                "UNION ALL "
+                "SELECT LOWER(COALESCE(content,'')) FROM linkedin_posts "
+                "WHERE posted_at >= %s::timestamptz "
+                "LIMIT 120",
+                (cutoff, cutoff))
             recent = " || ".join(r[0] for r in (cur.fetchall() or []) if r and r[0])
     except Exception:
         recent = ""

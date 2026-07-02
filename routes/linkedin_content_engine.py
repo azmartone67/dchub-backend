@@ -403,12 +403,21 @@ def _recent_post_openings(days: int = 14, n: int = 12) -> list[str]:
         return []
     try:
         with _conn() as c, c.cursor() as cur:
+            # UNION both post ledgers: direct posters (showcase, media hub)
+            # record only in linkedin_posts — without it the composer can't
+            # see half of what actually shipped.
             cur.execute("""
-                SELECT LEFT(content, 180) FROM social_media_posts
-                 WHERE status = 'published' AND publish_platform = 'linkedin'
-                   AND created_at > NOW() - make_interval(days => %s)
-                 ORDER BY created_at DESC LIMIT %s
-            """, (days, n))
+                SELECT opening FROM (
+                    SELECT LEFT(content, 180) AS opening, created_at AS ts
+                      FROM social_media_posts
+                     WHERE status = 'published' AND publish_platform = 'linkedin'
+                       AND created_at > NOW() - make_interval(days => %s)
+                    UNION ALL
+                    SELECT LEFT(content, 180) AS opening, posted_at AS ts
+                      FROM linkedin_posts
+                     WHERE posted_at > NOW() - make_interval(days => %s)
+                ) u ORDER BY ts DESC LIMIT %s
+            """, (days, days, n))
             return [r[0].replace("\n", " ").strip()
                     for r in (cur.fetchall() or []) if r and r[0]]
     except Exception:
