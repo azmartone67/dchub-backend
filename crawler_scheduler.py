@@ -156,6 +156,16 @@ SCHEDULE = [
     # brain_findings_writer.upsert_brain_finding so re-runs are safe.
     # Kill switch: MCP_FUNNEL_R3_DISABLE=1.
     ( 2,  2, "per_tool_conversion", "_run_per_tool_conversion"),
+    # AI-surface drift sentinel (2026-07-02): once-daily in-process audit of
+    # the AI-agent surfaces (llms.txt, manifests, /connect, /ai …) against
+    # ai_surface_canon + brain-findings write (idempotent upsert). Replaces
+    # nothing — this is the FIRST scheduled trigger (previously admin-POST
+    # only). Leader-gated by the scheduler's per-tick check; no HTTP
+    # self-call. Slot 12/12 (same-hour pair → one run/day): light hour, and
+    # after the morning content crons so the audit sees the day's surfaces.
+    # No-ops unless AI_SURFACE_SENTINEL_ENABLED=1; the downstream draft-PR
+    # writer additionally stays DRY_RUN unless DCHUB_DRIFT_PR=1.
+    (12, 12, "ai_surface_sentinel", "_run_ai_surface_sentinel"),
     # Daily R2 refresh — POST /refresh on the heroic-reprieve daily
     # FastAPI so today's PNGs land in R2 (2026-06-05). R2 has been
     # empty for 7+ days because extractor_cron.py's daily_refresh_if_needed()
@@ -3331,6 +3341,37 @@ def _run_crm_outbound_flush():
         logger.error("📇 crm_outbound_flush: error — %s", e)
 
 
+def _run_ai_surface_sentinel():
+    """AI-surface drift audit (2026-07-02): daily in-process run of
+    ai_surface_sentinel.run_audit() + brain-findings write — the same work
+    the admin /api/v1/admin/ai-surface/refresh endpoint does, but leader-
+    gated by this scheduler's per-tick check and with NO HTTP self-call.
+    Findings are idempotent (canonical upsert_brain_finding, dedup on
+    issue+url). The findings write ALSO attempts the drift draft-PR writer
+    (routes/drift_pr_writer.py), which stays DRY_RUN unless DCHUB_DRIFT_PR=1.
+    Gate: AI_SURFACE_SENTINEL_ENABLED=1 (matches the refresh endpoint)."""
+    if str(os.environ.get("AI_SURFACE_SENTINEL_ENABLED", "")).strip().lower() \
+            not in ("1", "true", "yes"):
+        logger.info("🛰️ ai_surface_sentinel: disabled "
+                    "(AI_SURFACE_SENTINEL_ENABLED not set)")
+        return
+    try:
+        from ai_surface_sentinel import _write_findings, run_audit
+        audit = run_audit()
+        findings = _write_findings(audit)
+        drift_pr = findings.get("drift_pr") or {}
+        logger.info(
+            "🛰️ ai_surface_sentinel: %s drifts across %s surfaces · "
+            "findings written=%s · drift_pr=%s",
+            audit.get("total_drifts"), len(audit.get("surfaces") or []),
+            findings.get("written"),
+            drift_pr.get("would_do") or drift_pr.get("pr_url")
+            or drift_pr.get("reason") or drift_pr.get("error") or "n/a",
+        )
+    except Exception as e:
+        logger.error("🛰️ ai_surface_sentinel: error — %s", e)
+
+
 _RUNNERS = {
     "market_refresh":      _run_market_refresh,
     "news":                _run_news_crawler,
@@ -3348,6 +3389,7 @@ _RUNNERS = {
     "gas_pricing_refresh": _run_gas_pricing_refresh,
     "tool_calibration":    _run_tool_calibration_check,
     "per_tool_conversion": _run_per_tool_conversion,
+    "ai_surface_sentinel": _run_ai_surface_sentinel,
     "linkedin_engagement_sync": _run_linkedin_engagement_sync,
     "accelerator_scan":    _run_accelerator_scan,
     "media_topic_tune":    _run_media_topic_tune,

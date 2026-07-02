@@ -6,13 +6,14 @@ Every AI-agent surface (llms.txt, the .well-known manifests, AGENTS.md,
 integration configs, /connect, /ai, robots.txt, the registry) currently
 hand-types the same numbers, so they drift + contradict each other (v2.1.22 vs
 2.3.3 vs 2.1.0; "24 tools" and "48 tools" on the SAME page; 232 vs 300+ markets;
-50,000+ facilities on /connect). This module is the fix: one canon, with the
-MOVING numbers resolved LIVE at read time so the canon itself never goes stale.
+an inflated five-figure facility claim on /connect). This module is the fix: one
+canon, with the MOVING numbers resolved LIVE at read time so it never goes stale.
 
 Used by ai_surface_sentinel.py to audit (and later auto-refresh) every surface.
 """
 from __future__ import annotations
 
+import datetime
 import json
 import os
 import urllib.request
@@ -89,6 +90,112 @@ def _mcp_tool_count(timeout=20):
     return None
 
 
+# ── Funnel metrics (canonical identity views — NEVER raw session counts) ──
+#
+# The reach dashboard was invalidated 2026-07-01 because it counted rotating
+# session_ids as "agents". The ONLY honest funnel numbers come from the
+# identity views (mcp_calls_identity / mcp_agent_retention_30d), which key on
+# agent_id + public-IP + real-external filters. Media generators must read
+# THESE via resolve_canon()["funnel"] — never hand-roll their own counts.
+
+_FUNNEL_QUERIES = {
+    "real_agents_7d": (
+        "SELECT COUNT(DISTINCT agent_id) FROM mcp_calls_identity "
+        "WHERE created_at >= NOW() - INTERVAL '7 days' "
+        "AND is_public_ip AND is_real_external"),
+    "real_agents_30d": (
+        "SELECT COUNT(DISTINCT agent_id) FROM mcp_calls_identity "
+        "WHERE created_at >= NOW() - INTERVAL '30 days' "
+        "AND is_public_ip AND is_real_external"),
+    "day2_return_pct": (
+        "SELECT ROUND(AVG(returned_2nd_day::int) * 100, 1) "
+        "FROM mcp_agent_retention_30d"),
+    # NB: auto_trial_keys keys on minted_at (there is no created_at column).
+    "emails_bound_30d": (
+        "SELECT COUNT(*) FROM auto_trial_keys "
+        "WHERE COALESCE(signed_up_email, operator_email) IS NOT NULL "
+        "AND minted_at >= NOW() - INTERVAL '30 days'"),
+}
+
+
+def _funnel_one(cur, sql):
+    """Run one metric query fail-soft. Uses a SAVEPOINT so a failed metric
+    can't abort a shared transaction (the market-brief tx-abort trap) and a
+    caller-passed cursor stays usable for the NEXT metric."""
+    sp = False
+    try:
+        cur.execute("SAVEPOINT _canon_funnel_sp")
+        sp = True
+    except Exception:
+        pass  # autocommit — no tx block, no savepoint needed
+    try:
+        cur.execute(sql)
+        row = cur.fetchone()
+        if sp:
+            cur.execute("RELEASE SAVEPOINT _canon_funnel_sp")
+        return row[0] if row else None
+    except Exception:
+        if sp:
+            try:
+                cur.execute("ROLLBACK TO SAVEPOINT _canon_funnel_sp")
+            except Exception:
+                pass
+        raise
+
+
+def canon_funnel_metrics(cur=None) -> dict:
+    """THE single source for funnel numbers on AI surfaces + media posts.
+
+    Returns {real_agents_7d, real_agents_30d, day2_return_pct,
+    emails_bound_30d, computed_at} from the canonical identity views.
+    Every metric is individually fail-soft to None (never raises). Accepts an
+    optional already-open cursor; otherwise opens/returns its own pooled
+    connection (same pattern as ai_surface_sentinel._write_findings)."""
+    out = {
+        "real_agents_7d": None,
+        "real_agents_30d": None,
+        "day2_return_pct": None,
+        "emails_bound_30d": None,
+        "computed_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    }
+    own_conn = None
+    return_pg_connection = None
+    if cur is None:
+        try:
+            from main import get_pg_connection, return_pg_connection
+            own_conn = get_pg_connection()
+            cur = own_conn.cursor()
+        except Exception as e:
+            out["_error"] = f"db_connect: {str(e)[:100]}"
+            return out
+    try:
+        for key, sql in _FUNNEL_QUERIES.items():
+            try:
+                val = _funnel_one(cur, sql)
+                if val is not None:
+                    out[key] = float(val) if key.endswith("_pct") else int(val)
+            except Exception as e:
+                out[f"_{key}_error"] = str(e)[:100]
+    finally:
+        if own_conn is not None:
+            try:
+                cur.close()
+            except Exception:
+                pass
+            try:
+                own_conn.rollback()  # read-only; leave the pooled conn clean
+            except Exception:
+                pass
+            try:
+                return_pg_connection(own_conn)
+            except Exception:
+                try:
+                    own_conn.close()
+                except Exception:
+                    pass
+    return out
+
+
 def resolve_canon() -> dict:
     """Return the canon with the MOVING numbers resolved LIVE, so the canon
     itself is never stale. Falls back to public strings if a resolver fails."""
@@ -107,4 +214,10 @@ def resolve_canon() -> dict:
         c["tools_live"] = _mcp_tool_count()
     except Exception as e:
         c["_tools_error"] = str(e)[:120]
+    # funnel metrics from the canonical identity views (fail-soft internally)
+    try:
+        c["funnel"] = canon_funnel_metrics()
+    except Exception as e:
+        c["funnel"] = None
+        c["_funnel_error"] = str(e)[:120]
     return c

@@ -5,7 +5,8 @@ ai_surface_sentinel.py — AI-Surface Freshness Sentinel (Phase 1: read-only aud
 Keeps every AI-agent-facing surface consistent with ai_surface_canon (the one
 source of truth). This session proved the need: the manifest chain disagreed
 with itself (v2.1.22 / 2.3.3 / 2.1.0), AGENTS.md said both "24 tools" and "48
-tools", /connect claimed "50,000+ facilities", robots.txt served stale.
+tools", /connect carried an inflated five-figure facility claim, robots.txt
+served stale.
 
 Phase 1 = the read-only AUDIT (zero write-risk): fetch each surface cache-
 bypassed, diff against canon, return a scorecard. AUTO-FIX is scaffolded but
@@ -163,6 +164,73 @@ def ai_surface_canon_dump():
     return jsonify(ok=True, canon=resolve_canon()), 200
 
 
+# Frontend-owned surfaces the drift PR writer may draft fixes for, mapped to
+# their file paths at the ROOT of azmartone67/dchub-frontend (verified layout:
+# llms.txt / llms-full.txt / AGENTS.md / ai.json all live at repo root).
+_FRONTEND_SURFACE_PATHS = {
+    "llms_txt": "llms.txt",
+    "llms_full": "llms-full.txt",
+    "agents_md": "AGENTS.md",
+}
+
+
+def _count_fix_replacement(marker, canon):
+    """Canonical replacement for a SIMPLE count-string stale marker, or None.
+    Deliberately narrow: only unambiguous count strings get a mechanical fix
+    (versions and bare market numbers like '232 ' are too context-dependent
+    for a string swap — those stay findings for a human)."""
+    if not marker:
+        return None
+    pub = canon.get("public") or {}
+    tools = str(canon.get("tools_advertised") or "")
+    fixes = {
+        "50,000+": pub.get("facilities"),
+        "100 calls/day": f"{canon.get('free_tier_calls_per_day', 10)} calls/day",
+        "24 tools": f"{tools} tools" if tools else None,
+        "48 tools": f"{tools} tools" if tools else None,
+        "49 tools": f"{tools} tools" if tools else None,
+        "51 tools": f"{tools} tools" if tools else None,
+    }
+    return fixes.get(marker)
+
+
+def _draft_drift_fix_prs(audit):
+    """For drifts that are simple count-string mismatches on frontend-owned
+    surfaces, ALSO draft a mechanical fix PR via routes.drift_pr_writer.
+    ON RAILS: the writer is DRY_RUN unless DCHUB_DRIFT_PR=1 (default OFF —
+    it only reports what it WOULD do), draft-PR-only, fenced + allowlisted.
+    Fail-soft: never raises, never blocks the findings write."""
+    try:
+        from ai_surface_canon import PINNED
+        from routes.drift_pr_writer import MAX_EDITS_PER_PR, open_drift_fix_pr
+    except Exception as e:
+        return {"attempted": False, "error": f"import: {str(e)[:80]}"}
+    edits, seen = [], set()
+    for s in audit.get("surfaces", []):
+        path = _FRONTEND_SURFACE_PATHS.get(s.get("surface"))
+        if not path:
+            continue
+        for d in s.get("drifts", []):
+            if d.get("field") != "stale_value":
+                continue
+            replace = _count_fix_replacement(d.get("live"), PINNED)
+            if not replace or (path, d["live"]) in seen:
+                continue
+            seen.add((path, d["live"]))
+            edits.append({"path": path, "find": d["live"], "replace": replace})
+    if not edits:
+        return {"attempted": False,
+                "reason": "no simple count-string drift on frontend surfaces"}
+    try:
+        return open_drift_fix_pr(
+            "azmartone67/dchub-frontend", edits[:MAX_EDITS_PER_PR],
+            rationale=("ai_surface_sentinel audit found stale count strings "
+                       "on frontend-owned AI surfaces; canonical values from "
+                       "ai_surface_canon.PINNED."))
+    except Exception as e:
+        return {"attempted": True, "error": str(e)[:120]}
+
+
 def _write_findings(audit):
     """Upsert each drift into brain_findings (dedup on issue+url) so drift is
     tracked + actionable in the brain workflow. SAFE: findings are informational
@@ -200,7 +268,9 @@ def _write_findings(audit):
             except Exception:
                 try: conn.close()
                 except Exception: pass
-    return {"written": written}
+    # Simple count-string drift on frontend surfaces ALSO gets a mechanical
+    # draft-PR attempt (DRY_RUN unless DCHUB_DRIFT_PR=1; fail-soft).
+    return {"written": written, "drift_pr": _draft_drift_fix_prs(audit)}
 
 
 @ai_surface_sentinel_bp.route("/api/v1/admin/ai-surface/refresh", methods=["POST"])
