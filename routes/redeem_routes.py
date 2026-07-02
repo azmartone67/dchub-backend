@@ -531,6 +531,18 @@ def phase63_redeem(session_id):
         # without session lookup rather than a hard 400.
         session_id = 'unknown'
 
+    # 2026-07-01: permanent DEMO surface for sharing / screenshots. This handler
+    # (redeem_bp) wins over pair_code_bp for /redeem/<x>, and "DEMO" would
+    # otherwise fall to Path 4 (mint a real code + 302). Delegate it to
+    # pair_code.redeem_landing, which renders a frozen sample page — never
+    # expires, no DB, no funnel pollution.
+    if session_id.upper() == 'DEMO' or request.args.get('demo'):
+        try:
+            from routes.pair_code import redeem_landing as _pc_redeem
+            return _pc_redeem('DEMO')
+        except Exception:
+            pass
+
     # Path 2: pair-code shape → delegate to the canonical pair-code handler.
     # This is the route that writes mcp_pair_codes.redeem_viewed_at, which
     # is what the conversion funnel counts.
