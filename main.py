@@ -22992,6 +22992,7 @@ def serve_sitemap_xml():
     import re as _re
     import time as _time
     from datetime import datetime as _dt
+    from urllib.parse import quote as _urlquote
 
     # r70 (2026-06-03): server-side TTL cache. This function ran 3 DB queries +
     # re-appended 233 DCPI market pages on EVERY call (the "sitemap: 233 DCPI
@@ -23072,6 +23073,12 @@ def serve_sitemap_xml():
         # IDENTICAL slug scheme (provider-slug + name-slug + stable_hash8 — verified
         # byte-identical). Their absence = the bulk of GSC's ~30k "not indexed". The
         # seen_slugs dedup in the facility loop below drops any overlap with discovered.
+        # r-sitemap-404s (2026-07-01): these two excepts used to be BARE — a
+        # failed union silently emitted a legacy-free sitemap (looked fine,
+        # ~9k URLs short) with zero log trace. Count + log every outcome so
+        # a regression here is visible in Railway logs, never inferred from
+        # GSC weeks later.
+        _legacy_unioned = 0
         try:
             c.execute("""
                 SELECT name, provider, city, state, country, id, first_seen
@@ -23079,10 +23086,13 @@ def serve_sitemap_xml():
                 WHERE name IS NOT NULL AND name != ''
                 LIMIT 50000
             """)
-            fac_rows = list(fac_rows) + list(c.fetchall())
-        except Exception:
+            _legacy_rows = c.fetchall()
+            _legacy_unioned = len(_legacy_rows)
+            fac_rows = list(fac_rows) + list(_legacy_rows)
+        except Exception as _legacy_err:
             try: conn.rollback()
             except Exception: pass
+            logger.warning(f"sitemap: legacy facilities union failed (full cols), retrying minimal: {_legacy_err}")
             try:
                 c.execute("""
                     SELECT name, provider, NULL, NULL, NULL, id, NULL
@@ -23090,10 +23100,14 @@ def serve_sitemap_xml():
                     WHERE name IS NOT NULL AND name != ''
                     LIMIT 50000
                 """)
-                fac_rows = list(fac_rows) + list(c.fetchall())
-            except Exception:
+                _legacy_rows = c.fetchall()
+                _legacy_unioned = len(_legacy_rows)
+                fac_rows = list(fac_rows) + list(_legacy_rows)
+            except Exception as _legacy_err2:
                 try: conn.rollback()
                 except Exception: pass
+                logger.error(f"sitemap: legacy facilities union FAILED entirely — sitemap will be ~9k URLs short: {_legacy_err2}")
+        logger.info(f"sitemap: {_legacy_unioned} legacy facilities unioned into {len(fac_rows)} total rows")
 
         # Get unique country/state combos for location pages
         c.execute("""
@@ -23471,14 +23485,27 @@ def serve_sitemap_xml():
             # Slug already claimed by another facility with the same
             # provider|name — this one would be invisible under the slug URL.
             # Emit its unique self-canonical /facility/<id> page instead.
-            _fallback_id_urls.append(f'  <url><loc>https://dchub.cloud/facility/{fac_id}</loc><lastmod>{_lm}</lastmod><changefreq>monthly</changefreq><priority>0.4</priority></url>')
+            # r-sitemap-404s (2026-07-01): percent-encode the id — legacy
+            # `facilities` ids are free TEXT and ~10 contain XML/URL-breaking
+            # chars (&, ', space) that would invalidate the whole sitemap if
+            # emitted raw. Hex/osm_*/integer ids pass through unchanged.
+            _q_id = _urlquote(str(fac_id), safe='')
+            _fallback_id_urls.append(f'  <url><loc>https://dchub.cloud/facility/{_q_id}</loc><lastmod>{_lm}</lastmod><changefreq>monthly</changefreq><priority>0.4</priority></url>')
 
     # Append the id-fallback URLs, respecting the per-file URL cap so the
     # sitemap stays valid even if the facility table grows unexpectedly large.
+    _fallback_dropped = 0
     if _fallback_id_urls:
         _room = _SITEMAP_MAX_URLS - len(urls)
         if _room > 0:
             urls.extend(_fallback_id_urls[:_room])
+            _fallback_dropped = max(0, len(_fallback_id_urls) - _room)
+        else:
+            _fallback_dropped = len(_fallback_id_urls)
+    logger.info(
+        f"sitemap: {len(seen_slugs)} unique facility slugs, "
+        f"{len(_fallback_id_urls) - _fallback_dropped} id-fallback URLs emitted, "
+        f"{_fallback_dropped} dropped at cap, {len(urls)} URLs total so far")
 
     # ---- Facilities hub (2026-06-29) — countries index + per-country lists ----
     # The geography hub (facilities_hub.py) that un-orphans the /facilities/<slug>

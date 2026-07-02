@@ -296,6 +296,29 @@ def facility_page(id_or_slug: str):
             """, (id_or_slug, hash8, hash8, id_or_slug))
             row = cur.fetchone()
 
+        # r-sitemap-404s (2026-07-01): the sitemap's collision-fallback URLs
+        # (main.py serve_sitemap_xml) emit /facility/<id> for LEGACY
+        # `facilities` rows too — their ids are TEXT (12.8k bare-16-hex +
+        # 513 osm_*), which the discovered-only CAST(id AS TEXT) match above
+        # can never resolve, so ~5,300 sitemap URLs 404'd live (GSC 21k
+        # submitted / 0 indexed). Resolve by exact legacy id first (unique),
+        # with the same hash8 fallback mirrored; exact-match wins the ordering
+        # so a junk id whose tail happens to parse as 8-hex can't mis-route.
+        # Legacy has the same columns plus sqft/tier (richer render).
+        if not row:
+            with c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT id, name, provider, address, city, state, country,
+                           latitude, longitude, power_mw, status, sqft, tier,
+                           source, source_url, confidence_score, last_updated
+                      FROM facilities
+                     WHERE (id = %s)
+                        OR (%s IS NOT NULL AND """ + hash_sql('') + """ = %s)
+                     ORDER BY (id = %s) DESC
+                     LIMIT 1
+                """, (id_or_slug, hash8, hash8, id_or_slug))
+                row = cur.fetchone()
+
         if not row:
             return _error_page(f"Facility '{_h(id_or_slug)}' not found.", 404)
 
@@ -303,14 +326,18 @@ def facility_page(id_or_slug: str):
         nearby = []
         try:
             with c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                # CAST id for the != — legacy `facilities` ids are TEXT
+                # (hex/osm_*), and comparing those against the integer
+                # discovered_facilities.id raised, silently dropping the
+                # whole nearby section for legacy-resolved pages.
                 cur.execute("""
                     SELECT id, name, provider, power_mw
                       FROM discovered_facilities
-                     WHERE city = %s AND state = %s AND id != %s
+                     WHERE city = %s AND state = %s AND CAST(id AS TEXT) != %s
                        AND COALESCE(is_duplicate, 0) = 0
                      ORDER BY power_mw DESC NULLS LAST
                      LIMIT 8
-                """, (row['city'], row['state'], row['id']))
+                """, (row['city'], row['state'], str(row['id'])))
                 nearby = cur.fetchall()
         except Exception:
             pass
