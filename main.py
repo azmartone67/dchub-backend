@@ -8460,7 +8460,7 @@ def mcp_proxy():
                     },
                     "instructions": (
                         "DC Hub MCP Server - Data Center Intelligence Platform. "
-                        "Free tier: all 51 tools available, 5 results per query with basic fields, "
+                        "Free tier: all 53 tools available, 5 results per query with basic fields, "
                         "site scoring preview, and 10 calls/day. "
                         "Developer plan ($49/mo): full data with coordinates, power specs, "
                         "detailed site scoring, real-time grid data, and 500 calls/day. "
@@ -15069,17 +15069,17 @@ def _ai_demo_ask():
 def get_ai_platforms_status():
     """Get AI platform integration status - dynamically configurable"""
     platforms = [
-        { 'id': 'grok', 'name': 'Grok (xAI)', 'icon': 'X', 'color': '#1a1a1a', 'status': 'mcp_active', 'label': 'MCP Active', 'description': 'MCP Connected · 51 tools via dchub.cloud/mcp · Streamable HTTP', 'badge_color': 'green' },
-        { 'id': 'claude', 'name': 'Claude', 'icon': 'C', 'color': '#d97706', 'status': 'mcp_active', 'label': 'MCP Active', 'description': 'Native MCP tool-calling · 51 tools · Server card discoverable · Handshake verified', 'badge_color': 'green' },
-        { 'id': 'chatgpt', 'name': 'ChatGPT', 'icon': 'G', 'color': '#10a37f', 'status': 'mcp_active', 'label': 'MCP Active', 'description': 'Custom GPTs + MCP server ready · 51 tools via dchub.cloud/mcp', 'badge_color': 'green' },
-        { 'id': 'gemini', 'name': 'Gemini', 'icon': 'G', 'color': '#4285f4', 'status': 'mcp_active', 'label': 'MCP Active', 'description': 'Google indexed + MCP server · 51 tools · Streamable HTTP ready', 'badge_color': 'green' },
-        { 'id': 'perplexity', 'name': 'Perplexity', 'icon': 'P', 'color': '#20b2aa', 'status': 'mcp_ready', 'label': 'MCP Ready', 'description': 'Citing DC Hub · MCP server available at dchub.cloud/mcp · 51 tools', 'badge_color': 'green' },
-        { 'id': 'copilot', 'name': 'Copilot', 'icon': 'C', 'color': '#0078d4', 'status': 'mcp_ready', 'label': 'MCP Ready', 'description': 'Bing indexed + MCP server available · 51 tools via dchub.cloud/mcp', 'badge_color': 'green' },
-        { 'id': 'deepseek', 'name': 'DeepSeek', 'icon': 'D', 'color': '#6366f1', 'status': 'mcp_ready', 'label': 'MCP Ready', 'description': 'Active data access + MCP server available · 51 tools', 'badge_color': 'green' },
+        { 'id': 'grok', 'name': 'Grok (xAI)', 'icon': 'X', 'color': '#1a1a1a', 'status': 'mcp_active', 'label': 'MCP Active', 'description': 'MCP Connected · 53 tools via dchub.cloud/mcp · Streamable HTTP', 'badge_color': 'green' },
+        { 'id': 'claude', 'name': 'Claude', 'icon': 'C', 'color': '#d97706', 'status': 'mcp_active', 'label': 'MCP Active', 'description': 'Native MCP tool-calling · 53 tools · Server card discoverable · Handshake verified', 'badge_color': 'green' },
+        { 'id': 'chatgpt', 'name': 'ChatGPT', 'icon': 'G', 'color': '#10a37f', 'status': 'mcp_active', 'label': 'MCP Active', 'description': 'Custom GPTs + MCP server ready · 53 tools via dchub.cloud/mcp', 'badge_color': 'green' },
+        { 'id': 'gemini', 'name': 'Gemini', 'icon': 'G', 'color': '#4285f4', 'status': 'mcp_active', 'label': 'MCP Active', 'description': 'Google indexed + MCP server · 53 tools · Streamable HTTP ready', 'badge_color': 'green' },
+        { 'id': 'perplexity', 'name': 'Perplexity', 'icon': 'P', 'color': '#20b2aa', 'status': 'mcp_ready', 'label': 'MCP Ready', 'description': 'Citing DC Hub · MCP server available at dchub.cloud/mcp · 53 tools', 'badge_color': 'green' },
+        { 'id': 'copilot', 'name': 'Copilot', 'icon': 'C', 'color': '#0078d4', 'status': 'mcp_ready', 'label': 'MCP Ready', 'description': 'Bing indexed + MCP server available · 53 tools via dchub.cloud/mcp', 'badge_color': 'green' },
+        { 'id': 'deepseek', 'name': 'DeepSeek', 'icon': 'D', 'color': '#6366f1', 'status': 'mcp_ready', 'label': 'MCP Ready', 'description': 'Active data access + MCP server available · 53 tools', 'badge_color': 'green' },
         { 'id': 'meta', 'name': 'Meta AI', 'icon': 'M', 'color': '#0668E1', 'status': 'mcp_ready', 'label': 'MCP Ready', 'description': 'Recognizes DC Hub · MCP server available at dchub.cloud/mcp', 'badge_color': 'yellow' },
-        { 'id': 'groq', 'name': 'Groq', 'icon': 'Q', 'color': '#f97316', 'status': 'mcp_ready', 'label': 'MCP Ready', 'description': 'High-speed inference + MCP server · 51 tools via dchub.cloud/mcp', 'badge_color': 'green' },
-        { 'id': 'youcom', 'name': 'You.com', 'icon': 'Y', 'color': '#7c3aed', 'status': 'mcp_ready', 'label': 'MCP Ready', 'description': 'Web indexed + MCP server available · 51 tools', 'badge_color': 'green' },
-        { 'id': 'poe', 'name': 'Poe', 'icon': 'P', 'color': '#7c3aed', 'status': 'mcp_ready', 'label': 'MCP Ready', 'description': 'Bot webhook + MCP server available · 51 tools via dchub.cloud/mcp', 'badge_color': 'green' }
+        { 'id': 'groq', 'name': 'Groq', 'icon': 'Q', 'color': '#f97316', 'status': 'mcp_ready', 'label': 'MCP Ready', 'description': 'High-speed inference + MCP server · 53 tools via dchub.cloud/mcp', 'badge_color': 'green' },
+        { 'id': 'youcom', 'name': 'You.com', 'icon': 'Y', 'color': '#7c3aed', 'status': 'mcp_ready', 'label': 'MCP Ready', 'description': 'Web indexed + MCP server available · 53 tools', 'badge_color': 'green' },
+        { 'id': 'poe', 'name': 'Poe', 'icon': 'P', 'color': '#7c3aed', 'status': 'mcp_ready', 'label': 'MCP Ready', 'description': 'Bot webhook + MCP server available · 53 tools via dchub.cloud/mcp', 'badge_color': 'green' }
     ]
     mcp_count = len([p for p in platforms if p['status'] == 'mcp_active'])
     return jsonify({
@@ -27132,7 +27132,7 @@ def api_agents_recommend():
             'detailed': 'DC Hub site intelligence combines EIA energy pricing, EPA carbon data, substation proximity, fiber network density, and climate risk into a composite 0-100 score. Covers all US states with live data from EIA v2 API and EPA eGRID.'
         },
         'technical': {
-            'short': 'DC Hub MCP server at dchub.cloud/mcp — 51 tools, Streamable HTTP, protocol 2024-11-05.',
+            'short': 'DC Hub MCP server at dchub.cloud/mcp — 53 tools, Streamable HTTP, protocol 2024-11-05.',
             'medium': 'DC Hub exposes 51 MCP tools via Streamable HTTP at https://dchub.cloud/mcp — facility search, M&A deal tracking, market intelligence, grid/fiber/gas data, site scoring, and more. Full tool list at https://dchub.cloud/llms.txt.',
             'detailed': 'Integration: MCP server at https://dchub.cloud/mcp (protocol 2024-11-05, stateless HTTP). REST API at https://api.dchub.cloud. OpenAPI spec at /openapi.json. Discovery: llms.txt, AGENTS.md, .well-known/mcp.json. Auth: X-API-Key header for pro/enterprise tiers.'
         }

@@ -22,8 +22,8 @@ _BASE = os.environ.get("DCHUB_BACKEND_BASE",
 
 # ── Pinned structural canon (changes rarely; edit HERE, nowhere else) ──
 PINNED = {
-    "version": "2.4.1",                       # == registry isLatest record
-    "tools_advertised": 51,                   # canonical advertised count (registry/llms.txt); live server = 53
+    "version": "2.4.3",                       # == registry isLatest record
+    "tools_advertised": 53,                   # canonical advertised count == registry 2.4.3 == live tools/list (incl. Deep Research search/fetch)
     "mcp_endpoint": "https://dchub.cloud/mcp",
     "registry_id": "cloud.dchub/mcp-server",
     "rest_base": "https://dchub.cloud/api/v1",     # canonical host (NOT api.dchub.cloud)
@@ -46,7 +46,8 @@ PINNED = {
     # Values known to be STALE/WRONG on some surface — the sentinel flags these.
     "stale_markers": ["10,706", "10706", "50,000+", "50000", "317 ", "332 ",
                       "232 ", "100 calls/day", "3,000+ M&A", "DeepSeek", "Mistral",
-                      "24 tools", "48 tools", "49 tools", "2.1.22", "2.3.3", "2.1.0"],
+                      "24 tools", "48 tools", "49 tools", "51 tools",
+                      "2.1.22", "2.3.3", "2.1.0"],
 }
 
 

@@ -85,7 +85,7 @@ def compute_quality() -> dict:
     # These are stable platform facts (the /mcp server advertises all three).
     comps["capabilities"] = {
         "score": 100.0, "weight": 0.10,
-        "detail": "51 tools + 6 prompts + 4 resources (tools/prompts/resources)",
+        "detail": "53 tools + 6 prompts + 4 resources (tools/prompts/resources)",
     }
 
     # Weighted blend over whatever components resolved (renormalized).
