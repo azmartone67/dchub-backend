@@ -776,6 +776,40 @@ def _post_to_linkedin(content_text, access_token, article_url=None,
                      "(%d chars / %d words): %r", len(_ct), _wc, _ct[:120])
         return False, {"error": "content_quality_gate",
                        "reason": f"too short: {len(_ct)} chars / {_wc} words"}
+    # ── Editorial-policy gate (2026-07-02, operator directive) ────────────
+    # Runs HERE — at the single HTTP choke point — because guards that live
+    # only in the queue-drain path (_should_skip_publish) are bypassed by the
+    # direct posters (that's how a partner-bashing post escaped on 06-22).
+    # Two hard rules, no env knob:
+    #   1. Never disparage a peer AI platform (they are partners AND our
+    #      distribution — their agents query DC Hub).
+    #   2. Never LEAD with a downgrade. AVOID/CAUTION verdicts live on the
+    #      product surfaces and subscriber alerts; the media feed messages
+    #      positive results and enhancements, not doom commentary.
+    _snippet = _disparages_partner(_ct)
+    if _snippet:
+        logger.error("LINKEDIN POLICY GATE: refused partner-disparaging post "
+                     "(%r)", _snippet)
+        try:
+            _record_media_block('linkedin',
+                                f'partner_disparage: {_snippet[:80]}', _ct)
+        except Exception:
+            pass
+        return False, {"error": "editorial_policy_gate",
+                       "reason": f"partner disparage: {_snippet[:80]}"}
+    _lead = _ct[:200]
+    if (_re_legacy.search(r'\bAVOID\b', _lead)
+            or _re_legacy.search(
+                r'(?i)\b(shifted to avoid|moved to avoid|downgraded to|'
+                r'falls? to avoid|drops? to avoid)\b', _lead)):
+        logger.error("LINKEDIN POLICY GATE: refused downgrade-lead post: %r",
+                     _lead[:120])
+        try:
+            _record_media_block('linkedin', 'downgrade_lead', _ct)
+        except Exception:
+            pass
+        return False, {"error": "editorial_policy_gate",
+                       "reason": "leads with a downgrade (AVOID)"}
     # Forensic trail (2026-06-30): the "Guam " incident stored the FULL blurb but
     # rendered one word, with NO backend truncation found. Log the EXACT
     # commentary we hand to LinkedIn so the next occurrence is captured with
@@ -2230,6 +2264,19 @@ def _should_skip_publish(cur, content_text: str, platform: str):
     if _disp:
         return True, ("partner-disparagement — refusing to publish copy that "
                       f"knocks a peer AI platform: …{_disp[:120]}…")
+
+    # (d2) DOWNGRADE-LEAD GATE (2026-07-02, operator directive): the media
+    # feed messages positive results and enhancements. A post that LEADS
+    # with an AVOID verdict / downgrade is doom commentary — those belong
+    # on the product surfaces and in subscriber alerts, not the feed. All
+    # platforms (the queued backlog still holds pre-policy AVOID posts).
+    _dl = (_text or "")[:200]
+    if (_re_legacy.search(r"\bAVOID\b", _dl)
+            or _re_legacy.search(
+                r"(?i)\b(shifted to avoid|moved to avoid|downgraded to|"
+                r"falls? to avoid|drops? to avoid)\b", _dl)):
+        return True, ("downgrade-lead — feed posts message positive results "
+                      "and enhancements, never AVOID/downgrade commentary")
 
     # (d3) AGENT-COUNT HONESTY GATE (r-reach-canonical-views, 2026-07-01): any
     # "N AI agents / N unique callers" claim must corroborate against the

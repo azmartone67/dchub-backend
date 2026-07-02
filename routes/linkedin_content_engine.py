@@ -303,7 +303,10 @@ def _pull_market_anomaly() -> dict:
                        (l.now_e - p.prev_e) AS delta
                   FROM latest l JOIN prev p ON l.market_slug = p.market_slug
                  WHERE p.prev_e IS NOT NULL
-                 ORDER BY ABS(l.now_e - p.prev_e) DESC LIMIT 1
+                   -- positive-results policy (2026-07-02): surface the biggest
+                   -- GAIN (new headroom coming online), never the biggest drop
+                   AND (l.now_e - p.prev_e) > 0
+                 ORDER BY (l.now_e - p.prev_e) DESC LIMIT 1
             """)
             row = cur.fetchone()
             return {"type": "market_anomaly", "anomaly": dict(row) if row else None}
@@ -316,7 +319,9 @@ _PULLERS = {
     "energy_narrative":     _pull_energy_narrative,
     "dcpi_scoop":           _pull_dcpi_scoop,
     "shipped_this_week":    _pull_shipped_this_week,
-    "hyperscaler_drama":    _pull_hyperscaler_drama,
+    # "hyperscaler_drama" retired 2026-07-02 (operator directive): no
+    # commentary/contrarian takes on third-party news. The feed reports
+    # DC Hub results, additions and capability — not reactions to others.
     "market_anomaly":       _pull_market_anomaly,
 }
 
@@ -338,7 +343,7 @@ def _pick_story_type(slot_topic: str | None = None) -> str:
     # (the "Cedar Falls held at 41.9" post) instead of DC Hub from strength.
     preferred = {
         "dcpi_mover":         ["shipped_this_week", "capability_spotlight", "dcpi_scoop"],
-        "hyperscaler_deal":   ["capability_spotlight", "shipped_this_week", "hyperscaler_drama"],
+        "hyperscaler_deal":   ["capability_spotlight", "shipped_this_week", "dcpi_scoop"],
         "ai_capex_index":     ["shipped_this_week", "capability_spotlight", "market_anomaly"],
         "industry_pulse":     ["capability_spotlight", "shipped_this_week", "energy_narrative"],
     }
@@ -679,10 +684,12 @@ def _card_url_for(story_type: str, data: dict, text: str) -> str | None:
         title = sub = market = score = verdict = ""
         style = "editorial"
 
+        constraint = ""
         if story_type == "dcpi_scoop":
             s = d.get("scoop") or {}
             market = _clean(s.get("market_name"), 40)
             score = _f1(s.get("excess_power_score"))
+            constraint = _f1(s.get("constraint_score"))
             verdict = (s.get("verdict") or "BUILD")
             title = market
             ttp = s.get("time_to_power_months")
@@ -789,6 +796,8 @@ def _card_url_for(story_type: str, data: dict, text: str) -> str | None:
             params["score"] = score
         if verdict:
             params["verdict"] = verdict
+        if constraint:
+            params["constraint"] = constraint
         return _OG_DYNAMIC_BASE + "?" + urllib.parse.urlencode(params)
     except Exception:
         return None

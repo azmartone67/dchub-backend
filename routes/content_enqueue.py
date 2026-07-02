@@ -85,7 +85,15 @@ def _fetch_narrative_arc() -> dict | None:
 
 def _pick_dcpi_mover() -> dict | None:
     """Random recent market for content. Reuses the same SQL as
-    linkedin_quad_daily but split into a tiny helper."""
+    linkedin_quad_daily but split into a tiny helper.
+
+    Positive-results editorial policy (2026-07-02, operator directive): the
+    social feed showcases WHERE THE POWER IS — BUILD markets, capacity wins,
+    platform enhancements. AVOID/CAUTION downgrades stay on the live DCPI
+    pages and in subscriber alerts (that's the product), but the media feed
+    never leads with doom commentary. Prefer the highest-excess BUILD market
+    of the week over a random one so the post always has a real bragging
+    right (top headroom, not a coin flip)."""
     c = _db_conn()
     if not c: return None
     try:
@@ -96,12 +104,15 @@ def _pick_dcpi_mover() -> dict | None:
                   FROM market_power_scores
                  WHERE published = TRUE
                    AND computed_at > NOW() - INTERVAL '7 days'
-                   AND verdict IN ('BUILD','CAUTION','AVOID')
-                 ORDER BY RANDOM()
-                 LIMIT 1
+                   AND verdict = 'BUILD'
+                   AND excess_power_score IS NOT NULL
+                 ORDER BY excess_power_score DESC
+                 LIMIT 10
             """)
-            r = cur.fetchone()
-            if not r: return None
+            top = cur.fetchall()
+            if not top: return None
+            import random as _rnd
+            r = _rnd.choice(top)
             return {
                 "name":   r[0],
                 "slug":   r[1],
@@ -160,39 +171,26 @@ def _shape_linkedin(mover: dict, arc: dict | None) -> str:
       • One data point + live page link
       • Stripped #spam hashtags down to 2-3 relevant ones
     """
-    verdict = (mover.get('verdict') or '').upper()
     name    = mover.get('name', '?')
     iso     = mover.get('iso', '?')
     excess  = mover.get('excess') or 0
     constr  = mover.get('constraint') or 0
     slug    = mover.get('slug', '')
 
-    # Verdict-specific opener — narrative framing, not data dump
-    if verdict == 'BUILD':
-        opener = (f"{name} flipped to BUILD on the DC Hub Power Index "
-                  f"this week.")
-        implication = (f"For developers screening {iso} for AI training capacity, "
-                       f"this is the second-tier signal you wait for: grid "
-                       f"headroom is materializing faster than the queue depth "
-                       f"can absorb.")
-    elif verdict == 'AVOID':
-        opener = (f"{name} ({iso}) just shifted to AVOID on the DC Hub "
-                  f"Power Index.")
-        implication = (f"That's typically a 12-18 month signal: the interconnect "
-                       f"queue + transmission constraints have tipped past the "
-                       f"point where new MW can land without renegotiating "
-                       f"timeline assumptions. Site-selectors should re-screen.")
-    elif verdict == 'CAUTION':
-        opener = (f"{name} moved into CAUTION territory on the DC Hub "
-                  f"Power Index.")
-        implication = (f"Watch the next two DCPI cycles. CAUTION markets are "
-                       f"where the highest IRR plays sit — early in the "
-                       f"constraint curve, before AVOID prices it out — but "
-                       f"the window typically closes in 1-2 quarters.")
-    else:
-        opener = (f"{name} ({iso}) updated on the DC Hub Power Index.")
-        implication = (f"Excess Power {excess:.0f}/100 against Constraint {constr:.0f}/100 "
-                       f"frames where the market sits in the AI-buildout cycle.")
+    # Positive-results policy (2026-07-02): the mover is always a BUILD-rated
+    # market with real headroom. The post is a capacity FIND for the reader —
+    # where the power is, what the numbers say, how to verify — never a
+    # downgrade commentary.
+    opener = (f"{name} ({iso}) rates BUILD on the DC Hub Power Index this "
+              f"week, with an Excess Power score of {excess:.0f}/100 — one "
+              f"of the strongest grid-headroom readings we track.")
+    implication = (f"For teams screening {iso} for AI capacity, that "
+                   f"combination — headroom {excess:.0f}/100 against a grid "
+                   f"constraint of just {constr:.0f}/100 — usually means "
+                   f"shorter interconnection timelines and real negotiating "
+                   f"leverage on power contracts. Markets like this are why "
+                   f"the shortlist should be rebuilt from live grid data, "
+                   f"not last quarter's PDF.")
 
     arc_line = ""
     if arc:
@@ -203,9 +201,8 @@ def _shape_linkedin(mover: dict, arc: dict | None) -> str:
     return (
         f"{opener}\n\n"
         f"{implication}\n\n"
-        f"DCPI inputs: Excess Power {excess:.0f}/100 · Grid Constraint "
-        f"{constr:.0f}/100. Daily-refreshed score, methodology + sources "
-        f"on the live page: https://dchub.cloud/dcpi/{slug}"
+        f"Daily-refreshed score, methodology + sources on the live page: "
+        f"https://dchub.cloud/dcpi/{slug}"
         f"{arc_line}\n\n"
         f"#datacenter #DCPI #{iso.replace('-','').lower()}"
     )
@@ -224,39 +221,18 @@ def _shape_twitter(mover: dict, arc: dict | None) -> str:
     clears BOTH gates and actually tells the story. The DCPI link is always kept
     intact (only the prose is trimmed to fit) so the post never loses its
     link-credit or ships a broken URL."""
-    verdict = (mover.get('verdict') or '').upper()
     name    = mover.get('name', '?')
     iso     = mover.get('iso', '?')
     excess  = mover.get('excess') or 0
-    constr  = mover.get('constraint') or 0
     slug    = mover.get('slug', '')
 
-    # Verdict-specific so-what: a freshness cue ("this week") + an investor-
-    # relevant implication, compressed from _shape_linkedin. The freshness phrase
-    # also earns _quality_score's freshness weight the bare status line lacked.
-    # DCPI is glossed as "grid-headroom index (0-100)" so the score reads as an
-    # explained, transparent metric rather than a cryptic proprietary number —
-    # the editor LLM rejects unexplained/unverifiable index claims.
-    if verdict == 'BUILD':
-        hook = (f"{name} ({iso}) flipped to BUILD on the DC Hub Power Index this "
-                f"week — grid headroom now outpaces queue depth. Excess-Power "
-                f"score {excess:.0f}/100 on our public 0-100 grid-headroom index. "
-                f"Green-light for AI siting.")
-    elif verdict == 'AVOID':
-        hook = (f"{name} ({iso}) moved to AVOID on the DC Hub Power Index this "
-                f"week. Its Excess-Power score {excess:.0f}/100 on our public "
-                f"0-100 grid-headroom index signals a tightening interconnect "
-                f"queue — a re-screen flag for site-selectors.")
-    elif verdict == 'CAUTION':
-        hook = (f"{name} ({iso}) moved to CAUTION on the DC Hub Power Index this "
-                f"week — early in the constraint curve. Excess-Power score "
-                f"{excess:.0f}/100 on our public 0-100 grid-headroom index. The "
-                f"high-IRR window: 1-2 quarters.")
-    else:
-        hook = (f"{name} ({iso}) updated on the DC Hub Power Index this week — "
-                f"Excess-Power score {excess:.0f}/100 vs Grid-Constraint "
-                f"{constr:.0f}/100 on our public 0-100 indices. Where it sits in "
-                f"the AI-buildout cycle.")
+    # Positive-results policy (2026-07-02): mover is always BUILD. Freshness
+    # cue ("this week") + explained 0-100 gloss kept so the post clears both
+    # the quality gate and the editor LLM.
+    hook = (f"{name} ({iso}) rates BUILD on the DC Hub Power Index this "
+            f"week — Excess-Power score {excess:.0f}/100 on our public "
+            f"0-100 grid-headroom index. Real headroom, shorter "
+            f"interconnection timelines: a green light for AI siting.")
 
     # "methodology + sources" cue makes the number verifiable (the link is the
     # proof), mirroring why _shape_linkedin clears the editor.
@@ -276,11 +252,11 @@ def _shape_twitter(mover: dict, arc: dict | None) -> str:
 
 
 def _shape_bluesky(mover: dict, arc: dict | None) -> str:
-    """≤300 char Bluesky post."""
+    """≤300 char Bluesky post. Positive-results policy: mover is always BUILD."""
     return (
-        f"DCPI · {mover['name']} ({mover['iso']}) — verdict: {mover['verdict']}\n\n"
-        f"Excess power {mover['excess']:.0f}/100, "
-        f"constraint {mover['constraint']:.0f}/100.\n\n"
+        f"{mover['name']} ({mover['iso']}) rates BUILD on the DC Hub Power "
+        f"Index — excess power {mover['excess']:.0f}/100, one of the "
+        f"strongest headroom readings we track this week.\n\n"
         f"Daily-refreshing scorecard: https://dchub.cloud/dcpi/{mover['slug']}"
     )[:300]
 

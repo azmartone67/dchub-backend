@@ -387,22 +387,25 @@ def _draw_data_brutal(pr):
       │  ◆ DC HUB MEDIA      dchub.cloud/dcpi      → today       │
       └─────────────────────────────────────────────────────────┘
 
-    Whitespace is the new feature. The ugly hard-edged orange brand bar
-    is gone; a thin purple line replaces it. The big score is now
-    accent-COLORED purple (was ACCENT/orange), with a 4px purple
-    underline that visually anchors the headline number — small detail,
-    huge readability win on a LinkedIn thumb-scroll."""
+    v3 (2026-07-02, operator "graphics are lame" directive) — MARKET
+    SCORECARD. The v2 card was a lone 240pt mono number with a hardcoded
+    '#1 NATIONALLY' caption that shipped even on a 45.0 AVOID market —
+    incoherent, and DejaVu-Mono digits read as broken glyphs at that size.
+    v3 renders like a product screenshot: market name + verdict pill,
+    hero score in the display sans, and labeled 0-100 GAUGE BARS for
+    Excess Power (+ Grid Constraint when available). Every element is
+    driven by the actual data — no canned superlatives."""
     from PIL import Image, ImageDraw
     img = Image.new('RGB', (W, H), BG)
+    _subtle_gradient(img, BG, BG_DEEP, falloff=1.0)
     d = ImageDraw.Draw(img)
 
     # Brand accent strip + kicker row
     _draw_brand_strip(d)
-    d.text((60, 32), 'DCPI  ·  LIVE  ·  DAILY POWER INDEX',
-           font=_mono(22), fill=CYAN)
+    d.text((60, 34), 'DC HUB POWER INDEX  ·  LIVE', font=_mono(22), fill=CYAN)
     date_str = _safe_date_str(pr.get('date'), '%b %d, %Y').upper()
     dtw, _ = _text_size(d, date_str, _mono(22))
-    d.text((W - dtw - 60, 32), date_str, font=_mono(22), fill=MUTED)
+    d.text((W - dtw - 60, 34), date_str, font=_mono(22), fill=MUTED)
 
     # Extract the hero stat from signals
     signals = pr.get('signals', {})
@@ -410,6 +413,10 @@ def _draw_data_brutal(pr):
     if not isinstance(top, dict): top = {}
     market_name = _market_name_of(top)
     score = _market_score_of(top)
+    constraint = top.get('constraint')
+    if constraint is None: constraint = top.get('constraint_score')
+    try: constraint = float(constraint) if constraint is not None else None
+    except (ValueError, TypeError): constraint = None
     if market_name == '?':
         # Fall back to parsing the title
         title = pr.get('title', '')
@@ -423,40 +430,59 @@ def _draw_data_brutal(pr):
         m = re.search(r'(\d+\.\d+)', title)
         if m: score = float(m.group(1))
 
-    # Market name — tight bold display, all caps, white
-    d.text((60, 110), market_name.upper()[:22], font=_font(72), fill=TEXT)
+    # Market name row — tight bold display + color-coded verdict pill
+    # sitting inline right after the name (not orphaned in a far corner).
+    # Ellipsize the name by PIXEL width so it never runs under the pill.
+    name_txt = market_name.upper()
+    name_font = _font(76)
+    max_name_w = W - 60 - 300     # reserve pill + margins on the right
+    if _text_size(d, name_txt, name_font)[0] > max_name_w:
+        while name_txt and _text_size(d, name_txt + '…', name_font)[0] > max_name_w:
+            name_txt = name_txt[:-1].rstrip()
+        name_txt += '…'
+    d.text((60, 104), name_txt, font=name_font, fill=WHITE)
+    verdict = _verdict_for(signals)
+    nw, _ = _text_size(d, name_txt, name_font)
+    _verdict_pill(d, x=min(60 + nw + 36, W - 260), y=118, verdict=verdict,
+                  font_size=36, pad_x=32, pad_y=14)
 
-    # Hero number — massive, brand purple, monospace.
-    # Position the underline using FONT SIZE (em-box), not textbbox —
-    # textbbox returns the tight glyph bbox which doesn't include the
-    # font's descender region, so a measurement-based underline cuts
-    # THROUGH the number. font.size + 0.10 padding clears all descenders.
     if score:
-        score_str = f'{score:.1f}'
-        FONT_PT = 240
-        score_y = 178
-        score_font = _mono(FONT_PT)
-        d.text((60, score_y), score_str, font=score_font, fill=PURPLE)
-        # Em-box bottom = top + (font_pt * roughly 1.0); add 8% breathing
-        underline_y = score_y + int(FONT_PT * 1.08)
+        # Hero score — display sans (clean digits), purple, with the scale
+        # caption anchored to its baseline so the number is self-explaining.
+        score_str = f'{score:.0f}' if float(score).is_integer() else f'{score:.1f}'
+        score_font = _font(170)
+        d.text((60, 218), score_str, font=score_font, fill=PURPLE_LT)
         sw, _ = _text_size(d, score_str, score_font)
-        d.rectangle([(60, underline_y), (60 + min(sw, 720), underline_y + 5)],
-                    fill=PURPLE_LT)
-        d.text((60, underline_y + 22), 'EXCESS POWER  ·  #1 NATIONALLY',
-               font=_mono(22), fill=MUTED)
+        d.text((60 + sw + 22, 322), '/100', font=_font(44), fill=DIM)
+        d.text((60 + sw + 22, 284), 'GRID HEADROOM', font=_mono(24), fill=MUTED)
+
+        # Gauge bars — the data-viz backbone of the card. Track in deep
+        # slate, fill in brand purple (excess) / cyan (constraint).
+        bar_x, bar_w, bar_h = 60, W - 120 - 150, 26
+        gauges = [('EXCESS POWER', score, PURPLE)]
+        if constraint is not None:
+            gauges.append(('GRID CONSTRAINT', constraint, CYAN))
+        gy = 436
+        for label, val, color in gauges:
+            d.text((bar_x, gy - 30), label, font=_mono(20), fill=MUTED)
+            _rounded_rect(d, [(bar_x, gy), (bar_x + bar_w, gy + bar_h)],
+                          radius=bar_h // 2, fill=(30, 41, 59))
+            fill_w = int(bar_w * max(0.0, min(float(val), 100.0)) / 100.0)
+            if fill_w > bar_h:
+                _rounded_rect(d, [(bar_x, gy), (bar_x + fill_w, gy + bar_h)],
+                              radius=bar_h // 2, fill=color)
+            d.text((bar_x + bar_w + 24, gy - 4), f'{val:.0f}',
+                   font=_font(30), fill=TEXT)
+            gy += 74
     else:
         # No score → render the subheadline at large display size instead
         sub = pr.get('subheadline', '') or pr.get('title', '')
-        for i, line in enumerate(_wrap(sub, 28)[:4]):
-            d.text((60, 220 + i * 76), line, font=_font(54), fill=TEXT)
-
-    # Verdict pill — top-right, color-coded
-    verdict = _verdict_for(signals)
-    _verdict_pill(d, x=W - 280, y=110, verdict=verdict, font_size=40)
+        for i, line in enumerate(_wrap_px(sub, _font(54), W - 120, max_lines=4)):
+            d.text((60, 230 + i * 76), line, font=_font(54), fill=TEXT)
 
     # Footer
     _draw_brand_footer(d, y=H - 64, mark='dchub.cloud/dcpi',
-                       kicker='DC HUB MEDIA  ·  AUTONOMOUS PRESS')
+                       kicker='DC HUB  ·  MARKET INTELLIGENCE')
 
     return img
 
@@ -497,10 +523,11 @@ def _draw_editorial(pr):
 
     _draw_brand_strip(d)
 
-    # Kicker row — diamond + DC HUB MEDIA + dot + date, in cyan
+    # Kicker row — brand chip + DC HUB + date (chip beats the tiny diamond
+    # glyph, which rendered as a barely-visible speck at 22pt)
+    _brand_chip(d, 64, 44, size=40)
     date_full = _safe_date_str(pr.get('date'), '%b %d, %Y').upper()
-    kicker = f'◆  DC HUB MEDIA  ·  {date_full}'
-    d.text((64, 56), kicker, font=_font(22), fill=CYAN)
+    d.text((120, 52), f'DC HUB  ·  {date_full}', font=_font(24), fill=CYAN)
 
     # Verdict pill — top-right, if signals carry one
     signals = pr.get('signals', {}) if isinstance(pr.get('signals', {}), dict) else {}
@@ -508,28 +535,43 @@ def _draw_editorial(pr):
         verdict = _verdict_for(signals)
         _verdict_pill(d, x=W - 280, y=44, verdict=verdict, font_size=36, pad_x=32, pad_y=14)
 
-    # Headline — 3 lines max, tight bold display
+    # Headline — 3 lines max, pixel-accurate wrap (the char-count wrap
+    # either overflowed long words or left half the canvas empty)
     title = pr.get('title', '')[:200]
-    lines = _wrap(title, 24)[:3]
-    y = 130
+    hfont = _font(72)
+    lines = _wrap_px(title, hfont, W - 128, max_lines=3)
+    y = 136
     for line in lines:
-        d.text((64, y), line, font=_font(74), fill=WHITE)
-        y += 92
+        d.text((64, y), line, font=hfont, fill=WHITE)
+        y += 90
 
-    # Cyan separator rule + subheadline
+    # Purple rule + stat strip — the supporting number deserves editorial
+    # weight, not 26pt muted whisper text
     sub = pr.get('subheadline', '')
     if sub:
-        sep_y = max(y + 14, 412)
-        d.rectangle([(64, sep_y), (124, sep_y + 3)], fill=CYAN)
-        sublines = _wrap(sub, 60)[:2]
-        sy = sep_y + 20
+        sep_y = min(max(y + 26, 400), 470)
+        d.rectangle([(64, sep_y), (144, sep_y + 5)], fill=PURPLE_LT)
+        sfont = _font(32)
+        # 3-line headline leaves room for only one stat line above the footer
+        _max_sub = 1 if len(lines) >= 3 else 2
+        sublines = _wrap_px(sub, sfont, W - 128 - 220, max_lines=_max_sub)
+        sy = sep_y + 26
         for s in sublines:
-            d.text((64, sy), s, font=_font(26, bold=False), fill=MUTED)
-            sy += 38
+            d.text((64, sy), s, font=sfont, fill=TEXT)
+            sy += 44
+
+    # Bar-chart motif — three ascending rounded bars bottom-right; quiet
+    # data-viz signature so the card never reads as an empty slab
+    bx, bw, bgap = W - 218, 34, 14
+    for i, bh in enumerate((64, 104, 150)):
+        _rounded_rect(d, [(bx + i * (bw + bgap), H - 130 - bh),
+                          (bx + i * (bw + bgap) + bw, H - 130)],
+                      radius=8,
+                      fill=((60, 66, 105), (91, 79, 176), PURPLE)[i])
 
     # Footer
     _draw_brand_footer(d, y=H - 64, mark='dchub.cloud/news',
-                       kicker='DC HUB MEDIA  ·  EDITORIAL')
+                       kicker='DC HUB  ·  MARKET INTELLIGENCE')
 
     return img
 
@@ -1158,15 +1200,16 @@ def _draw_fallback(slug):
     _draw_brand_strip(d)
 
     # Hero brand mark centered-left
-    _brand_chip(d, 60, 140, size=200)
-    d.text((300, 168), 'DC HUB', font=_font(78), fill=WHITE)
-    d.text((300, 256), 'DATA CENTER INTELLIGENCE', font=_mono(22), fill=CYAN)
+    _brand_chip(d, 60, 130, size=170)
+    d.text((270, 152), 'DC HUB', font=_font(78), fill=WHITE)
+    d.text((272, 244), 'THE LIVE DATA LAYER FOR AI AGENTS', font=_mono(22), fill=CYAN)
 
-    # Pillars
-    d.text((60, 400), 'POWER  ·  PIPELINE  ·  PRICING  ·  ISO GRID',
+    # Pillars + honest-numbers stat line (canonical 2026-07: 311 markets,
+    # 178 countries; facilities floor 21,800+)
+    d.text((60, 386), 'POWER  ·  GRID  ·  FIBER  ·  GAS  ·  DEALS',
            font=_mono(22), fill=MUTED)
-    d.text((60, 442), 'Live since 2024  ·  21,400 facilities  ·  170+ countries',
-           font=_font(22), fill=TEXT)
+    d.text((60, 428), '21,800+ facilities  ·  311 markets  ·  178 countries',
+           font=_font(26), fill=TEXT)
 
     _draw_brand_footer(d, y=H - 64, mark='dchub.cloud',
                        kicker='DC HUB  ·  CITED BY CLAUDE, CHATGPT, PERPLEXITY')
@@ -1306,11 +1349,18 @@ def og_card_dynamic():
             sc = float(score_raw) if score_raw not in (None, '') else 0.0
         except Exception:
             sc = 0.0
-        signals = {'top_build_markets': [{
+        entry = {
             'market': market or (args.get('title') or '')[:30],
             'excess': sc,
             'verdict': verdict or 'BUILD',
-        }]}
+        }
+        # v3 scorecard: optional 0-100 constraint → second gauge bar
+        try:
+            if args.get('constraint') not in (None, ''):
+                entry['constraint'] = float(args.get('constraint'))
+        except Exception:
+            pass
+        signals = {'top_build_markets': [entry]}
 
     _title = (args.get('title') or 'DC Hub Media').strip()[:200]
     # Per-content slug so the ai_hero SDXL cache (keyed by slug+day) produces a
