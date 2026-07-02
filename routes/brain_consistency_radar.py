@@ -6004,6 +6004,17 @@ def check_data_freshness_sla_breach() -> list[dict]:
         ("transmission_lines",     "updated_at",   720,  "HIFLD transmission lines"),
         ("gas_pipelines",          "updated_at",   720,  "EIA gas pipelines"),
         ("substations",            "updated_at",   720,  "HIFLD substations"),
+        # 2026-07-02 — data-moat feed sentinels. This sweep found
+        # usgs_water_stress 3.5 MONTHS stale (last row 2026-03-18) with no
+        # detector watching it — the water-risk answers were silently aging.
+        # SLAs sized to each feed's real cadence (LMP hourly-ish cron → 48h
+        # rides out a weekend outage; water USGS ~weekly → 21d; LNG terminals
+        # near-static → 45d).
+        ("iso_lmp_snapshots",      "fetched_at",   48,   "ISO LMP price feed"),
+        ("henry_hub_spot",         "ingested_at",  96,   "Henry Hub spot price (EIA)"),
+        ("lng_export_terminals",   "ingested_at",  1080, "LNG export terminals (EIA)"),
+        ("usgs_water_stress",      "updated_at",   504,  "USGS water levels (water-risk answers)"),
+        ("competitor_snapshots",   "captured_at",  72,   "competitor gap-crawler inputs"),
     ]
     c = _db()
     if c is None: return findings
@@ -6651,6 +6662,214 @@ def check_ai_platform_crawl_drop() -> list[dict]:
                 c.close()
             except Exception:
                 pass
+    return findings
+
+
+def check_media_and_yield_health() -> list[dict]:
+    """2026-07-02 — three silent-death modes in the media/discovery loops that
+    plain MAX(col) freshness SLAs can't express:
+
+    1. `x_publisher_dead` — social_media_posts has approved rows queued but
+       ZERO rows have ever received a twitter_id (found live: 37 approved,
+       0 posted in the publisher's entire history; the loop fails at the X
+       API with no error column to land in).
+    2. `linkedin_engagement_readback_stale` — posts are going out but
+       engagement_fetched_at isn't advancing → the media loop is flying
+       blind (root cause 2026-07-02: token missing r_organization_social;
+       the fetch batch breaks on the first 403 silently).
+    3. `competitor_gap_yield_stale` — the gap crawler runs daily (findings
+       update) but hasn't staged a NEW discovered_facilities row in 3+
+       weeks → either every competitor gap is ingested (fine) or the
+       source parsing/geocoding died (needs eyes either way).
+
+    Read-only. FAIL-CLOSED: returns [] on any error.
+    """
+    findings: list[dict] = []
+    c = None
+    try:
+        c = _db()
+        if c is None:
+            return []
+        with c.cursor() as cur:
+            # 1. X publisher: queued but never once succeeded
+            try:
+                cur.execute("SELECT to_regclass('public.social_media_posts')")
+                if (cur.fetchone() or [None])[0]:
+                    cur.execute("""
+                        SELECT COUNT(*) FILTER (WHERE status = 'approved'),
+                               COUNT(*) FILTER (WHERE twitter_id IS NOT NULL
+                                    AND created_at > NOW() - INTERVAL '14 days')
+                          FROM social_media_posts
+                    """)
+                    queued, posted_14d = cur.fetchone() or (0, 0)
+                    if int(queued or 0) > 0 and int(posted_14d or 0) == 0:
+                        findings.append({
+                            "issue":  "x_publisher_dead",
+                            "url":    "table:social_media_posts",
+                            "count":  int(queued),
+                            "detail": (f"{queued} approved posts queued for X but 0 posted in "
+                                       f"14d (0 twitter_id ever recorded). The _twitter_loop "
+                                       f"runs (TWITTER_PUBLISHER_ENABLED set, creds present) "
+                                       f"but the X API rejects posts — known cause: the X app "
+                                       f"is not attached to a Project in the X developer "
+                                       f"portal (owner action). Errors are only in Railway "
+                                       f"logs; nothing lands in a table."),
+                        })
+            except Exception:
+                c.rollback()
+
+            # 2. LinkedIn engagement read-back stale
+            try:
+                cur.execute("SELECT to_regclass('public.linkedin_posts')")
+                if (cur.fetchone() or [None])[0]:
+                    cur.execute("""
+                        SELECT COUNT(*) FILTER (
+                                   WHERE COALESCE(status,'') = 'success'
+                                     AND COALESCE(posted_at, published_at, created_at)
+                                         > NOW() - INTERVAL '7 days'),
+                               MAX(engagement_fetched_at)
+                          FROM linkedin_posts
+                    """)
+                    recent_posts, last_fetch = cur.fetchone() or (0, None)
+                    stale = last_fetch is None
+                    if not stale:
+                        cur.execute(
+                            "SELECT %s < NOW() - INTERVAL '96 hours'", (last_fetch,))
+                        stale = bool(cur.fetchone()[0])
+                    if int(recent_posts or 0) > 0 and stale:
+                        findings.append({
+                            "issue":  "linkedin_engagement_readback_stale",
+                            "url":    "table:linkedin_posts",
+                            "count":  int(recent_posts),
+                            "detail": (f"{recent_posts} LinkedIn posts published in 7d but "
+                                       f"engagement_fetched_at last advanced "
+                                       f"{last_fetch or 'NEVER'} — the media loop can't learn "
+                                       f"what lands. fetch_linkedin_engagement breaks its whole "
+                                       f"batch on the first 403; token needs "
+                                       f"r_organization_social (+ r_organizational_social_feed "
+                                       f"for impressions). Trigger POST /api/linkedin/"
+                                       f"engagement-sync and read `reason` to confirm."),
+                        })
+            except Exception:
+                c.rollback()
+
+            # 3. Competitor gap-crawler yield
+            try:
+                cur.execute("""
+                    SELECT MAX(first_seen) FROM discovered_facilities
+                     WHERE source LIKE 'competitor_gap%%'
+                """)
+                last_yield = (cur.fetchone() or [None])[0]
+                if last_yield is not None:
+                    cur.execute(
+                        "SELECT %s < NOW() - INTERVAL '21 days'", (last_yield,))
+                    if bool(cur.fetchone()[0]):
+                        findings.append({
+                            "issue":  "competitor_gap_yield_stale",
+                            "url":    "table:discovered_facilities",
+                            "count":  1,
+                            "detail": (f"Gap crawler last staged a NEW facility {last_yield} "
+                                       f"(>21d ago) while its daily scan keeps running "
+                                       f"(coverage_gap_competitor findings update). Either all "
+                                       f"competitor gaps are ingested (dedup working — good) or "
+                                       f"Cloudscene sitemap parsing / geocoding silently died. "
+                                       f"Verify: POST /api/discovery/run?sources=competitor_gap "
+                                       f"and check found vs staged vs dup counts."),
+                        })
+            except Exception:
+                c.rollback()
+    except Exception:  # noqa: BLE001 — FAIL-CLOSED
+        return []
+    finally:
+        if c is not None:
+            try:
+                c.close()
+            except Exception:
+                pass
+    return findings
+
+
+_LLMS_TXT_URLS = (
+    "https://dchub.cloud/llms.txt",
+    "https://dchub.cloud/llms-full.txt",
+)
+_LLMS_PROBE_CAP = 15         # max advertised URLs probed per sweep
+_LLMS_TIME_BUDGET_S = 45.0   # hard wall-clock budget for the whole detector
+# Statuses that mean "alive but gated/wrong-method" — an agent following the
+# doc gets a real answerable response, not a dead end. Only genuinely-dead
+# statuses (404/410/5xx…) file a finding.
+_LLMS_ALIVE_STATUSES = {401, 402, 403, 405, 429}
+
+
+def check_llms_txt_contract() -> list[dict]:
+    """2026-07-02 — doc-vs-live contract test for llms.txt/llms-full.txt.
+    These files are what AI agents follow VERBATIM; every 404 there teaches
+    an answer engine that DC Hub is unreliable (the 06-30 audit found 8
+    phantom endpoints advertised; they were hand-fixed — this keeps the
+    contract from drifting again, e.g. a route rename or an edge-routing
+    regression like the /ai/cite PHASE_282 miss).
+
+    Fetches the live llms files, extracts every advertised dchub.cloud URL,
+    GETs each (cache-busted) and files `llms_txt_dead_link:<path>` for any
+    that return 404/410/5xx. Gated statuses (401/403/402/405/429) count as
+    alive. Capped + time-budgeted. FAIL-CLOSED: [] on any error.
+    """
+    import time as _time
+    findings: list[dict] = []
+    started = _time.time()
+    try:
+        urls: list[str] = []
+        seen = set()
+        for src in _LLMS_TXT_URLS:
+            try:
+                req = urllib.request.Request(
+                    src + f"?_cb={int(started)}",
+                    headers={"User-Agent": "DCHub-Brain-ContractCheck/1.0"})
+                with urllib.request.urlopen(req, timeout=8) as resp:
+                    body = resp.read(300_000).decode("utf-8", "replace")
+            except Exception:
+                continue
+            for m in re.finditer(r"https://dchub\.cloud[^\s\)\]\"'`<>]*", body):
+                u = m.group(0).rstrip(".,;:")
+                # skip templated examples the doc shows with placeholders
+                if any(ch in u for ch in ("{", "<", "…")):
+                    continue
+                if u in seen:
+                    continue
+                seen.add(u)
+                urls.append(u)
+        if not urls:
+            return []  # couldn't read the docs at all — fail closed
+        for u in urls[:_LLMS_PROBE_CAP]:
+            if _time.time() - started > _LLMS_TIME_BUDGET_S:
+                break
+            sep = "&" if "?" in u else "?"
+            status = None
+            try:
+                req = urllib.request.Request(
+                    u + f"{sep}_cb={int(started)}",
+                    headers={"User-Agent": "DCHub-Brain-ContractCheck/1.0"})
+                with urllib.request.urlopen(req, timeout=6) as resp:
+                    status = resp.status
+            except urllib.error.HTTPError as e:
+                status = e.code
+            except Exception:
+                continue  # network blip ≠ dead link; fail closed per-URL
+            if status is not None and status >= 400 and status not in _LLMS_ALIVE_STATUSES:
+                from urllib.parse import urlparse as _up
+                path = _up(u).path or "/"
+                findings.append({
+                    "issue":  f"llms_txt_dead_link:{path}",
+                    "url":    u,
+                    "count":  1,
+                    "detail": (f"llms.txt/llms-full.txt advertises {u} but it returns "
+                               f"HTTP {status}. Agents follow these docs verbatim — a dead "
+                               f"advertised rail costs citations AND credibility. Fix the "
+                               f"route (backend), the edge routing (_routes.json / "
+                               f"PHASE_282_PREFIXES in _worker.js), or the doc itself."),
+                })
+    except Exception:  # noqa: BLE001 — FAIL-CLOSED
+        return []
     return findings
 
 
@@ -8706,6 +8925,13 @@ def scan_all() -> list[dict]:
                #     auto-close a real finding.
                check_gated_endpoint_coaching_missing,
                check_ai_platform_crawl_drop,
+               # 2026-07-02 — flywheel sentinels: (1) media/discovery silent-
+               # death modes (X publisher 0-ever-posted, LinkedIn engagement
+               # read-back frozen, gap-crawler yield dead) and (2) llms.txt
+               # doc-vs-live contract (advertised URLs must resolve — agents
+               # follow them verbatim). Both FAIL-CLOSED.
+               check_media_and_yield_health,
+               check_llms_txt_contract,
                # Phase KKK (2026-05-17) — package install velocity drop
                check_package_install_velocity_drop,
                # Phase OOO (2026-05-17) — frontend-critical endpoint health

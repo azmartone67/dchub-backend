@@ -161,6 +161,36 @@ def _gather_predictions() -> list[dict]:
                            timeout=5).json()
     except Exception:
         ws = {}
+    # 2026-07-02 — north-star GROWTH metrics: the numbers the whole flywheel
+    # exists to move. Read from the canonical /api/v1/reach endpoint (which
+    # reads mcp_calls_identity / mcp_agent_retention_30d — never session_id)
+    # so L6's velocity/forecast machinery + the forecast→finding bridge (#7)
+    # operate on REAL external growth, not internal proxies. Before this the
+    # brain snapshotted tool_calls/signals/queue — all self-traffic-inflatable.
+    try:
+        reach = requests.get("http://localhost:8080/api/v1/reach",
+                             timeout=8).json()
+    except Exception:
+        reach = {}
+    _day2 = None
+    try:
+        _day2 = (reach.get("retention_30d") or {}).get("day2_return_rate_pct")
+    except Exception:
+        pass
+    _binds_7d = None
+    try:
+        _bc = _conn()
+        try:
+            _bcur = _bc.cursor()
+            _bcur.execute(
+                "SELECT COUNT(email) FROM mcp_dev_keys "
+                "WHERE email IS NOT NULL AND created_at > NOW() - INTERVAL '7 days'")
+            _binds_7d = (_bcur.fetchone() or [None])[0]
+        finally:
+            try: _bc.close()
+            except Exception: pass
+    except Exception:
+        pass
 
     # Persist current values
     for k, v in [
@@ -169,6 +199,13 @@ def _gather_predictions() -> list[dict]:
         ("conversions_30d",     funnel.get("conversions_30d", 0)),
         ("publisher_queue",     (ws.get("distribution") or {}).get("queued_unpublished", 0)),
         ("linkedin_published_7d", ((ws.get("distribution") or {}).get("published_7d") or {}).get("linkedin", 0)),
+        # north-star growth (None when /api/v1/reach unavailable → skipped,
+        # never a fabricated 0)
+        ("real_agents_7d",      reach.get("real_agents_7d")),
+        ("real_calls_7d",       reach.get("real_calls_7d")),
+        ("citations_7d",        reach.get("citations_7d")),
+        ("day2_retention_pct",  _day2),
+        ("email_binds_7d",      _binds_7d),
     ]:
         if v is not None:
             _record_metric(k, v)
@@ -181,6 +218,14 @@ def _gather_predictions() -> list[dict]:
         ("conversions_30d",      "Conversions (30d)",    None),
         ("publisher_queue",      "Publisher queue depth",100),
         ("linkedin_published_7d","LinkedIn posts (7d)",  None),
+        # 2026-07-02 north-star growth: thresholds sized to the real baseline
+        # (16 agents / 6 citations the week this shipped) — a forecast below
+        # them means the reach constraint is actively tightening.
+        ("real_agents_7d",       "Real external agents (7d)", 8),
+        ("real_calls_7d",        "Real external MCP calls (7d)", None),
+        ("citations_7d",         "AI citations (7d)",    3),
+        ("day2_retention_pct",   "Agent day-2 retention %", None),
+        ("email_binds_7d",       "Email binds (7d)",     None),
     ]:
         v = _velocity(key, days=7)
         if v.get("insufficient_data"):
