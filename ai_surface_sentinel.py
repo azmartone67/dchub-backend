@@ -163,18 +163,66 @@ def ai_surface_canon_dump():
     return jsonify(ok=True, canon=resolve_canon()), 200
 
 
+def _write_findings(audit):
+    """Upsert each drift into brain_findings (dedup on issue+url) so drift is
+    tracked + actionable in the brain workflow. SAFE: findings are informational
+    — no surface writes. Uses the canonical writer (handles the UNIQUE(issue,url)
+    schema trap; a hand-rolled INSERT with the wrong columns fails silently)."""
+    try:
+        from main import get_pg_connection, return_pg_connection
+        from routes.brain_findings_writer import upsert_brain_finding
+    except Exception as e:
+        return {"written": 0, "error": f"import: {str(e)[:80]}"}
+    conn = None
+    written = 0
+    try:
+        conn = get_pg_connection()
+        with conn.cursor() as cur:
+            for s in audit.get("surfaces", []):
+                for d in s.get("drifts", []):
+                    issue = f"ai_surface_drift:{s['surface']}:{d['field']}"
+                    detail = (f"{s['surface']} {d['field']}: live={d['live']!r} "
+                              f"expected={d['expected']!r} sev={d['severity']} "
+                              f"({s['live_url']})")
+                    try:
+                        upsert_brain_finding(cur, issue=issue, url=s["live_url"],
+                                             detail=detail, detector="ai_surface_sentinel")
+                        written += 1
+                    except Exception:
+                        pass
+        conn.commit()
+    except Exception as e:
+        return {"written": written, "error": str(e)[:120]}
+    finally:
+        if conn is not None:
+            try:
+                return_pg_connection(conn)
+            except Exception:
+                try: conn.close()
+                except Exception: pass
+    return {"written": written}
+
+
 @ai_surface_sentinel_bp.route("/api/v1/admin/ai-surface/refresh", methods=["POST"])
 def ai_surface_refresh():
+    """Cron-driven acting endpoint. Runs the audit, and — when the sentinel is
+    ENABLED (or ?force) — writes each drift to brain_findings so the brain
+    tracks + can act on it. AUTO-FIX (regenerating surfaces from canon) is a
+    separate, still-gated lane (Phase-2b); findings-only is the safe default."""
     if not _admin_ok():
         return jsonify(error="unauthorized"), 401
-    audit = run_audit()
+    body = request.get_json(silent=True) or {}
+    enabled = str(os.environ.get("AI_SURFACE_SENTINEL_ENABLED", "")).lower() in ("1", "true", "yes")
     autofix_on = str(os.environ.get("AI_SURFACE_SENTINEL_AUTOFIX", "")).lower() in ("1", "true", "yes")
-    if not autofix_on:
-        # Observe-first: Phase-1 ships with autofix OFF. Return the audit + the
-        # plan of what WOULD be fixed, so a human can review before enabling.
-        return jsonify(ok=True, autofix="disabled",
-                       note="Set AI_SURFACE_SENTINEL_AUTOFIX=1 to enable auto-regeneration.",
-                       **audit), 200
-    # Phase-2 autofix lanes land here (regenerate machine surfaces from canon,
-    # CF cache-purge, file brain findings for human-facing ones, fetch-back verify).
-    return jsonify(ok=True, autofix="enabled_but_not_yet_implemented", **audit), 200
+    audit = run_audit()
+    if enabled or body.get("force"):
+        findings = _write_findings(audit)
+    else:
+        findings = {"written": 0, "skipped": "AI_SURFACE_SENTINEL_ENABLED not set"}
+    return jsonify(
+        ok=True,
+        enabled=enabled,
+        autofix=("enabled_pending_impl" if autofix_on else "disabled — findings only"),
+        findings=findings,
+        **audit,
+    ), 200

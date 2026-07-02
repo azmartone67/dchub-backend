@@ -224,6 +224,16 @@ _DISPATCH = [
      "POST",
      lambda now: now.weekday() == 3 and now.hour == 14 and now.minute < 5),
 
+    # 2026-07-01: AI-Surface Freshness Sentinel — audit every AI-agent surface
+    # (llms.txt, manifests, AGENTS.md, /connect, /ai, robots, integration
+    # configs) vs the one canon every 2h. When AI_SURFACE_SENTINEL_ENABLED=1 it
+    # writes drift to brain_findings (safe, informational — no surface writes;
+    # AUTOFIX is separately gated). Read-only no-op until that env flag is set.
+    ("ai_surface_audit_2h",
+     f"{BASE}/api/v1/admin/ai-surface/refresh",
+     "POST",
+     lambda now: now.hour % 2 == 0 and now.minute < 5),
+
     # r47.26 (2026-05-26): hourly agent broadcast — re-pings MCP registries
     # + our own discovery surfaces so other agents pick up changes within
     # 1 hour. Fires every hour at :05 past the hour.
