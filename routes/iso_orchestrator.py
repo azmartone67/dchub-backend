@@ -89,6 +89,13 @@ def extract_all():
         # (token-free, browser-UA). Top APAC DC market (TSMC + hyperscalers).
         # LIVE-only. Japan/Korea/India/SG/NZ remain auth-gated/fragmented.
         ("iso_tw_taipower", "TAIPOWER"),
+        # APAC #3+#4 (2026-07-01, daily-content-feeds #2): Japan via the TSO
+        # denki-yoho CSVs (6 verified-live areas incl TEPCO; fans out
+        # internally like eia_utility_bas, so one slot) and Singapore via the
+        # NEMS community mirror. Both LIVE-only with staleness guards.
+        # Korea (KPX key-gated) and India (WAF-blocked realtime) stay future.
+        ("iso_jp_denkiyoho", "OCCTO"),
+        ("iso_sg_nems",     "EMA"),
         # 2026-05-30: non-ISO utility/co-op balancing authorities (40+ BAs:
         # APS/SRP/FPL + big IOUs + Pacific-NW PUDs + WAPA + co-ops).
         # run_extraction() fans out all of them in parallel internally
@@ -188,9 +195,14 @@ def health():
         modeled_baseline_count=1,
         modeled_isos=["IESO"],
         utility_bas_count=43,
+        # 2026-07-01 (daily-content-feeds #2): Japan + Singapore now LIVE —
+        # OCCTO aggregate + TEPCO/JP_<area> rows from 6 verified denki-yoho
+        # CSVs (of 10 areas; Kansai/Tohoku serve stale mirrors, honestly
+        # skipped) and EMA from the NEMS community mirror (nems.sn.sg).
         international_live=["NGESO (GB, Elexon)", "AEMO (AU)",
-                            "ENTSOE (EU, 12 zones)", "TAIPOWER (TW)"],
-        future_isos=["Japan (OCCTO/TEPCO)", "Korea (KPX)", "India (Grid-India)",
-                     "Singapore (EMA)"],
-        future_isos_note="APAC beyond TW/AU — auth-gated or fragmented; not cleanly tokenless",
+                            "ENTSOE (EU, 12 zones)", "TAIPOWER (TW)",
+                            "OCCTO (JP, 6 TSO denki-yoho areas incl TEPCO)",
+                            "EMA (SG, NEMS mirror)"],
+        future_isos=["Korea (KPX)", "India (Grid-India)"],
+        future_isos_note="KPX is API-key-gated; India realtime is WAF-blocked (daily CEA .xls is BIFF w/ 2-3d lag) — no clean tokenless live feed",
     ), 200

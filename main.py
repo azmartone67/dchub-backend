@@ -29659,6 +29659,21 @@ try:
 except Exception as _tw_e:
     print(f"[main] iso_tw_taipower_bp register failed: {_tw_e}", flush=True)
 
+# daily-content-feeds #2 (2026-07-01): APAC grid telemetry — Japan + Singapore
+try:
+    from routes.iso_jp_denkiyoho import iso_jp_denkiyoho_bp
+    app.register_blueprint(iso_jp_denkiyoho_bp)
+    print("[main] iso_jp_denkiyoho_bp registered — LIVE Japan grid (6 TSO denki-yoho CSVs incl TEPCO, tokenfree, APAC #3)", flush=True)
+except Exception as _jp_e:
+    print(f"[main] iso_jp_denkiyoho_bp register failed: {_jp_e}", flush=True)
+
+try:
+    from routes.iso_sg_nems import iso_sg_nems_bp
+    app.register_blueprint(iso_sg_nems_bp)
+    print("[main] iso_sg_nems_bp registered — LIVE Singapore grid (NEMS mirror, tokenfree, APAC #4)", flush=True)
+except Exception as _sg_e:
+    print(f"[main] iso_sg_nems_bp register failed: {_sg_e}", flush=True)
+
 # Phase ZZZZZ-round34 (2026-05-24): Tier 2 MCP tools — PDF site reports + CSV export
 try:
     from routes.mcp_tier2_reports import mcp_tier2_bp
@@ -33008,6 +33023,9 @@ try:
             "IESO": "CA", "AESO": "CA", "HYDROQUEBEC": "CA", "CENACE": "MX",
             "ENTSOE": "EU", "NORDPOOL": "EU", "NGESO": "GB",
             "AEMO": "AU", "TAIPOWER": "TW",
+            # 2026-07-01 daily-content-feeds #2: JP (OCCTO aggregate + TEPCO
+            # area; other areas arrive as JP_<code>, rolled up below) + SG.
+            "OCCTO": "JP", "TEPCO": "JP", "EMA": "SG",
         }
         out = {"zones": [], "count": 0, "source": "grid_data",
                "isos_covered": [], "countries": {}}
@@ -33040,6 +33058,10 @@ try:
         for iso, d in sorted(by_iso.items()):
             if iso.startswith("EU_"):
                 parent, zone, country = "ENTSOE", iso[3:], "EU"
+            elif iso.startswith("JP_"):
+                # Japan TSO areas (JP_CHUBU/JP_KYUSHU/...) roll up under OCCTO,
+                # same convention as the ENTSO-E per-zone rows above.
+                parent, zone, country = "OCCTO", iso[3:], "JP"
             else:
                 parent, zone, country = iso, iso, _ISO_COUNTRY.get(iso, "US")
             if iso_filter and iso_filter not in (iso, parent):
