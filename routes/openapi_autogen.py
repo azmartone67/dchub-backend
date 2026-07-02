@@ -146,11 +146,17 @@ def _build_spec(app) -> dict:
 
             paths[path_str][method_lower] = op
 
+    # 2026-07-01: info.version from ai_surface_canon (was hand-typed 2.1.0).
+    try:
+        from ai_surface_canon import PINNED as _C
+        _apiver = _C["version"]
+    except Exception:
+        _apiver = "2.4.3"
     spec = {
         "openapi": "3.1.0",
         "info": {
             "title":   "DC Hub API",
-            "version": "2.1.0",
+            "version": _apiver,
             "summary": "AI-powered. Real-time. Actionable. No BS.",
             "description": (
                 "The live, MCP-native data-center intelligence platform. "
