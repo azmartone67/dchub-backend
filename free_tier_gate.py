@@ -113,7 +113,11 @@ ON CONFLICT (user_id, session_date) DO UPDATE SET
 # ── Helpers ────────────────────────────────────────────────────────────────
 
 def is_gated(path):
-    if any(path.startswith(p) for p in ['/api/v1/fiber/summary', '/api/v1/fiber/coverage', '/api/v1/fiber/nearby', '/api/v1/fiber/routes/public', '/api/v1/subsea/', '/api/v1/carriers', '/api/jobs/', '/api/admin/mcp/', '/api/v1/track-conversion']):
+    # /api/v1/fiber/route-plan: OPEN GEO/demo surface (diverse fibre route
+    # planner, routes/fiber_route_plan.py) — indicative OSRM corridors + unit
+    # rates, no proprietary data. Documented as open-to-any-address; without
+    # this exemption the '/api/v1/fiber' GATED_PREFIX 401'd it.
+    if any(path.startswith(p) for p in ['/api/v1/fiber/summary', '/api/v1/fiber/coverage', '/api/v1/fiber/nearby', '/api/v1/fiber/routes/public', '/api/v1/fiber/route-plan', '/api/v1/subsea/', '/api/v1/carriers', '/api/jobs/', '/api/admin/mcp/', '/api/v1/track-conversion']):
         return False
     return any(path.startswith(p) for p in GATED_PREFIXES)
 

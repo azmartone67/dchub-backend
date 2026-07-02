@@ -155,6 +155,11 @@ def _isnum(x):
     except: return False
 
 @fiber_route_plan_bp.route("/api/v1/route-plan", methods=["GET", "POST"])
+# Documented alias (this file's header + /llms.txt say /api/v1/fiber/route-plan).
+# It previously 401'd: never registered here, so the path fell through to
+# free_tier_gate's '/api/v1/fiber' GATED_PREFIX → authentication_required.
+# The planner is an OPEN GEO/demo surface — exempted in free_tier_gate.is_gated.
+@fiber_route_plan_bp.route("/api/v1/fiber/route-plan", methods=["GET", "POST"])
 def route_plan():
     a = request.values
     frm = _parse_pt(a.get("from", "")); to = _parse_pt(a.get("to", ""))
