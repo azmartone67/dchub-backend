@@ -2899,6 +2899,22 @@ def get_publisher_status_snapshot() -> dict:
         # midnight doesn't show yesterday's tallies.
         _maybe_reset_24h_counters(platform)
         out[platform] = {k: v for k, v in st.items() if not k.startswith('_')}
+    # ITEM deadman (2026-07-02): surface the DB-durable 72h-silence watchdog
+    # (see run_publisher_deadman_check below). Pure in-memory read of the
+    # cache the loop ticks maintain — no DB call on the request path.
+    # Per-platform: last_db_success_at + silent_hours + fired flag.
+    try:
+        out["deadman"] = {
+            "silence_threshold_hours": _DEADMAN_SILENCE_HOURS,
+            "check_interval_hours": _DEADMAN_CHECK_INTERVAL_SECONDS / 3600.0,
+            "platforms": {p: dict(v) for p, v in _DEADMAN_STATE.items()},
+        }
+        if not _DEADMAN_STATE:
+            out["deadman"]["note"] = (
+                "no check has run yet this process (first publisher loop "
+                "tick lands ~2-3 min after boot)")
+    except Exception:
+        pass  # status snapshot must never break on the watchdog cache
     return out
 
 
@@ -2917,6 +2933,229 @@ def _is_publish_leader() -> bool:
         return bool(is_current_leader())
     except Exception:
         return True
+
+
+# =============================================================================
+# ITEM deadman (2026-07-02) — 72h platform-silence dead-man switch.
+# X was dark for 36 days while every workflow ran green because NOTHING
+# consumed the publisher state: _PUBLISHER_STATE above is in-memory only and
+# resets on every deploy, so "last success" always looked recent-ish. This
+# detector computes last-success DURABLY from the DB (the same tables the
+# media sweep counts: social_media_posts for linkedin/twitter/bluesky, plus
+# linkedin_quad_posts + linkedin_posts for the LinkedIn quad-daily arm) and
+# files a brain finding when an env-configured platform has been silent
+# > _DEADMAN_SILENCE_HOURS. UNIQUE(issue,url) in brain_findings dedups
+# re-fires (recurrences bump seen_count); clearing/resolving is the
+# outcome-verifier's job, not ours.
+#
+# Scheduling: called from each publisher loop tick (run_publisher_deadman_check
+# below is self-throttled to one check per platform per 6h via module-level
+# monotonic timestamps, so the three loops calling it are cheap no-ops).
+# The DB read runs on every replica (keeps the /publisher-status deadman
+# section populated everywhere); the brain-finding WRITE is leader-gated
+# like the other per-cycle jobs.
+# =============================================================================
+_DEADMAN_SILENCE_HOURS = 72.0
+_DEADMAN_CHECK_INTERVAL_SECONDS = 6 * 3600
+_DEADMAN_PLATFORMS = ('linkedin', 'twitter', 'bluesky')
+_DEADMAN_LAST_CHECK_MONO = {}   # platform -> time.monotonic() of last check
+_DEADMAN_STATE = {}             # platform -> snapshot dict (see below)
+
+# Per-platform "most recent successful publish" queries. Each runs
+# independently (on error we rollback and move on) and the MAX across
+# sources wins. SCHEMA TRAP (verified against live Neon 2026-07-02): the
+# repo DDL declares social_media_posts.posted_at/published_at as TEXT, but
+# LIVE posted_at is `timestamp without time zone` while published_at is
+# TEXT — so every cast goes ::text first (works for both types), guarded by
+# a leading-ISO-date regex so one junk text row can't error the whole MAX,
+# then ::timestamp (naive; the writers store UTC wall time via
+# datetime.utcnow().isoformat()+'Z', and _deadman_last_db_success assumes
+# UTC for naive values). IMPORTANT: executed with cur.execute(sql) and NO
+# params tuple, so psycopg2 does NOT run %-substitution — any LIKE pattern
+# here must use single %.
+_SMP_TS = ("SELECT MAX(NULLIF({col}::text, '')::timestamp) AS ts "
+           "  FROM social_media_posts "
+           " WHERE status = 'published' AND publish_platform {plat} "
+           "   AND {col}::text ~ '^[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}'")
+_DEADMAN_SUCCESS_SQL = {
+    'linkedin': (
+        # Legacy auto-publisher + drain-now path
+        _SMP_TS.format(col='posted_at',    plat="= 'linkedin'"),
+        _SMP_TS.format(col='published_at', plat="= 'linkedin'"),
+        # Quad-daily arm records successes ONLY here (r-quad-visibility)
+        "SELECT MAX(posted_at) AS ts FROM linkedin_quad_posts "
+        " WHERE success = TRUE",
+        # linkedin_poster mirror table (post_urn set == real publish)
+        "SELECT MAX(COALESCE(posted_at, created_at)) AS ts FROM linkedin_posts "
+        " WHERE post_urn IS NOT NULL AND post_urn <> '' "
+        "   AND post_urn NOT LIKE 'DRY_RUN%'",
+    ),
+    'twitter': (
+        _SMP_TS.format(col='posted_at',    plat="IN ('twitter', 'x')"),
+        _SMP_TS.format(col='published_at', plat="IN ('twitter', 'x')"),
+    ),
+    'bluesky': (
+        _SMP_TS.format(col='posted_at',    plat="= 'bluesky'"),
+        _SMP_TS.format(col='published_at', plat="= 'bluesky'"),
+    ),
+}
+
+
+def _deadman_env_enabled(platform: str) -> bool:
+    """True when the platform has publish credentials configured — mirrors
+    the env_gates logic in routes/publisher_status.py. Deliberately does NOT
+    look at DCHUB_AUTOPUB_LEGACY / TWITTER_PUBLISHER_ENABLED: a platform with
+    creds set but the loop flag off is EXACTLY the silent-dark state this
+    switch exists to surface (the flag state goes in the finding detail)."""
+    def _set(name):
+        try:
+            return bool((os.environ.get(name, '') or '').strip())
+        except Exception:
+            return False
+    if platform == 'linkedin':
+        return _set('LINKEDIN_ACCESS_TOKEN')
+    if platform == 'twitter':
+        quad = all(_set(k) for k in ('TWITTER_API_KEY', 'TWITTER_API_SECRET',
+                                     'TWITTER_ACCESS_TOKEN', 'TWITTER_ACCESS_SECRET'))
+        return _set('TWITTER_BEARER_TOKEN') or quad
+    if platform == 'bluesky':
+        return _set('BLUESKY_HANDLE') and _set('BLUESKY_APP_PASSWORD')
+    return False
+
+
+def _deadman_last_db_success(cur, platform: str):
+    """Most recent successful publish for `platform` across its source
+    tables, as a tz-aware datetime, or None if no published row exists
+    anywhere (never-configured platform → dead-man stays disarmed).
+    Each source query is independent: a missing table / uncastable text
+    timestamp rolls back and the other sources still count."""
+    best = None
+    for sql in _DEADMAN_SUCCESS_SQL.get(platform, ()):
+        try:
+            cur.execute(sql)
+            row = cur.fetchone()
+            ts = None
+            if row is not None:
+                ts = row.get('ts') if hasattr(row, 'get') else (row[0] if row else None)
+            if ts is None:
+                continue
+            from datetime import timezone as _tz
+            if getattr(ts, 'tzinfo', None) is None:
+                ts = ts.replace(tzinfo=_tz.utc)
+            if best is None or ts > best:
+                best = ts
+        except Exception:
+            try:
+                cur.connection.rollback()
+            except Exception:
+                pass
+    return best
+
+
+def run_publisher_deadman_check(force: bool = False) -> None:
+    """72h-silence dead-man check across all publisher platforms.
+
+    Self-throttled: at most one DB check per platform per 6h (module-level
+    monotonic stamps — a deploy resets the throttle, which is fine because
+    the detection itself is DB-durable). Never raises; publisher loops must
+    not die on a watchdog hiccup. The brain-finding write is leader-gated;
+    the read + _DEADMAN_STATE refresh runs on every replica so the
+    /publisher-status deadman section is populated everywhere."""
+    try:
+        now_mono = time.monotonic()
+        due = [p for p in _DEADMAN_PLATFORMS
+               if force or (now_mono - _DEADMAN_LAST_CHECK_MONO.get(p, -_DEADMAN_CHECK_INTERVAL_SECONDS - 1)) >= _DEADMAN_CHECK_INTERVAL_SECONDS]
+        if not due:
+            return
+        from datetime import timezone as _tz
+        conn = None
+        try:
+            conn = _get_db()
+            cur = conn.cursor()
+            is_leader = _is_publish_leader()
+            for platform in due:
+                _DEADMAN_LAST_CHECK_MONO[platform] = now_mono
+                try:
+                    enabled = _deadman_env_enabled(platform)
+                    last_ts = _deadman_last_db_success(cur, platform)
+                    silent_hours = None
+                    last_iso = None
+                    if last_ts is not None:
+                        last_iso = last_ts.astimezone(_tz.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+                        silent_hours = round(
+                            (datetime.now(_tz.utc) - last_ts).total_seconds() / 3600.0, 1)
+                    # Fire ONLY when: creds configured + at least one publish
+                    # EVER succeeded (never fire on a never-configured platform)
+                    # + silence exceeds the threshold.
+                    fired = bool(enabled and silent_hours is not None
+                                 and silent_hours > _DEADMAN_SILENCE_HOURS)
+                    finding = None
+                    if fired:
+                        st = _PUBLISHER_STATE.get(platform) or {}
+                        detail = (
+                            f"last_db_success_at={last_iso}; "
+                            f"silent_hours={silent_hours}; "
+                            f"threshold_hours={_DEADMAN_SILENCE_HOURS:g}; "
+                            f"last_error_class={st.get('last_error_class')}; "
+                            f"last_attempt_result={st.get('last_attempt_result')}; "
+                            f"boot_started={st.get('boot_started')}; "
+                            f"boot_disabled_reason={st.get('boot_disabled_reason')}; "
+                            f"autopub_legacy_set={bool((os.environ.get('DCHUB_AUTOPUB_LEGACY', '') or '').strip())}; "
+                            f"twitter_publisher_enabled_set={bool((os.environ.get('TWITTER_PUBLISHER_ENABLED', '') or '').strip())}"
+                        )
+                        if is_leader:
+                            try:
+                                from routes.brain_findings_writer import upsert_brain_finding
+                                finding = upsert_brain_finding(
+                                    cur,
+                                    issue=f"publisher_silent:{platform}",
+                                    url="https://dchub.cloud/api/v1/dchub-media/publisher-status",
+                                    detail=detail,
+                                    detector="publisher_deadman",
+                                )
+                                conn.commit()
+                            except Exception as e:
+                                finding = "error"
+                                try:
+                                    conn.rollback()
+                                except Exception:
+                                    pass
+                                logger.warning(
+                                    "publisher-deadman: finding write failed for %s: %s",
+                                    platform, e)
+                        else:
+                            finding = "not_leader"
+                        logger.warning(
+                            "publisher-deadman: %s SILENT %.1fh (last DB success %s, "
+                            "threshold %.0fh) — brain finding: %s",
+                            platform, silent_hours, last_iso,
+                            _DEADMAN_SILENCE_HOURS, finding)
+                    _DEADMAN_STATE[platform] = {
+                        "enabled": enabled,
+                        "last_db_success_at": last_iso,
+                        "silent_hours": silent_hours,
+                        "fired": fired,
+                        "finding": finding,
+                        "checked_at": _utcnow_iso(),
+                    }
+                except Exception as e:
+                    logger.warning("publisher-deadman: %s check failed: %s", platform, e)
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+    except Exception as e:
+        # Watchdog must never take a publisher loop down with it.
+        try:
+            logger.warning("publisher-deadman: tick failed: %s", e)
+        except Exception:
+            pass
 
 
 def start_auto_publisher():
@@ -2957,6 +3196,11 @@ def start_auto_publisher():
             try:
                 time.sleep(120 if _first else 6 * 3600)
                 _first = False
+                # ITEM deadman (2026-07-02): 72h platform-silence watchdog.
+                # Self-throttled (1 check/platform/6h) + leader-gated write +
+                # never raises, so it's safe on every tick even when this
+                # replica isn't the publish leader.
+                run_publisher_deadman_check()
                 access_token = os.environ.get('LINKEDIN_ACCESS_TOKEN', '').strip()
                 if not access_token:
                     # Loud-when-queued, quiet-when-empty surface
@@ -3264,6 +3508,9 @@ def start_twitter_publisher():
             try:
                 time.sleep(150 if _first else 6 * 3600)
                 _first = False
+                # ITEM deadman (2026-07-02): 72h platform-silence watchdog
+                # (self-throttled + leader-gated write; see LinkedIn loop).
+                run_publisher_deadman_check()
                 # r78: per-cycle leader re-check (LinkedIn got this in r66;
                 # X/Bluesky only checked the import-time IS_LEADER snapshot,
                 # so a double-leader window — keepalive fail-open, gunicorn
@@ -3420,6 +3667,9 @@ def start_bluesky_publisher():
             try:
                 time.sleep(180 if _first else 6 * 3600)
                 _first = False
+                # ITEM deadman (2026-07-02): 72h platform-silence watchdog
+                # (self-throttled + leader-gated write; see LinkedIn loop).
+                run_publisher_deadman_check()
                 # r78: per-cycle leader re-check — see Twitter loop note.
                 if not _is_publish_leader():
                     logger.debug("Bluesky auto-publisher: not leader this cycle — skipping")
