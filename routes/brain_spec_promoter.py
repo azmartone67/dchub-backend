@@ -147,6 +147,19 @@ def _spec_body_for_pr(pr: dict) -> tuple[str, str | None]:
     return (pr.get("body") or ""), None
 
 
+def _distill_directive(spec_text: str) -> str:
+    """Extract just the approved recommendation from the spec doc. The doc's
+    own boilerplate ("couldn't be expressed as a single-file edit, so it's
+    filed here as a spec for a human to implement") PRIMES the drafter to
+    refuse — verified live on PR #1378, whose refusal rationale quoted that
+    exact line back. Hand the model only the directive it's meant to act on."""
+    m = re.search(r"##\s*The approved recommendation\s*\n(.*?)(?:\n##\s|\Z)",
+                  spec_text or "", re.DOTALL)
+    if m and m.group(1).strip():
+        return m.group(1).strip()
+    return spec_text or ""
+
+
 def promote_spec_prs(dry_run: bool = True,
                      cap: int = _MAX_PER_RUN_DEFAULT) -> dict:
     """One promotion pass. NEVER raises. Read-only unless dry_run=False AND
@@ -212,7 +225,7 @@ def promote_spec_prs(dry_run: bool = True,
         try:
             from routes.brain_guardrails import draft_and_open_pr
             res = draft_and_open_pr(
-                directive_text=spec_text[:4000],
+                directive_text=_distill_directive(spec_text)[:4000],
                 target_path=target,
                 label=f"spec-promote PR#{num}",
                 dry_run=False,

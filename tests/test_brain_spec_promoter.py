@@ -88,3 +88,14 @@ def test_explicit_paths_rank_before_module_tokens():
     got = sp._extract_candidate_paths(text)
     assert got[0] == "routes/brain_models.py"
     assert "routes/mcp_funnel.py" in got
+
+
+def test_distill_strips_self_defeating_boilerplate():
+    doc = ("# Brain proposal — x\n\n> filed here as a spec for a human to "
+           "implement (or close). **Draft PR — a human merges.**\n\n"
+           "## The approved recommendation\n\nSwap the cache key to include "
+           "the tool name in routes/mcp_funnel.py.\n\n## Human checklist\n\n- [ ] x\n")
+    got = sp._distill_directive(doc)
+    assert got.startswith("Swap the cache key")
+    assert "human to implement" not in got
+    assert "checklist" not in got.lower()
