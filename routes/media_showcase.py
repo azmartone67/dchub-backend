@@ -34,6 +34,7 @@ Kill switch: MEDIA_SHOWCASE_DISABLED=1.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import time
@@ -43,6 +44,7 @@ from datetime import datetime, timezone
 
 from flask import Blueprint, jsonify, request
 
+logger = logging.getLogger(__name__)
 media_showcase_bp = Blueprint("media_showcase", __name__)
 
 _BASE = os.environ.get("DCHUB_BACKEND_BASE",
@@ -152,6 +154,54 @@ def gather_showcase_facts() -> dict:
     facts["platform_count"] = len(_PLATFORMS)
     _track(len(_PLATFORMS), 7)  # 7 = US ISO count, a stated constant
     return facts
+
+
+# ── composition-time honesty gate (r-media-canon-gate, 2026-07-02) ────
+def _media_gate_denies(text: str, platform: str = "linkedin") -> tuple[bool, list]:
+    """Run the one-call pre-queue gate (routes.media_fact_check_guard.
+    gate_media_text) BEFORE publishing — the corroboration pass the "86 AI
+    agents … up 41% week-over-week" post never went through. Activation
+    follows the guard module's own kill-switch (MEDIA_FACT_CHECK_GUARD_ENABLED,
+    default OFF) so rollout is a Railway env flip, not a deploy.
+
+    Returns (denied, reasons). With the flag ON, a gate crash fails CLOSED —
+    an unprovable number must never ship because a checker hiccuped. With the
+    guard module unimportable the gate fails OPEN only because the
+    content_publisher drain gate still runs its own checks downstream."""
+    try:
+        from routes.media_fact_check_guard import _enabled, gate_media_text
+    except Exception as e:  # guard missing → publish path unchanged
+        logger.warning("[media_showcase] fact-check guard unavailable: %s", str(e)[:120])
+        return False, []
+    try:
+        if not _enabled():
+            return False, []
+    except Exception:
+        return False, []
+    # Own autocommit connection for the guard's dedup/quality SELECTs, so a
+    # failed query can never poison another transaction (the _live_as_of trap).
+    conn = None
+    cur = None
+    try:
+        import psycopg2
+        dsn = os.environ.get("DATABASE_URL") or os.environ.get("NEON_DATABASE_URL")
+        if dsn:
+            conn = psycopg2.connect(dsn, sslmode="require", connect_timeout=6)
+            conn.autocommit = True
+            cur = conn.cursor()
+    except Exception:
+        conn = cur = None  # gate_media_text tolerates cur=None (guard 1 surfaces it)
+    try:
+        res = gate_media_text(cur, text or "", platform)
+        return (not res.get("allow", False)), list(res.get("reasons") or [])
+    except Exception as e:
+        return True, [f"gate raised — failing closed ({str(e)[:100]})"]
+    finally:
+        try:
+            if conn is not None:
+                conn.close()
+        except Exception:
+            pass
 
 
 # ── the anti-hallucination gate ───────────────────────────────────────
@@ -278,6 +328,15 @@ def showcase_publish():
         # The hard guarantee: never publish copy with an unverifiable number.
         return jsonify(ok=False, published=False, reason="factcheck_failed",
                        unverified_numbers=out["unverified_numbers"], post=out["post"]), 200
+    # r-media-canon-gate (2026-07-02): the one-call corroboration gate, run
+    # BEFORE the post leaves this process. On denial: ONE log line + drop the
+    # whole post — never publish a stripped version.
+    _denied, _greasons = _media_gate_denies(out["post"], "linkedin")
+    if _denied:
+        logger.warning("[media_showcase] media gate denied %s: %s",
+                       kind, "; ".join(_greasons)[:400])
+        return jsonify(ok=False, published=False, reason="media_gate_denied",
+                       gate_reasons=_greasons[:8], post=out["post"]), 200
     # Publish via the existing LinkedIn poster (same path the daily quad uses).
     try:
         from linkedin_poster import post_to_linkedin

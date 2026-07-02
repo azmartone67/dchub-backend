@@ -95,12 +95,26 @@ def publisher_status():
         "bluesky_creds_set":             _bluesky_creds_set(),
     }
 
+    # ITEM deadman (2026-07-02): the snapshot carries a "deadman" section —
+    # the DB-durable 72h-silence watchdog (per-platform last_db_success_at +
+    # silent_hours + fired flag, maintained by run_publisher_deadman_check in
+    # content_publisher.py). Lift it out of the per-platform loops dict so it
+    # renders as its own top-level payload section. Pure in-memory read; no
+    # secrets (timestamps + booleans + coarse error class only).
+    deadman = None
+    try:
+        if isinstance(loops, dict):
+            deadman = loops.pop("deadman", None)
+    except Exception:
+        deadman = None
+
     payload = {
         "as_of":     datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ'),
         "public":    True,
         "leaks_secrets": False,
         "loops":     loops,
         "env_gates": env_gates,
+        "deadman":   deadman or {"note": "deadman state unavailable (snapshot failed or no check has run yet)"},
     }
 
     resp = make_response(jsonify(payload), 200)

@@ -427,12 +427,20 @@ def _collect_signals() -> dict:
         # promotes `coverage_milestone` when ANY metric grew >=10% WoW or
         # crossed a round number (1k, 10k, 100k, 1M).
         try:
+            # r-media-canon-gate (2026-07-02): USAGE tables removed from this
+            # list — raw ai_requests / mcp_tool_calls row counts include
+            # internal probes + self-heal traffic (~25x inflated vs the
+            # canonical identity view), so a "+N% WoW" milestone built on them
+            # is the same class of over-claim as the session-inflated agent
+            # post. Coverage stories may only cite genuinely-coverage tables;
+            # honest usage WoW would have to come from mcp_calls_identity
+            # (is_public_ip AND is_real_external), which this generic
+            # COUNT(*) loop cannot express — so those rows are dropped rather
+            # than fabricated.
             COVERAGE_TABLES = [
-                ("AI requests served",  "ai_requests",         "created_at"),
                 ("facilities",          "facilities",          "discovered_at"),
                 ("markets_tracked",     "market_power_scores", "computed_at"),
                 ("mcp_developers",      "mcp_dev_keys",        "created_at"),
-                ("mcp_tool_calls",      "mcp_tool_calls",      "created_at"),
                 ("air_permits",         "air_permits",         "issued_date"),
                 ("substations",         "substations",         "updated_at"),
             ]
@@ -1366,11 +1374,72 @@ def _validate_release(rel: dict) -> tuple[bool, str]:
     return True, "ok"
 
 
+def _agent_claim_gate_denies(text: str, platform: str = "linkedin") -> tuple[bool, list]:
+    """r-media-canon-gate (2026-07-02): composition-time honesty gate for
+    AGENT-COUNT copy only. This engine's daily releases legitimately quote
+    GW/%/MW figures the corroboration guard cannot prove from a structured
+    source, so gating EVERY release would dark-hole the whole feed — instead
+    we run the one-call gate (routes.media_fact_check_guard.gate_media_text)
+    only when the text makes an "N AI agents / N unique callers" claim, the
+    exact class the session-inflated "up 41% week-over-week" post came from.
+    Everything else keeps its existing gate at the content_publisher drain.
+
+    Activation follows the guard module's kill-switch
+    (MEDIA_FACT_CHECK_GUARD_ENABLED, default OFF) so rollout is a Railway env
+    flip. Returns (denied, reasons); with the flag ON a gate crash on
+    agent-claim copy fails CLOSED."""
+    try:
+        from routes.media_fact_check_guard import (
+            _enabled, check_agent_count_claims, gate_media_text)
+    except Exception as e:
+        print(f"[marketing_engine] fact-check guard unavailable: {str(e)[:120]}",
+              file=sys.stderr)
+        return False, []
+    try:
+        if not _enabled():
+            return False, []
+        if not (check_agent_count_claims(text or "").get("claims")):
+            return False, []  # no agent-count claim → not this gate's job
+    except Exception:
+        return False, []
+    # Own AUTOCOMMIT connection for the guard's dedup/quality SELECTs — never
+    # a shared write transaction, so a failed guard query can't abort pending
+    # INSERTs (the shared-tx poison trap).
+    conn = _conn()
+    cur = None
+    if conn is not None:
+        try:
+            conn.autocommit = True
+            cur = conn.cursor()
+        except Exception:
+            cur = None
+    try:
+        res = gate_media_text(cur, text or "", platform)
+        return (not res.get("allow", False)), list(res.get("reasons") or [])
+    except Exception as e:
+        return True, [f"gate raised — failing closed ({str(e)[:100]})"]
+    finally:
+        try:
+            if conn is not None:
+                conn.close()
+        except Exception:
+            pass
+
+
 def _write_release(rel: dict, signals: dict, topic: str) -> tuple[int | None, str | None]:
     """Persist to the canonical press_releases table + audit row in
        auto_press_releases. Returns (press_release_id, error).
        Phrasing avoids the literal "INSERT INTO" prefix in this
        docstring so the regression-lint regex doesn't match prose."""
+    # r-media-canon-gate (2026-07-02): if the composed release makes an
+    # agent-count claim, corroborate it BEFORE the row is inserted. On denial:
+    # ONE log line + drop the release — never persist a stripped version.
+    _denied, _greasons = _agent_claim_gate_denies(
+        f"{rel.get('title') or ''}\n{rel.get('body') or ''}", "linkedin")
+    if _denied:
+        print(f"[marketing_engine] media gate dropped release "
+              f"{rel.get('slug')}: {'; '.join(_greasons)[:400]}", file=sys.stderr)
+        return None, "media_gate_denied"
     c = _conn()
     if c is None: return None, "no_database"
     today = date.today().isoformat()
@@ -1804,23 +1873,41 @@ def _queue_distribution_posts(rel: dict, press_id: int, today: str) -> None:
             except Exception:
                 _cta = None
 
+            # r-media-canon-gate (2026-07-02): each channel's text is composed
+            # independently (pre-generated / Claude rewrite / static), so gate
+            # each one for agent-count claims BEFORE its row is inserted. The
+            # gate runs on the composed body PRE-CTA (the canonical reach CTA
+            # is a constant, known fence-safe append whose "$10 = 1,000 calls"
+            # figure would otherwise trip the dollar-aggregate fail-closed
+            # check). On denial: ONE log line + drop that channel's post
+            # entirely — never queue a stripped version.
             li_text = _format_linkedin_post(rel)
-            if _cta: li_text = _cta(li_text)
-            cur.execute("""
-                INSERT INTO social_media_posts
-                    (platform, content, status, press_release_id, created_at)
-                VALUES (%s, %s, %s, %s, NOW())
-                ON CONFLICT (press_release_id, platform) DO NOTHING
-            """, ("linkedin", li_text, "approved", press_id))
+            _li_denied, _li_why = _agent_claim_gate_denies(li_text, "linkedin")
+            if _li_denied:
+                print(f"[marketing_engine] media gate dropped linkedin post for "
+                      f"{rel.get('slug')}: {'; '.join(_li_why)[:400]}", file=sys.stderr)
+            else:
+                if _cta: li_text = _cta(li_text)
+                cur.execute("""
+                    INSERT INTO social_media_posts
+                        (platform, content, status, press_release_id, created_at)
+                    VALUES (%s, %s, %s, %s, NOW())
+                    ON CONFLICT (press_release_id, platform) DO NOTHING
+                """, ("linkedin", li_text, "approved", press_id))
 
             tw_text = _format_twitter_post(rel)
-            if _cta: tw_text = _cta(tw_text, short=True, max_chars=280)
-            cur.execute("""
-                INSERT INTO social_media_posts
-                    (platform, content, status, press_release_id, created_at)
-                VALUES (%s, %s, %s, %s, NOW())
-                ON CONFLICT (press_release_id, platform) DO NOTHING
-            """, ("twitter", tw_text, "approved", press_id))
+            _tw_denied, _tw_why = _agent_claim_gate_denies(tw_text, "twitter")
+            if _tw_denied:
+                print(f"[marketing_engine] media gate dropped twitter post for "
+                      f"{rel.get('slug')}: {'; '.join(_tw_why)[:400]}", file=sys.stderr)
+            else:
+                if _cta: tw_text = _cta(tw_text, short=True, max_chars=280)
+                cur.execute("""
+                    INSERT INTO social_media_posts
+                        (platform, content, status, press_release_id, created_at)
+                    VALUES (%s, %s, %s, %s, NOW())
+                    ON CONFLICT (press_release_id, platform) DO NOTHING
+                """, ("twitter", tw_text, "approved", press_id))
 
             # Phase VV (2026-05-17) — Bluesky queue row. Bluesky has a
             # 300-grapheme cap so we reuse the Twitter formatter (also
@@ -1833,13 +1920,18 @@ def _queue_distribution_posts(rel: dict, press_id: int, today: str) -> None:
             # function; this just makes sure the queue HAS rows so
             # when the loop activates there's work to do.
             bsky_text = _format_twitter_post(rel)  # same short-form
-            if _cta: bsky_text = _cta(bsky_text, short=True, max_chars=300)
-            cur.execute("""
-                INSERT INTO social_media_posts
-                    (platform, content, status, press_release_id, created_at)
-                VALUES (%s, %s, %s, %s, NOW())
-                ON CONFLICT (press_release_id, platform) DO NOTHING
-            """, ("bluesky", bsky_text, "approved", press_id))
+            _bs_denied, _bs_why = _agent_claim_gate_denies(bsky_text, "bluesky")
+            if _bs_denied:
+                print(f"[marketing_engine] media gate dropped bluesky post for "
+                      f"{rel.get('slug')}: {'; '.join(_bs_why)[:400]}", file=sys.stderr)
+            else:
+                if _cta: bsky_text = _cta(bsky_text, short=True, max_chars=300)
+                cur.execute("""
+                    INSERT INTO social_media_posts
+                        (platform, content, status, press_release_id, created_at)
+                    VALUES (%s, %s, %s, %s, NOW())
+                    ON CONFLICT (press_release_id, platform) DO NOTHING
+                """, ("bluesky", bsky_text, "approved", press_id))
         c.commit()
     finally:
         try: c.close()

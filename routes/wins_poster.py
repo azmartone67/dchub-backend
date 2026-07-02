@@ -14,10 +14,12 @@ is deliberately conservative:
     The optional env WINS_POSTER_AUTOPILOT_ENABLED (default off) is the only way the
     job writes 'approved'.
   • HONEST numbers only — milestone numbers come ONLY from canonical_stats phrase
-    helpers (citation-safe floors); agent-traction is COUNT(DISTINCT ip_address)
-    with the internal-traffic filter (never raw COUNT(*)); citations must be fresh,
+    helpers (citation-safe floors); agent-traction is COUNT(DISTINCT agent_id)
+    on the canonical mcp_calls_identity view (is_public_ip AND is_real_external —
+    never session_id, never raw ip_address); citations must be fresh,
     organic, and non-disclaiming. Every composed post is run through a fence
-    self-check before queueing.
+    self-check before queueing, and (when MEDIA_FACT_CHECK_GUARD_ENABLED) the
+    one-call gate_media_text corroboration gate before any row is inserted.
   • DEDUP + RATE CAP — a win posts at most once (wins_posted_ledger UNIQUE +
     social_media_posts ON CONFLICT(win_key, platform)) and at most 1 win/day.
 
@@ -94,6 +96,51 @@ def _conn():
         return psycopg2.connect(dsn, connect_timeout=8) if dsn else None
     except Exception:
         return None
+
+
+# ── composition-time honesty gate (r-media-canon-gate, 2026-07-02) ────────────
+def _media_gate_denies(text: str, platform: str = "linkedin") -> tuple[bool, list]:
+    """Run the one-call pre-queue gate (routes.media_fact_check_guard.
+    gate_media_text) BEFORE a win row is inserted — the corroboration pass the
+    session-inflated agent-count post never went through. Activation follows
+    the guard module's own kill-switch (MEDIA_FACT_CHECK_GUARD_ENABLED, default
+    OFF) so rollout is a Railway env flip, not a deploy.
+
+    Returns (denied, reasons). With the flag ON, a gate crash fails CLOSED.
+    With the guard module unimportable it fails OPEN only because the
+    content_publisher drain gate still re-checks at publish time."""
+    try:
+        from routes.media_fact_check_guard import _enabled, gate_media_text
+    except Exception as e:
+        log.warning(f"[wins] fact-check guard unavailable: {str(e)[:120]}")
+        return False, []
+    try:
+        if not _enabled():
+            return False, []
+    except Exception:
+        return False, []
+    # Own AUTOCOMMIT connection for the guard's dedup/quality SELECTs — never
+    # the shared queue_wins transaction, so a failed guard query can't abort
+    # the pending ledger/queue INSERTs (the shared-tx poison trap).
+    conn = _conn()
+    cur = None
+    if conn is not None:
+        try:
+            conn.autocommit = True
+            cur = conn.cursor()
+        except Exception:
+            cur = None
+    try:
+        res = gate_media_text(cur, text or "", platform)
+        return (not res.get("allow", False)), list(res.get("reasons") or [])
+    except Exception as e:
+        return True, [f"gate raised — failing closed ({str(e)[:100]})"]
+    finally:
+        try:
+            if conn is not None:
+                conn.close()
+        except Exception:
+            pass
 
 
 def _ensure_wins_schema(conn) -> None:
@@ -498,6 +545,17 @@ def compose_win_post(lead: dict, platform: str = "linkedin") -> str | None:
     if not _fence_safe(text):
         log.warning(f"[wins] composed post hit a banned over-claim, skipping: {lead.get('win_key')}")
         return None
+    # r-media-canon-gate (2026-07-02): the one-call corroboration gate
+    # (gate_media_text), run on the ANALYST BODY — before the CTA append below,
+    # same placement as the fence/number-lead guards, because the canonical CTA
+    # is a constant, known fence-safe line whose "$10 = 1,000 calls" figure
+    # would otherwise trip the dollar-aggregate fail-closed check on every
+    # post. On denial: ONE log line + drop the post (never a stripped version).
+    _denied, _greasons = _media_gate_denies(text, platform)
+    if _denied:
+        log.warning(f"[wins] media gate denied {lead.get('win_key')}: "
+                    f"{'; '.join(_greasons)[:400]}")
+        return None
     # Item 8 (2026-06-30): append the one canonical reach CTA so every win post
     # ends with a connect line ("free, call claim_free_key · $10 = 1,000 calls").
     # Appended AFTER the fence/number-lead guards so those still validate the
@@ -572,6 +630,10 @@ def queue_wins(dry_run: bool = True) -> dict:
                     continue
             except Exception:
                 pass
+            # r-media-canon-gate (2026-07-02): compose_win_post now also runs
+            # the one-call gate_media_text corroboration gate on the analyst
+            # body (pre-CTA) and returns None on denial, so no unproven copy
+            # ever reaches the INSERTs below.
             text = compose_win_post(c, "linkedin")
             if not text:
                 out["skipped"].append({"win_key": c["win_key"], "reason": "compose_failed_or_unsafe"})
