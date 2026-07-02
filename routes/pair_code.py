@@ -551,7 +551,7 @@ def redeem_landing(code):
                             (signal_type, tool_requested, mcp_client,
                              message_shown, created_at)
                         VALUES ('redeem_url_viewed', %s, %s, %s, NOW())
-                    """, (tool_name or 'unknown',
+                    """, (tool_name or 'session_cta',
                           (referring_agent or 'unknown')[:200],
                           f"redeem_viewed: code={code}"))
                 c.commit()

@@ -712,11 +712,15 @@ def _build_data() -> dict:
             pass
 
         # Fix-C validation: total signals 30d split by tool_tagged vs not.
+        # 'unknown' (historic session-level mints, pair_code.py) and its
+        # 2026-07-02 replacement 'session_cta' are placeholders, not real
+        # tool tags — counting them read as a false 100% tagged.
         try:
             cur.execute(
                 "SELECT "
                 "  COUNT(*) FILTER (WHERE tool_requested IS NOT NULL "
-                "                     AND tool_requested <> ''), "
+                "                     AND tool_requested NOT IN "
+                "                         ('', 'unknown', 'session_cta')), "
                 "  COUNT(*) "
                 "  FROM mcp_upgrade_signals "
                 " WHERE created_at >= NOW() - INTERVAL '30 days'")
@@ -937,11 +941,19 @@ def _build_data() -> dict:
         # the killer step without having to hit a separate endpoint.
         # Fail-soft: a bad query CANNOT blank the rest of the dashboard.
         try:
-            with conn.cursor() as cur:
+            # r-cursor-shadow (2026-07-02): this block used `with conn.cursor()
+            # as cur:` — shadowing the function-wide `cur` opened at the top of
+            # the try and CLOSING it on block exit. Every query after this point
+            # (per-platform loop, ai_platforms_reach) raised InterfaceError
+            # "cursor already closed", silently swallowed into zeros by the
+            # bare-except+rollback blocks. The 2026-06-12 pricing-A/B patch
+            # fixed the same bug downstream but not these upstream readers.
+            # Private cursor name so the outer `cur` survives this block.
+            with conn.cursor() as _sd_cur:
                 def _ds(sql):
                     try:
-                        cur.execute(sql)
-                        return int((cur.fetchone() or [0])[0] or 0)
+                        _sd_cur.execute(sql)
+                        return int((_sd_cur.fetchone() or [0])[0] or 0)
                     except Exception:
                         try: conn.rollback()
                         except Exception: pass
@@ -1094,12 +1106,14 @@ def _build_data() -> dict:
                     / row["distinct_sessions_30d"], 2)
             out["platforms"].append(row)
 
-        # r-attribution (2026-06-30): the per-platform 30d view above reads
-        # mcp_tool_calls, where ~85% of rows are platform='unknown' (the
-        # session_id->mcp_sessions recovery fails upstream) so it shows all
-        # zeros. The CORRECT, populated per-engine source is ai_cumulative
-        # (same as /api/v1/mcp/funnel ai_agent_top_platforms). Surface it as
-        # lifetime reach-by-engine so the dashboard/briefing stop reading 0.
+        # r-attribution (2026-06-30; CORRECTED 2026-07-02): the zeros were
+        # blamed on mcp_tool_calls being ~85% platform='unknown' — a
+        # MISDIAGNOSIS. The per-platform view also matches client_name and
+        # user_agent, so it returns real rows (Claude ≈194 req / 50 callers
+        # in the 30d window when the query is run by hand). The actual cause
+        # of the zeros was the cursor-shadowing bug fixed above
+        # (r-cursor-shadow). ai_cumulative stays as a COMPLEMENT — lifetime
+        # reach-by-engine alongside the 30d window — not a replacement.
         try:
             _eng_keys = {k for k, _, _ in _AI_PLATFORMS}
             cur.execute("SELECT platform, name, total_requests FROM ai_cumulative "
@@ -1135,10 +1149,12 @@ def _build_data() -> dict:
         out["ab_status"]["arm_b_configured"] = arm_b_ok
 
         # 2026-06-12: the REAL failure (exposed via the named-exception probe):
-        # InterfaceError: cursor already closed. This section runs after the
-        # `with conn.cursor() as cur:` block that owned `cur` has exited, so
+        # InterfaceError: cursor already closed. This section ran after the
+        # step-drop `with` block that used to shadow-and-close `cur`, so
         # every read here died and rendered "0 impressions / missing table"
         # while pricing_ab_events held live rows. Open a fresh cursor.
+        # (2026-07-02: the shadowing itself is fixed — r-cursor-shadow above —
+        # the fresh cursor stays as a cheap guard.)
         try:
             conn.rollback()
         except Exception:
