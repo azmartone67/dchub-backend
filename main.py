@@ -26178,9 +26178,17 @@ _SERVER_RESTART_TS = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
 # background-task-skip guard and well below the 2200MB watchdog
 # kill. Env-overridable via MEMORY_GC_LIMIT_MB.
 #
-# Three-tier memory pressure model:
-#   1500MB → soft: clear caches + force GC (this loop)
+# r-memfix (2026-07-02): prod sets MEMORY_GC_LIMIT_MB=1900 in Railway.
+# 24h avg RSS is ~1584MB, so the 1500MB default fired EVERY 60s cycle,
+# and each firing ran a full gen-2 GC over a ~1.7GB heap while holding
+# the GIL — that GIL pause is what surfaced as 30s+ slow requests,
+# lock timeouts and brain-radar timeouts. At 1900MB the clear/GC path
+# runs only under genuine pressure, after the 1800MB bg-task skip and
+# before the 2200MB kill.
+#
+# Three-tier memory pressure model (prod values):
 #   1800MB → medium: skip background tasks (_MEMORY_GUARD_BYTES)
+#   1900MB → soft: clear caches + force GC (this loop, env override)
 #   2200MB → hard: watchdog kills container
 _MEMORY_LIMIT_MB = int(os.environ.get("MEMORY_GC_LIMIT_MB", "1500"))
 _GC_INTERVAL = 60
@@ -26193,6 +26201,79 @@ except Exception:
     _libc = None
     _has_malloc_trim = False
 
+def _clear_resident_caches():
+    """r-memfix (2026-07-02): clear the caches that actually hold memory.
+
+    The old clear-list targeted the seven energy fallback stubs
+    (BoundedCache(max_size=1), defined near the energy-blueprint import
+    only as an ImportError fallback) — freeing ~0MB per sweep while the
+    real resident caches (fiber intel, sitemap XML, heal findings,
+    energy summary, grid intel, surfaces, GDCI bulk) were never
+    touched. That is why the watchdog "freed" only 12-374MB while RSS
+    saw-toothed 0.58GB→3.2GB.
+
+    Fixed-key dicts are reset in place — their readers index them with
+    cache["key"] directly, so dict.clear() would KeyError them.
+    """
+    cleared = []
+    try:
+        _FIBER_INTEL_CACHE["data"] = None
+        _FIBER_INTEL_CACHE["at"] = 0.0
+        cleared.append("fiber_intel")
+    except Exception:
+        pass
+    try:
+        _SITEMAP_XML_CACHE["xml"] = None
+        _SITEMAP_XML_CACHE["ts"] = 0.0
+        cleared.append("sitemap_xml")
+    except Exception:
+        pass
+    try:
+        # DB-backed (Phase AAA) — readers fall through to the
+        # heal_findings_cache table, so this never blinds the brain.
+        _HEAL_FINDINGS_CACHE["payload"] = None
+        _HEAL_FINDINGS_CACHE["ts"] = 0.0
+        cleared.append("heal_findings")
+    except Exception:
+        pass
+    try:
+        _ENERGY_SUMMARY_CACHE.clear()
+        cleared.append("energy_summary")
+    except Exception:
+        pass
+    try:
+        _GRID_INTEL_CACHE.clear()
+        cleared.append("grid_intel")
+    except Exception:
+        pass
+    try:
+        from routes import surface_brain as _sb_mod
+        _sb_mod._SURFACES_CACHE["payload"] = None
+        _sb_mod._SURFACES_CACHE["ts"] = 0.0
+        cleared.append("surfaces")
+    except Exception:
+        pass
+    try:
+        import index_api as _idx_mod
+        _idx_mod._bulk_cache = None
+        _idx_mod._bulk_ts = 0
+        cleared.append("gdci_bulk")
+    except Exception:
+        pass
+    # Legacy energy caches: empty max_size=1 stubs when the energy
+    # blueprint is extracted (the Railway path), real caches otherwise.
+    # NB: the old code checked `'DEALS_CACHE' in dir()` inside the loop
+    # function — dir() there lists LOCALS, so it was always False.
+    for cache_obj in [GRIDSTATUS_CACHE, FCC_BROADBAND_CACHE, EPA_CACHE,
+                      PEERINGDB_CACHE, EIA_CACHE, HIFLD_CACHE, OILGAS_CACHE] \
+                     + ([DEALS_CACHE] if 'DEALS_CACHE' in globals() else []):
+        try:
+            cache_obj.clear()
+        except Exception:
+            pass
+    return cleared
+
+
 def _periodic_gc_loop():
     while True:
         try:
@@ -26200,34 +26281,28 @@ def _periodic_gc_loop():
             proc = _psutil_mod.Process(os.getpid())
             rss_mb = proc.memory_info().rss / (1024 * 1024)
 
-            # Always collect all 3 generations
-            gc.collect(0)
-            gc.collect(1)
-            gc.collect(2)
+            if rss_mb <= _MEMORY_LIMIT_MB:
+                # r-memfix: below the limit, do NOTHING. The old loop ran
+                # gc.collect(0)+(1)+(2) unconditionally every 60s — a
+                # gen-2 sweep over a ~1.7GB heap holds the GIL for
+                # seconds, stalling all 16 gthreads on every minute
+                # boundary. Python's allocation-threshold GC covers the
+                # steady state fine.
+                continue
 
-            if rss_mb > _MEMORY_LIMIT_MB:
-                logger.warning(f"⚠️ Memory high: {rss_mb:.0f}MB > {_MEMORY_LIMIT_MB}MB limit, clearing caches")
-                for cache_obj in [GRIDSTATUS_CACHE, FCC_BROADBAND_CACHE, EPA_CACHE, 
-                                  PEERINGDB_CACHE, EIA_CACHE, HIFLD_CACHE, OILGAS_CACHE] + ([DEALS_CACHE] if 'DEALS_CACHE' in dir() else []):
-                    try:
-                        cache_obj.clear()
-                    except Exception:
-                        pass
-                # Force full GC after cache clear
-                gc.collect(0)
-                gc.collect(1)
-                gc.collect(2)
-                if _has_malloc_trim:
-                    _libc.malloc_trim(0)
-                # Re-measure AFTER giving Python time to release
-                import time as _t
-                _t.sleep(1)
-                rss_after = proc.memory_info().rss / (1024 * 1024)
-                freed = rss_mb - rss_after
-                if freed > 0:
-                    logger.info(f"🧹 Memory after cleanup: {rss_after:.0f}MB (freed {freed:.0f}MB)")
-                else:
-                    logger.info(f"🧹 Memory after cleanup: {rss_after:.0f}MB (RSS unchanged — memory may be held by OS)")
+            logger.warning(f"⚠️ Memory high: {rss_mb:.0f}MB > {_MEMORY_LIMIT_MB}MB limit, clearing caches")
+            cleared = _clear_resident_caches()
+            gc.collect()  # full gen-0..2 sweep — only under pressure
+            if _has_malloc_trim:
+                _libc.malloc_trim(0)
+            # Re-measure AFTER giving Python time to release
+            time.sleep(1)
+            rss_after = proc.memory_info().rss / (1024 * 1024)
+            freed = rss_mb - rss_after
+            logger.info(
+                f"🧹 Memory after cleanup: {rss_after:.0f}MB "
+                f"(freed {freed:.0f}MB; cleared: {', '.join(cleared) or 'none'})"
+            )
         except Exception as e:
             logger.error(f"GC loop error: {e}")
 
