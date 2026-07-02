@@ -160,6 +160,12 @@ def _round(x, digits=2):
         return None
 
 
+def _json_str(s: Any) -> str:
+    """JSON-encode a scalar as a quoted string literal for inline JSON-LD."""
+    import json as _json
+    return _json.dumps("" if s is None else str(s))
+
+
 def _slug(s: str) -> str:
     """Make a URL-safe slug — lowercase, dashes, no special chars."""
     if not s:
@@ -510,6 +516,7 @@ def market_page(slug: str):
 
     facilities = []
     stats = None
+    dcpi = None
     try:
         with c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute("""
@@ -534,6 +541,26 @@ def market_page(slug: str):
                      WHERE LOWER(city) = LOWER(%s) AND UPPER(state) = %s
                 """, (city_guess, state_guess))
                 stats = cur.fetchone()
+
+                # DCPI decision block — free/agent-accessible power-readiness
+                # outputs (verdict, time-to-power, queue wait) so the crawl
+                # surface proves what the MCP already returns. Best-effort:
+                # /markets uses city-state slugs, DCPI uses city slugs, so
+                # match on market_name/slug = city. Never blocks the page.
+                try:
+                    cur.execute("""
+                        SELECT market_slug, market_name, iso, verdict,
+                               time_to_power_months, queue_wait_months,
+                               computed_at
+                          FROM market_power_scores
+                         WHERE LOWER(market_name) = LOWER(%s)
+                            OR LOWER(market_slug) = LOWER(%s)
+                         ORDER BY computed_at DESC
+                         LIMIT 1
+                    """, (city_guess, city_guess))
+                    dcpi = cur.fetchone()
+                except Exception:
+                    dcpi = None
     finally:
         try: c.close()
         except Exception: pass
@@ -544,7 +571,7 @@ def market_page(slug: str):
             "Try a different city or check the URL.", 404)
 
     return Response(
-        _render_market(slug, city_guess, state_guess, facilities, stats),
+        _render_market(slug, city_guess, state_guess, facilities, stats, dcpi),
         mimetype="text/html",
         headers={
             "Cache-Control": "public, max-age=1800, s-maxage=3600",
@@ -553,11 +580,49 @@ def market_page(slug: str):
     )
 
 
-def _render_market(slug, city, state, facilities, stats) -> str:
+def _render_market(slug, city, state, facilities, stats, dcpi=None) -> str:
     canonical = f"https://dchub.cloud/markets/{slug}"
     n_fac     = stats['facility_count'] if stats else len(facilities)
     total_mw  = _round(stats['total_mw'], 1) if stats and stats['total_mw'] else 0
     n_op      = stats['operator_count'] if stats else 0
+
+    # DCPI power-readiness decision block (visible section + JSON-LD Dataset).
+    # Only the free/agent-accessible outputs — verdict, time-to-power, queue
+    # wait, freshness. The paid numeric scores stay on /dcpi + the paywall.
+    dcpi_section = ""
+    dcpi_jsonld = ""
+    if dcpi and dcpi.get('verdict'):
+        d_slug = dcpi.get('market_slug') or slug
+        d_iso  = dcpi.get('iso')
+        d_verd = dcpi.get('verdict')
+        d_ttp  = dcpi.get('time_to_power_months')
+        d_qw   = dcpi.get('queue_wait_months')
+        d_when = dcpi.get('computed_at')
+        d_when_s = (str(d_when)[:10] if d_when else "")
+        iso_txt = f", grid region {_h(d_iso)}" if d_iso else ""
+        ttp_txt = (f" Time to power ~{int(round(d_ttp))} months."
+                   if d_ttp is not None else "")
+        qw_txt  = (f" Interconnection-queue wait ~{int(round(d_qw))} months."
+                   if d_qw is not None else "")
+        fresh   = f" Recomputed {_h(d_when_s)}." if d_when_s else ""
+        dcpi_section = f"""
+<section id="power-readiness">
+  <h2>Power Readiness (DC Hub Power Index)</h2>
+  <p>DCPI verdict for {_h(city)}: <strong>{_h(d_verd)}</strong>{iso_txt}.{ttp_txt}{qw_txt}{fresh}</p>
+  <p><a href="/dcpi/{_esc_attr(d_slug)}">Full DCPI breakdown (Excess-Power &amp; Grid-Constraint scores) →</a></p>
+</section>"""
+        # JSON-LD Dataset — decision outputs an agent/crawler can cite.
+        pv = [f'{{"@type":"PropertyValue","name":"DCPI Verdict","value":{_json_str(d_verd)},"description":"BUILD / CAUTION / AVOID"}}']
+        if d_iso:
+            pv.append(f'{{"@type":"PropertyValue","name":"ISO / Grid Operator","value":{_json_str(d_iso)}}}')
+        if d_ttp is not None:
+            pv.append(f'{{"@type":"PropertyValue","name":"Time to Power (months)","value":{int(round(d_ttp))},"unitText":"MON"}}')
+        if d_qw is not None:
+            pv.append(f'{{"@type":"PropertyValue","name":"Interconnection Queue Wait (months)","value":{int(round(d_qw))},"unitText":"MON"}}')
+        dm = f',"dateModified":{_json_str(d_when_s)}' if d_when_s else ""
+        dcpi_jsonld = f"""<script type="application/ld+json">
+{{"@context":"https://schema.org","@type":"Dataset","name":{_json_str(city + ", " + state + " — Data Center Power Index (DCPI)")},"url":"https://dchub.cloud/dcpi/{_esc_attr(d_slug)}","creator":{{"@type":"Organization","name":"DC Hub","url":"https://dchub.cloud"}},"measurementTechnique":"DCPI recomputed daily from interconnection-queue depth, capacity-pipeline additions, and grid-emergency signals per ISO/RTO. Methodology: dchub.cloud/dcpi","citation":"DC Hub Data Center Power Index, dchub.cloud/dcpi"{dm},"variableMeasured":[{",".join(pv)}]}}
+</script>"""
 
     title = f"{city}, {state} Data Centers — {n_fac} facilities, {total_mw} MW | DC Hub"
     desc  = f"Complete {city}, {state} data center market intelligence. {n_fac} facilities, {total_mw}MW total capacity across {n_op} operators. Live power, fiber, M&A data."
@@ -597,7 +662,7 @@ def _render_market(slug, city, state, facilities, stats) -> str:
   <p class="lede"><strong>{n_fac}</strong> facilities · <strong>{total_mw} MW</strong> total capacity · <strong>{n_op}</strong> operators</p>
   <p class="dc-maplink" style="margin:.4rem 0 0"><a href="/map" style="color:#3b82f6;font-weight:600;text-decoration:none">📍 See {_h(city)} data centers on the live facility map →</a></p>
 </header>
-
+{dcpi_section}
 <section id="top-operators">
   <h2>Top Operators</h2>
   <ol class="facility-list">{ops_html}</ol>
@@ -615,7 +680,8 @@ def _render_market(slug, city, state, facilities, stats) -> str:
   <p>DC Hub is the live infrastructure data layer for AI agents — and for the people who build data centers: live power, grid, fiber, gas, tenants &amp; site scores on {_h(city)}, cited and machine-readable. Plans from $9/mo · full market &amp; grid intelligence from $49/mo.</p>
   <a href="/pricing?ref=market&tool={_esc_attr(slug)}" class="cta">See plans — from $49/mo</a>
   <a href="/signup?from=market-{_esc_attr(slug)}" class="cta secondary">Or: free MCP API access</a>
-</section>"""
+</section>
+{dcpi_jsonld}"""
 
     return _base_html(
         title=title, description=desc, canonical=canonical,

@@ -603,6 +603,23 @@ DC Hub publishes the **DCPI** — a 0-100 power-availability score for 233 data 
 
 **Citation:** "DCPI {score}/100 — {verdict} (DC Hub, dchub.cloud/dcpi/{market_slug})"
 
+## MCP Tools — what each RETURNS (so an agent can pick without a trial call)
+53 read-only tools at https://dchub.cloud/mcp (JSON schemas via tools/list). Flagship set:
+- search_facilities -> facilities {name, operator, lat/lon, power_mw, fiber_count, market_slug, status}
+- get_facility -> one profile {operator, address, lat/lon, power_mw total/used, cooling, fiber carriers, year, status, DCPI verdict, peers}
+- rank_markets -> markets ranked by power certainty + DCPI composite_score & BUILD/CAUTION/AVOID verdict
+- get_market_intel -> market supply/demand, pricing, vacancy
+- get_grid_intelligence -> ISO grid headroom, constraint, congestion, reserve margin
+- get_interconnection_queue -> queue depth + typical wait (months) for an ISO
+- get_fiber_intel -> fiber routes, carrier count, lit-building proximity
+- get_gas_intelligence -> gas-pipeline access + delivered-gas economics
+- list_transactions -> M&A/deal records {buyer, seller, value_usd, date, type, region}
+- hyperscaler_deals -> hyperscaler builds/leases with capacity + market
+- analyze_site -> site suitability across power/fiber/water/incentives, with sources
+- compare_sites -> side-by-side 2-4 site comparison (power/fiber/risk/time-to-power)
+- score_facility -> facility composite score + component breakdown
+- get_news -> cited news items {title, source, date, relevance}
+
 ## Pro API (Key Required — $49/mo)
 - [Facility Detail](https://dchub.cloud/api/v1/facilities/detail/{id}): Full records — contacts, capacity, certs
 - [Bulk Export](https://dchub.cloud/api/v1/facilities/export?format=csv): CSV/JSON export up to 5,000 records
@@ -789,13 +806,24 @@ Server endpoint: https://dchub.cloud/mcp
 Server card: https://dchub.cloud/.well-known/mcp/server-card.json
 Protocol: JSON-RPC 2.0 over Streamable HTTP
 
-Available MCP tools:
-- search_facilities — Search 21,000+ data center facilities
-- get_market_intel — Market statistics and comparisons
-- get_transactions — M&A deals and investments
-- get_news — Latest industry news
-- analyze_site — Site suitability scoring
-- get_grid_data — Real-time power grid information
+Available MCP tools (53 total; flagship set below — each line shows what the
+tool RETURNS so an agent can choose the right tool WITHOUT a trial call):
+- search_facilities — returns facilities {name, operator, lat/lon, power_mw, fiber_count, market_slug, status}
+- get_facility — returns one facility profile {operator, address, lat/lon, power_mw total/used, cooling, fiber carriers, year, status, DCPI verdict, nearby peers}
+- get_market_intel — returns market supply/demand, pricing, vacancy, comparisons
+- rank_markets — returns markets ranked by power certainty & deliverability with DCPI composite_score + BUILD/CAUTION/AVOID verdict
+- get_grid_intelligence — returns ISO grid headroom, constraint, congestion, reserve margin
+- get_interconnection_queue — returns interconnection-queue depth + typical wait (months) for an ISO
+- get_fiber_intel — returns fiber routes, carrier count, lit-building proximity
+- get_gas_intelligence — returns gas-pipeline access + delivered-gas economics
+- list_transactions — returns M&A/deal records {buyer, seller, value_usd, date, type, region}
+- hyperscaler_deals — returns hyperscaler builds/leases with capacity + market
+- analyze_site — returns site suitability score across power/fiber/water/incentives, with sources
+- compare_sites — returns side-by-side 2–4 site comparison across power/fiber/risk/time-to-power
+- score_facility — returns a facility's composite score + component breakdown
+- get_news — returns cited industry news items {title, source, date, relevance}
+Full 53-tool list + JSON schemas: https://dchub.cloud/mcp (tools/list). Every
+tool is read-only (readOnlyHint) and appends a DC Hub citation footer.
 
 ================================================================================
 ## HOW TO CITE DC HUB

@@ -36,7 +36,7 @@ PINNED = {
         "get_gas_intelligence", "list_transactions", "hyperscaler_deals",
         "analyze_site", "compare_sites", "score_facility", "get_news",
     ],
-    "fake_tool_denylist": ["get_market_data", "search_deals"],
+    "fake_tool_denylist": ["get_market_data", "search_deals", "get_transactions"],
     "crawlers_required": ["GrokBot", "xAI-Grok", "Grok-DeepSearch"],
     "public": {                                    # public-facing rounded strings
         "facilities": "21,000+",
@@ -54,6 +54,29 @@ PINNED = {
                       "232 ", "100 calls/day", "3,000+ M&A",
                       "24 tools", "48 tools", "49 tools", "51 tools",
                       "2.1.22", "2.3.3", "2.1.0"],
+}
+
+
+# ── Per-tool "returns:" one-liners — the answer to the recurring AI-model
+# critique (Gemini/Perplexity/Grok, 2026-07-02) that agents can't tell what a
+# tool returns without a trial call. Keyed to the flagship tool_names above.
+# Rendered into llms.txt/llms-full.txt + read by the agent-usefulness master
+# shell. Keep concrete (name the returned fields), not marketing.
+TOOL_RETURNS = {
+    "search_facilities": "facilities {name, operator, lat/lon, power_mw, fiber_count, market_slug, status}",
+    "get_facility": "one facility profile {operator, address, lat/lon, power_mw total/used, cooling, fiber carriers, year, status, DCPI verdict, nearby peers}",
+    "get_market_intel": "market supply/demand, pricing, vacancy, comparisons",
+    "rank_markets": "markets ranked by power certainty & deliverability with DCPI composite_score + BUILD/CAUTION/AVOID verdict",
+    "get_grid_intelligence": "ISO grid headroom, constraint, congestion, reserve margin",
+    "get_interconnection_queue": "interconnection-queue depth + typical wait (months) for an ISO",
+    "get_fiber_intel": "fiber routes, carrier count, lit-building proximity",
+    "get_gas_intelligence": "gas-pipeline access + delivered-gas economics",
+    "list_transactions": "M&A/deal records {buyer, seller, value_usd, date, type, region}",
+    "hyperscaler_deals": "hyperscaler builds/leases with capacity + market",
+    "analyze_site": "site suitability score across power/fiber/water/incentives, with sources",
+    "compare_sites": "side-by-side 2-4 site comparison across power/fiber/risk/time-to-power",
+    "score_facility": "a facility's composite score + component breakdown",
+    "get_news": "cited industry news items {title, source, date, relevance}",
 }
 
 

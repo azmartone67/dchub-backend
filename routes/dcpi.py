@@ -4443,6 +4443,8 @@ DCPI_MARKET_TEMPLATE = """<!DOCTYPE html>
   "keywords": {{ (("data center power, DCPI, " ~ s.market_name ~ ", grid constraint, excess power, " ~ (s.iso or "ISO") ~ ", site selection, " ~ (s.verdict or "LOW_SIGNAL")))|tojson }},
   "temporalCoverage": "2024-01-01/..",
   "citation": "DC Hub Data Center Power Index, dchub.cloud/dcpi",
+  {% if s.computed_at %}"dateModified": {{ (s.computed_at[:10])|tojson }},
+  {% endif %}"measurementTechnique": "DCPI is recomputed daily from interconnection-queue depth, capacity-pipeline additions, grid-emergency events, and reserve-margin signals for the serving ISO/RTO. Methodology: dchub.cloud/dcpi",
   "spatialCoverage": {
     "@type": "Place",
     "name": {{ ((s.market_name ~ (", " ~ s.state if s.state else "")))|tojson }}{% if s.latitude is not none and s.longitude is not none %},
@@ -4452,7 +4454,9 @@ DCPI_MARKET_TEMPLATE = """<!DOCTYPE html>
     {% if not gated %}{"@type": "PropertyValue", "name": "Excess Power Score", "value": {{ ((s.excess_power_score or 0)|round(1))|tojson }}, "minValue": 0, "maxValue": 100, "description": "Higher = more available/stranded power capacity"},
     {"@type": "PropertyValue", "name": "Grid Constraint Score", "value": {{ ((s.constraint_score or 0)|round(1))|tojson }}, "minValue": 0, "maxValue": 100, "description": "Higher = more impediment to new data-center builds"},
     {% endif %}{"@type": "PropertyValue", "name": "DCPI Verdict", "value": {{ (s.verdict or "LOW_SIGNAL")|tojson }}, "description": "BUILD / CAUTION / AVOID / LOW_SIGNAL"}{% if s.iso %},
-    {"@type": "PropertyValue", "name": "ISO / Grid Operator", "value": {{ s.iso|tojson }}}{% endif %}
+    {"@type": "PropertyValue", "name": "ISO / Grid Operator", "value": {{ s.iso|tojson }}}{% endif %}{% if s.time_to_power_months is not none %},
+    {"@type": "PropertyValue", "name": "Time to Power (months)", "value": {{ (s.time_to_power_months|round(0)|int)|tojson }}, "unitText": "MON", "description": "Estimated months to energize new large load in this market (free/agent-accessible decision output)"}{% endif %}{% if s.queue_wait_months is not none %},
+    {"@type": "PropertyValue", "name": "Interconnection Queue Wait (months)", "value": {{ (s.queue_wait_months|round(0)|int)|tojson }}, "unitText": "MON", "description": "Typical interconnection-queue wait for the serving grid region"}{% endif %}
   ]
 }
 </script>

@@ -105,6 +105,15 @@ def _compute_index(horizon_days=90, limit=20):
         )
         operator_score = diversity_score  # back-compat for any reference below
 
+        # AI-ready MW — HONEST PROXY. DC Hub has no per-rack density / cooling
+        # data (no public source exists), so this is derived from DISCLOSED
+        # installed capacity, discounted, and weighted up only where a
+        # hyperscale/multi-operator signal suggests modern (liquid-capable)
+        # deployments. It is a market-level indicator, NOT a per-facility
+        # kW/rack claim — labeled so agents don't over-trust it.
+        ai_ready_factor = 0.6 if (hyperscale_ready or ops >= 3) else 0.3
+        ai_ready_mw = round(total_mw * ai_ready_factor, 0)
+
         scored.append({
             "market":           r["slug"],
             "city":             r["city"],
@@ -113,6 +122,14 @@ def _compute_index(horizon_days=90, limit=20):
             "deployable_mw":    {
                 "value": round(spare_proxy, 0),
                 "note": "Estimate from market depth — refined via ISO interconnect queue join (Q3 2026).",
+            },
+            "ai_ready_mw":      {
+                "value": ai_ready_mw,
+                "basis": "proxy",
+                "note": ("Proxy from disclosed installed MW (x%.1f hyperscale/"
+                         "multi-operator weight). NOT a per-rack kW/density "
+                         "measurement — no public per-facility density data "
+                         "exists yet." % ai_ready_factor),
             },
             "facility_count":   r["facility_count"],
             "total_installed_mw": round(total_mw, 0),
@@ -135,6 +152,10 @@ def _compute_index(horizon_days=90, limit=20):
         "result_count":      len(scored),
         "markets":           scored,
         "data_sources":      ["discovered_facilities", "DCPI v2", "pipeline (planned)"],
+        "ai_readiness_basis": ("ai_ready_mw is a market-level PROXY from disclosed "
+                               "installed capacity — DC Hub does not yet ingest "
+                               "per-rack power density or cooling type (no public "
+                               "source). Treat as directional, not a spec claim."),
         "next_refresh":      "Fridays 14:00 UTC (cron)",
     }, 200
 

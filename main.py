@@ -1727,6 +1727,16 @@ try:
     except Exception as _ams:
         import logging
         logging.getLogger(__name__).warning('audience_master_shell wiring failed: %s', _ams)
+    # 2026-07-02: Agent-usefulness master shell — MEASURES how legible/useful DC Hub
+    # is to AI agents (schema completeness, DCPI de-clone, null density, GEO flags) +
+    # persists a 0-100 score per tick. Read-only. POST /api/v1/admin/agent-usefulness/master-tick
+    try:
+        from routes.agent_usefulness_master_shell import agent_usefulness_master_shell_bp
+        app.register_blueprint(agent_usefulness_master_shell_bp)
+        print("[main] agent_usefulness_master_shell_bp registered: POST /api/v1/admin/agent-usefulness/master-tick", flush=True)
+    except Exception as _aums:
+        import logging
+        logging.getLogger(__name__).warning('agent_usefulness_master_shell wiring failed: %s', _aums)
     # 2026-06-30: DC Hub Media auto-showcase — compelling + VERIFIED market-pulse
     # / milestone content (every number pulled live + a fact-check gate), so the
     # media machine showcases the data as well as Grok did, but without Grok's
