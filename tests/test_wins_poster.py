@@ -74,14 +74,20 @@ def test_citation_template_is_fence_safe():
     assert "Claude" in text
 
 
-def test_internal_filter_catches_synthetic_traffic():
-    # the agent-traction count must NEVER credit internal/probe traffic as an agent
-    for junk in ("dchub-selfheal", "DCHub-DailyDigest/1.0", "uptime-probe",
-                 "python-requests/2.31", "Render/1.0", "mcp-test-sweep"):
-        assert wp._INTERNAL_RE.search(junk), f"internal filter must catch {junk!r}"
-    # a real agent UA must NOT be filtered
-    for real in ("Claude-User", "ChatGPT", "cursor-mcp", "perplexity-bot-research"):
-        assert not wp._INTERNAL_RE.search(real), f"real agent {real!r} wrongly filtered"
+def test_traction_count_reads_canonical_identity_view():
+    # the agent-traction count must NEVER credit internal/probe traffic as an
+    # agent. r-reach-canonical-views (2026-07-01): filtering is delegated to
+    # the canonical mcp_calls_identity view (agent_id = md5 of first public
+    # XFF token, is_real_external) — the detector must read that view and must
+    # never re-derive its own count from raw ip_address or session_id (the old
+    # local regex denylist read 30+ where the canonical count was ~14).
+    import inspect
+    src = inspect.getsource(wp.detect_agent_traction_win)
+    assert "mcp_calls_identity" in src, "must read the canonical identity view"
+    assert "is_real_external" in src and "is_public_ip" in src
+    assert "COUNT(DISTINCT agent_id)" in src
+    assert "DISTINCT ip_address" not in src, "raw ip_address is never an agent identity"
+    assert "session_id" not in src, "session_id is never an agent identity"
 
 
 def test_default_is_review_queue_not_autosend():

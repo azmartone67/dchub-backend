@@ -297,6 +297,70 @@ def _market_row(conn, market_text: str) -> dict | None:
 
 
 # ── the verifier ─────────────────────────────────────────────────────────────
+# "86 AI agents" / "14 distinct AI agents" / "86 unique callers". "callers"
+# alone is too generic — it must carry a unique/distinct qualifier to count as
+# an agent-reach claim. Agents may appear bare ("22 agents queried…").
+_AGENT_CLAIM_RE = re.compile(
+    r"\b(\d[\d,]{0,9})\s+"
+    r"(?:(?:distinct|unique|external|real)\s+)*"
+    r"(?:AI\s+)?agents?\b"
+    r"|\b(\d[\d,]{0,9})\s+(?:distinct|unique)\s+callers?\b",
+    re.I)
+
+
+def _extract_agent_count_claims(text: str) -> list[dict]:
+    out = []
+    try:
+        for m in _AGENT_CLAIM_RE.finditer(text or ""):
+            num = m.group(1) or m.group(2)
+            try:
+                out.append({"raw": m.group(0), "value": float(num.replace(",", ""))})
+            except (TypeError, ValueError):
+                continue
+    except Exception as e:
+        logger.warning("[fact_check_guard] agent claim extract failed: %s", str(e)[:160])
+    return out
+
+
+def _live_agent_count_30d():
+    """Canonical real-external agent count (30d) from mcp_calls_identity.
+    Returns None on any failure — callers treat that as fail-closed."""
+    conn = _db_conn()
+    if conn is None:
+        return None
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT COUNT(DISTINCT agent_id) FROM mcp_calls_identity "
+                "WHERE created_at >= NOW() - INTERVAL '30 days' "
+                "  AND is_public_ip AND is_real_external")
+            return int((cur.fetchone() or [0])[0] or 0)
+    except Exception as e:
+        logger.warning("[fact_check_guard] live agent count failed: %s", str(e)[:160])
+        return None
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def check_agent_count_claims(text: str) -> dict:
+    """Public gate helper: corroborate agent-reach claims in `text` against the
+    canonical identity view. Returns {claims, live, over} where `over` lists
+    claims exceeding the live 30d real-external agent count (+5% tolerance),
+    and live is None when the view could not be read (callers fail closed:
+    a text WITH claims and live=None must not publish)."""
+    claims = _extract_agent_count_claims(text)
+    if not claims:
+        return {"claims": [], "live": None, "over": []}
+    live = _live_agent_count_30d()
+    if live is None:
+        return {"claims": claims, "live": None, "over": claims}
+    over = [c for c in claims if c["value"] > max(live, 1) * (1.0 + _COUNT_OVER_FRAC)]
+    return {"claims": claims, "live": live, "over": over}
+
+
 def verify_media_text(text: str) -> dict:
     """Corroborate every numeric/DCPI claim in `text` against LIVE ground truth.
 
@@ -413,6 +477,34 @@ def verify_media_text(text: str) -> dict:
                 # bare 'number'/'deals' counts: left to media_claim_verify's canon
                 # + banned checks (run separately by callers); not flagged here to
                 # avoid false positives on incidental numbers (years, list counts).
+
+        # ---- agent-count claims ("N AI agents", "N unique callers") ----
+        # r-reach-canonical-views (2026-07-01): the "86 AI agents … up 41%
+        # week-over-week" LinkedIn post shipped because no gate corroborated
+        # agent-reach numbers. Ground truth is the canonical identity view
+        # mcp_calls_identity (agent = md5 of first public XFF token, real
+        # external only — NEVER session_id, never raw ip_address). A claim is
+        # corroborated only if it is at/below the live 30d agent count within
+        # tolerance; DB unavailable → fail closed.
+        for c in _extract_agent_count_claims(text):
+            checked += 1
+            live = _live_agent_count_30d()
+            if live is None:
+                unverified.append({
+                    "claim": c["raw"],
+                    "found_live": None,
+                    "expected": ("live agent count unavailable (mcp_calls_identity) "
+                                 "— cannot corroborate, omit the agent count"),
+                })
+            elif c["value"] > max(live, 1) * (1.0 + _COUNT_OVER_FRAC):
+                unverified.append({
+                    "claim": c["raw"],
+                    "found_live": live,
+                    "expected": (f"<= {live:,} real external agents/30d per "
+                                 f"mcp_calls_identity — claim over-states; agents are "
+                                 f"NEVER session_id or raw ip_address counts"),
+                })
+            # else corroborated (at/below the live canonical count).
 
         # ---- DCPI verdict-with-market claims ----
         conn = None

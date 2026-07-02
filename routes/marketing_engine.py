@@ -311,13 +311,20 @@ def _collect_signals() -> dict:
                  "now": round(r[3] or 0, 1), "delta": round(r[4] or 0, 1)}
                 for r in cur.fetchall()]
 
-        # AI usage — quotable adoption metric
+        # AI usage — quotable adoption metric. MUST read the canonical identity
+        # view (agent = md5 of first public XFF token, real-external only), the
+        # same identity as /api/v1/reach. The old raw COUNT(DISTINCT ip_address)
+        # over ALL mcp_tool_calls counted probes + self-traffic and published
+        # "86 AI agents ... up 41% week-over-week" on LinkedIn (2026-06-30,
+        # press_release 117) when the honest count was ~14/wk. NEVER count
+        # session_id or raw ip_address as agents.
         try:
             with c.cursor() as cur:
                 cur.execute("""
-                    SELECT COUNT(*),
-                           COUNT(DISTINCT ip_address)
-                    FROM mcp_tool_calls
+                    SELECT COUNT(*) FILTER (WHERE is_real_external),
+                           COUNT(DISTINCT agent_id)
+                               FILTER (WHERE is_real_external AND is_public_ip)
+                    FROM mcp_calls_identity
                     WHERE created_at > NOW() - INTERVAL '24 hours'
                 """)
                 row = cur.fetchone() or (0, 0)
@@ -3205,10 +3212,13 @@ def marketing_pulse():
                 elif et == "stripe_click": out["engagement_7d"]["stripe_clicks"] = int(n)
         try:
             with c.cursor() as cur:
+                # canonical identity view — real external agents only, never
+                # raw ip_address (which counts probes + self-traffic).
                 cur.execute("""
-                    SELECT COUNT(DISTINCT ip_address)
-                    FROM mcp_tool_calls
-                    WHERE created_at > NOW() - INTERVAL '7 days'""")
+                    SELECT COUNT(DISTINCT agent_id)
+                    FROM mcp_calls_identity
+                    WHERE created_at > NOW() - INTERVAL '7 days'
+                      AND is_public_ip AND is_real_external""")
                 out["ai_callers_7d"] = int((cur.fetchone() or (0,))[0])
         except Exception:
             pass

@@ -2231,6 +2231,27 @@ def _should_skip_publish(cur, content_text: str, platform: str):
         return True, ("partner-disparagement — refusing to publish copy that "
                       f"knocks a peer AI platform: …{_disp[:120]}…")
 
+    # (d3) AGENT-COUNT HONESTY GATE (r-reach-canonical-views, 2026-07-01): any
+    # "N AI agents / N unique callers" claim must corroborate against the
+    # canonical identity view mcp_calls_identity (agent = md5 of first public
+    # XFF token, real external only — NEVER session_id / raw ip_address). The
+    # "86 AI agents … up 41% week-over-week" post shipped from an unfiltered
+    # COUNT(DISTINCT ip_address) when the honest count was ~14/wk. Hard block
+    # on an over-claim; a text WITH agent claims that we cannot corroborate
+    # (view unreadable) is ALSO blocked — omit-or-prove. Fail-OPEN only when
+    # the helper itself can't import.
+    try:
+        from routes.media_fact_check_guard import check_agent_count_claims
+        _ac = check_agent_count_claims(_text)
+        if _ac["claims"] and _ac["over"]:
+            _c0 = _ac["over"][0]
+            return True, (f"agent-count over-claim: '{_c0['raw']}' vs "
+                          f"{_ac['live'] if _ac['live'] is not None else 'unverifiable'} "
+                          f"real external agents/30d (mcp_calls_identity) — agents are "
+                          f"never session_id or raw ip_address counts")
+    except Exception as _ae:
+        logger.warning("agent-count gate unavailable (%s) — failing OPEN", _ae)
+
     # (q) QUALITY GATE (B3, 2026-05-31). Computed FIRST so a thin post is
     # filtered before the dedup DB round-trip. Wrapped so a scoring bug
     # NEVER blocks a post (fail-open); a successfully-computed low score

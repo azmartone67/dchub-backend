@@ -441,6 +441,14 @@ def redeem_landing(code):
        CTA that goes straight to Stripe with the pair-code as
        client_reference_id."""
     code = code.upper().strip()
+    # 2026-07-01: permanent DEMO render for sharing / screenshots.
+    # /redeem/DEMO (or ?demo=1) renders the page with a frozen sample code —
+    # it skips the DB lookup and the funnel view-tracking, so it never expires
+    # and never pollutes the conversion metrics.
+    if code == "DEMO" or request.args.get("demo"):
+        return Response(_redeem_page("DEMO-2RNC", "get_grid_intelligence",
+                                     "pjm", "developer", referring_agent="claude"),
+                        mimetype="text/html"), 200
     c = _conn()
     if c is None:
         return Response(_redeem_error_page("Database temporarily unavailable."),

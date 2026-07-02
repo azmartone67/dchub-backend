@@ -45,12 +45,6 @@ _DAILY_CAP = int(os.environ.get("WINS_POST_DAILY_CAP", "2"))
 # the job itself writes status='approved'.
 _AUTOPILOT = str(os.environ.get("WINS_POSTER_AUTOPILOT_ENABLED", "")).lower() in ("1", "true", "yes")
 
-# Internal/synthetic traffic that must NEVER count as an external "AI agent".
-_INTERNAL_RE = re.compile(
-    r"(loop|dchub-|selfheal|self-heal|probe|health|scanner|regression|mcp-test|"
-    r"sweep|clawit|anthropicapi|qa-|monitor|uptime|curl/|python-requests|"
-    r"postman|render/|googlebot|bingbot)", re.I)
-
 # Belt-and-suspenders fence: a composed post may NEVER carry a retired over-claim.
 # Mirrors tests/test_honest_numbers.py. canonical_stats phrases are already safe;
 # this guards against a template/data regression slipping a banned string through.
@@ -173,21 +167,23 @@ def detect_milestone_win() -> list[dict]:
 
 
 def detect_agent_traction_win() -> list[dict]:
-    """A new weekly high of DISTINCT EXTERNAL AI agents (by IP), internal traffic
-    filtered out. NEVER COUNT(*) (raw is ~25x selfheal-inflated)."""
+    """A new weekly high of DISTINCT EXTERNAL AI agents, read from the CANONICAL
+    identity view mcp_calls_identity (agent = md5 of first public XFF token,
+    is_real_external filters probe/self/scripted-UA traffic). NEVER a raw
+    COUNT(*) (~25x selfheal-inflated), never sessions (they rotate per
+    connection), never a locally-filtered raw-IP distinct count (the old
+    regex denylist read 30+ where the canonical count was ~14)."""
     conn = _conn()
     if conn is None:
         return []
     try:
         with conn.cursor() as cur:
             cur.execute("""
-                SELECT COUNT(DISTINCT ip_address)
-                  FROM mcp_tool_calls
+                SELECT COUNT(DISTINCT agent_id)
+                  FROM mcp_calls_identity
                  WHERE created_at >= NOW() - INTERVAL '7 days'
-                   AND ip_address IS NOT NULL
-                   AND COALESCE(client_name,'')||' '||COALESCE(user_agent,'')||' '||COALESCE(platform,'')
-                       !~* %s
-            """, (_INTERNAL_RE.pattern,))
+                   AND is_public_ip AND is_real_external
+            """)
             n = int((cur.fetchone() or [0])[0] or 0)
             # prior weekly max from the ledger (headline stored as the number)
             cur.execute("""SELECT MAX(CAST(NULLIF(headline,'') AS INT))

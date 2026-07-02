@@ -2978,8 +2978,9 @@ def trial_check():
 #
 # Columns this endpoint reads (cited back in the response as source_columns):
 #   tool_calls_7d / 30d  : COUNT(*)               WHERE created_at >= NOW()-N
-#   distinct_callers_7d  : COUNT(DISTINCT session_id)  -- real per-client id
-#   distinct_ips_7d      : COUNT(DISTINCT ip_address)  -- secondary signal
+#   distinct_callers_7d  : COUNT(DISTINCT agent_id) mcp_calls_identity, real
+#                          external only -- NEVER session_id (rotates per conn)
+#   distinct_ips_7d      : COUNT(DISTINCT client_ip), public only -- secondary
 #   distinct_platforms   : COUNT(DISTINCT platform) minus internal/probe/
 #                          generic buckets (honest external-vendor count)
 #   approved_testimonials_count : COUNT(*) FROM ai_testimonials
@@ -3073,8 +3074,8 @@ def stats_live_proof():
         "source_columns": {
             "tool_calls_7d":               "COUNT(*) mcp_tool_calls WHERE created_at >= NOW()-7d",
             "tool_calls_30d":              "COUNT(*) mcp_tool_calls WHERE created_at >= NOW()-30d",
-            "distinct_callers_7d":         "COUNT(DISTINCT session_id) mcp_tool_calls (7d)",
-            "distinct_ips_7d":             "COUNT(DISTINCT ip_address) mcp_tool_calls (7d)",
+            "distinct_callers_7d":         "COUNT(DISTINCT agent_id) mcp_calls_identity (7d) WHERE is_public_ip AND is_real_external — canonical identity view; NEVER session_id (it rotates per MCP connection)",
+            "distinct_ips_7d":             "COUNT(DISTINCT client_ip) mcp_calls_identity (7d) WHERE is_public_ip — all traffic incl. probes, secondary signal",
             "distinct_platforms":          "COUNT(DISTINCT recognized platform) mcp_tool_calls (30d, allowlist only)",
             "approved_testimonials_count": "COUNT(*) ai_testimonials WHERE approved = TRUE",
         },
@@ -3102,15 +3103,18 @@ def stats_live_proof():
     except Exception as e:
         out["flags"]["tool_calls_error"] = str(e)[:120]
 
-    # 2) Distinct callers (session_id = real per-client attribution; memory:
-    #    any-metric ÷ raw COUNT(*) screams a fake crisis — gate on DISTINCT
-    #    callers) + distinct IPs as a secondary honest signal.
+    # 2) Distinct callers — the CANONICAL identity view (agent_id = md5 of the
+    #    first public XFF token, real-external only). NEVER session_id: the
+    #    server mints a new session per MCP connection, so DISTINCT session_id
+    #    tracks call volume, not callers (r-reach-canonical-views 2026-07-01;
+    #    session-counting read 1,792 "callers" where the honest count was ~14).
     try:
         with _pool.connection() as conn, conn.cursor() as cur:
             cur.execute(
-                "SELECT COUNT(DISTINCT session_id), COUNT(DISTINCT ip_address) "
-                "FROM mcp_tool_calls "
-                "WHERE created_at >= NOW() - INTERVAL '7 days'"
+                "SELECT COUNT(DISTINCT agent_id) FILTER (WHERE is_real_external), "
+                "       COUNT(DISTINCT client_ip) "
+                "FROM mcp_calls_identity "
+                "WHERE created_at >= NOW() - INTERVAL '7 days' AND is_public_ip"
             )
             r = cur.fetchone() or (0, 0)
             out["distinct_callers_7d"] = int(r[0] or 0)
@@ -3186,19 +3190,21 @@ def stats_live_proof():
 # (never a placeholder). Public + no PII (IPs are aggregated, never returned).
 @mcp_bp.get("/api/v1/reach")
 def reach_dashboard_data():
-    # Same private/CGNAT exclusion as routes/ai_reach. Function-level import:
-    # ai_reach is a standalone blueprint module — no import-order coupling at boot.
-    from routes.ai_reach import _PRIVATE_IP as _reach_private_ip
-
-    _real = _deloop_real_calls_predicate()
-    # public client IP only — the regex's `|$)` branch also drops '' (NULL folds to '')
-    _pub = "client_ip !~ '" + _reach_private_ip + "'"
+    # r-reach-canonical-views (2026-07-01): agent counts read the CANONICAL
+    # identity views (mcp_calls_identity / mcp_agent_retention_30d) instead of
+    # re-deriving identity + real-vs-probe inline. One definition of "real
+    # external agent" lives in the DB view (agent_id = md5(first XFF token),
+    # is_public_ip + is_real_external filters); every surface that reports
+    # agents must read it — session_id is NEVER an agent (it rotates per MCP
+    # connection). If the views are missing this endpoint fails soft to 0 +
+    # calls_error, loudly, rather than silently re-inventing its own count.
+    _real = "is_real_external"
+    _pub = "is_public_ip"
 
     def _from(window_sql):
-        # first X-Forwarded-For token = the client; some rows store the raw chain
         return ("(SELECT client_name, user_agent, platform, tool_name, "
-                "        TRIM(SPLIT_PART(COALESCE(ip_address,''), ',', 1)) AS client_ip "
-                "   FROM mcp_tool_calls WHERE " + window_sql + ") t")
+                "        agent_id, client_ip, is_public_ip, is_real_external "
+                "   FROM mcp_calls_identity WHERE " + window_sql + ") t")
 
     _7d = "created_at >= NOW() - (7 * INTERVAL '1 day')"
     _prev7d = ("created_at >= NOW() - (14 * INTERVAL '1 day') "
@@ -3215,33 +3221,33 @@ def reach_dashboard_data():
         "wow": {"real_agents_pct": None, "real_calls_pct": None},
         "platforms_7d": [],              # real (de-looped) traffic only
         "top_tools_7d": [],              # real traffic only
+        "retention_30d": {"agents": 0, "returned_2nd_day": 0, "day2_return_rate_pct": None},
         "citations_7d": 0, "citation_engines_7d": 0,
-        "flags": {"calls_available": False, "citations_available": False},
+        "flags": {"calls_available": False, "retention_available": False,
+                  "citations_available": False},
         "source_columns": {
-            "real_agents_7d": "COUNT(DISTINCT TRIM(SPLIT_PART(ip_address,',',1))) mcp_tool_calls (7d) over real_calls_predicate() rows; private/CGNAT/empty IPs excluded",
-            "real_calls_7d":  "COUNT(*) mcp_tool_calls (7d) WHERE mcp_calls_deloop.real_calls_predicate()",
-            "probe_calls_7d": "COUNT(*) mcp_tool_calls (7d) WHERE NOT real_calls_predicate() (internal/probe/self-heal/scripted-UA)",
+            "real_agents_7d": "COUNT(DISTINCT agent_id) mcp_calls_identity (7d) WHERE is_public_ip AND is_real_external — the canonical identity view (agent_id = md5(first X-Forwarded-For token))",
+            "real_calls_7d":  "COUNT(*) mcp_calls_identity (7d) WHERE is_real_external",
+            "probe_calls_7d": "COUNT(*) mcp_calls_identity (7d) WHERE NOT is_real_external (internal/probe/self-heal/scripted-UA)",
+            "retention_30d":  "mcp_agent_retention_30d — per-agent active_days over 30d (canonical retention view)",
             "citations_7d":   "COUNT(*) ai_citations (7d) WHERE dchub_cited = true",
         },
-        "note": ("Real vs probe uses mcp_calls_deloop.real_calls_predicate() — the same "
-                 "canonical filter as /api/v1/mcp/funnel and funnel_health (client_name + "
-                 "user_agent + platform, so a self-applied platform label can't make a "
-                 "curl/urllib probe count as real). Agents = distinct public client IPs "
-                 "(first X-Forwarded-For token), never session_id — session_id rotates per "
-                 "MCP connection so it tracks call volume, not agents (see views "
-                 "mcp_calls_identity / mcp_agent_retention_30d). "
+        "note": ("Agent counts read the canonical DB views mcp_calls_identity / "
+                 "mcp_agent_retention_30d (identity = md5 of the first X-Forwarded-For "
+                 "token, private/CGNAT excluded, is_real_external filters probe/self/"
+                 "scripted-UA traffic) — never session_id, which rotates per MCP "
+                 "connection and tracks call volume, not agents. "
                  "0 with a false flag means no data, never a placeholder."),
     }
     try:
         with _pool.connection() as conn, conn.cursor() as cur:
-            # 7d totals — real vs probe; agents = distinct public client IPs.
-            # Inlined predicate over trusted constants (no bound params) so the
-            # literal % in the classifier's ILIKE patterns are left alone.
+            # 7d totals — real vs probe; agents = distinct agent_id from the
+            # canonical identity view (md5 of the first public XFF token).
             cur.execute(
                 "SELECT COUNT(*) FILTER (WHERE (" + _real + ")), "
-                "       COUNT(DISTINCT client_ip) FILTER (WHERE (" + _real + ") AND " + _pub + "), "
+                "       COUNT(DISTINCT agent_id) FILTER (WHERE (" + _real + ") AND " + _pub + "), "
                 "       COUNT(*) FILTER (WHERE NOT (" + _real + ")), "
-                "       COUNT(DISTINCT client_ip) FILTER (WHERE NOT (" + _real + ") AND " + _pub + ") "
+                "       COUNT(DISTINCT agent_id) FILTER (WHERE NOT (" + _real + ") AND " + _pub + ") "
                 "FROM " + _from(_7d))
             r = cur.fetchone() or (0, 0, 0, 0)
             rc, rag, pc, pag = (int(v or 0) for v in r)
@@ -3252,7 +3258,7 @@ def reach_dashboard_data():
             # platform breakdown — real traffic only, canonical classifier
             cur.execute(
                 "SELECT (" + _DELOOP_PLATFORM_CASE.strip() + ") AS p, COUNT(*) AS calls, "
-                "       COUNT(DISTINCT client_ip) FILTER (WHERE " + _pub + ") AS agents "
+                "       COUNT(DISTINCT agent_id) FILTER (WHERE " + _pub + ") AS agents "
                 "FROM " + _from(_7d) + " WHERE (" + _real + ") "
                 "GROUP BY 1 ORDER BY calls DESC LIMIT 20")
             out["platforms_7d"] = [
@@ -3261,7 +3267,7 @@ def reach_dashboard_data():
             # prior 7d (days 7-14) for week-over-week
             cur.execute(
                 "SELECT COUNT(*) FILTER (WHERE (" + _real + ")), "
-                "       COUNT(DISTINCT client_ip) FILTER (WHERE (" + _real + ") AND " + _pub + ") "
+                "       COUNT(DISTINCT agent_id) FILTER (WHERE (" + _real + ") AND " + _pub + ") "
                 "FROM " + _from(_prev7d))
             r = cur.fetchone() or (0, 0)
             prc, prag = int(r[0] or 0), int(r[1] or 0)
@@ -3272,7 +3278,7 @@ def reach_dashboard_data():
             # top tools among real traffic only
             cur.execute(
                 "SELECT tool_name, COUNT(*) AS calls, "
-                "       COUNT(DISTINCT client_ip) FILTER (WHERE " + _pub + ") AS agents "
+                "       COUNT(DISTINCT agent_id) FILTER (WHERE " + _pub + ") AS agents "
                 "FROM " + _from(_7d) + " WHERE (" + _real + ") AND tool_name IS NOT NULL "
                 "GROUP BY tool_name ORDER BY calls DESC LIMIT 12")
             out["top_tools_7d"] = [
@@ -3282,6 +3288,23 @@ def reach_dashboard_data():
         out["data_available"] = True
     except Exception as e:
         out["flags"]["calls_error"] = str(e)[:160]
+    # 30d retention — straight read of the canonical retention view.
+    try:
+        with _pool.connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT COUNT(*), COUNT(*) FILTER (WHERE returned_2nd_day) "
+                "FROM mcp_agent_retention_30d")
+            r = cur.fetchone() or (0, 0)
+            n30, ret = int(r[0] or 0), int(r[1] or 0)
+            out["retention_30d"] = {
+                "agents": n30,
+                "returned_2nd_day": ret,
+                "day2_return_rate_pct": round(100.0 * ret / n30, 1) if n30 else None,
+            }
+        out["flags"]["retention_available"] = True
+        out["data_available"] = True
+    except Exception as e:
+        out["flags"]["retention_error"] = str(e)[:160]
     try:
         with _pool.connection() as conn, conn.cursor() as cur:
             cur.execute("SELECT COUNT(*), COUNT(DISTINCT engine) FROM ai_citations "
