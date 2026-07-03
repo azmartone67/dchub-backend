@@ -1,0 +1,38 @@
+name: AI-Adoption Master Tick (make every AI reach for DC Hub)
+
+# One orchestrated cycle whose single north-star is DISTINCT EXTERNAL AI AGENTS
+# / WEEK. Tiers: measure (reach rollup + coverage) → discover (queue the missing
+# MCP-registry submissions) → legibility (self-surfaces + GEO preview) →
+# reinforcement (which platform to tune tool-copy for) → verify. It MEASURES and
+# DRAFTS/QUEUES; it does not auto-merge and (by default) does not auto-submit —
+# writes stay behind AI_ADOPTION_SUBMIT_ENABLED / the GEO publisher's own gate.
+# This is the second, safe-to-arm half of the "reliability-first, then arm" plan.
+#
+# Kill switch: set AI_ADOPTION_MASTER_DISABLED=1 on Railway to halt the tick.
+
+on:
+  schedule:
+    - cron: '43 */6 * * *'   # every 6 hours at :43 — distinct minute, off-peak
+  workflow_dispatch: {}
+
+jobs:
+  master-tick:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Run one AI-adoption cycle
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          if [ -z "$ADMIN_KEY" ]; then
+            echo "::warning ::DCHUB_ADMIN_KEY secret not set — skipping (fail-safe)"
+            exit 0
+          fi
+          # Hit the Railway origin directly (not dchub.cloud) — CF zone/cache can
+          # shadow or cache a stale 404 on POST admin paths. Override via DCHUB_BACKEND_BASE.
+          BASE="${DCHUB_BACKEND_BASE:-https://dchub-backend-production.up.railway.app}"
+          URL="$BASE/api/v1/admin/ai-adoption/master-tick?cb=${GITHUB_RUN_ID}"
+          echo "POST $URL"
+          body=$(curl -sS --max-time 90 -X POST "$URL" \
+                   -H "X-Admin-Key: $ADMIN_KEY" \
+                 || echo '{"ok":false,"error":"curl_fail"}')
+          echo "$body" | python3 -c "import json,sys; d=json.load(sys.stdin); print('ok:', d.get('ok')); print('headline:', d.get('headline') or d.get('error') or d.get('skipped') or ''); print('persisted:', d.get('persisted'))" || echo "$body"
