@@ -55,11 +55,11 @@ _GITHUB_REPO = (os.environ.get("GITHUB_REPO") or "azmartone67/dchub-backend").st
 _L15_LABEL = "brain-l15-auto"
 _L23_LABEL = "brain-l23-lifecycle"
 _L15_TITLE_PREFIX = "[brain-l15] "
-# CI-noise: transient failure/status notifications a GitHub Actions workflow
-# opens on failure (e.g. "[workflow-failed] …", "[STATUS] Daily check failed").
-# Nothing else ever closes them, so they accumulate. They are idempotent — if
-# the job still fails a fresh issue is filed each run — so a stale one is moot.
-_CI_NOISE_LABELS = ("workflow-failure", "workflow-failed", "auto", "monitoring")
+# NOTE (2026-07-03): CI-noise issues ([workflow-failed]/[STATUS], labels
+# workflow-failure/monitoring/auto) are owned by the dedicated GH Action
+# .github/workflows/issue-autoclose.yml — it closes them on workflow RECOVERY
+# (more correct than a time window) + dedup + stale>3d. This janitor stays
+# scoped to brain-l15-auto / brain-l23-lifecycle so the two never double-act.
 
 
 def _token() -> str:
@@ -95,21 +95,6 @@ def _proposal_stale_days() -> int:
 
 def _max_per_run() -> int:
     return max(0, _env_int("BRAIN_ISSUE_JANITOR_MAX_PER_RUN", 10))
-
-
-def _ci_stale_days() -> int:
-    # CI-failure notices re-file every run, so anything past ~1 day is already
-    # superseded by the next run's result (pass or fresh-fail). 1 day keeps at
-    # most one fresh notice per check visible, then drains it.
-    return max(1, _env_int("BRAIN_ISSUE_JANITOR_CI_STALE_DAYS", 1))
-
-
-def _normalize_ci_title(t: str) -> str:
-    """Strip the trailing date/timestamp so daily re-files of the same check
-    ('… on 2026-07-02_00:59', '… — 2026-07-02') collapse to one key."""
-    import re
-    t = re.sub(r"[\s_—–-]*\d{4}-\d{2}-\d{2}([_ T][\d:]+)?\s*$", "", t or "")
-    return t.strip().lower()
 
 
 def _gh(method: str, path: str, body=None, params=None):
@@ -275,52 +260,6 @@ def janitor_sweep(dry_run: bool = True) -> dict:
                             "capability proposal sat unactioned past the stale "
                             "window. The brain will re-propose it if it still "
                             "scores as valuable."),
-            })
-
-    # ── CI-noise sweep: workflow-failure / auto / monitoring notifications ──
-    # These are opened by the github-actions bot on a failed run, and nothing
-    # else closes them. SAFETY: only issues authored by the github-actions app
-    # (login == 'github-actions[bot]' / type 'Bot') are ever touched — a human
-    # issue that happens to share a label is skipped. Two triggers:
-    #   (a) DEDUP: several re-files of the same check collapse by normalized
-    #       title; keep the newest, close the rest immediately.
-    #   (b) STALE: the surviving newest is closed once older than CI_STALE_DAYS
-    #       — a 2-day-old failure notice is moot (if still failing, a fresh
-    #       issue exists). Re-files automatically, so closing is never lossy.
-    ci_by_number: dict = {}
-    for lbl in _CI_NOISE_LABELS:
-        for issue in _open_issues(lbl):
-            num = issue.get("number")
-            if num in ci_by_number:
-                continue
-            user = issue.get("user") or {}
-            login = (user.get("login") or "").lower()
-            if user.get("type") != "Bot" and "github-actions" not in login:
-                continue  # never touch a human-authored issue
-            ci_by_number[num] = issue
-    ci_stale = _ci_stale_days()
-    groups: dict = {}
-    for issue in sorted(ci_by_number.values(),
-                        key=lambda i: i.get("created_at", ""), reverse=True):
-        groups.setdefault(_normalize_ci_title(issue.get("title", "")), []).append(issue)
-    for _key, grp in groups.items():
-        newest, older = grp[0], grp[1:]
-        for dup in older:
-            candidates.append({
-                "number": dup.get("number"), "title": dup.get("title") or "",
-                "reason": "ci_duplicate_superseded", "state_reason": "not_planned",
-                "comment": (f"🤖 **Auto-closed by the brain issue janitor** — "
-                            f"superseded by the newer re-file #{newest.get('number')} "
-                            f"of the same check. CI-failure notices re-file each run."),
-            })
-        if _age_days(newest) >= ci_stale:
-            candidates.append({
-                "number": newest.get("number"), "title": newest.get("title") or "",
-                "reason": f"ci_stale_{ci_stale}d", "state_reason": "not_planned",
-                "comment": (f"🤖 **Auto-closed by the brain issue janitor** — this "
-                            f"CI-failure notice is >{ci_stale}d old. If the job is "
-                            f"still failing a fresh issue exists; if it recovered "
-                            f"this is moot. Re-files automatically."),
             })
 
     candidates = candidates[:cap]
