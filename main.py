@@ -21086,9 +21086,35 @@ def _fiber_full_access_ok():
 
 def _fiber_teaser_response():
     """Small teaser: first 3 fiber routes + an agent-quotable upgrade hint
-    citing the full count behind the paywall. Cheap (LIMIT 3 + COUNT) so
-    anon callers don't trigger the full 2000-row scan."""
-    sample = _build_fiber_routes_geojson(max_features=3)
+    citing the full count behind the paywall.
+
+    r-fiberteaser (2026-07-03): the LIMIT 3 is pushed to SQL, but the
+    ORDER BY on a COMPUTED expression (char_length(coordinates::text) > 80)
+    still forces a full seqscan + sort of ~39k rows to pick the top 3, plus
+    a full COUNT(*) — on EVERY anonymous call, uncached. The teaser body is
+    tier-invariant (identical for all anon callers sharing the same filters),
+    so cache the DB build for a short TTL (same pattern/TTL as
+    _FIBER_INTEL_CACHE). Coaching below is pure string assembly (no DB) so it
+    stays fresh per-call — nothing per-caller is ever cached."""
+    # Bound the key: max_features=3 clamps the effective cap to {1,2,3}, so
+    # normalize `limit` to that (an attacker can't spray ?limit=N to make
+    # unbounded distinct keys). carrier/type/class are finite real taxonomies;
+    # the size cap below backstops arbitrary-string variation regardless.
+    try:
+        _cap = min(max(int(request.args.get('limit', 3)), 1), 3)
+    except (TypeError, ValueError):
+        _cap = 3
+    _key = (request.args.get('carrier') or '', request.args.get('type') or '',
+            request.args.get('class') or '', _cap)
+    _now = time.time()
+    _hit = _FIBER_TEASER_CACHE.get(_key)
+    if _hit is not None and (_now - _hit['at']) < _FIBER_INTEL_TTL:
+        sample = _hit['data']
+    else:
+        sample = _build_fiber_routes_geojson(max_features=_cap)
+        if len(_FIBER_TEASER_CACHE) > 200:  # bounded — cheap to rebuild
+            _FIBER_TEASER_CACHE.clear()
+        _FIBER_TEASER_CACHE[_key] = {'data': sample, 'at': _now}
     feats = (sample.get('features') or [])[:3] if isinstance(sample, dict) else []
     total = int(sample.get('_full_total', sample.get('total', 0)) or 0)
     _coach = {}
@@ -21186,6 +21212,7 @@ def fiber_routes_public_api():
 # both internal callers (radar, redeem) get real data and the radar's
 # tier-consistency check has something to compare against.
 _FIBER_INTEL_CACHE = {"data": None, "at": 0.0}   # in-process full-build cache (r-fibercache)
+_FIBER_TEASER_CACHE = {}   # in-process teaser-build cache keyed by filter params (r-fiberteaser)
 _FIBER_INTEL_TTL = 300
 
 
