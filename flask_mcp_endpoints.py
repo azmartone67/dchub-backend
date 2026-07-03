@@ -2289,14 +2289,22 @@ def ai_analytics():
             )
             out["total_requests"] = int(cur.fetchone()[0] or 0)
 
-            # Distinct platforms across signals + tool calls — be lenient
-            # about which table the data lives in (different MCP shapes
-            # write to different tables over time).
+            # Distinct real external AI clients in the last 30d. FIX 2026-07-03:
+            # this counted DISTINCT platform FROM mcp_upgrade_signals — a column
+            # that table does NOT have (platform lives there as `mcp_client`), so
+            # it threw, the except swallowed it, and active_platforms was pinned
+            # to 0 forever despite hundreds of connections. Count from the real
+            # traffic table (mcp_tool_calls, same source as total_requests),
+            # excluding internal/probe/unattributed tags so the number is honest.
             try:
                 cur.execute(
-                    "SELECT COUNT(DISTINCT platform) FROM mcp_upgrade_signals "
+                    "SELECT COUNT(DISTINCT platform) FROM mcp_tool_calls "
                     "WHERE created_at >= NOW() - INTERVAL '30 days' "
-                    "AND platform IS NOT NULL AND platform != ''"
+                    "AND platform IS NOT NULL "
+                    "AND platform NOT IN ('', 'unknown', 'mcp') "
+                    "AND platform NOT ILIKE '%probe%' "
+                    "AND platform NOT ILIKE '%dchub%' "
+                    "AND platform NOT ILIKE '%harness%'"
                 )
                 out["active_platforms"] = int(cur.fetchone()[0] or 0)
             except Exception:

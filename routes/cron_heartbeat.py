@@ -382,6 +382,25 @@ _DISPATCH = [
      f"{BASE}/api/v1/admin/brain/strategic-digest/send",
      "POST",
      lambda now: True),
+
+    # 2026-07-03: RE-WIRE the acquisition + measurement loops that were built
+    # but never scheduled (a root cause of the flat "just us" reach). The
+    # audience master-shell measures real agents, audits GEO coverage, and ACTS
+    # on the single biggest broad-query discovery gap per tick; admin-gated
+    # (_hit sends X-Admin-Key), killable via AUDIENCE_MASTER_DISABLED, acts on
+    # one gap/day. Daily 05:xx UTC.
+    ("audience_master_tick_daily",
+     f"{BASE}/api/v1/admin/audience/master-tick",
+     "POST",
+     lambda now: now.hour == 5 and now.minute < 55),
+
+    # reach-rollup persists the weekly external-agent trend (was dark → the
+    # /ai/reach/trend line showed zeroed weeks after the March backfill).
+    # Pure read/aggregate. Daily 02:xx UTC.
+    ("reach_rollup_daily",
+     f"{BASE}/api/cron/reach-rollup",
+     "POST",
+     lambda now: now.hour == 2 and now.minute < 55),
 ]
 
 

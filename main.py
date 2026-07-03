@@ -5586,6 +5586,46 @@ if IS_RAILWAY and not IS_FAILOVER and _ROLE_RUNS_BG:
     except Exception as _e:
         print(f"[leader-election] could not start keepalive loop: {_e}", flush=True)
 
+# ── Self-driving cron (2026-07-03) ─────────────────────────────────────────
+# The external caller that pinged /api/v1/cron/heartbeat every 5 min died
+# 2026-06-08, silently stalling media posting, the strategic digest, warmers
+# and outreach for ~24 days (the platform reverted to "just us"). Drive the
+# dispatcher IN-PROCESS on the leader worker so growth automation never again
+# depends on an off-repo pinger. Every dispatched job is idempotent (dedup by
+# week/slot/day), so a returning external cron just double-fires harmlessly.
+# Leader-gated (single-fire across replicas) + DCHUB_ROLE=worker only; killable
+# via DCHUB_SELF_HEARTBEAT_DISABLE=1.
+def _cron_self_heartbeat_loop():
+    import urllib.request as _uhb
+    _hb_url = f"http://127.0.0.1:{os.environ.get('PORT', '8080')}/api/v1/cron/heartbeat"
+    time.sleep(120)  # let blueprints finish registering before first fire
+    while True:
+        try:
+            if ((not IS_FAILOVER) and is_current_leader()
+                    and os.environ.get("DCHUB_SELF_HEARTBEAT_DISABLE", "").lower()
+                    not in ("1", "true", "yes")):
+                try:
+                    _req = _uhb.Request(_hb_url, data=b"", method="POST",
+                                        headers={"User-Agent": "DCHub-SelfHeartbeat/1.0",
+                                                 "X-DC-Internal-Cron": "1"})
+                    with _uhb.urlopen(_req, timeout=20) as _r:
+                        _r.read(256)
+                except Exception as _e:
+                    print(f"[self-heartbeat] dispatch failed: {_e}", flush=True)
+        except Exception as _e:
+            print(f"[self-heartbeat] loop error: {_e}", flush=True)
+        time.sleep(300)  # every 5 minutes
+
+if IS_RAILWAY and not IS_FAILOVER and _ROLE_RUNS_BG:
+    try:
+        import threading as _hb_threading
+        _hb_threading.Thread(target=_cron_self_heartbeat_loop,
+                             name="cron-self-heartbeat", daemon=True).start()
+        print("🫀 [self-heartbeat] in-process 5-min cron driver started "
+              "(replaces dead external pinger)", flush=True)
+    except Exception as _e:
+        print(f"[self-heartbeat] could not start: {_e}", flush=True)
+
 ENABLE_DISCOVERY_THREADS = IS_RAILWAY and not IS_FAILOVER
 if IS_RAILWAY and not IS_FAILOVER:
     ENABLE_BACKGROUND_SCHEDULERS = False  # external scheduler service runs jobs
