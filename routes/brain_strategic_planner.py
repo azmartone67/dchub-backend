@@ -681,7 +681,9 @@ def _build_prompt(ctx: dict) -> str:
 
 def _call_claude(prompt: str) -> Optional[dict]:
     """Call Claude with the strategic prompt. Walks the brain_models
-    fallback chain on 404 (opus-4-8 → sonnet-4-5 → haiku-4-5)."""
+    fallback chain on 404/timeout (fable-5 → opus-4-8 → sonnet-4-5 →
+    haiku-4-5). fable-5 gets its own transport config — see the
+    per-model block below."""
     if not _ANTHROPIC_KEY:
         logger.warning("L6 strategic: ANTHROPIC_API_KEY unset")
         return None
@@ -692,20 +694,44 @@ def _call_claude(prompt: str) -> Optional[dict]:
         logger.warning("L6 strategic: model registry import failed: %s", e)
         return None
 
+    try:
+        from utils.anthropic_helper import anthropic_messages_url
+    except Exception:
+        anthropic_messages_url = None  # degrade to direct below
+
     chain = resolve_chain(brain_model_for("reasoning"))
     last_err = None
     for model in chain:
+        # ── Per-model transport (2026-07-02, fable-timeout fix) ──────
+        # fable-5: extended thinking is ALWAYS ON and has NO budget knob
+        # (`thinking:{type:"disabled"}` and `budget_tokens` both return
+        # 400 on fable-5), so reasoning tokens are spent out of
+        # max_tokens BEFORE the JSON answer. Two consequences:
+        #   · max_tokens needs headroom for thinking + the ~10-16k-char
+        #     rec JSON → 32000 (16000 lets a long think truncate the
+        #     answer mid-string → "Unterminated string" parse failure).
+        #   · wall-clock routinely runs 2-4 min. The CF AI Gateway edge
+        #     kills long-poll requests at ~90-100s — every fable run
+        #     died with "Read timed out (read timeout=90)" and silently
+        #     degraded to sonnet/haiku, so the strategic recs were never
+        #     Fable-quality. The fable leg therefore goes DIRECT to
+        #     api.anthropic.com (same ANTHROPIC_API_KEY) with a 240s
+        #     read budget — fine, we run in a bg thread.
+        # Fallback models (opus/sonnet/haiku — no thinking config): keep
+        # the AI Gateway (caching + observability) with a smaller 120s
+        # read timeout; the gateway's own ~100s edge ceiling makes a
+        # longer client budget pointless there anyway.
+        _is_fable = model.startswith("claude-fable")
+        if _is_fable or anthropic_messages_url is None:
+            _url = "https://api.anthropic.com/v1/messages"
+        else:
+            _url = anthropic_messages_url()
+        _timeout = (10, 240) if _is_fable else (10, 120)   # (connect, read)
+        _max_tokens = 32000 if _is_fable else 16000
         try:
             import requests
             r = requests.post(
-                # 2026-07-02: DIRECT, not anthropic_messages_url(). This
-                # reasoning call runs 60-120s+ on fable-5; through the CF AI
-                # Gateway it died at the edge on EVERY run — burning the full
-                # client timeout, then falling back a model, so fable never
-                # actually answered. At <=2 runs/week the gateway's caching/
-                # observability is worth nothing here; go straight to
-                # Anthropic with a 180s budget (we run in a bg thread).
-                "https://api.anthropic.com/v1/messages",
+                _url,
                 headers={
                     "x-api-key":         _ANTHROPIC_KEY,
                     "anthropic-version": "2023-06-01",
@@ -716,15 +742,15 @@ def _call_claude(prompt: str) -> Optional[dict]:
                     "model":      model,
                     # 2026-06-08 FIX: was 3200 — too small for the ~20-rec JSON
                     # once the prompt was enriched (r63 history+rejection memory).
-                    # The response truncated mid-string (~char 8-10k) → "Unterminated
-                    # string" JSON parse failure → all models failed → no recs persisted
-                    # → the weekly briefing silently never delivered. 16000 fits the
-                    # full synthesis with headroom (safe for opus-4-8/sonnet-4-5/haiku-4-5).
-                    "max_tokens": 16000,
+                    # 16000 fits the full synthesis for the non-thinking fallbacks
+                    # (opus-4-8/sonnet-4-5/haiku-4-5); fable-5 gets 32000 because
+                    # always-on thinking is billed against max_tokens too — see
+                    # the per-model transport block above.
+                    "max_tokens": _max_tokens,
                     "system":     _SYSTEM_PROMPT,
                     "messages":   [{"role": "user", "content": prompt}],
                 },
-                timeout=180,
+                timeout=_timeout,
             )
             if r.status_code == 404:
                 last_err = f"{model}:404"
@@ -736,6 +762,13 @@ def _call_claude(prompt: str) -> Optional[dict]:
                 logger.warning("L6 strategic: %s", last_err)
                 continue
             body = r.json() or {}
+            if body.get("stop_reason") == "max_tokens":
+                # fable-5 trap: thinking is billed against max_tokens, so a
+                # long think can starve the JSON answer. Surface it loudly —
+                # the parse below will likely fail and walk the chain.
+                logger.warning(
+                    "L6 strategic: %s hit max_tokens=%s — answer likely "
+                    "truncated (thinking eats max_tokens)", model, _max_tokens)
             text = "".join(
                 b.get("text", "")
                 for b in (body.get("content") or [])
