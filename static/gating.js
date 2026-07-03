@@ -11,7 +11,7 @@
   var currentTierIdx = 0;
   var sessionId = '';
   var redeemTemplate = 'https://dchub.cloud/api/v1/redeem/{session_id}';
-  var GATING_VERSION = 'phase72.2-localstorage-auth-cachebust';
+  var GATING_VERSION = 'phase74-map-subtree-scope';
 
   // Phase 285: placeholders that DON'T look like real pricing data.
   // Previously rate/amount used "$1,188" which renders identically to a
@@ -46,6 +46,27 @@
 
   var SKIP_TAGS = ['SCRIPT', 'STYLE', 'NOSCRIPT', 'INPUT', 'TEXTAREA',
                     'CODE', 'PRE', 'TEMPLATE', 'IFRAME', 'TITLE', 'META'];
+
+  // phase74 (2026-07-02, INP): the Leaflet map mutates constantly (pan/zoom
+  // re-renders markers, tiles, popups) and every burst used to trigger a full
+  // TreeWalker rescan of document.body — the main INP long-task driver on
+  // /land-power-map (Clarity: 350ms). Map internals never contain gateable MW
+  // text that isn't already gated at the API, so both the observer and the
+  // scanner skip the map subtree entirely. Non-map surfaces (side panels,
+  // score cards, tables) are still scanned and gated exactly as before.
+  function isMapContainerEl(el) {
+    if (el.id === 'map') return true;
+    var cl = el.classList;
+    return !!(cl && (cl.contains('leaflet-pane') || cl.contains('leaflet-container')));
+  }
+  function inMapSubtree(node) {
+    var el = node.nodeType === 1 ? node : node.parentNode;
+    while (el && el.nodeType === 1) {
+      if (isMapContainerEl(el)) return true;
+      el = el.parentNode;
+    }
+    return false;
+  }
 
   function tierIndex(t) {
     var i = TIER_ORDER.indexOf(String(t || 'anonymous').toLowerCase());
@@ -212,10 +233,20 @@
   function scanRoot(root) {
     if (currentTierIdx >= 2) return;
     if (!root) return;
+    // phase74: walk ELEMENT+TEXT so FILTER_REJECT on an element prunes its
+    // ENTIRE subtree in one step (TreeWalker semantics) — the Leaflet map,
+    // scripts/styles and already-gated spans are never descended into,
+    // instead of being re-checked per text node on every rescan.
     var walker = document.createTreeWalker(
-      root, NodeFilter.SHOW_TEXT,
+      root, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT,
       {
         acceptNode: function (n) {
+          if (n.nodeType === 1) {
+            if (isMapContainerEl(n)) return NodeFilter.FILTER_REJECT;
+            if (SKIP_TAGS.indexOf(n.tagName) >= 0) return NodeFilter.FILTER_REJECT;
+            if (n.classList && n.classList.contains('gated-redacted')) return NodeFilter.FILTER_REJECT;
+            return NodeFilter.FILTER_SKIP; // descend, but don't emit elements
+          }
           var p = n.parentNode;
           if (!p) return NodeFilter.FILTER_REJECT;
           if (SKIP_TAGS.indexOf(p.tagName) >= 0) return NodeFilter.FILTER_REJECT;
@@ -265,6 +296,9 @@
       for (var i = 0; i < muts.length; i++) {
         var m = muts[i];
         if (m.type !== 'childList' && m.type !== 'characterData') continue;
+        // phase74: map-internal mutations (markers, tiles, popups) never carry
+        // gateable text that isn't API-gated — don't let them trigger rescans.
+        if (inMapSubtree(m.target)) continue;
         var allOurs = true;
         for (var j = 0; j < m.addedNodes.length; j++) {
           var node = m.addedNodes[j];
