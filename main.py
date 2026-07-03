@@ -37192,3 +37192,47 @@ def _outreach_exclude_list():
     except Exception as e:
         return jsonify({"error": str(e)[:300]}), 500
 
+
+
+# ── r-perftrace2 (TEMP 2026-07-03): per-after-hook timing for ?_perf=1 ────────
+# Wraps every registered app-level after_request func so each logs its own
+# duration on a ?_perf=1 probe request. Localizes the ~588ms after_chain to a
+# specific hook (or, if the per-hook sum << after_chain, to Flask machinery
+# like save_session/finalize). REMOVE after attribution.
+def _perf_wrap_after_hooks():
+    import time as _pt, logging as _pl
+    from functools import wraps as _w
+    _log = _pl.getLogger('perfhook')
+    try:
+        funcs = app.after_request_funcs.get(None, [])
+    except Exception:
+        return
+    new = []
+    for _fn in funcs:
+        if getattr(_fn, '_perf_wrapped', False):
+            new.append(_fn); continue
+        def _mk(fn):
+            @_w(fn)
+            def _inner(resp):
+                try:
+                    if b'_perf=1' in (request.query_string or b''):
+                        _s = _pt.monotonic()
+                        try:
+                            return fn(resp)
+                        finally:
+                            _log.warning("[PERFHOOK] %s %.1fms",
+                                         getattr(fn, '__name__', '?'),
+                                         (_pt.monotonic() - _s) * 1000)
+                except Exception:
+                    pass
+                return fn(resp)
+            _inner._perf_wrapped = True
+            return _inner
+        new.append(_mk(_fn))
+    app.after_request_funcs[None] = new
+
+try:
+    _perf_wrap_after_hooks()
+except Exception:
+    pass
+# ── end r-perftrace2 ─────────────────────────────────────────────────────────
