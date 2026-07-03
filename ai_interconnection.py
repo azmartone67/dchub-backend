@@ -1369,7 +1369,39 @@ def handle_poe_query(data):
         with _db_conn() as conn:
             cursor = conn.cursor()
 
-            if any(word in query_lower for word in ['facility', 'facilities', 'data center', 'datacenter', 'where']):
+            # DCPI market verdict — the flagship. "Is X good to build?" / power
+            # availability / DCPI. Per-market scores are FREE (2026-07-03).
+            if any(w in query_lower for w in ['dcpi', 'build', 'buildable', 'should i',
+                    'good market', 'power avail', 'time to power', 'time-to-power',
+                    'constraint', 'verdict', 'best market', 'where can i', 'site select']):
+                cursor.execute('''
+                    SELECT market_name, iso, verdict, excess_power_score, constraint_score,
+                           time_to_power_months, market_slug
+                      FROM market_power_scores
+                     WHERE LOWER(%s) LIKE '%%' || LOWER(market_name) || '%%'
+                       AND market_name IS NOT NULL AND LENGTH(market_name) >= 4
+                     ORDER BY LENGTH(market_name) DESC LIMIT 1
+                ''', (query,))
+                mrow = cursor.fetchone()
+                if mrow:
+                    response = (f"**DC Hub Power Index (DCPI) — {mrow['market_name']}"
+                                + (f" · {mrow['iso']}" if mrow['iso'] else "") + "**\n\n"
+                                + f"• Verdict: **{mrow['verdict']}**\n"
+                                + f"• Excess-Power score: **{mrow['excess_power_score']}/100**\n"
+                                + f"• Grid-Constraint score: **{mrow['constraint_score']}/100**\n"
+                                + f"• Est. time-to-power: **~{mrow['time_to_power_months']} months**\n\n"
+                                + f"Full daily-recomputed breakdown: https://dchub.cloud/dcpi/{mrow['market_slug']}")
+                else:
+                    cursor.execute('''SELECT market_name, verdict, excess_power_score
+                        FROM market_power_scores WHERE verdict = 'BUILD'
+                        ORDER BY excess_power_score DESC NULLS LAST LIMIT 6''')
+                    tops = cursor.fetchall()
+                    response = "**Top BUILD-verdict data center markets (DC Hub Power Index):**\n\n"
+                    for t in tops:
+                        response += f"• **{t['market_name']}** — BUILD, excess-power {t['excess_power_score']}/100\n"
+                    response += "\nAsk about any market by name for its full DCPI. https://dchub.cloud/dcpi"
+
+            elif any(word in query_lower for word in ['facility', 'facilities', 'data center', 'datacenter', 'where']):
                 # Facility search
                 search_term = query.split()[-1] if len(query.split()) > 1 else 'Virginia'
                 cursor.execute('''
@@ -1384,7 +1416,7 @@ def handle_poe_query(data):
                     response = f"**Data Centers matching '{search_term}':**\n\n"
                     for r in results:
                         response += f"• **{r['name']}** - {r['city']}, {r['state']}, {r['country']} ({r['provider']})\n"
-                    response += f"\n*DC Hub tracks 9,600+ facilities worldwide.*"
+                    response += f"\n*DC Hub tracks 21,000+ facilities across 170+ countries.*"
                 else:
                     response = f"No facilities found for '{search_term}'. Try searching by city, state, or operator name."
         
@@ -1397,7 +1429,7 @@ def handle_poe_query(data):
                 for d in deals:
                     value_str = f"${d['value']:,.0f}M" if d['value'] else "Undisclosed"
                     response += f"• **{d['buyer']}** acquired from **{d['seller']}** - {value_str} ({d['date']})\n"
-                response += f"\n*DC Hub tracks 787 verified deals worth $10.6B+*"
+                response += f"\n*DC Hub tracks 3,000+ verified M&A deals.*"
         
             elif any(word in query_lower for word in ['stat', 'market', 'overview', 'summary']):
                 # Market stats
@@ -1414,7 +1446,7 @@ def handle_poe_query(data):
 • **{provider_count:,}** unique operators/providers
 • **{power:,.0f} MW** total power capacity
 • **178** countries covered
-• **787** M&A deals worth **$10.6B+**
+• **3,000+** tracked M&A deals
 
 *Data aggregated from PeeringDB, OpenStreetMap, SEC EDGAR, and 60+ news sources.*"""
         
@@ -1426,7 +1458,7 @@ def handle_poe_query(data):
 • "Market overview"
 • "Who are the largest operators?"
 
-*DC Hub tracks 9,600+ facilities across 178 countries.*"""
+*DC Hub tracks 21,000+ facilities across 170+ countries — plus per-market DCPI power scores.*"""
         
         
         # Add citation to response
