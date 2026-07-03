@@ -144,7 +144,9 @@ def _eia_request(path, params=None):
 
     url = f"{EIA_BASE}/{path}"
     if base_params:
-        url += '%s' + urllib.parse.urlencode(base_params, doseq=True)
+        # '?' not '%s' — a bad restore glued the query string onto the path,
+        # so EIA saw /data/%sapi_key=... and 400'd every request (dead layer).
+        url += '?' + urllib.parse.urlencode(base_params, doseq=True)
 
     try:
         req = urllib.request.Request(url, headers={'User-Agent': 'DCHub/1.0'})
@@ -254,7 +256,11 @@ def power_plants_nearby():
     if lat is None or lng is None:
         return jsonify({'error': 'lat and lng parameters required'}), 400
 
-    radius = request.args.get('radius', 25, type=float)
+    radius = request.args.get('radius', type=float)
+    if radius is None:
+        # accept radius_km as an alias (map/agent callers pass km)
+        radius_km = request.args.get('radius_km', type=float)
+        radius = radius_km * 0.621371 if radius_km else 25
     fuel = request.args.get('fuel', '')
     min_mw = request.args.get('min_mw', 1, type=float)
     status = request.args.get('status', 'OP')
@@ -1030,6 +1036,100 @@ def _coords_to_state(lat, lng):
                 best_dist = dist
                 best = state
     return best
+
+
+# =============================================================================
+# Legacy grid aliases — /api/v1/grid/caiso/fuelmix + /demand
+# =============================================================================
+# The served land-power map JS (js/gridstatus-integration.js) still calls these
+# paths; the original main.py implementations were lost in a route extraction
+# (see endpoint_migration_guide.py). Both paths are already on main.py's
+# public/bypass lists. Backed by EIA hourly RTO data (respondent CISO) via the
+# same _eia_request client, shaped to what the map JS reads.
+
+@power_plant_bp.route('/api/v1/grid/caiso/fuelmix')
+def grid_caiso_fuelmix():
+    """CAISO current fuel mix. Legacy shape: {success, sources, raw, totalMW,
+    renewablesMW, renewablesPct}."""
+    cached = _get_cached('grid_caiso_fuelmix')
+    if cached:
+        return jsonify(cached)
+
+    data = _eia_request('electricity/rto/fuel-type-data/data/', {
+        'frequency': 'hourly',
+        'data[0]': 'value',
+        'facets[respondent][]': 'CISO',
+        'sort[0][column]': 'period',
+        'sort[0][direction]': 'desc',
+        'length': 40,
+    })
+    rows = data.get('response', {}).get('data', []) if 'error' not in data else []
+    if not rows:
+        return jsonify({'success': False, 'error': data.get('error', 'No fuel-mix data')}), 502
+
+    latest = rows[0].get('period')
+    sources = {}
+    for row in rows:
+        if row.get('period') != latest:
+            continue
+        name = row.get('type-name') or row.get('fueltype') or 'Other'
+        mw = _safe_float(row.get('value')) or 0
+        sources[name] = sources.get(name, 0) + max(mw, 0)
+    total = sum(sources.values())
+    renewables = sum(sources.get(k, 0) for k in ('Solar', 'Wind', 'Hydro', 'Geothermal'))
+
+    result = {
+        'success': True,
+        'iso': 'CAISO',
+        'source': 'EIA hourly RTO (respondent CISO)',
+        'timestamp': latest,
+        'sources': {k: round(v) for k, v in sources.items()},
+        'raw': sorted(([k, round(v)] for k, v in sources.items()), key=lambda kv: -kv[1]),
+        'totalMW': round(total),
+        'renewablesMW': round(renewables),
+        'renewablesPct': round(renewables / total * 100, 1) if total else None,
+    }
+    _set_cached('grid_caiso_fuelmix', result)
+    return jsonify(result)
+
+
+@power_plant_bp.route('/api/v1/grid/caiso/demand')
+def grid_caiso_demand():
+    """CAISO current demand + upcoming day-ahead forecast peak. Legacy shape:
+    {success, currentDemandMW, dayAheadForecastMW}."""
+    cached = _get_cached('grid_caiso_demand')
+    if cached:
+        return jsonify(cached)
+
+    data = _eia_request('electricity/rto/region-data/data/', {
+        'frequency': 'hourly',
+        'data[0]': 'value',
+        'facets[respondent][]': 'CISO',
+        'facets[type][]': ['D', 'DF'],
+        'sort[0][column]': 'period',
+        'sort[0][direction]': 'desc',
+        'length': 72,
+    })
+    rows = data.get('response', {}).get('data', []) if 'error' not in data else []
+    if not rows:
+        return jsonify({'success': False, 'error': data.get('error', 'No demand data')}), 502
+
+    current = next((r for r in rows if r.get('type') == 'D'), None)
+    current_period = current.get('period') if current else None
+    # day-ahead forecast peak = max DF over periods at/after the latest actual
+    upcoming_df = [_safe_float(r.get('value')) or 0 for r in rows
+                   if r.get('type') == 'DF' and (not current_period or r.get('period', '') >= current_period)]
+
+    result = {
+        'success': True,
+        'iso': 'CAISO',
+        'source': 'EIA hourly RTO (respondent CISO)',
+        'timestamp': current_period,
+        'currentDemandMW': round(_safe_float(current.get('value')) or 0) if current else None,
+        'dayAheadForecastMW': round(max(upcoming_df)) if upcoming_df else None,
+    }
+    _set_cached('grid_caiso_demand', result)
+    return jsonify(result)
 
 
 # =============================================================================
