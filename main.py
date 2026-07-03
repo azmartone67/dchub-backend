@@ -15978,10 +15978,17 @@ def admin_gsc_submit_sitemap():
     try:
         from google_search_console import auto_submit_sitemap
         out = auto_submit_sitemap()
-        # surface verified-state so a cron log shows WHY a submit no-ops
+        # surface verified-state so a cron log shows WHY a submit no-ops.
+        # r-gsc-serialize (2026-07-03): gsc_status() is a Flask route returning
+        # a Response (jsonify), NOT a dict — storing it here made the OUTER
+        # jsonify() raise "Object of type Response is not JSON serializable",
+        # so every submit reported that opaque error and MASKED the real
+        # auto_submit result (success flag / Google status_code / 'Not
+        # configured'). Extract the JSON body so the endpoint reports honestly.
         try:
             from google_search_console import gsc_status as _gss
-            out['gsc_status'] = _gss()
+            _st = _gss()
+            out['gsc_status'] = _st.get_json() if hasattr(_st, 'get_json') else _st
         except Exception:
             pass
         return jsonify(ok=bool(out.get('success')), result=out), 200
