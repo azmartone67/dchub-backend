@@ -135,6 +135,45 @@ def _summarize(step: str, r: dict) -> dict:
     return s
 
 
+def _acquisition_scoreboard() -> dict:
+    """2026-07-03 — the growth north-star, read every tick. Pulls the weekly
+    reach trend (distinct external agents + NEW external IPs/week) so the brain
+    is ORIENTED on acquisition, not just reliability. Flags a decline vs the
+    trailing 3-week average so a falling agent-acquisition number becomes a
+    visible, tracked signal (it powers the human digest + future auto-actions).
+    Best-effort; never raises."""
+    r = _call("GET", "/api/v1/ai/reach/trend?cb=master", use_admin=False, timeout=30)
+    if not r.get("ok"):
+        return {"ok": False, "error": r.get("error", "reach_trend_unreachable")}
+    d = r.get("data") or {}
+    cur = d.get("current") or {}
+    weeks = d.get("weeks") or d.get("trend") or []
+    new_now = cur.get("new_external_ips")
+    agents_now = cur.get("distinct_external_ips")
+    # Decline is judged on COMPLETE weeks only — the current week is partial and
+    # would always read low. Series of new_external_ips; last element is the
+    # in-progress week, so compare the last-complete week to the 3 before it.
+    series = [w.get("new_external_ips") for w in weeks
+              if isinstance(w.get("new_external_ips"), int)]
+    last_complete = series[-2] if len(series) >= 2 else None
+    prior = series[-5:-2] if len(series) >= 5 else series[:-2]
+    baseline = round(sum(prior) / len(prior), 1) if prior else None
+    declining = (isinstance(last_complete, int) and baseline is not None
+                 and last_complete < baseline * 0.8)
+    top = sorted((cur.get("per_platform") or []),
+                 key=lambda p: p.get("agents", 0), reverse=True)[:4]
+    return {
+        "ok": True,
+        "new_agents_this_week": new_now,
+        "active_agents_this_week": agents_now,
+        "baseline_new_3wk_avg": baseline,
+        "declining": bool(declining),
+        "top_sources": [{"platform": p.get("platform_id"),
+                         "agents": p.get("agents")} for p in top],
+        "week_start": cur.get("week_start"),
+    }
+
+
 def _human_gated_digest() -> dict:
     """Read the public action-queue and bucket out the money/positioning findings
     that the master tick will NEVER auto-act — surfaced for the human."""
@@ -294,6 +333,12 @@ def _run_master_tick(dry: bool, tiers: set) -> dict:
         # Money/positioning findings the brain must NOT auto-act on.
         report["human_decisions"] = _human_gated_digest()
 
+    # ── Growth north-star — read every tick so the brain is oriented on
+    #    acquisition, not just reliability. A declining new-agents number is
+    #    surfaced as a flagged decision (the levers that fix it —
+    #    agent-pitch content, GEO answers, registry depth — are human/gated).
+    report["acquisition"] = _acquisition_scoreboard()
+
     # ── Verify — confirm prior actions resolved their findings ──────
     if "verify" in tiers:
         report["tiers_run"].append("verify")
@@ -301,10 +346,13 @@ def _run_master_tick(dry: bool, tiers: set) -> dict:
                                            _call("POST", "/api/v1/brain/autopilot/verify-pending")))
 
     # Roll-up headline.
+    _acq = report.get("acquisition") or {}
     report["headline"] = {
         "steps_ok": sum(1 for s in report["steps"] if s.get("ok")),
         "steps_total": len(report["steps"]),
         "human_decisions_pending": (report.get("human_decisions") or {}).get("count", 0),
+        "new_agents_this_week": _acq.get("new_agents_this_week"),
+        "acquisition_declining": _acq.get("declining"),
     }
     _persist(report)
     return report
