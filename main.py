@@ -1919,6 +1919,20 @@ try:
     except Exception as _gms:
         import logging
         logging.getLogger(__name__).warning('growth_master_shell wiring failed: %s', _gms)
+    # 2026-07-03: AI-Adoption master shell — the loop whose single north-star is
+    # DISTINCT EXTERNAL AI AGENTS / WEEK. Orchestrates existing pieces (ai_reach_rollup,
+    # brain_ecosystem_watch, mcp_registry_outreach, geo_autopublish) across 5 tiers:
+    # measure · discover (queue registry submissions) · legibility (self-surfaces + GEO
+    # preview) · reinforcement (which platform to tune tool-copy for) · verify. Writes
+    # default OFF (draft/queue only). Tracking GUI at GET /api/v1/admin/ai-adoption/dashboard.
+    # Kill: AI_ADOPTION_MASTER_DISABLED=1. Auto-submit gate: AI_ADOPTION_SUBMIT_ENABLED=1.
+    try:
+        from routes.ai_adoption_master_shell import ai_adoption_master_shell_bp
+        app.register_blueprint(ai_adoption_master_shell_bp)
+        print("[main] ai_adoption_master_shell_bp registered: POST /api/v1/admin/ai-adoption/master-tick", flush=True)
+    except Exception as _aims:
+        import logging
+        logging.getLogger(__name__).warning('ai_adoption_master_shell wiring failed: %s', _aims)
     # 2026-07-03: Media master shell (growth lever #4) — keeps the analyst feed
     # publishing; when starved it fires a number-led evergreen. Kill: MEDIA_MASTER_DISABLED.
     try:
