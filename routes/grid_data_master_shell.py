@@ -351,35 +351,42 @@ _GAP_FINDINGS = [
 
 def _file_gap_findings() -> int:
     """Upsert the standing code-shaped gaps into brain_findings (idempotent) so the
-    brain's autonomy loop can draft them. Returns count filed."""
+    brain's autonomy loop can draft them. Returns count actually inserted/updated.
+
+    NOTE: upsert_brain_finding is SAVEPOINT-wrapped, so it needs a NON-autocommit
+    connection — ai_reach._conn() is autocommit=True, under which the savepoints
+    fail-and-skip silently (no row written). So open our own transactional conn."""
     try:
         from routes.brain_findings_writer import upsert_brain_finding
     except Exception:
         return 0
-    c = _conn()
-    if c is None:
+    db = os.environ.get("DATABASE_URL")
+    if not db:
         return 0
+    import psycopg2
+    conn = None
     filed = 0
     try:
-        with c.cursor() as cur:
+        conn = psycopg2.connect(db, sslmode="require", connect_timeout=8)
+        conn.autocommit = False
+        with conn.cursor() as cur:
             for issue, detail in _GAP_FINDINGS:
                 try:
-                    upsert_brain_finding(
-                        cur,
-                        issue=issue,
+                    r = upsert_brain_finding(
+                        cur, issue=issue,
                         url="/api/v1/admin/grid-data/master-tick",
-                        count=1,
-                        detail=detail,
-                        detector="grid_data_master",
+                        count=1, detail=detail, detector="grid_data_master",
                     )
-                    filed += 1
+                    if r in ("inserted", "updated"):
+                        filed += 1
                 except Exception:
                     continue
-        c.commit()
+        conn.commit()
     except Exception:
-        return filed
+        try: conn.rollback()
+        except Exception: pass
     finally:
-        try: c.close()
+        try: conn.close()
         except Exception: pass
     return filed
 
@@ -466,7 +473,7 @@ def tier2_score_levers(m: dict) -> dict:
 
 
 # ── TIER 3 — ACT (one bounded action on the weakest lever) ────────────
-def _next_untapped(ingested: dict, prefer_cat: str | None = None,
+def _next_untapped(ingested: dict, prefer_cats: tuple | None = None,
                    prefer_isos: set | None = None) -> dict | None:
     pool = [t for t in TARGET_DATASETS if t["id"] not in ingested]
     if not pool:
@@ -475,8 +482,8 @@ def _next_untapped(ingested: dict, prefer_cat: str | None = None,
         pref = [t for t in pool if t["cat"] == "load_forecast" and t["iso"] in prefer_isos]
         if pref:
             return pref[0]
-    if prefer_cat:
-        pref = [t for t in pool if t["cat"] == prefer_cat]
+    if prefer_cats:
+        pref = [t for t in pool if t["cat"] in prefer_cats]
         if pref:
             return pref[0]
     return pool[0]
@@ -511,9 +518,9 @@ def tier3_act(m: dict, levers: dict) -> dict:
                 "dispatched": r.get("dispatched")}
 
     # breadth / depth / forecast → absorb the next relevant untapped dataset
-    prefer_cat = lever if lever in _DEPTH_CATS else None
+    prefer_cats = _DEPTH_CATS if lever == "depth" else None
     prefer_isos = (_LOAD_FC_ISOS - set(m.get("forecast_isos_tapped") or [])) if lever == "forecast" else None
-    target = _next_untapped(ingested, prefer_cat=prefer_cat, prefer_isos=prefer_isos)
+    target = _next_untapped(ingested, prefer_cats=prefer_cats, prefer_isos=prefer_isos)
     if target is None:
         target = _stalest_tapped(ingested)
         mode = "maintain_freshness"
