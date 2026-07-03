@@ -77,10 +77,19 @@ def _truthy(v) -> bool:
 
 
 def _enabled() -> bool:
-    """The self-director ships DARK. Default OFF so a self-running loop can't
-    burn API budget or surface half-baked analysis until an operator flips the
-    flag. When off, a tick is a NO-OP that makes ZERO model calls."""
-    return _truthy(os.environ.get("BRAIN_SELF_DIRECT_ENABLED"))
+    """ARMED 2026-07-03 (owner greenlight — "brain acts autonomously, shadow-graded
+    first"). Now ON by default, but this loop is still PROPOSE-ONLY: its only write
+    is an agenda row a human reviews — it NEVER merges or acts externally — and cost
+    is bounded by BRAIN_SELF_DIRECT_DAILY_CAP (default 4 investigations/day). Kill:
+    BRAIN_SELF_DIRECT_DISABLED=1 (or BRAIN_SELF_DIRECT_ENABLED=0) makes a tick a
+    NO-OP with ZERO model calls. An explicit BRAIN_SELF_DIRECT_ENABLED is honored
+    either way, so an operator retains full control."""
+    if _truthy(os.environ.get("BRAIN_SELF_DIRECT_DISABLED")):
+        return False
+    _explicit = os.environ.get("BRAIN_SELF_DIRECT_ENABLED")
+    if _explicit is not None and str(_explicit).strip() != "":
+        return _truthy(_explicit)
+    return True
 
 
 def _daily_cap() -> int:
