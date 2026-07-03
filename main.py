@@ -1895,6 +1895,18 @@ try:
     except Exception as _aums:
         import logging
         logging.getLogger(__name__).warning('agent_usefulness_master_shell wiring failed: %s', _aums)
+    # 2026-07-03: Agent-onboarding master shell — one per-platform onboarding scoreboard
+    # across every AI platform (Claude/ChatGPT/Gemini/Grok/Perplexity/Copilot/Mistral/HF/
+    # Poe/…): live probes (mcp reachable+transport+auth, A2A card, robots AI-bot allowlist,
+    # /reach traffic) → 0-100 score + a ranked NEXT-ACTION worklist. Read-only + worklist.
+    # POST /api/v1/admin/agent-onboarding/master-tick. Kill: AGENT_ONBOARDING_MASTER_DISABLED.
+    try:
+        from routes.agent_onboarding_master_shell import agent_onboarding_master_shell_bp
+        app.register_blueprint(agent_onboarding_master_shell_bp)
+        print("[main] agent_onboarding_master_shell_bp registered: POST /api/v1/admin/agent-onboarding/master-tick", flush=True)
+    except Exception as _aoms:
+        import logging
+        logging.getLogger(__name__).warning('agent_onboarding_master_shell wiring failed: %s', _aoms)
     # 2026-07-03: Growth master shell — the self-driving GROWTH orchestrator. Every
     # tick it scores 5 levers (discovery, measurement, autonomy, media, distribution),
     # finds the weakest, and pulls ONE bounded action. Persists a 0-100 growth score.

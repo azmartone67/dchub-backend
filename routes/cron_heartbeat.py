@@ -438,6 +438,16 @@ _DISPATCH = [
      "POST",
      lambda now: now.hour == 9 and now.minute < 55),
 
+    # 2026-07-03: AGENT-ONBOARDING master shell — daily 08:xx UTC. One per-platform
+    # onboarding scoreboard (Claude/ChatGPT/Gemini/Grok/Perplexity/Copilot/Mistral/
+    # HF/Poe/…): probes mcp reachability+transport+auth, A2A card, robots AI-bot
+    # allowlist, and real /reach traffic → 0-100 score + ranked next-action worklist.
+    # Read-only + worklist. Kill: AGENT_ONBOARDING_MASTER_DISABLED.
+    ("agent_onboarding_master_tick_daily",
+     f"{BASE}/api/v1/admin/agent-onboarding/master-tick",
+     "POST",
+     lambda now: now.hour == 8 and now.minute < 55),
+
     # ─────────────────────────────────────────────────────────────────────
     # 2026-07-03: RE-HOMED off the retiring off-repo Replit scheduler
     # (dchub-scheduler.py). Replit is decommissioned; these five Replit jobs
