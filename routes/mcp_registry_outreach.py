@@ -256,6 +256,14 @@ DISCOVERY_TARGETS = [
         # (listed — audit-only, same as Smithery/mcp.so). Claiming the
         # listing still requires an interactive login at /claim —
         # owner action, can't be automated.
+        # ⚠ 2026-07-02: yellowmcp ALSO carries a stale DUPLICATE at
+        # /servers/dc-hub-data-center-intelligence — 4.4% uptime, an
+        # ancient description (15 tools / $49/mo / "50,000 facilities"),
+        # probing the DEAD Smithery gateway
+        # server.smithery.ai/@azmartone67/dchub-nexus/mcp (the defunct
+        # dchub-nexus slug). Owner action: claim + repoint to
+        # dchub.cloud/mcp, or Report for removal — it sits next to the
+        # healthy entry in reliability-sorted results.
         "homepage":    "https://yellowmcp.com/servers/cloud-dchub-mcp-server",
         "submit_url":  "https://yellowmcp.com/claim",
         "submit_method":"refresh_only",
