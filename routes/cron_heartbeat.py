@@ -413,6 +413,15 @@ _DISPATCH = [
      f"{BASE}/api/cron/reach-rollup",
      "POST",
      lambda now: now.hour == 2 and now.minute < 55),
+
+    # 2026-07-03: GROWTH master shell — scores 5 growth levers (discovery,
+    # measurement, autonomy, media, distribution), finds the weakest, and pulls
+    # ONE bounded, server-side-deduped action. Every 4h. Killable via
+    # GROWTH_MASTER_DISABLED / GROWTH_MASTER_ACT_DISABLED (shadow) / GROWTH_LEVER_*_OFF.
+    ("growth_master_tick_4h",
+     f"{BASE}/api/v1/admin/growth/master-tick",
+     "POST",
+     lambda now: now.hour % 4 == 0 and now.minute < 5),
 ]
 
 

@@ -2297,14 +2297,25 @@ def ai_analytics():
             # traffic table (mcp_tool_calls, same source as total_requests),
             # excluding internal/probe/unattributed tags so the number is honest.
             try:
+                # 2026-07-03 tighten: also drop raw UA-string junk (spaces, long
+                # strings, script/bot tokens) so this counts clean BRAND platforms
+                # (~honest single-digit count), not 171 distinct UA-derived tags.
                 cur.execute(
                     "SELECT COUNT(DISTINCT platform) FROM mcp_tool_calls "
                     "WHERE created_at >= NOW() - INTERVAL '30 days' "
                     "AND platform IS NOT NULL "
                     "AND platform NOT IN ('', 'unknown', 'mcp') "
+                    "AND platform NOT LIKE '% %' "
+                    "AND char_length(platform) <= 24 "
                     "AND platform NOT ILIKE '%probe%' "
                     "AND platform NOT ILIKE '%dchub%' "
-                    "AND platform NOT ILIKE '%harness%'"
+                    "AND platform NOT ILIKE '%harness%' "
+                    "AND platform NOT ILIKE '%bot%' "
+                    "AND platform NOT ILIKE '%curl%' "
+                    "AND platform NOT ILIKE '%python%' "
+                    "AND platform NOT ILIKE '%http%' "
+                    "AND platform NOT ILIKE '%mozilla%' "
+                    "AND platform NOT ILIKE '%node%'"
                 )
                 out["active_platforms"] = int(cur.fetchone()[0] or 0)
             except Exception:
