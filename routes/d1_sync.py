@@ -185,6 +185,39 @@ def _build_facility_slug(row: dict) -> str:
     return ""
 
 
+def _assign_unique_slugs(rows: list) -> None:
+    """Populate row['__slug'] with a UNIQUE, non-empty slug for every row.
+
+    History (2026-07-03): D1's `facilities` table used to declare `slug TEXT
+    UNIQUE`. _build_facility_slug() returns "" for any facility without a usable
+    name (~231 of the ~4.1k eligible rows), so every no-name row shared slug="".
+    A CF D1 batch executes as ONE transaction, so a single duplicate slug
+    aborted the whole batch (SQLITE_CONSTRAINT_UNIQUE) and dropped it to the slow
+    per-row fallback — where the colliding rows failed individually and never
+    synced. That (not the batch-body bug alone) is why D1 was frozen at ~6.3k.
+    The UNIQUE constraint has since been dropped on D1, but assigning distinct,
+    non-empty slugs is still correct: it makes every facility addressable via the
+    failover /facilities/<slug> route and keeps the mirror tidy.
+
+    We keep the SEO-aligned slug wherever _build_facility_slug produces one,
+    give empty slugs a deterministic id-based value, and de-collide the ~26
+    genuine provider|name duplicates by suffixing the id. Rows are pre-sorted
+    deterministically (ORDER BY power_mw, id) so slug ownership is stable across
+    runs and the mirror does not churn. Result: every row carries a distinct,
+    non-empty slug and batches commit cleanly.
+    """
+    seen = set()
+    for r in rows:
+        rid = str(r.get("id")) if r.get("id") is not None else ""
+        slug = _build_facility_slug(r) or (f"facility-{rid}" if rid else "facility")
+        if slug in seen:
+            slug = f"{slug}-{rid[:8]}" if rid else slug
+            while slug in seen:            # last-resort guarantee of uniqueness
+                slug += "-x"
+        seen.add(slug)
+        r["__slug"] = slug
+
+
 def _run_sync() -> dict:
     """One full sync pass. Returns stats dict."""
     started = time.time()
@@ -211,13 +244,21 @@ def _run_sync() -> dict:
         WHERE df.latitude IS NOT NULL
           AND df.longitude IS NOT NULL
           AND COALESCE(df.is_duplicate, 0) = 0
-        ORDER BY COALESCE(df.power_mw, f.power_mw) DESC NULLS LAST
+        ORDER BY COALESCE(df.power_mw, f.power_mw) DESC NULLS LAST, df.id ASC
         LIMIT 50000
     """)
     out["rows_read"] = len(rows)
     if not rows:
         out["errors"].append("zero rows from Neon — Railway may be down")
         return out
+
+    # 1b) Assign a UNIQUE, non-empty slug to every row BEFORE batching so every
+    # facility is addressable via the failover /facilities/<slug> route (231
+    # no-name rows otherwise resolve to slug=""). D1's UNIQUE constraint on slug
+    # was dropped 2026-07-03 (a CF D1 batch is one transaction, so a single dup
+    # slug used to abort the whole batch → per-row fallback → frozen mirror);
+    # this keeps slugs clean regardless. See _assign_unique_slugs.
+    _assign_unique_slugs(rows)
 
     # 2) Batch-write to D1 with UPSERT semantics.
     insert_sql = """
@@ -236,12 +277,13 @@ def _run_sync() -> dict:
             fiber_providers=excluded.fiber_providers, synced_at=unixepoch()
     """
     # Batched via CF D1's {"batch":[...]} envelope (_d1_batch). 100 upserts per
-    # HTTP call → ~210 calls for ~21k rows → ~1–2 min. A per-row fallback covers
-    # any single batch that CF rejects (bad UTF-8, oversize address, etc.).
+    # HTTP call. Only rows WITH coordinates are mirrored (the map can't plot the
+    # rest) — currently ~4.1k of ~21.9k discovered_facilities → ~41 calls, well
+    # under a minute. A per-row fallback covers any single batch CF rejects.
     def _row_params(r):
         return [
             str(r.get("id")) if r.get("id") is not None else None,
-            _build_facility_slug(r),
+            r.get("__slug") or _build_facility_slug(r),
             r.get("name") or "",
             r.get("provider"),
             r.get("city"),
@@ -257,6 +299,16 @@ def _run_sync() -> dict:
             r.get("address"),
             None,  # fiber_providers — populate separately once we have data
         ]
+
+    # Snapshot D1's OWN clock before writing so we can later prune rows this run
+    # never touched. Reading D1's unixepoch() (not Railway's) sidesteps any
+    # host clock skew between Railway and Cloudflare.
+    prune_cutoff = None
+    try:
+        _c = _d1_query("SELECT unixepoch() AS t")
+        prune_cutoff = (((_c.get("result") or [{}])[0].get("results") or [{}])[0].get("t"))
+    except Exception:
+        prune_cutoff = None
 
     for i in range(0, len(rows), BATCH_SIZE):
         if time.time() - started > SYNC_TIMEOUT_SECONDS:
@@ -286,6 +338,21 @@ def _run_sync() -> dict:
                         out["errors"].append(
                             f"per-row row id={r.get('id')} failed: {str(e2)[:160]}")
         out["batches"] += 1
+
+    # 2b) Prune stale rows — ONLY after a fully-successful pass (every eligible
+    # row re-stamped this run, zero batch failures). Removes facilities that
+    # dropped out of the eligible set (lost coords, became duplicate, or id
+    # churned on re-ingestion) so the failover map matches Neon and D1 can't
+    # grow unbounded. The hard guard means a partial/timed-out sync never
+    # deletes anything.
+    if (prune_cutoff is not None and out["rows_read"] > 0
+            and out["rows_synced"] >= out["rows_read"] and not out["errors"]):
+        try:
+            pr = _d1_query("DELETE FROM facilities WHERE synced_at < ?1", [prune_cutoff])
+            out["rows_pruned"] = (((pr.get("result") or [{}])[0]
+                                   .get("meta") or {}).get("changes"))
+        except Exception as e:
+            out["errors"].append(f"prune failed: {str(e)[:120]}")
 
     # 3) Record this run in the sync_log table.
     try:
