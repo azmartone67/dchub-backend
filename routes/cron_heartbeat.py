@@ -438,6 +438,15 @@ _DISPATCH = [
      "POST",
      lambda now: now.hour == 9 and now.minute < 55),
 
+    # 2026-07-03: GRID/POWER/GAS data master shell — daily 11:xx UTC. Absorbs the
+    # next untapped high-value gridstatus dataset (of 523 on our key) into
+    # grid_ext_metrics, self-heals stale core feeds, and files code-shaped energy-
+    # data gaps to brain. Constantly widens coverage. Kill: GRID_DATA_MASTER_DISABLED.
+    ("grid_data_master_tick_daily",
+     f"{BASE}/api/v1/admin/grid-data/master-tick",
+     "POST",
+     lambda now: now.hour == 11 and now.minute < 55),
+
     # 2026-07-03: AGENT-ONBOARDING master shell — daily 08:xx UTC. One per-platform
     # onboarding scoreboard (Claude/ChatGPT/Gemini/Grok/Perplexity/Copilot/Mistral/
     # HF/Poe/…): probes mcp reachability+transport+auth, A2A card, robots AI-bot

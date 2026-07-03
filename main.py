@@ -1938,6 +1938,20 @@ try:
     except Exception as _dms:
         import logging
         logging.getLogger(__name__).warning('distribution_master_shell wiring failed: %s', _dms)
+    # 2026-07-03: Grid/Power/Gas data master shell — self-driving energy-data
+    # aggregation. Absorbs untapped gridstatus datasets (reserves/capacity/load-
+    # forecast/marginal-emissions/fuel-mix) one/tick into grid_ext_metrics, self-
+    # heals stale ISO/LMP/queue feeds, and files code-shaped gaps (capacity-auction,
+    # hosting-capacity, ISO-NE LMP, grid_telemetry stubs) to brain_findings for
+    # autonomous drafting. Kill: GRID_DATA_MASTER_DISABLED; shadow (no writes):
+    # GRID_DATA_MASTER_ACT_DISABLED.
+    try:
+        from routes.grid_data_master_shell import grid_data_master_shell_bp
+        app.register_blueprint(grid_data_master_shell_bp)
+        print("[main] grid_data_master_shell_bp registered: POST /api/v1/admin/grid-data/master-tick", flush=True)
+    except Exception as _gdms:
+        import logging
+        logging.getLogger(__name__).warning('grid_data_master_shell wiring failed: %s', _gdms)
     # 2026-07-03: autonomous GEO answer-page publisher — renders + commits
     # /answers/<slug> to the frontend via GitHub API (closes the "backend cron
     # can't author static pages" constraint). POST /api/v1/admin/geo/publish-answer.

@@ -1,0 +1,626 @@
+"""
+grid_data_master_shell.py — the self-driving GRID / POWER / GAS aggregation
+orchestrator (2026-07-03).
+
+Sits in the house master-shell family (mirrors growth_master_shell exactly:
+admin-gated, killable, loopback self-calls, a snapshot table, tier1..3, 0-100
+score, one bounded action/tick, fail-soft). Its job is to keep DC Hub's energy
+data layer AHEAD OF THE CURVE — constantly widening + freshening coverage rather
+than sitting on a static set of feeds.
+
+Why this exists: get_grid_intelligence is the #1 demanded tool, yet we ingest
+~a-handful of the 523 datasets our gridstatus.io key already unlocks, and several
+high-value fields are structurally empty (reserve_margin, DC-load queue outside
+ERCOT, capacity-auction price, feeder hosting-capacity). This shell closes that
+gap in two ways every tick:
+
+  A) MECHANICAL (armed) — a registry-driven GENERIC gridstatus ingester. Adding a
+     new source = adding a row to TARGET_DATASETS (config), not writing code. Each
+     tick absorbs the next untapped high-value dataset into a unified
+     `grid_ext_metrics` table (reserves, capacity, load-forecast, marginal
+     emissions, richer fuel mix), then maintains freshness once all are tapped.
+     Purely additive — a new table, never touches the existing ISO pipelines.
+
+  B) CODE-SHAPED (delegated) — the gaps that need real new adapters (PJM RPM
+     capacity-auction clearing price, utility feeder hosting-capacity, ISO-NE
+     real-time LMP, the grid_telemetry ERCOT/PJM/ISONE credential stubs) are
+     filed as brain_findings so the brain's autonomy loop drafts them. Agentic,
+     not static.
+
+The four levers (weakest → one bounded action/tick):
+  1. FRESHNESS  — are our core ISO / LMP / queue feeds serving fresh data?
+  2. BREADTH    — how much of the target dataset registry have we absorbed?
+  3. DEPTH      — do we carry the structurally-missing signals (reserves,
+                  capacity, marginal emissions)?
+  4. FORECAST   — do we carry forward-looking load across the ISOs?
+
+Endpoints:
+  POST /api/v1/admin/grid-data/master-tick   — measure → score → act → persist
+  GET  /api/v1/admin/grid-data/master-state  — latest snapshot + trend
+
+Kill switches: GRID_DATA_MASTER_DISABLED=1 (whole tick),
+GRID_DATA_MASTER_ACT_DISABLED=1 (shadow: measure+persist, no ingest/no findings),
+GRID_DATA_LEVER_<NAME>_OFF=1 (per-lever).
+"""
+import os
+import json
+import time
+import hmac
+import urllib.request
+import urllib.parse
+import urllib.error
+from datetime import datetime, timezone
+
+from flask import Blueprint, jsonify, request
+
+grid_data_master_shell_bp = Blueprint("grid_data_master_shell", __name__)
+
+# Loopback on Railway (mirrors growth_master_shell / cron_heartbeat.BASE).
+_BACKEND_BASE = (
+    f"http://127.0.0.1:{os.environ.get('PORT', '8080')}"
+    if (os.environ.get("RAILWAY_ENVIRONMENT") or os.environ.get("RAILWAY_PROJECT_ID"))
+    else os.environ.get("DCHUB_BACKEND_BASE", "https://dchub-backend-production.up.railway.app")
+)
+GRIDSTATUS_BASE = "https://api.gridstatus.io/v1"
+
+
+# ── auth (mirrors growth_master_shell) ────────────────────────────────
+def _admin_key() -> str | None:
+    return os.environ.get("DCHUB_ADMIN_KEY") or os.environ.get("DCHUB_INTERNAL_KEY")
+
+
+def _admin_ok() -> bool:
+    expected = (_admin_key() or "").strip()
+    if not expected:
+        return False
+    got = (request.headers.get("X-Admin-Key")
+           or request.args.get("admin_key") or "").strip()
+    return bool(got) and hmac.compare_digest(got, expected)
+
+
+def _disabled() -> bool:
+    return str(os.environ.get("GRID_DATA_MASTER_DISABLED", "")).lower() in ("1", "true", "yes")
+
+
+def _act_disabled() -> bool:
+    """Shadow mode: measure + persist but take NO action (no ingest, no findings)."""
+    return str(os.environ.get("GRID_DATA_MASTER_ACT_DISABLED", "")).lower() in ("1", "true", "yes")
+
+
+def _lever_off(name: str) -> bool:
+    return str(os.environ.get(f"GRID_DATA_LEVER_{name.upper()}_OFF", "")).lower() in ("1", "true", "yes")
+
+
+# ── self-call + parse helpers ─────────────────────────────────────────
+def _req(path: str, method: str = "GET", timeout: int = 8) -> dict:
+    url = (path if path.startswith("http") else _BACKEND_BASE.rstrip("/") + path)
+    try:
+        req = urllib.request.Request(url, data=(b"" if method == "POST" else None), method=method)
+        req.add_header("X-DC-Probe", "grid-data-tick")  # rate-limiter bypass
+        req.add_header("User-Agent", "dchub-grid-data-orchestrator/1.0")
+        ak = _admin_key()
+        if ak:
+            req.add_header("X-Admin-Key", ak)
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            body = resp.read().decode("utf-8", "replace")
+            try:
+                parsed = json.loads(body)
+            except Exception:
+                parsed = {"_raw": body[:300]}
+            return {"ok": True, "http": resp.status, "data": parsed}
+    except urllib.error.HTTPError as e:
+        return {"ok": False, "http": e.code, "error": f"HTTP {e.code}"}
+    except Exception as e:
+        return {"ok": False, "http": None, "error": f"{type(e).__name__}: {str(e)[:160]}"}
+
+
+def _fire(path: str, timeout: int = 4) -> dict:
+    """Trigger a downstream action without blocking on completion."""
+    url = (path if path.startswith("http") else _BACKEND_BASE.rstrip("/") + path)
+    try:
+        req = urllib.request.Request(url, data=b"", method="POST")
+        req.add_header("X-DC-Probe", "grid-data-tick")
+        req.add_header("User-Agent", "dchub-grid-data-orchestrator/1.0")
+        ak = _admin_key()
+        if ak:
+            req.add_header("X-Admin-Key", ak)
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return {"ok": resp.status < 400, "http": resp.status, "dispatched": True}
+    except urllib.error.HTTPError as e:
+        return {"ok": False, "http": e.code, "dispatched": True}
+    except Exception:
+        return {"ok": True, "dispatched": True, "note": "not awaited"}
+
+
+def _num(v):
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return None
+
+
+# ── gridstatus.io generic client ─────────────────────────────────────
+def _gs_key() -> str:
+    return (os.environ.get("GRIDSTATUS_API_KEY") or "").strip()
+
+
+def _gs_get(dataset: str, params: dict | None = None, timeout: int = 15):
+    """GET one gridstatus dataset query. Returns (rows, err). Retries once on 429
+    (free tier = 1 req/sec)."""
+    key = _gs_key()
+    if not key:
+        return None, "no_gridstatus_key"
+    p = {"api_key": key}
+    if params:
+        p.update(params)
+    url = GRIDSTATUS_BASE + "/datasets/" + dataset + "/query?" + urllib.parse.urlencode(p)
+    req = urllib.request.Request(url, headers={"Accept": "application/json",
+                                               "User-Agent": "dchub-grid-data-orchestrator/1.0"})
+    for attempt in range(2):
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                payload = json.loads(r.read().decode("utf-8"))
+            rows = payload.get("data") if isinstance(payload, dict) else payload
+            return (rows or []), None
+        except urllib.error.HTTPError as e:
+            if e.code == 429 and attempt == 0:
+                time.sleep(1.1)
+                continue
+            return None, f"http_{e.code}"
+        except Exception as e:
+            return None, f"{type(e).__name__}: {str(e)[:120]}"
+    return None, "http_429"
+
+
+# ── the target-dataset REGISTRY (config-driven expansion) ─────────────
+# Each entry: id (gridstatus dataset), iso, cat, value_col (primary numeric;
+# best-effort fallback picks the first non-timestamp numeric), unit. Absorbing a
+# new source = appending a row here — no new code. Ordered rough-priority.
+TARGET_DATASETS = [
+    # forecast — forward load per ISO (the "stay ahead" signal)
+    {"id": "pjm_load_forecast",    "iso": "PJM",   "cat": "load_forecast", "value_col": "load_forecast", "unit": "MW"},
+    {"id": "ercot_load_forecast",  "iso": "ERCOT", "cat": "load_forecast", "value_col": "load_forecast", "unit": "MW"},
+    {"id": "caiso_load_forecast",  "iso": "CAISO", "cat": "load_forecast", "value_col": "load_forecast", "unit": "MW"},
+    {"id": "miso_load_forecast",   "iso": "MISO",  "cat": "load_forecast", "value_col": "load_forecast", "unit": "MW"},
+    {"id": "nyiso_load_forecast",  "iso": "NYISO", "cat": "load_forecast", "value_col": "load_forecast", "unit": "MW"},
+    {"id": "spp_load_forecast",    "iso": "SPP",   "cat": "load_forecast", "value_col": "load_forecast", "unit": "MW"},
+    # depth — capacity (committed generation supply)
+    {"id": "pjm_generation_capacity_daily", "iso": "PJM",   "cat": "capacity", "value_col": "total_committed_mw", "unit": "MW"},
+    {"id": "ercot_capacity_committed",      "iso": "ERCOT", "cat": "capacity", "value_col": None, "unit": "MW"},
+    {"id": "ercot_capacity_forecast",       "iso": "ERCOT", "cat": "capacity", "value_col": None, "unit": "MW"},
+    # depth — operating reserves (proxy toward the never-live reserve_margin)
+    {"id": "pjm_dispatched_reserves_verified",     "iso": "PJM",   "cat": "reserves", "value_col": "total_reserve", "unit": "MW"},
+    {"id": "ercot_real_time_adders_and_reserves",  "iso": "ERCOT", "cat": "reserves", "value_col": None, "unit": "MW"},
+    {"id": "aeso_reserves",                        "iso": "AESO",  "cat": "reserves", "value_col": None, "unit": "MW"},
+    # depth — marginal emissions (grid carbon intensity; the Electricity-Maps lane)
+    {"id": "pjm_marginal_emission_rates_5_min",  "iso": "PJM",  "cat": "emissions", "value_col": "marginal_co2_rate", "unit": "lb/MWh"},
+    # breadth — richer fuel mix than EIA's 7-fuel feed
+    {"id": "pjm_fuel_mix",           "iso": "PJM",   "cat": "fuel_mix", "value_col": None, "unit": "MW"},
+    {"id": "caiso_fuel_mix",         "iso": "CAISO", "cat": "fuel_mix", "value_col": None, "unit": "MW"},
+    {"id": "ercot_fuel_mix_detailed","iso": "ERCOT", "cat": "fuel_mix", "value_col": None, "unit": "MW"},
+]
+_LOAD_FC_ISOS = {t["iso"] for t in TARGET_DATASETS if t["cat"] == "load_forecast"}
+_DEPTH_CATS = ("reserves", "capacity", "emissions")
+
+
+# ── DB ────────────────────────────────────────────────────────────────
+def _conn():
+    try:
+        from routes.ai_reach import _conn as _raw
+        return _raw()
+    except Exception:
+        return None
+
+
+def _ensure_tables() -> bool:
+    c = _conn()
+    if c is None:
+        return False
+    try:
+        with c.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS grid_data_snapshots (
+                    id             SERIAL PRIMARY KEY,
+                    computed_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    grid_data_score NUMERIC(6,2),
+                    breadth_tapped INTEGER,
+                    breadth_target INTEGER,
+                    weakest_lever  TEXT,
+                    action_taken   TEXT,
+                    lever_scores   JSONB,
+                    findings_filed INTEGER,
+                    detail         JSONB
+                )
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS grid_ext_metrics (
+                    id           SERIAL PRIMARY KEY,
+                    source       TEXT NOT NULL DEFAULT 'gridstatus',
+                    dataset_id   TEXT NOT NULL,
+                    iso          TEXT,
+                    category     TEXT,
+                    primary_value NUMERIC,
+                    unit         TEXT,
+                    as_of        TIMESTAMPTZ,
+                    raw          JSONB,
+                    ingested_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    UNIQUE (dataset_id, as_of)
+                )
+            """)
+        return True
+    except Exception:
+        return False
+    finally:
+        try: c.close()
+        except Exception: pass
+
+
+def _ingested_state() -> dict:
+    """Return {dataset_id: {'as_of': ts, 'iso': .., 'category': ..}} for what we
+    already carry in grid_ext_metrics (latest as_of per dataset)."""
+    c = _conn()
+    if c is None:
+        return {}
+    out = {}
+    try:
+        with c.cursor() as cur:
+            cur.execute("""
+                SELECT dataset_id, iso, category, MAX(as_of) AS latest
+                FROM grid_ext_metrics GROUP BY dataset_id, iso, category
+            """)
+            for did, iso, cat, latest in cur.fetchall():
+                out[did] = {"iso": iso, "category": cat, "as_of": latest}
+    except Exception:
+        return {}
+    finally:
+        try: c.close()
+        except Exception: pass
+    return out
+
+
+def _ingest_gridstatus_dataset(entry: dict) -> dict:
+    """Pull the latest row of one gridstatus dataset into grid_ext_metrics.
+    Column-agnostic + fail-soft: always captures the raw row; primary_value is
+    best-effort (entry.value_col, else first non-timestamp numeric)."""
+    rows, err = _gs_get(entry["id"], {"limit": 1, "order": "desc"})
+    if err or not rows:
+        return {"ok": False, "dataset": entry["id"], "error": err or "no_rows"}
+    row = rows[0]
+    as_of = (row.get("interval_start_utc") or row.get("publish_time_utc")
+             or row.get("interval_end_utc"))
+    pv = _num(row.get(entry.get("value_col"))) if entry.get("value_col") else None
+    if pv is None:
+        for k, v in row.items():
+            if str(k).endswith("_utc"):
+                continue
+            n = _num(v)
+            if n is not None:
+                pv = n
+                break
+    c = _conn()
+    if c is None:
+        return {"ok": False, "dataset": entry["id"], "error": "db_unavailable"}
+    try:
+        with c.cursor() as cur:
+            cur.execute("""
+                INSERT INTO grid_ext_metrics
+                  (source, dataset_id, iso, category, primary_value, unit, as_of, raw)
+                VALUES ('gridstatus', %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (dataset_id, as_of) DO UPDATE
+                  SET primary_value = EXCLUDED.primary_value,
+                      raw = EXCLUDED.raw, ingested_at = NOW()
+            """, (entry["id"], entry.get("iso"), entry.get("cat"), pv,
+                  entry.get("unit"), as_of, json.dumps(row)))
+        return {"ok": True, "dataset": entry["id"], "iso": entry.get("iso"),
+                "category": entry.get("cat"), "primary_value": pv, "as_of": str(as_of)}
+    except Exception as e:
+        return {"ok": False, "dataset": entry["id"], "error": f"{type(e).__name__}: {str(e)[:120]}"}
+    finally:
+        try: c.close()
+        except Exception: pass
+
+
+# ── brain hand-off — file the code-shaped gaps for autonomous closure ──
+# Standing structural gaps that need real new adapters (not a single-file edit,
+# so these seed the brain's strategic/spec pipeline rather than the L5 code queue).
+_GAP_FINDINGS = [
+    ("grid_capacity_auction_no_ingest",
+     "No PJM RPM / base-residual-auction (BRA) capacity clearing-price layer exists — "
+     "the single most-cited data-center-power stat ($/MW-day, driven by AI load) is absent. "
+     "Build a periodic ingester for the published RPM clearing price + reserve margin."),
+    ("grid_hosting_capacity_no_ingest",
+     "No utility feeder / hosting-capacity ingest anywhere — we cannot answer 'how much "
+     "interconnectable capacity at THIS point'. Build adapters for utility hosting-capacity "
+     "GIS (start Dominion/VA) and fuse with the substations layer."),
+    ("grid_telemetry_headroom_stub_ercot_pjm_isone",
+     "grid_telemetry live headroom is written for only 4 of 7 ISOs — ERCOT is a stub "
+     "(needs ERCOT_GEN_PRODUCT_ID), PJM/ISONE fail closed (no creds). DCPI falls to "
+     "modeled anchors for those 3. Wire a public gen/load source (gridstatus) to fill them."),
+    ("grid_iso_ne_realtime_lmp_absent",
+     "ISO-NE real-time LMP is absent (registration-gated). New England is a live DC market; "
+     "add an ISO-NE LMP adapter (registered feed or gridstatus fallback)."),
+    ("grid_dc_load_queue_ercot_only",
+     "The large-load / data-center interconnection-queue figure is ERCOT-only; PJM/MISO/SPP "
+     "are null. Also reconcile interconnection_queues.py (says DC-load tracked:false) with the "
+     "ingest layer that does derive it for ERCOT."),
+]
+
+
+def _file_gap_findings() -> int:
+    """Upsert the standing code-shaped gaps into brain_findings (idempotent) so the
+    brain's autonomy loop can draft them. Returns count filed."""
+    try:
+        from routes.brain_findings_writer import upsert_brain_finding
+    except Exception:
+        return 0
+    c = _conn()
+    if c is None:
+        return 0
+    filed = 0
+    try:
+        with c.cursor() as cur:
+            for issue, detail in _GAP_FINDINGS:
+                try:
+                    upsert_brain_finding(
+                        cur,
+                        issue=issue,
+                        url="/api/v1/admin/grid-data/master-tick",
+                        count=1,
+                        detail=detail,
+                        detector="grid_data_master",
+                    )
+                    filed += 1
+                except Exception:
+                    continue
+        c.commit()
+    except Exception:
+        return filed
+    finally:
+        try: c.close()
+        except Exception: pass
+    return filed
+
+
+# ── TIER 1 — MEASURE (core freshness + registry breadth) ──────────────
+def tier1_measure() -> dict:
+    # core feeds serving fresh data? (reachable + non-empty via our own endpoints)
+    zones = (_req("/api/v1/iso/zones").get("data") or {})
+    lmp = (_req("/api/v1/iso-lmp/snapshot").get("data") or {})
+    queue = (_req("/api/v1/interconnection-queue/snapshot").get("data") or {})
+    health = (_req("/api/health/data-freshness").get("data") or {})
+
+    zone_count = _num(zones.get("count")) or _num(zones.get("zones_count")) or 0
+    lmp_rows = lmp.get("snapshots") or lmp.get("hubs") or lmp.get("data") or lmp.get("prices")
+    lmp_n = len(lmp_rows) if isinstance(lmp_rows, list) else (_num(lmp.get("count")) or 0)
+    q_by_iso = queue.get("by_iso")
+    q_n = len(q_by_iso) if isinstance(q_by_iso, list) else 0
+    dc_share_isos = sum(1 for r in (q_by_iso or [])
+                        if isinstance(r, dict) and _num(r.get("queued_load_data_center_gw")) is not None)
+
+    # overall data-freshness green ratio (best-effort across shapes)
+    green = total = 0
+    srcs = health.get("sources") or health.get("datasets") or health.get("feeds")
+    if isinstance(srcs, list):
+        for s in srcs:
+            if not isinstance(s, dict):
+                continue
+            total += 1
+            st = str(s.get("status") or s.get("state") or "").lower()
+            if st in ("green", "fresh", "ok", "healthy"):
+                green += 1
+    green_ratio = round(green / total, 3) if total else None
+
+    ingested = _ingested_state()
+    return {
+        "core": {
+            "iso_zone_count": zone_count,
+            "lmp_locations": lmp_n,
+            "queue_isos": q_n,
+            "queue_dc_share_isos": dc_share_isos,
+            "data_health_green_ratio": green_ratio,
+        },
+        "breadth_tapped": len(ingested),
+        "breadth_target": len(TARGET_DATASETS),
+        "ingested_ids": sorted(ingested.keys()),
+        "cats_tapped": sorted({v.get("category") for v in ingested.values() if v.get("category")}),
+        "forecast_isos_tapped": sorted({v.get("iso") for v in ingested.values()
+                                        if v.get("category") == "load_forecast" and v.get("iso")}),
+        "_ingested": ingested,
+    }
+
+
+# ── TIER 2 — SCORE THE FOUR LEVERS (0..1; weakest = next action) ──────
+def tier2_score_levers(m: dict) -> dict:
+    core = m.get("core") or {}
+    # 1. FRESHNESS — are the three core feeds serving + overall health green?
+    fresh_bits = [
+        1.0 if (core.get("iso_zone_count") or 0) > 0 else 0.0,
+        1.0 if (core.get("lmp_locations") or 0) > 0 else 0.0,
+        1.0 if (core.get("queue_isos") or 0) > 0 else 0.0,
+    ]
+    gr = core.get("data_health_green_ratio")
+    if gr is not None:
+        fresh_bits.append(float(gr))
+    freshness = round(sum(fresh_bits) / len(fresh_bits), 3)
+
+    # 2. BREADTH — registry coverage (how much of the firehose we've absorbed)
+    tapped = m.get("breadth_tapped") or 0
+    target = m.get("breadth_target") or len(TARGET_DATASETS)
+    breadth = round(min(1.0, tapped / target), 3) if target else 0.0
+
+    # 3. DEPTH — do we carry the structurally-missing signal categories?
+    cats = set(m.get("cats_tapped") or [])
+    depth = round(sum(1 for c in _DEPTH_CATS if c in cats) / len(_DEPTH_CATS), 3)
+
+    # 4. FORECAST — forward load across the ISOs
+    fc_isos = set(m.get("forecast_isos_tapped") or [])
+    forecast = round(len(fc_isos & _LOAD_FC_ISOS) / len(_LOAD_FC_ISOS), 3) if _LOAD_FC_ISOS else 0.0
+
+    scores = {"freshness": freshness, "breadth": breadth, "depth": depth, "forecast": forecast}
+    ranked = sorted(scores.items(), key=lambda kv: kv[1])
+    weakest = next((name for name, _ in ranked if not _lever_off(name)), ranked[0][0])
+    return {"scores": scores, "weakest": weakest}
+
+
+# ── TIER 3 — ACT (one bounded action on the weakest lever) ────────────
+def _next_untapped(ingested: dict, prefer_cat: str | None = None,
+                   prefer_isos: set | None = None) -> dict | None:
+    pool = [t for t in TARGET_DATASETS if t["id"] not in ingested]
+    if not pool:
+        return None
+    if prefer_isos:
+        pref = [t for t in pool if t["cat"] == "load_forecast" and t["iso"] in prefer_isos]
+        if pref:
+            return pref[0]
+    if prefer_cat:
+        pref = [t for t in pool if t["cat"] == prefer_cat]
+        if pref:
+            return pref[0]
+    return pool[0]
+
+
+def _stalest_tapped(ingested: dict) -> dict | None:
+    """When everything is tapped, re-ingest the oldest to maintain freshness."""
+    if not ingested:
+        return None
+    oldest_id = min(ingested, key=lambda k: str(ingested[k].get("as_of") or ""))
+    return next((t for t in TARGET_DATASETS if t["id"] == oldest_id), None)
+
+
+def tier3_act(m: dict, levers: dict) -> dict:
+    if _act_disabled():
+        return {"action": "none", "reason": "GRID_DATA_MASTER_ACT_DISABLED (shadow mode)"}
+    lever = levers.get("weakest")
+    if _lever_off(lever):
+        return {"action": "none", "reason": f"lever '{lever}' killed"}
+    ingested = m.get("_ingested") or {}
+
+    if lever == "freshness":
+        # self-heal: re-trigger whichever core feed is empty (default: the ISO fan-out)
+        core = m.get("core") or {}
+        if (core.get("lmp_locations") or 0) == 0:
+            r = _fire("/api/v1/iso-lmp/ingest"); tgt = "iso-lmp/ingest"
+        elif (core.get("queue_isos") or 0) == 0:
+            r = _fire("/api/v1/iso-queue/ingest"); tgt = "iso-queue/ingest"
+        else:
+            r = _fire("/api/v1/iso/all/extract"); tgt = "iso/all/extract"
+        return {"action": "self_heal_refresh", "lever": lever, "target": tgt,
+                "dispatched": r.get("dispatched")}
+
+    # breadth / depth / forecast → absorb the next relevant untapped dataset
+    prefer_cat = lever if lever in _DEPTH_CATS else None
+    prefer_isos = (_LOAD_FC_ISOS - set(m.get("forecast_isos_tapped") or [])) if lever == "forecast" else None
+    target = _next_untapped(ingested, prefer_cat=prefer_cat, prefer_isos=prefer_isos)
+    if target is None:
+        target = _stalest_tapped(ingested)
+        mode = "maintain_freshness"
+    else:
+        mode = "absorb_new_source"
+    if target is None:
+        return {"action": "none", "reason": "no target datasets"}
+    res = _ingest_gridstatus_dataset(target)
+    return {"action": "ingest_gridstatus", "mode": mode, "lever": lever,
+            "dataset": target["id"], "result": res}
+
+
+# ── SCORE, PERSIST ────────────────────────────────────────────────────
+def grid_data_score(levers: dict) -> float:
+    s = levers.get("scores") or {}
+    return round(100.0 * (sum(s.values()) / len(s)), 2) if s else 0.0
+
+
+def _persist(m: dict, levers: dict, score: float, action: dict, findings: int) -> bool:
+    if not _ensure_tables():
+        return False
+    c = _conn()
+    if c is None:
+        return False
+    try:
+        with c.cursor() as cur:
+            cur.execute("""
+                INSERT INTO grid_data_snapshots
+                  (grid_data_score, breadth_tapped, breadth_target, weakest_lever,
+                   action_taken, lever_scores, findings_filed, detail)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+            """, (
+                score, m.get("breadth_tapped"), m.get("breadth_target"),
+                levers.get("weakest"), (action or {}).get("action"),
+                json.dumps(levers.get("scores") or {}), findings,
+                json.dumps({"core": m.get("core"), "cats_tapped": m.get("cats_tapped"),
+                            "forecast_isos": m.get("forecast_isos_tapped"),
+                            "levers": levers, "action": action}),
+            ))
+        return True
+    except Exception:
+        return False
+    finally:
+        try: c.close()
+        except Exception: pass
+
+
+# ── ORCHESTRATOR ──────────────────────────────────────────────────────
+@grid_data_master_shell_bp.route("/api/v1/admin/grid-data/master-tick", methods=["POST", "GET"])
+def master_tick():
+    if not _admin_ok():
+        return jsonify(error="unauthorized"), 401
+    if _disabled():
+        return jsonify(skipped="GRID_DATA_MASTER_DISABLED"), 200
+    started = time.time()
+    _ensure_tables()  # idempotent; must exist before measure reads / act ingests on tick #1
+    measure = tier1_measure()
+    levers = tier2_score_levers(measure)
+    action = tier3_act(measure, levers)
+    findings = 0 if _act_disabled() else _file_gap_findings()
+    score = grid_data_score(levers)
+    persisted = _persist(measure, levers, score, action, findings)
+
+    s = levers.get("scores") or {}
+    headline = (
+        f"grid-data {score}/100 · breadth {measure.get('breadth_tapped')}/{measure.get('breadth_target')} · "
+        f"weakest → {levers.get('weakest')} ({s.get(levers.get('weakest'))}) · "
+        f"acted: {action.get('action')}"
+        + (f" ({action.get('dataset')})" if action.get('dataset') else "")
+        + f" · {findings} gaps→brain"
+    )
+    return jsonify(
+        ok=True,
+        ms=int((time.time() - started) * 1000),
+        grid_data_score=score,
+        headline=headline,
+        tier1_measure={k: v for k, v in measure.items() if k != "_ingested"},
+        tier2_levers=levers,
+        tier3_action=action,
+        findings_filed=findings,
+        persisted=persisted,
+        generated_at=datetime.now(timezone.utc).isoformat(),
+    ), 200
+
+
+@grid_data_master_shell_bp.route("/api/v1/admin/grid-data/master-state", methods=["GET"])
+def master_state():
+    if not _admin_ok():
+        return jsonify(error="unauthorized"), 401
+    c = _conn()
+    if c is None:
+        return jsonify(error="db_unavailable"), 503
+    try:
+        import psycopg2.extras
+        with c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("SELECT * FROM grid_data_snapshots ORDER BY id DESC LIMIT 20")
+            rows = cur.fetchall()
+        return jsonify(
+            ok=True,
+            latest=rows[0] if rows else None,
+            trend=[{"at": str(r.get("computed_at")), "score": _num(r.get("grid_data_score")),
+                    "breadth": f"{r.get('breadth_tapped')}/{r.get('breadth_target')}",
+                    "weakest": r.get("weakest_lever"), "acted": r.get("action_taken")}
+                   for r in rows],
+        ), 200
+    except Exception as e:
+        return jsonify(ok=False, error=f"{type(e).__name__}: {str(e)[:160]}"), 500
+    finally:
+        try: c.close()
+        except Exception: pass
