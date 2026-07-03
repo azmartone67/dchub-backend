@@ -101,6 +101,18 @@ _DISPATCH = [
      "POST",
      lambda now: True),
 
+    # Freshness drain — re-homed 2026-07-03 off the retired off-repo Replit
+    # scheduler (heartbeat_auto_drain @ :05/:35) onto the in-process
+    # self-heartbeat. _hit() attaches X-Admin-Key so the refresh batch runs
+    # authenticated — an unauthenticated POST returns 401 and re-stamps
+    # nothing. Fires ~every 15 min; only touches stale/unknown surfaces
+    # (fresh ones are skipped) and is idempotent, so overlapping fires are
+    # harmless. Bounded by the handler's WALL_BUDGET_SEC=12.
+    ("heartbeat_auto_drain",
+     f"{BASE}/api/v1/heartbeat/auto?batch=500",
+     "POST",
+     lambda now: now.minute % 15 < 5),
+
     # Brain heartbeat warmer — once per hour at :03 (to spread load)
     ("brain_warmer_hourly",
      f"{BASE}/api/v1/brain-warming/warm",

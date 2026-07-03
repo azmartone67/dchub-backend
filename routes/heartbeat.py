@@ -337,15 +337,13 @@ def api_heartbeat():
 def _admin_key_ok():
     """True when the caller presents the admin key. Fail-open when
     DCHUB_ADMIN_KEY is unset — same pattern as api_force_refresh below.
-    Accepts X-Admin-Key, Authorization: Bearer, or ?key= (the last for
-    the temporary GET escape hatch — see api_auto_refresh)."""
+    Accepts X-Admin-Key or Authorization: Bearer."""
     expected = (os.environ.get("DCHUB_ADMIN_KEY") or "").strip()
     if not expected:
         return True
     auth = request.headers.get("Authorization") or ""
     bearer = auth[7:].strip() if auth.startswith("Bearer ") else ""
-    provided = (request.headers.get("X-Admin-Key") or bearer
-                or request.args.get("key") or "").strip()
+    provided = (request.headers.get("X-Admin-Key") or bearer or "").strip()
     return provided == expected
 
 
@@ -368,12 +366,13 @@ def api_auto_refresh():
     of the CF 5xx tail (155/wk historically). Now:
       GET                → _status() snapshot only, edge-cacheable
       POST + X-Admin-Key → the actual refresh batch
-    Temporary escape hatch for the off-repo Replit scheduler cron:
-    GET ?run=1&key=<admin key> still runs the batch. Remove once that
-    cron is confirmed POSTing with the key.
+    The refresh batch is driven in-process by the self-heartbeat via the
+    /api/v1/cron/heartbeat dispatcher (heartbeat_auto_drain job, authed
+    with X-Admin-Key), re-homed 2026-07-03 off the retired off-repo Replit
+    scheduler. The temporary GET ?run=1&key= escape hatch that bridged that
+    migration has been removed; force a manual drain with POST + X-Admin-Key.
     """
-    run_requested = (request.method == "POST"
-                     or request.args.get("run") == "1")
+    run_requested = request.method == "POST"
     if not run_requested:
         s = _status()
         stale = sum(1 for r in s if r["status"] != "fresh")
