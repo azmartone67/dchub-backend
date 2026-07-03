@@ -20999,8 +20999,22 @@ def _build_fiber_routes_geojson(max_features=None):
         # rows truncated the 19,241 real Zayo routes (only 522 surfaced). Real
         # routes store a long multi-vertex `coordinates` array (>80 chars);
         # synthetic endpoint-pairs are ~35 chars.
-        query += (" ORDER BY (coordinates IS NOT NULL AND char_length(coordinates::text) > 80) DESC,"
-                  " distance_miles DESC NULLS LAST")
+        if max_features is not None:
+            # r-fiberteaser (2026-07-03): TEASER preview path. The full ORDER
+            # BY below sorts a COMPUTED expression across all ~55k rows —
+            # measured 578ms seqscan + top-N heapsort per anonymous call
+            # (EXPLAIN, 20k buffers), the exact cost the 07-03 QA sweep
+            # flagged. A 3-route PREVIEW doesn't need the globally-best routes:
+            # filter to real multi-vertex geometry and let LIMIT short-circuit
+            # (no ORDER BY → Postgres stops after N matches, ~0.3ms / 38
+            # buffers). Preserves preview quality (real surveyed routes, not
+            # synthetic 2-point lines) without the full-table sort, and is
+            # robust to the per-worker cache being cold (unlike the in-process
+            # teaser cache, which worker-recycling keeps wiping).
+            query += " AND coordinates IS NOT NULL AND char_length(coordinates::text) > 80"
+        else:
+            query += (" ORDER BY (coordinates IS NOT NULL AND char_length(coordinates::text) > 80) DESC,"
+                      " distance_miles DESC NULLS LAST")
         query += ' LIMIT %s'
         params.append(limit)
 
