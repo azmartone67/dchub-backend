@@ -156,9 +156,9 @@ _REGISTRIES = [
     # 2026-07-01: added the four community registries DC Hub is verifiably
     # listed on but which were NOT monitored — so "listed on Glama/PulseMCP/
     # LobeHub/mcphub.io" is now a CHECKED fact, not a hardcoded /ai claim.
-    # All four probe "present" via the generic _fetch + _present_in_body path
-    # (verified live 2026-07-01). Glama uses the canonical /servers/<owner>/<repo>
-    # page; PulseMCP uses its JSON API (the HTML server page bot-blocks 403).
+    # (2026-07-02: the mcphub_io "verified" turned out to be a false
+    # positive — see its entry.) Glama uses the canonical /servers/<owner>/
+    # <repo> page; PulseMCP uses its JSON API (the HTML page bot-blocks 403).
     {
         "id":           "glama_ai",
         "name":         "Glama.ai MCP directory",
@@ -181,10 +181,21 @@ _REGISTRIES = [
         "submission_url": "https://github.com/lobehub/lobe-chat-agents",
     },
     {
+        # r-fix 2026-07-02: the 07-01 "verified listed" was a FALSE
+        # POSITIVE — /servers/<slug> is a Next.js SPA shell that 200s
+        # for ANY slug with "dchub" echoed in its route params, so the
+        # marker check always passed. Real data source is
+        # registry.mcphub.io (their client fetches /registry, /search)
+        # — DOWN with CF 525 as of 2026-07-02, and the only archived
+        # snapshot (2025-03) has no dchub, so we were likely never
+        # listed. Probe the API instead; non-actionable because their
+        # submit page 404s and the data backend is dead — a "missing"
+        # verdict has no submission path to act on.
         "id":           "mcphub_io",
         "name":         "mcphub.io directory",
-        "url":          "https://mcphub.io/servers/dchub",
+        "url":          "https://registry.mcphub.io/search?q=dchub",
         "submission_url": "https://mcphub.io/",
+        "actionable":   False,
     },
 ]
 
