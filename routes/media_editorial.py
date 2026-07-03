@@ -553,8 +553,17 @@ def editorial_decision(slot: str | None = None) -> dict:
     # the slot SUPPRESSES — silent beats repetitive, per the desk's own motto.
     stale_fallback = False
     if top is None and ranked:
+        # 2026-07-03: parameterize the rest window (was a hardcoded 12d, which
+        # over-starved the feed — the desk deadlocked to 0 posts/7d). Default 5d
+        # via MEDIA_EDITORIAL_REST_DAYS so a STRONG stale lead (raw_score >=
+        # _NEWSWORTHY_MIN) re-runs sooner; the downstream number-lead +
+        # claim-verify gates still apply, so this cannot lower quality.
+        try:
+            _rest_days = max(1, int(os.environ.get("MEDIA_EDITORIAL_REST_DAYS", "5")))
+        except Exception:
+            _rest_days = 5
         rest_blob = {re.sub(r"[^a-z0-9]+", "", w.lower())
-                     for w in _recently_posted_keys(days=12)}
+                     for w in _recently_posted_keys(days=_rest_days)}
         rest_blob.discard("")
         for cand in ranked:
             if (cand.get("raw_score", cand.get("score", 0)) >= _NEWSWORTHY_MIN

@@ -305,15 +305,14 @@ def tier3_act(levers: dict) -> dict:
         return {"action": "brain_self_direct_tick", "lever": lever, "dispatched": r.get("dispatched")}
 
     if lever == "media":
-        # Fire a fact-check-gated evergreen analyst post (idempotent/deduped server-side).
-        r = _fire("/api/v1/admin/media/showcase/publish")
-        return {"action": "media_showcase_publish", "lever": lever, "dispatched": r.get("dispatched")}
+        # Delegate to the Media master shell — it publishes a number-led evergreen if starved.
+        r = _fire("/api/v1/admin/media/master-tick")
+        return {"action": "media_master_tick", "lever": lever, "dispatched": r.get("dispatched")}
 
     if lever == "distribution":
-        # Pull the GEO acquisition tick (acts on the top broad-query gap) + re-broadcast to registries.
-        _fire("/api/v1/admin/audience/master-tick")
-        _fire("/api/v1/agents/broadcast")
-        return {"action": "geo_acquisition_tick+registry_broadcast", "lever": lever, "dispatched": True}
+        # Delegate to the Distribution master shell — GEO coverage + registry presence.
+        r = _fire("/api/v1/admin/distribution/master-tick")
+        return {"action": "distribution_master_tick", "lever": lever, "dispatched": r.get("dispatched")}
 
     if lever == "discovery":
         # Keep the machine-readable surfaces non-stale (llms.txt content adds are one-time).

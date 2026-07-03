@@ -422,6 +422,21 @@ _DISPATCH = [
      f"{BASE}/api/v1/admin/growth/master-tick",
      "POST",
      lambda now: now.hour % 4 == 0 and now.minute < 5),
+
+    # 2026-07-03: MEDIA master shell (lever #4) — daily 13:xx UTC (9am ET). If the
+    # analyst feed is starved it fires a number-led evergreen. Kill: MEDIA_MASTER_DISABLED.
+    ("media_master_tick_daily",
+     f"{BASE}/api/v1/admin/media/master-tick",
+     "POST",
+     lambda now: now.hour == 13 and now.minute < 55),
+
+    # 2026-07-03: DISTRIBUTION master shell (lever #5) — daily 09:xx UTC. Measures
+    # GEO coverage + registry presence, briefs gaps + submits registries. Kill:
+    # DISTRIBUTION_MASTER_DISABLED.
+    ("distribution_master_tick_daily",
+     f"{BASE}/api/v1/admin/distribution/master-tick",
+     "POST",
+     lambda now: now.hour == 9 and now.minute < 55),
 ]
 
 

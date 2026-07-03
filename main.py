@@ -1904,6 +1904,25 @@ try:
     except Exception as _gms:
         import logging
         logging.getLogger(__name__).warning('growth_master_shell wiring failed: %s', _gms)
+    # 2026-07-03: Media master shell (growth lever #4) — keeps the analyst feed
+    # publishing; when starved it fires a number-led evergreen. Kill: MEDIA_MASTER_DISABLED.
+    try:
+        from routes.media_master_shell import media_master_shell_bp
+        app.register_blueprint(media_master_shell_bp)
+        print("[main] media_master_shell_bp registered: POST /api/v1/admin/media/master-tick", flush=True)
+    except Exception as _mms:
+        import logging
+        logging.getLogger(__name__).warning('media_master_shell wiring failed: %s', _mms)
+    # 2026-07-03: Distribution master shell (growth lever #5) — measures GEO
+    # coverage + registry presence, briefs gaps + submits registries. Kill:
+    # DISTRIBUTION_MASTER_DISABLED.
+    try:
+        from routes.distribution_master_shell import distribution_master_shell_bp
+        app.register_blueprint(distribution_master_shell_bp)
+        print("[main] distribution_master_shell_bp registered: POST /api/v1/admin/distribution/master-tick", flush=True)
+    except Exception as _dms:
+        import logging
+        logging.getLogger(__name__).warning('distribution_master_shell wiring failed: %s', _dms)
     # 2026-07-02: REST/MCP parity manifest (Grok feedback) — maps every MCP tool
     # to its public REST endpoint so REST-only agents have a discovery map.
     try:
