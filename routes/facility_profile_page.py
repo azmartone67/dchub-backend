@@ -57,6 +57,29 @@ def _fetch_facility_by_slug(slug: str) -> dict | None:
                 LIMIT 1
             """, (hash8,))
             row = c.fetchone()
+            # r-facility-301 (2026-07-03): second-chance lookup in the curated
+            # legacy `facilities` table (~15.8k rows, TEXT hex/osm ids), same
+            # slug-hash scheme. The legacy /facility/<id> pages now 301 HERE
+            # (routes/seo_pages.py facility_page), so a legacy-only facility —
+            # one with no discovered_facilities twin sharing provider|name —
+            # must resolve or the redirect lands on a 404. Mirrors the
+            # 2026-07-01 d495c8bd fix on the /facility/<id> side.
+            if not row:
+                try:
+                    c.execute("""
+                        SELECT id, name, provider, city, state, country,
+                               NULL AS region, latitude, longitude,
+                               power_mw, status, address
+                        FROM facilities
+                        WHERE """ + hash_sql('') + """ = %s
+                        ORDER BY COALESCE(power_mw, 0) DESC, id ASC
+                        LIMIT 1
+                    """, (hash8,))
+                    row = c.fetchone()
+                except Exception:
+                    try: conn.rollback()
+                    except Exception: pass
+                    row = None
             if not row: return None
             cols = [desc[0] for desc in c.description]
             return dict(zip(cols, row))

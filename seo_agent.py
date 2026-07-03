@@ -18,6 +18,9 @@ from db_utils import get_db
 seo_agent_bp = Blueprint('seo_agent', __name__)
 
 DB_PATH = os.environ.get('DB_PATH', 'dc_nexus.db')
+# r-indexnow-consolidate (2026-07-03): submission now delegates to
+# routes.indexnow (DCHUB_INDEXNOW_KEY + committed key-file default), so this
+# module is always "configured" regardless of the legacy INDEXNOW_KEY env var.
 INDEXNOW_KEY = os.environ.get('INDEXNOW_KEY', '')
 
 def init_seo_tables():
@@ -71,74 +74,39 @@ def init_seo_tables():
     print("✅ SEO Agent tables initialized")
 
 def ping_indexnow(urls):
-    """Submit URLs to IndexNow for rapid indexing"""
-    if not INDEXNOW_KEY:
-        return {"error": "INDEXNOW_KEY not configured", "success": False}
-    
-    results = []
-    
-    engines = [
-        {"name": "Bing/IndexNow", "endpoint": "https://www.bing.com/indexnow"},
-        {"name": "Yandex", "endpoint": "https://yandex.com/indexnow"},
-        {"name": "Seznam", "endpoint": "https://search.seznam.cz/indexnow"},
-        {"name": "Naver", "endpoint": "https://searchadvisor.naver.com/indexnow"}
-    ]
-    
-    host = "dchub.cloud"
-    key_location = f"https://{host}/{INDEXNOW_KEY}.txt"
-    
-    for engine in engines:
+    """Submit URLs to IndexNow for rapid indexing.
+
+    r-indexnow-consolidate (2026-07-03): delegates to the canonical
+    routes.indexnow.submit_to_indexnow. This module's own engine loop was
+    keyed on the INDEXNOW_KEY env var (unset in prod → every call returned
+    "not configured" and submitted NOTHING), while the canonical path uses
+    DCHUB_INDEXNOW_KEY with the committed key-file default and a persisted
+    last-submit ledger. One submit path, one key. Per the IndexNow protocol
+    a 2xx from ONE participating engine propagates to all of them, so the
+    old 4-engine fan-out added no reach — only 4x the timeout exposure.
+    Keeps this module's seo_indexing_log bookkeeping + return shape."""
+    from routes.indexnow import submit_to_indexnow
+    res = submit_to_indexnow(urls)
+    ok = bool(res.get("ok"))
+    status = "success" if ok else "failed"
+    try:
+        conn = get_db()
         try:
-            if len(urls) == 1:
-                params = {
-                    "url": urls[0],
-                    "key": INDEXNOW_KEY
-                }
-                response = requests.get(engine["endpoint"], params=params, timeout=10)
-            else:
-                payload = {
-                    "host": host,
-                    "key": INDEXNOW_KEY,
-                    "keyLocation": key_location,
-                    "urlList": urls[:10000]
-                }
-                response = requests.post(
-                    engine["endpoint"],
-                    json=payload,
-                    headers={"Content-Type": "application/json"},
-                    timeout=10
-                )
-            
-            status = "success" if response.status_code in [200, 202] else "failed"
-            results.append({
-                "engine": engine["name"],
-                "status": status,
-                "code": response.status_code
-            })
-            
-            conn = get_db()
-            try:
-                c = conn.cursor()
-                for url in urls[:100]:
-                    c.execute('''INSERT INTO seo_indexing_log
-                        (url, search_engine, status, response_code)
-                        VALUES (%s, %s, %s, %s) ON CONFLICT (url) DO UPDATE SET search_engine = EXCLUDED.search_engine, status = EXCLUDED.status, response_code = EXCLUDED.response_code''',
-                        (url, engine["name"], status, response.status_code))
-                conn.commit()
-            finally:
-                conn.close()
-            
-        except Exception as e:
-            results.append({
-                "engine": engine["name"],
-                "status": "error",
-                "error": str(e)
-            })
-    
+            c = conn.cursor()
+            for url in (urls or [])[:100]:
+                c.execute('''INSERT INTO seo_indexing_log
+                    (url, search_engine, status, response_code)
+                    VALUES (%s, %s, %s, %s) ON CONFLICT (url) DO UPDATE SET search_engine = EXCLUDED.search_engine, status = EXCLUDED.status, response_code = EXCLUDED.response_code''',
+                    (url, res.get("endpoint") or "indexnow", status, res.get("status")))
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        pass
     return {
-        "success": True,
-        "urls_submitted": len(urls),
-        "engines": results
+        "success": ok,
+        "urls_submitted": res.get("submitted", 0),
+        "engines": [res],
     }
 
 def get_priority_urls():
@@ -314,7 +282,7 @@ def seo_status():
             "success": True,
             "status": "active",
             "agents": {
-                "indexnow": {"status": "active" if INDEXNOW_KEY else "needs_key"},
+                "indexnow": {"status": "active"},  # canonical routes.indexnow key
                 "backlink": {"status": "active"},
                 "citation": {"status": "active"}
             },
@@ -324,7 +292,7 @@ def seo_status():
                 "indexnow_pings_24h": today_pings,
                 "ai_citations": get_ai_citation_stats()
             },
-            "indexnow_configured": bool(INDEXNOW_KEY)
+            "indexnow_configured": True  # canonical routes.indexnow key
         })
     except Exception as e:
         return jsonify({"success": False, "error": str(e)})

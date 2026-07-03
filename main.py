@@ -23380,31 +23380,34 @@ def location_meta(slug):
 # =============================================================================
 # SEO: Dynamic Sitemap & Robots.txt (added Feb 2026)
 # =============================================================================
-_SITEMAP_XML_CACHE = {'xml': None, 'ts': 0.0}
+# r-sitemap-shard (2026-07-03, QA deep-dive indexing blocker): /sitemap.xml
+# was ONE 3.69MB/21,143-URL urlset — GSC/Bing showed a single opaque coverage
+# bucket, and it carried 5,772 self-canonical legacy /facility/<id> dupes next
+# to the 14,411 canonical /facilities/<slug> pages (Google parked them in
+# "not indexed: Other"; Bing burned its limited crawl quota on them). Now:
+#   /sitemap.xml               → sitemapindex (same submitted URL, so GSC/Bing
+#                                pick up the change on their next fetch)
+#   /sitemap-static.xml        → static pages + locations + hubs + landings
+#   /sitemap-markets.xml       → /markets/* metros + DB city-state + pockets
+#   /sitemap-dcpi.xml          → /dcpi/<market> pages
+#   /sitemap-press.xml         → /press-release/<slug> archive
+#   /sitemap-facilities-N.xml  → canonical /facilities/<slug>, 10k per shard
+# The legacy /facility/<id> collision-loser URLs are GONE from every shard —
+# routes/seo_pages.py facility_page now 301s them to the canonical slug URL.
+# Cache: sections dict memoized 1h (r70 semantics kept — internal probes hit
+# the origin directly, so CDN Cache-Control alone never protected the DB).
+_SITEMAP_XML_CACHE = {'sections': None, 'ts': 0.0}
+_SITEMAP_FACILITIES_PER_SHARD = 10000
+_SITEMAP_FIXED_SECTIONS = ('static', 'markets', 'dcpi', 'press')
 
 
-@app.route('/sitemap.xml')
-def serve_sitemap_xml():
-    """Dynamic sitemap for Google — includes all facilities, locations, and market pages."""
+def _build_sitemap_sections():
+    """Build every sitemap section in one pass (same DB cost as the old
+    monolithic build). Returns {'static': [...], 'markets': [...],
+    'dcpi': [...], 'press': [...], 'facilities': [...]} where each value is a
+    list of rendered '  <url>…</url>' strings."""
     import re as _re
-    import time as _time
     from datetime import datetime as _dt
-    from urllib.parse import quote as _urlquote
-
-    # r70 (2026-06-03): server-side TTL cache. This function ran 3 DB queries +
-    # re-appended 233 DCPI market pages on EVERY call (the "sitemap: 233 DCPI
-    # market pages added" log fired ~15x/5min) — wasteful on a flap-prone
-    # 1-replica backend. The Cache-Control:3600 below only helps the CDN;
-    # internal probes (brain/sentinel/worker proxy) hit the origin directly and
-    # re-trigger the full rebuild every time. Memoize the rendered XML for 1h so
-    # repeat calls return instantly without touching the DB or logging.
-    global _SITEMAP_XML_CACHE
-    if _SITEMAP_XML_CACHE.get('xml') and (_time.time() - _SITEMAP_XML_CACHE.get('ts', 0.0) < 3600):
-        _resp = make_response(_SITEMAP_XML_CACHE['xml'])
-        _resp.headers['Content-Type'] = 'application/xml'
-        _resp.headers['Cache-Control'] = 'public, max-age=3600'
-        _resp.headers['X-Sitemap-Cache'] = 'hit'
-        return _resp
 
     today = _dt.now().strftime('%Y-%m-%d')
 
@@ -23520,7 +23523,8 @@ def serve_sitemap_xml():
             try: conn.close()
             except: pass
 
-    urls = []
+    sections = {'static': [], 'markets': [], 'dcpi': [],
+                'press': [], 'facilities': []}
 
     # ---- Static pages ----
     static_pages = [
@@ -23677,8 +23681,31 @@ def serve_sitemap_xml():
         ('/vs/data-center-frontier',     '0.8', 'weekly'),
         ('/vs/datacenters-com',          '0.8', 'weekly'),
     ]
+    # r-sitemap-shard (2026-07-03): the seed brief landings ported from the
+    # retired routes/seo_pages.py sitemap-landings.xml (which was UNREACHABLE
+    # at the edge — the CF worker had no proxy rule for it, so these live-200
+    # pages had zero crawl surface). Seed lists kept in lock-step with
+    # routes.market_brief.SEED_MARKETS / state_brief.SEED_STATES /
+    # operator_brief.SEED_OPERATORS / hyperscaler_brief.SEED_HYPERSCALERS.
+    for _mb_slug in (
+        'northern-virginia', 'dallas', 'phoenix', 'atlanta', 'chicago',
+        'silicon-valley', 'new-york', 'portland', 'hillsboro', 'reno',
+        'columbus', 'salt-lake-city', 'charlotte', 'denver', 'madison',
+    ):
+        static_pages.append((f'/markets/{_mb_slug}/brief', '0.9', 'daily'))
+    for _sb_slug in ('texas', 'california', 'virginia', 'georgia',
+                     'ohio', 'oregon', 'illinois', 'arizona'):
+        static_pages.append((f'/states/{_sb_slug}/brief', '0.9', 'daily'))
+    for _ob_slug in ('aligned', 'qts', 'digital-realty', 'equinix', 'vantage',
+                     'cyrusone', 'cologix', 'core-scientific', 'airtrunk',
+                     'iron-mountain'):
+        static_pages.append((f'/operators/{_ob_slug}/brief', '0.9', 'daily'))
+    for _hs_slug in ('aws', 'azure', 'google-cloud', 'meta', 'apple',
+                     'oracle', 'tiktok-bytedance', 'tencent', 'alibaba',
+                     'softbank'):
+        static_pages.append((f'/hyperscalers/{_hs_slug}/brief', '0.9', 'daily'))
     for path, pri, freq in static_pages:
-        urls.append(f'  <url><loc>https://dchub.cloud{path}</loc><lastmod>{today}</lastmod><changefreq>{freq}</changefreq><priority>{pri}</priority></url>')
+        sections['static'].append(f'  <url><loc>https://dchub.cloud{path}</loc><lastmod>{today}</lastmod><changefreq>{freq}</changefreq><priority>{pri}</priority></url>')
 
     # r42j (2026-05-26): per-market DCPI pages. Each has unique analyst
     # narrative auto-generated by claude-haiku — unique-prose pages that
@@ -23697,7 +23724,7 @@ def serve_sitemap_xml():
             ORDER BY market_slug, computed_at DESC
         """)
         for (_slug,) in _dc.fetchall():
-            urls.append(
+            sections['dcpi'].append(
                 f'  <url><loc>https://dchub.cloud/dcpi/{_slug}</loc>'
                 f'<lastmod>{today}</lastmod>'
                 f'<changefreq>daily</changefreq>'
@@ -23740,7 +23767,7 @@ def serve_sitemap_xml():
                     _plast = _ds
             except Exception:
                 _plast = today
-            urls.append(
+            sections['press'].append(
                 f'  <url><loc>https://dchub.cloud/press-release/{_pslug}</loc>'
                 f'<lastmod>{_plast}</lastmod>'
                 f'<changefreq>monthly</changefreq>'
@@ -23763,9 +23790,42 @@ def serve_sitemap_xml():
         'jakarta', 'kuala-lumpur', 'bangkok', 'sao-paulo', 'mexico-city',
         'santiago', 'bogota',
     ]
-    urls.append(f'  <url><loc>https://dchub.cloud/markets</loc><lastmod>{today}</lastmod><changefreq>weekly</changefreq><priority>0.8</priority></url>')
+    sections['markets'].append(f'  <url><loc>https://dchub.cloud/markets</loc><lastmod>{today}</lastmod><changefreq>weekly</changefreq><priority>0.8</priority></url>')
+    _seen_market_slugs = set(markets)
     for m in markets:
-        urls.append(f'  <url><loc>https://dchub.cloud/markets/{m}</loc><lastmod>{today}</lastmod><changefreq>daily</changefreq><priority>0.8</priority></url>')
+        sections['markets'].append(f'  <url><loc>https://dchub.cloud/markets/{m}</loc><lastmod>{today}</lastmod><changefreq>daily</changefreq><priority>0.8</priority></url>')
+
+    # r-sitemap-shard (2026-07-03): DB-driven US /markets/<city-state> pages,
+    # ported verbatim from the retired routes/seo_pages.py sitemap-markets.xml
+    # (the one legacy sub-sitemap the CF worker KEPT routing — 222 live-indexed
+    # URLs that must not vanish when that route is deleted). ≥3 facilities per
+    # city-state so thin one-facility market pages don't dilute crawl budget.
+    try:
+        _mk_conn = get_read_db()
+        _mkc = _mk_conn.cursor()
+        _mkc.execute("""
+            SELECT LOWER(REPLACE(city,' ','-') || '-' || LOWER(state)) AS slug
+              FROM discovered_facilities
+             WHERE city IS NOT NULL AND state IS NOT NULL
+               AND TRIM(city) <> '' AND TRIM(state) <> ''
+               AND COALESCE(is_duplicate, 0) = 0
+               AND country IN ('US','USA','United States')
+             GROUP BY city, state
+            HAVING COUNT(*) >= 3
+        """)
+        for (_mslug,) in _mkc.fetchall():
+            _mslug = (_mslug or '').strip()
+            # skip malformed slugs (empty city/state → '/markets/-' junk)
+            if (len(_mslug) < 3 or _mslug.startswith('-') or _mslug.endswith('-')
+                    or not any(ch.isalnum() for ch in _mslug)
+                    or _mslug in _seen_market_slugs):
+                continue
+            _seen_market_slugs.add(_mslug)
+            sections['markets'].append(f'  <url><loc>https://dchub.cloud/markets/{_mslug}</loc><lastmod>{today}</lastmod><changefreq>weekly</changefreq><priority>0.8</priority></url>')
+        try: _mk_conn.close()
+        except Exception: pass
+    except Exception as _mk_err:
+        logger.warning(f"sitemap city-state markets DB fetch failed: {_mk_err}")
 
     # ---- Pocket detail pages (Phase r31, 2026-05-20) ----
     # One URL per ranked market. These pages carry schema.org Article
@@ -23777,7 +23837,7 @@ def serve_sitemap_xml():
             _slug = _p.get("market_slug")
             if not _slug:
                 continue
-            urls.append(
+            sections['markets'].append(
                 f'  <url><loc>https://dchub.cloud/pockets/{_slug}</loc>'
                 f'<lastmod>{today}</lastmod><changefreq>daily</changefreq>'
                 f'<priority>0.7</priority></url>'
@@ -23816,36 +23876,23 @@ def serve_sitemap_xml():
         'usa-ny', 'usa-tx', 'usa-va', 'usa-wa', 'za',
     ]
     for _slug in _LOCATION_STATIC_SLUGS:
-        urls.append(f'  <url><loc>https://dchub.cloud/locations/{_slug}</loc><lastmod>{today}</lastmod><changefreq>weekly</changefreq><priority>0.6</priority></url>')
+        sections['static'].append(f'  <url><loc>https://dchub.cloud/locations/{_slug}</loc><lastmod>{today}</lastmod><changefreq>weekly</changefreq><priority>0.6</priority></url>')
 
     # ---- Facility pages (from DB) ----
     # URL format: /facilities/{provider-slug}-{name-slug}-{hash8}
     # Matches frontend: /facilities/databank-ltd-databank-minneapolis-msp1-8c8fb870
     #
-    # r-sitemap-coverage (2026-06-30): FIX ~21% coverage. The /facilities/<slug>
-    # hash8 = MD5(provider|name)[:8], and the resolver (facility_by_slug +
-    # facility_page) matches that hash with LIMIT 1. So EVERY facility that
-    # shares a (provider, name) pair collapses to ONE slug + ONE resolvable
-    # page. With ~21.8k rows collapsing to ~4.6k unique (provider|name) pairs,
-    # ~17k facilities were silently DROPPED from the sitemap (Google never saw
-    # them). We can't hand those losers a second /facilities/<slug> URL — it
-    # would resolve to the SAME page (the self-canonical dupes the CF worker
-    # retired sitemap-facilities.xml over). Instead give each collision-loser
-    # its UNIQUE, self-canonical /facility/<id> page (integer id, resolved 1:1
-    # by CAST(id AS TEXT)=%s in routes.seo_pages.facility_page; verified live
-    # 200 with X-DC-Page-Source: seo-facility + its own <link rel=canonical>
-    # /facility/<id>). Winners keep their /facilities/<slug> URL unchanged.
-    # Net: coverage ~4.6k -> ~21.8k with ZERO new duplicate-content URLs.
-    #
-    # Safety: a sitemap file caps at 50,000 URLs / 50MB. Total here is ~21.8k
-    # facility URLs + ~5.6k other URLs (~27k) — comfortably under 50k, so a
-    # single file is still valid (no sharding needed yet). Guard with a hard
-    # cap anyway so a data blow-up can never emit an oversized/invalid sitemap;
-    # if the eligible count ever pushes the total past the cap, shard into a
-    # sitemap index (see risks in the PR notes).
-    _SITEMAP_MAX_URLS = 49000  # keep headroom below the 50,000 hard limit
+    # r-sitemap-shard (2026-07-03): REVERSES r-sitemap-coverage (2026-06-30),
+    # which handed every collision-loser (same provider|name → same slug) its
+    # own self-canonical /facility/<id> page. The 07-03 QA deep-dive showed
+    # that experiment was the #1 shared Google+Bing indexing blocker: 5,772
+    # thin near-dupes (~82 visible words, 64% boilerplate, zero internal
+    # links) sitting in the sitemap next to the 14,411 canonical slug pages.
+    # Winners keep their /facilities/<slug> URL; losers now 301 to the winner
+    # (routes/seo_pages.py facility_page) and are NOT emitted here at all.
+    # Sharding (10k/file) keeps every emitted file far below the 50k/50MB
+    # sitemap hard limits, so no per-file cap juggling is needed anymore.
     seen_slugs = set()
-    _fallback_id_urls = []  # collision-losers routed to unique /facility/<id>
     for row in fac_rows:
         name = row[0] if row[0] else ''
         provider = row[1] if row[1] else ''
@@ -23877,56 +23924,108 @@ def serve_sitemap_xml():
 
         if full_slug not in seen_slugs:
             seen_slugs.add(full_slug)
-            urls.append(f'  <url><loc>https://dchub.cloud/facilities/{full_slug}</loc><lastmod>{_lm}</lastmod><changefreq>monthly</changefreq><priority>0.5</priority></url>')
-        elif fac_id:
-            # Slug already claimed by another facility with the same
-            # provider|name — this one would be invisible under the slug URL.
-            # Emit its unique self-canonical /facility/<id> page instead.
-            # r-sitemap-404s (2026-07-01): percent-encode the id — legacy
-            # `facilities` ids are free TEXT and ~10 contain XML/URL-breaking
-            # chars (&, ', space) that would invalidate the whole sitemap if
-            # emitted raw. Hex/osm_*/integer ids pass through unchanged.
-            _q_id = _urlquote(str(fac_id), safe='')
-            _fallback_id_urls.append(f'  <url><loc>https://dchub.cloud/facility/{_q_id}</loc><lastmod>{_lm}</lastmod><changefreq>monthly</changefreq><priority>0.4</priority></url>')
+            sections['facilities'].append(f'  <url><loc>https://dchub.cloud/facilities/{full_slug}</loc><lastmod>{_lm}</lastmod><changefreq>monthly</changefreq><priority>0.5</priority></url>')
+        # else: collision-loser — same provider|name as an already-emitted
+        # winner. Its /facility/<id> page 301s to the winner's slug URL now;
+        # emitting nothing here is the whole point of r-sitemap-shard.
 
-    # Append the id-fallback URLs, respecting the per-file URL cap so the
-    # sitemap stays valid even if the facility table grows unexpectedly large.
-    _fallback_dropped = 0
-    if _fallback_id_urls:
-        _room = _SITEMAP_MAX_URLS - len(urls)
-        if _room > 0:
-            urls.extend(_fallback_id_urls[:_room])
-            _fallback_dropped = max(0, len(_fallback_id_urls) - _room)
-        else:
-            _fallback_dropped = len(_fallback_id_urls)
     logger.info(
-        f"sitemap: {len(seen_slugs)} unique facility slugs, "
-        f"{len(_fallback_id_urls) - _fallback_dropped} id-fallback URLs emitted, "
-        f"{_fallback_dropped} dropped at cap, {len(urls)} URLs total so far")
+        f"sitemap: {len(seen_slugs)} unique facility slugs "
+        f"(collision-losers dropped — they 301 to the winner now)")
 
     # ---- Facilities hub (2026-06-29) — countries index + per-country lists ----
     # The geography hub (facilities_hub.py) that un-orphans the /facilities/<slug>
     # pages above: give Google the shallow crawl path it was missing.
-    urls.append(f'  <url><loc>https://dchub.cloud/facilities</loc><lastmod>{today}</lastmod><changefreq>weekly</changefreq><priority>0.7</priority></url>')
+    sections['static'].append(f'  <url><loc>https://dchub.cloud/facilities</loc><lastmod>{today}</lastmod><changefreq>weekly</changefreq><priority>0.7</priority></url>')
     _hub_countries = set()
     for _frow in fac_rows:
         _hc = (_frow[4] or '').strip().lower() if len(_frow) > 4 else ''
         if _hc:
             _hub_countries.add(_hc)
     for _hc in sorted(_hub_countries):
-        urls.append(f'  <url><loc>https://dchub.cloud/facilities/in/{_hc}</loc><lastmod>{today}</lastmod><changefreq>weekly</changefreq><priority>0.6</priority></url>')
+        sections['static'].append(f'  <url><loc>https://dchub.cloud/facilities/in/{_hc}</loc><lastmod>{today}</lastmod><changefreq>weekly</changefreq><priority>0.6</priority></url>')
 
-    # NOTE: do NOT use an f-string here — '<?xml ... ?>' contains '?', and a prior
-    # regression replaced '?' with '%s' (the same bug class fixed in task #4).
-    # Use a plain string so '<?xml' renders literally.
-    xml = '<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n' + '\n'.join(urls) + '\n</urlset>'
+    logger.info("sitemap sections: " + ", ".join(
+        f"{k}={len(v)}" for k, v in sections.items()))
+    return sections
 
-    _SITEMAP_XML_CACHE = {'xml': xml, 'ts': _time.time()}
+
+def _sitemap_sections():
+    """1h-TTL cached accessor shared by the index route + every shard route,
+    so one build serves all ~8 files (and internal probes stay cheap)."""
+    import time as _time
+    global _SITEMAP_XML_CACHE
+    cached = _SITEMAP_XML_CACHE.get('sections')
+    if cached and (_time.time() - _SITEMAP_XML_CACHE.get('ts', 0.0) < 3600):
+        return cached, True
+    sections = _build_sitemap_sections()
+    _SITEMAP_XML_CACHE = {'sections': sections, 'ts': _time.time()}
+    return sections, False
+
+
+def _sitemap_shard_files(sections):
+    """Ordered shard filenames for the sitemapindex."""
+    import math
+    files = [f'sitemap-{name}.xml' for name in _SITEMAP_FIXED_SECTIONS]
+    n_fac = max(1, math.ceil(len(sections.get('facilities') or [])
+                             / _SITEMAP_FACILITIES_PER_SHARD))
+    files.extend(f'sitemap-facilities-{i}.xml' for i in range(1, n_fac + 1))
+    return files
+
+
+def _sitemap_xml_response(xml, cache_hit):
     resp = make_response(xml)
     resp.headers['Content-Type'] = 'application/xml'
     resp.headers['Cache-Control'] = 'public, max-age=3600'
-    resp.headers['X-Sitemap-Cache'] = 'miss'
+    resp.headers['X-Sitemap-Cache'] = 'hit' if cache_hit else 'miss'
     return resp
+
+
+@app.route('/sitemap.xml')
+def serve_sitemap_xml():
+    """Sitemap INDEX — fans out to the per-section shard files. Served at the
+    long-submitted /sitemap.xml URL so GSC/Bing/robots.txt need no change
+    (both engines accept a urlset→sitemapindex swap at a submitted URL)."""
+    from datetime import datetime as _dt
+    sections, hit = _sitemap_sections()
+    today = _dt.now().strftime('%Y-%m-%d')
+    entries = [
+        f'  <sitemap><loc>https://dchub.cloud/{fn}</loc><lastmod>{today}</lastmod></sitemap>'
+        for fn in _sitemap_shard_files(sections)
+    ]
+    # NOTE: plain string concat, NOT an f-string — '<?xml ... ?>' contains '?'
+    # and a prior regression turned '?' into '%s' (same bug class as task #4).
+    xml = ('<?xml version="1.0" encoding="UTF-8"?>\n'
+           '<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
+           + '\n'.join(entries) + '\n</sitemapindex>')
+    return _sitemap_xml_response(xml, hit)
+
+
+@app.route('/sitemap-<section>.xml')
+def serve_sitemap_shard(section):
+    """One urlset per section: sitemap-{static,markets,dcpi,press}.xml +
+    sitemap-facilities-N.xml (10k URLs per facility shard). Edge note: the CF
+    Pages worker forwards '/sitemap-' prefixed paths to this backend — added
+    to PHASE_282_PREFIXES the same day, since only the two literal paths
+    /sitemap.xml + /sitemap-markets.xml were routed before."""
+    import re as _re
+    sections, hit = _sitemap_sections()
+    if section in _SITEMAP_FIXED_SECTIONS:
+        entries = sections.get(section) or []
+    else:
+        m = _re.match(r'^facilities-(\d{1,3})$', section)
+        if not m:
+            return make_response('Unknown sitemap section\n', 404)
+        fac = sections.get('facilities') or []
+        shard_no = int(m.group(1))
+        lo = (shard_no - 1) * _SITEMAP_FACILITIES_PER_SHARD
+        if shard_no < 1 or lo >= max(len(fac), 1):
+            return make_response('Sitemap shard out of range\n', 404)
+        entries = fac[lo:lo + _SITEMAP_FACILITIES_PER_SHARD]
+    xml = ('<?xml version="1.0" encoding="UTF-8"?>\n'
+           '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
+           + '\n'.join(entries) + '\n</urlset>')
+    return _sitemap_xml_response(xml, hit)
 
 
 # 2026-06-05 (Phase HJ-2) — Admin sitemap cache bust.
@@ -23977,33 +24076,31 @@ def admin_sitemap_purge():
                        hint='set X-Admin-Key header to DCHUB_ADMIN_KEY'), 401
     global _SITEMAP_XML_CACHE
     old_ts = _SITEMAP_XML_CACHE.get('ts', 0.0)
-    old_size = len(_SITEMAP_XML_CACHE.get('xml') or '')
-    _SITEMAP_XML_CACHE = {'xml': None, 'ts': 0.0}
+    _SITEMAP_XML_CACHE = {'sections': None, 'ts': 0.0}
     # Trigger an immediate rebuild so the very next external fetch is
     # a HIT and Google's verification fetch lands on fresh XML.
+    # r-sitemap-shard (2026-07-03): rebuild the sections dict directly (one
+    # build now serves the index + every shard) and report per-section counts.
     try:
-        with app.test_client() as _tc:
-            _r = _tc.get('/sitemap.xml')
-            new_size = len(_r.data) if _r.status_code == 200 else 0
-            # Count URLs in the new XML for the response
-            try:
-                new_url_count = _r.data.decode('utf-8', errors='ignore').count('<url>')
-            except Exception:
-                new_url_count = -1
-    except Exception as _re_e:
-        new_size = 0
+        _new_sections, _ = _sitemap_sections()
+        section_counts = {k: len(v or []) for k, v in _new_sections.items()}
+        new_url_count = sum(section_counts.values())
+        shard_files = _sitemap_shard_files(_new_sections)
+    except Exception:
+        section_counts = {}
         new_url_count = -1
+        shard_files = []
     return jsonify({
         'ok':                  True,
         'purged':              True,
         'old_cache_age_sec':   round(__import__('time').time() - old_ts, 1) if old_ts else None,
-        'old_xml_bytes':       old_size,
-        'new_xml_bytes':       new_size,
         'new_url_count':       new_url_count,
-        'note':                ('Sitemap rebuilt. Next external fetch will '
-                                'serve the fresh XML. Submit to Google Search '
-                                'Console now to ensure Google fetches the new '
-                                'version.'),
+        'section_counts':      section_counts,
+        'shards':              shard_files,
+        'note':                ('Sitemap sections rebuilt. /sitemap.xml is a '
+                                'sitemapindex over the shards listed. Submit '
+                                '/sitemap.xml in Google Search Console to '
+                                'refresh coverage.'),
     })
 
 
@@ -26484,7 +26581,7 @@ def _clear_resident_caches():
     except Exception:
         pass
     try:
-        _SITEMAP_XML_CACHE["xml"] = None
+        _SITEMAP_XML_CACHE["sections"] = None
         _SITEMAP_XML_CACHE["ts"] = 0.0
         cleared.append("sitemap_xml")
     except Exception:

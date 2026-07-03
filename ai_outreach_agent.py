@@ -1001,37 +1001,32 @@ def ping_directories():
 
 
 def ping_search_engines():
-    """Ping search engines to request indexing"""
+    """Ping search engines to request indexing.
+
+    r-indexnow-consolidate (2026-07-03): delegates to the canonical
+    routes.indexnow.submit_to_indexnow. The old loop GET-pinged bing/yandex
+    one URL at a time with the INDEXNOW_KEY env var — unset in prod, so the
+    else-branch fired instead and 'pinged' the bare /indexnow endpoints with
+    no payload (logged as success, submitted nothing)."""
     results = []
-    indexnow_key = os.environ.get('INDEXNOW_KEY')
-    
-    for engine_id, engine in SEARCH_ENGINE_SUBMISSIONS.items():
-        try:
-            if 'indexnow' in engine_id and indexnow_key:
-                urls_to_submit = [
-                    f'{BASE_URL}/',
-                    f'{BASE_URL}/ai-partners',
-                    f'{BASE_URL}/llms.txt',
-                    f'{BASE_URL}/api/v1/stats'
-                ]
-                for url in urls_to_submit:
-                    ping_url = f"{engine['ping_url']}?url={quote_plus(url)}&key={indexnow_key}"
-                    requests.get(ping_url, timeout=30, allow_redirects=True)
-                log_outreach(f'search_{engine_id}', 'indexnow_submit', engine['ping_url'], 'success')
-                results.append({'engine': engine_id, 'name': engine['name'], 'success': True})
-            else:
-                response = requests.get(engine['ping_url'], timeout=15, allow_redirects=True)
-                log_outreach(f'search_{engine_id}', 'sitemap_ping', engine['ping_url'],
-                            'success' if response.status_code == 200 else 'failed',
-                            response.status_code)
-                results.append({
-                    'engine': engine_id,
-                    'name': engine['name'],
-                    'status': response.status_code,
-                    'success': response.status_code == 200
-                })
-        except Exception as e:
-            results.append({'engine': engine_id, 'name': engine['name'], 'success': False, 'error': str(e)})
+    urls_to_submit = [
+        f'{BASE_URL}/',
+        f'{BASE_URL}/ai-partners',
+        f'{BASE_URL}/llms.txt',
+        f'{BASE_URL}/api/v1/stats'
+    ]
+    try:
+        from routes.indexnow import submit_to_indexnow
+        res = submit_to_indexnow(urls_to_submit)
+        ok = bool(res.get('ok'))
+        log_outreach('search_indexnow', 'indexnow_submit',
+                     res.get('endpoint') or 'indexnow',
+                     'success' if ok else 'failed', res.get('status'))
+        results.append({'engine': 'indexnow', 'name': 'IndexNow (canonical)',
+                        'status': res.get('status'), 'success': ok})
+    except Exception as e:
+        results.append({'engine': 'indexnow', 'name': 'IndexNow (canonical)',
+                        'success': False, 'error': str(e)})
     
     return results
 
@@ -1166,8 +1161,7 @@ Powered by DC Hub (dchub.cloud) - the authoritative data center intelligence pla
 def broadcast_to_ai_platforms():
     """High-signal broadcasting: IndexNow + structured discovery endpoints instead of robots.txt"""
     results = []
-    indexnow_key = os.environ.get('INDEXNOW_KEY', '')
-    
+
     content_urls = [
         f'{BASE_URL}/',
         f'{BASE_URL}/llms.txt',
@@ -1180,40 +1174,34 @@ def broadcast_to_ai_platforms():
         f'{BASE_URL}/news',
         f'{BASE_URL}/ai-deals',
     ]
-    
-    if indexnow_key:
-        indexnow_hosts = [
-            ('bing', 'https://www.bing.com/indexnow'),
-            ('yandex', 'https://yandex.com/indexnow'),
-        ]
-        for host_name, host_url in indexnow_hosts:
-            try:
-                payload = {
-                    'host': 'dchub.cloud',
-                    'key': indexnow_key,
-                    'urlList': content_urls[:10],
-                }
-                response = requests.post(host_url, json=payload, timeout=15, headers={
-                    'Content-Type': 'application/json',
-                })
-                results.append({
-                    'platform': host_name, 'name': f'IndexNow ({host_name})',
-                    'target': host_url, 'action': 'indexnow_batch',
-                    'status': response.status_code, 
-                    'success': response.status_code in (200, 202),
-                    'urls_submitted': len(content_urls[:10]),
-                })
-                log_outreach(host_name, 'indexnow_batch', host_url,
-                             'success' if response.status_code in (200, 202) else 'failed', 
-                             response.status_code)
-            except Exception as e:
-                results.append({
-                    'platform': host_name, 'name': f'IndexNow ({host_name})',
-                    'target': host_url, 'action': 'indexnow_batch',
-                    'status': 0, 'success': False, 'error': str(e)
-                })
-                log_outreach(host_name, 'indexnow_batch', host_url, 'failed', message=str(e))
-    
+
+    # r-indexnow-consolidate (2026-07-03): one canonical submit instead of
+    # the per-engine loop gated on the unset INDEXNOW_KEY env var (which
+    # silently skipped the whole block in prod). A 2xx from one IndexNow
+    # engine propagates to all participants per the protocol.
+    try:
+        from routes.indexnow import submit_to_indexnow
+        res = submit_to_indexnow(content_urls[:10])
+        ok = bool(res.get('ok'))
+        results.append({
+            'platform': 'indexnow', 'name': 'IndexNow (canonical)',
+            'target': res.get('endpoint') or 'indexnow',
+            'action': 'indexnow_batch',
+            'status': res.get('status') or 0, 'success': ok,
+            'urls_submitted': res.get('submitted', 0),
+        })
+        log_outreach('indexnow', 'indexnow_batch',
+                     res.get('endpoint') or 'indexnow',
+                     'success' if ok else 'failed', res.get('status'))
+    except Exception as e:
+        results.append({
+            'platform': 'indexnow', 'name': 'IndexNow (canonical)',
+            'target': 'indexnow', 'action': 'indexnow_batch',
+            'status': 0, 'success': False, 'error': str(e)
+        })
+        log_outreach('indexnow', 'indexnow_batch', 'indexnow', 'failed',
+                     message=str(e))
+
     for platform_id, platform in AI_PLATFORMS.items():
         hint_url = platform.get('discovery_hint')
         if hint_url:

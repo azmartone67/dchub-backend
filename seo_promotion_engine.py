@@ -226,49 +226,34 @@ class SEOPromotionEngine:
         return results
     
     def ping_indexnow(self, urls: List[str] = None) -> Dict:
-        """Use IndexNow API for instant indexing on Bing/Yandex"""
-        if not INDEXNOW_KEY:
-            return {'error': 'INDEXNOW_KEY not configured'}
-        
+        """Use IndexNow API for instant indexing on Bing/Yandex.
+
+        r-indexnow-consolidate (2026-07-03): delegates to the canonical
+        routes.indexnow.submit_to_indexnow — this class's own loop was gated
+        on the INDEXNOW_KEY env var (unset in prod → no-op). Keeps the
+        per-URL _log_submission bookkeeping and the results-dict shape."""
         if not urls:
             urls = [
                 urljoin(self.site_url, '/'),
                 urljoin(self.site_url, '/news'),
                 urljoin(self.site_url, '/map'),
             ]
-        
+
         results = {}
-        
-        for engine_name, config in SEARCH_ENGINES.items():
-            if 'indexnow_url' not in config:
-                continue
-                
-            try:
-                payload = {
-                    'host': self.site_url.replace('https://', '').replace('http://', ''),
-                    'key': INDEXNOW_KEY,
-                    'urlList': urls
-                }
-                
-                response = self.session.post(
-                    config['indexnow_url'],
-                    json=payload,
-                    headers={'Content-Type': 'application/json'},
-                    timeout=10
-                )
-                
-                results[engine_name] = {
-                    'status': 'success' if response.status_code in [200, 202] else 'failed',
-                    'code': response.status_code,
-                    'urls_submitted': len(urls)
-                }
-                
-                for url in urls:
-                    self._log_submission(engine_name, url, 'indexnow', response.status_code)
-                    
-            except Exception as e:
-                results[engine_name] = {'status': 'error', 'error': str(e)}
-        
+        try:
+            from routes.indexnow import submit_to_indexnow
+            res = submit_to_indexnow(urls)
+            engine_name = res.get('endpoint') or 'indexnow'
+            results[engine_name] = {
+                'status': 'success' if res.get('ok') else 'failed',
+                'code': res.get('status'),
+                'urls_submitted': res.get('submitted', 0),
+            }
+            for url in urls:
+                self._log_submission(engine_name, url, 'indexnow', res.get('status'))
+        except Exception as e:
+            results['indexnow'] = {'status': 'error', 'error': str(e)}
+
         return results
     
     def generate_structured_data(self) -> Dict:

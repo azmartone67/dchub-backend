@@ -1711,12 +1711,28 @@ def fix_sitemap_404_check():
        routes that actually exist (Google interprets this as a broken site).
     """
     import urllib.request
-    try:
-        req = urllib.request.Request("https://dchub.cloud/sitemap.xml",
-                                     headers=_qa_headers())
+
+    def _fetch_locs(url):
+        req = urllib.request.Request(url, headers=_qa_headers())
         with urllib.request.urlopen(req, timeout=10) as r:
             body = r.read().decode("utf-8", errors="ignore")
-        locs = _hp_re.findall(r"<loc>([^<]+)</loc>", body)
+        return body, _hp_re.findall(r"<loc>([^<]+)</loc>", body)
+
+    try:
+        body, locs = _fetch_locs("https://dchub.cloud/sitemap.xml")
+        # r-sitemap-shard (2026-07-03): /sitemap.xml is now a sitemapindex —
+        # its <loc>s are the shard FILES, not pages. Follow into the shards
+        # (round-robin the first few of each) so we still probe real page
+        # URLs; probing only the shard files would vacuously pass.
+        if "<sitemapindex" in body:
+            page_locs = []
+            for shard_url in locs[:8]:
+                try:
+                    _, shard_locs = _fetch_locs(shard_url)
+                    page_locs.extend(shard_locs[:5])
+                except Exception:
+                    page_locs.append(shard_url)  # unfetchable shard → probe it
+            locs = page_locs
     except Exception as e:
         return False, f"sitemap fetch failed: {str(e)[:150]}"
 

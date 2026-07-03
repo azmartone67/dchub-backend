@@ -1501,28 +1501,27 @@ def ping_all_ai_platforms():
     except Exception as e:
         results['bing_copilot'] = {'success': False, 'error': str(e)}
     
-    # IndexNow for multiple engines
-    indexnow_key = os.environ.get('INDEXNOW_KEY', '')
-    if indexnow_key:
-        try:
-            indexnow_payload = {
-                'host': 'dchub.cloud',
-                'key': indexnow_key,
-                'urlList': [
-                    'https://dchub.cloud/',
-                    'https://dchub.cloud/mcp',
-                    'https://dchub.cloud/.well-known/mcp/server-card.json',
-                    'https://dchub.cloud/ai/llms.txt',
-                    'https://dchub.cloud/ai/learn/facilities',
-                    'https://dchub.cloud/ai/learn/deals',
-                    'https://dchub.cloud/ai/learn/market-intel',
-                    'https://dchub.cloud/api/market-report'
-                ]
-            }
-            resp = requests.post(ping_targets['indexnow'], json=indexnow_payload, timeout=10)
-            results['indexnow'] = {'success': resp.status_code in [200, 202], 'status': resp.status_code}
-        except Exception as e:
-            results['indexnow'] = {'success': False, 'error': str(e)}
+    # IndexNow — r-indexnow-consolidate (2026-07-03): via the canonical
+    # routes.indexnow.submit_to_indexnow (correct key + keyLocation + engine
+    # fallback + persisted status). The old inline POST used the INDEXNOW_KEY
+    # env var (unset in prod → whole block silently skipped) and the
+    # aggregator endpoint that 403s our submissions anyway.
+    try:
+        from routes.indexnow import submit_to_indexnow
+        _in_res = submit_to_indexnow([
+            'https://dchub.cloud/',
+            'https://dchub.cloud/mcp',
+            'https://dchub.cloud/.well-known/mcp/server-card.json',
+            'https://dchub.cloud/ai/llms.txt',
+            'https://dchub.cloud/ai/learn/facilities',
+            'https://dchub.cloud/ai/learn/deals',
+            'https://dchub.cloud/ai/learn/market-intel',
+            'https://dchub.cloud/api/market-report'
+        ])
+        results['indexnow'] = {'success': bool(_in_res.get('ok')),
+                               'status': _in_res.get('status')}
+    except Exception as e:
+        results['indexnow'] = {'success': False, 'error': str(e)}
     
     return jsonify({
         'success': True,

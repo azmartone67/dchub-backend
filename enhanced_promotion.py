@@ -555,46 +555,31 @@ API Documentation: {self.site_url}/api/v1
         return press_release
     
     def ping_search_engines(self) -> Dict:
-        """Enhanced search engine submission with IndexNow"""
+        """Enhanced search engine submission with IndexNow.
+
+        r-indexnow-consolidate (2026-07-03): delegates to the canonical
+        routes.indexnow.submit_to_indexnow. The old inline loop defaulted to
+        the made-up key 'dchub_indexnow_key_2024' — every engine rejected it,
+        so this daily job has never actually submitted anything."""
         results = {}
-        
-        # IndexNow key (from environment or default)
-        indexnow_key = os.environ.get('INDEXNOW_KEY', 'dchub_indexnow_key_2024')
-        
-        # URLs to submit
+
         urls_to_index = [
             f"{self.site_url}/",
             f"{self.site_url}/land-power.html",
             f"{self.site_url}/api/v1/stats",
             f"{self.site_url}/sitemap.xml",
         ]
-        
-        # IndexNow submission (works for Bing, Yandex, Seznam, Naver)
-        indexnow_endpoints = [
-            'https://api.indexnow.org/indexnow',
-            'https://www.bing.com/indexnow',
-            'https://yandex.com/indexnow',
-        ]
-        
-        for endpoint in indexnow_endpoints:
-            try:
-                payload = {
-                    'host': 'dchub.cloud',
-                    'key': indexnow_key,
-                    'urlList': urls_to_index
-                }
-                response = requests.post(
-                    endpoint,
-                    json=payload,
-                    headers={'Content-Type': 'application/json'},
-                    timeout=10
-                )
-                results[endpoint] = {
-                    'status': 'success' if response.status_code in [200, 202] else 'failed',
-                    'code': response.status_code
-                }
-            except Exception as e:
-                results[endpoint] = {'status': 'error', 'error': str(e)}
+
+        try:
+            from routes.indexnow import submit_to_indexnow
+            res = submit_to_indexnow(urls_to_index)
+            results['indexnow'] = {
+                'status': 'success' if res.get('ok') else 'failed',
+                'code': res.get('status'),
+                'endpoint': res.get('endpoint'),
+            }
+        except Exception as e:
+            results['indexnow'] = {'status': 'error', 'error': str(e)}
         
         # Google ping (sitemap)
         try:

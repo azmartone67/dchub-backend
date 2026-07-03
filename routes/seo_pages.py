@@ -10,10 +10,8 @@ Routes registered:
   GET /facility/<id>      — per-facility detail page (21k pages)
   GET /markets/<slug>     — per-market roll-up    (~50 pages)
   GET /grids/<iso>        — per-ISO roll-up       (16+ after intl expansion)
-  GET /sitemap-facilities.xml   — Google Search Console submission
-  GET /sitemap-markets.xml
-  GET /sitemap-grids.xml
-  GET /sitemap-index.xml  — master sitemap pointer
+  (sitemaps moved 2026-07-03: /sitemap.xml in main.py is the canonical
+   sitemapindex; the per-section shards live at /sitemap-<section>.xml)
 
 Each page has:
   - Server-rendered HTML (fast first paint, perfect for crawlers)
@@ -245,6 +243,31 @@ def _base_html(*, title: str, description: str, canonical: str,
 </html>"""
 
 
+def _canonical_facility_slug(provider, name):
+    """Canonical /facilities/<slug> path segment for a facility row, or None.
+    MUST stay byte-identical to main.py serve_sitemap's slugify +
+    routes.facility_slug.stable_hash8 — this is the 301 target for every
+    legacy /facility/<id> page, so a drift here mints duplicate URLs."""
+    import re as _re301
+    from routes.facility_slug import stable_hash8
+
+    def _sm_slug(text):
+        if not text:
+            return ''
+        s = str(text).lower().strip()
+        s = _re301.sub(r'[^a-z0-9\s-]', '', s)
+        s = _re301.sub(r'[\s-]+', '-', s)
+        return s.strip('-')
+
+    name_slug = _sm_slug(name)
+    if not name_slug or len(name_slug) < 3:
+        return None
+    provider_slug = _sm_slug(provider)
+    h8 = stable_hash8(provider, name)
+    return (f"{provider_slug}-{name_slug}-{h8}" if provider_slug
+            else f"{name_slug}-{h8}")
+
+
 # ═════════════════════════════════════════════════════════════════════
 # FACILITY PAGE — /facility/<id>
 # ═════════════════════════════════════════════════════════════════════
@@ -321,6 +344,24 @@ def facility_page(id_or_slug: str):
 
         if not row:
             return _error_page(f"Facility '{_h(id_or_slug)}' not found.", 404)
+
+        # r-facility-301 (2026-07-03, QA deep-dive indexing blocker): every
+        # resolvable /facility/<id> page is a THIN, self-canonical duplicate of
+        # the canonical /facilities/<slug> profile (same facility, ~82 visible
+        # words, zero inbound links). 5,772 of them sat in the sitemap next to
+        # 14,411 slug pages — Google parked the dupes in "not indexed: Other",
+        # Bing burned crawl quota on them. Consolidate: 301 to the canonical
+        # slug URL (collision-losers land on the winner's page by design — the
+        # slug is keyed on provider|name). Only when no canonical slug can be
+        # built (name too short/empty) do we still render the page below.
+        # /facility/aws-<code> + the ADDRESS_MAP landings have their own more-
+        # specific routes, so they never reach this handler.
+        _canon_slug = _canonical_facility_slug(row.get('provider'), row.get('name'))
+        if _canon_slug:
+            _resp = redirect(f"https://dchub.cloud/facilities/{_canon_slug}", code=301)
+            _resp.headers['Cache-Control'] = 'public, max-age=86400'
+            _resp.headers['X-DC-Page-Source'] = 'seo-facility-canonical-301'
+            return _resp
 
         # Find similar facilities nearby (same city) for "related" section
         nearby = []
@@ -756,187 +797,18 @@ def iso_page(code: str):
 
 
 # ═════════════════════════════════════════════════════════════════════
-# SITEMAPS — submit to Google Search Console
+# SITEMAPS — REMOVED (r-sitemap-shard 2026-07-03)
+# ─────────────────────────────────────────────────────────────────────
+# The five legacy sub-sitemaps that lived here (/sitemap-index.xml,
+# /sitemap-facilities.xml, /sitemap-markets.xml, /sitemap-grids.xml,
+# /sitemap-landings.xml) were retired: index/facilities/grids were already
+# 410 at the CF worker (facilities emitted the 5,772 /facility/<id> dupes
+# that blocked Google AND Bing indexing), landings was edge-unreachable,
+# and markets is now served by the canonical sharded sitemap in main.py
+# (serve_sitemap_shard — /sitemap.xml is a sitemapindex; the DB-driven
+# /markets/<city-state> query moved there, the brief/answers landings
+# moved into its static section). One sitemap system owns all shards.
 # ═════════════════════════════════════════════════════════════════════
-@seo_pages_bp.get("/sitemap-index.xml")
-def sitemap_index():
-    today = _dt.date.today().isoformat()
-    # Round 34 fix: point at dchub.cloud (where Flask serves these).
-    # dchub.cloud/sitemap-*.xml is shadowed by CF Pages → 404.
-    xml = f"""<?xml version="1.0" encoding="UTF-8"?>
-<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-  <sitemap><loc>https://dchub.cloud/sitemap-facilities.xml</loc><lastmod>{today}</lastmod></sitemap>
-  <sitemap><loc>https://dchub.cloud/sitemap-markets.xml</loc><lastmod>{today}</lastmod></sitemap>
-  <sitemap><loc>https://dchub.cloud/sitemap-grids.xml</loc><lastmod>{today}</lastmod></sitemap>
-  <sitemap><loc>https://dchub.cloud/sitemap-landings.xml</loc><lastmod>{today}</lastmod></sitemap>
-</sitemapindex>"""
-    return Response(xml, mimetype='application/xml',
-                     headers={'Cache-Control': 'public, max-age=3600'})
-
-
-@seo_pages_bp.get("/sitemap-facilities.xml")
-def sitemap_facilities():
-    c = _conn()
-    urls = []
-    if c is not None:
-        try:
-            with c.cursor() as cur:
-                cur.execute("""
-                    SELECT id, last_updated FROM discovered_facilities
-                     WHERE COALESCE(is_duplicate, 0) = 0
-                       AND latitude IS NOT NULL
-                     ORDER BY power_mw DESC NULLS LAST
-                     LIMIT 50000
-                """)
-                urls = cur.fetchall()
-        except Exception:
-            pass
-        finally:
-            try: c.close()
-            except Exception: pass
-
-    items = []
-    for fid, lastmod in urls:
-        lastmod_str = ""
-        if lastmod:
-            try: lastmod_str = f"<lastmod>{str(lastmod)[:10]}</lastmod>"
-            except Exception: pass
-        items.append(f'  <url><loc>https://dchub.cloud/facility/{fid}</loc>{lastmod_str}<changefreq>monthly</changefreq><priority>0.7</priority></url>')
-
-    xml = '<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n' + '\n'.join(items) + '\n</urlset>'
-    return Response(xml, mimetype='application/xml',
-                     headers={'Cache-Control': 'public, max-age=3600'})
-
-
-@seo_pages_bp.get("/sitemap-markets.xml")
-def sitemap_markets():
-    c = _conn()
-    markets = []
-    if c is not None:
-        try:
-            with c.cursor() as cur:
-                cur.execute("""
-                    SELECT LOWER(REPLACE(city,' ','-') || '-' || LOWER(state)) AS slug
-                      FROM discovered_facilities
-                     WHERE city IS NOT NULL AND state IS NOT NULL
-                       AND TRIM(city) <> '' AND TRIM(state) <> ''
-                       AND COALESCE(is_duplicate, 0) = 0
-                       AND country IN ('US','USA','United States')
-                     GROUP BY city, state
-                    HAVING COUNT(*) >= 3
-                """)
-                markets = [r[0] for r in cur.fetchall()]
-        except Exception:
-            pass
-        finally:
-            try: c.close()
-            except Exception: pass
-
-    # r71-seo: skip malformed slugs. Empty/whitespace city or state rows produced
-    # junk like /markets/- and /markets/abu-dhabi- (trailing hyphen) — thin pages
-    # that dilute crawl budget. Don't advertise them in the sitemap.
-    def _valid_market_slug(s):
-        s = (s or "").strip()
-        return (len(s) >= 3 and not s.startswith("-")
-                and not s.endswith("-") and any(ch.isalnum() for ch in s))
-    items = '\n'.join(
-        f'  <url><loc>https://dchub.cloud/markets/{slug}</loc><changefreq>weekly</changefreq><priority>0.8</priority></url>'
-        for slug in markets if _valid_market_slug(slug)
-    )
-    xml = f'<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n{items}\n</urlset>'
-    return Response(xml, mimetype='application/xml',
-                     headers={'Cache-Control': 'public, max-age=3600'})
-
-
-@seo_pages_bp.get("/sitemap-grids.xml")
-def sitemap_grids():
-    items = '\n'.join(
-        f'  <url><loc>https://dchub.cloud/grids/{code}</loc><changefreq>daily</changefreq><priority>0.9</priority></url>'
-        for code in ISO_REGISTRY.keys()
-    )
-    xml = f'<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n{items}\n</urlset>'
-    return Response(xml, mimetype='application/xml',
-                     headers={'Cache-Control': 'public, max-age=3600'})
-
-
-# round-34: high-intent SEO landings sitemap (AWS region codes, addresses,
-# Interxion Frankfurt, Moltbook docs). These are zero-click queries with
-# strong impression volume — sitemapped + linked to from the homepage so
-# Google indexes them on the next crawl.
-@seo_pages_bp.get("/sitemap-landings.xml")
-def sitemap_landings():
-    # round-35: advertise the un-blocked /facility/aws-<code>, /facility/<addr>,
-    # /markets/interxion-frankfurt, /partners/moltbook-api paths. The legacy
-    # /aws/*, /address/*, single-segment paths are CF zone-worker 403-blocked
-    # ("DNS points to prohibited IP"); sitemapping them was wasting crawl budget.
-    urls = []
-    for code in AWS_REGION_MAP.keys():
-        urls.append(f'  <url><loc>https://dchub.cloud/facility/aws-{code}</loc><changefreq>monthly</changefreq><priority>0.85</priority></url>')
-    for slug in ADDRESS_MAP.keys():
-        urls.append(f'  <url><loc>https://dchub.cloud/facility/{slug}</loc><changefreq>monthly</changefreq><priority>0.85</priority></url>')
-    urls.append('  <url><loc>https://dchub.cloud/markets/interxion-frankfurt</loc><changefreq>weekly</changefreq><priority>0.85</priority></url>')
-    urls.append('  <url><loc>https://dchub.cloud/partners/moltbook-api</loc><changefreq>monthly</changefreq><priority>0.7</priority></url>')
-    # Market Brief v1 (2026-06-06): 15 seed markets get sitemapped on day 1
-    # (wave 1 = 5 markets + wave 2 = 10 markets added same day). Beyond
-    # these the surface auto-renders for any market_power_scores row, but
-    # only the seed fifteen are hand-QA'd + pre-warmed by the cron.
-    # Kept in lock-step with routes.market_brief.SEED_MARKETS.
-    for _mb_slug in (
-        # Wave 1
-        'northern-virginia', 'dallas', 'phoenix', 'atlanta', 'chicago',
-        # Wave 2
-        'silicon-valley', 'new-york', 'portland', 'hillsboro', 'reno',
-        'columbus', 'salt-lake-city', 'charlotte', 'denver', 'madison',
-    ):
-        urls.append(f'  <url><loc>https://dchub.cloud/markets/{_mb_slug}/brief</loc><changefreq>daily</changefreq><priority>0.9</priority></url>')
-    # State Brief v1 (2026-06-06): 8 seed states (state-level roll-ups
-    # capture broad-intent "texas data center market" SEO queries that
-    # no single market_brief URL captures). Kept in lock-step with
-    # routes.state_brief.SEED_STATES.
-    for _sb_slug in (
-        'texas', 'california', 'virginia', 'georgia',
-        'ohio', 'oregon', 'illinois', 'arizona',
-    ):
-        urls.append(f'  <url><loc>https://dchub.cloud/states/{_sb_slug}/brief</loc><changefreq>daily</changefreq><priority>0.9</priority></url>')
-    # Operator Brief v1 (2026-06-06): 10 seed operators. Captures
-    # investor/broker-intent SEO ("Aligned vs QTS data center MW",
-    # "AirTrunk pipeline", etc.). Beyond these the surface auto-renders
-    # for any tracked operator, but only the seed ten are hand-QA'd +
-    # pre-warmed. Kept in lock-step with routes.operator_brief.SEED_OPERATORS.
-    for _ob_slug in (
-        'aligned', 'qts', 'digital-realty', 'equinix', 'vantage',
-        'cyrusone', 'cologix', 'core-scientific', 'airtrunk',
-        'iron-mountain',
-    ):
-        urls.append(f'  <url><loc>https://dchub.cloud/operators/{_ob_slug}/brief</loc><changefreq>daily</changefreq><priority>0.9</priority></url>')
-    # Hyperscaler Brief v1 (2026-06-06): 10 seed hyperscalers (AWS, Azure,
-    # Google, Meta, Apple, Oracle, ByteDance, Tencent, Alibaba, SoftBank).
-    # Per-hyperscaler full-pipeline view: MW, capex, M&A, PPAs, ISO
-    # concentration, water, capital velocity — built for M&A bankers, PE
-    # deal teams, and hedge funds. Beyond these the surface auto-renders
-    # for any slug in HYPERSCALER_ALIASES, but only the seed ten are
-    # hand-QA'd + pre-warmed. Kept in lock-step with
-    # routes.hyperscaler_brief.SEED_HYPERSCALERS.
-    for _hs_slug in (
-        'aws', 'azure', 'google-cloud', 'meta', 'apple',
-        'oracle', 'tiktok-bytedance', 'tencent', 'alibaba', 'softbank',
-    ):
-        urls.append(f'  <url><loc>https://dchub.cloud/hyperscalers/{_hs_slug}/brief</loc><changefreq>daily</changefreq><priority>0.9</priority></url>')
-    # GEO answer pages (2026-06-29): the Audience Master Shell targets the broad
-    # high-intent developer queries where DC Hub is invisible ("how do I get this
-    # data into my agent"). Each shipped /answers/ page gets sitemapped here so
-    # crawlers + AI retrieval find it. /answers/ is CF-routable (verified 200).
-    for _ans_slug in (
-        'live-data-center-capacity-for-ai-agents',
-        'interconnection-queue-data-for-ai-agents',
-        'natural-gas-data-for-ai-data-center-siting',
-        'global-grid-data-for-ai-agents',
-    ):
-        urls.append(f'  <url><loc>https://dchub.cloud/answers/{_ans_slug}</loc><changefreq>monthly</changefreq><priority>0.85</priority></url>')
-    items = '\n'.join(urls)
-    xml = f'<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n{items}\n</urlset>'
-    return Response(xml, mimetype='application/xml',
-                     headers={'Cache-Control': 'public, max-age=3600'})
 
 
 # ═════════════════════════════════════════════════════════════════════
@@ -1584,10 +1456,7 @@ def seo_health():
                 "/facility/aws-<code>",
                 "/facility/1725-comstock-st-san-jose",
                 "/markets/interxion-frankfurt",
-                "/partners/moltbook-api",
-                "/sitemap-index.xml", "/sitemap-facilities.xml",
-                "/sitemap-markets.xml", "/sitemap-grids.xml",
-                "/sitemap-landings.xml"],
+                "/partners/moltbook-api"],
         legacy_redirects=["/aws/<code> -> /facility/aws-<code>",
                           "/address/<slug> -> /facility/<slug>",
                           "/interxion-frankfurt -> /markets/interxion-frankfurt",

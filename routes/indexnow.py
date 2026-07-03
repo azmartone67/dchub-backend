@@ -145,18 +145,39 @@ def submit_to_indexnow(urls):
     return out
 
 
+def _fetch_sitemap_xml(url):
+    req = urllib.request.Request(url, headers={"User-Agent": "dchub-indexnow/1.0"})
+    with urllib.request.urlopen(req, timeout=25) as r:
+        return r.read().decode("utf-8", "replace")
+
+
 def _sitemap_recent(n=500):
-    """Most-recent URLs from the live sitemap (sorted by <lastmod> desc)."""
+    """Most-recent URLs from the live sitemap (sorted by <lastmod> desc).
+    r-sitemap-shard (2026-07-03): /sitemap.xml is now a sitemapindex — follow
+    its child shard files and collect PAGE locs, else this mode would submit
+    the ~8 shard-file URLs to IndexNow and nothing else."""
     try:
-        req = urllib.request.Request(f"https://{HOST}/sitemap.xml",
-                                     headers={"User-Agent": "dchub-indexnow/1.0"})
-        with urllib.request.urlopen(req, timeout=25) as r:
-            xml = r.read().decode("utf-8", "replace")
+        xml = _fetch_sitemap_xml(f"https://{HOST}/sitemap.xml")
     except Exception:
         return []
-    pairs = re.findall(r"<loc>([^<]+)</loc>\s*(?:<lastmod>([^<]*)</lastmod>)?", xml)
-    pairs = [(u.strip(), (lm or "").strip()) for u, lm in pairs
-             if u.strip().startswith(f"https://{HOST}")]
+    pairs = []
+
+    def _collect(x):
+        for u, lm in re.findall(r"<loc>([^<]+)</loc>\s*(?:<lastmod>([^<]*)</lastmod>)?", x):
+            u = u.strip()
+            if u.startswith(f"https://{HOST}"):
+                pairs.append((u, (lm or "").strip()))
+
+    if "<sitemapindex" in xml:
+        shard_urls = [u.strip() for u in re.findall(r"<loc>([^<]+)</loc>", xml)
+                      if u.strip().startswith(f"https://{HOST}")]
+        for su in shard_urls[:10]:
+            try:
+                _collect(_fetch_sitemap_xml(su))
+            except Exception:
+                continue
+    else:
+        _collect(xml)
     pairs.sort(key=lambda e: e[1], reverse=True)
     return [u for u, _ in pairs[:max(1, n)]]
 
@@ -225,6 +246,100 @@ def _recent_facility_urls(n=2000):
     return urls
 
 
+def ping_new_facilities(limit=5000):
+    """Delta churn hook (r-indexnow-delta 2026-07-03): submit the canonical
+    /facilities/<slug> URLs for discovered_facilities rows NEWER than the last
+    successfully pinged id, then advance the cursor. Before this, daily
+    ingestion + the competitor-gap crawler grew the table continuously but
+    NOTHING ever told IndexNow — Bing only learned about new facilities by
+    re-crawling the (monolithic) sitemap on its own throttled schedule.
+
+    Concurrency: the cursor row is taken FOR UPDATE, so overlapping runs from
+    multiple processes/replicas serialize on the row lock and the losers see
+    the advanced cursor → empty delta → no duplicate submits. (Row locks are
+    pooler-safe, unlike the advisory-lock trap fixed 2026-07-02.) The cursor
+    only advances on a 2xx submit, so a failed ping retries next run.
+
+    First run initializes the cursor to MAX(id) and submits nothing — the
+    backfill path for the existing corpus is the ?facilities=1 admin mode."""
+    conn = _db_conn()
+    if not conn:
+        return {"ok": False, "reason": "no db"}
+    try:
+        conn.autocommit = False
+        with conn.cursor() as cur:
+            cur.execute("CREATE TABLE IF NOT EXISTS indexnow_cursor "
+                        "(id INT PRIMARY KEY, last_fac_id BIGINT, updated_at TEXT)")
+            cur.execute("SELECT last_fac_id FROM indexnow_cursor WHERE id = 1 FOR UPDATE")
+            row = cur.fetchone()
+            if row is None:
+                cur.execute("SELECT COALESCE(MAX(id), 0) FROM discovered_facilities")
+                max_id = int(cur.fetchone()[0] or 0)
+                cur.execute("INSERT INTO indexnow_cursor (id, last_fac_id, updated_at) "
+                            "VALUES (1, %s, %s)",
+                            (max_id, datetime.datetime.utcnow().isoformat() + "Z"))
+                conn.commit()
+                return {"ok": True, "initialized": True, "cursor": max_id,
+                        "submitted": 0}
+            last_id = int(row[0] or 0)
+            cur.execute("""
+                SELECT id, name, provider FROM discovered_facilities
+                 WHERE id > %s AND name IS NOT NULL AND name != ''
+                   AND COALESCE(is_duplicate, 0) = 0
+                 ORDER BY id ASC
+                 LIMIT %s
+            """, (last_id, max(1, min(int(limit), 10000))))
+            rows = cur.fetchall()
+            if not rows:
+                conn.commit()
+                return {"ok": True, "submitted": 0, "cursor": last_id,
+                        "new_facilities": 0}
+            max_seen = max(int(r[0]) for r in rows)
+            urls, seen = [], set()
+            from routes.facility_slug import stable_hash8
+            for fac_id, name, provider in rows:
+                name_slug = _slugify(name)
+                if not name_slug or len(name_slug) < 3:
+                    continue
+                provider_slug = _slugify(provider)
+                h8 = stable_hash8(provider, name)
+                full = (f"{provider_slug}-{name_slug}-{h8}"
+                        if provider_slug else f"{name_slug}-{h8}")
+                if full in seen:
+                    continue
+                seen.add(full)
+                urls.append(f"https://{HOST}/facilities/{full}")
+            if not urls:
+                # nothing slug-worthy in the delta — still advance past it
+                cur.execute("UPDATE indexnow_cursor SET last_fac_id = %s, "
+                            "updated_at = %s WHERE id = 1",
+                            (max_seen, datetime.datetime.utcnow().isoformat() + "Z"))
+                conn.commit()
+                return {"ok": True, "submitted": 0, "cursor": max_seen,
+                        "new_facilities": len(rows)}
+            res = submit_to_indexnow(urls)
+            if res.get("ok"):
+                cur.execute("UPDATE indexnow_cursor SET last_fac_id = %s, "
+                            "updated_at = %s WHERE id = 1",
+                            (max_seen, datetime.datetime.utcnow().isoformat() + "Z"))
+                conn.commit()
+            else:
+                conn.rollback()  # keep the old cursor → retry next run
+            return {**res, "new_facilities": len(rows),
+                    "cursor": max_seen if res.get("ok") else last_id}
+    except Exception as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return {"ok": False, "error": str(e)[:200]}
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
 def _recent_dcpi_urls(n=400):
     """Canonical /dcpi/<market_slug> URLs for PUBLISHED power markets — a strict
     subset of the sitemap. Lever #3 (2026-06-26): re-engages crawlers (IndexNow
@@ -276,7 +391,8 @@ def _wants(name):
 
 @indexnow_bp.route("/api/v1/admin/indexnow", methods=["GET", "POST"])
 def indexnow_endpoint():
-    _submit_modes = ("recent", "facilities", "new_facilities", "dcpi", "markets")
+    _submit_modes = ("recent", "facilities", "new_facilities", "dcpi", "markets",
+                     "delta")
     # Public read: config + last status (no submit, no mode).
     if request.method == "GET" and not any(request.args.get(m) for m in _submit_modes):
         return jsonify(ok=True, host=HOST, key_location=KEY_LOCATION,
@@ -294,6 +410,14 @@ def indexnow_endpoint():
         n = 0
     if dry and not is_admin:
         n = min(n or 25, 50)  # cap public preview (DB-backed) to avoid abuse
+    # Cursor-advancing facility delta (admin-only, never dry): submits only
+    # facilities newer than the last successful ping. The daily churn loop
+    # (register_indexnow) calls ping_new_facilities() directly; this mode is
+    # the manual/external-cron trigger for the same thing.
+    if _wants("delta"):
+        if not is_admin:
+            return jsonify(ok=False, error="admin key required"), 401
+        return jsonify(ping_new_facilities(n or 5000))
     urls = list(body.get("urls") or [])
     # Newest facilities (canonical /facilities/<slug>, by id desc) — the main
     # new-content stream that has no in-process publish hook.
@@ -313,9 +437,36 @@ def indexnow_endpoint():
     return jsonify(submit_to_indexnow(urls))
 
 
+def _start_delta_loop(app):
+    """Daily facility-churn ping (r-indexnow-delta 2026-07-03). Runs on the
+    bg role only (DCHUB_ROLE=web skips it, same split as the other
+    schedulers); duplicate replicas are harmless anyway — ping_new_facilities
+    serializes on the cursor row lock, so losers see an empty delta."""
+    if (os.environ.get("DCHUB_ROLE", "all").strip().lower() or "all") == "web":
+        return
+    import random
+    import threading
+    import time
+
+    def _loop():
+        # let boot settle + stagger replicas so they don't all wake together
+        time.sleep(900 + random.uniform(0, 600))
+        while True:
+            try:
+                res = ping_new_facilities()
+                app.logger.info(f"indexnow facility-delta: {res}")
+            except Exception as e:
+                app.logger.warning(f"indexnow facility-delta failed: {e}")
+            time.sleep(86400)
+
+    threading.Thread(target=_loop, name="indexnow-facility-delta",
+                     daemon=True).start()
+
+
 def register_indexnow(app):
     try:
         app.register_blueprint(indexnow_bp)
         app.logger.info(f"✓ IndexNow: key {KEY[:8]}… → {KEY_LOCATION}")
+        _start_delta_loop(app)
     except Exception as e:
         app.logger.warning(f"indexnow registration: {e}")

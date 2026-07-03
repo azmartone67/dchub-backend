@@ -26,17 +26,14 @@ Disallow: /api/v1/admin/
 Disallow: /api/auth/
 Disallow: /api/stripe/
 
-# Sitemaps — multi-property roll-up index.
-# r37 (2026-05-31): point these at the CANONICAL apex (dchub.cloud), not the
-# api.dchub.cloud subdomain. Same Flask backend serves both hosts, but
-# advertising the api.* sitemaps made Google treat api.dchub.cloud/facility/<id>
-# and dchub.cloud/facilities/<slug> as two competing originals for every
-# facility -> "Duplicate, Google chose different canonical" / redirect-error
-# index bloat (the GSC 13k-not-indexed symptom). One canonical domain only.
-Sitemap: https://dchub.cloud/sitemap-index.xml
-Sitemap: https://dchub.cloud/sitemap-facilities.xml
-Sitemap: https://dchub.cloud/sitemap-markets.xml
-Sitemap: https://dchub.cloud/sitemap-grids.xml
+# Sitemaps — ONE canonical entry point.
+# r37 (2026-05-31): canonical apex (dchub.cloud) only, never api.* — two hosts
+# advertising the same pages made Google pick competing canonicals.
+# r-sitemap-shard (2026-07-03): the four legacy sub-sitemaps listed here were
+# retired (sitemap-facilities.xml was 5,772 /facility/<id> self-canonical dupes
+# — the QA deep-dive's #1 Google+Bing indexing blocker). /sitemap.xml is now a
+# sitemapindex that fans out to /sitemap-<section>.xml shards; advertise only it.
+Sitemap: https://dchub.cloud/sitemap.xml
 
 # Host preference (search engines treat as canonical signal)
 Host: dchub.cloud
