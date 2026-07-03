@@ -437,6 +437,63 @@ _DISPATCH = [
      f"{BASE}/api/v1/admin/distribution/master-tick",
      "POST",
      lambda now: now.hour == 9 and now.minute < 55),
+
+    # ─────────────────────────────────────────────────────────────────────
+    # 2026-07-03: RE-HOMED off the retiring off-repo Replit scheduler
+    # (dchub-scheduler.py). Replit is decommissioned; these five Replit jobs
+    # had NO surviving driver (not in any .github/workflows/*.yml, not in
+    # crawler_scheduler.py, not an in-process loop), so they would silently
+    # die when the Replit project is deleted — exactly like heartbeat_auto_drain
+    # did. Cadences mirror the Replit schedule; minute windows are WIDE because
+    # the heartbeat is sporadic (~hourly, ~59 fires/day), and every job here is
+    # idempotent, so overlapping/repeat fires within a window are harmless.
+    # _hit() attaches X-Admin-Key + X-Internal-Key so admin/internal-gated jobs
+    # authorize. (The other ~30 Replit jobs are already GH-cron/crawler-driven,
+    # dead routes, gated off, or Replit-only — see 2026-07-03 audit; not re-homed.)
+
+    # Housekeeping: delete expired MCP rate-limit rows + stale daily-usage rows.
+    # Pure idempotent DELETE (a repeat fire in-window deletes 0). Replit: daily 03:10.
+    ("mcp_rate_cleanup",
+     f"{BASE}/api/jobs/mcp-rate-cleanup",
+     "POST",
+     lambda now: now.hour == 3 and now.minute < 55),
+
+    # Warm the public CC-BY /api/v1/industry/pulse cache (~15-query rollup →
+    # in-process _PULSE_CACHE, 30-min TTL). Read-only compute, no auth. A cold
+    # cache makes the public analyst surface 503 (observed 2026-07-03). Replit:
+    # every 30 min.
+    ("industry_pulse_refresh",
+     f"{BASE}/api/v1/industry/pulse/refresh",
+     "POST",
+     lambda now: now.minute % 30 < 10),
+
+    # Land+Power dataset freshness. The crawler_scheduler patch that would have
+    # folded this in was never applied, so it was Replit-only → health showed
+    # land_power RED/stale. Fire-and-forget bg thread, incremental upsert
+    # (idempotent). Replit: daily 04:30.
+    ("land_power_sync_incremental",
+     f"{BASE}/api/land-power/sync",
+     "POST",
+     lambda now: now.hour == 4 and now.minute < 55),
+
+    # Failover DR: mirror Neon facilities → Cloudflare D1 so the Pages worker
+    # can serve /api/v1/map when Railway is down. Last ran 2026-06-17 (16d stale,
+    # D1 stuck ~6.2K/21K rows). Returns 202 immediately (bg thread + single-flight
+    # guard); CF D1 INSERT ON CONFLICT is idempotent; self-no-ops if
+    # CLOUDFLARE_API_TOKEN is unset. Replit: hourly :15.
+    ("d1_facilities_sync",
+     f"{BASE}/api/v1/admin/d1-sync/run",
+     "POST",
+     lambda now: now.minute >= 15 and now.minute < 25),
+
+    # Welcome-email drip. check_and_send_drip_emails() sends only the next DUE
+    # stage per user and logs to email_drip_log (dedup), so re-fires never
+    # double-send. Replit: daily 16:30 (9 AM MST). admin_drip_check was patched
+    # 2026-07-03 to accept the X-Admin-Key header that _hit sends.
+    ("drip_emails",
+     f"{BASE}/api/admin/drip-check",
+     "POST",
+     lambda now: now.hour == 16 and now.minute < 55),
 ]
 
 

@@ -406,8 +406,14 @@ def setup_drip_routes(app, get_db_conn):
 
     @app.route('/api/admin/drip-check', methods=['POST'])
     def admin_drip_check():
-        admin_key = request.args.get('admin_key')
-        if admin_key != os.environ.get('DCHUB_ADMIN_KEY', ''):
+        # 2026-07-03: also accept the X-Admin-Key header (what the in-process
+        # cron heartbeat's _hit sends) in addition to the legacy ?admin_key=
+        # query param, so the re-homed drip cron authorizes without the admin
+        # key ever appearing in a URL/access-log. Re-homed off the retired
+        # off-repo Replit scheduler into cron_heartbeat _DISPATCH.
+        expected = os.environ.get('DCHUB_ADMIN_KEY', '')
+        admin_key = request.args.get('admin_key') or request.headers.get('X-Admin-Key')
+        if not expected or admin_key != expected:
             return jsonify({'error': 'Unauthorized'}), 403
 
         conn = get_db_conn()
