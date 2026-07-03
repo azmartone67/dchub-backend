@@ -383,8 +383,13 @@ def energy_discovery_status():
                 ('total_power_plants',     'power_plants_eia',   None),  # no ts column on this table -> plain COUNT (silences created_at/inserted_at log spam)
                 ('total_transmissions',    'transmission_lines', 'created_at'),
                 ('total_wind_projects',    'wind_projects',      'updated_at'),
-                ('total_gas_compressors',  'gas_compressors',    'updated_at'),
-                ('total_gas_processings',  'gas_processings',    'updated_at'),
+                # 2026-07-03: table names were WRONG (gas_compressors/gas_processings
+                # don't exist) so to_regclass short-circuited both to 0, which
+                # tripped the ingestion watchdog even though the data is present.
+                # Real tables: gas_compressor_stations (1.7k) / gas_processing_plants
+                # (478), timestamped by loaded_at (no updated_at/created_at).
+                ('total_gas_compressors',  'gas_compressor_stations', 'loaded_at'),
+                ('total_gas_processings',  'gas_processing_plants',   'loaded_at'),
                 ('total_fiber_routes',     'fiber_routes',       'updated_at'),
             ]:
                 try:
