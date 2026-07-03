@@ -349,12 +349,14 @@ def _build_data() -> dict:
                                      "pct_tagged_30d": 0.0},
         "source_plan_cohort": {"total": 0, "expiring_next_60d": 0,
                                "expired_not_demoted": 0},
-        # 2026-06-07: session-bound 3-strike high-intent claim KPIs.
-        # high_intent_sessions_30d = rows that crossed the 3-paid-hits
-        # threshold in the last 30d. claims_minted = how many of those got
-        # a signed URL emitted into the paywall response. claims_used =
-        # how many humans clicked the URL + entered an email. claim_to_paid
-        # = how many of THOSE eventually paid (joined to users.email).
+        # 2026-06-07: session-bound high-intent claim KPIs.
+        # r-two-branch (2026-07-03): sessions_30d = REAL paywall-hit rows in
+        # the last 30d (the honest mint-rate denominator — see the query
+        # block for why the old paid_call_count_24h >= 3 filter was wrong).
+        # claims_minted = signed URLs emitted into paywall responses.
+        # claims_used = redeemed by agent auto-redeem OR human form-submit.
+        # claim_to_paid = email-path (users.plan) UNION key-path (Stripe
+        # pack/top-up on the minted key).
         "high_intent": {"sessions_30d": 0, "claims_minted_30d": 0,
                         "claims_used_30d": 0, "claim_to_paid_30d": 0,
                         "minted_rate_pct": 0.0, "claim_to_paid_rate_pct": 0.0,
@@ -369,11 +371,10 @@ def _build_data() -> dict:
                         # 'chatgpt', 'generic'). Populated by the dedicated
                         # query block below.
                         "variant_breakdown": [],
-                        # 2026-06-07: step-by-step drop monitor —
-                        # claims_minted → page_viewed → email_submitted
-                        # → key_issued → first_api_call → upgrade_click → paid.
-                        # killer_step + alarm flag scream the instant any
-                        # step drops >95% (the 19/0/0 stall pattern).
+                        # r-two-branch (2026-07-03): trunk + two-branch drop
+                        # monitor (see mcp_high_intent_claim.
+                        # build_step_waterfall). alarm only on MECHANICAL
+                        # breakage with prev >= 5 — never on intent outcomes.
                         "step_drop": []},
         "step_drop_alarm": False,
         "step_drop_killer": "",
@@ -436,18 +437,26 @@ def _build_data() -> dict:
         # ── KPI 2: Conversions 30d ────────────────────────────────────
         # Prefer Stripe-webhook signal (mcp_conversions table). Fall back
         # to mcp_pair_codes.redeemed_at + users.plan_updated_at.
+        # r-honest-conv (2026-07-03): this gross number is NO LONGER the
+        # headline — the hero card leads with real_conversions_30d (KPI 4f,
+        # Stripe-backed + comp-stripped) and shows this as context. The
+        # source is recorded so the pair-code fallback renders as
+        # 'redemptions', never as conversions.
+        conv_source = "mcp_conversions"
         conv_30d = _scalar(cur,
             "SELECT COUNT(*) FROM mcp_conversions "
             " WHERE created_at >= NOW() - INTERVAL '30 days'")
         if conv_30d is None:
             out["missing_tables"].append("mcp_conversions")
             # Fall back to pair-code redemptions.
+            conv_source = "pair_code_redemptions"
             conv_30d = _scalar(cur,
                 "SELECT COUNT(*) FROM mcp_pair_codes "
                 " WHERE redeemed_at >= NOW() - INTERVAL '30 days'")
             if conv_30d is None:
                 conv_30d = 0
         out["kpis"]["conversions_30d"] = int(conv_30d or 0)
+        out["kpis"]["conversions_30d_source"] = conv_source
 
         # ── KPI 2b: Emails captured 30d (the AGENT-funnel lead signal) ──
         # 2026-06-28: ~0 here while signals/high-intent claims are high = the
@@ -809,7 +818,7 @@ def _build_data() -> dict:
         except Exception:
             pass
 
-        # ── 2026-06-07: High-intent 3-strike claim KPIs ───────────────
+        # ── 2026-06-07: High-intent claim KPIs (env-driven hit gate) ──
         # The new conversion-funnel surface — see
         # routes/mcp_high_intent_claim.py. We probe directly here (not via
         # the public stats endpoint) so the dashboard works during the
@@ -817,10 +826,14 @@ def _build_data() -> dict:
         try:
             # All high-intent counts run over the REAL-traffic derived table
             # (probe/self-test excluded) — see _hi_real_from / _high_intent_real_where.
+            # r-two-branch (2026-07-03): sessions_30d = ALL real paywall-hit rows
+            # in-window. The old filter (paid_call_count_24h >= 3) hardcoded a 3
+            # while the LIVE mint threshold is env-driven (DCHUB_HIGH_INTENT_
+            # THRESHOLD, currently 1) AND read a self-resetting 24h counter — so
+            # the denominator undercounted and the mint rate read >100%.
             v = _scalar(cur,
                 "SELECT COUNT(*) FROM " + _hi_real_from() +
-                " WHERE last_hit_at >= NOW() - INTERVAL '30 days' "
-                "   AND paid_call_count_24h >= 3")
+                " WHERE last_hit_at >= NOW() - INTERVAL '30 days'")
             if v is None:
                 out["missing_tables"].append("mcp_high_intent_sessions")
             else:
@@ -833,30 +846,41 @@ def _build_data() -> dict:
                     "SELECT COUNT(*) FROM " + _hi_real_from() +
                     " WHERE claim_used_at IS NOT NULL "
                     "   AND claim_used_at >= NOW() - INTERVAL '30 days'") or 0)
-                # claim_to_paid: joined to users.email. Skips silently if
-                # users.email column missing (rollout-time defensiveness).
+                # claim_to_paid — r-two-branch (2026-07-03): email-path (users.plan
+                # via claim_email) UNION key-path (Stripe pack/top-up on the minted
+                # key). 11 of 12 live redemptions have claim_email NULL (agents
+                # auto-redeem), so the old email-only join made the agent path
+                # structurally uncountable. mcp_topups.api_key_hash is
+                # sha256(key).hexdigest()[:32] (mcp_conversion_plays._hash_key).
                 try:
                     cur.execute(
-                        "SELECT COUNT(DISTINCT h.claim_email) "
-                        "  FROM " + _hi_real_from() +
-                        "  JOIN users u "
-                        "    ON LOWER(u.email) = LOWER(h.claim_email) "
-                        " WHERE h.claim_used_at IS NOT NULL "
-                        "   AND h.claim_used_at >= NOW() - INTERVAL '30 days' "
-                        "   AND COALESCE(u.plan, 'free') NOT IN ('free','')")
+                        "SELECT COUNT(*) FROM ("
+                        " SELECT h.id FROM " + _hi_real_from() +
+                        "   JOIN users u ON LOWER(u.email) = LOWER(h.claim_email)"
+                        "  WHERE h.claim_email IS NOT NULL"
+                        "    AND h.claim_used_at >= NOW() - INTERVAL '30 days'"
+                        "    AND COALESCE(u.plan, 'free') NOT IN ('free','')"
+                        " UNION "
+                        " SELECT h.id FROM " + _hi_real_from() +
+                        "   JOIN mcp_topups t ON t.api_key_hash = "
+                        "        LEFT(ENCODE(SHA256(CONVERT_TO(h.minted_api_key,'UTF8')),'hex'),32)"
+                        "  WHERE h.minted_api_key IS NOT NULL"
+                        "    AND h.claim_used_at >= NOW() - INTERVAL '30 days'"
+                        "    AND t.paid_at IS NOT NULL"
+                        ") q")
                     out["high_intent"]["claim_to_paid_30d"] = int(
                         (cur.fetchone() or (0,))[0] or 0)
                 except Exception:
                     try: conn.rollback()
                     except Exception: pass
                 if out["high_intent"]["sessions_30d"] > 0:
-                    out["high_intent"]["minted_rate_pct"] = round(
+                    out["high_intent"]["minted_rate_pct"] = min(100.0, round(
                         100.0 * out["high_intent"]["claims_minted_30d"]
-                        / out["high_intent"]["sessions_30d"], 1)
+                        / out["high_intent"]["sessions_30d"], 1))
                 if out["high_intent"]["claims_used_30d"] > 0:
-                    out["high_intent"]["claim_to_paid_rate_pct"] = round(
+                    out["high_intent"]["claim_to_paid_rate_pct"] = min(100.0, round(
                         100.0 * out["high_intent"]["claim_to_paid_30d"]
-                        / out["high_intent"]["claims_used_30d"], 1)
+                        / out["high_intent"]["claims_used_30d"], 1))
                 # Round 2: pull the LIVE threshold so the dashboard reflects
                 # what the endpoint is using (env-driven via
                 # DCHUB_HIGH_INTENT_THRESHOLD).
@@ -935,20 +959,21 @@ def _build_data() -> dict:
             try: conn.rollback()
             except Exception: pass
 
-        # ── 2026-06-07: step-by-step drop monitor ─────────────────────
-        # Same 7-step waterfall as /api/v1/admin/mcp/high-intent/step-drop
-        # — surfaces inline on /admin/funnel-health so the operator sees
-        # the killer step without having to hit a separate endpoint.
-        # Fail-soft: a bad query CANNOT blank the rest of the dashboard.
+        # ── Step-by-step drop monitor ─────────────────────────────────
+        # r-two-branch (2026-07-03): the trunk + two-branch waterfall is now
+        # computed by routes.mcp_high_intent_claim.build_step_waterfall — the
+        # SAME builder the step-drop endpoint uses, so the card and the
+        # endpoint agree by construction (the 06-27 r-claim-honest fix had to
+        # be applied twice because each surface had its own copy). Agents
+        # auto-redeem with NO email, humans form-submit WITH one; modeling
+        # them as one linear chain produced the "Email 1 → Trial key 12 =
+        # -1100% drop" artifact that pinned step_drop_alarm True (07-03
+        # flywheel-truth QA). Fail-soft: a bad query CANNOT blank the page.
         try:
-            # r-cursor-shadow (2026-07-02): this block used `with conn.cursor()
-            # as cur:` — shadowing the function-wide `cur` opened at the top of
-            # the try and CLOSING it on block exit. Every query after this point
-            # (per-platform loop, ai_platforms_reach) raised InterfaceError
-            # "cursor already closed", silently swallowed into zeros by the
-            # bare-except+rollback blocks. The 2026-06-12 pricing-A/B patch
-            # fixed the same bug downstream but not these upstream readers.
-            # Private cursor name so the outer `cur` survives this block.
+            from routes.mcp_high_intent_claim import build_step_waterfall
+            # r-cursor-shadow (2026-07-02): private cursor name — `with
+            # conn.cursor() as cur:` here would shadow and CLOSE the
+            # function-wide `cur`, silently zeroing every query below.
             with conn.cursor() as _sd_cur:
                 def _ds(sql):
                     try:
@@ -958,78 +983,17 @@ def _build_data() -> dict:
                         try: conn.rollback()
                         except Exception: pass
                         return 0
-                # Waterfall runs over the SAME real-traffic table as the headline
-                # (probe/self-test excluded) so the step-drop matches the KPIs.
-                _hf = "SELECT COUNT(*) FROM " + _hi_real_from() + " WHERE "
-                _m = _ds(_hf + "claim_minted_at IS NOT NULL AND claim_minted_at >= NOW() - INTERVAL '30 days'")
-                _u = _ds(_hf + "claim_used_at   IS NOT NULL AND claim_used_at   >= NOW() - INTERVAL '30 days'")
-                # r-claim-page-open (2026-06-24): REAL page-open (GET /claim), now
-                # distinct from form-submit (_u). Graceful 0 if column missing.
-                _v = _ds(_hf + "claim_page_opened_at IS NOT NULL AND claim_page_opened_at >= NOW() - INTERVAL '30 days'")
-                _e = _ds(_hf + "claim_email     IS NOT NULL AND claim_used_at   >= NOW() - INTERVAL '30 days'")
-                _k = _ds(_hf + "minted_api_key  IS NOT NULL AND claim_used_at   >= NOW() - INTERVAL '30 days'")
-                _f = _ds("SELECT COUNT(DISTINCT h.minted_api_key) FROM " + _hi_real_from() +
-                         " JOIN auto_trial_keys a ON a.api_key = h.minted_api_key "
-                         " WHERE h.minted_api_key IS NOT NULL "
-                         "   AND h.claim_used_at >= NOW() - INTERVAL '30 days' "
-                         "   AND a.last_used_at IS NOT NULL")
-                # "Stripe click" step ≈ viewed the redeem/checkout URL. The old
-                # query referenced u.operator_email + u.stripe_clicked_at — NEITHER
-                # column exists on mcp_upgrade_signals (verified 2026-06-23), so it
-                # silently returned 0 forever. Real columns: user_email +
-                # signal_type='redeem_url_viewed' (the genuine upgrade-intent event).
-                _c = _ds("SELECT COUNT(DISTINCT LOWER(h.claim_email)) FROM " + _hi_real_from() +
-                         " JOIN mcp_upgrade_signals u "
-                         "   ON LOWER(u.user_email) = LOWER(h.claim_email) "
-                         " WHERE h.claim_email IS NOT NULL "
-                         "   AND h.claim_used_at >= NOW() - INTERVAL '30 days' "
-                         "   AND u.signal_type = 'redeem_url_viewed'")
-                _p = _ds("SELECT COUNT(DISTINCT LOWER(h.claim_email)) FROM " + _hi_real_from() +
-                         " JOIN users u ON LOWER(u.email) = LOWER(h.claim_email) "
-                         " WHERE h.claim_email IS NOT NULL "
-                         "   AND h.claim_used_at >= NOW() - INTERVAL '30 days' "
-                         "   AND COALESCE(u.plan, 'free') NOT IN ('free','')")
-            raw = [("claims_minted", "Claim URL minted", _m),
-                   # r-claim-honest (2026-06-27): this step was claim_page_opened_at
-                   # (_v) — a HUMAN browser GET on /claim. But agents auto-redeem the
-                   # signed token server-side (server.mjs _autoRedeemClaim → /redeem)
-                   # with no browser, so _v is structurally ~0 while every downstream
-                   # step (keyed on claim_used_at) lights up → a FALSE 100% "killer
-                   # drop". The real "claim acted on" event is claim_used_at (_u), set
-                   # by BOTH the agent auto-redeem and a human form-submit. Show that
-                   # honest step; the genuine human-open count is preserved as a
-                   # separate diagnostic (human_page_opens) below.
-                   ("claim_redeemed","Claim redeemed (agent/human)", _u),
-                   ("email_submitted","Email submitted", _e),
-                   ("key_issued",    "Trial key issued", _k),
-                   ("first_api_call","Key made API call",_f),
-                   ("upgrade_click", "Stripe click",     _c),
-                   ("paid",          "Conversion",       _p)]
-            prev = None
-            killer_drop = -1.0
-            killer = ""
-            steps = []
-            for name, label, count in raw:
-                if prev is None or prev == 0:
-                    dfp = 0.0
-                else:
-                    dfp = round(100.0 * (prev - count) / prev, 2)
-                steps.append({"step": name, "label": label, "count": count,
-                              "drop_from_prev": dfp,
-                              "drop_pct": round(100.0 * (_m - count) / _m, 2) if _m else 0.0})
-                if dfp > killer_drop and name != "claims_minted":
-                    killer_drop = dfp
-                    killer = name
-                prev = count
-            out["high_intent"]["step_drop"] = steps
+                wf = build_step_waterfall(_ds, days=30)
+            out["high_intent"]["step_drop"] = wf["steps"]
+            out["high_intent"]["branch_agent"] = wf["branch_agent"]
+            out["high_intent"]["branch_human"] = wf["branch_human"]
+            out["high_intent"]["paid_total_30d"] = wf["paid_total"]
             # r-claim-honest (2026-06-27): genuine human browser opens of /claim,
-            # kept as a diagnostic now that the waterfall step measures the real
-            # agent-or-human redeem (claim_used_at). Expected ~0 by design — agents
-            # auto-redeem server-side — so this is NOT an alarm, just visibility.
-            out["high_intent"]["human_page_opens"] = _v
-            out["step_drop_alarm"] = (_m > 5 and _u == 0) or killer_drop > 95.0
-            out["step_drop_killer"] = killer
-            out["step_drop_killer_pct"] = round(killer_drop, 2) if killer else 0.0
+            # kept as a diagnostic (agents redeem server-side — ~0 by design).
+            out["high_intent"]["human_page_opens"] = wf["human_page_opens"]
+            out["step_drop_alarm"] = wf["alarm"]
+            out["step_drop_killer"] = wf["killer_step"]
+            out["step_drop_killer_pct"] = wf["killer_drop_pct"]
         except Exception as e:
             logger.debug("[funnel_health] step_drop probe failed: %s", e)
             try: conn.rollback()
@@ -1037,7 +1001,10 @@ def _build_data() -> dict:
 
         # ── Per-AI-platform breakdown ─────────────────────────────────
         # Match on mcp_call_log.platform (LIKE) + mcp_upgrade_signals.mcp_client.
-        # Conversions = pair_codes redeemed where user_agent_at_view matches.
+        # conversions_30d here = pair_codes REDEMPTIONS (user_agent_at_view
+        # match) — labeled 'Redemptions' on the card since 2026-07-03; real
+        # Stripe conversions are the hero real_conversions_30d. JSON key kept
+        # for back-compat.
         for key, label, patterns in _AI_PLATFORMS:
             row = {"key": key, "label": label, "requests_30d": 0,
                    "distinct_sessions_30d": 0, "signals_30d": 0,
@@ -1404,7 +1371,13 @@ def _render_html(data: dict, admin_key: str) -> str:
                                    "claims_used_30d": 0, "claim_to_paid_30d": 0,
                                    "minted_rate_pct": 0.0,
                                    "claim_to_paid_rate_pct": 0.0,
-                                   "threshold": 3})
+                                   "threshold": 2})
+    # r-two-branch (2026-07-03): ONE live threshold value + a correct ordinal
+    # for the card copy. The old markup defaulted to 3 in the title and 2 in
+    # the copy, and its ordinal only knew 'nd'/'rd' — env threshold=1
+    # rendered as "1rd".
+    _hi_t = int(hi.get("threshold") or 2)
+    _hi_ord = {1: "st", 2: "nd", 3: "rd"}.get(_hi_t, "th")
     ab = data["ab_status"]
     plats = data["platforms"]
     evs = data["events"]
@@ -1477,7 +1450,10 @@ def _render_html(data: dict, admin_key: str) -> str:
             f["stage_drops_pct"].get("codes→viewed")),
         ("Stripe clicks",             f["stripe_clicked_30d"],
             f["stage_drops_pct"].get("viewed→clicked")),
-        ("Conversions",               f["conversions_30d"],
+        ("Redemptions (pair codes)"
+             if k.get("conversions_30d_source") == "pair_code_redemptions"
+             else "Conversions (gross)",
+                                      f["conversions_30d"],
             f["stage_drops_pct"].get("clicked→converted")),
     ]
     funnel_rows = []
@@ -1517,6 +1493,44 @@ def _render_html(data: dict, admin_key: str) -> str:
         f'</tr>'
         for p in plats
     ) or '<tr><td colspan="6" class="empty">No platform data.</td></tr>'
+
+    # Two-branch step-drop card rows (r-two-branch 2026-07-03). Branch bases
+    # are SPLITS of claim_redeemed, not drops — drop_from_prev is None there
+    # and renders as '—'. Only mechanical steps go red (they alone can alarm).
+    _BR_HEAD = {
+        "trunk": "TRUNK — every real paywall-hit session",
+        "agent": "BRANCH A · AGENT — auto-redeem, key-attributed (claim_email IS NULL)",
+        "human": "BRANCH B · HUMAN — email form-submit (claim_email IS NOT NULL)",
+    }
+    _sd_rows = []
+    _sd_last_branch = None
+    for s_ in (hi.get("step_drop") or []):
+        _br = s_.get("branch") or "trunk"
+        if _br != _sd_last_branch:
+            _sd_rows.append(
+                '<tr><td colspan="4" style="font-size:10px;letter-spacing:0.06em;'
+                'text-transform:uppercase;color:var(--accent);padding-top:14px;'
+                f'border-bottom:none">{_esc(_BR_HEAD.get(_br, _br))}</td></tr>')
+            _sd_last_branch = _br
+        _dfp = s_.get("drop_from_prev")
+        _mech = bool(s_.get("mechanical"))
+        if _dfp is None:
+            _dfp_html = '<span style="color:var(--muted)">—</span>'
+        else:
+            _dc = ("#ef4444" if (_mech and _dfp > 95)
+                   else "#f59e0b" if _dfp > 50 else "var(--muted)")
+            _dfp_html = f'<span style="color:{_dc}">{_dfp:.1f}%</span>'
+        _cum = s_.get("drop_pct")
+        _cum_html = "—" if _cum is None else f"{_cum:.1f}%"
+        _pad = "10px" if _br == "trunk" else "22px"
+        _sd_rows.append(
+            f'<tr><td style="padding-left:{_pad}">{_esc(s_.get("label", "?"))}</td>'
+            f'<td style="text-align:right">{_fmt_n(s_.get("count", 0))}</td>'
+            f'<td style="text-align:right">{_dfp_html}</td>'
+            f'<td style="text-align:right;color:var(--muted)">{_cum_html}</td></tr>')
+    step_rows_html = "".join(_sd_rows) or (
+        '<tr><td colspan="4" style="color:var(--muted);text-align:center;'
+        'padding:18px">No data yet</td></tr>')
 
     # A/B table.
     cA = ab["cohorts"].get("A") or {}
@@ -1703,9 +1717,9 @@ def _render_html(data: dict, admin_key: str) -> str:
       <div class="hero-d">/mo plan-based run-rate · counts annual/comped as monthly — not Stripe cash-recurring</div>
     </div>
     <div class="hero">
-      <div class="hero-l">Conversions 30d</div>
-      <div class="hero-v">{_fmt_n(k['conversions_30d'])}</div>
-      <div class="hero-d">mcp_conversions OR pair_codes.redeemed_at</div>
+      <div class="hero-l">Real conversions 30d</div>
+      <div class="hero-v">{_vn(_real_conv)}</div>
+      <div class="hero-d">Stripe-backed, comp-stripped · {_fmt_n(k['conversions_30d'])} {('redemptions (pair codes — NOT conversions)' if k.get('conversions_30d_source') == 'pair_code_redemptions' else 'gross incl. comp (mcp_conversions)')}</div>
     </div>
     <div class="hero">
       <div class="hero-l">Active dev keys</div>
@@ -1833,12 +1847,14 @@ def _render_html(data: dict, admin_key: str) -> str:
     </div>
   </div>
 
-  <!-- 2026-06-07: 3-STRIKE HIGH-INTENT CLAIM (closes 0% MCP-conversion gap) -->
+  <!-- 2026-06-07: HIGH-INTENT CLAIM (closes 0% MCP-conversion gap).
+       r-two-branch 2026-07-03: title/copy render the LIVE env-driven hit
+       gate instead of a hardcoded strike count. -->
   <div class="card" style="margin-bottom:18px;">
-    <h2>3-strike high-intent claim <span style="font-size:10px;color:var(--accent);">NEW · session-bound · threshold={hi.get('threshold',3)}</span></h2>
+    <h2>High-intent claim funnel <span style="font-size:10px;color:var(--accent);">session-bound · mint threshold={_hi_t}</span></h2>
     <div class="card-row">
       <div class="sub-stat">
-        <div class="ss-l">High-intent sessions 30d</div>
+        <div class="ss-l">Paywall-hit sessions 30d</div>
         <div class="ss-v">{_fmt_n(hi.get('sessions_30d',0))}</div>
       </div>
       <div class="sub-stat">
@@ -1864,25 +1880,27 @@ def _render_html(data: dict, admin_key: str) -> str:
     </div>
     <div style="font-size:11px;color:var(--muted);margin-top:10px;">
       mcp-server tracks every paid-tool hit per (session_id, tool); on the
-      <b>{hi.get('threshold',2)}{'nd' if int(hi.get('threshold',2))==2 else 'rd'}</b> hit in 24h
-      the paywall response embeds a signed
-      <code>https://dchub.cloud/claim/&lt;token&gt;</code> URL. Human enters email →
-      trial key emailed via Resend. Threshold env-driven via
-      <code>DCHUB_HIGH_INTENT_THRESHOLD</code> (2026-06-07: lowered 3 → 2 after
-      empirical drop-off analysis).
+      <b>{_hi_t}{_hi_ord}</b> hit in 24h the paywall response embeds a signed
+      <code>https://dchub.cloud/claim/&lt;token&gt;</code> URL. Agents auto-redeem
+      it server-side (no email); humans enter an email → trial key via Resend.
+      Threshold env-driven via <code>DCHUB_HIGH_INTENT_THRESHOLD</code> — the
+      live value ({_hi_t}) is shown in the title. Mint rate = claims minted /
+      real paywall-hit sessions, same 30d window. Claim → paid counts BOTH
+      paths: email → users.plan, and key → Stripe pack/top-up.
     </div>
   </div>
 
-  <!-- 2026-06-07: step-by-step drop monitor (funnel_health_high_intent_step_drop)
-       7-stage waterfall: claims_minted → page_viewed → email_submitted →
-       key_issued → first_api_call → upgrade_click → paid. The killer_step
-       banner screams the instant any step drops >95% from prior — would
-       have caught the 19/0/0 stall on day 1. Endpoint:
+  <!-- r-two-branch 2026-07-03: trunk + two-branch drop monitor.
+       TRUNK paywall_sessions → claims_minted → claim_redeemed, then
+       BRANCH A (agent auto-redeem, key-attributed) and BRANCH B (human
+       email). Drops are within-branch only, clamped [0,100]; the alarm
+       fires ONLY on mechanical breakage with prev >= 5 — never on the
+       upsell/paid intent steps. Endpoint:
        GET /api/v1/admin/mcp/high-intent/step-drop -->
   <div class="card" style="margin-bottom:18px;border:{(
       '2px solid #ef4444' if data.get('step_drop_alarm') else
       '1px solid var(--border)')};">
-    <h2>High-intent funnel · step-by-step drop
+    <h2>High-intent funnel · two-branch step drop
       <span style="font-size:10px;color:{('#ef4444' if data.get('step_drop_alarm') else 'var(--accent)')};">
         {('ALARM · killer=' + str(data.get('step_drop_killer',''))) if data.get('step_drop_alarm') else 'monitoring'}
       </span>
@@ -1895,20 +1913,17 @@ def _render_html(data: dict, admin_key: str) -> str:
         <th style="text-align:right">Cumulative drop vs minted</th>
       </tr></thead>
       <tbody>
-      {''.join(
-        f'<tr><td>{_esc(s.get("label","?"))}</td>'
-        f'<td style="text-align:right">{_fmt_n(s.get("count",0))}</td>'
-        f'<td style="text-align:right;color:{("#ef4444" if s.get("drop_from_prev",0)>95 else "#f59e0b" if s.get("drop_from_prev",0)>50 else "var(--muted)")}">{s.get("drop_from_prev",0):.1f}%</td>'
-        f'<td style="text-align:right;color:{("#ef4444" if s.get("drop_pct",0)>95 else "#f59e0b" if s.get("drop_pct",0)>50 else "var(--muted)")}">{s.get("drop_pct",0):.1f}%</td>'
-        f'</tr>'
-        for s in hi.get('step_drop', []) or []
-      ) or '<tr><td colspan="4" style="color:var(--muted);text-align:center;padding:18px">No data yet</td></tr>'}
+      {step_rows_html}
       </tbody>
     </table>
     <div style="font-size:11px;color:var(--muted);margin-top:10px;">
-      Killer step = the single biggest drop_from_prev. If the funnel breaks at
-      any point (CF Pages 404, broken page, email send fail, broken Stripe link),
-      this card screams within 60s (cache TTL) instead of 30 days.
+      Agents auto-redeem the claim token server-side with no email, so Branch A
+      is attributed by the minted API key (unlock_more_data calls via
+      mcp_call_log, payments via mcp_topups); Branch B by claim_email. '—' =
+      branch base (a split of claim_redeemed, not a drop). Killer step = the
+      biggest MECHANICAL drop with prev ≥ 5 — a mint/redeem/key-issuance/first-call
+      breakage screams within 60s (cache TTL); 0 on upsell/paid is a growth
+      problem, not an incident.
       Endpoint: <code>/api/v1/admin/mcp/high-intent/step-drop</code>.
     </div>
   </div>
@@ -1959,8 +1974,8 @@ def _render_html(data: dict, admin_key: str) -> str:
         <th style="text-align:right">Requests</th>
         <th style="text-align:right">Distinct callers (IP)</th>
         <th style="text-align:right">Signals</th>
-        <th style="text-align:right">Conversions</th>
-        <th style="text-align:right">Conv %</th>
+        <th style="text-align:right">Redemptions (pair codes)</th>
+        <th style="text-align:right">Redeem %</th>
       </tr></thead>
       <tbody>{plat_rows_html}</tbody>
     </table>

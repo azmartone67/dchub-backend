@@ -1451,34 +1451,175 @@ def claim_variant_conversion():
         except Exception: pass
 
 
+# ── Two-branch waterfall builder ──────────────────────────────────────
+# r-two-branch (2026-07-03): THE shared builder for both the
+# /admin/funnel-health card and /api/v1/admin/mcp/high-intent/step-drop —
+# one definition, no drift (the 06-27 r-claim-honest fix had to be applied
+# twice because these two surfaces each had their own copy).
+#
+# The old 7-step LINEAR chain interleaved two incompatible populations:
+# agents auto-redeem the claim token server-side with NO email
+# (claim_email NULL — 11 of 12 live redemptions), humans form-submit WITH
+# one. Email-keyed steps sat "above" key-keyed steps, so the card rendered
+# Email 1 → Trial key 12 as a "-1100% drop" and step_drop_alarm pinned
+# True on a math artifact the brain's 15-min monitor screamed about every
+# cycle (07-02 + 07-03 flywheel QA). New shape:
+#
+#   TRUNK   paywall_sessions → claims_minted → claim_redeemed
+#   AGENT   (claim_email IS NULL)   base → key_issued → first_api_call
+#           → agent_upsell (unlock_more_data called WITH that key —
+#             mcp_call_log.api_key, no email involved)
+#           → agent_paid   (Stripe pack/top-up on the SAME key —
+#             mcp_topups.api_key_hash = sha256(key)[:32])
+#   HUMAN   (claim_email IS NOT NULL)   base → key_issued
+#           → redeem_url_viewed (email-keyed signal) → paid (users.plan)
+#
+# drop_from_prev is computed ONLY within a chain (a branch base is a SPLIT
+# of claim_redeemed, not a drop → None) and clamped to [0, 100].
+#
+# The alarm is a BREAKAGE detector, not a conversion complaint: only
+# `mechanical` transitions (mint→redeem, base→key_issued, key→first_call)
+# with prev >= 5 can trip it. Upsell/paid are intent outcomes — 0 there is
+# the growth problem the north-star metric tracks, not a 15-min incident.
+
+def build_step_waterfall(run, days: int = 30) -> dict:
+    """Compute the two-branch high-intent claim waterfall.
+
+    run: callable(sql: str) -> int — a fail-soft scalar COUNT executor
+    supplied by the caller (each surface brings its own cursor/rollback
+    handling). Returns a dict with steps, alarm, killer + branch summaries.
+    """
+    d = max(1, min(365, int(days)))
+    real   = _hi_real_sql()
+    real_h = _hi_real_sql("h.")
+    W    = f"NOW() - INTERVAL '{d} days'"
+    base = f"SELECT COUNT(*) FROM mcp_high_intent_sessions WHERE {real} AND "
+
+    # ── TRUNK ──────────────────────────────────────────────────────────
+    n_hit    = run(base + f"last_hit_at >= {W}")
+    n_minted = run(base + f"claim_minted_at IS NOT NULL AND claim_minted_at >= {W}")
+    n_used   = run(base + f"claim_used_at IS NOT NULL AND claim_used_at >= {W}")
+    # Human /claim page opens — diagnostic only (agents redeem with no
+    # browser, so ~0 here is by design — see r-claim-honest 2026-06-27).
+    n_page   = run(base + f"claim_page_opened_at IS NOT NULL AND claim_page_opened_at >= {W}")
+
+    # ── BRANCH A: agent auto-redeem (no human email on the row) ────────
+    a_where  = f"claim_used_at IS NOT NULL AND claim_used_at >= {W} AND claim_email IS NULL"
+    a_base   = run(base + a_where)
+    a_key    = run(base + a_where + " AND minted_api_key IS NOT NULL")
+    a_first  = run(
+        "SELECT COUNT(DISTINCT h.minted_api_key) FROM mcp_high_intent_sessions h "
+        "JOIN auto_trial_keys a ON a.api_key = h.minted_api_key "
+        f"WHERE {real_h} AND h.claim_email IS NULL AND h.minted_api_key IS NOT NULL "
+        f"AND h.claim_used_at >= {W} AND a.last_used_at IS NOT NULL")
+    # Agent upsell: the minted trial key later called unlock_more_data (the
+    # tool that hands the human checkout links). mcp_call_log rows carry the
+    # caller's api_key (server.mjs trackToolCall → /api/v1/mcp/track), so
+    # this is KEY-attributed — claim_email plays no part.
+    a_upsell = run(
+        "SELECT COUNT(DISTINCT h.minted_api_key) FROM mcp_high_intent_sessions h "
+        "JOIN mcp_call_log l ON l.api_key = h.minted_api_key "
+        f"WHERE {real_h} AND h.claim_email IS NULL AND h.minted_api_key IS NOT NULL "
+        f"AND h.claim_used_at >= {W} "
+        f"AND l.tool = 'unlock_more_data' AND l.timestamp >= {W}")
+    # Agent paid: a Stripe-backed pack/top-up landed on the SAME key.
+    # mcp_topups.api_key_hash is sha256(key).hexdigest()[:32]
+    # (mcp_conversion_plays._hash_key) — reproduce it in SQL.
+    a_paid   = run(
+        "SELECT COUNT(DISTINCT h.minted_api_key) FROM mcp_high_intent_sessions h "
+        "JOIN mcp_topups t ON t.api_key_hash = "
+        "     LEFT(ENCODE(SHA256(CONVERT_TO(h.minted_api_key,'UTF8')),'hex'),32) "
+        f"WHERE {real_h} AND h.claim_email IS NULL AND h.minted_api_key IS NOT NULL "
+        f"AND h.claim_used_at >= {W} AND t.paid_at IS NOT NULL")
+
+    # ── BRANCH B: human email form-submit ──────────────────────────────
+    b_where  = f"claim_used_at IS NOT NULL AND claim_used_at >= {W} AND claim_email IS NOT NULL"
+    b_base   = run(base + b_where)
+    b_key    = run(base + b_where + " AND minted_api_key IS NOT NULL")
+    b_view   = run(
+        "SELECT COUNT(DISTINCT LOWER(h.claim_email)) FROM mcp_high_intent_sessions h "
+        "JOIN mcp_upgrade_signals u ON LOWER(u.user_email) = LOWER(h.claim_email) "
+        f"WHERE {real_h} AND h.claim_email IS NOT NULL "
+        f"AND h.claim_used_at >= {W} AND u.signal_type = 'redeem_url_viewed'")
+    b_paid   = run(
+        "SELECT COUNT(DISTINCT LOWER(h.claim_email)) FROM mcp_high_intent_sessions h "
+        "JOIN users u ON LOWER(u.email) = LOWER(h.claim_email) "
+        f"WHERE {real_h} AND h.claim_email IS NOT NULL "
+        f"AND h.claim_used_at >= {W} "
+        "AND COALESCE(u.plan,'free') NOT IN ('free','')")
+
+    def _clamp(x: float) -> float:
+        return max(0.0, min(100.0, x))
+
+    steps: list[dict] = []
+    killer, killer_drop = "", -1.0
+
+    def _add(name, label, branch, count, prev, mechanical):
+        """prev=None → chain head or split point (no drop shown)."""
+        nonlocal killer, killer_drop
+        dfp = None
+        if prev is not None and prev > 0:
+            dfp = round(_clamp(100.0 * (prev - count) / prev), 2)
+        cum = (round(_clamp(100.0 * (n_minted - count) / n_minted), 2)
+               if (n_minted and name != "paywall_sessions") else None)
+        steps.append({"step": name, "label": label, "branch": branch,
+                      "count": count, "drop_from_prev": dfp,
+                      "drop_pct": cum, "mechanical": mechanical})
+        if (mechanical and dfp is not None and prev is not None
+                and prev >= 5 and dfp > killer_drop):
+            killer_drop = dfp
+            killer = name
+
+    _add("paywall_sessions", "Paywall-hit sessions (real)",  "trunk", n_hit,    None,     False)
+    # paywall→minted is the mint GATE doing its job (threshold, dedup,
+    # non-human exclusion) — show the number, never alarm on it.
+    _add("claims_minted",    "Claim URL minted",              "trunk", n_minted, None,     False)
+    _add("claim_redeemed",   "Claim redeemed (agent+human)",  "trunk", n_used,   n_minted, True)
+
+    _add("agent_redeemed",   "Agent auto-redeems (no email)", "agent", a_base,   None,     False)
+    _add("agent_key_issued", "Trial key issued",              "agent", a_key,    a_base,   True)
+    _add("agent_first_call", "Key made an API call",          "agent", a_first,  a_key,    True)
+    _add("agent_upsell",     "unlock_more_data checkout link (key-attributed)",
+                                                              "agent", a_upsell, a_first,  False)
+    _add("agent_paid",       "Paid pack/top-up on key (Stripe)",
+                                                              "agent", a_paid,   a_upsell, False)
+
+    _add("human_redeemed",   "Human submitted email",         "human", b_base,   None,     False)
+    _add("human_key_issued", "Trial key issued",              "human", b_key,    b_base,   True)
+    _add("human_redeem_viewed", "Redeem/checkout URL viewed", "human", b_view,   b_key,    False)
+    _add("human_paid",       "Paid plan (users.plan)",        "human", b_paid,   b_view,   False)
+
+    # Alarm = BREAKAGE only (see block comment): dead mint gate, the 19/0/0
+    # redeem stall, or a >95% mechanical drop off a prev >= 5.
+    alarm = ((n_hit >= 5 and n_minted == 0)
+             or (n_minted > 5 and n_used == 0)
+             or killer_drop > 95.0)
+    if killer_drop < 0:
+        killer, killer_drop = "", 0.0
+
+    return {
+        "steps": steps,
+        "alarm": alarm,
+        "killer_step": killer,
+        "killer_drop_pct": round(killer_drop, 2),
+        "human_page_opens": n_page,
+        "paywall_sessions": n_hit,
+        "claims_minted": n_minted,
+        "claims_redeemed": n_used,
+        "paid_total": a_paid + b_paid,
+        "branch_agent": {"base": a_base, "key_issued": a_key,
+                         "first_api_call": a_first, "upsell": a_upsell,
+                         "paid": a_paid},
+        "branch_human": {"base": b_base, "key_issued": b_key,
+                         "redeem_url_viewed": b_view, "paid": b_paid},
+    }
+
+
 # ── GET /api/v1/admin/mcp/high-intent/step-drop ───────────────────────
-# 2026-06-07: step-by-step drop-off monitor so the brain can scream the
-# instant the claim funnel breaks again. Reports a 7-step waterfall:
-#
-#   1. claims_minted   — claim URLs sent (token generated, X-DC-Claim-URL
-#                        emitted to the AI agent in the paywall response)
-#   2. page_viewed     — human actually opened /claim/<token>
-#                        (proxy: claim_used_at IS NOT NULL, OR a tracked
-#                        page_view event on this row — we use the former
-#                        as a strict superset; a click without submit isn't
-#                        currently tracked but the gap matters most when
-#                        the page itself is broken which IS visible from
-#                        the should_mint_rate / used delta)
-#   3. email_submitted — POST /claim/<token> with a valid email
-#                        (proxy: claim_email IS NOT NULL on this row)
-#   4. key_issued      — auto_trial.mint_trial_for_request returned a key
-#                        (proxy: minted_api_key IS NOT NULL on this row)
-#   5. first_api_call  — that key actually made an API call after issuance
-#                        (joined to mcp_call_log.api_key or auto_trial_keys.last_used_at)
-#   6. upgrade_click   — the human hit a Stripe checkout link from a
-#                        paywall surfaced AFTER the trial issuance
-#                        (proxy: mcp_upgrade_signals.stripe_clicked_at
-#                        for the same email within 14 days)
-#   7. paid            — joined to users.plan != 'free' (same email window)
-#
-# The drop_pct field on each row tells the brain WHERE the funnel is
-# bleeding. If step 1→2 is the killer (the 19/0/0 we just fixed) this
-# would have been a 100% drop alarm on the very first day.
+# 2026-06-07 (restructured r-two-branch 2026-07-03): step-by-step drop-off
+# monitor so the brain can scream the instant the claim funnel BREAKS —
+# see build_step_waterfall above for the trunk + two-branch shape and the
+# mechanical-only alarm semantics.
 #
 # All windows: ?days=N (default 30, max 365). Admin-keyed.
 
@@ -1489,11 +1630,13 @@ def high_intent_step_drop():
     every 15 min to scream the instant the claim funnel breaks.
 
     Returns:
-      {ok, window_days, steps: [{step, label, count, drop_pct, drop_from_prev},
-                                ...],
+      {ok, window_days,
+       steps: [{step, label, branch, count, drop_from_prev, drop_pct,
+                mechanical}, ...],
        overall_conversion_pct,
-       killer_step: <name of the step with the biggest drop_from_prev>,
-       alarm: bool}
+       killer_step: <biggest MECHANICAL drop_from_prev with prev >= 5>,
+       alarm: bool,
+       branch_agent / branch_human: per-branch summaries}
     """
     if not _internal_ok(request):
         return jsonify(ok=False, error="forbidden"), 403
@@ -1506,12 +1649,10 @@ def high_intent_step_drop():
     if c is None:
         return jsonify(ok=False, error="no_db"), 503
 
-    steps_out = []
     try:
         _ensure_schema(c)
-        # Pull the 7 counts from a single CTE-style probe per step so a
-        # missing column on a brand-new schema can't blank the whole page.
-        # Each scalar is wrapped in its own try/except.
+        # Fail-soft scalar executor — a missing column on a brand-new schema
+        # can't blank the whole page (each probe returns 0 on error).
         def _scalar(sql: str, args: tuple = ()) -> int:
             try:
                 with c.cursor() as cur:
@@ -1524,144 +1665,28 @@ def high_intent_step_drop():
                 except Exception: pass
                 return 0
 
-        # r-claim-script-guard (2026-06-23): every step now filters to REAL
-        # human-bearing prospects (_hi_real_sql) — the SAME exclusion the mint
-        # gate applies — so this card stops counting raw-script/self-test traffic
-        # as a -99% "leak". Base-table queries use no alias; join queries use 'h.'.
-        n_minted = _scalar(
-            ("""SELECT COUNT(*) FROM mcp_high_intent_sessions
-                WHERE claim_minted_at IS NOT NULL
-                  AND claim_minted_at >= NOW() - INTERVAL '%s days'""" % days)
-            + " AND " + _hi_real_sql())
-
-        # Step 2: we don't yet track raw page-views separately from POSTs.
-        # As a conservative proxy: claim_used_at IS NOT NULL (form-submit).
-        # The brain can compare n_used vs n_minted directly — that's the
-        # 19/0/0 alarm we just lived through.
-        n_used = _scalar(
-            ("""SELECT COUNT(*) FROM mcp_high_intent_sessions
-                WHERE claim_used_at IS NOT NULL
-                  AND claim_used_at >= NOW() - INTERVAL '%s days'""" % days)
-            + " AND " + _hi_real_sql())
-        # r-claim-page-open (2026-06-24): REAL page-open signal (GET /claim),
-        # now distinct from form-submit (n_used). Graceful 0 if the column is
-        # missing or a row predates tracking (NULL = not-opened).
-        n_page_viewed = _scalar(
-            ("""SELECT COUNT(*) FROM mcp_high_intent_sessions
-                WHERE claim_page_opened_at IS NOT NULL
-                  AND claim_page_opened_at >= NOW() - %s * INTERVAL '1 day'""" % days)
-            + " AND " + _hi_real_sql())
-
-        n_email = _scalar(
-            ("""SELECT COUNT(*) FROM mcp_high_intent_sessions
-                WHERE claim_email IS NOT NULL
-                  AND claim_used_at IS NOT NULL
-                  AND claim_used_at >= NOW() - INTERVAL '%s days'""" % days)
-            + " AND " + _hi_real_sql())
-
-        n_key = _scalar(
-            ("""SELECT COUNT(*) FROM mcp_high_intent_sessions
-                WHERE minted_api_key IS NOT NULL
-                  AND claim_used_at IS NOT NULL
-                  AND claim_used_at >= NOW() - INTERVAL '%s days'""" % days)
-            + " AND " + _hi_real_sql())
-
-        # Step 5: trial key actually made an API call. Join to auto_trial_keys
-        # (where the trial keys live with a last_used_at column).
-        n_first_call = _scalar(
-            ("""SELECT COUNT(DISTINCT h.minted_api_key)
-                 FROM mcp_high_intent_sessions h
-                 JOIN auto_trial_keys a ON a.api_key = h.minted_api_key
-                WHERE h.minted_api_key IS NOT NULL
-                  AND h.claim_used_at >= NOW() - INTERVAL '%s days'
-                  AND a.last_used_at IS NOT NULL""" % days)
-            + " AND " + _hi_real_sql("h."))
-
-        # Step 6: same email later viewed the redeem/checkout URL.
-        # r-claim-honest (2026-06-27): the prior query joined u.operator_email +
-        # u.stripe_clicked_at — NEITHER column exists on mcp_upgrade_signals
-        # (verified 2026-06-23), so it silently returned 0 forever, making this a
-        # permanent false 100% drop (the next "killer" after page_viewed is fixed).
-        # Real columns: user_email + signal_type='redeem_url_viewed' (the genuine
-        # upgrade-intent event) — matches the corrected query in funnel_health.py:886.
-        n_upgrade_click = _scalar(
-            ("""SELECT COUNT(DISTINCT LOWER(h.claim_email))
-                 FROM mcp_high_intent_sessions h
-                 JOIN mcp_upgrade_signals u
-                   ON LOWER(u.user_email) = LOWER(h.claim_email)
-                WHERE h.claim_email IS NOT NULL
-                  AND h.claim_used_at >= NOW() - INTERVAL '%s days'
-                  AND u.signal_type = 'redeem_url_viewed'""" % days)
-            + " AND " + _hi_real_sql("h."))
-
-        # Step 7: same email is paying.
-        n_paid = _scalar(
-            ("""SELECT COUNT(DISTINCT LOWER(h.claim_email))
-                 FROM mcp_high_intent_sessions h
-                 JOIN users u ON LOWER(u.email) = LOWER(h.claim_email)
-                WHERE h.claim_email IS NOT NULL
-                  AND h.claim_used_at >= NOW() - INTERVAL '%s days'
-                  AND COALESCE(u.plan, 'free') NOT IN ('free','')""" % days)
-            + " AND " + _hi_real_sql("h."))
-
-        raw_steps = [
-            ("claims_minted",   "Claim URL minted + sent to agent",   n_minted),
-            # r-claim-honest (2026-06-27): was n_page_viewed (claim_page_opened_at,
-            # a HUMAN browser GET). Agents auto-redeem the token server-side
-            # (server.mjs _autoRedeemClaim → /redeem) with no browser, so that count
-            # is structurally ~0 while every downstream step (keyed on claim_used_at)
-            # lights up → a FALSE 100% killer drop that makes this brain-monitored
-            # page scream every cycle. The honest "claim acted on" event is
-            # claim_used_at (n_used), set by BOTH agent auto-redeem and human
-            # form-submit. Genuine human opens preserved as human_page_opens below.
-            ("claim_redeemed",  "Claim redeemed (agent/human)",       n_used),
-            ("email_submitted", "Human submitted email",              n_email),
-            ("key_issued",      "Trial key issued",                   n_key),
-            ("first_api_call",  "Trial key made first API call",      n_first_call),
-            ("upgrade_click",   "Redeem/checkout URL viewed",         n_upgrade_click),
-            ("paid",            "Conversion: plan != 'free'",          n_paid),
-        ]
-
-        prev = None
-        killer_drop = -1.0
-        killer = None
-        for (name, label, count) in raw_steps:
-            if prev is None or prev == 0:
-                drop_from_prev = 0.0
-            else:
-                drop_from_prev = round(100.0 * (prev - count) / prev, 2)
-            drop_pct = (round(100.0 * (n_minted - count) / n_minted, 2)
+        wf = build_step_waterfall(lambda sql: _scalar(sql), days=days)
+        n_minted = wf["claims_minted"]
+        # Overall conversion = ALL paid outcomes (key-attributed agent packs +
+        # email-attributed human plans) over claims minted.
+        overall_conv = (round(100.0 * wf["paid_total"] / n_minted, 2)
                         if n_minted else 0.0)
-            steps_out.append({
-                "step":            name,
-                "label":           label,
-                "count":           count,
-                "drop_pct":        drop_pct,
-                "drop_from_prev":  drop_from_prev,
-            })
-            if drop_from_prev > killer_drop and name != "claims_minted":
-                killer_drop = drop_from_prev
-                killer = name
-            prev = count
-
-        overall_conv = (round(100.0 * n_paid / n_minted, 2)
-                        if n_minted else 0.0)
-        # Alarm: minted > 5 AND used == 0 (the 19/0/0 alarm), OR any
-        # single step drops >95% off the prior step.
-        alarm = (n_minted > 5 and n_used == 0) or killer_drop > 95.0
 
         return jsonify(
             ok=True,
             window_days=days,
-            steps=steps_out,
+            steps=wf["steps"],
             overall_conversion_pct=overall_conv,
-            killer_step=killer,
-            killer_drop_pct=round(killer_drop, 2) if killer else 0.0,
-            alarm=alarm,
+            killer_step=wf["killer_step"] or None,
+            killer_drop_pct=wf["killer_drop_pct"],
+            alarm=wf["alarm"],
+            paywall_sessions=wf["paywall_sessions"],
+            paid_total=wf["paid_total"],
+            branch_agent=wf["branch_agent"],
+            branch_human=wf["branch_human"],
             # r-claim-honest (2026-06-27): genuine human browser opens of /claim,
-            # kept as a diagnostic now that the waterfall step measures the real
-            # agent-or-human redeem (claim_used_at). Expected ~0 by design.
-            human_page_opens=n_page_viewed,
+            # kept as a diagnostic (agents redeem server-side — ~0 by design).
+            human_page_opens=wf["human_page_opens"],
             threshold=HIGH_INTENT_THRESHOLD,
             generated_at=datetime.now(timezone.utc).isoformat(),
         )

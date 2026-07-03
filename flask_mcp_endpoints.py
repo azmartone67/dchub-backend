@@ -1361,6 +1361,33 @@ def track_tool_call():
             try: _db_lt.close()   # ALWAYS return the connection to the pool
             except Exception: pass
 
+    # r-unlock-signal (2026-07-03): unlock_more_data handing checkout links to
+    # a KEYED agent is the agent path's upgrade-intent moment, but it left no
+    # mcp_upgrade_signals row — upgrade events were email-keyed only, and 11 of
+    # 12 claim redemptions have NO email (agents auto-redeem), so agent-path
+    # trial→upgrade intent was structurally invisible. Record it through the
+    # canonical writer (hourly per-caller dedup inside; synthetic traffic is
+    # filtered at the read layer, but skip our own self-heal loop outright).
+    if (str(tool) == 'unlock_more_data' and not _is_synthetic_selfheal
+            and (body.get('api_key') or '').strip()):
+        try:
+            from mcp_signal_canonical import record_signal
+            record_signal(
+                signal_type='checkout_link_issued',
+                tool_requested='unlock_more_data',
+                tier_current=(body.get('tier') or 'free'),
+                session_id=(str(_r_session)[:200] if _r_session else None),
+                mcp_client=(_r_client or None),
+                user_agent=((body.get('user_agent')
+                             or request.headers.get('User-Agent') or '')[:300]
+                            or None),
+                ip_address=((body.get('ip_address')
+                             or request.headers.get('X-Forwarded-For')
+                             or request.remote_addr or '')[:64] or None),
+                api_key=(body.get('api_key') or '').strip(),
+            )
+        except Exception:
+            pass  # telemetry side-channel — never block the track callback
 
     try:
         with _pool.connection() as conn, conn.cursor() as cur:
