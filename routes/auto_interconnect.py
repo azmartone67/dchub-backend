@@ -118,6 +118,35 @@ def _is_internal_marker(ua_lower: str) -> bool:
     return any(m in ua_lower for m in _INTERNAL_UA_MARKERS)
 
 
+# r-probefunnel (2026-07-03): the pending-bucket detector (unlike
+# _detect_novel_uas) applied NO internal/automation filter, so ai_cumulative
+# rows that are really probes / scanners / registry crawlers / test clients
+# (dchub-canon-probe, audit-probe, mcp-crawler, mcp-auth-scanner, bare
+# 'canon'/'probe'/'test', ~40 of them) were surfaced as "partner candidates"
+# in the daily digest — one of which the owner tried to approve and hit the
+# 403→paywall bug. Genuine AI-platform partners (claude/gemini/perplexity/
+# cursor/glama/deepseek…) never contain these tokens; automated non-partner
+# tooling does. The funnel is advisory (promotion into _PARTNERS still needs
+# a manual PR), so we bias toward filtering obvious automation.
+_AUTOMATION_RE = re.compile(
+    r"(probe|prober|scanner|scraper|crawler|tester|validator|verifier|"
+    r"inspector|introspector|enumerator|sentinel|proctor|monitor|analyzer|"
+    r"canon|canary|smoke|audit|survey|dataset|corpus|healthcheck|"
+    r"health[-_]?check|no[-_]?auth|\bcurl\b|[-_]curl\b|"
+    r"\btest\b|[-_]test\b|\btest[-_]|\bqa\b)"
+)
+
+
+def _looks_like_automation(*fields: str) -> bool:
+    """True if any field reads as an internal probe or non-partner automated
+    tool (scanner/crawler/test-client), so it stays out of the partner funnel."""
+    for f in fields:
+        fl = (f or "").lower()
+        if fl and (_is_internal_marker(fl) or _AUTOMATION_RE.search(fl)):
+            return True
+    return False
+
+
 def _known_ai_slugs() -> set:
     """Slugs already in ai_tracking.AI_PLATFORMS — must NOT be re-promoted."""
     try:
@@ -234,6 +263,13 @@ def _detect_pending_buckets(conn):
     for r in rows:
         slug = (r[0] or "").lower()
         if not slug or slug in curated:
+            continue
+        # r-probefunnel: skip internal probes + non-partner automation
+        # (scanners/crawlers/test-clients) that pollute ai_cumulative — parity
+        # with _detect_novel_uas, which already filters internal UAs. Also drop
+        # ≤2-char slugs ('v','t','qa') — UA-parse noise, never a real platform
+        # ('you'/You.com is 3 chars and survives).
+        if len(slug) <= 2 or _looks_like_automation(slug, r[2]):  # r[2] = name
             continue
         out.append({
             "platform":   slug,
