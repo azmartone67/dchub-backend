@@ -410,7 +410,7 @@ def _record_decision(topic: str, style: str, phase: str,
                 INSERT INTO media_style_outcomes
                   (post_id, post_urn, topic, style, published_at,
                    decision_phase)
-                VALUES (%s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
             """, (post_id, post_urn, topic, style, pub, phase))
         return True
     except Exception as e:
@@ -653,7 +653,7 @@ def backfill_history(days: int = 30) -> dict:
                            impressions, reactions, comments, clicks,
                            score, measured_at, decision_phase)
                         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                                %s, %s)
+                                %s, %s) ON CONFLICT DO NOTHING
                     """, (pid, urn, topic, style, posted,
                           imps, rea, com, cli, score, measured_at,
                           "backfill"))
