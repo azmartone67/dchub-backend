@@ -135,6 +135,27 @@ def _ensure_table():
                 );
                 CREATE INDEX IF NOT EXISTS ix_quad_slot ON linkedin_quad_posts(slot_date, slot_hour);
             """)
+            # 2026-07-03 VARIETY: durable columns so the desk's dedup keys on
+            # (content_type, entity) over a real window instead of the fragile
+            # whitespace-token substring match. story_type fixes the composer's
+            # 14-day story-type dedup (it queried `topic`, which only ever held
+            # the SLOT topic — the two vocabularies never overlapped → no-op).
+            for _col, _ddl in (
+                ("story_type", "ALTER TABLE linkedin_quad_posts ADD COLUMN IF NOT EXISTS story_type TEXT"),
+                ("lead_kind",  "ALTER TABLE linkedin_quad_posts ADD COLUMN IF NOT EXISTS lead_kind TEXT"),
+                ("lead_entity","ALTER TABLE linkedin_quad_posts ADD COLUMN IF NOT EXISTS lead_entity TEXT"),
+            ):
+                try:
+                    cur.execute(_ddl)
+                except Exception:
+                    pass
+            try:
+                cur.execute("CREATE INDEX IF NOT EXISTS ix_quad_lead "
+                            "ON linkedin_quad_posts(lead_kind, posted_at DESC)")
+                cur.execute("CREATE INDEX IF NOT EXISTS ix_quad_story "
+                            "ON linkedin_quad_posts(story_type, posted_at DESC)")
+            except Exception:
+                pass
             c.commit()
     except Exception:
         pass
@@ -487,22 +508,41 @@ def _already_posted(slot_date, slot_hour):
         return False
 
 
-def _record(slot_date, slot_hour, topic, style, text, landing, og_url, result):
+def _lead_entity_from(lead) -> str:
+    """Normalized ENTITY token for the durable dedup ledger — the city/iso/deal
+    party the lead is about, alnum-squashed so it matches regardless of which
+    lead kind produced it. Mirrors media_editorial._entity_tail. '' when unknown."""
+    import re as _re
+    if not isinstance(lead, dict):
+        return ""
+    dk = lead.get("dedup_key") or ""
+    tail = dk.split(":", 1)[-1]
+    return _re.sub(r"[^a-z0-9]+", "", tail.lower())
+
+
+def _record(slot_date, slot_hour, topic, style, text, landing, og_url, result,
+            story_type=None, lead=None):
     if not (_pg and _dsn()): return
+    _lead_kind = (lead or {}).get("kind") if isinstance(lead, dict) else None
+    _lead_entity = _lead_entity_from(lead)
     try:
         with _conn() as c, c.cursor() as cur:
             cur.execute("""
                 INSERT INTO linkedin_quad_posts
                   (slot_date, slot_hour, topic, style, post_text, landing_url, og_image_url,
-                   linkedin_urn, success, error_msg)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                   linkedin_urn, success, error_msg, story_type, lead_kind, lead_entity)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (slot_date, slot_hour) DO UPDATE SET
                   success=EXCLUDED.success, error_msg=EXCLUDED.error_msg,
-                  linkedin_urn=COALESCE(EXCLUDED.linkedin_urn, linkedin_quad_posts.linkedin_urn)
+                  linkedin_urn=COALESCE(EXCLUDED.linkedin_urn, linkedin_quad_posts.linkedin_urn),
+                  story_type=COALESCE(EXCLUDED.story_type, linkedin_quad_posts.story_type),
+                  lead_kind=COALESCE(EXCLUDED.lead_kind, linkedin_quad_posts.lead_kind),
+                  lead_entity=COALESCE(EXCLUDED.lead_entity, linkedin_quad_posts.lead_entity)
             """, (slot_date, slot_hour, topic, style, text[:5000], landing, og_url,
                    (result or {}).get("urn") or (result or {}).get("id"),
                    bool((result or {}).get("ok")),
-                   (result or {}).get("error", "")[:500]))
+                   (result or {}).get("error", "")[:500],
+                   story_type, _lead_kind, (_lead_entity or None)))
             c.commit()
     except Exception:
         pass
@@ -782,7 +822,8 @@ def run():
             print(f"[quad-daily] pre-publish gate BLOCKED: {_why}")
             _record(slot_date, target_slot["hour"], target_slot["topic"],
                     target_slot["style"], text, landing, og_url,
-                    {"ok": False, "skipped": True, "error": f"gate: {_why}"[:200]})
+                    {"ok": False, "skipped": True, "error": f"gate: {_why}"[:200]},
+                    story_type=payload.get("story_type"), lead=_ed_lead)
             return jsonify({"slot": target_slot, "skipped": True,
                             "gate_reason": _why}), 200
     except Exception as _ge:
@@ -792,7 +833,8 @@ def run():
     result = _post_to_linkedin(text, landing, og_url)
 
     _record(slot_date, target_slot["hour"], target_slot["topic"], target_slot["style"],
-             text, landing, og_url, result)
+             text, landing, og_url, result,
+             story_type=payload.get("story_type"), lead=_ed_lead)
 
     # Capability radar: retire a capability/milestone lead ONLY after it actually
     # posted (success), so a new capability stays visible until announced and a

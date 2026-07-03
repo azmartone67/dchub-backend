@@ -53,10 +53,78 @@ _ISOS = ["ERCOT", "PJM", "MISO", "SPP"]
 # The AI platforms verified as live MCP/data consumers (the moat headline).
 _PLATFORMS = ["Claude", "ChatGPT", "Gemini", "Perplexity", "Copilot", "Meta AI", "Grok"]
 
-# Dedup guard: in-process last-published epoch per kind, so a cron double-tick
-# (multi-replica / multiple heartbeat ticks inside one schedule window) can't
-# fire the same showcase twice. Pass {"force": true} to override for manual posts.
+# Dedup guard: in-process last-published epoch per kind (fast-path only). The
+# AUTHORITATIVE guard is now DB-backed (_showcase_last_published_ago / _mark_...)
+# so it survives restarts/redeploys AND is shared across replicas — the old
+# in-memory-only dict reset on every deploy and wasn't cross-worker, so a
+# post-deploy or multi-replica fire republished the same generic card (Cause B
+# of the media variety audit). Pass {"force": true} to override for manual posts.
 _LAST_PUBLISH: dict[str, float] = {}
+
+
+def _showcase_conn():
+    try:
+        import psycopg2
+        dsn = os.environ.get("DATABASE_URL") or os.environ.get("NEON_DATABASE_URL")
+        if not dsn:
+            return None
+        c = psycopg2.connect(dsn, sslmode="require", connect_timeout=6)
+        c.autocommit = True
+        return c
+    except Exception:
+        return None
+
+
+def _ensure_showcase_ledger(cur) -> None:
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS media_showcase_publishes (
+            kind          TEXT PRIMARY KEY,
+            last_post     TEXT,
+            published_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+    """)
+
+
+def _showcase_last_published_ago(kind: str) -> float | None:
+    """Seconds since this kind last published (DB-backed, cross-worker,
+    survives restart). None when never published or DB unavailable."""
+    c = _showcase_conn()
+    if c is None:
+        return None
+    try:
+        with c.cursor() as cur:
+            _ensure_showcase_ledger(cur)
+            cur.execute(
+                "SELECT EXTRACT(EPOCH FROM (NOW() - published_at)) "
+                "  FROM media_showcase_publishes WHERE kind = %s", (kind,))
+            row = cur.fetchone()
+            return float(row[0]) if row and row[0] is not None else None
+    except Exception:
+        return None
+    finally:
+        try: c.close()
+        except Exception: pass
+
+
+def _mark_showcase_published(kind: str, post: str = "") -> None:
+    c = _showcase_conn()
+    if c is None:
+        return
+    try:
+        with c.cursor() as cur:
+            _ensure_showcase_ledger(cur)
+            cur.execute("""
+                INSERT INTO media_showcase_publishes (kind, last_post, published_at)
+                VALUES (%s, %s, NOW())
+                ON CONFLICT (kind) DO UPDATE SET
+                    last_post = EXCLUDED.last_post,
+                    published_at = NOW()
+            """, (kind, (post or "")[:800]))
+    except Exception:
+        pass
+    finally:
+        try: c.close()
+        except Exception: pass
 
 
 # ── auth + helpers ────────────────────────────────────────────────────
@@ -318,11 +386,24 @@ def showcase_publish():
         return jsonify(skipped="MEDIA_SHOWCASE_DISABLED"), 200
     body = request.get_json(silent=True) or {}
     kind = body.get("kind") or "market_pulse"
-    # Dedup: don't republish the same kind within 12h (guards cron double-fire).
+    # Dedup: don't republish the same kind within the window (guards cron
+    # double-fire AND post-deploy / multi-replica refires). DB-backed so it
+    # survives restarts and is shared across workers; the in-memory dict is only
+    # a fast local shortcut. 2026-07-03: widen the window to 48h — this generic
+    # branded card is near-identical each publish (Cause B), so once/2d is plenty.
     now_ts = time.time()
-    if not body.get("force") and (now_ts - _LAST_PUBLISH.get(kind, 0)) < 12 * 3600:
-        return jsonify(ok=True, published=False, skipped="deduped_within_12h",
-                       seconds_since_last=int(now_ts - _LAST_PUBLISH.get(kind, 0))), 200
+    try:
+        _win_h = max(1, int(os.environ.get("MEDIA_SHOWCASE_DEDUP_HOURS", "48")))
+    except Exception:
+        _win_h = 48
+    _win_s = _win_h * 3600
+    if not body.get("force"):
+        _db_ago = _showcase_last_published_ago(kind)
+        _mem_ago = now_ts - _LAST_PUBLISH.get(kind, 0) if kind in _LAST_PUBLISH else None
+        _ago = min([a for a in (_db_ago, _mem_ago) if a is not None], default=None)
+        if _ago is not None and _ago < _win_s:
+            return jsonify(ok=True, published=False, skipped="deduped_within_window",
+                           window_hours=_win_h, seconds_since_last=int(_ago)), 200
     out = _build(kind, body.get("platform", "Grok"), body.get("detail", ""))
     if not out["factcheck_passed"]:
         # The hard guarantee: never publish copy with an unverifiable number.
@@ -355,6 +436,7 @@ def showcase_publish():
         published = _flag or bool(res.get("post_urn"))
         if published:
             _LAST_PUBLISH[kind] = now_ts
+            _mark_showcase_published(kind, out.get("post", ""))
         return jsonify(ok=True, published=published,
                        post_urn=(res or {}).get("post_urn"),
                        error=(res or {}).get("error"), post=out["post"]), 200

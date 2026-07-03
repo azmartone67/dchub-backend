@@ -306,7 +306,11 @@ def rank_data_events() -> list[dict]:
             "trend": f"{'+' if d>0 else ''}{d:.0f} pts WoW — the largest move in the index",
             "so_what": f"{verdict}: re-rank {mk} in the site-selection shortlist.",
             "source_url": "https://dchub.cloud/dcpi",
-            "dedup_key": f"dcpi_mover:{str(mk).lower()}",
+            # 2026-07-03: split on comma like dcpi_build so the tail normalizes
+            # to the CITY ("cheyenne") not "cheyennewy" — the old tail never
+            # matched the whitespace tokens in _recently_posted_keys, so
+            # mover-lead dedup was silently a no-op (see media variety audit).
+            "dedup_key": f"dcpi_mover:{str(mk).split(',')[0].lower().strip()}",
             "score": abs(d) * 1.2,
         })
 
@@ -316,21 +320,35 @@ def rank_data_events() -> list[dict]:
     # ownable number; the novelty filter in editorial_decision() suppresses it
     # if that market was already featured this week (the 'Cheyenne always wins'
     # trap the audit flagged).
+    # 2026-07-03 VARIETY FIX: emit the top-N BUILD markets as SEPARATE candidate
+    # leads (not just [0]). The deterministic #1 (Cheyenne) is the same market
+    # every day until its score changes, so taking [0] alone gave the feed one
+    # recurring build lead forever. editorial_decision() then applies the durable
+    # (kind, entity) ledger + kind-cooldown to pick a fresh one — so on the day
+    # #1 was already posted, #2/#3 lead instead of suppressing the whole kind.
     tb = sig.get("top_build_markets") or []
-    if tb:
-        b = tb[0]
+    try:
+        _build_n = max(1, int(os.environ.get("MEDIA_BUILD_ROTATE_TOPN", "5")))
+    except Exception:
+        _build_n = 5
+    for _rank, b in enumerate(tb[:_build_n]):
         ex = _num(b.get("excess"))
         mk = b.get("market") or b.get("slug")
-        if ex is not None and mk:
-            leads.append({
-                "kind": "dcpi_build",
-                "headline_number": f"{mk} leads the DCPI excess-power index at {ex:.0f}/100",
-                "trend": f"the strongest excess-power headroom of any tracked market (constraint {(_num(b.get('constraint')) or 0):.0f})",
-                "so_what": f"{mk} sits at the top of the build shortlist on available power — but verify time-to-power before committing.",
-                "source_url": build_public_url("dcpi", b.get('slug','')),
-                "dedup_key": f"build:{str(mk).split(',')[0].lower().strip()}",
-                "score": (ex or 0) * 0.45,
-            })
+        if ex is None or not mk:
+            continue
+        _lead_word = "leads the" if _rank == 0 else "ranks top-5 on the"
+        leads.append({
+            "kind": "dcpi_build",
+            "headline_number": f"{mk} {_lead_word} DCPI excess-power index at {ex:.0f}/100",
+            "trend": f"among the strongest excess-power headroom of any tracked market (constraint {(_num(b.get('constraint')) or 0):.0f})",
+            "so_what": f"{mk} sits near the top of the build shortlist on available power — but verify time-to-power before committing.",
+            "source_url": build_public_url("dcpi", b.get('slug','')),
+            "dedup_key": f"build:{str(mk).split(',')[0].lower().strip()}",
+            # keep #1 the strongest, decay lower ranks slightly so the sort still
+            # prefers the leader when nothing blocks it, but the runners-up remain
+            # newsworthy (>= _NEWSWORTHY_MIN) and can win when #1 is on cooldown.
+            "score": (ex or 0) * 0.45 * (1.0 - 0.04 * _rank),
+        })
 
     # 2) M&A deal of the week — largest disclosed transaction value.
     # value is stored in $M as `value_m` (verified: KKR/Nvidia value_m=10000).
@@ -505,6 +523,115 @@ def _recently_posted_keys(days: int = 9) -> set:
     return {tok for tok in recent.split()} if recent else keys
 
 
+def _entity_tail(lead: dict) -> str:
+    """The normalized ENTITY token from a lead's dedup_key — the market/iso/
+    deal-party the lead is ABOUT. dedup_key is 'kind:entity[:extra]'; the tail
+    after the first ':' is the entity (already city-normalized upstream). We
+    alnum-squash it so 'Cheyenne, WY'→'cheyenne' matches consistently no matter
+    which lead produced it (build vs mover)."""
+    dk = (lead or {}).get("dedup_key") or ""
+    tail = dk.split(":", 1)[-1]
+    return re.sub(r"[^a-z0-9]+", "", tail.lower())
+
+
+# ── Durable (content_type, entity) ledger ────────────────────────────
+# The audit's Cause A.3: the whitespace-token substring match was fragile and
+# the story-type dedup was a no-op. This reads the AUTHORITATIVE ledger — the
+# quad's own linkedin_quad_posts rows, which record the desk's chosen
+# lead_kind + lead_entity per slot (written by linkedin_quad_daily._record) —
+# so dedup keys on (type, entity) exactly, over a real window. Fully defensive.
+def recent_lead_ledger(days: int = 14) -> list[dict]:
+    """Return [{kind, entity, posted_at, days_ago}] for successful quad posts in
+    the window. Empty on any error (fail-open → variety guards simply relax)."""
+    out: list[dict] = []
+    c = _conn()
+    if c is None:
+        return out
+    try:
+        with c.cursor() as cur:
+            cur.execute(
+                "SELECT lead_kind, lead_entity, "
+                "       EXTRACT(EPOCH FROM (NOW() - posted_at))/86400.0 AS days_ago "
+                "  FROM linkedin_quad_posts "
+                " WHERE success = TRUE "
+                "   AND posted_at > NOW() - make_interval(days => %s) "
+                "   AND lead_kind IS NOT NULL "
+                " ORDER BY posted_at DESC LIMIT 200",
+                (int(days),))
+            for r in (cur.fetchall() or []):
+                out.append({
+                    "kind": (r[0] or "").strip(),
+                    "entity": re.sub(r"[^a-z0-9]+", "", (r[1] or "").lower()),
+                    "days_ago": float(r[2] or 0),
+                })
+    except Exception:
+        try: c.rollback()
+        except Exception: pass
+    finally:
+        try: c.close()
+        except Exception: pass
+    return out
+
+
+# Policy windows (env-tunable — the point is variety, NOT a new single default):
+#   MARKET window  — do not re-lead with the same ENTITY within N days.
+#   KIND cooldown  — do not lead with the same content_type N days running.
+try:
+    _MARKET_WINDOW_DAYS = max(1, int(os.environ.get("MEDIA_ENTITY_WINDOW_DAYS", "14")))
+except Exception:
+    _MARKET_WINDOW_DAYS = 14
+try:
+    _KIND_COOLDOWN_DAYS = max(1, int(os.environ.get("MEDIA_KIND_COOLDOWN_DAYS", "2")))
+except Exception:
+    _KIND_COOLDOWN_DAYS = 2
+
+
+# Bridge from the desk's lead KINDS to the topic-tuner's engagement-weighted
+# topic library (media_topic_mix). This is what finally WIRES the dormant tuner
+# into selection: a kind whose mapped topic has a higher learned weight gets a
+# rotation-weight bump. Unmapped kinds default to neutral. (grep-confirmed: the
+# tuner was armed + cron-live but NO poster-path code read media_topic_mix.)
+_KIND_TO_TOPIC = {
+    "dcpi_build":       "dcpi_verdict",
+    "dcpi_mover":       "verdict_shift",
+    "deal":             "ma_transaction",
+    "interconnection":  "grid_alert",
+    "tenant":           "hyperscaler_deal",
+    "new_facility":     "facility_news",
+    "capability_launch": "ai_citation",
+    "data_milestone":   "industry_pulse",
+}
+
+
+def _topic_mix_weights() -> dict:
+    """kind -> engagement weight (normalized ~1.0 mean) from media_topic_mix.
+    Empty dict when the tuner hasn't written a mix yet → callers treat every
+    kind as neutral 1.0 (variety still driven by the ledger + kind cooldown)."""
+    try:
+        from routes.media_topic_tuner import current_topic_mix
+        mix = current_topic_mix() or []
+    except Exception:
+        return {}
+    if not mix:
+        return {}
+    by_topic = {m.get("topic"): float(m.get("weight") or 0) for m in mix}
+    if not by_topic:
+        return {}
+    _vals = [v for v in by_topic.values() if v > 0]
+    _mean = (sum(_vals) / len(_vals)) if _vals else 0
+    if _mean <= 0:
+        return {}
+    out: dict = {}
+    for kind, topic in _KIND_TO_TOPIC.items():
+        w = by_topic.get(topic)
+        if w is None:
+            continue
+        # scale to a gentle 0.6x–1.6x band around the mix mean so a strong topic
+        # is favored but a weak one is never fully crushed (keeps exploration).
+        out[kind] = round(max(0.6, min(1.6, w / _mean)), 3)
+    return out
+
+
 # Newsworthiness bar: the top lead's score must clear this or the editor
 # SUPPRESSES the slot (event-driven cadence). Tunable via env.
 _NEWSWORTHY_MIN = float(os.environ.get("MEDIA_EDITORIAL_MIN_SCORE", "8") or 8)
@@ -531,19 +658,57 @@ def editorial_decision(slot: str | None = None) -> dict:
                    for w in _recently_posted_keys(days=4)}
     recent_blob.discard("")
 
+    # 2026-07-03 VARIETY: the DURABLE (kind, entity) ledger is the primary guard
+    # now (the old whitespace-token blob is kept as a secondary net). Build:
+    #   entity_window  — entities that led a post within MARKET_WINDOW days.
+    #   kind_cooldown  — kinds that led a post within KIND_COOLDOWN days.
+    ledger = recent_lead_ledger(days=max(_MARKET_WINDOW_DAYS, _KIND_COOLDOWN_DAYS))
+    entity_window = {row["entity"] for row in ledger
+                     if row["entity"] and row["days_ago"] <= _MARKET_WINDOW_DAYS}
+    kind_cooldown = {row["kind"] for row in ledger
+                     if row["kind"] and row["days_ago"] <= _KIND_COOLDOWN_DAYS}
+    # topic-tuner engagement weights (finally wired) — reorder ranked so a
+    # kind the learner favors leads first among the still-eligible candidates.
+    mix_w = _topic_mix_weights()
+    if mix_w:
+        ranked = sorted(
+            ranked,
+            key=lambda l: l.get("score", 0) * mix_w.get(l.get("kind"), 1.0),
+            reverse=True)
+
     def _key_in(lead, blob):
         # market/iso/entity from the dedup_key appears in the given window?
-        tail = (lead.get("dedup_key") or "").split(":", 1)[-1]
-        tail = re.sub(r"[^a-z0-9]+", "", tail.lower())
+        tail = _entity_tail(lead)
         if not tail:
             return False
         return tail in blob
 
     def _is_novel(lead):
-        return not _key_in(lead, recent_blob)
+        # A lead is FRESH only if its entity hasn't led recently (durable ledger
+        # OR text-blob), AND its content_type isn't on cooldown. This is the
+        # rotation across content TYPES + the same-market window in one filter.
+        ent = _entity_tail(lead)
+        if ent and ent in entity_window:
+            return False
+        if _key_in(lead, recent_blob):
+            return False
+        if (lead.get("kind") or "") in kind_cooldown:
+            return False
+        return True
 
     fresh = [l for l in ranked if _is_novel(l)]
     top = fresh[0] if fresh else None
+
+    # Relaxation ladder: if the strict filter left nothing, drop the KIND
+    # cooldown first (a fresh ENTITY is more valuable than type-rotation), then
+    # fall to the stale-rest path below. This prevents whole-feed deadlock while
+    # still preferring a different content type when one is available.
+    if top is None and ranked:
+        relaxed = [l for l in ranked
+                   if _entity_tail(l) not in entity_window
+                   and not _key_in(l, recent_blob)]
+        if relaxed:
+            top = relaxed[0]
 
     # Rerun-with-rest-period (2026-07-02, operator "it repeats itself"): the
     # old fallback re-posted ranked[0] whenever nothing was novel. A STANDING
@@ -565,9 +730,15 @@ def editorial_decision(slot: str | None = None) -> dict:
         rest_blob = {re.sub(r"[^a-z0-9]+", "", w.lower())
                      for w in _recently_posted_keys(days=_rest_days)}
         rest_blob.discard("")
+        # A stale lead may rerun only if BOTH the text-blob AND the durable
+        # (kind,entity) ledger agree it hasn't led recently — so a STANDING lead
+        # (ERCOT 427 GW queue, Cheyenne build) can never cycle back inside its
+        # entity window even if the shorter rest_blob has aged out.
         for cand in ranked:
+            ent = _entity_tail(cand)
             if (cand.get("raw_score", cand.get("score", 0)) >= _NEWSWORTHY_MIN
-                    and not _key_in(cand, rest_blob)):
+                    and not _key_in(cand, rest_blob)
+                    and not (ent and ent in entity_window)):
                 top, stale_fallback = cand, True
                 break
 
