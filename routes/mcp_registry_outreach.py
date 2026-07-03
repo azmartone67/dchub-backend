@@ -169,7 +169,10 @@ DISCOVERY_TARGETS = [
         "submit_url":  "https://github.com/lobehub/lobehub/issues",
         "submit_method":"github_issue",
         "manual_url":  "https://github.com/lobehub/lobehub/issues/15667",
-        "audit_url":   "https://lobehub.com/mcp/dchub",
+        # r-fix 2026-07-02: LobeHub moved listings to market.lobehub.com;
+        # the old lobehub.com/mcp/<slug> URL 302s and the auditor read
+        # signal_missing on a live listing. Audit the market page directly.
+        "audit_url":   "https://market.lobehub.com/s/plugins/azmartone67-dchub-mcp-server",
         "audit_signal":"DC Hub",
         "audit_browser_ua": True,
         "description": "Lobehub MCP directory. Submitted via GitHub issue lobehub/lobehub#15667 (2026-06-10).",
