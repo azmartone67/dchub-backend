@@ -806,13 +806,19 @@ class PlatformIdentifier:
         self.db = db
 
     def identify(self, user_agent: str, headers: dict, path: str,
-                 method: str) -> tuple:
+                 method: str, use_learned: bool = True) -> tuple:
         """
         Returns (platform_id, confidence) based on:
         1. User-Agent string matching
         2. Request path patterns
         3. Header signatures
         4. Learned patterns from DB
+
+        use_learned=False skips passes 4/5 (the DB-backed learned-pattern
+        lookup + the discovered-platform learning write) so the caller gets a
+        purely in-memory classification with ZERO DB round-trips — used on the
+        hot response path (see gateway_after_request) where the DB work is
+        deferred to a background thread.
         """
         ua_lower = (user_agent or "").lower()
         platform_id = None
@@ -848,8 +854,8 @@ class PlatformIdentifier:
                 platform_id = "llm_inference_client"
                 confidence = 0.5
 
-        # Pass 4: Check learned patterns
-        if not platform_id and user_agent:
+        # Pass 4: Check learned patterns (DB read — skipped on the hot path)
+        if use_learned and not platform_id and user_agent:
             ua_hash = hashlib.md5(user_agent.encode()).hexdigest()[:16]
             patterns = self.db.get_learned_patterns("user_agent_mapping")
             for p in patterns:
@@ -858,8 +864,8 @@ class PlatformIdentifier:
                     confidence = p["confidence"]
                     break
 
-        # If still unknown, log it for learning
-        if not platform_id and user_agent:
+        # If still unknown, log it for learning (DB write — skipped on the hot path)
+        if use_learned and not platform_id and user_agent:
             protocol_guess = ""
             if path == "/mcp":
                 protocol_guess = "mcp_streamable_http"
@@ -1408,60 +1414,69 @@ class MCPGateway:
             if path.startswith("/static") or path.startswith("/favicon"):
                 return response
 
-            elapsed = (time.time() - getattr(
-                request, "_gateway_start", time.time()
-            )) * 1000
-
-            ua = request.headers.get("User-Agent", "")
-            ip = request.remote_addr or ""
-
-            platform_id, confidence = self.identifier.identify(
-                ua, dict(request.headers), path, request.method
-            )
-
-            # Log the request
-            body = ""
+            # ── Synchronous, in-memory only: capture request data + set headers.
+            # r-gwperf (2026-07-03): this hook USED to run the identify()
+            # learned-pattern DB read + a full log_request (SELECT/INSERT/UPDATE/
+            # commit) SYNCHRONOUSLY here — ~6 sequential Neon round-trips, a
+            # measured ~600ms tax on EVERY routed response (even a 204/404; only
+            # the WSGI /api/health fast-path bypassed Flask and escaped it). It is
+            # explicitly non-critical logging, so the DB work now runs off-thread
+            # and the response returns immediately. The X-Gateway-Platform header
+            # uses a DB-free classification (use_learned=False); the accurate
+            # platform (with the learned-pattern pass) is what gets LOGGED, in the
+            # background thread below.
             try:
-                body = request.get_data(as_text=True)[:2000]
-            except Exception:
-                pass
-
-            tools_invoked = ""
-            if path == "/mcp" and body:
+                elapsed = (time.time() - getattr(
+                    request, "_gateway_start", time.time())) * 1000
+                ua = request.headers.get("User-Agent", "")
+                ip = request.remote_addr or ""
+                req_method = request.method
+                hdrs = dict(request.headers)
+                query = request.query_string.decode()[:500]
+                status = response.status_code
+                session_id = request.headers.get("Mcp-Session-Id", "")
+                body = ""
                 try:
-                    rpc = json.loads(body)
-                    method = rpc.get("method", "")
-                    if method == "tools/call":
-                        tool_name = rpc.get("params", {}).get("name", "")
-                        tools_invoked = tool_name
+                    body = request.get_data(as_text=True)[:2000]
+                except Exception:
+                    pass
+                quick_pid, _ = self.identifier.identify(
+                    ua, hdrs, path, req_method, use_learned=False)
+                response.headers["X-Gateway-Platform"] = quick_pid
+                response.headers["X-Gateway-Version"] = GATEWAY_VERSION
+            except Exception:
+                return response
+
+            # ── Off-request: full identify (learned-pattern DB pass) + all the
+            # non-critical request logging. Fail-soft; never blocks the response.
+            # Self-limits under DB pressure: try_get_db() returns None when the
+            # pool is busy, so log_request drops the row rather than queuing.
+            def _bg_log():
+                try:
+                    platform_id, _conf = self.identifier.identify(
+                        ua, hdrs, path, req_method)
+                    tools_invoked = ""
+                    if path == "/mcp" and body:
+                        try:
+                            rpc = json.loads(body)
+                            if rpc.get("method", "") == "tools/call":
+                                tools_invoked = rpc.get("params", {}).get("name", "")
+                        except Exception:
+                            pass
+                    self.db.log_request(
+                        platform_id=platform_id, user_agent=ua, ip=ip,
+                        method=req_method, path=path, query=query, body=body,
+                        response_code=status, response_time=elapsed,
+                        tools=tools_invoked, session_id=session_id)
+                    if path in [f["path"] for f in DISCOVERY_FILES.values()]:
+                        self.db.log_discovery_hit(path, platform_id, ua, ip, status)
                 except Exception:
                     pass
 
-            session_id = request.headers.get("Mcp-Session-Id", "")
-
-            self.db.log_request(
-                platform_id=platform_id,
-                user_agent=ua,
-                ip=ip,
-                method=request.method,
-                path=path,
-                query=request.query_string.decode()[:500],
-                body=body,
-                response_code=response.status_code,
-                response_time=elapsed,
-                tools=tools_invoked,
-                session_id=session_id,
-            )
-
-            # Track discovery file access
-            if path in [f["path"] for f in DISCOVERY_FILES.values()]:
-                self.db.log_discovery_hit(
-                    path, platform_id, ua, ip, response.status_code
-                )
-
-            # Add gateway headers to every response
-            response.headers["X-Gateway-Platform"] = platform_id
-            response.headers["X-Gateway-Version"] = GATEWAY_VERSION
+            try:
+                threading.Thread(target=_bg_log, name="gw-log", daemon=True).start()
+            except Exception:
+                pass
 
             return response
 
