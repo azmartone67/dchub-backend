@@ -744,6 +744,16 @@ def outreach_submit_one():
                        known=[t["key"] for t in DISCOVERY_TARGETS]), 400
     sub = _submit_target(target)
     audit = _audit_target(target)
+    # r-fix 2026-07-02: persist the audit like submit-all does — the
+    # single-target path returned a live audit but never wrote the
+    # ledger row, so /status kept showing the previous cron's verdict.
+    _record(target["key"], target["name"], action="audit",
+            outcome=(
+                "listed" if audit.get("listed") is True
+                else "not_listed" if audit.get("listed") is False
+                else "unknown"),
+            http_code=audit.get("http_code"),
+            detail=audit.get("reason"))
     return jsonify(ok=True, submit=sub, audit=audit), 200
 
 
