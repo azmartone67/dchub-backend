@@ -18167,12 +18167,24 @@ _JUNK_PLATFORM_NAMES = {
     'direct', 'unknown_ai', 'seo_bot', 'media_crawler', 'unknown', 'test',
     'mcp-remote-fallback-test', 'internal', 'curl', 'qa', 'probe', 'smoke',
     'no-auth-test', 'mcp-sandbox', 'test-client', 'canary', 'mcp', 'mcp_generic',
+    # r-probe-roster (2026-07-02): our own probes leaked onto the public /ai
+    # roster as "platforms" ('Canon ... 28 this week'). canon = the AI-surface
+    # sentinel's old clientInfo name; verify/funnel-diag/researchclient etc.
+    # are internal/dev clients. Keep in sync with mcp_calls_deloop.PROBE_PLATFORMS.
+    'canon', 'verify', 'funnel-diag', 'researchclient', 'agentdiscoveryindex',
+    'fastmcpclient',
 }
+try:
+    from mcp_calls_deloop import PROBE_PLATFORMS as _DELOOP_PROBES
+    _JUNK_PLATFORM_NAMES |= {p.strip().lower() for p in _DELOOP_PROBES}
+except Exception:
+    pass
 _JUNK_PLATFORM_RE = re.compile(
     r'(^qa|^curl|^smoke|^test|^probe|-probe$|prober|-scanner$|scanner|'
     r'-checker$|-health$|-test$|noauth|no-auth|sandbox|health-check|'
     r'-validator$|-crawler$|-inspector$|-monitor$|smithery-probe|tester|'
-    r'-seo$|^seo-|seobot|agent-seo|agent-search)',  # r73: catch SEO bots (agent-seo)
+    r'-seo$|^seo-|seobot|agent-seo|agent-search|'  # r73: catch SEO bots (agent-seo)
+    r'^[a-z0-9]{1,2}$|^postmanclient|^dchub|-python$|^funnel-)',  # r-probe-roster: 1-2 char keys, dev clients
     re.I,
 )
 def _is_junk_platform(key: str) -> bool:
