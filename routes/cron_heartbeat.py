@@ -434,19 +434,27 @@ def heartbeat():
            for (label, url, method, pred) in _DISPATCH if pred(started)]
     skipped = [label for (label, url, method, pred) in _DISPATCH if not pred(started)]
 
+    # Record the heartbeat NOW, synchronously in the request thread — do NOT
+    # defer logging into the background dispatch thread. The prior design logged
+    # only AFTER every job finished (incl. the slow Opus strategic-synthesis),
+    # so if that daemon thread didn't survive to the tail, the fire was never
+    # recorded → /api/v1/cron/last-fired read empty and cried "cron dead" for
+    # ~24 days while the heartbeat was firing fine. Logging up front is correct
+    # (the heartbeat DID fire) and reliable — it's one fast INSERT on a DB path
+    # the reader already proves works, so it can't trip the edge-worker timeout.
+    try:
+        from routes.cron_observability import log_heartbeat
+        log_heartbeat(jobs_run=len(due), jobs_total=len(_DISPATCH),
+                      elapsed_ms=0, ua=_ua, ip=_ip)
+    except Exception:
+        pass
+
     def _dispatch_all(jobs):
         import concurrent.futures
         try:
             with concurrent.futures.ThreadPoolExecutor(max_workers=min(8, len(jobs) or 1)) as ex:
                 for (label, url, method) in jobs:
                     ex.submit(_hit, url, method)  # _hit swallows its own errors
-        except Exception:
-            pass
-        try:
-            from routes.cron_observability import log_heartbeat
-            log_heartbeat(jobs_run=len(jobs), jobs_total=len(_DISPATCH),
-                          elapsed_ms=int((datetime.datetime.utcnow() - started).total_seconds() * 1000),
-                          ua=_ua, ip=_ip)
         except Exception:
             pass
 
