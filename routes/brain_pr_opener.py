@@ -121,9 +121,10 @@ def open_similar_pr_exists(title: str, prefix: str = "",
 
 def expire_stale_draft_prs(days: int = 5,
                            prefixes=("[brain-l5 draft]", "[brain-l6 strategic-draft]",
-                                     "[brain-spec]")) -> dict:
+                                     "[brain-spec]"),
+                           max_open: int | None = None) -> dict:
     """Auto-close brain DRAFT PRs whose title starts with one of the brain
-    prefixes — the drain half of the draft-graveyard fix. Two passes:
+    prefixes — the drain half of the draft-graveyard fix. Three passes:
 
     1. SUPERSEDE (2026-07-02): when two open drafts under the same prefix
        have overlapping titles (token overlap >= 60%), close the OLDER one
@@ -133,11 +134,22 @@ def expire_stale_draft_prs(days: int = 5,
     2. EXPIRE: close survivors older than `days` (default dropped 14 → 5 on
        2026-07-02 — a strategic draft nobody touched in 5 days is stale, and
        the brain re-proposes anything still worth doing).
+    3. CAP (2026-07-03): the brain opens ~8 spec/strategic drafts a DAY, so
+       even a 5-day expiry lets ~40 accumulate before any drain. After
+       supersede+expire, if more than `max_open` brain drafts remain, close
+       the OLDEST beyond the cap — bounds the graveyard by count, not just
+       age. Newest survive because they're the freshest phrasing of each
+       theme; the brain re-proposes anything still worth doing.
 
     Only touches drafts (never a human-readied PR). Best-effort; returns a
     summary. Safe to cron daily."""
     import datetime as _dt
-    closed, superseded, scanned = [], [], 0
+    if max_open is None:
+        try:
+            max_open = int(os.environ.get("BRAIN_DRAFT_PR_MAX_OPEN", "8"))
+        except Exception:
+            max_open = 8
+    closed, superseded, capped, scanned = [], [], [], 0
 
     def _close(number: int, comment: str) -> bool:
         try:
@@ -190,17 +202,34 @@ def expire_stale_draft_prs(days: int = 5,
 
         # Pass 2 — expire survivors older than the TTL.
         cutoff = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=days)
+        survivors = []
         for created, number, title, prefix in kept:
             if created < cutoff:
                 if _close(number, (f"🤖 Auto-closed by the brain draft-PR expiry: "
                                    f"draft sat unactioned for {days}+ days. The "
                                    f"brain re-proposes anything still worth doing.")):
                     closed.append(number)
+            else:
+                survivors.append((created, number, title, prefix))
+
+        # Pass 3 — count-cap: keep only the `max_open` NEWEST brain drafts;
+        # close the oldest beyond it so a burst can't accumulate for `days`.
+        if max_open is not None and max_open >= 0 and len(survivors) > max_open:
+            # newest-first; everything past the cap index is closed
+            over = sorted(survivors, reverse=True)[max_open:]
+            for created, number, title, prefix in over:
+                if _close(number, (f"🤖 Auto-closed by the brain draft-PR cap: more "
+                                   f"than {max_open} brain drafts were open, so the "
+                                   f"oldest were drained. The brain re-proposes "
+                                   f"anything still worth doing.")):
+                    capped.append(number)
     except Exception as e:
         return {"ok": False, "error": f"{type(e).__name__}: {str(e)[:120]}"}
     return {"ok": True, "scanned": scanned, "closed": closed,
             "closed_count": len(closed), "superseded": superseded,
-            "superseded_count": len(superseded), "older_than_days": days}
+            "superseded_count": len(superseded), "capped": capped,
+            "capped_count": len(capped), "older_than_days": days,
+            "max_open": max_open}
 
 
 def _get_default_branch_sha() -> str | None:
