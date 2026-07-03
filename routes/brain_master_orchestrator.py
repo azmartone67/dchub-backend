@@ -238,10 +238,12 @@ def _run_master_tick(dry: bool, tiers: set) -> dict:
                                         "error": str(_isj_e)[:160]})
             try:
                 from routes.brain_pr_opener import expire_stale_draft_prs as _expire
-                # days 7→5 (2026-07-02): with the L6 supersede pass draining
-                # overlapping drafts, 5 days untouched = stale; the brain
-                # re-proposes anything still worth doing.
-                _exp = _expire(days=5) or {}
+                # days 7→5 (2026-07-02); 5→3 default (2026-07-03) to drain the
+                # draft backlog faster — an untouched draft after 3 days is
+                # stale and the brain re-proposes anything still worth doing.
+                # Tunable without a deploy via BRAIN_DRAFT_PR_TTL_DAYS.
+                _ttl_days = int(os.getenv("BRAIN_DRAFT_PR_TTL_DAYS", "3"))
+                _exp = _expire(days=_ttl_days) or {}
                 report["steps"].append({"step": "tier2.draft_pr_expire",
                                         "ok": bool(_exp.get("ok")),
                                         "closed": _exp.get("closed_count", 0),

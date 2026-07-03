@@ -1,0 +1,152 @@
+name: Issue Auto-Close (CI-failure + STATUS janitor)
+
+# WHY: ~10 workflows open `[workflow-failed] …` (label: workflow-failure) and
+# `[STATUS] Daily check failed …` (labels: monitoring, auto) issues when they
+# fail, but NOTHING ever closes them — they accumulate forever. The brain
+# issue janitor only owns brain-l15-auto / brain-l23-lifecycle labels, so
+# these CI-noise issues have no owner. This closes them once the offending
+# workflow passes again (resolution), dedups older duplicates for the same
+# workflow, and sweeps anything stale. It NEVER touches brain-* or human
+# issues — only the workflow-failure / STATUS labels it created above.
+
+on:
+  schedule:
+    - cron: '23 * * * *'   # hourly at :23
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Preview only — list what would close, close nothing'
+        type: boolean
+        default: false
+      stale_days:
+        description: 'Close CI-noise issues with no fresh failure older than N days'
+        default: '3'
+
+permissions:
+  issues: write
+  actions: read
+  contents: read
+
+concurrency:
+  group: issue-autoclose
+  cancel-in-progress: false
+
+jobs:
+  autoclose:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Close resolved / stale / duplicate CI-noise issues
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner, repo = context.repo.repo;
+            const inputs = (context.payload && context.payload.inputs) || {};
+            const DRY = String(inputs.dry_run || 'false') === 'true';
+            const STALE_DAYS = parseInt(inputs.stale_days || '3', 10);
+            const DEFAULT_BRANCH = context.payload.repository?.default_branch || 'main';
+            const STATUS_WORKFLOW = 'DC Hub Daily Status Check'; // opener of the [STATUS] issues
+            const now = Date.now();
+
+            // Only these labels are ever in-scope. brain-* / human issues are never touched.
+            const OWNED_LABELS = new Set(['workflow-failure', 'monitoring', 'auto']);
+            const NEVER = new Set(['brain-l15-auto', 'brain-l23-lifecycle', 'keep', 'pinned']);
+
+            // Map a title to the workflow name that opened it.
+            function wfNameFor(title) {
+              if (title.startsWith('[workflow-failed] ')) {
+                return title.slice('[workflow-failed] '.length).split(' on ')[0].trim();
+              }
+              if (title.startsWith('[STATUS]')) return STATUS_WORKFLOW;
+              return null;
+            }
+
+            // 1) Latest run per workflow name on the default branch.
+            const runsResp = await github.rest.actions.listWorkflowRunsForRepo({
+              owner, repo, branch: DEFAULT_BRANCH, per_page: 100,
+            });
+            const latestByWf = {};
+            for (const r of runsResp.data.workflow_runs) {
+              if (!latestByWf[r.name]) latestByWf[r.name] = r; // newest-first → first seen wins
+            }
+
+            // 2) Open, owned issues (exclude PRs, brain, human).
+            const all = await github.paginate(github.rest.issues.listForRepo, {
+              owner, repo, state: 'open', per_page: 100,
+            });
+            const owned = all.filter(i => {
+              if (i.pull_request) return false;
+              const labels = (i.labels || []).map(l => (typeof l === 'string' ? l : l.name));
+              if (labels.some(l => NEVER.has(l))) return false;
+              const inScope = labels.some(l => OWNED_LABELS.has(l));
+              const titled = i.title.startsWith('[workflow-failed] ') || i.title.startsWith('[STATUS]');
+              return inScope && titled;
+            });
+
+            // 3) Newest open issue per workflow (for dedup).
+            const newestByWf = {};
+            for (const i of owned) {
+              const wf = wfNameFor(i.title); if (!wf) continue;
+              if (!newestByWf[wf] || new Date(i.created_at) > new Date(newestByWf[wf].created_at)) {
+                newestByWf[wf] = i;
+              }
+            }
+
+            const acted = { resolved: [], duplicate: [], stale: [], kept: [] };
+            async function close(i, reason, comment) {
+              acted[reason].push(i.number);
+              if (DRY) return;
+              await github.rest.issues.createComment({ owner, repo, issue_number: i.number, body: comment });
+              await github.rest.issues.update({
+                owner, repo, issue_number: i.number,
+                state: 'closed',
+                state_reason: reason === 'resolved' ? 'completed' : 'not_planned',
+              });
+            }
+
+            for (const i of owned) {
+              try {
+                const wf = wfNameFor(i.title);
+                const latest = wf ? latestByWf[wf] : null;
+                const issueTime = new Date(i.created_at);
+
+                // a) Resolution: the workflow has since had a successful run.
+                if (latest && latest.status === 'completed' && latest.conclusion === 'success'
+                    && new Date(latest.created_at) > issueTime) {
+                  await close(i, 'resolved',
+                    `✅ Auto-closed by issue-autoclose: \`${wf}\` has since passed ` +
+                    `([run ${latest.id}](${latest.html_url})). Reopen if it regresses.`);
+                  continue;
+                }
+                // b) Dedup: not the newest open failure issue for this workflow.
+                if (wf && newestByWf[wf] && newestByWf[wf].number !== i.number) {
+                  await close(i, 'duplicate',
+                    `Auto-closed by issue-autoclose: superseded by a newer failure issue ` +
+                    `for \`${wf}\` (#${newestByWf[wf].number}).`);
+                  continue;
+                }
+                // c) Stale: no fresh failure and older than the window.
+                const ageDays = (now - issueTime.getTime()) / 86400000;
+                if (ageDays > STALE_DAYS) {
+                  await close(i, 'stale',
+                    `Auto-closed by issue-autoclose: stale (>${STALE_DAYS}d, no fresh failure). ` +
+                    `The workflow re-files automatically if it fails again.`);
+                  continue;
+                }
+                acted.kept.push(i.number);
+              } catch (e) {
+                core.warning(`#${i.number}: ${e.message}`);
+              }
+            }
+
+            const line = `${DRY ? '[DRY] ' : ''}owned=${owned.length} ` +
+              `resolved=${acted.resolved.length} duplicate=${acted.duplicate.length} ` +
+              `stale=${acted.stale.length} kept=${acted.kept.length}`;
+            core.notice(line);
+            await core.summary
+              .addHeading('Issue Auto-Close')
+              .addRaw(`\n\n${line}\n\n`)
+              .addRaw(`- resolved: ${acted.resolved.join(', ') || '—'}\n`)
+              .addRaw(`- duplicate: ${acted.duplicate.join(', ') || '—'}\n`)
+              .addRaw(`- stale: ${acted.stale.join(', ') || '—'}\n`)
+              .addRaw(`- kept open: ${acted.kept.join(', ') || '—'}\n`)
+              .write();
