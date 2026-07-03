@@ -117,21 +117,107 @@ def _latest(rows, ts_keys=("datetime_beginning_utc", "datetime_beginning_ept")):
         return rows[0]
 
 
-def pjm_dom_zone():
-    """Dominion (DOM) zone brief: current load + RT/DA LMP. Fail-closed.
+# ── gridstatus.io path (PRIMARY) ─────────────────────────────────────────────
+# DOM-zone load + LMP are ALSO carried by gridstatus.io, for which DC Hub already
+# has a provisioned key (GRIDSTATUS_API_KEY) — so Ashburn lights up with NO PJM
+# Data Miner 2 registration. gridstatus is tried first; the DM2 client below is
+# the fallback used only when PJM_API_KEY is set and gridstatus is unavailable.
+GRIDSTATUS_BASE = "https://api.gridstatus.io/v1"
 
-    Returns a dict shaped to slot into the grid-intelligence regions, or a
-    `source_unavailable` marker when PJM_API_KEY is unset."""
+
+def gridstatus_key():
+    return (os.environ.get("GRIDSTATUS_API_KEY") or "").strip()
+
+
+def _gridstatus_get(dataset, params=None, timeout=15):
+    """GET one gridstatus.io dataset query. Returns (rows_list, error_str)."""
+    key = gridstatus_key()
+    if not key:
+        return None, "source_unavailable: GRIDSTATUS_API_KEY not set"
+    p = {"api_key": key}
+    if params:
+        p.update(params)
+    url = GRIDSTATUS_BASE + "/datasets/" + dataset + "/query?" + urllib.parse.urlencode(p)
+    req = urllib.request.Request(url, headers={"Accept": "application/json", "User-Agent": UA})
+    import time as _t
+    for _attempt in range(2):  # gridstatus free tier = 1 req/sec; retry once on 429
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                payload = json.loads(r.read().decode("utf-8"))
+            rows = payload.get("data") if isinstance(payload, dict) else payload
+            return (rows or []), None
+        except urllib.error.HTTPError as e:
+            if e.code == 429 and _attempt == 0:
+                _t.sleep(1.1)
+                continue
+            return None, f"http_{e.code}"
+        except Exception as e:
+            return None, f"{type(e).__name__}: {str(e)[:120]}"
+    return None, "http_429"
+
+
+def _gridstatus_dom(base):
+    """DOM-zone load + real-time LMP from gridstatus.io. Returns a dict or None
+    (None → caller falls back to Data Miner 2 or the fail-closed marker)."""
+    out = dict(base)
+    got = False
+    # Dominion-zone load — the `dom` column of the PJM system-load dataset (MW).
+    rows, lerr = _gridstatus_get("pjm_load", {"limit": 1, "order": "desc"})
+    if rows:
+        out["demand_mw"] = _num(rows[0].get("dom"))
+        out["demand_period"] = rows[0].get("interval_start_utc")
+        got = out.get("demand_mw") is not None
+    elif lerr:
+        out["load_error"] = lerr
+    # Dominion-zone real-time LMP (5-min), location=DOM — the Ashburn power price.
+    rt, rterr = _gridstatus_get("pjm_lmp_real_time_5_min",
+                                {"filter_column": "location", "filter_value": "DOM",
+                                 "limit": 1, "order": "desc"})
+    if rt:
+        out["lmp_rt_usd_mwh"] = _num(rt[0].get("lmp"))
+        out["lmp_congestion_usd_mwh"] = _num(rt[0].get("congestion"))
+        out["lmp_loss_usd_mwh"] = _num(rt[0].get("loss"))
+        out["lmp_period"] = rt[0].get("interval_start_utc")
+        got = got or out.get("lmp_rt_usd_mwh") is not None
+    elif rterr:
+        out["lmp_rt_error"] = rterr
+    if not got:
+        return None
+    out["source"] = "PJM via gridstatus.io (pjm_load.dom + pjm_lmp_real_time_5_min zone=DOM)"
+    out["note"] = ("DOM-zone LOAD + real-time LMP are zone-level (Ashburn / Northern "
+                   "Virginia); PJM does not publish generation per zone.")
+    return out
+
+
+def pjm_dom_zone():
+    """Dominion (DOM) zone brief: current load + RT LMP. Fail-closed.
+
+    Source order: gridstatus.io (PRIMARY — key already provisioned) → PJM Data
+    Miner 2 (fallback, needs PJM_API_KEY) → source_unavailable marker."""
     base = {
         "region": "PJM-DOM", "iso": "PJM", "zone": "DOMINION",
         "zone_name": "PJM Dominion zone — Ashburn / Northern Virginia (world's #1 DC market)",
     }
+    import time as _t
+    _now0 = _t.time()
+    _cache = _PJM_CACHE.get("dom")
+    if _cache and _cache[0] > _now0:
+        return dict(_cache[1])
+
+    # PRIMARY: gridstatus.io (no PJM registration required)
+    if gridstatus_key():
+        gs = _gridstatus_dom(base)
+        if gs:
+            _PJM_CACHE["dom"] = (_now0 + _PJM_TTL, dict(gs))
+            return gs
+
+    # FALLBACK: PJM Data Miner 2 — only if a DM2 key is set.
     if not is_enabled():
         base.update({
             "source_unavailable": True,
-            "needs": "PJM_API_KEY (free Data Miner 2 subscription key — dataminer2.pjm.com)",
-            "note": ("EIA-930 has no sub-BA DOM data; DOM-zone load + LMP activate "
-                     "the moment PJM_API_KEY is set on the backend Railway service."),
+            "needs": "GRIDSTATUS_API_KEY (provisioned) or PJM_API_KEY (dataminer2.pjm.com)",
+            "note": ("EIA-930 has no sub-BA DOM data; DOM-zone load + LMP come from "
+                     "gridstatus.io (primary) or PJM Data Miner 2 (fallback)."),
         })
         return base
 
