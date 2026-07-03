@@ -7084,34 +7084,12 @@ def _resolve_mcp_platform(client_name, ua_str=''):
         for key_str, plat in MCP_PLATFORM_MAP.items():
             if key_str in cn_l:
                 return plat
-        # r-probeattr (2026-07-03): don't echo an internal/probe/scanner client
-        # name back as its own "platform". The HTTP path (ai_tracking.
-        # detect_platform) already buckets these to 'internal' via
-        # _is_internal_ua, but this MCP path echoed real-but-internal
-        # clientInfo.name values straight through — so DC Hub's OWN canon/
-        # usefulness probes and external registry scanners (dchub-canon-probe,
-        # dchub-usefulness-probe, audit-probe, mcp-auth-scanner, …) minted bogus
-        # AI-platform rows in ai_cumulative and polluted the auto-interconnect
-        # partner funnel (the 403→paywall approve-link the owner hit). Reuse the
-        # same vetted marker list so attribution is consistent across paths.
-        try:
-            from ai_tracking import _is_internal_ua
-            if _is_internal_ua(cn_l):
-                return 'internal'
-        except Exception:
-            pass
         return cn
     ua_l = (ua_str or '').lower()
     if ua_l:
         for key_str, plat in MCP_PLATFORM_MAP.items():
             if key_str in ua_l:
                 return plat
-        try:
-            from ai_tracking import _is_internal_ua
-            if _is_internal_ua(ua_l):
-                return 'internal'
-        except Exception:
-            pass
     return 'unknown'
 
 
