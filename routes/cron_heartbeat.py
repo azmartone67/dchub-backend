@@ -447,6 +447,15 @@ _DISPATCH = [
      "POST",
      lambda now: now.hour == 11 and now.minute < 55),
 
+    # 2026-07-03: brain RAG reindex — embed new findings/recs/news/deals into
+    # brain_corpus_embeddings so the L6 planner's semantic recall stays fresh.
+    # Every 4h at :20, cap 500/run (incremental backfill; catches up over runs).
+    # Kill: BRAIN_RAG_DISABLED.
+    ("brain_rag_reindex_4h",
+     f"{BASE}/api/v1/admin/brain/rag/reindex?cap=500",
+     "POST",
+     lambda now: now.hour % 4 == 0 and now.minute >= 20 and now.minute < 25),
+
     # 2026-07-03: AGENT-ONBOARDING master shell — daily 08:xx UTC. One per-platform
     # onboarding scoreboard (Claude/ChatGPT/Gemini/Grok/Perplexity/Copilot/Mistral/
     # HF/Poe/…): probes mcp reachability+transport+auth, A2A card, robots AI-bot

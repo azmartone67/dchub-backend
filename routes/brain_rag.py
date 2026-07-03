@@ -1,24 +1,23 @@
 """
-brain_rag.py — brain context-assembly RAG (pgvector + Cohere embeddings).
+brain_rag.py — general context-assembly RAG (pgvector + Cohere embeddings).
 
-The strategic planner re-pulls ~11 HTTP sources every synthesis but has no memory
-of its OWN prior findings + recommendations beyond a few recent rows. This gives
-it semantic RECALL: embed the brain corpus (brain_findings + brain_strategic_
-recommendations) once, then retrieve the top-k most RELEVANT prior items for the
-focus at hand. Numbers stay in SQL — this is only for the UNSTRUCTURED corpus
-(finding/rec prose). Owner-greenlit 2026-07-03.
+Started as brain-corpus recall for the L6 planner; now a CORPUS-REGISTRY RAG:
+"roll RAG out to a new corpus" = add a row to CORPORA (no new code), same as the
+grid master shell's dataset registry. Numbers stay in SQL — this embeds only
+UNSTRUCTURED prose (findings/recs/news/deals). Owner-greenlit 2026-07-03.
 
 Store:  brain_corpus_embeddings(source_table, source_id, kind, text,
-        embedding vector(1024))  — pgvector on Neon.
+        embedding vector(1024))  — pgvector on Neon, one table for all corpora.
 Embed:  Cohere embed-english-v3.0 (1024-d, asymmetric search_document/search_query;
-        OpenAI account is out of quota, so Cohere not OpenAI). Batched ≤96/call.
-Recall: cosine (<=>). Wired into brain_strategic_planner behind BRAIN_RAG_ENABLED.
+        OpenAI key is out of quota). Batched ≤96/call.
+Recall: cosine (<=>), optionally scoped to one corpus.
 
 Endpoints (admin, X-Admin-Key):
-  POST /api/v1/admin/brain/rag/reindex?cap=300   — embed up to cap not-yet-embedded rows
-  GET  /api/v1/admin/brain/rag/retrieve?q=...&k=8 — test retrieval
-  GET  /api/v1/admin/brain/rag/status            — coverage counts
-Kill: BRAIN_RAG_DISABLED=1 (endpoints) / BRAIN_RAG_ENABLED unset (planner stays as-is).
+  POST /api/v1/admin/brain/rag/reindex?cap=500    — embed up to cap new rows (any corpus)
+  GET  /api/v1/admin/brain/rag/retrieve?q=&k=8&corpus=news_articles — test
+  GET  /api/v1/admin/brain/rag/status             — per-corpus coverage
+Kill: BRAIN_RAG_DISABLED=1 (endpoints) / BRAIN_RAG_ENABLED unset (planner wiring).
+Kept fresh by cron_heartbeat (brain_rag_reindex).
 """
 import os
 import json
@@ -33,6 +32,30 @@ brain_rag_bp = Blueprint("brain_rag", __name__)
 EMBED_MODEL = "embed-english-v3.0"
 EMBED_DIM = 1024
 _COHERE_BATCH = 96  # Cohere v1/embed hard limit
+
+# ── corpus registry — add a row to roll RAG onto a new source (no new code) ──
+# Each: source_table → {id (t-qualified ::text), text (SQL expr over alias t),
+# kind, where}. All exprs are hardcoded/trusted (never user input).
+CORPORA = {
+    "brain_findings": {
+        "id": "t.id::text", "kind": "finding",
+        "text": "coalesce(t.issue,'') || ' — ' || coalesce(t.detail,'')",
+        "where": "coalesce(t.issue,'') <> ''"},
+    "brain_strategic_recommendations": {
+        "id": "t.id::text", "kind": "recommendation",
+        "text": "coalesce(t.title,'') || ' — ' || coalesce(t.spec_md,'')",
+        "where": "coalesce(t.title,'') <> ''"},
+    "news_articles": {
+        "id": "t.id::text", "kind": "news",
+        "text": "coalesce(t.title,'') || ' — ' || coalesce(t.summary,'')",
+        "where": "coalesce(t.title,'') <> ''"},
+    "deals": {
+        "id": "t.id::text", "kind": "deal",
+        "text": ("coalesce(t.buyer,'') || ' → ' || coalesce(t.seller,'') || ' (' || "
+                 "coalesce(t.type,'') || ', ' || coalesce(t.market, t.region, '') || ') ' || "
+                 "coalesce(t.notes,'')"),
+        "where": "coalesce(t.buyer,'') <> '' OR coalesce(t.seller,'') <> ''"},
+}
 
 
 # ── auth ──────────────────────────────────────────────────────────────
@@ -94,8 +117,6 @@ def _ensure() -> bool:
 
 # ── Cohere embeddings ─────────────────────────────────────────────────
 def _embed(texts, input_type="search_document"):
-    """Return list of 1024-float vectors (or None). input_type: search_document
-    for the corpus, search_query for a lookup — Cohere v3 is asymmetric."""
     key = (os.environ.get("COHERE_API_KEY") or "").strip()
     if not key or not texts:
         return None
@@ -118,55 +139,72 @@ def _vec(v):
 
 # ── corpus selection ──────────────────────────────────────────────────
 def _pending(cur, cap):
-    """Rows in the brain corpus that don't yet have an embedding."""
+    """Rows across ALL registered corpora that don't yet have an embedding.
+    A corpus whose columns don't resolve is skipped (rollback), never fatal."""
     rows = []
-    cur.execute("""
-        SELECT 'brain_findings', bf.id::text, 'finding',
-               left(coalesce(bf.issue,'') || ' — ' || coalesce(bf.detail,''), 1600)
-        FROM brain_findings bf
-        LEFT JOIN brain_corpus_embeddings e
-          ON e.source_table='brain_findings' AND e.source_id=bf.id::text
-        WHERE e.id IS NULL AND coalesce(bf.issue,'') <> ''
-        ORDER BY bf.id DESC
-        LIMIT %s
-    """, (cap,))
-    rows += cur.fetchall()
-    if len(rows) < cap:
-        cur.execute("""
-            SELECT 'brain_strategic_recommendations', r.id::text, 'recommendation',
-                   left(coalesce(r.title,'') || ' — ' || coalesce(r.spec_md,''), 1600)
-            FROM brain_strategic_recommendations r
-            LEFT JOIN brain_corpus_embeddings e
-              ON e.source_table='brain_strategic_recommendations' AND e.source_id=r.id::text
-            WHERE e.id IS NULL AND coalesce(r.title,'') <> ''
-            ORDER BY r.id DESC
-            LIMIT %s
-        """, (cap - len(rows),))
-        rows += cur.fetchall()
+    for src, spec in CORPORA.items():
+        if len(rows) >= cap:
+            break
+        lim = cap - len(rows)
+        q = (f"SELECT '{src}', ({spec['id']}) AS sid, '{spec['kind']}', "
+             f"left({spec['text']}, 1600) "
+             f"FROM {src} t "
+             f"LEFT JOIN brain_corpus_embeddings e "
+             f"  ON e.source_table='{src}' AND e.source_id=({spec['id']}) "
+             f"WHERE e.id IS NULL AND ({spec['where']}) "
+             f"LIMIT {int(lim)}")
+        try:
+            cur.execute(q)
+            rows += cur.fetchall()
+        except Exception:
+            try: cur.connection.rollback()
+            except Exception: pass
     return rows
 
 
-# ── retrieval (the payoff — importable by the planner) ────────────────
-def retrieve_context(query: str, k: int = 8) -> list:
-    """Top-k most semantically-relevant prior findings + recommendations.
-    Returns [{source_table, source_id, kind, text, score}]. Fail-soft → []."""
+def _corpus_total(cur):
+    total = 0
+    for src, spec in CORPORA.items():
+        try:
+            cur.execute(f"SELECT count(*) FROM {src} t WHERE ({spec['where']})")
+            total += cur.fetchone()[0] or 0
+        except Exception:
+            try: cur.connection.rollback()
+            except Exception: pass
+    return total
+
+
+# ── retrieval (importable by any consumer) ────────────────────────────
+def retrieve_context(query: str, k: int = 8, corpus: str = None) -> list:
+    """Top-k most semantically-relevant rows, optionally scoped to one corpus
+    (e.g. corpus='news_articles'). Returns [{source_table,source_id,kind,text,score}].
+    Fail-soft → []."""
     if not query:
         return []
     qv = _embed([query], input_type="search_query")
     if not qv:
         return []
+    qs = _vec(qv[0])
     c = _db()
     if c is None:
         return []
     try:
         with c.cursor() as cur:
-            cur.execute(f"""
-                SELECT source_table, source_id, kind, left(text, 500),
-                       1 - (embedding <=> %s::vector) AS score
-                FROM brain_corpus_embeddings
-                ORDER BY embedding <=> %s::vector
-                LIMIT %s
-            """, (_vec(qv[0]), _vec(qv[0]), int(k)))
+            if corpus:
+                cs = list(corpus) if isinstance(corpus, (list, tuple)) else [corpus]
+                cur.execute("""
+                    SELECT source_table, source_id, kind, left(text, 500),
+                           1 - (embedding <=> %s::vector)
+                    FROM brain_corpus_embeddings WHERE source_table = ANY(%s)
+                    ORDER BY embedding <=> %s::vector LIMIT %s
+                """, (qs, cs, qs, int(k)))
+            else:
+                cur.execute("""
+                    SELECT source_table, source_id, kind, left(text, 500),
+                           1 - (embedding <=> %s::vector)
+                    FROM brain_corpus_embeddings
+                    ORDER BY embedding <=> %s::vector LIMIT %s
+                """, (qs, qs, int(k)))
             return [{"source_table": r[0], "source_id": r[1], "kind": r[2],
                      "text": r[3], "score": round(float(r[4]), 4)} for r in cur.fetchall()]
     except Exception:
@@ -186,9 +224,9 @@ def reindex():
     if not _ensure():
         return jsonify(ok=False, error="ensure_failed (pgvector/table)"), 200
     try:
-        cap = max(1, min(1000, int(request.args.get("cap", "300"))))
+        cap = max(1, min(1500, int(request.args.get("cap", "500"))))
     except Exception:
-        cap = 300
+        cap = 500
     c = _db()
     if c is None:
         return jsonify(ok=False, error="db_unavailable"), 200
@@ -213,12 +251,10 @@ def reindex():
             c.commit()
             embedded += len(batch)
         with c.cursor() as cur:
-            cur.execute("""
-                SELECT (SELECT count(*) FROM brain_findings WHERE coalesce(issue,'')<>'')
-                     + (SELECT count(*) FROM brain_strategic_recommendations WHERE coalesce(title,'')<>'')
-                     - (SELECT count(*) FROM brain_corpus_embeddings)
-            """)
-            remaining = max(0, cur.fetchone()[0] or 0)
+            total = _corpus_total(cur)
+            cur.execute("SELECT count(*) FROM brain_corpus_embeddings")
+            emb = cur.fetchone()[0] or 0
+        remaining = max(0, total - emb)
         return jsonify(ok=True, embedded=embedded, remaining=remaining,
                        done=(remaining == 0), model=EMBED_MODEL), 200
     except Exception as e:
@@ -239,7 +275,8 @@ def retrieve():
         k = max(1, min(50, int(request.args.get("k", "8"))))
     except Exception:
         k = 8
-    return jsonify(ok=True, query=q, results=retrieve_context(q, k)), 200
+    corpus = (request.args.get("corpus") or "").strip() or None
+    return jsonify(ok=True, query=q, corpus=corpus, results=retrieve_context(q, k, corpus)), 200
 
 
 @brain_rag_bp.route("/api/v1/admin/brain/rag/status", methods=["GET"])
@@ -252,17 +289,28 @@ def status():
     try:
         with c.cursor() as cur:
             try:
-                cur.execute("SELECT count(*), max(updated_at) FROM brain_corpus_embeddings")
-                emb, last = cur.fetchone()
+                cur.execute("SELECT source_table, count(*) FROM brain_corpus_embeddings GROUP BY source_table")
+                by = dict(cur.fetchall())
+                cur.execute("SELECT max(updated_at) FROM brain_corpus_embeddings")
+                last = cur.fetchone()[0]
             except Exception:
-                c.rollback(); emb, last = 0, None
-            cur.execute("SELECT count(*) FROM brain_findings WHERE coalesce(issue,'')<>''")
-            f = cur.fetchone()[0]
-            cur.execute("SELECT count(*) FROM brain_strategic_recommendations WHERE coalesce(title,'')<>''")
-            r = cur.fetchone()[0]
-        return jsonify(ok=True, embedded=emb, corpus_total=f + r,
-                       coverage_pct=round(100.0 * emb / max(1, f + r), 1),
-                       last_indexed=str(last), model=EMBED_MODEL,
+                c.rollback(); by = {}; last = None
+            emb = sum(by.values())
+            total = 0
+            per = {}
+            for src, spec in CORPORA.items():
+                try:
+                    cur.execute(f"SELECT count(*) FROM {src} t WHERE ({spec['where']})")
+                    n = cur.fetchone()[0] or 0
+                except Exception:
+                    try: cur.connection.rollback()
+                    except Exception: pass
+                    n = 0
+                total += n
+                per[src] = f"{by.get(src, 0)}/{n}"
+        return jsonify(ok=True, embedded=emb, corpus_total=total,
+                       coverage_pct=round(100.0 * emb / max(1, total), 1),
+                       by_corpus=per, last_indexed=str(last), model=EMBED_MODEL,
                        planner_wired=str(os.environ.get("BRAIN_RAG_ENABLED", "")).lower() in ("1", "true", "yes")), 200
     except Exception as e:
         return jsonify(ok=False, error=f"{type(e).__name__}: {str(e)[:160]}"), 200

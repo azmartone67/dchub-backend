@@ -331,19 +331,46 @@ def _gather_strategic_context() -> dict:
         "recent_arch_proposals": recent_arch_proposals,
     }
     # RAG recall (behind BRAIN_RAG_ENABLED): semantically retrieve the most
-    # relevant PRIOR findings + recommendations so the synthesis has memory
-    # beyond the few recent rows. Fail-soft; the structured sources above are
-    # unchanged — this only adds unstructured recall.
+    # relevant PRIOR work + live market context so the synthesis has memory +
+    # situational awareness beyond the few recent rows. Fail-soft; the structured
+    # sources above are unchanged — this only adds unstructured recall.
     if _truthy(os.environ.get("BRAIN_RAG_ENABLED")):
         try:
             from routes.brain_rag import retrieve_context
-            _rag_q = ("data-center infrastructure growth strategy: MCP funnel "
-                      "conversion, grid & fiber tool demand, agent retention, "
-                      "data-moat coverage gaps, monetization")
-            ctx["retrieved_prior_work"] = retrieve_context(_rag_q, k=8)
+            _rag_q = _rag_focus_query(funnel_now, self_perception)
+            ctx["retrieved_prior_work"] = retrieve_context(
+                _rag_q, k=8, corpus=["brain_findings", "brain_strategic_recommendations"])
+            # rollout: also surface the most relevant recent MARKET NEWS + M&A so
+            # strategy reacts to what's actually happening, not just the funnel.
+            ctx["relevant_news"] = retrieve_context(_rag_q, k=5, corpus="news_articles")
+            ctx["relevant_deals"] = retrieve_context(_rag_q, k=4, corpus="deals")
         except Exception:
             pass
     return ctx
+
+
+def _rag_focus_query(funnel_now, self_perception) -> str:
+    """Build the RAG query from the LIVE strategic focus (top paid-tool demand +
+    recent self-assessed losses) so recall matches THIS week, not a fixed string."""
+    parts = ["DC Hub data-center infrastructure growth strategy"]
+    try:
+        pd = ((funnel_now or {}).get("paid_tool_demand_30d") or [])[:4]
+        parts += [str((x or {}).get("tool") or (x or {}).get("name") or "")
+                  for x in pd if isinstance(x, dict)]
+    except Exception:
+        pass
+    try:
+        sp = self_perception or {}
+        latest = sp.get("latest") if isinstance(sp.get("latest"), dict) else {}
+        losses = latest.get("losses") or sp.get("losses")
+        if isinstance(losses, list):
+            parts += [str(x)[:80] for x in losses[:3]]
+        elif losses:
+            parts.append(str(losses)[:200])
+    except Exception:
+        pass
+    q = " · ".join(p for p in parts if p).strip()
+    return q[:600] or "DC Hub growth, conversion, grid & fiber demand, data-moat gaps"
 
 
 def _gather_outcomes_context(window_days: int = 30) -> dict:
@@ -677,6 +704,15 @@ def _build_prompt(ctx: dict) -> str:
                         "findings + past recommendations — build on / reuse these; "
                         "do NOT re-propose what's already logged):\n" +
                         _truncate(ctx.get("retrieved_prior_work"), 3500))
+    if ctx.get("relevant_news"):
+        sections.append("RELEVANT MARKET NEWS (semantically retrieved recent "
+                        "coverage relevant to the focus — react to what's actually "
+                        "happening in the market):\n" +
+                        _truncate(ctx.get("relevant_news"), 2500))
+    if ctx.get("relevant_deals"):
+        sections.append("RELEVANT M&A DEALS (semantically retrieved comparable "
+                        "transactions for market-timing signal):\n" +
+                        _truncate(ctx.get("relevant_deals"), 1500))
 
     # Feature #8 (DARK): per-rec-type STRATEGIC-OUTCOME LEDGER feedback.
     # Only spliced when BRAIN_STRATEGIC_LEDGER_FEEDBACK_ENABLED is set;

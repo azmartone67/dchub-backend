@@ -195,8 +195,8 @@ TARGET_DATASETS = [
     {"id": "isone_lmp_real_time_5_min", "iso": "ISONE", "dom": "grid", "cat": "lmp", "value_col": "lmp", "unit": "$/MWh"},
     # operating reserves + forward operating margin (toward the never-live reserve_margin)
     {"id": "pjm_dispatched_reserves_verified",     "iso": "PJM",   "dom": "grid", "cat": "reserves", "value_col": "total_reserve", "unit": "MW"},
-    {"id": "ercot_real_time_adders_and_reserves",  "iso": "ERCOT", "dom": "grid", "cat": "reserves", "value_col": None, "unit": "MW"},
-    {"id": "aeso_reserves",                        "iso": "AESO",  "dom": "grid", "cat": "reserves", "value_col": None, "unit": "MW"},
+    {"id": "ercot_real_time_adders_and_reserves",  "iso": "ERCOT", "dom": "grid", "cat": "reserves", "value_col": "prc", "unit": "MW"},
+    {"id": "aeso_reserves",                        "iso": "AESO",  "dom": "grid", "cat": "reserves", "value_col": "dispatched_contingency_reserve_total", "unit": "MW"},
     {"id": "miso_multiday_operating_margin",       "iso": "MISO",  "dom": "grid", "cat": "margin",   "value_col": "resource_operating_margin", "unit": "MW"},
     # grid carbon intensity (the Electricity-Maps lane): marginal + consumed
     {"id": "pjm_marginal_emission_rates_5_min",  "iso": "PJM", "dom": "grid", "cat": "emissions", "value_col": "marginal_co2_rate", "unit": "lb/MWh"},
