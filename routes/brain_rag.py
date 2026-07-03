@@ -60,7 +60,7 @@ CORPORA = {
         "text": ("coalesce(t.name,'') || ' — ' || coalesce(t.provider,'') || ' · ' || "
                  "concat_ws(', ', t.city, t.state, t.country) || ' · ' || "
                  "coalesce(t.market,'') || ' ' || coalesce(t.facility_type,'')"),
-        "where": "coalesce(t.name,'') <> '' AND coalesce(t.is_duplicate, false) = false"},
+        "where": "coalesce(t.name,'') <> '' AND coalesce(t.is_duplicate, 0) = 0"},
 }
 
 # Corpora an unauthenticated agent may semantically search (brain internals excluded).
