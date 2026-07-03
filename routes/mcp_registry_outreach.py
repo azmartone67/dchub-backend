@@ -102,16 +102,29 @@ DISCOVERY_TARGETS = [
         "description": "AI gateway with MCP aggregation. Already listed as cloud.dchub.",
     },
     {
-        # Probable not-yet-listed; submission pending.
+        # r-fix 2026-07-02: root-caused the "listing vanished" alarm.
+        # mcphub.io is a Next.js SPA whose data ALL comes from
+        # https://registry.mcphub.io — and that origin is DOWN
+        # (Cloudflare 525 on every endpoint), so the site renders an
+        # empty shell for EVERY server, not just us. The old audit_url
+        # (/servers/dchub) returns a 200 SPA shell with no server-side
+        # content, so the signal check can never pass — repointed the
+        # audit at their search API, which returns real JSON when (if)
+        # their origin comes back. Also: the only archived snapshot of
+        # their registry (2025-03-22, 276 entries) does NOT contain
+        # dchub, so we were likely never listed. /submit 404s; their
+        # sitemap points at mcphub.net, which now redirects to an ad
+        # domain (parked/hijacked). No working submission path.
         "key":         "mcphub",
         "name":        "MCPHub",
         "homepage":    "https://mcphub.io",
-        "submit_url":  "https://mcphub.io/submit",
+        "submit_url":  None,
         "submit_method":"manual",
-        "manual_url":  "https://mcphub.io/submit",
-        "audit_url":   "https://mcphub.io/servers/dchub",
-        "audit_signal":"DC Hub",
-        "description": "MCP server hub with categorized listings. Pending submission.",
+        "manual_url":  "https://mcphub.io",
+        "audit_url":   "https://registry.mcphub.io/search?q=dchub",
+        "audit_signal":"dchub",
+        "audit_browser_ua": True,
+        "description": "MCP server hub (mcphub.io). Data backend registry.mcphub.io DOWN (CF 525) as of 2026-07-02; no submit path; never confirmed listed.",
     },
     {
         # PulseMCP serves 403 to bare curl (bot protection). Audit via
@@ -182,13 +195,24 @@ DISCOVERY_TARGETS = [
         "name":        "MCP Hive",
         "homepage":    "https://mcphive.com",
         # r-fix 2026-06-10: real form is /submit.html (not /submit, which 404s).
+        # r-fix 2026-07-02: submission FILED via the form's own endpoint
+        # (multipart POST to /scripts/save_submission.php, exactly what
+        # js/submit.js sends) — the endpoint returned the host's 404
+        # page. The form is broken for browser users too; there is no
+        # backing GitHub repo and no contact email anywhere on the
+        # site. Their directory is a static CSV (data/servers.csv)
+        # that is a stale scrape of punkpeye/awesome-mcp-servers
+        # (verbatim emoji descriptions + identical category slugs) —
+        # and we ARE in awesome-mcp-servers, so if they ever re-scrape
+        # we appear for free. Audit repointed at the CSV (the old
+        # /servers/<slug> pages never existed on this static site).
         "submit_url":  "https://mcphive.com/submit.html",
         "submit_method":"manual",
         "manual_url":  "https://mcphive.com/submit.html",
-        "audit_url":   "https://mcphive.com/servers/dchub",
-        "audit_signal":"DC Hub",
+        "audit_url":   "https://mcphive.com/data/servers.csv",
+        "audit_signal":"dchub",
         "audit_browser_ua": True,
-        "description": "MCP Hive directory. Manual form at /submit.html (pending paste).",
+        "description": "MCP Hive directory. Submission attempted 2026-07-02: form backend (save_submission.php) 404s — dead/abandoned scrape of awesome-mcp-servers; no working path.",
     },
     {
         "key":         "toolhive",
@@ -196,6 +220,16 @@ DISCOVERY_TARGETS = [
         # r-fix 2026-06-10: toolhive.io is DEAD (301 -> compliancehive.eu).
         # The real ToolHive is Stacklok's GitHub registry (repo renamed
         # toolhive-registry -> toolhive-catalog). PR #1252 filed.
+        # r-fix 2026-07-02: PR #1252 was CLOSED 2026-06-16 by a Stacklok
+        # collaborator — REJECTED on curated-registry fit, not technical
+        # grounds ("handshakes cleanly and the tools match the entry
+        # exactly"): single-maintainer project, no tagged releases,
+        # limited community traction, proprietary hosted backend. See
+        # https://github.com/stacklok/toolhive-catalog/pull/1252 and
+        # their docs/registry-criteria.md#community-health. They invited
+        # a fresh submission once the project matures (tagged releases,
+        # contributor base, adoption signal) — do NOT re-file before
+        # that bar is met; it reads as spam and burns goodwill.
         "homepage":    "https://github.com/stacklok/toolhive-catalog",
         "submit_url":  "https://github.com/stacklok/toolhive-catalog/pulls",
         "submit_method":"github_pr",
@@ -203,7 +237,7 @@ DISCOVERY_TARGETS = [
         "audit_url":   "https://raw.githubusercontent.com/stacklok/toolhive-catalog/main/registries/toolhive/servers/dchub/server.json",
         "audit_signal":"dchub",
         "audit_browser_ua": True,
-        "description": "Stacklok ToolHive registry (GitHub PR). PR stacklok/toolhive-catalog#1252 filed 2026-06-10.",
+        "description": "Stacklok ToolHive registry. PR #1252 REJECTED 2026-06-16 on curated-fit criteria (maturity/traction, not quality). Re-apply only after tagged releases + community traction.",
     },
     {
         "key":         "yellowmcp",
@@ -213,14 +247,23 @@ DISCOVERY_TARGETS = [
         # "Declining Reliability" because their uptime probe does
         # GET /mcp -> 405 (the MCP POST initialize handshake returns 200).
         # Action: claim the listing + make GET /mcp return 200.
-        "homepage":    "https://yellowmcp.com",
+        # r-fix 2026-07-02: the "missing" alarm was a SLUG CHANGE, not a
+        # drop — yellowmcp moved us from /servers/dchub (now 404) to
+        # /servers/cloud-dchub-mcp-server (verified live, linked from
+        # their homepage, 83.3% uptime / probes "reachable"). GET /mcp
+        # now returns 200 so the old 405-reliability penalty is gone.
+        # Audit repointed at the new slug; flipped to refresh_only
+        # (listed — audit-only, same as Smithery/mcp.so). Claiming the
+        # listing still requires an interactive login at /claim —
+        # owner action, can't be automated.
+        "homepage":    "https://yellowmcp.com/servers/cloud-dchub-mcp-server",
         "submit_url":  "https://yellowmcp.com/claim",
-        "submit_method":"claim",
+        "submit_method":"refresh_only",
         "manual_url":  "https://yellowmcp.com/claim",
-        "audit_url":   "https://yellowmcp.com/servers/dchub",
+        "audit_url":   "https://yellowmcp.com/servers/cloud-dchub-mcp-server",
         "audit_signal":"DC Hub",
         "audit_browser_ua": True,
-        "description": "Yellowmcp reliability directory. LISTED (auto-discovered) but -100% reliability: GET /mcp returns 405 to their probe. Claim + fix GET handler.",
+        "description": "Yellowmcp reliability directory. LISTED at /servers/cloud-dchub-mcp-server (slug changed 2026; 83.3% uptime). Claim-listing still pending (needs interactive login).",
     },
 ]
 
@@ -238,10 +281,18 @@ _DEAD_REGISTRY_KEYS = {
     # working manual path (JS-only SPA; /submit 404s; no GitHub repo).
     # The others had their REAL paths found and are now live/actioned:
     #   lobehub   -> GitHub issue lobehub/lobehub#15667
-    #   mcp_hive  -> form at mcphive.com/submit.html
-    #   toolhive  -> Stacklok GitHub PR stacklok/toolhive-catalog#1252
-    #   yellowmcp -> already listed (auto-discovered); claim + GET-405 fix
-    "mcphub",     # mcphub.io JS SPA; /submit 404; no verifiable submit path
+    #   yellowmcp -> LISTED at /servers/cloud-dchub-mcp-server (07-02)
+    # r-fix 2026-07-02: mcp_hive + toolhive re-verified and EXCLUDED:
+    #   mcp_hive  -> form backend (save_submission.php) 404s; abandoned
+    #                static scrape of awesome-mcp-servers; no contact.
+    #                Submission attempted 07-02, endpoint dead.
+    #   toolhive  -> NOT dead, but PR #1252 was REJECTED 06-16 on
+    #                curated-fit criteria (maturity/traction). Excluded
+    #                so L23 stops flagging a gap we deliberately won't
+    #                re-file until the project meets their bar.
+    "mcphub",     # data backend registry.mcphub.io down (CF 525); no submit path
+    "mcp_hive",   # form backend dead (404); abandoned site
+    "toolhive",   # rejected on fit 2026-06-16; re-apply when matured
 }
 
 
