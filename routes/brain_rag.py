@@ -149,12 +149,15 @@ def _vec(v):
 # ── corpus selection ──────────────────────────────────────────────────
 def _pending(cur, cap):
     """Rows across ALL registered corpora that don't yet have an embedding.
-    A corpus whose columns don't resolve is skipped (rollback), never fatal."""
+    Allocates the cap roughly EVENLY across corpora so one large corpus
+    (facilities) doesn't starve the others until it's done. A corpus whose
+    columns don't resolve is skipped (rollback), never fatal."""
     rows = []
+    per = max(1, cap // max(1, len(CORPORA)))
     for src, spec in CORPORA.items():
         if len(rows) >= cap:
             break
-        lim = cap - len(rows)
+        lim = min(per, cap - len(rows))
         q = (f"SELECT '{src}', ({spec['id']}) AS sid, '{spec['kind']}', "
              f"left({spec['text']}, 1600) "
              f"FROM {src} t "
