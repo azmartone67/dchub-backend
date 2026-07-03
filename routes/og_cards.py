@@ -394,10 +394,13 @@ def _draw_data_brutal(pr):
     v3 renders like a product screenshot: market name + verdict pill,
     hero score in the display sans, and labeled 0-100 GAUGE BARS for
     Excess Power (+ Grid Constraint when available). Every element is
-    driven by the actual data — no canned superlatives."""
+    driven by the actual data — no canned superlatives.
+
+    2026-07-03: sits on a heavily-dimmed topical photo (transmission / grid)
+    instead of a flat navy slab, so a non-ai_hero pick is no longer a flat
+    dark logo card. The photo is a texture behind the type, not the subject."""
     from PIL import Image, ImageDraw
-    img = Image.new('RGB', (W, H), BG)
-    _subtle_gradient(img, BG, BG_DEEP, falloff=1.0)
+    img = _photo_backdrop(pr, dim=0.80)
     d = ImageDraw.Draw(img)
 
     # Brand accent strip + kicker row
@@ -514,11 +517,13 @@ def _draw_editorial(pr):
     a publication). v2 uses a subtle navy-to-deeper-navy gradient ONLY
     in the bottom third, so the top stays clean and high-contrast.
     Headline grew 72→76pt, switched to brand-purple kicker, added a
-    cyan separator rule above the subhead to give it editorial weight."""
+    cyan separator rule above the subhead to give it editorial weight.
+
+    2026-07-03: now sits on a dimmed topical photo (campus / grid) rather
+    than a flat navy fill, so even a non-ai_hero editorial pick reads as a
+    publication card, not a dark logo slab."""
     from PIL import Image, ImageDraw
-    img = Image.new('RGB', (W, H), BG)
-    # Subtle gradient — only the bottom 40%, navy → deeper navy
-    _subtle_gradient(img, BG, BG_DEEP, falloff=1.0)
+    img = _photo_backdrop(pr, dim=0.82)
     d = ImageDraw.Draw(img)
 
     _draw_brand_strip(d)
@@ -707,6 +712,132 @@ def _draw_infographic(pr):
 _AI_IMAGE_CACHE = {}             # (slug, yyyymmdd) → png bytes
 _AI_IMAGE_CACHE_MAX = 50
 
+# ---------------------------------------------------------------------------
+# Curated photo library background (2026-07-03) — the ALWAYS-AVAILABLE
+# photographic source. The good "Brookfield" editorial card looked great
+# because it composited a real photo (SDXL); the rest of the fleet fell to
+# flat-navy logo slabs because SDXL was the ONLY photo source and it's
+# unconfigured by default. This wires the curated Unsplash library
+# (services/image_matcher + data/images.json — transmission-at-sunset,
+# renewable, campus-exterior, servers, construction) as a zero-cost photo
+# floor so EVERY hero card is photographic, with SDXL kept as the premium
+# path when CF creds are live.
+_LIB_IMAGE_CACHE = {}            # image_id → cropped 1200x630 RGB PIL image
+_LIB_IMAGE_CACHE_MAX = 24
+
+
+def _library_photo_url(pr: dict):
+    """Pick the most topical curated photo for this press release using the
+    existing ImageMatcher (services/image_matcher). Returns a resolved
+    Unsplash delivery URL (with sizing params) or None on any problem.
+
+    The matcher scores by tag-in-text + category, so we feed it the title +
+    subheadline + topic. Unsplash serves an on-the-fly resized JPEG when we
+    append ?w=&q=&fit=crop, which keeps the fetch small and predictable."""
+    try:
+        from services.image_matcher import get_matcher
+        title = (pr.get('title') or '')
+        blob = ' '.join([
+            title,
+            (pr.get('subheadline') or ''),
+            (pr.get('topic') or ''),
+        ]).strip()
+        res = get_matcher().match(title, blob)
+        img = (res or {}).get('image') or {}
+        base = (img.get('url') or '').strip()
+        if not base:
+            return None, None
+        # Unsplash dynamic sizing — request a landscape crop near our canvas
+        # size so the download is small (~80-180KB) and already ~1200x630.
+        sep = '&' if '?' in base else '?'
+        url = f"{base}{sep}w={W}&h={H}&fit=crop&crop=entropy&q=72&auto=format"
+        return url, (img.get('id') or base)
+    except Exception as e:
+        print(f"[og_cards] library match failed: {e}")
+        return None, None
+
+
+def _crop_to_canvas(bg):
+    """Resize+center-crop a PIL image to exactly W x H (1200x630), preserving
+    aspect ratio (cover-fit). Same treatment the SDXL branch uses."""
+    from PIL import Image
+    bg = bg.convert('RGB')
+    # Scale so the image COVERS the canvas, then center-crop the overflow.
+    scale = max(W / bg.width, H / bg.height)
+    new_w = max(1, int(round(bg.width * scale)))
+    new_h = max(1, int(round(bg.height * scale)))
+    bg = bg.resize((new_w, new_h), Image.LANCZOS)
+    left = max(0, (new_w - W) // 2)
+    top = max(0, (new_h - H) // 2)
+    return bg.crop((left, top, left + W, top + H))
+
+
+def _library_bg(pr: dict):
+    """Fetch (and cache) a curated library photo as a 1200x630 RGB PIL image.
+    This is the always-on photographic background — no SDXL/CF creds needed.
+    Returns None on any problem (network, decode) so callers fall back."""
+    url, cache_id = _library_photo_url(pr)
+    if not url:
+        return None
+    if cache_id in _LIB_IMAGE_CACHE:
+        return _LIB_IMAGE_CACHE[cache_id].copy()
+    try:
+        import requests as _rq
+        from io import BytesIO
+        from PIL import Image
+        resp = _rq.get(url, timeout=12, headers={
+            'User-Agent': 'dchub-og-cards/1.0 (+https://dchub.cloud)'})
+        if resp.status_code != 200 or not resp.content:
+            return None
+        bg = Image.open(BytesIO(resp.content))
+        bg = _crop_to_canvas(bg)
+        # Cache the cropped canvas-sized image (small, ~1-2MB decoded) so
+        # repeated LinkedIn/OG scrapes of the same card don't re-fetch.
+        _LIB_IMAGE_CACHE[cache_id] = bg
+        if len(_LIB_IMAGE_CACHE) > _LIB_IMAGE_CACHE_MAX:
+            _LIB_IMAGE_CACHE.pop(next(iter(_LIB_IMAGE_CACHE)), None)
+        return bg.copy()
+    except Exception as e:
+        print(f"[og_cards] library bg fetch failed: {e}")
+        return None
+
+
+def _photo_backdrop(pr, dim=0.78, base=None):
+    """Return a HEAVILY-dimmed library photo sized to the canvas, to sit
+    behind editorial/data-brutal type so those cards are no longer flat navy
+    slabs. Blends the photo toward the brand navy by `dim` (0=photo,
+    1=solid navy) so the typography still reads at full contrast — the photo
+    is a texture, not the subject. Falls back to a flat navy canvas (with the
+    subtle gradient) when no photo is available."""
+    from PIL import Image
+    base = base if base is not None else BG
+    try:
+        bg = _library_bg(pr)
+    except Exception:
+        bg = None
+    if bg is None:
+        img = Image.new('RGB', (W, H), base)
+        _subtle_gradient(img, base, BG_DEEP, falloff=1.0)
+        return img
+    # Blend photo → navy by `dim`
+    navy = Image.new('RGB', (W, H), base)
+    try:
+        img = Image.blend(bg.convert('RGB'), navy, max(0.0, min(1.0, dim)))
+    except Exception:
+        img = Image.new('RGB', (W, H), base)
+        _subtle_gradient(img, base, BG_DEEP, falloff=1.0)
+        return img
+    # Darken the bottom third further so the footer + gauges stay legible.
+    from PIL import ImageDraw
+    overlay = Image.new('RGBA', (W, H), (0, 0, 0, 0))
+    od = ImageDraw.Draw(overlay)
+    start_y = int(H * 0.55)
+    for i in range(start_y, H):
+        a = int(120 * ((i - start_y) / (H - start_y)))
+        od.line([(0, i), (W, i)], fill=(base[0], base[1], base[2], a))
+    img = Image.alpha_composite(img.convert('RGBA'), overlay).convert('RGB')
+    return img
+
 def _generate_workers_ai_image(prompt: str, slug: str, variant: int = 0):
     """Hit Cloudflare Workers AI SDXL endpoint. Returns PNG bytes or None
     if creds missing / API errored. Cached per (slug, day, variant) so the
@@ -844,11 +975,92 @@ def _ai_review_ok(png_bytes: bytes) -> bool:
         return True
 
 
+def _compose_photo_hero(bg, pr):
+    """Composite the EDITORIAL hero layout (the good "Brookfield" card) onto a
+    photographic background: dark bottom gradient scrim → brand strip → brand
+    chip + DC HUB MEDIA kicker → optional verdict pill → bottom headline →
+    brand footer. Shared by BOTH photo sources (SDXL and the curated library)
+    so the aesthetic is identical no matter which one produced the photo.
+
+    `bg` is any RGB PIL image at ANY size — it's cover-fit cropped to the
+    1200x630 canvas here. Returns a finished RGB image.
+    """
+    from PIL import Image, ImageDraw
+    bg = _crop_to_canvas(bg)
+    img = bg
+    d = ImageDraw.Draw(img)
+
+    # Strong bottom gradient — protects ALL text below the midline.
+    # (alpha 220, starts at 40% so headline+pill+CTA sit on safe contrast.)
+    overlay = Image.new('RGBA', (W, H), (0, 0, 0, 0))
+    odraw = ImageDraw.Draw(overlay)
+    start_y = int(H * 0.40)
+    for i in range(start_y, H):
+        alpha = int(220 * ((i - start_y) / (H - start_y)))
+        odraw.line([(0, i), (W, i)], fill=(0, 0, 0, alpha))
+    # A lighter TOP scrim too, so the brand chip + date read cleanly over a
+    # bright sky (the sunset/solar photos are light at the top).
+    for i in range(0, int(H * 0.22)):
+        alpha = int(150 * (1 - i / (H * 0.22)))
+        odraw.line([(0, i), (W, i)], fill=(0, 0, 0, alpha))
+    img = Image.alpha_composite(img.convert('RGBA'), overlay).convert('RGB')
+    d = ImageDraw.Draw(img)
+
+    # Brand accent strip (purple) — same anchor as all other styles
+    _draw_brand_strip(d)
+
+    # Brand chip + DC HUB MEDIA label (top-left, like every other style)
+    _brand_chip(d, 60, 56, size=52)
+    d.text((130, 56),  'DC HUB MEDIA', font=_font(20), fill=PURPLE_LT)
+    d.text((130, 84),  _safe_date_str(pr.get('date'), '%b %d, %Y').upper(),
+           font=_mono(16), fill=CYAN)
+
+    # Verdict pill — top-right if applicable
+    signals = pr.get('signals', {}) if isinstance(pr.get('signals', {}), dict) else {}
+    if signals.get('top_build_markets'):
+        verdict = _verdict_for(signals)
+        _verdict_pill(d, x=W - 280, y=44, verdict=verdict,
+                      font_size=36, pad_x=32, pad_y=14)
+
+    # Headline at the bottom — clean white on the gradient-darkened backdrop.
+    title = pr.get('title', '')[:120]
+    hf = _font(60)
+    lines = _wrap_px(title, hf, max_w=W - 120, max_lines=3)
+    line_height = 76
+    total_height = line_height * len(lines)
+    y_start = H - total_height - 100
+    for line in lines:
+        d.text((60, y_start), line, font=hf, fill=WHITE)
+        y_start += line_height
+
+    # Optional supporting line just under the headline (editorial subhead).
+    sub = (pr.get('subheadline') or '').strip()
+    if sub and len(lines) <= 2:
+        sfont = _font(26)
+        for s in _wrap_px(sub, sfont, W - 120, max_lines=1):
+            d.text((60, y_start + 6), s, font=sfont, fill=(226, 232, 240))
+
+    # Footer — the exact honest-brand footer the good Brookfield card used.
+    _draw_brand_footer(d, y=H - 64, mark='dchub.cloud/news',
+                       kicker='DC HUB MEDIA  ·  AUTONOMOUS PRESS')
+
+    return img
+
+
 def _draw_ai_hero(pr):
-    """Phase JJ (2026-05-14): real AI-generated hero via CF Workers AI
-    SDXL when CF_ACCOUNT_ID + CF_API_TOKEN are set. Falls back to the
-    polished gradient placeholder (batch 2 typography: 78pt headline,
-    4px drop shadow, deep purple → vivid orange gradient).
+    """Photographic editorial hero — the DEFAULT premium card.
+
+    2026-07-03 upgrade: the photographic background now ALWAYS resolves.
+    Source order:
+      1. CF Workers AI SDXL — premium, atmospheric, per-headline (only when
+         CF_ACCOUNT_ID + CF_API_TOKEN are set).
+      2. Curated photo library (services/image_matcher + data/images.json) —
+         the zero-cost, always-available floor. A topical transmission /
+         renewable / campus / server photo, matched to the headline.
+      3. Flat brand panel — true last resort only if BOTH photo sources fail
+         (e.g. no network + no SDXL creds).
+    Every photo path is composited by the SAME _compose_photo_hero() layout,
+    so the fleet now matches the good editorial card by default.
     """
     from PIL import Image, ImageDraw
     slug = pr.get('slug', '')
@@ -856,6 +1068,8 @@ def _draw_ai_hero(pr):
         # Try to derive a slug from the title for cache keying
         slug = (pr.get('title') or 'unknown').lower().replace(' ', '-')[:60]
 
+    # 1) Premium path — SDXL when configured.
+    ai_png = None
     _prompt = _build_sdxl_prompt(pr)
     ai_png = _generate_workers_ai_image(_prompt, slug, 0)
     # Review-retry (opt-in via DCHUB_MEDIA_AI_REVIEW): if the first image fails
@@ -863,71 +1077,26 @@ def _draw_ai_hero(pr):
     if ai_png and not _ai_review_ok(ai_png):
         ai_png = _generate_workers_ai_image(_prompt, slug, 1) or ai_png
     if ai_png:
-        # Real AI image — composite headline overlay
-        from io import BytesIO
-        bg = Image.open(BytesIO(ai_png)).convert('RGB')
-        # SDXL gives us 1024x576; resize/crop to our 1200x630 canvas
-        # while preserving aspect ratio as much as possible.
-        bg = bg.resize((W, int(W * bg.height / bg.width)))
-        # Top-crop or pad to 630
-        if bg.height > H:
-            top = (bg.height - H) // 2
-            bg = bg.crop((0, top, W, top + H))
-        elif bg.height < H:
-            canvas = Image.new('RGB', (W, H), (10, 14, 26))
-            canvas.paste(bg, (0, (H - bg.height) // 2))
-            bg = canvas
+        try:
+            from io import BytesIO
+            bg = Image.open(BytesIO(ai_png)).convert('RGB')
+            return _compose_photo_hero(bg, pr)
+        except Exception as e:
+            print(f"[ai_hero] SDXL composite failed, trying library: {e}")
 
-        img = bg
-        d = ImageDraw.Draw(img)
+    # 2) Always-available floor — curated library photo.
+    try:
+        lib_bg = _library_bg(pr)
+    except Exception as e:
+        print(f"[ai_hero] library bg error: {e}")
+        lib_bg = None
+    if lib_bg is not None:
+        try:
+            return _compose_photo_hero(lib_bg, pr)
+        except Exception as e:
+            print(f"[ai_hero] library composite failed: {e}")
 
-        # Strong bottom gradient — protects ALL text below the midline.
-        # v2 (2026-06-05): alpha bumped 180→220 and gradient starts
-        # higher (40% vs 50%) so headline+pill+CTA all sit on safe contrast.
-        overlay = Image.new('RGBA', (W, H), (0, 0, 0, 0))
-        odraw = ImageDraw.Draw(overlay)
-        start_y = int(H * 0.40)
-        for i in range(start_y, H):
-            alpha = int(220 * ((i - start_y) / (H - start_y)))
-            odraw.line([(0, i), (W, i)], fill=(0, 0, 0, alpha))
-        img = Image.alpha_composite(img.convert('RGBA'), overlay).convert('RGB')
-        d = ImageDraw.Draw(img)
-
-        # Brand accent strip (purple) — same anchor as all other styles
-        _draw_brand_strip(d)
-
-        # Brand chip + DC HUB MEDIA label (top-left, like every other style)
-        _brand_chip(d, 60, 56, size=52)
-        d.text((130, 56),  'DC HUB MEDIA', font=_font(20), fill=PURPLE_LT)
-        d.text((130, 84),  _safe_date_str(pr.get('date'), '%b %d, %Y').upper(),
-               font=_mono(16), fill=CYAN)
-
-        # Verdict pill — top-right if applicable
-        signals = pr.get('signals', {}) if isinstance(pr.get('signals', {}), dict) else {}
-        if signals.get('top_build_markets'):
-            verdict = _verdict_for(signals)
-            _verdict_pill(d, x=W - 280, y=44, verdict=verdict,
-                          font_size=36, pad_x=32, pad_y=14)
-
-        # Headline at the bottom — no double-shadow hack, just clean
-        # white on the gradient-darkened SDXL backdrop.
-        title = pr.get('title', '')[:120]
-        hf = _font(60)
-        lines = _wrap_px(title, hf, max_w=W - 120, max_lines=3)
-        line_height = 76
-        total_height = line_height * len(lines)
-        y_start = H - total_height - 100
-        for line in lines:
-            d.text((60, y_start), line, font=hf, fill=WHITE)
-            y_start += line_height
-
-        # Footer
-        _draw_brand_footer(d, y=H - 64, mark='dchub.cloud/news',
-                           kicker='DC HUB MEDIA  ·  AUTONOMOUS PRESS')
-
-        return img
-
-    # Fallback when SDXL isn't configured — premium brand panel (no garish
+    # 3) Fallback when NEITHER photo source worked — premium brand panel (no garish
     # sunset gradient). v2 (2026-06-05): replaces the purple→orange "sunrise"
     # the user explicitly flagged as lame. Now it's a calm deep-navy canvas
     # with a SINGLE large brand glyph + headline + verdict pill.
@@ -974,14 +1143,20 @@ def _draw_ai_hero(pr):
 # ---------------------------------------------------------------------------
 
 # Monday=0 ... Sunday=6
+# 2026-07-03: photographic ai_hero is now the DEFAULT surface. The old
+# rotation landed the good photo card only on Thursday and served flat
+# logo/number slabs the other 6 days. ai_hero always resolves a real photo
+# now (library floor, SDXL premium), so it's the everyday card. data_brutal
+# (the DCPI score gauge) is kept twice a week for the pure-number stories
+# where the big score IS the story.
 DAILY_STYLES = {
-    0: 'data_brutal',   # Monday
-    1: 'editorial',     # Tuesday
-    2: 'infographic',   # Wednesday
+    0: 'ai_hero',       # Monday
+    1: 'ai_hero',       # Tuesday
+    2: 'data_brutal',   # Wednesday  — mid-week DCPI score card
     3: 'ai_hero',       # Thursday
-    4: 'data_brutal',   # Friday
-    5: 'editorial',     # Saturday
-    6: 'infographic',   # Sunday
+    4: 'ai_hero',       # Friday
+    5: 'ai_hero',       # Saturday
+    6: 'data_brutal',   # Sunday     — weekend DCPI score card
 }
 
 def todays_style():

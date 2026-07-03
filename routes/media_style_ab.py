@@ -78,22 +78,27 @@ ALL_KNOWN_STYLES = PICKABLE_STYLES + ("fallback",)
 # routes/linkedin_content_engine.py:_card_url_for() so the FIRST post per
 # topic still gets a sane style. Once the learner has a winner per topic it
 # overrides this mapping.
+# 2026-07-03: photographic ai_hero is the cold-start DEFAULT for every
+# narrative / deal / facility / pulse topic (it always resolves a real
+# background photo now — curated library floor + SDXL premium). Only the
+# pure-DCPI-score topics, where the number gauge IS the story, cold-start on
+# data_brutal. Mirrors routes/linkedin_content_engine._card_url_for.
 COLD_START_BY_TOPIC = {
     "dcpi_verdict":      "data_brutal",
     "verdict_shift":     "data_brutal",
-    "ai_capex":          "data_brutal",
+    "ai_capex":          "ai_hero",
     "market_brief":      "data_brutal",
-    "grid_alert":        "data_brutal",
-    "energy_pricing":    "editorial",
-    "hyperscaler_deal":  "editorial",
-    "ma_transaction":    "editorial",
-    "fiber_route":       "editorial",
-    "facility_news":     "editorial",
-    "water_risk":        "editorial",
-    "renewable_energy":  "editorial",
-    "industry_pulse":    "editorial",
-    "ai_citation":       "editorial",
-    "other":             "editorial",
+    "grid_alert":        "ai_hero",
+    "energy_pricing":    "ai_hero",
+    "hyperscaler_deal":  "ai_hero",
+    "ma_transaction":    "ai_hero",
+    "fiber_route":       "ai_hero",
+    "facility_news":     "ai_hero",
+    "water_risk":        "ai_hero",
+    "renewable_energy":  "ai_hero",
+    "industry_pulse":    "ai_hero",
+    "ai_citation":       "ai_hero",
+    "other":             "ai_hero",
 }
 
 

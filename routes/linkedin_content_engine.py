@@ -119,6 +119,41 @@ _MCP_TOOL_HOOKS = [
 ]
 
 
+# ── Recency filter for the varied RANDOM pullers ──────────────────
+# The dcpi_scoop / market_anomaly pullers ORDER BY RANDOM() with NO recency
+# guard, so they could re-pick a market the desk just posted about. This reads
+# the durable lead ledger (linkedin_quad_daily.lead_entity) so those pullers
+# exclude any market/entity that led a post in the last N days.
+def _recent_lead_entities(days: int = 14) -> set[str]:
+    if not (_pg and _dsn()):
+        return set()
+    try:
+        with _conn() as c, c.cursor() as cur:
+            try:
+                cur.execute("""
+                    SELECT DISTINCT lead_entity FROM linkedin_quad_posts
+                     WHERE success = TRUE
+                       AND posted_at > NOW() - make_interval(days => %s)
+                       AND lead_entity IS NOT NULL AND lead_entity <> ''
+                """, (int(days),))
+                return {r[0] for r in cur.fetchall() if r and r[0]}
+            except Exception:
+                try: c.rollback()
+                except Exception: pass
+                return set()
+    except Exception:
+        return set()
+
+
+def _market_recently_led(market_name: str, recent: set[str]) -> bool:
+    """True if this market's normalized city token is in the recent-lead set."""
+    if not market_name or not recent:
+        return False
+    import re as _re
+    tok = _re.sub(r"[^a-z0-9]+", "", str(market_name).split(",")[0].lower())
+    return bool(tok) and tok in recent
+
+
 # ── Data pullers (one per story type) ─────────────────────────────
 
 def _pull_capability_spotlight() -> dict:
@@ -191,8 +226,10 @@ def _pull_dcpi_scoop() -> dict:
     if not (_pg and _dsn()):
         return {"type": "dcpi_scoop"}
     try:
+        _recent = _recent_lead_entities()
         with _conn() as c, c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            # High excess power score, not a top-5 known name.
+            # High excess power score, not a top-5 known name. Pull SEVERAL and
+            # skip any market that led a post recently (variety fix 2026-07-03).
             cur.execute("""
                 SELECT market_name, verdict, excess_power_score,
                        constraint_score, time_to_power_months
@@ -204,10 +241,13 @@ def _pull_dcpi_scoop() -> dict:
                    AND market_name NOT ILIKE '%%Atlanta%%'
                    AND market_name NOT ILIKE '%%Dallas%%'
                    AND market_name NOT ILIKE '%%Chicago%%'
-                 ORDER BY RANDOM() LIMIT 1
+                 ORDER BY RANDOM() LIMIT 12
             """)
-            row = cur.fetchone()
-            return {"type": "dcpi_scoop", "scoop": dict(row) if row else None}
+            rows = cur.fetchall() or []
+            fresh = [r for r in rows
+                     if not _market_recently_led((r or {}).get("market_name"), _recent)]
+            pick = (fresh or rows)
+            return {"type": "dcpi_scoop", "scoop": dict(pick[0]) if pick else None}
     except Exception:
         return {"type": "dcpi_scoop"}
 
@@ -306,10 +346,16 @@ def _pull_market_anomaly() -> dict:
                    -- positive-results policy (2026-07-02): surface the biggest
                    -- GAIN (new headroom coming online), never the biggest drop
                    AND (l.now_e - p.prev_e) > 0
-                 ORDER BY (l.now_e - p.prev_e) DESC LIMIT 1
+                 ORDER BY (l.now_e - p.prev_e) DESC LIMIT 8
             """)
-            row = cur.fetchone()
-            return {"type": "market_anomaly", "anomaly": dict(row) if row else None}
+            rows = cur.fetchall() or []
+            # variety fix (2026-07-03): skip any market that led a post recently
+            # so the "biggest mover" doesn't lock onto the same market for days.
+            _recent = _recent_lead_entities()
+            fresh = [r for r in rows
+                     if not _market_recently_led((r or {}).get("market_name"), _recent)]
+            pick = (fresh or rows)
+            return {"type": "market_anomaly", "anomaly": dict(pick[0]) if pick else None}
     except Exception:
         return {"type": "market_anomaly"}
 
@@ -341,24 +387,44 @@ def _pick_story_type(slot_topic: str | None = None) -> str:
     # dcpi_scoop / hyperscaler_drama / energy_narrative) are demoted to fallback
     # variety. This is the fix for the feed reading like obscure market trivia
     # (the "Cedar Falls held at 41.9" post) instead of DC Hub from strength.
+    # 2026-07-03 VARIETY: give every slot the FULL story-type set as candidates
+    # (with a preferred head for slot identity) so the demoted varied pullers
+    # (dcpi_scoop / market_anomaly / energy_narrative) are actually reachable in
+    # the rotation rather than pinned to fallback. The 14-day dedup below then
+    # forces movement across types.
     preferred = {
-        "dcpi_mover":         ["shipped_this_week", "capability_spotlight", "dcpi_scoop"],
-        "hyperscaler_deal":   ["capability_spotlight", "shipped_this_week", "dcpi_scoop"],
-        "ai_capex_index":     ["shipped_this_week", "capability_spotlight", "market_anomaly"],
-        "industry_pulse":     ["capability_spotlight", "shipped_this_week", "energy_narrative"],
+        "dcpi_mover":         ["shipped_this_week", "capability_spotlight", "dcpi_scoop", "market_anomaly", "energy_narrative"],
+        "hyperscaler_deal":   ["capability_spotlight", "shipped_this_week", "dcpi_scoop", "market_anomaly", "energy_narrative"],
+        "ai_capex_index":     ["shipped_this_week", "capability_spotlight", "market_anomaly", "dcpi_scoop", "energy_narrative"],
+        "industry_pulse":     ["capability_spotlight", "shipped_this_week", "energy_narrative", "dcpi_scoop", "market_anomaly"],
     }
-    candidates = preferred.get(slot_topic or "", list(_PULLERS.keys()))
+    _all = list(_PULLERS.keys())
+    candidates = preferred.get(slot_topic or "", _all)
+    # ensure every pullable type is reachable (append any not already listed)
+    candidates = candidates + [t for t in _all if t not in candidates]
 
     if not (_pg and _dsn()):
         return random.choice(candidates)
     try:
         with _conn() as c, c.cursor() as cur:
-            cur.execute("""
-                SELECT DISTINCT topic FROM linkedin_quad_posts
-                 WHERE posted_at > NOW() - INTERVAL '14 days'
-                   AND topic = ANY(%s)
-            """, (candidates,))
-            used = {r[0] for r in cur.fetchall()}
+            # FIX (2026-07-03): the 14-day story-type dedup was a NO-OP — it
+            # queried `topic`, but _record wrote the SLOT topic (dcpi_mover/...)
+            # there, never the STORY TYPE. Query the dedicated story_type column
+            # (written by linkedin_quad_daily._record from composed['story_type']).
+            # COALESCE-guard for the pre-migration window where the column may be
+            # absent on an un-upgraded replica → fall back gracefully.
+            used = set()
+            try:
+                cur.execute("""
+                    SELECT DISTINCT story_type FROM linkedin_quad_posts
+                     WHERE posted_at > NOW() - INTERVAL '14 days'
+                       AND story_type = ANY(%s)
+                """, (candidates,))
+                used = {r[0] for r in cur.fetchall() if r and r[0]}
+            except Exception:
+                try: c.rollback()
+                except Exception: pass
+                used = set()
         fresh = [t for t in candidates if t not in used]
         return random.choice(fresh or candidates)
     except Exception:
@@ -747,7 +813,13 @@ def _card_url_for(story_type: str, data: dict, text: str) -> str | None:
     try:
         d = data or {}
         title = sub = market = score = verdict = ""
-        style = "editorial"
+        # 2026-07-03: photographic ai_hero is the DEFAULT card. _draw_ai_hero
+        # now ALWAYS resolves a real background photo (curated library floor +
+        # SDXL premium), so the good editorial look no longer depends on CF
+        # creds or the removed DCHUB_MEDIA_AI_IMAGES gate. data_brutal (the
+        # DCPI score gauge) is reserved for pure-number stories where the score
+        # itself is the headline.
+        style = "ai_hero"
 
         constraint = ""
         if story_type == "dcpi_scoop":
@@ -760,7 +832,8 @@ def _card_url_for(story_type: str, data: dict, text: str) -> str | None:
             ttp = s.get("time_to_power_months")
             if score:
                 sub = f"Excess power {score} · {verdict}" + (f" · power in {int(ttp)} mo" if ttp else "")
-            style = "data_brutal" if score else "editorial"
+            # Pure DCPI score story → the gauge card IS the story.
+            style = "data_brutal" if score else "ai_hero"
 
         elif story_type == "market_anomaly":
             a = d.get("anomaly") or {}
@@ -773,7 +846,8 @@ def _card_url_for(story_type: str, data: dict, text: str) -> str | None:
                 sub = f"{'+' if float(dl) >= 0 else ''}{_f1(dl)} pt WoW DCPI shift · now {score} · {verdict}"
             elif score:
                 sub = f"DCPI {score} · {verdict}"
-            style = "data_brutal" if score else "editorial"
+            # Pure DCPI mover → gauge card; otherwise photographic hero.
+            style = "data_brutal" if score else "ai_hero"
 
         elif story_type == "energy_narrative":
             s = d.get("story_data") or {}
@@ -788,7 +862,8 @@ def _card_url_for(story_type: str, data: dict, text: str) -> str | None:
                 sub = f"{int(s['queue_wait_months'])}-month interconnection queue"
             else:
                 sub = "Live ISO grid intelligence on DC Hub"
-            style = "data_brutal" if (market and score) else "editorial"
+            # Narrative → photographic hero (grid/renewable/transmission photo).
+            style = "ai_hero"
 
         elif story_type == "hyperscaler_drama":
             news = d.get("news") or {}
@@ -799,14 +874,14 @@ def _card_url_for(story_type: str, data: dict, text: str) -> str | None:
                        f"{mkt.get('verdict', 'BUILD')} at {_f1(mkt.get('excess_power_score'))}")
             else:
                 sub = "Live, agent-native data-center intelligence"
-            style = "editorial"
+            style = "ai_hero"
 
         elif story_type == "capability_spotlight":
             tool = d.get("tool") or {}
             ask = _clean(tool.get("ask"), 110) or "rank every US market by excess power for AI"
             title = f"Ask any AI to {ask}"
             sub = f"Live via DC Hub MCP · {tool.get('tool', '')} · 38 agent-native tools"
-            style = "editorial"
+            style = "ai_hero"
 
         elif story_type == "shipped_this_week":
             st = d.get("stats") or {}
@@ -819,7 +894,7 @@ def _card_url_for(story_type: str, data: dict, text: str) -> str | None:
             if st.get("facilities_discovered"):
                 parts.append(f"{st['facilities_discovered']} new facilities")
             sub = " · ".join(parts) or "Compounding live intelligence, every day"
-            style = "editorial"
+            style = "ai_hero"
 
         # Generic fallback — pull the strongest line from the composed text
         if not title:
@@ -833,14 +908,12 @@ def _card_url_for(story_type: str, data: dict, text: str) -> str | None:
         if not sub:
             sub = "Live, agent-native data-center intelligence · dchub.cloud"
 
-        # Opt-in AI imagery (2026-06-06): when DCHUB_MEDIA_AI_IMAGES is on AND CF
-        # Workers AI creds are set on the backend, visually-rich stories get an
-        # SDXL hero photo (atmospheric data-center / grid imagery) instead of a
-        # typographic card. Default OFF → behavior unchanged; ai_hero also falls
-        # back to the polished gradient card if SDXL is unconfigured, so it's safe.
-        if os.environ.get("DCHUB_MEDIA_AI_IMAGES", "").lower() in ("1", "true", "yes") \
-                and story_type in ("energy_narrative", "hyperscaler_drama", "capability_spotlight"):
-            style = "ai_hero"
+        # 2026-07-03: the DCHUB_MEDIA_AI_IMAGES env gate is GONE. It used to be
+        # the only thing that ever selected ai_hero (and only for 3 story types,
+        # and only when set) — which is why the fleet looked like flat slabs and
+        # exactly one card looked great. ai_hero is now the default above and
+        # always resolves a real photo (curated library floor + SDXL premium),
+        # so no gate is needed.
 
         # 2026-06-07: A/B style learner. Default OFF (observe first). When
         # DCHUB_STYLE_AB_LEARNER_ENABLED=1 the learner picks a style per

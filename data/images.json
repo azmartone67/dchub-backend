@@ -1,36 +1,24 @@
 [
   {
-    "id": "dc-construction-1",
-    "url": "https://images.unsplash.com/photo-1558494949-ef010cbdcc31",
-    "category": "construction",
+    "id": "dc-transmission-sunset-1",
+    "url": "https://images.unsplash.com/photo-1473341304170-971dccb5ac1e",
+    "category": "power",
     "tags": [
-      "construction",
-      "building",
-      "cranes",
-      "development"
-    ],
-    "style": "photorealistic"
-  },
-  {
-    "id": "dc-server-1",
-    "url": "https://images.unsplash.com/photo-1544197150-b99a580bb7a8",
-    "category": "servers",
-    "tags": [
-      "servers",
-      "racks",
-      "technology",
-      "hardware"
-    ],
-    "style": "photorealistic"
-  },
-  {
-    "id": "dc-cooling-1",
-    "url": "https://images.unsplash.com/photo-1600267165477-6d4cc741b379",
-    "category": "cooling",
-    "tags": [
-      "cooling",
-      "hvac",
-      "infrastructure"
+      "power",
+      "transmission",
+      "grid",
+      "electrical",
+      "energy",
+      "substation",
+      "lines",
+      "excess",
+      "headroom",
+      "dcpi",
+      "market",
+      "verdict",
+      "build",
+      "sunset",
+      "golden"
     ],
     "style": "photorealistic"
   },
@@ -42,18 +30,111 @@
       "power",
       "electrical",
       "grid",
-      "energy"
+      "energy",
+      "transmission",
+      "iso",
+      "load",
+      "capacity"
     ],
     "style": "photorealistic"
   },
   {
-    "id": "dc-exterior-1",
-    "url": "https://images.unsplash.com/photo-1558494949-ef010cbdcc31",
+    "id": "dc-renewable-solar-1",
+    "url": "https://images.unsplash.com/photo-1509391366360-2e959784a276",
+    "category": "renewable",
+    "tags": [
+      "solar",
+      "renewable",
+      "clean",
+      "curtailment",
+      "generation",
+      "energy",
+      "power",
+      "grid",
+      "additions"
+    ],
+    "style": "photorealistic"
+  },
+  {
+    "id": "dc-renewable-wind-1",
+    "url": "https://images.unsplash.com/photo-1548337138-e87d889cc369",
+    "category": "renewable",
+    "tags": [
+      "wind",
+      "renewable",
+      "offshore",
+      "clean",
+      "turbine",
+      "generation",
+      "energy",
+      "power"
+    ],
+    "style": "photorealistic"
+  },
+  {
+    "id": "dc-campus-exterior-1",
+    "url": "https://images.unsplash.com/photo-1487958449943-2429e8be8625",
     "category": "exterior",
     "tags": [
       "building",
       "facility",
-      "campus"
+      "campus",
+      "exterior",
+      "architecture",
+      "site",
+      "deal",
+      "transaction",
+      "hyperscaler",
+      "acquisition",
+      "market",
+      "news"
+    ],
+    "style": "photorealistic"
+  },
+  {
+    "id": "dc-construction-1",
+    "url": "https://images.unsplash.com/photo-1558494949-ef010cbdcc31",
+    "category": "construction",
+    "tags": [
+      "construction",
+      "building",
+      "cranes",
+      "development",
+      "buildout",
+      "build",
+      "shipped",
+      "pipeline",
+      "capex"
+    ],
+    "style": "photorealistic"
+  },
+  {
+    "id": "dc-server-1",
+    "url": "https://images.unsplash.com/photo-1544197150-b99a580bb7a8",
+    "category": "servers",
+    "tags": [
+      "servers",
+      "racks",
+      "technology",
+      "hardware",
+      "compute",
+      "gpu",
+      "training",
+      "capacity",
+      "ai"
+    ],
+    "style": "photorealistic"
+  },
+  {
+    "id": "dc-cooling-1",
+    "url": "https://images.unsplash.com/photo-1600267165477-6d4cc741b379",
+    "category": "cooling",
+    "tags": [
+      "cooling",
+      "hvac",
+      "infrastructure",
+      "water",
+      "thermal"
     ],
     "style": "photorealistic"
   }
