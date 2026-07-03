@@ -195,27 +195,28 @@ def _registry_presence() -> dict:
     present = set()
     if c is not None:
         try:
+            # 2026-07-03 FIX: real columns are registry_name + discovered. The
+            # prior query used registry/present/listed — none exist — so it
+            # threw, the fallback reused the same bad column, and this ALWAYS
+            # returned 0/5 while we're listed everywhere.
             with c.cursor() as cur:
                 cur.execute("""
-                    SELECT DISTINCT lower(registry)
+                    SELECT DISTINCT lower(registry_name)
                       FROM mcp_presence_listings
-                     WHERE COALESCE(present, listed, is_listed, false) = true
+                     WHERE COALESCE(discovered, FALSE) = true
                 """)
                 present = {r[0] for r in cur.fetchall() if r and r[0]}
         except Exception:
             try: c.rollback()
             except Exception: pass
-            # schema-tolerant fallback: any row for the registry counts as "seen"
-            try:
-                with c.cursor() as cur:
-                    cur.execute("SELECT DISTINCT lower(registry) FROM mcp_presence_listings")
-                    present = {r[0] for r in cur.fetchall() if r and r[0]}
-            except Exception:
-                pass
         finally:
             try: c.close()
             except Exception: pass
-    hits = {reg for reg in _KEY_REGISTRIES if any(reg in p for p in present)}
+    # Normalize dots/hyphens→underscores so "mcp.so" matches the crawler's "mcp_so".
+    def _norm(s: str) -> str:
+        return (s or "").replace(".", "_").replace("-", "_")
+    present_n = {_norm(p) for p in present}
+    hits = {reg for reg in _KEY_REGISTRIES if any(_norm(reg) in p for p in present_n)}
     return {"present": sorted(hits), "missing": [r for r in _KEY_REGISTRIES if r not in hits],
             "count": len(hits), "total": len(_KEY_REGISTRIES)}
 

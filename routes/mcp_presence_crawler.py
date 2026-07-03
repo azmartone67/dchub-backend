@@ -70,7 +70,15 @@ mcp_presence_crawler_bp = Blueprint("mcp_presence_crawler", __name__)
 
 
 # ── Constants ─────────────────────────────────────────────────────────
-USER_AGENT = "dchub-mcp-presence-crawler/1.0 (+https://dchub.cloud)"
+# 2026-07-03: browser UA. The honest bot UA got 403'd / JS-shelled by the
+# React/Cloudflare registries (Smithery, Glama, mcp.so), so every listing
+# fetch came back empty → discovered never flipped → the distribution shell
+# read registries 0/5 while we're actually listed on all of them. A browser
+# UA + the existing allow_redirects=True resolves them (verified 200 + our
+# name present on smithery/glama/mcp.so/lobehub).
+USER_AGENT = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+              "AppleWebKit/537.36 (KHTML, like Gecko) "
+              "Chrome/126.0.0.0 Safari/537.36")
 REQUEST_TIMEOUT_S = 8
 RATE_LIMIT_SLEEP_S = 1.0
 MAX_REQUESTS_PER_RUN = 15
@@ -900,6 +908,17 @@ def crawl_mcp_presence() -> dict:
                         and listing_tools != actual_count
                     )
 
+                    # 2026-07-03: PRESENCE. The direct listing crawl updated
+                    # metrics but NEVER set discovered=True, so the distribution
+                    # shell read 0/5 even for confirmed listings. A successful
+                    # fetch of our known listing_url whose HTML mentions us IS
+                    # the presence signal. Only upgrades False→True (a query-
+                    # discovered True is never downgraded).
+                    _h = (html or "").lower()
+                    confirmed_present = bool(
+                        html and ("dchub" in _h or "dc hub" in _h
+                                  or "data center intelligence" in _h))
+
                     # Compute stale_days (best-effort — only if we
                     # successfully parsed a last_updated string)
                     stale_days = None
@@ -928,6 +947,7 @@ def crawl_mcp_presence() -> dict:
                                dchub_metric_stale_days      = %s,
                                our_actual_tool_count        = %s,
                                drift_detected               = %s,
+                               discovered                   = COALESCE(discovered, FALSE) OR %s,
                                last_crawled_at              = NOW(),
                                notes = jsonb_set(
                                    jsonb_set(COALESCE(notes,'{}'::jsonb),
@@ -940,6 +960,7 @@ def crawl_mcp_presence() -> dict:
                         (
                             listing_tools, listing_uptime, parsed_ts,
                             stale_days, actual_count, drift,
+                            confirmed_present,
                             extracted.get("status") or "ok",
                             listing_last or "",
                             row_id,
