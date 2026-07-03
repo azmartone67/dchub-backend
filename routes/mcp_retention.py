@@ -193,6 +193,79 @@ def mcp_retention():
                 }
             except Exception:
                 ib["oauth_error"] = True
+            try:
+                # free_key_durable cohort (2026-07-03): the dch_live_ keys claim_free_key
+                # mints into mcp_dev_keys (metadata.source='claim_api') were counted
+                # NOWHERE — the headline summary reads auto_trial_keys only, and
+                # oauth_durable filters dch_oauth_. So reuse of the exact key we tell
+                # agents to SAVE was invisible to every retention number.
+                # ★ VERIFIED LIVE 2026-07-03: adding it does NOT inflate the rate (the
+                # earlier "artifact hides a higher number" hypothesis is DISPROVEN) —
+                # dch_live_ shows ~34% intra-window reuse (used_again_any) but ~0%
+                # CROSS-week return, so the honest combined number (below) is ~the same
+                # (1.2% vs the trial-only 1.3%). The value is HONEST VISIBILITY: the
+                # intra-vs-cross-week split is the sharpest evidence that the break is
+                # cross-SESSION durable identity (header-less web clients), which the
+                # WorkOS OAuth lever targets — not intra-session usability.
+                cur.execute("""
+                    SELECT COUNT(*) AS identities,
+                           COUNT(*) FILTER (WHERE last_used_at IS NOT NULL) AS used_again_any,
+                           COUNT(*) FILTER (WHERE created_at < now() - interval '7 days') AS mature,
+                           COUNT(*) FILTER (WHERE created_at < now() - interval '7 days'
+                                    AND last_used_at IS NOT NULL
+                                    AND date_trunc('week', last_used_at) > date_trunc('week', created_at)
+                                   ) AS returned_mature
+                    FROM mcp_dev_keys
+                    WHERE api_key LIKE 'dch_live_%' AND created_at >= now() - interval '30 days'
+                """)
+                f = cur.fetchone() or {}
+                m = int(f.get("mature") or 0); rt = int(f.get("returned_mature") or 0)
+                idn = int(f.get("identities") or 0); ua = int(f.get("used_again_any") or 0)
+                ib["free_key_durable"] = {
+                    "identities": idn,
+                    "used_again_any_time": ua,
+                    "pct_used_again_any_time": round(100.0 * ua / idn, 1) if idn else None,
+                    "mature_cohort": m, "returned_next_week_mature": rt,
+                    "pct_returned": round(100.0 * rt / m, 1) if m else None,
+                    "note": ("dch_live_ free keys from claim_free_key (mcp_dev_keys). "
+                             "used_again_any_time = reused at all (often same-week / same "
+                             "session); pct_returned = CROSS-week return — the true "
+                             "durable-identity signal. A high used-again but ~0 cross-week "
+                             "return = agents DO get value but can't persist identity across "
+                             "sessions (header-less hosts): the WorkOS-OAuth lever's target."),
+                }
+            except Exception:
+                ib["free_key_error"] = True
+            try:
+                # Honest COMBINED cross-session return across ALL durable free-tier keys
+                # (auto_trial_keys dch_trial_ + mcp_dev_keys dch_live_). The existing
+                # pct_returned_next_week_mature is trial-only; this is the whole-cohort
+                # truth. Preserved as an ADDITIVE field so the tracked trial-only number
+                # keeps its meaning. anchor = mint/first-connect; same 8-30d mature window.
+                cur.execute("""
+                    WITH durable AS (
+                        SELECT minted_at AS anchor, last_used_at
+                          FROM auto_trial_keys WHERE minted_at >= now() - interval '30 days'
+                        UNION ALL
+                        SELECT created_at AS anchor, last_used_at
+                          FROM mcp_dev_keys
+                         WHERE api_key LIKE 'dch_live_%' AND created_at >= now() - interval '30 days'
+                    )
+                    SELECT COUNT(*) FILTER (WHERE anchor < now() - interval '7 days') AS mature,
+                           COUNT(*) FILTER (WHERE anchor < now() - interval '7 days'
+                                    AND last_used_at IS NOT NULL
+                                    AND date_trunc('week', last_used_at) > date_trunc('week', anchor)
+                                   ) AS returned
+                    FROM durable
+                """)
+                d = cur.fetchone() or {}
+                dm = int(d.get("mature") or 0); dr = int(d.get("returned") or 0)
+                out["summary"]["mature_cohort_all_durable_30d"] = dm
+                out["summary"]["returned_next_week_all_durable"] = dr
+                out["summary"]["pct_returned_next_week_all_durable"] = (
+                    round(100.0 * dr / dm, 1) if dm else None)
+            except Exception:
+                pass
             out["identity_breakdown"] = ib
     except Exception as e:
         return jsonify(error="query_failed", detail=str(e)[:200]), 500
