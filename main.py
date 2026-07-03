@@ -1892,6 +1892,18 @@ try:
     except Exception as _aums:
         import logging
         logging.getLogger(__name__).warning('agent_usefulness_master_shell wiring failed: %s', _aums)
+    # 2026-07-03: Growth master shell — the self-driving GROWTH orchestrator. Every
+    # tick it scores 5 levers (discovery, measurement, autonomy, media, distribution),
+    # finds the weakest, and pulls ONE bounded action. Persists a 0-100 growth score.
+    # Killable: GROWTH_MASTER_DISABLED=1 (all), GROWTH_MASTER_ACT_DISABLED=1 (shadow —
+    # measure only), GROWTH_LEVER_<NAME>_OFF=1 (per lever). POST /api/v1/admin/growth/master-tick
+    try:
+        from routes.growth_master_shell import growth_master_shell_bp
+        app.register_blueprint(growth_master_shell_bp)
+        print("[main] growth_master_shell_bp registered: POST /api/v1/admin/growth/master-tick", flush=True)
+    except Exception as _gms:
+        import logging
+        logging.getLogger(__name__).warning('growth_master_shell wiring failed: %s', _gms)
     # 2026-07-02: REST/MCP parity manifest (Grok feedback) — maps every MCP tool
     # to its public REST endpoint so REST-only agents have a discovery map.
     try:
@@ -15782,8 +15794,12 @@ def energy_discovery_status_inline():
                 ('total_power_plants',    'power_plants',    'created_at'),
                 ('total_transmissions',   'transmission_lines', 'created_at'),
                 ('total_wind_projects',   'wind_projects',   'updated_at'),
-                ('total_gas_compressors', 'gas_compressors', 'updated_at'),
-                ('total_gas_processings', 'gas_processings', 'updated_at'),
+                # 2026-07-03: real tables are *_stations / *_plants — the bare
+                # names never existed, so to_regclass returned NULL → count 0 →
+                # the ingestion watchdog tripped a false "stale" alert (#1409)
+                # while 1,768 compressors + 478 processing plants sat in the DB.
+                ('total_gas_compressors', 'gas_compressor_stations', 'updated_at'),
+                ('total_gas_processings', 'gas_processing_plants',   'updated_at'),
                 ('total_fiber_routes',    'fiber_routes',    'updated_at'),
             ]:
                 try:

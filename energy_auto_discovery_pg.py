@@ -61,8 +61,8 @@ def _phase25_real_counts():
             ('total_power_plants',    'power_plants'),
             ('total_transmissions',   'transmission'),
             ('total_wind_projects',   'wind_projects'),
-            ('total_gas_compressors', 'gas_compressors'),
-            ('total_gas_processings', 'gas_processings'),
+            ('total_gas_compressors', 'gas_compressor_stations'),
+            ('total_gas_processings', 'gas_processing_plants'),
         ]:
             try:
                 cur.execute(f"SELECT COUNT(*) FROM {table}")
