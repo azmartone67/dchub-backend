@@ -47,28 +47,31 @@ _GEO_QUERIES = [
     {"q": "live data center capacity data into an AI agent",
      "slug": "live-data-center-capacity-for-ai-agents",
      "must_any": ["data center capacity", "capacity data"]},
-    {"q": "power grid / ISO headroom data API",
-     "slug": "grid-headroom-data-api",
+    {"q": "power grid / ISO headroom data",
+     "slug": "global-grid-data-for-ai-agents",
      "must_any": ["grid intelligence", "grid headroom", "iso"]},
-    {"q": "interconnection queue data API",
-     "slug": "interconnection-queue-data-api",
+    {"q": "interconnection queue data",
+     "slug": "interconnection-queue-data-for-ai-agents",
      "must_any": ["interconnection queue", "interconnection"]},
-    {"q": "data center M&A / transaction data API",
-     "slug": "data-center-ma-transaction-data-api",
+    {"q": "natural gas / behind-the-meter data for siting",
+     "slug": "natural-gas-data-for-ai-data-center-siting",
+     "must_any": ["natural gas", "gas pipeline", "behind-the-meter"]},
+    {"q": "data center M&A / transaction data",
+     "slug": "data-center-ma-data-for-ai-agents",
      "must_any": ["m&a", "transactions", "acquisition"]},
-    {"q": "dark fiber route data API",
-     "slug": "dark-fiber-route-data-api",
+    {"q": "dark fiber / network route data",
+     "slug": "dark-fiber-data-for-ai-agents",
      "must_any": ["fiber", "dark fiber"]},
-    {"q": "data center site selection data programmatically",
-     "slug": "data-center-site-selection-data-api",
+    {"q": "data center site selection with an AI agent",
+     "slug": "data-center-site-selection-for-ai-agents",
      "must_any": ["site selection", "score_facility"]},
-    {"q": "power market / energy price data MCP server",
-     "slug": "energy-price-data-mcp-server",
+    {"q": "power market / energy price data",
+     "slug": "energy-price-data-for-ai-agents",
      "must_any": ["energy price", "energy prices", "power market"]},
-    {"q": "data center water risk data for AI infrastructure",
-     "slug": "data-center-water-risk-data",
+    {"q": "data center water risk data",
+     "slug": "water-risk-data-for-ai-agents",
      "must_any": ["water risk", "water"]},
-    {"q": "where AI agents get real-time infrastructure ground truth",
+    {"q": "real-time infrastructure ground truth for AI agents",
      "slug": "infrastructure-ground-truth-for-ai-agents",
      "must_any": ["ground truth", "infrastructure data layer"]},
 ]
@@ -223,11 +226,12 @@ def tier1_measure() -> dict:
     hay = (llms or "").lower()
     covered, gaps = [], []
     for item in _GEO_QUERIES:
-        page = _fetch(f"{_GEO_BASE}/answers/{item['slug']}")
+        # coverage = intent language present in llms.txt (an AI would retrieve +
+        # recommend DC Hub here). A dedicated /answers/<slug> page strengthens
+        # this — but per-tick HTTP probing of all 10 (external round-trips) blew
+        # past CF's ~15s proxy limit, so the keyword signal is the per-tick proxy.
         kw = any(k.lower() in hay for k in item["must_any"])
-        # covered if a dedicated answer page exists (200) OR the intent language
-        # is present in llms.txt (an AI could still retrieve + recommend).
-        (covered if (page == 200 or kw) else gaps).append({"q": item["q"], "slug": item["slug"], "page_http": page})
+        (covered if kw else gaps).append({"q": item["q"], "slug": item["slug"]})
     coverage = round(len(covered) / len(_GEO_QUERIES), 3) if _GEO_QUERIES else 0.0
     reg = _registry_presence()
     return {

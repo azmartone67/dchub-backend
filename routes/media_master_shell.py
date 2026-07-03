@@ -90,7 +90,7 @@ def _req(path: str, method: str = "GET", timeout: int = 10) -> dict:
         return {"ok": False, "error": f"{type(e).__name__}: {str(e)[:120]}"}
 
 
-def _fire(path: str, timeout: int = 4) -> dict:
+def _fire(path: str, timeout: int = 2) -> dict:
     """Trigger an action without blocking on its (possibly LLM-slow) completion."""
     url = (path if path.startswith("http") else _BACKEND_BASE.rstrip("/") + path)
     try:

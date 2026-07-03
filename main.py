@@ -1418,6 +1418,9 @@ _WORKER_PROXY_POST_PATHS = frozenset({
     # Its handler is now fire-and-forget (202 in ms), so the relay below
     # holds a web thread only for the round-trip, not the cycle.
     '/api/v1/admin/brain/master-tick',
+    # r-sentinel-edge (2026-07-03): the Site Sentinel master tick fans out
+    # 101 probes + KV/R2 writes — worker-owned, and fire-and-forget (202).
+    '/api/v1/admin/sentinel/master-tick',
 })
 # GET-capable triggers (cron-job.org defaults to GET): same delegation.
 _WORKER_PROXY_GET_PATHS = frozenset({
@@ -23658,6 +23661,14 @@ def _build_sitemap_sections():
         ('/answers/interconnection-queue-data-for-ai-agents', '0.85', 'monthly'),
         ('/answers/natural-gas-data-for-ai-data-center-siting', '0.85', 'monthly'),
         ('/answers/global-grid-data-for-ai-agents', '0.85', 'monthly'),
+        # 2026-07-03: 6 new GEO answer pages (distribution master shell — close
+        # the broad-query coverage gap to 10/10).
+        ('/answers/data-center-ma-data-for-ai-agents', '0.85', 'monthly'),
+        ('/answers/dark-fiber-data-for-ai-agents', '0.85', 'monthly'),
+        ('/answers/data-center-site-selection-for-ai-agents', '0.85', 'monthly'),
+        ('/answers/energy-price-data-for-ai-agents', '0.85', 'monthly'),
+        ('/answers/water-risk-data-for-ai-agents', '0.85', 'monthly'),
+        ('/answers/infrastructure-ground-truth-for-ai-agents', '0.85', 'monthly'),
         # 2026-06-29: the crawlable facilities directory hub (page 1 self-links all
         # pages) — gives Google a server-rendered path to every non-dup facility.
         ('/facilities/directory', '0.8', 'weekly'),
@@ -33351,6 +33362,17 @@ try:
     except Exception: pass
 except Exception as _e:
     print(f"[main] site_sentinel register failed: {_e}", file=sys.stderr)
+
+# r-sentinel-edge (2026-07-03) — the Site Sentinel "master shell": one
+# fire-and-forget tick that runs scan → KV/R2 persist → cache-coverage +
+# latency-regression classify → human-gated tier-aware-cache digest.
+# POST /api/v1/admin/sentinel/master-tick (202) + GET .../master-tick/last.
+try:
+    from routes.sentinel_master_orchestrator import sentinel_master_bp
+    app.register_blueprint(sentinel_master_bp)
+    print("[main] sentinel_master_bp registered: POST /api/v1/admin/sentinel/master-tick", flush=True)
+except Exception as _e:
+    print(f"[main] sentinel_master register failed: {_e}", file=sys.stderr)
 
 # 2026-06-07 (Sentinel Round 2) — Auto-merge brain Layer-5 fixes that
 # came from a sentinel-derived finding AND pass all 6 safety gates.
