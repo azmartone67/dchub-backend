@@ -671,9 +671,18 @@ def auto_interconnect_approve(token):
     """Single-use approve endpoint. First click flips status='approved' and
     stamps approved_at + approved_by_ip + approved_by_ua. Repeat clicks 404
     so a leaked URL can't toggle state twice."""
-    if not _admin_ok():
-        return jsonify(ok=False, error="forbidden"), 403
-    if not token or len(token) < 8:
+    # AUTH (r-approvelink 2026-07-03): the single-use 128-bit approve_token
+    # (uuid4().hex, emailed only to the owner) IS the capability — the same
+    # magic-link model as an unsubscribe link. Requiring _admin_ok() here was
+    # a bug: the emailed "Approve →" link carries no admin key, so every
+    # browser click 403'd — and the global paywall handler then dressed that
+    # 403 up as a consumer upgrade envelope (what the owner actually saw).
+    # The real gate is the token match in the UPDATE below (AND status=
+    # 'pending' → truly single-use; a used/leaked URL 404s). The action only
+    # flips a status flag — promotion into _PARTNERS still needs a manual PR —
+    # so token possession is sufficient authorization. Admin/dashboard callers
+    # still work: they hit the same token path.
+    if not token or not re.fullmatch(r"[0-9a-f]{32}", token):
         return jsonify(ok=False, error="bad_token"), 400
     conn = _get_db()
     if conn is None:
@@ -716,9 +725,10 @@ def auto_interconnect_approve(token):
 def auto_interconnect_dismiss(token):
     """Mark a finding as dismissed (not promoted; no further surfacing).
     Idempotent — repeat dismisses just re-stamp the row."""
-    if not _admin_ok():
-        return jsonify(ok=False, error="forbidden"), 403
-    if not token or len(token) < 8:
+    # AUTH: token-as-capability, same magic-link model as /approve above
+    # (r-approvelink 2026-07-03) — the emailed 128-bit token is the gate, not
+    # an admin key the link never carried.
+    if not token or not re.fullmatch(r"[0-9a-f]{32}", token):
         return jsonify(ok=False, error="bad_token"), 400
     conn = _get_db()
     if conn is None:
