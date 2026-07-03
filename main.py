@@ -1354,45 +1354,11 @@ def _make_fast_health_wsgi(downstream):
                 and environ.get('PATH_INFO') == '/signup'):
             start_response('200 OK', _FAST_SIGNUP_HEADERS)
             return [_FAST_SIGNUP_BODY]
-        # r-perftrace (TEMP 2026-07-03): WSGI-boundary latency bracket for ?_perf=1
-        # probe requests ONLY (never normal traffic). Splits the request into
-        # ctx_setup / before_chain / view_dispatch / after_chain to localize the
-        # site-wide ~700ms tax. Paired with the _perf_* before/after hooks. REMOVE
-        # after attribution.
-        if '_perf=1' in (environ.get('QUERY_STRING') or ''):
-            import time as _pt, logging as _pl
-            environ['_perf_t0'] = _pt.monotonic()
-            _res = downstream(environ, start_response)
-            _te = _pt.monotonic()
-            def _d(a, b):
-                return ('%.0fms' % ((b - a) * 1000)) if (a and b) else 'n/a'
-            _t0 = environ.get('_perf_t0'); _fb = environ.get('_perf_first_before')
-            _be = environ.get('_perf_before_end'); _as = environ.get('_perf_after_start')
-            try:
-                _pl.getLogger('perftrace').warning(
-                    "[PERFTRACE] %s %s total=%s ctx_setup=%s before_chain=%s view_dispatch=%s after_chain=%s",
-                    environ.get('REQUEST_METHOD'), environ.get('PATH_INFO'),
-                    _d(_t0, _te), _d(_t0, _fb), _d(_fb, _be), _d(_be, _as), _d(_as, _te))
-            except Exception:
-                pass
-            return _res
         return downstream(environ, start_response)
     return _wsgi
 
 
 app.wsgi_app = _make_fast_health_wsgi(app.wsgi_app)
-
-
-@app.before_request
-def _perf_first_before():
-    # r-perftrace (TEMP 2026-07-03): earliest before_request (registered first) —
-    # marks the end of Flask request-context + session setup. ?_perf=1 only. REMOVE.
-    try:
-        if b'_perf=1' in (request.query_string or b''):
-            import time as _pt
-            request.environ['_perf_first_before'] = _pt.monotonic()
-    except Exception:
-        pass
 
 
 # =================================================================
@@ -25744,31 +25710,6 @@ def _bundle6a_edge_cache(resp):
 # --- end Bundle 6A edge cache -----------------------------------------------
 
 
-@app.before_request
-def _perf_before_end():
-    # r-perftrace (TEMP 2026-07-03): latest before_request (registered last) —
-    # marks end of the before_request chain / start of dispatch. ?_perf=1 only. REMOVE.
-    try:
-        if b'_perf=1' in (request.query_string or b''):
-            import time as _pt
-            request.environ['_perf_before_end'] = _pt.monotonic()
-    except Exception:
-        pass
-
-
-@app.after_request
-def _perf_after_start(response):
-    # r-perftrace (TEMP 2026-07-03): registered last → runs FIRST in the after
-    # chain — marks end of view/dispatch, start of after_request chain. REMOVE.
-    try:
-        if b'_perf=1' in (request.query_string or b''):
-            import time as _pt
-            request.environ.setdefault('_perf_after_start', _pt.monotonic())
-    except Exception:
-        pass
-    return response
-
-
 
 
 # --- phase 9g: REMOVED (was shadow handler for /api/v1/mcp/track) ----------
@@ -37202,47 +37143,3 @@ def _outreach_exclude_list():
     except Exception as e:
         return jsonify({"error": str(e)[:300]}), 500
 
-
-
-# ── r-perftrace2 (TEMP 2026-07-03): per-after-hook timing for ?_perf=1 ────────
-# Wraps every registered app-level after_request func so each logs its own
-# duration on a ?_perf=1 probe request. Localizes the ~588ms after_chain to a
-# specific hook (or, if the per-hook sum << after_chain, to Flask machinery
-# like save_session/finalize). REMOVE after attribution.
-def _perf_wrap_after_hooks():
-    import time as _pt, logging as _pl
-    from functools import wraps as _w
-    _log = _pl.getLogger('perfhook')
-    try:
-        funcs = app.after_request_funcs.get(None, [])
-    except Exception:
-        return
-    new = []
-    for _fn in funcs:
-        if getattr(_fn, '_perf_wrapped', False):
-            new.append(_fn); continue
-        def _mk(fn):
-            @_w(fn)
-            def _inner(resp):
-                try:
-                    if b'_perf=1' in (request.query_string or b''):
-                        _s = _pt.monotonic()
-                        try:
-                            return fn(resp)
-                        finally:
-                            _log.warning("[PERFHOOK] %s %.1fms",
-                                         getattr(fn, '__name__', '?'),
-                                         (_pt.monotonic() - _s) * 1000)
-                except Exception:
-                    pass
-                return fn(resp)
-            _inner._perf_wrapped = True
-            return _inner
-        new.append(_mk(_fn))
-    app.after_request_funcs[None] = new
-
-try:
-    _perf_wrap_after_hooks()
-except Exception:
-    pass
-# ── end r-perftrace2 ─────────────────────────────────────────────────────────
