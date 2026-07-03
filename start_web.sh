@@ -47,11 +47,25 @@ if [ -n "$RENDER" ] || [ -n "$RENDER_SERVICE_ID" ]; then _THREADS=4; fi
 # over-cautious. 20000 keeps a slow safety-net recycle (every several hours)
 # without the storm. (preload + 2 workers is a separate follow-up PR — needs
 # the post-fork thread-start fix; NOT a config-only change.)
-# r-workerproxy (2026-07-02): bind the IPv6 wildcard, not 0.0.0.0.
-# Railway private networking is IPv6-only — the web→worker job proxy
-# (DCHUB_WORKER_INTERNAL_URL → dchub-worker.railway.internal) can only
-# reach the worker if gunicorn listens on ::. Linux dual-stack
-# (bindv6only=0) means :: still accepts the IPv4/public-edge traffic.
-exec gunicorn main:app --bind "[::]:$PORT" \
+# r-bindsplit (2026-07-03, incident): the bind is ROLE-CONDITIONAL.
+#
+# WORKER must listen on [::] — Railway private networking is IPv6-only,
+# and the web→worker job proxy (DCHUB_WORKER_INTERNAL_URL →
+# dchub-worker.railway.internal) can only RECEIVE on an IPv6 listener.
+#
+# WEB binds 0.0.0.0 — the months-proven public config. Web only makes
+# OUTBOUND calls to the worker; outbound needs no IPv6 listener. The
+# r-workerproxy change (df3c8285) had moved web to [::] on a dual-stack
+# assumption; the 07-03 02:52Z outage forensics showed dual-stack did
+# hold, but web gains nothing from [::] and the public edge + the
+# watchdog's 127.0.0.1 self-probe are both native-IPv4 paths, so web
+# goes back to the bind that never had an open question against it.
+if [ "$DCHUB_ROLE" = "worker" ]; then
+  _BIND="[::]:$PORT"
+else
+  _BIND="0.0.0.0:$PORT"
+fi
+echo "start_web: DCHUB_ROLE=${DCHUB_ROLE:-unset} — gunicorn binding $_BIND"
+exec gunicorn main:app --bind "$_BIND" \
   --workers 1 --threads "$_THREADS" --timeout 120 \
   --max-requests 20000 --max-requests-jitter 1000
