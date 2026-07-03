@@ -1926,6 +1926,16 @@ try:
     except Exception as _dms:
         import logging
         logging.getLogger(__name__).warning('distribution_master_shell wiring failed: %s', _dms)
+    # 2026-07-03: autonomous GEO answer-page publisher — renders + commits
+    # /answers/<slug> to the frontend via GitHub API (closes the "backend cron
+    # can't author static pages" constraint). POST /api/v1/admin/geo/publish-answer.
+    try:
+        from routes.geo_answer_publisher import geo_answer_publisher_bp
+        app.register_blueprint(geo_answer_publisher_bp)
+        print("[main] geo_answer_publisher_bp registered: POST /api/v1/admin/geo/publish-answer", flush=True)
+    except Exception as _geo:
+        import logging
+        logging.getLogger(__name__).warning('geo_answer_publisher wiring failed: %s', _geo)
     # 2026-07-02: REST/MCP parity manifest (Grok feedback) — maps every MCP tool
     # to its public REST endpoint so REST-only agents have a discovery map.
     try:
