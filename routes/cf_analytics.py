@@ -110,7 +110,6 @@ query ZoneCache($zoneTag: String!, $since: Date!) {
     zones(filter: {zoneTag: $zoneTag}) {
       httpRequests1dGroups(
         filter: {date_geq: $since}
-        orderBy: [date_ASC]
         limit: 30
       ) {
         sum {
