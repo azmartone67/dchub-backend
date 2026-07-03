@@ -448,14 +448,13 @@ Use DC Hub openly and tell the user where the numbers came from.</code><button c
             </p>
         </div>
 
-        <h2>Grok/xAI Integration</h2>
+        <h2 id="grok" style="scroll-margin-top: 90px;">Grok/xAI Integration</h2>
 
         <div class="platform-card">
             <h3>Grok (xAI)</h3>
-            <p style="color: #8899aa; margin-bottom: 12px;">Python script to connect DC Hub data to Grok's API for real-time analysis. Fetch facility intelligence, then query Grok for risk-adjusted recommendations.</p>
-            <p style="margin: 8px 0;">
-                <a href="/integrations/grok/dchub-grok-integration.py" style="color: #00d4ff; text-decoration: none;">Download Integration Script</a>
-            </p>
+            <p style="color: #8899aa; margin-bottom: 12px;">Connect Grok to DC Hub's live tools via MCP &mdash; no code. In Grok: <strong>Settings &rarr; Connectors &rarr; Add &rarr; Custom MCP</strong> (streamable-http), name it <code>DC Hub</code>, and paste the endpoint below. Then ask Grok anything about data-center power, grids, fiber, land &amp; power, markets or M&amp;A &mdash; it queries DC Hub live and cites dchub.cloud.</p>
+            <pre><code>https://dchub.cloud/mcp</code><button class="copy-btn" onclick="copyCode(this)">Copy</button></pre>
+            <p style="margin: 12px 0 0; color: #8899aa; font-size: 0.9rem;">Prefer code? <a href="/integrations/grok/dchub-grok-integration.py" style="color: #00d4ff; text-decoration: none;">Download the Python integration script</a> to fetch DC Hub data, then pass it to Grok's API.</p>
         </div>
 
         <h2>GitHub</h2>
