@@ -75,18 +75,35 @@ def _ensure_table():
 _ensure_table()
 
 
-def log_heartbeat(jobs_run=None, jobs_total=None, elapsed_ms=None):
-    """Called by the existing cron_heartbeat handler after each run.
+def log_heartbeat(jobs_run=None, jobs_total=None, elapsed_ms=None, ua=None, ip=None):
+    """Called by the cron_heartbeat handler after each run.
+
+    FIX 2026-07-03: the 2026-06-08 async-dispatch change moved this call into a
+    background thread (the heartbeat fires jobs concurrently, then logs), where
+    Flask's `request` proxy is OUT OF CONTEXT — so reading request.headers here
+    threw RuntimeError every time, the bare except swallowed it, and NOTHING was
+    logged for ~24 days. /api/v1/cron/last-fired then read empty and reported
+    healthy=false ("cron dead since 06-08") while the GitHub-Actions heartbeat
+    was actually firing fine. The caller now captures ua/ip in the request
+    thread and passes them in; request access is only a best-effort fallback.
     Wrapped in try/except so a log failure never breaks the dispatch."""
     try:
+        if ua is None or ip is None:
+            try:
+                if ua is None:
+                    ua = request.headers.get("User-Agent", "") or ""
+                if ip is None:
+                    ip = request.headers.get("CF-Connecting-IP") or request.remote_addr or ""
+            except Exception:
+                pass
+        ua = (ua or "")[:200]
+        ip = (ip or "")[:80]
         with _conn() as c, c.cursor() as cur:
-            ua = (request.headers.get("User-Agent", "") or "")[:200]
-            ip = request.headers.get("CF-Connecting-IP") or request.remote_addr or ""
             cur.execute("""
                 INSERT INTO cron_heartbeat_log
                   (user_agent, source_ip, jobs_run, jobs_total, elapsed_ms)
                 VALUES (%s, %s, %s, %s, %s)
-            """, (ua, ip[:80], jobs_run, jobs_total, elapsed_ms))
+            """, (ua, ip, jobs_run, jobs_total, elapsed_ms))
     except Exception:
         pass
 

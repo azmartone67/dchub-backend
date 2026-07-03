@@ -421,6 +421,15 @@ def heartbeat():
     return 200 immediately (sub-second). Jobs still run to completion; the HTTP
     response just no longer blocks on them, so it can never trip the worker."""
     started = datetime.datetime.utcnow()
+    # Capture caller identity IN the request thread — the background dispatch
+    # thread below has NO Flask request context, and reading request.* there is
+    # exactly what silently broke heartbeat logging on 2026-06-08 (see
+    # cron_observability.log_heartbeat). Pass these through instead.
+    try:
+        _ua = request.headers.get("User-Agent", "") or ""
+        _ip = request.headers.get("CF-Connecting-IP") or request.remote_addr or ""
+    except Exception:
+        _ua, _ip = "", ""
     due = [(label, url, method)
            for (label, url, method, pred) in _DISPATCH if pred(started)]
     skipped = [label for (label, url, method, pred) in _DISPATCH if not pred(started)]
@@ -436,7 +445,8 @@ def heartbeat():
         try:
             from routes.cron_observability import log_heartbeat
             log_heartbeat(jobs_run=len(jobs), jobs_total=len(_DISPATCH),
-                          elapsed_ms=int((datetime.datetime.utcnow() - started).total_seconds() * 1000))
+                          elapsed_ms=int((datetime.datetime.utcnow() - started).total_seconds() * 1000),
+                          ua=_ua, ip=_ip)
         except Exception:
             pass
 
