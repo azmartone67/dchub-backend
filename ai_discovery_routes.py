@@ -149,6 +149,30 @@ def register_discovery_routes(app):
                         "tags": ["Public"]
                     }
                 },
+                "/api/v1/dcpi/scores/{market_slug}": {
+                    "get": {
+                        "operationId": "getMarketDcpi",
+                        "summary": "DC Hub Power Index (DCPI) for one market",
+                        "description": "Free per-market power-readiness scores: BUILD/CAUTION/AVOID verdict, composite_score, excess_power_score, constraint_score, time_to_power_months. Recomputed daily. Use for 'is <market> good to build a data center?'.",
+                        "parameters": [
+                            {"name": "market_slug", "in": "path", "required": True, "schema": {"type": "string"}, "description": "Market slug, e.g. phoenix, northern-virginia, dallas"}
+                        ],
+                        "responses": {"200": {"description": "Per-market DCPI scores + verdict"}},
+                        "tags": ["Public"]
+                    }
+                },
+                "/api/v1/ai-capacity-index": {
+                    "get": {
+                        "operationId": "getAiCapacityIndex",
+                        "summary": "AI Compute Capacity Index",
+                        "description": "Markets ranked by AI-ready deployable MW for near-term (30/60/90-day) large-load siting, with hyperscale_ready flag and an honest ai_ready_mw proxy.",
+                        "parameters": [
+                            {"name": "horizon", "in": "query", "schema": {"type": "integer", "enum": [30, 60, 90], "default": 90}, "description": "Deployment horizon in days"}
+                        ],
+                        "responses": {"200": {"description": "Ranked AI-ready markets"}},
+                        "tags": ["Public"]
+                    }
+                },
                 "/api/news": {
                     "get": {
                         "operationId": "getNews",
