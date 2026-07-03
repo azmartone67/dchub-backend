@@ -261,9 +261,11 @@ DISCOVERY_TARGETS = [
         # ancient description (15 tools / $49/mo / "50,000 facilities"),
         # probing the DEAD Smithery gateway
         # server.smithery.ai/@azmartone67/dchub-nexus/mcp (the defunct
-        # dchub-nexus slug). Owner action: claim + repoint to
-        # dchub.cloud/mcp, or Report for removal — it sits next to the
-        # healthy entry in reliability-sorted results.
+        # dchub-nexus slug). No self-serve delete exists (claim only
+        # grants edit of description/docs/category), so removal was
+        # requested from the operator (GitHub avib99 — the handle
+        # behind yellowmcp.com) via
+        # https://github.com/avib99/yellowmcp/issues/1 (2026-07-02).
         "homepage":    "https://yellowmcp.com/servers/cloud-dchub-mcp-server",
         "submit_url":  "https://yellowmcp.com/claim",
         "submit_method":"refresh_only",
