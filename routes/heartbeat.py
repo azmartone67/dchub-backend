@@ -4,7 +4,9 @@ and auto-regenerates content that's gone stale. The site is alive.
   GET  /heartbeat                  pretty dashboard
   GET  /api/v1/heartbeat           JSON status of every surface
   POST /api/v1/heartbeat/refresh   force-refresh everything (admin)
+  GET  /api/v1/heartbeat/auto      cheap status snapshot (edge-cacheable)
   POST /api/v1/heartbeat/auto      cron-triggered: refresh anything stale
+                                   (admin-key gated)
 """
 import os, json, datetime
 from flask import Blueprint, jsonify, request, render_template_string
@@ -332,6 +334,21 @@ def api_heartbeat():
     return jsonify(surfaces=_status()), 200
 
 
+def _admin_key_ok():
+    """True when the caller presents the admin key. Fail-open when
+    DCHUB_ADMIN_KEY is unset — same pattern as api_force_refresh below.
+    Accepts X-Admin-Key, Authorization: Bearer, or ?key= (the last for
+    the temporary GET escape hatch — see api_auto_refresh)."""
+    expected = (os.environ.get("DCHUB_ADMIN_KEY") or "").strip()
+    if not expected:
+        return True
+    auth = request.headers.get("Authorization") or ""
+    bearer = auth[7:].strip() if auth.startswith("Bearer ") else ""
+    provided = (request.headers.get("X-Admin-Key") or bearer
+                or request.args.get("key") or "").strip()
+    return provided == expected
+
+
 @heartbeat_bp.route("/api/v1/heartbeat/auto", methods=["POST", "GET"])
 def api_auto_refresh():
     """Phase DDDD-cleanup (2026-05-16): bumped BATCH default 50 → 250 and
@@ -344,9 +361,34 @@ def api_auto_refresh():
     Most refresh functions are noops that return immediately, so 250
     surfaces per call is still well under the 30s CF worker timeout.
     Cron stays at every-30min; 600 stale surfaces now drain in ~3 calls.
+
+    Phase r-hbsplit (2026-07-03): read split from work. The unauthenticated
+    GET was executing the full WALL_BUDGET_SEC=12 refresh loop on EVERY
+    call (~14s wall), and monitors poll this path — origin load plus part
+    of the CF 5xx tail (155/wk historically). Now:
+      GET                → _status() snapshot only, edge-cacheable
+      POST + X-Admin-Key → the actual refresh batch
+    Temporary escape hatch for the off-repo Replit scheduler cron:
+    GET ?run=1&key=<admin key> still runs the batch. Remove once that
+    cron is confirmed POSTing with the key.
     """
-    from flask import request as _req
-    BATCH = int(_req.args.get("batch", "250"))
+    run_requested = (request.method == "POST"
+                     or request.args.get("run") == "1")
+    if not run_requested:
+        s = _status()
+        stale = sum(1 for r in s if r["status"] != "fresh")
+        resp = jsonify(mode="status", total_surfaces=len(s),
+                       stale=stale, fresh=len(s) - stale,
+                       surfaces=s,
+                       # legacy keys so old POST-shape parsers don't break
+                       refreshed=[], count=0,
+                       hint="refresh runs via POST + X-Admin-Key")
+        resp.headers["Cache-Control"] = "public, max-age=30, s-maxage=60"
+        return resp, 200
+    if not _admin_key_ok():
+        return jsonify(error="unauthorized",
+                       hint="refresh requires POST + X-Admin-Key"), 401
+    BATCH = int(request.args.get("batch", "250"))
     s = _status()
     # Sort by oldest last_updated first (None = never refreshed = highest priority)
     s.sort(key=lambda r: (r.get("last_updated") or "0000-00-00"))

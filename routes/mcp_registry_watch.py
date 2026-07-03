@@ -25,6 +25,7 @@ brain_findings table (same as other autopilot findings).
 """
 import json
 import os
+import time
 import urllib.parse
 import urllib.request
 from typing import Dict, List
@@ -226,6 +227,26 @@ def _probe_all() -> Dict[str, dict]:
     return out
 
 
+# r-probecache (2026-07-03): _probe_all() serially fetches ~9 registries,
+# so the public GET cost ~5s at origin on every cache-miss variant.
+# Registries only change on PR merges — cache the probe result in-process
+# for 1h (same pattern as main.py _FIBER_INTEL_CACHE). Per-worker cache;
+# the admin scan endpoint forces a fresh probe and re-primes it.
+_PROBE_CACHE: dict = {"data": None, "at": 0.0}
+_PROBE_TTL_SEC = 3600.0
+
+
+def _probe_all_cached(force: bool = False) -> Dict[str, dict]:
+    now = time.time()
+    if (not force and _PROBE_CACHE["data"] is not None
+            and (now - _PROBE_CACHE["at"]) < _PROBE_TTL_SEC):
+        return _PROBE_CACHE["data"]
+    data = _probe_all()
+    _PROBE_CACHE["data"] = data
+    _PROBE_CACHE["at"] = now
+    return data
+
+
 def _file_findings_for_missing(results: Dict[str, dict]) -> List[dict]:
     """For each missing registry, return a brain-finding-shaped dict.
 
@@ -377,7 +398,7 @@ def mcp_registries_status():
     Cached at the edge for 1h since the registries themselves only
     update on PR merges. Public — no auth required.
     """
-    results = _probe_all()
+    results = _probe_all_cached()
     present_count = sum(1 for r in results.values() if r["verdict"] == "present")
     # "missing" counts only ACTIONABLE absences (a registry we could
     # actually submit to). Non-actionable surfaces (no PR path, e.g.
@@ -389,7 +410,7 @@ def mcp_registries_status():
     not_actionable = sum(
         1 for r in results.values()
         if r["verdict"] != "present" and not r.get("actionable", True))
-    return jsonify({
+    resp = jsonify({
         "ok":             True,
         "total":          len(results),
         "present":        present_count,
@@ -405,6 +426,10 @@ def mcp_registries_status():
             "punkpeye/awesome-mcp-servers."
         ),
     })
+    # r-probecache: the docstring always claimed 1h edge caching but no
+    # header was ever set — send it so CF can actually honor it.
+    resp.headers["Cache-Control"] = "public, max-age=300, s-maxage=3600"
+    return resp
 
 
 @mcp_registry_watch_bp.route("/api/v1/admin/brain/mcp-registries/scan",
@@ -427,7 +452,7 @@ def mcp_registries_scan():
     if provided != admin_key:
         return jsonify({"error": "unauthorized"}), 401
 
-    results = _probe_all()
+    results = _probe_all_cached(force=True)
     findings = _file_findings_for_missing(results)
 
     # Also hunt for NEW registries we don't yet track and file them as
