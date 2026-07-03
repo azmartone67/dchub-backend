@@ -239,6 +239,7 @@ def _envirofacts_cwa(state, rows=200):
 # =============================================================================
 
 @power_plant_bp.route('/api/v1/power-plants/nearby')
+@power_plant_bp.route('/api/v1/energy/power-plants/nearby')  # MCP + brain probes use this path; was 404
 def power_plants_nearby():
     """Find power plants near coordinates using EIA operating generator capacity data.
 
