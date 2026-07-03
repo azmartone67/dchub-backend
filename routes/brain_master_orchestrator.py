@@ -242,6 +242,16 @@ def _run_master_tick(dry: bool, tiers: set) -> dict:
         "steps": [],
     }
 
+    # ── Tier 0 — DATA DISCOVERY: refresh + widen the grid/power/gas data
+    #    aggregation (absorb the next untapped gridstatus source + file fresh
+    #    coverage gaps to brain_findings) BEFORE the brain tiers act, so the data
+    #    shell's findings feed THIS same cycle. Writes → skipped on dry; own kill
+    #    switch GRID_DATA_MASTER_DISABLED.
+    if not dry:
+        report["tiers_run"].append("0")
+        report["steps"].append(_summarize("tier0.grid_data_master",
+                                           _call("POST", "/api/v1/admin/grid-data/master-tick")))
+
     # ── Tier 1 — AUTO-FIX (autonomous) ──────────────────────────────
     # Pass dry through to the autopilot so a dry master-tick previews only.
     if "1" in tiers:

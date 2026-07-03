@@ -133,13 +133,16 @@ def _fire(path: str, timeout: int = 4) -> dict:
 
 
 def _num(v):
+    # preserve numeric type as-is — int(3.45) would SILENTLY truncate a float
+    # price ($/MMBtu, $/MWh, emissions intensity). Only stringy values get coerced.
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, (int, float)):
+        return v
     try:
-        return int(v)
+        return float(v)
     except (TypeError, ValueError):
-        try:
-            return float(v)
-        except (TypeError, ValueError):
-            return None
+        return None
 
 
 # ── gridstatus.io generic client ─────────────────────────────────────
@@ -180,30 +183,40 @@ def _gs_get(dataset: str, params: dict | None = None, timeout: int = 15):
 # best-effort fallback picks the first non-timestamp numeric), unit. Absorbing a
 # new source = appending a row here — no new code. Ordered rough-priority.
 TARGET_DATASETS = [
-    # forecast — forward load per ISO (the "stay ahead" signal)
-    {"id": "pjm_load_forecast",    "iso": "PJM",   "cat": "load_forecast", "value_col": "load_forecast", "unit": "MW"},
-    {"id": "ercot_load_forecast",  "iso": "ERCOT", "cat": "load_forecast", "value_col": "load_forecast", "unit": "MW"},
-    {"id": "caiso_load_forecast",  "iso": "CAISO", "cat": "load_forecast", "value_col": "load_forecast", "unit": "MW"},
-    {"id": "miso_load_forecast",   "iso": "MISO",  "cat": "load_forecast", "value_col": "load_forecast", "unit": "MW"},
-    {"id": "nyiso_load_forecast",  "iso": "NYISO", "cat": "load_forecast", "value_col": "load_forecast", "unit": "MW"},
-    {"id": "spp_load_forecast",    "iso": "SPP",   "cat": "load_forecast", "value_col": "load_forecast", "unit": "MW"},
-    # depth — capacity (committed generation supply)
-    {"id": "pjm_generation_capacity_daily", "iso": "PJM",   "cat": "capacity", "value_col": "total_committed_mw", "unit": "MW"},
-    {"id": "ercot_capacity_committed",      "iso": "ERCOT", "cat": "capacity", "value_col": None, "unit": "MW"},
-    {"id": "ercot_capacity_forecast",       "iso": "ERCOT", "cat": "capacity", "value_col": None, "unit": "MW"},
-    # depth — operating reserves (proxy toward the never-live reserve_margin)
-    {"id": "pjm_dispatched_reserves_verified",     "iso": "PJM",   "cat": "reserves", "value_col": "total_reserve", "unit": "MW"},
-    {"id": "ercot_real_time_adders_and_reserves",  "iso": "ERCOT", "cat": "reserves", "value_col": None, "unit": "MW"},
-    {"id": "aeso_reserves",                        "iso": "AESO",  "cat": "reserves", "value_col": None, "unit": "MW"},
-    # depth — marginal emissions (grid carbon intensity; the Electricity-Maps lane)
-    {"id": "pjm_marginal_emission_rates_5_min",  "iso": "PJM",  "cat": "emissions", "value_col": "marginal_co2_rate", "unit": "lb/MWh"},
-    # breadth — richer fuel mix than EIA's 7-fuel feed
-    {"id": "pjm_fuel_mix",           "iso": "PJM",   "cat": "fuel_mix", "value_col": None, "unit": "MW"},
-    {"id": "caiso_fuel_mix",         "iso": "CAISO", "cat": "fuel_mix", "value_col": None, "unit": "MW"},
-    {"id": "ercot_fuel_mix_detailed","iso": "ERCOT", "cat": "fuel_mix", "value_col": None, "unit": "MW"},
+    # ── GRID (market / ops signals) ──────────────────────────────────
+    # forward load per ISO (the "stay ahead" signal)
+    {"id": "pjm_load_forecast",    "iso": "PJM",   "dom": "grid", "cat": "load_forecast", "value_col": "load_forecast", "unit": "MW"},
+    {"id": "ercot_load_forecast",  "iso": "ERCOT", "dom": "grid", "cat": "load_forecast", "value_col": "load_forecast", "unit": "MW"},
+    {"id": "caiso_load_forecast",  "iso": "CAISO", "dom": "grid", "cat": "load_forecast", "value_col": "load_forecast", "unit": "MW"},
+    {"id": "miso_load_forecast",   "iso": "MISO",  "dom": "grid", "cat": "load_forecast", "value_col": "load_forecast", "unit": "MW"},
+    {"id": "nyiso_load_forecast",  "iso": "NYISO", "dom": "grid", "cat": "load_forecast", "value_col": "load_forecast", "unit": "MW"},
+    {"id": "spp_load_forecast",    "iso": "SPP",   "dom": "grid", "cat": "load_forecast", "value_col": "load_forecast", "unit": "MW"},
+    # ISO-NE real-time LMP — CLOSES the "ISO-NE LMP registration-gated" gap
+    {"id": "isone_lmp_real_time_5_min", "iso": "ISONE", "dom": "grid", "cat": "lmp", "value_col": "lmp", "unit": "$/MWh"},
+    # operating reserves + forward operating margin (toward the never-live reserve_margin)
+    {"id": "pjm_dispatched_reserves_verified",     "iso": "PJM",   "dom": "grid", "cat": "reserves", "value_col": "total_reserve", "unit": "MW"},
+    {"id": "ercot_real_time_adders_and_reserves",  "iso": "ERCOT", "dom": "grid", "cat": "reserves", "value_col": None, "unit": "MW"},
+    {"id": "aeso_reserves",                        "iso": "AESO",  "dom": "grid", "cat": "reserves", "value_col": None, "unit": "MW"},
+    {"id": "miso_multiday_operating_margin",       "iso": "MISO",  "dom": "grid", "cat": "margin",   "value_col": "resource_operating_margin", "unit": "MW"},
+    # grid carbon intensity (the Electricity-Maps lane): marginal + consumed
+    {"id": "pjm_marginal_emission_rates_5_min",  "iso": "PJM", "dom": "grid", "cat": "emissions", "value_col": "marginal_co2_rate", "unit": "lb/MWh"},
+    {"id": "eia_co2_emissions",                  "iso": "US",  "dom": "grid", "cat": "emissions", "value_col": "co2_emissions_intensity_for_consumed_electricity", "unit": "lb/MWh"},
+    # ── POWER (generation supply) ────────────────────────────────────
+    {"id": "pjm_generation_capacity_daily", "iso": "PJM",   "dom": "power", "cat": "capacity", "value_col": "total_committed_mw", "unit": "MW"},
+    {"id": "ercot_capacity_committed",      "iso": "ERCOT", "dom": "power", "cat": "capacity", "value_col": None, "unit": "MW"},
+    {"id": "ercot_capacity_forecast",       "iso": "ERCOT", "dom": "power", "cat": "capacity", "value_col": None, "unit": "MW"},
+    {"id": "pjm_fuel_mix",           "iso": "PJM",   "dom": "power", "cat": "fuel_mix", "value_col": None, "unit": "MW"},
+    {"id": "caiso_fuel_mix",         "iso": "CAISO", "dom": "power", "cat": "fuel_mix", "value_col": None, "unit": "MW"},
+    {"id": "ercot_fuel_mix_detailed","iso": "ERCOT", "dom": "power", "cat": "fuel_mix", "value_col": None, "unit": "MW"},
+    # ── GAS ──────────────────────────────────────────────────────────
+    {"id": "eia_henry_hub_natural_gas_spot_prices_daily", "iso": "US", "dom": "gas", "cat": "gas_price", "value_col": "price", "unit": "$/MMBtu"},
 ]
 _LOAD_FC_ISOS = {t["iso"] for t in TARGET_DATASETS if t["cat"] == "load_forecast"}
-_DEPTH_CATS = ("reserves", "capacity", "emissions")
+# depth = the structurally-missing high-value signals the weakest-depth lever pulls first
+_DEPTH_CATS = ("lmp", "reserves", "margin", "capacity", "emissions", "gas_price")
+_DOMAINS = ("grid", "power", "gas")
+_DATASET_DOM = {t["id"]: t.get("dom") for t in TARGET_DATASETS}
+_DOMAIN_TARGETS = {d: sum(1 for t in TARGET_DATASETS if t.get("dom") == d) for d in _DOMAINS}
 
 
 # ── DB ────────────────────────────────────────────────────────────────
@@ -340,12 +353,29 @@ _GAP_FINDINGS = [
      "(needs ERCOT_GEN_PRODUCT_ID), PJM/ISONE fail closed (no creds). DCPI falls to "
      "modeled anchors for those 3. Wire a public gen/load source (gridstatus) to fill them."),
     ("grid_iso_ne_realtime_lmp_absent",
-     "ISO-NE real-time LMP is absent (registration-gated). New England is a live DC market; "
-     "add an ISO-NE LMP adapter (registered feed or gridstatus fallback)."),
+     "ISO-NE real-time LMP is now CAPTURED in grid_ext_metrics via gridstatus "
+     "(isone_lmp_real_time_5_min). Promote it into the canonical iso_lmp_snapshots table + "
+     "get_energy_prices/get_grid_data, which still exclude ISO-NE."),
     ("grid_dc_load_queue_ercot_only",
      "The large-load / data-center interconnection-queue figure is ERCOT-only; PJM/MISO/SPP "
      "are null. Also reconcile interconnection_queues.py (says DC-load tracked:false) with the "
      "ingest layer that does derive it for ERCOT."),
+    ("gas_pipelines_no_deliverability",
+     "gas_pipelines carries presence/density only — NO capacity_mcf / firm deliverability, so "
+     "the DCGI gas score can't reflect real pipeline capacity. Add a deliverability source "
+     "(EIA-191 / pipeline tariffs)."),
+    ("gas_market_pricing_synthetic_basis",
+     "market_gas_pricing basis_diff_usd_mmbtu is a SYNTHETIC hardcoded seed "
+     "(basis_source='synthetic_seed_basis'); delivered gas price is only as good as the basis. "
+     "Wire a live regional hub-basis feed to replace the synthetic seed."),
+    ("gas_eia_prices_sparse",
+     "eia_gas_prices is sparse — many states NULL (EIA only publishes where available), so "
+     "get_gas_intelligence returns null for those states. Backfill industrial/electric-power "
+     "gas $/MMBtu for missing states via a regional-hub + basis proxy."),
+    ("power_capacity_market_price_absent",
+     "No capacity-MARKET clearing price for any ISO (PJM RPM/BRA, ISO-NE FCA, MISO PRA). The "
+     "$/MW-day auction price — the forward economic siting signal driven by data-center load — "
+     "is absent. Add a periodic capacity-auction clearing-price ingester per ISO."),
 ]
 
 
@@ -421,6 +451,11 @@ def tier1_measure() -> dict:
     green_ratio = round(green / total, 3) if total else None
 
     ingested = _ingested_state()
+    dom_tapped = {}
+    for did in ingested:
+        d = _DATASET_DOM.get(did)
+        if d:
+            dom_tapped[d] = dom_tapped.get(d, 0) + 1
     return {
         "core": {
             "iso_zone_count": zone_count,
@@ -431,6 +466,7 @@ def tier1_measure() -> dict:
         },
         "breadth_tapped": len(ingested),
         "breadth_target": len(TARGET_DATASETS),
+        "domains": {d: f"{dom_tapped.get(d, 0)}/{_DOMAIN_TARGETS.get(d, 0)}" for d in _DOMAINS},
         "ingested_ids": sorted(ingested.keys()),
         "cats_tapped": sorted({v.get("category") for v in ingested.values() if v.get("category")}),
         "forecast_isos_tapped": sorted({v.get("iso") for v in ingested.values()
@@ -585,8 +621,10 @@ def master_tick():
     persisted = _persist(measure, levers, score, action, findings)
 
     s = levers.get("scores") or {}
+    doms = measure.get("domains") or {}
     headline = (
-        f"grid-data {score}/100 · breadth {measure.get('breadth_tapped')}/{measure.get('breadth_target')} · "
+        f"grid-data {score}/100 · breadth {measure.get('breadth_tapped')}/{measure.get('breadth_target')} "
+        f"(grid {doms.get('grid')} · power {doms.get('power')} · gas {doms.get('gas')}) · "
         f"weakest → {levers.get('weakest')} ({s.get(levers.get('weakest'))}) · "
         f"acted: {action.get('action')}"
         + (f" ({action.get('dataset')})" if action.get('dataset') else "")
