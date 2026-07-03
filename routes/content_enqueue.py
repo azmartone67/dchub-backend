@@ -415,6 +415,49 @@ def _shape_linkedin_metrics(arc: dict | None = None) -> str:
     )
 
 
+# ── Agent-acquisition lane (2026-07-03) ─────────────────────────────
+# The DCPI-mover + metrics posts above are analyst-voice, aimed at the
+# HUMAN LinkedIn feed. This lane is different: an explicit ACQUISITION
+# pitch that tells a developer/agent-builder exactly HOW to connect an
+# agent to DC Hub in one line — the content that turns a reader into a
+# new MCP connection. Runs on a LOW cadence (default 4d) across LinkedIn
+# (decision-makers) + Bluesky (dev/AI audience). Kill: env
+# DCHUB_AGENT_PITCH_DISABLED=1. Stable marker = weekly-cadence dedup key.
+_AGENT_PITCH_MARKER = "Give your AI agent live data-center ground truth"
+
+
+def _shape_agent_pitch_linkedin(arc: dict | None = None) -> str:
+    m = _fetch_dchub_metrics()
+    facilities = m.get("facilities") or _METRICS_FALLBACK["facilities"]
+    grids = m.get("grids") or _METRICS_FALLBACK["grids"]
+    return (
+        "Give your AI agent live data-center ground truth — in one line.\n\n"
+        "Most agents reason about physical infrastructure from stale "
+        "training data. DC Hub is the live, MCP-native data layer they can "
+        "query instead:\n\n"
+        f"• {facilities:,} facilities across 170+ countries\n"
+        f"• real-time grid telemetry across {grids} grids/ISOs\n"
+        "• fiber, substations, gas pipelines, water risk, 2,000+ M&A deals\n"
+        "• 53 tools, machine-readable + citable, free tier (no card)\n\n"
+        "Connect Claude / Cursor / any MCP client:\n"
+        "claude mcp add --transport http dchub https://dchub.cloud/mcp\n\n"
+        "Or try it live, no signup: https://dchub.cloud/playground\n\n"
+        "#AI #MCP #DataCenter #AIagents"
+    )
+
+
+def _shape_agent_pitch_bluesky(arc: dict | None = None) -> str:
+    m = _fetch_dchub_metrics()
+    facilities = m.get("facilities") or _METRICS_FALLBACK["facilities"]
+    return (
+        "Give your AI agent live data-center ground truth in one line:\n\n"
+        "claude mcp add --transport http dchub https://dchub.cloud/mcp\n\n"
+        f"{facilities:,} facilities, live grid telemetry, fiber + gas + M&A "
+        "— 53 MCP tools, citable, free tier. Or try live: "
+        "https://dchub.cloud/playground"
+    )[:300]
+
+
 # ── Dedup + enqueue ─────────────────────────────────────────────────
 
 def _already_enqueued_recently(platform: str, topic_key: str) -> bool:
@@ -689,6 +732,32 @@ def enqueue():
             results["skipped"].append(
                 {"platform": "linkedin", "kind": "metrics_showcase",
                  "reason": "weekly_cadence_already_enqueued"})
+
+    # Agent-acquisition lane (2026-07-03): explicit "connect your agent"
+    # pitch on LinkedIn + Bluesky, LOW cadence (default 4d) so it never
+    # crowds the daily movers. This is the acquisition-targeted content —
+    # the growth-needle lever, not analyst news. Kill: DCHUB_AGENT_PITCH_DISABLED=1.
+    if os.environ.get("DCHUB_AGENT_PITCH_DISABLED", "").strip().lower() \
+            not in ("1", "true", "yes"):
+        try:
+            _pitch_days = int(os.environ.get("DCHUB_AGENT_PITCH_DAYS", "4"))
+        except Exception:
+            _pitch_days = 4
+        for _plat, _shaper in (("linkedin", _shape_agent_pitch_linkedin),
+                               ("bluesky",  _shape_agent_pitch_bluesky)):
+            if not _enqueued_within_days(_plat, _AGENT_PITCH_MARKER, _pitch_days):
+                _pid = _enqueue_post(_shaper(arc), _plat)
+                if _pid:
+                    results["enqueued"].append(
+                        {"platform": _plat, "id": _pid, "kind": "agent_pitch"})
+                else:
+                    results["skipped"].append(
+                        {"platform": _plat, "kind": "agent_pitch",
+                         "reason": "insert_failed"})
+            else:
+                results["skipped"].append(
+                    {"platform": _plat, "kind": "agent_pitch",
+                     "reason": "cadence_already_enqueued"})
 
     return jsonify({
         "ok":              True,
