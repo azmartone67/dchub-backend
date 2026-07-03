@@ -1834,6 +1834,16 @@ def _dcpi_is_paid(plan=None):
     return (plan if plan is not None else _dcpi_caller_plan()) in _DCPI_PAID_PLANS
 
 
+_DCPI_SINGLE_MARKET_FREE = True  # r-free-per-market (2026-07-03)
+def _dcpi_single_market_paid():
+    """Policy 2026-07-03 (free-per-market, paid-bulk): a SINGLE-market surface
+    (/dcpi/<slug>, /api/v1/dcpi/scores/<slug>, its og/embed) shows the numeric
+    DCPI scores to everyone — one market is free to cite; the BULK/all-market
+    endpoints + CSV export stay Pro-gated (they keep calling _dcpi_is_paid()).
+    Flip _DCPI_SINGLE_MARKET_FREE to revert."""
+    return True if _DCPI_SINGLE_MARKET_FREE else _dcpi_is_paid()
+
+
 def _dcpi_mask_rows(rows, *, extra=False, paid=None):
     """If the caller is NOT paid, null the paid fields on each row dict and set
     locked=True. Returns (rows, gated_bool). Operates on copies (never mutates
@@ -2279,8 +2289,8 @@ def api_score_market(slug):
 
     # r-gate-everywhere (2026-06-27): per-market twin of api_scores() — was a raw
     # jsonify(row) that leaked composite/excess/constraint/time-to-power +
-    # risk/opp to anon. Mask for non-paid; also drop the score-derived forecast.
-    _rows, _g = _dcpi_mask_rows([row], extra=True)
+    # risk/opp to anon. SINGLE-market is free-to-cite (2026-07-03); bulk stays paid.
+    _rows, _g = _dcpi_mask_rows([row], extra=True, paid=_dcpi_single_market_paid())
     row = _rows[0]
     if _g:
         row["forecast"] = {"available": False, "reason": "pro_only"}
@@ -2452,8 +2462,8 @@ def api_score_market_v2(slug):
     if row.get("computed_at"):
         row["computed_at"] = row["computed_at"].isoformat()
     # r-gate-everywhere (2026-06-27): mask the numeric v1 + v2 sub-scores for
-    # non-paid (verdicts stay free). Was a raw leak of every score.
-    _paid_v2 = _dcpi_is_paid()
+    # non-paid (verdicts stay free). SINGLE-market is free-to-cite (2026-07-03).
+    _paid_v2 = _dcpi_single_market_paid()
     return jsonify(
         market_slug=row["market_slug"],
         market_name=row["market_name"],
@@ -5259,7 +5269,8 @@ def public_market_page(slug):
     # the page cache by tier — a slug-only cache key would let the first anon
     # render poison the paid cache (and vice-versa). Masking happens on the render
     # path below; cache hits are already the correct tier variant.
-    _paid = _dcpi_is_paid()
+    # SINGLE-market page is free-to-cite (2026-07-03); bulk endpoints stay paid.
+    _paid = _dcpi_single_market_paid()
     _gated = not _paid
     _ckey = slug + (":paid" if _paid else ":anon")
 
@@ -5447,8 +5458,8 @@ def api_history():
     # r-gate-everywhere (2026-06-27): the daily score time-series for ALL ~317
     # markets is the crown-jewel paid dataset (an anon could reconstruct every
     # composite). Keep the day axis + market names (SEO: "daily history exists"),
-    # null the numeric values for non-paid.
-    if not _dcpi_is_paid():
+    # null the numeric values for non-paid. SINGLE-market free-to-cite (2026-07-03).
+    if not _dcpi_single_market_paid():
         for _slug in series:
             for _d in series[_slug].get("data", []):
                 _d["excess"] = None
@@ -5537,9 +5548,9 @@ def og_card(slug):
     excess_color = ("#10b981" if excess_score >= 65 else
                     "#f59e0b" if excess_score >= 40 else "#ef4444")
     verdict_color = {"BUILD": "#10b981", "CAUTION": "#f59e0b", "AVOID": "#ef4444"}.get(s["verdict"], "#9ca3af")
-    # r-gate-everywhere (2026-06-27): the social card is an anonymous, OCR-able
-    # public surface — show the VERDICT (the free hook), not the Pro scores.
-    if not _dcpi_is_paid():
+    # the social card is an OCR-able public surface — under free-per-market
+    # (2026-07-03) it shows the single-market scores, not a Pro placeholder.
+    if not _dcpi_single_market_paid():
         _excess_disp, _constraint_disp = "Pro", "Pro"
         _ttp_disp = "SCORES: DC HUB PRO"
         excess_color = verdict_color
@@ -5678,9 +5689,9 @@ def og_card_png(slug):
     draw.text((pill_x + 10, pill_y - 4), verdict_text,
               fill=(10, 14, 26), font=f_verdict)
 
-    # Score blocks — r-gate-everywhere (2026-06-27): anonymous social card →
-    # verdict only; the numeric scores are DC Hub Pro.
-    _og_paid = _dcpi_is_paid()
+    # Score blocks — free-per-market (2026-07-03): single-market card shows the
+    # numeric scores; only bulk/all-market surfaces stay Pro.
+    _og_paid = _dcpi_single_market_paid()
     _excess_disp = f"{excess}" if _og_paid else "Pro"
     _constraint_disp = f"{constraint}" if _og_paid else "Pro"
     _ttp_disp = f"{ttp}mo" if _og_paid else "Pro"
@@ -5738,9 +5749,9 @@ def embed_widget(slug):
     if not s:
         return Response("market not found", status=404, mimetype="text/plain")
 
-    # r-gate-everywhere (2026-06-27): a 3rd-party iframe embed is anonymous — the
-    # numeric scores are Pro. For non-paid, mask them (verdict still renders).
-    if not _dcpi_is_paid():
+    # free-per-market (2026-07-03): a single-market iframe embed shows the numeric
+    # scores; bulk/all-market surfaces stay Pro.
+    if not _dcpi_single_market_paid():
         s = dict(s)
         for _k in ("excess_power_score", "constraint_score", "time_to_power_months",
                    "composite_score"):

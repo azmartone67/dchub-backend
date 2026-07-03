@@ -115,7 +115,7 @@ _DATASETS = {
     },
     "dcpi-markets": {
         "name": "DCPI Market Scores",
-        "description": "276 data center markets with BUILD/CAUTION/AVOID verdict + 4 numeric scores.",
+        "description": "300+ data center markets with BUILD/CAUTION/AVOID verdict + 4 numeric scores (latest computed_at per market).",
         "query": """
             SELECT DISTINCT ON (market_slug)
                    market_slug, market_name, iso, state, verdict,
@@ -194,6 +194,20 @@ def manifest():
             "api_docs": "https://dchub.cloud/api-docs",
             "by_the_numbers": "https://dchub.cloud/by-the-numbers",
             "contact": "hello@dchub.cloud",
+        },
+        # r-free-per-market (2026-07-03): the bulk CSVs require a free key, so an
+        # agent that only wants ONE market dead-ended at a 401. Advertise the
+        # FREE per-market surface here so agents (Perplexity/ChatGPT/Grok) can
+        # discover + cite a single market without the bulk-export key.
+        "free_access": {
+            "note": ("Bulk CSV exports require a free dev key. PER-MARKET DCPI "
+                     "(verdict + market context) is FREE to query and cite — no "
+                     "key. For all-markets bulk data, claim a free key."),
+            "per_market_page": "https://dchub.cloud/dcpi/{market_slug}",
+            "per_market_example": "https://dchub.cloud/dcpi/phoenix",
+            "market_index": "https://dchub.cloud/dcpi",
+            "mcp_tool": "get_market_dcpi_rank (via https://dchub.cloud/mcp)",
+            "claim_free_key": "https://dchub.cloud/signup",
         },
     }
     resp = jsonify(out)
