@@ -249,25 +249,32 @@ _MARKET_STATE_OVERRIDE = {
 
 
 def _conn():
-    """Open a psycopg2 connection. Uses the shared helper if available."""
-    try:
-        from routes._iso_common import conn as _c
-        # _c() is a @contextmanager that YIELDS the connection — returning it
-        # directly handed callers a _GeneratorContextManager with no .cursor
-        # (the repeated "_read_cached / delivered_* err: '_GeneratorContext
-        # Manager' object has no attribute 'cursor'" log spam). Enter it to
-        # hand back the real psycopg2 connection; every caller here closes it
-        # itself in its own finally, so no leak.
-        return _c().__enter__()
-    except Exception:
-        pass
-    # Fallback: raw connect
+    """Open a psycopg2 connection the CALLER fully owns (closes in its finally).
+
+    r-conn-gc (2026-07-03): the prior body did `_iso_common.conn().__enter__()`.
+    conn() is a @contextmanager whose `finally` closes the socket; calling
+    `__enter__()` WITHOUT retaining the context-manager object left the closer
+    generator unreferenced, so the GC finalized it and closed the connection
+    MID-USE. That surfaced as "connection already closed" on the delivered-price
+    reads (→ delivered_industrial/electric came back None in every payload) AND
+    on every `_upsert_market` write (→ upsert_failed for all 38 markets, so
+    market_gas_pricing stayed empty despite the EIA key being set and the cron
+    running green). Fix: connect DIRECTLY so the connection's lifetime is bound
+    only to the caller's own `finally`, not to a GC-vulnerable abandoned
+    generator. Reuse `_iso_common.dsn()` for the same endpoint selection.
+    """
     try:
         import psycopg2 as _pg
-        dsn = (os.environ.get("DATABASE_URL")
-               or os.environ.get("NEON_DATABASE_URL") or "")
-        if dsn:
-            return _pg.connect(dsn)
+        try:
+            from routes._iso_common import dsn as _dsn
+            _d = _dsn()
+        except Exception:
+            _d = ""
+        if not _d:
+            _d = (os.environ.get("DATABASE_URL")
+                  or os.environ.get("NEON_DATABASE_URL") or "")
+        if _d:
+            return _pg.connect(_d)
     except Exception:
         pass
     return None
