@@ -1,0 +1,36 @@
+name: Sentinel Master Tick (health → cache → classify loop)
+
+# The Site Sentinel "master shell": one orchestrated tick — parallel scan +
+# edge/cache probe → KV + R2 persist → cache-coverage & latency-regression
+# classify → human-gated tier-aware-cache digest. Kill switch:
+# SENTINEL_MASTER_DISABLED=1 on Railway. Belt-and-suspenders with the
+# dchub-scheduler cron (either driver is fine; the tick is idempotent + locked).
+
+on:
+  schedule:
+    - cron: '25 1,5,9,13,17,21 * * *'   # every 4h at :25 (scheduler runs :20)
+  workflow_dispatch: {}
+
+jobs:
+  sentinel-master-tick:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Run one Sentinel master tick
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          if [ -z "$ADMIN_KEY" ]; then
+            echo "::warning ::DCHUB_ADMIN_KEY secret not set — skipping (fail-safe)"
+            exit 0
+          fi
+          # Hit the Railway origin directly (not dchub.cloud) — CF zone/cache can
+          # shadow a stale 404 on POST admin paths. Cache-buster for good measure.
+          BASE="${DCHUB_BACKEND_BASE:-https://dchub-backend-production.up.railway.app}"
+          URL="$BASE/api/v1/admin/sentinel/master-tick?cb=${GITHUB_RUN_ID}"
+          echo "POST $URL"
+          # Fire-and-forget: the endpoint 202s immediately; the cycle runs in the
+          # background on the worker. Report lands at GET .../master-tick/last.
+          body=$(curl -sS --max-time 60 -X POST "$URL" \
+                   -H "X-Admin-Key: $ADMIN_KEY" \
+                 || echo '{"ok":false,"error":"curl_fail"}')
+          echo "$body" | python3 -c "import json,sys; d=json.load(sys.stdin); print('ok:', d.get('ok')); print('started:', d.get('started')); print('note:', d.get('note') or d.get('error') or d.get('reason') or '')" || echo "$body"

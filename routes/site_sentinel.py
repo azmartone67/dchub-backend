@@ -282,6 +282,24 @@ _SITE_BASE = os.environ.get("DCHUB_SITE_BASE_URL", "https://dchub.cloud").rstrip
 _ADMIN_KEY = (os.environ.get("DCHUB_ADMIN_KEY")
               or os.environ.get("DCHUB_INTERNAL_KEY") or "").strip()
 
+# r-sentinel-parallel (2026-07-03): the sweep was a sequential loop of 101
+# blocking GETs (each up to 15s + 3 retries) — self-described "~50s" and now
+# worse (one page alone is 10.6s). Bounded thread pool collapses wall-clock to
+# ~the single slowest page. 10 workers keeps origin concurrency modest (the
+# backend is --workers 1 --threads 16, and the brain self-DDoS lesson says
+# don't fan 100 self-probes at once). Override via SENTINEL_SCAN_CONCURRENCY.
+try:
+    _SCAN_CONCURRENCY = max(1, int(os.environ.get("SENTINEL_SCAN_CONCURRENCY", "10")))
+except (TypeError, ValueError):
+    _SCAN_CONCURRENCY = 10
+# r-sentinel-edge: the second (anonymous, cache-honoring) probe that records
+# cf-cache-status + edge latency. On by default; SENTINEL_EDGE_PROBE=0 disables
+# it (halves probe count) without a deploy.
+_EDGE_PROBE_ENABLED = os.environ.get("SENTINEL_EDGE_PROBE", "1").strip().lower() not in ("0", "false", "no")
+_EDGE_PROBE_UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                  "AppleWebKit/537.36 (KHTML, like Gecko) "
+                  "Chrome/120.0.0.0 Safari/537.36")
+
 
 def _conn():
     import psycopg2
@@ -322,8 +340,34 @@ ALTER TABLE site_sentinel_results
     ADD COLUMN IF NOT EXISTS content_hash    TEXT,
     ADD COLUMN IF NOT EXISTS prev_content_hash TEXT,
     ADD COLUMN IF NOT EXISTS prev_bytes      INT;
+-- r-sentinel-edge (2026-07-03): edge/cache-coverage columns. The primary
+-- probe forces origin (Cache-Control: no-cache) so elapsed_ms measures
+-- ORIGIN latency (liveness). A second anonymous probe WITHOUT no-cache
+-- records what a real user gets from the edge: edge_ms (user-perceived
+-- latency) + cf_cache_status (HIT/MISS/DYNAMIC/…) + cache_class, the
+-- Bucket-A(force-origin)/Bucket-B(cacheable-but-cold) classification the
+-- master shell uses to decide what is safe to edge-cache.
+ALTER TABLE site_sentinel_results
+    ADD COLUMN IF NOT EXISTS edge_ms         INT,
+    ADD COLUMN IF NOT EXISTS cf_cache_status TEXT,
+    ADD COLUMN IF NOT EXISTS cache_class     TEXT;
 CREATE INDEX IF NOT EXISTS ix_site_sentinel_results_healthy
     ON site_sentinel_results(healthy, checked_at DESC);
+-- r-sentinel-edge: append-only latency history for regression detection
+-- (the results table keeps only the latest row per path via ON CONFLICT,
+-- so it cannot see 'this endpoint got 40× slower'). Capped by a pruning
+-- pass in the master shell.
+CREATE TABLE IF NOT EXISTS site_sentinel_latency_history (
+    id          BIGSERIAL PRIMARY KEY,
+    path        TEXT NOT NULL,
+    checked_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    elapsed_ms  INT,
+    edge_ms     INT,
+    status_code INT,
+    healthy     BOOLEAN
+);
+CREATE INDEX IF NOT EXISTS ix_ssl_hist_path_time
+    ON site_sentinel_latency_history(path, checked_at DESC);
 """
 
 
@@ -600,22 +644,99 @@ def _scan_one(entry: dict) -> dict:
         return out
 
 
-def scan_all() -> list[dict]:
-    """Run one full sweep. Persists to DB; returns the full result set."""
-    results: list[dict] = []
-    c = _conn()
-    if c is None:
-        # Even without DB we can still scan; we just can't persist
+def _classify_cache(cf_status: str, kv_status: str, origin_ms, edge_ms) -> str:
+    """Bucket the page for the master shell's caching decision.
+      edge_hit        — served from CF/KV edge; users already fast (leave alone)
+      cacheable_miss  — cache-eligible but cold at the edge (Bucket B: safe win)
+      force_origin    — DYNAMIC/BYPASS, never cached (Bucket A: gated → needs the
+                        tier-aware key (#6), NOT a blanket cache rule)
+      slow_origin     — edge-hit yet origin itself is slow (optimize the query)
+      unknown         — no cache signal (non-CF host, error, or probe skipped)
+    """
+    cf = (cf_status or "").upper()
+    kv = (kv_status or "").upper()
+    if cf in ("HIT", "STALE", "UPDATING", "REVALIDATED") or kv in ("HIT", "STALE"):
+        # Edge is serving it. Flag if the ORIGIN behind it is still heavy.
+        if isinstance(origin_ms, int) and origin_ms >= 1500:
+            return "slow_origin"
+        return "edge_hit"
+    if cf in ("MISS", "EXPIRED") or kv == "MISS":
+        return "cacheable_miss"
+    if cf in ("DYNAMIC", "BYPASS"):
+        return "force_origin"
+    return "unknown"
+
+
+def _edge_probe(entry: dict, origin_ms=None) -> dict:
+    """Second probe as an ANONYMOUS browser — NO X-Internal-Key, NO no-cache —
+    so Cloudflare answers from the edge exactly as a real visitor would. Records
+    what users actually experience (edge_ms) + the cache verdict. Best-effort:
+    never raises, never flips health (that's the primary probe's job)."""
+    out = {"edge_ms": None, "cf_cache_status": None, "cache_class": "unknown"}
+    if not _EDGE_PROBE_ENABLED:
+        return out
+    try:
+        import requests
+        url = f"{_SITE_BASE}{entry['path']}"
+        t0 = time.time()
+        r = requests.get(url, timeout=15, allow_redirects=True, headers={
+            "User-Agent": _EDGE_PROBE_UA,
+            "Accept": "text/html,application/json,application/xhtml+xml,*/*;q=0.8",
+        })
+        out["edge_ms"] = int((time.time() - t0) * 1000)
+        cf = (r.headers.get("cf-cache-status") or "").strip()
+        kv = (r.headers.get("x-cache-kv") or "").strip()
+        out["cf_cache_status"] = cf or (f"KV-{kv.upper()}" if kv else None)
+        out["cache_class"] = _classify_cache(cf, kv, origin_ms, out["edge_ms"])
+        try: r.close()
+        except Exception: pass
+    except Exception:
+        # An edge probe failure is not a page failure — leave class 'unknown'.
         pass
+    return out
+
+
+def _probe_entry(entry: dict) -> tuple[dict, dict]:
+    """One entry's full probe: primary (origin liveness) + edge (user latency +
+    cache verdict). Pure — no DB, no shared state — so it is safe to run in a
+    thread pool. Returns (entry, merged_scan)."""
+    scan = _scan_one(entry)
+    edge = _edge_probe(entry, origin_ms=scan.get("elapsed_ms"))
+    scan.update(edge)
+    return entry, scan
+
+
+def scan_all() -> list[dict]:
+    """Run one full sweep. Persists to DB; returns the full result set.
+
+    r-sentinel-parallel (2026-07-03): the HTTP probes now fan out across a
+    bounded thread pool (was a sequential 101-URL loop, ~50-100s) so wall-clock
+    is ~the single slowest page. DB writes stay SERIAL on one connection after
+    the probe phase — the prev_content_hash roll is order-sensitive and one
+    connection avoids fanning Neon connections. Also records the edge/cache
+    columns (#2) and appends a latency-history row per path (#5 regression)."""
+    results: list[dict] = []
+    scanned: list[tuple[dict, dict]] = []
+
+    # ── Phase 1: parallel probes (no DB, no shared mutation) ──────────
+    from concurrent.futures import ThreadPoolExecutor
+    workers = min(_SCAN_CONCURRENCY, max(1, len(_MANIFEST)))
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="sentinel-probe") as ex:
+        # executor.map preserves manifest order; a per-entry try in _probe_entry
+        # is unnecessary because _scan_one/_edge_probe already never raise.
+        for entry, scan in ex.map(_probe_entry, _MANIFEST):
+            scanned.append((entry, scan))
+
+    # ── Phase 2: serial persistence ──────────────────────────────────
+    c = _conn()
     try:
         if c is not None:
             with c.cursor() as cur:
                 _ensure_schema(cur)
-        for entry in _MANIFEST:
+        for entry, scan in scanned:
             path     = entry["path"]
             category = entry["category"]
             label    = entry.get("label", "")
-            scan = _scan_one(entry)
             results.append({
                 "path":         path,
                 "category":     category,
@@ -628,6 +749,9 @@ def scan_all() -> list[dict]:
                 "has_nav":      scan.get("has_nav"),
                 "stale_days":   scan.get("stale_days"),
                 "data_age_src": scan.get("data_age_src"),
+                "edge_ms":      scan.get("edge_ms"),
+                "cf_cache_status": scan.get("cf_cache_status"),
+                "cache_class":  scan.get("cache_class"),
             })
             if c is not None:
                 try:
@@ -641,10 +765,12 @@ def scan_all() -> list[dict]:
                                elapsed_ms, healthy, reason, checked_at,
                                last_healthy_at, has_nav, stale_days,
                                data_age_src, content_hash,
-                               prev_content_hash, prev_bytes)
+                               prev_content_hash, prev_bytes,
+                               edge_ms, cf_cache_status, cache_class)
                             VALUES (%s,%s,%s,%s,%s,%s,%s,%s, NOW(),
                                     CASE WHEN %s THEN NOW() ELSE NULL END,
-                                    %s, %s, %s, %s, NULL, NULL)
+                                    %s, %s, %s, %s, NULL, NULL,
+                                    %s, %s, %s)
                             ON CONFLICT (path) DO UPDATE SET
                               category     = EXCLUDED.category,
                               label        = EXCLUDED.label,
@@ -660,6 +786,9 @@ def scan_all() -> list[dict]:
                               prev_content_hash = site_sentinel_results.content_hash,
                               prev_bytes        = site_sentinel_results.bytes,
                               content_hash      = EXCLUDED.content_hash,
+                              edge_ms         = EXCLUDED.edge_ms,
+                              cf_cache_status = EXCLUDED.cf_cache_status,
+                              cache_class     = EXCLUDED.cache_class,
                               last_healthy_at = CASE
                                 WHEN EXCLUDED.healthy THEN NOW()
                                 ELSE site_sentinel_results.last_healthy_at
@@ -670,7 +799,16 @@ def scan_all() -> list[dict]:
                               scan["healthy"],
                               scan.get("has_nav"), scan.get("stale_days"),
                               scan.get("data_age_src"),
-                              scan.get("content_hash")))
+                              scan.get("content_hash"),
+                              scan.get("edge_ms"), scan.get("cf_cache_status"),
+                              scan.get("cache_class")))
+                        # r-sentinel-edge: append latency-history row (#5).
+                        cur.execute("""
+                            INSERT INTO site_sentinel_latency_history
+                              (path, elapsed_ms, edge_ms, status_code, healthy)
+                            VALUES (%s,%s,%s,%s,%s)
+                        """, (path, scan["elapsed_ms"], scan.get("edge_ms"),
+                              scan["status_code"], scan["healthy"]))
                 except Exception:
                     pass
     finally:
@@ -709,10 +847,14 @@ def latest_results() -> list[dict]:
         import psycopg2.extras
         with c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             try:
+                # r-sentinel-edge: COALESCE the new columns so a row written by
+                # a pre-migration deploy (before the ADD COLUMN ran) still reads
+                # cleanly. Wrapped in try/except below for the same reason.
                 cur.execute("""
                     SELECT path, category, label, status_code, bytes,
                            elapsed_ms, healthy, reason, checked_at,
-                           last_healthy_at, has_nav, stale_days, data_age_src
+                           last_healthy_at, has_nav, stale_days, data_age_src,
+                           edge_ms, cf_cache_status, cache_class
                       FROM site_sentinel_results
                      WHERE path = ANY(%s)
                      ORDER BY healthy ASC, category ASC, path ASC
@@ -732,6 +874,9 @@ def latest_results() -> list[dict]:
                         "has_nav":     r["has_nav"],
                         "stale_days":  float(r["stale_days"]) if r["stale_days"] is not None else None,
                         "data_age_src":r["data_age_src"],
+                        "edge_ms":        r.get("edge_ms"),
+                        "cf_cache_status":r.get("cf_cache_status"),
+                        "cache_class":    r.get("cache_class"),
                     })
             except Exception:
                 return out

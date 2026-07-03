@@ -460,15 +460,18 @@ DISABLED_JOBS = {
     # admin-gated + idempotent + already-built; just missing schedule.
     # Staggered minutes to avoid pool contention.
 
-    # Site Sentinel: actively scan + persist health for all surfaces.
-    # /scan returns cached; /scan-now triggers fresh probe. Every 4h.
-    'sentinel_scan_now': {
-        'name': 'Site Sentinel — Active Scan',
-        'endpoint': '/api/v1/sentinel/scan-now',
+    # Site Sentinel MASTER SHELL: scan (parallel + edge probe) → KV/R2 persist
+    # → cache-coverage + latency-regression classify → tier-aware digest. Every
+    # 4h. Fire-and-forget 202 (the tick runs in a bg thread on the worker), so
+    # the short timeout only bounds the ACK, not the ~11s sweep. Replaces the
+    # bare scan-now cron (r-sentinel-edge 2026-07-03); /scan-now stays for manual.
+    'sentinel_master_tick': {
+        'name': 'Site Sentinel — Master Tick',
+        'endpoint': '/api/v1/admin/sentinel/master-tick',
         'method': 'POST',
         'hours': [1, 5, 9, 13, 17, 21],
         'minute': 20,
-        'timeout': 300,
+        'timeout': 60,
     },
     # Heartbeat: refresh per-surface freshness telemetry. Every 4h,
     # staggered :40 to follow sentinel :20.
