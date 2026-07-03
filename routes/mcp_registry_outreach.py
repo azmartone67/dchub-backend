@@ -682,6 +682,144 @@ def _submit_target(target: dict, run_state: Optional[dict] = None) -> dict:
 
 
 # ──────────────────────────────────────────────────────────────────
+# r-escalate (2026-07-03): close the loop the module always promised.
+# The submit half can only QUEUE manual/PR/form debts — nothing ever
+# CLOSED them (they sat as ledger entries on a dashboard nobody
+# reads). Now any live-registry debt that stays not-listed past
+# REGISTRY_ESCALATE_DAYS auto-files a GitHub issue on our own repo,
+# which lands it in the brain's issue queue — the one loop that
+# demonstrably drains (870 closed). Dead/rejected registries
+# (_DEAD_REGISTRY_KEYS) never escalate.
+# Kill switch: REGISTRY_ESCALATE_DISABLE=1. Window: REGISTRY_ESCALATE_DAYS.
+# ──────────────────────────────────────────────────────────────────
+_ESCALATE_REPO = "azmartone67/dchub-backend"
+_ESCALATE_LABEL = "registry-outreach"
+_ESCALATABLE_METHODS = ("manual", "github_pr", "github_issue", "anthropic_form")
+
+
+def _escalate_days() -> int:
+    try: return max(1, int(os.environ.get("REGISTRY_ESCALATE_DAYS", "7")))
+    except Exception: return 7
+
+
+def _recently_escalated(target_key: str, days: int) -> bool:
+    """FAIL-CLOSED like _recently_submitted: no DB / error → True so we
+    never spam issues when we can't verify the cooldown."""
+    conn = _db()
+    if conn is None:
+        return True
+    try:
+        with conn.cursor() as cur:
+            cur.execute(_LEDGER_DDL)
+            cur.execute("""
+                SELECT 1 FROM outreach_submissions
+                 WHERE target_key = %s
+                   AND action = 'escalated'
+                   AND submitted_at >= NOW() - (INTERVAL '1 day' * %s)
+                 LIMIT 1
+            """, (target_key, days))
+            return cur.fetchone() is not None
+    except Exception as e:
+        logger.warning("escalation cooldown check failed (fail-closed): %s", e)
+        return True
+    finally:
+        try: conn.close()
+        except Exception: pass
+
+
+def _gh_api(path: str, payload: Optional[dict] = None, method: str = "GET"):
+    """Minimal GitHub API call via urllib (matches this module's style).
+    Returns (status_code, parsed_json_or_None). Never raises."""
+    import urllib.request as _ur, urllib.error as _ue
+    token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+    if not token:
+        return 0, None
+    req = _ur.Request(
+        f"https://api.github.com/{path.lstrip('/')}",
+        data=json.dumps(payload).encode("utf-8") if payload is not None else None,
+        method=method,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "DCHub-Outreach/1.0",
+            "Content-Type": "application/json",
+        })
+    try:
+        with _ur.urlopen(req, timeout=15) as resp:
+            return resp.getcode(), json.loads(resp.read().decode("utf-8", errors="replace") or "null")
+    except _ue.HTTPError as he:
+        try: body = json.loads(he.read().decode("utf-8", errors="replace") or "null")
+        except Exception: body = None
+        return he.code, body
+    except Exception as e:
+        logger.warning("escalation gh api %s %s failed: %s", method, path, e)
+        return 0, None
+
+
+def _escalate_stale_debts(results: list) -> list:
+    """Called at the end of a submit-all cycle with the per-run results
+    (each carries a FRESH audit verdict). Files one deduped GitHub
+    issue per live registry that is still not listed."""
+    if _truthy(os.environ.get("REGISTRY_ESCALATE_DISABLE")):
+        return [{"escalation": "disabled"}]
+    targets_by_key = {t["key"]: t for t in DISCOVERY_TARGETS}
+    days = _escalate_days()
+    out = []
+    open_issues = None   # lazy-fetched once per run
+    for r in results:
+        key = r.get("target")
+        t = targets_by_key.get(key)
+        if not t or key in _DEAD_REGISTRY_KEYS:
+            continue
+        if t.get("submit_method") not in _ESCALATABLE_METHODS:
+            continue
+        if r.get("audit", {}).get("listed") is not False:
+            continue
+        if _recently_escalated(key, days):
+            out.append({"target": key, "escalation": "cooldown"})
+            continue
+        title = f"[registry-debt] {t['name']}: not listed — manual submission owed"
+        if open_issues is None:
+            # exact-title dedupe via list (NOT search — GitHub search
+            # strips the [brackets], same lesson as the fixpack guard)
+            code, body = _gh_api(
+                f"repos/{_ESCALATE_REPO}/issues?labels={_ESCALATE_LABEL}&state=open&per_page=100")
+            open_issues = {i.get("title"): i.get("html_url") for i in (body or [])} if code == 200 else {}
+            # ensure the label exists (422 already_exists is fine)
+            _gh_api(f"repos/{_ESCALATE_REPO}/labels",
+                    {"name": _ESCALATE_LABEL, "color": "1d76db",
+                     "description": "auto-filed registry-listing debts (mcp_registry_outreach)"},
+                    method="POST")
+        if title in open_issues:
+            _record(key, t["name"], "escalated", "issue_exists", detail=open_issues[title])
+            out.append({"target": key, "escalation": "issue_exists", "issue": open_issues[title]})
+            continue
+        body_md = (
+            f"Auto-filed by the outbound discovery engine (`mcp_registry_outreach.py`).\n\n"
+            f"**Registry:** {t['name']} — {t.get('homepage')}\n"
+            f"**Submit here:** {t.get('manual_url')}\n"
+            f"**Manifest:** https://dchub.cloud/.well-known/mcp.json\n"
+            f"**Last audit:** {r.get('audit', {}).get('reason', 'not listed')}\n\n"
+            f"This registry is alive but our listing audit shows **not listed** and the debt "
+            f"is older than {days}d. Close by submitting (then the daily audit auto-confirms) "
+            f"or by adding the key to `_DEAD_REGISTRY_KEYS` with a dated reason if the "
+            f"registry is dead/rejected.\n\n"
+            f"Ledger: `GET /api/v1/admin/outreach/mcp-registry/status`"
+        )
+        code, issue = _gh_api(f"repos/{_ESCALATE_REPO}/issues",
+                              {"title": title, "body": body_md, "labels": [_ESCALATE_LABEL]},
+                              method="POST")
+        if code == 201 and issue:
+            _record(key, t["name"], "escalated", "issue_filed", detail=issue.get("html_url"))
+            out.append({"target": key, "escalation": "issue_filed", "issue": issue.get("html_url")})
+        else:
+            _record(key, t["name"], "escalated", "issue_error", http_code=code or None,
+                    detail=str(issue)[:300] if issue else "no token or network error")
+            out.append({"target": key, "escalation": "issue_error", "http_code": code})
+    return out
+
+
+# ──────────────────────────────────────────────────────────────────
 # Public endpoints
 # ──────────────────────────────────────────────────────────────────
 
@@ -717,6 +855,10 @@ def outreach_submit_all():
         # Be a polite outbound citizen — half-second pacing
         time.sleep(0.5)
 
+    # r-escalate: stale live-registry debts become GitHub issues in the
+    # brain's queue instead of dying in the ledger (see helper above).
+    escalations = _escalate_stale_debts(results)
+
     summary = {
         "ran_at":     _dt.datetime.utcnow().isoformat() + "Z",
         "targets":    len(results),
@@ -726,6 +868,7 @@ def outreach_submit_all():
         "submitted":  sum(1 for r in results if r["submit"].get("outcome") == "submitted"),
         "dry_run":    sum(1 for r in results if r["submit"].get("outcome") == "dry_run"),
         "skipped":    sum(1 for r in results if r["submit"].get("outcome") == "skipped"),
+        "escalated":  escalations,
         "guards": {
             "network_post_enabled": _submit_enabled(),
             "dry_run":              _submit_dry_run(),
