@@ -317,7 +317,7 @@ def _gather_strategic_context() -> dict:
             "L6 strategic: arch_proposals import skipped: %s", _grp_e)
         recent_arch_proposals = []
 
-    return {
+    ctx = {
         "funnel":          {"now": funnel_now, "d30": funnel_30d},
         "page_health":     page_health,
         "feedback":        feedback,
@@ -330,6 +330,20 @@ def _gather_strategic_context() -> dict:
         "code_inventory":      code_inventory,
         "recent_arch_proposals": recent_arch_proposals,
     }
+    # RAG recall (behind BRAIN_RAG_ENABLED): semantically retrieve the most
+    # relevant PRIOR findings + recommendations so the synthesis has memory
+    # beyond the few recent rows. Fail-soft; the structured sources above are
+    # unchanged — this only adds unstructured recall.
+    if _truthy(os.environ.get("BRAIN_RAG_ENABLED")):
+        try:
+            from routes.brain_rag import retrieve_context
+            _rag_q = ("data-center infrastructure growth strategy: MCP funnel "
+                      "conversion, grid & fiber tool demand, agent retention, "
+                      "data-moat coverage gaps, monetization")
+            ctx["retrieved_prior_work"] = retrieve_context(_rag_q, k=8)
+        except Exception:
+            pass
+    return ctx
 
 
 def _gather_outcomes_context(window_days: int = 30) -> dict:
@@ -653,6 +667,16 @@ def _build_prompt(ctx: dict) -> str:
                     "across days the operator hasn't acted → escalate):\n"
                     + _truncate(ctx.get("self_perception"),
                                 _CTX_BUDGET["self_perception"]))
+
+    # RAG recall (2026-07-03, DARK): semantically-retrieved prior findings +
+    # recommendations relevant to the strategic focus. Only present when
+    # BRAIN_RAG_ENABLED set the key in _gather_strategic_context — otherwise this
+    # section is absent and the prompt is byte-identical to today.
+    if ctx.get("retrieved_prior_work"):
+        sections.append("RELEVANT PRIOR WORK (semantically retrieved from your own "
+                        "findings + past recommendations — build on / reuse these; "
+                        "do NOT re-propose what's already logged):\n" +
+                        _truncate(ctx.get("retrieved_prior_work"), 3500))
 
     # Feature #8 (DARK): per-rec-type STRATEGIC-OUTCOME LEDGER feedback.
     # Only spliced when BRAIN_STRATEGIC_LEDGER_FEEDBACK_ENABLED is set;

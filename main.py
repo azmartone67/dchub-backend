@@ -1966,6 +1966,17 @@ try:
     except Exception as _gdms:
         import logging
         logging.getLogger(__name__).warning('grid_data_master_shell wiring failed: %s', _gdms)
+    # 2026-07-03: brain context-assembly RAG — pgvector + Cohere embeddings over
+    # the brain corpus (findings + recommendations). Gives the strategic planner
+    # semantic RECALL of prior work. POST /api/v1/admin/brain/rag/reindex. Dark
+    # unless BRAIN_RAG_ENABLED (planner wiring); endpoints kill: BRAIN_RAG_DISABLED.
+    try:
+        from routes.brain_rag import brain_rag_bp
+        app.register_blueprint(brain_rag_bp)
+        print("[main] brain_rag_bp registered: POST /api/v1/admin/brain/rag/reindex", flush=True)
+    except Exception as _brag:
+        import logging
+        logging.getLogger(__name__).warning('brain_rag wiring failed: %s', _brag)
     # 2026-07-03: autonomous GEO answer-page publisher — renders + commits
     # /answers/<slug> to the frontend via GitHub API (closes the "backend cron
     # can't author static pages" constraint). POST /api/v1/admin/geo/publish-answer.
