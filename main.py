@@ -1970,6 +1970,16 @@ try:
     except Exception as _geo:
         import logging
         logging.getLogger(__name__).warning('geo_answer_publisher wiring failed: %s', _geo)
+    # 2026-07-03: fully self-driving GEO — picks an uncovered high-intent query,
+    # LLM-drafts grounded in real DB facts, publishes via the publisher. Gated
+    # on GEO_AUTOPUBLISH_ENABLED (default off). POST /api/v1/admin/geo/autopublish.
+    try:
+        from routes.geo_autopublish import geo_autopublish_bp
+        app.register_blueprint(geo_autopublish_bp)
+        print("[main] geo_autopublish_bp registered: POST /api/v1/admin/geo/autopublish", flush=True)
+    except Exception as _gap:
+        import logging
+        logging.getLogger(__name__).warning('geo_autopublish wiring failed: %s', _gap)
     # 2026-07-02: REST/MCP parity manifest (Grok feedback) — maps every MCP tool
     # to its public REST endpoint so REST-only agents have a discovery map.
     try:

@@ -267,13 +267,26 @@ def tier3_act(m: dict, sc: dict) -> dict:
         return {"action": "none", "reason": "DISTRIBUTION_MASTER_ACT_DISABLED (shadow)"}
     weakest = sc.get("weakest")
 
+    # 2026-07-03: self-driving GEO authoring runs EVERY tick regardless of the
+    # weakest lever — it expands coverage into new high-intent queries beyond
+    # the tracked broad set. Publishes ONE page/tick, LLM-drafted from real DB
+    # facts, committed to the frontend via GitHub API. Inert unless
+    # GEO_AUTOPUBLISH_ENABLED=1 (autopublish_next self-gates). Never raises.
+    geo_auto = None
+    try:
+        from routes.geo_autopublish import autopublish_next
+        geo_auto = autopublish_next(dry=False)
+    except Exception as _e:
+        geo_auto = {"ok": False, "error": str(_e)[:120]}
+
     if weakest == "registry":
         # Real submit is env-gated (REGISTRY_SUBMIT_ENABLED) server-side; also
         # re-broadcast our discovery surfaces so registries re-crawl us.
         _fire("/api/v1/admin/outreach/mcp-registry/submit-all")
         _fire("/api/v1/agents/broadcast")
         return {"action": "registry_submit+broadcast", "lever": "registry",
-                "missing": (m.get("registry") or {}).get("missing"), "dispatched": True}
+                "missing": (m.get("registry") or {}).get("missing"),
+                "geo_autopublish": geo_auto, "dispatched": True}
 
     # GEO gap: fire the audience GEO tick (acts on the top broad-query gap) and
     # emit a content brief for the top uncovered answer page (frontend commit is
@@ -294,7 +307,8 @@ def tier3_act(m: dict, sc: dict) -> dict:
             ],
         }
     return {"action": "geo_tick+answer_page_brief", "lever": "geo",
-            "remaining_gaps": len(gaps), "brief": brief, "dispatched": True}
+            "remaining_gaps": len(gaps), "brief": brief,
+            "geo_autopublish": geo_auto, "dispatched": True}
 
 
 # ── persist ───────────────────────────────────────────────────────────
