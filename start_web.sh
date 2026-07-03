@@ -33,8 +33,21 @@ else
   echo "start_web: RENDER detected — skipping MCP sidecar to stay under the 512MB memory cap"
 fi
 
+# r-threads (2026-07-03): 16 → 32 on the primary (Railway) box only. Root-cause
+# probe of the "fiber teaser is slow" report showed the ~0.8s (often multi-second,
+# load-varying) latency is NOT per-handler — it's SINGLE-WORKER SATURATION.
+# `gunicorn --workers 1 --threads 16`: a handful of genuinely slow, DB/compute-
+# heavy routes (/sentinel ~17s, /brain-live ~8s, market-brief/media ~7-10s; see
+# /api/v1/brain/latency) occupy all 16 threads for seconds, so EVERYTHING queues
+# behind them — even the Flask-bypassing /api/health path was measured spiking
+# 42ms → 4200ms under load. The work is I/O-bound (8 concurrent reqs overlapped,
+# 3.5s wall not 16s — threads block on DB and release the GIL), so more threads
+# absorb more concurrent slow requests before queuing. 32 stays well under the
+# web DB pool ceiling (DB_POOL_MAX=50) and RSS has headroom (~441MB vs 1500MB
+# guard). This is the low-risk first lever; the real fix (multiple WORKERS with
+# post-fork thread-start gating) remains the scoped follow-up noted below.
 # On Render's smaller box, fewer threads = lower memory + faster, cleaner boot.
-_THREADS=16
+_THREADS=32
 if [ -n "$RENDER" ] || [ -n "$RENDER_SERVICE_ID" ]; then _THREADS=4; fi
 
 # r82 PERF: --max-requests 1000 → 20000. At current volume 1000 recycled the
