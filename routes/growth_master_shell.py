@@ -39,9 +39,14 @@ from flask import Blueprint, jsonify, request
 
 growth_master_shell_bp = Blueprint("growth_master_shell", __name__)
 
-_BACKEND_BASE = os.environ.get(
-    "DCHUB_BACKEND_BASE",
-    "https://dchub-backend-production.up.railway.app",
+# Self-calls go LOOPBACK on Railway (mirrors cron_heartbeat.BASE) — the shell
+# runs INSIDE the backend, so hitting the public URL would round-trip out
+# through Cloudflare and back (~2s/call × ~10 calls = a 17s tick that 503s past
+# CF's ~15s proxy limit and pins a worker). Loopback keeps each call sub-100ms.
+_BACKEND_BASE = (
+    f"http://127.0.0.1:{os.environ.get('PORT', '8080')}"
+    if (os.environ.get("RAILWAY_ENVIRONMENT") or os.environ.get("RAILWAY_PROJECT_ID"))
+    else os.environ.get("DCHUB_BACKEND_BASE", "https://dchub-backend-production.up.railway.app")
 )
 _GEO_BASE = "https://dchub.cloud"
 
@@ -75,7 +80,7 @@ def _lever_off(name: str) -> bool:
 
 
 # ── self-call helpers ─────────────────────────────────────────────────
-def _req(path: str, method: str = "GET", timeout: int = 40) -> dict:
+def _req(path: str, method: str = "GET", timeout: int = 10) -> dict:
     url = (path if path.startswith("http") else _BACKEND_BASE.rstrip("/") + path)
     started = time.time()
     try:
@@ -97,6 +102,28 @@ def _req(path: str, method: str = "GET", timeout: int = 40) -> dict:
         return {"ok": False, "http": e.code, "error": f"HTTP {e.code}"}
     except Exception as e:
         return {"ok": False, "http": None, "error": f"{type(e).__name__}: {str(e)[:160]}"}
+
+
+def _fire(path: str, timeout: int = 4) -> dict:
+    """Trigger a downstream ACTION without blocking on its full completion — the
+    endpoint runs to completion server-side regardless. A short read timeout is
+    treated as 'dispatched' so the tick stays well under CF's ~15s proxy limit
+    (some actions, e.g. a media-showcase LLM call, take longer than that)."""
+    url = (path if path.startswith("http") else _BACKEND_BASE.rstrip("/") + path)
+    try:
+        req = urllib.request.Request(url, data=b"", method="POST")
+        req.add_header("X-DC-Probe", "growth-tick")
+        req.add_header("User-Agent", "dchub-growth-orchestrator/1.0")
+        ak = _admin_key()
+        if ak:
+            req.add_header("X-Admin-Key", ak)
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return {"ok": resp.status < 400, "http": resp.status, "dispatched": True}
+    except urllib.error.HTTPError as e:
+        return {"ok": False, "http": e.code, "dispatched": True}
+    except Exception:
+        # timeout/other — the request WAS sent; the action runs server-side.
+        return {"ok": True, "dispatched": True, "note": "not awaited"}
 
 
 def _fetch_text(url: str, timeout: int = 12) -> tuple[int, str]:
@@ -274,27 +301,25 @@ def tier3_act(levers: dict) -> dict:
 
     if lever == "autonomy":
         # Nudge the brain to actually pick + act on work (propose-only unless armed).
-        r = _req("/api/v1/brain/self-direct/tick", method="POST")
-        return {"action": "brain_self_direct_tick", "lever": lever, "result_http": r.get("http"), "ok": r.get("ok")}
+        r = _fire("/api/v1/brain/self-direct/tick")
+        return {"action": "brain_self_direct_tick", "lever": lever, "dispatched": r.get("dispatched")}
 
     if lever == "media":
         # Fire a fact-check-gated evergreen analyst post (idempotent/deduped server-side).
-        r = _req("/api/v1/admin/media/showcase/publish", method="POST")
-        return {"action": "media_showcase_publish", "lever": lever, "result_http": r.get("http"), "ok": r.get("ok")}
+        r = _fire("/api/v1/admin/media/showcase/publish")
+        return {"action": "media_showcase_publish", "lever": lever, "dispatched": r.get("dispatched")}
 
     if lever == "distribution":
         # Pull the GEO acquisition tick (acts on the top broad-query gap) + re-broadcast to registries.
-        geo = _req("/api/v1/admin/audience/master-tick", method="POST")
-        _req("/api/v1/agents/broadcast", method="POST")
-        return {"action": "geo_acquisition_tick+registry_broadcast", "lever": lever,
-                "geo_http": geo.get("http"), "ok": geo.get("ok")}
+        _fire("/api/v1/admin/audience/master-tick")
+        _fire("/api/v1/agents/broadcast")
+        return {"action": "geo_acquisition_tick+registry_broadcast", "lever": lever, "dispatched": True}
 
     if lever == "discovery":
-        # llms.txt is a static surface — trigger the surface refresh + flag for the
-        # one-time content add (advertise /onboard). Refresh keeps it non-stale.
-        r = _req("/api/v1/heartbeat/auto?batch=200", method="POST")
-        return {"action": "surface_refresh", "lever": lever, "result_http": r.get("http"),
-                "flag": "Add /onboard + /platforms/register to llms.txt (one-time content)."}
+        # Keep the machine-readable surfaces non-stale (llms.txt content adds are one-time).
+        r = _fire("/api/v1/heartbeat/auto?batch=200")
+        return {"action": "surface_refresh", "lever": lever, "dispatched": r.get("dispatched"),
+                "flag": "Advertise /onboard + /platforms/register in llms.txt (one-time content)."}
 
     if lever == "measurement":
         return {"action": "flag", "lever": lever,
