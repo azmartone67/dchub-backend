@@ -1382,7 +1382,7 @@ def claim_variant_conversion():
                                          AND h.claim_used_at   >= NOW() - INTERVAL '%s days') AS used,
                         COUNT(DISTINCT CASE
                             WHEN h.claim_used_at IS NOT NULL
-                                 AND h.claim_used_at >= NOW() - INTERVAL '%s days'
+                                 AND h.claim_used_at >= NOW() - %s * INTERVAL '1 day'
                                  AND u.email IS NOT NULL
                                  AND COALESCE(u.plan,'free') NOT IN ('free','')
                             THEN LOWER(h.claim_email)
