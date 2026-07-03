@@ -1414,11 +1414,43 @@ _WORKER_PROXY_POST_PATHS = frozenset({
     '/api/jobs/ambassador',
     '/api/jobs/backup',              # pg_dump → R2
     '/api/jobs/db-backup',
+    # r-starve (2026-07-03): the master shell is brain work → worker-owned.
+    # Its handler is now fire-and-forget (202 in ms), so the relay below
+    # holds a web thread only for the round-trip, not the cycle.
+    '/api/v1/admin/brain/master-tick',
 })
 # GET-capable triggers (cron-job.org defaults to GET): same delegation.
 _WORKER_PROXY_GET_PATHS = frozenset({
     '/api/news/push-to-neon',        # fire-and-forget full RSS crawl
     '/api/cron/daily',               # news sync + LinkedIn digest thread
+})
+
+# r-starve (2026-07-03): per-path relay read-timeout. Only the paths below
+# run SYNCHRONOUSLY on the worker (the handler streams the full job result,
+# 40-240s observed) — they keep the long 180s read budget. Every other
+# allowlisted path answers 202 in milliseconds (fire-and-forget handlers or
+# cheap DB counts), so the old blanket timeout=(5,180) meant one wedged
+# relay could hold a web request thread for 3 minutes for nothing — a
+# direct feeder of the 07-03 thread-pool starvation. Those get (5,15):
+# generous for a 202, short enough that a stuck worker can't starve web.
+_WORKER_PROXY_SYNC_PATHS = frozenset({
+    '/api/facilities/refresh',       # 3-source synchronous discovery crawl
+    '/api/jobs/fiber-sync',          # observed 117s
+    '/api/jobs/news-refresh',        # synchronous sync_news, 90-150s
+    '/api/jobs/autopilot',
+    '/api/jobs/global-intelligence',
+    '/api/jobs/infrastructure-sync',
+    # NOT here: transmission/gas/substations-refresh — their loaders take
+    # 60-240s but the handlers 202 immediately via _spawn_loader.
+    '/api/jobs/energy-discovery',
+    '/api/jobs/capacity-headroom',
+    '/api/jobs/evolution',
+    '/api/jobs/ai-ecosystem',
+    '/api/jobs/ai-outreach',
+    '/api/jobs/autonomous-brain',
+    '/api/jobs/ambassador',
+    '/api/jobs/backup',              # pg_dump → R2, minutes
+    '/api/jobs/db-backup',
 })
 
 
@@ -1441,9 +1473,13 @@ def _delegate_to_worker():
     }
     fwd_headers['X-Dchub-Delegated'] = '1'
     url = _WORKER_INTERNAL_URL + request.full_path.rstrip('?')
+    # r-starve: long read budget ONLY for handlers that stream the full
+    # job result; fire-and-forget (202) handlers get a short one so a
+    # wedged worker can't pin web request threads for minutes.
+    _read_budget = 180 if request.path in _WORKER_PROXY_SYNC_PATHS else 15
     try:
         upstream = _rq.request(request.method, url, data=request.get_data(),
-                               headers=fwd_headers, timeout=(5, 180),
+                               headers=fwd_headers, timeout=(5, _read_budget),
                                allow_redirects=False)
     except _rq.exceptions.ReadTimeout:
         # The worker accepted the request and is still executing (the
@@ -1451,7 +1487,8 @@ def _delegate_to_worker():
         # after we disconnect). The job is off web — that's the win — so
         # answer the cron with an honest 202 instead of holding this
         # thread any longer.
-        logger.info("workerproxy: %s still running on worker after 180s — 202", request.path)
+        logger.info("workerproxy: %s still running on worker after %ss — 202",
+                    request.path, _read_budget)
         return jsonify({'success': True, 'delegated_to': 'worker',
                         'completed': False,
                         'note': 'job still running on dchub-worker; check worker logs'}), 202
@@ -22414,9 +22451,11 @@ try:
             # Tonight's logs showed 3/5 self_response fails caused by L8
             # Claude calls hanging 90-110s each. 90s × 5 = 7.5min was too
             # tight; 90s × 10 = 15min gives slow Anthropic responses room
-            # without triggering SIGTERM-master kill. The real architectural
-            # fix (move L8 to a dedicated worker, watchdog kills WORKER not
-            # MASTER) is on the backlog — this is the band-aid until then.
+            # without triggering SIGTERM-master kill.
+            # r-recycle (2026-07-03): the watchdog now recycles the gunicorn
+            # WORKER first (master re-forks in seconds, container stays up)
+            # and only escalates to the master kill when recycles repeat
+            # within the hour — see health_watchdog._trigger_restart.
             init_watchdog(app, check_interval=90, max_failures=10)
             print("🐕 Health Watchdog: ✅ Running (check every 90s, restart after 10 failures)")
     except Exception as e:

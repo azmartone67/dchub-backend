@@ -1,6 +1,7 @@
 import threading
 import time
 import os
+import json
 import signal
 import logging
 import psutil
@@ -53,6 +54,31 @@ class HealthWatchdog:
         self._news_scheduler_ref = None
         self._news_restart_count = 0
         self._news_restart_history = []
+        # r-recycle (2026-07-03 outage follow-up): escalation ladder — on
+        # max_failures, first recycle the gunicorn WORKER (master re-forks a
+        # fresh one in seconds, container stays up), and only kill the MASTER
+        # (= full Railway restart, ~1-2 min blip under restartPolicy ALWAYS)
+        # if recycles keep firing. The watchdog thread dies WITH the worker
+        # it recycles, so the recycle history must outlive this instance:
+        # it is kept in a container-local file (wiped on container restart,
+        # which is exactly the reset we want). Escalate when this recycle
+        # would be recycle #N (default 3rd) within the rolling window
+        # (default 1h ≈ two full grace+fail cycles) — i.e. two recycles get
+        # a chance to clear the wedge before we reach for the master.
+        self._recycle_state_file = os.environ.get(
+            'WATCHDOG_RECYCLE_STATE_FILE', '/tmp/dchub_watchdog_recycles.json')
+        try:
+            self._max_recycles = int(os.environ.get('WATCHDOG_MAX_RECYCLES_PER_WINDOW', '2'))
+        except (TypeError, ValueError):
+            self._max_recycles = 2
+        try:
+            self._recycle_window_s = int(os.environ.get('WATCHDOG_RECYCLE_WINDOW_SECONDS', '3600'))
+        except (TypeError, ValueError):
+            self._recycle_window_s = 3600
+        try:
+            self._recycle_grace_s = int(os.environ.get('WATCHDOG_RECYCLE_GRACE_SECONDS', '30'))
+        except (TypeError, ValueError):
+            self._recycle_grace_s = 30
 
     def register_news_scheduler(self, scheduler_ref):
         self._news_scheduler_ref = scheduler_ref
@@ -316,22 +342,83 @@ class HealthWatchdog:
         except Exception as e:
             logger.warning("WATCHDOG: Port %s cleanup failed: %s", _app_port, str(e)[:100])
 
+    def _read_recycle_history(self):
+        """Worker-recycle timestamps (epoch seconds) that survived past
+        worker deaths. Best-effort: unreadable/corrupt file = empty."""
+        try:
+            with open(self._recycle_state_file) as f:
+                data = json.load(f)
+            return [t for t in data if isinstance(t, (int, float))]
+        except Exception:
+            return []
+
+    def _record_worker_recycle(self):
+        history = self._read_recycle_history()
+        history.append(time.time())
+        try:
+            with open(self._recycle_state_file, 'w') as f:
+                json.dump(history[-10:], f)
+        except Exception as e:
+            logger.warning("WATCHDOG: could not persist recycle history: %s", str(e)[:80])
+
+    def _recycle_worker(self, failed_checks):
+        """Kill/recycle the gunicorn WORKER, not the master. SIGTERM to our
+        own PID starts gunicorn's graceful worker shutdown; the master
+        re-forks a fresh worker while the container (and Railway deployment)
+        stay up — recovery in seconds instead of the ~1-2 min full-restart
+        blip. If the graceful exit hangs (request threads truly wedged on
+        network I/O — the exact starvation we're recovering from), force the
+        worker down with os._exit after a bounded grace."""
+        logger.critical("WATCHDOG: Server unresponsive %d times — recycling gunicorn WORKER "
+                        "(master stays up). Failed: %s",
+                        self.consecutive_failures, ', '.join(failed_checks))
+        print(f"WATCHDOG: Recycling gunicorn worker PID {os.getpid()} "
+              f"(failed: {', '.join(failed_checks)})")
+        self._record_worker_recycle()
+
+        import sys
+        sys.stdout.flush()
+        sys.stderr.flush()
+
+        try:
+            os.kill(os.getpid(), signal.SIGTERM)
+        except Exception:
+            os._exit(1)
+        time.sleep(self._recycle_grace_s)
+        # Still alive → graceful shutdown is stuck behind wedged threads.
+        print(f"WATCHDOG: Worker still alive {self._recycle_grace_s}s after SIGTERM — forcing exit")
+        sys.stdout.flush()
+        os._exit(1)
+
     def _trigger_restart(self):
         self.total_restarts += 1
         restart_time = datetime.utcnow().isoformat()
-        reason = f"Health check failed {self.consecutive_failures} consecutive times"
         failed_checks = [k for k, v in self.last_check_details.items() if not v['healthy']]
+
+        # Escalation ladder (r-recycle): worker recycle first, master kill
+        # only when recycling demonstrably isn't clearing the condition.
+        recent_recycles = [t for t in self._read_recycle_history()
+                           if time.time() - t < self._recycle_window_s]
+        escalate = len(recent_recycles) >= self._max_recycles
 
         self.restart_history.append({
             'time': restart_time,
-            'reason': reason,
-            'failed_checks': failed_checks
+            'reason': f"Health check failed {self.consecutive_failures} consecutive times",
+            'failed_checks': failed_checks,
+            'action': 'master_kill' if escalate else 'worker_recycle',
+            'recent_recycles': len(recent_recycles),
         })
         if len(self.restart_history) > 20:
             self.restart_history = self.restart_history[-20:]
 
-        logger.critical("WATCHDOG: Server unresponsive %d times, forcing full restart! Failed: %s",
-                        self.consecutive_failures, ', '.join(failed_checks))
+        if not escalate:
+            self._recycle_worker(failed_checks)  # does not return
+            return
+
+        logger.critical("WATCHDOG: Server unresponsive %d times and %d worker recycles in the "
+                        "last %ds did not clear it — forcing FULL restart! Failed: %s",
+                        self.consecutive_failures, len(recent_recycles),
+                        self._recycle_window_s, ', '.join(failed_checks))
         print(f"WATCHDOG: Server unresponsive {self.consecutive_failures} times, forcing full restart")
 
         self._kill_app_port_processes()
@@ -454,6 +541,13 @@ class HealthWatchdog:
             'last_check_time': self.last_check_time.isoformat() if self.last_check_time else None,
             'last_check_details': self.last_check_details,
             'restart_history': self.restart_history[-5:],
+            'worker_recycle': {
+                'recent_recycles_in_window': len([
+                    t for t in self._read_recycle_history()
+                    if time.time() - t < self._recycle_window_s]),
+                'escalate_to_master_kill_at': self._max_recycles,
+                'window_seconds': self._recycle_window_s,
+            },
             'news_scheduler': {
                 'monitored': self._news_scheduler_ref is not None,
                 'restart_count': self._news_restart_count,

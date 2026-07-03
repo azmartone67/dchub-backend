@@ -43,7 +43,11 @@ jobs:
           BASE="${DCHUB_BACKEND_BASE:-https://dchub-backend-production.up.railway.app}"
           URL="$BASE/api/v1/admin/brain/master-tick?dry=${DRY}&tiers=${TIERS}&cb=${GITHUB_RUN_ID}"
           echo "POST $URL"
-          body=$(curl -sS --max-time 300 -X POST "$URL" \
+          # r-starve (2026-07-03): the endpoint is fire-and-forget — it 202s
+          # immediately and the cycle runs in the background on the worker.
+          # We print the ack here; the full report lands in brain_master_ticks
+          # and is served by GET /api/v1/admin/brain/master-tick/last.
+          body=$(curl -sS --max-time 60 -X POST "$URL" \
                    -H "X-Admin-Key: $ADMIN_KEY" \
                  || echo '{"ok":false,"error":"curl_fail"}')
-          echo "$body" | python3 -c "import json,sys; d=json.load(sys.stdin); h=d.get('headline',{}); print('tiers:', d.get('tiers_run')); print('steps_ok:', h.get('steps_ok'),'/',h.get('steps_total')); print('human_decisions_pending:', h.get('human_decisions_pending')); [print(' ',s.get('step'),'->','ok' if s.get('ok') else s.get('error')) for s in d.get('steps',[])]" || echo "$body"
+          echo "$body" | python3 -c "import json,sys; d=json.load(sys.stdin); print('ok:', d.get('ok')); print('started:', d.get('started')); print('tiers:', d.get('tiers') or d.get('tiers_run')); print('note:', d.get('note') or d.get('error') or d.get('reason') or '')" || echo "$body"

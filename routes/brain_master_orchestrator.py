@@ -21,10 +21,19 @@ Tiering (matches the evolution plan):
            actually resolved their findings (feeds quarantine).
 
 Endpoints:
-  POST /api/v1/admin/brain/master-tick         — run one full cycle
+  POST /api/v1/admin/brain/master-tick         — start one full cycle (202)
        ?dry=1                — preview: skip Tier-1 execution + drafting
        ?tiers=1,2,3,verify   — run a subset (default: all)
   GET  /api/v1/admin/brain/master-tick/last    — last cycle's report
+
+r-starve (2026-07-03): the tick is FIRE-AND-FORGET. It chains 8-10 serial
+self-HTTP calls (90s budget each), so running it inside a request handler
+held a web thread for the whole cycle ('SLOW REQUEST: master-tick took
+81.7s' during the 07-03 outage window) and fed the thread-pool starvation
+that trips the health watchdog. POST now returns 202 immediately and the
+cycle runs in a daemon thread guarded by a non-blocking lock (same r-async
+pattern as /api/news/refresh); the report lands in brain_master_ticks and
+is served by GET /master-tick/last.
 
 Auth: X-Admin-Key (DCHUB_ADMIN_KEY / DCHUB_INTERNAL_KEY). Fail-closed.
 Safety: this layer only CALLS the existing run endpoints, so all their
@@ -37,6 +46,7 @@ from __future__ import annotations
 import os
 import json
 import time
+import threading
 import datetime as _dt
 import urllib.request
 import urllib.error
@@ -44,6 +54,10 @@ import urllib.error
 from flask import Blueprint, jsonify, request
 
 brain_master_orchestrator_bp = Blueprint("brain_master_orchestrator", __name__)
+
+# r-starve: one tick at a time. acquire(blocking=False) so an overlapping
+# trigger answers 202/already-running instead of queueing a second cycle.
+_tick_running = threading.Lock()
 
 _BACKEND_BASE = os.environ.get(
     "DCHUB_BACKEND_BASE",
@@ -178,21 +192,9 @@ def _is_admin(req) -> bool:
     return bool(got) and got == expected
 
 
-@brain_master_orchestrator_bp.route("/api/v1/admin/brain/master-tick", methods=["POST"])
-def master_tick():
-    if not _admin_key():
-        return jsonify({"error": "admin_endpoint_unconfigured",
-                        "hint": "Set DCHUB_ADMIN_KEY on Railway."}), 503
-    if not _is_admin(request):
-        return jsonify({"error": "unauthorized"}), 401
-    if _is_master_disabled():
-        return jsonify({"ok": True, "skipped": True,
-                        "reason": "BRAIN_MASTER_DISABLED env set"}), 200
-
-    dry = str(request.args.get("dry", "")).lower() in ("1", "true", "yes")
-    want = request.args.get("tiers", "1,2,3,verify")
-    tiers = {t.strip() for t in want.split(",") if t.strip()}
-
+def _run_master_tick(dry: bool, tiers: set) -> dict:
+    """One full orchestrated cycle. Runs in a daemon thread (r-starve) —
+    must not touch flask.request; everything it needs is passed in."""
     report = {
         "ok": True,
         "ran_at": _dt.datetime.now(_dt.timezone.utc).isoformat(),
@@ -303,7 +305,50 @@ def master_tick():
         "human_decisions_pending": (report.get("human_decisions") or {}).get("count", 0),
     }
     _persist(report)
-    return jsonify(report), 200
+    return report
+
+
+@brain_master_orchestrator_bp.route("/api/v1/admin/brain/master-tick", methods=["POST"])
+def master_tick():
+    if not _admin_key():
+        return jsonify({"error": "admin_endpoint_unconfigured",
+                        "hint": "Set DCHUB_ADMIN_KEY on Railway."}), 503
+    if not _is_admin(request):
+        return jsonify({"error": "unauthorized"}), 401
+    if _is_master_disabled():
+        return jsonify({"ok": True, "skipped": True,
+                        "reason": "BRAIN_MASTER_DISABLED env set"}), 200
+
+    dry = str(request.args.get("dry", "")).lower() in ("1", "true", "yes")
+    want = request.args.get("tiers", "1,2,3,verify")
+    tiers = {t.strip() for t in want.split(",") if t.strip()}
+
+    if not _tick_running.acquire(blocking=False):
+        return jsonify({"ok": True, "started": False,
+                        "note": "master-tick already running; report will land at "
+                                "GET /api/v1/admin/brain/master-tick/last"}), 202
+
+    def _bg():
+        try:
+            _run_master_tick(dry, tiers)
+        except Exception as e:
+            # The cycle itself never raises (every step is try-wrapped),
+            # but never let a surprise kill the lock release.
+            _persist({"ok": False, "dry_run": dry, "tiers_run": sorted(tiers),
+                      "error": f"{type(e).__name__}: {str(e)[:200]}",
+                      "ran_at": _dt.datetime.now(_dt.timezone.utc).isoformat()})
+        finally:
+            try:
+                _tick_running.release()
+            except Exception:
+                pass
+
+    threading.Thread(target=_bg, daemon=True, name="brain-master-tick").start()
+    return jsonify({"ok": True, "started": True, "dry_run": dry,
+                    "tiers": sorted(tiers),
+                    "started_at": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+                    "note": "cycle running in background; report → "
+                            "GET /api/v1/admin/brain/master-tick/last"}), 202
 
 
 @brain_master_orchestrator_bp.route("/api/v1/admin/brain/master-tick/last", methods=["GET"])
