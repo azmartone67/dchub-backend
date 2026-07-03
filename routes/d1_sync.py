@@ -60,55 +60,83 @@ CF_TOKEN = os.environ.get("CLOUDFLARE_API_TOKEN", "")
 CF_D1_URL = (f"https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT}"
               f"/d1/database/{CF_D1_ID}/query")
 
-BATCH_SIZE = 50             # statements per /batch call (CF caps batch size + each stmt has 16 params)
+BATCH_SIZE = 100            # statements per CF D1 batch call. Each statement
+                            # binds 16 params — well under D1's 100-param/query
+                            # cap (that cap is PER STATEMENT, not per batch). A
+                            # batch that fails wholesale falls back to per-row,
+                            # so an over-large batch degrades safely, never wedges.
 SYNC_TIMEOUT_SECONDS = 600  # whole-job ceiling (10 min)
 
 
+def _d1_headers() -> dict:
+    return {
+        "Authorization": f"Bearer {CF_TOKEN}",
+        "Content-Type": "application/json",
+    }
+
+
+def _check_d1(r) -> dict:
+    """Parse a CF D1 REST response and raise a DESCRIPTIVE error on failure.
+
+    CF returns the real reason (bad SQL, missing field, param mismatch) in the
+    JSON body's `errors`, even on an HTTP 400. requests' raise_for_status()
+    discards the body — which is exactly why sync_log only ever showed a bare
+    "400 Client Error: Bad Request" and the true cause was invisible. Surface
+    the body detail instead so failures are diagnosable from /status."""
+    try:
+        data = r.json()
+    except Exception:
+        r.raise_for_status()          # non-JSON body → fall back to HTTP status
+        raise
+    if not r.ok or not data.get("success", False):
+        errs = data.get("errors") or data.get("messages") or []
+        detail = "; ".join(
+            (e.get("message") if isinstance(e, dict) else str(e)) for e in errs
+        ) or f"HTTP {r.status_code}"
+        raise RuntimeError(f"D1 error: {detail}")
+    return data
+
+
 def _d1_query(sql: str, params: list = None, timeout: int = 30) -> dict:
-    """POST a SQL statement to D1. Returns the parsed response dict.
-    Raises on HTTP error; caller handles."""
+    """POST a single SQL statement to D1. Returns the parsed response dict.
+    Raises a descriptive error on failure; caller handles."""
     import requests
     if not CF_TOKEN:
         raise RuntimeError(
             "CLOUDFLARE_API_TOKEN not set on Railway — D1 sync disabled. "
             "Create a token with D1:Edit scope and set it as an env var.")
-    headers = {
-        "Authorization": f"Bearer {CF_TOKEN}",
-        "Content-Type": "application/json",
-    }
     body = {"sql": sql}
     if params:
         body["params"] = params
-    r = requests.post(CF_D1_URL, headers=headers, json=body, timeout=timeout)
-    r.raise_for_status()
-    return r.json()
+    r = requests.post(CF_D1_URL, headers=_d1_headers(), json=body, timeout=timeout)
+    return _check_d1(r)
 
 
 def _d1_batch(statements: list, timeout: int = 60) -> dict:
-    """POST a list of {sql, params} statement objects to D1's /query
-    endpoint as an ARRAY body — CF D1's documented batch mode.
+    """Execute many {sql, params} statements in ONE HTTP call via CF D1's
+    documented batch envelope.
 
-    Phase FF+25-followup (2026-05-20): the per-row loop in _run_sync()
-    was making 12,553 sequential HTTP calls (~300ms each = >60min,
-    Railway edge timed out at 30s). The CF D1 REST API accepts a JSON
-    ARRAY at the same /query URL for batch execution. ~50 statements
-    per call → ~250 calls total → ~75s end-to-end.
+    THE FIX (2026-07-03): the CF D1 REST `/query` endpoint accepts a JSON
+    OBJECT only — either {"sql","params"} or {"batch":[{"sql","params"},...]}.
+    It does NOT accept a bare top-level array. The prior version (git e0037c60)
+    POSTed `json=statements` (a bare array), so CF couldn't find a `sql` field
+    and 400'd EVERY batch — forcing the per-row fallback that took ~8.5 min for
+    ~4k rows and left D1 frozen at ~6.2k of ~21k facilities. Wrapping the same
+    statements in {"batch": [...]} is the documented batch mode:
+      • ~21k rows / 100 per batch ≈ 210 calls → ~1–2 min end-to-end.
+      • The batch runs in an implicit transaction: if one statement errors the
+        whole batch rolls back, and the caller's per-row fallback re-applies it.
 
-    First implementation used /batch as the URL (replaced /query), but
-    that 404'd silently — CF doesn't expose /batch, it's array-body-to-
-    /query. Fixed in v2.
+    History of wrong turns kept as a warning: v1 used a `/batch` URL (404 — CF
+    has no such path); v2 used array-body-to-/query (400 — this function's bug).
     """
     import requests
     if not CF_TOKEN:
         raise RuntimeError("CLOUDFLARE_API_TOKEN not set")
-    headers = {
-        "Authorization": f"Bearer {CF_TOKEN}",
-        "Content-Type": "application/json",
-    }
-    # CF D1 batch: same URL as single-query, but body is an array
-    r = requests.post(CF_D1_URL, headers=headers, json=statements, timeout=timeout)
-    r.raise_for_status()
-    return r.json()
+    # CF D1 batch: same /query URL, body is an OBJECT with a "batch" array.
+    r = requests.post(CF_D1_URL, headers=_d1_headers(),
+                      json={"batch": statements}, timeout=timeout)
+    return _check_d1(r)
 
 
 def _neon_query(sql: str, params: tuple = ()):
@@ -207,10 +235,9 @@ def _run_sync() -> dict:
             facility_type=excluded.facility_type, address=excluded.address,
             fiber_providers=excluded.fiber_providers, synced_at=unixepoch()
     """
-    # Phase FF+25-followup (2026-05-20): batched via CF D1 /batch endpoint.
-    # Previous version did ONE HTTP call per row → 12,553 calls × 300ms =
-    # 60+ min, way past Railway's edge timeout. Now: 50 statements per
-    # batch, ~250 batches total → ~75s end-to-end at 300ms/batch.
+    # Batched via CF D1's {"batch":[...]} envelope (_d1_batch). 100 upserts per
+    # HTTP call → ~210 calls for ~21k rows → ~1–2 min. A per-row fallback covers
+    # any single batch that CF rejects (bad UTF-8, oversize address, etc.).
     def _row_params(r):
         return [
             str(r.get("id")) if r.get("id") is not None else None,
@@ -253,7 +280,11 @@ def _run_sync() -> dict:
                     _d1_query(insert_sql, _row_params(r))
                     out["rows_synced"] += 1
                 except Exception as e2:
-                    pass  # already logged at batch level
+                    # Capture ONE representative per-row failure so we can tell a
+                    # transient batch reject from a genuinely bad row.
+                    if not any("per-row row" in x for x in out["errors"]):
+                        out["errors"].append(
+                            f"per-row row id={r.get('id')} failed: {str(e2)[:160]}")
         out["batches"] += 1
 
     # 3) Record this run in the sync_log table.
