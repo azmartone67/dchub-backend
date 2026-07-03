@@ -12,10 +12,13 @@ weaker sub-signal: a GEO gap emits a content brief for the top uncovered query +
 fires the audience GEO tick; a registry gap fires the (env-gated) registry
 submit + agent broadcast. PERSISTS a 0-100 score.
 
-Constraint: a backend cron cannot commit the static frontend answer pages, so
-GEO page authoring stays a human/one-time step (the shell briefs it); the
-registry + broadcast actions are fully self-driving. Mirrors the house pattern
-(loopback self-calls + fire-and-forget, admin-gated, killable).
+Constraint (RESOLVED 2026-07-03): GEO page authoring is no longer a human step —
+routes/geo_answer_publisher.py commits answers/<slug>.html to the frontend via
+the GitHub Contents API (POST /api/v1/admin/geo/publish-answer). The shell still
+briefs the top gap; wiring brief->publish (LLM draft_answer -> structured fields
+-> publish_answer) is the remaining self-drive step. Registry + broadcast actions
+are already fully self-driving. Mirrors the house pattern (loopback self-calls +
+fire-and-forget, admin-gated, killable).
 
 Endpoints:
   POST /api/v1/admin/distribution/master-tick   — measure -> score -> act -> persist
