@@ -371,21 +371,56 @@ def register():
     slug = re.sub(r"[^a-z0-9]+", "-", payload["name"].lower()).strip("-")
     integration_card_url = f"https://dchub.cloud/integrations/{slug or 'platform'}"
 
+    # r-onboard-fix 2026-07-03: the dch_platform_* key above is TRACKING-ONLY —
+    # NO auth/tier gate honors that prefix, so a self-registered partner used to
+    # receive a credential that unlocked nothing (dead funnel: agent registers →
+    # gets key → key works nowhere → never converts). On auto-approve, ALSO mint
+    # a REAL developer key via partner_key_issuer._issue_internal (dual-writes to
+    # api_keys, honored by every gate) and hand THAT back as the usable key.
+    live_key = None
+    if auto:
+        try:
+            from routes.partner_key_issuer import _issue_internal
+            _res = _issue_internal(
+                partner_slug=(slug or f"agent-{sub_id}"),
+                target_email=payload["contact_email"],
+                plan="developer",
+                company=payload["name"],
+                name=payload["name"],
+                label=f"self-register: {payload['name']}"[:80],
+                issued_by="agent_self_register",
+            )
+            if isinstance(_res, dict) and _res.get("ok"):
+                live_key = _res.get("key")
+            else:
+                logger.warning("self-register live key mint declined: %s",
+                               (_res or {}).get("error") if isinstance(_res, dict) else _res)
+        except Exception as e:
+            logger.warning("self-register live key mint failed: %s", e)
+
     try: c.close()        # LEAK FIX: release the pooled conn on the success path
     except Exception: pass
     return jsonify(
         ok=True,
         platform_id=sub_id,
-        platform_key=api_key,
+        api_key=live_key,          # WORKING developer key (null until approved)
+        platform_key=api_key,      # tracking-only id (dch_platform_*, not an auth credential)
+        key_usage=("Send api_key as the X-API-Key header to https://dchub.cloud/mcp "
+                   "for the full developer tier."
+                   if live_key else
+                   "A working api_key is issued the moment your platform is approved."),
         integration_card_url=integration_card_url,
         api_docs_url="https://dchub.cloud/api/docs",
         recommended_quota_daily=quota,
         auto_approved=auto,
         fit_score=fit_score,
         fit_reasons=fit_reasons,
-        next_step=("Your platform is in the onboarder queue. Full fit "
-                   "score + integration card land within 6 hours. Watch "
-                   f"GET /api/v1/platforms/register/{sub_id}.")
+        next_step=(("Approved — connect now: set header X-API-Key: <api_key> against "
+                    "https://dchub.cloud/mcp (developer tier, "
+                    f"{quota}/day).") if live_key else
+                   ("Your platform is in the onboarder queue. Full fit score + "
+                    "integration card land within 6 hours. Watch "
+                    f"GET /api/v1/platforms/register/{sub_id}."))
     ), 201
 
 
