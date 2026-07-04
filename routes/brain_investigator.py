@@ -987,10 +987,20 @@ def investigate(question: str, *, depth: str = "default") -> dict:
     # the old caps hit stop_reason=max_tokens mid-JSON → unparseable → every
     # investigation died with model_returned_no_recommendation. Same lesson as
     # brain_v2_layer4's "4000, not 800".
+    # 2026-07-04 (model-routing right-sizing): DECOMPOSE is a mechanical
+    # extraction task — emit 3-6 sub-questions + data-source names as JSON,
+    # explicitly NOT answering the question — so it rides the cheap "voice"
+    # tier (haiku-4-5), not the fable/opus reasoning tier it launched on.
+    # Safe by construction: haiku-4-5 is on the GA structured-outputs list
+    # (brain_llm_structured.STRUCTURED_OUTPUT_MODEL_PREFIXES) so
+    # _DECOMPOSE_SCHEMA still rides; haiku has no always-on thinking, so the
+    # 2000-token cap is pure output headroom; and _call_model still walks
+    # resolve_chain(brain_model_for(tier)) — only the tier argument changed.
+    # REASON stays on "reasoning" and REFUTE on "challenger" (judgment work).
     dtext, derr, dmodel = _call_model(
         _DECOMPOSE_SYSTEM,
         f"Operator question: {question}\n\nDecompose it.",
-        tier="reasoning", max_tokens=2000, schema=_DECOMPOSE_SCHEMA,
+        tier="voice", max_tokens=2000, schema=_DECOMPOSE_SCHEMA,
     )
     if derr:
         base["cannot_investigate"] = derr
