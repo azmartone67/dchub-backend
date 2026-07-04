@@ -260,6 +260,32 @@ UUID_RE = re.compile(r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]
 #     form (graceful — never 400 the user out of the funnel).
 DCM_RE = re.compile(r'^DCM-[A-Z2-9]{4}$', re.IGNORECASE)
 
+# r-scanner-mint (2026-07-03): UA gate for the Path-4 inline pair-code mint.
+# The 07-03 deep dive found ~92% of the 1,071 pair codes minted/30d came from
+# scanners fuzzing GET /redeem/<anything> — every bare page load minted a code
+# (zero of them ever redeemed), turning the funnel waterfall's codes_minted
+# stage into bot noise. Raw HTTP libraries, headless browsers, and security
+# scanners never carry a human who can complete Stripe checkout, so we never
+# mint for them. An EMPTY UA is treated as a scanner too — every real browser
+# sends one. Real browser UAs (Mozilla/…Safari/Chrome/Edg) match none of these.
+_SCANNER_UA_RE = re.compile(
+    r'python-httpx|python-urllib|urllib|python-requests|curl|wget|libwww|'
+    r'node-fetch|undici|axios|got/|go-http|okhttp|java/|requests/|aiohttp|'
+    r'scrapy|httpie|restsharp|postman|'
+    r'headless|phantomjs|slimerjs|selenium|playwright|puppeteer|'
+    r'zgrab|censys|nmap|masscan|nuclei|nikto|sqlmap|dirbuster|gobuster|'
+    r'feroxbuster|wpscan|paloalto|expanse|'
+    r'\bbot\b|spider|crawler|scanner',
+    re.IGNORECASE)
+
+
+def _is_scanner_request() -> bool:
+    """True when the current request's UA can't be a human-driven browser."""
+    ua = (request.headers.get('User-Agent') or '').strip()
+    if not ua:
+        return True
+    return bool(_SCANNER_UA_RE.search(ua))
+
 FORM_HTML = """<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -349,6 +375,8 @@ FORM_HTML = """<!DOCTYPE html>
     <a href="https://buy.stripe.com/8x2dRa5sS0x75uteGuaZi0g" target="_blank">$9/mo →</a>
   </div>
 
+  __MINT_CTA_BLOCK__
+
   <div class="what-you-get">
     <h2>The ladder</h2>
     <div class="tier-row">
@@ -411,6 +439,15 @@ FORM_HTML = """<!DOCTYPE html>
           beacon('/api/v1/redeem/click', 'stripe-' + tier);
         });
       });
+      // r-scanner-mint (2026-07-03): pair-code mint moved behind this click.
+      var mintCta = document.getElementById('mint-cta');
+      if (mintCta) {
+        mintCta.addEventListener('click', function (ev) {
+          ev.preventDefault();
+          beacon('/api/v1/redeem/click', 'mint-cta');
+          window.location = window.location.pathname + '?mint=1';
+        });
+      }
     })();
   </script>
 </body>
@@ -561,29 +598,43 @@ def phase63_redeem(session_id):
     # Path 4: GET with non-UUID, non-DCM id → mint a pair code and
     # redirect to the canonical page. Only on GET (POST is the form
     # submission and the user has already landed; preserve that flow).
+    #
+    # r-scanner-mint (2026-07-03): the mint is no longer unconditional. A
+    # bare GET here used to mint on every page load — scanners fuzzing
+    # /redeem/<anything> minted ~92% of all pair codes (of 1,071/30d) with
+    # ZERO redemptions ever, drowning the funnel's codes_minted stage in bot
+    # noise. Minting now requires BOTH:
+    #   · explicit interaction intent — ?mint=1, set only by the form page's
+    #     JS CTA click (never by a bare page view; crawlers that don't run
+    #     JS never see it, and the CTA carries no crawlable href), AND
+    #   · a human-capable browser UA (_is_scanner_request — raw HTTP libs,
+    #     headless drivers, and security scanners are refused).
+    # Everyone else falls through to the email form below, which is
+    # interaction-gated by nature (a POST with a typed email).
     if request.method == 'GET' and not UUID_RE.match(session_id):
-        try:
-            from routes.pair_code import get_or_create_code as _mint
-            # Key on `sess:<id>` so a re-hit from the same session reuses
-            # the same pair code (idempotent within the 30-min window).
-            _mint_result = _mint(f"sess:{session_id}",
-                                  tool_name=request.args.get('tool'),
-                                  market=request.args.get('market'))
-            if _mint_result and _mint_result.get('code'):
-                _code = _mint_result['code']
-                _p99_logger.info(
-                    f"r68-redeem-leak: minted {_code} for "
-                    f"non-UUID session_id={session_id[:40]}"
+        if request.args.get('mint') == '1' and not _is_scanner_request():
+            try:
+                from routes.pair_code import get_or_create_code as _mint
+                # Key on `sess:<id>` so a re-hit from the same session reuses
+                # the same pair code (idempotent within the 30-min window).
+                _mint_result = _mint(f"sess:{session_id}",
+                                      tool_name=request.args.get('tool'),
+                                      market=request.args.get('market'))
+                if _mint_result and _mint_result.get('code'):
+                    _code = _mint_result['code']
+                    _p99_logger.info(
+                        f"r68-redeem-leak: minted {_code} for "
+                        f"non-UUID session_id={session_id[:40]}"
+                    )
+                    return redirect(f'/redeem/{_code}', code=302)
+            except Exception as _e:
+                _p99_logger.warning(
+                    f"r68-redeem-leak: inline mint failed for "
+                    f"session={session_id[:40]}: {type(_e).__name__}: {_e}"
                 )
-                return redirect(f'/redeem/{_code}', code=302)
-        except Exception as _e:
-            _p99_logger.warning(
-                f"r68-redeem-leak: inline mint failed for "
-                f"session={session_id[:40]}: {type(_e).__name__}: {_e}"
-            )
-        # Mint failed — fall through to render the email form with this
-        # session_id. Form still works; the lookup will just return no
-        # tools_tried context. Better than a 400.
+        # No interaction intent / scanner UA / mint failed — render the email
+        # form with this session_id. Form still works; the lookup will just
+        # return no tools_tried context. Better than a 400.
 
     if request.method == 'POST':
         email = (request.form.get('email') or '').strip().lower()
@@ -833,12 +884,30 @@ def phase63_redeem(session_id):
         tools_display = 'DC Hub paid tools'
         tools_hit_block = ''
 
+    # r-scanner-mint (2026-07-03): interaction-gated pair-code mint. The
+    # server no longer mints on bare page view (scanners were ~92% of all
+    # mints); this CTA is the human path back to the one-click checkout code.
+    # Deliberately NO crawlable href — the ?mint=1 navigation happens only in
+    # the JS click handler, so non-JS crawlers never trigger it. Only shown
+    # for non-UUID sessions: UUID-shaped ids (the bare /redeem flow) never
+    # take Path 4, so ?mint=1 would be a dead click there.
+    mint_cta_block = ''
+    if not UUID_RE.match(session_id):
+        mint_cta_block = (
+            '<div class="upgrade-row">\n'
+            '    <div class="text"><strong>Upgrading for your AI agent?</strong> '
+            'Get a one-click checkout code bound to this session.</div>\n'
+            '    <a href="#" id="mint-cta">Get code &rarr;</a>\n'
+            '  </div>'
+        )
+
     html = (FORM_HTML
             .replace('__SESSION_ID__', session_id)
             .replace('__SESSION_SHORT__', short)
             .replace('__TOOLS_DISPLAY__', tools_display)
             .replace('__TOOLS_COUNT__', tools_count)
-            .replace('__TOOLS_HIT_BLOCK__', tools_hit_block))
+            .replace('__TOOLS_HIT_BLOCK__', tools_hit_block)
+            .replace('__MINT_CTA_BLOCK__', mint_cta_block))
     return Response(
         html,
         mimetype='text/html; charset=utf-8',

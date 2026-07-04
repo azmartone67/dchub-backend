@@ -174,12 +174,18 @@ def _internal_platform_list() -> str:
                     for p in sorted(set(INTERNAL_PLATFORM_VALUES)))
 
 
-def external_platform_predicate() -> str:
+def external_platform_predicate(col: str = "platform") -> str:
     """TRUE when the write-time `platform` column is NOT one of our own
     internal/self/probe services. `dchub-%` covers selfheal / mcp-test /
     regression-test; the explicit list covers named probes + short test-client
-    names. NULL/empty platform is KEPT (real anonymous agents)."""
-    p = "COALESCE(LOWER(platform), '')"
+    names. NULL/empty platform is KEPT (real anonymous agents).
+
+    `col` lets other tables reuse THIS verdict on their own tag column
+    (e.g. mcp_high_intent_sessions.mcp_client) instead of keeping a second
+    hand-maintained exclusion list. NOTE: contains literal % (LIKE) — never
+    embed in a psycopg2 query that also passes bound params; use
+    internal_tag_regex_predicate() there instead."""
+    p = f"COALESCE(LOWER({col}), '')"
     # NOT LIKE patterns catch recurring internal validators/probes whose names
     # vary (p1verify, gate-audit, mcp-probe, diag-*, …) without an ever-growing
     # exact list. Literal % is safe here — this clause is inlined (no bound
@@ -224,11 +230,29 @@ _SCRIPT_INTERNAL_UA = (
 )
 
 
-def real_ua_predicate() -> str:
+def real_ua_predicate(col: str = "user_agent") -> str:
     """TRUE when user_agent is NOT a raw-scripting client or an internal/self UA.
     Fires regardless of client_name (the gap PLATFORM_CASE leaves). Inlined SQL
-    literal — no bound params, so the literal patterns are safe next to ILIKE."""
-    return f"COALESCE(user_agent,'') !~* '({_SCRIPT_INTERNAL_UA})'"
+    literal — no bound params, so the literal patterns are safe next to ILIKE.
+    `col` lets other tables apply the same verdict to their UA column; the
+    regex form carries no literal %, so it is bound-params-safe."""
+    return f"COALESCE({col},'') !~* '({_SCRIPT_INTERNAL_UA})'"
+
+
+def internal_tag_regex_predicate(col: str) -> str:
+    """The REGEX twin of external_platform_predicate() for callers that embed
+    the predicate in psycopg2 queries WITH bound params — the LIKE form's
+    literal % would be eaten by paramstyle substitution (the empty-tuple %
+    trap's sibling). Rendered from the SAME constants (INTERNAL_PLATFORM_VALUES
+    + the QA-tag families), so the is_real_external verdict and this predicate
+    cannot drift. Same semantics: internal families and exact tags excluded,
+    length<=2 ad-hoc tags excluded, NULL/empty KEPT."""
+    exact = "|".join(sorted(set(INTERNAL_PLATFORM_VALUES)))
+    fams = "dchub|verify|probe|audit|harness|test|check|diag|sweep"
+    c = f"COALESCE(LOWER({col}), '')"
+    return (f"({c} !~* '({fams})' "
+            f"AND {c} !~ '^({exact})$' "
+            f"AND {c} !~ '^.{{1,2}}$')")
 
 
 def real_calls_predicate() -> str:
