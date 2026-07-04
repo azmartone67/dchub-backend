@@ -185,7 +185,9 @@ PLATFORMS: list[dict] = [
         "bots": [],
         "required_auth": "oauth", "required_transport": "streamable",
         "directory": "Copilot Agent Store (Partner Center)", "directory_listed": False,
-        "connect_path": "review", "recipe_published": False,
+        # recipe published 2026-07-03: MCP-native wizard runbook + certifiable
+        # connector YAML at /integrations/copilot/* + /connect section rewrite.
+        "connect_path": "review", "recipe_published": True,
         "next_action": "Wire /mcp into Copilot Studio as a custom MCP server (GA), then submit to the Agent Store via Partner Center. Biggest genuinely-missing enterprise door.",
         "owner_gated": True, "effort": "medium (verification + review)",
     },

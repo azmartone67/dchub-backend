@@ -379,7 +379,91 @@ _LANES = [
     ("frontend",        "3 · Frontend map/LCP", lambda c: _lane_frontend()),
     ("seo",             "4 · SEO",              lambda c: _lane_seo()),
     ("funnel_honesty",  "5 · Funnel honesty",   lambda c: _lane_funnel(c)),
+    ("worklist_wave",   "6 · Worklist wave",    lambda c: _lane_worklist(c)),
 ]
+
+
+# ── lane 6 · onboarding-worklist wave (2026-07-03 wave 2) ─────────────
+# WebMCP page tools + Copilot MCP recipe + Claude Directory reviewer key.
+
+def _http_with_header(url, *, header, method="GET", headers=None, body=None, timeout=8.0):
+    """Like _http but also returns one response header (for mcp-session-id)."""
+    t0 = time.time()
+    try:
+        data = json.dumps(body).encode() if body is not None else None
+        req = urllib.request.Request(url, data=data, method=method)
+        req.add_header("User-Agent", _BROWSER_UA)
+        for k, v in (headers or {}).items():
+            req.add_header(k, v)
+        if body is not None:
+            req.add_header("Content-Type", "application/json")
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return (r.getcode(), r.read(200_000).decode("utf-8", "replace"),
+                    r.headers.get(header), int((time.time() - t0) * 1000))
+    except Exception as e:
+        return 0, f"{type(e).__name__}: {e}", None, int((time.time() - t0) * 1000)
+
+
+def _lane_worklist(c) -> list[dict]:
+    out = []
+    # 6a — WebMCP: script live + referenced on the homepage
+    st, js, ms = _http(f"{_EDGE}/js/dchub-webmcp.js?v=1")
+    ok = st == 200 and "modelContext" in js and "registerTool" in js
+    out.append(_check("wl_webmcp_js", "WebMCP page-tools script live (/js/dchub-webmcp.js)",
+                      ok if st else None, f"HTTP {st}", ms))
+    st2, home, ms2 = _http(f"{_EDGE}/?{_CB()}")
+    out.append(_check("wl_webmcp_wired", "homepage includes dchub-webmcp.js?v=1",
+                      ("dchub-webmcp.js?v=" in home) if st2 == 200 else None,
+                      "wired" if "dchub-webmcp.js?v=" in home else f"missing (HTTP {st2})", ms2))
+
+    # 6b — Copilot: served manifest is the MCP-native connector
+    st3, y, ms3 = _http(f"{_EDGE}/integrations/copilot/manifest.yaml?{_CB()}")
+    out.append(_check("wl_copilot_mcp_yaml", "Copilot manifest is MCP-native (x-ms-agentic-protocol)",
+                      ("x-ms-agentic-protocol" in y) if st3 == 200 else None,
+                      f"HTTP {st3}", ms3))
+
+    # 6c — Claude Directory reviewer OAuth key stays paid
+    if c is not None:
+        tier = _scalar(c, "SELECT tier FROM mcp_dev_keys "
+                          "WHERE email = 'directory-review@dchub.cloud' "
+                          "AND api_key LIKE 'dch_oauth_%'")
+        out.append(_check("wl_reviewer_key_paid", "directory-review OAuth key tier=paid",
+                          (tier == "paid") if tier is not None else None,
+                          f"tier={tier}"))
+    else:
+        out.append(_check("wl_reviewer_key_paid", "directory-review OAuth key tier=paid",
+                          None, "no db"))
+
+    # 6d — compare_sites returns a winner on the reviewer raw key (was 400-broken)
+    rk = None
+    if c is not None:
+        rk = _scalar(c, "SELECT api_key FROM mcp_dev_keys "
+                        "WHERE developer_id = 'dir-review-d9f4f02d40fa'")
+    if rk:
+        hdrs = {"Accept": "application/json, text/event-stream", "X-API-Key": rk}
+        _st, _b, sid, _ms = _http_with_header(
+            f"{_MCP_ORIGIN}/mcp", header="mcp-session-id", method="POST", headers=hdrs,
+            body={"jsonrpc": "2.0", "id": 0, "method": "initialize",
+                  "params": {"protocolVersion": "2025-03-26", "capabilities": {},
+                             "clientInfo": {"name": "fixwave-probe", "version": "1.0"}}})
+        if sid:
+            st4, b4, ms4 = _http(f"{_MCP_ORIGIN}/mcp", method="POST",
+                                 headers={**hdrs, "mcp-session-id": sid},
+                                 body={"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                                       "params": {"name": "compare_sites",
+                                                  "arguments": {"locations": "33.45,-112.07;39.04,-77.48",
+                                                                "capacity_mw": 50}}},
+                                 timeout=60.0)
+            ok4 = st4 == 200 and '"winner"' in b4 and "API 400" not in b4
+            out.append(_check("wl_compare_sites", "compare_sites returns winner (contract fixed)",
+                              ok4 if st4 else None, f"HTTP {st4}, {len(b4)}B", ms4))
+        else:
+            out.append(_check("wl_compare_sites", "compare_sites returns winner (contract fixed)",
+                              None, "initialize gave no session id", _ms))
+    else:
+        out.append(_check("wl_compare_sites", "compare_sites returns winner (contract fixed)",
+                          None, "reviewer key not found"))
+    return out
 
 _cache: dict = {"ts": 0.0, "payload": None}
 _cache_lock = threading.Lock()
