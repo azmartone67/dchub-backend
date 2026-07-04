@@ -484,8 +484,15 @@ def _act(lane: str, decision: dict) -> dict:
             if c is None:
                 return {"dispatched": False, "note": "no_db"}
             try:
+                # qa-0704b: the canonical writer savepoint-wraps every op and
+                # NEVER raises — under an autocommit connection the savepoints
+                # fail and it cleanly returns "skipped" (the same
+                # SAVEPOINT-in-autocommit trap as the per-tool module, one
+                # layer deeper). Transactional conn + trust the return value,
+                # exactly as the writer's docstring instructs.
+                c.autocommit = False
                 with c.cursor() as cur:
-                    upsert_brain_finding(
+                    result = upsert_brain_finding(
                         cur,
                         issue="lane_driver_proposal",
                         url=f"/api/v1/admin/brain/lane-driver/state#{lane}",
@@ -496,7 +503,8 @@ def _act(lane: str, decision: dict) -> dict:
                         detector="brain_lane_driver",
                         status="open")
                 c.commit()
-                return {"dispatched": True, "note": "finding upserted"}
+                ok = result in ("inserted", "updated")
+                return {"dispatched": ok, "note": f"finding {result}"}
             finally:
                 try: c.close()
                 except Exception: pass
