@@ -210,12 +210,17 @@ def _ensure_tables() -> bool:
 
 # ── TIER 1+2 — MEASURE AND SCORE EACH LANE ────────────────────────────
 def _lane_demand() -> dict:
+    # qa-0704b: bound the scan to 30d — the unbounded MAX cold-scanned the whole
+    # table (2.9s vs 0.21s bounded) and was the one probe that died on the first
+    # live tick (demand read "error: db" while four lanes measured fine). A real
+    # call older than 30d correctly reads as NULL → fresh=0.
     row = _q1("""
         SELECT EXTRACT(EPOCH FROM (NOW() - MAX(created_at) FILTER (WHERE is_real_external)))/3600.0,
                COUNT(*) FILTER (WHERE is_real_external AND created_at > NOW() - INTERVAL '7 days'),
                COUNT(*) FILTER (WHERE is_real_external AND created_at <= NOW() - INTERVAL '7 days'
                                 AND created_at > NOW() - INTERVAL '14 days')
         FROM mcp_calls_identity
+        WHERE created_at > NOW() - INTERVAL '30 days'
     """)
     if not row:
         return {"score": 0.0, "error": "db"}
