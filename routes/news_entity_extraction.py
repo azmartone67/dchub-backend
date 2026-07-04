@@ -90,6 +90,17 @@ LLM_MODEL = (os.environ.get("NEWS_NER_LLM_MODEL") or "").strip()  # falls
                                                                     # voice tier
 MAX_PER_RUN = int(os.environ.get("NEWS_NER_MAX", "200"))
 
+# r-entityres (2026-07-04): minimum LOCAL cosine (0-1, computed over Cohere
+# embeddings fetched in ONE _embed call — NEVER the cross-encoder rerank
+# scores retrieve_context returns, whose absolute values sit at 0.05-0.3
+# even for good hits) for a promote-time candidate to resolve to an
+# EXISTING discovered_facilities row instead of creating a duplicate.
+try:
+    NEWS_ENTITY_DUP_COSINE = float(
+        os.environ.get("NEWS_ENTITY_DUP_COSINE", "0.90"))
+except Exception:
+    NEWS_ENTITY_DUP_COSINE = 0.90
+
 
 # ── Storage ──────────────────────────────────────────────────────────
 def _ensure_table():
@@ -332,6 +343,149 @@ def _already_known(cur, name: str) -> bool:
     return False
 
 
+# ── Semantic entity resolution (r-entityres 2026-07-04) ──────────────
+# ROOT CAUSE of facility-count inflation: _already_known() is EXACT
+# LOWER(name)= equality, so "QTS Atlanta DC-1" vs "QTS Atlanta Data
+# Center 1" both pass "unknown" and BOTH become discovered_facilities
+# rows. Fix: when exact match fails, do a semantic check against the
+# discovered_facilities RAG corpus BEFORE creating a new row. Resolve
+# to the existing row only when (a) local embedding cosine >= threshold
+# AND (b) the location POSITIVELY agrees (same city OR same state, both
+# sides present). High name similarity with a differing/unknown location
+# still CREATES — a false merge is worse than a duplicate. Every failure
+# path degrades to the exact current behavior (create).
+
+def _cos_sim(a, b):
+    """Plain local cosine over two equal-length vectors. None on failure."""
+    try:
+        num = sum(float(x) * float(y) for x, y in zip(a, b))
+        da = sum(float(x) * float(x) for x in a) ** 0.5
+        db = sum(float(y) * float(y) for y in b) ** 0.5
+        if da <= 0 or db <= 0:
+            return None
+        return num / (da * db)
+    except Exception:
+        return None
+
+
+def _loc_agrees(new_city, new_state, ex_city, ex_state) -> bool:
+    """POSITIVE location agreement only: same city (both present) or same
+    state (both present). Missing location on either side → False, so the
+    caller creates rather than risking a false merge."""
+    nc = (new_city or "").strip().lower()
+    ns = (new_state or "").strip().lower()
+    ec = (ex_city or "").strip().lower()
+    es = (ex_state or "").strip().lower()
+    if nc and ec and nc == ec:
+        return True
+    if ns and es and ns == es:
+        return True
+    return False
+
+
+def _entity_query_text(name, city, state) -> str:
+    bits = [str(b).strip() for b in (city, state) if b and str(b).strip()]
+    return (name or "") + ((" — " + ", ".join(bits)) if bits else "")
+
+
+def _resolve_existing_semantic(facility: dict):
+    """Semantic duplicate check for a facility about to be CREATED.
+
+    Returns {"id", "name", "cosine"} of the existing discovered_facilities
+    row to resolve to, or None (= create, exactly as before). Recipe per
+    the RAG similarity rule: retrieve_context() only NOMINATES candidates
+    (its scores are cross-encoder rerank values and are NEVER thresholded);
+    the actual similarity is local cosine over embeddings from ONE _embed
+    call (input_type=search_document for both sides — symmetric compare).
+    Fail-soft: ANY import/RAG/embed/DB failure returns None."""
+    try:
+        from routes.brain_rag import retrieve_context, _embed
+    except Exception:
+        return None
+
+    name = (facility.get("name") or "").strip()
+    if not name:
+        return None
+    query = _entity_query_text(name, facility.get("city"),
+                               facility.get("state"))
+
+    try:
+        hits = retrieve_context(query, k=5, corpus="discovered_facilities") or []
+    except Exception:
+        return None
+    ids = []
+    for h in hits:
+        try:
+            sid = str(h.get("source_id") or "").strip()
+        except Exception:
+            continue
+        if sid.isdigit():
+            ids.append(int(sid))
+    if not ids:
+        return None
+
+    # Fetch candidate name/city/state by id — we compare canonical
+    # "name — city, state" texts, not whatever prose shape the corpus
+    # embedded (which also carries provider/market noise).
+    rows = []
+    c = _get_db()
+    if c is None:
+        return None
+    try:
+        with c.cursor() as cur:
+            cur.execute(
+                "SELECT id, name, city, state FROM discovered_facilities "
+                "WHERE id = ANY(%s) AND COALESCE(is_duplicate, 0) = 0",
+                (ids,))
+            for r in cur.fetchall():
+                if r[1]:
+                    rows.append({"id": r[0], "name": r[1],
+                                 "city": r[2], "state": r[3]})
+    except Exception:
+        try: c.rollback()
+        except Exception: pass
+        return None
+    finally:
+        try: c.close()
+        except Exception: pass
+    if not rows:
+        return None
+
+    cand_texts = [_entity_query_text(r["name"], r["city"], r["state"])
+                  for r in rows]
+    try:
+        vecs = _embed([query] + cand_texts, input_type="search_document")
+    except Exception:
+        return None
+    if not vecs or len(vecs) != len(cand_texts) + 1:
+        return None
+
+    qv = vecs[0]
+    best = None
+    for r, v in zip(rows, vecs[1:]):
+        cos = _cos_sim(qv, v)
+        if cos is None:
+            continue
+        if best is None or cos > best[1]:
+            best = (r, cos)
+    if best is None:
+        return None
+
+    r, cos = best
+    if cos < NEWS_ENTITY_DUP_COSINE:
+        return None
+    if not _loc_agrees(facility.get("city"), facility.get("state"),
+                       r["city"], r["state"]):
+        # Similar name, but no positive location agreement → could be a
+        # genuinely different site with a similar name. CREATE anyway.
+        logger.info(
+            f"[news-ner entityres] near-duplicate name NOT merged "
+            f"(location differs/unknown): new='{name}' vs "
+            f"existing #{r['id']} '{r['name']}' cosine={round(cos, 4)}")
+        return None
+    return {"id": r["id"], "name": r["name"], "cosine": round(cos, 4)}
+
+
 # ── Pipeline ─────────────────────────────────────────────────────────
 def _scan(days: int, dry_run: bool) -> dict:
     out = {
@@ -516,6 +670,7 @@ def _promote_candidates(min_mentions: int = None,
         "min_mentions": min_mentions,
         "considered": 0,
         "promoted": 0,
+        "resolved_existing": 0,
         "skipped_not_announcement": 0,
         "skipped_no_url": 0,
         "errors": 0,
@@ -619,6 +774,48 @@ def _promote_candidates(min_mentions: int = None,
                     f"Promoted from news NER candidate "
                     f"({cand['mentions']} mentions). "
                     f"{facility.get('notes') or ''}")[:400]
+
+            # r-entityres (2026-07-04): exact match already failed (that's
+            # why this candidate is here) — semantic check BEFORE creating
+            # a possibly-duplicate discovered_facilities row. Fail-soft:
+            # resolver returns None on any failure → create as before.
+            resolved = _resolve_existing_semantic(facility)
+            if resolved:
+                logger.info(
+                    f"[news-ner entityres] RESOLVED to existing facility "
+                    f"#{resolved['id']} '{resolved['name']}' — new candidate "
+                    f"'{facility['name']}' NOT created "
+                    f"(cosine={resolved['cosine']})")
+                out["resolved_existing"] += 1
+                if len(out["examples"]) < 20:
+                    out["examples"].append({
+                        "name": facility["name"],
+                        "resolved_to_id": resolved["id"],
+                        "resolved_to_name": resolved["name"],
+                        "cosine": resolved["cosine"],
+                        "mentions": cand["mentions"],
+                        "url": url,
+                    })
+                if dry_run:
+                    continue
+                # Flip the NER candidate so it isn't re-considered.
+                try:
+                    with c.cursor() as cur:
+                        cur.execute(
+                            "UPDATE news_discovered_entities "
+                            "SET in_facilities = TRUE, "
+                            "status = 'resolved_existing', "
+                            "last_seen_at = NOW(), notes = %s "
+                            "WHERE id = %s",
+                            (f"semantic-resolved to discovered_facilities "
+                             f"#{resolved['id']} ({resolved['name'][:120]}) "
+                             f"cosine={resolved['cosine']}",
+                             cand["id"]))
+                    c.commit()
+                except Exception:
+                    try: c.rollback()
+                    except Exception: pass
+                continue
 
             if dry_run:
                 out["promoted"] += 1
