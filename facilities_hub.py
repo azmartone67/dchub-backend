@@ -97,6 +97,7 @@ footer{{margin-top:40px;padding-top:16px;border-top:1px solid #e2e8f0;font-size:
 {body_html}
 <footer>
 <a href="{SITE}/">DC Hub</a> · <a href="{SITE}/facilities">All facilities</a> ·
+<a href="{SITE}/facilities/directory">Facility Directory</a> ·
 <a href="{SITE}/dcpi">DC Hub Power Index</a> · <a href="{SITE}/markets">Markets</a> ·
 <a href="{SITE}/grid">Grid</a>
 <div class="muted" style="margin-top:8px">DC Hub — live data-center infrastructure intelligence across 170+ countries.</div>
