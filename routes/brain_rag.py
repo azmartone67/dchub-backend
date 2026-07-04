@@ -11,7 +11,9 @@ Store:  brain_corpus_embeddings(source_table, source_id, kind, text,
         for all corpora. Chunked corpora (market_narratives) store one row per
         ~150-300-token chunk, source_id='<slug>#<n>', provenance in meta.
 Embed:  Cohere embed-english-v3.0 (1024-d, asymmetric search_document/search_query;
-        OpenAI key is out of quota). Batched ≤96/call.
+        OpenAI key is out of quota). Batched ≤96/call. Chunked market_narratives
+        additionally get an Anthropic contextual-retrieval blurb (haiku + prompt
+        caching) prepended before embed — BRAIN_RAG_CONTEXTUAL=0 to disable.
 Recall: cosine (<=>), optionally scoped to one corpus.
 
 Endpoints (admin, X-Admin-Key):
@@ -121,6 +123,88 @@ CHUNKED_CORPORA = {
 }
 _CHUNK_MIN_CHARS = 600    # ~150 tokens (chars/4)
 _CHUNK_MAX_CHARS = 1200   # ~300 tokens
+
+# ── contextual retrieval (r-rag-contextual 2026-07-04) ───────────────
+# Anthropic's contextual-retrieval recipe: before embedding, a small LLM
+# writes a 2-3 sentence blurb situating each chunk within its FULL document;
+# the blurb is prepended to the embedded text ("Context: <blurb>\n" + chunk),
+# which lifts retrieval accuracy on chunks whose prose doesn't name their
+# subject. The full doc rides in a SYSTEM block with cache_control ephemeral
+# so all chunks of one doc share a cached prefix — only the chunk in the user
+# turn varies (chunk 2..n read the doc at ~0.1x input price when the doc
+# clears the model's minimum cacheable prefix; Haiku 4.5 = 4,096 tokens).
+# FAIL-SOFT per chunk and per doc: any API failure keeps the existing static
+# provenance header, and a total failure never stops the reindex.
+# Toggle: BRAIN_RAG_CONTEXTUAL=0 (default ON, mirrors _rerank_on).
+# Budget: BRAIN_RAG_CTX_MAX_CALLS LLM calls per reindex run (default 400) so
+# a runaway backfill cannot burn tokens.
+CTX_MODEL_DEFAULT = "claude-haiku-4-5-20251001"  # same haiku id the deep-dive writer uses
+_CTX_MAX_TOKENS = 120
+_CTX_SYSTEM_INSTRUCTION = (
+    "You situate a chunk within a document for search retrieval. "
+    "Answer with 2-3 sentences of succinct context and nothing else.")
+
+
+def _contextual_on() -> bool:
+    return (os.environ.get("BRAIN_RAG_CONTEXTUAL", "1").strip().lower()
+            not in ("0", "false", "no", "off"))
+
+
+def _ctx_model() -> str:
+    return (os.environ.get("BRAIN_RAG_CTX_MODEL") or "").strip() or CTX_MODEL_DEFAULT
+
+
+def _ctx_max_calls() -> int:
+    try:
+        return max(0, int(os.environ.get("BRAIN_RAG_CTX_MAX_CALLS", "400")))
+    except Exception:
+        return 400
+
+
+def _contextualize_chunks(doc_title, doc_md, chunks, max_calls=None):
+    """One Anthropic Messages call per chunk (urllib, same pattern as
+    _embed/_rerank) → 2-3 sentence situating blurb. System = [instruction,
+    full doc w/ cache_control ephemeral] so per-doc calls share a cached
+    prefix. Returns a list parallel to `chunks` — None where the call was
+    skipped (no key / over budget) or failed. NEVER raises."""
+    out = [None] * len(chunks)
+    key = (os.environ.get("ANTHROPIC_API_KEY") or "").strip()
+    if not key or not chunks:
+        return out
+    n = len(chunks) if max_calls is None else max(0, min(len(chunks), int(max_calls)))
+    system = [
+        {"type": "text", "text": _CTX_SYSTEM_INSTRUCTION},
+        {"type": "text",
+         "text": f'<document title="{doc_title}">\n{doc_md}\n</document>',
+         "cache_control": {"type": "ephemeral"}},
+    ]
+    for i in range(n):
+        body = json.dumps({
+            "model": _ctx_model(),
+            "max_tokens": _CTX_MAX_TOKENS,
+            "system": system,
+            "messages": [{
+                "role": "user",
+                "content": ("Situate this chunk within the document for retrieval. "
+                            "Chunk:\n" + chunks[i]),
+            }],
+        }).encode()
+        req = urllib.request.Request("https://api.anthropic.com/v1/messages",
+                                     data=body, method="POST")
+        req.add_header("x-api-key", key)
+        req.add_header("anthropic-version", "2023-06-01")
+        req.add_header("Content-Type", "application/json")
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                d = json.loads(r.read())
+            txt = " ".join(
+                b.get("text", "") for b in (d.get("content") or [])
+                if isinstance(b, dict) and b.get("type") == "text").strip()
+            if txt:
+                out[i] = txt[:500]
+        except Exception:
+            continue  # fail-soft: this chunk keeps its static-header text
+    return out
 
 # Corpora an unauthenticated agent may semantically search (brain internals excluded).
 PUBLIC_CORPORA = ("news_articles", "deals", "discovered_facilities", "market_narratives")
@@ -378,12 +462,28 @@ def _reindex_chunk_docs(c, doc_cap: int) -> int:
     if doc_cap <= 0:
         return 0
     written = 0
+    ctx_left = _ctx_max_calls() if _contextual_on() else 0
     with c.cursor() as cur:
         docs = _pending_chunk_docs(cur, doc_cap)
     for slug, name, md, gen_at in docs:
         chunks = _chunk_narrative(name or slug, gen_at, md)
         if not chunks:
             continue
+        # Contextual retrieval (see _contextualize_chunks): prepend an
+        # LLM-written situating blurb to each chunk BEFORE embedding. The
+        # static provenance header stays as the base — a failed/skipped
+        # chunk embeds exactly as before. Budgeted per reindex run.
+        if ctx_left > 0:
+            attempted = min(len(chunks), ctx_left)
+            try:
+                blurbs = _contextualize_chunks(name or slug, md, chunks,
+                                               max_calls=ctx_left)
+            except Exception:
+                blurbs = None  # belt-and-suspenders: helper never raises
+            ctx_left -= attempted
+            if blurbs:
+                chunks = [f"Context: {b}\n{t}" if b else t
+                          for t, b in zip(chunks, blurbs)]
         vecs = []
         for i in range(0, len(chunks), _COHERE_BATCH):
             v = _embed(chunks[i:i + _COHERE_BATCH], input_type="search_document")
