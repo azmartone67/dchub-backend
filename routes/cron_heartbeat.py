@@ -617,7 +617,9 @@ _DISPATCH = [
     # 2026-07-04: THE DC HUB ANALYST — weekly brain-authored Analyst Note
     # ("what moved in data-center power this week"): DCPI movers + deals +
     # news + RAG recall, ONE structured-outputs compose, honest-numbers
-    # fenced, persisted to analyst_notes and served at /research/analyst-note.
+    # fenced, persisted to analyst_notes and served at /reports/analyst-note
+    # (the backend-served Reports family — /research/* is DEAD: intercepted by
+    # main.py's _check_prefix_redirects AND CF-routed to dchubapiproxy).
     # Thu 14:xx UTC — the media-showcase slot family; WIDE minute window
     # because the heartbeat is sporadic (~hourly). Endpoint is IDEMPOTENT per
     # week_of (repeat fires in-window are cheap SELECT no-ops); admin-gated —
