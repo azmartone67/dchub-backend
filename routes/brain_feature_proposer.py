@@ -129,7 +129,9 @@ def _dup_threshold() -> float:
 # Wired 2026-07-03 to kill the PR-flood: before proposing a feature we ask
 # the brain corpus whether a strongly-similar prior proposal already exists.
 # retrieve_context() lives in routes/brain_rag.py (committed, stable) — it
-# returns [{source_table, source_id, kind, text, score}] and is itself
+# returns [{source_table, source_id, kind, text, score, cosine}] ("cosine" =
+# raw bi-encoder similarity, ALWAYS present; "score" = rerank relevance when
+# rerank fired, else == cosine — threshold on "cosine") and is itself
 # fail-soft (returns [] on any error). We wrap EVERY call again here so a
 # RAG outage can never break the proposer: on failure we degrade silently
 # to the pre-RAG behavior (SQL-only exact dedup via brain_proposal_pr_url).
@@ -167,14 +169,25 @@ def _recall_prior_proposals(query: str, k: int = 6) -> list:
 def _strong_duplicate(results: list) -> Optional[dict]:
     """If the top recalled prior clears the cosine threshold, return it
     (the single strongest match) so the caller can SKIP / mark
-    'supersedes <id>'. Otherwise None. Never raises."""
+    'supersedes <id>'. Otherwise None. Never raises.
+
+    Thresholds on r["cosine"] — the raw bi-encoder similarity retrieve_context
+    now carries on every result — NOT r["score"]. Once rerank shipped,
+    "score" became the cross-encoder relevance (~0.05-0.3 scale), so
+    comparing it to the 0.82 cosine threshold meant this gate silently NEVER
+    fired and duplicate proposals sailed through (live bug, fixed
+    r-rag-cosine-passthrough 2026-07-04). Falls back to "score" only when
+    "cosine" is absent (older retrieve_context, where score WAS the cosine)."""
     try:
         thr = _dup_threshold()
         best = None
         best_score = -1.0
         for r in results or []:
             try:
-                s = float(r.get("score") or 0.0)
+                v = r.get("cosine")
+                if v is None:
+                    v = r.get("score")
+                s = float(v or 0.0)
             except Exception:
                 continue
             if s > best_score:
@@ -195,7 +208,9 @@ def _format_recalled_block(results: list, limit: int = 6) -> str:
         try:
             src = r.get("source_table") or "?"
             sid = r.get("source_id")
-            score = r.get("score")
+            # "sim=" advertises a SIMILARITY to the LLM — use the cosine
+            # (fallback: score, which == cosine when rerank didn't fire).
+            score = r.get("cosine") if r.get("cosine") is not None else r.get("score")
             txt = (r.get("text") or "").strip().replace("\n", " ")
             if not txt:
                 continue
@@ -1138,6 +1153,11 @@ def admin_preview():
             "recalled_priors": [
                 {"source": f"{r.get('source_table')}#{r.get('source_id')}",
                  "score": r.get("score"),
+                 # cosine is what _strong_duplicate gates on (DUP_THRESHOLD
+                 # 0.82) — surface it so the threshold can actually be tuned
+                 # from dry-run output; "score" may be rerank relevance on a
+                 # different scale.
+                 "cosine": r.get("cosine"),
                  "text": (r.get("text") or "")[:200]}
                 for r in (prop.get("recall") or [])[:6]
             ],
