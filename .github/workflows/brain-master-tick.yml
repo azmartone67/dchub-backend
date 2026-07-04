@@ -11,7 +11,7 @@ name: Brain Master Tick (orchestrated discovery→action loop)
 
 on:
   schedule:
-    - cron: '17 */2 * * *'   # every 2 hours at :17 — distinct minute, off-peak
+    - cron: '19 */2 * * *'   # every 2h at :19 — moved off the :17 herd (dchub-self-healing + sla-visitor also fire :17) to clear the #1380 cron collision; :19 only grazes a 5-min safety-net
   workflow_dispatch:
     inputs:
       dry:
