@@ -456,6 +456,17 @@ def rank_data_events() -> list[dict]:
             "score": min(35.0, 6.0 + mw / 30.0),
         })
 
+    # 5) Weekly Analyst Note (2026-07-04) — the brain-authored, fenced + cited
+    # weekly synthesis surfaces as a LEAD only; the desk's existing gates
+    # (number-lead, novelty, claim-verify, approval) decide posting.
+    try:
+        from routes.analyst_note import analyst_note_lead
+        _an_lead = analyst_note_lead()
+        if _an_lead:
+            leads.append(_an_lead)
+    except Exception as e:
+        logger.warning("[editorial] analyst note lead failed: %s", str(e)[:160])
+
     # r86d BANDIT: bias toward angles that actually earn reach. Each lead's
     # newsworthiness score is multiplied by its kind's learned reach factor
     # (soft-greedy, floor 0.7x; untried kinds stay neutral 1.0x → explored).
