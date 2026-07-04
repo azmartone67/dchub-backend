@@ -93,10 +93,29 @@ import os
 import time
 import urllib.request
 import uuid
+from datetime import datetime, timezone
 from flask import Blueprint, Response, jsonify, request, redirect
 
 
 agent_concierge_bp = Blueprint("agent_concierge", __name__)
+
+
+def _render_citation(citation: str) -> str:
+    """Fill the {as_of} placeholder in citation templates.
+
+    This module has no DB freshness source on the hot path, so the
+    served date is today's UTC date — DCPI refreshes daily, so that's
+    the honest as-of for anything cited from here.
+    """
+    if "{as_of}" in citation:
+        return citation.replace(
+            "{as_of}", datetime.now(timezone.utc).strftime("%Y-%m-%d"))
+    return citation
+
+
+def _rendered_recipe(r: dict) -> dict:
+    """Copy of a recipe with its citation rendered for serving."""
+    return dict(r, citation=_render_citation(r["citation"]))
 
 
 # ── COOKBOOK ────────────────────────────────────────────────────
@@ -905,7 +924,8 @@ def agent_solve():
             ],
             "tier_required": "free",
             "browse_more":   "https://dchub.cloud/api/v1/agent/cookbook",
-            "citation_template": "Per DC Hub · dchub.cloud/dcpi · as of {as_of}",
+            "citation_template": _render_citation(
+                "Per DC Hub · dchub.cloud/dcpi · as of {as_of}"),
         })
 
     return jsonify({
@@ -916,7 +936,7 @@ def agent_solve():
         "recipe_problem":  recipe["problem"],
         "tools":           recipe["tools"],
         "sample_answer":   recipe["sample_answer"],
-        "citation":        recipe["citation"],
+        "citation":        _render_citation(recipe["citation"]),
         "tier_required":   recipe["tier"],
         "time_saved_min":  recipe["time_saved_min"],
         "surfaces":        recipe["surfaces"],
@@ -946,7 +966,7 @@ def agent_cookbook():
         "ok":            True,
         "count":         len(_COOKBOOK),
         "doc":           "https://dchub.cloud/agent",
-        "recipes":       _COOKBOOK,
+        "recipes":       [_rendered_recipe(r) for r in _COOKBOOK],
         "_pattern":      ("Each recipe maps a NATURAL-LANGUAGE problem "
                           "to a DC Hub tool-call sequence. The /solve "
                           "endpoint routes queries to the best match by "
@@ -964,7 +984,7 @@ def agent_recipe(rid: str):
     """Single-recipe lookup by id."""
     for r in _COOKBOOK:
         if r["id"] == rid:
-            return jsonify({"ok": True, "recipe": r})
+            return jsonify({"ok": True, "recipe": _rendered_recipe(r)})
     return jsonify({"ok": False, "error": "recipe_not_found",
                     "available_ids": [r["id"] for r in _COOKBOOK]}), 404
 
