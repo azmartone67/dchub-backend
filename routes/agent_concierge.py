@@ -44,10 +44,14 @@ This module ships four surfaces designed to compound on each other:
                                              the agent's context
                                              preserved
                                          Recipes come from a curated
-                                         library (below) keyed by
-                                         keyword match. No Claude call
-                                         on the hot path = fast +
-                                         deterministic + cacheable.
+                                         library (below) matched by
+                                         embedding cosine (Cohere via
+                                         brain_rag._embed; cached
+                                         recipe vectors) with keyword
+                                         fallback. No Claude call on
+                                         the hot path = fast + cheap;
+                                         embed failure degrades to the
+                                         deterministic keyword match.
 
   3. GET /api/v1/agent/cookbook          The recipe library itself.
                                          24 canonical problems →
@@ -579,16 +583,135 @@ th { color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacin
 """
 
 
-# ── Endpoints ───────────────────────────────────────────────────
+# ── Intent → recipe matching ────────────────────────────────────
+#
+# Two layers (2026-07: the embedding match the keyword docstring
+# anticipated is now live):
+#
+#   1. SEMANTIC — embed the ~30 recipe descriptions ONCE per worker
+#      (module-level cache; rebuilt after a worker recycle — one
+#      ~30-text Cohere call via routes.brain_rag._embed), embed the
+#      incoming query, cosine-rank locally (0-1 scale). Best hit wins
+#      when cosine >= CONCIERGE_MATCH_COSINE (env-tunable, default
+#      0.55 — intent matching is intentionally looser than dedup).
+#      NOTE: retrieve_context() returns cross-encoder RERANK relevance
+#      scores (absolute values often 0.05-0.3 even for good hits) —
+#      those are NOT cosines; never threshold on them here.
+#   2. KEYWORD — the original substring-overlap scan. This is the
+#      fail-soft floor: ANY embed/import/shape failure in the semantic
+#      layer degrades to the exact pre-existing keyword behavior.
 
-def _match_recipe(problem: str) -> dict | None:
+_RECIPE_VEC_CACHE = None   # list[(recipe_dict, embedding)] | None — lazy, per-worker
+
+
+def _concierge_match_cosine() -> float:
+    """Env-tunable semantic acceptance threshold (cosine, 0-1 scale)."""
+    try:
+        return float(os.environ.get("CONCIERGE_MATCH_COSINE", "0.55"))
+    except Exception:
+        return 0.55
+
+
+def _recipe_embed_text(r: dict) -> str:
+    """The per-recipe text we embed: problem statement + keywords + tools."""
+    parts = [r.get("problem") or ""]
+    kws = [k for k in (r.get("keywords") or []) if k]
+    if kws:
+        parts.append(" ".join(kws))
+    tools = [t.get("tool") for t in (r.get("tools") or []) if t.get("tool")]
+    if tools:
+        parts.append(" ".join(tools))
+    return ". ".join(p for p in parts if p)
+
+
+def _get_embed():
+    """Lazy import so this module never hard-depends on brain_rag."""
+    try:
+        from routes.brain_rag import _embed
+        return _embed
+    except Exception:
+        return None
+
+
+def _recipe_vectors():
+    """Lazily build the (recipe, vector) cache — one ~30-text embed call.
+
+    Returns the cached list, or None on any failure (caller falls back
+    to the keyword path; next request will simply retry the build).
+    """
+    global _RECIPE_VEC_CACHE
+    if _RECIPE_VEC_CACHE is not None:
+        return _RECIPE_VEC_CACHE
+    embed = _get_embed()
+    if embed is None:
+        return None
+    try:
+        texts = [_recipe_embed_text(r) for r in _COOKBOOK]
+        vecs = embed(texts, input_type="search_document")
+        if not vecs or len(vecs) != len(_COOKBOOK):
+            return None
+        _RECIPE_VEC_CACHE = list(zip(_COOKBOOK, vecs))
+        return _RECIPE_VEC_CACHE
+    except Exception:
+        return None
+
+
+def _cosine(a, b) -> float:
+    """Local cosine similarity (0-1 for Cohere vectors). Fail-soft 0.0."""
+    try:
+        dot = na = nb = 0.0
+        for x, y in zip(a, b):
+            fx, fy = float(x), float(y)
+            dot += fx * fy
+            na += fx * fx
+            nb += fy * fy
+        if na <= 0.0 or nb <= 0.0:
+            return 0.0
+        return dot / ((na ** 0.5) * (nb ** 0.5))
+    except Exception:
+        return 0.0
+
+
+def _match_recipe_semantic(problem: str) -> dict | None:
+    """Embed the query, cosine-rank against the cached recipe vectors.
+
+    Returns the best recipe when best cosine >= CONCIERGE_MATCH_COSINE,
+    else None. Fail-soft: ANY failure (no Cohere key, import error,
+    HTTP error, bad shapes) returns None and the caller uses the
+    keyword path — the exact pre-semantic behavior.
+    """
+    try:
+        pairs = _recipe_vectors()
+        if not pairs:
+            return None
+        embed = _get_embed()
+        if embed is None:
+            return None
+        # search_document for both sides is fine for this symmetric
+        # short-text comparison (recipe vectors are search_document too).
+        qv = embed([problem], input_type="search_document")
+        if not qv or not qv[0]:
+            return None
+        q = qv[0]
+        best, best_score = None, -1.0
+        for recipe, vec in pairs:
+            s = _cosine(q, vec)
+            if s > best_score:
+                best_score = s
+                best = recipe
+        if best is not None and best_score >= _concierge_match_cosine():
+            return best
+        return None
+    except Exception:
+        return None
+
+
+def _match_recipe_keyword(problem: str) -> dict | None:
     """Keyword-match the problem to a recipe. Highest overlap wins.
 
-    Linear scan over ~30 recipes is fine (<1ms). If we ever grow past
-    100 recipes, swap for a TF-IDF index or a small embedding match.
+    Linear scan over ~30 recipes is fine (<1ms). This is the fail-soft
+    floor under the semantic matcher above.
     """
-    if not problem or not isinstance(problem, str):
-        return None
     pl = problem.lower()
     best = None
     best_score = 0
@@ -603,6 +726,22 @@ def _match_recipe(problem: str) -> dict | None:
             best_score = score
             best = r
     return best
+
+
+# ── Endpoints ───────────────────────────────────────────────────
+
+def _match_recipe(problem: str) -> dict | None:
+    """Route a free-text problem to a cookbook recipe.
+
+    Semantic (embedding cosine) first; keyword-substring fallback.
+    Any embed/RAG failure degrades to the exact keyword behavior.
+    """
+    if not problem or not isinstance(problem, str):
+        return None
+    hit = _match_recipe_semantic(problem)
+    if hit is not None:
+        return hit
+    return _match_recipe_keyword(problem)
 
 
 @agent_concierge_bp.route("/agent", methods=["GET"], strict_slashes=False)
