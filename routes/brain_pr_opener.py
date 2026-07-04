@@ -95,16 +95,113 @@ def titles_overlap(a: str, b: str, threshold: float = 0.6) -> bool:
     return len(ta & tb) / min(len(ta), len(tb)) >= threshold
 
 
+# ── Semantic dedup layer (Phase rag-gap-prdedup, 2026-07-04) ────────────
+# Token overlap catches word-shuffle paraphrases but misses true semantic
+# rephrasings — each L6 run re-words the same theme with different words
+# ("Trust-signal scoring for connector marketplace" vs "Security audit
+# grade for MCP server"), so paraphrase dups still slipped past the 60%
+# token gate. When the cheap token check does NOT flag, embed the
+# candidate (title + optional summary) and the already-fetched open PR
+# titles in ONE Cohere batch and compare by LOCAL cosine (0-1 scale).
+# NEVER threshold on retrieve_context() scores for this — those are
+# cross-encoder RERANK relevance scores whose absolute values sit around
+# 0.05-0.3 even for excellent hits, so an absolute cutoff on them is
+# meaningless. Raw-embedding cosine is the only sane 0-1 scale here.
+# Fail-soft everywhere: any import/embed failure degrades to EXACTLY the
+# pre-semantic (token-overlap) behavior.
+
+def _pr_dup_cosine() -> float:
+    """Cosine threshold for semantic PR-title dedup. Env-tunable via
+    PR_DUP_COSINE (default 0.88)."""
+    try:
+        return float(os.environ.get("PR_DUP_COSINE", "0.88"))
+    except Exception:
+        return 0.88
+
+
+def _pr_dup_embed_cap() -> int:
+    """Max candidate titles embedded per dedup check (one batch). GitHub
+    lists newest-first, so the cap keeps the freshest ~30 open drafts.
+    Env-tunable via PR_DUP_EMBED_CAP (default 30)."""
+    try:
+        return max(1, int(os.environ.get("PR_DUP_EMBED_CAP", "30")))
+    except Exception:
+        return 30
+
+
+def _cosine(a, b) -> float:
+    """Plain local cosine similarity between two raw embedding vectors."""
+    try:
+        num = sum(x * y for x, y in zip(a, b))
+        da = sum(x * x for x in a) ** 0.5
+        db = sum(y * y for y in b) ** 0.5
+        if not da or not db:
+            return 0.0
+        return num / (da * db)
+    except Exception:
+        return 0.0
+
+
+def _strip_bracket_prefix(title: str) -> str:
+    """Drop the leading '[brain-…]' tag before embedding — every brain
+    draft shares it, and a long shared prefix inflates cosine between
+    otherwise-unrelated titles."""
+    return re.sub(r"^\[[^\]]*\]\s*", "", (title or "")).strip()
+
+
+def semantic_title_dup(candidate_text: str, other_titles,
+                       threshold: float | None = None) -> bool:
+    """True when `candidate_text` embeds within cosine >= threshold of ANY
+    title in `other_titles`. ONE batched _embed call ([candidate]+titles,
+    input_type='search_document' for both — fine for symmetric
+    comparison); cosine computed locally on the raw vectors. Caps the
+    candidate list at PR_DUP_EMBED_CAP (~30). Fail-soft: returns False on
+    ANY failure (no COHERE_API_KEY, import error, short/None response) so
+    callers keep their exact pre-semantic behavior."""
+    cand = (candidate_text or "").strip()
+    titles = [_strip_bracket_prefix(t) for t in (other_titles or [])]
+    titles = [t for t in titles if t][:_pr_dup_embed_cap()]
+    if not cand or not titles:
+        return False
+    if threshold is None:
+        threshold = _pr_dup_cosine()
+    try:
+        from routes.brain_rag import _embed
+        vecs = _embed([cand] + titles, input_type="search_document")
+        if not vecs or len(vecs) != len(titles) + 1:
+            return False
+        cv = vecs[0]
+        return any(_cosine(cv, v) >= threshold for v in vecs[1:])
+    except Exception:
+        return False
+
+
 def open_similar_pr_exists(title: str, prefix: str = "",
-                           threshold: float = 0.6) -> bool:
+                           threshold: float = 0.6,
+                           summary: str = "",
+                           extra_titles=None) -> bool:
     """Fuzzy sibling of open_pr_exists: True if an OPEN PR whose title starts
-    with `prefix` overlaps `title` by >= threshold. Fail-open like
-    open_pr_exists — a GitHub blip never blocks a legitimate draft; the
-    supersede pass in expire_stale_draft_prs catches any dup that slips
-    through."""
+    with `prefix` overlaps `title` by >= threshold tokens — and, when the
+    token check does NOT flag (Phase rag-gap-prdedup 2026-07-04), if any
+    open PR title embeds within PR_DUP_COSINE (default 0.88) of the
+    candidate title(+summary). The cheap token check always runs FIRST; the
+    one-batch semantic check only runs on a token miss.
+
+    Optional kwargs (backwards-compatible — existing call sites unchanged):
+      summary      — extra candidate context (e.g. the rec's spec_md head);
+                     embedded alongside the title for the semantic pass.
+      extra_titles — additional titles to dedup against with BOTH checks,
+                     e.g. this week's already-PR'd rec titles from the L6
+                     planner (which knows them from brain_strategic_recs).
+
+    Fail-open like open_pr_exists — a GitHub blip never blocks a legitimate
+    draft, and any embed failure degrades to exactly the token-overlap
+    behavior; the supersede pass in expire_stale_draft_prs catches any dup
+    that slips through."""
     t = (title or "").strip()
     if not t:
         return False
+    candidates = []
     try:
         r = _gh("GET", f"/repos/{_GITHUB_REPO}/pulls?state=open&per_page=100")
         if r.status_code == 200:
@@ -114,9 +211,24 @@ def open_similar_pr_exists(title: str, prefix: str = "",
                     continue
                 if titles_overlap(t, pt, threshold):
                     return True
+                candidates.append(pt)
     except Exception:
         pass
-    return False
+    # Same checks against caller-supplied titles (this week's already-PR'd
+    # rec titles) — token first, then pooled into the semantic batch.
+    for et in (extra_titles or []):
+        et = (et or "").strip()
+        if not et:
+            continue
+        if titles_overlap(t, et, threshold):
+            return True
+        candidates.append(et)
+    # Semantic layer — only reached when nothing token-flagged.
+    cand_text = _strip_bracket_prefix(t)
+    s = (summary or "").strip()
+    if s:
+        cand_text = f"{cand_text}\n{s[:500]}"
+    return semantic_title_dup(cand_text, candidates)
 
 
 def expire_stale_draft_prs(days: int = 5,
