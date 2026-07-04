@@ -237,8 +237,12 @@ def _action_worker_version_drift(finding: dict) -> tuple[str | None, dict | None
 
 
 def _action_seo_sitemap_stale(finding: dict) -> tuple[str | None, dict | None]:
-    """Sitemap lastmod stale. Re-trigger sitemap regeneration."""
-    return "/api/v1/sitemap/regenerate", {}
+    """Sitemap lastmod stale. /api/v1/sitemap/regenerate is not a real route
+    anywhere in the app (2026-07-03 audit) — sitemaps are rendered dynamically
+    as a sitemapindex over shards, so there is nothing to "regenerate"; a stale
+    lastmod means the shard renderer or its source data is stale, which is a
+    code/data fix. Escalate instead of firing a guaranteed 404."""
+    return None, None
 
 
 # Phase CCC (2026-05-16): 5 more escalation patterns so the audit log
@@ -804,9 +808,9 @@ _PATTERN_LIBRARY: dict[str, dict[str, Any]] = {
     },
     "seo_sitemap_stale": {
         "action":      _action_seo_sitemap_stale,
-        "method":      "POST",
-        "use_admin":   True,
-        "description": "Retrigger sitemap regeneration",
+        "method":      None,   # 2026-07-03: demoted — target route never existed (sitemaps are dynamic shards)
+        "use_admin":   False,
+        "description": "Escalation-only: sitemap lastmod stale means the dynamic shard renderer/data is stale — code fix needed (/api/v1/sitemap/regenerate was a dead pointer)",
     },
     # Phase CCC (2026-05-16): 5 more escalation-only patterns.
     "consistency_radar_detector_crashed": {

@@ -468,6 +468,31 @@ _DISPATCH = [
      "POST",
      lambda now: now.hour == 9 and now.minute < 55),
 
+    # 2026-07-03: FIX-WAVE master shell tick — the 6-lane PASS/FAIL regression
+    # sentinel for the 07-03 deep-dive fix wave (routes/fixwave_master_shell.py).
+    # The shell shipped registered + live but with NO driver (same orphan class
+    # as the deep-dive cron), so fixwave_snapshots never accumulated and a lane
+    # regressing would go unwatched. READ-ONLY probes, fail-soft, 30s in-process
+    # cache + one snapshot row per tick → in-window re-fires are cheap. Odd
+    # hours to offset the even-hour growth/ai-surface ticks. _hit() attaches
+    # X-Admin-Key. Kill: FIXWAVE_DISABLED=1.
+    ("fixwave_master_tick_2h",
+     f"{BASE}/api/v1/admin/fixwave/master-tick",
+     "POST",
+     lambda now: now.hour % 2 == 1 and now.minute < 55),
+
+    # 2026-07-03: brain issue-janitor — auto-closes stale / verified-fixed L15
+    # GitHub issues (routes/brain_issue_janitor.py). Its ONLY driver was the
+    # decommissioned off-repo Replit scheduler, so the L15 issue backlog has
+    # been growing unbounded since. Sweep is bounded (max_per_run) and
+    # idempotent (closed issues stay closed); admin-gated — _hit() sends
+    # X-Admin-Key. Daily 10:xx UTC (free hour slot).
+    # Kill: BRAIN_ISSUE_JANITOR_DISABLE=1.
+    ("brain_issue_janitor_daily",
+     f"{BASE}/api/v1/brain/issue-janitor/run",
+     "POST",
+     lambda now: now.hour == 10 and now.minute < 55),
+
     # 2026-07-03: AGENT-ONBOARDING master shell — daily 08:xx UTC. One per-platform
     # onboarding scoreboard (Claude/ChatGPT/Gemini/Grok/Perplexity/Copilot/Mistral/
     # HF/Poe/…): probes mcp reachability+transport+auth, A2A card, robots AI-bot
