@@ -307,6 +307,12 @@ def _run_master_tick(dry: bool, tiers: set) -> dict:
         # L23 capability proposals (seeds, never auto-built).
         report["steps"].append(_summarize("tier3.l23_lifecycle",
                                            _call("GET", "/api/v1/brain/lifecycle/audit")))
+        # Semantic dedup (2026-07-03): near-duplicate OPEN findings — theme-dups
+        # that keyword/fuzzy dedup misses (the L6 PR-flood cause) — surfaced via the
+        # RAG embeddings for the janitor/operator to MERGE. Propose-only; never
+        # auto-resolves. Dark-safe: returns [] if embeddings absent.
+        report["steps"].append(_summarize("tier3.semantic_dup_findings",
+                                           _call("GET", "/api/v1/admin/brain/rag/duplicate-findings?threshold=0.9&limit=25")))
         # Effect-unfixable patterns the autopilot keeps failing on: surface them
         # for human re-channeling instead of bounce-looping forever. Propose-only,
         # additive (deduped) findings; dark no-op unless BRAIN_PROMOTE_ON_FAILURE_ENABLED.

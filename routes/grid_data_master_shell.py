@@ -218,6 +218,31 @@ _DOMAINS = ("grid", "power", "gas")
 _DATASET_DOM = {t["id"]: t.get("dom") for t in TARGET_DATASETS}
 _DOMAIN_TARGETS = {d: sum(1 for t in TARGET_DATASETS if t.get("dom") == d) for d in _DOMAINS}
 
+# Capacity-MARKET clearing price ($/MW-day) — the #1-cited DC-power economic signal,
+# which has NO machine-readable feed (published in ISO auction-result PDFs). Cited
+# seed with provenance + delivery year (same honest pattern as ERCOT large-load).
+# Update per annual auction; a live parser is the filed brain gap. Env override:
+# GRID_CAPACITY_AUCTION_JSON (JSON {ISO:{...}}) so it can be refreshed without deploy.
+CAPACITY_AUCTION = {
+    "PJM": {"price_usd_mw_day": 269.92, "delivery_year": "2025/2026",
+            "auction": "RPM Base Residual Auction",
+            "source": "PJM 2025/2026 BRA cleared price (record, ~8x the prior year — driven by data-center load)",
+            "as_of": "2024-07"},
+}
+
+
+def _capacity_auction(iso):
+    """Cited capacity-auction clearing price for an ISO, env-overridable. Returns
+    {} if none. NEVER fabricates — only ISOs with a published, dated figure."""
+    data = dict(CAPACITY_AUCTION)
+    ov = os.environ.get("GRID_CAPACITY_AUCTION_JSON")
+    if ov:
+        try:
+            data.update(json.loads(ov))
+        except Exception:
+            pass
+    return data.get(iso, {})
+
 
 # ── DB ────────────────────────────────────────────────────────────────
 def _conn():
@@ -678,6 +703,13 @@ def grid_extended(iso):
             if r and r.get("primary_value") is not None:
                 out[field] = float(r["primary_value"])
                 out[field + "_as_of"] = str(r.get("as_of"))
+        # capacity-MARKET clearing price ($/MW-day) — cited seed with provenance
+        ca = _capacity_auction(iso)
+        if ca.get("price_usd_mw_day") is not None:
+            out["capacity_auction_price_usd_mw_day"] = ca["price_usd_mw_day"]
+            out["capacity_auction_delivery_year"] = ca.get("delivery_year")
+            out["capacity_auction_source"] = ca.get("source")
+            out["capacity_auction_as_of"] = ca.get("as_of")
         if len(out) > 3:
             out["available"] = True
             out["note"] = ("Forward/supply signals absorbed from gridstatus.io by the grid-data "
