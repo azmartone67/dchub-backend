@@ -580,8 +580,44 @@ _PROPOSE_SYSTEM = (
 )
 
 
+# ── Structured-output schema (2026-07-04) ─────────────────────────────
+# Derived from the consumers: propose_feature reads feature_name /
+# feature_slug; _stub_module_content reads feature_name, complexity,
+# primary_route, reuses, problem, proposed_ux, priority_justification
+# (introspection-tested in tests/test_brain_structured_outputs.py).
+# The "cluster too vague" contract stays intact: feature_name is nullable
+# and everything except feature_name+complexity is OPTIONAL, so the model
+# can still emit {"feature_name": null, "complexity": "unclear"} — the
+# claude_returned_unclear path fires exactly as before.
+_PROPOSE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "feature_name": {"type": ["string", "null"]},
+        "feature_slug": {"type": "string"},
+        "problem": {"type": "string"},
+        "proposed_ux": {"type": "string"},
+        "complexity": {"type": "string",
+                       "enum": ["small", "medium", "large", "unclear"]},
+        "priority_justification": {"type": "string"},
+        "primary_route": {"type": "string"},
+        "reuses": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["feature_name", "complexity"],
+    "additionalProperties": False,
+}
+
+
 def _call_claude(prompt: str) -> tuple[Optional[str], Optional[str]]:
-    """Single Anthropic call. Mirrors routes/feedback_triage._call_claude."""
+    """Single Anthropic call. Mirrors routes/feedback_triage._call_claude.
+
+    Structured outputs (2026-07-04): when the model supports the verified GA
+    param output_config.format (json_schema; no beta header), the request
+    pins the spec JSON to _PROPOSE_SCHEMA. FAIL-SOFT: a 400 on a structured
+    attempt retries the SAME model on the legacy free-text body before the
+    existing 404/400 chain-walk. Note the static fallback rung
+    claude-sonnet-4-20250514 (Sonnet 4.0) does NOT support structured
+    outputs — the helper's model gate keeps it on the legacy path.
+    BRAIN_STRUCTURED_OUTPUTS=0 forces legacy everywhere."""
     if not ANTHROPIC_API_KEY:
         return None, "no_api_key"
     try:
@@ -592,38 +628,69 @@ def _call_claude(prompt: str) -> tuple[Optional[str], Optional[str]]:
         models = resolve_chain(brain_model_for("reasoning"))
     except Exception:
         models = [BRAIN_MODEL, "claude-sonnet-4-20250514"]
+    try:
+        from routes import brain_llm_structured as _so
+    except Exception:
+        _so = None
     last_err = None
     for i, model in enumerate(models):
-        body = json.dumps({
-            "model": model,
-            "max_tokens": 3000,
-            "system": _PROPOSE_SYSTEM,
-            "messages": [{"role": "user", "content": prompt}],
-        }).encode("utf-8")
-        req = urllib.request.Request(
-            anthropic_messages_url(),
-            data=body,
-            headers={
-                "Content-Type": "application/json",
-                "X-API-Key": ANTHROPIC_API_KEY,
-                "User-Agent": "dchub-brain/1.0",
-                "Anthropic-Version": "2023-06-01",
-            },
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=40) as r:
-                data = json.loads(r.read().decode("utf-8"))
-            for block in data.get("content", []):
-                if block.get("type") == "text":
-                    return block.get("text", ""), None
-            return None, "no_text_block"
-        except urllib.error.HTTPError as e:
-            last_err = f"http_{e.code}"
-            if e.code in (404, 400) and i + 1 < len(models):
-                continue
-            return None, last_err
-        except Exception as e:
-            return None, f"call_fail: {repr(e)[:160]}"
+        _attempts = ((True, False)
+                     if (_so is not None and
+                         _so.structured_active(model, _PROPOSE_SCHEMA))
+                     else (False,))
+        _walk_chain = False
+        for _structured in _attempts:
+            if _so is not None:
+                body_dict, _ = _so.build_messages_body(
+                    model, _PROPOSE_SYSTEM,
+                    [{"role": "user", "content": prompt}],
+                    3000, _PROPOSE_SCHEMA if _structured else None)
+            else:
+                body_dict = {
+                    "model": model,
+                    "max_tokens": 3000,
+                    "system": _PROPOSE_SYSTEM,
+                    "messages": [{"role": "user", "content": prompt}],
+                }
+            body = json.dumps(body_dict).encode("utf-8")
+            req = urllib.request.Request(
+                anthropic_messages_url(),
+                data=body,
+                headers={
+                    "Content-Type": "application/json",
+                    "X-API-Key": ANTHROPIC_API_KEY,
+                    "User-Agent": "dchub-brain/1.0",
+                    "Anthropic-Version": "2023-06-01",
+                },
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=40) as r:
+                    data = json.loads(r.read().decode("utf-8"))
+                for block in data.get("content", []):
+                    if block.get("type") == "text":
+                        return block.get("text", ""), None
+                return None, "no_text_block"
+            except urllib.error.HTTPError as e:
+                last_err = f"http_{e.code}"
+                if _structured and e.code == 400:
+                    # Structured param plausibly the cause — memoize when
+                    # the error blames it, then retry SAME model legacy.
+                    try:
+                        _etext = e.read().decode("utf-8", "replace")
+                    except Exception:
+                        _etext = ""
+                    if _so is not None and _so.looks_like_structured_rejection(
+                            e.code, _etext):
+                        _so.mark_model_unsupported(model)
+                    continue
+                if e.code in (404, 400) and i + 1 < len(models):
+                    _walk_chain = True
+                    break
+                return None, last_err
+            except Exception as e:
+                return None, f"call_fail: {repr(e)[:160]}"
+        if _walk_chain:
+            continue
     return None, last_err or "all_models_failed"
 
 
