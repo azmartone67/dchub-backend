@@ -113,7 +113,12 @@ def _conn():
         if not dsn:
             return None
         c = _pg.connect(dsn, sslmode="require", connect_timeout=5)
-        c.autocommit = True
+        # qa-0704: MUST stay transactional (autocommit=False). Every probe in
+        # _compute() is gated on SAVEPOINT, and Postgres rejects SAVEPOINT
+        # outside a transaction block — with autocommit=True every _savepoint()
+        # call failed, every probe was skipped, and all 48 tools reported
+        # zeros since ship (2026-06-07) while mcp_call_log held the real rows.
+        c.autocommit = False
         return c
     except Exception as e:
         logger.warning("per_tool_conversion: db connect failed: %s", e)
@@ -415,6 +420,7 @@ def _emit_brain_findings(data: dict) -> dict:
                 f"{tool}: {callers} distinct callers · {paywall} paywall hits · "
                 f"0 paid in 30d. Proposed action: {action}")
             try:
+                cur.execute("SAVEPOINT bf_low")
                 upsert_brain_finding(
                     cur,
                     issue="mcp_tool_zero_conversion",
@@ -423,8 +429,10 @@ def _emit_brain_findings(data: dict) -> dict:
                     detail=detail,
                     detector="mcp_per_tool_conversion",
                     status="open")
+                cur.execute("RELEASE SAVEPOINT bf_low")
                 out["low_written"] += 1
             except Exception as e:
+                _rollback_sp(cur, "bf_low")
                 out["errors"].append(f"low/{tool}: {e}")
 
         # HIGH performers — propose visibility boost + cross-promo.
@@ -439,6 +447,7 @@ def _emit_brain_findings(data: dict) -> dict:
                 f"of category) + cross-promote on MCP Connect landing pages "
                 f"(/integrations/mcp/cursor, /integrations/mcp/cline, etc).")
             try:
+                cur.execute("SAVEPOINT bf_high")
                 upsert_brain_finding(
                     cur,
                     issue="mcp_tool_high_converter",
@@ -447,9 +456,12 @@ def _emit_brain_findings(data: dict) -> dict:
                     detail=detail,
                     detector="mcp_per_tool_conversion",
                     status="open")
+                cur.execute("RELEASE SAVEPOINT bf_high")
                 out["high_written"] += 1
             except Exception as e:
+                _rollback_sp(cur, "bf_high")
                 out["errors"].append(f"high/{tool}: {e}")
+        conn.commit()   # qa-0704: connection is transactional now
     finally:
         try:
             conn.close()

@@ -9695,6 +9695,14 @@ def enforce_tier_rate_limits():
     if internal_token and internal_secret and hmac.compare_digest(internal_token, internal_secret):
         return None
 
+    # qa-0704: the mcp-server authenticates service-to-service calls with
+    # X-Internal-Key (DCHUB_INTERNAL_KEY) — rate_limiter.py's hook honors it
+    # (r58c) but THIS hook only knew X-DC-Internal-Token, so funnel-critical
+    # fire-and-forget writes (/api/v1/mcp/track-paid-hit) 429'd whenever the
+    # sender's egress IP bucket was hot. Same env-backed constant-time check.
+    if is_valid_internal_key(request.headers.get('X-Internal-Key', '')):
+        return None
+
     # Phase FF+25-followup (2026-05-20): User-Agent allowlist for our own
     # internal probes. The CF WAF allow rule (matching `lower(user_agent)
     # contains "dchub"`) unblocked them at the edge; this is defense-in-
