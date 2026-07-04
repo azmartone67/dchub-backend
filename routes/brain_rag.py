@@ -35,6 +35,19 @@ EMBED_MODEL = "embed-english-v3.0"
 EMBED_DIM = 1024
 _COHERE_BATCH = 96  # Cohere v1/embed hard limit
 
+# ── rerank (r-rag-rerank 2026-07-04) ─────────────────────────────────
+# Two-stage retrieval: over-fetch k*OVERFETCH candidates from the pgvector
+# HNSW index (fast bi-encoder cosine), then Cohere rerank (cross-encoder)
+# down to k. Lifts relevance@k ~15-40% over raw cosine. Fail-soft: any
+# rerank error or missing key falls straight back to the cosine top-k, so
+# recall never breaks. Toggle with BRAIN_RAG_RERANK=0.
+RERANK_MODEL = "rerank-english-v3.0"
+_RERANK_OVERFETCH = 4      # fetch k*4 candidates to rerank
+_RERANK_MAX_FETCH = 60     # never over-fetch beyond this
+def _rerank_on() -> bool:
+    return (os.environ.get("BRAIN_RAG_RERANK", "1").strip().lower()
+            not in ("0", "false", "no", "off"))
+
 # ── corpus registry — add a row to roll RAG onto a new source (no new code) ──
 # Each: source_table → {id (t-qualified ::text), text (SQL expr over alias t),
 # kind, where}. All exprs are hardcoded/trusted (never user input).
@@ -63,7 +76,34 @@ CORPORA = {
                  "concat_ws(', ', t.city, t.state, t.country) || ' · ' || "
                  "coalesce(t.market,'') || ' ' || coalesce(t.facility_type,'')"),
         "where": "coalesce(t.name,'') <> '' AND coalesce(t.is_duplicate, 0) = 0"},
+    # ── self-learning "lessons" (r-rag-lessons 2026-07-04) ───────────────
+    # The brain already CAPTURES outcomes (autopilot_outcomes,
+    # brain_finding_outcomes) but never RECALLED them, so it re-proposed ideas
+    # that already failed. Embedding these as a 'lesson' corpus lets any layer
+    # retrieve_lessons(query) recall what worked/failed before it acts. Brain-
+    # internal → deliberately NOT in PUBLIC_CORPORA. fresh_col=verified_at so a
+    # re-verified outcome re-embeds. Only settled rows (verdict present) embed.
+    "autopilot_outcomes": {
+        "id": "t.id::text", "kind": "lesson",
+        "text": ("'Action ' || coalesce(t.pattern_name,'') || ': ' || "
+                 "case when t.succeeded is true then 'WORKED' "
+                 "when t.succeeded is false then 'FAILED' else 'unverified' end || "
+                 "' — ' || coalesce(t.evidence,'') || ' ' || coalesce(t.failure_reason,'')"),
+        "where": ("t.succeeded IS NOT NULL AND "
+                  "(coalesce(t.evidence,'') <> '' OR coalesce(t.failure_reason,'') <> '')"),
+        "fresh_col": "verified_at"},
+    "brain_finding_outcomes": {
+        "id": "t.id::text", "kind": "lesson",
+        "text": ("'Issue ' || coalesce(t.issue_type,'') || ': ' || coalesce(t.fix_kind,'') || "
+                 "' fix ' || coalesce(t.fix_summary,'') || ' → ' || coalesce(t.outcome,'') || "
+                 "'. ' || coalesce(t.outcome_detail,'')"),
+        "where": "t.outcome <> 'pending' AND coalesce(t.issue_type,'') <> ''",
+        "fresh_col": "verified_at"},
 }
+
+# Brain-internal corpora that carry PAST-OUTCOME lessons (recalled by
+# retrieve_lessons; never exposed to public_search).
+LESSON_CORPORA = ("autopilot_outcomes", "brain_finding_outcomes")
 # Optional per-corpus "fresh_col" (a t.<timestamp> column): when set, _pending
 # ALSO re-picks rows whose source timestamp is newer than the stored embedding
 # (updated-in-place rows re-embed). Corpora without it keep insert-only behavior.
@@ -180,6 +220,31 @@ def _embed(texts, input_type="search_document"):
 
 def _vec(v):
     return "[" + ",".join(repr(float(x)) for x in v) + "]"
+
+
+def _rerank(query, docs, top_n):
+    """Cohere cross-encoder rerank. `docs` = list of text strings. Returns a
+    list of (original_index, relevance_score) for the top_n, best-first — or
+    None on any failure (caller falls back to cosine order)."""
+    key = (os.environ.get("COHERE_API_KEY") or "").strip()
+    if not key or not docs:
+        return None
+    body = json.dumps({"model": RERANK_MODEL, "query": query,
+                       "documents": docs, "top_n": int(top_n)}).encode()
+    req = urllib.request.Request("https://api.cohere.ai/v1/rerank", data=body, method="POST")
+    req.add_header("Authorization", "Bearer " + key)
+    req.add_header("Content-Type", "application/json")
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            d = json.loads(r.read())
+        out = []
+        for item in (d.get("results") or []):
+            idx = item.get("index")
+            if isinstance(idx, int) and 0 <= idx < len(docs):
+                out.append((idx, round(float(item.get("relevance_score", 0.0)), 4)))
+        return out or None
+    except Exception:
+        return None
 
 
 # ── corpus selection ──────────────────────────────────────────────────
@@ -374,14 +439,19 @@ def _corpus_total(cur):
 # ── retrieval (importable by any consumer) ────────────────────────────
 def retrieve_context(query: str, k: int = 8, corpus: str = None) -> list:
     """Top-k most semantically-relevant rows, optionally scoped to one corpus
-    (e.g. corpus='news_articles'). Returns [{source_table,source_id,kind,text,score}].
-    Fail-soft → []."""
+    (e.g. corpus='news_articles'). Two-stage: pgvector cosine over-fetch →
+    Cohere rerank → top-k (rerank fail-soft → cosine order). Returns
+    [{source_table,source_id,kind,text,score}]. Fail-soft → []."""
     if not query:
         return []
     qv = _embed([query], input_type="search_query")
     if not qv:
         return []
     qs = _vec(qv[0])
+    # Over-fetch candidates when reranking so the cross-encoder has room to
+    # re-order; without rerank, fetch exactly k.
+    rerank = _rerank_on()
+    fetch_k = min(int(k) * _RERANK_OVERFETCH, _RERANK_MAX_FETCH) if rerank else int(k)
     c = _db()
     if c is None:
         return []
@@ -394,21 +464,39 @@ def retrieve_context(query: str, k: int = 8, corpus: str = None) -> list:
                            1 - (embedding <=> %s::vector)
                     FROM brain_corpus_embeddings WHERE source_table = ANY(%s)
                     ORDER BY embedding <=> %s::vector LIMIT %s
-                """, (qs, cs, qs, int(k)))
+                """, (qs, cs, qs, int(fetch_k)))
             else:
                 cur.execute("""
                     SELECT source_table, source_id, kind, left(text, 500),
                            1 - (embedding <=> %s::vector)
                     FROM brain_corpus_embeddings
                     ORDER BY embedding <=> %s::vector LIMIT %s
-                """, (qs, qs, int(k)))
-            return [{"source_table": r[0], "source_id": r[1], "kind": r[2],
+                """, (qs, qs, int(fetch_k)))
+            base = [{"source_table": r[0], "source_id": r[1], "kind": r[2],
                      "text": r[3], "score": round(float(r[4]), 4)} for r in cur.fetchall()]
     except Exception:
         return []
     finally:
         try: c.close()
         except Exception: pass
+
+    # Stage 2 — rerank. Only worth it when we over-fetched more than k.
+    if rerank and len(base) > int(k):
+        ranked = _rerank(query, [d["text"] for d in base], int(k))
+        if ranked:
+            out = []
+            for idx, rel in ranked:
+                d = dict(base[idx]); d["score"] = rel; out.append(d)
+            return out
+    return base[:int(k)]
+
+
+def retrieve_lessons(query: str, k: int = 5) -> list:
+    """Recall PAST-OUTCOME lessons (what worked / failed before) from the
+    autopilot_outcomes + brain_finding_outcomes corpora, so a layer can avoid
+    repeating a known failure. Thin scoped wrapper over retrieve_context —
+    inherits rerank + fail-soft []."""
+    return retrieve_context(query, k=k, corpus=list(LESSON_CORPORA))
 
 
 # ── hydration for agent-facing search (attach citable source fields) ───
