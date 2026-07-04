@@ -1977,6 +1977,16 @@ try:
     except Exception as _brag:
         import logging
         logging.getLogger(__name__).warning('brain_rag wiring failed: %s', _brag)
+    # RAG v1 (2026-07-03): token-budgeted market context packs — the agent-shaped
+    # read of the Market Brief. GET /api/v1/context/market/<slug>?max_tokens=&format=.
+    # Backs the MCP get_market_context tool.
+    try:
+        from routes.context_packs import context_packs_bp
+        app.register_blueprint(context_packs_bp)
+        print("[main] context_packs_bp registered: GET /api/v1/context/market/<slug>", flush=True)
+    except Exception as _cpk:
+        import logging
+        logging.getLogger(__name__).warning('context_packs wiring failed: %s', _cpk)
     # 2026-07-03: autonomous GEO answer-page publisher — renders + commits
     # /answers/<slug> to the frontend via GitHub API (closes the "backend cron
     # can't author static pages" constraint). POST /api/v1/admin/geo/publish-answer.
@@ -12989,6 +12999,62 @@ def _resend_email(to_email, subject, html, from_email="alerts@dchub.cloud", from
         return False
 
 
+def _welcome_recently_sent(to_email):
+    """r-onboarding-fix (2026-07-03, defect #7): True if a welcome email was
+    already delivered to this address in the last 24h. Concurrent / retried
+    provisioning called the welcome sender 3-4x for one customer (Roman); this
+    time-window guard collapses that to one. Defense-in-depth alongside the
+    Stripe event-id gate (which stops same-event reprocessing). Best-effort —
+    returns False on any error so a genuine welcome is never suppressed by a DB
+    blip."""
+    try:
+        _rc, rows = _pg_execute(
+            "SELECT 1 FROM welcome_email_log "
+            "WHERE lower(email) = lower(%s) "
+            "AND status IN ('sent', 'sent_via_resend') "
+            "AND attempted_at > now() - interval '24 hours' LIMIT 1",
+            (to_email,), fetch=True)
+        return bool(rows)
+    except Exception:
+        return False
+
+
+def _welcome_mcp_connector_html(to_email, raw_api_key):
+    """r-onboarding-fix (2026-07-03, defect #6): the 'Connect to Claude' section
+    of the welcome email, carrying the customer's dch_live_ MCP key + the
+    ready-to-paste ?api_key= connector URL — the ONE credential Claude needs,
+    which no welcome surface delivered before. If raw_api_key is already a
+    dch_live_ key (the MCP subscription path passes it) use it; otherwise look up
+    the active MCP key by email. Graceful fallback if none exists yet."""
+    mcp_key = raw_api_key if (raw_api_key or '').startswith('dch_live_') else None
+    if not mcp_key:
+        try:
+            _rc, rows = _pg_execute(
+                "SELECT api_key FROM mcp_dev_keys "
+                "WHERE lower(email) = lower(%s) AND status = 'active' "
+                "ORDER BY created_at DESC LIMIT 1",
+                (to_email,), fetch=True)
+            if rows:
+                mcp_key = rows[0][0]
+        except Exception:
+            mcp_key = None
+    if mcp_key:
+        connector = f"https://dchub.cloud/mcp?api_key={mcp_key}"
+        return f"""
+    <h2 style="margin-top: 32px;">Connect to Claude (or Cursor / Cline) in 60 seconds</h2>
+    <p>DC Hub is a Model Context Protocol server. In <strong>Claude.ai &rarr; Settings &rarr; Connectors &rarr; Add custom connector</strong>, paste this URL — it carries your key, so you get your full paid tier and there are no auth fields to fill:</p>
+    <div class="key-box">
+      <div class="key-label">Your Claude connector URL</div>
+      {connector}
+    </div>
+    <p style="font-size:14px; color:#6a6a7a;">Using Claude Desktop / Cursor / Cline instead? Send your key as a header: <code>X-API-Key: {mcp_key}</code>. Full guide: <a href="https://dchub.cloud/mcp" style="color:#00d4ff;">dchub.cloud/mcp</a></p>
+"""
+    return """
+    <h2 style="margin-top: 32px;">Connect to Claude (or Cursor / Cline)</h2>
+    <p>DC Hub is a Model Context Protocol server. Grab your connector URL on your dashboard, then in <strong>Claude.ai &rarr; Settings &rarr; Connectors &rarr; Add custom connector</strong> paste it — full guide at <a href="https://dchub.cloud/mcp" style="color:#00d4ff;">dchub.cloud/mcp</a>.</p>
+"""
+
+
 def send_welcome_email_sendgrid(to_email, raw_api_key, plan_name='pro', temp_password=None, reset_url=None):
     """Send welcome email with API key (and login password for new accounts) via SendGrid.
 
@@ -12999,6 +13065,11 @@ def send_welcome_email_sendgrid(to_email, raw_api_key, plan_name='pro', temp_pas
     import threading
     def _send():
         try:
+            # r-onboarding-fix (2026-07-03, defect #7): collapse duplicate welcomes.
+            if _welcome_recently_sent(to_email):
+                print(f"↩️ welcome email already sent to {to_email} in last 24h — skipping duplicate")
+                _log_welcome_email(to_email, plan_name, status='skipped_duplicate')
+                return
             sg_key = os.environ.get('SENDGRID_API_KEY', '')
             if not sg_key:
                 # r43-H (2026-05-27): was a silent skip. Now alerts admin
@@ -13033,6 +13104,8 @@ def send_welcome_email_sendgrid(to_email, raw_api_key, plan_name='pro', temp_pas
 
             plan_display = plan_name.replace('_', ' ').title()
             subject = f"Welcome to DC Hub {plan_display} - Your API Key Inside"
+            # r-onboarding-fix (2026-07-03, defect #6): lead with the Claude connector.
+            mcp_connector_section = _welcome_mcp_connector_html(to_email, raw_api_key)
 
             password_section = ""
             if reset_url:
@@ -13104,7 +13177,8 @@ p {{ font-size: 16px; color: #4a4a5a; margin-bottom: 16px; line-height: 1.6; }}
   <div class="body">
     <h1>Welcome to DC Hub {plan_display}!</h1>
 {password_section}
-    <p>Your account is active and ready to go. Below is your API key -- this is the <strong>only time</strong> you'll see the full key, so please save it now.</p>
+{mcp_connector_section}
+    <p>Prefer the REST API? Your account is active and ready to go. Below is your API key -- this is the <strong>only time</strong> you'll see the full key, so please save it now.</p>
 
     <div class="key-box">
       <div class="key-label">Your API Key</div>
