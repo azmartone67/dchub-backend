@@ -162,6 +162,16 @@ def _esc(s) -> str:
             .replace('"', "&quot;"))
 
 
+def _ascii_header(v) -> str:
+    """ASCII-only header value. HTTP headers must be latin-1 — an em-dash in
+    X-Cite-As made gunicorn reject EVERY response from /api/v1/industry/pulse
+    (502 since launch; see routes/industry_pulse.py). Never raises."""
+    try:
+        return str(v or "").encode("ascii", "ignore").decode("ascii")
+    except Exception:
+        return ""
+
+
 def _slugify(text: str) -> str:
     import re as _re2
     return _re2.sub(r"[^a-z0-9]+", "-", (text or "").lower()).strip("-")
@@ -459,6 +469,23 @@ def _render_profile(fac: dict, slug: str) -> str:
         "isAccessibleForFree": True,
         "creator": {"@type": "Organization", "name": "DC Hub", "url": "https://dchub.cloud"},
         "spatialCoverage": {"@id": canonical + "#place"},
+        # r-page-onramp (2026-07-04): crawl->tool crossover. Point the Dataset
+        # at the LIVE query surfaces so an agent that lands on the crawled page
+        # can jump straight to querying: distribution -> the MCP endpoint,
+        # potentialAction -> the keyless RAG search (routes/brain_rag.py).
+        "distribution": [{
+            "@type": "DataDownload",
+            "encodingFormat": "application/json",
+            "contentUrl": "https://dchub.cloud/mcp",
+        }],
+        "potentialAction": {
+            "@type": "SearchAction",
+            "target": {
+                "@type": "EntryPoint",
+                "urlTemplate": "https://dchub.cloud/api/v1/rag/search?q={search_term_string}",
+            },
+            "query-input": "required name=search_term_string",
+        },
     }, indent=2)
 
     # Enriched stat cards — only render values we actually have (sparse rows
@@ -704,6 +731,8 @@ def _render_profile(fac: dict, slug: str) -> str:
     <div class="foot">
       Data: DC Hub global infrastructure database ·
       <a href="/api/v1/facilities/{_esc(slug)}" rel="nofollow">Raw JSON</a>
+      <div style="margin-top:8px">Query this facility live via MCP:
+        <a href="https://dchub.cloud/connect?src=page-onramp&amp;entity={_esc(slug)}">https://dchub.cloud/connect?src=page-onramp&amp;entity={_esc(slug)}</a></div>
     </div>
   </div>
 
@@ -768,6 +797,11 @@ text-align:center;padding:80px 20px">
         )
 
     html = _render_profile(fac, slug)
+    # r-page-onramp (2026-07-04): citation header with as-of stamp. ASCII only
+    # (headers are latin-1; the industry-pulse em-dash 502 is the trap).
+    _cite = _ascii_header(
+        f"DC Hub Facility {slug} - as of {_dt.date.today().isoformat()}")
     return Response(html, status=200, mimetype="text/html",
                     headers={"Cache-Control": "public, max-age=3600",
-                             "X-DC-Hub-Source": "facility-profile-dynamic"})
+                             "X-DC-Hub-Source": "facility-profile-dynamic",
+                             "X-Cite-As": _cite})

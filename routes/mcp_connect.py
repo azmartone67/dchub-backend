@@ -310,6 +310,18 @@ def _record_view(client_key: str) -> int | None:
     try:
         ua = (request.headers.get("User-Agent") or "")[:300]
         ref = (request.headers.get("Referer") or "")[:500]
+        # r-page-onramp (2026-07-04): the crawl->tool crossover pack links
+        # every facility/market/DCPI page here with ?src=page-onramp&entity=
+        # <slug>. The recorder only stored the Referer header — absent for
+        # most agent fetches — so fold the marker query-string into the same
+        # TEXT column (zero DDL). Funnel queries can then filter
+        # referer LIKE '%src=page-onramp%' and parse entity= for the page.
+        try:
+            _qs = (request.query_string or b"").decode("utf-8", "ignore")
+            if "src=" in _qs:
+                ref = (ref + (" | " if ref else "") + "qs:" + _qs)[:500]
+        except Exception:
+            pass
         ip = (request.headers.get("CF-Connecting-IP")
               or request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
               or request.remote_addr or "")[:64]
@@ -332,6 +344,27 @@ def _record_view(client_key: str) -> int | None:
         try: db.close()
         except Exception: pass
     return new_id
+
+
+# r-page-onramp (2026-07-04): bare /connect is a STATIC file served from
+# main.py (send_from_directory('static','connect.html')) with NO telemetry —
+# only the /connect/<client> pages call _record_view. The crossover-pack
+# onramp lines point at /connect?src=page-onramp&entity=<slug>, so without
+# this hook the measurement marker would never reach connect_landing_views.
+# before_app_request fires even though the /connect route lives in main.py
+# (Flask runs before_request hooks prior to dispatch). Cost: one string
+# compare per request. Never raises.
+@mcp_connect_bp.before_app_request
+def _record_page_onramp_view():
+    try:
+        if request.path.rstrip("/") != "/connect":
+            return None
+        if request.args.get("src") != "page-onramp":
+            return None
+        _record_view("page-onramp")
+    except Exception:
+        pass
+    return None
 
 
 # ── Page render ─────────────────────────────────────────────────────────

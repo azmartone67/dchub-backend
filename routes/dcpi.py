@@ -4525,6 +4525,8 @@ DCPI_MARKET_TEMPLATE = """<!DOCTYPE html>
   "keywords": {{ (("data center power, DCPI, " ~ s.market_name ~ ", grid constraint, excess power, " ~ (s.iso or "ISO") ~ ", site selection, " ~ (s.verdict or "LOW_SIGNAL")))|tojson }},
   "temporalCoverage": "2024-01-01/..",
   "citation": "DC Hub Data Center Power Index, dchub.cloud/dcpi",
+  "distribution": [{"@type": "DataDownload", "encodingFormat": "application/json", "contentUrl": "https://dchub.cloud/mcp"}],
+  "potentialAction": {"@type": "SearchAction", "target": {"@type": "EntryPoint", "urlTemplate": "https://dchub.cloud/api/v1/rag/search?q={search_term_string}"}, "query-input": "required name=search_term_string"},
   {% if s.computed_at %}"dateModified": {{ (s.computed_at[:10])|tojson }},
   {% endif %}"measurementTechnique": "DCPI is recomputed daily from interconnection-queue depth, capacity-pipeline additions, grid-emergency events, and reserve-margin signals for the serving ISO/RTO. Methodology: dchub.cloud/dcpi",
   "spatialCoverage": {
@@ -4925,6 +4927,9 @@ h1 {
   <code style="display:block;background:rgba(255,255,255,.03);padding:12px;border-radius:6px;color:#e8eef8;font-size:13px;margin-bottom:8px">DC Hub. (2026). Data Center Power Index v2. https://dchub.cloud/dcpi</code>
   <a href="/dcpi/methodology" style="color:#5aa3ff;font-size:14px;text-decoration:none">View methodology + BibTeX →</a>
 </div>
+<div style="margin:12px auto 32px;max-width:760px;font-family:system-ui;font-size:12.5px;color:#9eb5d8">
+  Query this market live via MCP: <a href="https://dchub.cloud/connect?src=page-onramp&amp;entity={{ s.market_slug }}" style="color:#5aa3ff;text-decoration:none">https://dchub.cloud/connect?src=page-onramp&amp;entity={{ s.market_slug }}</a>
+</div>
 </body>
 </html>"""
 
@@ -5204,6 +5209,18 @@ def _redis_set_page(slug: str, html: str) -> None:
         pass
 
 
+def _cite_as_header(slug: str) -> str:
+    """r-page-onramp (2026-07-04): ASCII-only X-Cite-As value with an as-of
+    stamp. Headers must be latin-1 — an em-dash in this exact header 502'd
+    every /api/v1/industry/pulse response (routes/industry_pulse.py); follow
+    that fixed pattern exactly. Never raises."""
+    try:
+        return (f"DC Hub DCPI {slug} - as of {datetime.date.today().isoformat()}"
+                ).encode("ascii", "ignore").decode("ascii")
+    except Exception:
+        return "DC Hub DCPI"
+
+
 @dcpi_bp.route("/dcpi/<slug>", methods=["GET"], strict_slashes=False)
 def public_market_page(slug):
     _ensure_tables()
@@ -5284,6 +5301,7 @@ def public_market_page(slug):
         _cr = Response(_ch[1], mimetype="text/html")
         _cr.headers["Content-Security-Policy"] = _DCPI_CSP
         _cr.headers["X-DC-Cache"] = "hit"
+        _cr.headers["X-Cite-As"] = _cite_as_header(slug)
         return _cr
 
     # RENDER-PERF: cross-worker Redis layer (survives gunicorn recycle). On a
@@ -5297,6 +5315,7 @@ def public_market_page(slug):
         _cr = Response(_r_html, mimetype="text/html")
         _cr.headers["Content-Security-Policy"] = _DCPI_CSP
         _cr.headers["X-DC-Cache"] = "hit"
+        _cr.headers["X-Cite-As"] = _cite_as_header(slug)
         return _cr
 
     # Phase RR (2026-05-14): backfill lite-scored markets. ~250+ markets
@@ -5419,6 +5438,7 @@ def public_market_page(slug):
     market_resp = Response(market_html, mimetype="text/html")
     market_resp.headers["Content-Security-Policy"] = _DCPI_CSP  # phase 284
     market_resp.headers["X-DC-Cache"] = "miss"
+    market_resp.headers["X-Cite-As"] = _cite_as_header(slug)
     return market_resp
 
 
