@@ -346,7 +346,8 @@ def _build_data() -> dict:
         "renewal_nudge": {"total": 0, "eligible_next_30d": 0,
                           "sent_last_7d": 0},
         "signals_with_tool_tagged": {"total_30d": 0, "untagged_30d": 0,
-                                     "pct_tagged_30d": 0.0},
+                                     "pct_tagged_30d": 0.0,
+                                     "excluded_view_stamps_30d": 0},
         "source_plan_cohort": {"total": 0, "expiring_next_60d": 0,
                                "expired_not_demoted": 0},
         # 2026-06-07: session-bound high-intent claim KPIs.
@@ -385,6 +386,10 @@ def _build_data() -> dict:
                       "winner": "no_data"},
         "events": [],
         "missing_tables": [],
+        # writer-path canaries (2026-07-03): per-table INSERT-then-ROLLBACK
+        # probe result ("ok" / "FAILED: <err>") so an all-zero card is
+        # distinguishable from a silently broken writer.
+        "writer_canary": {},
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "db_ok": False,
     }
@@ -724,18 +729,31 @@ def _build_data() -> dict:
         # 'unknown' (historic session-level mints, pair_code.py) and its
         # 2026-07-02 replacement 'session_cta' are placeholders, not real
         # tool tags — counting them read as a false 100% tagged.
+        # r-structural-untagged (2026-07-03): signal_type='redeem_url_viewed'
+        # is EXCLUDED from the denominator — those rows are page-view stamps,
+        # not tool-gated paywall signals, so they structurally carry no tool
+        # (the 07-03 deep dive found ALL 708 untagged rows were this type;
+        # the resulting 69.5% "tagged" read as a Fix-C regression when the
+        # taggable population was actually ~100%). The excluded count is
+        # surfaced separately so the view-stamp volume stays visible.
         try:
             cur.execute(
                 "SELECT "
-                "  COUNT(*) FILTER (WHERE tool_requested IS NOT NULL "
+                "  COUNT(*) FILTER (WHERE COALESCE(signal_type,'') "
+                "                         <> 'redeem_url_viewed' "
+                "                     AND tool_requested IS NOT NULL "
                 "                     AND tool_requested NOT IN "
                 "                         ('', 'unknown', 'session_cta')), "
-                "  COUNT(*) "
+                "  COUNT(*) FILTER (WHERE COALESCE(signal_type,'') "
+                "                         <> 'redeem_url_viewed'), "
+                "  COUNT(*) FILTER (WHERE COALESCE(signal_type,'') "
+                "                         = 'redeem_url_viewed') "
                 "  FROM mcp_upgrade_signals "
                 " WHERE created_at >= NOW() - INTERVAL '30 days'")
-            r = cur.fetchone() or (0, 0)
+            r = cur.fetchone() or (0, 0, 0)
             tagged = int(r[0] or 0)
             total = int(r[1] or 0)
+            excluded = int(r[2] or 0)
             untagged = max(0, total - tagged)
             pct = round(100.0 * tagged / total, 1) if total else 0.0
             out["signals_with_tool_tagged"] = {
@@ -743,6 +761,7 @@ def _build_data() -> dict:
                 "untagged_30d": untagged,
                 "tagged_30d": tagged,
                 "pct_tagged_30d": pct,
+                "excluded_view_stamps_30d": excluded,
             }
         except Exception:
             pass
@@ -791,6 +810,37 @@ def _build_data() -> dict:
                 "          WHERE r.user_id = u.id "
                 "            AND r.sent_at > NOW() - INTERVAL '7 days')")
             out["renewal_nudge"]["eligible_next_30d"] = int(v2 or 0)
+
+        # ── Writer-path canaries (2026-07-03) ─────────────────────────
+        # mcp_session_upgrades and renewal_nudge_log both read 0 — which is
+        # consistent with zero eligible events, but indistinguishable from a
+        # silently broken writer (a wrong-column INSERT dies inside the
+        # writer's own try/except — the brain_findings class of bug). Prove
+        # the write PATH (table exists, columns match, INSERT accepted) with
+        # a synthetic row inside a rolled-back transaction: nothing persists,
+        # counts stay honest, and any schema drift flips the chip to FAILED.
+        out["writer_canary"] = {}
+        for _tbl, _ins in (
+            ("mcp_session_upgrades",
+             "INSERT INTO mcp_session_upgrades "
+             "(mcp_session_id, user_email, plan, amount_cents) "
+             "VALUES ('qa_canary_writer_probe', 'qa-canary@dchub.cloud', "
+             "'qa_canary', 0)"),
+            ("renewal_nudge_log",
+             "INSERT INTO renewal_nudge_log "
+             "(user_id, email, days_remaining_at_send, status) "
+             "VALUES ('qa_canary_writer_probe', 'qa-canary@dchub.cloud', "
+             "0, 'qa_canary')"),
+        ):
+            try:
+                cur.execute("BEGIN")
+                cur.execute(_ins)
+                cur.execute("ROLLBACK")
+                out["writer_canary"][_tbl] = "ok"
+            except Exception as _wc_e:
+                try: cur.execute("ROLLBACK")
+                except Exception: pass
+                out["writer_canary"][_tbl] = f"FAILED: {type(_wc_e).__name__}"
 
         # ── source_plan='pro_annual_onetime' cohort ───────────────────
         try:
@@ -1382,6 +1432,18 @@ def _render_html(data: dict, admin_key: str) -> str:
     plats = data["platforms"]
     evs = data["events"]
     missing = data["missing_tables"]
+    wc = data.get("writer_canary", {})
+
+    def _canary_chip(tbl: str) -> str:
+        """Writer-canary sub-stat markup: green 'ok' means a synthetic INSERT
+        was accepted (then rolled back), so a 0 total = no eligible events,
+        not a dead writer. Red = the write path itself is broken."""
+        v = str(wc.get(tbl) or "—")
+        color = ("#22c55e" if v == "ok"
+                 else "var(--muted)" if v == "—" else "#ef4444")
+        return (f'<div class="sub-stat"><div class="ss-l">Writer path</div>'
+                f'<div class="ss-v" style="font-size:13px;color:{color}">'
+                f'{_esc(v)}</div></div>')
 
     admin_key_safe = _esc(admin_key, quote=True)
 
@@ -1788,6 +1850,7 @@ def _render_html(data: dict, admin_key: str) -> str:
           <div class="ss-l">Top plan</div>
           <div class="ss-v" style="font-size:14px;">{_esc((sess['top_platforms'][0]['plan'] if sess['top_platforms'] else '—'))}</div>
         </div>
+        {_canary_chip('mcp_session_upgrades')}
       </div>
     </div>
     <div class="card">
@@ -1805,6 +1868,7 @@ def _render_html(data: dict, admin_key: str) -> str:
           <div class="ss-l">Eligible next 30d</div>
           <div class="ss-v">{_fmt_n(rn['eligible_next_30d'])}</div>
         </div>
+        {_canary_chip('renewal_nudge_log')}
       </div>
     </div>
   </div>
@@ -1815,7 +1879,7 @@ def _render_html(data: dict, admin_key: str) -> str:
       <h2>Signals with tool_requested tagged <span style="font-size:10px;color:var(--ok);">FIX C</span></h2>
       <div class="card-row">
         <div class="sub-stat">
-          <div class="ss-l">Total 30d</div>
+          <div class="ss-l">Taggable 30d</div>
           <div class="ss-v">{_fmt_n(s.get('total_30d',0))}</div>
         </div>
         <div class="sub-stat">
@@ -1826,7 +1890,12 @@ def _render_html(data: dict, admin_key: str) -> str:
           <div class="ss-l">Untagged</div>
           <div class="ss-v">{_fmt_n(s.get('untagged_30d',0))}</div>
         </div>
+        <div class="sub-stat">
+          <div class="ss-l">View-stamps excl.</div>
+          <div class="ss-v" style="color:var(--muted)">{_fmt_n(s.get('excluded_view_stamps_30d',0))}</div>
+        </div>
       </div>
+      <div style="font-size:10px;color:var(--muted);margin-top:6px;">redeem_url_viewed rows are page-view stamps with no tool by design — excluded from the denominator (r-structural-untagged 2026-07-03).</div>
     </div>
     <div class="card">
       <h2>Pro-annual-onetime cohort <span style="font-size:10px;color:var(--warn);">DEMOTE-WATCH</span></h2>

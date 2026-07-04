@@ -151,19 +151,42 @@ def _is_non_human_client(mcp_client: str | None, user_agent: str | None) -> bool
 _INTERNAL_CLIENT_SQL = (
     "(dchub|self.?heal|regression|verify|trial.?test|smoke|e2e|sweep|probe|"
     "monitor|health.?check|watchdog|canary|uptimerobot|fleet.?view|headless|"
-    "brain|audit|fix2|gating|adv.?check|hi.?claim|funnel-diag)"
+    "brain|audit|fix2|gating|adv.?check|hi.?claim|funnel-diag|clawith|friction)"
 )
 
 
 def _hi_real_sql(prefix: str = "") -> str:
     """SQL boolean (no leading AND) TRUE for real human-bearing high-intent
-    rows. prefix = optional table alias incl trailing dot (e.g. 'h.')."""
+    rows. prefix = optional table alias incl trailing dot (e.g. 'h.').
+
+    r-identity-verdict (2026-07-03): on top of the local regex, this now also
+    applies the CANONICAL is_real_external building blocks from
+    mcp_calls_deloop — the same rendered predicates the mcp_calls_identity
+    view is generated from — to this table's mcp_client/user_agent columns.
+    The 07-03 deep dive found QA clients (gating-audit / fix2-verify /
+    hi-claim-test / clientx-friction-audit / clawith, UA render-verify)
+    counted as "real paywall-hit sessions"; most were caught locally, but
+    'clawith' only via its UA, and every new QA tag needed a second hand-edit
+    here. Reusing the deloop constants means one list, two verdicts, no
+    drift. Regex form only (internal_tag_regex_predicate, not the LIKE
+    variant) — this fragment is embedded in queries WITH bound params, where
+    a literal % would be eaten by psycopg2 paramstyle substitution."""
     p = prefix
-    return (
-        f"COALESCE({p}mcp_client,'') !~* '{_INTERNAL_CLIENT_SQL}' "
-        f"AND COALESCE({p}user_agent,'') !~* '{_INTERNAL_CLIENT_SQL}' "
-        f"AND COALESCE({p}user_agent,'') !~* '{_SCRIPT_UA_SQL}'"
-    )
+    parts = [
+        f"COALESCE({p}mcp_client,'') !~* '{_INTERNAL_CLIENT_SQL}'",
+        f"COALESCE({p}user_agent,'') !~* '{_INTERNAL_CLIENT_SQL}'",
+        f"COALESCE({p}user_agent,'') !~* '{_SCRIPT_UA_SQL}'",
+    ]
+    try:
+        from mcp_calls_deloop import (
+            internal_tag_regex_predicate as _tag_pred,
+            real_ua_predicate as _ua_pred,
+        )
+        parts.append(_tag_pred(f"{p}mcp_client"))
+        parts.append(_ua_pred(f"{p}user_agent"))
+    except Exception:  # pragma: no cover — deloop module missing must never
+        pass           # blank the funnel; the local regex still applies.
+    return " AND ".join(parts)
 
 
 def _hmac_secret() -> bytes:
@@ -1467,6 +1490,9 @@ def claim_variant_conversion():
 #
 #   TRUNK   paywall_sessions → claims_minted → claim_redeemed
 #   AGENT   (claim_email IS NULL)   base → key_issued → first_api_call
+#           — ALL in DISTINCT-minted-key units (r-distinct-keys 2026-07-03:
+#             the gate re-issues one key across sessions; rows-vs-distinct
+#             faked an 81.8% key→first_call "leak" that was really ~0%)
 #           → agent_upsell (unlock_more_data called WITH that key —
 #             mcp_call_log.api_key, no email involved)
 #           → agent_paid   (Stripe pack/top-up on the SAME key —
@@ -1504,9 +1530,23 @@ def build_step_waterfall(run, days: int = 30) -> dict:
     n_page   = run(base + f"claim_page_opened_at IS NOT NULL AND claim_page_opened_at >= {W}")
 
     # ── BRANCH A: agent auto-redeem (no human email on the row) ────────
+    # r-distinct-keys (2026-07-03): every step in this chain counts DISTINCT
+    # minted keys, not session ROWS. The mint gate re-issues the SAME key when
+    # one agent redeems across several sessions, so counting key_issued as
+    # rows against a DISTINCT-key first_call faked an "81.8% leak" at
+    # key→first_call (the 07-03 deep dive traced the whole Branch-A drop to
+    # this unit mismatch — like-for-like the drop is ~0%). Keyless
+    # redemptions can't dedup by key, so the base adds them as single events;
+    # base→key_issued then reads as exactly the true mint breakage. Raw
+    # redemption EVENTS are kept as a diagnostic in branch_agent — because of
+    # the dedup, branch bases no longer necessarily sum to claim_redeemed.
     a_where  = f"claim_used_at IS NOT NULL AND claim_used_at >= {W} AND claim_email IS NULL"
-    a_base   = run(base + a_where)
-    a_key    = run(base + a_where + " AND minted_api_key IS NOT NULL")
+    a_events = run(base + a_where)          # raw redemption rows (diagnostic)
+    dbase    = ("SELECT COUNT(DISTINCT minted_api_key) "
+                f"FROM mcp_high_intent_sessions WHERE {real} AND ")
+    a_key    = run(dbase + a_where + " AND minted_api_key IS NOT NULL")
+    a_nokey  = run(base + a_where + " AND minted_api_key IS NULL")
+    a_base   = a_key + a_nokey              # distinct agents (keys + keyless events)
     a_first  = run(
         "SELECT COUNT(DISTINCT h.minted_api_key) FROM mcp_high_intent_sessions h "
         "JOIN auto_trial_keys a ON a.api_key = h.minted_api_key "
@@ -1576,9 +1616,12 @@ def build_step_waterfall(run, days: int = 30) -> dict:
     _add("claims_minted",    "Claim URL minted",              "trunk", n_minted, None,     False)
     _add("claim_redeemed",   "Claim redeemed (agent+human)",  "trunk", n_used,   n_minted, True)
 
-    _add("agent_redeemed",   "Agent auto-redeems (no email)", "agent", a_base,   None,     False)
-    _add("agent_key_issued", "Trial key issued",              "agent", a_key,    a_base,   True)
-    _add("agent_first_call", "Key made an API call",          "agent", a_first,  a_key,    True)
+    _add("agent_redeemed",   "Agent auto-redeems (distinct agents)",
+                                                              "agent", a_base,   None,     False)
+    _add("agent_key_issued", "Trial key issued (distinct keys)",
+                                                              "agent", a_key,    a_base,   True)
+    _add("agent_first_call", "Key made an API call (distinct keys)",
+                                                              "agent", a_first,  a_key,    True)
     _add("agent_upsell",     "unlock_more_data checkout link (key-attributed)",
                                                               "agent", a_upsell, a_first,  False)
     _add("agent_paid",       "Paid pack/top-up on key (Stripe)",
@@ -1609,7 +1652,10 @@ def build_step_waterfall(run, days: int = 30) -> dict:
         "paid_total": a_paid + b_paid,
         "branch_agent": {"base": a_base, "key_issued": a_key,
                          "first_api_call": a_first, "upsell": a_upsell,
-                         "paid": a_paid},
+                         "paid": a_paid,
+                         # diagnostic: raw redemption rows before the
+                         # distinct-key dedup (r-distinct-keys 2026-07-03)
+                         "redemption_events": a_events},
         "branch_human": {"base": b_base, "key_issued": b_key,
                          "redeem_url_viewed": b_view, "paid": b_paid},
     }
