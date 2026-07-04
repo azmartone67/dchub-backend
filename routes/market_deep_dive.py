@@ -380,15 +380,18 @@ def cron_rotate():
         _ensure_schema(c)
         with c.cursor() as cur:
             # Top markets by DCPI score that are stalest in deep_dives
-            # (NULL generated_at sorts first via LEFT JOIN)
+            # (NULL generated_at sorts first via LEFT JOIN).
+            # market_power_scores has no `score` column — the composite is
+            # derived at read time (same drift _gather_market_facts documents);
+            # rank on writer-guaranteed excess_power_score instead.
             cur.execute("""
                 SELECT mps.market_slug
-                  FROM (SELECT DISTINCT ON (market_slug) market_slug, score, computed_at
+                  FROM (SELECT DISTINCT ON (market_slug) market_slug, excess_power_score, computed_at
                           FROM market_power_scores
                          WHERE published = true
                          ORDER BY market_slug, computed_at DESC) mps
                   LEFT JOIN market_deep_dives mdd USING (market_slug)
-                 ORDER BY mdd.generated_at NULLS FIRST, mps.score DESC
+                 ORDER BY mdd.generated_at NULLS FIRST, mps.excess_power_score DESC NULLS LAST
                  LIMIT %s
             """, (n,))
             targets = [r[0] for r in cur.fetchall()]
