@@ -156,16 +156,23 @@ def optional_auth(f):
 # =============================================================================
 
 def send_password_reset_email(email, name, reset_url):
-    """Send password reset email via SendGrid (with 5s timeout, runs in background thread)"""
+    """Send a password-reset email (background thread).
+
+    r-onboarding-fix (2026-07-03): reset delivery was silently broken for a class
+    of customers. Two root causes, both fixed here:
+      1. It sent from an UNVERIFIED sender (info@dchub.cloud). Every PROVEN Resend
+         delivery in prod uses alerts@dchub.cloud (see _resend_email default +
+         the welcome path), so resets could be silently dropped while welcomes
+         succeeded. Now sends from the proven identity.
+      2. Resend (the transport that actually works) was buried INSIDE the
+         `if not SENDGRID_API_KEY: return` guard and only reachable after a
+         SendGrid attempt. Now Resend is tried FIRST and SendGrid is an optional
+         secondary — so a missing/blocked SendGrid can never skip the reset.
+    Plus fail-loud telemetry: if BOTH transports fail we alert the admin with the
+    reset URL instead of returning a neutral silent success (defect #10)."""
     def _do_send():
-        try:
-            sg_key = os.environ.get('SENDGRID_API_KEY', '')
-            if not sg_key:
-                print(f"⚠️ SENDGRID_API_KEY not set, skipping reset email for {email}")
-                return
-            import urllib.request, urllib.error, json as _json
-            subject = "Reset Your DC Hub Password"
-            html = f"""
+        subject = "Reset Your DC Hub Password"
+        html = f"""
                     <div style="font-family: system-ui; max-width: 600px; margin: 0 auto;">
                         <h2 style="color: #2563eb;">DC Hub Password Reset</h2>
                         <p>Hi {name},</p>
@@ -178,55 +185,51 @@ def send_password_reset_email(email, name, reset_url):
                         <p style="color: #999; font-size: 12px;">DC Hub — Data Center Market Intelligence</p>
                     </div>
                     """
-            payload = {
-                "personalizations": [{"to": [{"email": email}]}],
-                "from": {"email": "info@dchub.cloud", "name": "DC Hub"},
-                "subject": subject,
-                "content": [{
-                    "type": "text/html",
-                    "value": html
-                }]
-            }
-            req = urllib.request.Request(
-                'https://api.sendgrid.com/v3/mail/send',
-                data=_json.dumps(payload).encode('utf-8'),
-                headers={
-                    'Authorization': f'Bearer {sg_key}',
-                    'Content-Type': 'application/json'
-                },
-                method='POST'
-            )
+        sent_via = None
+        # 1) Resend FIRST — proven default sender (alerts@dchub.cloud). Lazy import:
+        #    main imports routes, so a top-level import would be circular.
+        try:
+            from main import _resend_email
+            if _resend_email(email, subject, html):
+                sent_via = "resend"
+        except Exception as _re:
+            print(f"⚠️ Resend reset send error for {email}: {str(_re)[:120]}")
+        # 2) SendGrid as OPTIONAL secondary (only if Resend didn't land)
+        if not sent_via:
             try:
-                with urllib.request.urlopen(req, timeout=5) as resp:
-                    _ok = 200 <= int(getattr(resp, 'status', 0) or 0) < 300
-                    print(f"✅ Password reset email sent to {email} (status: {resp.status})")
+                sg_key = os.environ.get('SENDGRID_API_KEY', '')
+                if sg_key:
+                    import urllib.request, json as _json
+                    payload = {
+                        "personalizations": [{"to": [{"email": email}]}],
+                        "from": {"email": "alerts@dchub.cloud", "name": "DC Hub"},
+                        "subject": subject,
+                        "content": [{"type": "text/html", "value": html}],
+                    }
+                    req = urllib.request.Request(
+                        'https://api.sendgrid.com/v3/mail/send',
+                        data=_json.dumps(payload).encode('utf-8'),
+                        headers={'Authorization': f'Bearer {sg_key}',
+                                 'Content-Type': 'application/json'},
+                        method='POST')
+                    with urllib.request.urlopen(req, timeout=5) as resp:
+                        if 200 <= int(getattr(resp, 'status', 0) or 0) < 300:
+                            sent_via = "sendgrid"
             except Exception as _sge:
-                # r-resend-port (2026-06-16): SendGrid out of credits ("Maximum
-                # credits exceeded" 401) raises urllib HTTPError. Fall through
-                # to Resend so the customer still gets their reset link.
-                print(f"⚠️ SendGrid reset email failed for {email}: {str(_sge)[:120]}")
-                _ok = False
-            if not _ok:
-                # Lazy import: main imports routes, so a top-level
-                # `from main import _resend_email` would be circular.
-                from main import _resend_email
-                if _resend_email(email, subject, html, from_email="info@dchub.cloud"):
-                    print(f"✅ Password reset email sent to {email} via Resend fallback")
-                    return
-        except Exception as e:
-            print(f"❌ Failed to send reset email to {email}: {e}")
-            # r-resend-port (2026-06-16): outer failure (e.g. payload build) →
-            # try Resend with a plain inline fallback carrying the reset link.
+                print(f"⚠️ SendGrid reset send failed for {email}: {str(_sge)[:120]}")
+        # 3) Fail-loud telemetry — never silently strand a customer.
+        if sent_via:
+            print(f"✅ Password reset email sent to {email} via {sent_via}")
+        else:
+            print(f"❌ Password reset email FAILED (both transports) for {email}")
             try:
-                from main import _resend_email
-                _subj = locals().get('subject') or "Reset Your DC Hub Password"
-                _html = locals().get('html') or (
-                    f"<h2>DC Hub Password Reset</h2><p>Reset your password (link valid 72h): "
-                    f"<a href='{reset_url}'>{reset_url}</a></p><p>— DC Hub</p>")
-                if _resend_email(email, _subj, _html, from_email="info@dchub.cloud"):
-                    print(f"✅ Password reset email sent to {email} via Resend fallback")
-            except Exception as _re:
-                print(f"❌ Resend reset fallback also failed for {email}: {str(_re)[:120]}")
+                send_admin_alert_email(
+                    f"🚨 Password reset email FAILED for {email}",
+                    f"<p>Both Resend and SendGrid failed to deliver a reset link to "
+                    f"<b>{email}</b>.</p><p>Reset URL (deliver manually if needed): "
+                    f"<a href='{reset_url}'>{reset_url}</a></p>")
+            except Exception as _ae:
+                print(f"⚠️ Admin alert for failed reset ALSO failed: {str(_ae)[:120]}")
 
     threading.Thread(target=_do_send, daemon=True).start()
 
@@ -858,6 +861,63 @@ def get_user_api_keys():
         'success': True,
         'keys': keys,
         'count': len(keys)
+    })
+
+
+@auth_bp.route('/api/user/mcp-connector', methods=['GET'])
+@require_auth
+def get_user_mcp_connector():
+    """r-onboarding-fix (2026-07-03): expose the MCP (`dch_live_`) key + a
+    ready-to-paste Claude connector URL for the authenticated user.
+
+    Defect #3/#12: the dashboard's /api/user/api-keys reads ONLY the `api_keys`
+    table (the `dchub_` REST keys). The key Claude actually needs lives in
+    `mcp_dev_keys` — keyed by EMAIL, with no `user_id` column — so it was
+    structurally unreachable on every self-serve surface. A paid customer could
+    log in and still never find the one credential that connects Claude. This
+    endpoint closes that gap; the dashboard 'Connect to Claude' card consumes it.
+    """
+    email = (getattr(request, 'user', None) or {}).get('email')
+    if not email:
+        return jsonify({'success': False, 'error': 'No email on session'}), 400
+    conn = _get_db()
+    try:
+        c = conn.cursor()
+        c.execute("""
+            SELECT api_key, tier, status, created_at, last_used_at
+            FROM mcp_dev_keys
+            WHERE lower(email) = lower(%s) AND status = 'active'
+            ORDER BY created_at DESC
+            LIMIT 1
+        """, (email,))
+        row = c.fetchone()
+    finally:
+        try: conn.close()
+        except Exception: pass
+
+    if not row:
+        return jsonify({
+            'success': True,
+            'has_key': False,
+            'message': ("No MCP key on file yet. You can connect anonymously "
+                        "(3 calls/day) or claim a free key at dchub.cloud/mcp."),
+        })
+
+    api_key = row[0]
+    connector_url = f"https://dchub.cloud/mcp?api_key={api_key}"
+    return jsonify({
+        'success': True,
+        'has_key': True,
+        'mcp_key': api_key,
+        'tier': row[1],
+        # Claude.ai web custom-connector has no header field → key goes IN the URL.
+        'connector_url': connector_url,
+        # Claude Desktop / Cursor / Cline support headers → use this instead.
+        'header': f"X-API-Key: {api_key}",
+        'last_used_at': row[4],
+        'instructions': ("Claude.ai (web): paste connector_url as the custom-connector "
+                         "URL — leave auth blank. Claude Desktop / Cursor / Cline: use the "
+                         "X-API-Key header instead."),
     })
 
 

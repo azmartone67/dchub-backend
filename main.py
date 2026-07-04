@@ -11874,6 +11874,51 @@ _STRIPE_WEBHOOK_STATS = {
 }
 
 
+_STRIPE_EVENTS_TABLE_READY = False
+
+
+def _stripe_event_already_processed(event_id, event_type=''):
+    """Idempotency gate for Stripe webhooks (r-onboarding-fix 2026-07-03, defect #4).
+
+    Records the Stripe event id and returns True if it was ALREADY recorded
+    (=> caller should SKIP — this is a retry/duplicate delivery), or False if we
+    recorded it now for the first time (=> caller should PROCESS).
+
+    Stripe retries deliver the SAME event id repeatedly and can hit the endpoint
+    concurrently; with no dedupe each delivery re-ran full provisioning — that is
+    exactly how founding customer #7 got 2 REST keys + 1 MCP key + 3 welcome
+    emails. `INSERT ... ON CONFLICT DO NOTHING` is atomic, so it also closes the
+    concurrent-delivery race.
+
+    Fail-OPEN: any error returns False (process) so a DB hiccup can never silently
+    drop a real upgrade. We use a dedicated connection (not _pg_execute) so we can
+    tell "conflict" (rowcount 0, no error => skip) apart from "error" (=> process).
+    """
+    global _STRIPE_EVENTS_TABLE_READY
+    if not event_id:
+        return False
+    try:
+        with pg_connection() as _conn:
+            _cur = _conn.cursor()
+            if not _STRIPE_EVENTS_TABLE_READY:
+                _cur.execute(
+                    "CREATE TABLE IF NOT EXISTS stripe_webhook_events ("
+                    " event_id TEXT PRIMARY KEY,"
+                    " event_type TEXT,"
+                    " processed_at TIMESTAMPTZ DEFAULT now())")
+                _STRIPE_EVENTS_TABLE_READY = True
+            _cur.execute(
+                "INSERT INTO stripe_webhook_events (event_id, event_type) "
+                "VALUES (%s, %s) ON CONFLICT (event_id) DO NOTHING",
+                (event_id, event_type))
+            inserted_now = (_cur.rowcount == 1)
+            _conn.commit()
+            return not inserted_now  # already-present => True => skip
+    except Exception as _e:
+        print(f"⚠️ stripe idempotency gate error (fail-open, will process): {str(_e)[:120]}")
+        return False
+
+
 @app.route('/api/v1/stripe/webhook',     methods=['POST'])
 @app.route('/api/stripe/webhook',        methods=['POST'])
 def stripe_webhook():
@@ -11969,6 +12014,19 @@ def stripe_webhook():
     _evt_bucket["received"] += 1
 
     print(f"💳 Stripe webhook: {event_type}")
+
+    # r-onboarding-fix (2026-07-03): idempotency gate (defect #4). Record the
+    # event id; if we've already processed it, ack 200 and skip so retries /
+    # concurrent deliveries can't re-provision (dup keys + dup welcome emails).
+    # NOTE: records at ENTRY, which is correct while provisioning failures are
+    # swallowed (they return 200, no retry). If defect #18 is fixed later
+    # (un-swallow → 500 → Stripe retry), move the record to AFTER success (or
+    # delete the row on failure) so a transient failure's retry isn't skipped.
+    _evt_id = event.get('id') or ''
+    if _evt_id and _stripe_event_already_processed(_evt_id, event_type):
+        print(f"↩️ Stripe event {_evt_id} ({event_type}) already processed — idempotent skip")
+        _evt_bucket["ok"] += 1
+        return jsonify({'received': True, 'idempotent_skip': True}), 200
 
     global last_webhook_time, last_webhook_status
 
@@ -13090,7 +13148,7 @@ p {{ font-size: 16px; color: #4a4a5a; margin-bottom: 16px; line-height: 1.6; }}
     <p>-- The DC Hub Team</p>
   </div>
   <div class="footer">
-    &copy; 2025 DC Hub. All rights reserved.<br>
+    &copy; 2026 DC Hub. All rights reserved.<br>
     <a href="https://dchub.cloud" style="color: #9a9aaa;">dchub.cloud</a>
   </div>
 </div>
@@ -13220,7 +13278,7 @@ p {{ font-size: 16px; color: #4a4a5a; margin-bottom: 16px; line-height: 1.6; }}
     <p>-- The DC Hub Team</p>
   </div>
   <div class="footer">
-    &copy; 2025 DC Hub. All rights reserved.<br>
+    &copy; 2026 DC Hub. All rights reserved.<br>
     <a href="https://dchub.cloud" style="color: #9a9aaa;">dchub.cloud</a>
   </div>
 </div>

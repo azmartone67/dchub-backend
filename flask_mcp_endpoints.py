@@ -2497,6 +2497,20 @@ def stripe_webhook_mcp():
 
     event_type = event.get("type", "") if isinstance(event, dict) else getattr(event, "type", "")
 
+    # r-onboarding-fix (2026-07-03): idempotency gate (defect #4). Share the same
+    # dedupe ledger as the primary handler so retries / concurrent deliveries of
+    # subscription.created|updated can't re-provision (dup dch_live_ key + dup
+    # "paid" welcome email). Lazy import avoids a circular import at module load;
+    # fail-OPEN so a gate error never drops a real event.
+    _evt_id = event.get("id", "") if isinstance(event, dict) else getattr(event, "id", "")
+    try:
+        from main import _stripe_event_already_processed as _seen_evt
+        if _evt_id and _seen_evt(_evt_id, event_type):
+            print(f"↩️ [mcp webhook] event {_evt_id} ({event_type}) already processed — idempotent skip")
+            return jsonify({"received": True, "idempotent_skip": True}), 200
+    except Exception as _ge:
+        print(f"⚠️ [mcp webhook] idempotency gate error (fail-open): {str(_ge)[:120]}")
+
     # r89-conv (2026-06-14): checkout.session.completed is the ONLY Stripe event
     # that carries client_reference_id = the MCP session_id we bind onto every
     # Stripe URL (_stripeWithSession in the MCP server). The subscription.* events
