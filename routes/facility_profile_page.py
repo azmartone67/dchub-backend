@@ -44,6 +44,32 @@ def _fetch_facility_by_slug(slug: str) -> dict | None:
         try:
             from routes.facility_slug import hash_sql
             c = conn.cursor()
+            _cols = ("id, name, provider, city, state, country, {region}, "
+                     "latitude, longitude, power_mw, status, address")
+            # r-slug-freeze (2026-07-03): exact match on the FROZEN
+            # canonical_slug column FIRST — indexed, and immune to the
+            # name/provider drift that recomputing MD5(provider|name) live
+            # introduces (the root cause of the GSC indexing churn). Falls
+            # through to the live-hash match below for rows not yet backfilled
+            # or if the column doesn't exist yet (pre-migration).
+            row = None
+            for _tbl, _region in (("discovered_facilities", "market AS region"),
+                                  ("facilities", "NULL AS region")):
+                try:
+                    c.execute(
+                        "SELECT " + _cols.format(region=_region) +
+                        f" FROM {_tbl} WHERE canonical_slug = %s"
+                        " ORDER BY COALESCE(power_mw, 0) DESC, id ASC LIMIT 1",
+                        (slug,))
+                    row = c.fetchone()
+                    if row:
+                        break
+                except Exception:
+                    try: conn.rollback()
+                    except Exception: pass
+                    row = None
+            if row:
+                return dict(zip([d[0] for d in c.description], row))
             # r-stable-slug: stable provider|name hash can collide; ORDER BY
             # highest power then lowest id so a collision deterministically
             # resolves to the canonical facility.
@@ -253,8 +279,21 @@ def _comparables_html(fac: dict, limit: int = 6) -> str:
             return ""
         try:
             c = conn.cursor()
+            # r-slug-freeze (2026-07-03): link to the FROZEN canonical_slug so
+            # the internal-link mesh can't drift into duplicate URLs after a
+            # post-freeze name change. Probe the column; degrade to live-compute.
+            _has_canon = False
+            try:
+                c.execute("SELECT 1 FROM information_schema.columns "
+                          "WHERE table_name='discovered_facilities' "
+                          "AND column_name='canonical_slug'")
+                _has_canon = c.fetchone() is not None
+            except Exception:
+                try: conn.rollback()
+                except Exception: pass
+            _cs = "canonical_slug" if _has_canon else "NULL AS canonical_slug"
             c.execute("""
-                SELECT id, name, provider, power_mw
+                SELECT id, name, provider, power_mw, """ + _cs + """
                   FROM discovered_facilities
                  WHERE id <> %s
                    AND name IS NOT NULL AND name <> ''
@@ -274,8 +313,8 @@ def _comparables_html(fac: dict, limit: int = 6) -> str:
     if not rows:
         return ""
     items = []
-    for rid, rname, rprov, rpow in rows:
-        slug = _fac_slug(rid, rprov, rname)
+    for rid, rname, rprov, rpow, rcanon in rows:
+        slug = rcanon or _fac_slug(rid, rprov, rname)
         extra = ""
         if rprov and rprov.strip().lower() != (rname or "").strip().lower():
             extra += f" &middot; {_esc(rprov)}"
@@ -664,7 +703,7 @@ def _render_profile(fac: dict, slug: str) -> str:
 
     <div class="foot">
       Data: DC Hub global infrastructure database ·
-      <a href="/api/v1/facilities/{_esc(slug)}">Raw JSON</a>
+      <a href="/api/v1/facilities/{_esc(slug)}" rel="nofollow">Raw JSON</a>
     </div>
   </div>
 
@@ -687,6 +726,22 @@ def render_facility_profile(slug):
 
     fac = _fetch_facility_by_slug(slug)
     if not fac:
+        # r-slug-freeze (2026-07-03): AUTHORITATIVE recovery first — the
+        # persistent facility_slug_aliases table (old_slug → frozen canonical)
+        # gives a deterministic single-hop 301, killing the multi-hop chains
+        # that GSC files as "Redirect error". Only fall through to the fuzzy
+        # name-token resolver when we have no stored alias.
+        try:
+            from routes.facility_slug_freeze import resolve_alias
+            _alias = resolve_alias(slug)
+        except Exception:
+            _alias = None
+        if _alias and _alias != slug:
+            return Response(status=301, headers={
+                "Location": f"/facilities/{_alias}",
+                "Cache-Control": "public, max-age=86400",
+                "X-DC-Hub-Source": "facility-slug-alias",
+            })
         # SEO recovery: re-ingestion churns MD5(id) → old indexed slugs 404
         # though the facility still exists under a new slug. Resolve + 301 to
         # the current canonical URL (preserves link equity). Only confident

@@ -2312,6 +2312,17 @@ try:
     except Exception as _fppe:
         import logging
         logging.getLogger(__name__).warning('facility_profile wiring failed: %s', _fppe)
+    # r-slug-freeze (2026-07-03): freeze canonical_slug + persistent old→new
+    # alias table admin endpoints (/api/v1/admin/slug/{status,freeze,alias-load,
+    # alias-resolve}). No boot-time DDL — DDL runs only when the admin endpoint
+    # is POSTed (avoids the boot-DDL-storm trap). The live route imports
+    # resolve_alias lazily and degrades to None if the table isn't created yet.
+    try:
+        from routes.facility_slug_freeze import slug_freeze_bp
+        app.register_blueprint(slug_freeze_bp)
+    except Exception as _sfze:
+        import logging
+        logging.getLogger(__name__).warning('slug_freeze wiring failed: %s', _sfze)
     # Phase FF+7-mttr5 (2026-05-19): Brain L22 — Auto-Code Layer.
     # Reads consistency-radar findings, matches whitelisted fix
     # recipes (route-alias for 404 patterns, etc.), drafts an Issue
@@ -7611,10 +7622,15 @@ def _get_mcp_caller_tier():
         request.args.get('api_key', '')
     )
     # Also check Authorization: Bearer
+    # r-onboarding-fix (2026-07-03, defect #9): accept dch_live_ (paid MCP) and
+    # dch_trial_ Bearer tokens too — the old dchub_-only check silently dropped
+    # `Authorization: Bearer dch_live_…`, resolving a paying MCP customer to free.
     if not api_key:
         auth = request.headers.get('Authorization', '')
-        if auth.startswith('Bearer ') and auth[7:].startswith('dchub_'):
-            api_key = auth[7:]
+        if auth.startswith('Bearer '):
+            _tok = auth[7:].strip()
+            if _tok.startswith(('dchub_', 'dch_live_', 'dch_trial_')):
+                api_key = _tok
 
     if not api_key:
         return 'free', None
@@ -23794,8 +23810,23 @@ def _build_sitemap_sections():
             # URLs). Sitemapping all ~14K fed Google a mostly-duplicate set it won't
             # index; only ~4,833 are canonical. Excluding dupes concentrates crawl
             # budget on the real facilities (no good URL changes — dupes only).
+            # r-slug-freeze (2026-07-03): emit the FROZEN canonical_slug so the
+            # sitemap can never drift from what /facilities/<slug> serves. Probe
+            # the column once; degrade to NULL (→ live-compute in the loop)
+            # pre-migration so a missing column can never break the sitemap.
+            _has_canon = False
+            try:
+                c.execute("SELECT 1 FROM information_schema.columns "
+                          "WHERE table_name='discovered_facilities' "
+                          "AND column_name='canonical_slug'")
+                _has_canon = c.fetchone() is not None
+            except Exception:
+                try: conn.rollback()
+                except Exception: pass
+                _has_canon = False
+            _canon_sel = "canonical_slug" if _has_canon else "NULL AS canonical_slug"
             c.execute("""
-                SELECT name, provider, city, state, country, id, first_seen
+                SELECT name, provider, city, state, country, id, first_seen, """ + _canon_sel + """
                 FROM discovered_facilities
                 WHERE name IS NOT NULL AND name != ''
                   AND COALESCE(is_duplicate, 0) = 0
@@ -23830,8 +23861,18 @@ def _build_sitemap_sections():
         # GSC weeks later.
         _legacy_unioned = 0
         try:
+            _has_canon_legacy = False
+            try:
+                c.execute("SELECT 1 FROM information_schema.columns "
+                          "WHERE table_name='facilities' AND column_name='canonical_slug'")
+                _has_canon_legacy = c.fetchone() is not None
+            except Exception:
+                try: conn.rollback()
+                except Exception: pass
+                _has_canon_legacy = False
+            _canon_sel_legacy = "canonical_slug" if _has_canon_legacy else "NULL AS canonical_slug"
             c.execute("""
-                SELECT name, provider, city, state, country, id, first_seen
+                SELECT name, provider, city, state, country, id, first_seen, """ + _canon_sel_legacy + """
                 FROM facilities
                 WHERE name IS NOT NULL AND name != ''
                 LIMIT 50000
@@ -23845,7 +23886,7 @@ def _build_sitemap_sections():
             logger.warning(f"sitemap: legacy facilities union failed (full cols), retrying minimal: {_legacy_err}")
             try:
                 c.execute("""
-                    SELECT name, provider, NULL, NULL, NULL, id, NULL
+                    SELECT name, provider, NULL, NULL, NULL, id, NULL, NULL AS canonical_slug
                     FROM facilities
                     WHERE name IS NOT NULL AND name != ''
                     LIMIT 50000
@@ -24271,6 +24312,13 @@ def _build_sitemap_sections():
             full_slug = f"{provider_slug}-{name_slug}-{short_hash}"
         else:
             full_slug = f"{name_slug}-{short_hash}"
+
+        # r-slug-freeze (2026-07-03): the FROZEN canonical_slug (row[7]) is the
+        # source of truth — it can't drift when re-ingestion cleans the name.
+        # The compute above is only the fallback for rows not yet backfilled.
+        _stored = row[7] if len(row) > 7 else None
+        if _stored:
+            full_slug = _stored
 
         # per-facility lastmod from first_seen (trustworthy) — fall back to today
         _lm = today
