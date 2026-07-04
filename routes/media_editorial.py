@@ -523,6 +523,162 @@ def _recently_posted_keys(days: int = 9) -> set:
     return {tok for tok in recent.split()} if recent else keys
 
 
+# ── Semantic repetition guard (rag-wire-media-semantic, 2026-07-03) ───
+# The token guard above catches EXACT entity repeats but re-leads the same THEME
+# reworded ("ERCOT's queue holds 427 GW" vs "Texas grid faces a 427 GW wait" —
+# different tokens, same story). This upgrades novelty to MEANING: embed the
+# candidate lead's headline+so-what and cosine-compare against the LEAD text of
+# the last ~30 posts; reject a candidate that's semantically near a recent post.
+# Uses brain_rag's low-level Cohere embed helper (_embed) — imported lazily and
+# wrapped so ANY embed/RAG/import failure degrades to the token guard (fail-soft;
+# a RAG outage must never dark-hold the feed). NOTE: we embed PROSE only (the
+# lead's headline+so-what), never fabricated metrics — retrieval augments the
+# novelty reasoning; the numbers stay in the SQL leads untouched.
+
+# env-tunable so the operator can loosen/tighten without a deploy.
+try:
+    _SEMANTIC_DEDUP_THRESHOLD = float(
+        os.environ.get("MEDIA_SEMANTIC_DEDUP_THRESHOLD", "0.82") or 0.82)
+except Exception:
+    _SEMANTIC_DEDUP_THRESHOLD = 0.82
+try:
+    _SEMANTIC_RECENT_POSTS = max(1, int(
+        os.environ.get("MEDIA_SEMANTIC_RECENT_POSTS", "30")))
+except Exception:
+    _SEMANTIC_RECENT_POSTS = 30
+
+
+def _recent_post_texts(limit: int = 30, days: int = 21) -> list[str]:
+    """The LEAD text (first ~300 chars) of the last `limit` LinkedIn posts,
+    newest first — the material the semantic guard compares candidates against.
+    UNIONs both post ledgers like _recently_posted_keys(). Fully defensive → []
+    on any error (→ the caller degrades to the token guard)."""
+    out: list[str] = []
+    c = _conn()
+    if c is None:
+        return out
+    try:
+        with c.cursor() as cur:
+            cutoff = (_dt.datetime.utcnow() - _dt.timedelta(days=days)).isoformat()
+            cur.execute(
+                "SELECT content, ts FROM ("
+                "  SELECT COALESCE(content,'') AS content, published_at AS ts "
+                "    FROM social_media_posts "
+                "   WHERE status='published' AND publish_platform='linkedin' "
+                "     AND published_at >= %s "
+                "  UNION ALL "
+                "  SELECT COALESCE(content,'') AS content, posted_at AS ts "
+                "    FROM linkedin_posts WHERE posted_at >= %s::timestamptz "
+                ") u "
+                "WHERE content <> '' "
+                "ORDER BY ts DESC NULLS LAST "
+                "LIMIT %s",
+                (cutoff, cutoff, int(limit)))
+            for r in (cur.fetchall() or []):
+                t = (r[0] or "").strip()
+                if t:
+                    out.append(t[:300])
+    except Exception:
+        try: c.rollback()
+        except Exception: pass
+    finally:
+        try: c.close()
+        except Exception: pass
+    return out
+
+
+def _cosine(a, b) -> float:
+    """Cosine similarity of two equal-length float vectors. 0.0 on any mismatch
+    (fail-soft: a bad vector never rejects a lead)."""
+    try:
+        if not a or not b or len(a) != len(b):
+            return 0.0
+        dot = 0.0; na = 0.0; nb = 0.0
+        for x, y in zip(a, b):
+            fx = float(x); fy = float(y)
+            dot += fx * fy; na += fx * fx; nb += fy * fy
+        if na <= 0.0 or nb <= 0.0:
+            return 0.0
+        return dot / ((na ** 0.5) * (nb ** 0.5))
+    except Exception:
+        return 0.0
+
+
+def _lead_fingerprint(lead: dict) -> str:
+    """The PROSE fingerprint of a lead's THEME: headline + so-what. This is what
+    the reader experiences as 'the story', so two leads that reword the same
+    story fingerprint near-identically. Never includes raw scores/keys."""
+    parts = [str((lead or {}).get("headline_number") or ""),
+             str((lead or {}).get("so_what") or "")]
+    return " ".join(p for p in parts if p).strip()
+
+
+def _semantic_repeat_predicate(leads: list[dict]):
+    """Build a predicate `is_repeat(lead) -> bool` that returns True when a
+    lead's THEME is semantically near a recent post (cosine >= threshold).
+
+    Embeds recent-post lead text + candidate fingerprints in at most TWO Cohere
+    calls (batched via brain_rag._embed), then does pure-Python cosine. Returns
+    a predicate that ALWAYS says False (→ no semantic rejection) if anything
+    fails — embed import/outage, empty history, dimension mismatch — so the
+    caller cleanly degrades to the token/ledger guards. Never raises."""
+    _no_op = lambda lead: False
+    try:
+        # Lazy import so a brain_rag import error can't break module load.
+        from routes.brain_rag import _embed as _rag_embed
+    except Exception as e:
+        logger.info("[editorial] semantic guard: _embed import unavailable (%s); "
+                    "degrading to token guard", str(e)[:120])
+        return _no_op
+
+    try:
+        recent = _recent_post_texts(limit=_SEMANTIC_RECENT_POSTS)
+        if not recent:
+            return _no_op
+
+        fingerprints = [_lead_fingerprint(l) for l in leads]
+        # index map: only leads with a non-empty fingerprint get an embedding.
+        idx = [i for i, fp in enumerate(fingerprints) if fp]
+        if not idx:
+            return _no_op
+
+        # Embed recent posts as documents, candidate themes as queries (Cohere
+        # v3 asymmetric) — matches how brain_rag itself embeds store vs recall.
+        post_vecs = _rag_embed(recent, input_type="search_document")
+        cand_vecs = _rag_embed([fingerprints[i] for i in idx],
+                               input_type="search_query")
+        if (not post_vecs or not cand_vecs
+                or len(cand_vecs) != len(idx) or not post_vecs[0]):
+            logger.info("[editorial] semantic guard: embed returned empty/short; "
+                        "degrading to token guard")
+            return _no_op
+
+        # candidate id(lead) -> its query vector (id() is stable within this call).
+        vec_by_lead: dict = {}
+        for pos, i in enumerate(idx):
+            vec_by_lead[id(leads[i])] = cand_vecs[pos]
+
+        thr = _SEMANTIC_DEDUP_THRESHOLD
+
+        def _is_repeat(lead) -> bool:
+            try:
+                cv = vec_by_lead.get(id(lead))
+                if not cv:
+                    return False
+                for pv in post_vecs:
+                    if _cosine(cv, pv) >= thr:
+                        return True
+                return False
+            except Exception:
+                return False
+
+        return _is_repeat
+    except Exception as e:
+        logger.warning("[editorial] semantic guard failed (%s); degrading to "
+                       "token guard", str(e)[:160])
+        return _no_op
+
+
 def _entity_tail(lead: dict) -> str:
     """The normalized ENTITY token from a lead's dedup_key — the market/iso/
     deal-party the lead is ABOUT. dedup_key is 'kind:entity[:extra]'; the tail
@@ -676,6 +832,14 @@ def editorial_decision(slot: str | None = None) -> dict:
             key=lambda l: l.get("score", 0) * mix_w.get(l.get("kind"), 1.0),
             reverse=True)
 
+    # SEMANTIC novelty (rag-wire-media-semantic): build a predicate that flags a
+    # candidate whose THEME is a reworded near-repeat of a recent post (cosine >=
+    # threshold), catching the class of repeat the token/ledger guards miss (same
+    # story, different tokens). Built ONCE over `ranked` (all embeds up front, ≤2
+    # Cohere calls), and is a hard no-op if embeddings are unavailable — so every
+    # path below degrades cleanly to the existing token/ledger guards.
+    _sem_repeat = _semantic_repeat_predicate(ranked)
+
     def _key_in(lead, blob):
         # market/iso/entity from the dedup_key appears in the given window?
         tail = _entity_tail(lead)
@@ -685,14 +849,18 @@ def editorial_decision(slot: str | None = None) -> dict:
 
     def _is_novel(lead):
         # A lead is FRESH only if its entity hasn't led recently (durable ledger
-        # OR text-blob), AND its content_type isn't on cooldown. This is the
-        # rotation across content TYPES + the same-market window in one filter.
+        # OR text-blob), AND its content_type isn't on cooldown, AND its THEME
+        # isn't a semantic near-repeat of a recent post. This is the rotation
+        # across content TYPES + the same-market window + reworded-theme guard
+        # in one filter.
         ent = _entity_tail(lead)
         if ent and ent in entity_window:
             return False
         if _key_in(lead, recent_blob):
             return False
         if (lead.get("kind") or "") in kind_cooldown:
+            return False
+        if _sem_repeat(lead):
             return False
         return True
 
@@ -706,7 +874,8 @@ def editorial_decision(slot: str | None = None) -> dict:
     if top is None and ranked:
         relaxed = [l for l in ranked
                    if _entity_tail(l) not in entity_window
-                   and not _key_in(l, recent_blob)]
+                   and not _key_in(l, recent_blob)
+                   and not _sem_repeat(l)]
         if relaxed:
             top = relaxed[0]
 
@@ -738,7 +907,8 @@ def editorial_decision(slot: str | None = None) -> dict:
             ent = _entity_tail(cand)
             if (cand.get("raw_score", cand.get("score", 0)) >= _NEWSWORTHY_MIN
                     and not _key_in(cand, rest_blob)
-                    and not (ent and ent in entity_window)):
+                    and not (ent and ent in entity_window)
+                    and not _sem_repeat(cand)):
                 top, stale_fallback = cand, True
                 break
 
