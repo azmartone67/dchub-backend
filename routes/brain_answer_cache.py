@@ -9,15 +9,26 @@ Postgres-backed — NOT in-process. Worker recycles wipe in-process caches
 (proven live this week), so the cache lives in the same Neon PG the RAG
 store uses:
 
-    answer_cache(id, tool, tier, query_text, query_embedding vector(1024),
-                 answer jsonb, created_at)
+    answer_cache(id, tool, tier, params_hash, query_text,
+                 query_embedding vector(1024), answer jsonb, created_at)
 
-Lookup is pgvector cosine over the caller's query embedding. The query is
-embedded via routes.brain_rag._embed with input_type='search_query' on BOTH
-write and read — query<->query cosine is only meaningful when both sides use
-the same asymmetric-embedding role.
+★ EXACT STRUCTURAL KEY: params_hash = md5 of the SORTED tool params. It is
+matched by strict equality in EVERY lookup — embedding similarity NEVER gets
+a vote on structural params. limit=3 vs limit=15 are different answers that
+sit at ~1.0 cosine as strings; only the hash keeps them apart.
 
-A hit requires BOTH:
+Two lookup modes:
+  · exact_only=True  — deterministic/templated tools (deal_autopsy): no
+    embedding at all; hit = exact (tool, tier, params_hash) + TTL. Newest
+    row wins.
+  · semantic (default) — genuine free-text queries (recommendation
+    context): pgvector cosine over the caller's query embedding, WITHIN the
+    exact (tool, tier, params_hash) bucket. The query is embedded via
+    routes.brain_rag._embed with input_type='search_query' on BOTH write
+    and read — query<->query cosine is only meaningful when both sides use
+    the same asymmetric-embedding role.
+
+A semantic hit requires BOTH:
   · cosine >= ANSWER_CACHE_COSINE   (default 0.97 — near-duplicate questions
     only; anything looser starts answering different questions)
   · age    <  ANSWER_CACHE_TTL_S    (default 3600)
@@ -58,9 +69,13 @@ lift, never an availability risk. Budget: callers invoke it only for
 paid-tier full answers; a per-process hour window caps calls at
 VERIFY_MAX_PER_HOUR (default 60). Kill switch: ANSWER_VERIFY_DISABLE=1.
 
-strip_flagged_sentences(text, issues) removes the offending sentence(s); if
-stripping would blank the whole answer it flags instead (prefix caveat).
+strip_flagged_sentences(text, issues) removes ONLY the sentence(s) the
+verifier explicitly quoted in issues[].sentence (normalized-prefix fuzzy
+match — NEVER raw number-substring matching, which strips true sentences
+that merely share a digit sequence). If no flagged sentence can be located,
+or stripping would blank the whole answer, it flags instead (prefix caveat).
 """
+import hashlib
 import json
 import logging
 import os
@@ -162,6 +177,20 @@ def _norm_tier(tier) -> str:
     return str(tier or "").strip().upper()
 
 
+def _params_hash(params) -> str:
+    """md5 of the SORTED structural tool params — the EXACT part of the
+    cache key, matched by strict equality in get_cached. limit=3 and
+    limit=15 hash differently, so structurally different requests can never
+    serve each other's answers no matter how close their query embeddings
+    sit. None/empty params hash to one stable constant."""
+    try:
+        blob = json.dumps(params or {}, sort_keys=True, default=str,
+                          separators=(",", ":"))
+    except Exception:
+        blob = repr(params)
+    return hashlib.md5(blob.encode("utf-8")).hexdigest()
+
+
 _ENSURED = False
 
 
@@ -181,15 +210,23 @@ def _ensure(c) -> bool:
                     id              SERIAL PRIMARY KEY,
                     tool            TEXT NOT NULL,
                     tier            TEXT NOT NULL,
+                    params_hash     TEXT,
                     query_text      TEXT,
                     query_embedding vector({EMBED_DIM}),
                     answer          JSONB,
                     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 )
             """)
+            # Additive migration for tables created before params_hash
+            # existed. Legacy rows keep NULL — they can never match a new
+            # lookup's exact hash, so they age out harmlessly (fail-soft).
             cur.execute("""
-                CREATE INDEX IF NOT EXISTS answer_cache_tool_tier_created
-                ON answer_cache (tool, tier, created_at DESC)
+                ALTER TABLE answer_cache
+                ADD COLUMN IF NOT EXISTS params_hash TEXT
+            """)
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS answer_cache_tool_tier_params_created
+                ON answer_cache (tool, tier, params_hash, created_at DESC)
             """)
         c.commit()
         _ENSURED = True
@@ -203,9 +240,16 @@ def _ensure(c) -> bool:
 
 
 # ── Part A: get / put ──────────────────────────────────────────────────
-def get_cached(tool: str, tier, query: str):
-    """Cached answer (dict) for a near-duplicate (tool, tier, query) — or
-    None. Hit = cosine >= ANSWER_CACHE_COSINE AND age < ANSWER_CACHE_TTL_S.
+def get_cached(tool: str, tier, query: str, params=None, exact_only=False):
+    """Cached answer (dict) for (tool, tier, params, query) — or None.
+
+    params_hash (md5 of sorted `params`) is matched by STRICT EQUALITY in
+    every mode — structural params (limit=N, filters…) are never subject to
+    embedding similarity. Two modes:
+      · exact_only=True  — no embedding at all; hit = exact key + TTL
+        (deterministic/templated tools: deal_autopsy).
+      · semantic (default) — cosine >= ANSWER_CACHE_COSINE within the exact
+        key bucket, AND age < ANSWER_CACHE_TTL_S (genuine free-text queries).
     Every failure path (no key, embed down, DB down, bad row) is a MISS.
     NEVER raises."""
     try:
@@ -215,34 +259,52 @@ def get_cached(tool: str, tier, query: str):
         q = (query or "").strip()
         if not tool or not tier_s or not q:
             return None
-        emb = _embed_query(q)
-        if not emb:
-            return None
+        ph = _params_hash(params)
         c = None
         try:
             c = _db()
             if c is None or not _ensure(c):
                 return None
-            qs = _vec(emb)
             with c.cursor() as cur:
-                # tool AND tier in the WHERE — the tier-isolation guarantee
-                # lives HERE, not in ranking. A paid row is invisible to an
-                # anon lookup and vice versa.
-                cur.execute("""
-                    SELECT answer,
-                           1 - (query_embedding <=> %s::vector) AS cosine,
-                           EXTRACT(EPOCH FROM (NOW() - created_at)) AS age_s
-                      FROM answer_cache
-                     WHERE tool = %s AND tier = %s
-                     ORDER BY query_embedding <=> %s::vector
-                     LIMIT 1
-                """, (qs, tool, tier_s, qs))
-                row = cur.fetchone()
-            if not row:
-                return None
-            answer, cosine, age_s = row[0], float(row[1] or 0.0), float(row[2] or 0.0)
-            if cosine < _cosine_threshold():
-                return None  # near-duplicate questions only
+                # tool AND tier AND params_hash in the WHERE — the
+                # tier-isolation and exact-params guarantees live HERE, not
+                # in ranking. A paid row is invisible to an anon lookup, a
+                # limit=15 row is invisible to a limit=3 lookup.
+                if exact_only:
+                    cur.execute("""
+                        SELECT answer,
+                               EXTRACT(EPOCH FROM (NOW() - created_at)) AS age_s
+                          FROM answer_cache
+                         WHERE tool = %s AND tier = %s AND params_hash = %s
+                         ORDER BY created_at DESC, id DESC
+                         LIMIT 1
+                    """, (tool, tier_s, ph))
+                    row = cur.fetchone()
+                    if not row:
+                        return None
+                    answer, age_s = row[0], float(row[1] or 0.0)
+                else:
+                    emb = _embed_query(q)
+                    if not emb:
+                        return None
+                    qs = _vec(emb)
+                    cur.execute("""
+                        SELECT answer,
+                               1 - (query_embedding <=> %s::vector) AS cosine,
+                               EXTRACT(EPOCH FROM (NOW() - created_at)) AS age_s
+                          FROM answer_cache
+                         WHERE tool = %s AND tier = %s AND params_hash = %s
+                           AND query_embedding IS NOT NULL
+                         ORDER BY query_embedding <=> %s::vector
+                         LIMIT 1
+                    """, (qs, tool, tier_s, ph, qs))
+                    row = cur.fetchone()
+                    if not row:
+                        return None
+                    answer, cosine, age_s = (row[0], float(row[1] or 0.0),
+                                             float(row[2] or 0.0))
+                    if cosine < _cosine_threshold():
+                        return None  # near-duplicate questions only
             if age_s >= _ttl_s():
                 return None  # expired (rows are lazily evicted by put_cached's cap)
             if isinstance(answer, (str, bytes)):
@@ -259,10 +321,12 @@ def get_cached(tool: str, tier, query: str):
         return None
 
 
-def put_cached(tool: str, tier, query: str, answer: dict) -> bool:
-    """Store a POST-verification answer under (tool, tier, query-embedding).
-    Enforces the per-tool row cap (delete-oldest). Fail-soft no-op → False.
-    NEVER raises."""
+def put_cached(tool: str, tier, query: str, answer: dict,
+               params=None, exact_only=False) -> bool:
+    """Store a POST-verification answer under (tool, tier, params_hash,
+    query-embedding). exact_only rows store NO embedding (they are only ever
+    matched by exact key). Enforces the per-tool row cap (delete-oldest).
+    Fail-soft no-op → False. NEVER raises."""
     c = None
     try:
         if _cache_disabled():
@@ -271,17 +335,22 @@ def put_cached(tool: str, tier, query: str, answer: dict) -> bool:
         q = (query or "").strip()
         if not tool or not tier_s or not q or not isinstance(answer, dict):
             return False
-        emb = _embed_query(q)
-        if not emb:
-            return False
+        ph = _params_hash(params)
+        emb = None
+        if not exact_only:
+            emb = _embed_query(q)
+            if not emb:
+                return False
         c = _db()
         if c is None or not _ensure(c):
             return False
         with c.cursor() as cur:
             cur.execute("""
-                INSERT INTO answer_cache (tool, tier, query_text, query_embedding, answer)
-                VALUES (%s, %s, %s, %s::vector, %s::jsonb)
-            """, (tool, tier_s, q[:2000], _vec(emb), json.dumps(answer, default=str)))
+                INSERT INTO answer_cache
+                    (tool, tier, params_hash, query_text, query_embedding, answer)
+                VALUES (%s, %s, %s, %s, %s::vector, %s::jsonb)
+            """, (tool, tier_s, ph, q[:2000], _vec(emb) if emb else None,
+                  json.dumps(answer, default=str)))
             # Per-tool row cap: keep the newest N rows for this tool (across
             # tiers), delete the rest — bounded storage, oldest-first out.
             cur.execute("""
@@ -453,36 +522,48 @@ def _norm_ws(s) -> str:
     return _WS_RE.sub(" ", (s or "")).strip().lower()
 
 
+_UNVERIFIED_CAVEAT = ("⚠️ [numbers in this answer could not be verified "
+                      "against source data] ")
+
+
+def _sent_match(ns: str, fs: str) -> bool:
+    """Normalized-PREFIX fuzzy match: the verifier may quote a truncated or
+    slightly-extended span of the sentence, but the quote must anchor at the
+    sentence start. Deliberately NOT free substring / number-substring
+    matching — a raw number-containment fallback strips TRUE sentences that
+    merely share a digit sequence with a flagged number ('48' vs '1,480 MW')."""
+    return ns.startswith(fs) or fs.startswith(ns)
+
+
 def strip_flagged_sentences(text: str, issues: list):
-    """Remove the sentence(s) the verifier flagged as carrying unsupported
-    numbers. Matching is defensive both ways (verifier may quote a fragment
-    or a longer span) plus a raw number-containment backup. If stripping
-    would blank the whole answer, FLAG instead of strip (prefix caveat) —
-    an empty paid answer is worse than a caveated one.
+    """Remove ONLY the sentence(s) the verifier EXPLICITLY returned in
+    issues[].sentence, located by normalized-prefix fuzzy match. There is NO
+    number-substring fallback. If none of the flagged sentences can be
+    located in the text — or stripping would blank the whole answer — FLAG
+    instead of strip (prefix caveat, text untouched): an answer we can't
+    surgically clean ships caveated, never silently mangled or empty.
     Returns (clean_text, stripped_count)."""
     if not text or not issues:
         return text, 0
     flagged_sents = [_norm_ws(i.get("sentence")) for i in issues
                      if isinstance(i, dict) and _norm_ws(i.get("sentence"))]
-    flagged_nums = [str(i.get("number") or "").strip() for i in issues
-                    if isinstance(i, dict) and str(i.get("number") or "").strip()]
+    if not flagged_sents:
+        # Issues carry no quotable sentence → nothing safe to strip → flag.
+        return _UNVERIFIED_CAVEAT + text, 0
     parts = _SENT_SPLIT_RE.split(text)
     keep, dropped = [], 0
     for s in parts:
         ns = _norm_ws(s)
-        bad = False
-        if ns:
-            bad = any((fs in ns) or (ns in fs) for fs in flagged_sents)
-            if not bad:
-                bad = any(num in s for num in flagged_nums)
-        if bad:
+        if ns and any(_sent_match(ns, fs) for fs in flagged_sents):
             dropped += 1
         else:
             keep.append(s)
+    if not dropped:
+        # Verifier flagged something we can't locate → flag-not-strip.
+        return _UNVERIFIED_CAVEAT + text, 0
     clean = " ".join(k for k in keep if k.strip()).strip()
     if not clean:
-        return ("⚠️ [numbers in this answer could not be verified against "
-                "source data] " + text), 0
+        return _UNVERIFIED_CAVEAT + text, 0
     return clean, dropped
 
 
