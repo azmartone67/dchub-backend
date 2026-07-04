@@ -28,6 +28,22 @@ from flask import Blueprint, jsonify, request
 cron_heartbeat_bp = Blueprint("cron_heartbeat", __name__,
                                url_prefix="/api/v1/cron")
 
+
+# 2026-07-04: THE DC HUB ANALYST blueprint (routes/analyst_note.py) rides on
+# this blueprint's app registration via record_once — main.py wiring is frozen
+# for parallel worktree tracks, and without registration the analyst_note_weekly
+# dispatch below would 404 forever. Defensive: a broken import can never break
+# the heartbeat (or boot).
+@cron_heartbeat_bp.record_once
+def _register_analyst_note(state):
+    try:
+        from routes.analyst_note import analyst_note_bp
+        if "analyst_note" not in state.app.blueprints:
+            state.app.register_blueprint(analyst_note_bp)
+    except Exception as _an_e:
+        print(f"[cron_heartbeat] analyst_note_bp register skipped: {_an_e}",
+              flush=True)
+
 # r78: the dispatcher runs INSIDE this Flask app — its job POSTs were going
 # out to api.dchub.cloud and back through Cloudflare to reach itself (and
 # api.dchub.cloud's non-/api/* routing 522s, which is what minted the
@@ -597,6 +613,21 @@ _DISPATCH = [
      f"{BASE}/api/v1/reports/monthly/send-outreach?triggered_by=heartbeat_catchup",
      "POST",
      lambda now: now.day <= 7 and now.hour == 3 and now.minute < 55),
+
+    # 2026-07-04: THE DC HUB ANALYST — weekly brain-authored Analyst Note
+    # ("what moved in data-center power this week"): DCPI movers + deals +
+    # news + RAG recall, ONE structured-outputs compose, honest-numbers
+    # fenced, persisted to analyst_notes and served at /research/analyst-note.
+    # Thu 14:xx UTC — the media-showcase slot family; WIDE minute window
+    # because the heartbeat is sporadic (~hourly). Endpoint is IDEMPOTENT per
+    # week_of (repeat fires in-window are cheap SELECT no-ops); admin-gated —
+    # _hit() sends X-Admin-Key. It NEVER auto-posts: distribution is only a
+    # media LEAD that the media machine's existing gates decide on.
+    # Kill: ANALYST_NOTE_DISABLED=1.
+    ("analyst_note_weekly",
+     f"{BASE}/api/v1/analyst-note/generate",
+     "POST",
+     lambda now: now.weekday() == 3 and now.hour == 14 and now.minute < 55),
 ]
 
 
