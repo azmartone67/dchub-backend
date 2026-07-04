@@ -167,6 +167,75 @@ def _match_market(deal, idx, by_state):
     return None
 
 
+# ── RAG comparables ────────────────────────────────────────────────────
+# Ground the (otherwise templated) read in real prior deals / news / market
+# analysis via the brain RAG core. Retrieval augments PROSE only — we never
+# push fabricated numbers through it; the query is built purely from the
+# deal's own text fields (buyer/seller/market/type). Fail-soft in every path:
+# any RAG hiccup degrades silently to the deterministic read + market facts.
+_RAG_CORPUS = ["deals", "news_articles", "market_narratives", "brain_findings"]
+
+# Human-friendly label + emoji per source_table for the cited comparables block.
+_RAG_KIND_LABEL = {
+    "deals": ("deal", "🤝"),
+    "news_articles": ("news", "📰"),
+    "market_narratives": ("market", "🧭"),
+    "brain_findings": ("analysis", "🧠"),
+}
+
+
+def _rag_comparables(deal, mk):
+    """Surface comparable prior deals, related news, and market analysis for a
+    deal via semantic recall. Returns List[dict] (possibly empty). NEVER raises
+    — a RAG failure must not break the autopsy."""
+    parts = [
+        (deal.get("buyer") or "").strip(),
+        (deal.get("seller") or "").strip(),
+        # Prefer the DCPI-matched market name (richer than raw geography), else raw.
+        ((mk.get("market_name") if mk else None) or deal.get("market")
+         or deal.get("region") or "").strip(),
+        (deal.get("type") or "").strip(),
+        "data center strategy",
+    ]
+    query = " ".join(p for p in parts if p).strip()
+    if not query:
+        return []
+    try:
+        from routes.brain_rag import retrieve_context
+        hits = retrieve_context(query, k=4, corpus=_RAG_CORPUS)
+    except Exception as e:
+        logger.warning(f"deal-autopsy: RAG recall failed: {e}")
+        return []
+    if not hits:
+        return []
+
+    # Don't cite the deal against itself; drop the exact same deals-row.
+    self_id = str(deal.get("id")) if deal.get("id") is not None else None
+    out = []
+    for h in hits:
+        try:
+            src = h.get("source_table") or ""
+            if src == "deals" and self_id and str(h.get("source_id")) == self_id:
+                continue
+            txt = (h.get("text") or "").strip()
+            if not txt:
+                continue
+            label, emoji = _RAG_KIND_LABEL.get(src, ("related", "🔗"))
+            out.append({
+                "kind": label,
+                "emoji": emoji,
+                "text": txt[:280],
+                "score": h.get("score"),
+                "source_table": src,
+                "source_id": h.get("source_id"),
+            })
+        except Exception:
+            continue
+        if len(out) >= 3:
+            break
+    return out
+
+
 def _autopsy_read(deal, mk):
     """Deterministic 'what's the real play' read. PAID layer."""
     if not mk:
@@ -252,6 +321,14 @@ def autopsy():
             if mk and mk.get("_state_proxy"):
                 read = (f"[Grid-checked via {mk.get('_state_proxy')}'s representative market, "
                         f"{mk.get('market_name')}] ") + read
+            # Ground the read in real comparables (prior deals / news / market
+            # analysis) via RAG. Weave a one-line lead-in into the prose and
+            # attach the cited block; both degrade to nothing on RAG failure.
+            comps = _rag_comparables(d, mk)
+            if comps:
+                read = (read + f" [Grounded against {len(comps)} comparable "
+                        f"{'signal' if len(comps) == 1 else 'signals'} — see below.]")
+                row["comparables"] = comps
             row["autopsy_read"] = read
         items.append(row)
 
@@ -291,6 +368,7 @@ _PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
  .v{font-weight:700;font-size:11px;padding:2px 8px;border-radius:6px;margin-left:6px}
  .BUILD{background:rgba(52,211,153,.16);color:var(--grn)}.CAUTION{background:rgba(251,191,36,.16);color:var(--amb)}.AVOID{background:rgba(248,113,113,.16);color:var(--red)}
  .read{margin-top:8px;font-size:13.5px;color:#cbd5e1;border-left:2px solid var(--ind);padding-left:10px}
+ .comps{margin-top:10px;padding-left:10px;border-left:2px solid rgba(148,163,184,.35)}.comps-h{font-size:10.5px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--mut);margin-bottom:5px}.comp{font-size:12px;color:#94a3b8;margin-top:4px;line-height:1.45}.comp-k{display:inline-block;font-size:10px;font-weight:700;color:#a5b4fc;margin-right:4px;text-transform:uppercase;letter-spacing:.04em}
  .lock{border-color:rgba(99,102,241,.4)}.lock-badge{display:inline-block;background:var(--ind);color:#fff;font-size:10px;font-weight:700;padding:2px 9px;border-radius:6px;letter-spacing:.08em;margin-bottom:8px}.peek{position:relative;margin:12px 0;border-radius:8px;overflow:hidden;border:1px solid var(--line)}.peek ul{filter:blur(3.5px);margin:0;padding:14px 14px 14px 30px;color:#cbd5e1;font-size:13px;user-select:none;background:rgba(99,102,241,.05)}.peek::after{content:'🔒 Pro';position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:14px;color:#c4b5fd;background:rgba(10,11,18,.22)}.cta-big{display:inline-block;margin-top:12px;background:var(--ind);color:#fff;text-decoration:none;padding:12px 22px;border-radius:9px;font-weight:800;font-size:15px;box-shadow:0 4px 14px rgba(99,102,241,.35)}.cta-sub{margin-top:7px;font-size:11px;color:#64748b}.cta{display:inline-block;margin-top:8px;background:var(--ind);color:#fff;text-decoration:none;padding:9px 16px;border-radius:8px;font-weight:700}
  a{color:#a5b4fc}
 </style></head><body><div class="wrap">
@@ -311,10 +389,11 @@ async function load(){
    h+='<div class="deal"><h3>'+title+(dcpi&&dcpi.verdict?('<span class="v '+dcpi.verdict+'">'+dcpi.verdict+'</span>'):'')+'</h3>';
    h+='<div class="meta">'+(x.date||'')+(x.value_usd?(' · $'+(x.value_usd/1e9).toFixed(2)+'B'):'')+(x.market_raw?(' · '+x.market_raw):'')+(dcpi?(' · '+(dcpi.iso||'')+' · '+(dcpi.time_to_power_months!=null?'~'+dcpi.time_to_power_months+'mo to power':'')):' · not in DCPI')+'</div>';
    if(x.autopsy_read){h+='<div class="read">'+x.autopsy_read+'</div>';}
+   if(x.comparables&&x.comparables.length){h+='<div class="comps"><div class="comps-h">Grounded against</div>';x.comparables.forEach(function(c){h+='<div class="comp"><span class="comp-k">'+(c.emoji||'🔗')+' '+(c.kind||'related')+'</span> '+(c.text||'')+'</div>';});h+='</div>';}
    h+='</div>';
   });
   var a=d.autopsy||{};
-  if(a.locked){h+='<div class="deal lock"><div class="lock-badge">🔒 PRO · AUTOPSY READ</div><strong>What is the real play behind each deal?</strong><p class="sub">Deal flow + each market DCPI verdict above are free — the read is Pro:</p><div class="peek"><ul><li>Long-dated land/power option vs near-term build vs queue gamble</li><li>The grid-reality read on every tracked deal</li><li>The smart-money interpretation</li></ul></div><a class="cta-big" href="'+(a.unlock&&a.unlock.url||'/pricing')+'">🔓 Unlock the read — Developer $49/mo →</a><div class="cta-sub">Cancel anytime · also unlocks the MCP decision tools + raw data</div></div>';}
+  if(a.locked){h+='<div class="deal lock"><div class="lock-badge">🔒 PRO · AUTOPSY READ</div><strong>What is the real play behind each deal?</strong><p class="sub">Deal flow + each market DCPI verdict above are free — the read is Pro:</p><div class="peek"><ul><li>Long-dated land/power option vs near-term build vs queue gamble</li><li>The grid-reality read on every tracked deal</li><li>Grounded against comparable prior deals, news &amp; market analysis</li><li>The smart-money interpretation</li></ul></div><a class="cta-big" href="'+(a.unlock&&a.unlock.url||'/pricing')+'">🔓 Unlock the read — Developer $49/mo →</a><div class="cta-sub">Cancel anytime · also unlocks the MCP decision tools + raw data</div></div>';}
   out.innerHTML=h;
  }catch(e){out.innerHTML='<p class="sub">Error: '+e+'</p>';}
 }
