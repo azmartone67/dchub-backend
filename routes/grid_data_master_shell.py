@@ -644,6 +644,52 @@ def master_tick():
     ), 200
 
 
+@grid_data_master_shell_bp.route("/api/v1/grid/extended/<iso>", methods=["GET"])
+def grid_extended(iso):
+    """Forward-looking + supply signals for an ISO from grid_ext_metrics — the data
+    the master shell absorbs from gridstatus that no serving tool exposed yet:
+    forward load, committed capacity, operating reserve/margin, grid carbon
+    intensity, zone LMP. Public read; complements demand+mix in get_grid_intelligence."""
+    iso = (iso or "").upper().strip()
+    c = _conn()
+    if c is None:
+        return jsonify(iso=iso, available=False, reason="db_unavailable"), 200
+    out = {"iso": iso, "available": False, "source": "DC Hub grid_ext_metrics (gridstatus.io)"}
+    try:
+        import psycopg2.extras
+        with c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("""
+                SELECT DISTINCT ON (category) category, primary_value, unit, as_of
+                FROM grid_ext_metrics
+                WHERE upper(iso) = %s AND primary_value IS NOT NULL
+                ORDER BY category, as_of DESC NULLS LAST
+            """, (iso,))
+            cat = {r["category"]: r for r in cur.fetchall()}
+        mapping = {
+            "forward_load_mw": "load_forecast",
+            "committed_capacity_mw": "capacity",
+            "operating_reserve_mw": "reserves",
+            "operating_margin_mw": "margin",
+            "grid_carbon_intensity_lb_mwh": "emissions",
+            "zone_lmp_usd_mwh": "lmp",
+        }
+        for field, c0 in mapping.items():
+            r = cat.get(c0)
+            if r and r.get("primary_value") is not None:
+                out[field] = float(r["primary_value"])
+                out[field + "_as_of"] = str(r.get("as_of"))
+        if len(out) > 3:
+            out["available"] = True
+            out["note"] = ("Forward/supply signals absorbed from gridstatus.io by the grid-data "
+                           "master shell — complements the live demand + fuel mix.")
+        return jsonify(out), 200
+    except Exception as e:
+        return jsonify(iso=iso, available=False, error=f"{type(e).__name__}: {str(e)[:140]}"), 200
+    finally:
+        try: c.close()
+        except Exception: pass
+
+
 @grid_data_master_shell_bp.route("/api/v1/admin/grid-data/master-state", methods=["GET"])
 def master_state():
     if not _admin_ok():
