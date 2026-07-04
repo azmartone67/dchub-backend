@@ -3359,6 +3359,49 @@ def _grid_intel_cached(region, rto_code):
     return out
 
 
+# ── RAG "related intel" helper (r-rag-tooldata 2026-07-04) ────────────
+# Attach cited, semantically-relevant passages to an agent-facing tool payload.
+# Fail-soft → [] (never breaks the endpoint). Gate on `cosine` (score is the
+# rerank cross-encoder scale — r-rag-cosine-passthrough). It runs a SYNCHRONOUS
+# Cohere embed, so callers on HOT PUBLIC paths (market/grid web pages) gate it
+# behind an explicit ?rag=1 opt-in; only low-volume agent tools call it always.
+def _rag_related_intel(query, corpus=None, k=4, min_cosine=0.30):
+    if not query:
+        return []
+    try:
+        from routes.brain_rag import retrieve_context, _hydrate
+    except Exception:
+        return []
+    try:
+        hits = retrieve_context(query, k=k, corpus=corpus) or []
+    except Exception:
+        return []
+    if not hits:
+        return []
+    try:
+        hits = _hydrate(hits)
+    except Exception:
+        pass
+    out = []
+    for h in hits:
+        try:
+            if float(h.get("cosine") or 0) < min_cosine:
+                continue
+        except Exception:
+            continue
+        cite = h.get("cite") or {}
+        out.append({
+            "text": (h.get("text") or "").strip()[:320],
+            "source": h.get("source_table"),
+            "kind": h.get("kind"),
+            "cosine": round(float(h.get("cosine") or 0), 3),
+            "title": cite.get("title"),
+            "url": cite.get("url"),
+            "citation": "Source: DC Hub (dchub.cloud), CC BY 4.0",
+        })
+    return out
+
+
 @app.route('/api/v1/grid/intelligence/<region>', methods=['GET'])
 def phase19b_grid_intelligence(region):
     """Aggregate grid view for an ISO/region.
@@ -3528,6 +3571,15 @@ def phase19b_grid_intelligence(region):
         resp.headers['X-Tier-Gated'] = 'true'
         return resp
 
+    # r-rag-tooldata (2026-07-04): OPT-IN grounding on the FULL (keyed/internal)
+    # path only. `out` is a shared 5-min in-process cache entry, so copy before
+    # mutating or the RAG block would leak to non-rag callers of the same ISO.
+    if request.args.get('rag'):
+        out = dict(out)
+        out['related_intel'] = _rag_related_intel(
+            f"{out.get('region') or region} grid power demand data center capacity",
+            corpus=["news_articles", "market_narratives", "deals"], k=4,
+        )
     resp = jsonify(out)
     resp.headers['Cache-Control'] = 'public, max-age=300'
     resp.headers['Access-Control-Allow-Origin'] = '*'
@@ -15173,6 +15225,16 @@ def get_market_stats(market):
             for _r in recent:
                 if isinstance(_r, dict) and 'power_mw' in _r:
                     _r['power_mw'] = None
+        # r-rag-tooldata (2026-07-04): OPT-IN grounding. This endpoint also backs
+        # the PUBLIC market pages (market-page.js) — a synchronous Cohere embed on
+        # every hit would regress that hot SEO path — so RAG passages attach ONLY
+        # when the caller sets ?rag=1 (the get_market_intel MCP proxy opts in).
+        _rel = []
+        if request.args.get('rag'):
+            _rel = _rag_related_intel(
+                f"{market_lower} data center market power capacity",
+                corpus=["market_narratives", "news_articles", "deals"], k=4,
+            )
         resp = jsonify({
             'success': True,
             'market': {
@@ -15189,7 +15251,8 @@ def get_market_stats(market):
             'top_providers': top_providers,
             'by_status': by_status,
             'recent_facilities': recent,
-            '_gated': (not _mk_paid)
+            '_gated': (not _mk_paid),
+            'related_intel': _rel
         })
         if not _mk_paid:
             resp.headers['Cache-Control'] = 'private, no-store'
@@ -28221,12 +28284,21 @@ def api_agents_recommend():
         # endpoint on it.
         logger.warning(f"recommend: live pocket lookup failed: {_e_pock}")
 
+    # r-rag-tooldata (2026-07-04): ground the recommendation in cited corpus
+    # passages so the tool returns evidence, not just a brochure. Low-volume
+    # agent tool → grounding is always on (unlike the hot market/grid paths).
+    related_intel = _rag_related_intel(
+        f"{context} data center market infrastructure {rec.get('short','')}",
+        corpus=["market_narratives", "news_articles", "deals"], k=4,
+    )
     payload = {
         'success': True,
         'context': context,
         'recommendation': rec,
         'connect_url': 'https://dchub.cloud/connect',
     }
+    if related_intel:
+        payload['related_intel'] = related_intel
     if live_pocket:
         payload['top_pocket'] = live_pocket
         payload['recommendation_live'] = (

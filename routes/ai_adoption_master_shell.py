@@ -226,6 +226,11 @@ def tier2_discovery(measure: dict) -> dict:
     out["drafts_queued"] = len(owner_actions)
     out["draft_source"] = "/api/v1/admin/outreach/draft-submissions"
     out["submitted"] = 0
+    # ground the registry-closure push in recalled outreach/submission OUTCOMES
+    out["discovery_evidence"] = _rag_ground(
+        "MCP registry directory submission outreach outcome — what got us listed",
+        k=3, lessons=True,
+    )
 
     # Only the handful of registries with an automatable submit path can be fired
     # autonomously, and only when the write gate is explicitly on. Everything else
@@ -278,9 +283,51 @@ def tier3_legibility(measure: dict) -> dict:
     return out
 
 
+# ── RAG grounding helper (r-rag-adoption 2026-07-04) ──────────────────
+# Best-effort: recall past-outcome lessons / corpus evidence so a decision cites
+# WHY. Fail-soft → [] (never breaks a tick). Gate on `cosine` — `score` is the
+# rerank cross-encoder scale and would silently disarm a cosine-tuned floor
+# (r-rag-cosine-passthrough). retrieve_* opens its own conn + embeds per call, so
+# keep k small and call it at most a couple times per tick.
+_RAG_MIN_COSINE = 0.30
+
+def _rag_ground(query: str, k: int = 4, corpus=None, lessons: bool = False) -> list:
+    try:
+        from routes.brain_rag import retrieve_context, retrieve_lessons, _hydrate
+    except Exception:
+        return []
+    try:
+        hits = retrieve_lessons(query, k=k) if lessons else retrieve_context(query, k=k, corpus=corpus)
+    except Exception:
+        return []
+    if not hits:
+        return []
+    try:
+        hits = _hydrate(hits)
+    except Exception:
+        pass
+    out = []
+    for h in hits or []:
+        try:
+            if float(h.get("cosine") or 0) < _RAG_MIN_COSINE:
+                continue
+        except Exception:
+            continue
+        cite = h.get("cite") or {}
+        out.append({
+            "source": h.get("source_table"),
+            "kind": h.get("kind"),
+            "cosine": round(float(h.get("cosine") or 0), 3),
+            "text": (h.get("text") or "").strip()[:280],
+            "title": cite.get("title"),
+            "url": cite.get("url"),
+        })
+    return out
+
+
 # ── Tier 4 — REINFORCEMENT (where to tune the tool-instruction copy) ──
 def tier4_reinforcement(measure: dict) -> dict:
-    out: dict = {"ok": True}
+    out: dict = {"ok": True, "reinforcement_evidence": []}
     pp = measure.get("per_platform") or []
     # normalise: expect dicts with platform_id/agents/requests
     norm = []
@@ -307,6 +354,13 @@ def tier4_reinforcement(measure: dict) -> dict:
         )
         out["conversion_leak"] = leak[0]["platform"] if leak else None
         tgt = out["conversion_leak"] or out["top_platform"]
+        # ground the copy-tuning target in past reinforcement/outreach OUTCOMES so
+        # the shell recalls what already worked/failed for this platform instead of
+        # re-recommending blind (learns to STOP, not just STEER).
+        out["reinforcement_evidence"] = _rag_ground(
+            f"tune MCP tool-instruction copy for {tgt}; convert probing agents into repeat callers",
+            k=4, lessons=True,
+        )
         out["recommendation"] = (
             f"Tune MCP tool-instruction copy for '{tgt}' — it drives the most "
             f"probe volume relative to distinct agents; sharper first-call guidance "
