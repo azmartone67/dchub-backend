@@ -7,7 +7,9 @@ grid master shell's dataset registry. Numbers stay in SQL — this embeds only
 UNSTRUCTURED prose (findings/recs/news/deals). Owner-greenlit 2026-07-03.
 
 Store:  brain_corpus_embeddings(source_table, source_id, kind, text,
-        embedding vector(1024))  — pgvector on Neon, one table for all corpora.
+        embedding vector(1024), chunk_ix, meta)  — pgvector on Neon, one table
+        for all corpora. Chunked corpora (market_narratives) store one row per
+        ~150-300-token chunk, source_id='<slug>#<n>', provenance in meta.
 Embed:  Cohere embed-english-v3.0 (1024-d, asymmetric search_document/search_query;
         OpenAI key is out of quota). Batched ≤96/call.
 Recall: cosine (<=>), optionally scoped to one corpus.
@@ -62,9 +64,26 @@ CORPORA = {
                  "coalesce(t.market,'') || ' ' || coalesce(t.facility_type,'')"),
         "where": "coalesce(t.name,'') <> '' AND coalesce(t.is_duplicate, 0) = 0"},
 }
+# Optional per-corpus "fresh_col" (a t.<timestamp> column): when set, _pending
+# ALSO re-picks rows whose source timestamp is newer than the stored embedding
+# (updated-in-place rows re-embed). Corpora without it keep insert-only behavior.
+
+# ── chunked corpora (RAG v1, 2026-07-03) ─────────────────────────────
+# One DOC → many chunk rows (source_id='<slug>#<n>'). Can't ride the flat
+# row-SQL registry above, so these get their own pending/reindex path.
+# market_deep_dives regenerates IN PLACE under the same PK (market_slug), so
+# staleness = doc.generated_at > max(chunk.updated_at) → re-chunk + re-embed.
+CHUNKED_CORPORA = {
+    "market_narratives": {
+        "table": "market_deep_dives",
+        "kind": "market_narrative",
+    },
+}
+_CHUNK_MIN_CHARS = 600    # ~150 tokens (chars/4)
+_CHUNK_MAX_CHARS = 1200   # ~300 tokens
 
 # Corpora an unauthenticated agent may semantically search (brain internals excluded).
-PUBLIC_CORPORA = ("news_articles", "deals", "discovered_facilities")
+PUBLIC_CORPORA = ("news_articles", "deals", "discovered_facilities", "market_narratives")
 
 
 # ── auth ──────────────────────────────────────────────────────────────
@@ -110,9 +129,16 @@ def _ensure() -> bool:
                     text         TEXT,
                     embedding    vector({EMBED_DIM}),
                     updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    meta         JSONB,
+                    chunk_ix     INT,
                     UNIQUE (source_table, source_id)
                 )
             """)
+            # RAG v1 (2026-07-03): chunk provenance columns on the LIVE table.
+            # Raw psycopg2 (not safe_db, which silently skips DDL) + IF NOT
+            # EXISTS, and _ensure only runs lazily at reindex — no boot storm.
+            cur.execute("ALTER TABLE brain_corpus_embeddings ADD COLUMN IF NOT EXISTS meta JSONB")
+            cur.execute("ALTER TABLE brain_corpus_embeddings ADD COLUMN IF NOT EXISTS chunk_ix INT")
             # ANN index so recall (<=> cosine) uses HNSW, not a full seq scan.
             # IF NOT EXISTS => builds once; instant on a fresh/empty branch table,
             # no-op once present. Plain (non-CONCURRENT) is correct here: this runs
@@ -158,22 +184,29 @@ def _vec(v):
 
 # ── corpus selection ──────────────────────────────────────────────────
 def _pending(cur, cap):
-    """Rows across ALL registered corpora that don't yet have an embedding.
-    Allocates the cap roughly EVENLY across corpora so one large corpus
-    (facilities) doesn't starve the others until it's done. A corpus whose
-    columns don't resolve is skipped (rollback), never fatal."""
+    """Rows across ALL registered corpora that don't yet have an embedding —
+    plus, for corpora with a `fresh_col`, rows updated IN PLACE since they
+    were embedded (the insert-only staleness gap: a row regenerated under the
+    same PK never re-indexed). Allocates the cap roughly EVENLY across corpora
+    so one large corpus (facilities) doesn't starve the others until it's
+    done. A corpus whose columns don't resolve is skipped (rollback), never
+    fatal."""
     rows = []
-    per = max(1, cap // max(1, len(CORPORA)))
+    per = max(1, cap // max(1, len(CORPORA) + len(CHUNKED_CORPORA)))
     for src, spec in CORPORA.items():
         if len(rows) >= cap:
             break
         lim = min(per, cap - len(rows))
+        fresh = spec.get("fresh_col")
+        pick = "e.id IS NULL"
+        if fresh:
+            pick = f"(e.id IS NULL OR t.{fresh} > e.updated_at)"
         q = (f"SELECT '{src}', ({spec['id']}) AS sid, '{spec['kind']}', "
              f"left({spec['text']}, 1600) "
              f"FROM {src} t "
              f"LEFT JOIN brain_corpus_embeddings e "
              f"  ON e.source_table='{src}' AND e.source_id=({spec['id']}) "
-             f"WHERE e.id IS NULL AND ({spec['where']}) "
+             f"WHERE {pick} AND ({spec['where']}) "
              f"LIMIT {int(lim)}")
         try:
             cur.execute(q)
@@ -182,6 +215,148 @@ def _pending(cur, cap):
             try: cur.connection.rollback()
             except Exception: pass
     return rows
+
+
+# ── chunked-corpus selection (market_narratives) ──────────────────────
+def _split_paragraphs(md: str) -> list:
+    import re as _re
+    return [p.strip() for p in _re.split(r"\n\s*\n", md or "") if p.strip()]
+
+
+def _chunk_narrative(market_name: str, generated_at, narrative_md: str) -> list:
+    """Split a deep-dive narrative on blank lines, greedy-merge paragraphs
+    into ~150-300-token chunks, prepend a provenance header so a chunk is
+    self-describing when retrieved on its own."""
+    date_s = ""
+    try:
+        date_s = generated_at.date().isoformat() if hasattr(generated_at, "date") else str(generated_at)[:10]
+    except Exception:
+        pass
+    header = f"{market_name} — DCPI deep-dive ({date_s}): "
+    chunks, buf = [], ""
+    for para in _split_paragraphs(narrative_md):
+        if buf and len(buf) + len(para) + 2 > _CHUNK_MAX_CHARS:
+            chunks.append(buf)
+            buf = para
+        else:
+            buf = (buf + "\n\n" + para) if buf else para
+        # a single paragraph can overshoot the max — emit it whole rather
+        # than splitting mid-sentence (Cohere truncate=END bounds the tail)
+        if len(buf) >= _CHUNK_MAX_CHARS:
+            chunks.append(buf)
+            buf = ""
+    if buf:
+        # greedy-merge a tiny tail into the previous chunk
+        if chunks and len(buf) < _CHUNK_MIN_CHARS and len(chunks[-1]) + len(buf) + 2 <= _CHUNK_MAX_CHARS + _CHUNK_MIN_CHARS:
+            chunks[-1] = chunks[-1] + "\n\n" + buf
+        else:
+            chunks.append(buf)
+    return [header + c for c in chunks]
+
+
+def _pending_chunk_docs(cur, cap):
+    """market_deep_dives docs that are missing from the embeddings store OR
+    regenerated since their chunks were embedded (generated_at > the newest
+    chunk's updated_at — the fresh_col staleness predicate for the chunked
+    corpus). Returns up to cap (slug, name, narrative_md, generated_at)."""
+    try:
+        cur.execute("""
+            SELECT d.market_slug, d.market_name, d.narrative_md, d.generated_at
+              FROM market_deep_dives d
+              LEFT JOIN (
+                    SELECT split_part(source_id, '#', 1) AS slug,
+                           max(updated_at) AS emb_at
+                      FROM brain_corpus_embeddings
+                     WHERE source_table = 'market_narratives'
+                     GROUP BY 1
+              ) e ON e.slug = d.market_slug
+             WHERE coalesce(d.narrative_md, '') <> ''
+               AND (e.emb_at IS NULL OR d.generated_at > e.emb_at)
+             ORDER BY d.generated_at DESC
+             LIMIT %s
+        """, (int(cap),))
+        return cur.fetchall()
+    except Exception:
+        try: cur.connection.rollback()
+        except Exception: pass
+        return []
+
+
+def _pending_chunk_count(cur) -> int:
+    try:
+        cur.execute("""
+            SELECT count(*)
+              FROM market_deep_dives d
+              LEFT JOIN (
+                    SELECT split_part(source_id, '#', 1) AS slug,
+                           max(updated_at) AS emb_at
+                      FROM brain_corpus_embeddings
+                     WHERE source_table = 'market_narratives'
+                     GROUP BY 1
+              ) e ON e.slug = d.market_slug
+             WHERE coalesce(d.narrative_md, '') <> ''
+               AND (e.emb_at IS NULL OR d.generated_at > e.emb_at)
+        """)
+        return cur.fetchone()[0] or 0
+    except Exception:
+        try: cur.connection.rollback()
+        except Exception: pass
+        return 0
+
+
+def _reindex_chunk_docs(c, doc_cap: int) -> int:
+    """Chunk + embed pending market_deep_dives docs. Per doc: DELETE the old
+    chunk rows (chunk counts shrink/grow across regenerations, so upsert alone
+    would strand tail chunks), then INSERT slug#0..slug#n with chunk_ix + meta
+    (citable market name / deep-dive URL / generated_at). Returns chunk rows
+    written. Commits per doc so a mid-run failure keeps completed docs."""
+    if doc_cap <= 0:
+        return 0
+    written = 0
+    with c.cursor() as cur:
+        docs = _pending_chunk_docs(cur, doc_cap)
+    for slug, name, md, gen_at in docs:
+        chunks = _chunk_narrative(name or slug, gen_at, md)
+        if not chunks:
+            continue
+        vecs = []
+        for i in range(0, len(chunks), _COHERE_BATCH):
+            v = _embed(chunks[i:i + _COHERE_BATCH], input_type="search_document")
+            if not v:
+                vecs = None
+                break
+            vecs += v
+        if not vecs or len(vecs) != len(chunks):
+            continue
+        meta = json.dumps({
+            "market_slug": slug,
+            "market_name": name,
+            "generated_at": (gen_at.isoformat() if hasattr(gen_at, "isoformat") else str(gen_at)),
+            "url": f"https://dchub.cloud/markets/{slug}/deep-dive",
+        })
+        try:
+            with c.cursor() as cur:
+                cur.execute(
+                    "DELETE FROM brain_corpus_embeddings "
+                    "WHERE source_table='market_narratives' AND source_id LIKE %s",
+                    (f"{slug}#%",))
+                for ix, (text, vec) in enumerate(zip(chunks, vecs)):
+                    cur.execute("""
+                        INSERT INTO brain_corpus_embeddings
+                          (source_table, source_id, kind, text, embedding, chunk_ix, meta)
+                        VALUES ('market_narratives', %s, 'market_narrative',
+                                %s, %s::vector, %s, %s::jsonb)
+                        ON CONFLICT (source_table, source_id) DO UPDATE
+                          SET embedding=EXCLUDED.embedding, text=EXCLUDED.text,
+                              chunk_ix=EXCLUDED.chunk_ix, meta=EXCLUDED.meta,
+                              updated_at=NOW()
+                    """, (f"{slug}#{ix}", text[:1600], _vec(vec), ix, meta))
+            c.commit()
+            written += len(chunks)
+        except Exception:
+            try: c.rollback()
+            except Exception: pass
+    return written
 
 
 def _corpus_total(cur):
@@ -253,6 +428,15 @@ _HYDRATE = {
                    "location": ", ".join([x for x in (r[3], r[4], r[5]) if x]),
                    "market": r[6], "power_mw": r[7],
                    "url": (f"https://dchub.cloud/facility/{r[8]}" if r[8] else None)}),
+    # Chunked corpus: provenance lives in the embedding row's own meta column
+    # (written at index time), so hydration never re-derives the '#<n>' split.
+    "market_narratives": (
+        "SELECT source_id, meta FROM brain_corpus_embeddings "
+        "WHERE source_table='market_narratives' AND source_id = ANY(%s)",
+        lambda r: {"title": ((r[1] or {}).get("market_name") or "") + " — DCPI deep-dive",
+                   "market": (r[1] or {}).get("market_slug"),
+                   "generated_at": (r[1] or {}).get("generated_at"),
+                   "url": (r[1] or {}).get("url")}),
 }
 
 
@@ -323,12 +507,19 @@ def reindex():
                     """, (st, sid, kind, text, _vec(vec)))
             c.commit()
             embedded += len(batch)
+        # Chunked corpus (market_narratives): docs, not rows — each yields
+        # ~3-6 chunk embeddings. Cap in DOC units from the leftover budget.
+        doc_cap = max(0, min(60, (cap - len(rows)) // 4)) if len(rows) < cap else 0
+        if doc_cap:
+            embedded += _reindex_chunk_docs(c, doc_cap)
         with c.cursor() as cur:
             total = _corpus_total(cur)
-            cur.execute("SELECT count(*) FROM brain_corpus_embeddings")
+            cur.execute("SELECT count(*) FROM brain_corpus_embeddings WHERE source_table <> 'market_narratives'")
             emb = cur.fetchone()[0] or 0
-        remaining = max(0, total - emb)
+            chunk_docs_pending = _pending_chunk_count(cur)
+        remaining = max(0, total - emb) + chunk_docs_pending
         return jsonify(ok=True, embedded=embedded, remaining=remaining,
+                       narrative_docs_pending=chunk_docs_pending,
                        done=(remaining == 0), model=EMBED_MODEL), 200
     except Exception as e:
         return jsonify(ok=False, error=f"{type(e).__name__}: {str(e)[:160]}", embedded=embedded), 200
@@ -352,11 +543,84 @@ def retrieve():
     return jsonify(ok=True, query=q, corpus=corpus, results=retrieve_context(q, k, corpus)), 200
 
 
+# ── keyed-caller check for the public search gate ─────────────────────
+# _resolve_caller_tier maps a dch_live_/dch_trial_ free key to FREE (rank 0),
+# same as fully-anonymous — so "keyed" needs its own check: any VALIDATED
+# identity (tier rank, internal/admin key, session cookie via
+# caller_is_privileged) OR a live key in mcp_dev_keys / api_keys. Small TTL
+# cache so repeat searches don't pay a DB lookup per call. Fail-closed →
+# keyless cap.
+_KEYED_CACHE = {}          # key -> (expires_epoch, bool)
+_KEYED_TTL = 300
+
+
+def _key_is_live(key: str) -> bool:
+    import time
+    now = time.time()
+    hit = _KEYED_CACHE.get(key)
+    if hit and hit[0] > now:
+        return hit[1]
+    ok = False
+    c = _db()
+    if c is not None:
+        try:
+            with c.cursor() as cur:
+                try:
+                    cur.execute(
+                        "SELECT 1 FROM mcp_dev_keys WHERE api_key = %s AND status = 'active' LIMIT 1",
+                        (key,))
+                    ok = cur.fetchone() is not None
+                except Exception:
+                    try: c.rollback()
+                    except Exception: pass
+                if not ok:
+                    try:
+                        cur.execute(
+                            "SELECT 1 FROM api_keys WHERE (key_prefix = %s OR key_hash = %s) LIMIT 1",
+                            (key[:16], key))
+                        ok = cur.fetchone() is not None
+                    except Exception:
+                        try: c.rollback()
+                        except Exception: pass
+        finally:
+            try: c.close()
+            except Exception: pass
+    if len(_KEYED_CACHE) > 5000:
+        _KEYED_CACHE.clear()
+    _KEYED_CACHE[key] = (now + _KEYED_TTL, ok)
+    return ok
+
+
+def _search_caller_keyed() -> bool:
+    try:
+        from routes.tier_gate import caller_is_privileged
+        if caller_is_privileged("IDENTIFIED"):
+            return True
+    except Exception:
+        pass
+    key = (request.headers.get("X-API-Key") or request.args.get("api_key") or "").strip()
+    if not key:
+        return False
+    try:
+        return _key_is_live(key)
+    except Exception:
+        return False
+
+
+_ANON_SEARCH_K = 3
+
+
 @brain_rag_bp.route("/api/v1/rag/search", methods=["GET"])
 def public_search():
     """Agent-facing SEMANTIC search over the public corpora (news / deals /
-    facilities) — meaning-based retrieval + citable fields, not keyword/SQL.
-    Brain internals (findings/recs) are never exposed here."""
+    facilities / market deep-dive narratives) — meaning-based retrieval +
+    citable fields, not keyword/SQL. Brain internals (findings/recs) are never
+    exposed here.
+
+    Gate (RAG v1, 2026-07-03): keyless/anonymous callers are capped at k=3 —
+    this endpoint previously handed full k=15 hydrated results to anyone over
+    plain HTTP, bypassing the MCP trial trim. Any validated key (free dev key
+    included) gets full k; claiming one is a single call to claim_free_key."""
     q = (request.args.get("q") or "").strip()
     if not q:
         return jsonify(error="q required"), 400
@@ -364,6 +628,11 @@ def public_search():
         k = max(1, min(15, int(request.args.get("k", "8"))))
     except Exception:
         k = 8
+    keyed = _search_caller_keyed()
+    capped = False
+    if not keyed and k > _ANON_SEARCH_K:
+        k = _ANON_SEARCH_K
+        capped = True
     req_corpus = (request.args.get("corpus") or "").strip()
     if req_corpus:
         cs = [x.strip() for x in req_corpus.split(",") if x.strip() in PUBLIC_CORPORA]
@@ -372,8 +641,17 @@ def public_search():
     if not cs:
         return jsonify(error="corpus must be one or more of " + ",".join(PUBLIC_CORPORA)), 400
     results = _hydrate(retrieve_context(q, k, corpus=cs))
-    return jsonify(ok=True, query=q, corpus=cs, count=len(results), results=results,
-                   _cite="Data: DC Hub (dchub.cloud), CC-BY-4.0 — cite as \"DC Hub, dchub.cloud\""), 200
+    out = dict(ok=True, query=q, corpus=cs, count=len(results), results=results,
+               _cite="Data: DC Hub (dchub.cloud), CC-BY-4.0 — cite as \"DC Hub, dchub.cloud\"")
+    if capped:
+        out["k_capped"] = _ANON_SEARCH_K
+        out["_unlock"] = {
+            "message": (f"Keyless callers get the top {_ANON_SEARCH_K} results. Any free key "
+                        f"unlocks full k (up to 15) — claim one in a single call, no email."),
+            "claim_url": "https://dchub.cloud/api/v1/keys/claim",
+            "how": "Retry with header X-API-Key: <your key>.",
+        }
+    return jsonify(out), 200
 
 
 @brain_rag_bp.route("/api/v1/admin/brain/rag/duplicate-findings", methods=["GET"])
@@ -444,7 +722,9 @@ def status():
                 last = cur.fetchone()[0]
             except Exception:
                 c.rollback(); by = {}; last = None
-            emb = sum(by.values())
+            # coverage_pct compares flat corpora only — market_narratives is
+            # chunk-rows vs docs (different units), reported in its own line.
+            emb = sum(v for s, v in by.items() if s != "market_narratives")
             total = 0
             per = {}
             for src, spec in CORPORA.items():
@@ -457,6 +737,17 @@ def status():
                     n = 0
                 total += n
                 per[src] = f"{by.get(src, 0)}/{n}"
+            # Chunked corpus: coverage in chunk-rows + docs-pending (regenerated
+            # docs count as pending until re-chunked — the staleness predicate).
+            try:
+                cur.execute("SELECT count(*) FROM market_deep_dives WHERE coalesce(narrative_md,'') <> ''")
+                _docs = cur.fetchone()[0] or 0
+            except Exception:
+                try: cur.connection.rollback()
+                except Exception: pass
+                _docs = 0
+            per["market_narratives"] = (f"{by.get('market_narratives', 0)} chunks / "
+                                        f"{_docs} docs ({_pending_chunk_count(cur)} pending)")
         return jsonify(ok=True, embedded=emb, corpus_total=total,
                        coverage_pct=round(100.0 * emb / max(1, total), 1),
                        by_corpus=per, last_indexed=str(last), model=EMBED_MODEL,
