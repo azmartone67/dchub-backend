@@ -26245,6 +26245,11 @@ def phase12g_load_facilities_live():
 @app.route('/api/admin/loader-status', methods=['GET'])
 def phase12g_loader_status():
     """Read the latest state of every async loader."""
+    import os
+    expected = os.environ.get("DCHUB_ADMIN_KEY") or os.environ.get("DCHUB_INTERNAL_KEY")
+    provided = (request.headers.get("X-Admin-Key") or request.args.get("admin_key"))
+    if expected and provided != expected:
+        return jsonify(error="unauthorized", hint="X-Admin-Key required"), 401
     return jsonify({'success': True, 'loaders': dict(phase12g_loader_state)})
 # --- end phase 12g ----------------------------------------------------------
 
@@ -26357,6 +26362,11 @@ def phase12l_probe_hifld_deep():
     everything — so we can see why fetch_page returns None even with
     the URL typo fixed.
     """
+    import os as _ph_os
+    expected = _ph_os.environ.get("DCHUB_ADMIN_KEY") or _ph_os.environ.get("DCHUB_INTERNAL_KEY")
+    provided = (request.headers.get("X-Admin-Key") or request.args.get("admin_key"))
+    if expected and provided != expected:
+        return jsonify(error="unauthorized", hint="X-Admin-Key required"), 401
     out = {'success': True}
     import urllib.request, urllib.parse, urllib.error, json as _json, io, contextlib
 
@@ -33490,6 +33500,11 @@ try:
     # Observability endpoint — admin-keyed
     @app.route('/api/v1/admin/internal-bot-cb', methods=['GET'])
     def _internal_bot_cb_state():
+        import os as _cb_os
+        expected = _cb_os.environ.get("DCHUB_ADMIN_KEY") or _cb_os.environ.get("DCHUB_INTERNAL_KEY")
+        provided = (request.headers.get("X-Admin-Key") or request.args.get("admin_key"))
+        if expected and provided != expected:
+            return jsonify(error="unauthorized", hint="X-Admin-Key required"), 401
         return jsonify(get_circuit_breaker_state()), 200
     print("[main] internal_bot_circuit_breaker attached", flush=True)
 except Exception as _cbe:
@@ -35008,6 +35023,10 @@ def _admin_schema_introspect():
     """Returns column lists for any table. Used to debug aggregator failures."""
     import os, psycopg2
     from flask import jsonify, request
+    expected = os.environ.get("DCHUB_ADMIN_KEY") or os.environ.get("DCHUB_INTERNAL_KEY")
+    provided = (request.headers.get("X-Admin-Key") or request.args.get("admin_key"))
+    if expected and provided != expected:
+        return jsonify(error="unauthorized", hint="X-Admin-Key required"), 401
     DATABASE_URL = os.environ.get("DATABASE_URL")
     table = request.args.get("table", "").strip()
     if not DATABASE_URL or not table:
@@ -36529,6 +36548,10 @@ def _customer_lookup():
        Phase 264: handles both datetime and str column types."""
     import os, psycopg2
     from flask import jsonify, request
+    expected = os.environ.get("DCHUB_ADMIN_KEY") or os.environ.get("DCHUB_INTERNAL_KEY")
+    provided = (request.headers.get("X-Admin-Key") or request.args.get("admin_key"))
+    if expected and provided != expected:
+        return jsonify(error="unauthorized", hint="X-Admin-Key required"), 401
     DATABASE_URL = os.environ.get("DATABASE_URL")
     if not DATABASE_URL: return jsonify({"error": "no DATABASE_URL"}), 500
     email = (request.args.get("email") or "").strip().lower()
@@ -36612,6 +36635,10 @@ def _admin_churn_risk():
     Optional ?plan=developer or ?plan=pro to filter."""
     import os, psycopg2
     from flask import jsonify, request
+    expected = os.environ.get("DCHUB_ADMIN_KEY") or os.environ.get("DCHUB_INTERNAL_KEY")
+    provided = (request.headers.get("X-Admin-Key") or request.args.get("admin_key"))
+    if expected and provided != expected:
+        return jsonify(error="unauthorized", hint="X-Admin-Key required"), 401
     DATABASE_URL = os.environ.get("DATABASE_URL")
     if not DATABASE_URL: return jsonify({"error": "no DATABASE_URL"}), 500
     try: days = max(1, min(int(request.args.get("days", 7)), 90))
@@ -36714,6 +36741,10 @@ def _admin_welcome_sequence():
     immediate welcome+nudge."""
     import os, psycopg2
     from flask import jsonify, request
+    expected = os.environ.get("DCHUB_ADMIN_KEY") or os.environ.get("DCHUB_INTERNAL_KEY")
+    provided = (request.headers.get("X-Admin-Key") or request.args.get("admin_key"))
+    if expected and provided != expected:
+        return jsonify(error="unauthorized", hint="X-Admin-Key required"), 401
     DATABASE_URL = os.environ.get("DATABASE_URL")
     if not DATABASE_URL: return jsonify({"error": "no DATABASE_URL"}), 500
     try: days = max(1, min(int(request.args.get("days", 7)), 30))

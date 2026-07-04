@@ -255,6 +255,10 @@ def run_digest(dry_run: bool = True, limit: int = 500) -> dict:
 @agent_winback_digest_bp.route("/api/v1/admin/agent-digest/preview", methods=["GET"])
 def preview():
     """Render the digest for one email (no send, no consent gate — render only)."""
+    expected = os.environ.get("DCHUB_ADMIN_KEY") or os.environ.get("DCHUB_INTERNAL_KEY")
+    provided = (request.headers.get("X-Admin-Key") or request.args.get("admin_key"))
+    if expected and provided != expected:
+        return jsonify(error="unauthorized", hint="X-Admin-Key required"), 401
     email = (request.args.get("email") or "preview@example.com").strip().lower()
     c = _conn()
     interests, ch = [], {"new_deals": 0, "deal_titles": [], "new_facilities": 0, "markets_tracked": 232}

@@ -186,6 +186,12 @@ def _esc(s):
 @partnership_admin_bp.route("/admin/partnerships/review",
                              methods=["GET"], strict_slashes=False)
 def review():
+    from flask import request, jsonify
+    expected = os.environ.get("DCHUB_ADMIN_KEY") or os.environ.get("DCHUB_INTERNAL_KEY")
+    provided = (request.headers.get("X-Admin-Key") or request.args.get("admin_key"))
+    if expected and provided != expected:
+        return jsonify(error="unauthorized",
+                       hint="X-Admin-Key header or ?admin_key= required"), 401
     data = _gather_pending()
     today = datetime.datetime.utcnow().strftime("%B %d, %Y · %H:%M UTC")
 

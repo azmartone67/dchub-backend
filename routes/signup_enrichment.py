@@ -297,6 +297,10 @@ def enrich_run():
 @signup_enrichment_bp.route("/api/v1/admin/enrich/status", methods=["GET"])
 def enrich_status():
     """Provider configured? + cohort breakdown of existing enrichment."""
+    expected = os.environ.get("DCHUB_ADMIN_KEY") or os.environ.get("DCHUB_INTERNAL_KEY")
+    provided = (request.headers.get("X-Admin-Key") or request.args.get("admin_key"))
+    if expected and provided != expected:
+        return jsonify(error="unauthorized", hint="X-Admin-Key required"), 401
     provider, _ = _active_provider()
     out = {
         "configured": bool(provider),

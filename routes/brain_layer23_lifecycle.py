@@ -393,6 +393,12 @@ def _call_internal(path: str, timeout: float = 8.0):
     if cached and (now - cached[0]) < _INTERNAL_TTL:
         return cached[1]
 
+    # Admin-gated targets (e.g. /api/v1/admin/internal-bot-cb) read
+    # X-Admin-Key from the request context — inject it or the gated
+    # view's 401 body would be cached here as if it were data.
+    _ak = os.environ.get("DCHUB_ADMIN_KEY") or os.environ.get("DCHUB_INTERNAL_KEY")
+    _admin_hdrs = {"X-Admin-Key": _ak} if _ak else {}
+
     # ── Direct dispatch path ───────────────────────────────────────
     try:
         # Split path + querystring (audit only uses GET no-query paths
@@ -409,7 +415,8 @@ def _call_internal(path: str, timeout: float = 8.0):
         view_fn = current_app.view_functions.get(endpoint) if endpoint else None
         if view_fn is not None:
             with current_app.test_request_context(path=path, method="GET",
-                                                   query_string=query):
+                                                   query_string=query,
+                                                   headers=_admin_hdrs):
                 result = view_fn(**(kwargs or {}))
                 # Handler returns either a Response, a (body, status) tuple,
                 # or a (body, status, headers) tuple. Normalize to JSON dict.
@@ -433,7 +440,7 @@ def _call_internal(path: str, timeout: float = 8.0):
     # ── Fallback: test_client (kept for safety; same semantics) ────
     try:
         with current_app.test_client() as tc:
-            r = tc.get(path)
+            r = tc.get(path, headers=_admin_hdrs)
             if r.status_code == 200:
                 data = r.get_json() or {}
                 _INTERNAL_CACHE[path] = (now, data)
