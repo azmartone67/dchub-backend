@@ -273,12 +273,12 @@ def _persist(scored: dict, measures: dict) -> bool:
             )
         """)
         cur.execute(
+            # Append-only snapshot log (one row per tick, BIGSERIAL PK, no
+            # natural conflict key). Whitelisted in scripts/regression_lint.py
+            # alongside the other *_snapshots history tables.
             "INSERT INTO conversion_loop_snapshots "
             "(loop_score, loop_healthy, move2_status, move3_status, claim_to_paid, "
-            " measures_json, scored_json) VALUES (%s, %s, %s, %s, %s, %s, %s) "
-            # append-only snapshot log; BIGSERIAL PK never collides, so this
-            # ON CONFLICT is a house-rule no-op guard (satisfies regression-lint).
-            "ON CONFLICT DO NOTHING",
+            " measures_json, scored_json) VALUES (%s, %s, %s, %s, %s, %s, %s)",
             (scored.get("loop_score"), scored.get("loop_healthy"),
              (scored.get("move2") or {}).get("status"),
              (scored.get("move3") or {}).get("status"),

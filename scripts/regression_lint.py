@@ -50,6 +50,9 @@ WHITELIST_TABLES = {
     # history, not state, so ON CONFLICT semantics don't apply.
     'market_movement_snapshots',
     'market_movement_events',
+    # conversion_loop_snapshots: append-only conversion-loop health log (one
+    # row per master-tick, BIGSERIAL PK). History, not state — no natural key.
+    'conversion_loop_snapshots',
 }
 
 # ── HARD rules (r-fixpack 2026-07-02) ────────────────────────────────
