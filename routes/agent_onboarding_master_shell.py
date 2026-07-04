@@ -489,6 +489,36 @@ def _score_platform(p: dict, m: dict) -> dict:
     }
 
 
+# ── RAG lesson grounding (r-rag-onboarding 2026-07-04) ────────────────
+# Attach recalled past-outcome lessons to the top worklist items so each next-
+# action carries WHY / prior-art. Fail-soft → []. Gate on cosine (score is the
+# rerank scale, r-rag-cosine-passthrough). retrieve_lessons embeds per call, so
+# only the highest-priority items are grounded per tick.
+def _rag_lessons_for(platform, weakest_dim, k: int = 3) -> list:
+    try:
+        from routes.brain_rag import retrieve_lessons
+    except Exception:
+        return []
+    q = f"{platform} onboarding {weakest_dim or ''} agent discovery listing outcome".strip()
+    try:
+        hits = retrieve_lessons(q, k=k) or []
+    except Exception:
+        return []
+    out = []
+    for h in hits:
+        try:
+            if float(h.get("cosine") or 0) < 0.30:
+                continue
+        except Exception:
+            continue
+        out.append({
+            "kind": h.get("kind"),
+            "cosine": round(float(h.get("cosine") or 0), 3),
+            "text": (h.get("text") or "").strip()[:240],
+        })
+    return out
+
+
 def tier2_score(m: dict) -> dict:
     per = [_score_platform(p, m) for p in PLATFORMS]
 
@@ -508,6 +538,10 @@ def tier2_score(m: dict) -> dict:
         "owner_gated": x["owner_gated"], "effort": x["effort"],
         "priority": round(x["reach_weight"] * (100 - x["score"]), 1),
     } for x in worklist]
+
+    # ground the highest-priority items with recalled lessons (cost-capped to top 3)
+    for _it in worklist[:3]:
+        _it["rag_lessons"] = _rag_lessons_for(_it.get("platform"), _it.get("weakest_dim"))
 
     covered = [x["name"] for x in per if x["score"] >= 90]
 
