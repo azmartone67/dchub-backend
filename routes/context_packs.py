@@ -547,7 +547,7 @@ def _iso_gather(iso: str) -> dict:
     except Exception:
         pass
     token = _ISO_NEWS_TOKEN.get(iso, iso)
-    out["news"] = _market_news(f"iso:{iso}", token + ",")  # name arg: city-split keeps token
+    out["news"] = _news_matching(f"iso:{iso}", token)  # 3-char tokens OK (PJM/SPP)
     return out
 
 
