@@ -498,6 +498,17 @@ _DISPATCH = [
      "POST",
      lambda now: now.hour == 5 and now.minute < 55),
 
+    # 2026-07-04: RAG master shell — DAILY shadow tick at 06:xx UTC (after the
+    # 04:20 reindex cycle so freshness reads warm, before the 09:xx deep-dive
+    # rotation). Measures corpus freshness/coverage, runs the retrieval eval,
+    # reports the reach north-star, files gaps. SHADOW unless RAG_MASTER_ARM=1
+    # (reindex + deep-dive already have their own crons — arming is opt-in so the
+    # supplemental nudge never double-fires). _hit() attaches X-Admin-Key.
+    ("rag_master_tick_daily",
+     f"{BASE}/api/v1/admin/rag/master-tick",
+     "POST",
+     lambda now: now.hour == 6 and now.minute < 55),
+
     # RAG v1 (2026-07-03): market deep-dive rotation — regenerate the 10 stalest
     # DCPI market narratives daily (317 markets → full refresh ~monthly). This
     # existing endpoint previously had NO surviving scheduler (it was only an

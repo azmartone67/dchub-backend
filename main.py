@@ -2047,6 +2047,16 @@ try:
     except Exception as _cpk:
         import logging
         logging.getLogger(__name__).warning('context_packs wiring failed: %s', _cpk)
+    # RAG v1 (2026-07-04): self-driving RAG orchestrator — measures corpus
+    # freshness/coverage/retrieval-quality/reach and files gaps to brain. SHADOW
+    # by default (writes only when RAG_MASTER_ARM=1). POST /api/v1/admin/rag/master-tick.
+    try:
+        from routes.rag_master_shell import rag_master_shell_bp
+        app.register_blueprint(rag_master_shell_bp)
+        print("[main] rag_master_shell_bp registered: POST /api/v1/admin/rag/master-tick", flush=True)
+    except Exception as _rms:
+        import logging
+        logging.getLogger(__name__).warning('rag_master_shell wiring failed: %s', _rms)
     # 2026-07-03: autonomous GEO answer-page publisher — renders + commits
     # /answers/<slug> to the frontend via GitHub API (closes the "backend cron
     # can't author static pages" constraint). POST /api/v1/admin/geo/publish-answer.
