@@ -21,15 +21,21 @@ PIPELINE (generate_analyst_note):
      _fence_fabricated_figures ban-list: every figure in body_md must appear
      in the structured inputs (with $M→$B / GW→MW scale tolerance); any
      sentence carrying an unsourced figure is STRIPPED, and the strips are
-     reported. Years and small counts (<=12: "top 5", "last 7 days") are
-     exempt list-position noise.
+     reported. Exempt: 4-digit years and BARE small integers (<=12: "top 5",
+     "last 7 days") — but ONLY without unit/currency context. A small number
+     wearing a unit ("$9B", "8 GW", "$12", "7%") is a real-world claim and
+     stays FENCED.
   4. PERSIST to analyst_notes — IDEMPOTENT per week_of (second run in the
      same ISO week is a cheap no-op; ?force=1 regenerates).
 
 SERVING:
-  GET  /research/analyst-note          latest note, server-rendered HTML
-                                       (house dark style, matches the
-                                       open_data /research/<slug> pages)
+  GET  /reports/analyst-note           latest note, server-rendered HTML
+                                       (house dark style; /reports/* is the
+                                       backend-served Reports family —
+                                       /research/* is DEAD ON ARRIVAL: it is
+                                       prefix-302'd by main.py's
+                                       _check_prefix_redirects AND routed to
+                                       dchubapiproxy by the CF zone worker)
   GET  /api/v1/analyst-note/latest     latest note, JSON
   POST /api/v1/analyst-note/generate   admin-gated cron target (heartbeat
                                        sends X-Admin-Key via _hit)
@@ -58,7 +64,7 @@ from flask import Blueprint, Response, jsonify, request
 logger = logging.getLogger(__name__)
 analyst_note_bp = Blueprint("analyst_note", __name__)
 
-PUBLIC_PATH = "/research/analyst-note"
+PUBLIC_PATH = "/reports/analyst-note"
 PUBLIC_URL = "https://dchub.cloud" + PUBLIC_PATH
 
 
@@ -258,6 +264,41 @@ def _citable_universe(inputs: dict) -> list[dict]:
 _NUM_TOKEN = re.compile(r"\d[\d,]*(?:\.\d+)?")
 _YEAR_RE = re.compile(r"^(?:19|20)\d{2}$")
 
+# Unit/currency context DEFEATS the small-integer exemption: "$9B", "8 GW",
+# "$12", "7%" are real-world claims, not list positions. Matched against the
+# text immediately AFTER the number — attached ("9B", "34%", "65/MWh") or the
+# immediate neighbor token ("8 GW", "5 MTok"). Case-insensitive. The negative
+# lookahead keeps ordinary words out: "3 markets" must NOT match [bmk]→"m".
+_UNIT_AFTER = re.compile(
+    r"^\s*/?\s*("
+    r"%|percent(?:age)?|pct|bps|"
+    r"bn|mn|tn|billion(?:s)?|million(?:s)?|trillion(?:s)?|thousand(?:s)?|"
+    r"[kmgt]wh|[kmgt]w|mtok|tokens?|tok|"
+    r"[bmk]"
+    r")(?![A-Za-z0-9&])", re.I)  # & keeps "3 M&A deals" a bare count
+# Currency SYMBOL attached/adjacent before the number: "$9B", "US$ 12", "€40".
+_CURRENCY_BEFORE = re.compile(r"[$€£]\s*$")
+# Currency CODE as the immediate previous token: "USD 12".
+_CURRENCY_WORDS = {"$", "usd", "eur", "gbp", "us$", "c$", "a$"}
+
+
+def _has_unit_context(sentence: str, start: int, end: int) -> bool:
+    """True when the numeric token at sentence[start:end] carries adjacent
+    unit/currency context — same token ("$9B", "34%") or immediate neighbor
+    ("8 GW", "USD 12"). Adjacent means: attached, or the very next/previous
+    whitespace-separated token."""
+    before = sentence[:start]
+    after = sentence[end:]
+    if _CURRENCY_BEFORE.search(before):
+        return True
+    if _UNIT_AFTER.match(after):  # ^\s* also covers the neighbor token
+        return True
+    prev = before.rstrip().rsplit(None, 1)
+    prev_tok = (prev[-1] if prev else "").strip(".,;:()").lower()
+    if prev_tok in _CURRENCY_WORDS:
+        return True
+    return False
+
 
 def _norm_forms(tok: str, scaled: bool = False) -> set:
     """Normalized string forms of one numeric token. With scaled=True (input
@@ -292,7 +333,10 @@ def _allowed_numbers(inputs_blob: str) -> set:
 def _fence_unsourced_figures(body_md: str, allowed: set) -> tuple[str, list[dict]]:
     """Strip every sentence of body_md that carries a figure NOT present in
     the structured inputs. Returns (clean_md, stripped). Exempt: 4-digit
-    years and values <= 12 (list positions / '7 days' noise)."""
+    years and BARE small integers <= 12 (list positions / '7 days' noise) —
+    the exemptions apply ONLY when the number has NO unit/currency context.
+    '$9B', '8 GW', '$12', '7%' are claims and MUST be sourced; '12 deals'
+    and 'top 3 markets' are bare counts and pass."""
     stripped: list[dict] = []
     kept_lines: list[str] = []
     for line in (body_md or "").split("\n"):
@@ -306,13 +350,11 @@ def _fence_unsourced_figures(body_md: str, allowed: set) -> tuple[str, list[dict
             for m in _NUM_TOKEN.finditer(s):
                 tok = m.group(0)
                 base = tok.replace(",", "")
-                if _YEAR_RE.match(base):
-                    continue
-                try:
-                    if abs(float(base)) <= 12:
+                if not _has_unit_context(s, m.start(), m.end()):
+                    if _YEAR_RE.match(base):
                         continue
-                except Exception:
-                    pass
+                    if base.isdigit() and int(base) <= 12:
+                        continue
                 if not (_norm_forms(tok, scaled=False) & allowed):
                     offender = tok
                     break

@@ -122,6 +122,63 @@ def test_fence_strips_fabricated_percentage():
     assert stripped and stripped[0]["figure"] == "34"
 
 
+# ── 2b) unit context DEFEATS the small-integer exemption ─────────────
+# "$9B" and "8 GW" are real-world claims even though 9 and 8 are <= 12;
+# the exemption is ONLY for bare integers with no unit/currency context.
+def test_fence_strips_small_dollar_billions():
+    clean, stripped = an._fence_unsourced_figures(
+        "The pipeline implies a $9B build-out.", _allowed())
+    assert clean == ""
+    assert stripped and stripped[0]["figure"] == "9"
+
+
+def test_fence_strips_small_gigawatts():
+    clean, stripped = an._fence_unsourced_figures(
+        "Developers requested 8 GW across the region.", _allowed())
+    assert clean == ""
+    assert stripped and stripped[0]["figure"] == "8"
+
+
+def test_fence_bare_small_counts_survive():
+    # bare list-position / count integers keep the exemption
+    clean, stripped = an._fence_unsourced_figures(
+        "The top 3 markets tightened.", _allowed())
+    assert "top 3 markets" in clean
+    assert stripped == []
+    clean, stripped = an._fence_unsourced_figures(
+        "We tracked 12 deals this week.", _allowed())
+    assert "12 deals" in clean
+    assert stripped == []
+
+
+def test_fence_strips_small_dollar_amount():
+    # "$12" is currency, not a count — fenced even though 12 <= 12
+    clean, stripped = an._fence_unsourced_figures(
+        "Spot pricing touched $12 in the west hub.", _allowed())
+    assert clean == ""
+    assert stripped and stripped[0]["figure"] == "12"
+
+
+def test_fence_strips_small_percent_and_currency_code():
+    # NOTE: 9%, not 7% — the 2026-07-01 date in _INPUTS licenses "7" via
+    # the input-side scale forms, which is exactly the allowed-set contract.
+    clean, stripped = an._fence_unsourced_figures(
+        "Utilization rose 9% while rents hit USD 11.", _allowed())
+    assert clean == ""
+    assert stripped and stripped[0]["figure"] == "9"
+
+
+def test_fence_unit_context_number_still_passes_when_sourced():
+    # unit context does NOT ban a figure — it just demands sourcing:
+    # value_m=10000 licenses "$10.0B" (scale tolerance) and 427 GW is
+    # verbatim in the inputs.
+    clean, stripped = an._fence_unsourced_figures(
+        "KKR/CyrusOne printed a $10.0B transaction on 427 GW of queue.",
+        _allowed())
+    assert "10.0B" in clean and "427 GW" in clean
+    assert stripped == []
+
+
 # ── 1) schema-driven compose (mocked) ─────────────────────────────────
 def test_generate_composes_fences_and_persists(monkeypatch):
     store = []
@@ -242,7 +299,7 @@ def test_latest_json_404_when_empty(client, monkeypatch):
 
 def test_html_page_serves_note(client, monkeypatch):
     monkeypatch.setattr(an, "latest_note", lambda: dict(_NOTE_ROW))
-    r = client.get("/research/analyst-note")
+    r = client.get("/reports/analyst-note")
     assert r.status_code == 200
     html = r.get_data(as_text=True)
     assert "427 GW" in html
@@ -255,9 +312,40 @@ def test_html_page_escapes_llm_content(client, monkeypatch):
     row = dict(_NOTE_ROW)
     row["body_md"] = "## X\n<script>alert(1)</script> holds 427 GW."
     monkeypatch.setattr(an, "latest_note", lambda: row)
-    html = client.get("/research/analyst-note").get_data(as_text=True)
+    html = client.get("/reports/analyst-note").get_data(as_text=True)
     assert "<script>alert(1)</script>" not in html
     assert "&lt;script&gt;" in html
+
+
+def test_public_path_is_not_prefix_intercepted(monkeypatch):
+    """REGRESSION (reviewer blocker): main.py's _check_prefix_redirects
+    before_request 302s /research/* → /grid-intelligence via
+    redirects_404_killer._PREFIX_REDIRECTS BEFORE any blueprint view runs
+    (and the CF zone worker routes /research/* to dchubapiproxy — the
+    Error-1000 class). The public page therefore lives at
+    /reports/analyst-note. Mirror the main.py hook here and prove the page
+    renders (200), while the old /research/ path would have been 302'd."""
+    from routes.redirects_404_killer import maybe_prefix_redirect
+
+    assert an.PUBLIC_PATH == "/reports/analyst-note"
+    # the redirect table must not claim the Reports family
+    assert maybe_prefix_redirect(an.PUBLIC_PATH) is None
+    # ... and WOULD have swallowed the old path (the reason for the move)
+    app0 = flask.Flask(__name__)
+    with app0.test_request_context("/research/analyst-note"):
+        assert maybe_prefix_redirect("/research/analyst-note") is not None
+
+    app = flask.Flask(__name__)
+    app.register_blueprint(an.analyst_note_bp)
+
+    @app.before_request
+    def _mirror_main_prefix_hook():          # same shape as main.py's hook
+        return maybe_prefix_redirect(flask.request.path or "")
+
+    monkeypatch.setattr(an, "latest_note", lambda: dict(_NOTE_ROW))
+    r = app.test_client().get(an.PUBLIC_PATH)
+    assert r.status_code == 200              # NOT a 302 interception
+    assert "427 GW" in r.get_data(as_text=True)
 
 
 def test_generate_route_is_admin_gated(client, monkeypatch):
@@ -284,7 +372,7 @@ def test_analyst_note_lead_fresh_note(monkeypatch):
     assert lead is not None
     assert lead["kind"] == "analyst_note"
     assert lead["dedup_key"] == f"analyst_note:{_NOTE_ROW['week_of']}"
-    assert lead["source_url"].endswith("/research/analyst-note")
+    assert lead["source_url"].endswith("/reports/analyst-note")
 
 
 def test_analyst_note_lead_stale_note_returns_none(monkeypatch):
@@ -309,7 +397,7 @@ def test_cron_heartbeat_registers_blueprint_and_job():
     # record_once registered the analyst_note blueprint on the same app
     assert "analyst_note" in app.blueprints
     rules = {r.rule for r in app.url_map.iter_rules()}
-    assert "/research/analyst-note" in rules
+    assert "/reports/analyst-note" in rules
     assert "/api/v1/analyst-note/latest" in rules
     assert "/api/v1/analyst-note/generate" in rules
     # the weekly dispatch entry exists and fires Thu 14:xx UTC only
