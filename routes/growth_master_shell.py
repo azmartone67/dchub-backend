@@ -33,7 +33,7 @@ import time
 import hmac
 import urllib.request
 import urllib.error
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from flask import Blueprint, jsonify, request
 
@@ -213,6 +213,26 @@ def tier1_measure() -> dict:
     loops = (pub.get("loops") or {})
     posts_24h = sum(_num(v.get("successes_24h")) or 0 for v in loops.values()) if isinstance(loops, dict) else 0
     attempts_24h = sum(_num(v.get("attempts_24h")) or 0 for v in loops.values()) if isinstance(loops, dict) else 0
+    # qa-0704: the publisher-status loop counters are in-process and reset to
+    # zero on every deploy (3 deploys on 07-04 → all loops 0/last=None while
+    # linkedin_posts held 9 posts in 72h). All-zero loops → fall back to the
+    # DB truth so the media lever doesn't false-alarm and burn the tick's one
+    # action on a healthy lever.
+    if not posts_24h and not attempts_24h:
+        try:
+            _mc = _conn()
+            if _mc is not None:
+                with _mc.cursor() as _cur:
+                    _cur.execute("SELECT COUNT(*) FROM linkedin_posts "
+                                 "WHERE created_at > NOW() - INTERVAL '24 hours'")
+                    _db_posts = int((_cur.fetchone() or [0])[0] or 0)
+                try: _mc.close()
+                except Exception: pass
+                if _db_posts:
+                    posts_24h = _db_posts
+                    attempts_24h = _db_posts
+        except Exception:
+            pass
     citation_velocity = (_num(north.get("distinct_agents_citing_7d"))
                          or _num(north.get("citation_velocity"))
                          or _num(north.get("citations_7d")))
@@ -255,10 +275,33 @@ def tier2_score_levers(m: dict) -> dict:
     measurement = round(0.6 * ap_sane + 0.4 * (1.0 if m.get("cron_healthy") else 0.0), 3)
 
     # 3. AUTONOMY — is the brain self-director armed AND recently active?
-    sd = (_req("/api/v1/brain/self-direct/status").get("data")
-          or _req("/api/v1/brain/agenda").get("data") or {})
-    enabled = bool(sd.get("enabled") if isinstance(sd, dict) else False)
+    # qa-0704: /api/v1/brain/self-direct/status never existed (404) and the
+    # /api/v1/brain/agenda fallback returns {"agenda": [...]} — neither carries
+    # 'enabled'/'agenda_count', so this lever scored 0.0 forever while
+    # brain_self_agenda held 27 rows in 7d and every tick burned its one
+    # action re-nudging a healthy brain. Parse the REAL agenda shape, then
+    # fall back to the env arm flag (this shell runs in the same process).
+    sd = (_req("/api/v1/brain/self-direct/status").get("data") or {})
+    enabled = bool(sd.get("enabled")) if (isinstance(sd, dict) and "enabled" in sd) else None
     recent = _num((sd or {}).get("agenda_count")) or _num((sd or {}).get("proposals_7d")) or 0
+    if not recent:
+        ag = (_req("/api/v1/brain/agenda").get("data") or {})
+        items = ag.get("agenda") if isinstance(ag, dict) else None
+        if isinstance(items, list) and items:
+            cutoff = datetime.now(timezone.utc) - timedelta(days=7)
+            n7 = 0
+            for it in items:
+                try:
+                    ts = str((it or {}).get("created_at") or "")
+                    if ts and datetime.fromisoformat(ts.replace("Z", "+00:00")) >= cutoff:
+                        n7 += 1
+                except Exception:
+                    pass
+            recent = n7
+            if enabled is None:
+                enabled = True  # a populated self-chosen agenda == armed
+    if enabled is None:
+        enabled = str(os.environ.get("BRAIN_SELF_DIRECT_ENABLED", "")).strip().lower() in ("1", "true", "yes")
     autonomy = round((0.6 if enabled else 0.0) + (0.4 if recent else 0.0), 3)
 
     # 4. MEDIA — publishing on cadence? posts in 24h OR citation velocity > 0.
