@@ -113,6 +113,103 @@ def _min_cluster() -> int:
         return 3
 
 
+def _dup_threshold() -> float:
+    """Cosine-similarity floor above which a recalled prior proposal is
+    treated as a strong duplicate → SKIP / supersede instead of opening a
+    fresh PR. Tunable via env; default 0.82 (Cohere embed-v3 cosine)."""
+    try:
+        return float(os.environ.get(
+            "BRAIN_FEATURE_PROPOSER_DUP_THRESHOLD", "0.82"))
+    except Exception:
+        return 0.82
+
+
+# ── RAG corpus recall (fail-soft; augments prose/reasoning only) ──────
+#
+# Wired 2026-07-03 to kill the PR-flood: before proposing a feature we ask
+# the brain corpus whether a strongly-similar prior proposal already exists.
+# retrieve_context() lives in routes/brain_rag.py (committed, stable) — it
+# returns [{source_table, source_id, kind, text, score}] and is itself
+# fail-soft (returns [] on any error). We wrap EVERY call again here so a
+# RAG outage can never break the proposer: on failure we degrade silently
+# to the pre-RAG behavior (SQL-only exact dedup via brain_proposal_pr_url).
+#
+# Only PROSE corpora are queried — prior strategic recommendations and
+# findings — because those hold the human-readable "we should build X"
+# reasoning. We do NOT feed fabricated metrics through RAG; counts stay in
+# SQL. Retrieval augments the "have we already said this?" judgment only.
+
+_RECALL_CORPUS = ["brain_strategic_recommendations", "brain_findings"]
+
+
+def _recall_prior_proposals(query: str, k: int = 6) -> list:
+    """Fail-soft semantic recall of prior proposals/recommendations that
+    resemble `query` (a proposed feature title + theme). Returns the
+    retrieve_context() result list, or [] on ANY error/unavailability.
+
+    NEVER raises — a RAG failure must degrade to current behavior."""
+    q = (query or "").strip()
+    if not q:
+        return []
+    try:
+        from routes.brain_rag import retrieve_context
+    except Exception as e:  # module import failure → degrade silently
+        logger.debug("brain_feature_proposer: rag import failed: %s", e)
+        return []
+    try:
+        results = retrieve_context(q, k=k, corpus=_RECALL_CORPUS)
+    except Exception as e:  # belt+suspenders over an already fail-soft fn
+        logger.debug("brain_feature_proposer: retrieve_context failed: %s", e)
+        return []
+    return results or []
+
+
+def _strong_duplicate(results: list) -> Optional[dict]:
+    """If the top recalled prior clears the cosine threshold, return it
+    (the single strongest match) so the caller can SKIP / mark
+    'supersedes <id>'. Otherwise None. Never raises."""
+    try:
+        thr = _dup_threshold()
+        best = None
+        best_score = -1.0
+        for r in results or []:
+            try:
+                s = float(r.get("score") or 0.0)
+            except Exception:
+                continue
+            if s > best_score:
+                best_score, best = s, r
+        if best is not None and best_score >= thr:
+            return best
+    except Exception:
+        return None
+    return None
+
+
+def _format_recalled_block(results: list, limit: int = 6) -> str:
+    """Render recalled priors as an 'ALREADY PROPOSED (do not duplicate)'
+    block for injection into the Claude prompt. Empty string if nothing
+    recalled. Text is already <=500 chars per row from retrieve_context."""
+    lines = []
+    for r in (results or [])[:limit]:
+        try:
+            src = r.get("source_table") or "?"
+            sid = r.get("source_id")
+            score = r.get("score")
+            txt = (r.get("text") or "").strip().replace("\n", " ")
+            if not txt:
+                continue
+            lines.append(
+                f"  - [{src}#{sid} sim={score}] {txt[:300]}")
+        except Exception:
+            continue
+    if not lines:
+        return ""
+    return ("ALREADY PROPOSED (do not duplicate — if the cluster below is "
+            "the same idea, return feature_name: null):\n"
+            + "\n".join(lines) + "\n")
+
+
 # ── DB helpers (mirror routes/feedback_triage.py) ─────────────────────
 
 
@@ -515,29 +612,56 @@ def _slugify(text: str) -> str:
 
 def propose_feature(cluster: dict) -> dict:
     """Run Claude on a cluster. Returns {"ok": bool, "spec": {...},
-    "error": "..."}. Never raises."""
+    "recall": [...], "supersedes": "<id>"|None, "error": "..."}.
+    Never raises.
+
+    RAG recall (fail-soft): before asking Claude to write a spec, we recall
+    strongly-similar prior proposals/recommendations from the brain corpus
+    and (a) inject them into the prompt as "ALREADY PROPOSED (do not
+    duplicate)" and (b) surface the strongest match so run_feature_proposer
+    can SKIP or mark 'supersedes <id>' instead of opening a duplicate PR.
+    Any RAG failure degrades to the pre-RAG behavior."""
     samples = "\n".join(
         f"  - #{s['id']}: {s['text'][:300]}"
         for s in (cluster.get("sample_texts") or [])
     )
+
+    # Recall query = theme + a couple of sample request texts (prose only;
+    # NO fabricated counts fed to the embedder). Fail-soft throughout.
+    recall_query = (str(cluster.get("theme") or "") + " — "
+                    + " ".join(
+                        (s.get("text") or "")[:160]
+                        for s in (cluster.get("sample_texts") or [])[:2]
+                    )).strip(" —")
+    recall = _recall_prior_proposals(recall_query, k=6)
+    recalled_block = _format_recalled_block(recall)
+    dup = _strong_duplicate(recall)
+    supersedes = None
+    if dup is not None:
+        supersedes = f"{dup.get('source_table')}#{dup.get('source_id')}"
+
     prompt = (
-        f"Cluster theme keywords: {cluster.get('theme')}\n"
-        f"User request count: {cluster.get('count')}\n"
-        f"Sample requests (most recent):\n{samples}\n"
+        (recalled_block + "\n" if recalled_block else "")
+        + f"Cluster theme keywords: {cluster.get('theme')}\n"
+        + f"User request count: {cluster.get('count')}\n"
+        + f"Sample requests (most recent):\n{samples}\n"
     )
     text, err = _call_claude(prompt)
     if err:
-        return {"ok": False, "error": err}
+        return {"ok": False, "error": err,
+                "recall": recall, "supersedes": supersedes}
     spec = _parse_spec_json(text) or {}
     if not spec.get("feature_name"):
         return {"ok": False, "error": "claude_returned_unclear",
-                "raw": (text or "")[:600]}
+                "raw": (text or "")[:600],
+                "recall": recall, "supersedes": supersedes}
     # Normalize slug.
     slug = (spec.get("feature_slug") or "").strip().lower()
     if not _SLUG_RE.match(slug):
         slug = _slugify(spec.get("feature_name") or "feature")
     spec["feature_slug"] = slug
-    return {"ok": True, "spec": spec}
+    return {"ok": True, "spec": spec,
+            "recall": recall, "supersedes": supersedes}
 
 
 # ── 3. open_draft_pr ──────────────────────────────────────────────────
@@ -861,6 +985,28 @@ def run_feature_proposer(force: bool = False) -> dict:
             })
             continue
         spec = prop["spec"]
+        # RAG dedup: a strongly-similar prior proposal already exists →
+        # SKIP the duplicate PR (attacks the PR-flood). We record which
+        # prior it supersedes so a human can find it. Fail-soft: if RAG
+        # recall failed, `supersedes` is None and we proceed as before.
+        supersedes = prop.get("supersedes")
+        if supersedes:
+            out["skipped"].append({
+                "cluster_id": cluster.get("cluster_id"),
+                "theme": cluster.get("theme"),
+                "reason": "rag_duplicate",
+                "supersedes": supersedes,
+                "spec_name": spec.get("feature_name"),
+            })
+            # Persist the supersede marker inside the logged spec (no schema
+            # change needed) so the proposal log records WHY we skipped.
+            try:
+                spec = dict(spec)
+                spec["_rag_supersedes"] = supersedes
+            except Exception:
+                pass
+            _log_proposal(cluster, spec, None, dry_run=_dry_run())
+            continue
         if _dry_run():
             out["proposals"].append({
                 "cluster_id": cluster.get("cluster_id"),
@@ -947,6 +1093,16 @@ def admin_preview():
             "proposal_ok": prop.get("ok"),
             "spec": prop.get("spec") if prop.get("ok") else None,
             "error": prop.get("error") if not prop.get("ok") else None,
+            # RAG recall visibility: strong prior → would be SKIPPED as
+            # rag_duplicate on a real run; weaker priors still surface for
+            # tuning the DUP_THRESHOLD.
+            "supersedes": prop.get("supersedes"),
+            "recalled_priors": [
+                {"source": f"{r.get('source_table')}#{r.get('source_id')}",
+                 "score": r.get("score"),
+                 "text": (r.get("text") or "")[:200]}
+                for r in (prop.get("recall") or [])[:6]
+            ],
         })
     return jsonify(ok=True, **out), 200
 
