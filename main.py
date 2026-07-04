@@ -1896,6 +1896,16 @@ try:
     except Exception as _fwms:
         import logging
         logging.getLogger(__name__).warning('fixwave_master_shell wiring failed: %s', _fwms)
+    # 2026-07-03: Agent-enablement portal — the ONE HTML pane over the agent stack
+    # (north-star agents/wk, onboarding shell score+worklist, AI-adoption snapshot,
+    # tool-tuner freshness). Read-only. GET /admin/agents
+    try:
+        from routes.agents_portal import agents_portal_bp
+        app.register_blueprint(agents_portal_bp)
+        print("[main] agents_portal_bp registered: GET /admin/agents", flush=True)
+    except Exception as _agp:
+        import logging
+        logging.getLogger(__name__).warning('agents_portal wiring failed: %s', _agp)
     # 2026-07-02: Agent-usefulness master shell — MEASURES how legible/useful DC Hub
     # is to AI agents (schema completeness, DCPI de-clone, null density, GEO flags) +
     # persists a 0-100 score per tick. Read-only. POST /api/v1/admin/agent-usefulness/master-tick
