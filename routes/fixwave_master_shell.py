@@ -326,8 +326,11 @@ def _lane_funnel(c) -> list[dict]:
             out.append(_check("fn_waterfall_distinct", "Branch A key_issued counts DISTINCT keys",
                               None, f"endpoint={ep} db={db_distinct}", ms))
         else:
+            # FAIL only in the artifact direction (rows > distinct keys).
+            # endpoint <= distinct is fine — the endpoint legitimately strips
+            # bot/QA redemptions that the raw DB count includes.
             out.append(_check("fn_waterfall_distinct", "Branch A key_issued counts DISTINCT keys",
-                              int(ep) == int(db_distinct),
+                              int(ep) <= int(db_distinct),
                               f"endpoint={ep} vs db-distinct={db_distinct}", ms))
 
         clean = _scalar(c,
