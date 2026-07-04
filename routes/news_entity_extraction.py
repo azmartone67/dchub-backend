@@ -388,6 +388,92 @@ def _entity_query_text(name, city, state) -> str:
     return (name or "") + ((" — " + ", ".join(bits)) if bits else "")
 
 
+# ── Designator guard (r-entityres fix 2026-07-04) ────────────────────
+# Embeddings CANNOT reliably distinguish digit/designator-level name
+# differences: "QTS Atlanta DC-1" vs "QTS Atlanta DC-2" (same city)
+# clears cosine 0.90+ yet is two different buildings. So cosine alone
+# must never decide. We extract normalized designator tokens (unit
+# numbers, DC-N, IAD8-style letter codes, roman numerals I–X, Phase N,
+# Building X) from both names and allow the merge ONLY when the token
+# sets are identical or BOTH empty:
+#   · both have designators and they differ → NEVER merge ("DC-1" vs
+#     "DC-2"), regardless of cosine.
+#   · only ONE side has a designator → refuse too ("QTS Atlanta" vs
+#     "QTS Atlanta DC-2" may be campus vs building — conservative).
+# Normalization makes true synonyms compare equal: "DC-1" == "DC1" ==
+# "Data Center 1" (DC prefix IS "data center"), "Phase II" == "Phase 2",
+# "01" == "1". Non-DC letter codes stay opaque (IAD8 != IAD9 != 8).
+# False-positive extraction only skews CONSERVATIVE (a refused merge =
+# one duplicate row, recoverable; a false merge silently loses a
+# facility).
+
+_ROMAN_UNITS = {"I": 1, "II": 2, "III": 3, "IV": 4, "V": 5,
+                "VI": 6, "VII": 7, "VIII": 8, "IX": 9, "X": 10}
+_ROMAN_ALT = "VIII|VII|VI|IX|IV|V|X|III|II|I"
+
+_RE_DESIG_PHASE = re.compile(
+    r"\bPHASE[\s\-]*([0-9]+|" + _ROMAN_ALT + r")\b")
+_RE_DESIG_BLDG = re.compile(r"\bBUILDING[\s\-]*([A-Z0-9]{1,4})\b")
+# Letter code: 1-4 uppercase letters + digits, optional hyphen
+# (DC-1, DC11, IAD8, ATL1, V1). Single-letter included so "Vantage V1"
+# carries a designator.
+_RE_DESIG_CODE = re.compile(r"\b([A-Z]{1,4})-?([0-9]+)\b")
+_RE_DESIG_ROMAN = re.compile(r"\b(" + _ROMAN_ALT + r")\b")
+_RE_DESIG_DIGITS = re.compile(r"\b([0-9]+)\b")
+
+
+def _norm_unit(tok: str) -> str:
+    """Normalize one unit token: roman → arabic, strip leading zeros."""
+    tok = (tok or "").strip().upper()
+    if tok in _ROMAN_UNITS:
+        return str(_ROMAN_UNITS[tok])
+    if tok.isdigit():
+        return str(int(tok))  # "01" == "1"
+    return tok
+
+
+def _designator_tokens(name: str) -> frozenset:
+    """Extract the set of normalized designator tokens from a facility
+    name. Empty set = no designators. Each regex class consumes its
+    matched span before the next runs, so "DC-1" never double-counts
+    its digit as a standalone "1"."""
+    s = " " + (name or "").upper() + " "
+    out = set()
+
+    def _eat(rx, fmt):
+        nonlocal s
+
+        def _repl(m):
+            tok = fmt(m)
+            if tok:
+                out.add(tok)
+            return " "
+
+        s = rx.sub(_repl, s)
+
+    _eat(_RE_DESIG_PHASE, lambda m: "PHASE" + _norm_unit(m.group(1)))
+    _eat(_RE_DESIG_BLDG, lambda m: "BLDG" + _norm_unit(m.group(1)))
+
+    def _code(m):
+        letters, digits = m.group(1), m.group(2)
+        if letters == "DC":
+            # "DC" literally means "data center": DC-1 == DC1 ==
+            # "Data Center 1" (whose "1" lands via the digit class).
+            return _norm_unit(digits)
+        return letters + _norm_unit(digits)
+
+    _eat(_RE_DESIG_CODE, _code)
+    _eat(_RE_DESIG_ROMAN, lambda m: _norm_unit(m.group(1)))
+    _eat(_RE_DESIG_DIGITS, lambda m: _norm_unit(m.group(1)))
+    return frozenset(out)
+
+
+def _designators_compatible(name_a: str, name_b: str) -> bool:
+    """True only when both names carry the SAME designator set (possibly
+    both empty). Any asymmetry or difference → merge is forbidden."""
+    return _designator_tokens(name_a) == _designator_tokens(name_b)
+
+
 def _resolve_existing_semantic(facility: dict):
     """Semantic duplicate check for a facility about to be CREATED.
 
@@ -397,6 +483,10 @@ def _resolve_existing_semantic(facility: dict):
     (its scores are cross-encoder rerank values and are NEVER thresholded);
     the actual similarity is local cosine over embeddings from ONE _embed
     call (input_type=search_document for both sides — symmetric compare).
+    A DESIGNATOR GUARD runs before cosine can win: candidates whose
+    designator token set differs from the new name's (see
+    _designator_tokens) are excluded outright — "QTS Atlanta DC-1" never
+    merges into "QTS Atlanta DC-2" no matter the cosine.
     Fail-soft: ANY import/RAG/embed/DB failure returns None."""
     try:
         from routes.brain_rag import retrieve_context, _embed
@@ -461,10 +551,26 @@ def _resolve_existing_semantic(facility: dict):
         return None
 
     qv = vecs[0]
+    new_toks = _designator_tokens(name)
     best = None
     for r, v in zip(rows, vecs[1:]):
         cos = _cos_sim(qv, v)
         if cos is None:
+            continue
+        # DESIGNATOR GUARD (r-entityres fix): embeddings cannot tell
+        # "DC-1" from "DC-2" — sibling buildings in the same campus
+        # exceed any usable cosine threshold. If designator token sets
+        # differ (including one-sided), this candidate can NEVER be a
+        # merge target, regardless of cosine. Log the near-miss when it
+        # would otherwise have cleared the threshold.
+        ex_toks = _designator_tokens(r["name"])
+        if new_toks != ex_toks:
+            if cos >= NEWS_ENTITY_DUP_COSINE:
+                logger.info(
+                    f"[news-ner entityres] designator guard REFUSED "
+                    f"merge: new='{name}' {sorted(new_toks) or '[]'} vs "
+                    f"existing #{r['id']} '{r['name']}' "
+                    f"{sorted(ex_toks) or '[]'} cosine={round(cos, 4)}")
             continue
         if best is None or cos > best[1]:
             best = (r, cos)

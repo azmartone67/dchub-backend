@@ -10,6 +10,18 @@ discovered_facilities:
   plus: retrieve_context failure, below-threshold cosine, and the
   missing-location conservative path all return None.
 
+DESIGNATOR GUARD (reviewer blocker, 2026-07-04): embeddings cannot
+distinguish digit/designator-level name differences, so cosine alone
+must never merge numbered sibling facilities:
+  (d) "QTS Atlanta DC-1" vs "QTS Atlanta DC-2", same city, cosine 0.97
+      → NO merge, regardless of cosine
+  (e) "Equinix DC11" vs "Equinix DC11, Ashburn" → merge OK (identical
+      designator on both sides)
+  (f) "Vantage V1" vs "Vantage", same city, cosine 1.0 → NO merge
+      (one-sided designator: campus vs building ambiguity)
+  plus a _designator_tokens() normalization matrix (DC-1 == DC1 ==
+  "Data Center 1", Phase II == Phase 2, IAD8 != IAD9, "01" == "1").
+
 No network, no DB — routes.brain_rag.retrieve_context/_embed and
 routes.news_entity_extraction._get_db are all mocked. The local-cosine
 rule is honored: rerank scores from retrieve_context are noise here
@@ -165,3 +177,113 @@ def test_cos_sim_basics():
     assert abs(ner._cos_sim([1, 0], [1, 0]) - 1.0) < 1e-9
     assert abs(ner._cos_sim([1, 0], [0, 1])) < 1e-9
     assert ner._cos_sim([0, 0], [1, 0]) is None  # zero vector → None
+
+
+# ── DESIGNATOR GUARD adversarial tests (reviewer blocker) ────────────
+# cosine(query, cand) = 0.97 — well above the 0.90 default threshold,
+# so ONLY the designator guard can stop these merges.
+_VEC_097 = [[1.0, 0.0], [0.97, 0.24310491562]]
+
+
+def test_numbered_sibling_never_merges_even_at_high_cosine():
+    """(d) 'QTS Atlanta DC-1' vs existing 'QTS Atlanta DC-2', SAME city,
+    cosine 0.97 → NO merge. Embeddings cannot tell DC-1 from DC-2;
+    without the guard this false-merged and silently lost a building."""
+    rows = [(501, "QTS Atlanta DC-2", "Atlanta", "GA")]
+    p1, p2, p3 = _patch([_hit(501)], rows, _VEC_097)
+    with p1, p2, p3:
+        got = ner._resolve_existing_semantic(dict(NEW_FACILITY))
+    assert got is None
+
+
+def test_identical_designator_still_merges():
+    """(e) 'Equinix DC11' vs 'Equinix DC11, Ashburn' → designator sets
+    identical ({11} == {11}) → the guard must NOT block a real dup."""
+    rows = [(502, "Equinix DC11, Ashburn", "Ashburn", "VA")]
+    new = {"name": "Equinix DC11", "provider": "Equinix",
+           "city": "Ashburn", "state": "VA", "country": "US"}
+    p1, p2, p3 = _patch([_hit(502)], rows, _VEC_097)
+    with p1, p2, p3:
+        got = ner._resolve_existing_semantic(new)
+    assert got is not None
+    assert got["id"] == 502
+    assert got["name"] == "Equinix DC11, Ashburn"
+
+
+def test_one_sided_designator_never_merges():
+    """(f) 'Vantage V1' vs 'Vantage', same city, cosine 1.0 → NO merge.
+    One-sided designator is ambiguous (campus vs building) → refuse."""
+    rows = [(503, "Vantage", "Phoenix", "AZ")]
+    vecs = [[1.0, 0.0], [1.0, 0.0]]  # cosine 1.0 — max possible
+    new = {"name": "Vantage V1", "provider": "Vantage",
+           "city": "Phoenix", "state": "AZ", "country": "US"}
+    p1, p2, p3 = _patch([_hit(503)], rows, vecs)
+    with p1, p2, p3:
+        got = ner._resolve_existing_semantic(new)
+    assert got is None
+
+
+def test_one_sided_designator_reversed_never_merges():
+    """Mirror of (f): bare 'Vantage' arriving when 'Vantage V1' exists
+    must also refuse — asymmetry blocks in both directions."""
+    rows = [(504, "Vantage V1", "Phoenix", "AZ")]
+    vecs = [[1.0, 0.0], [1.0, 0.0]]
+    new = {"name": "Vantage", "provider": "Vantage",
+           "city": "Phoenix", "state": "AZ", "country": "US"}
+    p1, p2, p3 = _patch([_hit(504)], rows, vecs)
+    with p1, p2, p3:
+        got = ner._resolve_existing_semantic(new)
+    assert got is None
+
+
+def test_guard_skips_sibling_but_merges_true_synonym():
+    """Mixed candidate list: the higher-cosine sibling (DC-2) must be
+    excluded by the guard while the true synonym ('QTS Atlanta Data
+    Center 1', designator {1} == {1}) still resolves."""
+    rows = [(501, "QTS Atlanta DC-2", "Atlanta", "GA"),
+            (101, "QTS Atlanta Data Center 1", "Atlanta", "GA")]
+    vecs = [[1.0, 0.0],
+            [0.99, 0.14106735979],   # sibling: HIGHER cosine, guarded
+            [0.95, 0.31224989991]]   # synonym: lower cosine, allowed
+    p1, p2, p3 = _patch([_hit(501), _hit(101)], rows, vecs)
+    with p1, p2, p3:
+        got = ner._resolve_existing_semantic(dict(NEW_FACILITY))
+    assert got is not None
+    assert got["id"] == 101
+
+
+def test_designator_tokens_matrix():
+    t = ner._designator_tokens
+    # DC prefix IS "data center" → numeric token; synonyms compare equal
+    assert t("QTS Atlanta DC-1") == t("QTS Atlanta DC1")
+    assert t("QTS Atlanta DC-1") == t("QTS Atlanta Data Center 1")
+    assert t("QTS Atlanta DC-1") != t("QTS Atlanta DC-2")
+    # leading zeros normalize
+    assert t("Compute North DC-01") == t("Compute North Data Center 1")
+    # non-DC letter codes stay opaque — never collapse to bare digits
+    assert t("Equinix IAD8") != t("Equinix IAD9")
+    assert t("Equinix IAD8") != t("Equinix DC8")
+    assert t("Equinix DC11") == t("Equinix DC11, Ashburn")
+    # single-letter codes count (Vantage V1)
+    assert t("Vantage V1") == frozenset({"V1"})
+    assert t("Vantage") == frozenset()
+    # roman numerals normalize to arabic
+    assert t("STACK Ashburn Campus II") == t("STACK Ashburn Campus 2")
+    assert t("STACK Ashburn Campus II") != t("STACK Ashburn Campus III")
+    # Phase and Building classes
+    assert t("Meta Mesa Phase 2") == t("Meta Mesa Phase II")
+    assert t("Meta Mesa Phase 2") != t("Meta Mesa Phase 3")
+    assert t("Switch Citadel Building A") != t("Switch Citadel Building B")
+    assert t("Switch Citadel Building 2") == t("Switch Citadel Building II")
+    # no designators at all → empty set (guard passes both-empty)
+    assert t("Meta Hyperscale Campus") == frozenset()
+    assert t("Switch Citadel") == frozenset()
+
+
+def test_designators_compatible():
+    ok = ner._designators_compatible
+    assert ok("QTS Atlanta DC-1", "QTS Atlanta Data Center 1") is True
+    assert ok("QTS Atlanta DC-1", "QTS Atlanta DC-2") is False
+    assert ok("Vantage V1", "Vantage") is False           # one-sided
+    assert ok("Vantage", "Vantage V1") is False           # one-sided, rev
+    assert ok("Meta Hyperscale Campus", "Meta Campus") is True  # both empty
