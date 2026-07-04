@@ -11,6 +11,7 @@ Starts automatically when Flask boots via:
 
 import hashlib
 import logging
+import math
 import os
 import re
 import threading
@@ -148,6 +149,204 @@ def _parse_date(published_str):
     return date.today()
 
 
+# ── Semantic near-duplicate gate (r-rag-dealdedup 2026-07-04) ─────────
+# The md5 deal_hash only collapses EXACT buyer|seller|value strings —
+# "Core Weave Inc." vs "CoreWeave" (or a re-worded headline) still produced
+# two rows, which a hand-maintained normalize dict can never keep up with.
+# For hash-NEW deals only, ask brain RAG for the closest known deals and
+# decide with a LOCAL embedding cosine.
+#
+# CRITICAL: retrieve_context() 'score' is a cross-encoder RERANK relevance
+# (absolute values often 0.05-0.3 even for excellent hits) — NEVER threshold
+# on it for dedup. Instead we re-embed [query]+candidate_texts in ONE _embed
+# call (input_type=search_document for both sides — symmetric comparison)
+# and compute cosine locally (0-1 scale).
+#
+# Conservative: same parties but CLEARLY different value (> tolerance) is a
+# follow-on transaction, NOT a dup → insert. One/both values undisclosed →
+# the cosine gate decides. Everything fail-soft: any embed/RAG/DB failure
+# keeps the deal(s) → EXACT pre-existing md5-only behavior.
+
+def _env_float(name, default):
+    try:
+        return float((os.getenv(name) or '').strip() or default)
+    except Exception:
+        return float(default)
+
+
+def _env_int(name, default):
+    try:
+        return int((os.getenv(name) or '').strip() or default)
+    except Exception:
+        return int(default)
+
+
+def _cosine(a, b):
+    """Local cosine similarity between two vectors (0-1 for Cohere embeds)."""
+    try:
+        dot = na = nb = 0.0
+        for x, y in zip(a, b):
+            x = float(x); y = float(y)
+            dot += x * y
+            na += x * x
+            nb += y * y
+        if na <= 0.0 or nb <= 0.0:
+            return 0.0
+        return dot / math.sqrt(na * nb)
+    except Exception:
+        return 0.0
+
+
+def _values_compatible(new_usd, cand_usd, tol):
+    """True when the two deal values could be the SAME transaction.
+    One/both undisclosed (None/0) → compatible (cosine gate decides).
+    Both known → relative gap <= tol. A clearly different value means a
+    follow-on transaction → NOT a dup (conservative)."""
+    try:
+        a = float(new_usd) if new_usd else 0.0
+        b = float(cand_usd) if cand_usd else 0.0
+    except Exception:
+        return True
+    if a <= 0.0 or b <= 0.0:
+        return True
+    hi, lo = (a, b) if a >= b else (b, a)
+    return (hi - lo) / hi <= tol
+
+
+def _candidate_value_usd(cur, source_table, source_id):
+    """Deal value in USD for a RAG candidate row, or None if undisclosed or
+    unreadable (treated as undisclosed → compatible). NOTE units: deals.value
+    is stored in $MILLIONS (see seed_comprehensive_deals.py — Stargate=500000
+    == $500B); ai_deals.deal_value_usd is raw USD."""
+    if cur is None or not source_id:
+        return None
+    try:
+        if source_table == 'deals':
+            cur.execute("SELECT value FROM deals WHERE id = %s", (str(source_id),))
+            row = cur.fetchone()
+            if row and row[0]:
+                return float(row[0]) * 1_000_000.0
+        elif source_table == 'ai_deals':
+            cur.execute("SELECT deal_value_usd FROM ai_deals WHERE id::text = %s",
+                        (str(source_id),))
+            row = cur.fetchone()
+            if row and row[0]:
+                return float(row[0])
+    except Exception:
+        try: cur.connection.rollback()
+        except Exception: pass
+    return None
+
+
+def _semantic_dup_check(deal, cur, retrieve_fn, embed_fn):
+    """Check ONE hash-new deal against the RAG 'deals' corpus.
+    Returns ('dup', info) | ('keep', None) | ('error', reason).
+    'error' = embed/RAG infra failure → caller degrades to md5-only."""
+    query = " ".join(p for p in (
+        (deal.get('buyer') or '').strip(),
+        (deal.get('seller') or '').strip(),
+        (deal.get('market') or deal.get('region') or '').strip()) if p)
+    if not query:
+        return 'keep', None
+    try:
+        hits = retrieve_fn(query, k=5, corpus="deals") or []
+    except Exception as e:
+        return 'error', f"retrieve_context: {e}"
+    hits = [h for h in hits if (h.get('text') or '').strip()]
+    if not hits:
+        # No candidates ≠ infra failure (retrieve_context is fail-soft → []).
+        return 'keep', None
+    texts = [h['text'] for h in hits]
+    try:
+        vecs = embed_fn([query] + texts, input_type="search_document")
+    except Exception as e:
+        return 'error', f"_embed: {e}"
+    if not vecs or len(vecs) != len(texts) + 1:
+        return 'error', '_embed returned no/short embeddings'
+    qv = vecs[0]
+    best_ix, best_cos = -1, -1.0
+    for i in range(len(texts)):
+        cs = _cosine(qv, vecs[i + 1])
+        if cs > best_cos:
+            best_cos, best_ix = cs, i
+    if best_cos < _env_float('DEAL_DUP_COSINE', 0.92):
+        return 'keep', None
+    hit = hits[best_ix]
+    cand_usd = _candidate_value_usd(cur, hit.get('source_table'), hit.get('source_id'))
+    if not _values_compatible(deal.get('deal_value_usd'), cand_usd,
+                              _env_float('DEAL_DUP_VALUE_TOL', 0.15)):
+        return 'keep', None  # value clearly different → follow-on transaction
+    return 'dup', {'match_table': hit.get('source_table'),
+                   'match_id': hit.get('source_id'),
+                   'cosine': round(best_cos, 4)}
+
+
+def _semantic_dedup_pass(deals, get_db):
+    """Drop semantic near-duplicates from `deals` before the upsert — the
+    same mark-as-duplicate mechanism the in-batch md5 path uses (skip + log).
+    md5 FAST PATH unchanged: hashes already in ai_deals just re-upsert via
+    ON CONFLICT (confidence bump) and are never semantically checked.
+    Fail-soft at EVERY layer: on any failure, returns `deals` unchanged."""
+    if not deals:
+        return deals
+    if (os.getenv('DEAL_SEMANTIC_DEDUP', '1') or '1').strip().lower() in (
+            '0', 'false', 'off', 'no'):
+        return deals
+    try:
+        from routes.brain_rag import retrieve_context, _embed
+    except Exception as e:
+        logger.debug(f"Semantic dedup unavailable (brain_rag import): {e}")
+        return deals
+    conn = None
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        try:
+            cur.execute("SELECT deal_hash FROM ai_deals WHERE deal_hash = ANY(%s)",
+                        ([d.get('deal_hash') for d in deals],))
+            known = {r[0] for r in cur.fetchall()}
+        except Exception as e:
+            logger.warning(f"  Semantic dedup: hash lookup failed (fail-soft, md5-only): {e}")
+            return deals
+        # Cap Cohere spend per run: each check = 1 retrieve + 1 embed call.
+        max_checks = _env_int('DEAL_DUP_MAX_CHECKS', 25)
+        kept, dropped, checks, aborted = [], 0, 0, False
+        for d in deals:
+            if aborted or d.get('deal_hash') in known or checks >= max_checks:
+                kept.append(d)
+                continue
+            checks += 1
+            verdict, info = _semantic_dup_check(d, cur, retrieve_context, _embed)
+            if verdict == 'error':
+                # Infra failure → EXACT current behavior for this deal AND the
+                # rest of the batch (backend is down — don't hammer it).
+                logger.warning(f"  Semantic dedup degraded to md5-only: {info}")
+                kept.append(d)
+                aborted = True
+                continue
+            if verdict == 'dup':
+                dropped += 1
+                logger.info(
+                    f"  🔁 Semantic dedup: '{d.get('buyer')} → {d.get('seller')}' "
+                    f"({d.get('deal_value_str') or 'undisclosed'}) ≈ existing "
+                    f"{info['match_table']}#{info['match_id']} "
+                    f"cos={info['cosine']} — skipping insert")
+                continue
+            kept.append(d)
+        if dropped:
+            logger.info(f"  Semantic dedup: dropped {dropped} near-duplicate(s) "
+                        f"of {checks} checked "
+                        f"(cosine>={_env_float('DEAL_DUP_COSINE', 0.92)})")
+        return kept
+    except Exception as e:
+        logger.warning(f"  Semantic dedup pass failed (fail-soft, md5-only): {e}")
+        return deals
+    finally:
+        if conn is not None:
+            try: conn.close()
+            except Exception: pass
+
+
 # ── Core ingestion ────────────────────────────────────────────────────
 def run_ingestion(get_db):
     """Single ingestion run: fetch RSS → extract deals → upsert into Neon."""
@@ -228,6 +427,14 @@ def run_ingestion(get_db):
     if len(_deduped) != len(deals):
         logger.info(f"  Deduped {len(deals) - len(_deduped)} same-batch duplicate deal_hash(es)")
     deals = _deduped
+
+    # r-rag-dealdedup (2026-07-04): semantic near-dup gate for hash-NEW deals
+    # (md5 stays the fast path; ON CONFLICT still collapses exact re-sightings).
+    # Fail-soft: any failure inside leaves `deals` unchanged (md5-only).
+    try:
+        deals = _semantic_dedup_pass(deals, get_db)
+    except Exception as _e:
+        logger.warning(f"  Semantic dedup crashed (fail-soft, md5-only): {_e}")
 
     # 3. Upsert into Neon
     # Phase ZZZZ-conn-fix (2026-05-18): pool watchdog was force-reclaiming
