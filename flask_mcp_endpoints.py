@@ -2297,27 +2297,42 @@ def ai_analytics():
             # traffic table (mcp_tool_calls, same source as total_requests),
             # excluding internal/probe/unattributed tags so the number is honest.
             try:
-                # 2026-07-03 tighten: also drop raw UA-string junk (spaces, long
-                # strings, script/bot tokens) so this counts clean BRAND platforms
-                # (~honest single-digit count), not 171 distinct UA-derived tags.
+                # qa-0704: the 07-03 blocklist could never converge — platform is
+                # an OPEN vocabulary of raw client names (202 distinct in 30d:
+                # QA-harness tags, truncated fragments like 'v'/'p'/'clawith',
+                # one-off agent names), and 179 of them passed the filters, which
+                # kept failing the growth shell's 1..30 sanity gate (measurement
+                # lever stuck at 0.4). Flip to an ALLOWLIST: classify each raw
+                # value against MCP_PLATFORM_MAP (the attribution root) plus the
+                # known agent-client brands, and count distinct CANONICAL
+                # platforms. Short map keys ('hf', 'poe', 'xai') match exact-only
+                # so junk can't substring its way in.
                 cur.execute(
-                    "SELECT COUNT(DISTINCT platform) FROM mcp_tool_calls "
+                    "SELECT DISTINCT lower(platform) FROM mcp_tool_calls "
                     "WHERE created_at >= NOW() - INTERVAL '30 days' "
-                    "AND platform IS NOT NULL "
-                    "AND platform NOT IN ('', 'unknown', 'mcp') "
-                    "AND platform NOT LIKE '% %' "
-                    "AND char_length(platform) <= 24 "
-                    "AND platform NOT ILIKE '%probe%' "
-                    "AND platform NOT ILIKE '%dchub%' "
-                    "AND platform NOT ILIKE '%harness%' "
-                    "AND platform NOT ILIKE '%bot%' "
-                    "AND platform NOT ILIKE '%curl%' "
-                    "AND platform NOT ILIKE '%python%' "
-                    "AND platform NOT ILIKE '%http%' "
-                    "AND platform NOT ILIKE '%mozilla%' "
-                    "AND platform NOT ILIKE '%node%'"
+                    "AND platform IS NOT NULL AND platform <> '' "
+                    "AND char_length(platform) <= 64"
                 )
-                out["active_platforms"] = int(cur.fetchone()[0] or 0)
+                _raws = [r[0] for r in (cur.fetchall() or []) if r and r[0]]
+                _pmap = {}
+                try:
+                    from main import MCP_PLATFORM_MAP as _pmap  # lazy: main imports us first
+                except Exception:
+                    _pmap = {'claude': 'Claude', 'chatgpt': 'ChatGPT', 'openai': 'ChatGPT',
+                             'gemini': 'Gemini', 'perplexity': 'Perplexity', 'cursor': 'Cursor',
+                             'copilot': 'Copilot', 'cline': 'Cline', 'windsurf': 'Windsurf'}
+                # Real MCP agent clients that aren't consumer AI brands but are
+                # genuine external platforms reaching the server.
+                _extra = {'smithery': 'Smithery', 'glama': 'Glama', 'opencode': 'opencode',
+                          'devin': 'Devin', 'agent-tools': 'agent-tools.cloud',
+                          'lobehub': 'LobeHub', 'continue': 'Continue'}
+                _canon = set()
+                for _raw in _raws:
+                    for _k, _v in list(_pmap.items()) + list(_extra.items()):
+                        if _raw == _k or (len(_k) >= 4 and _k in _raw):
+                            _canon.add(_v)
+                            break
+                out["active_platforms"] = len(_canon)
             except Exception:
                 conn.rollback()
 
