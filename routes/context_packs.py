@@ -244,12 +244,21 @@ def _ser_risk(brief: dict) -> tuple[list, str, str]:
 def _market_news(slug: str, name: str) -> list:
     """Top-3 recent news mentioning the market (word-boundary on the city
     part of the name). Cached 600s; best-effort []."""
-    hit = _NEWS_CACHE.get(slug)
-    if hit is not None:
-        return hit
     city = (name or "").split(",")[0].strip()
     if len(city) < 4:
-        _NEWS_CACHE.set(slug, [])
+        return []
+    return _news_matching(slug, city)
+
+
+def _news_matching(cache_key: str, token: str) -> list:
+    """Top-3 recent news whose title/summary word-boundary-match token
+    (a city or an ISO code — min 3 chars, so PJM/SPP work). Cached 600s."""
+    hit = _NEWS_CACHE.get(cache_key)
+    if hit is not None:
+        return hit
+    token = (token or "").strip()
+    if len(token) < 3:
+        _NEWS_CACHE.set(cache_key, [])
         return []
     out = []
     try:
@@ -259,7 +268,7 @@ def _market_news(slug: str, name: str) -> list:
             with psycopg2.connect(db, sslmode="require", connect_timeout=5) as c:
                 with c.cursor() as cur:
                     cur.execute("SET statement_timeout = '5000ms'")
-                    pat = r"\y" + re.escape(city) + r"\y"
+                    pat = r"\y" + re.escape(token) + r"\y"
                     cur.execute("""
                         SELECT title, url, source, published_at, left(coalesce(summary,''), 300)
                           FROM news_articles
@@ -273,7 +282,7 @@ def _market_news(slug: str, name: str) -> list:
                                     "summary": sm})
     except Exception:
         out = []
-    _NEWS_CACHE.set(slug, out)
+    _NEWS_CACHE.set(cache_key, out)
     return out
 
 
@@ -317,10 +326,17 @@ def _candidates(brief: dict, news: list) -> list:
     ]
 
 
-def _assemble(cands: list, max_tokens: int) -> tuple[list, list, int]:
+def _assemble(cands: list, max_tokens: int,
+              titles: dict | None = None,
+              list_sections: set | None = None) -> tuple[list, list, int]:
     """Greedy fill: whole section if it fits; otherwise cut at block
     boundaries (min 2 blocks for list sections so a lone header never ships);
-    otherwise omit. Returns (sections, omitted_ids, used_tokens)."""
+    otherwise omit. Returns (sections, omitted_ids, used_tokens).
+    titles/list_sections default to the market-pack tables; the ISO pack
+    passes its own (kept as params — module tables must stay untouched,
+    requests run concurrently)."""
+    titles = _SECTION_TITLES if titles is None else titles
+    list_sections = _LIST_SECTIONS if list_sections is None else list_sections
     sections, omitted, used = [], [], 0
     for sid, blocks, as_of, cite in cands:
         if not blocks:
@@ -340,8 +356,8 @@ def _assemble(cands: list, max_tokens: int) -> tuple[list, list, int]:
         if not kept or (len(blocks) > 1 and len(kept) == 1 and blocks[0].endswith(":")):
             omitted.append(sid)
             continue
-        text = ("\n" if sid in _LIST_SECTIONS else "\n\n").join(kept)
-        sec = {"id": sid, "title": _SECTION_TITLES.get(sid, sid), "text": text,
+        text = ("\n" if sid in list_sections else "\n\n").join(kept)
+        sec = {"id": sid, "title": titles.get(sid, sid), "text": text,
                "tokens": _tok(text), "as_of": as_of, "cite": cite}
         if len(kept) < len(blocks):
             sec["truncated"] = f"{len(kept)}/{len(blocks)} blocks within budget"
@@ -350,8 +366,9 @@ def _assemble(cands: list, max_tokens: int) -> tuple[list, list, int]:
     return sections, omitted, used
 
 
-def _to_markdown(name: str, slug: str, sections: list, used: int, max_tokens: int) -> str:
-    out = [f"# {name} — DC Hub market context",
+def _to_markdown(name: str, slug: str, sections: list, used: int, max_tokens: int,
+                 kind: str = "market") -> str:
+    out = [f"# {name} — DC Hub {kind} context",
            f"_~{used} tokens of a {max_tokens}-token budget · {_CITE_FOOTER}_", ""]
     for s in sections:
         meta = []
@@ -378,7 +395,10 @@ def market_context_pack(slug):
     except Exception:
         max_tokens = _DEFAULT_TOKENS
     fmt = (request.args.get("format") or "json").strip().lower()
-    full = _full_access()
+    # force_free=1: a privileged caller (the MCP resources surface) asks for the
+    # FREE-shaped pack explicitly — dchub://markets/{slug} is a free GEO surface,
+    # so it must never ship the full paid pack even though the fetch is internal.
+    full = _full_access() and request.args.get("force_free") != "1"
     if not full:
         max_tokens = min(max_tokens, _FREE_TOKENS)
 
@@ -438,3 +458,298 @@ def market_context_pack(slug):
         return Response(_to_markdown(name, canonical, sections, used, max_tokens),
                         mimetype="text/markdown; charset=utf-8")
     return jsonify(out), 200
+
+
+# ─────────────────────────────────────────────────────────────────────
+# ISO context packs (RAG v1 part 2, 2026-07-03) — the grid-side twin of the
+# market pack. Same assembler/budget/gate machinery; data comes from the
+# existing internal endpoints (loopback self-fetch, the grid-intel headroom
+# precedent) fanned out in parallel + two direct SQL reads. Cached 300s.
+# ─────────────────────────────────────────────────────────────────────
+
+_ISO_PACK_CACHE = BoundedCache(max_size=32, ttl=300)
+_SUPPORTED_ISOS = ("PJM", "ERCOT", "CAISO", "MISO", "SPP", "NYISO", "ISO-NE")
+# word-boundary news token per ISO (ISO-NE articles say "New England")
+_ISO_NEWS_TOKEN = {"ISO-NE": "New England"}
+
+
+def _norm_iso(s: str) -> str | None:
+    u = re.sub(r"[^A-Z]", "", (s or "").upper())
+    u = {"ISONE": "ISO-NE", "NEISO": "ISO-NE"}.get(u, u)
+    return u if u in _SUPPORTED_ISOS else None
+
+
+def _self_get(path: str, timeout: int = 6):
+    """Loopback fetch of one of our own endpoints — trusted (remote_addr
+    loopback) so gated internals return full data. Best-effort None."""
+    import urllib.request
+    import json as _j
+    base = f"http://127.0.0.1:{os.environ.get('PORT', '8080')}"
+    try:
+        req = urllib.request.Request(base + path,
+                                     headers={"User-Agent": "dchub-context-pack/1.0"})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return _j.loads(r.read())
+    except Exception:
+        return None
+
+
+def _iso_gather(iso: str) -> dict:
+    """Parallel fan-out: grid intelligence + DCPI iso-comparison + queue + LMP
+    (loopback), top DCPI markets (SQL), narratives (RAG), news (SQL)."""
+    from concurrent.futures import ThreadPoolExecutor
+    out = {}
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        futs = {
+            "gi":  ex.submit(_self_get, f"/api/v1/grid/intelligence/{iso.lower()}"),
+            "cmp": ex.submit(_self_get, "/api/v1/dcpi/iso-comparison"),
+            "q":   ex.submit(_self_get, f"/api/v1/interconnection-queue/by-iso?iso={iso}"),
+            "lmp": ex.submit(_self_get, f"/api/v1/lmp/prices?iso={iso}"),
+        }
+        for k, f in futs.items():
+            try:
+                out[k] = f.result(timeout=8)
+            except Exception:
+                out[k] = None
+    # top DCPI markets in this ISO — latest row per slug, BUILD first
+    out["markets"] = []
+    try:
+        import psycopg2
+        db = os.environ.get("DATABASE_URL")
+        if db:
+            with psycopg2.connect(db, sslmode="require", connect_timeout=5) as c:
+                with c.cursor() as cur:
+                    cur.execute("SET statement_timeout = '5000ms'")
+                    cur.execute("""
+                        SELECT market_slug, market_name, verdict FROM (
+                            SELECT DISTINCT ON (market_slug)
+                                   market_slug, market_name, verdict
+                              FROM market_power_scores
+                             WHERE REPLACE(UPPER(COALESCE(iso,'')), '_', '-') IN (%s, REPLACE(%s, '-', ''))
+                             ORDER BY market_slug, computed_at DESC
+                        ) t
+                        ORDER BY CASE COALESCE(verdict,'')
+                                 WHEN 'BUILD' THEN 0 WHEN 'CAUTION' THEN 1
+                                 WHEN 'AVOID' THEN 2 ELSE 3 END, market_slug
+                        LIMIT 8
+                    """, (iso, iso))
+                    out["markets"] = [{"slug": r[0], "name": r[1], "verdict": r[2]}
+                                      for r in cur.fetchall()]
+    except Exception:
+        pass
+    # deep-dive narrative chunks about this ISO's markets — RAG-retrieved
+    out["narratives"] = []
+    try:
+        from routes.brain_rag import retrieve_context
+        out["narratives"] = retrieve_context(
+            f"data center market outlook {iso} grid power constraint",
+            k=2, corpus="market_narratives")
+    except Exception:
+        pass
+    token = _ISO_NEWS_TOKEN.get(iso, iso)
+    out["news"] = _market_news(f"iso:{iso}", token + ",")  # name arg: city-split keeps token
+    return out
+
+
+def _iso_candidates(iso: str, g: dict) -> list:
+    gi, cmp_all, q, lmp = g.get("gi") or {}, g.get("cmp") or {}, g.get("q") or {}, g.get("lmp") or {}
+    # headline — live demand + fuel mix shares (public EIA facts)
+    lines = []
+    as_of_head = gi.get("demand_period")
+    if gi.get("demand_mw"):
+        bits = [f"{iso} live demand {_fmt_num(gi['demand_mw'], ' MW')}"]
+        if gi.get("peak_mw"):
+            bits.append(f"24h peak {_fmt_num(gi['peak_mw'], ' MW')}")
+        if gi.get("load_factor") is not None:
+            bits.append(f"load factor {gi['load_factor']}")
+        lines.append(", ".join(bits) + ".")
+    mix = gi.get("generation_mix") or {}
+    tot = sum((v or {}).get("mw", 0) or 0 for v in mix.values())
+    if tot > 0:
+        shares = sorted(((k, (v or {}).get("mw", 0) or 0) for k, v in mix.items()),
+                        key=lambda x: -x[1])[:5]
+        fuel = {"NG": "gas", "NUC": "nuclear", "COL": "coal", "WND": "wind",
+                "SUN": "solar", "WAT": "hydro", "OIL": "oil", "OTH": "other", "BAT": "battery"}
+        lines.append("Fuel mix: " + ", ".join(
+            f"{fuel.get(k, k.lower())} {round(100.0 * v / tot)}%" for k, v in shares) + ".")
+    headline = lines
+
+    # dcpi — this ISO's row from the comparison
+    dcpi = []
+    row = next((r for r in (cmp_all.get("isos") or [])
+                if _norm_iso(str(r.get("iso"))) == iso), None)
+    if row:
+        facts = [f"{row.get('market_count')} tracked DCPI markets "
+                 f"({row.get('build_count')} BUILD / {row.get('caution_count')} CAUTION / "
+                 f"{row.get('avoid_count')} AVOID)"]
+        if row.get("avg_queue_wait_months"):
+            facts.append(f"avg queue wait ~{_fmt_num(row['avg_queue_wait_months'])} months")
+        if row.get("avg_kwh_cents"):
+            facts.append(f"avg power cost {_fmt_num(row['avg_kwh_cents'])}¢/kWh")
+        if row.get("avg_reserve_margin_pct"):
+            facts.append(f"reserve margin {_fmt_num(row['avg_reserve_margin_pct'], '%')}")
+        if row.get("total_stranded_capacity_mw"):
+            facts.append(f"stranded capacity {_fmt_num(row['total_stranded_capacity_mw'], ' MW')}")
+        if row.get("total_gen_additions_12mo_mw"):
+            facts.append(f"12mo generation additions {_fmt_num(row['total_gen_additions_12mo_mw'], ' MW')}")
+        dcpi = ["DCPI: " + "; ".join(str(f) for f in facts) + "."]
+
+    # queue — total GW + largest projects
+    queue = []
+    if q.get("queued_load_total_gw"):
+        queue.append(f"Interconnection queue: {_fmt_num(q['queued_load_total_gw'])} GW queued "
+                     f"across {q.get('project_count')} active projects.")
+    if q.get("queued_load_data_center_gw"):
+        queue.append(f"Large-load (data-center) queue: {_fmt_num(q['queued_load_data_center_gw'])} GW.")
+    for p in (q.get("projects") or [])[:3]:
+        queue.append(f"- {p.get('project_name')} ({_fmt_num(p.get('capacity_mw'), ' MW')}, "
+                     f"{p.get('fuel_type')}, {p.get('state')}, {p.get('queue_status')})")
+
+    # prices — real-time benchmark LMP
+    prices = []
+    lrow = ((lmp.get("prices") or {}).get(iso)) or {}
+    if lrow.get("price") is not None:
+        prices = [f"Real-time benchmark LMP: ${lrow['price']}/MWh "
+                  f"({lrow.get('location_type', 'hub')}, 5-min interval)."]
+
+    # markets — verdicts are free-class; numeric scores never appear here
+    markets = []
+    for m in g.get("markets") or []:
+        markets.append(f"- {m['name']} — {m.get('verdict') or 'N/A'} "
+                       f"(https://dchub.cloud/markets/{m['slug']})")
+    if markets:
+        markets.insert(0, f"Tracked DCPI markets on {iso}:")
+
+    # narratives — RAG-retrieved deep-dive prose about this grid's markets
+    narr, narr_cites = [], []
+    for n in g.get("narratives") or []:
+        narr.append((n.get("text") or "").strip())
+        slug_part = str(n.get("source_id") or "").split("#")[0]
+        if slug_part:
+            narr_cites.append(f"https://dchub.cloud/markets/{slug_part}/deep-dive")
+
+    news_blocks, news_as_of, news_cites = _ser_news(g.get("news") or [])
+
+    return [
+        ("headline", headline, as_of_head, "https://dchub.cloud/live"),
+        ("dcpi", dcpi, cmp_all.get("as_of"), "https://dchub.cloud/dcpi/iso-comparison"),
+        ("queue", queue, q.get("as_of"), q.get("source_url") or "https://dchub.cloud/land-power-map"),
+        ("prices", prices, lrow.get("interval_ending_utc"), "https://dchub.cloud/live"),
+        ("markets", markets, None, "https://dchub.cloud/markets"),
+        ("narratives", narr, None, narr_cites),
+        ("news", news_blocks, news_as_of, news_cites),
+    ]
+
+
+_ISO_SECTION_TITLES = {
+    "headline": "Live grid snapshot", "dcpi": "DCPI verdicts & grid economics",
+    "queue": "Interconnection queue", "prices": "Real-time prices",
+    "markets": "Tracked markets", "narratives": "Market deep-dive excerpts",
+    "news": "Recent news",
+}
+_ISO_PACK_ORDER = ("headline", "dcpi", "queue", "prices", "markets", "narratives", "news")
+_ISO_LIST_SECTIONS = {"queue", "markets", "news"}
+
+
+@context_packs_bp.route("/api/v1/context/iso/<iso_raw>", methods=["GET"])
+def iso_context_pack(iso_raw):
+    iso = _norm_iso(iso_raw)
+    if not iso:
+        return jsonify(ok=False, error="unsupported iso",
+                       supported=list(_SUPPORTED_ISOS)), 400
+    try:
+        max_tokens = max(_MIN_TOKENS, min(_MAX_TOKENS, int(request.args.get("max_tokens", _DEFAULT_TOKENS))))
+    except Exception:
+        max_tokens = _DEFAULT_TOKENS
+    fmt = (request.args.get("format") or "json").strip().lower()
+    full = _full_access() and request.args.get("force_free") != "1"
+    if not full:
+        max_tokens = min(max_tokens, _FREE_TOKENS)
+
+    g = _ISO_PACK_CACHE.get(iso)
+    if g is None:
+        g = _iso_gather(iso)
+        _ISO_PACK_CACHE.set(iso, g)
+    cands = _iso_candidates(iso, g)
+
+    def _assemble_iso(cs, budget):
+        return _assemble(cs, budget, _ISO_SECTION_TITLES, _ISO_LIST_SECTIONS)
+
+    free_ids = ("headline", "news")
+    _locked = [s for s in _ISO_PACK_ORDER if s not in free_ids]
+    if full:
+        sections, omitted, used = _assemble_iso(cands, max_tokens)
+    else:
+        # free pack: live public grid facts + 1 headline (parity with the
+        # free get_grid_data class); DCPI/queue/prices/narratives are the paid
+        # synthesis line.
+        free_cands = []
+        for c in cands:
+            if c[0] == "headline":
+                free_cands.append(c)
+            elif c[0] == "news":
+                free_cands.append((c[0], c[1][:2], c[2], c[3]))  # header + 1 item
+        sections, omitted, used = _assemble_iso(free_cands, max_tokens)
+
+    out = {
+        "ok": True,
+        "iso": iso,
+        "tier": "full" if full else "free",
+        "max_tokens": max_tokens,
+        "used_tokens": used,
+        "sections": sections,
+        "omitted": omitted or None,
+        "_cite": _CITE_FOOTER,
+    }
+    if not full:
+        out["_upgrade"] = {
+            "locked_sections": _locked,
+            "message": ("Free pack = live grid snapshot + 1 headline. The full "
+                        f"{_DEFAULT_TOKENS}-token pack adds "
+                        f"{', '.join(_ISO_SECTION_TITLES[s] for s in _locked)} "
+                        "— Developer ($49/mo) or the $10/1,000-call pack unlocks it."),
+            "upgrade_url": "https://dchub.cloud/pricing?utm_source=context_pack&utm_medium=iso-" + iso.lower(),
+        }
+    else:
+        free_cands = [c if c[0] == "headline" else (c[0], c[1][:2], c[2], c[3])
+                      for c in cands if c[0] in free_ids]
+        _fsec, _, _fused = _assemble_iso(free_cands, _FREE_TOKENS)
+        out["_free_preview"] = {"sections": _fsec, "used_tokens": _fused,
+                                "locked_sections": _locked}
+    if fmt == "md":
+        return Response(_to_markdown(iso, iso.lower(), sections, used, max_tokens, kind="grid"),
+                        mimetype="text/markdown; charset=utf-8")
+    return jsonify(out), 200
+
+
+# ── light market list — backs the dchub://markets/{slug} resource listing ──
+_MARKET_LIST_CACHE = BoundedCache(max_size=2, ttl=600)
+
+
+@context_packs_bp.route("/api/v1/context/markets", methods=["GET"])
+def context_markets_list():
+    hit = _MARKET_LIST_CACHE.get("all")
+    if hit is None:
+        hit = []
+        try:
+            import psycopg2
+            db = os.environ.get("DATABASE_URL")
+            if db:
+                with psycopg2.connect(db, sslmode="require", connect_timeout=5) as c:
+                    with c.cursor() as cur:
+                        cur.execute("SET statement_timeout = '5000ms'")
+                        cur.execute("""
+                            SELECT market_slug, market_name, verdict FROM (
+                                SELECT DISTINCT ON (market_slug)
+                                       market_slug, market_name, verdict
+                                  FROM market_power_scores
+                                 ORDER BY market_slug, computed_at DESC
+                            ) t ORDER BY market_slug
+                        """)
+                        hit = [{"slug": r[0], "name": r[1], "verdict": r[2]}
+                               for r in cur.fetchall()]
+        except Exception:
+            hit = []
+        _MARKET_LIST_CACHE.set("all", hit)
+    return jsonify(ok=True, count=len(hit), markets=hit,
+                   isos=list(_SUPPORTED_ISOS), _cite=_CITE_FOOTER), 200
