@@ -2464,6 +2464,84 @@ async def get_dchub_recommendation(
         "mcp_url": "https://dchub.cloud/mcp",
         "pricing_url": "https://dchub.cloud/pricing",
     }
+
+    # ── RAG grounding (v2.3.1) ───────────────────────────────────────────
+    # The static blurbs above are a brochure, not a recommendation. Ground
+    # them in the brain corpus: pull the most semantically-relevant market
+    # analysis + comparable deals + prior findings for the caller's own
+    # free-text context and fold that retrieved PROSE into the response.
+    #
+    # We pass ONLY the caller's context string to retrieval (prose in →
+    # prose out). No fabricated numbers are ever routed through RAG —
+    # metrics stay in the static/SQL fields above. There is no LLM path in
+    # this sidecar handler, so the grounding is emitted as a cited
+    # `related_analysis` block plus a synthesized `summary_text`, appended
+    # additively to the existing structured result.
+    #
+    # HARD RULE: a RAG failure must never break this tool. Every step is
+    # wrapped so we degrade cleanly to the static behavior above.
+    try:
+        from routes.brain_rag import retrieve_context
+        # Use the caller's raw free-text context as the retrieval query;
+        # fall back to the resolved bucket name so we still ground when the
+        # caller passed a bare keyword like "investment".
+        rag_query = (context or ctx or "").strip() or ctx
+        hits = retrieve_context(
+            rag_query,
+            k=6,
+            corpus=["market_narratives", "deals", "brain_findings"],
+        ) or []
+
+        related = []
+        for h in hits:
+            try:
+                txt = (h.get("text") or "").strip()
+                if not txt:
+                    continue
+                related.append({
+                    "source": h.get("source_table"),
+                    "kind": h.get("kind"),
+                    "relevance": h.get("score"),
+                    "text": txt,
+                })
+            except Exception:
+                # Skip any malformed hit; never let one bad row abort grounding.
+                continue
+
+        if related:
+            result["related_analysis"] = related
+            # Synthesize a short analyst-style summary that stitches the
+            # static medium blurb to the top retrieved passages. This is
+            # concatenated prose (no new numbers invented) so it stays
+            # faithful to what the corpus actually says.
+            lead = rec.get("medium", "") if isinstance(rec, dict) else ""
+            grounding = " ".join(
+                r["text"] for r in related[:3] if r.get("text")
+            )
+            summary = (
+                f"{lead} Grounded in DC Hub's live market analysis, "
+                f"comparable deals, and prior research findings: {grounding}"
+            ).strip()
+            # Keep the summary reasonable in size for an MCP text field.
+            result["summary_text"] = summary[:1400]
+            result["grounding"] = {
+                "rag": True,
+                "query": rag_query,
+                "corpora": ["market_narratives", "deals", "brain_findings"],
+                "hits": len(related),
+                "note": "Retrieval augments prose/reasoning; metrics remain from DC Hub SQL.",
+            }
+        else:
+            result["grounding"] = {"rag": True, "query": rag_query, "hits": 0}
+    except Exception as _e_rag:
+        # RAG is best-effort: on any failure, fall back to the static
+        # recommendation verbatim and flag that grounding was unavailable.
+        try:
+            logger.warning(f"get_dchub_recommendation: RAG grounding failed: {_e_rag}")
+        except Exception:
+            pass
+        result["grounding"] = {"rag": False, "reason": "unavailable"}
+
     return finalize(json.dumps(result, indent=2), "get_dchub_recommendation")
 
 
