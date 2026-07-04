@@ -559,6 +559,36 @@ _DISPATCH = [
      f"{BASE}/api/admin/drip-check",
      "POST",
      lambda now: now.hour == 16 and now.minute < 55),
+
+    # ─────────────────────────────────────────────────────────────────────
+    # 2026-07-04: monthly-trend CATCH-UP. The GH workflow monthly-trend-cron
+    # .yml ('5 0 1 * *') is single-shot through the PUBLIC edge and has now
+    # failed 2 months straight (2026-06-01 + 2026-07-01: edge worker 503
+    # "Backend unreachable and no cached data available", worker 4.46.0) —
+    # and the autopilot backstop (monthly_trend_unsent_3d) was dead in June
+    # because the brain flywheel was offline. These loopback entries are
+    # immune to edge 503s. Both endpoints default to the PRIOR month and are
+    # idempotent: /archive upserts ON CONFLICT (year, month); /send-outreach
+    # skips any journalist who already received that month's report
+    # (media_outreach_log pitch_topic dedup) and logs to monthly_outreach_log.
+    # So repeat fires in-window are no-ops after the first success, and the
+    # GH cron double-firing on the 1st is harmless. Window is day<=7 (NOT
+    # day<=3): the deploy landed on UTC July 4, a day<=3 window would have
+    # silently skipped the whole month and orphaned June's report forever
+    # (in August "prior month" becomes July) — and the sporadic ~hourly
+    # heartbeat needs wide windows anyway. Archive (02:xx) fires before send
+    # (03:xx) so the frozen permalink exists when journalists click, but the
+    # send does not hard-depend on it (it computes its own snapshot).
+    # _hit() attaches X-Admin-Key/X-Internal-Key; both routes' _admin_ok()
+    # accepts either (accepted_internal_keys ∪ DCHUB_ADMIN_KEY).
+    ("monthly_trend_archive_catchup",
+     f"{BASE}/api/v1/reports/monthly/archive",
+     "POST",
+     lambda now: now.day <= 7 and now.hour == 2 and now.minute < 55),
+    ("monthly_trend_outreach_catchup",
+     f"{BASE}/api/v1/reports/monthly/send-outreach?triggered_by=heartbeat_catchup",
+     "POST",
+     lambda now: now.day <= 7 and now.hour == 3 and now.minute < 55),
 ]
 
 
