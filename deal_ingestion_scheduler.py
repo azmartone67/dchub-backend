@@ -162,9 +162,13 @@ def _parse_date(published_str):
 # call (input_type=search_document for both sides — symmetric comparison)
 # and compute cosine locally (0-1 scale).
 #
-# Conservative: same parties but CLEARLY different value (> tolerance) is a
-# follow-on transaction, NOT a dup → insert. One/both values undisclosed →
-# the cosine gate decides. Everything fail-soft: any embed/RAG/DB failure
+# Conservative (r-rag-dealdedup blocker fix 2026-07-04): the gate may DROP a
+# deal ONLY when BOTH values are disclosed AND within DEAL_DUP_VALUE_TOL.
+# Same parties but CLEARLY different value (> tolerance) is a follow-on
+# transaction → insert. One/both values undisclosed → ALWAYS KEEP: repeat
+# counterparties do multiple deals, and with no value to disambiguate, a
+# duplicate row is recoverable (merge later) while a silently dropped real
+# deal is PERMANENT LOSS. Everything fail-soft: any embed/RAG/DB failure
 # keeps the deal(s) → EXACT pre-existing md5-only behavior.
 
 def _env_float(name, default):
@@ -197,27 +201,33 @@ def _cosine(a, b):
         return 0.0
 
 
-def _values_compatible(new_usd, cand_usd, tol):
-    """True when the two deal values could be the SAME transaction.
-    One/both undisclosed (None/0) → compatible (cosine gate decides).
-    Both known → relative gap <= tol. A clearly different value means a
-    follow-on transaction → NOT a dup (conservative)."""
+def _values_confirm_dup(new_usd, cand_usd, tol):
+    """True ONLY when BOTH deal values are disclosed AND within tol —
+    the sole case where a high cosine may drop the row as a duplicate.
+
+    Blocker fix (2026-07-04): the extracted dicts carry no market/region,
+    so buyer+seller repeats look near-identical to the embedder. If either
+    value is undisclosed (None/0/unparseable) we can NOT distinguish a
+    re-sighting from a genuinely new follow-on deal between the same
+    counterparties → return False (KEEP). A duplicate row is recoverable;
+    a dropped real deal is permanent loss."""
     try:
         a = float(new_usd) if new_usd else 0.0
         b = float(cand_usd) if cand_usd else 0.0
     except Exception:
-        return True
+        return False
     if a <= 0.0 or b <= 0.0:
-        return True
+        return False  # one/both undisclosed → never enough evidence to drop
     hi, lo = (a, b) if a >= b else (b, a)
     return (hi - lo) / hi <= tol
 
 
 def _candidate_value_usd(cur, source_table, source_id):
     """Deal value in USD for a RAG candidate row, or None if undisclosed or
-    unreadable (treated as undisclosed → compatible). NOTE units: deals.value
-    is stored in $MILLIONS (see seed_comprehensive_deals.py — Stargate=500000
-    == $500B); ai_deals.deal_value_usd is raw USD."""
+    unreadable (treated as undisclosed → the new deal is KEPT, never dropped).
+    NOTE units: deals.value is stored in $MILLIONS (see
+    seed_comprehensive_deals.py — Stargate=500000 == $500B);
+    ai_deals.deal_value_usd is raw USD."""
     if cur is None or not source_id:
         return None
     try:
@@ -242,12 +252,22 @@ def _semantic_dup_check(deal, cur, retrieve_fn, embed_fn):
     """Check ONE hash-new deal against the RAG 'deals' corpus.
     Returns ('dup', info) | ('keep', None) | ('error', reason).
     'error' = embed/RAG infra failure → caller degrades to md5-only."""
-    query = " ".join(p for p in (
-        (deal.get('buyer') or '').strip(),
-        (deal.get('seller') or '').strip(),
-        (deal.get('market') or deal.get('region') or '').strip()) if p)
-    if not query:
+    buyer = (deal.get('buyer') or '').strip()
+    seller = (deal.get('seller') or '').strip()
+    if not (buyer or seller):
         return 'keep', None
+    # Blocker fix (2026-07-04): run_ingestion's extracted dicts carry NO
+    # market/region keys, so the old query degenerated to buyer+seller only
+    # and repeat counterparties all looked alike. Enrich with the
+    # discriminators that DO exist on the dict — deal_type + deal_date —
+    # mirroring the corpus text shape "buyer → seller (type, market) notes"
+    # so distinct follow-on deals between the same parties separate better.
+    # (market/region kept as a fallback for future extractor enrichment.)
+    query = " ".join(p for p in (
+        buyer, seller,
+        (deal.get('deal_type') or '').strip(),
+        (deal.get('market') or deal.get('region') or '').strip(),
+        (deal.get('deal_date') or '').strip()) if p)
     try:
         hits = retrieve_fn(query, k=5, corpus="deals") or []
     except Exception as e:
@@ -273,9 +293,13 @@ def _semantic_dup_check(deal, cur, retrieve_fn, embed_fn):
         return 'keep', None
     hit = hits[best_ix]
     cand_usd = _candidate_value_usd(cur, hit.get('source_table'), hit.get('source_id'))
-    if not _values_compatible(deal.get('deal_value_usd'), cand_usd,
-                              _env_float('DEAL_DUP_VALUE_TOL', 0.15)):
-        return 'keep', None  # value clearly different → follow-on transaction
+    if not _values_confirm_dup(deal.get('deal_value_usd'), cand_usd,
+                               _env_float('DEAL_DUP_VALUE_TOL', 0.15)):
+        # Undisclosed value(s) OR clearly different value → KEEP. Only two
+        # DISCLOSED values within tolerance confirm a duplicate; anything
+        # less could be a genuinely new follow-on deal (permanent loss if
+        # dropped — a duplicate row is merely recoverable noise).
+        return 'keep', None
     return 'dup', {'match_table': hit.get('source_table'),
                    'match_id': hit.get('source_id'),
                    'cosine': round(best_cos, 4)}
