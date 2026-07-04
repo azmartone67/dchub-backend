@@ -296,39 +296,58 @@ Cap at 4 chains. Quality over quantity. Reply with ONLY the JSON object."""
 
 def _call_claude(prompt: str) -> dict | None:
     if not _ANTHROPIC_KEY: return None
+    # r-l14-fix (2026-07-04): max_tokens=2500 truncated the 4-chain JSON mid-object
+    # → json.loads threw → None → nothing persisted → the issue-janitor's resolved-
+    # close arm went blind. Give the output real headroom, and on ANY failure (non-200
+    # model error OR unparseable body) retry ONCE on a confirmed-valid model so a
+    # mispinned/retired reasoning tier can't silently zero out L14. Log the exact
+    # cause + whether the response was truncated so this is never a mystery again.
+    from routes.brain_models import brain_model_for
+    _models = []
     try:
-        import requests
-        r = requests.post(
-            anthropic_messages_url(),
-            headers={"x-api-key": _ANTHROPIC_KEY,
-                     "User-Agent": "dchub-brain/1.0",
-                     "anthropic-version": "2023-06-01",
-                     "content-type": "application/json"},
-            json={
-                # 2026-05-24 r30: route via brain_models tier registry.
-                # L14 causal analysis is "reasoning" tier — Opus 4.7.
-                "model": (
-                    __import__("routes.brain_models", fromlist=["brain_model_for"])
-                    .brain_model_for("reasoning")
-                ),
-                "max_tokens": 2500,
-                "messages": [{"role": "user", "content": prompt}],
-            },
-            timeout=60,
-        )
-        if r.status_code != 200:
-            logger.warning(f"L14 Claude {r.status_code}: {r.text[:200]}")
-            return None
-        body = r.json() or {}
-        text = "".join(b.get("text","") for b in (body.get("content") or [])
-                       if b.get("type") == "text").strip()
-        if text.startswith("```"):
-            text = text.split("```")[1] if "```" in text else text
-            if text.startswith("json"): text = text[4:].lstrip("\n")
-        return json.loads(text)
-    except Exception as e:
-        logger.warning(f"L14 Claude call failed: {e}")
-        return None
+        _models.append(brain_model_for("reasoning"))
+    except Exception:
+        pass
+    if "claude-sonnet-4-5" not in _models:
+        _models.append("claude-sonnet-4-5")   # confirmed-valid fallback
+    import requests
+    for _model in _models:
+        try:
+            r = requests.post(
+                anthropic_messages_url(),
+                headers={"x-api-key": _ANTHROPIC_KEY,
+                         "User-Agent": "dchub-brain/1.0",
+                         "anthropic-version": "2023-06-01",
+                         "content-type": "application/json"},
+                json={
+                    "model": _model,
+                    "max_tokens": 8000,   # was 2500 — too small for the 4-chain JSON
+                    "messages": [{"role": "user", "content": prompt}],
+                },
+                timeout=90,
+            )
+            if r.status_code != 200:
+                logger.warning(f"L14 Claude {r.status_code} ({_model}): {r.text[:200]}")
+                continue
+            body = r.json() or {}
+            text = "".join(b.get("text", "") for b in (body.get("content") or [])
+                           if b.get("type") == "text").strip()
+            if body.get("stop_reason") == "max_tokens":
+                logger.warning(f"L14 Claude ({_model}) truncated at max_tokens "
+                               f"(text_len={len(text)}) — raise max_tokens")
+            if text.startswith("```"):
+                text = text.split("```")[1] if "```" in text else text
+                if text.startswith("json"): text = text[4:].lstrip("\n")
+            # Lenient: slice the outermost {...} so trailing prose/whitespace can't
+            # break an otherwise-complete object.
+            _s, _e = text.find("{"), text.rfind("}")
+            if 0 <= _s < _e:
+                text = text[_s:_e + 1]
+            return json.loads(text)
+        except Exception as e:
+            logger.warning(f"L14 Claude call failed ({_model}): {type(e).__name__}: {str(e)[:200]}")
+            continue
+    return None
 
 
 @brain_layer14_bp.route("/api/v1/brain/causal", methods=["GET"])
