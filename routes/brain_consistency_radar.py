@@ -2945,13 +2945,17 @@ def check_market_deep_dive_stale() -> list[dict]:
                 """)
                 regs = cur.fetchone() or [None, None]
                 if not (regs[0] and regs[1]): return findings
+                # market_power_scores has no stored `score` column — the DCPI
+                # composite is derived at read time. Rank the top-10 on the
+                # writer-guaranteed excess_power_score instead (same fix as
+                # the deep-dive cron_rotate target picker).
                 cur.execute("""
                     SELECT mps.market_slug, mps.market_name, mdd.generated_at
-                      FROM (SELECT DISTINCT ON (market_slug) market_slug, market_name, score
+                      FROM (SELECT DISTINCT ON (market_slug) market_slug, market_name, excess_power_score
                               FROM market_power_scores WHERE published = true
                              ORDER BY market_slug, computed_at DESC) mps
                       LEFT JOIN market_deep_dives mdd USING (market_slug)
-                     ORDER BY mps.score DESC LIMIT 10
+                     ORDER BY mps.excess_power_score DESC NULLS LAST LIMIT 10
                 """)
                 rows = cur.fetchall()
             except Exception:

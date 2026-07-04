@@ -416,18 +416,29 @@ def _lp_get_site_impl(site_id, user_id):
                 return jsonify(error="not_found"), 404
             lat = float(site["latitude"]); lon = float(site["longitude"])
 
-            # Current DCPI for the market
+            # Current DCPI for the market. market_power_scores has no stored
+            # `score` column — derive the composite at read time from the
+            # writer-guaranteed components (canonical formula, same pattern
+            # as site_valuation_engine). dcpi_score_at_save is the composite
+            # the UI showed at save time, so this keeps dcpi_delta
+            # apples-to-apples.
             current_dcpi = None
             if site.get("market"):
                 try:
                     cur.execute("""
-                        SELECT score FROM market_power_scores
+                        SELECT excess_power_score, constraint_score,
+                               time_to_power_months, verdict
+                          FROM market_power_scores
                          WHERE LOWER(market_name) = LOWER(%s)
                             OR LOWER(market_slug) = LOWER(%s)
                          ORDER BY computed_at DESC LIMIT 1
                     """, (site["market"], site["market"].replace(" ", "-")))
                     r = cur.fetchone()
-                    if r: current_dcpi = float(r["score"]) if r["score"] is not None else None
+                    if r:
+                        from routes.dcpi import derive_composite_score
+                        current_dcpi = float(derive_composite_score(
+                            r["excess_power_score"], r["constraint_score"],
+                            r["time_to_power_months"], r["verdict"]))
                 except Exception: pass
 
             # Nearby substation count within 50km — bbox + haversine

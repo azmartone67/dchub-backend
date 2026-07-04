@@ -123,21 +123,30 @@ def _compute_pulse_metrics() -> dict:
             }
 
             # ── DCPI top markets (citable verdicts) ───────────────
+            # market_power_scores has no stored `score` column (the DCPI
+            # composite is derived at read time — same drift 7f0bdab6 fixed
+            # in market_deep_dive). All four queries here threw, _safe_*
+            # swallowed it, and this section served empty lists + the
+            # hardcoded default counts. Filter on the writer-guaranteed
+            # verdict and rank BUILD by excess power, AVOID by constraint
+            # (the press_outreach convention).
             top_build = _safe_fetchall(cur, """
-                SELECT market_slug, market_name, score
+                SELECT market_slug, market_name,
+                       excess_power_score AS score
                 FROM market_power_scores
-                WHERE score >= 70
-                ORDER BY score DESC LIMIT 5
+                WHERE verdict = 'BUILD'
+                ORDER BY excess_power_score DESC NULLS LAST LIMIT 5
             """)
             top_avoid = _safe_fetchall(cur, """
-                SELECT market_slug, market_name, score
+                SELECT market_slug, market_name,
+                       constraint_score AS score
                 FROM market_power_scores
-                WHERE score <= 35
-                ORDER BY score ASC LIMIT 5
+                WHERE verdict = 'AVOID'
+                ORDER BY constraint_score DESC NULLS LAST LIMIT 5
             """)
             metrics["dcpi_verdicts"] = {
-                "build_count": _safe_query(cur, "SELECT COUNT(*) FROM market_power_scores WHERE score >= 70", default=14),
-                "avoid_count": _safe_query(cur, "SELECT COUNT(*) FROM market_power_scores WHERE score <= 35", default=63),
+                "build_count": _safe_query(cur, "SELECT COUNT(*) FROM market_power_scores WHERE verdict = 'BUILD'", default=14),
+                "avoid_count": _safe_query(cur, "SELECT COUNT(*) FROM market_power_scores WHERE verdict = 'AVOID'", default=63),
                 "markets_scored": _safe_query(cur, "SELECT COUNT(*) FROM market_power_scores", default=80),
                 "top_build": [{"slug": r[0], "name": r[1], "score": float(r[2] or 0)} for r in top_build],
                 "top_avoid": [{"slug": r[0], "name": r[1], "score": float(r[2] or 0)} for r in top_avoid],
