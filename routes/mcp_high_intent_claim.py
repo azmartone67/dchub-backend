@@ -1296,6 +1296,8 @@ def high_intent_stats():
         "claim_minted_rate_30d_pct": 0.0,
         "claim_to_paid_rate_30d_pct": 0.0,
         "claim_to_paid_30d": 0,
+        "claims_with_key_30d": 0,
+        "claim_email_captured_30d": 0,
     }
     try:
         _ensure_schema(c)
@@ -1340,6 +1342,33 @@ def high_intent_stats():
                     + " AND " + _hi_real_sql(),
                 )
                 out["claims_used_30d"] = int((cur.fetchone() or [0])[0] or 0)
+            except Exception: pass
+            # r-loop-metric (2026-07-04): the TRUE Move #2 firing signal is not
+            # claims_used alone but "did the agent walk away with a WORKING key" —
+            # minted_api_key IS NOT NULL. And the 07-03 pivot's own success metric is
+            # claim_email_captured (consented email → human follow-up pipeline).
+            # Surfacing both lets the monitor watch the metric that now matters instead
+            # of false-alarming on a deliberately-retired sub-path. Same real-traffic
+            # guard, same fail-soft try/except as the counts above.
+            try:
+                cur.execute(
+                    """SELECT COUNT(DISTINCT mcp_session_id)
+                         FROM mcp_high_intent_sessions
+                        WHERE minted_api_key IS NOT NULL
+                          AND claim_used_at >= NOW() - INTERVAL '30 days'"""
+                    + " AND " + _hi_real_sql(),
+                )
+                out["claims_with_key_30d"] = int((cur.fetchone() or [0])[0] or 0)
+            except Exception: pass
+            try:
+                cur.execute(
+                    """SELECT COUNT(DISTINCT mcp_session_id)
+                         FROM mcp_high_intent_sessions
+                        WHERE claim_email IS NOT NULL AND claim_email <> ''
+                          AND claim_used_at >= NOW() - INTERVAL '30 days'"""
+                    + " AND " + _hi_real_sql(),
+                )
+                out["claim_email_captured_30d"] = int((cur.fetchone() or [0])[0] or 0)
             except Exception: pass
             # claim → paid conversion (DISTINCT session). Attribute on the captured
             # claim_email landing in the canonical mcp_conversions table after the

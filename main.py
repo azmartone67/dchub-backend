@@ -1928,6 +1928,18 @@ try:
     except Exception as _aoms:
         import logging
         logging.getLogger(__name__).warning('agent_onboarding_master_shell wiring failed: %s', _aoms)
+    # 2026-07-04: Conversion-loop master shell — guards the agent→paid loop (Move #2
+    # auto-redeem + Move #3 key-bound upgrade) so it can never silently break again.
+    # Probes /high-intent/stats + /funnel + redeem-route liveness, scores both moves
+    # vs the 06-24 deploy baselines, snapshots per tick. Read-only + worklist.
+    # POST /api/v1/admin/conversion-loop/master-tick. Kill: CONVERSION_LOOP_MASTER_DISABLED.
+    try:
+        from routes.conversion_loop_master_shell import conversion_loop_master_shell_bp
+        app.register_blueprint(conversion_loop_master_shell_bp)
+        print("[main] conversion_loop_master_shell_bp registered: POST /api/v1/admin/conversion-loop/master-tick", flush=True)
+    except Exception as _clms:
+        import logging
+        logging.getLogger(__name__).warning('conversion_loop_master_shell wiring failed: %s', _clms)
     # 2026-07-03: Growth master shell — the self-driving GROWTH orchestrator. Every
     # tick it scores 5 levers (discovery, measurement, autonomy, media, distribution),
     # finds the weakest, and pulls ONE bounded action. Persists a 0-100 growth score.
@@ -2011,6 +2023,22 @@ try:
     except Exception as _gdms:
         import logging
         logging.getLogger(__name__).warning('grid_data_master_shell wiring failed: %s', _gdms)
+    # 2026-07-04: Reliability-recovery master shell — the inward-pointed loop whose
+    # single job is getting the brain's verified fix-success rate over (and HELD
+    # over) 50% so Phase-3 narrow auto-merge can be armed safely. Scores 5 levers
+    # (accounting, thrash, dead_route, verifier, calibration), finds the weakest,
+    # pulls ONE bounded action. Persists the A/B/C arm gate server-side, so
+    # /reliability/state is the single source of truth for "is auto-merge arm-ready".
+    # SHADOW BY DEFAULT (measure + score + persist, NO action) — arm with
+    # RELIABILITY_MASTER_ARM=1. Kill: RELIABILITY_MASTER_DISABLED=1; per-lever:
+    # RELIABILITY_LEVER_<NAME>_OFF=1. POST /api/v1/admin/reliability/master-tick
+    try:
+        from routes.reliability_master_shell import reliability_master_shell_bp
+        app.register_blueprint(reliability_master_shell_bp)
+        print("[main] reliability_master_shell_bp registered: POST /api/v1/admin/reliability/master-tick", flush=True)
+    except Exception as _rms:
+        import logging
+        logging.getLogger(__name__).warning('reliability_master_shell wiring failed: %s', _rms)
     # 2026-07-03: brain context-assembly RAG — pgvector + Cohere embeddings over
     # the brain corpus (findings + recommendations). Gives the strategic planner
     # semantic RECALL of prior work. POST /api/v1/admin/brain/rag/reindex. Dark
