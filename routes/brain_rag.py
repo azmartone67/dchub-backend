@@ -133,11 +133,21 @@ CORPORA = {
                  "'. ' || coalesce(t.outcome_detail,'')"),
         "where": "t.outcome <> 'pending' AND coalesce(t.issue_type,'') <> ''",
         "fresh_col": "verified_at"},
+    # qa-0704 lane-driver: the brain's own lane decisions + measured outcomes
+    # (routes/brain_lane_driver.py ledger). verified_at is TIMESTAMPTZ in the
+    # driver's DDL; until the first tick creates the table, _pending's
+    # try/except skips this corpus harmlessly.
+    "brain_lane_decisions": {
+        "id": "t.id::text", "kind": "lane_lesson",
+        "text": "'[' || coalesce(t.lane,'') || '] ' || coalesce(t.diagnosis,'') || ' -> action ' || coalesce(t.action,'') || ' (expected: ' || coalesce(t.expected_effect,'') || ') outcome: ' || coalesce(t.outcome,'pending') || ' - ' || coalesce(t.outcome_note,'')",
+        "where": "coalesce(t.diagnosis,'') <> ''",
+        "fresh_col": "verified_at"},
 }
 
 # Brain-internal corpora that carry PAST-OUTCOME lessons (recalled by
 # retrieve_lessons; never exposed to public_search).
-LESSON_CORPORA = ("autopilot_outcomes", "brain_finding_outcomes")
+LESSON_CORPORA = ("autopilot_outcomes", "brain_finding_outcomes",
+                  "brain_lane_decisions")
 # Optional per-corpus "fresh_col" (a t.<timestamp> column): when set AND
 # live-verified by _fresh_col_active (exists + timestamp type on the LIVE
 # schema), _pending ALSO re-picks rows whose source timestamp is newer than

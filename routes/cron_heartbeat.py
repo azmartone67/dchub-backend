@@ -480,6 +480,16 @@ _DISPATCH = [
      "POST",
      lambda now: now.hour % 6 == 2 and now.minute < 55),
 
+    # 2026-07-04: Brain Lane Driver — RAG-grounded lane decisions (2 worst
+    # lanes/tick, structured outputs, closed action catalog, decision ledger
+    # = RAG lesson corpus). Every 6h at 04/10/16/22 UTC, offset from the gap
+    # shell so its actions have hours to land before the next gap read.
+    # Kills: BRAIN_LANE_DRIVER_DISABLED / _ACT_DISABLED.
+    ("brain_lane_driver_6h",
+     f"{BASE}/api/v1/admin/brain/lane-driver/tick",
+     "POST",
+     lambda now: now.hour % 6 == 4 and now.minute < 55),
+
     # RAG v1 (2026-07-03): market deep-dive rotation — regenerate the 10 stalest
     # DCPI market narratives daily (317 markets → full refresh ~monthly). This
     # existing endpoint previously had NO surviving scheduler (it was only an

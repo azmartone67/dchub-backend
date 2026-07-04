@@ -1951,6 +1951,19 @@ try:
     except Exception as _gaps:
         import logging
         logging.getLogger(__name__).warning('gap_master_shell wiring failed: %s', _gaps)
+    # 2026-07-04: Brain Lane Driver — the brain REASONS over the five business
+    # lanes (onboarding/funnel/revenue/seo/media) with RAG recall of its own
+    # past decisions+outcomes, and picks ONE catalog action per lane per tick
+    # (structured outputs; first-class 'stop'). Ledger: brain_lane_decisions
+    # (also a RAG lesson corpus). Kills: BRAIN_LANE_DRIVER_DISABLED /
+    # _ACT_DISABLED; caps: _LANES_PER_TICK (2), _DAILY_CAP (12).
+    try:
+        from routes.brain_lane_driver import brain_lane_driver_bp
+        app.register_blueprint(brain_lane_driver_bp)
+        print("[main] brain_lane_driver_bp registered: POST /api/v1/admin/brain/lane-driver/tick", flush=True)
+    except Exception as _bld:
+        import logging
+        logging.getLogger(__name__).warning('brain_lane_driver wiring failed: %s', _bld)
     # 2026-07-03: AI-Adoption master shell — the loop whose single north-star is
     # DISTINCT EXTERNAL AI AGENTS / WEEK. Orchestrates existing pieces (ai_reach_rollup,
     # brain_ecosystem_watch, mcp_registry_outreach, geo_autopublish) across 5 tiers:
