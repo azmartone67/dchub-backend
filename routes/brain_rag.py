@@ -130,19 +130,32 @@ _CHUNK_MAX_CHARS = 1200   # ~300 tokens
 # the blurb is prepended to the embedded text ("Context: <blurb>\n" + chunk),
 # which lifts retrieval accuracy on chunks whose prose doesn't name their
 # subject. The full doc rides in a SYSTEM block with cache_control ephemeral
-# so all chunks of one doc share a cached prefix — only the chunk in the user
-# turn varies (chunk 2..n read the doc at ~0.1x input price when the doc
-# clears the model's minimum cacheable prefix; Haiku 4.5 = 4,096 tokens).
+# so all chunks of one doc share a byte-identical prefix. HONESTY NOTE
+# (review 2026-07-04): the cache is INERT for this corpus today — deep-dive
+# narratives are written with max_tokens=1000 (~<=1.1K-token prefix), below
+# Haiku 4.5's 4,096-token minimum cacheable prefix, so per-chunk calls pay
+# full input price. Cost stays bounded by the call budget (~$0.35/run worst
+# case); if narratives ever grow past the minimum, caching engages
+# automatically with no code change.
+# BLURB CAP: 200 chars — retrieve_context serves left(text,500) and rerank
+# scores that same preview, so a longer blurb would crowd the provenance
+# header + chunk FACTS out of what consumers actually see.
 # FAIL-SOFT per chunk and per doc: any API failure keeps the existing static
-# provenance header, and a total failure never stops the reindex.
+# provenance header, and a total failure never stops the reindex. A circuit
+# breaker aborts after 3 CONSECUTIVE call failures (e.g. blackholed network:
+# 30s/call x 400-call budget would otherwise hold a gunicorn thread for
+# hours — the 07-03 thread-starvation class).
 # Toggle: BRAIN_RAG_CONTEXTUAL=0 (default ON, mirrors _rerank_on).
 # Budget: BRAIN_RAG_CTX_MAX_CALLS LLM calls per reindex run (default 400) so
 # a runaway backfill cannot burn tokens.
 CTX_MODEL_DEFAULT = "claude-haiku-4-5-20251001"  # same haiku id the deep-dive writer uses
-_CTX_MAX_TOKENS = 120
+_CTX_MAX_TOKENS = 80
+_CTX_BLURB_MAX_CHARS = 200
+_CTX_BREAKER_FAILS = 3   # consecutive call failures -> abort this batch
 _CTX_SYSTEM_INSTRUCTION = (
     "You situate a chunk within a document for search retrieval. "
-    "Answer with 2-3 sentences of succinct context and nothing else.")
+    "Answer with 1-2 short sentences (under 200 characters) of succinct "
+    "context and nothing else.")
 
 
 def _contextual_on() -> bool:
@@ -178,6 +191,7 @@ def _contextualize_chunks(doc_title, doc_md, chunks, max_calls=None):
          "text": f'<document title="{doc_title}">\n{doc_md}\n</document>',
          "cache_control": {"type": "ephemeral"}},
     ]
+    consec_fail = 0
     for i in range(n):
         body = json.dumps({
             "model": _ctx_model(),
@@ -201,9 +215,17 @@ def _contextualize_chunks(doc_title, doc_md, chunks, max_calls=None):
                 b.get("text", "") for b in (d.get("content") or [])
                 if isinstance(b, dict) and b.get("type") == "text").strip()
             if txt:
-                out[i] = txt[:500]
+                out[i] = txt[:_CTX_BLURB_MAX_CHARS]
+            consec_fail = 0
         except Exception:
-            continue  # fail-soft: this chunk keeps its static-header text
+            # fail-soft: this chunk keeps its static-header text. Circuit
+            # breaker: 3 consecutive failures (worst case = hung network at
+            # 30s each) -> abort the batch rather than hold a request thread
+            # for the rest of the budget.
+            consec_fail += 1
+            if consec_fail >= _CTX_BREAKER_FAILS:
+                break
+            continue
     return out
 
 # Corpora an unauthenticated agent may semantically search (brain internals excluded).
@@ -465,6 +487,13 @@ def _reindex_chunk_docs(c, doc_cap: int) -> int:
     ctx_left = _ctx_max_calls() if _contextual_on() else 0
     with c.cursor() as cur:
         docs = _pending_chunk_docs(cur, doc_cap)
+    # Cohere preflight (review 2026-07-04): blurb tokens are spent BEFORE the
+    # embed that can still fail — if Cohere is down, every doc stays pending
+    # and the NEXT run re-pays the full contextualization. One cheap embed
+    # probe gates the whole run's Anthropic spend.
+    if ctx_left > 0 and docs:
+        if not _embed(["cohere preflight"], input_type="search_document"):
+            ctx_left = 0
     for slug, name, md, gen_at in docs:
         chunks = _chunk_narrative(name or slug, gen_at, md)
         if not chunks:
@@ -484,6 +513,13 @@ def _reindex_chunk_docs(c, doc_cap: int) -> int:
             if blurbs:
                 chunks = [f"Context: {b}\n{t}" if b else t
                           for t, b in zip(chunks, blurbs)]
+            # Run-level breaker: a doc that attempted several calls and got
+            # ZERO blurbs signals systemic API failure (auth/outage) — stop
+            # contextualizing for the rest of the run; docs still embed with
+            # their static headers.
+            if (blurbs is None) or (attempted >= _CTX_BREAKER_FAILS
+                                    and not any(blurbs)):
+                ctx_left = 0
         vecs = []
         for i in range(0, len(chunks), _COHERE_BATCH):
             v = _embed(chunks[i:i + _COHERE_BATCH], input_type="search_document")

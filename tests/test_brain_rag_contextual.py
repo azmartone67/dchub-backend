@@ -213,3 +213,52 @@ def test_reindex_processes_docs_with_contextual_disabled(monkeypatch):
     for t in _inserted_texts(conn):
         assert t.startswith("Ashburn — DCPI deep-dive (2026-07-01):"), t
     monkeypatch.delenv("BRAIN_RAG_CONTEXTUAL", raising=False)
+
+
+# ── review-fix invariants (r-ctx-fixes 2026-07-04) ────────────────────
+def test_circuit_breaker_aborts_after_consecutive_failures(monkeypatch):
+    """3 consecutive call failures -> the batch aborts (no further urlopen
+    attempts), so a hung network can't hold a thread for the whole budget."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    attempts = []
+
+    def _always_boom(req, timeout=0):
+        attempts.append(1)
+        raise OSError("blackholed")
+
+    monkeypatch.setattr(br.urllib.request, "urlopen", _always_boom)
+    out = br._contextualize_chunks("T", "doc", ["c1", "c2", "c3", "c4", "c5"])
+    assert out == [None] * 5
+    assert len(attempts) == br._CTX_BREAKER_FAILS  # stopped at the breaker
+
+
+def test_blurb_capped_at_200_chars(monkeypatch):
+    """A runaway blurb is truncated to _CTX_BLURB_MAX_CHARS so it can't crowd
+    the provenance header + chunk facts out of the 500-char preview."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    long_blurb = "x" * 999
+
+    def _ok(req, timeout=0):
+        body = json.dumps({"content": [{"type": "text", "text": long_blurb}]})
+        return io.BytesIO(body.encode())
+
+    monkeypatch.setattr(br.urllib.request, "urlopen", _ok)
+    out = br._contextualize_chunks("T", "doc", ["c1"])
+    assert out[0] is not None and len(out[0]) == br._CTX_BLURB_MAX_CHARS == 200
+
+
+def test_cohere_preflight_gates_anthropic_spend(monkeypatch):
+    """If the Cohere preflight embed fails, contextualization is disabled for
+    the run (no Anthropic calls), but docs still embed... in this simulation
+    _embed always fails so docs stay pending — the invariant under test is
+    ZERO _contextualize_chunks calls when Cohere is down."""
+    monkeypatch.delenv("BRAIN_RAG_CONTEXTUAL", raising=False)  # default ON
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setattr(br, "_pending_chunk_docs", lambda cur, cap: [
+        ("m1", "Market One", "para one\n\n" + "y" * 700, datetime(2026, 7, 1))])
+    monkeypatch.setattr(br, "_embed", lambda texts, input_type="x": None)  # Cohere down
+    ctx_calls = []
+    monkeypatch.setattr(br, "_contextualize_chunks",
+                        lambda *a, **k: ctx_calls.append(1) or [])
+    br._reindex_chunk_docs(FakeConn(), doc_cap=5)
+    assert ctx_calls == []  # zero Anthropic spend while Cohere is down
