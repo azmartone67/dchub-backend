@@ -54,14 +54,45 @@ def _rerank_on() -> bool:
 # Each: source_table → {id (t-qualified ::text), text (SQL expr over alias t),
 # kind, where}. All exprs are hardcoded/trusted (never user input).
 CORPORA = {
+    # fresh_col notes (r-rag-freshcol 2026-07-04) — every fresh_col below is
+    # gated at runtime by _fresh_col_active() (live information_schema check:
+    # column EXISTS and is a timestamp/date type) because the repo DDL lies
+    # (brain_findings/power_plants schema-drift class). A wrong fresh_col
+    # would otherwise make _pending's per-corpus SELECT raise → try/except →
+    # that WHOLE corpus silently stops indexing, every run.
+    #
+    #   brain_findings.last_seen — column verified on LIVE via the public
+    #     GET /api/v1/brain/findings/db-status introspection (2026-07-04).
+    #     The canonical writer (routes/brain_findings_writer) re-stamps
+    #     last_seen=NOW() while updating detail/count IN PLACE on every
+    #     re-fire — exactly the insert-only staleness gap fresh_col closes.
+    #   brain_strategic_recommendations.updated_at — TIMESTAMPTZ in the
+    #     schema_repair DDL that created the table; actively re-stamped by
+    #     _mark_pr_on_rec (spec-promoter flow, proven live by recs carrying
+    #     pr_url/status='pr_drafted').
+    #   news_articles — NO fresh_col: every active writer is INSERT … ON
+    #     CONFLICT (id) DO NOTHING (news_engine.py); rows are never updated
+    #     in place and no updated/modified-style column is referenced by any
+    #     code path, so there is no usable freshness signal.
+    #   deals — NO fresh_col: writers are ON CONFLICT DO NOTHING; the only
+    #     UPDATE path (manual admin edit in main.py) stamps no timestamp.
+    #   discovered_facilities.last_updated — re-stamped in place by two live
+    #     crawlers (routes/discovery_routes.py upsert: SET last_updated=
+    #     EXCLUDED.last_updated; routes/osm_crawler.py: SET last_updated=
+    #     NOW()), so the column exists on live. CAVEAT: some writers pass ISO
+    #     strings, and sibling column merged_at is TEXT on live — if
+    #     last_updated is TEXT too, the type gate leaves this corpus on
+    #     insert-only (visible in /status fresh_cols) instead of breaking it.
     "brain_findings": {
         "id": "t.id::text", "kind": "finding",
         "text": "coalesce(t.issue,'') || ' — ' || coalesce(t.detail,'')",
-        "where": "coalesce(t.issue,'') <> ''"},
+        "where": "coalesce(t.issue,'') <> ''",
+        "fresh_col": "last_seen"},
     "brain_strategic_recommendations": {
         "id": "t.id::text", "kind": "recommendation",
         "text": "coalesce(t.title,'') || ' — ' || coalesce(t.spec_md,'')",
-        "where": "coalesce(t.title,'') <> ''"},
+        "where": "coalesce(t.title,'') <> ''",
+        "fresh_col": "updated_at"},
     "news_articles": {
         "id": "t.id::text", "kind": "news",
         "text": "coalesce(t.title,'') || ' — ' || coalesce(t.summary,'')",
@@ -77,7 +108,8 @@ CORPORA = {
         "text": ("coalesce(t.name,'') || ' — ' || coalesce(t.provider,'') || ' · ' || "
                  "concat_ws(', ', t.city, t.state, t.country) || ' · ' || "
                  "coalesce(t.market,'') || ' ' || coalesce(t.facility_type,'')"),
-        "where": "coalesce(t.name,'') <> '' AND coalesce(t.is_duplicate, 0) = 0"},
+        "where": "coalesce(t.name,'') <> '' AND coalesce(t.is_duplicate, 0) = 0",
+        "fresh_col": "last_updated"},
     # ── self-learning "lessons" (r-rag-lessons 2026-07-04) ───────────────
     # The brain already CAPTURES outcomes (autopilot_outcomes,
     # brain_finding_outcomes) but never RECALLED them, so it re-proposed ideas
@@ -106,9 +138,13 @@ CORPORA = {
 # Brain-internal corpora that carry PAST-OUTCOME lessons (recalled by
 # retrieve_lessons; never exposed to public_search).
 LESSON_CORPORA = ("autopilot_outcomes", "brain_finding_outcomes")
-# Optional per-corpus "fresh_col" (a t.<timestamp> column): when set, _pending
-# ALSO re-picks rows whose source timestamp is newer than the stored embedding
-# (updated-in-place rows re-embed). Corpora without it keep insert-only behavior.
+# Optional per-corpus "fresh_col" (a t.<timestamp> column): when set AND
+# live-verified by _fresh_col_active (exists + timestamp type on the LIVE
+# schema), _pending ALSO re-picks rows whose source timestamp is newer than
+# the stored embedding (updated-in-place rows re-embed). Corpora without it —
+# or whose declared column fails the live check — keep insert-only behavior.
+# Activation is visible per-corpus in /api/v1/admin/brain/rag/status
+# ("fresh_cols").
 
 # ── chunked corpora (RAG v1, 2026-07-03) ─────────────────────────────
 # One DOC → many chunk rows (source_id='<slug>#<n>'). Can't ride the flat
@@ -354,14 +390,49 @@ def _rerank(query, docs, top_n):
 
 
 # ── corpus selection ──────────────────────────────────────────────────
+# fresh_col live-schema gate (r-rag-freshcol 2026-07-04). The repo DDL lies
+# (brain_findings/power_plants drift class), so a registry fresh_col only
+# activates after the LIVE information_schema confirms the column exists AND
+# is a timestamp/date type. Without this gate a wrong fresh_col makes the
+# per-corpus SELECT raise inside _pending's try/except → that whole corpus
+# silently stops indexing on EVERY run. Fail-closed → insert-only behavior
+# (never worse than pre-fresh_col). Positive/negative introspection results
+# are process-cached; introspection ERRORS are not cached (transient DB blips
+# must not disable freshness until restart).
+_FRESH_COL_CACHE = {}   # (table, col) -> bool
+
+
+def _fresh_col_active(cur, table: str, col: str) -> bool:
+    hit = _FRESH_COL_CACHE.get((table, col))
+    if hit is not None:
+        return hit
+    try:
+        cur.execute(
+            "SELECT data_type FROM information_schema.columns "
+            "WHERE table_schema='public' AND table_name=%s AND column_name=%s",
+            (table, col))
+        row = cur.fetchone()
+        ok = bool(row) and (str(row[0]).startswith("timestamp")
+                            or str(row[0]) == "date")
+    except Exception:
+        try: cur.connection.rollback()
+        except Exception: pass
+        return False  # uncached: retry next run
+    _FRESH_COL_CACHE[(table, col)] = ok
+    return ok
+
+
 def _pending(cur, cap):
     """Rows across ALL registered corpora that don't yet have an embedding —
-    plus, for corpora with a `fresh_col`, rows updated IN PLACE since they
-    were embedded (the insert-only staleness gap: a row regenerated under the
-    same PK never re-indexed). Allocates the cap roughly EVENLY across corpora
-    so one large corpus (facilities) doesn't starve the others until it's
-    done. A corpus whose columns don't resolve is skipped (rollback), never
-    fatal."""
+    plus, for corpora with a `fresh_col` (live-verified via
+    _fresh_col_active), rows updated IN PLACE since they were embedded (the
+    insert-only staleness gap: a row regenerated under the same PK never
+    re-indexed). NEW rows are picked before stale re-embeds (ORDER BY) so a
+    corpus whose fresh_col re-stamps often — brain_findings re-fires dozens
+    of findings per scan — can't starve its own new content out of the
+    per-corpus budget. Allocates the cap roughly EVENLY across corpora so one
+    large corpus (facilities) doesn't starve the others until it's done. A
+    corpus whose columns don't resolve is skipped (rollback), never fatal."""
     rows = []
     per = max(1, cap // max(1, len(CORPORA) + len(CHUNKED_CORPORA)))
     for src, spec in CORPORA.items():
@@ -370,14 +441,17 @@ def _pending(cur, cap):
         lim = min(per, cap - len(rows))
         fresh = spec.get("fresh_col")
         pick = "e.id IS NULL"
-        if fresh:
+        order = ""
+        if fresh and _fresh_col_active(cur, src, fresh):
             pick = f"(e.id IS NULL OR t.{fresh} > e.updated_at)"
+            order = "ORDER BY (e.id IS NULL) DESC "
         q = (f"SELECT '{src}', ({spec['id']}) AS sid, '{spec['kind']}', "
              f"left({spec['text']}, 1600) "
              f"FROM {src} t "
              f"LEFT JOIN brain_corpus_embeddings e "
              f"  ON e.source_table='{src}' AND e.source_id=({spec['id']}) "
              f"WHERE {pick} AND ({spec['where']}) "
+             f"{order}"
              f"LIMIT {int(lim)}")
         try:
             cur.execute(q)
@@ -576,8 +650,20 @@ def _corpus_total(cur):
 def retrieve_context(query: str, k: int = 8, corpus: str = None) -> list:
     """Top-k most semantically-relevant rows, optionally scoped to one corpus
     (e.g. corpus='news_articles'). Two-stage: pgvector cosine over-fetch →
-    Cohere rerank → top-k (rerank fail-soft → cosine order). Returns
-    [{source_table,source_id,kind,text,score}]. Fail-soft → []."""
+    Cohere rerank → top-k (rerank fail-soft → cosine order). Fail-soft → [].
+
+    Returns [{source_table, source_id, kind, text, score, cosine}] where
+      - "cosine" is ALWAYS the original bi-encoder similarity (1 - pgvector
+        cosine distance), present on EVERY result whether rerank fired or not.
+        Threshold on THIS for similarity/dedup gates (e.g. the feature
+        proposer's >= 0.82 duplicate check) — it lives on the embed-v3 cosine
+        scale the thresholds were tuned for.
+      - "score" is the RANKING signal: the Cohere cross-encoder relevance when
+        rerank fired, else identical to "cosine". Cross-encoder relevance runs
+        on a DIFFERENT scale (typically ~0.05-0.3), so sorting/display by
+        "score" is right but thresholding cosine-tuned gates on it silently
+        disarms them (r-rag-cosine-passthrough 2026-07-04, live bug: the
+        proposer's 0.82 gate never fired once rerank shipped)."""
     if not query:
         return []
     qv = _embed([query], input_type="search_query")
@@ -608,8 +694,11 @@ def retrieve_context(query: str, k: int = 8, corpus: str = None) -> list:
                     FROM brain_corpus_embeddings
                     ORDER BY embedding <=> %s::vector LIMIT %s
                 """, (qs, qs, int(fetch_k)))
+            # "cosine" rides on every row and NEVER gets overwritten; "score"
+            # starts as cosine and becomes rerank relevance if stage 2 fires.
             base = [{"source_table": r[0], "source_id": r[1], "kind": r[2],
-                     "text": r[3], "score": round(float(r[4]), 4)} for r in cur.fetchall()]
+                     "text": r[3], "score": round(float(r[4]), 4),
+                     "cosine": round(float(r[4]), 4)} for r in cur.fetchall()]
     except Exception:
         return []
     finally:
@@ -631,8 +720,23 @@ def retrieve_lessons(query: str, k: int = 5) -> list:
     """Recall PAST-OUTCOME lessons (what worked / failed before) from the
     autopilot_outcomes + brain_finding_outcomes corpora, so a layer can avoid
     repeating a known failure. Thin scoped wrapper over retrieve_context —
-    inherits rerank + fail-soft []."""
-    return retrieve_context(query, k=k, corpus=list(LESSON_CORPORA))
+    inherits rerank + fail-soft [].
+
+    Dedup (r-rag-lesson-dedup 2026-07-04): the outcome tables write
+    near-identical rows per verify pass, so the SAME lesson text can occupy
+    several of the k slots and crowd out distinct lessons. Results with
+    identical text are collapsed to one; retrieve_context returns best-first,
+    so keeping the FIRST occurrence keeps the highest-scoring copy."""
+    results = retrieve_context(query, k=k, corpus=list(LESSON_CORPORA))
+    seen = set()
+    out = []
+    for r in results or []:
+        t = (r.get("text") or "").strip()
+        if t in seen:
+            continue
+        seen.add(t)
+        out.append(r)
+    return out
 
 
 # ── hydration for agent-facing search (attach citable source fields) ───
@@ -972,9 +1076,23 @@ def status():
                 _docs = 0
             per["market_narratives"] = (f"{by.get('market_narratives', 0)} chunks / "
                                         f"{_docs} docs ({_pending_chunk_count(cur)} pending)")
+            # fresh_col activation per corpus, checked against the LIVE
+            # schema — the deploy-visible answer to "did freshness actually
+            # engage?" (a declared column that's missing or non-timestamp
+            # shows inactive_missing_or_wrong_type, corpus stays insert-only).
+            fresh = {}
+            for src, spec in CORPORA.items():
+                fc = spec.get("fresh_col")
+                if not fc:
+                    fresh[src] = "none (insert-only)"
+                elif _fresh_col_active(cur, src, fc):
+                    fresh[src] = f"active ({fc})"
+                else:
+                    fresh[src] = f"inactive_missing_or_wrong_type ({fc})"
         return jsonify(ok=True, embedded=emb, corpus_total=total,
                        coverage_pct=round(100.0 * emb / max(1, total), 1),
-                       by_corpus=per, last_indexed=str(last), model=EMBED_MODEL,
+                       by_corpus=per, fresh_cols=fresh,
+                       last_indexed=str(last), model=EMBED_MODEL,
                        planner_wired=str(os.environ.get("BRAIN_RAG_ENABLED", "")).lower() in ("1", "true", "yes")), 200
     except Exception as e:
         return jsonify(ok=False, error=f"{type(e).__name__}: {str(e)[:160]}"), 200
