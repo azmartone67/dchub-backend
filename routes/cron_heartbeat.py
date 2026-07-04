@@ -478,17 +478,21 @@ _DISPATCH = [
     ("gap_master_tick_6h",
      f"{BASE}/api/v1/admin/gaps/master-tick",
      "POST",
-     lambda now: now.hour % 6 == 2 and now.minute < 55),
+     lambda now: now.hour % 6 == 2 and now.minute < 8),
 
     # 2026-07-04: Brain Lane Driver — RAG-grounded lane decisions (2 worst
     # lanes/tick, structured outputs, closed action catalog, decision ledger
     # = RAG lesson corpus). Every 6h at 04/10/16/22 UTC, offset from the gap
     # shell so its actions have hours to land before the next gap read.
     # Kills: BRAIN_LANE_DRIVER_DISABLED / _ACT_DISABLED.
+    # qa-0704c: NARROW window — the heartbeat re-fires any minute<55 entry on
+    # every pass within the hour (fine for idempotent endpoints; this one costs
+    # 2 Fable decisions per fire — 4 fires in 12min on 07-04 until the daily
+    # cap braked it, with the driver itself choosing stop/stop by fire #4).
     ("brain_lane_driver_6h",
      f"{BASE}/api/v1/admin/brain/lane-driver/tick",
      "POST",
-     lambda now: now.hour % 6 == 4 and now.minute < 55),
+     lambda now: now.hour % 6 == 4 and now.minute >= 5 and now.minute < 10),
 
     # 2026-07-04: Reliability-Recovery shell — DAILY shadow tick (measure +
     # score + persist the A/B/C auto-merge arm gate; consecutive_ge50 needs
@@ -496,7 +500,7 @@ _DISPATCH = [
     ("reliability_master_tick_daily",
      f"{BASE}/api/v1/admin/reliability/master-tick",
      "POST",
-     lambda now: now.hour == 5 and now.minute < 55),
+     lambda now: now.hour == 5 and now.minute < 8),
 
     # 2026-07-04: RAG master shell — DAILY shadow tick at 06:xx UTC (after the
     # 04:20 reindex cycle so freshness reads warm, before the 09:xx deep-dive

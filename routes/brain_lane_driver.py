@@ -612,7 +612,19 @@ def lane_driver_tick():
 
     remaining = max(0, _daily_cap() - _decisions_today())
     n = min(_lanes_per_tick(), remaining)
-    ranked = sorted(_LANES, key=lambda l: _prescore(l, sensed[l]))
+    # qa-0704c: per-lane cooldown — a lane decided on within the last 5h is
+    # not re-decided, so heartbeat re-fires inside a cron window can't spend
+    # the day's budget re-litigating the same two lanes (07-04: 4 fires in
+    # 12min; the driver itself chose stop/stop by fire #4, but the budget
+    # was already burned).
+    cooled = []
+    for l in _LANES:
+        row = _q1("""SELECT 1 FROM brain_lane_decisions
+                     WHERE lane = %s AND decided_at > NOW() - INTERVAL '5 hours'
+                     LIMIT 1""", (l,))
+        if not row:
+            cooled.append(l)
+    ranked = sorted(cooled or [], key=lambda l: _prescore(l, sensed[l]))
     selected = ranked[:n]
 
     kpi_table = "\n".join(
