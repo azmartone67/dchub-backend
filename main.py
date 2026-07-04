@@ -3366,7 +3366,11 @@ def _grid_intel_cached(region, rto_code):
 # Cohere embed, so callers on HOT PUBLIC paths (market/grid web pages) gate it
 # behind an explicit ?rag=1 opt-in; only low-volume agent tools call it always.
 def _rag_related_intel(query, corpus=None, k=4, min_cosine=0.30):
-    if not query:
+    # Kill-switch (r-rag-tooldata): RAG_TOOLDATA_DISABLED=1 sheds ALL tool-data
+    # grounding without a redeploy — the fast lever if the synchronous embed on a
+    # hot path (esp. get_grid_intelligence) needs to be turned off in a hurry.
+    import os as _os
+    if _os.getenv("RAG_TOOLDATA_DISABLED") == "1" or not query:
         return []
     try:
         from routes.brain_rag import retrieve_context, _hydrate

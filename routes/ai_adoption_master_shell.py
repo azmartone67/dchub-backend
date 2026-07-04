@@ -292,6 +292,9 @@ def tier3_legibility(measure: dict) -> dict:
 _RAG_MIN_COSINE = 0.30
 
 def _rag_ground(query: str, k: int = 4, corpus=None, lessons: bool = False) -> list:
+    import os as _os
+    if _os.getenv("RAG_TOOLDATA_DISABLED") == "1":  # one lever kills all RAG grounding
+        return []
     try:
         from routes.brain_rag import retrieve_context, retrieve_lessons, _hydrate
     except Exception:
