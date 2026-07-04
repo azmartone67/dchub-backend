@@ -151,9 +151,80 @@ def _gather_market_facts(cur, slug: str) -> dict | None:
     return out
 
 
-def _ask_claude_to_write(facts: dict) -> tuple[str | None, str | None]:
-    if not _ANTHROPIC_KEY:
-        return None, "no_anthropic_api_key"
+def _retrieve_grounding(facts: dict) -> str:
+    """RAG grounding for the deep-dive writer (2026-07-04).
+
+    Before this, the haiku writer saw ONLY the one market's SQL facts —
+    no deal color, no news, no peer-market comparisons. Pull top-k
+    semantic matches from the brain RAG corpora (routes/brain_rag.py)
+    and return a clearly-labeled GROUNDING CONTEXT block. Synergy: the
+    resulting richer narratives are themselves embedded into the
+    market_narratives corpus, so better grounding compounds downstream.
+
+    FAIL-SOFT: any failure (import, DB, embed provider, per-corpus query)
+    returns "" so the composed prompt is byte-identical to the ungrounded
+    version — grounding can only ever ADD, never break generation.
+    """
+    try:
+        from routes.brain_rag import retrieve_context
+    except Exception:
+        return ""
+    name = (facts.get("name") or "").strip()
+    slug = (facts.get("slug") or "").strip().lower()
+    if not name:
+        return ""
+    # facts carries no state today; include it if a future writer adds one.
+    query = " ".join(p for p in (
+        name, (facts.get("state") or "").strip(),
+        "data center acquisition investment") if p)
+
+    def _pull(k: int, corpus: str) -> list:
+        try:
+            return retrieve_context(query, k=k, corpus=corpus) or []
+        except Exception:
+            return []
+
+    deals = _pull(4, "deals")
+    news = _pull(4, "news_articles")
+    # Peer-market context: the market's OWN narrative chunks
+    # (source_id='<slug>#<n>') would dominate top-k for a query containing
+    # its own name — over-fetch, then exclude self in Python, keep 3 peers.
+    peers = [h for h in _pull(8, "market_narratives")
+             if not (slug and str(h.get("source_id") or "").lower().startswith(slug))][:3]
+
+    def _fmt(hits: list) -> str:
+        lines = []
+        for h in hits:
+            txt = " ".join(str(h.get("text") or "").split())[:400]
+            if txt:
+                lines.append(f"- [{h.get('source_id') or '?'}] {txt}")
+        return "\n".join(lines)
+
+    sections = []
+    d = _fmt(deals)
+    if d:
+        sections.append("RELATED DEALS (semantic matches):\n" + d)
+    n = _fmt(news)
+    if n:
+        sections.append("RELATED NEWS (semantic matches):\n" + n)
+    p = _fmt(peers)
+    if p:
+        sections.append("PEER-MARKET CONTEXT (other markets, for comparison only):\n" + p)
+    if not sections:
+        return ""
+    return (
+        f"GROUNDING CONTEXT — retrieved from DC Hub's internal knowledge "
+        f"base. These are semantic matches and MAY include items that are "
+        f"not actually about {name}: weave in ONLY what is clearly relevant "
+        f"to {name}, silently ignore the rest, and NEVER invent, derive, or "
+        f"repeat numbers from this section — every number you cite must come "
+        f"from the live stats above.\n\n" + "\n\n".join(sections)
+    )
+
+
+def _compose_prompt(facts: dict) -> str:
+    """Build the writer prompt. Split out of _ask_claude_to_write so tests
+    can assert on the exact prompt without mocking the Anthropic call."""
     deals_str = ", ".join(
         f"{d.get('buyer','?')}→{d.get('seller','?')} ({'$'+format(d['value'],',.0f') if d.get('value') else '?'}, {d.get('date') or '?'})"
         for d in (facts.get("recent_deals") or [])[:5]
@@ -161,7 +232,14 @@ def _ask_claude_to_write(facts: dict) -> tuple[str | None, str | None]:
     operators_str = ", ".join(
         f"{o['name']} ({o['count']})" for o in (facts.get("top_operators") or [])[:5]
     ) or "operator mix not yet aggregated"
-    prompt = (
+    try:
+        grounding = _retrieve_grounding(facts)
+    except Exception:
+        grounding = ""
+    # When grounding is "" this collapses to the original "…\n\n" join, so
+    # a retrieval failure yields a prompt byte-identical to the ungrounded one.
+    grounding_block = f"\n{grounding}\n" if grounding else ""
+    return (
         f"You are writing a 400-word market analysis for data-center "
         f"investors and operators. Be specific, cite the live numbers, "
         f"avoid generic platitudes. Output plain markdown, no preamble.\n\n"
@@ -171,12 +249,19 @@ def _ask_claude_to_write(facts: dict) -> tuple[str | None, str | None]:
         f"(verdict: {facts.get('verdict','?')})\n"
         f"Tracked facilities: {facts.get('facility_count')} | total MW: {facts.get('total_mw'):,.0f}\n"
         f"Top operators: {operators_str}\n"
-        f"Recent M&A: {deals_str}\n\n"
-        f"Write four paragraphs: (1) current state in one sentence, "
+        f"Recent M&A: {deals_str}\n"
+        f"{grounding_block}"
+        f"\nWrite four paragraphs: (1) current state in one sentence, "
         f"then 2-3 specific facts; (2) what the DCPI verdict means for "
         f"buyers; (3) deal flow + operator dynamics; (4) one forward-"
         f"looking sentence. Maximum 500 words. No headings, just paragraphs."
     )
+
+
+def _ask_claude_to_write(facts: dict) -> tuple[str | None, str | None]:
+    if not _ANTHROPIC_KEY:
+        return None, "no_anthropic_api_key"
+    prompt = _compose_prompt(facts)
     try:
         import requests
         r = requests.post(
