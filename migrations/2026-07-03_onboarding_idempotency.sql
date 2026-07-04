@@ -5,11 +5,22 @@
 -- fix/onboarding-funnel-2026-07-03. REVIEW + RUN MANUALLY against the primary
 -- Neon endpoint (NOT auto-run at boot — see the boot-DDL-storm history).
 --
--- Fixes audit defects #4 (no idempotency) and #5 (duplicate api_keys via a
--- check-then-insert race). Founding customer #7 got TWO active api_keys rows
+-- Fixes audit defect #4 (no idempotency) and cleans up the duplicate-key
+-- symptom from defect #5. Founding customer #7 got TWO active api_keys rows
 -- (dchub_cHcI5r / dchub_fgLdqa, 7ms apart) because two concurrent webhook
 -- deliveries both passed the app-level "does an active key exist?" check before
 -- either inserted.
+--
+-- IMPORTANT — why there is NO `UNIQUE(user_id)` constraint here:
+--   An earlier draft added a partial UNIQUE index enforcing "one active key per
+--   user". That is WRONG for this schema: internal/owner accounts (e.g.
+--   user_id='admin001') legitimately hold many active keys — including the
+--   platform's own live keys (DCHUB_API_KEY, DCHUB_ENT_KEY). A blanket
+--   constraint deactivates those. The correct race protection is the
+--   APPLICATION-level idempotency gate (_stripe_event_already_processed, which
+--   dedupes the same Stripe event across retries/concurrent deliveries — the
+--   actual cause of the dup), NOT a DB uniqueness rule. So this migration only
+--   creates the ledger and cleans UNUSED duplicate keys.
 -- ============================================================================
 
 BEGIN;
@@ -22,12 +33,17 @@ CREATE TABLE IF NOT EXISTS stripe_webhook_events (
     processed_at TIMESTAMPTZ DEFAULT now()
 );
 
--- 2) Deactivate DUPLICATE active api_keys, keeping the earliest-created active
---    key per user (non-destructive: we set is_active=0, we do not DELETE, so no
---    credential history is lost and nothing that referenced the row breaks).
+-- 2) Deactivate ONLY UNUSED duplicate active keys (zero usage on every counter),
+--    keeping the earliest active key per user. This clears webhook-race dups
+--    like Roman's id 94 WITHOUT touching keys that have ever served traffic and
+--    WITHOUT collapsing accounts that intentionally hold multiple keys (their
+--    used keys all survive). Non-destructive: is_active=0, never DELETE.
 UPDATE api_keys a
    SET is_active = 0
  WHERE COALESCE(a.is_active, 1) = 1
+   AND COALESCE(a.calls_total, 0) = 0
+   AND COALESCE(a.usage_count, 0) = 0
+   AND COALESCE(a.calls_today, 0) = 0
    AND EXISTS (
         SELECT 1 FROM api_keys b
          WHERE b.user_id = a.user_id
@@ -36,21 +52,14 @@ UPDATE api_keys a
                  OR (b.created_at = a.created_at AND b.id < a.id) )
    );
 
--- 3) Enforce "at most one ACTIVE api_keys row per user" at the DB level. After
---    this, a second concurrent INSERT that slips past the app guard raises a
---    unique violation instead of creating a duplicate; the caller's _pg_execute
---    swallows it, so the customer simply keeps their first key (desired).
-CREATE UNIQUE INDEX IF NOT EXISTS uq_api_keys_one_active_per_user
-    ON api_keys (user_id)
-    WHERE COALESCE(is_active, 1) = 1;
-
 COMMIT;
 
 -- ----------------------------------------------------------------------------
--- POST-RUN VERIFICATION (run separately; should each return 0 offending rows):
---   -- users with >1 active api_keys row (should be 0):
---   SELECT user_id, count(*) FROM api_keys WHERE COALESCE(is_active,1)=1
---     GROUP BY user_id HAVING count(*) > 1;
---   -- Roman specifically (77594c7a070f7304) — expect exactly 1 active:
+-- POST-RUN VERIFICATION:
+--   -- Roman (77594c7a070f7304): expect id 93 active, id 94 inactive:
 --   SELECT id, key_prefix, is_active FROM api_keys WHERE user_id='77594c7a070f7304';
+--   -- No USED key should have been deactivated (should return 0 rows):
+--   SELECT id, user_id, key_prefix, calls_total FROM api_keys
+--    WHERE COALESCE(is_active,1)=0
+--      AND (COALESCE(calls_total,0)>0 OR COALESCE(usage_count,0)>0);
 -- ----------------------------------------------------------------------------
