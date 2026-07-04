@@ -78,27 +78,36 @@ def _candidates(limit: int = 25) -> list[dict]:
         conn = get_db()
         if not conn: return []
         cur = conn.cursor()
-        # Schema: mcp_tool_calls.api_key_hash, api_keys.key_hash,
-        # api_keys.user_id -> users.email, api_keys.plan (not tier).
-        # Heavy callers in last 14d that have a captured email + are
-        # on the free/identified tier and haven't been nudged in 30d.
+        # Schema (verified live 2026-07-04): per-key call telemetry lives in
+        # mcp_call_log(api_key, tool, timestamp) — the raw-key call source that
+        # upgrade_nudger/stripe_metered/retention_cohorts all read. It is NOT in
+        # mcp_tool_calls, which carries no key column at all (id, tool_name,
+        # platform, client_name, params, success, response_time_ms, ip_address,
+        # user_agent, created_at, session_id). The old query selected
+        # mcp_tool_calls.api_key_hash — a column no writer creates — so it threw
+        # 'column "api_key_hash" does not exist' on every run and the except
+        # below swallowed it, yielding 0 candidates forever (silent no-op).
+        # Link the raw key to api_keys via key_prefix/key_hash (same join
+        # upgrade_nudger uses), then api_keys.user_id -> users.email, and
+        # api_keys.plan for the tier gate. Heavy callers in last 14d with a
+        # captured email on the free/identified tier, not nudged in 30d.
         cur.execute("""
             WITH heavy AS (
-                SELECT api_key_hash,
+                SELECT api_key AS api_key_raw,
                        COUNT(*) AS calls_14d,
-                       MODE() WITHIN GROUP (ORDER BY tool_name) AS top_tool
-                FROM mcp_tool_calls
-                -- Phase FF+11-schemafix (2026-05-19): created_at, not called_at
-                WHERE created_at > NOW() - INTERVAL '14 days'
-                  AND api_key_hash IS NOT NULL
-                GROUP BY api_key_hash
+                       MODE() WITHIN GROUP (ORDER BY tool) AS top_tool
+                FROM mcp_call_log
+                WHERE timestamp > NOW() - INTERVAL '14 days'
+                  AND api_key IS NOT NULL AND api_key <> ''
+                GROUP BY api_key
                 HAVING COUNT(*) >= %s
             ),
             with_email AS (
-                SELECT h.api_key_hash, h.calls_14d, h.top_tool,
+                SELECT k.key_hash AS api_key_hash, h.calls_14d, h.top_tool,
                        u.email, COALESCE(k.plan, 'free') AS plan
                 FROM heavy h
-                JOIN api_keys k ON k.key_hash = h.api_key_hash
+                JOIN api_keys k ON k.key_prefix = LEFT(h.api_key_raw, 16)
+                                OR k.key_hash   = h.api_key_raw
                 JOIN users u    ON u.id = k.user_id
                 WHERE u.email IS NOT NULL AND u.email <> ''
                   AND COALESCE(k.plan, 'free') IN ('free', 'identified', 'developer')
