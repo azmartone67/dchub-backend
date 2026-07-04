@@ -456,6 +456,18 @@ _DISPATCH = [
      "POST",
      lambda now: now.hour % 4 == 0 and now.minute >= 20 and now.minute < 25),
 
+    # RAG v1 (2026-07-03): market deep-dive rotation — regenerate the 10 stalest
+    # DCPI market narratives daily (317 markets → full refresh ~monthly). This
+    # existing endpoint previously had NO surviving scheduler (it was only an
+    # autopilot action, and the flywheel has been offline) AND its generator was
+    # broken (selected the non-existent `score` column) — market_deep_dives sat
+    # at 0 rows since inception. Feeds the market_narratives RAG corpus + the
+    # context-pack outlook section. _hit() attaches X-Admin-Key. Daily 09:xx UTC.
+    ("market_deep_dive_rotate_daily",
+     f"{BASE}/api/v1/markets/deep-dive/cron?count=10",
+     "POST",
+     lambda now: now.hour == 9 and now.minute < 55),
+
     # 2026-07-03: AGENT-ONBOARDING master shell — daily 08:xx UTC. One per-platform
     # onboarding scoreboard (Claude/ChatGPT/Gemini/Grok/Perplexity/Copilot/Mistral/
     # HF/Poe/…): probes mcp reachability+transport+auth, A2A card, robots AI-bot
