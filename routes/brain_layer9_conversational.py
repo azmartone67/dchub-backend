@@ -25,6 +25,14 @@ Context fed to Claude:
 
 No admin gate — read-only Q&A on already-public brain state. Rate-
 limited by ANTHROPIC_API_KEY budget; default ~$0.01 per question.
+
+rag-gap-l9: answers were grounded ONLY in the shallow live snapshot above
+(4 internal endpoints) — zero recall of the brain's own corpus. Now each
+question also fail-soft retrieves semantic recall (findings, strategic
+recommendations, news, deals) + past-outcome lessons from routes.brain_rag
+and injects them as a RETRIEVED CONTEXT / PAST LESSONS block ALONGSIDE the
+snapshot (additive — the snapshot is never replaced, and any retrieval
+failure degrades to the exact pre-RAG prompt).
 """
 
 import os
@@ -126,6 +134,57 @@ def _gather_full_context() -> dict:
     }
 
 
+# ── rag-gap-l9: semantic recall grounding (fail-soft, additive) ────────
+_RAG_QA_CORPORA = ["brain_findings", "brain_strategic_recommendations",
+                   "news_articles", "deals"]
+
+
+def _retrieve_grounding(question: str):
+    """Fail-soft semantic recall for Q&A grounding. Returns (items, lessons).
+    ANY failure (module missing, no embed key, DB down) → ([], []) so the
+    prompt degrades to snapshot-only, byte-identical to the pre-RAG prompt."""
+    if not (question or "").strip():
+        return [], []
+    items, lessons = [], []
+    try:
+        from routes.brain_rag import retrieve_context
+        items = retrieve_context(question, k=6, corpus=_RAG_QA_CORPORA) or []
+    except Exception:
+        items = []
+    try:
+        from routes.brain_rag import retrieve_lessons
+        lessons = retrieve_lessons(question, k=3) or []
+    except Exception:
+        lessons = []
+    return items, lessons
+
+
+def _grounding_block(items, lessons) -> str:
+    """Render retrieval results as a prompt block. Returns "" when nothing was
+    retrieved so the final prompt stays IDENTICAL to the pre-RAG prompt."""
+    if not items and not lessons:
+        return ""
+    parts = []
+    if items:
+        parts.append(
+            "RETRIEVED CONTEXT (semantic recall over brain findings, strategic "
+            "recommendations, market news and M&A deals — the items most "
+            "relevant to this question):\n"
+            + json.dumps(items, indent=2, default=str)[:4500])
+    if lessons:
+        parts.append(
+            "PAST LESSONS (outcomes of prior fixes/strategies — what actually "
+            "worked or failed before; don't recommend a known failure):\n"
+            + json.dumps(lessons, indent=2, default=str)[:2500])
+    parts.append(
+        "Grounding rules: when a claim relies on a retrieved item above, cite "
+        "which item grounds it, e.g. [brain_findings #<source_id>] or "
+        "[deals #<source_id>]. If neither the live context snapshot nor the "
+        'retrieved items cover the question, say "not in my context" instead '
+        "of guessing.")
+    return "\n" + "\n\n".join(parts) + "\n"
+
+
 @brain_layer9_bp.route("/api/v1/brain/ask", methods=["POST", "GET"])
 def ask():
     """Natural-language Q&A against full brain state."""
@@ -156,6 +215,12 @@ def ask():
 
     ctx = _gather_full_context()
 
+    # rag-gap-l9: fail-soft semantic recall — additive alongside the snapshot,
+    # never replacing it. On any retrieval failure grounding == "" and the
+    # prompt below is byte-identical to the pre-RAG prompt.
+    retrieved_items, retrieved_lessons = _retrieve_grounding(question)
+    grounding = _grounding_block(retrieved_items, retrieved_lessons)
+
     prompt = f"""You are the DC Hub brain (L9 conversational). The founder
 just asked you a question. You see the full current state of the system
 as JSON context below. Answer the question directly, factually, and
@@ -171,7 +236,7 @@ Question: {question}
 
 Context:
 {json.dumps(ctx, indent=2, default=str)[:9000]}
-
+{grounding}
 Reply with plain prose (no markdown headers, no JSON). Be a coworker,
 not a report. End with one sentence on what you'd do next if you were
 the founder."""
@@ -232,6 +297,10 @@ the founder."""
             "recent_commits":    len(ctx["recent_commits"]),
             "outreach_sent":     (ctx["outreach"] or {}).get("total_sent"),
             "has_current_plan":  ctx["current_plan"] is not None,
+            # rag-gap-l9: how much semantic recall grounded this answer
+            # (0/0 = retrieval unavailable → snapshot-only, pre-RAG behavior).
+            "retrieved_items":   len(retrieved_items),
+            "retrieved_lessons": len(retrieved_lessons),
         },
         answered_at=_dt.datetime.utcnow().isoformat() + "Z",
     ), 200
