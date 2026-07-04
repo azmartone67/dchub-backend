@@ -7126,7 +7126,18 @@ def _resolve_mcp_platform(client_name, ua_str=''):
         for key_str, plat in MCP_PLATFORM_MAP.items():
             if key_str in cn_l:
                 return plat
-        return cn
+        # r-junk-platform (2026-07-04): an unmatched name used to be echoed
+        # back VERBATIM, so ad-hoc QA tags ('clawith', 1-char curl tags) became
+        # distinct "platforms" in mcp_tool_calls AND were persisted into
+        # mcp_sessions, from where /api/v1/mcp/track recovery re-stamped them
+        # onto every call in the session. normalize_write_platform maps known
+        # internal tags / QA families / 1-2 char tags to 'dchub-internal' and
+        # passes plausible real client names through untouched.
+        try:
+            from mcp_calls_deloop import normalize_write_platform
+            return normalize_write_platform(cn)
+        except Exception:
+            return cn
     ua_l = (ua_str or '').lower()
     if ua_l:
         for key_str, plat in MCP_PLATFORM_MAP.items():

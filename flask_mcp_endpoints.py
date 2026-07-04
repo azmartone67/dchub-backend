@@ -47,6 +47,7 @@ from mcp_calls_deloop import (
     PLATFORM_CASE as _DELOOP_PLATFORM_CASE,
     PROBE_PLATFORMS as _DELOOP_PROBE_PLATFORMS,
     real_calls_predicate as _deloop_real_calls_predicate,
+    normalize_write_platform as _normalize_write_platform,
 )
 
 # Compat: prefer psycopg (v3), fall back to psycopg2 if Railway only has the older one
@@ -1291,6 +1292,17 @@ def track_tool_call():
         body.get("platform"), body.get("client_name"), body.get("client"),
     )
 
+    # r-junk-platform (2026-07-04): junk clientInfo self-IDs ('clawith' 3.4k
+    # rows/30d, plus 1-char curl/urllib tags 'v'/'p'/'t'/'w'/'c'/'fv') were
+    # landing VERBATIM as mcp_tool_calls.platform — no writer slices anything,
+    # server.mjs ships unrecognized clientInfo.name through as the platform
+    # tag by design and this endpoint stored it faithfully. Normalize to
+    # 'dchub-internal' for the mcp_tool_calls INSERT ONLY (below): computed
+    # AFTER the self-heal-diet check so skip behavior is unchanged, and NOT
+    # applied to the mcp_call_log write so the canonical log keeps the raw
+    # tag for probe-health observability. client_name keeps the raw string.
+    _platform_clean = _normalize_write_platform(_r_platform)
+
     # phase9j_dual: also write to legacy mcp_tool_calls so the existing
     # /api/v1/usage and /api/v1/data-freshness queries (which read from
     # that table) reflect activity. The 4/30 rewrite of this file moved
@@ -1332,7 +1344,7 @@ def track_tool_call():
                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                 (
                     str(tool)[:200],
-                    (_r_platform or 'mcp-worker')[:80],
+                    (_platform_clean or 'mcp-worker')[:80],
                     (_r_client or 'unknown')[:200],
                     (_params_str or '{}')[:4000],
                     bool((body.get('status') in (None, 'ok', 'success', 200, True)) or body.get('success', True)),

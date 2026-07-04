@@ -239,6 +239,15 @@ def real_ua_predicate(col: str = "user_agent") -> str:
     return f"COALESCE({col},'') !~* '({_SCRIPT_INTERNAL_UA})'"
 
 
+# Shared QA-tag family fragment (regex alternation, no anchors). Single source
+# for internal_tag_regex_predicate() below AND the write-time normalizer, so
+# the read-layer verdict and the write-layer rewrite cannot drift.
+INTERNAL_TAG_FAMILIES = "dchub|verify|probe|audit|harness|test|check|diag|sweep"
+
+import re as _re_norm  # noqa: E402 — module is otherwise pure SQL-string assembly
+_INTERNAL_TAG_FAMILIES_RE = _re_norm.compile(INTERNAL_TAG_FAMILIES, _re_norm.I)
+
+
 def internal_tag_regex_predicate(col: str) -> str:
     """The REGEX twin of external_platform_predicate() for callers that embed
     the predicate in psycopg2 queries WITH bound params — the LIKE form's
@@ -248,11 +257,42 @@ def internal_tag_regex_predicate(col: str) -> str:
     cannot drift. Same semantics: internal families and exact tags excluded,
     length<=2 ad-hoc tags excluded, NULL/empty KEPT."""
     exact = "|".join(sorted(set(INTERNAL_PLATFORM_VALUES)))
-    fams = "dchub|verify|probe|audit|harness|test|check|diag|sweep"
+    fams = INTERNAL_TAG_FAMILIES
     c = f"COALESCE(LOWER({col}), '')"
     return (f"({c} !~* '({fams})' "
             f"AND {c} !~ '^({exact})$' "
             f"AND {c} !~ '^.{{1,2}}$')")
+
+
+def normalize_write_platform(platform):
+    """WRITE-time twin of external_platform_predicate(): rewrite junk platform
+    tags to the self-describing bucket 'dchub-internal' BEFORE they land in
+    mcp_tool_calls.
+
+    r-junk-platform (2026-07-04): 'clawith' (3.4k rows/30d, python-httpx
+    sweep) and 1-char tags ('v','p','t','w','c','fv', all curl/urllib debug
+    clients) were landing VERBATIM in mcp_tool_calls.platform. No writer
+    slices anything — server.mjs ships an unrecognized clientInfo.name through
+    as the platform tag BY DESIGN ("distinct platforms before we add a rule"),
+    and the Flask track/proxy writers faithfully store it. That design is right
+    for plausible client names ('opencode', 'devin-…') but wrong for QA tags.
+
+    Mapping: exact INTERNAL_PLATFORM_VALUES tags, the QA-tag families, and
+    1-2 char tags → 'dchub-internal' — the read layer ALREADY excludes all
+    three groups (and %dchub% catches the rewritten value), so read-time
+    semantics are unchanged; the platform column just stops accumulating a
+    new bucket per ad-hoc tag. Everything else passes through untouched,
+    including ''/None (real anonymous agents are KEPT at read time — never
+    invent a value for them). client_name keeps the raw string for forensics.
+    """
+    p = (platform or '').strip()
+    if not p:
+        return platform
+    pl = p.lower()
+    if pl in INTERNAL_PLATFORM_VALUES or len(pl) <= 2 \
+            or _INTERNAL_TAG_FAMILIES_RE.search(pl):
+        return 'dchub-internal'
+    return platform
 
 
 def real_calls_predicate() -> str:
