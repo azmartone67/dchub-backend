@@ -749,6 +749,111 @@ def _build_prompt(ctx: dict) -> str:
             "\n\n──── End context. Reply with the JSON object ONLY. ────")
 
 
+# ─── Structured-output schema (derived from _persist_recommendations +
+# brain_strategic_ledger.record_baseline reads — every key a downstream
+# consumer touches is a property here; see tests/test_brain_structured_outputs.py
+# which introspects the consumers against this schema) ───────────────
+# Structured-outputs constraints honoured: additionalProperties=false on
+# every object, no min/max|minLength|minItems>1, enums only on scalars.
+# Item counts ("EXACTLY 3") stay prompt-enforced — the API can't express them.
+
+_L6_CONFIDENCE = {"type": "string", "enum": ["high", "medium", "low"]}
+_L6_STR_LIST = {"type": "array", "items": {"type": "string"}}
+_L6_SCAFFOLD = {
+    "type": "array",
+    "items": {
+        "type": "object",
+        "properties": {"path": {"type": "string"}, "kind": {"type": "string"}},
+        "required": ["path", "kind"],
+        "additionalProperties": False,
+    },
+}
+
+_L6_REC_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "summary": {"type": "string"},
+        "top_gaps_4w": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string"},
+                    "spec": {"type": "string"},
+                    "evidence_keys": _L6_STR_LIST,
+                    "dollar_lift_est_usd": {"type": ["number", "null"]},
+                    "confidence": _L6_CONFIDENCE,
+                    "file_scaffold": _L6_SCAFFOLD,
+                    # optional: STRATEGIC-OUTCOME LEDGER reads item.target_metric
+                    "target_metric": {"type": "string"},
+                },
+                "required": ["title", "spec", "evidence_keys",
+                             "dollar_lift_est_usd", "confidence",
+                             "file_scaffold"],
+                "additionalProperties": False,
+            },
+        },
+        "competitor_lacks": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string"},
+                    "spec": {"type": "string"},
+                    "competitor": {"type": "string"},
+                    "evidence_keys": _L6_STR_LIST,
+                    "confidence": _L6_CONFIDENCE,
+                    "dollar_lift_est_usd": {"type": ["number", "null"]},
+                    "file_scaffold": _L6_SCAFFOLD,
+                    "target_metric": {"type": "string"},
+                },
+                "required": ["title", "spec", "competitor",
+                             "evidence_keys", "confidence"],
+                "additionalProperties": False,
+            },
+        },
+        "funnel_optimizations": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string"},
+                    "spec": {"type": "string"},
+                    "current_stage_metric": {"type": "string"},
+                    "projected_stage_metric": {"type": "string"},
+                    "dollar_lift_est_usd": {"type": ["number", "null"]},
+                    "confidence": _L6_CONFIDENCE,
+                    "evidence_keys": _L6_STR_LIST,
+                    "file_scaffold": _L6_SCAFFOLD,
+                    "target_metric": {"type": "string"},
+                },
+                "required": ["title", "spec", "current_stage_metric",
+                             "projected_stage_metric", "dollar_lift_est_usd",
+                             "confidence"],
+                "additionalProperties": False,
+            },
+        },
+        "wildcard_bet": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string"},
+                "spec": {"type": "string"},
+                "horizon_months": {"type": "integer"},
+                "confidence": _L6_CONFIDENCE,
+            },
+            "required": ["title", "spec", "horizon_months", "confidence"],
+            "additionalProperties": False,
+        },
+        "stop_doing": {"type": ["string", "null"]},
+        "self_critique": {"type": "string"},
+    },
+    "required": ["summary", "top_gaps_4w", "competitor_lacks",
+                 "funnel_optimizations", "wildcard_bet", "stop_doing",
+                 "self_critique"],
+    "additionalProperties": False,
+}
+
+
 # ─── Claude call (with fallback chain) ──────────────────────────────
 
 def _call_claude(prompt: str) -> Optional[dict]:
@@ -802,28 +907,68 @@ def _call_claude(prompt: str) -> Optional[dict]:
         _max_tokens = 32000 if _is_fable else 16000
         try:
             import requests
-            r = requests.post(
-                _url,
-                headers={
-                    "x-api-key":         _ANTHROPIC_KEY,
-                    "anthropic-version": "2023-06-01",
-                    "User-Agent":        "dchub-brain-strategic/1.0",
-                    "content-type":      "application/json",
-                },
-                json={
-                    "model":      model,
-                    # 2026-06-08 FIX: was 3200 — too small for the ~20-rec JSON
-                    # once the prompt was enriched (r63 history+rejection memory).
-                    # 16000 fits the full synthesis for the non-thinking fallbacks
-                    # (opus-4-8/sonnet-4-5/haiku-4-5); fable-5 gets 32000 because
-                    # always-on thinking is billed against max_tokens too — see
-                    # the per-model transport block above.
-                    "max_tokens": _max_tokens,
-                    "system":     _SYSTEM_PROMPT,
-                    "messages":   [{"role": "user", "content": prompt}],
-                },
-                timeout=_timeout,
-            )
+            # ── Structured outputs (2026-07-04) ─────────────────────
+            # Verified param: output_config.format={type:"json_schema",
+            # schema}, GA (no beta header), supported on the whole chain
+            # (fable-5/opus-4-8/sonnet-4-5/haiku-4-5). Kill switch:
+            # BRAIN_STRUCTURED_OUTPUTS=0. FAIL-SOFT: any 400 on a
+            # structured attempt retries the SAME model with the legacy
+            # free-text body (byte-identical to the pre-structured one),
+            # then the existing chain-walk handles everything else.
+            # 2026-06-08 FIX (max_tokens): was 3200 — too small for the
+            # ~20-rec JSON once the prompt was enriched (r63 history+
+            # rejection memory). 16000 fits the full synthesis for the
+            # non-thinking fallbacks (opus-4-8/sonnet-4-5/haiku-4-5);
+            # fable-5 gets 32000 because always-on thinking is billed
+            # against max_tokens too — see the per-model transport block
+            # above. Structured outputs do NOT change that: a truncated
+            # (stop_reason=max_tokens) answer is invalid JSON either way
+            # and walks the chain exactly as before.
+            try:
+                from routes import brain_llm_structured as _so
+            except Exception:
+                _so = None
+
+            def _post(structured: bool):
+                if _so is not None:
+                    _body, _applied = _so.build_messages_body(
+                        model, _SYSTEM_PROMPT,
+                        [{"role": "user", "content": prompt}],
+                        _max_tokens,
+                        _L6_REC_SCHEMA if structured else None)
+                else:
+                    _applied = False
+                    _body = {
+                        "model":      model,
+                        "max_tokens": _max_tokens,
+                        "system":     _SYSTEM_PROMPT,
+                        "messages":   [{"role": "user", "content": prompt}],
+                    }
+                return requests.post(
+                    _url,
+                    headers={
+                        "x-api-key":         _ANTHROPIC_KEY,
+                        "anthropic-version": "2023-06-01",
+                        "User-Agent":        "dchub-brain-strategic/1.0",
+                        "content-type":      "application/json",
+                    },
+                    json=_body,
+                    timeout=_timeout,
+                ), _applied
+
+            _want_structured = (_so is not None and
+                                _so.structured_active(model, _L6_REC_SCHEMA))
+            r, _structured = _post(_want_structured)
+            if _structured and r.status_code == 400:
+                # Param rejected (or any other 400 while structured was on):
+                # memoize when the error blames output_config, then retry
+                # this SAME model on the legacy path before chain-walking.
+                if _so.looks_like_structured_rejection(r.status_code, r.text):
+                    _so.mark_model_unsupported(model)
+                logger.info(
+                    "L6 strategic: %s 400 on structured attempt — retrying "
+                    "legacy free-text path", model)
+                r, _structured = _post(False)
             if r.status_code == 404:
                 last_err = f"{model}:404"
                 logger.info(
@@ -846,7 +991,9 @@ def _call_claude(prompt: str) -> Optional[dict]:
                 for b in (body.get("content") or [])
                 if b.get("type") == "text"
             ).strip()
-            if text.startswith("```"):
+            # Fence-strip is a LEGACY-path affordance only. A structured
+            # response is guaranteed bare JSON — no fences to strip.
+            if not _structured and text.startswith("```"):
                 text = text.split("```", 2)[1] if "```" in text else text
                 if text.startswith("json"):
                     text = text[4:].lstrip("\n")

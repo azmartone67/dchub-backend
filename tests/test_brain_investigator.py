@@ -31,7 +31,8 @@ def _fake_caller(responses):
     in order of the system-prompt's role. We dispatch on a substring of the
     system prompt so the decompose / reason / refute passes get the right
     canned JSON regardless of call order."""
-    def caller(system, prompt, *, tier="reasoning", max_tokens=1500):
+    def caller(system, prompt, *, tier="reasoning", max_tokens=1500, **kwargs):
+        # **kwargs absorbs the structured-outputs `schema=` kwarg (2026-07-04)
         if "DECOMPOSE" in system:
             return responses["decompose"], None, "claude-opus-4-8"
         if "ADVERSARIAL CRITIC" in system:
@@ -117,7 +118,7 @@ def test_refutation_failure_marks_unstress_tested(monkeypatch):
     drops and a caveat is added."""
     monkeypatch.setattr(inv, "ANTHROPIC_API_KEY", "test-key")
 
-    def caller(system, prompt, *, tier="reasoning", max_tokens=1500):
+    def caller(system, prompt, *, tier="reasoning", max_tokens=1500, **kwargs):
         if "DECOMPOSE" in system:
             return _GOOD_RESPONSES["decompose"], None, "m"
         if "ADVERSARIAL CRITIC" in system:
@@ -175,7 +176,7 @@ def test_cannot_investigate_without_api_key(monkeypatch):
     NEVER raises."""
     monkeypatch.setattr(inv, "ANTHROPIC_API_KEY", "")
 
-    def caller(system, prompt, *, tier="reasoning", max_tokens=1500):
+    def caller(system, prompt, *, tier="reasoning", max_tokens=1500, **kwargs):
         return None, "no_api_key", None
 
     monkeypatch.setattr(inv, "_call_model", caller)

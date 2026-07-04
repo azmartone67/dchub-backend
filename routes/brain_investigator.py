@@ -719,13 +719,69 @@ def _prior_work_block(prior: list[dict]) -> str:
     return "\n".join(lines)
 
 
+# ── Structured-output schemas (2026-07-04) ───────────────────────────
+# Derived from what investigate() consumes: decomp.get(...) /
+# draft.get(...) / ref.get(...) — every key a consumer reads is a schema
+# property (introspection-tested in tests/test_brain_structured_outputs.py).
+# Structured-outputs constraints honoured: additionalProperties=false,
+# no numeric/string bound keywords (0.0-1.0 / -0.5..+0.2 stay
+# prompt-enforced + clamped in code, exactly as today).
+
+_DECOMPOSE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "sub_questions": {"type": "array", "items": {"type": "string"}},
+        "data_needed": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["sub_questions", "data_needed"],
+    "additionalProperties": False,
+}
+
+_REASON_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "recommendation": {"type": "string"},
+        "reasoning": {"type": "string"},
+        "cited_evidence": {"type": "array", "items": {"type": "string"}},
+        "confidence": {"type": "number"},
+        "caveats": {"type": "array", "items": {"type": "string"}},
+        "decision_for_human": {"type": "string"},
+    },
+    "required": ["recommendation", "reasoning", "cited_evidence",
+                 "confidence", "caveats", "decision_for_human"],
+    "additionalProperties": False,
+}
+
+_REFUTE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "weaknesses_found": {"type": "array", "items": {"type": "string"}},
+        "survives_scrutiny": {"type": "boolean"},
+        "confidence_adjustment": {"type": "number"},
+        "added_caveats": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["weaknesses_found", "survives_scrutiny",
+                 "confidence_adjustment", "added_caveats"],
+    "additionalProperties": False,
+}
+
+
 # ── LLM helper (reuse brain_models tier + resolve_chain fallback) ────
 def _call_model(system: str, prompt: str, *, tier: str = "reasoning",
-                max_tokens: int = 1500) -> tuple[Optional[str], Optional[str], Optional[str]]:
+                max_tokens: int = 1500,
+                schema: Optional[dict] = None) -> tuple[Optional[str], Optional[str], Optional[str]]:
     """One Anthropic call through the brain's model infra. Returns
     (text, error, model_used). Reuses brain_models.brain_model_for (tier
     selection, Opus 4.8) + resolve_chain (404 fallback). Degrades gracefully:
-    returns (None, 'no_api_key', None) when the key is missing. Never raises."""
+    returns (None, 'no_api_key', None) when the key is missing. Never raises.
+
+    schema (2026-07-04): when given AND the model supports Anthropic
+    structured outputs (verified GA param output_config.format, no beta
+    header), the request pins the response to that JSON schema so the text
+    block is guaranteed-parseable JSON. FAIL-SOFT: a 400 on a structured
+    attempt retries the SAME model with the legacy free-text body before the
+    existing 400/404/429 chain-walk; BRAIN_STRUCTURED_OUTPUTS=0 forces the
+    legacy path everywhere. The legacy body/behaviour is unchanged."""
     if not ANTHROPIC_API_KEY:
         return None, "no_api_key", None
     try:
@@ -733,38 +789,68 @@ def _call_model(system: str, prompt: str, *, tier: str = "reasoning",
         models = resolve_chain(brain_model_for(tier))
     except Exception:
         models = ["claude-opus-4-8", "claude-sonnet-4-5"]
+    try:
+        from routes import brain_llm_structured as _so
+    except Exception:
+        _so = None
     last_err = None
     for i, model in enumerate(models):
-        try:
-            body = json.dumps({
-                "model": model,
-                "max_tokens": max_tokens,
-                "system": system,
-                "messages": [{"role": "user", "content": prompt}],
-            }).encode("utf-8")
-            req = urllib.request.Request(
-                anthropic_messages_url(),
-                data=body,
-                headers={
-                    "Content-Type": "application/json",
-                    "X-API-Key": ANTHROPIC_API_KEY,
-                    "User-Agent": "dchub-brain/1.0",
-                    "Anthropic-Version": "2023-06-01",
-                },
-            )
-            with urllib.request.urlopen(req, timeout=50) as r:
-                data = json.loads(r.read().decode("utf-8"))
-            for block in data.get("content", []):
-                if block.get("type") == "text":
-                    return block.get("text", ""), None, model
-            return None, "no_text_block", model
-        except urllib.error.HTTPError as e:
-            last_err = f"http_{e.code}"
-            if e.code in (400, 404, 429) and i + 1 < len(models):
-                continue
-            return None, last_err, model
-        except Exception as e:
-            return None, f"call_fail:{repr(e)[:140]}", model
+        _attempts = ((True, False)
+                     if (_so is not None and _so.structured_active(model, schema))
+                     else (False,))
+        _walk_chain = False
+        for _structured in _attempts:
+            try:
+                if _so is not None:
+                    body_dict, _ = _so.build_messages_body(
+                        model, system,
+                        [{"role": "user", "content": prompt}],
+                        max_tokens, schema if _structured else None)
+                else:
+                    body_dict = {
+                        "model": model,
+                        "max_tokens": max_tokens,
+                        "system": system,
+                        "messages": [{"role": "user", "content": prompt}],
+                    }
+                body = json.dumps(body_dict).encode("utf-8")
+                req = urllib.request.Request(
+                    anthropic_messages_url(),
+                    data=body,
+                    headers={
+                        "Content-Type": "application/json",
+                        "X-API-Key": ANTHROPIC_API_KEY,
+                        "User-Agent": "dchub-brain/1.0",
+                        "Anthropic-Version": "2023-06-01",
+                    },
+                )
+                with urllib.request.urlopen(req, timeout=50) as r:
+                    data = json.loads(r.read().decode("utf-8"))
+                for block in data.get("content", []):
+                    if block.get("type") == "text":
+                        return block.get("text", ""), None, model
+                return None, "no_text_block", model
+            except urllib.error.HTTPError as e:
+                last_err = f"http_{e.code}"
+                if _structured and e.code == 400:
+                    # Structured param plausibly the cause — memoize when the
+                    # error body blames it, then retry this SAME model legacy.
+                    try:
+                        _etext = e.read().decode("utf-8", "replace")
+                    except Exception:
+                        _etext = ""
+                    if _so is not None and _so.looks_like_structured_rejection(
+                            e.code, _etext):
+                        _so.mark_model_unsupported(model)
+                    continue
+                if e.code in (400, 404, 429) and i + 1 < len(models):
+                    _walk_chain = True
+                    break
+                return None, last_err, model
+            except Exception as e:
+                return None, f"call_fail:{repr(e)[:140]}", model
+        if _walk_chain:
+            continue
     return None, last_err or "all_models_failed", None
 
 
@@ -904,7 +990,7 @@ def investigate(question: str, *, depth: str = "default") -> dict:
     dtext, derr, dmodel = _call_model(
         _DECOMPOSE_SYSTEM,
         f"Operator question: {question}\n\nDecompose it.",
-        tier="reasoning", max_tokens=2000,
+        tier="reasoning", max_tokens=2000, schema=_DECOMPOSE_SCHEMA,
     )
     if derr:
         base["cannot_investigate"] = derr
@@ -930,7 +1016,8 @@ def investigate(question: str, *, depth: str = "default") -> dict:
         f"Reason from the evidence to a draft recommendation."
     )
     rtext, rerr, rmodel = _call_model(
-        _REASON_SYSTEM, reason_prompt, tier="reasoning", max_tokens=4000)
+        _REASON_SYSTEM, reason_prompt, tier="reasoning", max_tokens=4000,
+        schema=_REASON_SCHEMA)
     if rerr:
         base["cannot_investigate"] = rerr
         return base
@@ -957,7 +1044,8 @@ def investigate(question: str, *, depth: str = "default") -> dict:
     # and a tight cap truncates the JSON mid-object → unparseable → a refutation
     # that silently contributes nothing while still claiming it ran.
     ftext, ferr, fmodel = _call_model(
-        _REFUTE_SYSTEM, refute_prompt, tier="challenger", max_tokens=4000)
+        _REFUTE_SYSTEM, refute_prompt, tier="challenger", max_tokens=4000,
+        schema=_REFUTE_SCHEMA)
     # 2026-06-20: the adversarial pass IS the brain's trust signal — a confidence
     # that never got refuted (survived=null) is worth far less than one that did.
     # A TRANSIENT failure (read timeout) was silently leaving recommendations
@@ -967,7 +1055,8 @@ def investigate(question: str, *, depth: str = "default") -> dict:
     # state + the confidence dock below.
     if ferr:
         ftext, ferr, fmodel = _call_model(
-            _REFUTE_SYSTEM, refute_prompt, tier="challenger", max_tokens=4000)
+            _REFUTE_SYSTEM, refute_prompt, tier="challenger", max_tokens=4000,
+            schema=_REFUTE_SCHEMA)
     refutation = {"attempted": True, "weaknesses_found": [], "survived": None}
     if ferr:
         # The refutation pass failed — be HONEST about it (don't pretend the
