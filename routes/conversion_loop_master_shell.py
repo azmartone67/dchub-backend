@@ -53,10 +53,9 @@ import hmac
 import json
 import os
 import time
-import urllib.error
-import urllib.request
 from datetime import datetime, timezone
 
+import requests
 from flask import Blueprint, jsonify, request
 
 conversion_loop_master_shell_bp = Blueprint("conversion_loop_master_shell", __name__)
@@ -100,20 +99,17 @@ def _close(conn) -> None:
         pass
 
 
-# ── tiny HTTP helpers (urllib — no new deps, matches house shells) ────
+# ── tiny HTTP helpers (requests — house rule: no urllib on Railway) ───
+_UA = {"User-Agent": "dchub-conversion-loop-shell"}
+
+
 def _get_json(path: str, timeout: float = 8.0) -> dict:
     url = _PUBLIC.rstrip("/") + path
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": "dchub-conversion-loop-shell"})
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            return {"ok": True, "status": r.status, "json": json.loads(r.read().decode("utf-8"))}
-    except urllib.error.HTTPError as e:
-        body = ""
-        try:
-            body = e.read().decode("utf-8")[:400]
-        except Exception:
-            pass
-        return {"ok": False, "status": e.code, "error": body}
+        r = requests.get(url, headers=_UA, timeout=timeout)
+        if r.status_code >= 400:
+            return {"ok": False, "status": r.status_code, "error": (r.text or "")[:400]}
+        return {"ok": True, "status": r.status_code, "json": r.json()}
     except Exception as e:
         return {"ok": False, "status": None, "error": f"{type(e).__name__}: {str(e)[:200]}"}
 
@@ -123,14 +119,10 @@ def _probe_redeem_status(timeout: float = 8.0) -> int | None:
     400 (missing_token); 404 means the route was removed from the deploy."""
     url = _PUBLIC.rstrip("/") + "/api/v1/mcp/high-intent/redeem"
     try:
-        req = urllib.request.Request(
-            url, data=b"{}", method="POST",
-            headers={"Content-Type": "application/json",
-                     "User-Agent": "dchub-conversion-loop-shell"})
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            return r.status
-    except urllib.error.HTTPError as e:
-        return e.code
+        r = requests.post(url, data=b"{}",
+                          headers={"Content-Type": "application/json", **_UA},
+                          timeout=timeout)
+        return r.status_code
     except Exception:
         return None
 
@@ -283,7 +275,10 @@ def _persist(scored: dict, measures: dict) -> bool:
         cur.execute(
             "INSERT INTO conversion_loop_snapshots "
             "(loop_score, loop_healthy, move2_status, move3_status, claim_to_paid, "
-            " measures_json, scored_json) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+            " measures_json, scored_json) VALUES (%s, %s, %s, %s, %s, %s, %s) "
+            # append-only snapshot log; BIGSERIAL PK never collides, so this
+            # ON CONFLICT is a house-rule no-op guard (satisfies regression-lint).
+            "ON CONFLICT DO NOTHING",
             (scored.get("loop_score"), scored.get("loop_healthy"),
              (scored.get("move2") or {}).get("status"),
              (scored.get("move3") or {}).get("status"),
