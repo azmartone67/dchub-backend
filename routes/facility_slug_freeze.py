@@ -34,6 +34,7 @@ import hashlib
 import logging
 
 from flask import Blueprint, request, jsonify
+from psycopg2.extras import execute_values
 
 logger = logging.getLogger(__name__)
 slug_freeze_bp = Blueprint("slug_freeze", __name__)
@@ -160,10 +161,15 @@ def ensure_freeze_schema(conn):
     return added
 
 
-def backfill_canonical_slugs(conn, table, batch=2000, max_batches=50):
+def backfill_canonical_slugs(conn, table, batch=5000, max_batches=50):
     """Set canonical_slug for rows where it IS NULL (set-once — the WHERE guard
-    means re-ingestion / re-runs can never overwrite a frozen value). Returns
-    (updated, remaining_estimate)."""
+    means re-ingestion / re-runs can never overwrite a frozen value). Slugs are
+    computed in Python (byte-identical to the sitemap) but WRITTEN in bulk via
+    execute_values — one round-trip per batch, not one per row — so 37k rows
+    freeze in seconds and never hit the edge-worker timeout. Rows whose name is
+    too short to slug get '' (a sentinel → they 404, correctly not indexable).
+    Per-batch commit means a timeout still leaves committed progress.
+    Returns (updated, remaining)."""
     cur = conn.cursor()
     updated = 0
     for _ in range(max_batches):
@@ -175,20 +181,17 @@ def backfill_canonical_slugs(conn, table, batch=2000, max_batches=50):
         rows = cur.fetchall()
         if not rows:
             break
-        for fid, provider, name in rows:
-            slug = build_canonical_slug(provider, name)
-            if not slug:
-                # name too short to slug — park a sentinel so we don't re-scan
-                # it forever. It will 404 (correct: not an indexable page).
-                cur.execute(
-                    f"UPDATE {table} SET canonical_slug = '' "
-                    f"WHERE id = %s AND canonical_slug IS NULL", (fid,))
-                continue
-            cur.execute(
-                f"UPDATE {table} SET canonical_slug = %s "
-                f"WHERE id = %s AND canonical_slug IS NULL", (slug, fid))
-            updated += 1
+        values = [(fid, build_canonical_slug(provider, name) or '')
+                  for fid, provider, name in rows]
+        # id cast to text on both sides so the same statement works for the
+        # SERIAL (int) discovered_facilities id and the TEXT facilities id.
+        execute_values(cur, f"""
+            UPDATE {table} AS t SET canonical_slug = v.slug
+            FROM (VALUES %s) AS v(id, slug)
+            WHERE t.id::text = v.id::text AND t.canonical_slug IS NULL
+        """, values, template="(%s, %s)")
         conn.commit()
+        updated += sum(1 for _, s in values if s)
         if len(rows) < batch:
             break
     cur.execute(
@@ -218,14 +221,14 @@ def backfill_id_scheme_aliases(conn, table, batch=2000, max_batches=50):
         for fid, provider, name, canonical in rows:
             old = build_id_scheme_slug(provider, name, fid)
             if old and old != canonical:
-                pairs.append((old, canonical, str(fid)))
-        for old, canonical, fid in pairs:
-            cur.execute("""
+                pairs.append((old, canonical, str(fid), 'id-scheme'))
+        if pairs:
+            execute_values(cur, """
                 INSERT INTO facility_slug_aliases (old_slug, canonical_slug, facility_id, source)
-                VALUES (%s, %s, %s, 'id-scheme')
+                VALUES %s
                 ON CONFLICT (old_slug) DO NOTHING
-            """, (old, canonical, fid))
-            inserted += cur.rowcount
+            """, pairs, template="(%s, %s, %s, %s)")
+            inserted += len(pairs)   # attempted (ON CONFLICT skips dupes silently)
         conn.commit()
         offset += len(rows)
         if len(rows) < batch:
@@ -237,22 +240,24 @@ def load_aliases(conn, rows, source="manual"):
     """Bulk-load [(old_slug, canonical_slug[, facility_id]), ...]. Explicit
     loads (e.g. GSC-export capture) win over programmatic ones — DO UPDATE."""
     cur = conn.cursor()
-    loaded = 0
+    vals = []
     for r in rows:
         old = (r[0] or "").strip().lstrip("/")
         canon = (r[1] or "").strip().lstrip("/")
         fid = str(r[2]) if len(r) > 2 and r[2] is not None else None
         if not old or not canon or old == canon:
             continue
-        cur.execute("""
-            INSERT INTO facility_slug_aliases (old_slug, canonical_slug, facility_id, source)
-            VALUES (%s, %s, %s, %s)
-            ON CONFLICT (old_slug) DO UPDATE
-              SET canonical_slug = EXCLUDED.canonical_slug, source = EXCLUDED.source
-        """, (old, canon, fid, source))
-        loaded += 1
+        vals.append((old, canon, fid, source))
+    if not vals:
+        return 0
+    execute_values(cur, """
+        INSERT INTO facility_slug_aliases (old_slug, canonical_slug, facility_id, source)
+        VALUES %s
+        ON CONFLICT (old_slug) DO UPDATE
+          SET canonical_slug = EXCLUDED.canonical_slug, source = EXCLUDED.source
+    """, vals, template="(%s, %s, %s, %s)")
     conn.commit()
-    return loaded
+    return len(vals)
 
 
 def resolve_alias(slug):
@@ -405,6 +410,17 @@ def slug_alias_resolve():
     if not isinstance(old_slugs, list) or not old_slugs:
         return jsonify(error='no_old_slugs',
                        hint='POST {"old_slugs":["provider-name-hash", ...]}'), 400
+    # Pagination — the fuzzy resolver is one DB round-trip PER slug, so a full
+    # 3,485-slug payload would exceed the edge-worker timeout. Process a bounded
+    # slice per call and report next_offset; the caller loops until remaining=0.
+    try:
+        limit = int(request.args.get('limit', body.get('limit', 1000)))
+        offset = int(request.args.get('offset', body.get('offset', 0)))
+    except Exception:
+        limit, offset = 1000, 0
+    limit = max(1, min(limit, 3000))
+    offset = max(0, offset)
+    window = old_slugs[offset:offset + limit]
     try:
         from routes.facility_profile_page import _resolve_legacy_slug, _fetch_facility_by_slug
     except Exception as e:
@@ -415,7 +431,7 @@ def slug_alias_resolve():
         ensure_freeze_schema(conn)
         pairs = []
         stats = {'resolved': 0, 'already_canonical': 0, 'unresolvable': 0}
-        for raw in old_slugs[:20000]:
+        for raw in window:
             s = (raw or '').strip().lstrip('/')
             if s.startswith('http'):
                 s = s.split('/facilities/', 1)[-1].split('?')[0].rstrip('/')
@@ -434,8 +450,12 @@ def slug_alias_resolve():
             else:
                 stats['unresolvable'] += 1
         loaded = load_aliases(conn, pairs, source='gsc') if pairs else 0
-        return jsonify(ok=True, submitted=len(old_slugs),
-                       aliases_loaded=loaded, **stats)
+        processed_to = offset + len(window)
+        remaining = max(0, len(old_slugs) - processed_to)
+        return jsonify(ok=True, total=len(old_slugs),
+                       window={'offset': offset, 'processed': len(window)},
+                       next_offset=(processed_to if remaining else None),
+                       remaining=remaining, aliases_loaded=loaded, **stats)
     except Exception as e:
         return jsonify(error=str(e)), 500
     finally:
