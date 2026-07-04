@@ -490,6 +490,14 @@ _DISPATCH = [
      "POST",
      lambda now: now.hour % 6 == 4 and now.minute < 55),
 
+    # 2026-07-04: Reliability-Recovery shell — DAILY shadow tick (measure +
+    # score + persist the A/B/C auto-merge arm gate; consecutive_ge50 needs
+    # ~daily snapshots to accumulate). SHADOW unless RELIABILITY_MASTER_ARM=1.
+    ("reliability_master_tick_daily",
+     f"{BASE}/api/v1/admin/reliability/master-tick",
+     "POST",
+     lambda now: now.hour == 5 and now.minute < 55),
+
     # RAG v1 (2026-07-03): market deep-dive rotation — regenerate the 10 stalest
     # DCPI market narratives daily (317 markets → full refresh ~monthly). This
     # existing endpoint previously had NO surviving scheduler (it was only an

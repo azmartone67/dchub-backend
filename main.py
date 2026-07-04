@@ -1964,6 +1964,21 @@ try:
     except Exception as _bld:
         import logging
         logging.getLogger(__name__).warning('brain_lane_driver wiring failed: %s', _bld)
+    # 2026-07-04: Reliability-Recovery master shell — inward-pointed: gets the
+    # brain's verified fix-success rate over (and HELD over) 50% so Phase-3
+    # narrow auto-merge can arm safely. Five levers (accounting, thrash,
+    # dead_route, verifier, calibration), weakest gets ONE bounded action.
+    # Persists the A/B/C arm gate server-side — /reliability/state is the
+    # single source of truth for "is auto-merge arm-ready". SHADOW BY DEFAULT
+    # (measure + score + persist, NO action) — arm with RELIABILITY_MASTER_ARM=1.
+    # Kill: RELIABILITY_MASTER_DISABLED=1; per-lever RELIABILITY_LEVER_<NAME>_OFF=1.
+    try:
+        from routes.reliability_master_shell import reliability_master_shell_bp
+        app.register_blueprint(reliability_master_shell_bp)
+        print("[main] reliability_master_shell_bp registered: POST /api/v1/admin/reliability/master-tick", flush=True)
+    except Exception as _rms:
+        import logging
+        logging.getLogger(__name__).warning('reliability_master_shell wiring failed: %s', _rms)
     # 2026-07-03: AI-Adoption master shell — the loop whose single north-star is
     # DISTINCT EXTERNAL AI AGENTS / WEEK. Orchestrates existing pieces (ai_reach_rollup,
     # brain_ecosystem_watch, mcp_registry_outreach, geo_autopublish) across 5 tiers:
