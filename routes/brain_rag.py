@@ -113,6 +113,16 @@ def _ensure() -> bool:
                     UNIQUE (source_table, source_id)
                 )
             """)
+            # ANN index so recall (<=> cosine) uses HNSW, not a full seq scan.
+            # IF NOT EXISTS => builds once; instant on a fresh/empty branch table,
+            # no-op once present. Plain (non-CONCURRENT) is correct here: this runs
+            # on the pooler conn inside _ensure()'s txn, and CONCURRENTLY can't. For
+            # a one-shot rebuild on a large live table use
+            # tools/add_brain_rag_hnsw_index.py (direct endpoint, CONCURRENTLY).
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS brain_corpus_embeddings_hnsw
+                ON brain_corpus_embeddings USING hnsw (embedding vector_cosine_ops)
+            """)
         c.commit()
         return True
     except Exception:
