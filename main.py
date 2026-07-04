@@ -1885,6 +1885,17 @@ try:
     except Exception as _ams:
         import logging
         logging.getLogger(__name__).warning('audience_master_shell wiring failed: %s', _ams)
+    # 2026-07-03: Fix-Wave master shell — live PASS/FAIL scoreboard for the 5 fix
+    # lanes spawned by the 07-03 flywheel/QA deep dive (MCP reliability, RAG gate+
+    # packs, frontend map/LCP, SEO, funnel honesty). Read-only probes, frozen
+    # baselines, snapshot per tick. GET /admin/fixwave · /api/v1/admin/fixwave/master-tick
+    try:
+        from routes.fixwave_master_shell import fixwave_master_shell_bp
+        app.register_blueprint(fixwave_master_shell_bp)
+        print("[main] fixwave_master_shell_bp registered: GET /admin/fixwave", flush=True)
+    except Exception as _fwms:
+        import logging
+        logging.getLogger(__name__).warning('fixwave_master_shell wiring failed: %s', _fwms)
     # 2026-07-02: Agent-usefulness master shell — MEASURES how legible/useful DC Hub
     # is to AI agents (schema completeness, DCPI de-clone, null density, GEO flags) +
     # persists a 0-100 score per tick. Read-only. POST /api/v1/admin/agent-usefulness/master-tick
