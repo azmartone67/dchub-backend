@@ -676,7 +676,7 @@ _CLAIM_FORM_HTML = r"""<!DOCTYPE html>
 
   __ERR__
 
-  <a href="https://buy.stripe.com/9B69AU08y2FfbSR55UaZi0i?client_reference_id=mcp%3Atool%3D__TOOL__%3Aref%3Dclaim"
+  <a href="https://buy.stripe.com/9B69AU08y2FfbSR55UaZi0i?client_reference_id=ref_claim__tool___TOOL_REF__"
      style="display:block;background:linear-gradient(135deg,#22d3ee,#a855f7);color:#0a0f1f;text-align:center;padding:15px;border-radius:10px;font-weight:700;text-decoration:none;font-size:1.02rem;margin-bottom:6px">⚡ Get instant full access — $10 · 1,000 calls →</a>
   <div style="text-align:center;color:#94a3b8;font-size:.78rem;margin-bottom:18px">One-time · no subscription · <strong>no email needed</strong></div>
 
@@ -775,7 +775,14 @@ _TOOL_VALUE_DEFAULT = ("the complete result set this tool returns", "The interac
 def _render_form(tool: str, count: int, err: str = "") -> str:
     err_html = (f'<div class="err">{_esc(err)}</div>') if err else ""
     _val, _blind = _TOOL_VALUE.get((tool or "").strip(), _TOOL_VALUE_DEFAULT)
+    # qa-0704: Stripe drops client_reference_id values outside [A-Za-z0-9_-]
+    # SILENTLY — the old mcp%3Atool%3D...%3Aref%3Dclaim shape never survived
+    # checkout, so a claim-page pack purchase could never be attributed. Use
+    # the phase17 ref_<src>__tool_<name> shape (main.py:14033 parses it) with
+    # a Stripe-legal sanitized tool name.
+    _tool_ref = re.sub(r"[^A-Za-z0-9_-]", "-", (tool or "unknown").strip() or "unknown")
     return (_CLAIM_FORM_HTML
+            .replace("__TOOL_REF__", _tool_ref)
             .replace("__TOOL__", _esc(tool or "this tool"))
             .replace("__COUNT__", str(count) if count else "several")
             .replace("__VALUE__", _esc(_val))

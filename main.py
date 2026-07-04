@@ -12223,10 +12223,16 @@ def stripe_webhook():
                 # first real sale. amount_subtotal is always 500 for the $5 pack.
                 _p5_sub  = int(data.get('amount_subtotal') or 0)
                 _p5_ref  = (data.get('client_reference_id') or '').strip()
+                # qa-0704: ref_claim__tool_* is the claim-page $10-pack link's
+                # attribution tag (routes/mcp_high_intent_claim.py). phase17
+                # only LOGS ref_* to mcp_conversions — it never grants credits —
+                # so treating ref_claim__ as reserved here would take the money
+                # and deliver nothing. Every other ref_* stays reserved.
                 _p5_reserved = (_p5_ref.upper().startswith('DCM-')
                                 or _p5_ref.lower().startswith('tu-')
                                 or _p5_ref.lower().startswith('pk-')
-                                or _p5_ref.startswith('ref_'))
+                                or (_p5_ref.startswith('ref_')
+                                    and not _p5_ref.startswith('ref_claim__')))
                 # r-pack10 (2026-06-25): recognize a 2nd one-time credit pack —
                 # the repurposed ex-metered link ($10 one-time = 1,000 calls,
                 # price_1TmOic…). Match either pack by its PRE-TAX subtotal (or
