@@ -44,14 +44,17 @@ This module ships four surfaces designed to compound on each other:
                                              the agent's context
                                              preserved
                                          Recipes come from a curated
-                                         library (below) matched by
-                                         embedding cosine (Cohere via
-                                         brain_rag._embed; cached
-                                         recipe vectors) with keyword
-                                         fallback. No Claude call on
-                                         the hot path = fast + cheap;
-                                         embed failure degrades to the
-                                         deterministic keyword match.
+                                         library (below): keyword
+                                         match FIRST (deterministic,
+                                         <1ms, no network), embedding
+                                         cosine as the backstop ONLY
+                                         when keywords found nothing
+                                         (short-timeout local Cohere
+                                         call, circuit-breakered).
+                                         No Claude call on the hot
+                                         path = fast + cheap; embed
+                                         failure degrades to the
+                                         keyword-only behavior.
 
   3. GET /api/v1/agent/cookbook          The recipe library itself.
                                          24 canonical problems →
@@ -88,6 +91,7 @@ This module ships four surfaces designed to compound on each other:
 import json
 import os
 import time
+import urllib.request
 import uuid
 from flask import Blueprint, Response, jsonify, request, redirect
 
@@ -585,23 +589,48 @@ th { color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacin
 
 # ── Intent → recipe matching ────────────────────────────────────
 #
-# Two layers (2026-07: the embedding match the keyword docstring
-# anticipated is now live):
+# Two layers, KEYWORD FIRST (2026-07 hot-path hardening: /solve is a
+# PUBLIC unauthenticated endpoint, so the network-touching semantic
+# layer only ever runs for requests that would otherwise return
+# nothing useful):
 #
-#   1. SEMANTIC — embed the ~30 recipe descriptions ONCE per worker
-#      (module-level cache; rebuilt after a worker recycle — one
-#      ~30-text Cohere call via routes.brain_rag._embed), embed the
-#      incoming query, cosine-rank locally (0-1 scale). Best hit wins
-#      when cosine >= CONCIERGE_MATCH_COSINE (env-tunable, default
-#      0.55 — intent matching is intentionally looser than dedup).
+#   1. KEYWORD — the original substring-overlap scan. Deterministic,
+#      <1ms, zero network. Runs FIRST; a keyword hit never touches
+#      Cohere at all.
+#   2. SEMANTIC — ONLY when keywords found nothing. Embed the ~30
+#      recipe descriptions ONCE per worker (module-level cache;
+#      rebuilt after a worker recycle — one ~30-text Cohere call),
+#      embed the incoming query, cosine-rank locally (0-1 scale).
+#      Best hit wins when cosine >= CONCIERGE_MATCH_COSINE
+#      (env-tunable, default 0.55 — intent matching is intentionally
+#      looser than dedup).
 #      NOTE: retrieve_context() returns cross-encoder RERANK relevance
 #      scores (absolute values often 0.05-0.3 even for good hits) —
 #      those are NOT cosines; never threshold on them here.
-#   2. KEYWORD — the original substring-overlap scan. This is the
-#      fail-soft floor: ANY embed/import/shape failure in the semantic
-#      layer degrades to the exact pre-existing keyword behavior.
+#
+# Hot-path guardrails on the semantic layer:
+#   • LOCAL embed helper with timeout=4s (never brain_rag._embed and
+#     its 30s urlopen — an unauthenticated caller must not be able to
+#     pin a worker for 30s per request).
+#   • CIRCUIT BREAKER — 3 consecutive embed failures open the breaker
+#     for CONCIERGE_BREAKER_COOLDOWN seconds (default 300); while
+#     open, requests skip Cohere entirely (pure keyword behavior).
+#   • Tiny LRU (cap ~200) of normalized-query → recipe, so repeat
+#     questions never re-embed.
+#   • Fail-soft floor: ANY embed/HTTP/shape failure degrades to the
+#     exact pre-existing keyword behavior.
 
 _RECIPE_VEC_CACHE = None   # list[(recipe_dict, embedding)] | None — lazy, per-worker
+
+_EMBED_MODEL = "embed-english-v3.0"   # keep in lockstep w/ brain_rag EMBED_MODEL
+_EMBED_TIMEOUT_S = 4                  # SHORT — public hot path; never 30
+_BREAKER_THRESHOLD = 3                # consecutive failures → open
+
+_embed_fail_count = 0        # consecutive embed failures (module-level)
+_breaker_open_until = 0.0    # epoch seconds; semantic path skipped until then
+
+_MATCH_LRU = {}              # normalized query → recipe (insertion-ordered dict)
+_MATCH_LRU_CAP = 200
 
 
 def _concierge_match_cosine() -> float:
@@ -610,6 +639,66 @@ def _concierge_match_cosine() -> float:
         return float(os.environ.get("CONCIERGE_MATCH_COSINE", "0.55"))
     except Exception:
         return 0.55
+
+
+def _breaker_cooldown_s() -> float:
+    """Env-tunable breaker cooldown (seconds, default 300)."""
+    try:
+        return float(os.environ.get("CONCIERGE_BREAKER_COOLDOWN", "300"))
+    except Exception:
+        return 300.0
+
+
+def _breaker_open() -> bool:
+    return time.time() < _breaker_open_until
+
+
+def _cohere_embed(texts, input_type="search_document"):
+    """Local Cohere v1/embed call — same shape as brain_rag._embed but
+    with a 4s timeout (public hot path). Returns list-of-vectors or
+    None. Tracks consecutive failures and opens the circuit breaker
+    after _BREAKER_THRESHOLD in a row. Missing key / empty input is a
+    config gap, not a transient failure — it does NOT trip the breaker.
+    """
+    global _embed_fail_count, _breaker_open_until
+    key = (os.environ.get("COHERE_API_KEY") or "").strip()
+    if not key or not texts:
+        return None
+    body = json.dumps({"texts": texts, "model": _EMBED_MODEL,
+                       "input_type": input_type, "truncate": "END"}).encode()
+    req = urllib.request.Request("https://api.cohere.ai/v1/embed",
+                                 data=body, method="POST")
+    req.add_header("Authorization", "Bearer " + key)
+    req.add_header("Content-Type", "application/json")
+    try:
+        with urllib.request.urlopen(req, timeout=_EMBED_TIMEOUT_S) as r:
+            d = json.loads(r.read())
+        vecs = d.get("embeddings")
+        if not vecs:
+            raise ValueError("empty embeddings")
+        _embed_fail_count = 0
+        return vecs
+    except Exception:
+        _embed_fail_count += 1
+        if _embed_fail_count >= _BREAKER_THRESHOLD:
+            _breaker_open_until = time.time() + _breaker_cooldown_s()
+            _embed_fail_count = 0
+        return None
+
+
+def _lru_get(norm: str):
+    """LRU lookup; refreshes recency on hit."""
+    r = _MATCH_LRU.pop(norm, None)
+    if r is not None:
+        _MATCH_LRU[norm] = r
+    return r
+
+
+def _lru_put(norm: str, recipe: dict):
+    _MATCH_LRU.pop(norm, None)
+    _MATCH_LRU[norm] = recipe
+    while len(_MATCH_LRU) > _MATCH_LRU_CAP:
+        _MATCH_LRU.pop(next(iter(_MATCH_LRU)))
 
 
 def _recipe_embed_text(r: dict) -> str:
@@ -624,30 +713,19 @@ def _recipe_embed_text(r: dict) -> str:
     return ". ".join(p for p in parts if p)
 
 
-def _get_embed():
-    """Lazy import so this module never hard-depends on brain_rag."""
-    try:
-        from routes.brain_rag import _embed
-        return _embed
-    except Exception:
-        return None
-
-
 def _recipe_vectors():
     """Lazily build the (recipe, vector) cache — one ~30-text embed call.
 
     Returns the cached list, or None on any failure (caller falls back
-    to the keyword path; next request will simply retry the build).
+    to the keyword path; next request will simply retry the build —
+    unless the breaker is open, in which case we never get here).
     """
     global _RECIPE_VEC_CACHE
     if _RECIPE_VEC_CACHE is not None:
         return _RECIPE_VEC_CACHE
-    embed = _get_embed()
-    if embed is None:
-        return None
     try:
         texts = [_recipe_embed_text(r) for r in _COOKBOOK]
-        vecs = embed(texts, input_type="search_document")
+        vecs = _cohere_embed(texts, input_type="search_document")
         if not vecs or len(vecs) != len(_COOKBOOK):
             return None
         _RECIPE_VEC_CACHE = list(zip(_COOKBOOK, vecs))
@@ -675,21 +753,21 @@ def _cosine(a, b) -> float:
 def _match_recipe_semantic(problem: str) -> dict | None:
     """Embed the query, cosine-rank against the cached recipe vectors.
 
-    Returns the best recipe when best cosine >= CONCIERGE_MATCH_COSINE,
-    else None. Fail-soft: ANY failure (no Cohere key, import error,
-    HTTP error, bad shapes) returns None and the caller uses the
-    keyword path — the exact pre-semantic behavior.
+    Only ever called AFTER the keyword scan found nothing. Returns the
+    best recipe when best cosine >= CONCIERGE_MATCH_COSINE, else None.
+    Skipped entirely while the circuit breaker is open. Fail-soft: ANY
+    failure (no Cohere key, HTTP error, timeout, bad shapes) returns
+    None and the caller keeps the keyword-only behavior.
     """
     try:
+        if _breaker_open():
+            return None
         pairs = _recipe_vectors()
         if not pairs:
             return None
-        embed = _get_embed()
-        if embed is None:
-            return None
         # search_document for both sides is fine for this symmetric
         # short-text comparison (recipe vectors are search_document too).
-        qv = embed([problem], input_type="search_document")
+        qv = _cohere_embed([problem], input_type="search_document")
         if not qv or not qv[0]:
             return None
         q = qv[0]
@@ -709,8 +787,8 @@ def _match_recipe_semantic(problem: str) -> dict | None:
 def _match_recipe_keyword(problem: str) -> dict | None:
     """Keyword-match the problem to a recipe. Highest overlap wins.
 
-    Linear scan over ~30 recipes is fine (<1ms). This is the fail-soft
-    floor under the semantic matcher above.
+    Linear scan over ~30 recipes is fine (<1ms). This runs FIRST; the
+    semantic matcher above is the backstop for keyword misses only.
     """
     pl = problem.lower()
     best = None
@@ -733,15 +811,26 @@ def _match_recipe_keyword(problem: str) -> dict | None:
 def _match_recipe(problem: str) -> dict | None:
     """Route a free-text problem to a cookbook recipe.
 
-    Semantic (embedding cosine) first; keyword-substring fallback.
-    Any embed/RAG failure degrades to the exact keyword behavior.
+    Order (public unauthenticated hot path — cheapest first):
+      1. LRU — repeat questions are instant, zero network.
+      2. KEYWORD — deterministic substring scan, zero network.
+      3. SEMANTIC — embedding cosine, ONLY on a keyword miss (those
+         requests would return nothing useful anyway, so bounded
+         added latency — 4s timeout, circuit-breakered — is a fair
+         trade). Any embed failure degrades to keyword-only behavior.
     """
     if not problem or not isinstance(problem, str):
         return None
-    hit = _match_recipe_semantic(problem)
+    norm = " ".join(problem.lower().split())
+    hit = _lru_get(norm)
     if hit is not None:
         return hit
-    return _match_recipe_keyword(problem)
+    hit = _match_recipe_keyword(problem)
+    if hit is None:
+        hit = _match_recipe_semantic(problem)
+    if hit is not None:
+        _lru_put(norm, hit)
+    return hit
 
 
 @agent_concierge_bp.route("/agent", methods=["GET"], strict_slashes=False)
@@ -861,7 +950,8 @@ def agent_cookbook():
         "_pattern":      ("Each recipe maps a NATURAL-LANGUAGE problem "
                           "to a DC Hub tool-call sequence. The /solve "
                           "endpoint routes queries to the best match by "
-                          "keyword overlap; the cookbook is the full "
+                          "keyword overlap (embedding-cosine backstop on "
+                          "keyword misses); the cookbook is the full "
                           "browsable library."),
         "_contribution": ("To add a recipe: PR routes/agent_concierge.py "
                           "with a new dict in _COOKBOOK. Auto-surfaces "
