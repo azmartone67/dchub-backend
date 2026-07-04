@@ -2443,3 +2443,267 @@ def admin_agent_pay_events():
         try: conn.close()
         except Exception: pass
     return jsonify(out), 200
+
+
+# ── Agent-Pay Master Shell ────────────────────────────────────────────────
+# 2026-07-04: the raw watcher (agent-pay-events, above) answers ONE binary —
+# "has anyone settled?" — and hides the two facts that actually matter while
+# volume is near-zero: (1) every challenge so far is SYNTHETIC test traffic
+# (scout-rail-test / acp-test-agent / junk 'v' clientInfo tags), so the raw
+# "challenges" total is a vanity number and REAL agent pay-intent is 0; and
+# (2) not one challenge has converted to a settle, and we can't see whether
+# that's expected (test agents that never meant to pay) or a broken settle
+# path (a real agent that tried and errored). This master-tick orchestrates
+# the levers into a scoreboard + verdict + next-action so the operator reads
+# "does the rail actually work E2E when a REAL agent tries?" not just a light.
+
+# Synthetic/non-real platform exclusion. Trusted hardcoded constants inlined
+# as SQL literals — but EVERY query that embeds this also carries bound %s
+# params (status list, window), so psycopg2 runs %-substitution over the whole
+# string: the literal % in the LIKE patterns MUST be doubled to %% here or it
+# trips the empty-tuple/format trap (see _scalar docstring + the
+# reference_psycopg2_empty_tuple_percent_trap memo). Keep the %% doubled.
+_SYNTH_PLATFORM_SQL = (
+    " ( platform IS NULL "
+    "   OR COALESCE(LOWER(platform),'') LIKE '%%test%%' "
+    "   OR COALESCE(LOWER(platform),'') LIKE '%%canary%%' "
+    "   OR COALESCE(LOWER(platform),'') LIKE '%%probe%%' "
+    "   OR COALESCE(LOWER(platform),'') LIKE '%%staging%%' "
+    "   OR LENGTH(COALESCE(platform,'')) <= 2 ) "  # junk 1-2 char clientInfo tags ('v', …)
+)
+_REAL_PLATFORM_SQL = " NOT " + _SYNTH_PLATFORM_SQL
+_PAID_ST = ('mpp_paid', 'x402_paid')
+_FAIL_ST = ('mpp_verify_failed', 'x402_failed')
+_CHAL_ST = 'mpp_challenge'
+# Full pay-status universe — mirrors the local _ST list in admin_agent_pay_events.
+_ALL_PAY_ST = ['mpp_challenge', 'mpp_paid', 'mpp_verify_failed', 'x402_paid', 'x402_failed']
+
+
+@funnel_health_bp.route("/api/v1/admin/agent-pay/master-tick", methods=["GET"])
+def admin_agent_pay_master_tick():
+    """SELF-DRIVING agent-pay orchestrator over mcp_call_log — the master shell
+    on top of the raw agent-pay-events watcher.
+
+    Levers (each isolated; one failing probe never blanks the tick):
+      • split     — challenges/paid/failed for ALL traffic AND real-only
+                    (synthetic test platforms excluded). Real pay-intent is the
+                    number that matters; the raw watcher couldn't see it.
+      • funnel    — real challenge→settle conversion: settle_rate, abandon
+                    (real challenges that never settled), failed. Tells expected
+                    -no-pay apart from broken-settle-path.
+      • by_tool   — real pay-intent per flagship tool, ranked → where demand
+                    concentrates (point conversion effort there).
+      • trend     — WoW: real challenges/paid this 7d vs prior 7d + direction.
+      • milestones— first_paid_at (all-time settle, THE headline) and
+                    first_real_challenge_at (all-time first NON-test opt-in — the
+                    leading indicator you hit long before first settle).
+      • verdict   — status + one-line headline + next_action (the self-driving
+                    recommendation for which lever to pull next).
+
+    Read-only. ?days=N (default 30, cap 120) scopes split/funnel/by_tool;
+    trend is fixed 7d WoW; milestones are all-time.
+    """
+    if not _admin_ok(request):
+        return jsonify(error="unauthorized"), 401
+    try:
+        win = max(1, min(120, int(request.args.get("days", "30"))))
+    except Exception:
+        win = 30
+
+    out = {
+        "window_days": win,
+        "split": {"all": {"challenges": 0, "paid": 0, "failed": 0},
+                  "real": {"challenges": 0, "paid": 0, "failed": 0},
+                  "test": {"challenges": 0, "paid": 0, "failed": 0}},
+        "funnel": {"real_challenges": 0, "real_paid": 0, "real_failed": 0,
+                   "settle_rate": None, "abandoned": 0},
+        "by_tool": [],
+        "trend": {"real_challenges_7d": 0, "real_challenges_prev7d": 0,
+                  "real_paid_7d": 0, "real_paid_prev7d": 0, "direction": "flat"},
+        "milestones": {"first_paid_at": None, "first_real_challenge_at": None},
+        "real_platforms": [],
+        "verdict": {"status": "UNKNOWN", "headline": "", "next_action": ""},
+        "note": "real=synthetic test platforms excluded; the number that matters "
+                "is real pay-intent, not raw challenges.",
+    }
+
+    conn = _conn()
+    if conn is None:
+        out["error"] = "no_db"
+        out["verdict"] = {"status": "NO_DB", "headline": "DB unavailable — cannot tick.",
+                          "next_action": "Check DATABASE_URL / Neon pooler health."}
+        return jsonify(out), 200
+
+    def _run(cur, label, sql, params, fetch="one"):
+        """Isolated probe: return rows/scalar or None on error (never raise)."""
+        try:
+            cur.execute(sql, params)
+            if fetch == "one":
+                r = cur.fetchone()
+                return r
+            return cur.fetchall() or []
+        except Exception as e:
+            logger.debug("agent_pay master-tick lever %s failed: %s", label, e)
+            try: conn.rollback()
+            except Exception: pass
+            return None
+
+    def _n(r, i=0):
+        if not r:
+            return 0
+        v = (r.get(list(r.keys())[i]) if hasattr(r, "get") else r[i])
+        try: return int(v or 0)
+        except Exception: return 0
+
+    try:
+        with conn.cursor() as cur:  # lint-ok: cursor-shadow (handler-local)
+            # ── split: all vs real vs test, over the window ──────────────
+            base = (" FROM mcp_call_log WHERE status = ANY(%s) "
+                    " AND timestamp > NOW() - make_interval(days => %s) ")
+            r = _run(cur, "split_all",
+                     "SELECT "
+                     "  COUNT(*) FILTER (WHERE status = 'mpp_challenge') AS chal, "
+                     "  COUNT(*) FILTER (WHERE status IN ('mpp_paid','x402_paid')) AS paid, "
+                     "  COUNT(*) FILTER (WHERE status IN ('mpp_verify_failed','x402_failed')) AS fail"
+                     + base,
+                     (list(_ALL_PAY_ST), win))
+            if r:
+                out["split"]["all"] = {"challenges": _n(r, 0), "paid": _n(r, 1), "failed": _n(r, 2)}
+            r = _run(cur, "split_real",
+                     "SELECT "
+                     "  COUNT(*) FILTER (WHERE status = 'mpp_challenge') AS chal, "
+                     "  COUNT(*) FILTER (WHERE status IN ('mpp_paid','x402_paid')) AS paid, "
+                     "  COUNT(*) FILTER (WHERE status IN ('mpp_verify_failed','x402_failed')) AS fail"
+                     + base + " AND " + _REAL_PLATFORM_SQL,
+                     (list(_ALL_PAY_ST), win))
+            if r:
+                out["split"]["real"] = {"challenges": _n(r, 0), "paid": _n(r, 1), "failed": _n(r, 2)}
+            # test = all − real (derived; avoids a third round-trip)
+            for k in ("challenges", "paid", "failed"):
+                out["split"]["test"][k] = max(0, out["split"]["all"][k] - out["split"]["real"][k])
+
+            # ── funnel: real challenge→settle ───────────────────────────
+            rc = out["split"]["real"]["challenges"]
+            rp = out["split"]["real"]["paid"]
+            rf = out["split"]["real"]["failed"]
+            out["funnel"] = {
+                "real_challenges": rc, "real_paid": rp, "real_failed": rf,
+                "settle_rate": (round(rp / rc, 4) if rc else None),
+                "abandoned": max(0, rc - rp - rf),
+            }
+
+            # ── by_tool: real pay-intent per flagship tool ──────────────
+            rows = _run(cur, "by_tool",
+                        "SELECT tool, "
+                        "  COUNT(*) FILTER (WHERE status = 'mpp_challenge') AS chal, "
+                        "  COUNT(*) FILTER (WHERE status IN ('mpp_paid','x402_paid')) AS paid "
+                        + base + " AND " + _REAL_PLATFORM_SQL +
+                        " GROUP BY tool ORDER BY chal DESC, paid DESC LIMIT 20",
+                        (list(_ALL_PAY_ST), win), fetch="all")
+            for r in (rows or []):
+                g = (lambda i: r.get(list(r.keys())[i]) if hasattr(r, "get") else r[i])
+                out["by_tool"].append({"tool": g(0) or "?",
+                                       "real_challenges": int(g(1) or 0),
+                                       "real_paid": int(g(2) or 0)})
+
+            # ── trend: WoW real challenges/paid ─────────────────────────
+            def _wow(status_pred, params):
+                cur_r = _run(cur, "wow_cur",
+                             "SELECT COUNT(*) FROM mcp_call_log WHERE " + status_pred +
+                             " AND timestamp > NOW() - INTERVAL '7 days' AND " + _REAL_PLATFORM_SQL,
+                             params)
+                prev_r = _run(cur, "wow_prev",
+                              "SELECT COUNT(*) FROM mcp_call_log WHERE " + status_pred +
+                              " AND timestamp <= NOW() - INTERVAL '7 days' "
+                              " AND timestamp > NOW() - INTERVAL '14 days' AND " + _REAL_PLATFORM_SQL,
+                              params)
+                return _n(cur_r), _n(prev_r)
+            c7, cp = _wow("status = %s", (_CHAL_ST,))
+            p7, pp = _wow("status = ANY(%s)", (list(_PAID_ST),))
+            direction = "flat"
+            if c7 > cp: direction = "up"
+            elif c7 < cp: direction = "down"
+            out["trend"] = {"real_challenges_7d": c7, "real_challenges_prev7d": cp,
+                            "real_paid_7d": p7, "real_paid_prev7d": pp, "direction": direction}
+
+            # ── milestones (all-time) ───────────────────────────────────
+            r = _run(cur, "first_paid",
+                     "SELECT MIN(timestamp) FROM mcp_call_log "
+                     " WHERE status IN ('mpp_paid','x402_paid')", None)
+            v = (r[0] if r else None)
+            out["milestones"]["first_paid_at"] = str(v) if v else None
+            r = _run(cur, "first_real_chal",
+                     "SELECT MIN(timestamp) FROM mcp_call_log "
+                     " WHERE status = %s AND " + _REAL_PLATFORM_SQL, (_CHAL_ST,))
+            v = (r[0] if r else None)
+            out["milestones"]["first_real_challenge_at"] = str(v) if v else None
+
+            # ── who: distinct real platforms that opted in (window) ─────
+            rows = _run(cur, "real_platforms",
+                        "SELECT platform, COUNT(*) AS n FROM mcp_call_log "
+                        " WHERE status = %s "
+                        " AND timestamp > NOW() - make_interval(days => %s) "
+                        " AND " + _REAL_PLATFORM_SQL +
+                        " GROUP BY platform ORDER BY n DESC LIMIT 15",
+                        (_CHAL_ST, win), fetch="all")
+            for r in (rows or []):
+                g = (lambda i: r.get(list(r.keys())[i]) if hasattr(r, "get") else r[i])
+                out["real_platforms"].append({"platform": g(0), "challenges": int(g(1) or 0)})
+    except Exception as e:
+        out["error"] = str(e)[:200]
+        try: conn.rollback()
+        except Exception: pass
+    finally:
+        try: conn.close()
+        except Exception: pass
+
+    # ── verdict: the self-driving read + next action ────────────────────
+    fp = out["milestones"]["first_paid_at"]
+    all_paid = out["split"]["all"]["paid"]
+    real_chal = out["funnel"]["real_challenges"]
+    real_fail = out["funnel"]["real_failed"]
+    all_chal = out["split"]["all"]["challenges"]
+    if fp or all_paid > 0:
+        top = (out["by_tool"][0]["tool"] if out["by_tool"] else "the flagship tools")
+        out["verdict"] = {
+            "status": "SETTLED",
+            "headline": f"🎉 FIRST AUTONOMOUS AGENT PAYMENT settled on the MPP rail "
+                        f"(first_paid_at={fp}). The rail works E2E with real money.",
+            "next_action": f"Double down: instrument what {top} did right, then widen the "
+                           f"same challenge→pay path to the other flagship tools + all agent platforms.",
+        }
+    elif real_chal > 0:
+        if real_fail > 0:
+            out["verdict"] = {
+                "status": "REAL_INTENT_SETTLE_ERRORS",
+                "headline": f"{real_chal} REAL agent(s) opted in to pay but {real_fail} hit "
+                            f"verify/settle FAILURES and 0 settled — likely a broken settle path.",
+                "next_action": "Pull the mpp_verify_failed/x402_failed rows and audit the "
+                               "server.mjs settle → Stripe MPP verify handshake. This is a bug, not a demand gap.",
+            }
+        else:
+            out["verdict"] = {
+                "status": "REAL_INTENT_NO_SETTLE",
+                "headline": f"{real_chal} REAL agent(s) opted in to pay but none completed — "
+                            f"abandoning at checkout (no settle errors logged).",
+                "next_action": "Reduce settle friction: confirm the challenge returns a "
+                               "one-call-completable pay token an autonomous agent can honor without a human; "
+                               "trace one real challenge end-to-end.",
+            }
+    elif all_chal > 0:
+        out["verdict"] = {
+            "status": "LIVE_TEST_ONLY",
+            "headline": f"Rail proven E2E on synthetic agents ({all_chal} test challenges) but "
+                        f"ZERO real agent pay-intent yet.",
+            "next_action": "Demand problem, not a plumbing problem. Drive real agent traffic to the "
+                           "gated flagship tools (get_grid_intelligence / get_fiber_intel / get_market_intel) "
+                           "and make the paywall challenge legible to autonomous callers.",
+        }
+    else:
+        out["verdict"] = {
+            "status": "NO_INTENT",
+            "headline": "Rail live but zero opt-ins (no challenges of any kind in window).",
+            "next_action": "Verify the MPP challenge is actually surfaced on flagship-tool calls "
+                           "for unpaid agents — if no challenge fires, no one can pay.",
+        }
+    return jsonify(out), 200
