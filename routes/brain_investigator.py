@@ -665,6 +665,60 @@ def _evidence_block(evidence: list[dict]) -> str:
     return "\n".join(lines)
 
 
+# ── Corpus recall (RAG): so the brain stops re-investigating seen topics ──
+def _recall_prior_work(question: str, k: int = 6) -> list[dict]:
+    """Semantic recall of PRIOR findings + recommendations on the same theme,
+    via routes.brain_rag.retrieve_context (pgvector HNSW + Cohere embed-v3).
+
+    This is the anti-amnesia step: gather_evidence() only reads point-in-time
+    SQL, so without recall the investigator re-reasons every recurring theme
+    from scratch. We scope recall to the two PROSE corpora that hold the brain's
+    own thinking — brain_findings + brain_strategic_recommendations — so the
+    REASON step can build on / supersede prior work instead of repeating it.
+
+    HARD FAIL-SOFT CONTRACT: this must NEVER break the investigation. Any
+    failure (missing module, embed API down, DB down, unexpected shape) degrades
+    to [] — the exact behaviour the caller had before recall existed. Only the
+    question PROSE is embedded; no fabricated/SQL numbers are run through RAG
+    (retrieval augments reasoning; metrics stay grounded in the evidence block).
+    """
+    q = (question or "").strip()
+    if not q:
+        return []
+    try:
+        from routes.brain_rag import retrieve_context
+        hits = retrieve_context(
+            q, k=k,
+            corpus=["brain_findings", "brain_strategic_recommendations"],
+        )
+        return hits if isinstance(hits, list) else []
+    except Exception as e:
+        logger.warning("brain_investigator: prior-work recall failed: %s", e)
+        return []
+
+
+def _prior_work_block(prior: list[dict]) -> str:
+    """Render recalled prior findings/recommendations for the REASON prompt.
+    Empty/failed recall renders an explicit 'none' marker so the model isn't
+    misled into thinking prior work exists."""
+    if not prior:
+        return "(no prior findings or recommendations recalled on this theme)"
+    lines = []
+    for h in prior:
+        table = (h.get("source_table") or "").strip() or "brain"
+        kind = (h.get("kind") or "").strip()
+        text = (h.get("text") or "").strip()
+        if not text:
+            continue
+        if len(text) > 400:
+            text = text[:400] + "…"
+        tag = f"{table}" + (f"/{kind}" if kind else "")
+        lines.append(f"- [{tag}] {text}")
+    if not lines:
+        return "(no prior findings or recommendations recalled on this theme)"
+    return "\n".join(lines)
+
+
 # ── LLM helper (reuse brain_models tier + resolve_chain fallback) ────
 def _call_model(system: str, prompt: str, *, tier: str = "reasoning",
                 max_tokens: int = 1500) -> tuple[Optional[str], Optional[str], Optional[str]]:
@@ -745,9 +799,16 @@ _DECOMPOSE_SYSTEM = (
 
 _REASON_SYSTEM = (
     "You are the DC Hub Brain Investigator. You have a question, its "
-    "decomposition, and REAL EVIDENCE gathered from DC Hub's ground-truth data "
-    "sources. Reason FROM THE EVIDENCE to a draft recommendation.\n\n"
+    "decomposition, a PRIOR WORK block (findings + recommendations already "
+    "produced on this theme), and REAL EVIDENCE gathered from DC Hub's "
+    "ground-truth data sources. Reason FROM THE EVIDENCE to a draft "
+    "recommendation.\n\n"
     "HARD RULES:\n"
+    "  - PRIOR WORK is context, NOT evidence. Do NOT re-derive conclusions the "
+    "prior work already reached — explicitly BUILD ON or SUPERSEDE them, and say "
+    "which. If your recommendation merely restates prior work, say so and lower "
+    "confidence. NEVER cite a number from the PRIOR WORK block as if it were "
+    "current evidence — only the EVIDENCE block carries citeable figures.\n"
     "  - Cite ONLY numbers that appear in the EVIDENCE block. NEVER invent a "
     "figure. If a number you'd want isn't in the evidence, say 'not measured' "
     "rather than guessing.\n"
@@ -825,6 +886,15 @@ def investigate(question: str, *, depth: str = "default") -> dict:
     base["evidence"] = evidence
     evidence_block = _evidence_block(evidence)
 
+    # Corpus recall: pull PRIOR findings + recommendations on this same theme so
+    # the REASON step builds on / supersedes them instead of re-investigating a
+    # seen topic. Fail-soft: on any RAG error this is [] and behaviour is
+    # identical to the pre-recall path (metrics still come only from the SQL
+    # evidence block above — recall augments reasoning, not the numbers).
+    prior_work = _recall_prior_work(question, k=6)
+    base["prior_work"] = prior_work
+    prior_work_block = _prior_work_block(prior_work)
+
     # ── Step 1: DECOMPOSE ────────────────────────────────────────────
     # 2026-07-01: caps raised 700/1500 → 2000/4000. On fable-5 (reasoning tier
     # since the r85j auto-promote) thinking tokens count toward max_tokens, so
@@ -847,11 +917,15 @@ def investigate(question: str, *, depth: str = "default") -> dict:
     }
 
     # ── Step 3: REASON from the gathered evidence ───────────────────
+    # PRIOR WORK block is injected ALONGSIDE the SQL evidence (never in place of
+    # it): the model is told to build on / supersede prior findings rather than
+    # repeat them, but figures are still cited ONLY from the EVIDENCE block.
     reason_prompt = (
         f"Operator question: {question}\n\n"
         f"Decomposition:\n"
         f"  sub-questions: {json.dumps(base['decomposition']['sub_questions'])}\n"
         f"  data needed: {json.dumps(base['decomposition']['data_needed'])}\n\n"
+        f"PRIOR WORK (do not repeat; build on or supersede):\n{prior_work_block}\n\n"
         f"EVIDENCE (ground-truth — cite ONLY these numbers):\n{evidence_block}\n\n"
         f"Reason from the evidence to a draft recommendation."
     )
