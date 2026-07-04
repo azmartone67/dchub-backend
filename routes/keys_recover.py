@@ -15,10 +15,12 @@ Security model (deliberate, documented):
     attacker-supplied address that differs from what's on file. (Here they're
     the same string by construction — you recover the email you typed — but the
     point is we email what the DB says, not what the request claims unlocks.)
-  * PAID account → we email a dashboard SIGN-IN link, not a raw key (paid keys
-    rotate in the dashboard; the password-reset / login flow is the right
-    recovery surface). Pure FREE key → we email the key itself, to its own
-    bound address, with explicit "you or your agent requested this" copy.
+  * PAID account → we email the customer's dch_live_ MCP connector URL (the
+    ?api_key= link Claude needs), to the already-bound address — the credential
+    the customer actually needs to connect, not a dead dashboard sign-in link
+    (r-onboarding-fix 2026-07-03, defect #14). Falls back to the sign-in link
+    only if no active MCP key exists. Pure FREE key → we email the key itself, to
+    its own bound address, with explicit "you or your agent requested this" copy.
   * RATE-LIMITED, soft-fail: <=3 / email / day AND <=10 / ip / day, via a
     best-effort in-memory per-process counter (a backstop, not a fortress —
     a real attacker hits many processes; the enumeration-safety above is the
@@ -129,6 +131,28 @@ def _recover_html_signin(email: str) -> str:
 </div>"""
 
 
+def _recover_html_connector(email: str, api_key: str) -> str:
+    """r-onboarding-fix (2026-07-03, defect #14): paid recovery used to email a
+    dead dashboard sign-in link. A paid account's dch_live_ MCP key + the
+    ?api_key= connector URL IS the credential the customer needs — email it to the
+    already-bound address (same enumeration-safe posture as free-key recovery)."""
+    import html as _html
+    email = _html.escape(email)
+    api_key_e = _html.escape(api_key)
+    connector = _html.escape(f"https://dchub.cloud/mcp?api_key={api_key}")
+    return f"""<div style="font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;max-width:560px;margin:0 auto;color:#1a1a1a;line-height:1.55">
+  <h2 style="font-weight:600;margin:0 0 4px">Connect DC Hub to Claude 🛰️</h2>
+  <p style="color:#666;margin:0 0 18px">You (or an AI agent acting for you) asked us to recover access for this email.</p>
+  <p>Paste this into <b>Claude.ai → Settings → Connectors → Add custom connector</b> — it carries your key, so you get your full paid tier (no auth fields to fill):</p>
+  <p style="margin:16px 0">
+    <code style="background:#f4f4f5;border:1px solid #e4e4e7;border-radius:6px;padding:10px 14px;display:inline-block;font-size:13px;word-break:break-all">{connector}</code>
+  </p>
+  <p style="color:#444;font-size:14px">Using Claude Desktop / Cursor / Cline instead? Send your key as header <code>X-API-Key: {api_key_e}</code>. Full guide: <a href="https://dchub.cloud/mcp">dchub.cloud/mcp</a></p>
+  <p style="color:#444;font-size:14px">Keep it private — anyone with this key can use your quota. If you didn't request this, ignore this email — nothing changed, and this was only ever sent to <b>{email}</b>.</p>
+  <p style="margin-top:20px">— DC Hub<br><span style="color:#888;font-size:13px">dchub.cloud</span></p>
+</div>"""
+
+
 def _send(to_email: str, subject: str, html: str) -> bool:
     """Send via the same Resend path the rest of the app uses. Soft-fail to
     False — the HTTP response is neutral regardless."""
@@ -168,8 +192,31 @@ def _lookup_and_send(email: str) -> None:
                 except Exception:
                     prow = None
                 if prow:
-                    _send(email, "Recover your DC Hub access",
-                          _recover_html_signin(email))
+                    # r-onboarding-fix (2026-07-03, defect #14): email the paid
+                    # customer their dch_live_ MCP connector URL (the credential
+                    # Claude needs), to the bound address — NOT a dead sign-in
+                    # link. Fall back to the sign-in link only if no active MCP
+                    # key exists for this account.
+                    _mcp_key = None
+                    try:
+                        cur.execute(
+                            "SELECT api_key FROM mcp_dev_keys "
+                            "WHERE LOWER(email) = %s "
+                            "  AND COALESCE(status,'active') = 'active' "
+                            "ORDER BY created_at DESC LIMIT 1",
+                            (email,),
+                        )
+                        _mrow = cur.fetchone()
+                        if _mrow and _mrow[0]:
+                            _mcp_key = _mrow[0]
+                    except Exception:
+                        _mcp_key = None
+                    if _mcp_key:
+                        _send(email, "Connect DC Hub to Claude — your key inside",
+                              _recover_html_connector(email, _mcp_key))
+                    else:
+                        _send(email, "Recover your DC Hub access",
+                              _recover_html_signin(email))
                     return
 
                 # 2) Pure free key bound to this email.

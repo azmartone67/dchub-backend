@@ -427,6 +427,52 @@ def validate_api_key(api_key):
         except Exception:
             return None
 
+    # r-onboarding-fix (2026-07-03, defect #9): dch_live_ MCP keys live in
+    # mcp_dev_keys (keyed by api_key + email), NOT api_keys. Without this branch a
+    # PAYING MCP customer's key resolves to None here -> treated as free/anonymous
+    # on any Flask @require_plan path. Today the Node worker validates via
+    # /keys/validate; this makes the Flask fallback agree instead of walling payers.
+    if api_key.startswith('dch_live_'):
+        import psycopg2 as _pg
+        _c = None
+        try:
+            _url = (os.environ.get('NEON_DATABASE_URL')
+                    or os.environ.get('DATABASE_URL')
+                    or os.environ.get('DATABASE_READ_URL'))
+            if not _url:
+                return None
+            _c = _pg.connect(_url, connect_timeout=5)
+            _cur = _c.cursor()
+            _cur.execute(
+                "SELECT email, COALESCE(tier,'free'), COALESCE(status,'active') "
+                "FROM mcp_dev_keys WHERE api_key = %s LIMIT 1", (api_key,))
+            _r = _cur.fetchone()
+            _cur.close()
+            if not _r or _r[2] != 'active':
+                return None
+            _email = _r[0]
+            _tier = (_r[1] or 'free').lower()
+            # map mcp_dev_keys.tier -> a plan the @require_plan gates understand
+            _plan = {'paid': 'pro', 'pro': 'pro', 'developer': 'developer',
+                     'founding': 'founding', 'enterprise': 'enterprise',
+                     'starter': 'starter'}.get(_tier, 'free')
+            return {
+                'user_id': api_key,
+                'email': _email,
+                'plan': _plan,
+                'role': 'mcp',
+                'rate_limit_tier': _plan,
+            }
+        except Exception as _e:
+            print(f"[defect9] dch_live_ validate error: {str(_e)[:120]}")
+            return None
+        finally:
+            if _c:
+                try:
+                    _c.close()
+                except Exception:
+                    pass
+
     import psycopg2
     conn = None
     try:
