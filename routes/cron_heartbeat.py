@@ -456,6 +456,14 @@ _DISPATCH = [
      "POST",
      lambda now: now.hour % 4 == 0 and now.minute >= 20 and now.minute < 25),
 
+    # 2026-07-04: Gap Master Shell — the five assessed gaps (demand/conversion/
+    # citations/search/retention) measured + one bounded action on the worst,
+    # every 6h at 02/08/14/20 UTC. Kill: GAPS_MASTER_DISABLED.
+    ("gap_master_tick_6h",
+     f"{BASE}/api/v1/admin/gaps/master-tick",
+     "POST",
+     lambda now: now.hour % 6 == 2 and now.minute < 55),
+
     # RAG v1 (2026-07-03): market deep-dive rotation — regenerate the 10 stalest
     # DCPI market narratives daily (317 markets → full refresh ~monthly). This
     # existing endpoint previously had NO surviving scheduler (it was only an
