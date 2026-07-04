@@ -233,7 +233,11 @@ def tier1_measure() -> dict:
                     attempts_24h = _db_posts
         except Exception:
             pass
-    citation_velocity = (_num(north.get("distinct_agents_citing_7d"))
+    # qa-0704: the live north-star endpoint's actual key is citation_velocity_7d
+    # — none of the three keys below exist in its response (same shape-mismatch
+    # family as the autonomy probe). Kept for forward/backward compat.
+    citation_velocity = (_num(north.get("citation_velocity_7d"))
+                         or _num(north.get("distinct_agents_citing_7d"))
                          or _num(north.get("citation_velocity"))
                          or _num(north.get("citations_7d")))
 
