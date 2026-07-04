@@ -25,6 +25,7 @@ Endpoints:
 """
 
 import re
+import json
 from routes.url_registry import build_public_url
 import logging
 from flask import Blueprint, jsonify, request, Response
@@ -236,6 +237,57 @@ def _rag_comparables(deal, mk):
     return out
 
 
+# ── verification pass (Part B, 2026-07-04) ────────────────────────────
+# Numbers quoted in the reads that come from PLATFORM constants rather than
+# the per-deal SQL rows (so the verifier doesn't flag boilerplate as
+# fabricated): DCPI market count + the upgrade price points.
+_VERIFY_PLATFORM_FACTS = ("DCPI scores 300+ markets. Behind-the-meter gas "
+                          "index: DCGI. Developer $49/mo, Pro $199/mo.")
+
+
+def _verify_paid_reads(items):
+    """Verification pass on the PAID autopsy reads: ONE cheap Haiku
+    structured-outputs call checks that every NUMBER in the composed reads
+    appears in the structured facts (deal rows + DCPI overlay + RAG
+    comparables). Sentences flagged as carrying unsupported numbers are
+    stripped IN PLACE from each deal's autopsy_read. On verifier failure /
+    timeout the answer is served unverified (meta verified:false). NEVER
+    raises — verification is a quality lift, not an availability risk.
+    Returns the `verification` meta dict for the response."""
+    try:
+        from routes.brain_answer_cache import (verify_answer,
+                                               strip_flagged_sentences)
+        reads = [row for row in items if row.get("autopsy_read")]
+        if not reads:
+            return {"verified": False, "reason": "no_paid_text"}
+        answer = "\n".join(r["autopsy_read"] for r in reads)
+        facts = {
+            # The structured SQL facts each read was composed from — the deal
+            # row + its DCPI overlay + the RAG comparables (retrieved evidence).
+            "deals": [{k: v for k, v in row.items() if k != "autopsy_read"}
+                      for row in reads],
+            "platform_constants": _VERIFY_PLATFORM_FACTS,
+        }
+        v = verify_answer(answer, json.dumps(facts, default=str))
+        if not v.get("verified"):
+            return {"verified": False, "reason": v.get("reason")}
+        stripped = 0
+        if not v.get("ok") and v.get("issues"):
+            for row in reads:
+                clean, n = strip_flagged_sentences(row["autopsy_read"], v["issues"])
+                row["autopsy_read"] = clean
+                stripped += n
+        return {"verified": True,
+                # ok after the strip: either nothing was fabricated, or the
+                # offending sentence(s) no longer ship.
+                "ok": bool(v.get("ok")) or stripped > 0,
+                "issues_found": len(v.get("issues") or []),
+                "sentences_stripped": stripped}
+    except Exception as e:
+        logger.warning(f"deal-autopsy: verification pass failed: {e}")
+        return {"verified": False, "reason": "error"}
+
+
 def _autopsy_read(deal, mk):
     """Deterministic 'what's the real play' read. PAID layer."""
     if not mk:
@@ -297,17 +349,33 @@ def autopsy():
     except (TypeError, ValueError):
         limit = 15
 
-    deals = _recent_deals(limit)
-    if not deals:
-        return jsonify(ok=False, error="Deal flow temporarily unavailable"), 503
-    idx, by_state = _market_index()
-
     try:
         from routes.tier_gate import _resolve_caller_tier
         tier, _ = _resolve_caller_tier()
     except Exception:
         tier = "FREE"
-    is_paid = (tier or "FREE").upper() in _PAID
+    tier = tier or "FREE"
+    is_paid = tier.upper() in _PAID
+
+    # ── semantic answer cache (PG-backed, ★TIER-AWARE) ──────────────────
+    # Check BEFORE compute: a hit skips the deals/DCPI SQL, up to 15 RAG
+    # recalls and the verify pass. tier is part of the key — a FREE cached
+    # answer can never serve a paid caller (and vice versa). Fail-soft: any
+    # cache trouble = miss.
+    _cache_q = f"deal autopsy limit={limit}"
+    try:
+        from routes.brain_answer_cache import get_cached, put_cached
+        _cached = get_cached("deal_autopsy", tier, _cache_q)
+    except Exception:
+        _cached, put_cached = None, None
+    if isinstance(_cached, dict) and _cached.get("ok"):
+        _cached["_cache"] = {"hit": True}
+        return jsonify(_cached), 200
+
+    deals = _recent_deals(limit)
+    if not deals:
+        return jsonify(ok=False, error="Deal flow temporarily unavailable"), 503
+    idx, by_state = _market_index()
 
     items = []
     matched = 0
@@ -349,6 +417,18 @@ def autopsy():
                         "option vs near-term build vs queue gamble) on each deal is Developer/Pro."),
             "unlock": {"url": _UPGRADE_URL, "developer_usd_month": 49, "pro_usd_month": 199},
         }
+    else:
+        # Verification pass — PAID full answers only. Strips fabricated-number
+        # sentences in place; verified:false meta on verifier failure/timeout.
+        out["verification"] = _verify_paid_reads(items)
+
+    # Store the POST-verification answer in the tier-aware cache (never the
+    # 503 path, never a pre-verification paid read). Fail-soft no-op.
+    try:
+        if put_cached:
+            put_cached("deal_autopsy", tier, _cache_q, out)
+    except Exception:
+        pass
     return jsonify(out), 200
 
 

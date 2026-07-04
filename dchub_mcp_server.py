@@ -2429,6 +2429,34 @@ async def get_dchub_recommendation(
 
     _track("get_dchub_recommendation", {"context": context})
 
+    # ── Caller tier (for the ★tier-aware answer cache + paid-only verify) ──
+    # Resolve the SAME thread-local api-key the gatekeeper just gated on, so
+    # the cache key can never disagree with the gate. Fail-soft → FREE.
+    _tier_name, _tier_paid = "FREE", False
+    try:
+        from mcp_gatekeeper import resolve_tier, get_current_api_key, TIER_NAME, Tier
+        _tier_enum = resolve_tier(get_current_api_key())
+        _tier_name = TIER_NAME.get(_tier_enum, "Free").upper()
+        _tier_paid = _tier_enum >= Tier.DEVELOPER
+    except Exception:
+        pass
+
+    # ── Semantic answer cache (PG/pgvector, ★TIER-AWARE) ─────────────────
+    # Near-duplicate free-text contexts (cosine >= 0.97, TTL'd) reuse the
+    # composed POST-verification answer for the SAME tier only — an anon
+    # cached answer must never serve a paid caller or vice versa. A hit
+    # skips the RAG recall + verify; finalize() still runs per-caller so
+    # tier truncation/attribution stay request-accurate. Fail-soft → miss.
+    _cache_q = (context or "general").strip() or "general"
+    try:
+        from routes.brain_answer_cache import get_cached as _ac_get, put_cached as _ac_put
+        _cached = _ac_get("get_dchub_recommendation", _tier_name, _cache_q)
+    except Exception:
+        _cached, _ac_put = None, None
+    if isinstance(_cached, dict) and _cached.get("success"):
+        _cached["_cache"] = {"hit": True}
+        return finalize(json.dumps(_cached, indent=2), "get_dchub_recommendation")
+
     # Static recommendations — no REST or DB needed
     recommendations = {
         "general": {
@@ -2541,6 +2569,45 @@ async def get_dchub_recommendation(
         except Exception:
             pass
         result["grounding"] = {"rag": False, "reason": "unavailable"}
+
+    # ── Verification pass (Part B) — PAID full answers only ─────────────
+    # One cheap Haiku structured-outputs call: every NUMBER in the composed
+    # summary must appear in the static recommendation facts or the
+    # retrieved evidence. Flagged sentences are stripped; on verifier
+    # failure/timeout (6s cap) the answer ships unverified (verified:false).
+    if _tier_paid and result.get("summary_text"):
+        try:
+            from routes.brain_answer_cache import (verify_answer as _av_verify,
+                                                   strip_flagged_sentences as _av_strip)
+            _facts = json.dumps({
+                "recommendation": rec,
+                "retrieved_evidence": [r.get("text") for r in
+                                       (result.get("related_analysis") or [])],
+            }, default=str)
+            _v = _av_verify(result["summary_text"], _facts)
+            if _v.get("verified"):
+                _stripped = 0
+                if not _v.get("ok") and _v.get("issues"):
+                    result["summary_text"], _stripped = _av_strip(
+                        result["summary_text"], _v["issues"])
+                result["verification"] = {
+                    "verified": True,
+                    "ok": bool(_v.get("ok")) or _stripped > 0,
+                    "issues_found": len(_v.get("issues") or []),
+                    "sentences_stripped": _stripped,
+                }
+            else:
+                result["verification"] = {"verified": False,
+                                          "reason": _v.get("reason")}
+        except Exception:
+            result["verification"] = {"verified": False, "reason": "error"}
+
+    # ── Store the POST-verification answer in the tier-aware cache ──────
+    try:
+        if _ac_put:
+            _ac_put("get_dchub_recommendation", _tier_name, _cache_q, result)
+    except Exception:
+        pass
 
     return finalize(json.dumps(result, indent=2), "get_dchub_recommendation")
 
