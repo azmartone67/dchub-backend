@@ -13081,6 +13081,35 @@ def _welcome_mcp_connector_html(to_email, raw_api_key):
                 mcp_key = rows[0][0]
         except Exception:
             mcp_key = None
+    # r-onboarding-fix (2026-07-03): fix the ORDERING RACE. A paid buyer's
+    # checkout.session.completed welcome fires ~1.5s BEFORE customer.subscription
+    # .created mints the dch_live_ key (confirmed in Roman's timing: welcome
+    # 13:44:00.5, key 13:44:02.0). So the lookup above finds nothing and the
+    # buyer gets a keyless generic message — then the dedup guard suppresses the
+    # later good welcome. Mint the key NOW so the welcome always carries a working
+    # connector. Idempotent by construction: the subscription handler SELECTs an
+    # existing active key and REUSES it (flask_mcp_endpoints.py:2813) instead of
+    # minting a second, so this never creates a duplicate. Fail-open.
+    if not mcp_key and to_email:
+        try:
+            import secrets as _sec
+            _newk = "dch_live_" + _sec.token_hex(16)
+            _pg_execute(
+                "INSERT INTO mcp_dev_keys (api_key, developer_id, email, tier, status, metadata) "
+                "VALUES (%s, %s, lower(%s), 'paid', 'active', %s)",
+                (_newk, "dev_" + _sec.token_hex(8), to_email,
+                 '{"source": "welcome_ensure"}'))
+            # Re-select so a concurrent insert (subscription handler racing us)
+            # can't leave us pointing at a key that lost the write.
+            _rc2, rows2 = _pg_execute(
+                "SELECT api_key FROM mcp_dev_keys "
+                "WHERE lower(email) = lower(%s) AND status = 'active' "
+                "ORDER BY created_at DESC LIMIT 1",
+                (to_email,), fetch=True)
+            if rows2:
+                mcp_key = rows2[0][0]
+        except Exception:
+            mcp_key = None
     if mcp_key:
         connector = f"https://dchub.cloud/mcp?api_key={mcp_key}"
         # INLINE styles (not CSS classes) so this renders in BOTH the styled
