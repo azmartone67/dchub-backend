@@ -172,11 +172,71 @@ def _slug(s: str) -> str:
 
 
 # ═════════════════════════════════════════════════════════════════════
+# r-page-onramp (2026-07-04): crawl->tool crossover pack.
+# Every crawled page carries (a) JSON-LD pointing at the LIVE query
+# surfaces (SearchAction -> /api/v1/rag/search, Dataset distribution ->
+# the /mcp endpoint), (b) a visible-but-subtle footer onramp line whose
+# src=page-onramp param is the measurement marker (recorded into
+# connect_landing_views by routes/mcp_connect.py), and (c) an X-Cite-As
+# header with an as-of stamp. ASCII ONLY in headers — the industry-pulse
+# em-dash made gunicorn 502 every response (routes/industry_pulse.py).
+# ═════════════════════════════════════════════════════════════════════
+MCP_ENDPOINT = "https://dchub.cloud/mcp"
+RAG_SEARCH_URL_TEMPLATE = "https://dchub.cloud/api/v1/rag/search?q={search_term_string}"
+
+
+def _search_action() -> dict:
+    """SearchAction potentialAction node pointing at the keyless RAG search."""
+    return {
+        "@type": "SearchAction",
+        "target": {"@type": "EntryPoint", "urlTemplate": RAG_SEARCH_URL_TEMPLATE},
+        "query-input": "required name=search_term_string",
+    }
+
+
+def _mcp_dataset_node(name: str, canonical: str, description: str) -> dict:
+    """Dataset node whose distribution points at the live MCP endpoint."""
+    return {
+        "@context": "https://schema.org",
+        "@type": "Dataset",
+        "name": name,
+        "description": description,
+        "url": canonical,
+        "isAccessibleForFree": True,
+        "license": "https://creativecommons.org/licenses/by/4.0/",
+        "creator": {"@type": "Organization", "name": "DC Hub",
+                    "url": "https://dchub.cloud"},
+        "distribution": [{"@type": "DataDownload",
+                          "encodingFormat": "application/json",
+                          "contentUrl": MCP_ENDPOINT}],
+        "potentialAction": _search_action(),
+    }
+
+
+def _onramp_footer_html(noun: str, entity: str) -> str:
+    """One subtle footer line: the machine-readable MCP onramp hint."""
+    if not entity:
+        return ""
+    u = f"https://dchub.cloud/connect?src=page-onramp&entity={entity}"
+    return (f'<p class="dc-onramp" style="font-size:0.8rem">'
+            f'Query this {_h(noun)} live via MCP: '
+            f'<a href="{_esc_attr(u)}">{_h(u)}</a></p>')
+
+
+def _ascii_header(v: Any) -> str:
+    """ASCII-only header value (headers must be latin-1). Never raises."""
+    try:
+        return str(v or "").encode("ascii", "ignore").decode("ascii")
+    except Exception:
+        return ""
+
+
+# ═════════════════════════════════════════════════════════════════════
 # COMMON BASE TEMPLATE (used by all 3 page types)
 # ═════════════════════════════════════════════════════════════════════
 def _base_html(*, title: str, description: str, canonical: str,
                og_image: str, schema_jsonld: str, body_html: str,
-               og_type: str = "website") -> str:
+               og_type: str = "website", extra_footer_html: str = "") -> str:
     """Wrap inner body in the canonical DC Hub layout."""
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -238,6 +298,7 @@ def _base_html(*, title: str, description: str, canonical: str,
   Free MCP API: <code>https://dchub.cloud/mcp</code> · <a href="https://dchub.cloud/signup">Get free dev key</a></p>
   <p class="dc-browse">Browse: <a href="/facilities">All facilities by country</a> · <a href="/dcpi">DC Hub Power Index</a> · <a href="/markets">Markets</a> · <a href="/grid">Grid</a></p>
   <p>21,000+ facilities · 7 ISO grid feeds · 2,000+ M&amp;A deals tracked · 540+ project pipeline</p>
+{extra_footer_html}
 </footer>
 </body>
 </html>"""
@@ -392,6 +453,10 @@ def facility_page(id_or_slug: str):
         headers={
             "Cache-Control": "public, max-age=900, s-maxage=3600",
             "X-DC-Page-Source": "seo-facility",
+            # r-page-onramp: as-of citation header, ASCII only (latin-1 trap)
+            "X-Cite-As": _ascii_header(
+                f"DC Hub Facility {row['id']} - as of "
+                f"{_dt.date.today().isoformat()}"),
         },
     )
 
@@ -421,21 +486,34 @@ def _render_facility(f: dict, nearby: list) -> str:
     canonical = f"https://dchub.cloud/facility/{fac_id}"
     og_image  = f"https://dchub.cloud/static/og/facility-{fac_id}.png"  # generated lazily
 
-    schema = f"""{{
-  "@context": "https://schema.org",
-  "@type": "Place",
-  "name": "{_esc_attr(name)}",
-  "description": "{_esc_attr(desc[:200])}",
-  "url": "{canonical}",
-  "address": {{
-    "@type": "PostalAddress",
-    "addressLocality": "{_esc_attr(city)}",
-    "addressRegion": "{_esc_attr(state)}",
-    "addressCountry": "{_esc_attr(country)}"
-  }},
-  "geo": {{"@type": "GeoCoordinates", "latitude": "{lat or ''}", "longitude": "{lon or ''}"}},
-  "additionalType": "https://schema.org/DataCenter"
-}}"""
+    # r-page-onramp (2026-07-04): schema built via json.dumps (the old manual
+    # f-string could emit invalid JSON on quoted names) and extended with the
+    # crawl->tool crossover nodes: SearchAction on the Place + a Dataset node
+    # whose distribution points at the live MCP endpoint.
+    import json as _json
+    _place_node = {
+        "@context": "https://schema.org",
+        "@type": "Place",
+        "name": name,
+        "description": desc[:200],
+        "url": canonical,
+        "address": {
+            "@type": "PostalAddress",
+            "addressLocality": city,
+            "addressRegion": state,
+            "addressCountry": country,
+        },
+        "additionalType": "https://schema.org/DataCenter",
+        "potentialAction": _search_action(),
+    }
+    if lat and lon:
+        _place_node["geo"] = {"@type": "GeoCoordinates",
+                              "latitude": lat, "longitude": lon}
+    _ds_node = _mcp_dataset_node(
+        f"{name} - facility intelligence record", canonical,
+        f"Structured data-center facility record for {name} ({location}). "
+        f"Queryable live via the DC Hub MCP endpoint.")
+    schema = _json.dumps([_place_node, _ds_node], indent=2)
 
     # Build the body
     badges = []
@@ -527,6 +605,7 @@ def _render_facility(f: dict, nearby: list) -> str:
         title=title, description=desc, canonical=canonical,
         og_image=og_image, schema_jsonld=schema, body_html=body,
         og_type="business.business",
+        extra_footer_html=_onramp_footer_html("facility", str(fac_id)),
     )
 
 
@@ -590,6 +669,10 @@ def market_page(slug: str):
         headers={
             "Cache-Control": "public, max-age=1800, s-maxage=3600",
             "X-DC-Page-Source": "seo-market",
+            # r-page-onramp: as-of citation header, ASCII only (latin-1 trap)
+            "X-Cite-As": _ascii_header(
+                f"DC Hub Market {slug} - as of "
+                f"{_dt.date.today().isoformat()}"),
         },
     )
 
@@ -603,13 +686,24 @@ def _render_market(slug, city, state, facilities, stats) -> str:
     title = f"{city}, {state} Data Centers — {n_fac} facilities, {total_mw} MW | DC Hub"
     desc  = f"Complete {city}, {state} data center market intelligence. {n_fac} facilities, {total_mw}MW total capacity across {n_op} operators. Live power, fiber, M&A data."
 
-    schema = f"""{{
-  "@context": "https://schema.org",
-  "@type": "Place",
-  "name": "{_esc_attr(city + ', ' + state + ' Data Center Market')}",
-  "description": "{_esc_attr(desc[:200])}",
-  "url": "{canonical}"
-}}"""
+    # r-page-onramp (2026-07-04): Place + SearchAction pointing at the live
+    # RAG search, plus a Dataset node whose distribution is the MCP endpoint
+    # (crawl->tool crossover). json.dumps guarantees the ld+json block parses.
+    import json as _json
+    _place_node = {
+        "@context": "https://schema.org",
+        "@type": "Place",
+        "name": f"{city}, {state} Data Center Market",
+        "description": desc[:200],
+        "url": canonical,
+        "potentialAction": _search_action(),
+    }
+    _ds_node = _mcp_dataset_node(
+        f"{city}, {state} data center market intelligence", canonical,
+        f"Structured market record for {city}, {state}: {n_fac} facilities, "
+        f"{total_mw} MW total capacity, {n_op} operators. Queryable live via "
+        f"the DC Hub MCP endpoint.")
+    schema = _json.dumps([_place_node, _ds_node], indent=2)
 
     # Top operators in market
     from collections import Counter
@@ -662,6 +756,7 @@ def _render_market(slug, city, state, facilities, stats) -> str:
         title=title, description=desc, canonical=canonical,
         og_image=f"https://dchub.cloud/static/og/market-{slug}.png",
         schema_jsonld=schema, body_html=body,
+        extra_footer_html=_onramp_footer_html("market", slug),
     )
 
 
