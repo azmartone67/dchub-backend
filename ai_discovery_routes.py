@@ -609,7 +609,7 @@ All endpoints below require NO API key. Just GET the URL. CORS enabled for all o
 - [Market Compare](https://dchub.cloud/api/v1/markets/compare?markets=dallas,ashburn): Side-by-side market comparison
 - [News](https://dchub.cloud/api/news?limit=10): Latest industry news from 40+ sources
 - [M&A Transactions](https://dchub.cloud/api/v1/transactions?limit=10): Recent acquisitions, investments, JVs
-- [Construction Pipeline](https://dchub.cloud/api/v1/pipeline): Data centers under construction or announced
+- [Construction Pipeline](https://dchub.cloud/api/v1/pipeline): Capacity data — data centers under construction or announced
 - [Site Score](https://dchub.cloud/api/site-score?lat=33.4484&lon=-112.074&state=AZ): Site suitability rating (0-100)
 - [Grid Fuel Mix](https://dchub.cloud/api/grid/fuel-mix?iso=ERCOT): Real-time power grid energy mix
 - [Energy Prices](https://dchub.cloud/api/energy/prices/TX): Electricity pricing by US state
@@ -633,13 +633,13 @@ DC Hub publishes the **DCPI** — a 0-100 power-availability score for 233 data 
 - get_facility -> one profile {operator, address, lat/lon, power_mw total/used, cooling, fiber carriers, year, status, DCPI verdict, peers}
 - rank_markets -> markets ranked by power certainty + DCPI composite_score & BUILD/CAUTION/AVOID verdict
 - get_market_intel -> market supply/demand, pricing, vacancy
-- get_grid_intelligence -> ISO grid headroom, constraint, congestion, reserve margin
+- get_grid_intelligence -> grid intelligence: ISO grid headroom, constraint, congestion, reserve margin
 - get_interconnection_queue -> queue depth + typical wait (months) for an ISO
 - get_fiber_intel -> fiber routes, carrier count, lit-building proximity
 - get_gas_intelligence -> gas-pipeline access + delivered-gas economics
 - list_transactions -> M&A/deal records {buyer, seller, value_usd, date, type, region}
 - hyperscaler_deals -> hyperscaler builds/leases with capacity + market
-- analyze_site -> site suitability across power/fiber/water/incentives, with sources
+- analyze_site -> site selection: suitability across power/fiber/water risk/incentives, with sources
 - compare_sites -> side-by-side 2-4 site comparison (power/fiber/risk/time-to-power)
 - score_facility -> facility composite score + component breakdown
 - get_news -> cited news items {title, source, date, relevance}
