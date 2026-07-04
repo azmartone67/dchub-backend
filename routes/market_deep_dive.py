@@ -74,9 +74,16 @@ def _ensure_schema(c):
 def _gather_market_facts(cur, slug: str) -> dict | None:
     """Pull live facts for the market from market_power_scores +
     discovered_facilities + deals."""
+    # RAG v1 root-cause fix (2026-07-03): the live market_power_scores table
+    # has NO `score` column (the DCPI composite is computed on the fly, never
+    # stored — the same schema drift market_brief r-fix-3 documents). Selecting
+    # it threw, the bare except returned None, and EVERY market came back
+    # "market_not_found" — which is why market_deep_dives sat at 0 rows and the
+    # daily cron_rotate silently generated nothing. Select only the
+    # writer-guaranteed columns.
     try:
         cur.execute("""
-            SELECT market_slug, market_name, score,
+            SELECT market_slug, market_name,
                    constraint_score, excess_power_score, verdict,
                    computed_at
               FROM market_power_scores
@@ -91,11 +98,11 @@ def _gather_market_facts(cur, slug: str) -> dict | None:
         return None
     out = {
         "slug":       r[0], "name": r[1],
-        "dcpi_score": int(r[2]) if r[2] is not None else None,
-        "constraint":int(r[3]) if r[3] is not None else None,
-        "excess":    int(r[4]) if r[4] is not None else None,
-        "verdict":   r[5],
-        "computed":  r[6].isoformat() if r[6] else None,
+        "dcpi_score": None,   # composite is derived at read time, never stored
+        "constraint":int(r[2]) if r[2] is not None else None,
+        "excess":    int(r[3]) if r[3] is not None else None,
+        "verdict":   r[4],
+        "computed":  r[5].isoformat() if r[5] else None,
     }
     # Facilities + MW
     try:
@@ -159,7 +166,9 @@ def _ask_claude_to_write(facts: dict) -> tuple[str | None, str | None]:
         f"investors and operators. Be specific, cite the live numbers, "
         f"avoid generic platitudes. Output plain markdown, no preamble.\n\n"
         f"MARKET: {facts['name']}\n"
-        f"DCPI score: {facts.get('dcpi_score','?')}/100 (verdict: {facts.get('verdict','?')})\n"
+        f"DCPI: excess-power {facts.get('excess','?')}/100, "
+        f"constraint {facts.get('constraint','?')}/100 "
+        f"(verdict: {facts.get('verdict','?')})\n"
         f"Tracked facilities: {facts.get('facility_count')} | total MW: {facts.get('total_mw'):,.0f}\n"
         f"Top operators: {operators_str}\n"
         f"Recent M&A: {deals_str}\n\n"
