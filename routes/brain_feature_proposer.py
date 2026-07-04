@@ -210,6 +210,38 @@ def _format_recalled_block(results: list, limit: int = 6) -> str:
             + "\n".join(lines) + "\n")
 
 
+def _recall_lessons(query: str, k: int = 5) -> list:
+    """Recall PAST-OUTCOME lessons (what worked/failed) from the brain's
+    self-learning corpus. Fail-soft → [] on any error/unavailability."""
+    if not query:
+        return []
+    try:
+        from routes.brain_rag import retrieve_lessons
+        return retrieve_lessons(query, k=k) or []
+    except Exception as e:
+        logger.debug("brain_feature_proposer: retrieve_lessons failed: %s", e)
+        return []
+
+
+def _format_lessons_block(results: list, limit: int = 5) -> str:
+    """Render recalled outcome-lessons as a 'PAST LESSONS (avoid repeating
+    failures)' prompt block. Empty string if nothing recalled."""
+    lines = []
+    for r in (results or [])[:limit]:
+        try:
+            txt = (r.get("text") or "").strip().replace("\n", " ")
+            if not txt:
+                continue
+            lines.append(f"  - {txt[:300]}")
+        except Exception:
+            continue
+    if not lines:
+        return ""
+    return ("PAST LESSONS (outcomes of prior brain actions — do NOT re-propose "
+            "anything that already FAILED; prefer approaches that WORKED):\n"
+            + "\n".join(lines) + "\n")
+
+
 # ── DB helpers (mirror routes/feedback_triage.py) ─────────────────────
 
 
@@ -640,8 +672,14 @@ def propose_feature(cluster: dict) -> dict:
     if dup is not None:
         supersedes = f"{dup.get('source_table')}#{dup.get('source_id')}"
 
+    # r-rag-lessons: recall PAST OUTCOMES (what worked/failed) so the proposer
+    # avoids re-proposing a feature that already FAILED — not just one already
+    # proposed. Fail-soft (retrieve_lessons returns [] on any error).
+    lessons_block = _format_lessons_block(_recall_lessons(recall_query, k=5))
+
     prompt = (
         (recalled_block + "\n" if recalled_block else "")
+        + (lessons_block + "\n" if lessons_block else "")
         + f"Cluster theme keywords: {cluster.get('theme')}\n"
         + f"User request count: {cluster.get('count')}\n"
         + f"Sample requests (most recent):\n{samples}\n"

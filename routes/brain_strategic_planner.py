@@ -344,6 +344,13 @@ def _gather_strategic_context() -> dict:
             # strategy reacts to what's actually happening, not just the funnel.
             ctx["relevant_news"] = retrieve_context(_rag_q, k=5, corpus="news_articles")
             ctx["relevant_deals"] = retrieve_context(_rag_q, k=4, corpus="deals")
+            # r-rag-lessons: recall PAST OUTCOMES (what worked/failed) so strategy
+            # doesn't re-recommend approaches that already failed. Fail-soft.
+            try:
+                from routes.brain_rag import retrieve_lessons
+                ctx["retrieved_lessons"] = retrieve_lessons(_rag_q, k=5)
+            except Exception:
+                pass
         except Exception:
             pass
     return ctx
@@ -704,6 +711,11 @@ def _build_prompt(ctx: dict) -> str:
                         "findings + past recommendations — build on / reuse these; "
                         "do NOT re-propose what's already logged):\n" +
                         _truncate(ctx.get("retrieved_prior_work"), 3500))
+    if ctx.get("retrieved_lessons"):
+        sections.append("PAST LESSONS (outcomes of prior brain actions — what "
+                        "actually WORKED vs FAILED when tried; do NOT recommend an "
+                        "approach that already failed, and prefer what worked):\n" +
+                        _truncate(ctx.get("retrieved_lessons"), 2500))
     if ctx.get("relevant_news"):
         sections.append("RELEVANT MARKET NEWS (semantically retrieved recent "
                         "coverage relevant to the focus — react to what's actually "
