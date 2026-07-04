@@ -511,11 +511,26 @@ def _render_profile(fac: dict, slug: str) -> str:
     _osm_href = (f"https://www.openstreetmap.org/?mlat={lat}&mlon={lng}#map=14/{lat}/{lng}"
                  if (lat and lng) else "")
 
+    # r84 (2026-07-04): Clarity STILL showed dead clicks on the stat grid — r82
+    # only linked Market+Coordinates (and Market silently died when the market
+    # didn't resolve to a DCPI slug, the common intl case), leaving Power/Status/
+    # City/State/Country as button-styled dead <div>s. Give the two highest-intent
+    # tiles real destinations: Power → the /sites capacity report (the number users
+    # jab at), Country → the country hub (only when it's an ISO2 code, so we never
+    # mint a spaces-in-URL 404). Link tiles also carry a ↗ affordance (CSS) so the
+    # clickable ones read as clickable and the remaining static tiles read as static.
+    _cc = (country or "").strip().lower()
+    _tile_href = {
+        "Power":       f"/sites/{_esc(slug)}" if slug else "",
+        "Country":     f"/facilities/in/{_esc(_cc)}" if (len(_cc) == 2 and _cc.isalpha()) else "",
+        "Market":      f"/dcpi/{_esc(_mslug0)}" if _mslug0 else "",
+        "Coordinates": _osm_href,
+    }
+
     def _tile(label, value):
         _in = (f'<div class="stat-label">{_esc(label)}</div>'
                f'<div class="stat-value">{_esc(value)}</div>')
-        _href = (f"/dcpi/{_esc(_mslug0)}" if (label == "Market" and _mslug0)
-                 else _osm_href if (label == "Coordinates" and _osm_href) else "")
+        _href = _tile_href.get(label, "")
         if _href:
             _t = ' target="_blank" rel="noopener"' if _href.startswith("http") else ""
             return f'<a class="stat-card stat-link" href="{_href}"{_t}>{_in}</a>'
@@ -664,6 +679,7 @@ def _render_profile(fac: dict, slug: str) -> str:
   .stat-card{{background:var(--surf);border:1px solid var(--b);border-radius:14px;padding:18px 20px}}
   a.stat-card.stat-link{{text-decoration:none;color:inherit;cursor:pointer;transition:border-color .15s}}
   a.stat-card.stat-link:hover{{border-color:var(--ind)}}
+  a.stat-card.stat-link .stat-label::after{{content:' \\2197';opacity:.5;font-size:11px;font-weight:700;color:var(--ind)}}
   a.chip.chip-link{{display:block;text-decoration:none;color:inherit;cursor:pointer;transition:border-color .15s}}
   a.chip.chip-link:hover{{border-color:var(--ind)}}
   .verdict-link{{text-decoration:none}}
