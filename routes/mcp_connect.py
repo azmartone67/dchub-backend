@@ -50,9 +50,12 @@ mcp_connect_bp = Blueprint("mcp_connect", __name__)
 _CLIENTS = {
     "cursor": {
         "name":           "Cursor",
-        "tagline":        "The AI code editor — get DC Hub MCP data in 30s",
-        "install_path":   "~/Library/Application Support/Cursor/User/globalStorage/mcp.json",
-        "install_path_win": "%APPDATA%\\Cursor\\User\\globalStorage\\mcp.json",
+        "tagline":        "The AI code editor — one-click install, DC Hub MCP data in 30s",
+        # r-connect-oneclick (2026-07-04, verified cursor.com/docs): the config
+        # file is ~/.cursor/mcp.json (global) or <project>/.cursor/mcp.json —
+        # NOT the old globalStorage path.
+        "install_path":   "~/.cursor/mcp.json",
+        "install_path_win": "%USERPROFILE%\\.cursor\\mcp.json",
         "snippet_lang":   "json",
         # Cursor reads mcp.json with mcpServers map. Setting headers.X-API-Key
         # lets DC Hub recognise the operator as IDENTIFIED (50 calls/day,
@@ -65,11 +68,13 @@ _CLIENTS = {
     }
   }
 }""",
-        # Deep-link: no documented `cursor://` MCP install protocol as of
-        # 2026-06. Leaving blank — operator hand-pastes config file. If
-        # Cursor ships a protocol later we wire it in here.
-        "deep_link":      "",
-        "deep_link_label": "",
+        # r-connect-oneclick: Cursor's native install deeplink (official,
+        # cursor.com/docs/context/mcp/install-links). config = base64 of the
+        # INNER server object {"url":"https://dchub.cloud/mcp"} (no-auth free
+        # tier). The page JS rebuilds this with the minted key after mint for
+        # the 50/day tier. Clicking opens Cursor → confirm → installed.
+        "deep_link":      "cursor://anysphere.cursor-deeplink/mcp/install?name=dchub&config=eyJ1cmwiOiJodHRwczovL2RjaHViLmNsb3VkL21jcCJ9",
+        "deep_link_label": "⚡ Add to Cursor — one click",
         "examples": [
             "What's the gas pipeline capacity within 50 miles of Northern Virginia data centers?",
             "Rank the top 10 markets by DCPI for build readiness in Q4 2026.",
@@ -79,14 +84,20 @@ _CLIENTS = {
     "cline": {
         "name":           "Cline",
         "tagline":        "VSCode autonomous agent — bind DC Hub MCP in your settings",
-        "install_path":   "~/.cline/mcp_settings.json",
-        "install_path_win": "%USERPROFILE%\\.cline\\mcp_settings.json",
+        # r-connect-oneclick (2026-07-04): the real path is under VS Code's
+        # globalStorage for the saoudrizwan.claude-dev extension — reach it via
+        # Cline panel → MCP Servers → Configure. The old ~/.cline path was wrong.
+        "install_path":   "~/Library/Application Support/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json",
+        "install_path_win": "%APPDATA%\\Code\\User\\globalStorage\\saoudrizwan.claude-dev\\settings\\cline_mcp_settings.json",
         "snippet_lang":   "json",
-        # Cline (the VSCode extension) loads mcp_settings.json on
-        # workspace open. Same mcpServers schema as Cursor.
+        # r-connect-oneclick: type MUST be "streamableHttp" (camelCase, no
+        # hyphen). WITHOUT it Cline falls back to legacy SSE and the connection
+        # 405s — the old snippet omitted it and silently failed. Easiest UX:
+        # Cline panel → MCP Servers → "Remote Servers" tab → paste name + URL.
         "snippet":        """{
   "mcpServers": {
     "dchub": {
+      "type": "streamableHttp",
       "url": "https://dchub.cloud/mcp",
       "headers": { "X-API-Key": "{{TRIAL_KEY}}" }
     }
@@ -106,15 +117,17 @@ _CLIENTS = {
         "install_path":   "~/.continue/config.yaml",
         "install_path_win": "%USERPROFILE%\\.continue\\config.yaml",
         "snippet_lang":   "yaml",
-        # Continue uses YAML; the MCP block lives under `models:` with
-        # provider: mcp. The schema matches Continue's docs.continue.dev
-        # MCP support page.
-        "snippet":        """models:
-  - name: dchub
-    provider: mcp
+        # r-connect-oneclick (2026-07-04, verified docs.continue.dev): the MCP
+        # block is a `mcpServers:` LIST with type: streamable-http and headers
+        # under requestOptions — NOT the old `models:`/`provider: mcp` shape,
+        # which no longer parses. Lives in ~/.continue/config.yaml.
+        "snippet":        """mcpServers:
+  - name: DC Hub
+    type: streamable-http
     url: https://dchub.cloud/mcp
-    headers:
-      X-API-Key: "{{TRIAL_KEY}}\"""",
+    requestOptions:
+      headers:
+        X-API-Key: "{{TRIAL_KEY}}\"""",
         "deep_link":      "",
         "deep_link_label": "",
         "examples": [
@@ -129,19 +142,29 @@ _CLIENTS = {
         "install_path":   "~/Library/Application Support/Claude/claude_desktop_config.json",
         "install_path_win": "%APPDATA%\\Claude\\claude_desktop_config.json",
         "snippet_lang":   "json",
-        # Claude Desktop config schema mirrors Cursor's — same mcpServers
-        # map. Restart Claude Desktop after editing for the server to
-        # appear in the connector picker.
+        # r-connect-oneclick (2026-07-04, verified support.claude.com + mcpb
+        # docs): Claude Desktop's claude_desktop_config.json validates ONLY
+        # stdio `command` servers — a bare "url" field makes it silently strip
+        # the whole mcpServers block on save (the old snippet was broken). To
+        # reach a REMOTE streamable-http server AND pass X-API-Key you must
+        # wrap the mcp-remote npx bridge. Needs Node/npx installed. Restart
+        # Claude Desktop after editing. (The Settings→Connectors "custom
+        # connector" UI is OAuth-only — it can't send X-API-Key.)
         "snippet":        """{
   "mcpServers": {
     "dchub": {
-      "url": "https://dchub.cloud/mcp",
-      "headers": { "X-API-Key": "{{TRIAL_KEY}}" }
+      "command": "npx",
+      "args": [
+        "-y", "mcp-remote", "https://dchub.cloud/mcp",
+        "--transport", "http-only",
+        "--header", "X-API-Key:{{TRIAL_KEY}}"
+      ]
     }
   }
 }""",
-        # Claude Desktop doesn't expose an `claude://` install protocol
-        # as of 2026-06. Operator restarts the app after pasting the JSON.
+        # No claude:// install protocol. The one-click path is the .mcpb
+        # desktop-extension bundle (double-click to install) — tracked
+        # separately; the corrected config above is the reliable path today.
         "deep_link":      "",
         "deep_link_label": "",
         "examples": [
@@ -188,6 +211,69 @@ Header (optional, unlocks 50/day):  X-API-Key: {{TRIAL_KEY}}""",
             "Summarize live grid headroom across the top 5 AI data-center markets.",
             "Which US markets have the most available powered-shell capacity?",
             "Compare DCPI build-readiness for Northern Virginia vs Columbus.",
+        ],
+    },
+    # r-connect-oneclick (2026-07-04): opencode is DC Hub's #1 real MCP
+    # tool-caller (top of /api/v1/reach) but had NO connect page. Config
+    # verified against opencode.ai/docs/mcp-servers — `mcp` map, type
+    # "remote", url + headers. CLI shortcut: `opencode mcp add`.
+    "opencode": {
+        "name":           "opencode",
+        "tagline":        "The terminal AI coding agent — DC Hub's #1 tool-caller. Add in one line.",
+        "install_path":   "~/.config/opencode/opencode.json",
+        "install_path_win": "%APPDATA%\\opencode\\opencode.json",
+        "snippet_lang":   "json",
+        "snippet":        """{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "dchub": {
+      "type": "remote",
+      "url": "https://dchub.cloud/mcp",
+      "enabled": true,
+      "headers": { "X-API-Key": "{{TRIAL_KEY}}" }
+    }
+  }
+}""",
+        # No deep-link scheme; the CLI wizard `opencode mcp add` is the
+        # fastest path (prompts remote → URL → header). Config above is the
+        # equivalent file. Drop the "headers" block for the no-key free tier.
+        "deep_link":      "",
+        "deep_link_label": "",
+        "examples": [
+            "get_grid_scoreboard — which grid has the most renewable headroom right now?",
+            "Rank the top 10 DCPI markets for a 100MW build with short time-to-power.",
+            "Find 50MW+ powered-shell sites in PJM with substation + fiber within 1 mile.",
+        ],
+    },
+    # r-connect-oneclick (2026-07-04): VS Code native MCP (verified
+    # code.visualstudio.com). Real one-click deep-link. type is "http"
+    # (VS Code auto-negotiates streamable-http). Distinct from Cline/Continue.
+    "vscode": {
+        "name":           "VS Code",
+        "tagline":        "Native MCP support — one-click install, no extension needed",
+        "install_path":   "~/Library/Application Support/Code/User/mcp.json  (or Command Palette → “MCP: Open User Configuration”)",
+        "install_path_win": "%APPDATA%\\Code\\User\\mcp.json",
+        "snippet_lang":   "json",
+        # VS Code native MCP: top-level key is "servers" (NOT mcpServers) and
+        # type is "http". Command Palette → "MCP: Add Server" is the guided
+        # no-file path.
+        "snippet":        """{
+  "servers": {
+    "dchub": {
+      "type": "http",
+      "url": "https://dchub.cloud/mcp",
+      "headers": { "X-API-Key": "{{TRIAL_KEY}}" }
+    }
+  }
+}""",
+        # Official deep-link: vscode:mcp/install?<url-encoded-JSON with name
+        # inside>. No-auth free tier (JS rebuilds with the minted key).
+        "deep_link":      "vscode:mcp/install?%7B%22name%22%3A%22dchub%22%2C%22type%22%3A%22http%22%2C%22url%22%3A%22https%3A%2F%2Fdchub.cloud%2Fmcp%22%7D",
+        "deep_link_label": "⚡ Install in VS Code — one click",
+        "examples": [
+            "get_grid_scoreboard — rank US + EU grids by renewable share right now.",
+            "What's the interconnection-queue depth in ERCOT vs PJM today?",
+            "Score a 200MW Northern Virginia parcel for DCPI BUILD readiness.",
         ],
     },
 }
@@ -407,6 +493,8 @@ _PAGE_TEMPLATE = """<!DOCTYPE html>
   <span>&copy; DC Hub &middot; <a href="https://dchub.cloud/architecture">how it works</a></span>
   <span>
     <a href="https://dchub.cloud/connect/cursor">Cursor</a> &middot;
+    <a href="https://dchub.cloud/connect/vscode">VS Code</a> &middot;
+    <a href="https://dchub.cloud/connect/opencode">opencode</a> &middot;
     <a href="https://dchub.cloud/connect/cline">Cline</a> &middot;
     <a href="https://dchub.cloud/connect/continue">Continue</a> &middot;
     <a href="https://dchub.cloud/connect/claude-desktop">Claude Desktop</a>
@@ -600,6 +688,16 @@ def connect_chatgpt():
 @mcp_connect_bp.route("/connect/gemini", methods=["GET"])
 def connect_gemini():
     return _serve("gemini")
+
+
+@mcp_connect_bp.route("/connect/opencode", methods=["GET"])
+def connect_opencode():
+    return _serve("opencode")
+
+
+@mcp_connect_bp.route("/connect/vscode", methods=["GET"])
+def connect_vscode():
+    return _serve("vscode")
 
 
 # Best-effort "this view's key" hook the JS calls after a successful mint.
