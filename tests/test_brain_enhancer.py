@@ -221,7 +221,7 @@ def _fake_investigate_by_confidence(conf_map):
     """Return an investigate() stub that maps a substring of the question to a
     canned verified recommendation with a chosen confidence — so we can assert
     the RANK order is by leverage x confidence."""
-    def _inv(question, *, depth="default"):
+    def _inv(question, *, depth="default", **_kw):  # **_kw: cache_evidence passthrough
         for key, conf in conf_map.items():
             if key in (question or ""):
                 return {
@@ -317,7 +317,7 @@ def test_fabricated_figure_in_proposal_is_flagged(monkeypatch):
         {"area": "data_coverage", "signal": "s", "question": "scale?"},
     ])
 
-    def _inv(question, *, depth="default"):
+    def _inv(question, *, depth="default", **_kw):  # **_kw: cache_evidence passthrough
         return {
             "question": question,
             "recommendation": "We track 50,000 facilities worth $324B, so scale.",

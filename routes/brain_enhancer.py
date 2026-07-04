@@ -588,14 +588,24 @@ def propose_enhancements(*, max_proposals: int = 3, depth: str = "default") -> d
 
     candidates: list[dict] = []
     last_model = None
-    for opp in opportunities[:n]:
+    _batch = opportunities[:n]
+    # Anthropic prompt caching (cache_evidence): ONLY worth switching on when
+    # >=2 investigations run back-to-back — investigation #1 writes the
+    # evidence-block cache (1.25x premium) and #2/#3 re-read it at ~0.1x on
+    # the same per-phase models within the 5-min TTL (the investigator
+    # memoizes the gather so the bytes stay identical). A single
+    # investigation would pay the write premium with no reader, so it stays
+    # off for n==1 (and everywhere else investigate() is called singly).
+    _use_prompt_cache = len(_batch) > 1
+    for opp in _batch:
         if candidates and (_time.monotonic() - _start) > _budget:
             logger.info("brain_enhancer: time budget %.0fs hit after %d proposal(s)",
                         _budget, len(candidates))
             break
         question = opp.get("question") or ""
         try:
-            inv = investigate(question, depth=depth)
+            inv = investigate(question, depth=depth,
+                              cache_evidence=_use_prompt_cache)
         except Exception as e:
             # PROPOSE-ONLY + best-effort: a single failed investigation must not
             # crash the batch.

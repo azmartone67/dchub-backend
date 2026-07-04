@@ -665,6 +665,68 @@ def _evidence_block(evidence: list[dict]) -> str:
     return "\n".join(lines)
 
 
+# ── Prompt-cache support (Anthropic cache_control, opt-in) ───────────
+# ECONOMICS (verified against the live prompt-caching docs 2026-07-04):
+#   · cache is an EXACT-BYTES prefix match (tools → system → messages),
+#     model-scoped, default TTL 5 min;
+#   · writes bill 1.25x input price, reads ~0.1x — so a cache_control marker
+#     only PAYS when the same >=min-tokens prefix is re-sent to the SAME model
+#     within 5 min. Anything else is a 1.25x premium for nothing;
+#   · min cacheable prefix is model-dependent (fable-5 ~512 tok, opus-4-8 /
+#     sonnet ~1,024). Below the minimum the marker silently no-ops (no write,
+#     no premium — harmless).
+#
+# WHERE IT PAYS HERE: one investigation's REASON (reasoning tier) and REFUTE
+# (challenger tier) calls carry the same big evidence block — but the two
+# tiers are DELIBERATELY different models (cross-model challenge, restored
+# 2026-07-01 in brain_models), so REASON↔REFUTE can never share a cache.
+# What CAN share: consecutive INVESTIGATIONS in one process — the enhancer
+# runs up to 3 investigate() back-to-back inside a ~55s budget, so REASON#2
+# re-sends REASON#1's prefix on the same reasoning model (and REFUTE#2 →
+# REFUTE#1 on the same challenger model), and the REFUTE transient-error
+# retry re-sends a byte-identical body. That is the ONLY same-model repeat,
+# hence cache_evidence defaults OFF and only batch callers turn it on — a
+# single self_director investigation must not pay the write premium with no
+# reader.
+_EVIDENCE_MEMO_TTL_S = 240.0   # deliberately < the 5-min Anthropic cache TTL
+_EVIDENCE_MEMO: dict = {"ts": 0.0, "items": None}
+
+
+def gather_evidence_memoized() -> list[dict]:
+    """gather_evidence() behind a short in-process memo so back-to-back
+    investigations render BYTE-IDENTICAL evidence — the precondition for any
+    Anthropic prompt-cache hit (one changed byte anywhere in the prefix
+    invalidates it). Only used on the cache_evidence path; the default path
+    keeps today's fresh-gather behaviour. Only non-empty gathers are memoized
+    so a transient DB blip doesn't pin an empty block for 4 minutes. The
+    evidence is point-in-time SQL that moves hourly at most — 4 minutes of
+    staleness inside one batch is free. NEVER raises beyond what
+    gather_evidence() itself raises (callers wrap it)."""
+    import time as _t
+    now = _t.time()
+    try:
+        if _EVIDENCE_MEMO["items"] is not None and \
+                (now - float(_EVIDENCE_MEMO["ts"])) < _EVIDENCE_MEMO_TTL_S:
+            return _EVIDENCE_MEMO["items"]
+    except Exception:
+        pass
+    items = gather_evidence()
+    if items:
+        _EVIDENCE_MEMO["ts"] = now
+        _EVIDENCE_MEMO["items"] = items
+    return items
+
+
+def _cached_evidence_suffix(evidence_block: str) -> str:
+    """The system-block suffix that carries the evidence when prompt caching
+    is on. The cache breakpoint goes on THIS block (the last stable block),
+    so it MUST stay free of per-call volatiles — no question text, no prior
+    work (varies per question), no timestamps, no UUIDs. Those ride the user
+    turn, AFTER the breakpoint, where they invalidate nothing."""
+    return ("EVIDENCE (ground-truth — cite ONLY these numbers):\n"
+            + evidence_block)
+
+
 # ── Corpus recall (RAG): so the brain stops re-investigating seen topics ──
 def _recall_prior_work(question: str, k: int = 6) -> list[dict]:
     """Semantic recall of PRIOR findings + recommendations on the same theme,
@@ -721,11 +783,22 @@ def _prior_work_block(prior: list[dict]) -> str:
 
 # ── LLM helper (reuse brain_models tier + resolve_chain fallback) ────
 def _call_model(system: str, prompt: str, *, tier: str = "reasoning",
-                max_tokens: int = 1500) -> tuple[Optional[str], Optional[str], Optional[str]]:
+                max_tokens: int = 1500,
+                cached_system_suffix: Optional[str] = None,
+                ) -> tuple[Optional[str], Optional[str], Optional[str]]:
     """One Anthropic call through the brain's model infra. Returns
     (text, error, model_used). Reuses brain_models.brain_model_for (tier
     selection, Opus 4.8) + resolve_chain (404 fallback). Degrades gracefully:
-    returns (None, 'no_api_key', None) when the key is missing. Never raises."""
+    returns (None, 'no_api_key', None) when the key is missing. Never raises.
+
+    cached_system_suffix (opt-in prompt caching): when set, the request's
+    system field is sent as a block LIST —
+        [{stable instruction block}, {suffix block w/ cache_control ephemeral}]
+    — with the cache breakpoint on the LAST stable block per the Anthropic
+    docs. The suffix MUST be byte-identical across the calls that are meant
+    to share the cache (same model, within the 5-min TTL) or the marker is a
+    1.25x write premium for nothing. When None (the default), the request is
+    byte-for-byte today's shape — a plain system string, no cache_control."""
     if not ANTHROPIC_API_KEY:
         return None, "no_api_key", None
     try:
@@ -733,13 +806,23 @@ def _call_model(system: str, prompt: str, *, tier: str = "reasoning",
         models = resolve_chain(brain_model_for(tier))
     except Exception:
         models = ["claude-opus-4-8", "claude-sonnet-4-5"]
+    if cached_system_suffix:
+        # NOTE: a mid-chain 404 fallback changes the model, which starts a
+        # fresh (cold) cache for that model — expected; caches are model-scoped.
+        system_payload = [
+            {"type": "text", "text": system},
+            {"type": "text", "text": cached_system_suffix,
+             "cache_control": {"type": "ephemeral"}},
+        ]
+    else:
+        system_payload = system
     last_err = None
     for i, model in enumerate(models):
         try:
             body = json.dumps({
                 "model": model,
                 "max_tokens": max_tokens,
-                "system": system,
+                "system": system_payload,
                 "messages": [{"role": "user", "content": prompt}],
             }).encode("utf-8")
             req = urllib.request.Request(
@@ -852,13 +935,30 @@ def _clamp01(x, default=0.5) -> float:
 
 
 # ── The investigation ────────────────────────────────────────────────
-def investigate(question: str, *, depth: str = "default") -> dict:
+def investigate(question: str, *, depth: str = "default",
+                cache_evidence: bool = False) -> dict:
     """Run the 5-step verified investigation chain and return a structured,
     recommend-only result. Best-effort; NEVER raises. Returns a dict with
     cannot_investigate set when the model helper is unavailable or errors.
 
     depth is accepted for forward-compat (e.g. 'quick' vs 'deep'); the default
     runs the full decompose -> gather -> reason -> refute -> synthesize chain.
+
+    cache_evidence (default OFF): opt-in Anthropic prompt caching for the
+    evidence block. ONLY set this from callers that run >=2 investigations
+    back-to-back in one process (the enhancer batch) — that is the only shape
+    where the 1.25x cache-write premium is repaid by ~0.1x reads (same model,
+    byte-identical prefix, within the 5-min TTL). A single investigation with
+    this flag on pays the premium with no reader. When on:
+      · evidence comes from the 4-min memo (byte-identity across the batch);
+      · REASON and REFUTE send system as [instruction block, evidence block
+        w/ cache_control] and the volatiles (question, decomposition, prior
+        work, draft rec) ride the user turn after the breakpoint;
+      · REASON and REFUTE still CANNOT share a cache with each other — the
+        challenger tier is a deliberately different model (cross-model
+        challenge); each phase's cache is read by the NEXT investigation's
+        same phase (and by the REFUTE transient-error retry).
+    When off (default), every request is byte-for-byte the pre-caching shape.
     """
     question = (question or "").strip()
     base = {
@@ -877,14 +977,21 @@ def investigate(question: str, *, depth: str = "default") -> dict:
         return base
 
     # Gather evidence FIRST (it's pure-data, works even without an API key, and
-    # the failure mode is graceful — empty list, not a crash).
+    # the failure mode is graceful — empty list, not a crash). On the
+    # cache_evidence path the memoized gather guarantees byte-identical
+    # evidence across a back-to-back batch (the prompt-cache precondition).
     try:
-        evidence = gather_evidence()
+        evidence = gather_evidence_memoized() if cache_evidence \
+            else gather_evidence()
     except Exception as e:
         evidence = []
         logger.warning("brain_investigator: gather_evidence failed: %s", e)
     base["evidence"] = evidence
     evidence_block = _evidence_block(evidence)
+    # The stable, cacheable system suffix (None = caching off → requests keep
+    # today's exact byte shape).
+    cached_suffix = _cached_evidence_suffix(evidence_block) \
+        if cache_evidence else None
 
     # Corpus recall: pull PRIOR findings + recommendations on this same theme so
     # the REASON step builds on / supersedes them instead of re-investigating a
@@ -920,17 +1027,31 @@ def investigate(question: str, *, depth: str = "default") -> dict:
     # PRIOR WORK block is injected ALONGSIDE the SQL evidence (never in place of
     # it): the model is told to build on / supersede prior findings rather than
     # repeat them, but figures are still cited ONLY from the EVIDENCE block.
-    reason_prompt = (
+    # Prompt-cache layout note: PRIOR WORK varies per question, so it must
+    # ALWAYS ride the user turn — never the cached system suffix.
+    _reason_core = (
         f"Operator question: {question}\n\n"
         f"Decomposition:\n"
         f"  sub-questions: {json.dumps(base['decomposition']['sub_questions'])}\n"
         f"  data needed: {json.dumps(base['decomposition']['data_needed'])}\n\n"
         f"PRIOR WORK (do not repeat; build on or supersede):\n{prior_work_block}\n\n"
-        f"EVIDENCE (ground-truth — cite ONLY these numbers):\n{evidence_block}\n\n"
-        f"Reason from the evidence to a draft recommendation."
     )
-    rtext, rerr, rmodel = _call_model(
-        _REASON_SYSTEM, reason_prompt, tier="reasoning", max_tokens=4000)
+    if cached_suffix is not None:
+        # Evidence rides the CACHED system block; only volatiles here.
+        reason_prompt = (_reason_core +
+                         "Reason from the EVIDENCE block in your system "
+                         "context to a draft recommendation.")
+        rtext, rerr, rmodel = _call_model(
+            _REASON_SYSTEM, reason_prompt, tier="reasoning", max_tokens=4000,
+            cached_system_suffix=cached_suffix)
+    else:
+        reason_prompt = (
+            _reason_core +
+            f"EVIDENCE (ground-truth — cite ONLY these numbers):\n{evidence_block}\n\n"
+            f"Reason from the evidence to a draft recommendation."
+        )
+        rtext, rerr, rmodel = _call_model(
+            _REASON_SYSTEM, reason_prompt, tier="reasoning", max_tokens=4000)
     if rerr:
         base["cannot_investigate"] = rerr
         return base
@@ -945,29 +1066,46 @@ def investigate(question: str, *, depth: str = "default") -> dict:
     decision_for_human = (draft.get("decision_for_human") or "").strip() or None
 
     # ── Step 4: ADVERSARIAL REFUTE (a SEPARATE pass) ────────────────
-    refute_prompt = (
-        f"Operator question: {question}\n\n"
-        f"DRAFT recommendation to attack:\n{recommendation}\n\n"
-        f"Draft reasoning: {draft.get('reasoning', '')}\n"
-        f"Draft confidence: {confidence}\n\n"
-        f"EVIDENCE it was built on:\n{evidence_block}\n\n"
-        f"Try to break this recommendation."
-    )
     # max_tokens generous: the adversarial pass enumerates weaknesses + caveats
     # and a tight cap truncates the JSON mid-object → unparseable → a refutation
     # that silently contributes nothing while still claiming it ran.
+    _refute_kwargs: dict = {"tier": "challenger", "max_tokens": 4000}
+    if cached_suffix is not None:
+        # Evidence rides the CACHED system block (the challenger model keeps
+        # its OWN cache — model-scoped; read by the next investigation's
+        # REFUTE in a batch, and by the transient-error retry below, which
+        # re-sends this exact body).
+        refute_prompt = (
+            f"Operator question: {question}\n\n"
+            f"DRAFT recommendation to attack:\n{recommendation}\n\n"
+            f"Draft reasoning: {draft.get('reasoning', '')}\n"
+            f"Draft confidence: {confidence}\n\n"
+            f"Try to break this recommendation against the EVIDENCE block in "
+            f"your system context."
+        )
+        _refute_kwargs["cached_system_suffix"] = cached_suffix
+    else:
+        refute_prompt = (
+            f"Operator question: {question}\n\n"
+            f"DRAFT recommendation to attack:\n{recommendation}\n\n"
+            f"Draft reasoning: {draft.get('reasoning', '')}\n"
+            f"Draft confidence: {confidence}\n\n"
+            f"EVIDENCE it was built on:\n{evidence_block}\n\n"
+            f"Try to break this recommendation."
+        )
     ftext, ferr, fmodel = _call_model(
-        _REFUTE_SYSTEM, refute_prompt, tier="challenger", max_tokens=4000)
+        _REFUTE_SYSTEM, refute_prompt, **_refute_kwargs)
     # 2026-06-20: the adversarial pass IS the brain's trust signal — a confidence
     # that never got refuted (survived=null) is worth far less than one that did.
     # A TRANSIENT failure (read timeout) was silently leaving recommendations
     # un-stress-tested (e.g. the retention 0.4 whose refutation timed out).
     # Retry ONCE on any transient error so far more investigations get a REAL
     # survived/broke verdict; only a second failure records the honest un-tested
-    # state + the confidence dock below.
+    # state + the confidence dock below. (With caching on, the retry re-sends a
+    # byte-identical body — the one guaranteed same-model cache read.)
     if ferr:
         ftext, ferr, fmodel = _call_model(
-            _REFUTE_SYSTEM, refute_prompt, tier="challenger", max_tokens=4000)
+            _REFUTE_SYSTEM, refute_prompt, **_refute_kwargs)
     refutation = {"attempted": True, "weaknesses_found": [], "survived": None}
     if ferr:
         # The refutation pass failed — be HONEST about it (don't pretend the
