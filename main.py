@@ -7590,10 +7590,15 @@ def _get_mcp_caller_tier():
         request.args.get('api_key', '')
     )
     # Also check Authorization: Bearer
+    # r-onboarding-fix (2026-07-03, defect #9): accept dch_live_ (paid MCP) and
+    # dch_trial_ Bearer tokens too — the old dchub_-only check silently dropped
+    # `Authorization: Bearer dch_live_…`, resolving a paying MCP customer to free.
     if not api_key:
         auth = request.headers.get('Authorization', '')
-        if auth.startswith('Bearer ') and auth[7:].startswith('dchub_'):
-            api_key = auth[7:]
+        if auth.startswith('Bearer '):
+            _tok = auth[7:].strip()
+            if _tok.startswith(('dchub_', 'dch_live_', 'dch_trial_')):
+                api_key = _tok
 
     if not api_key:
         return 'free', None
