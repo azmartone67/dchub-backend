@@ -12932,14 +12932,20 @@ def _welcome_email_resend_fallback(to_email, raw_api_key, plan_name='pro'):
         return False
     try:
         _plan = (plan_name or '').replace('_', ' ')
-        html = (f"<h2>Welcome to DC Hub — your API key</h2>"
-                f"<p>Your {_plan} access is active. API key:</p>"
-                f"<p style='font-size:16px'><code>{raw_api_key}</code></p>"
-                f"<p>Set it as your <code>X-API-Key</code> header to unlock full data. "
-                f"In Claude/Cursor/etc:<br><code>claude mcp add dchub --transport http "
-                f"--header X-API-Key:{raw_api_key} https://dchub.cloud/mcp</code></p>"
-                f"<p>Questions? <a href='mailto:api@dchub.cloud'>api@dchub.cloud</a> · "
-                f"<a href='https://dchub.cloud/pricing'>dchub.cloud/pricing</a></p><p>— DC Hub</p>")
+        # r-onboarding-fix (2026-07-03): SendGrid is dead in prod (no module), so
+        # THIS fallback is the email that actually sends. Previously it shipped a
+        # bare REST key + `claude mcp add … X-API-Key:<dchub_ REST key>` and NO
+        # connector — so the #6/#1417 "Connect to Claude" section (dch_live_ key +
+        # ?api_key= URL) never reached a real buyer. Lead with it here.
+        _conn = _welcome_mcp_connector_html(to_email, raw_api_key)
+        html = (f"<div style='font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;max-width:600px;margin:0 auto;color:#1a1a2e;line-height:1.55'>"
+                f"<h1 style='font-size:22px;'>Welcome to DC Hub — your {_plan} access is live</h1>"
+                f"{_conn}"
+                f"<p style='font-size:14px;color:#6a6a7a;margin-top:24px;'>Prefer the REST API? Your key:</p>"
+                f"<p style='font-size:15px'><code>{raw_api_key}</code></p>"
+                f"<p style='font-size:14px;color:#6a6a7a;'>Set it as your <code>X-API-Key</code> header. "
+                f"Questions? <a href='mailto:api@dchub.cloud'>api@dchub.cloud</a> · "
+                f"<a href='https://dchub.cloud/pricing'>dchub.cloud/pricing</a></p><p>— DC Hub</p></div>")
         payload = _json.dumps({"from": "DC Hub <alerts@dchub.cloud>", "to": [to_email],
                                "subject": "Welcome to DC Hub — Your API Key Inside",
                                "html": html}).encode()
@@ -13077,14 +13083,17 @@ def _welcome_mcp_connector_html(to_email, raw_api_key):
             mcp_key = None
     if mcp_key:
         connector = f"https://dchub.cloud/mcp?api_key={mcp_key}"
+        # INLINE styles (not CSS classes) so this renders in BOTH the styled
+        # SendGrid template AND the plain-HTML Resend fallback that actually
+        # sends in prod (r-onboarding-fix 2026-07-03).
         return f"""
-    <h2 style="margin-top: 32px;">Connect to Claude (or Cursor / Cline) in 60 seconds</h2>
-    <p>DC Hub is a Model Context Protocol server. In <strong>Claude.ai &rarr; Settings &rarr; Connectors &rarr; Add custom connector</strong>, paste this URL — it carries your key, so you get your full paid tier and there are no auth fields to fill:</p>
-    <div class="key-box">
-      <div class="key-label">Your Claude connector URL</div>
+    <h2 style="margin-top:32px;font-size:20px;">Connect to Claude (or Cursor / Cline) in 60 seconds</h2>
+    <p style="font-size:16px;color:#4a4a5a;line-height:1.6;">DC Hub is a Model Context Protocol server. In <strong>Claude.ai &rarr; Settings &rarr; Connectors &rarr; Add custom connector</strong>, paste this URL — it carries your key, so you get your full paid tier and there are no auth fields to fill:</p>
+    <div style="background:#1a1a2e;color:#00d4ff;padding:18px 20px;border-radius:8px;font-family:monospace;font-size:13px;word-break:break-all;margin:16px 0;">
+      <div style="color:#9a9aaa;font-size:12px;text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;font-family:sans-serif;">Your Claude connector URL</div>
       {connector}
     </div>
-    <p style="font-size:14px; color:#6a6a7a;">Using Claude Desktop / Cursor / Cline instead? Send your key as a header: <code>X-API-Key: {mcp_key}</code>. Full guide: <a href="https://dchub.cloud/mcp" style="color:#00d4ff;">dchub.cloud/mcp</a></p>
+    <p style="font-size:14px;color:#6a6a7a;">Using Claude Desktop / Cursor / Cline instead? Send your key as a header: <code>X-API-Key: {mcp_key}</code>. Full guide: <a href="https://dchub.cloud/mcp" style="color:#00d4ff;">dchub.cloud/mcp</a></p>
 """
     return """
     <h2 style="margin-top: 32px;">Connect to Claude (or Cursor / Cline)</h2>
