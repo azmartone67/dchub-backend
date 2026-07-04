@@ -40,6 +40,18 @@ ROOT = "https://api.dchub.cloud"
 # [] (today's anonymous behaviour, unchanged) so this is inert until the domain
 # is set AFTER the WorkOS dashboard is configured (CIMD/DCR + Resource Indicator).
 _AUTHKIT = (os.environ.get("WORKOS_AUTHKIT_DOMAIN") or "").strip().rstrip("/")
+# r-onboarding-fix (2026-07-03): advertising an authorization_server makes
+# Claude.ai/Cursor START an OAuth sign-in the moment the connector is added —
+# but the /mcp resource actually accepts anonymous + X-API-Key (an anon
+# `initialize` returns 200, no 401/WWW-Authenticate). So merely SETTING
+# WORKOS_AUTHKIT_DOMAIN silently forces every self-serve customer into a WorkOS
+# login they cannot pass ("username/password not accepted"). Gate the advert
+# behind an EXPLICIT flag so it only fires once OAuth is genuinely ENFORCED at
+# the resource. Default OFF => authorization_servers = [] = today's working
+# anonymous/X-API-Key behaviour. NOTE: the live .well-known/* path is served by
+# the out-of-repo `dchub-oauth-meta` CF worker — it must be updated in lockstep.
+_ADVERTISE_OAUTH = (os.environ.get("MCP_OAUTH_ADVERTISE", "").strip().lower()
+                    in ("1", "true", "yes", "on"))
 # The MCP resource indicator — MUST match the WorkOS "Resource Indicator" config
 # and the token `aud`. This is the URL clients actually connect to.
 _RESOURCE = (os.environ.get("DCHUB_MCP_RESOURCE") or "https://dchub.cloud/mcp").strip()
@@ -68,9 +80,10 @@ def oauth_protected_resource():
         "resource_name":                  "DC Hub Intelligence MCP Server",
         "resource_policy_uri":            "https://dchub.cloud/terms",
         "resource_tos_uri":               "https://dchub.cloud/terms",
-        # WorkOS AuthKit as the AS when WORKOS_AUTHKIT_DOMAIN is set; empty = today's
-        # anonymous/X-API-Key behaviour (clients read [] as "no auth required").
-        "authorization_servers":          ([_AUTHKIT] if _AUTHKIT else []),
+        # WorkOS AuthKit as the AS ONLY when explicitly advertised (MCP_OAUTH_ADVERTISE=1)
+        # AND configured; otherwise [] = "no auth required" (anonymous/X-API-Key), which
+        # matches how the resource actually behaves today. See _ADVERTISE_OAUTH above.
+        "authorization_servers":          ([_AUTHKIT] if (_AUTHKIT and _ADVERTISE_OAUTH) else []),
         "bearer_methods_supported":       ["header"],
         "resource_signing_alg_values_supported": ["RS256", "ES256"],
         # r-workos-scopes: advertise ONLY the standard OIDC scopes WorkOS AuthKit
