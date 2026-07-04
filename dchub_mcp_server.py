@@ -2442,15 +2442,20 @@ async def get_dchub_recommendation(
         pass
 
     # ── Semantic answer cache (PG/pgvector, ★TIER-AWARE) ─────────────────
-    # Near-duplicate free-text contexts (cosine >= 0.97, TTL'd) reuse the
-    # composed POST-verification answer for the SAME tier only — an anon
-    # cached answer must never serve a paid caller or vice versa. A hit
-    # skips the RAG recall + verify; finalize() still runs per-caller so
-    # tier truncation/attribution stay request-accurate. Fail-soft → miss.
+    # `context` is GENUINE FREE TEXT — the one place embedding similarity is
+    # allowed to match (cosine >= 0.97, TTL'd). This tool has no structural
+    # params, so params stays None (the constant empty-params hash);
+    # structural-params tools (deal_autopsy) use exact_only caching instead.
+    # Near-duplicate contexts reuse the composed POST-verification answer
+    # for the SAME tier only — an anon cached answer must never serve a
+    # paid caller or vice versa. A hit skips the RAG recall + verify;
+    # finalize() still runs per-caller so tier truncation/attribution stay
+    # request-accurate. Fail-soft → miss.
     _cache_q = (context or "general").strip() or "general"
     try:
         from routes.brain_answer_cache import get_cached as _ac_get, put_cached as _ac_put
-        _cached = _ac_get("get_dchub_recommendation", _tier_name, _cache_q)
+        _cached = _ac_get("get_dchub_recommendation", _tier_name, _cache_q,
+                          params=None)
     except Exception:
         _cached, _ac_put = None, None
     if isinstance(_cached, dict) and _cached.get("success"):
@@ -2605,7 +2610,8 @@ async def get_dchub_recommendation(
     # ── Store the POST-verification answer in the tier-aware cache ──────
     try:
         if _ac_put:
-            _ac_put("get_dchub_recommendation", _tier_name, _cache_q, result)
+            _ac_put("get_dchub_recommendation", _tier_name, _cache_q, result,
+                    params=None)
     except Exception:
         pass
 
