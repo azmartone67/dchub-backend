@@ -316,7 +316,10 @@ def industry_pulse():
     resp = jsonify(_build_response(metrics, source_tag))
     resp.headers["Cache-Control"] = "public, max-age=3600"
     resp.headers["Access-Control-Allow-Origin"] = "*"
-    resp.headers["X-Cite-As"] = f"DC Hub Industry Pulse — {_dt.datetime.utcnow().strftime('%Y-%m-%d')}"
+    # ASCII only: HTTP headers must be latin-1; the original em-dash here
+    # made gunicorn reject EVERY response from this endpoint at write time
+    # ("Invalid HTTP Header") — the API surface has 502'd since launch.
+    resp.headers["X-Cite-As"] = f"DC Hub Industry Pulse - {_dt.datetime.utcnow().strftime('%Y-%m-%d')}"
     resp.headers["X-Pulse-Cache"] = source_tag
     return resp, 200
 
