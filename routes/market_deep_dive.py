@@ -494,15 +494,25 @@ def cron_rotate():
 
 @market_deep_dive_bp.route("/markets/<slug>/deep-dive", methods=["GET"])
 def deep_dive_html(slug):
-    # Normalize so /markets/Dublin/deep-dive == /markets/dublin/deep-dive.
+    # r-canon-unify (2026-07-04): /markets/<slug>/deep-dive is in NO sitemap, yet
+    # the flagship /markets/<slug> pages used to canonicalize HERE — GSC flagged
+    # 569 "alternate" + 150 "duplicate-canonical". Collapse to ONE indexable URL:
+    # 301 the deep-dive path to the market page, which now serves the SAME
+    # narrative body under a self-canonical https://dchub.cloud/markets/<slug>.
+    # (Was: no-cache → 301 to /markets/<slug>; cache → render body here. Now the
+    # body lives in _render_deep_dive_body() and this route is a pure 301.)
+    slug = (slug or "").lower().strip()
+    return redirect(f"/markets/{slug}", code=301)
+
+
+def _render_deep_dive_body(slug):
+    """Render the cached deep-dive narrative as the /markets/<slug> page body.
+    Returns a Flask Response (self-canonical to /markets/<slug>), or None when
+    no deep-dive is cached (caller then renders the minimal SEO shell)."""
     slug = (slug or "").lower().strip()
     r = read_deep_dive(slug)
     if not r:
-        # No deep-dive generated for this market yet. 301 to the canonical
-        # market page instead of 404 — kills the crawler 404 (these showed up
-        # in CF AI-crawl 4xx: /markets/dublin/deep-dive, /centennial-co/...),
-        # preserves link equity, and lands the agent on a real page.
-        return redirect(f"/markets/{slug}", code=301)
+        return None
     try:
         from routes.surface_brain import auto_log
         auto_log("market_deep_dive", "view", target=slug)
@@ -521,7 +531,7 @@ def deep_dive_html(slug):
 <title>{name} Market Deep-Dive · DC Hub</title>
 <meta name="description" content="{name} data center market analysis. DCPI score {stats.get('dcpi_score','?')}/100, {stats.get('facility_count',0)} facilities, {stats.get('total_mw',0):,.0f} MW. Updated {gen_at}.">
 <meta name="robots" content="index,follow,max-snippet:-1">
-<link rel="canonical" href="https://dchub.cloud/markets/{slug}/deep-dive">
+<link rel="canonical" href="https://dchub.cloud/markets/{slug}">
 <meta property="og:title" content="{name} Market Deep-Dive · DC Hub">
 <script type="application/ld+json">{{
  "@context":"https://schema.org","@type":"Article",
@@ -529,7 +539,7 @@ def deep_dive_html(slug):
  "datePublished":"{r['generated_at'].isoformat() if r['generated_at'] else ''}",
  "author":{{"@type":"Organization","name":"DC Hub","url":"https://dchub.cloud"}},
  "publisher":{{"@type":"Organization","name":"DC Hub","url":"https://dchub.cloud"}},
- "url":"https://dchub.cloud/markets/{slug}/deep-dive",
+ "url":"https://dchub.cloud/markets/{slug}",
  "wordCount":{r.get('word_count') or 0},
  "about":{{"@type":"Place","name":"{name}"}},
  "description":"Live data-center market analysis. DCPI score {stats.get('dcpi_score','?')}/100."
@@ -639,13 +649,16 @@ def market_short_html(slug):
     if slug_norm in _CANONICAL_REDIRECT:
         return redirect(f"/markets/{_CANONICAL_REDIRECT[slug_norm]}", code=301)
 
-    # If the cached deep-dive exists, redirect-through (serve same HTML)
-    r = read_deep_dive(slug_norm)
-    if r:
-        return deep_dive_html(slug_norm)
+    # If a deep-dive is cached, serve its narrative AS the /markets/<slug> page
+    # (self-canonical to /markets/<slug> — r-canon-unify 2026-07-04). The old
+    # code returned deep_dive_html(), which now 301s, so render the body directly.
+    _dd_body = _render_deep_dive_body(slug_norm)
+    if _dd_body is not None:
+        return _dd_body
 
     # Fallback: render minimal shell from MARKET_DATA
     name = _SLUG_TO_MARKET_NAME.get(slug_norm)
+    _known_curated = name is not None
     if not name:
         # Try title-cased fallback: "chicago" → "Chicago"
         name = slug_norm.replace("-", " ").title()
@@ -656,6 +669,51 @@ def market_short_html(slug):
         md = MARKET_DATA.get(name, {}) or {}
     except Exception:
         pass
+
+    # SOFT-404 GUARD (r-soft404 2026-07-04): this route used to return a 200 SEO
+    # shell for ANY string, which GSC flagged as 222 Soft-404s. If the slug is a
+    # curated market, is in MARKET_ALIASES, has a cached deep-dive (checked
+    # above), or has ≥1 facility in the DB, it's real → render. Otherwise it's a
+    # junk URL → return a real 404 so Google drops it, not an empty 200 shell.
+    _in_aliases = False
+    try:
+        from main import MARKET_ALIASES
+        _in_aliases = bool(MARKET_ALIASES.get(slug_norm.replace('-', ' ')))
+    except Exception:
+        pass
+    if not _known_curated and not md and not _in_aliases:
+        _fac_ct = 0
+        try:
+            _c404 = _conn()
+            if _c404 is not None:
+                try:
+                    with _c404.cursor() as _cur404:
+                        _cur404.execute(
+                            "SELECT COUNT(*) FROM discovered_facilities WHERE market = %s",
+                            (name,))
+                        _row404 = _cur404.fetchone()
+                        _fac_ct = int(_row404[0]) if _row404 and _row404[0] else 0
+                finally:
+                    try: _c404.close()
+                    except Exception: pass
+        except Exception:
+            _fac_ct = 0
+        if _fac_ct == 0:
+            _404_html = (
+                "<!doctype html><html lang=en><head><meta charset=utf-8>"
+                "<title>Market not found · DC Hub</title>"
+                '<meta name="robots" content="noindex,follow">'
+                "<style>body{font-family:-apple-system,system-ui,sans-serif;"
+                "max-width:640px;margin:4rem auto;padding:0 1.25rem;"
+                "background:#0a0a0f;color:#d4d4d8;line-height:1.7}a{color:#818cf8}</style>"
+                "</head><body><h1>Market not found</h1>"
+                f"<p>DC Hub doesn’t have a data-center market page for "
+                f"“{slug_norm}”.</p>"
+                '<p>Browse <a href="/markets">all markets</a> or the '
+                '<a href="/dcpi">DC Hub Power Index</a>.</p>'
+                "</body></html>")
+            return Response(_404_html, status=404, mimetype="text/html",
+                            headers={"Cache-Control": "public, max-age=300"})
 
     if not md:
         # Still return 200 — the market exists in our universe even if we
@@ -877,8 +935,7 @@ ul{{padding-left:1.25rem}} li{{margin:.3rem 0}}
 {highlights_html}
 {fac_links_html}
 <div style="max-width:1080px;margin:26px auto;padding:18px 22px;background:linear-gradient(135deg,rgba(99,102,241,0.14),rgba(168,85,247,0.07));border:1px solid rgba(99,102,241,0.3);border-radius:14px;text-align:center"><a href="/pricing?ref=market&tool={slug_norm}" style="color:#a5b4fc;text-decoration:none;font-weight:600;font-size:15px">DC Hub &mdash; the live infrastructure data layer for AI agents and the people who build data centers. All 19,000+ facilities + live power, grid, fiber &amp; site-selection tools &mdash; <strong>from $49/mo &rarr;</strong></a></div>
-<p class="foot">Deep-dive narrative: <a href="/markets/{slug_norm}/deep-dive">/markets/{slug_norm}/deep-dive</a> ·
-JSON: <a href="/api/v1/markets/{name.replace(' ', '%20')}" rel="nofollow">/api/v1/markets/{name}</a> ·
+<p class="foot">JSON: <a href="/api/v1/markets/{name.replace(' ', '%20')}" rel="nofollow">/api/v1/markets/{name}</a> ·
 All markets: <a href="/markets">/markets</a></p>
 <script src="/js/dchub-nav.js" defer></script>
 </body></html>"""

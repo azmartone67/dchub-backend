@@ -3,7 +3,7 @@
 These render server-side HTML for SEO. Each page has Schema.org JSON-LD,
 OG meta tags, and pulls live data from /api/v1/grid/intelligence/<iso>.
  [phase68_gating_applied]"""
-from flask import Blueprint, render_template, jsonify, request, Response
+from flask import Blueprint, render_template, jsonify, request, Response, redirect
 import json, datetime, requests
 
 grid_public_bp = Blueprint('grid_public', __name__)
@@ -297,9 +297,16 @@ def grid_hub():
 @grid_public_bp.route('/grid/<iso>/', methods=['GET'])
 def grid_iso(iso):
     """Per-ISO deep page."""
+    _raw = iso
     iso = iso.upper()
     if iso not in ISOS:
         return Response('<h1>Unknown ISO</h1>', status=404, mimetype='text/html')
+    # r-grid-canoncase (2026-07-04): the sitemap lists /grid/pjm (lowercase) but
+    # this page self-canonicalized to /grid/PJM (uppercase) → GSC "alternate page
+    # with proper canonical". Lowercase is now the ONE canonical form: 301 any
+    # other casing to it, and every canonical/og/schema URL below is lowercase.
+    if _raw != iso.lower():
+        return redirect(f"/grid/{iso.lower()}", code=301)
     tier = _user_tier(request)
     if tier == 'free' and iso not in FREE_TIER_ISOS:
         # r-tierleak (2026-06-23): paywall vs full render share the /grid/<iso> cache
@@ -318,7 +325,7 @@ def grid_iso(iso):
         "@type": "Dataset",
         "name": f"{iso} Real-Time Grid Intelligence",
         "description": f"Live demand, generation mix, and headroom for {meta['name']} ({meta['states']}).",
-        "url": f"https://dchub.cloud/grid/{iso}",
+        "url": f"https://dchub.cloud/grid/{iso.lower()}",
         "license": "https://creativecommons.org/licenses/by/4.0/",
         "creator": {"@type": "Organization", "name": "DC Hub"},
         "isAccessibleForFree": iso in FREE_TIER_ISOS,
@@ -543,9 +550,9 @@ def render_grid_iso_html(iso, meta, live, schema):
   <meta property="og:title" content="{iso} Grid: {demand:,} MW | DC Hub">
   <meta property="og:description" content="{meta['tagline']} · {headroom:.0f}% headroom · live EIA data.">
   <meta property="og:image" content="https://dchub.cloud/api/v1/grid/{iso}/card.png">
-  <meta property="og:url" content="https://dchub.cloud/grid/{iso}">
+  <meta property="og:url" content="https://dchub.cloud/grid/{iso.lower()}">
   <meta name="twitter:card" content="summary_large_image">
-  <link rel="canonical" href="https://dchub.cloud/grid/{iso}">
+  <link rel="canonical" href="https://dchub.cloud/grid/{iso.lower()}">
   <script type="application/ld+json">{json.dumps(schema)}</script>
   <style>
     body {{ font-family: -apple-system, system-ui, sans-serif; margin: 0; background: #0a0e1a; color: #e6e9f0; }}
