@@ -534,7 +534,75 @@ _STICKY_TOPIC_WINDOWS = {
     "dcpi_leader": 7,
     "dcpi_warning": 5,
     "dcpi_mover":   5,
+    # Fix (2026-07-04): the weekly product/data changelog. A 7-day window keeps
+    # "here's what DC Hub shipped" to at most once a week so the same commit
+    # batch is never covered twice.
+    "platform_update": 7,
 }
+
+
+# Fix (2026-07-04): story-FAMILY diversity quota. Auto-press had collapsed to
+# ~5 story families over 30 days (excess-power alone was ~10/30). Group the
+# market/angle topics into coarse families; the cascade refuses ANY topic whose
+# family already owns more than _FAMILY_QUOTA of the trailing-14d feed — even if
+# that topic's own per-topic dedup window would allow it. Unmapped topics are
+# their own family (a topic can never falsely throttle itself).
+_FAMILY_QUOTA = 0.33   # ~1/3 — bites the reported "excess-power 10/30" (=0.333) collapse
+_TOPIC_FAMILIES = {
+    # the "Cheyenne / Rural-SPP excess-power" collapse — one DCPI-ranking family
+    "dcpi_leader":  "dcpi_market",
+    "dcpi_warning": "dcpi_market",
+    "dcpi_mover":   "dcpi_market",
+    # grid / interconnection
+    "iso_focus":             "grid",
+    "iso_grid_pulse":        "grid",
+    "interconnection_queue": "grid",
+    # third-party news overlay
+    "industry_pulse": "industry_news",
+    # deals / M&A
+    "ma_pulse":    "deals",
+    "theme_deals": "deals",
+    # DC-Hub-itself stories
+    "coverage_milestone": "platform",
+    "ai_adoption":        "platform",
+    "ai_citation":        "platform",
+    "platform_update":    "platform",
+}
+
+
+def _topic_family(topic: str) -> str:
+    t = (topic or "").strip()
+    return _TOPIC_FAMILIES.get(t, t or "unknown")
+
+
+def _family_shares(days: int = 14) -> dict:
+    """Return {family: share_0to1} over the trailing N days of
+    auto_press_releases.source_topic. Lets the picker refuse a topic whose
+    story family already dominates the recent feed (the 'excess-power 10/30'
+    collapse). Returns {} on any error OR when the sample is too small
+    (< 6 releases) so a sparse feed never thrashes (fail-open)."""
+    try:
+        c = _conn()
+        if c is None:
+            return {}
+        with c.cursor() as cur:
+            cur.execute(
+                """SELECT source_topic, COUNT(*) FROM auto_press_releases
+                    WHERE generated_for >= (CURRENT_DATE - INTERVAL '%s days')
+                    GROUP BY source_topic""",
+                (days,))
+            rows = cur.fetchall()
+        c.close()
+        total = sum(int(n or 0) for _, n in rows)
+        if total < 6:
+            return {}
+        fam_counts: dict = {}
+        for st, n in rows:
+            fam = _topic_family(st or "")
+            fam_counts[fam] = fam_counts.get(fam, 0) + int(n or 0)
+        return {f: (cnt / total) for f, cnt in fam_counts.items()}
+    except Exception:
+        return {}
 
 
 def _topic_recently_ran(topic: str, recent_3d: set) -> bool:
@@ -583,6 +651,11 @@ _MARKET_ALIASES = {
     "dfw": "dallas-fort worth",
     "phoenix": "phoenix", "mesa": "phoenix", "az": "phoenix",
     "columbus": "central ohio", "new albany": "central ohio",
+    # Fix (2026-07-04): the "Rural SPP" excess-power headline kept re-running as
+    # a "new" market because it never normalized. Collapse it onto Kansas (the
+    # SPP anchor market DCPI ranks it under) so the market-clash guard catches
+    # the repeat.
+    "rural spp": "kansas", "spp": "kansas",
 }
 _US_STATES = {
     "alabama","alaska","arizona","arkansas","california","colorado",
@@ -628,8 +701,12 @@ def _recent_market_names(n: int = 2) -> set:
         out = set()
         for t in titles:
             tl = t.lower()
-            # 1) leading market name: "Cheyenne, WY ...", "Atlanta Metro ..."
-            m = re.match(r"^([A-Z][a-zA-Z\.\- ]+?)(?:,| Metro|:| - | – | Leads| Tops| Takes)", t)
+            # 1) leading market name: "Cheyenne, WY ...", "Atlanta Metro ...",
+            #    "Rural SPP — Excess Power ...", "Wyoming Lead the BUILD ..."
+            #    Fix (2026-07-04): added ' — ' (em-dash) + ' Lead ' terminators —
+            #    the em-dash headline form and the singular "Lead" verb were both
+            #    slipping past extraction, so those markets read as un-featured.
+            m = re.match(r"^([A-Z][a-zA-Z\.\- ]+?)(?:,| Metro|:| - | – | — | Leads| Lead | Tops| Takes)", t)
             if m:
                 out.add(_norm_market(m.group(1)))
             # 2) any US state mentioned anywhere in the title (catches the
@@ -641,6 +718,134 @@ def _recent_market_names(n: int = 2) -> set:
         return out
     except Exception:
         return set()
+
+
+def _recent_titles(days: int = 7) -> list:
+    """Recent auto-press headlines (last N days) for the DO-NOT-REPEAT prompt
+    block + near-duplicate rejection. Fail-open ([] on any error)."""
+    try:
+        c = _conn()
+        if c is None:
+            return []
+        with c.cursor() as cur:
+            cur.execute(
+                """SELECT title FROM auto_press_releases
+                    WHERE title IS NOT NULL
+                      AND generated_for >= (CURRENT_DATE - INTERVAL '%s days')
+                    ORDER BY generated_at DESC NULLS LAST
+                    LIMIT 40""",
+                (days,))
+            return [r[0] for r in cur.fetchall() if r and r[0]]
+    except Exception:
+        return []
+
+
+# Headline stopwords stripped before the content-overlap comparison so
+# 'the / this week / record / new / DC / data center' noise doesn't dilute the
+# signal (that noise is exactly why 'Cheyenne Tops the Build Rankings' vs
+# 'Cheyenne, WY Leads the BUILD Ranking' looked only ~38% similar).
+_TITLE_STOP = {
+    "the", "a", "an", "of", "in", "on", "to", "for", "and", "with", "this",
+    "week", "record", "new", "its", "dc", "data", "center", "centers", "hub",
+    "as", "at", "by", "is", "are", "amid", "sees", "now",
+}
+
+
+def _is_near_dup_title(title: str, recent_titles: list,
+                       ratio_threshold: float = 0.78) -> bool:
+    """True if `title` retells a story we already ran in the recent set. Three
+    signals, any of which fires:
+      (a) difflib sequence ratio >= ratio_threshold  — near-identical wording;
+      (b) content-token Jaccard >= 0.5               — reworded, same nouns;
+      (c) SAME leading market + Jaccard >= 0.25       — same market, same angle
+          reworded (the actual afternoon-repeat pattern; the force_topic path
+          has no market-clash guard, so this catches it).
+    Content tokens drop stopwords + <=2-char tokens. Fail-open (False) so a
+    comparison hiccup never blocks publishing."""
+    try:
+        import difflib
+
+        def _norm(s: str) -> str:
+            s = re.sub(r"[^a-z0-9 ]", " ", (s or "").lower())
+            return re.sub(r"\s+", " ", s).strip()
+
+        def _content(s: str) -> set:
+            return {w for w in _norm(s).split()
+                    if w and len(w) > 2 and w not in _TITLE_STOP}
+
+        def _lead_market(s: str) -> str:
+            m = re.match(
+                r"^([A-Z][a-zA-Z\.\- ]+?)"
+                r"(?:,| Metro|:| - | – | — | Leads| Lead | Tops| Takes)", s or "")
+            return _norm_market(m.group(1)) if m else ""
+
+        nt_norm = _norm(title)
+        if not nt_norm:
+            return False
+        nt_c = _content(title)
+        nt_mkt = _lead_market(title)
+        for rt in (recent_titles or []):
+            nr_norm = _norm(rt)
+            if not nr_norm:
+                continue
+            if difflib.SequenceMatcher(None, nt_norm, nr_norm).ratio() >= ratio_threshold:
+                return True
+            rc = _content(rt)
+            if not nt_c or not rc:
+                continue
+            jacc = len(nt_c & rc) / len(nt_c | rc)
+            if jacc >= 0.5:
+                return True
+            if nt_mkt and nt_mkt == _lead_market(rt) and jacc >= 0.25:
+                return True
+        return False
+    except Exception:
+        return False
+
+
+def _recent_platform_ships(days: int = 7) -> list:
+    """Best-effort list of platform enhancements shipped in the last N days, for
+    the 'platform_update' auto-press topic (144 feat() commits/week were landing
+    with zero coverage). Tries a git-derived feat() changelog first (works when
+    the deploy carries .git); falls back to the brain capability ledger
+    (brain_live_capabilities LIVE rows). Returns [] if neither yields anything —
+    the caller then skips the platform_update branch. Never raises."""
+    items: list = []
+    # 1) git changelog — feat()/new-dataset/new-tool commit subjects
+    try:
+        import subprocess
+        repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        proc = subprocess.run(
+            ["git", "log", f"--since={int(days)}.days", "--no-merges",
+             "--pretty=%s", "-i", "--grep=^feat", "--grep=^data", "-E"],
+            cwd=repo_root, capture_output=True, text=True, timeout=4)
+        if proc.returncode == 0:
+            for line in (proc.stdout or "").splitlines():
+                s = re.sub(r"^(feat|data)(\([^)]*\))?:\s*", "", line.strip(),
+                           flags=re.I).strip()
+                if s and len(s) > 8:
+                    items.append(s[:120])
+    except Exception:
+        pass
+    # de-dupe preserving order, cap
+    seen, uniq = set(), []
+    for s in items:
+        k = s.lower()
+        if k not in seen:
+            seen.add(k)
+            uniq.append(s)
+    items = uniq[:12]
+    # 2) fallback — capability ledger LIVE rows (containerized deploy w/o .git)
+    if not items:
+        try:
+            from routes.brain_capability_ledger import _read_ledger
+            for (name, status, _loc) in (_read_ledger() or []):
+                if (status or "").upper() == "LIVE" and name:
+                    items.append(str(name)[:120])
+        except Exception:
+            pass
+        items = items[:12]
+    return items
 
 
 def _theme_for_weekday() -> tuple[str, str]:
@@ -933,8 +1138,23 @@ def _pick_daily_topic_cascade(signals: dict) -> tuple[str, str]:
         recent_markets = _recent_market_names(n=8)
     except NameError:
         recent_markets = set()
+    try:
+        # Fix (2026-07-04): trailing-14d story-family shares for the diversity
+        # quota. Precomputed once here so _topic_dedup stays a pure dict lookup.
+        fam_share = _family_shares(days=14)
+    except NameError:
+        fam_share = {}
 
     def _topic_dedup(t: str) -> bool:
+        # Family-diversity quota (2026-07-04): block any topic whose story
+        # family already owns > _FAMILY_QUOTA of the trailing-14d feed, so no
+        # single family (excess-power was ~10/30) can dominate — even when the
+        # topic's own per-topic window would allow it.
+        try:
+            if fam_share.get(_topic_family(t), 0.0) > _FAMILY_QUOTA:
+                return True
+        except NameError:
+            pass
         try:
             return _topic_recently_ran(t, recent)
         except NameError:
@@ -1012,6 +1232,27 @@ def _pick_daily_topic_cascade(signals: dict) -> tuple[str, str]:
         return "industry_pulse", (
             f"Industry pulse — three stories moving the data-center "
             f"market right now: {headlines}. DC Hub adds the DCPI overlay.")
+
+    # ── 2.5 Platform update — what DC Hub shipped this week (NEW) ────
+    # Fix (2026-07-04): 144 feat() commits/week were landing on main with ZERO
+    # coverage. Reports the week's shipped enhancements/new datasets/tools as a
+    # concise changelog. Sticky 7-day window (_STICKY_TOPIC_WINDOWS) so it posts
+    # at most once a week and never re-covers the same commit batch. Only fires
+    # when there are >= 3 concrete ships (else the post would be thin).
+    if not _topic_dedup("platform_update"):
+        try:
+            ships = _recent_platform_ships(days=7)
+        except NameError:
+            ships = []
+        if len(ships) >= 3:
+            _ship_list = "; ".join(ships[:6])
+            return "platform_update", (
+                f"Platform update — DC Hub shipped {len(ships)} enhancements in "
+                f"the last 7 days: {_ship_list}. Write it as a concise product/"
+                f"data changelog for agents & operators: what's new, why it "
+                f"matters for a site-selection or capex decision, and how to "
+                f"query it (MCP tool / endpoint). No hype; name the concrete new "
+                f"datasets, tools, and endpoints.")
 
     # ── 3. ISO focus — rotates through 7 ISOs by day-of-year ────────
     # NEW Phase NN. Only fires when the picked ISO has >=10 markets
@@ -2258,13 +2499,42 @@ def auto_generate():
     signals["daily_topic"] = topic
     signals["daily_topic_reason"] = topic_reason
 
+    # Fix (2026-07-04): the force_topic afternoon slot (17:30 UTC afternoon_pulse)
+    # bypassed _pick_daily_topic AND every dedup guard, so afternoon pieces kept
+    # collapsing onto the same ~5 story families (the 83%-repetitive symptom).
+    # Build an explicit DO-NOT-REPEAT context — last-7d headlines + recently
+    # featured markets — and (a) inject it into the prompt below, (b) reject
+    # near-duplicate output in the retry loop. Applied to BOTH the force_topic
+    # and auto-picked paths (belt-and-suspenders on top of the cascade guards).
+    try:
+        _dnr_titles = _recent_titles(days=7)
+    except Exception:
+        _dnr_titles = []
+    try:
+        _dnr_markets = sorted(m for m in _recent_market_names(n=8) if m)
+    except Exception:
+        _dnr_markets = []
+    _dnr_block = ""
+    if _dnr_titles or _dnr_markets:
+        _parts = ["\n\nDO NOT REPEAT — the last 7 days already covered the "
+                  "stories below. Choose a genuinely different angle, market, "
+                  "and headline structure:"]
+        if _dnr_titles:
+            _parts.append("Recent headlines:\n- " + "\n- ".join(_dnr_titles[:12]))
+        if _dnr_markets:
+            _parts.append("Recently-featured markets (do NOT lead with these): "
+                          + ", ".join(_dnr_markets))
+        _parts.append("If today's signal forces one of these markets, lead with "
+                      "a NEW number/second-order read and a distinct headline.")
+        _dnr_block = "\n".join(_parts)
+
     rel = None
     err = None
     why = None
     last_attempt_err = None
 
-    for attempt_idx, (att_topic, att_reason, att_simpler, att_model) in enumerate(
-            _attempt_plan(topic, topic_reason)):
+    _attempts = _attempt_plan(topic, topic_reason)
+    for attempt_idx, (att_topic, att_reason, att_simpler, att_model) in enumerate(_attempts):
         signals["daily_topic"] = att_topic
         signals["daily_topic_reason"] = att_reason
 
@@ -2283,10 +2553,12 @@ def auto_generate():
                 f"Signals (trimmed):\n```\n{json.dumps(mini_signals, indent=2)[:2500]}\n```\n\n"
                 "Generate a publishable press release + LinkedIn post per "
                 "the system prompt. Be concrete, lean on the signal data."
+                + _dnr_block
             )
         else:
             prompt = (f"Daily signals (topic: {att_topic} — {att_reason}):\n"
-                      "```\n" + json.dumps(signals, indent=2)[:6000] + "\n```")
+                      "```\n" + json.dumps(signals, indent=2)[:6000] + "\n```"
+                      + _dnr_block)
 
         rel, err = _call_claude_marketing(prompt, model=att_model)
         if err or not rel:
@@ -2301,7 +2573,25 @@ def auto_generate():
             rel = None
             continue
 
-        # Got a valid release. Break out of retry loop.
+        # Near-duplicate guard (2026-07-04): even a schema-valid release is
+        # rejected when its headline is ~the same story we ran in the last 7
+        # days — the actual 83%-repetitive symptom. Retrying re-enters the loop
+        # with the next attempt (simpler prompt / fallback model), which sees the
+        # same DO-NOT-REPEAT block and should pivot. The last attempt is the
+        # generic platform_pulse, so this never dead-ends the day's output.
+        # The FINAL attempt is allowed through even if flagged, so a genuinely
+        # data-flat day still publishes *something* (preserves the "never a
+        # silent day" contract the retry loop was built for).
+        _is_last_attempt = (attempt_idx >= len(_attempts) - 1)
+        if (_dnr_titles and not _is_last_attempt
+                and _is_near_dup_title(rel.get("title", ""), _dnr_titles)):
+            last_attempt_err = (f"attempt_{attempt_idx+1}: near_duplicate_title="
+                                f"{(rel.get('title') or '')[:80]!r}")
+            print(f"[marketing] {last_attempt_err}", file=sys.stderr)
+            rel = None
+            continue
+
+        # Got a valid, non-duplicate release. Break out of retry loop.
         break
 
     if not rel:
