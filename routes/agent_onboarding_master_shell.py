@@ -495,6 +495,9 @@ def _score_platform(p: dict, m: dict) -> dict:
 # rerank scale, r-rag-cosine-passthrough). retrieve_lessons embeds per call, so
 # only the highest-priority items are grounded per tick.
 def _rag_lessons_for(platform, weakest_dim, k: int = 3) -> list:
+    import os as _os
+    if _os.getenv("RAG_TOOLDATA_DISABLED") == "1":  # one lever kills all RAG grounding
+        return []
     try:
         from routes.brain_rag import retrieve_lessons
     except Exception:
