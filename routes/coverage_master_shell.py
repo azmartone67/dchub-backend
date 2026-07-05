@@ -57,6 +57,8 @@ _BACKEND_BASE = (
     if (os.environ.get("RAILWAY_ENVIRONMENT") or os.environ.get("RAILWAY_PROJECT_ID"))
     else os.environ.get("DCHUB_BACKEND_BASE",
                         "https://dchub-backend-production.up.railway.app"))
+# MCP origin for the anon front-door probe (read-only, mints nothing).
+_MCP_ORIGIN = os.environ.get("COVERAGE_MCP_ORIGIN", "https://dchub.cloud").rstrip("/")
 
 _TICK_TTL = 60  # seconds; the feed is 30-min cached anyway
 _cache: dict = {"ts": 0.0, "payload": None}
@@ -130,7 +132,10 @@ def _facts() -> dict:
     public sees — so the drafts can never drift from what's on the site."""
     feed = _get_json("/api/v1/whats-new")
     stats = (_get_json("/api/v1/stats") or {}).get("data", {})
+    reach = _get_json("/api/v1/reach")
     items = {i.get("category"): i for i in (feed.get("items") or [])}
+    plats = reach.get("platforms_7d") or []
+    top_plat = max(plats, key=lambda p: p.get("agents", 0)) if plats else {}
 
     dc = items.get("Data centers", {})
     deals = items.get("Data-center deals", {})
@@ -159,6 +164,14 @@ def _facts() -> dict:
         "middle_mile": _num(mid.get("total")),
         # geography
         "countries": _num(stats.get("countries")) or _num(stats.get("total_countries")),
+        # funnel — AI agent use (north star), probe-filtered so it isn't inflated
+        "reach_ok": bool(reach.get("ok")),
+        "real_agents_7d": _num(reach.get("real_agents_7d")),
+        "real_calls_7d": _num(reach.get("real_calls_7d")),
+        "probe_agents_7d": _num(reach.get("probe_agents_7d")),
+        "citations_7d": _num(reach.get("citations_7d")),
+        "top_platform": top_plat.get("platform"),
+        "top_platform_agents": _num(top_plat.get("agents")),
     }
 
 
@@ -332,11 +345,62 @@ def _lane_messaging(f: dict) -> list[dict]:
     return out
 
 
+def _anon_front_door() -> tuple[bool, str]:
+    """Probe the anonymous MCP front door: tools/call get_grid_scoreboard with
+    NO key. Read-only — mints nothing, charges nothing. This is the very first
+    thing an anonymous agent hits, so if it's empty the whole funnel is dead."""
+    body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                       "params": {"name": "get_grid_scoreboard", "arguments": {}}}).encode()
+    t0 = time.time()
+    try:
+        req = urllib.request.Request(f"{_MCP_ORIGIN}/mcp", data=body, method="POST")
+        req.add_header("Content-Type", "application/json")
+        req.add_header("Accept", "application/json, text/event-stream")
+        req.add_header("User-Agent", "dchub-coverage-shell/1.0")
+        with urllib.request.urlopen(req, timeout=12) as r:
+            txt = r.read(80_000).decode("utf-8", "replace")
+        ms = int((time.time() - t0) * 1000)
+        ok = ('"result"' in txt) and ('renewable' in txt.lower() or '\\"ok\\":true' in txt or '"ok":true' in txt)
+        return ok, f"HTTP 200, {len(txt)}B, {ms}ms"
+    except Exception as e:
+        return False, f"{type(e).__name__}: {e}"
+
+
+def _lane_funnel(f: dict) -> list[dict]:
+    """AI-agent use + the anon→free→$10→metered ladder, at a glance."""
+    out = []
+    ra = f.get("real_agents_7d")
+    out.append(_check("reach_live", "reach feed live (real AI agents/week)",
+                      f.get("reach_ok") and ra is not None,
+                      f"real_agents_7d={_fmt(ra)} · real_calls={_fmt(f.get('real_calls_7d'))} · "
+                      f"top={f.get('top_platform')}({_fmt(f.get('top_platform_agents'))})"))
+    # the north-star count must be probe-filtered or it reads ~10x inflated
+    out.append(_check("reach_probe_filtered", "probe/self traffic separated from real agents",
+                      f.get("probe_agents_7d") is not None,
+                      f"probe_agents_7d={_fmt(f.get('probe_agents_7d'))} (excluded from real)"))
+    # anon front door — the first thing an unidentified agent sees
+    fd_ok, fd_detail = _anon_front_door()
+    out.append(_check("anon_front_door", "anon get_grid_scoreboard returns live data (no key)",
+                      fd_ok, fd_detail))
+    return out
+
+
 _LANES = [
     ("facilities_honesty", "1 · Facilities: tracked vs verified", _lane_honesty),
     ("no_future_date",     "2 · Date: as_of, never future",       _lane_date),
     ("provenance",         "3 · Provenance labeled (unify≠discover)", _lane_provenance),
     ("messaging",          "4 · Messaging drafts honesty-safe",    _lane_messaging),
+    ("funnel",             "5 · Funnel: reach + anon→free→$10→metered", _lane_funnel),
+]
+
+# The upgrade ladder, rendered at a glance on the dashboard. Static because
+# probing each paid hop live would mint keys / issue checkouts on every load;
+# the anon front door (lever 5) is the one hop cheap + safe to probe live.
+_LADDER = [
+    ("anonymous", "get_grid_scoreboard — no key", "live-probed (lever 5)"),
+    ("free", "claim_free_key — 1 call, no email", "10 calls/day (worker-enforced)"),
+    ("$10 one-time", "unlock_more_data → Stripe", "1,000 calls"),
+    ("metered", "per-call $0.50 (MPP, no human) or $1/100", "first-class in unlock_more_data"),
 ]
 
 
@@ -439,6 +503,19 @@ def coverage_dashboard():
         f"deals +{_fmt(facts.get('deals_7d'))}/7d ({_fmt(facts.get('deals_total'))} total) · "
         f"+{_fmt(facts.get('total_added_7d'))} records/7d · {_fmt(facts.get('countries'))} countries · "
         f"as_of {_esc(str(facts.get('data_as_of')))}")
+    funnel_line = (
+        f"reach {_fmt(facts.get('real_agents_7d'))} real agents/wk · "
+        f"{_fmt(facts.get('real_calls_7d'))} calls · {_fmt(facts.get('citations_7d'))} citations · "
+        f"top {_esc(str(facts.get('top_platform')))} ({_fmt(facts.get('top_platform_agents'))}) · "
+        f"{_fmt(facts.get('probe_agents_7d'))} probe agents filtered out")
+    ladder_html = "".join(
+        f"<span style='display:inline-block;background:#0f172a;border:1px solid #334155;"
+        f"border-radius:8px;padding:6px 10px;margin:3px 6px 3px 0;font-size:12px'>"
+        f"<b style='color:#e2e8f0'>{_esc(step)}</b> "
+        f"<span style='color:#94a3b8'>{_esc(how)}</span> "
+        f"<span style='color:#64748b'>· {_esc(state)}</span></span>"
+        + ("<span style='color:#475569'>→</span>" if i < len(_LADDER) - 1 else "")
+        for i, (step, how, state) in enumerate(_LADDER))
 
     html = (
         "<!doctype html><meta charset='utf-8'>"
@@ -453,6 +530,9 @@ def coverage_dashboard():
         f"read-only · drafts NOT auto-posted · generated {_esc(p['generated_at'])} · "
         f"JSON: /api/v1/admin/coverage/master-tick</div>"
         f"<div style='color:#38bdf8;font-size:12px;margin-top:6px'>{facts_line}</div>"
+        f"<div style='color:#34d399;font-size:12px;margin-top:4px'>{funnel_line}</div>"
+        f"<div style='margin:12px 0 2px;font-size:12px;color:#64748b'>upgrade ladder</div>"
+        f"<div style='margin-bottom:6px'>{ladder_html}</div>"
         + "".join(cards)
         + "<h3 style='margin:22px 0 4px'>Ready-to-send drafts "
           "<span style='color:#64748b;font-weight:400;font-size:13px'>(honesty-checked · click to select)</span></h3>"
