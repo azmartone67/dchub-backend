@@ -48,10 +48,26 @@ _ORGANISM_CACHE: dict = {"at": 0.0, "value": None}
 _ORGANISM_TTL = 300.0
 
 
+def _admin_headers() -> dict:
+    """Fix (2026-07-04): the organism composes admin-gated sub-endpoints via the
+    same-process test_client. /api/v1/media/outreach-log has been PII-gated since
+    the 06-19 gate, so the header-less call got a 403 and journalist_outreach
+    scored None/'unreachable' — the channel silently went dark. Send the server's
+    OWN admin/internal key (env) on these internal calls so the sub-endpoint
+    returns 200. Only emits a header when a key is actually configured; matches
+    the keys media_outreach._admin_ok() accepts."""
+    import os as _os
+    for _n in ("DCHUB_INTERNAL_KEY", "INTERNAL_KEY", "DCHUB_ADMIN_KEY"):
+        _v = _os.environ.get(_n)
+        if _v:
+            return {"X-Admin-Key": _v}
+    return {}
+
+
 def _call(tc, path):
     """Internal Flask call; returns (dict, http_code). Never raises."""
     try:
-        r = tc.get(path)
+        r = tc.get(path, headers=_admin_headers())
         if r.status_code == 200:
             try:
                 return r.get_json() or {}, 200

@@ -41,54 +41,180 @@ def _conn():
         return None
 
 
-# UA-fingerprint → AI-platform classifier. Used by winback pitches.
-# Each pattern maps to (platform_name, suggested_contact_url, pitch_angle).
-_UA_PLATFORM = [
-    # Anthropic ecosystem
-    (re.compile(r"anthropic|claude(?!.*headless)", re.I),
-     ("Anthropic / Claude",
-      "https://www.anthropic.com/contact-sales",
-      "Add DC Hub MCP to the Claude registry so direct connectors discover us")),
-    # Cursor
-    (re.compile(r"cursor", re.I),
-     ("Cursor",
-      "https://cursor.sh/contact",
-      "List DC Hub in Cursor's MCP server directory for data-center workflows")),
-    # ChatGPT / OpenAI
-    (re.compile(r"openai|chatgpt|gpt-?\d", re.I),
-     ("OpenAI / ChatGPT",
-      "https://openai.com/contact-sales",
-      "Submit DC Hub to the GPT Store + connect via custom GPTs")),
-    # Perplexity
-    (re.compile(r"perplexity", re.I),
-     ("Perplexity",
-      "https://www.perplexity.ai/hub/blog",
-      "Apply for Perplexity's source-citation program — high-volume usage proves data quality")),
-    # Gemini / Google
-    (re.compile(r"gemini|google.*ai|bard", re.I),
-     ("Google Gemini",
-      "https://cloud.google.com/contact",
-      "Submit DC Hub to Vertex AI agent garden + Gemini extensions")),
-    # MCP probers / discovery tools
-    (re.compile(r"mcp[-_]?(probe|registry|scanner|crawler|explorer|inspector)", re.I),
-     ("MCP Discovery Registry",
-      "https://mcpregistry.com or smithery.dev/submit",
-      "Submit DC Hub to the MCP registry/directory listing the prober came from")),
-    # Generic python HTTP — likely an internal tool or fresh-built agent
-    (re.compile(r"python-(httpx|requests)|aiohttp", re.I),
-     ("Python-built agent",
-      "(no platform — direct outreach via referrer/IP investigation)",
-      "Internal or custom agent — needs deeper UA/IP analysis to identify")),
-]
+# Fix (2026-07-04): platform classification now uses the CANONICAL
+# MCP_PLATFORM_MAP (main.py) — the same map every other reach/attribution metric
+# uses — instead of a private ad-hoc regex list that classified ALL 50 dormant
+# agents as "Unidentified" (winback channel stuck at 20/100 = platform_count 1).
+# The real signal for MCP agents lives in the recovered `platform` column +
+# clientInfo name, NOT the raw UA (which is usually '@modelcontextprotocol/sdk'
+# or 'node'), so we resolve from the identity view's platform/client_name first
+# and only fall back to the UA string.
+
+# Fallback copy of the canonical map — used ONLY if `from main import
+# MCP_PLATFORM_MAP` fails (circular-import guard / test harness). Keep in sync
+# with main.py:MCP_PLATFORM_MAP.
+_MCP_PLATFORM_MAP_FALLBACK = {
+    'claude': 'Claude', 'claude-desktop': 'Claude', 'anthropic': 'Claude',
+    'chatgpt': 'ChatGPT', 'openai': 'ChatGPT',
+    'grok': 'Grok', 'xai': 'Grok',
+    'gemini': 'Gemini', 'google': 'Gemini',
+    'perplexity': 'Perplexity',
+    'cursor': 'Cursor', 'copilot': 'Copilot',
+    'windsurf': 'Windsurf', 'cline': 'Cline',
+    'groq': 'Groq', 'deepseek': 'DeepSeek',
+    'mistral': 'Mistral', 'le chat': 'Mistral', 'lechat': 'Mistral',
+    'cohere': 'Cohere', 'poe': 'Poe', 'youcom': 'You.com',
+    'huggingface': 'Hugging Face', 'hf': 'Hugging Face', 'hugging face': 'Hugging Face',
+    'base44': 'base44',
+}
+
+
+def _mcp_platform_map() -> dict:
+    try:
+        from main import MCP_PLATFORM_MAP
+        if MCP_PLATFORM_MAP:
+            return MCP_PLATFORM_MAP
+    except Exception:
+        pass
+    return _MCP_PLATFORM_MAP_FALLBACK
+
+
+# Canonical display-platform → (contact_url, pitch_angle) for the winback email.
+_PLATFORM_CONTACT = {
+    "Claude":       ("https://www.anthropic.com/contact-sales",
+                     "Add DC Hub MCP to the Claude registry / connector directory so direct connectors discover us"),
+    "ChatGPT":      ("https://openai.com/contact-sales",
+                     "List DC Hub in the GPT Store + wire it as a ChatGPT connector for data-center queries"),
+    "Grok":         ("https://x.ai/",
+                     "Formalize DC Hub as a Grok data source for infrastructure questions"),
+    "Gemini":       ("https://cloud.google.com/contact",
+                     "Submit DC Hub to Vertex AI agent garden + Gemini extensions"),
+    "Perplexity":   ("https://www.perplexity.ai/hub/blog",
+                     "Apply for Perplexity's source-citation program — the call volume proves data quality"),
+    "Cursor":       ("https://cursor.sh/contact",
+                     "List DC Hub in Cursor's MCP server directory for data-center workflows"),
+    "Copilot":      ("https://github.com/features/copilot",
+                     "List DC Hub as a Copilot extension / MCP server for infra tooling"),
+    "Windsurf":     ("https://codeium.com/contact",
+                     "Add DC Hub to the Windsurf MCP directory"),
+    "Cline":        ("https://cline.bot/",
+                     "List DC Hub in the Cline MCP marketplace"),
+    "Groq":         ("https://groq.com/contact/",
+                     "Wire DC Hub as a Groq tool/function data source"),
+    "DeepSeek":     ("https://www.deepseek.com/",
+                     "Formalize DC Hub as a DeepSeek data connector"),
+    "Mistral":      ("https://mistral.ai/contact/",
+                     "Add DC Hub to Le Chat's connector catalog"),
+    "Cohere":       ("https://cohere.com/contact-sales",
+                     "Register DC Hub as a Cohere tool-use data source"),
+    "Poe":          ("https://poe.com/",
+                     "Publish a DC Hub bot / server on Poe"),
+    "You.com":      ("https://you.com/",
+                     "Add DC Hub as a You.com source / plugin"),
+    "Hugging Face": ("https://huggingface.co/support",
+                     "List DC Hub in the HF MCP / Spaces directory"),
+    "base44":       ("https://base44.com/",
+                     "Formalize the base44 → DC Hub integration"),
+}
+_DEFAULT_CONTACT = ("n/a",
+                    "Unidentified — add a platform/clientInfo/UA mapping to MCP_PLATFORM_MAP (main.py)")
+
+
+def _canon_platform(*signals: str) -> str:
+    """Resolve a canonical display-platform from the given signals (recovered
+    platform column, MCP clientInfo name, raw UA), tried in order. Each is
+    matched exact-then-substring against the canonical MCP_PLATFORM_MAP keys.
+    Returns 'Unidentified AI platform' when nothing matches."""
+    pmap = _mcp_platform_map()
+    _JUNK = {"", "mcp", "unknown", "anonymous", "internal-dchub",
+             "n/a", "none", "null"}
+    for sig in signals:
+        s = (sig or "").strip().lower()
+        if not s or s in _JUNK:
+            continue
+        if s in pmap:
+            return pmap[s]
+        for key, disp in pmap.items():
+            if key and key in s:
+                return disp
+    return "Unidentified AI platform"
 
 
 def _classify_ua(ua: str) -> tuple[str, str, str]:
-    if not ua: return ("Unknown", "n/a", "Add UA classification rule when identified")
-    for pattern, info in _UA_PLATFORM:
-        if pattern.search(ua):
-            return info
-    return ("Unidentified AI platform", "n/a",
-            "Add UA classification to routes/dchub_media_revival.py:_UA_PLATFORM")
+    """UA-only classification (kept for backward compat — imported by
+    routes/winback_outreach.py). Delegates to the canonical map now."""
+    platform = _canon_platform(ua)
+    contact, angle = _PLATFORM_CONTACT.get(platform, _DEFAULT_CONTACT)
+    return (platform, contact, angle)
+
+
+def _dormant_by_platform(min_prior_calls: int = 30, idle_days: int = 14,
+                         look_back_days: int = 90) -> list:
+    """Dormant REAL-external agents grouped from the canonical identity view
+    (mcp_calls_identity), carrying the recovered platform + clientInfo name so
+    classification matches every other reach metric. One row per agent_id
+    (md5 of the first public XFF token). is_real_external already excludes
+    python/curl/node/internal probe traffic, so this is the genuine winback
+    cohort. Returns [] on any error — the caller falls back to the UA-only path."""
+    c = _conn()
+    if c is None:
+        return []
+    rows = []
+    try:
+        with c.cursor() as cur:
+            cur.execute(f"""
+                WITH agg AS (
+                  SELECT agent_id,
+                         COUNT(*)                  AS prior_calls,
+                         MAX(created_at)           AS last_call,
+                         MIN(created_at)           AS first_call,
+                         COUNT(DISTINCT tool_name) AS distinct_tools,
+                         MAX(user_agent)           AS sample_ua,
+                         mode() WITHIN GROUP (ORDER BY LOWER(COALESCE(platform,'')))    AS modal_platform,
+                         mode() WITHIN GROUP (ORDER BY LOWER(COALESCE(client_name,''))) AS modal_client
+                    FROM mcp_calls_identity
+                   WHERE created_at >= NOW() - INTERVAL '{int(look_back_days)} days'
+                     AND is_public_ip
+                     AND is_real_external
+                   GROUP BY agent_id
+                )
+                SELECT agent_id, prior_calls, last_call, first_call,
+                       distinct_tools, sample_ua, modal_platform, modal_client
+                  FROM agg
+                 WHERE prior_calls >= %s
+                   AND last_call < NOW() - INTERVAL '{int(idle_days)} days'
+                 ORDER BY prior_calls DESC
+                 LIMIT 200
+            """, (int(min_prior_calls),))
+            rows = cur.fetchall() or []
+    except Exception:
+        return []
+    finally:
+        try: c.close()
+        except Exception: pass
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+    out: list = []
+    for r in rows:
+        (agent_id, prior_calls, last_call, first_call,
+         distinct_tools, sample_ua, modal_platform, modal_client) = r
+        days_idle = None
+        if last_call:
+            lc = last_call
+            if lc.tzinfo is None:
+                lc = lc.replace(tzinfo=datetime.timezone.utc)
+            days_idle = round((now - lc).total_seconds() / 86400.0, 1)
+        platform = _canon_platform(modal_platform, modal_client, sample_ua)
+        out.append({
+            "ip_hash":        (agent_id or "?")[:12],
+            "ua_fingerprint": (sample_ua or "")[:80],
+            "platform":       platform,
+            "prior_calls":    int(prior_calls or 0),
+            "distinct_tools": int(distinct_tools or 0),
+            "days_idle":      days_idle,
+            "last_call_at":   last_call.isoformat() if last_call else None,
+        })
+    return out
 
 
 def _last_press_age_days() -> tuple[float | None, int]:
@@ -160,17 +286,29 @@ def winback_pitches():
     """Public worklist. For each dormant agent (>=30 prior calls,
     idle 14+ days), classify by UA and emit a per-platform pitch
     template. DC Hub Media can copy/paste these for outbound."""
-    try:
-        from routes.bot_outreach import _compute_dormant
-        dormant = _compute_dormant(min_prior_calls=30, idle_days=14) or []
-    except Exception:
-        dormant = []
+    # Fix (2026-07-04): prefer the identity-view sourced dormant list (carries
+    # the recovered platform + clientInfo) so agents classify into REAL
+    # platforms; fall back to the UA-only bot_outreach list only if that query
+    # yields nothing.
+    dormant = _dormant_by_platform(min_prior_calls=30, idle_days=14)
+    _source = "mcp_calls_identity"
+    if not dormant:
+        try:
+            from routes.bot_outreach import _compute_dormant
+            dormant = _compute_dormant(min_prior_calls=30, idle_days=14) or []
+        except Exception:
+            dormant = []
+        _source = "bot_outreach_ua_only"
 
     # Group by platform
     by_platform: dict = {}
     for a in dormant:
         ua = (a.get("ua_fingerprint") or "")[:200]
-        platform, contact, angle = _classify_ua(ua)
+        platform = a.get("platform")
+        if platform:
+            contact, angle = _PLATFORM_CONTACT.get(platform, _DEFAULT_CONTACT)
+        else:
+            platform, contact, angle = _classify_ua(ua)
         b = by_platform.setdefault(platform, {
             "platform":         platform,
             "contact":          contact,
@@ -216,6 +354,7 @@ def winback_pitches():
 
     resp = jsonify(
         pitches=pitches,
+        source=_source,
         platform_count=len(pitches),
         total_dormant_agents=sum(p["dormant_count"] for p in pitches),
         total_dormant_calls=sum(p["total_prior_calls"] for p in pitches),
