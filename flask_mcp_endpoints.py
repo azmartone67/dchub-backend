@@ -1949,6 +1949,39 @@ def mcp_funnel():
             except Exception:
                 out["ai_agent_requests_total"] = None
 
+            # brain-l15 #1439/#1447 (2026-07-05): the all-sources total above is
+            # ~68% internal/self-heal/probe traffic (platform='internal' alone was
+            # ~1.08M of ~1.6M). The /ai dashboard deliberately leads with the
+            # all-sources number, so we KEEP it unchanged — but expose an
+            # EXTERNAL-only figure that drops our own internal/self-heal/probe
+            # platforms, and point the PRESS headline (below) at THAT. Press copy
+            # must never claim "led by Claude and ChatGPT" over a number that is
+            # mostly our own self-heal traffic.
+            _aicum_excl = (
+                "COALESCE(LOWER(platform),'') NOT IN "
+                "('internal','internal-dchub','dchub-selfheal','dchub-regression-test',"
+                "'dchub-mcp-test','mcp-test','mcp-probe','probe','value-harness','node',"
+                "'node-script','python-script','curl','postman','insomnia','verify') "
+                "AND COALESCE(LOWER(platform),'') NOT LIKE 'dchub-%' "
+                "AND COALESCE(LOWER(platform),'') NOT LIKE '%probe%' "
+                "AND COALESCE(LOWER(platform),'') NOT LIKE '%harness%' "
+                "AND COALESCE(LOWER(platform),'') NOT LIKE '%-test' "
+                "AND COALESCE(LOWER(platform),'') NOT LIKE 'test-%' "
+                "AND COALESCE(LOWER(platform),'') NOT LIKE '%regression%' "
+                "AND COALESCE(LOWER(platform),'') NOT LIKE '%selfheal%' "
+                "AND COALESCE(LOWER(platform),'') NOT LIKE '%audit%'"
+            )
+            try:
+                cur.execute(
+                    f"SELECT COALESCE(SUM(total_requests), 0) FROM ai_cumulative "
+                    f"WHERE {_aicum_excl}"
+                )
+                out["ai_agent_requests_external"] = int((cur.fetchone() or [0])[0])
+            except Exception:
+                try: conn.rollback()
+                except Exception: pass
+                out["ai_agent_requests_external"] = None
+
             try:
                 cur.execute(
                     "SELECT platform, name, total_requests FROM ai_cumulative "
@@ -1960,6 +1993,24 @@ def mcp_funnel():
                 ]
             except Exception:
                 out["ai_agent_top_platforms"] = []
+
+            # External-only ranking (internal/self-heal/probe removed) — the list
+            # press + external surfaces should quote instead of the raw one, where
+            # 'internal' was the #1 "platform".
+            try:
+                cur.execute(
+                    f"SELECT platform, name, total_requests FROM ai_cumulative "
+                    f"WHERE {_aicum_excl} "
+                    f"ORDER BY total_requests DESC LIMIT 10"
+                )
+                out["ai_agent_top_platforms_external"] = [
+                    {"platform": r[0], "name": r[1], "requests": int(r[2] or 0)}
+                    for r in cur.fetchall()
+                ]
+            except Exception:
+                try: conn.rollback()
+                except Exception: pass
+                out["ai_agent_top_platforms_external"] = []
 
             # Pre-calculated acceleration fields for press copy. Ratio
             # of recent-to-lifetime is the genuine moat story.
@@ -1975,13 +2026,26 @@ def mcp_funnel():
                     out["pct_30d_of_lifetime"] = None
                     out["pct_7d_of_lifetime"]  = None
                     out["annualized_run_rate_from_7d"] = None
-                # Press-ready single-sentence signal
-                if out.get("ai_agent_requests_total"):
+                # Press-ready single-sentence signal.
+                # brain-l15 #1439/#1447: quote the EXTERNAL figure (internal/self-
+                # heal excluded) and name the ACTUAL top external platforms, so the
+                # press line is no longer "led by Claude and ChatGPT" over ~68%
+                # self-heal traffic. Falls back to an unattributed all-sources claim
+                # only if the external figure is unavailable.
+                _ext = out.get("ai_agent_requests_external")
+                if _ext:
+                    _top = [p.get("name") or p.get("platform")
+                            for p in (out.get("ai_agent_top_platforms_external") or [])
+                            if (p.get("name") or p.get("platform"))][:2]
+                    _lead = f"led by {' and '.join(_top)} " if _top else ""
+                    out["press_headline_metric"] = (
+                        f"DC Hub has served {_ext:,} external AI-agent requests "
+                        f"{_lead}since launch."
+                    )
+                elif out.get("ai_agent_requests_total"):
                     _t = out["ai_agent_requests_total"]
                     out["press_headline_metric"] = (
-                        f"DC Hub has served {_t:,} AI-agent requests "
-                        f"led by Claude and ChatGPT "
-                        f"since launch."
+                        f"DC Hub has served {_t:,} AI-agent requests since launch."
                     )
             except Exception:
                 pass
@@ -2086,15 +2150,48 @@ def mcp_funnel():
                 # Item F (2026-06-02): migrate to mcp_funnel_real view; the
                 # inline _signal_excl_clause is now provided by the view's
                 # is_synthetic=FALSE filter. Date-range/tier filters kept.
+                #
+                # brain-l15 #1437/#1445 (2026-07-05): raw mcp_client sometimes IS
+                # a browser User-Agent ('mozilla/5.0 (linux; android 10; k)…'),
+                # which leaked through as a "platform" with sessions=0. Normalize
+                # UA-shaped / oversized values into a single 'web-unattributed'
+                # bucket so they stop fragmenting the platform list.
+                # brain-l15 #1438/#1446 (2026-07-05): `converted` used to read the
+                # mcp_upgrade_signals.converted FLAG, which is ~never set for the
+                # anonymous MCP funnel — so every platform showed converted=0 while
+                # conversions_30d=9. Attribute real conversions via
+                # mcp_conversions.attribution_signal_id -> signal.id instead, so a
+                # conversion counts for the platform of the signal that drove it.
                 cur.execute(
-                    """SELECT
-                          COALESCE(NULLIF(LOWER(mcp_client), ''), 'unknown') AS platform,
-                          COUNT(*) AS signals,
-                          COUNT(DISTINCT session_id) AS sessions,
-                          COUNT(DISTINCT ip_address) AS unique_ips,
-                          COUNT(*) FILTER (WHERE converted = TRUE) AS converted
-                       FROM mcp_funnel_real
-                       WHERE created_at >= NOW() - INTERVAL '30 days'
+                    """SELECT platform,
+                              COUNT(DISTINCT sig_id)  AS signals,
+                              COUNT(DISTINCT session_id) AS sessions,
+                              COUNT(DISTINCT ip_address) AS unique_ips,
+                              COUNT(DISTINCT conv_id) AS converted
+                       FROM (
+                           SELECT
+                             s.id AS sig_id, s.session_id, s.ip_address,
+                             c.id AS conv_id,
+                             CASE
+                               WHEN COALESCE(s.mcp_client,'') = '' THEN 'unknown'
+                               WHEN LOWER(s.mcp_client) LIKE 'mozilla/%'
+                                 OR LOWER(s.mcp_client) LIKE '%mozilla%'
+                                 OR LOWER(s.mcp_client) LIKE '%(linux%'
+                                 OR LOWER(s.mcp_client) LIKE '%(windows%'
+                                 OR LOWER(s.mcp_client) LIKE '%(macintosh%'
+                                 OR LOWER(s.mcp_client) LIKE '%(iphone%'
+                                 OR LOWER(s.mcp_client) LIKE '%android%'
+                                 OR LOWER(s.mcp_client) LIKE '%applewebkit%'
+                                 OR LENGTH(s.mcp_client) > 48
+                                 THEN 'web-unattributed'
+                               ELSE LOWER(s.mcp_client)
+                             END AS platform
+                           FROM mcp_funnel_real s
+                           LEFT JOIN mcp_conversions c
+                             ON c.attribution_signal_id = s.id
+                            AND c.created_at >= NOW() - INTERVAL '30 days'
+                           WHERE s.created_at >= NOW() - INTERVAL '30 days'
+                       ) q
                        GROUP BY platform
                        ORDER BY signals DESC
                        LIMIT 20"""
@@ -2111,7 +2208,55 @@ def mcp_funnel():
                     for r in cur.fetchall()
                 ]
             except Exception as e:
+                try: conn.rollback()
+                except Exception: pass
                 out["signals_by_platform_30d_error"] = str(e)[:120]
+
+            # brain-l15 #1438/#1446 (2026-07-05): per-platform CONVERSION
+            # attribution + an explicit unattributed bucket. Answers "are the 9
+            # conversions a severed join, or genuinely unattributable?" — each
+            # conversion is mapped to the platform of the signal it references
+            # (attribution_signal_id first, then a caller_id match); anything with
+            # no signal link lands in 'unattributed' (identified web purchases with
+            # no MCP-signal trail). SUM(attributed)+unattributed == conversions_30d.
+            try:
+                cur.execute(
+                    """WITH conv AS (
+                         SELECT c.id AS conv_id,
+                                COALESCE((
+                                  SELECT CASE
+                                    WHEN COALESCE(s.mcp_client,'') = '' THEN 'unknown'
+                                    WHEN LOWER(s.mcp_client) LIKE 'mozilla/%'
+                                      OR LOWER(s.mcp_client) LIKE '%mozilla%'
+                                      OR LENGTH(s.mcp_client) > 48
+                                      THEN 'web-unattributed'
+                                    ELSE LOWER(s.mcp_client)
+                                  END
+                                  FROM mcp_upgrade_signals s
+                                  WHERE s.id = c.attribution_signal_id
+                                     OR (COALESCE(c.caller_id,'') <> ''
+                                         AND s.caller_id = c.caller_id)
+                                  ORDER BY (s.id = c.attribution_signal_id) DESC NULLS LAST,
+                                           s.created_at DESC
+                                  LIMIT 1
+                                ), 'unattributed') AS platform
+                         FROM mcp_conversions c
+                         WHERE c.created_at >= NOW() - INTERVAL '30 days'
+                       )
+                       SELECT platform, COUNT(*) AS conversions
+                       FROM conv GROUP BY platform ORDER BY conversions DESC"""
+                )
+                _cbp = [{"platform": r[0], "conversions": int(r[1] or 0)}
+                        for r in cur.fetchall()]
+                out["conversions_by_platform_30d"] = _cbp
+                out["conversions_attributed_30d"] = sum(
+                    x["conversions"] for x in _cbp if x["platform"] != "unattributed")
+                out["conversions_unattributed_30d"] = sum(
+                    x["conversions"] for x in _cbp if x["platform"] == "unattributed")
+            except Exception as e:
+                try: conn.rollback()
+                except Exception: pass
+                out["conversions_by_platform_30d_error"] = str(e)[:120]
 
             # Per-platform tool-call totals — pairs with signals_by_platform
             # so we can compute "signal rate" (% of calls that hit a paywall)
