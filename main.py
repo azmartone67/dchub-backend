@@ -1421,11 +1421,42 @@ _WORKER_PROXY_POST_PATHS = frozenset({
     # r-sentinel-edge (2026-07-03): the Site Sentinel master tick fans out
     # 101 probes + KV/R2 writes — worker-owned, and fire-and-forget (202).
     '/api/v1/admin/sentinel/master-tick',
+    # r-poolfix (2026-07-04): the remaining brain + master-shell heartbeat
+    # ticks ran in-process on the web pool and drove the 03:17-herd 80/80
+    # saturation. Same rationale as brain/sentinel above — worker-owned
+    # background work, no live request depends on them. Left OUT of
+    # _WORKER_PROXY_SYNC_PATHS on purpose: they get the (5,15) budget so the
+    # web relay releases its thread in <=15s (202) while the worker runs the
+    # cycle to completion. Query strings (?cap=, ?count=) match on path only.
+    '/api/v1/admin/audience/master-tick',
+    '/api/v1/admin/growth/master-tick',
+    '/api/v1/admin/media/master-tick',
+    '/api/v1/admin/distribution/master-tick',
+    '/api/v1/admin/grid-data/master-tick',
+    '/api/v1/admin/gaps/master-tick',
+    '/api/v1/admin/reliability/master-tick',
+    '/api/v1/admin/rag/master-tick',
+    '/api/v1/admin/fixwave/master-tick',
+    '/api/v1/admin/agent-onboarding/master-tick',
+    '/api/v1/admin/conversion-loop/master-tick',
+    '/api/v1/admin/agent-usefulness/master-tick',
+    '/api/v1/admin/brain/rag/reindex',      # embeds chunks — DB + Cohere
+    '/api/v1/admin/brain/lane-driver/tick',
+    '/api/v1/brain/issue-janitor/run',
+    '/api/v1/brain-warming/warm',
+    '/api/v1/iso-queue/ingest',
+    '/api/v1/gas/feeds/ingest',
+    '/api/cron/reach-rollup',
+    '/api/v1/markets/deep-dive/cron',       # generates deep-dives (LLM + DB)
 })
 # GET-capable triggers (cron-job.org defaults to GET): same delegation.
 _WORKER_PROXY_GET_PATHS = frozenset({
     '/api/news/push-to-neon',        # fire-and-forget full RSS crawl
     '/api/cron/daily',               # news sync + LinkedIn digest thread
+    # r-poolfix (2026-07-04): the two GET-method heartbeat ticks (their
+    # dispatch entries use GET) — same worker-delegation as the POST ticks.
+    '/api/v1/admin/agent-pay/master-tick',
+    '/api/v1/brain-warming/detectors',
 })
 
 # r-starve (2026-07-03): per-path relay read-timeout. Only the paths below

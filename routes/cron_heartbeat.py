@@ -694,6 +694,27 @@ _DISPATCH = [
      lambda now: now.weekday() == 3 and now.hour == 14 and now.minute < 55),
 ]
 
+# r-poolfix (2026-07-04): the DB/LLM-heavy ticks. When a herd of these comes
+# due on the same hour-boundary heartbeat, _dispatch_all runs them at most
+# 3-wide (light jobs stay 8-wide) so they can't collectively pin the pool —
+# the 03:17 80/80 saturation. Most are also delegated to the worker
+# (main.py _WORKER_PROXY_*), so this doubly bounds the worker's concurrency.
+_HEAVY_LABELS = frozenset({
+    "audience_master_tick_daily", "growth_master_tick_4h",
+    "media_master_tick_daily", "distribution_master_tick_daily",
+    "grid_data_master_tick_daily", "gap_master_tick_6h",
+    "reliability_master_tick_daily", "rag_master_tick_daily",
+    "fixwave_master_tick_2h", "agent_onboarding_master_tick_daily",
+    "conversion_loop_master_tick_daily", "agent_usefulness_master_tick_daily",
+    "agent_pay_master_tick_daily",
+    "brain_detectors_daily", "brain_issue_janitor_daily",
+    "brain_lane_driver_6h", "brain_rag_reindex_4h", "brain_warmer_hourly",
+    "iso_queue_ingest_daily", "gas_feeds_ingest_daily",
+    "reach_rollup_daily", "market_deep_dive_rotate_daily",
+    "strategic_synthesis_weekly", "strategic_digest_weekly",
+    "analyst_note_weekly",
+})
+
 
 @cron_heartbeat_bp.route("/heartbeat", methods=["GET", "POST"])
 def heartbeat():
@@ -741,13 +762,32 @@ def heartbeat():
         pass
 
     def _dispatch_all(jobs):
+        # r-poolfix (2026-07-04): de-stack the pool. On an hour-boundary
+        # heartbeat a herd of daily master-shell + brain ticks all come due
+        # at once; firing 8 heavy DB cycles concurrently drove the 03:17
+        # 80/80 pool saturation. Split the batch: light jobs (warmers,
+        # keep-alives, url-smoke) stay wide-concurrent (fast); the HEAVY
+        # ticks — the same set now delegated to the worker (main.py
+        # _WORKER_PROXY_*), so this also bounds how many hit the worker at
+        # once — run at most 3-wide. Idempotent + wide hour windows mean a
+        # throttled tick still fires on a later heartbeat in its hour.
         import concurrent.futures
-        try:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=min(8, len(jobs) or 1)) as ex:
-                for (label, url, method) in jobs:
-                    ex.submit(_hit, url, method)  # _hit swallows its own errors
-        except Exception:
-            pass
+        heavy = [j for j in jobs if j[0] in _HEAVY_LABELS]
+        light = [j for j in jobs if j[0] not in _HEAVY_LABELS]
+
+        def _run(batch, width):
+            if not batch:
+                return
+            try:
+                with concurrent.futures.ThreadPoolExecutor(
+                        max_workers=min(width, len(batch))) as ex:
+                    for (label, url, method) in batch:
+                        ex.submit(_hit, url, method)  # _hit swallows errors
+            except Exception:
+                pass
+
+        _run(light, 8)
+        _run(heavy, 3)
 
     if due:
         import threading
