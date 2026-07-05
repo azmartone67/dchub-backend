@@ -24,6 +24,7 @@ Kill: BRAIN_RAG_DISABLED=1 (endpoints) / BRAIN_RAG_ENABLED unset (planner wiring
 Kept fresh by cron_heartbeat (brain_rag_reindex).
 """
 import os
+import re
 import json
 import hmac
 import urllib.request
@@ -659,6 +660,61 @@ def _corpus_total(cur):
 
 
 # ── retrieval (importable by any consumer) ────────────────────────────
+def _keyword_fallback(query: str, k: int = 8, corpus=None) -> list:
+    """Degraded-mode recall when the embedding provider is unavailable
+    (r-rag-embed-fallback 2026-07-05: Cohere trial key 429 → _embed None).
+    Postgres full-text (OR of significant terms) over the ALREADY-STORED chunk
+    text so semantic_search / search_intelligence return relevant CITED rows
+    instead of []. Marked _fallback='keyword', cosine=0.0 so cosine-tuned gates
+    (>=0.82) treat it as 'not a match'. Fail-soft → []."""
+    _STOP = {"the","a","an","of","for","to","in","on","and","or","with","what",
+             "is","are","how","why","when","where","which","that","this","by",
+             "from","as","at","into","out","over","under","about","across","your",
+             "our","their","its","it","they","we","you","be","will"}
+    seen, terms = set(), []
+    for t in re.findall(r"[a-z0-9]{3,}", (query or "").lower()):
+        if t not in _STOP and t not in seen:
+            seen.add(t); terms.append(t)
+    terms = terms[:12]
+    if not terms:
+        return []
+    tsq = " | ".join(terms)
+    c = _db()
+    if c is None:
+        return []
+    try:
+        with c.cursor() as cur:
+            if corpus:
+                cs = list(corpus) if isinstance(corpus, (list, tuple)) else [corpus]
+                cur.execute("""
+                    SELECT source_table, source_id, kind, left(text, 500),
+                           ts_rank(to_tsvector('english', text),
+                                   to_tsquery('english', %s)) AS rank
+                    FROM brain_corpus_embeddings
+                    WHERE source_table = ANY(%s)
+                      AND to_tsvector('english', text) @@ to_tsquery('english', %s)
+                    ORDER BY rank DESC LIMIT %s
+                """, (tsq, cs, tsq, int(k)))
+            else:
+                cur.execute("""
+                    SELECT source_table, source_id, kind, left(text, 500),
+                           ts_rank(to_tsvector('english', text),
+                                   to_tsquery('english', %s)) AS rank
+                    FROM brain_corpus_embeddings
+                    WHERE to_tsvector('english', text) @@ to_tsquery('english', %s)
+                    ORDER BY rank DESC LIMIT %s
+                """, (tsq, tsq, int(k)))
+            rows = cur.fetchall()
+    except Exception:
+        return []
+    finally:
+        try: c.close()
+        except Exception: pass
+    return [{"source_table": r[0], "source_id": r[1], "kind": r[2],
+             "text": r[3], "score": round(float(r[4] or 0.0), 4),
+             "cosine": 0.0, "_fallback": "keyword"} for r in rows]
+
+
 def retrieve_context(query: str, k: int = 8, corpus: str = None) -> list:
     """Top-k most semantically-relevant rows, optionally scoped to one corpus
     (e.g. corpus='news_articles'). Two-stage: pgvector cosine over-fetch →
@@ -680,7 +736,10 @@ def retrieve_context(query: str, k: int = 8, corpus: str = None) -> list:
         return []
     qv = _embed([query], input_type="search_query")
     if not qv:
-        return []
+        # r-rag-embed-fallback (2026-07-05): embedding provider down (e.g.
+        # Cohere trial-key 429) → don't return [] (silent "0 results"); fall
+        # back to keyword full-text over the stored corpus so search still answers.
+        return _keyword_fallback(query, k, corpus)
     qs = _vec(qv[0])
     # Over-fetch candidates when reranking so the cross-encoder has room to
     # re-order; without rerank, fetch exactly k.
