@@ -29,7 +29,11 @@ env:
 jobs:
   reseed:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    # 2026-07-04: the seed makes up to 50 sequential Claude calls and now that it
+    # actually WORKS it takes ~4 min end-to-end (before the model fix it "failed
+    # fast" on 404s and returned in seconds). Give the job enough headroom so a
+    # healthy-but-slow seed isn't killed mid-run.
+    timeout-minutes: 8
     steps:
       - name: Re-seed per-platform tool descriptions
         env:
@@ -40,7 +44,11 @@ jobs:
             echo "::warning::DCHUB_ADMIN_KEY not set — skipping tuner re-seed"
             exit 0
           fi
-          response=$(curl -sS --max-time 180 -X POST \
+          # --max-time 420: the working seed takes ~4 min (50 sequential Claude
+          # calls). The old 180s ceiling fired a FALSE curl_fail RED while the
+          # seed completed fine server-side. 420s covers it with margin yet still
+          # reds out a genuinely stuck seed (well under the 8-min job cap).
+          response=$(curl -sS --max-time 420 -X POST \
             -H "X-Admin-Key: $ADMIN_KEY" \
             -H "Content-Type: application/json" \
             "$RAILWAY_BASE/api/v1/admin/mcp/tool-tuner/seed?force=1" \
