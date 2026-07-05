@@ -116,12 +116,20 @@ def _min_cluster() -> int:
 def _dup_threshold() -> float:
     """Cosine-similarity floor above which a recalled prior proposal is
     treated as a strong duplicate → SKIP / supersede instead of opening a
-    fresh PR. Tunable via env; default 0.82 (Cohere embed-v3 cosine)."""
+    fresh PR. Tunable via env; default 0.90 (Cohere embed-v3 cosine).
+
+    r-l6-dup-threshold (2026-07-04): raised 0.82 → 0.90. The recall corpus
+    (brain_strategic_recommendations + brain_findings) is now DENSE — with
+    ~200 recs + ~1500 findings, a genuinely-novel proposal about, say, "email
+    delivery" routinely clears 0.82 against a loosely-related prior and gets
+    SKIPPED (this gate skips the WHOLE cluster). 0.90 keeps only near-identical
+    matches; the weekly cap + min-cluster + the soft 'return null if same idea'
+    prompt still prevent a flood, so the hard-skip should fire only on true dups."""
     try:
         return float(os.environ.get(
-            "BRAIN_FEATURE_PROPOSER_DUP_THRESHOLD", "0.82"))
+            "BRAIN_FEATURE_PROPOSER_DUP_THRESHOLD", "0.90"))
     except Exception:
-        return 0.82
+        return 0.90
 
 
 # ── RAG corpus recall (fail-soft; augments prose/reasoning only) ──────
