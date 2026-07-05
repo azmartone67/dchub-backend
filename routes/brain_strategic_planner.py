@@ -878,6 +878,10 @@ def _call_claude(prompt: str) -> Optional[dict]:
 
     chain = resolve_chain(brain_model_for("reasoning"))
     last_err = None
+    # r-l6-truncation-retry (2026-07-04): models we've already given a
+    # bigger-budget retry this synthesis (bounded to one boost per model).
+    _escalated: set = set()
+    _MAX_TOKENS_CEIL = 60000
     for model in chain:
         # ── Per-model transport (2026-07-02, fable-timeout fix) ──────
         # fable-5: extended thinking is ALWAYS ON and has NO budget knob
@@ -981,11 +985,32 @@ def _call_claude(prompt: str) -> Optional[dict]:
             body = r.json() or {}
             if body.get("stop_reason") == "max_tokens":
                 # fable-5 trap: thinking is billed against max_tokens, so a
-                # long think can starve the JSON answer. Surface it loudly —
-                # the parse below will likely fail and walk the chain.
+                # long think can starve the JSON answer → truncated JSON →
+                # parse below fails → the chain walks to None → ZERO recs for
+                # the whole week (fail-closed). Rather than accept that, give
+                # the SAME model ONE more shot with a bigger budget so the
+                # answer completes AFTER thinking, before walking the chain.
+                # Bounded (one boost/model, hard 60k ceiling); any non-200 on
+                # the retry keeps the original truncated body → parse fails →
+                # chain-walk exactly as before (strictly additive, no regression).
                 logger.warning(
                     "L6 strategic: %s hit max_tokens=%s — answer likely "
                     "truncated (thinking eats max_tokens)", model, _max_tokens)
+                if model not in _escalated and _max_tokens < _MAX_TOKENS_CEIL:
+                    _escalated.add(model)
+                    _boosted = min(_MAX_TOKENS_CEIL, int(_max_tokens * 1.75))
+                    logger.warning(
+                        "L6 strategic: %s retrying at max_tokens=%s (was %s) "
+                        "for thinking headroom", model, _boosted, _max_tokens)
+                    _max_tokens = _boosted
+                    try:
+                        r, _structured = _post(_want_structured)
+                        if r.status_code == 200:
+                            body = r.json() or {}
+                    except Exception as _re:
+                        logger.warning(
+                            "L6 strategic: %s boosted-retry exception: %s",
+                            model, _re)
             text = "".join(
                 b.get("text", "")
                 for b in (body.get("content") or [])
