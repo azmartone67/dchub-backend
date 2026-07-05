@@ -45,20 +45,42 @@ jobs:
             -H "Content-Type: application/json" \
             "$RAILWAY_BASE/api/v1/admin/mcp/tool-tuner/seed?force=1" \
             || echo '{"ok":false,"error":"curl_fail"}')
-          echo "$response" | head -c 4000
+          echo "$response" | head -c 4000 || true
           echo
           echo "$response" | python3 -c "
           import json, sys
+          # 2026-07-04 FIX: the seed endpoint returns INTEGER counts
+          # (written/skipped/failed). The old parser did len(d.get('written')),
+          # which raised TypeError on an int and — because the bare except only
+          # printed a ::warning:: and never exited non-zero — the step stayed
+          # GREEN while the tuner was failing 100%. Parse ints and FAIL RED on an
+          # unhealthy run or a parse failure.
           try:
               d = json.load(sys.stdin)
-              w = len(d.get('written') or [])
-              s = len(d.get('skipped') or [])
-              f = len(d.get('failed') or [])
-              print(f'::notice::tool-tuner re-seed: written={w} skipped={s} failed={f}')
-              if d.get('skipped') is True:
-                  print('::warning::tuner re-seed skipped (AI_AGENT_EXPANSION_DISABLE=1)')
-              if not d.get('ok', False) and d.get('skipped') is not True:
-                  print(f'::warning::tuner re-seed not ok: {str(d)[:200]}')
           except Exception as e:
-              print(f'::warning::tuner re-seed parse failed: {e}')
+              print(f'::error::tuner re-seed: could not parse response: {e}')
+              sys.exit(1)
+          def _n(v):
+              if isinstance(v, bool):
+                  return 0
+              if isinstance(v, (int, float)):
+                  return int(v)
+              if isinstance(v, (list, dict)):
+                  return len(v)
+              try:
+                  return int(str(v).strip())
+              except Exception:
+                  return 0
+          w, s, f = _n(d.get('written')), _n(d.get('skipped')), _n(d.get('failed'))
+          ok = bool(d.get('ok', False))
+          print(f'::notice::tool-tuner re-seed: written={w} skipped={s} failed={f} ok={ok}')
+          # Kill-switch on (AI_AGENT_EXPANSION_DISABLE=1) — intentional no-op, green.
+          if d.get('skipped') is True:
+              print('::warning::tuner re-seed skipped (AI_AGENT_EXPANSION_DISABLE=1)')
+              sys.exit(0)
+          # Fail RED: endpoint said not-ok, or produced no writes despite failures.
+          if (not ok) or (w == 0 and f > 0):
+              print(f'::error::tuner re-seed UNHEALTHY: {str(d)[:300]}')
+              sys.exit(1)
+          print('::notice::tuner re-seed healthy')
           "
