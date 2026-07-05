@@ -2045,6 +2045,17 @@ try:
     except Exception as _mms:
         import logging
         logging.getLogger(__name__).warning('media_master_shell wiring failed: %s', _mms)
+    # 2026-07-04: Coverage & Media master shell — scores the public /whats-new
+    # feed for honesty (tracked-vs-verified facilities, no future date, public
+    # layers labeled 'unify' not 'discover') and emits honesty-checked external
+    # messaging drafts. Read-only; drafts NOT auto-posted. Kill: COVERAGE_SHELL_DISABLED.
+    try:
+        from routes.coverage_master_shell import coverage_master_shell_bp
+        app.register_blueprint(coverage_master_shell_bp)
+        print("[main] coverage_master_shell_bp registered: GET /admin/coverage · POST /api/v1/admin/coverage/master-tick", flush=True)
+    except Exception as _cms:
+        import logging
+        logging.getLogger(__name__).warning('coverage_master_shell wiring failed: %s', _cms)
     # 2026-07-03: Distribution master shell (growth lever #5) — measures GEO
     # coverage + registry presence, briefs gaps + submits registries. Kill:
     # DISTRIBUTION_MASTER_DISABLED.

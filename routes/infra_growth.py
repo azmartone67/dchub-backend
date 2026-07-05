@@ -219,6 +219,23 @@ _FRIENDLY = {
     "power_plants_eia": "Power plants", "power_plants_discovered": "Discovered power plants",
 }
 
+# Provenance so the public feed — and anything downstream that messages these
+# numbers (media shell, agents) — never implies a third-party open-data layer
+# was "discovered" by DC Hub. "curated" = DC Hub crawls/curates the rows;
+# "public" = we UNIFY a third-party open dataset (still valuable, but say so).
+_PROVENANCE = {
+    "data_centers":            ("curated", "DC Hub crawlers"),
+    "power_plants_discovered": ("curated", "DC Hub discovery"),
+    "substations":             ("public",  "HIFLD"),
+    "transmission_lines":      ("public",  "HIFLD"),
+    "gas_pipelines":           ("public",  "EIA / HIFLD"),
+    "gas_compressors":         ("public",  "HIFLD"),
+    "gas_processing":          ("public",  "HIFLD"),
+    "fcc_fiber_hexes":         ("public",  "FCC"),
+    "metro_fiber_routes":      ("public",  "public + DC Hub"),
+    "power_plants_eia":        ("public",  "EIA"),
+}
+
 
 @infra_growth_bp.route("/api/v1/whats-new", methods=["GET"])
 def whats_new():
@@ -247,26 +264,63 @@ def whats_new():
                     deals = (d7, d1, dtot)
                 except Exception:
                     c.rollback()
+                # Verified/deduped data-center count — IDENTICAL query to
+                # /api/v1/stats (is_duplicate = 0) so the site never shows two
+                # different "verified" numbers. The `total` is the raw tracked
+                # count; `verified` is the quality-passed subset. Surfacing both
+                # stops any consumer implying all ~21.9K are verified DCs.
+                try:
+                    cur.execute("SELECT COUNT(*) FROM discovered_facilities WHERE is_duplicate = 0")
+                    dc_verified = int(cur.fetchone()[0])
+                except Exception:
+                    c.rollback()
+                    dc_verified = None
     except Exception as e:
         return jsonify(ok=False, error=str(e)[:200]), 500
 
+    def _prov(layer_key):
+        p, s = _PROVENANCE.get(layer_key, ("public", "public data"))
+        return {"provenance": p, "source_name": s}
+
     items = []
     if deals is not None:
+        # Deals are DC Hub-curated (created_at = when WE logged it) — the
+        # strongest "we did the work" number, so it leads the feed.
         items.append({"category": "Data-center deals", "total": deals[2],
                       "added": deals[0], "window_days": 7, "added_1d": deals[1],
-                      "cadence": "daily", "as_of": None})
+                      "cadence": "daily", "as_of": None,
+                      "provenance": "curated", "source_name": "DC Hub curated"})
     for l in layers:
         if not l["count"]:        # don't advertise empty layers (transmission lives in HIFLD, not this table → 0)
             continue
-        items.append({"category": _FRIENDLY.get(l["layer"], l["layer"]), "total": l["count"],
-                      "added": l.get("delta_window"), "window_days": l.get("window_days"),
-                      "added_1d": l["delta_1d"], "cadence": l["category"], "as_of": l["as_of"]})
+        item = {"category": _FRIENDLY.get(l["layer"], l["layer"]), "total": l["count"],
+                "added": l.get("delta_window"), "window_days": l.get("window_days"),
+                "added_1d": l["delta_1d"], "cadence": l["category"], "as_of": l["as_of"],
+                **_prov(l["layer"])}
+        # Data centers: expose the verified subset next to the raw tracked total
+        # and relabel so the headline can never read as "21.9K verified DCs".
+        if l["layer"] == "data_centers":
+            item["label"] = "Data centers (tracked)"
+            item["verified"] = dc_verified
+            item["tracked"] = l["count"]
+        items.append(item)
     # Everything counted here was added within the last 7 days (layer windows are ≤7d subsets).
     total_added = sum(i["added"] for i in items if isinstance(i["added"], int) and i["added"] > 0)
+    # data_as_of = newest real snapshot date (a DATE, never future). The page
+    # should render THIS, not generated_at (whose UTC instant tips into
+    # "tomorrow" for US readers late in the day → a future "updated" date).
+    _asof_dates = [i["as_of"] for i in items if i.get("as_of")]
+    data_as_of = max(_asof_dates) if _asof_dates else None
     resp = jsonify(ok=True,
                    generated_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                   data_as_of=data_as_of,
                    total_added=total_added, items=items,
-                   note="Live additions to DC Hub across infrastructure layers (rolling 7-day window).",
+                   facilities_tracked=(layers and next((l["count"] for l in layers if l["layer"] == "data_centers"), None)) or None,
+                   facilities_verified=dc_verified,
+                   note="Live additions to DC Hub across infrastructure layers (rolling 7-day window). "
+                        "'Data centers' total is the raw tracked count; 'verified' is the deduped subset. "
+                        "Layers marked provenance='public' unify third-party open data (HIFLD/FCC/EIA); "
+                        "'curated' layers are crawled/curated by DC Hub.",
                    source="DC Hub (dchub.cloud), CC-BY-4.0")
     resp.headers["Cache-Control"] = "public, max-age=1800"
     return resp
