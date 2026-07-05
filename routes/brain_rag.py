@@ -31,6 +31,8 @@ import urllib.error
 
 from flask import Blueprint, jsonify, request
 
+from routes.url_registry import build_public_url
+
 brain_rag_bp = Blueprint("brain_rag", __name__)
 
 EMBED_MODEL = "embed-english-v3.0"
@@ -617,7 +619,7 @@ def _reindex_chunk_docs(c, doc_cap: int) -> int:
             "market_slug": slug,
             "market_name": name,
             "generated_at": (gen_at.isoformat() if hasattr(gen_at, "isoformat") else str(gen_at)),
-            "url": f"https://dchub.cloud/markets/{slug}/deep-dive",
+            "url": build_public_url("markets", slug, subpath="deep-dive"),
         })
         try:
             with c.cursor() as cur:
@@ -765,7 +767,7 @@ _HYDRATE = {
         lambda r: {"name": r[1], "provider": r[2],
                    "location": ", ".join([x for x in (r[3], r[4], r[5]) if x]),
                    "market": r[6], "power_mw": r[7],
-                   "url": (f"https://dchub.cloud/facility/{r[8]}" if r[8] else None)}),
+                   "url": (build_public_url("facility", r[8]) if r[8] else None)}),
     # Chunked corpus: provenance lives in the embedding row's own meta column
     # (written at index time), so hydration never re-derives the '#<n>' split.
     "market_narratives": (
