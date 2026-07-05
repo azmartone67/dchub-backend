@@ -553,35 +553,51 @@ def seed_variants():
     # inflated-count copy again.
     canonical = _canonical_descriptions()
 
+    # Build the work list first (skip existing unless force).
+    jobs = []  # (canon, tool_name, generic, voice)
     for tool_name in TOP_10_TOOLS:
         generic = canonical.get(tool_name, tool_name)
         for canon, _aliases, voice in TOP_5_PLATFORMS:
-            key = (canon, tool_name)
-            if key in existing and not force:
+            if (canon, tool_name) in existing and not force:
                 skipped.append({"platform": canon, "tool": tool_name,
                                 "reason": "already_exists"})
                 continue
-            if not api_key_present:
-                # Without Claude, write a deterministic light variant so
-                # the table is at least populated. The seed task should
-                # be re-run once ANTHROPIC_API_KEY is set.
-                deterministic = f"[{canon}] {generic}"[:280]
-                _upsert(c, canon, tool_name, deterministic, "deterministic_no_claude")
-                written.append({"platform": canon, "tool": tool_name,
-                                "via": "deterministic"})
-                continue
+            jobs.append((canon, tool_name, generic, voice))
+
+    if not api_key_present:
+        # Without Claude, write deterministic light variants so the table is at
+        # least populated. Fast — do inline. Re-run once ANTHROPIC_API_KEY is set.
+        for canon, tool_name, generic, _voice in jobs:
+            deterministic = f"[{canon}] {generic}"[:280]
+            _upsert(c, canon, tool_name, deterministic, "deterministic_no_claude")
+            written.append({"platform": canon, "tool": tool_name,
+                            "via": "deterministic"})
+    elif jobs:
+        # 2026-07-04: the Claude rewrites are the whole cost (~50 sequential
+        # network calls → ~4 min). Run at ~230s the web worker gets recycled
+        # mid-seed (observed: a run completed only 17/50 before a 502) and the
+        # request can't return through Railway's edge. Fan the network-bound
+        # rewrites out over a small pool so the whole seed finishes in ~30-40s —
+        # short enough to return cleanly and never block the worker long enough
+        # to be killed. DB writes stay sequential on this request's connection.
+        from concurrent.futures import ThreadPoolExecutor
+
+        def _rewrite_one(job):
+            canon, tool_name, generic, voice = job
             tuned = _claude_rewrite(
                 tool_name, generic, canon, voice,
                 _fmt_adoption(_adopt.get((canon, tool_name), 0),
                               _tool_max.get(tool_name, 0), canon))
-            if tuned:
-                _upsert(c, canon, tool_name, tuned, "claude")
-                written.append({"platform": canon, "tool": tool_name,
-                                "via": "claude"})
-            else:
-                failed.append({"platform": canon, "tool": tool_name})
-            # Tiny pause to stay polite to upstream
-            time.sleep(0.1)
+            return (canon, tool_name, tuned)
+
+        with ThreadPoolExecutor(max_workers=6) as ex:
+            for canon, tool_name, tuned in ex.map(_rewrite_one, jobs):
+                if tuned:
+                    _upsert(c, canon, tool_name, tuned, "claude")
+                    written.append({"platform": canon, "tool": tool_name,
+                                    "via": "claude"})
+                else:
+                    failed.append({"platform": canon, "tool": tool_name})
 
     # Bust cache so the next read endpoint call sees fresh data.
     _TUNED_CACHE["data"] = {}
