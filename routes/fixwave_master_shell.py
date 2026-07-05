@@ -7,8 +7,9 @@ in real time and keep the checks as a standing regression sentinel afterward.
 
 The five lanes (one per fix session):
   1. MCP-RELIABILITY — tools/list must render for a keyless Claude connector
-     (WorkOS challenge exemption) + stale-session tools/call must 404 (spec)
-     so clients auto-reinitialize.
+     (WorkOS challenge exemption) + stale-session tools/call must be served
+     statelessly (200 result, not a hard 400/404) per r-stateless-call, so
+     Smithery/mcp-remote hosts don't abandon on the handshake.
   2. RAG — /api/v1/rag/search keyless capped at k<=3 (the gate); market
      context packs live; market_deep_dives chunks embedded.
   3. FRONTEND — residual map.on guards shipped; early preconnects on
@@ -80,11 +81,9 @@ _TITLE_BASELINES = {
     "/ai":  "AI Platform | DC Hub — Data Center Intelligence for Every AI Agent",
 }
 
-# Internal/QA clients + known scraper that must NOT count as "real"
-# high-intent prospects (07-03 finding: clawith = python-httpx, 95 rotating
-# IPs; gating-audit / fix2-verify / hi-claim-test / render-verify = our own probes).
-_NON_REAL_CLIENTS = ("clawith", "gating-audit", "fix2-verify", "hi-claim-test",
-                     "clientx-friction-audit", "p", "v")
+# (Real-prospect exclusion is delegated to routes.mcp_high_intent_claim._hi_real_sql
+# — the ONE canonical predicate the mint gate + step-drop endpoint use — so the
+# funnel-honesty lane never drifts from the endpoint. See _lane_funnel below.)
 
 # ── auth / kill ───────────────────────────────────────────────────────
 
@@ -191,8 +190,21 @@ def _lane_mcp() -> list[dict]:
                                      "mcp-session-id": f"fixwave-bogus-{int(time.time())}"},
                             body={"jsonrpc": "2.0", "id": 2, "method": "tools/call",
                                   "params": {"name": "get_grid_scoreboard", "arguments": {}}})
-    out.append(_check("mcp_stale_session_404", "stale-session tools/call returns 404 (spec) not 400",
-                      st2 == 404, f"HTTP {st2}", ms2))
+    # r-stateless-call (2026-07-04) SUPERSEDED the earlier r-session-404 for
+    # tools/call specifically: a tools/call bearing a stale/unknown session id
+    # is now served from a fresh STATELESS transport (HTTP 200 + real result),
+    # NOT 404 — because Smithery/mcp-remote hosts do NOT re-init on a 404 and
+    # kept firing the dead id (~2/3 of gateway tool calls 404'd = the #1
+    # activation leak). So the CORRECT behavior for a stale tools/call is a
+    # graceful 200 served result, never a hard 400/404. (The 404 spec path
+    # still governs non-call methods; get_grid_scoreboard is keyless so the
+    # stateless serve returns real data.)
+    served = st2 == 200 and ("result" in body2 or "structuredContent" in body2
+                             or "event:" in body2 or "data:" in body2)
+    out.append(_check("mcp_stale_session_served",
+                      "stale-session tools/call served statelessly (200 result, not hard 400/404)",
+                      served if st2 else None,
+                      f"HTTP {st2}" + ("" if served else f" — {body2[:80]}"), ms2))
     return out
 
 
@@ -342,13 +354,27 @@ def _lane_funnel(c) -> list[dict]:
                               int(ep) <= int(db_distinct),
                               f"endpoint={ep} vs db-distinct={db_distinct}", ms))
 
+        # Mirror build_step_waterfall's paywall_sessions (n_hit) EXACTLY so the
+        # sentinel and the endpoint agree by construction — same table, same
+        # window column (last_hit_at), same COUNT(*), and the SAME canonical
+        # real-prospect predicate _hi_real_sql() the endpoint + mint gate use.
+        # The old query kept its own _NON_REAL_CLIENTS exact-match list, which
+        # DRIFTED from the regex predicate (endpoint=99 vs this=93 → false
+        # FAIL). Delegating to the one predicate kills the drift; the check
+        # still catches a real regression if build_step_waterfall's n_hit logic
+        # diverges from _hi_real_sql. Lazy import to avoid any load-order issue.
+        try:
+            from routes.mcp_high_intent_claim import _hi_real_sql as _hirs
+            _real = _hirs()
+        except Exception:
+            _real = ("coalesce(mcp_client,'') !~* "
+                     "'clawith|gating|audit|fix2|hi.?claim|friction|render-verify'")
         clean = _scalar(c,
-            "SELECT count(DISTINCT mcp_session_id) FROM mcp_high_intent_sessions "
-            "WHERE first_hit_at > now() - interval '30 days' "
-            "AND coalesce(mcp_client,'') <> ALL(%s)", (list(_NON_REAL_CLIENTS),))
+            "SELECT COUNT(*) FROM mcp_high_intent_sessions "
+            "WHERE last_hit_at >= now() - interval '30 days' AND " + _real)
         raw = _scalar(c,
-            "SELECT count(DISTINCT mcp_session_id) FROM mcp_high_intent_sessions "
-            "WHERE first_hit_at > now() - interval '30 days'")
+            "SELECT COUNT(*) FROM mcp_high_intent_sessions "
+            "WHERE last_hit_at >= now() - interval '30 days'")
         ep_hit = by_step.get("paywall_sessions")
         if None in (clean, raw, ep_hit):
             out.append(_check("fn_excludes_probes", "paywall 'real' count excludes QA probes + clawith",
