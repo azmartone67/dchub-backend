@@ -9723,10 +9723,38 @@ _tier_rate_limits = {
     'pro':        {'per_minute': 300,  'per_hour': 5000},
     'founding':   {'per_minute': 300,  'per_hour': 5000},
     'enterprise': {'per_minute': 1000, 'per_hour': 20000},
+    # GEO-0704: the funnel mints dch_live_ (paid MCP → mcp_dev_keys) and
+    # dch_trial_/identified (auto_trial_keys) keys. _get_request_tier now
+    # resolves them via validate_api_key, which can return these plans — give
+    # each a real tier so a minted-key caller is bucketed by KEY and gets limits
+    # matching what they hold, instead of silently falling back to 'free'.
+    'developer':  {'per_minute': 300,  'per_hour': 5000},
+    'starter':    {'per_minute': 120,  'per_hour': 2000},
+    'identified': {'per_minute': 90,   'per_hour': 1000},
 }
 
 _tier_requests = defaultdict(list)
 _tier_rate_lock = threading.Lock()
+
+# GEO-0704: short-TTL cache for minted-key (dch_live_/dch_trial_) tier lookups.
+# Those validate against mcp_dev_keys / auto_trial_keys with a fresh DB
+# connection; a burst of REST calls from one minted-key agent (exactly the
+# funnel's usage pattern) would otherwise churn one connection per request.
+# Tier doesn't change second-to-second, so a 120s cache is safe.
+_tier_key_cache = {}
+_TIER_KEY_CACHE_TTL = 120
+_TIER_KEY_CACHE_MAX = 2000
+
+def _tier_key_cache_get(api_key):
+    ent = _tier_key_cache.get(api_key)
+    if ent and (time.time() - ent[1]) < _TIER_KEY_CACHE_TTL:
+        return ent[0]
+    return None
+
+def _tier_key_cache_put(api_key, result):
+    if len(_tier_key_cache) > _TIER_KEY_CACHE_MAX:
+        _tier_key_cache.clear()
+    _tier_key_cache[api_key] = (result, time.time())
 
 _RATE_LIMIT_BYPASS_PATHS = {
     '/api/v1/stats', '/api/health', '/api/stripe/webhook',
@@ -9752,6 +9780,13 @@ def _get_request_tier():
     # looked at X-API-Key, so `Authorization: Bearer dchub_xxx` (the MCP /
     # RFC-6750 standard) silently fell through to IP-based free tier — which
     # is exactly the symptom enterprise customers were hitting.
+    # GEO-0704: the funnel mints THREE key namespaces — dchub_ (api_keys,
+    # SHA256), dch_live_ (paid MCP → mcp_dev_keys), and dch_trial_ (auto_trial_
+    # keys). This helper only knew dchub_, so dch_live_/dch_trial_ callers hit
+    # REST as anonymous/free and 429'd under a shared IP bucket. Recognize all
+    # three; the api_keys SQL only covers dchub_, so dch_live_/dch_trial_ delegate
+    # to the canonical validate_api_key (which knows their tables).
+    _KEY_PREFIXES = ('dchub_', 'dch_live_', 'dch_trial_')
     api_key = (
         request.headers.get('X-API-Key')
         or request.args.get('api_key')
@@ -9761,8 +9796,32 @@ def _get_request_tier():
         _auth = request.headers.get('Authorization', '')
         if _auth.startswith('Bearer '):
             _bearer = _auth[7:].strip()
-            if _bearer.startswith('dchub_'):
+            if _bearer.startswith(_KEY_PREFIXES):
                 api_key = _bearer
+    if api_key and api_key.startswith(('dch_live_', 'dch_trial_')):
+        # Minted MCP/trial keys don't live in api_keys — resolve via the shared
+        # validator (mcp_dev_keys / auto_trial_keys), cached briefly so a burst
+        # of REST calls from one agent doesn't open a DB connection per request.
+        # Negatives are cached too ('MISS'): without it a repeated INVALID dch_
+        # key (which previously fell straight through to free with NO db hit)
+        # would now open a connection per request — a DoS vector we must not add.
+        _cached = _tier_key_cache_get(api_key)
+        if _cached is not None:
+            if _cached != 'MISS':
+                return _cached
+            # known-invalid → fall through to JWT / IP resolution below
+        else:
+            try:
+                from api_tier_gating import validate_api_key as _vak
+                _info = _vak(api_key)
+                if _info:
+                    _res = (f"user_{_info.get('user_id') or api_key[:24]}",
+                            _info.get('plan') or 'free')
+                    _tier_key_cache_put(api_key, _res)
+                    return _res
+                _tier_key_cache_put(api_key, 'MISS')
+            except Exception:
+                pass
     if api_key and api_key.startswith('dchub_'):
         key_hash = hashlib.sha256(api_key.encode()).hexdigest()
         try:
@@ -9792,7 +9851,7 @@ def _get_request_tier():
     try:
         auth_header = request.headers.get('Authorization', '')
         token = None
-        if auth_header.startswith('Bearer ') and not auth_header[7:].strip().startswith('dchub_'):
+        if auth_header.startswith('Bearer ') and not auth_header[7:].strip().startswith(_KEY_PREFIXES):
             token = auth_header[7:].strip()
         if not token:
             # 2026-06-06: include dchub_token — the login cookie name the
@@ -21440,13 +21499,38 @@ def _build_fiber_routes_geojson(max_features=None):
         'dark':     ('dark', 'dark_fiber'),
         'ix':       ('ix_interconnect', 'IX'),
     }
+    # GEO-0704: full multi-vertex surveyed geometry (the 23MB driver) is shipped
+    # ONLY when the caller has NARROWED the query (carrier / type / class / bbox)
+    # or is a real dchub.cloud browser — i.e. the Land & Power map, which draws
+    # the backbone unfiltered and is identified by the r43-G signed session
+    # cookie (validate_cookie), the same browser signal caller_is_privileged
+    # uses. Everyone else — an unfiltered programmatic/paid BULK pull (anonymous
+    # scrapers already get the 3-route teaser, never this path) — gets endpoint-
+    # only (2-point) geometry so the payload stays bounded. Callers who want the
+    # full polylines just add a filter.
+    bbox = request.args.get('bbox')  # "minLng,minLat,maxLng,maxLat"
+    _has_filter = bool(carrier or route_type or (route_class in CLASS_TYPES) or bbox)
+    _is_browser = False
+    try:
+        from routes.session_cookie import validate_cookie
+        _is_browser = bool(validate_cookie())
+    except Exception:
+        _is_browser = False
+    # Only the full (non-teaser) build can be simplified; the teaser path has its
+    # own real-geometry preview handling below.
+    _simplify_geo = (max_features is None) and not (_has_filter or _is_browser)
     conn = None
     try:
         conn = get_db()
         cursor = conn.cursor()
 
-        limit = request.args.get('limit', 2000, type=int)
-        limit = min(max(limit, 1), 20000)
+        # GEO-0704: default 2000→500, hard cap 20000→2000. A caller-controlled
+        # ?limit= up to 20k rows sorted longest-polyline-first was the 23.47MB
+        # p99 payload. Bounds the row count for every caller (the map's
+        # limit=5000 clamps to 2000 real backbone routes — plenty for overview;
+        # the class sub-layers pull their own detail).
+        limit = request.args.get('limit', 500, type=int)
+        limit = min(max(limit, 1), 2000)
         if max_features is not None:
             limit = min(limit, max(int(max_features), 1))
 
@@ -21462,6 +21546,17 @@ def _build_fiber_routes_geojson(max_features=None):
             types = CLASS_TYPES[route_class]
             query += ' AND route_type IN (' + ','.join(['%s'] * len(types)) + ')'
             params.extend(types)
+        # GEO-0704: optional viewport filter (start point in the box). Narrows the
+        # set AND qualifies the caller for full multi-vertex geometry.
+        if bbox:
+            try:
+                _mnx, _mny, _mxx, _mxy = [float(v) for v in bbox.split(',')]
+                query += (' AND start_lng BETWEEN %s AND %s'
+                          ' AND start_lat BETWEEN %s AND %s')
+                params.extend([min(_mnx, _mxx), max(_mnx, _mxx),
+                               min(_mny, _mxy), max(_mny, _mxy)])
+            except Exception:
+                pass  # malformed bbox → ignore (behaves as unfiltered)
         # ROBUSTNESS (2026-06-20): prioritize REAL multi-vertex surveyed geometry
         # (Zayo carrier KMZ, NTIA middle-mile) over synthetic 2-point straight
         # lines. There was NO ORDER BY, so a 10k cap on 39k physically-insert-ordered
@@ -21481,9 +21576,13 @@ def _build_fiber_routes_geojson(max_features=None):
             # robust to the per-worker cache being cold (unlike the in-process
             # teaser cache, which worker-recycling keeps wiping).
             query += " AND coordinates IS NOT NULL AND char_length(coordinates::text) > 80"
-        else:
+        elif not _simplify_geo:
+            # Narrowed / browser callers get the prioritized full-detail set:
+            # real multi-vertex surveyed routes first (Zayo/NTIA), longest first.
             query += (" ORDER BY (coordinates IS NOT NULL AND char_length(coordinates::text) > 80) DESC,"
                       " distance_miles DESC NULLS LAST")
+        # else: unfiltered programmatic bulk pull — skip the ~578ms full-table
+        # sort; endpoints-only geometry (below) keeps the payload bounded anyway.
         query += ' LIMIT %s'
         params.append(limit)
 
@@ -21513,6 +21612,12 @@ def _build_fiber_routes_geojson(max_features=None):
                 except Exception:
                     coords = []
 
+            # GEO-0704: unfiltered programmatic bulk pull → collapse multi-vertex
+            # polylines to endpoints so the response stays bounded. (Browser map
+            # + narrowed callers keep full geometry; the teaser path is untouched.)
+            if _simplify_geo and len(coords) > 2:
+                coords = [coords[0], coords[-1]]
+
             features.append({
                 "type": "Feature",
                 "properties": {
@@ -21536,6 +21641,13 @@ def _build_fiber_routes_geojson(max_features=None):
             })
 
         result = {"type": "FeatureCollection", "features": features, "total": len(features)}
+        if _simplify_geo:
+            # Tell the caller how to get the full polylines back.
+            result["_geometry"] = "endpoints"
+            result["_note"] = (
+                "Unfiltered bulk request: returning endpoint (2-point) geometry only. "
+                "Add ?bbox=minLng,minLat,maxLng,maxLat, ?class=metro|longhaul|dark, "
+                "?type= or ?carrier= for full multi-vertex route geometry.")
         if max_features is not None:
             # Teaser path: cite the real full count (ignores carrier/type
             # filters — the marketing number is "all fiber routes available").

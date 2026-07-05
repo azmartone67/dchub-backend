@@ -113,6 +113,12 @@ LIMITS = {
     # Generous (not unlimited): a hammering scraper still caps, but normal
     # crawl + browse never trips. These pages are cacheable + cheap.
     'public_content': {'rpm': 120, 'rph': 2000},
+    # GEO-0704: verified AI + search crawlers (GPTBot/ClaudeBot/PerplexityBot/
+    # Googlebot etc.) crawl the whole 21k-facility surface — across content
+    # prefixes AND the /facility singular 301, /states, /hyperscalers, llms.txt.
+    # Generous cap so a full-site crawl never 429s, but bounded so a spoofed
+    # crawler UA can't hammer origin unbounded (content is public HTML anyway).
+    'verified_bot':   {'rpm': 300, 'rph': 12000},
 }
 
 # DC Hub internal key values (same as used in main.py route guards)
@@ -201,7 +207,45 @@ SKIP_PREFIXES = ('/static/', '/assets/', '/js/', '/css/', '/images/', '/mcp/',
 # Phase FF (2026-05-22): public showcase/content HTML pages get the generous
 # 'public_content' tier instead of the strict anonymous IP cap, so crawlers +
 # visitors aren't 429'd on the flagship citation surfaces. Prefix match.
-PUBLIC_CONTENT_PREFIXES = ('/dcpi', '/markets', '/reports', '/brain/', '/grid')
+#
+# GEO-0704: added the 21k-facility SEO surface + the other crawler-heavy public
+# content hubs. GPTBot alone crawls ~28k facility pages/wk; at the 20rpm/200rph
+# anonymous cap it was served ~24k 429s/wk — landing on the exact AI/search
+# crawlers the citation strategy depends on. Canonical facility detail pages are
+# /facilities/<slug> (the /facility/<id> singular form 301-redirects here);
+# /news, /operators/<slug> and /vs/<slug> are the other high-volume generated
+# content hubs. Prefix match, so /facilities also covers the /facilities hub.
+PUBLIC_CONTENT_PREFIXES = ('/dcpi', '/markets', '/reports', '/brain/', '/grid',
+                           '/facilities', '/news', '/operators', '/vs')
+
+# GEO-0704: recognized AI-answer + search-engine crawler UA substrings — the
+# engines the GEO/citation strategy wants indexing every facility page. The
+# public_content lift only covers content PREFIXES, so a crawler hitting the
+# /facility/<id> singular 301, /states/*, /hyperscalers/*, llms.txt or any other
+# non-prefixed page still 429'd at the anonymous cap. Elevate these UAs to the
+# generous (still bounded) 'verified_bot' tier on ALL paths. This is a rate-limit
+# lift ONLY — the tier/paywall gates on the /api data endpoints still apply, and
+# these are public HTML content pages, so a spoofed crawler UA gains nothing but
+# a higher req/min ceiling (same risk posture as the internal-probe UA bypass
+# above). If Cloudflare is configured to forward its verified-bot signal
+# (cf-verified-bot: true via a Managed Transform), that header is honored as a
+# stronger, unforgeable confirmation.
+_VERIFIED_CRAWLER_UA = (
+    'gptbot', 'oai-searchbot', 'chatgpt-user', 'claudebot', 'claude-web',
+    'anthropic-ai', 'perplexitybot', 'googlebot', 'google-extended',
+    'bingbot', 'applebot', 'duckduckbot', 'ccbot', 'bytespider',
+    'google-inspectiontool', 'meta-externalagent', 'amazonbot',
+)
+
+
+def _is_verified_crawler():
+    """True if the request is a recognized AI/search crawler that must never be
+    429'd on public content. Matches Cloudflare's forwarded cf-verified-bot
+    header (unforgeable, when present) or a known crawler UA substring."""
+    if (request.headers.get('cf-verified-bot') or '').lower() == 'true':
+        return True
+    ua = (request.headers.get('User-Agent') or '').lower()
+    return bool(ua) and any(m in ua for m in _VERIFIED_CRAWLER_UA)
 
 
 # ---------------------------------------------------------------------------
@@ -343,11 +387,17 @@ def rate_limit_before():
         return None
 
     key, tier = _get_key_and_tier()
-    # Phase FF: elevate anonymous hits on public showcase pages to the
-    # generous public_content tier (flagship SEO/citation surfaces). Authed/
-    # internal tiers already have higher limits, so only lift anonymous.
-    if tier == 'anonymous' and path.startswith(PUBLIC_CONTENT_PREFIXES):
-        tier = 'public_content'
+    # Phase FF / GEO-0704: elevate anonymous hits so crawlers + visitors aren't
+    # 429'd on public surfaces. Authed/internal tiers already have higher limits,
+    # so only lift anonymous. A recognized AI/search crawler gets the generous
+    # verified_bot tier on ANY path (it crawls the whole site — including the
+    # /facility singular 301 and llms.txt that aren't content PREFIXES); other
+    # anonymous hits on the public showcase/content prefixes get public_content.
+    if tier == 'anonymous':
+        if _is_verified_crawler():
+            tier = 'verified_bot'
+        elif path.startswith(PUBLIC_CONTENT_PREFIXES):
+            tier = 'public_content'
     limits = LIMITS[tier]
     g._rl_limit = limits['rpm']  # stash early so the 429 path can emit X-RateLimit-Limit too
 
