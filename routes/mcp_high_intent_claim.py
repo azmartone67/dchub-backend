@@ -1092,6 +1092,15 @@ def claim_submit(token: str):
         except Exception as e:
             logger.warning("[claim_submit] mark-used failed: %s", e)
 
+        # r-lead-notify (2026-07-04): a CAPTURED EMAIL is the real, sellable lead.
+        # Ping the operator HERE (not at mint, which fires for anonymous rotating
+        # sessions with no human). Fire-and-forget; never breaks the conversion.
+        try:
+            from routes.claim_notify import notify_operator_of_lead
+            notify_operator_of_lead(email, tool, sid, count=int(row[0] or 0))
+        except Exception as _ln:
+            logger.debug("[claim_submit] lead-notify skipped: %s", _ln)
+
         # r74 (2026-06-07): emit CRM reverse-ETL capture event.
         # Fail-soft — a CRM hiccup cannot break the conversion flow.
         try:
@@ -1265,6 +1274,12 @@ def claim_redeem_agent():
                                                  "source": "agent_redeem"})
             except Exception as _e_crm:
                 logger.debug("[redeem-agent] crm capture skipped: %s", _e_crm)
+            # r-lead-notify (2026-07-04): agent bound an email → real contactable lead.
+            try:
+                from routes.claim_notify import notify_operator_of_lead
+                notify_operator_of_lead(email, tool, sid, count=int(row[0] or 0))
+            except Exception as _ln:
+                logger.debug("[redeem-agent] lead-notify skipped: %s", _ln)
 
         logger.info("[redeem-agent] minted key=%s tool=%s email=%s mint_error=%s",
                     (api_key or "")[:16] + "...", tool, bool(email), mint_error)
