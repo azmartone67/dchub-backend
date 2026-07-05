@@ -184,7 +184,7 @@ def _ensure_table(c) -> None:
 # The MCP server itself remains the source of truth; this is just used
 # as the source string for Claude's per-platform rewrite.
 GENERIC_DESCRIPTIONS = {
-    "search_facilities":      ("Search 50,000+ global data-center facilities by "
+    "search_facilities":      ("Search 21,000+ global data-center facilities by "
                                "city, operator, status, capacity, and more."),
     "get_facility":           ("Detailed profile of a single facility: capacity, "
                                "operator, location, power source, infrastructure."),
@@ -207,6 +207,66 @@ GENERIC_DESCRIPTIONS = {
 }
 
 
+# ── Canonical descriptions (live tools/list SoT) ─────────────────────
+def _mcp_tools_list_url() -> str:
+    """The live MCP endpoint to pull canonical tool descriptions from.
+    Precedence: DCHUB_MCP_URL env > server.json remotes[0].url (the published
+    SoT) > the known public remote."""
+    env = (os.environ.get("DCHUB_MCP_URL") or "").strip()
+    if env:
+        return env
+    try:
+        here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with open(os.path.join(here, "server.json"), "r", encoding="utf-8") as fh:
+            sj = json.load(fh)
+        for r in (sj.get("remotes") or []):
+            u = (r.get("url") or "").strip()
+            if u:
+                return u
+    except Exception:
+        pass
+    return "https://dchub.cloud/mcp"
+
+
+def _canonical_descriptions() -> dict:
+    """2026-07-04 FIX: source the per-tool descriptions the seed feeds to Claude
+    from the LIVE tools/list SoT instead of the frozen 2026-06-07
+    GENERIC_DESCRIPTIONS snapshot. That snapshot overstated search_facilities'
+    scope (an inflated facility count vs the canonical 21,000+) and the seed baked
+    the stale figure into every per-platform rewrite.
+
+    Returns {tool_name: description} for TOP_10_TOOLS, starting from
+    GENERIC_DESCRIPTIONS and overlaying whatever the live endpoint returns.
+    Fully fail-soft: any fetch/parse error leaves the frozen fallback in place so
+    the seed still runs when the MCP server is unreachable."""
+    out = dict(GENERIC_DESCRIPTIONS)
+    try:
+        import requests
+        url = _mcp_tools_list_url()
+        resp = requests.post(
+            url,
+            json={"jsonrpc": "2.0", "method": "tools/list", "id": 1, "params": {}},
+            headers={"Accept": "application/json",
+                     "User-Agent": "dchub-tool-tuner/1.0"},
+            timeout=20)
+        data = resp.json()
+        tools = ((data.get("result") or {}).get("tools")) or []
+        wanted = set(TOP_10_TOOLS)
+        found = 0
+        for t in tools:
+            name = t.get("name")
+            desc = (t.get("description") or "").strip()
+            if name in wanted and desc:
+                out[name] = desc
+                found += 1
+        logger.info("[tool-tuner] canonical descriptions: %d/%d tools from live "
+                    "tools/list (%s)", found, len(TOP_10_TOOLS), url)
+    except Exception as e:
+        logger.warning("[tool-tuner] live tools/list fetch failed (%s); using "
+                       "frozen GENERIC_DESCRIPTIONS", e)
+    return out
+
+
 # ── Claude-driven generator ──────────────────────────────────────────
 def _outcome_signal(c) -> dict:
     """r-tuner-loop (2026-06-26): close the tuner loop. Per-(platform, tool)
@@ -215,19 +275,37 @@ def _outcome_signal(c) -> dict:
     ADOPTION (getting an agent to choose the tool); response-level retention/$10
     conversion is tuned separately in the gateway. Returns {(platform, tool):
     calls}. Fail-soft → {} so the seed loop falls back to the prior no-signal
-    behavior and never breaks on this best-effort read."""
+    behavior and never breaks on this best-effort read.
+
+    2026-07-04 FIX: was querying mcp_call_log (columns: "timestamp", tool) which
+    has NO platform column — so the SELECT raised, the except swallowed it, and
+    this returned {} on every reseed (a silent no-op that never surfaced). Repoint
+    to mcp_tool_calls, whose platform + client_name are populated by the live MCP
+    gateway (see main.py schema / flask_mcp_endpoints insert). Canonicalize the
+    raw platform/client_name to one of the 5 tuned platforms; rows we can't map
+    are dropped (best-effort signal only), so an all-'mcp'/'unknown' table simply
+    yields {} and the rewrites behave exactly as no-signal."""
     out: dict = {}
     try:
         with c.cursor() as cur:
             cur.execute(
-                "SELECT lower(coalesce(platform,'')) AS p, tool AS t, count(*) AS n "
-                "FROM mcp_call_log "
-                "WHERE (\"timestamp\")::timestamptz > now() - interval '30 days' "
-                "  AND tool IS NOT NULL AND tool <> '' "
-                "GROUP BY 1, 2")
-            for p, t, n in cur.fetchall():
-                if p and t:
-                    out[(PLATFORM_MAP.get(p, p), t)] = int(n or 0)
+                "SELECT lower(coalesce(platform,'')) AS p, "
+                "       lower(coalesce(client_name,'')) AS cn, "
+                "       tool_name AS t, count(*) AS n "
+                "FROM mcp_tool_calls "
+                "WHERE created_at > now() - interval '30 days' "
+                "  AND tool_name IS NOT NULL AND tool_name <> '' "
+                "GROUP BY 1, 2, 3")
+            for p, cn, t, n in cur.fetchall():
+                if not t:
+                    continue
+                # Resolve to a canonical tuned platform: exact alias on the
+                # platform tag, then substring, then the same on client_name.
+                canon = (PLATFORM_MAP.get(p) or _platform_from_ua(p)
+                         or PLATFORM_MAP.get(cn) or _platform_from_ua(cn))
+                if not canon:
+                    continue
+                out[(canon, t)] = out.get((canon, t), 0) + int(n or 0)
     except Exception:
         try: c.rollback()
         except Exception: pass
@@ -262,13 +340,26 @@ def _claude_rewrite(tool_name: str, generic_desc: str, platform: str,
         url = anthropic_messages_url()
     except Exception:
         url = "https://api.anthropic.com/v1/messages"
+    # 2026-07-04 FIX: this used to seed resolve_chain() with the RETIRED,
+    # hard-coded "claude-sonnet-4-20250514" (DCHUB_BRAIN_MODEL_ROUTINE /
+    # DCHUB_BRAIN_MODEL are unset on the web service). That tag isn't a key in
+    # brain_models._FALLBACK_CHAIN, so resolve_chain returned a DEAD single-
+    # element list → every Anthropic call 404'd → the tuner failed 100% (and
+    # the except below hid it). Resolve via brain_model_for("routine"), which
+    # honours the env overrides AND reachability and defaults to a live model
+    # (claude-sonnet-4-5), then walk its real fallback chain. Guarantee at least
+    # one confirmed-live terminal rung so a stray retired env override can never
+    # zero the tuner out again.
     try:
-        from routes.brain_models import resolve_chain
-        models = resolve_chain(os.environ.get("DCHUB_BRAIN_MODEL_ROUTINE") or
-                               os.environ.get("DCHUB_BRAIN_MODEL") or
-                               "claude-sonnet-4-20250514")
-    except Exception:
-        models = ["claude-sonnet-4-20250514"]
+        from routes.brain_models import brain_model_for, resolve_chain
+        models = resolve_chain(brain_model_for("routine")) or []
+    except Exception as e:
+        logger.warning("[tool-tuner] model resolution failed (%s); "
+                       "using routine default", e)
+        models = []
+    for _live in ("claude-sonnet-4-5", "claude-haiku-4-5"):
+        if _live not in models:
+            models.append(_live)
     prompt = (
         f"Rewrite this MCP tool description tuned for {platform.upper()}.\n\n"
         f"TOOL NAME: {tool_name}\n"
@@ -311,9 +402,15 @@ def _claude_rewrite(tool_name: str, generic_desc: str, platform: str,
             return None
         except urllib.error.HTTPError as e:
             if e.code in (404, 400) and i + 1 < len(models):
+                logger.warning("[tool-tuner] %s/%s model=%s HTTP %s — trying "
+                               "next fallback rung", platform, tool_name, model, e.code)
                 continue
+            logger.warning("[tool-tuner] %s/%s model=%s HTTP %s — no more rungs, "
+                           "giving up", platform, tool_name, model, e.code)
             return None
-        except Exception:
+        except Exception as e:
+            logger.warning("[tool-tuner] %s/%s model=%s rewrite error: %s",
+                           platform, tool_name, model, e)
             return None
     return None
 
@@ -356,10 +453,12 @@ def _load_all_tuned(c) -> dict:
     try:
         _ensure_table(c)
         with c.cursor() as cur:
-            cur.execute("SELECT platform, tool_name, description, version "
+            cur.execute("SELECT platform, tool_name, description, version, "
+                        "       to_char(updated_at, 'YYYY-MM-DD\"T\"HH24:MI:SSOF') "
                         "FROM mcp_tool_descriptions_per_platform")
-            for plat, tool, desc, ver in cur.fetchall():
-                out.setdefault(plat, {})[tool] = {"description": desc, "version": ver}
+            for plat, tool, desc, ver, upd in cur.fetchall():
+                out.setdefault(plat, {})[tool] = {
+                    "description": desc, "version": ver, "updated_at": upd}
     except Exception as e:
         logger.warning("_load_all_tuned failed: %s", e)
         try: c.rollback()
@@ -449,8 +548,13 @@ def seed_variants():
         if _n > _tool_max.get(_t, 0):
             _tool_max[_t] = _n
 
+    # Pull canonical per-tool descriptions from the live tools/list SoT (falls
+    # back to the frozen GENERIC_DESCRIPTIONS) so we never reseed the stale
+    # inflated-count copy again.
+    canonical = _canonical_descriptions()
+
     for tool_name in TOP_10_TOOLS:
-        generic = GENERIC_DESCRIPTIONS.get(tool_name, tool_name)
+        generic = canonical.get(tool_name, tool_name)
         for canon, _aliases, voice in TOP_5_PLATFORMS:
             key = (canon, tool_name)
             if key in existing and not force:
@@ -484,15 +588,29 @@ def seed_variants():
     _TUNED_CACHE["at"] = 0.0
 
     _put_db(c)  # release the pooled connection (rare admin path; normal completion)
-    return jsonify(ok=True,
-                   written=len(written),
-                   skipped=len(skipped),
-                   failed=len(failed),
-                   elapsed_s=round(time.time() - started, 2),
-                   anthropic_key_present=api_key_present,
-                   detail={"written": written[:30],
-                           "skipped": skipped[:30],
-                           "failed": failed[:30]})
+
+    n_written, n_skipped, n_failed = len(written), len(skipped), len(failed)
+    # 2026-07-04 FIX: this always returned 200 ok:true, even when written==0 and
+    # failed==50 — so the 100% model-404 failure looked healthy for weeks. A run
+    # that wrote NOTHING but had failures is a hard error: 500 ok:false so the
+    # reseed workflow and any monitor go RED. (skipped-only, e.g. every cell
+    # already existed without ?force=1, stays a healthy 200.)
+    unhealthy = (n_written == 0 and n_failed > 0)
+    payload = dict(
+        ok=(not unhealthy),
+        written=n_written,
+        skipped=n_skipped,
+        failed=n_failed,
+        elapsed_s=round(time.time() - started, 2),
+        anthropic_key_present=api_key_present,
+        detail={"written": written[:30],
+                "skipped": skipped[:30],
+                "failed": failed[:30]},
+    )
+    if unhealthy:
+        payload["error"] = "all_writes_failed"
+        return jsonify(**payload), 500
+    return jsonify(**payload), 200
 
 
 @ai_platform_tool_tuner_bp.route("/api/v1/admin/mcp/tool-tuner/upsert",
@@ -543,9 +661,32 @@ def coverage():
             matrix[canon] = row
         total_cells = len(TOP_5_PLATFORMS) * len(TOP_10_TOOLS)
         filled = sum(1 for canon in matrix for t in matrix[canon] if matrix[canon][t])
+        # Per-platform freshness — the whole point of the reseed. A fresh, non-
+        # cached read so a monitor can assert every platform's newest row is
+        # recent (this tuner silently froze at version 1 for weeks).
+        freshness: dict = {}
+        try:
+            with c.cursor() as cur:
+                cur.execute(
+                    "SELECT platform, count(*), "
+                    "  to_char(min(updated_at),'YYYY-MM-DD\"T\"HH24:MI:SSOF'), "
+                    "  to_char(max(updated_at),'YYYY-MM-DD\"T\"HH24:MI:SSOF'), "
+                    "  min(version), max(version), "
+                    "  round(extract(epoch from (now()-max(updated_at)))/3600.0, 1) "
+                    "FROM mcp_tool_descriptions_per_platform GROUP BY platform")
+                for plat, cnt, oldest, newest, vmin, vmax, age_h in cur.fetchall():
+                    freshness[plat] = {"cells": int(cnt or 0),
+                                       "oldest_updated_at": oldest,
+                                       "newest_updated_at": newest,
+                                       "min_version": vmin, "max_version": vmax,
+                                       "newest_age_hours": float(age_h) if age_h is not None else None}
+        except Exception as e:
+            logger.warning("[tool-tuner] coverage freshness query failed: %s", e)
+            try: c.rollback()
+            except Exception: pass
         return jsonify(ok=True, total_cells=total_cells, filled=filled,
                        percent=round(100 * filled / max(total_cells, 1), 1),
-                       matrix=matrix, top_tools=TOP_10_TOOLS,
+                       matrix=matrix, freshness=freshness, top_tools=TOP_10_TOOLS,
                        top_platforms=[p for p, _, _ in TOP_5_PLATFORMS])
     finally:
         _put_db(c)
