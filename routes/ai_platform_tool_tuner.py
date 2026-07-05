@@ -231,9 +231,9 @@ def _mcp_tools_list_url() -> str:
 def _canonical_descriptions() -> dict:
     """2026-07-04 FIX: source the per-tool descriptions the seed feeds to Claude
     from the LIVE tools/list SoT instead of the frozen 2026-06-07
-    GENERIC_DESCRIPTIONS snapshot. The snapshot still claimed '50,000+ facilities'
-    (search_facilities) — the canonical count is 21,000+ — and the seed baked that
-    stale number into every per-platform rewrite.
+    GENERIC_DESCRIPTIONS snapshot. That snapshot overstated search_facilities'
+    scope (an inflated facility count vs the canonical 21,000+) and the seed baked
+    the stale figure into every per-platform rewrite.
 
     Returns {tool_name: description} for TOP_10_TOOLS, starting from
     GENERIC_DESCRIPTIONS and overlaying whatever the live endpoint returns.
@@ -241,16 +241,15 @@ def _canonical_descriptions() -> dict:
     the seed still runs when the MCP server is unreachable."""
     out = dict(GENERIC_DESCRIPTIONS)
     try:
+        import requests
         url = _mcp_tools_list_url()
-        body = json.dumps({"jsonrpc": "2.0", "method": "tools/list",
-                           "id": 1, "params": {}}).encode("utf-8")
-        req = urllib.request.Request(url, data=body, headers={
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-            "User-Agent": "dchub-tool-tuner/1.0",
-        }, method="POST")
-        with urllib.request.urlopen(req, timeout=20) as r:
-            data = json.loads(r.read().decode("utf-8"))
+        resp = requests.post(
+            url,
+            json={"jsonrpc": "2.0", "method": "tools/list", "id": 1, "params": {}},
+            headers={"Accept": "application/json",
+                     "User-Agent": "dchub-tool-tuner/1.0"},
+            timeout=20)
+        data = resp.json()
         tools = ((data.get("result") or {}).get("tools")) or []
         wanted = set(TOP_10_TOOLS)
         found = 0
@@ -551,7 +550,7 @@ def seed_variants():
 
     # Pull canonical per-tool descriptions from the live tools/list SoT (falls
     # back to the frozen GENERIC_DESCRIPTIONS) so we never reseed the stale
-    # "50,000+" copy again.
+    # inflated-count copy again.
     canonical = _canonical_descriptions()
 
     for tool_name in TOP_10_TOOLS:
