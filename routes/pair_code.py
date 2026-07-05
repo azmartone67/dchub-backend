@@ -710,15 +710,21 @@ def _has_interaction_intent(api_key: str) -> bool:
     """A mint is allowed only for a request that shows genuine human intent:
       1. a valid signed intent token (from paywall_response's upgrade_url), OR
       2. a user-activated browser navigation (Sec-Fetch-User: ?1 — set by
-         browsers ONLY on a click/address-bar nav, never by raw HTTP libs), OR
-      3. a same-site referer (arrived from a dchub.cloud page).
-    A bare, tokenless GET with no navigation signal is treated as a fuzzer."""
+         browsers ONLY on a click/address-bar nav, never by raw HTTP libs).
+    A bare, tokenless GET with no navigation signal is treated as a fuzzer.
+
+    2026-07-05: a same-site Referer is deliberately NOT accepted. The CF edge
+    worker (dchub-frontend/_worker.js:1773) hard-sets `Referer: https://dchub.cloud`
+    on EVERY backend proxy request, so a referer check would pass for ALL edge
+    traffic — scanners included — a universal bypass that made this gate a no-op
+    in production (confirmed: railway-primary mints with that header, gates
+    without it). The worker DOES clone/forward the original User-Agent and
+    Sec-Fetch-* headers, so `_is_scanner_request()` and the Sec-Fetch-User signal
+    still discriminate at the edge; the signed token stays the primary path for
+    the paywall_response upgrade_url flow."""
     if _verify_intent_token(request.args.get("t") or "", api_key):
         return True
     if (request.headers.get("Sec-Fetch-User") or "").strip() == "?1":
-        return True
-    ref = request.headers.get("Referer") or ""
-    if "dchub.cloud" in ref or "//dchub." in ref:
         return True
     return False
 
@@ -773,9 +779,9 @@ def upgrade_redirect():
 
     # r-scanner-mint2 (2026-07-04): mint only for a plausible human. Refuse
     # scanner/raw-lib UAs, and require an interaction signal (signed intent
-    # token from paywall_response, a user-activated Sec-Fetch-User navigation,
-    # or a same-site referer). Bots that clear neither bar bounce to /pricing
-    # with attribution — no pair code minted. (This is the path that minted
+    # token from paywall_response, or a user-activated Sec-Fetch-User
+    # navigation). Bots that clear neither bar bounce to /pricing with
+    # attribution — no pair code minted. (This is the path that minted
     # ~127 bot codes/24h; the pack5 branch above never mints.)
     if _is_scanner_request() or not _has_interaction_intent(api_key):
         utm = "?utm_source=mcp_upgrade&utm_medium=paywall_nointent"
