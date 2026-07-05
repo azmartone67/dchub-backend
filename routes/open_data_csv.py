@@ -31,6 +31,8 @@ from datetime import datetime, timezone
 
 from flask import Blueprint, Response, jsonify
 
+from routes.url_registry import build_public_url
+
 open_data_csv_bp = Blueprint("open_data_csv", __name__)
 
 
@@ -168,6 +170,10 @@ _DATASETS = {
 @open_data_csv_bp.route("/api/v1/open-data/manifest.json", methods=["GET"])
 def manifest():
     """List of available datasets."""
+    # Derive the /dcpi base off the url_registry chokepoint so the advertised
+    # per-market path can never drift from what we actually serve. The template
+    # keeps the literal {market_slug} token for agents to substitute.
+    _dcpi_base = build_public_url("dcpi", "x").rsplit("/", 1)[0]
     out = {
         "license": "CC-BY-4.0",
         "attribution": "Required. Cite: \"Source: dchub.cloud\" or DOI-style citation in CSV header.",
@@ -203,9 +209,9 @@ def manifest():
             "note": ("Bulk CSV exports require a free dev key. PER-MARKET DCPI "
                      "(verdict + market context) is FREE to query and cite — no "
                      "key. For all-markets bulk data, claim a free key."),
-            "per_market_page": "https://dchub.cloud/dcpi/{market_slug}",
-            "per_market_example": "https://dchub.cloud/dcpi/phoenix",
-            "market_index": "https://dchub.cloud/dcpi",
+            "per_market_page": _dcpi_base + "/{market_slug}",
+            "per_market_example": build_public_url("dcpi", "phoenix"),
+            "market_index": _dcpi_base,
             "mcp_tool": "get_market_dcpi_rank (via https://dchub.cloud/mcp)",
             "claim_free_key": "https://dchub.cloud/signup",
         },

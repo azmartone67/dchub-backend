@@ -155,9 +155,12 @@ def test_strong_duplicate_does_not_fire_on_high_rerank_low_cosine(monkeypatch):
 
 def test_strong_duplicate_falls_back_to_score_without_cosine(monkeypatch):
     monkeypatch.delenv("BRAIN_FEATURE_PROPOSER_DUP_THRESHOLD", raising=False)
-    # Older retrieve_context shape (no cosine key): score WAS the cosine.
+    # Older retrieve_context shape (no cosine key): score WAS the cosine, so it
+    # is gated at the SAME default threshold. Value must clear it (default 0.90,
+    # raised from 0.82 in r-l6-dup-threshold 2026-07-04) — the fixture's old
+    # 0.85 was stranded between the two thresholds after that bump.
     results = [{"source_table": "brain_findings", "source_id": "9",
-                "text": "prior", "score": 0.85}]
+                "text": "prior", "score": 0.92}]
     dup = bfp._strong_duplicate(results)
     assert dup is not None and dup["source_id"] == "9"
 

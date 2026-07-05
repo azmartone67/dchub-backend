@@ -30,6 +30,7 @@ import re
 
 from flask import Blueprint, Response, jsonify, request
 
+from routes.url_registry import build_public_url
 from utils.cache import BoundedCache
 
 context_packs_bp = Blueprint("context_packs", __name__)
@@ -104,7 +105,7 @@ def _fmt_num(v, suffix=""):
 
 
 def _market_url(slug: str) -> str:
-    return f"https://dchub.cloud/markets/{slug}"
+    return build_public_url("markets", slug)
 
 
 def _ser_hero(brief: dict) -> tuple[list, str, str]:
@@ -616,7 +617,7 @@ def _iso_candidates(iso: str, g: dict) -> list:
     markets = []
     for m in g.get("markets") or []:
         markets.append(f"- {m['name']} — {m.get('verdict') or 'N/A'} "
-                       f"(https://dchub.cloud/markets/{m['slug']})")
+                       f"({_market_url(m['slug'])})")
     if markets:
         markets.insert(0, f"Tracked DCPI markets on {iso}:")
 
@@ -626,7 +627,7 @@ def _iso_candidates(iso: str, g: dict) -> list:
         narr.append((n.get("text") or "").strip())
         slug_part = str(n.get("source_id") or "").split("#")[0]
         if slug_part:
-            narr_cites.append(f"https://dchub.cloud/markets/{slug_part}/deep-dive")
+            narr_cites.append(build_public_url("markets", slug_part, subpath="deep-dive"))
 
     news_blocks, news_as_of, news_cites = _ser_news(g.get("news") or [])
 
