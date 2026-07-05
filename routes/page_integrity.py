@@ -136,7 +136,13 @@ def page_integrity():
 
     weak_only = request.args.get("weak") == "1"
 
-    pages = []
+    # r88-honesty-2 (2026-07-04): score EVERY page into all_pages, then apply
+    # the ?weak=1 filter only to the RETURNED list. The rollup (site_score /
+    # site_verdict / verdict_breakdown) is always computed over the full set.
+    # The old code appended only weak pages under ?weak=1, then averaged the
+    # filtered set — so a healthy site read site_verdict='broken' (the mean of
+    # its handful of sub-60 pages) or 0.0 with an empty weak set. Artifact.
+    all_pages = []
     for entry in manifest:
         path = entry.get("path") or ""
         if not path:
@@ -172,18 +178,17 @@ def page_integrity():
             "last_bytes": result.get("bytes"),
             "last_reason": result.get("reason"),
         }
-        if not weak_only or score < 60:
-            pages.append(page_row)
+        all_pages.append(page_row)
 
-    pages.sort(key=lambda p: (p["score"], p["path"]))
+    all_pages.sort(key=lambda p: (p["score"], p["path"]))
 
-    # Site-wide rollup
-    if pages:
-        mean_score = round(sum(p["score"] for p in pages) / len(pages), 1)
+    # Site-wide rollup — ALWAYS over the full page set, never the weak filter.
+    if all_pages:
+        mean_score = round(sum(p["score"] for p in all_pages) / len(all_pages), 1)
     else:
         mean_score = 0.0
     from collections import Counter
-    verdict_counts = Counter(p["verdict"] for p in pages)
+    verdict_counts = Counter(p["verdict"] for p in all_pages)
 
     site_verdict = (
         "alive"  if mean_score >= 80 else
@@ -192,10 +197,15 @@ def page_integrity():
         "broken"
     )
 
+    # The ?weak=1 filter narrows only what's RETURNED (the worklist), not what
+    # the score is computed over.
+    pages = [p for p in all_pages if p["score"] < 60] if weak_only else all_pages
+
     return jsonify(
         site_score=mean_score,
         site_verdict=site_verdict,
-        pages_total=len(pages),
+        pages_total=len(all_pages),
+        pages_returned=len(pages),
         verdict_breakdown=dict(verdict_counts),
         pages=pages,
         legend={

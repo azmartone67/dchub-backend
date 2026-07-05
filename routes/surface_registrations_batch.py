@@ -125,9 +125,20 @@ _BATCH = [
     ("auto_ecosystem", "Ecosystem",
      "/ecosystem — vendor + partner directory",
      ["/ecosystem"], [], ["view"]),
+    # 2026-07-04: the per-ISO grid pages were healthy (200, score 70) but
+    # verdict='orphan' — not surface_brain-registered, so no brain tracking or
+    # schema/SEO reinforcement on our #1-demand surface (get_grid_intelligence,
+    # 220 users). Registered here so the orphan verdicts flip to alive. Literal
+    # ISO paths (not /grid/<iso>) so page_integrity's exact `path in surfaces`
+    # membership test matches the manifest entries. (Brain L6 scaffold:
+    # routes/_proposed_register_orphan_grid_pages_as_brain_surfaces.py)
     ("auto_grid_hub", "Grid Hub",
-     "/grid — public ISO grid intelligence index",
-     ["/grid"], ["get_grid_data"], ["view"]),
+     "/grid — public ISO grid intelligence index + per-ISO grid pages",
+     ["/grid", "/grid/CAISO", "/grid/ERCOT", "/grid/PJM"],
+     ["get_grid_data", "get_grid_intelligence"], ["view"]),
+    ("auto_integrations_tools", "Integrations Tool Catalog",
+     "/integrations/tools.json — machine-readable tool catalog for integrations",
+     ["/integrations/tools.json"], ["get_agent_registry"], ["api_call"]),
     ("auto_land_power", "Land + Power",
      "/land-power — combined land + power discovery surface",
      ["/land-power"], [], ["view"]),

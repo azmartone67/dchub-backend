@@ -219,8 +219,12 @@ def _lane_rag(c) -> list[dict]:
                       ok2, f"HTTP {st2}", ms2))
 
     if c is not None:
+        # The chunk writer (routes/brain_rag._reindex_chunk_docs) stores
+        # market_deep_dives content under source_table='market_narratives'
+        # (one row per chunk). Counting only 'market_deep_dives' matched
+        # zero rows → a false NEGATIVE on a healthy corpus. Count both.
         cnt = _scalar(c, "SELECT count(*) FROM brain_corpus_embeddings "
-                         "WHERE source_table = 'market_deep_dives'")
+                         "WHERE source_table IN ('market_narratives','market_deep_dives')")
         out.append(_check("rag_deepdives_embedded", "market_deep_dives chunks embedded",
                           (cnt or 0) > 0 if cnt is not None else None,
                           f"{cnt} chunks" if cnt is not None else "query failed"))
@@ -255,7 +259,12 @@ def _lane_frontend() -> list[dict]:
 
     st3, home, ms3 = _http(f"{_EDGE}/?{_CB()}")
     if st3 == 200:
-        eager = re.search(r"rootMargin:\s*['\"]400px['\"]", home) is not None
+        # Match only an EXECUTABLE rootMargin:'400px' — i.e. one in object-
+        # literal position ({rootMargin:... or ,rootMargin:...). The real
+        # fix shipped (IntersectionObserver rootMargin '0px', threshold
+        # 0.15); the bare token now survives ONLY inside a shipped code
+        # comment, which used to trip this probe as a false POSITIVE.
+        eager = re.search(r"[{,]\s*rootMargin:\s*['\"]400px['\"]", home) is not None
         out.append(_check("fe_home_iframe", "home no longer eager-loads full map iframe",
                           not eager, "rootMargin 400px still present" if eager else "eager preload gone", ms3))
     else:

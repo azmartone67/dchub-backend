@@ -560,6 +560,35 @@ _DISPATCH = [
      "POST",
      lambda now: now.hour == 8 and now.minute < 55),
 
+    # 2026-07-04: THREE master shells shipped with live tick endpoints but NO
+    # scheduler anywhere (not here, not in .github/workflows, not the retired
+    # dchub-scheduler.py) — the same orphan class as heartbeat_auto_drain: a
+    # working shell that silently never ticks. Wired below, one daily fire each
+    # (admin-gated; _hit sends X-Admin-Key). Windows are WIDE + each tick is
+    # idempotent per its own dedupe window, so sporadic/overlapping heartbeat
+    # fires are harmless.
+
+    # CONVERSION-LOOP master shell — daily 06:xx UTC. Measures the paywall→pay
+    # loop and pulls one bounded action. Kill: CONVERSION_LOOP_MASTER_DISABLED.
+    ("conversion_loop_master_tick_daily",
+     f"{BASE}/api/v1/admin/conversion-loop/master-tick",
+     "POST",
+     lambda now: now.hour == 6 and now.minute < 55),
+
+    # AGENT-USEFULNESS master shell — daily 07:xx UTC. Scores whether agents get
+    # value per call + acts on the weakest tier. Kill: AGENT_USEFULNESS_MASTER_DISABLED.
+    ("agent_usefulness_master_tick_daily",
+     f"{BASE}/api/v1/admin/agent-usefulness/master-tick",
+     "POST",
+     lambda now: now.hour == 7 and now.minute < 55),
+
+    # AGENT-PAY master shell — daily 12:xx UTC (GET-only endpoint). Real vs. all
+    # pay-intent split over the MPP/x402 rail + self-driving levers. Read-mostly.
+    ("agent_pay_master_tick_daily",
+     f"{BASE}/api/v1/admin/agent-pay/master-tick",
+     "GET",
+     lambda now: now.hour == 12 and now.minute < 55),
+
     # ─────────────────────────────────────────────────────────────────────
     # 2026-07-03: RE-HOMED off the retiring off-repo Replit scheduler
     # (dchub-scheduler.py). Replit is decommissioned; these five Replit jobs

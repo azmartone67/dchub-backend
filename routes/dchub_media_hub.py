@@ -191,9 +191,16 @@ def media_aggregate():
                 out["live_spine"]["mcp_calls_24h"] = int((cur.fetchone() or (0,))[0])
             except Exception: c.rollback()
             try:
-                cur.execute("""SELECT COUNT(DISTINCT ip_address)
-                               FROM mcp_tool_calls
-                               WHERE created_at > NOW() - INTERVAL '7 days'""")
+                # Canonical real-external agent count — mcp_calls_identity with
+                # the is_real_external + is_public_ip filter (mirrors
+                # media_fact_check_guard._live_agent_count_30d and the /reach
+                # dashboard). Counting unfiltered DISTINCT ip_address off
+                # mcp_tool_calls inflated this ~8.5x: internal probes, QA
+                # canaries, and rotating bot IPs all read as "AI agents".
+                cur.execute("""SELECT COUNT(DISTINCT agent_id)
+                               FROM mcp_calls_identity
+                               WHERE created_at > NOW() - INTERVAL '7 days'
+                                 AND is_public_ip AND is_real_external""")
                 out["live_spine"]["unique_ai_agents_7d"] = int((cur.fetchone() or (0,))[0])
             except Exception: c.rollback()
             try:

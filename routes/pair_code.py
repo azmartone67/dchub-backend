@@ -51,7 +51,9 @@ main.py) calls `redeem_pair_code()` to flip the api_key's tier.
 """
 from __future__ import annotations
 import os
-import sys
+import re
+import hmac
+import hashlib
 import json
 import secrets as _secrets
 import string
@@ -635,6 +637,92 @@ def _fast_get_code(api_key, tool, market, agent, deadline_ms=500):
     return box["result"]
 
 
+# ── r-scanner-mint2 (2026-07-04): interaction gate for GET /upgrade ──────
+# The 07-03 r-scanner-mint fix gated only the inline /redeem/<id>?mint=1 path.
+# GET /upgrade still minted a pair code for ANY request carrying a key, so
+# scanners fuzzing /upgrade?key=… kept minting (~127 codes/24h, all
+# referring_agent LIKE 'Mozilla%', zero redemptions). This mirrors
+# redeem_routes._is_scanner_request + adds an interaction-intent requirement.
+
+_SCANNER_UA_RE = re.compile(
+    r'python-httpx|python-urllib|urllib|python-requests|curl|wget|libwww|'
+    r'node-fetch|undici|axios|got/|go-http|okhttp|java/|requests/|aiohttp|'
+    r'scrapy|httpie|restsharp|postman|'
+    r'headless|phantomjs|slimerjs|selenium|playwright|puppeteer|'
+    r'zgrab|censys|nmap|masscan|nuclei|nikto|sqlmap|dirbuster|gobuster|'
+    r'feroxbuster|wpscan|paloalto|expanse|'
+    r'\bbot\b|spider|crawler|scanner',
+    re.IGNORECASE)
+
+
+def _is_scanner_request() -> bool:
+    """True when the UA can't be a human-driven browser (raw HTTP libs,
+    headless drivers, security scanners) or is empty. Prefer the shared
+    redeem_routes helper (single source of truth); fall back to the local
+    copy if that import isn't available."""
+    try:
+        from routes.redeem_routes import _is_scanner_request as _shared
+        return _shared()
+    except Exception:
+        ua = (request.headers.get('User-Agent') or '').strip()
+        if not ua:
+            return True
+        return bool(_SCANNER_UA_RE.search(ua))
+
+
+def _intent_secret() -> str:
+    return (os.environ.get("DCHUB_SESSION_SECRET")
+            or os.environ.get("DCHUB_ADMIN_KEY")
+            or os.environ.get("DCHUB_INTERNAL_KEY") or "")
+
+
+def _make_intent_token(api_key: str, tool: str = "", ttl_sec: int = 1800) -> str:
+    """Short signed, expiring token proving this /upgrade URL was minted by a
+    real paywall_response (not fuzzed). Bound to the api_key + an expiry so a
+    leaked URL can only be replayed within the TTL. Returns "" if no secret is
+    configured (callers then fall back to browser interaction signals)."""
+    secret = _intent_secret()
+    if not secret:
+        return ""
+    exp = int(_time.time()) + int(ttl_sec)
+    msg = f"{_hash_key(api_key)}:{exp}".encode()
+    sig = hmac.new(secret.encode(), msg, hashlib.sha256).hexdigest()[:24]
+    return f"{exp}.{sig}"
+
+
+def _verify_intent_token(token: str, api_key: str) -> bool:
+    secret = _intent_secret()
+    if not secret or not token or "." not in token:
+        return False
+    try:
+        exp_s, sig = token.split(".", 1)
+        exp = int(exp_s)
+        if exp < int(_time.time()):
+            return False
+        msg = f"{_hash_key(api_key)}:{exp}".encode()
+        expected = hmac.new(secret.encode(), msg, hashlib.sha256).hexdigest()[:24]
+        return hmac.compare_digest(sig, expected)
+    except Exception:
+        return False
+
+
+def _has_interaction_intent(api_key: str) -> bool:
+    """A mint is allowed only for a request that shows genuine human intent:
+      1. a valid signed intent token (from paywall_response's upgrade_url), OR
+      2. a user-activated browser navigation (Sec-Fetch-User: ?1 — set by
+         browsers ONLY on a click/address-bar nav, never by raw HTTP libs), OR
+      3. a same-site referer (arrived from a dchub.cloud page).
+    A bare, tokenless GET with no navigation signal is treated as a fuzzer."""
+    if _verify_intent_token(request.args.get("t") or "", api_key):
+        return True
+    if (request.headers.get("Sec-Fetch-User") or "").strip() == "?1":
+        return True
+    ref = request.headers.get("Referer") or ""
+    if "dchub.cloud" in ref or "//dchub." in ref:
+        return True
+    return False
+
+
 @pair_code_bp.get("/upgrade")
 def upgrade_redirect():
     """Smart-redirect entry point. Mint a pair-code for the caller and
@@ -682,6 +770,24 @@ def upgrade_redirect():
                 return redirect(f"{_p5url}{_sep}client_reference_id=pk-{_kh}", code=302)
         except Exception:
             pass  # any error → fall through to the subscription/pricing path below
+
+    # r-scanner-mint2 (2026-07-04): mint only for a plausible human. Refuse
+    # scanner/raw-lib UAs, and require an interaction signal (signed intent
+    # token from paywall_response, a user-activated Sec-Fetch-User navigation,
+    # or a same-site referer). Bots that clear neither bar bounce to /pricing
+    # with attribution — no pair code minted. (This is the path that minted
+    # ~127 bot codes/24h; the pack5 branch above never mints.)
+    if _is_scanner_request() or not _has_interaction_intent(api_key):
+        utm = "?utm_source=mcp_upgrade&utm_medium=paywall_nointent"
+        if tool: utm += f"&utm_content={tool}"
+        return redirect(f"https://dchub.cloud/pricing{utm}", code=302)
+
+    # De-conflate genuine human web-clicks from AI-agent mints for attribution.
+    # With no explicit &agent=, get_or_create_code falls back to the raw browser
+    # UA ('Mozilla/5.0…'), which the fixwave scanner-mint sentinel reads as a
+    # bot mint. Label a real human click 'human-web' so genuine mints don't trip
+    # it; a named &agent= (set by the MCP server that built the URL) is kept.
+    agent = agent or "human-web"
 
     # Fast path: cached code OR mint completes in <500ms.
     result = _fast_get_code(api_key, tool, market, agent, deadline_ms=500)
@@ -811,6 +917,12 @@ def paywall_response():
                    f"&tool={tool}")
     if market: upgrade_url += f"&market={market}"
     if agent:  upgrade_url += f"&agent={agent}"
+    # r-scanner-mint2: carry a signed, expiring intent token so the human who
+    # opens THIS url always clears /upgrade's interaction gate (even on a
+    # privacy browser that strips Sec-Fetch headers). Fuzzers hitting /upgrade
+    # with a guessed key can't forge it.
+    _itok = _make_intent_token(api_key, tool or "")
+    if _itok: upgrade_url += f"&t={_itok}"
 
     return jsonify(
         ok=True,

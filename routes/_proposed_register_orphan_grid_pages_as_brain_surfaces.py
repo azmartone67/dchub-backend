@@ -12,7 +12,11 @@ Evidence cited by the brain when proposing this:
 - `page_health.pages`
 - `self_model.current_state.recent_actions`
 
-To unblock: implement the routes and remove the NotImplementedError below.
+IMPLEMENTED 2026-07-04: the four orphan pages (/grid/CAISO, /grid/ERCOT,
+/grid/PJM, /integrations/tools.json) are now registered as surface_brain
+surfaces in routes/surface_registrations_batch.py (auto_grid_hub extended +
+new auto_integrations_tools). page_integrity now reads them as brain-tracked
+(verdict flips orphan → alive) instead of orphan.
 """
 from flask import Blueprint, jsonify
 
@@ -21,12 +25,15 @@ strategic_register_orphan_grid_pages_as_brain_surfaces_bp = Blueprint("register-
 
 @strategic_register_orphan_grid_pages_as_brain_surfaces_bp.route("/api/v1/strategic-scaffold/register-orphan-grid-pages-as-brain-surfaces", methods=["GET"])
 def _scaffold_health():
-    """Health probe so the blueprint can register without 500ing.
-    Real endpoint TBD by the human reviewer."""
+    """Health probe. The proposal this scaffold described has SHIPPED — the
+    real registration lives in routes/surface_registrations_batch.py."""
     return jsonify(
-        ok=False,
+        ok=True,
         scaffold=True,
-        message=("This is a strategic scaffold drafted by Brain L6. "
-                  "It is not implemented yet."),
-        spec_doc="docs/strategic/register-orphan-grid-pages-as-brain-surfaces.md",
-    ), 501
+        implemented=True,
+        message=("Brain L6 proposal implemented 2026-07-04 in "
+                  "routes/surface_registrations_batch.py "
+                  "(auto_grid_hub + auto_integrations_tools)."),
+        surfaces=["/grid/CAISO", "/grid/ERCOT", "/grid/PJM",
+                  "/integrations/tools.json"],
+    ), 200
