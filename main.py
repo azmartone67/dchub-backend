@@ -2102,6 +2102,14 @@ try:
     except Exception as _gdms:
         import logging
         logging.getLogger(__name__).warning('grid_data_master_shell wiring failed: %s', _gdms)
+
+    try:
+        from routes.depth_master_shell import depth_master_shell_bp
+        app.register_blueprint(depth_master_shell_bp)
+        print("[main] depth_master_shell_bp registered: POST /api/v1/admin/depth/master-tick", flush=True)
+    except Exception as _dms:
+        import logging
+        logging.getLogger(__name__).warning('depth_master_shell wiring failed: %s', _dms)
     # 2026-07-04: Reliability-recovery master shell — the inward-pointed loop whose
     # single job is getting the brain's verified fix-success rate over (and HELD
     # over) 50% so Phase-3 narrow auto-merge can be armed safely. Scores 5 levers
@@ -3489,6 +3497,14 @@ def _grid_intel_fetch(region, rto_code):
             if _ext.get('lmp') and out.get('lmp_usd_mwh') is None:
                 out['lmp_usd_mwh'] = _ext['lmp'].get('value')
                 out['lmp_as_of'] = _ext['lmp'].get('as_of')
+            # r-depth (2026-07-06): the Depth Master Shell ingests these two into
+            # grid_ext_metrics — capacity-auction $/MW-day (the #1-cited DC-power
+            # economic signal) and inferred DC-load-queue GW (beyond ERCOT).
+            if _ext.get('capacity_price'):
+                out['capacity_price_usd_mw_day'] = _ext['capacity_price'].get('value')
+                out['capacity_price_as_of'] = _ext['capacity_price'].get('as_of')
+            if _ext.get('dc_load_queue'):
+                out['dc_load_queue_gw'] = _ext['dc_load_queue'].get('value')
     except Exception as _ee:
         out['extended_metrics_error'] = type(_ee).__name__
 
@@ -21669,7 +21685,8 @@ def _build_fiber_routes_geojson(max_features=None):
     # only (2-point) geometry so the payload stays bounded. Callers who want the
     # full polylines just add a filter.
     bbox = request.args.get('bbox')  # "minLng,minLat,maxLng,maxLat"
-    _has_filter = bool(carrier or route_type or (route_class in CLASS_TYPES) or bbox)
+    market = request.args.get('market')  # metro name/slug → routes touching that metro
+    _has_filter = bool(carrier or route_type or (route_class in CLASS_TYPES) or bbox or market)
     _is_browser = False
     try:
         from routes.session_cookie import validate_cookie
@@ -21717,6 +21734,24 @@ def _build_fiber_routes_geojson(max_features=None):
                                min(_mny, _mxy), max(_mny, _mxy)])
             except Exception:
                 pass  # malformed bbox → ignore (behaves as unfiltered)
+        # r-depth (2026-07-06): market= filter — routes TOUCHING a metro (either
+        # endpoint within ~1.2° of the market centroid). Uses the market_power_scores
+        # lat/lng backfilled by the coord fix, so it covers every scored market — no
+        # hardcoded metro table. Narrows the set AND qualifies for full geometry.
+        if market:
+            try:
+                cursor.execute("""SELECT latitude, longitude FROM market_power_scores
+                                   WHERE LOWER(market_slug)=LOWER(%s) AND latitude IS NOT NULL
+                                   ORDER BY computed_at DESC LIMIT 1""", (market.strip(),))
+                _mrow = cursor.fetchone()
+                if _mrow and _mrow[0] is not None:
+                    _mlat, _mlng, _mr = float(_mrow[0]), float(_mrow[1]), 1.2
+                    query += (" AND ( (start_lat BETWEEN %s AND %s AND start_lng BETWEEN %s AND %s)"
+                              " OR (end_lat BETWEEN %s AND %s AND end_lng BETWEEN %s AND %s) )")
+                    params.extend([_mlat - _mr, _mlat + _mr, _mlng - _mr, _mlng + _mr,
+                                   _mlat - _mr, _mlat + _mr, _mlng - _mr, _mlng + _mr])
+            except Exception:
+                pass  # unknown market → ignore (behaves as unfiltered)
         # ROBUSTNESS (2026-06-20): prioritize REAL multi-vertex surveyed geometry
         # (Zayo carrier KMZ, NTIA middle-mile) over synthetic 2-point straight
         # lines. There was NO ORDER BY, so a 10k cap on 39k physically-insert-ordered

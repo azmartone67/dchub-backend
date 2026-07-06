@@ -463,6 +463,15 @@ _DISPATCH = [
      "POST",
      lambda now: now.hour == 11 and now.minute < 55),
 
+    # 2026-07-06: Depth Master Shell — ACTS on the 4 hardest grid/fiber depth gaps
+    # each tick (capacity-auction price, DC-load queue beyond ERCOT, substation
+    # hosting-capacity, fiber long-haul). One bounded action/tick into grid_ext_metrics.
+    # Kill: DEPTH_MASTER_DISABLED. Offset one hour from the grid-data shell.
+    ("depth_master_tick_daily",
+     f"{BASE}/api/v1/admin/depth/master-tick",
+     "POST",
+     lambda now: now.hour == 10 and now.minute < 55),
+
     # 2026-07-03: brain RAG reindex — embed new findings/recs/news/deals into
     # brain_corpus_embeddings so the L6 planner's semantic recall stays fresh.
     # Every 4h at :20, cap 500/run (incremental backfill; catches up over runs).
@@ -703,6 +712,7 @@ _HEAVY_LABELS = frozenset({
     "audience_master_tick_daily", "growth_master_tick_4h",
     "media_master_tick_daily", "distribution_master_tick_daily",
     "grid_data_master_tick_daily", "gap_master_tick_6h",
+    "depth_master_tick_daily",
     "reliability_master_tick_daily", "rag_master_tick_daily",
     "fixwave_master_tick_2h", "agent_onboarding_master_tick_daily",
     "conversion_loop_master_tick_daily", "agent_usefulness_master_tick_daily",
