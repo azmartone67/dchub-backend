@@ -730,7 +730,20 @@ def _load_markets_dynamic():
                         state,
                         COUNT(*) AS facility_count,
                         COALESCE(SUM(power_mw), 0) AS op_mw,
-                        COALESCE(SUM(power_mw) FILTER (WHERE status IN ('construction','planned','permitting','Under Construction','Planned')), 0) AS pipeline_mw
+                        COALESCE(SUM(power_mw) FILTER (WHERE status IN ('construction','planned','permitting','Under Construction','Planned')), 0) AS pipeline_mw,
+                        -- r-market-coords (2026-07-06): market centroid from the
+                        -- market's own facilities so market_power_scores.lat/lng
+                        -- stops being NULL (feeds facility_profile nearest-metro
+                        -- fallback + market_brief proximity). MEDIAN not AVG: some
+                        -- discovered_facilities rows carry bad coords (e.g. a few
+                        -- TX rows sit in the Gulf), and a mean gets dragged to open
+                        -- water — median lands on the true metro center. The
+                        -- recompute writes these via COALESCE, so they populate
+                        -- NULLs + survive future NULL recomputes.
+                        percentile_cont(0.5) WITHIN GROUP (ORDER BY latitude)
+                            FILTER (WHERE latitude IS NOT NULL AND latitude BETWEEN -90 AND 90) AS lat,
+                        percentile_cont(0.5) WITHIN GROUP (ORDER BY longitude)
+                            FILTER (WHERE longitude IS NOT NULL AND longitude BETWEEN -180 AND 180) AS lon
                     FROM discovered_facilities
                     WHERE city IS NOT NULL AND city != ''
                       AND state IS NOT NULL AND state != ''
@@ -740,7 +753,7 @@ def _load_markets_dynamic():
                     GROUP BY LOWER(city), city, state
                     HAVING COUNT(*) >= 3
                 )
-                SELECT slug, name, state, facility_count, op_mw, pipeline_mw
+                SELECT slug, name, state, facility_count, op_mw, pipeline_mw, lat, lon
                 FROM city_stats
                 ORDER BY facility_count DESC
                 LIMIT 200;
@@ -759,7 +772,7 @@ def _load_markets_dynamic():
                 # Map our DB rows to the same dict shape
                 out = []
                 for r in rows:
-                    slug, name, state, fac, op_mw, pipe_mw = r
+                    slug, name, state, fac, op_mw, pipe_mw, lat, lon = r
                     d = {}
                     for k in keys:
                         if k == "slug": d[k] = slug.replace(" ", "-").replace(",", "")
@@ -770,6 +783,8 @@ def _load_markets_dynamic():
                         elif k in ("facility_count", "fac"): d[k] = int(fac)
                         elif k in ("operational_mw", "op_mw", "total_mw"): d[k] = float(op_mw)
                         elif k in ("pipeline_mw", "pipeline_mw_total"): d[k] = float(pipe_mw)
+                        elif k in ("latitude", "lat"): d[k] = float(lat) if lat is not None else sample.get(k)
+                        elif k in ("longitude", "lon", "lng"): d[k] = float(lon) if lon is not None else sample.get(k)
                         else: d[k] = sample.get(k)  # default from hardcoded
                     out.append(d)
                 return out
@@ -789,15 +804,19 @@ def _load_markets_dynamic():
                 # the few markets with fresh data.
                 #
                 # Now: emit tuples in the canonical shape. iso is derived
-                # via _state_to_iso() (the common case), lat/lon are None
-                # which gather_metrics_for_market handles gracefully — it
-                # uses state + iso for its lookups, not coordinates.
+                # via _state_to_iso() (the common case). lat/lon are the
+                # median facility centroid (r-market-coords 2026-07-06) so the
+                # recompute can COALESCE real coords into market_power_scores
+                # (was hardcoded None,None → 198/317 markets sat NULL). None
+                # still passes through harmlessly for the rare coord-less group.
                 out_tuples = []
                 for r in rows:
-                    slug, name, state, fac, op_mw, pipe_mw = r
+                    slug, name, state, fac, op_mw, pipe_mw, lat, lon = r
                     clean_slug = slug.replace(" ", "-").replace(",", "")
                     iso = _state_to_iso(state)
-                    out_tuples.append((clean_slug, name, state, iso, None, None))
+                    lat = float(lat) if lat is not None else None
+                    lon = float(lon) if lon is not None else None
+                    out_tuples.append((clean_slug, name, state, iso, lat, lon))
                 return out_tuples
         return None
     except Exception as e:
