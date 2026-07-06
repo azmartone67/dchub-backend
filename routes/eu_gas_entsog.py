@@ -27,6 +27,7 @@ DATA: GET https://transparency.entsog.eu/api/v1/operationalData
 import os
 import time
 import datetime
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from flask import Blueprint, jsonify
@@ -50,6 +51,16 @@ _OPS_CACHE = {"data": None, "ts": 0.0}
 _SNAP_CACHE = {"data": None, "ts": 0.0}
 _OPS_TTL = 86400      # operator list is ~static — refresh daily
 _SNAP_TTL = 900       # flows — 15 min (ENTSOG itself lags ~1-2 days)
+
+# r-peace (2026-07-05): stale-while-revalidate + single-flight for the ENTSOG
+# snapshot. The old path ran the full ~40s ENTSOG fan-out INLINE on every cache
+# miss, so whoever hit /snapshot just after the 15-min TTL expired waited ~33s
+# (logged as SLOW REQUEST). Now a stale hit returns the last snapshot INSTANTLY
+# and refreshes in ONE background thread; only a truly-cold process (no cache,
+# right after a restart) builds inline, and concurrent cold callers share that
+# single build instead of stampeding ENTSOG.
+_SNAP_LOCK = threading.Lock()
+_SNAP_REFRESHING = {"v": False}
 
 
 def _tso_operators():
@@ -116,12 +127,10 @@ def _tso_flow(opkey):
     return (entry / 1e6, exit_ / 1e6, latest[:10])  # kWh/d → GWh/d
 
 
-def _live_snapshot():
-    """Per-country gas transmission throughput + net flow, aggregated across
-    each country's TSOs. None if ENTSOG is unreachable / no live data."""
-    now = time.time()
-    if _SNAP_CACHE["data"] is not None and (now - _SNAP_CACHE["ts"]) < _SNAP_TTL:
-        return _SNAP_CACHE["data"]
+def _rebuild_snapshot():
+    """The expensive ENTSOG fan-out (~40s worst case). Writes _SNAP_CACHE on
+    success and returns the result dict, or None if ENTSOG yields nothing.
+    Runs inline only when cold; otherwise from the background refresh thread."""
     tsos = _tso_operators()
     if not tsos:
         return None
@@ -164,8 +173,48 @@ def _live_snapshot():
         "active_countries": len(countries),
     }
     _SNAP_CACHE["data"] = result
-    _SNAP_CACHE["ts"] = now
+    _SNAP_CACHE["ts"] = time.time()
     return result
+
+
+def _bg_refresh():
+    """Single-flight background refresh — never blocks a request."""
+    try:
+        _rebuild_snapshot()
+    except Exception:
+        pass
+    finally:
+        with _SNAP_LOCK:
+            _SNAP_REFRESHING["v"] = False
+
+
+def _live_snapshot():
+    """Per-country gas transmission throughput + net flow. Stale-while-revalidate:
+    a cached snapshot (fresh OR stale) returns INSTANTLY; a stale one also kicks
+    a single background refresh. Only a cold process builds inline (single-flight,
+    concurrent callers share it). None only if cold AND ENTSOG is unreachable."""
+    now = time.time()
+    data = _SNAP_CACHE["data"]
+    if data is not None:
+        if (now - _SNAP_CACHE["ts"]) < _SNAP_TTL:
+            return data                        # fresh
+        # STALE: serve stale now, refresh once in the background.
+        start = False
+        with _SNAP_LOCK:
+            if not _SNAP_REFRESHING["v"]:
+                _SNAP_REFRESHING["v"] = True
+                start = True
+        if start:
+            threading.Thread(target=_bg_refresh, name="entsog-snap-refresh",
+                             daemon=True).start()
+        return data
+    # COLD (no cache — fresh process): single-flight inline build so only one
+    # thread does the fan-out; concurrent callers wait on the lock, then get the
+    # just-built result instead of each stampeding ENTSOG.
+    with _SNAP_LOCK:
+        if _SNAP_CACHE["data"] is not None:    # built while we waited on the lock
+            return _SNAP_CACHE["data"]
+        return _rebuild_snapshot()
 
 
 _DISCLAIMER = ("EU gas TRANSMISSION-ACTIVITY context (physical throughput + net "
