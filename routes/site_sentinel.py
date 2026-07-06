@@ -300,6 +300,15 @@ _EDGE_PROBE_UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
                   "AppleWebKit/537.36 (KHTML, like Gecko) "
                   "Chrome/120.0.0.0 Safari/537.36")
 
+# r-workos-sentinel (2026-07-06): durable server-side check that the WorkOS OAuth
+# challenge (the anon Claude/ChatGPT durable-identity lever) is still firing. It's a
+# POST probe so it can't live in the GET-based PAGES manifest — scan_all() appends its
+# result so a regression becomes a brain finding + operator alert like any page.
+# Disable via SENTINEL_WORKOS_PROBE=0. Probes _SITE_BASE/mcp by default (same edge the
+# sentinel already self-probes); override the target with SENTINEL_MCP_PROBE_URL.
+_WORKOS_PROBE_ENABLED = os.environ.get("SENTINEL_WORKOS_PROBE", "1").strip().lower() not in ("0", "false", "no")
+_WORKOS_PROBE_URL = (os.environ.get("SENTINEL_MCP_PROBE_URL") or (_SITE_BASE + "/mcp"))
+
 
 def _conn():
     import psycopg2
@@ -706,6 +715,63 @@ def _probe_entry(entry: dict) -> tuple[dict, dict]:
     return entry, scan
 
 
+def _probe_workos_challenge() -> tuple[dict, dict]:
+    """One ANONYMOUS pair of MCP POSTs (NO internal/admin key — the whole point is to
+    look like an unauthenticated Claude connector):
+      • initialize -> MUST be 401  (WorkOS OAuth challenge firing → durable identity)
+      • tools/list -> SHOULD be 200 (catalog stays public so connectors can render)
+    A 200 on initialize means the challenge was disabled (check env
+    DCHUB_OAUTH_CHALLENGE_DISABLE=0 on the dchub-mcp-server service). Returns an
+    (entry, scan) pair shaped exactly like _probe_entry so scan_all() persists it and
+    unhealthy_findings()/the brain radar pick up a regression automatically."""
+    entry = {"path": "/mcp#workos-oauth-challenge", "category": "high",
+             "label": "WorkOS OAuth Challenge (anon 401)"}
+    scan = {"status_code": 0, "bytes": 1, "elapsed_ms": 0, "healthy": False, "reason": ""}
+    if not _WORKOS_PROBE_ENABLED:
+        scan.update(healthy=True, reason="probe disabled (SENTINEL_WORKOS_PROBE=0)")
+        return entry, scan
+    import requests, json as _json
+    hdrs = {"content-type": "application/json",
+            "MCP-Protocol-Version": "2025-06-18",
+            "User-Agent": "claude-ai/1.0 (DCHub-Sentinel WorkOS probe)",
+            "X-DC-Probe": "workos-challenge"}
+    def _post(method, retries=2):
+        body = {"jsonrpc": "2.0", "id": 1, "method": method, "params": (
+                    {"protocolVersion": "2025-06-18", "capabilities": {},
+                     "clientInfo": {"name": "claude-ai", "version": "1"}}
+                    if method == "initialize" else {})}
+        for _a in range(retries + 1):
+            try:
+                r = requests.post(_WORKOS_PROBE_URL, timeout=15, headers=hdrs,
+                                  data=_json.dumps(body))
+                return r.status_code
+            except Exception:
+                if _a < retries:
+                    time.sleep(0.5 * (_a + 1)); continue
+        return -1
+    t0 = time.time()
+    init_code = _post("initialize")
+    list_code = _post("tools/list")
+    scan["elapsed_ms"] = int((time.time() - t0) * 1000)
+    scan["status_code"] = init_code
+    if init_code == 401:
+        # Challenge is up. Note catalog status but do NOT red-flag on tools/list
+        # semantics alone (avoid false alarms from session-state differences).
+        if list_code in (200, 202):
+            scan.update(healthy=True, reason="challenge firing (initialize=401, tools/list=200)")
+        else:
+            scan.update(healthy=True,
+                        reason=f"challenge firing (initialize=401); catalog tools/list={list_code} (watch)")
+    elif init_code == -1:
+        scan.update(healthy=False,
+                    reason="mcp endpoint unreachable from sentinel (initialize probe failed)")
+    else:
+        scan.update(healthy=False,
+                    reason=(f"WorkOS CHALLENGE OFF: anon initialize={init_code} (expected 401) — durable "
+                            f"identity DISABLED; set DCHUB_OAUTH_CHALLENGE_DISABLE=0 on dchub-mcp-server"))
+    return entry, scan
+
+
 def scan_all() -> list[dict]:
     """Run one full sweep. Persists to DB; returns the full result set.
 
@@ -726,6 +792,13 @@ def scan_all() -> list[dict]:
         # is unnecessary because _scan_one/_edge_probe already never raise.
         for entry, scan in ex.map(_probe_entry, _MANIFEST):
             scanned.append((entry, scan))
+    # r-workos-sentinel: durable WorkOS OAuth-challenge health (a POST probe, so it
+    # can't live in the GET PAGES manifest). Wrapped so a probe hiccup can never break
+    # the page sweep.
+    try:
+        scanned.append(_probe_workos_challenge())
+    except Exception:
+        pass
 
     # ── Phase 2: serial persistence ──────────────────────────────────
     c = _conn()
