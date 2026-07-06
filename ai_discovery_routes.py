@@ -120,6 +120,23 @@ def register_discovery_routes(app):
                         "tags": ["Public"]
                     }
                 },
+                "/api/v1/interconnection-queue/refined": {
+                    "get": {
+                        "operationId": "getRefinedQueue",
+                        "summary": "Server-side set-reduction over the ISO interconnection queue",
+                        "description": "Filters ~5,300 US interconnection-queue projects (7 ISOs) server-side so an agent ingests survivors, not the raw ~1,744 GW queue (avoids in-context-filter token blowup). Phase-1 predicates: min_mw, max_ttp_months (ISO-level estimate), iso, baseload_only. Returns the DCHubEnvelope with _entity=queue_results. A fiber_km predicate + a per-survivor site_evaluation_handoff arrive with the queue geocode.",
+                        "parameters": [
+                            {"name": "min_mw", "in": "query", "schema": {"type": "number"}, "description": "Minimum project capacity in MW (e.g. 1000 for 1 GW+)"},
+                            {"name": "max_ttp_months", "in": "query", "schema": {"type": "integer"}, "description": "Max time-to-power in months (ISO-level avg interconnection wait; keeps projects in ISOs at or under this)"},
+                            {"name": "iso", "in": "query", "schema": {"type": "string", "enum": ["PJM", "ERCOT", "MISO", "CAISO", "SPP", "NYISO", "ISO-NE"]}, "description": "Restrict to one ISO"},
+                            {"name": "baseload_only", "in": "query", "schema": {"type": "boolean", "default": False}, "description": "Keep only firm/dispatchable fuel (nuclear, gas, steam, geothermal, hydro, coal); exclude wind/solar/storage"},
+                            {"name": "status", "in": "query", "schema": {"type": "string", "default": "active"}, "description": "Queue status filter (default active; 'all' for every status)"},
+                            {"name": "limit", "in": "query", "schema": {"type": "integer", "default": 200, "maximum": 1000}, "description": "Max survivors returned"}
+                        ],
+                        "responses": {"200": {"description": "Refined queue survivors (_entity=queue_results)", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/DCHubEnvelope"}}}}},
+                        "tags": ["Public"]
+                    }
+                },
                 "/api/v1/facilities": {
                     "get": {
                         "operationId": "searchFacilities",

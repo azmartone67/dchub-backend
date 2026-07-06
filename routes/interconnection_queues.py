@@ -349,3 +349,106 @@ LBNL <a href="https://emp.lbl.gov/queues">Queued Up</a>
     return Response(html, mimetype="text/html; charset=utf-8",
                     headers={"Cache-Control": "public, max-age=3600, s-maxage=3600",
                              "X-DC-Phase": "ZZZZZ-round47"})
+
+
+# ── r-refined-queue (2026-07-06) — server-side set-reduction over the queue ──
+# Gemini's architecture vote: push the high-cardinality filter to the DATA layer
+# so an agent ingests survivors, not 1,744 GW of raw queue (the in-context-filter
+# token-blowup). Phase-1 predicates all live on interconnect_queue (no spatial
+# join): min_mw, max_ttp_months (ISO-level estimate), iso, baseload_only. A
+# fiber_km predicate + a per-survivor site_evaluation_handoff arrive once the
+# rows are geocoded (they carry state/county/POI but NULL lat/lng). Returns the
+# envelope with _entity:"queue_results" so an agent branches before parsing.
+_ISO_TTP_MONTHS = {  # ISO avg interconnection wait (DCPI); per-project ETA = geocode-era refinement
+    "PJM": 50.5, "ERCOT": 32.6, "MISO": 33.7, "CAISO": 39.9,
+    "SPP": 24.0, "NYISO": 31.4, "ISO-NE": 33.8, "ISONE": 33.8, "ISNE": 33.8,
+}
+# Firm / dispatchable = baseload-capable for AI load; exclude intermittent + storage-only.
+# NOTE: Postgres POSIX regex uses \y for word boundary (not \b).
+_NON_BASELOAD_RE = r"(wind|solar|\ypv\y|storage|battery|\ywin\y|\ybess\y)"
+
+
+@interconnection_queues_bp.route("/api/v1/interconnection-queue/refined")
+def api_refined_queue():
+    import re as _re
+    a = request.args
+    def _num(k, d=None):
+        v = a.get(k)
+        try:
+            return float(v) if v not in (None, "") else d
+        except Exception:
+            return d
+    min_mw = _num("min_mw", 0) or 0
+    max_ttp = _num("max_ttp_months", None)
+    iso = (a.get("iso") or "").strip()
+    baseload_only = str(a.get("baseload_only", "")).lower() in ("1", "true", "yes")
+    status = (a.get("status") or "active").strip().lower()
+    try:
+        limit = max(1, min(int(a.get("limit") or 200), 1000))
+    except Exception:
+        limit = 200
+
+    where = ["capacity_mw IS NOT NULL", "capacity_mw >= %s"]
+    params = [min_mw]
+    if iso:
+        where.append("upper(iso) = upper(%s)"); params.append(iso)
+    if status and status != "all":
+        where.append("lower(coalesce(queue_status,'')) LIKE %s"); params.append("%" + status + "%")
+    if baseload_only:
+        where.append("coalesce(fuel_type,'') !~* %s"); params.append(_NON_BASELOAD_RE)
+    if max_ttp is not None:
+        ttp_isos = [k.upper() for k, v in _ISO_TTP_MONTHS.items() if v <= max_ttp]
+        if ttp_isos:
+            where.append("upper(iso) = ANY(%s)"); params.append(ttp_isos)
+        else:
+            where.append("1=0")
+
+    if not NEON_URL:
+        return jsonify(ok=False, error="no_db", _entity="error"), 503
+    wc = " AND ".join(where)
+    try:
+        with psycopg.connect(NEON_URL, autocommit=True) as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT project_name, iso, state, county, fuel_type, capacity_mw, "
+                "queue_status, queue_date, queue_id, poi_name FROM interconnect_queue "
+                "WHERE " + wc + " ORDER BY capacity_mw DESC NULLS LAST LIMIT %s",
+                params + [limit])
+            cols = [c.name for c in cur.description]
+            rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+            cur.execute("SELECT COUNT(*), COALESCE(SUM(capacity_mw),0) "
+                        "FROM interconnect_queue WHERE " + wc, params)
+            total_n, total_mw = cur.fetchone()
+    except Exception as e:
+        return jsonify(ok=False, error=str(e)[:200], _entity="error"), 200
+
+    by_iso, by_fuel = {}, {}
+    survivors = []
+    for d in rows:
+        iso_u = (d.get("iso") or "").upper()
+        d["capacity_mw"] = float(d["capacity_mw"]) if d["capacity_mw"] is not None else None
+        d["queue_date"] = d["queue_date"].isoformat() if d.get("queue_date") else None
+        d["estimated_ttp_months"] = _ISO_TTP_MONTHS.get(iso_u) or _ISO_TTP_MONTHS.get(iso_u.replace("-", ""))
+        firm = not _re.search(_NON_BASELOAD_RE.replace(r"\y", r"\b"), d.get("fuel_type") or "", _re.I)
+        d["fuel_class"] = "firm/baseload-capable" if firm else "intermittent"
+        by_iso[iso_u] = by_iso.get(iso_u, 0) + 1
+        by_fuel[d["fuel_class"]] = by_fuel.get(d["fuel_class"], 0) + 1
+        survivors.append(d)
+
+    return jsonify({
+        "_entity": "queue_results",
+        "ok": True,
+        "count_returned": len(survivors),
+        "count_total_matching": int(total_n or 0),
+        "total_queued_mw": round(float(total_mw or 0), 1),
+        "filters_applied": {"min_mw": min_mw, "max_ttp_months": max_ttp,
+                            "iso": iso or None, "baseload_only": baseload_only, "status": status},
+        "results": survivors,
+        "summary": {"by_iso": by_iso, "by_fuel_class": by_fuel},
+        "_source": "DC Hub — dchub.cloud",
+        "_cite": "Data: DC Hub (dchub.cloud), CC-BY-4.0 — cite as \"DC Hub, dchub.cloud\"",
+        "note": ("Server-side set-reduction over the live ISO interconnection queue "
+                 "(~5,300 projects, 7 ISOs). estimated_ttp_months is the ISO-level average "
+                 "interconnection wait (DCPI); a per-project ETA + a fiber_km predicate + a "
+                 "per-survivor site_evaluation_handoff arrive once the queue rows are geocoded "
+                 "(they carry state/county/POI, not lat/lng)."),
+    })
