@@ -391,6 +391,8 @@ def api_refined_queue():
     baseload_only = str(a.get("baseload_only", "")).lower() in ("1", "true", "yes")
     fuel_type = (a.get("fuel_type") or "").strip()
     status = (a.get("status") or "active").strip().lower()
+    max_fiber_km = _num("max_fiber_km", None)
+    geocoded_only = str(a.get("geocoded_only", "")).lower() in ("1", "true", "yes")
     try:
         limit = max(1, min(int(a.get("limit") or 200), 1000))
     except Exception:
@@ -432,6 +434,13 @@ def api_refined_queue():
             where.append("upper(iso) = ANY(%s)"); params.append(ttp_isos)
         else:
             where.append("1=0")
+    # Phase-2 spatial predicates (only geocoded rows qualify; 83% of the queue).
+    if geocoded_only or max_fiber_km is not None:
+        where.append("lat IS NOT NULL AND lng IS NOT NULL")
+    if max_fiber_km is not None:
+        # fiber_km = km to nearest MAPPED long-haul route endpoint (coarse backbone
+        # proximity, sparse ~260-node dataset; origin is a county-centroid for most rows).
+        where.append("fiber_km IS NOT NULL AND fiber_km <= %s"); params.append(max_fiber_km)
 
     if not NEON_URL:
         return jsonify(ok=False, error="no_db", _entity="error"), 503
@@ -440,7 +449,8 @@ def api_refined_queue():
         with psycopg.connect(NEON_URL, autocommit=True) as conn, conn.cursor() as cur:
             cur.execute(
                 "SELECT project_name, iso, state, county, fuel_type, capacity_mw, "
-                "queue_status, queue_date, queue_id, poi_name FROM interconnect_queue "
+                "queue_status, queue_date, queue_id, poi_name, lat, lng, fiber_km, geo_method "
+                "FROM interconnect_queue "
                 "WHERE " + wc + " ORDER BY capacity_mw DESC NULLS LAST LIMIT %s",
                 params + [limit])
             cols = [c.name for c in cur.description]
@@ -453,6 +463,7 @@ def api_refined_queue():
 
     by_iso, by_fuel = {}, {}
     survivors = []
+    n_geocoded = 0
     for d in rows:
         iso_u = (d.get("iso") or "").upper()
         d["capacity_mw"] = float(d["capacity_mw"]) if d["capacity_mw"] is not None else None
@@ -460,6 +471,24 @@ def api_refined_queue():
         d["estimated_ttp_months"] = _ISO_TTP_MONTHS.get(iso_u) or _ISO_TTP_MONTHS.get(iso_u.replace("-", ""))
         firm = not _re.search(_NON_BASELOAD_RE.replace(r"\y", r"\b"), d.get("fuel_type") or "", _re.I)
         d["fuel_class"] = "firm/baseload-capable" if firm else "intermittent"
+        # Phase-2 geo enrichment: normalize coords + fiber_km, attach a compact
+        # ready-to-pipe site_evaluation_handoff (verbose 'why' stays in the top-level
+        # handoff / note, so per-survivor payload stays lean).
+        lat = float(d["lat"]) if d.get("lat") is not None else None
+        lng = float(d["lng"]) if d.get("lng") is not None else None
+        d["lat"], d["lng"] = lat, lng
+        d["fiber_km"] = float(d["fiber_km"]) if d.get("fiber_km") is not None else None
+        d["coordinate_precision"] = d.pop("geo_method", None)  # poi_exact | county_centroid
+        if lat is not None and lng is not None:
+            n_geocoded += 1
+            mw = d["capacity_mw"]
+            d["site_evaluation_handoff"] = {
+                "analyze_site": ({"lat": lat, "lon": lng, "capacity_mw": mw, "include_risk": True, "include_fiber": True}
+                                 if mw else {"lat": lat, "lon": lng, "include_risk": True, "include_fiber": True}),
+                "get_water_risk": {"lat": lat, "lng": lng},
+            }
+        else:
+            d["site_evaluation_handoff"] = None
         by_iso[iso_u] = by_iso.get(iso_u, 0) + 1
         by_fuel[d["fuel_class"]] = by_fuel.get(d["fuel_class"], 0) + 1
         survivors.append(d)
@@ -472,9 +501,11 @@ def api_refined_queue():
         "total_queued_mw": round(float(total_mw or 0), 1),
         "filters_applied": {"min_mw": min_mw, "max_ttp_months": max_ttp,
                             "iso": iso or None, "baseload_only": baseload_only,
-                            "fuel_type": fuel_type or None, "status": status},
+                            "fuel_type": fuel_type or None, "status": status,
+                            "max_fiber_km": max_fiber_km, "geocoded_only": geocoded_only},
         "results": survivors,
-        "summary": {"by_iso": by_iso, "by_fuel_class": by_fuel},
+        "summary": {"by_iso": by_iso, "by_fuel_class": by_fuel,
+                    "geocoded_returned": n_geocoded},
         "_source": "DC Hub — dchub.cloud",
         "_cite": "Data: DC Hub (dchub.cloud), CC-BY-4.0 — cite as \"DC Hub, dchub.cloud\"",
         "note": ("Server-side set-reduction over the live ISO interconnection queue "
@@ -484,8 +515,13 @@ def api_refined_queue():
                  "means still-progressing — it excludes terminal states (withdrawn/cancelled/"
                  "suspended/in-commercial-operation) rather than matching the literal word, so it "
                  "is cross-ISO safe (SPP labels its live projects 'IA FULLY EXECUTED/ON SCHEDULE', "
-                 "'DISIS STAGE', etc.). estimated_ttp_months is the ISO-level average "
-                 "interconnection wait (DCPI); a per-project ETA + a fiber_km predicate + a "
-                 "per-survivor site_evaluation_handoff arrive once the queue rows are geocoded "
-                 "(they carry state/county/POI, not lat/lng)."),
+                 "'DISIS STAGE', etc.). PHASE 2 LIVE: ~83% of rows now carry lat/lng + a compact "
+                 "per-survivor site_evaluation_handoff (ready-to-pipe analyze_site + get_water_risk "
+                 "args). coordinate_precision is 'poi_exact' (matched a named substation) or "
+                 "'county_centroid' (county-median of substation locations, ~county resolution — not "
+                 "parcel-exact). fiber_km + max_fiber_km = km to the nearest MAPPED long-haul route "
+                 "endpoint (coarse backbone-proximity from a sparse ~260-node dataset, NOT last-mile "
+                 "fiber). Use geocoded_only=true to keep only survivors an agent can pipe into "
+                 "analyze_site. estimated_ttp_months stays the ISO-level average (DCPI); a per-project "
+                 "ETA is the remaining refinement."),
     })
