@@ -50,6 +50,10 @@ RERANK_MODEL = "rerank-english-v3.0"
 _RERANK_OVERFETCH = 4      # fetch k*4 candidates to rerank
 _RERANK_MAX_FETCH = 60     # never over-fetch beyond this
 def _rerank_on() -> bool:
+    # Rerank is Cohere-only (cross-encoder). On any other embed provider skip it
+    # (→ cosine order) rather than burn a Cohere call that would 429.
+    if _embed_provider() != "cohere":
+        return False
     return (os.environ.get("BRAIN_RAG_RERANK", "1").strip().lower()
             not in ("0", "false", "no", "off"))
 
@@ -356,7 +360,17 @@ def _ensure() -> bool:
 
 
 # ── Cohere embeddings ─────────────────────────────────────────────────
-def _embed(texts, input_type="search_document"):
+def _embed_provider() -> str:
+    """r-rag-mistral (2026-07-06): which embedding provider to use. Cohere
+    embed-english-v3.0 (1024-d) was original, but the live COHERE_API_KEY is a
+    TRIAL key (1,000/mo) that exhausts → 429 → whole RAG froze. mistral-embed
+    is ALSO 1024-d (drop-in, no schema change), so default to it. Set
+    RAG_EMBED_PROVIDER=cohere to revert once a Cohere PRODUCTION key is in
+    place (then re-embed — cross-provider vectors are not comparable)."""
+    return (os.environ.get("RAG_EMBED_PROVIDER") or "mistral").strip().lower()
+
+
+def _embed_cohere(texts, input_type="search_document"):
     key = (os.environ.get("COHERE_API_KEY") or "").strip()
     if not key or not texts:
         return None
@@ -371,6 +385,40 @@ def _embed(texts, input_type="search_document"):
         return d.get("embeddings")
     except Exception:
         return None
+
+
+def _embed_mistral(texts, input_type=None):
+    # mistral-embed: symmetric (no doc/query split) + 1024-d. input_type is
+    # accepted+ignored for a drop-in signature. Sub-batch to stay under the
+    # provider's per-request cap regardless of caller batch size.
+    key = (os.environ.get("MISTRAL_API_KEY") or "").strip()
+    if not key or not texts:
+        return None
+    texts = list(texts)
+    out = []
+    for i in range(0, len(texts), 64):
+        sub = texts[i:i + 64]
+        body = json.dumps({"model": "mistral-embed", "input": sub}).encode()
+        req = urllib.request.Request("https://api.mistral.ai/v1/embeddings",
+                                     data=body, method="POST")
+        req.add_header("Authorization", "Bearer " + key)
+        req.add_header("Content-Type", "application/json")
+        try:
+            with urllib.request.urlopen(req, timeout=45) as r:
+                d = json.loads(r.read())
+            embs = [it.get("embedding") for it in (d.get("data") or [])]
+        except Exception:
+            return None
+        if len(embs) != len(sub):
+            return None
+        out.extend(embs)
+    return out or None
+
+
+def _embed(texts, input_type="search_document"):
+    if _embed_provider() == "cohere":
+        return _embed_cohere(texts, input_type)
+    return _embed_mistral(texts, input_type)
 
 
 def _vec(v):
