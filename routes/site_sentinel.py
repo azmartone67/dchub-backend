@@ -275,6 +275,12 @@ _MANIFEST: list[dict] = [
     # empty/error shell without false-flagging honest empty states.
     {"path": "/api/v1/reach",                       "category": "high",   "min_bytes":  500, "label": "Reach Scoreboard API"},
     {"path": "/api/v1/brain/mcp-registries",        "category": "high",   "min_bytes":  500, "label": "MCP Registry Coverage API"},
+    # r-workos-sentinel (2026-07-06): the durable WorkOS OAuth-challenge check. NOT a
+    # GET page — the "probe":"workos" marker routes it to _probe_workos_challenge() in
+    # _probe_entry (an anonymous POST pair). It's listed HERE so latest_results() and
+    # unhealthy_findings() (both filtered to _MANIFEST paths) include it — otherwise a
+    # regression would be written but never read, and never alert.
+    {"path": "/mcp#workos-oauth-challenge",         "category": "high",   "label": "WorkOS OAuth Challenge (anon 401)", "probe": "workos"},
 ]
 
 
@@ -709,6 +715,9 @@ def _probe_entry(entry: dict) -> tuple[dict, dict]:
     """One entry's full probe: primary (origin liveness) + edge (user latency +
     cache verdict). Pure — no DB, no shared state — so it is safe to run in a
     thread pool. Returns (entry, merged_scan)."""
+    # r-workos-sentinel: POST OAuth-challenge probe, not a GET page + edge probe.
+    if entry.get("probe") == "workos":
+        return _probe_workos_challenge()
     scan = _scan_one(entry)
     edge = _edge_probe(entry, origin_ms=scan.get("elapsed_ms"))
     scan.update(edge)
@@ -792,13 +801,6 @@ def scan_all() -> list[dict]:
         # is unnecessary because _scan_one/_edge_probe already never raise.
         for entry, scan in ex.map(_probe_entry, _MANIFEST):
             scanned.append((entry, scan))
-    # r-workos-sentinel: durable WorkOS OAuth-challenge health (a POST probe, so it
-    # can't live in the GET PAGES manifest). Wrapped so a probe hiccup can never break
-    # the page sweep.
-    try:
-        scanned.append(_probe_workos_challenge())
-    except Exception:
-        pass
 
     # ── Phase 2: serial persistence ──────────────────────────────────
     c = _conn()
@@ -1088,7 +1090,8 @@ def verify_outcomes(stuck_hours: float = 2.0) -> dict:
                 if not entry:
                     continue  # manifest changed since this row was written
                 out["checked"] += 1
-                scan = _scan_one(entry)
+                scan = (_probe_workos_challenge()[1] if entry.get("probe") == "workos"
+                        else _scan_one(entry))
                 if scan.get("healthy"):
                     downtime_min = None
                     if last_healthy_at is not None:
@@ -1594,7 +1597,8 @@ def sentinel_inbox_probe_one():
     entry = next((e for e in _MANIFEST if e["path"] == target), None)
     if entry is None:
         return jsonify(error="not_in_manifest", path=target), 404
-    scan = _scan_one(entry)
+    scan = (_probe_workos_challenge()[1] if entry.get("probe") == "workos"
+            else _scan_one(entry))
     # Persist this single result (mirrors the multi-scan upsert above).
     c = _conn()
     if c is not None:
