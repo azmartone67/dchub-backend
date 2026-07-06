@@ -17,7 +17,7 @@ This blueprint ships four pages:
     GET  /connect/claude-desktop
 
 Each is:
-    1. Header + value prop ("DC Hub for <Client> — 48 tools, free tier, 30s")
+    1. Header + value prop ("DC Hub for <Client> — {TOOLS} tools, free tier, 30s")
     2. A "Mint your free trial key" button (POSTs /api/v1/keys/claim?platform=X,
        in-place swaps to the install snippet with the key embedded)
     3. A pre-rendered, copy-button install snippet tuned per client
@@ -371,12 +371,12 @@ def _record_page_onramp_view():
 _PAGE_TEMPLATE = """<!DOCTYPE html>
 <html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>DC Hub for {NAME} — 48 MCP tools, free tier, 30s to install</title>
-<meta name="description" content="Install DC Hub's MCP server in {NAME} in 30 seconds. 48 tools across 21,000+ data centers, 300+ power markets, live ISO grids, 2,000+ tracked deals. Free trial — no credit card.">
+<title>DC Hub for {NAME} — {TOOLS} MCP tools, free tier, 30s to install</title>
+<meta name="description" content="Install DC Hub's MCP server in {NAME} in 30 seconds. {TOOLS} tools across 21,000+ data centers, 300+ power markets, live ISO grids, 2,000+ tracked deals. Free trial — no credit card.">
 <meta name="robots" content="index,follow">
 <link rel="canonical" href="https://dchub.cloud/connect/{KEY}">
 <meta property="og:title" content="DC Hub MCP for {NAME}">
-<meta property="og:description" content="48 tools, 30 seconds to install, free trial — for AI agents that need real data center, grid, and infrastructure intelligence.">
+<meta property="og:description" content="{TOOLS} tools, 30 seconds to install, free trial — for AI agents that need real data center, grid, and infrastructure intelligence.">
 <meta property="og:image" content="https://api.dchub.cloud/static/og/landing-architecture.png">
 <style>
  :root{{--bg:#0a0a0f;--card:#15151c;--border:#2a2a35;--text:#e8e8f0;--muted:#9a9aa6;--accent:#7c5cff;--accent2:#22d3ee;--ok:#10b981;--warn:#f59e0b}}
@@ -439,7 +439,7 @@ _PAGE_TEMPLATE = """<!DOCTYPE html>
 
 <div class="eyebrow">DC Hub MCP &middot; {NAME}</div>
 <h1>DC Hub for {NAME}</h1>
-<p class="tagline">{TAGLINE} &middot; 48 tools, free tier, 30 seconds to install.</p>
+<p class="tagline">{TAGLINE} &middot; {TOOLS} tools, free tier, 30 seconds to install.</p>
 
 <div class="badges">
   <a href="/api/v1/mcp/quality" title="Live DC Hub operational quality score (transparent breakdown)" style="text-decoration:none"><img src="/api/v1/mcp/quality/badge.svg" alt="DC Hub quality score" style="height:22px;vertical-align:middle"></a>
@@ -497,7 +497,7 @@ _PAGE_TEMPLATE = """<!DOCTYPE html>
   <div class="step"><span class="step-num">4</span> Trial limits + upgrade</div>
   <p style="margin:0 0 6px;color:var(--muted);font-size:.95rem">
     Your trial gives <b style="color:var(--text)">50 requests/day for 7 days</b>.
-    Need more? Upgrade to Pro — gets you unlimited daily quota, all 48 tools,
+    Need more? Upgrade to Pro — gets you unlimited daily quota, all {TOOLS} tools,
     and removes the free-tier truncation on grid + fiber intel.
   </p>
   <div class="upgrade-grid">
@@ -632,6 +632,12 @@ function copySnippet() {{
 """
 
 
+# r-toolcount (2026-07-06): single source for the connect-page tool count.
+# Canonical live value = ai_surface_canon._mcp_tool_count() (MCP tools/list).
+# Was hardcoded "48" in 5 template spots and went stale (live = 59).
+_TOOL_COUNT = 59
+
+
 def _render_page(client_key: str, view_id: int | None) -> str:
     c = _CLIENTS[client_key]
     # Render examples as <div class="example"> lines
@@ -659,6 +665,7 @@ def _render_page(client_key: str, view_id: int | None) -> str:
     # escape under .format(). The JSON placeholders are inserted via
     # repr-safe json.dumps so they're always valid JS literals.
     return _PAGE_TEMPLATE.format(
+        TOOLS=_TOOL_COUNT,
         NAME=c["name"],
         KEY=client_key,
         TAGLINE=c["tagline"],
