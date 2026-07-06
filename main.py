@@ -1927,6 +1927,17 @@ try:
     except Exception as _fwms:
         import logging
         logging.getLogger(__name__).warning('fixwave_master_shell wiring failed: %s', _fwms)
+    # 2026-07-05: Flywheel master shell — ONE pane over the FIVE back-half-of-
+    # the-funnel priorities (retention/durable-identity, brain dedup + facilities
+    # backlog, canonical identity, media distribution, SEO slug-freeze). Read-only
+    # DIAGNOSTIC. GET /admin/flywheel · /api/v1/admin/flywheel/master-tick
+    try:
+        from routes.flywheel_master_shell import flywheel_master_shell_bp
+        app.register_blueprint(flywheel_master_shell_bp)
+        print("[main] flywheel_master_shell_bp registered: GET /admin/flywheel", flush=True)
+    except Exception as _flms:
+        import logging
+        logging.getLogger(__name__).warning('flywheel_master_shell wiring failed: %s', _flms)
     # 2026-07-03: Agent-enablement portal — the ONE HTML pane over the agent stack
     # (north-star agents/wk, onboarding shell score+worklist, AI-adoption snapshot,
     # tool-tuner freshness). Read-only. GET /admin/agents
