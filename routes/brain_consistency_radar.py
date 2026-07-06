@@ -79,6 +79,39 @@ _WORKER_PROBE_URL  = "https://dchub.cloud/api/v1/dcpi/scores?limit=1"
 # get a generic "unreachable" and have to grep Railway logs).
 _LAST_FETCH_ERROR: dict[str, str] = {}
 
+# r-peace (2026-07-05): the radar probes its OWN public edge (dchub.cloud via
+# CF → back to this backend). When the replica is busy those self-probes time
+# out, and each timeout used to print `[brain-radar] <url> TimeoutError` to
+# stderr — so the busier the box got, the LOUDER its logs got, drowning real
+# signal in self-inflicted noise. A transient timeout / connection error to our
+# own edge is NEVER a drift finding (the caller just sees body=None and skips
+# it — the finding logic reads the parsed body, not the log line), so it's
+# silenced exactly like the already-silenced 401/403 case. Genuinely unexpected
+# errors still print, but throttled to once per URL per 10 min so a persistent
+# problem is visible without flooding.
+_RADAR_LOG_THROTTLE: dict[str, float] = {}
+_RADAR_LOG_TTL_S = 600
+
+def _radar_transient(msg: str) -> bool:
+    m = (msg or "").lower()
+    return any(s in m for s in (
+        "timed out", "timeout", "connection reset", "connection refused",
+        "connection aborted", "broken pipe", "temporarily unavailable",
+        "bad gateway", "502", "503", "504"))
+
+def _radar_log(url: str, msg: str) -> None:
+    """Print a radar fetch error at most once per URL per TTL; stay silent for
+    transient self-edge conditions (they're load, not drift)."""
+    if _radar_transient(msg):
+        return
+    import time as _t
+    now = _t.time()
+    last = _RADAR_LOG_THROTTLE.get(url, 0.0)
+    if now - last < _RADAR_LOG_TTL_S:
+        return
+    _RADAR_LOG_THROTTLE[url] = now
+    print(f"[brain-radar] {url} {msg}", file=sys.stderr)
+
 
 def _http_get(url: str, timeout: int = 8) -> tuple[Optional[str], Optional[dict]]:
     """Returns (body, headers_dict) or (None, None) on error.
@@ -181,17 +214,17 @@ def _http_get(url: str, timeout: int = 8) -> tuple[Optional[str], Optional[dict]
         # don't pollute Railway logs with red WARNINGs.
         if e.code in (401, 403):
             return None, None
-        print(f"[brain-radar] {url} {msg}", file=sys.stderr)
+        _radar_log(url, msg)
         return None, None
     except urllib.error.URLError as e:
         msg = f"URLError: {e.reason}"
         _LAST_FETCH_ERROR[url] = msg
-        print(f"[brain-radar] {url} {msg}", file=sys.stderr)
+        _radar_log(url, msg)
         return None, None
     except Exception as e:
         msg = f"{type(e).__name__}: {str(e)[:200]}"
         _LAST_FETCH_ERROR[url] = msg
-        print(f"[brain-radar] {url} {msg}", file=sys.stderr)
+        _radar_log(url, msg)
         return None, None
 
 
