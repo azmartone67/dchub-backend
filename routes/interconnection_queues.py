@@ -392,7 +392,15 @@ def api_refined_queue():
     where = ["capacity_mw IS NOT NULL", "capacity_mw >= %s"]
     params = [min_mw]
     if iso:
-        where.append("upper(iso) = upper(%s)"); params.append(iso)
+        # Comma/semicolon-separated ISO union; normalize away non-alnum so ISO-NE,
+        # ISONE, iso-ne all collapse to ISONE and match the stored label. e.g.
+        # iso=ERCOT,PJM keeps both; combines with max_ttp_months as an intersection.
+        _iso_toks = [_re.sub(r"[^A-Z0-9]", "", t.strip().upper())
+                     for t in iso.replace(";", ",").split(",") if t.strip()]
+        _iso_toks = [t for t in _iso_toks if t]
+        if _iso_toks:
+            where.append("regexp_replace(upper(coalesce(iso,'')),'[^A-Z0-9]','','g') = ANY(%s)")
+            params.append(_iso_toks)
     if status and status != "all":
         where.append("lower(coalesce(queue_status,'')) LIKE %s"); params.append("%" + status + "%")
     if baseload_only:
