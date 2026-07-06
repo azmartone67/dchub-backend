@@ -382,6 +382,7 @@ def api_refined_queue():
     max_ttp = _num("max_ttp_months", None)
     iso = (a.get("iso") or "").strip()
     baseload_only = str(a.get("baseload_only", "")).lower() in ("1", "true", "yes")
+    fuel_type = (a.get("fuel_type") or "").strip()
     status = (a.get("status") or "active").strip().lower()
     try:
         limit = max(1, min(int(a.get("limit") or 200), 1000))
@@ -396,6 +397,15 @@ def api_refined_queue():
         where.append("lower(coalesce(queue_status,'')) LIKE %s"); params.append("%" + status + "%")
     if baseload_only:
         where.append("coalesce(fuel_type,'') !~* %s"); params.append(_NON_BASELOAD_RE)
+    if fuel_type:
+        # Inclusive substring match on the raw fuel label (POSIX ~*): comma/semicolon
+        # separated tokens, keep rows matching ANY. e.g. "gas" hits GAS/Natural Gas/
+        # "Natural Gas; Other"; "nuclear,hydro" unions the two. Alnum/space/+/- only.
+        _toks = [t.strip() for t in fuel_type.replace(";", ",").split(",") if t.strip()]
+        _toks = [t for t in _toks if _re.fullmatch(r"[A-Za-z0-9 /+-]{1,24}", t)]
+        if _toks:
+            where.append("coalesce(fuel_type,'') ~* %s")
+            params.append("(" + "|".join(_toks) + ")")
     if max_ttp is not None:
         ttp_isos = [k.upper() for k, v in _ISO_TTP_MONTHS.items() if v <= max_ttp]
         if ttp_isos:
@@ -441,13 +451,16 @@ def api_refined_queue():
         "count_total_matching": int(total_n or 0),
         "total_queued_mw": round(float(total_mw or 0), 1),
         "filters_applied": {"min_mw": min_mw, "max_ttp_months": max_ttp,
-                            "iso": iso or None, "baseload_only": baseload_only, "status": status},
+                            "iso": iso or None, "baseload_only": baseload_only,
+                            "fuel_type": fuel_type or None, "status": status},
         "results": survivors,
         "summary": {"by_iso": by_iso, "by_fuel_class": by_fuel},
         "_source": "DC Hub — dchub.cloud",
         "_cite": "Data: DC Hub (dchub.cloud), CC-BY-4.0 — cite as \"DC Hub, dchub.cloud\"",
         "note": ("Server-side set-reduction over the live ISO interconnection queue "
-                 "(~5,300 projects, 7 ISOs). estimated_ttp_months is the ISO-level average "
+                 "(~5,300 projects, 7 ISOs). fuel_type is an inclusive substring match on "
+                 "the raw fuel label (e.g. 'gas' hits GAS/Natural Gas); baseload_only excludes "
+                 "wind/solar/storage. estimated_ttp_months is the ISO-level average "
                  "interconnection wait (DCPI); a per-project ETA + a fiber_km predicate + a "
                  "per-survivor site_evaluation_handoff arrive once the queue rows are geocoded "
                  "(they carry state/county/POI, not lat/lng)."),
