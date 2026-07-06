@@ -13324,23 +13324,41 @@ def _welcome_email_resend_fallback(to_email, raw_api_key, plan_name='pro'):
     if not rk or not to_email:
         return False
     try:
-        _plan = (plan_name or '').replace('_', ' ')
+        _plan = (plan_name or '').replace('_', ' ').strip() or 'DC Hub'
+        # r-whiteglove (2026-07-06): founder-voiced welcome so EVERY new customer
+        # gets the same white-glove onboarding — a personal greeting (best-effort
+        # first name, fail-soft to 'there'), the load-bearing "Connect to Claude"
+        # connector block, a first-query nudge, and a DIRECT reply path to the
+        # founder. from/reply_to = jonathan@dchub.cloud so replies reach a human
+        # (was "DC Hub <alerts@dchub.cloud>", an unmonitored transactional inbox).
+        _first = 'there'
+        try:
+            _rc_n, _rows_n = _pg_execute(
+                "SELECT name FROM users WHERE lower(email)=lower(%s) "
+                "AND COALESCE(name,'')<>'' LIMIT 1", (to_email,), fetch=True)
+            if _rows_n and _rows_n[0][0]:
+                _first = str(_rows_n[0][0]).strip().split()[0]
+        except Exception:
+            _first = 'there'
         # r-onboarding-fix (2026-07-03): SendGrid is dead in prod (no module), so
-        # THIS fallback is the email that actually sends. Previously it shipped a
-        # bare REST key + `claude mcp add … X-API-Key:<dchub_ REST key>` and NO
-        # connector — so the #6/#1417 "Connect to Claude" section (dch_live_ key +
-        # ?api_key= URL) never reached a real buyer. Lead with it here.
+        # THIS fallback is the email that actually sends. It MUST carry the
+        # "Connect to Claude" connector block (dch_live_ key + ?api_key= URL) —
+        # the one credential Claude needs, which no other surface delivered.
         _conn = _welcome_mcp_connector_html(to_email, raw_api_key)
-        html = (f"<div style='font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;max-width:600px;margin:0 auto;color:#1a1a2e;line-height:1.55'>"
-                f"<h1 style='font-size:22px;'>Welcome to DC Hub — your {_plan} access is live</h1>"
+        html = (f"<div style='font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;max-width:600px;margin:0 auto;color:#1a1a2e;line-height:1.6;font-size:15px'>"
+                f"<p>Hi {_first},</p>"
+                f"<p>Jonathan here, founder of DC Hub. Thanks for coming on board as a <strong>{_plan}</strong> subscriber &mdash; I wanted to reach out personally and make sure you have everything you need to get value fast. Your account is live and fully provisioned.</p>"
                 f"{_conn}"
-                f"<p style='font-size:14px;color:#6a6a7a;margin-top:24px;'>Prefer the REST API? Your key:</p>"
-                f"<p style='font-size:15px'><code>{raw_api_key}</code></p>"
-                f"<p style='font-size:14px;color:#6a6a7a;'>Set it as your <code>X-API-Key</code> header. "
-                f"Questions? <a href='mailto:api@dchub.cloud'>api@dchub.cloud</a> · "
-                f"<a href='https://dchub.cloud/pricing'>dchub.cloud/pricing</a></p><p>— DC Hub</p></div>")
-        payload = _json.dumps({"from": "DC Hub <alerts@dchub.cloud>", "to": [to_email],
-                               "subject": "Welcome to DC Hub — Your API Key Inside",
+                f"<p style='font-size:14px;color:#6a6a7a;margin-top:20px;'>Prefer the REST API? Your key: <code>{raw_api_key}</code> &mdash; send it as your <code>X-API-Key</code> header.</p>"
+                f"<p>A good first query once you're connected: <em>&ldquo;rank the top US data center markets by power availability&rdquo;</em> &mdash; or pull any market's DC Hub Power Index at <a href='https://dchub.cloud/dcpi'>dchub.cloud/dcpi</a>.</p>"
+                f"<p>If anything's unclear, or you'd like 15 minutes to walk through what DC Hub can do for what you're building, just reply here &mdash; it comes straight to me.</p>"
+                f"<p style='margin-bottom:2px;'>Glad to have you aboard.<br>Jonathan<br>"
+                f"<span style='color:#6a6a7a;'>Founder, DC Hub &middot; <a href='https://dchub.cloud'>dchub.cloud</a></span></p></div>")
+        _subject = (f"Welcome to DC Hub, {_first} — you're all set"
+                    if _first != 'there' else "Welcome to DC Hub — you're all set")
+        payload = _json.dumps({"from": "Jonathan Martone <jonathan@dchub.cloud>", "to": [to_email],
+                               "reply_to": "jonathan@dchub.cloud",
+                               "subject": _subject,
                                "html": html}).encode()
         req = _u.Request("https://api.resend.com/emails", data=payload, method="POST",
                          headers={"Authorization": "Bearer " + rk, "Content-Type": "application/json",
