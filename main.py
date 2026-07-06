@@ -3140,6 +3140,75 @@ def _eia_latest_settled(series, value_key='value', floor_ratio=0.5):
     return series[0], False
 
 
+# r-grid-ext (2026-07-06): EIA respondent code → grid_ext_metrics.iso label.
+# grid_ext_metrics + iso_lmp_snapshots hold REAL gridstatus/ISO data the Grid
+# Data Master Shell ingests (load forecast, reserves, margin, committed capacity,
+# marginal emissions, ISO-NE LMP, real-time hub LMP) that the flagship grid tool
+# never surfaced. This maps the two families of ISO labels so we can join them.
+_GRID_EXT_ISO = {
+    'ERCO': 'ERCOT', 'ISNE': 'ISONE', 'CISO': 'CAISO', 'CAL': 'CAISO',
+    'SWPP': 'SPP', 'NYIS': 'NYISO', 'MISO': 'MISO', 'PJM': 'PJM',
+}
+
+
+def _grid_ext_metrics_for(rto_code):
+    """Latest already-ingested extended grid metrics for the region's ISO, from
+    grid_ext_metrics (load_forecast/reserves/margin/capacity/emissions/fuel_mix/
+    ISO-NE lmp) + a real-time hub-average LMP from iso_lmp_snapshots. Real data,
+    no fabrication. Fail-soft: returns {} on any error so the base grid payload
+    is never affected. Runs once per 5-min cache window (see _grid_intel_cached)."""
+    iso = _GRID_EXT_ISO.get((rto_code or '').upper())
+    if not iso:
+        return {}
+    ext, rt_lmp = {}, None
+    try:
+        conn = get_read_db()
+        if not conn:
+            return {}
+        try:
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT DISTINCT ON (category)
+                       category, primary_value, unit, as_of, source
+                  FROM grid_ext_metrics
+                 WHERE iso = %s AND primary_value IS NOT NULL
+                 ORDER BY category, as_of DESC NULLS LAST
+            """, (iso,))
+            for cat, val, unit, as_of, src in cur.fetchall():
+                try:
+                    v = float(val)
+                except (TypeError, ValueError):
+                    v = None
+                ext[cat] = {'value': v, 'unit': unit,
+                            'as_of': as_of.isoformat() if as_of else None,
+                            'source': src or 'gridstatus'}
+            # Real-time benchmark LMP: hub-average over the latest interval.
+            cur.execute("""
+                SELECT ROUND(AVG(lmp_usd_mwh)::numeric, 2), MAX(interval_ending)
+                  FROM iso_lmp_snapshots
+                 WHERE iso = %s AND interval_ending = (
+                       SELECT MAX(interval_ending) FROM iso_lmp_snapshots WHERE iso = %s)
+            """, (iso, iso))
+            row = cur.fetchone()
+            if row and row[0] is not None:
+                rt_lmp = {'value': float(row[0]), 'unit': '$/MWh',
+                          'as_of': row[1].isoformat() if row[1] else None,
+                          'source': 'ISO real-time LMP (hub avg)'}
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+    except Exception:
+        return {}
+    if rt_lmp:
+        # ISO-NE already carries an lmp row from grid_ext_metrics; the other 6
+        # ISOs get their real-time LMP surfaced here for the first time.
+        ext.setdefault('lmp', rt_lmp)
+        ext['rt_lmp_hub_avg'] = rt_lmp
+    return ext
+
+
 def _grid_intel_fetch(region, rto_code):
     """Expensive upstream assembly for phase19b_grid_intelligence. Cached by
     _grid_intel_cached. Timeouts trimmed (15→8, 8→5) so a cache miss can't
@@ -3395,6 +3464,33 @@ def _grid_intel_fetch(region, rto_code):
                     }
         except Exception as e:
             out['data_center_load_error'] = type(e).__name__ + ': ' + str(e)[:160]
+
+    # r-grid-ext (2026-07-06): surface the extended metrics already ingested into
+    # grid_ext_metrics + iso_lmp_snapshots (load forecast, reserves, margin,
+    # committed capacity, marginal emissions, ISO-NE LMP, real-time hub LMP) —
+    # real gridstatus/ISO data the Grid Data Master Shell collects but the tool
+    # never exposed. Promote the highest-signal ones to top-level fields; keep
+    # the full set under extended_metrics. Fail-soft — never breaks the payload.
+    try:
+        _ext = _grid_ext_metrics_for(rto_code)
+        if _ext:
+            out['extended_metrics'] = _ext
+            if _ext.get('load_forecast'):
+                out['load_forecast_mw'] = _ext['load_forecast'].get('value')
+                out['load_forecast_as_of'] = _ext['load_forecast'].get('as_of')
+            if _ext.get('reserves'):
+                out['operating_reserves_mw'] = _ext['reserves'].get('value')
+            if _ext.get('margin'):
+                out['operating_margin_mw'] = _ext['margin'].get('value')
+            if _ext.get('capacity'):
+                out['committed_capacity_mw'] = _ext['capacity'].get('value')
+            if _ext.get('emissions'):
+                out['marginal_emissions_lb_mwh'] = _ext['emissions'].get('value')
+            if _ext.get('lmp') and out.get('lmp_usd_mwh') is None:
+                out['lmp_usd_mwh'] = _ext['lmp'].get('value')
+                out['lmp_as_of'] = _ext['lmp'].get('as_of')
+    except Exception as _ee:
+        out['extended_metrics_error'] = type(_ee).__name__
 
     out['note'] = 'EIA hourly RTO data via api.eia.gov/v2/electricity/rto. ' + \
                   ('Set EIA_API_KEY env var on Railway for higher rate limits.' if not os.environ.get('EIA_API_KEY') else '')

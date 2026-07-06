@@ -543,3 +543,92 @@ def recompute_missing_markets():
         "hint":          ("Re-run if remaining_in_markets > 0 (cap is "
                            f"{max_n}/call). Idempotent — safe to cron."),
     }), 200
+
+
+# ---------------------------------------------------------------------------
+# r-market-resolve-guard (2026-07-06): "stay fixed" sentinel for the two
+# facility→market fixes (commits 0c297e05 + ee400bc0):
+#   1. market_power_scores.latitude/longitude must stay populated (a future
+#      writer without COALESCE, or _load_markets_dynamic dropping the median
+#      centroid, would silently NULL them again → 198/317 regression).
+#   2. A facility must resolve to its OWN metro, not collapse to an arbitrary
+#      same-state row — the canonical symptom was Dallas→Midland-Odessa.
+# GET returns status; when it detects a breach it files a brain_finding so the
+# autopilot/consistency stream surfaces it. Public GET (read-only, no secrets).
+# ---------------------------------------------------------------------------
+@dcpi_freshness_bp.route("/api/v1/dcpi/resolution-guard", methods=["GET"])
+def dcpi_resolution_guard():
+    NULL_PCT_WARN = 5.0   # was 62% (198/317) before the fix; healthy is ~0.3%
+    # (city, state, lat, lng, expected_slug, must_not_slug)
+    CANARIES = [
+        ("Dallas",  "TX", 32.78, -96.80, "dallas",  "midland-tx"),
+        ("Houston", "TX", 29.76, -95.37, "houston", "midland-tx"),
+        ("Austin",  "TX", 30.27, -97.74, "austin",  "midland-tx"),
+    ]
+    result = {"ok": True, "checked_at": datetime.datetime.utcnow().isoformat() + "Z",
+              "checks": {}, "breaches": []}
+
+    # Check 1 — coord coverage.
+    c = _conn()
+    if c:
+        try:
+            with c, c.cursor() as cur:
+                cur.execute("""
+                    WITH latest AS (
+                        SELECT DISTINCT ON (market_slug) market_slug, latitude, longitude
+                          FROM market_power_scores ORDER BY market_slug, computed_at DESC)
+                    SELECT COUNT(*),
+                           COUNT(*) FILTER (WHERE latitude IS NULL OR longitude IS NULL)
+                      FROM latest
+                """)
+                total, nulls = cur.fetchone()
+            pct = round(100.0 * nulls / total, 2) if total else 0.0
+            cov = {"total": total, "null_coords": nulls, "null_pct": pct,
+                   "status": "warn" if pct > NULL_PCT_WARN else "ok"}
+            result["checks"]["coord_coverage"] = cov
+            if pct > NULL_PCT_WARN:
+                result["breaches"].append(
+                    f"market_power_scores coord coverage regressed: {nulls}/{total} "
+                    f"({pct}%) NULL (>{NULL_PCT_WARN}% threshold)")
+        except Exception as e:
+            result["checks"]["coord_coverage"] = {"error": str(e)[:160]}
+
+    # Check 2 — facility→market resolution canaries (Dallas must ≠ Midland).
+    try:
+        from routes.facility_profile_page import _market_dcpi
+        canary_out = []
+        for city, st, lat, lng, expect, forbid in CANARIES:
+            row = _market_dcpi(city, st, lat, lng) or {}
+            got = (row.get("market_slug") or "").lower()
+            ok = (got == expect)
+            collapsed = (got == forbid)
+            canary_out.append({"city": city, "expected": expect, "got": got, "ok": ok})
+            if collapsed or not ok:
+                result["breaches"].append(
+                    f"resolution regressed: {city},{st} → '{got or 'none'}' "
+                    f"(expected '{expect}'"
+                    + (f", COLLAPSED to forbidden '{forbid}'" if collapsed else "") + ")")
+        result["checks"]["resolution_canaries"] = canary_out
+    except Exception as e:
+        result["checks"]["resolution_canaries"] = {"error": str(e)[:160]}
+
+    if result["breaches"]:
+        result["ok"] = False
+        # File to brain_findings so the autopilot/consistency stream surfaces it.
+        try:
+            from routes.brain_findings_writer import upsert_brain_finding
+            c2 = _conn()
+            if c2:
+                with c2, c2.cursor() as cur:
+                    upsert_brain_finding(
+                        cur,
+                        issue="Facility→market resolution/coord regression",
+                        url="/api/v1/dcpi/resolution-guard",
+                        detail=" | ".join(result["breaches"])[:900],
+                        detector="dcpi_resolution_guard",
+                        status="open",
+                    )
+                    c2.commit()
+        except Exception as e:
+            result["finding_error"] = str(e)[:160]
+    return jsonify(result), 200
