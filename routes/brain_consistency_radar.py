@@ -358,6 +358,17 @@ _TOOL_API_MAPPING = {
 }
 
 
+# r-peace (2026-07-05): TTL result-cache for the tier-drift probe. It round-
+# trips ~10 endpoints through CF (→ back to this same backend) on EVERY radar
+# scan, and many brain workflows trigger scans — pure self-traffic. Tier gating
+# only changes on DEPLOY, so re-probing every scan is waste. Cache 30 min,
+# DB-shared via brain_meta so the TTL survives gunicorn --max-requests worker
+# recycles AND spans replicas — the exact proven pattern as the dead-link sweep.
+# Removes the reason the radar round-trips its own edge, not just the log noise.
+_TIER_CACHE = {"ts": 0.0, "findings": None}
+_TIER_TTL_S = 1800
+
+
 def check_tier_consistency() -> list[dict]:
     """For each known MCP tool with a web API counterpart, fetch the
     web endpoint as an anonymous caller and check the response shape.
@@ -369,6 +380,25 @@ def check_tier_consistency() -> list[dict]:
     IDENTIFIED tier, that's a mismatch (the agent could get data via
     MCP after one keys/claim call; the user via web hits a paywall).
     """
+    import time as _t_tier
+    _now_tier = _t_tier.time()
+    # Hydrate the in-process cache from brain_meta, then serve if still fresh —
+    # a fresh window does 0 CF probes.
+    if _TIER_CACHE["findings"] is None:
+        try:
+            from routes.brain_v2_store import get_meta as _gm_t
+            _row_t = _gm_t("tier_drift_cache")
+            if _row_t and _row_t.get("value"):
+                import json as _json_t
+                _p_t = _json_t.loads(_row_t["value"])
+                _TIER_CACHE["ts"] = float(_p_t.get("ts") or 0)
+                _TIER_CACHE["findings"] = _p_t.get("findings") or []
+        except Exception:
+            pass
+    if (_TIER_CACHE["findings"] is not None
+            and (_now_tier - _TIER_CACHE["ts"]) < _TIER_TTL_S):
+        return list(_TIER_CACHE["findings"])
+
     findings: list[dict] = []
     try:
         from mcp_gatekeeper import TOOL_TIER, Tier
@@ -440,6 +470,17 @@ def check_tier_consistency() -> list[dict]:
                 "mcp_tier": mcp_tier.name,
                 "web_min_tier": web_min_tier,
             })
+    # Cache the result (in-process + brain_meta) so the next ~30 min of scans
+    # do 0 CF probes. Tier drift only changes on deploy — no detection latency
+    # that matters is lost.
+    _TIER_CACHE["ts"] = _now_tier
+    _TIER_CACHE["findings"] = list(findings)
+    try:
+        from routes.brain_v2_store import set_meta as _sm_t
+        import json as _json_t2
+        _sm_t("tier_drift_cache", _json_t2.dumps({"ts": _now_tier, "findings": list(findings)}))
+    except Exception:
+        pass
     return findings
 
 
