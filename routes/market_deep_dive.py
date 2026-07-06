@@ -652,6 +652,16 @@ def market_short_html(slug):
     falls back to a minimal SEO shell so QA never sees a 404."""
     slug_norm = (slug or "").lower().strip()
 
+    # r-period-slug (2026-07-06): a malformed market_slug with a period
+    # (e.g. 'st.-louis' — a soft-404 duplicate of the canonical 'st-louis')
+    # must never be its own indexable URL. A period is never valid in a
+    # canonical market slug, so strip it and 301 to the '-'-normalized slug,
+    # consolidating the duplicate onto the real page. Aligns with the
+    # _CANONICAL_REDIRECT canonical-unify pattern just below.
+    _norm_slug = slug_norm.replace(".", "")
+    if _norm_slug and _norm_slug != slug_norm:
+        return redirect(f"/markets/{_norm_slug}", code=301)
+
     # r43-H (2026-05-28): canonical-consolidation 301s. Several alias slugs
     # point at the same physical market (Ashburn IS the core of Northern
     # Virginia, NoVA == Northern Virginia, DFW == Dallas). Rendering both

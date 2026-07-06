@@ -24662,6 +24662,13 @@ def _build_sitemap_sections():
             ORDER BY market_slug, computed_at DESC
         """)
         for (_slug, _computed) in _dc.fetchall():
+            # r-period-slug (2026-07-06): skip malformed period slugs (e.g.
+            # 'st.-louis' — a soft-404 duplicate of the canonical 'st-louis').
+            # A period is never valid in a canonical market slug; emitting it
+            # put a duplicate loc in the sitemap. The /dcpi/<slug> route 301s
+            # it to the '-'-normalized page, so it must not be an indexed URL.
+            if not _slug or "." in _slug:
+                continue
             # r-lastmod-honesty (2026-07-04): real per-URL date = when this DCPI
             # score was last recomputed (was: uniform 'today', which Google
             # distrusts). Falls back to the pinned static date if computed_at null.
@@ -24789,8 +24796,13 @@ def _build_sitemap_sections():
                     _mlm = str(_row[1])[:10]
             except Exception:
                 _mlm = _STATIC_LASTMOD
-            # skip malformed slugs (empty city/state → '/markets/-' junk)
+            # skip malformed slugs (empty city/state → '/markets/-' junk);
+            # r-period-slug (2026-07-06): also skip period slugs (e.g.
+            # 'st.-louis-mo' from city 'St. Louis' — REPLACE(city,' ','-')
+            # never stripped the period). Those URLs 404 at /markets/<slug>,
+            # so they must not sit in the sitemap as soft-404s.
             if (len(_mslug) < 3 or _mslug.startswith('-') or _mslug.endswith('-')
+                    or '.' in _mslug
                     or not any(ch.isalnum() for ch in _mslug)
                     or _mslug in _seen_market_slugs):
                 continue
@@ -24810,6 +24822,10 @@ def _build_sitemap_sections():
         for _p in _pocket_rows:
             _slug = _p.get("market_slug")
             if not _slug:
+                continue
+            # r-period-slug (2026-07-06): skip malformed period slugs (e.g.
+            # 'st.-louis') — same soft-404-dup guard as the DCPI shard above.
+            if "." in _slug:
                 continue
             # r-lastmod-honesty (2026-07-04): use the pocket's real recompute
             # date if the row carries one, else the pinned static date (was:

@@ -775,7 +775,7 @@ def _load_markets_dynamic():
                     slug, name, state, fac, op_mw, pipe_mw, lat, lon = r
                     d = {}
                     for k in keys:
-                        if k == "slug": d[k] = slug.replace(" ", "-").replace(",", "")
+                        if k == "slug": d[k] = slug.replace(" ", "-").replace(",", "").replace(".", "")
                         elif k == "name": d[k] = name
                         elif k == "state": d[k] = state
                         elif k == "country": d[k] = "US"
@@ -790,7 +790,9 @@ def _load_markets_dynamic():
                 return out
             elif isinstance(sample, str):
                 # List of slug strings
-                return [r[0].replace(" ", "-").replace(",", "") for r in rows]
+                # r-period-slug (2026-07-06): strip periods too — 'St. Louis'
+                # → 'st-louis' (was 'st.-louis', a soft-404 dup of the canonical).
+                return [r[0].replace(" ", "-").replace(",", "").replace(".", "") for r in rows]
             elif isinstance(sample, tuple):
                 # Phase ZZ (2026-05-16) — CRITICAL FIX. _MARKETS_HARDCODED is
                 # a list of 6-tuples (slug, name, state, iso, lat, lon) but
@@ -812,7 +814,9 @@ def _load_markets_dynamic():
                 out_tuples = []
                 for r in rows:
                     slug, name, state, fac, op_mw, pipe_mw, lat, lon = r
-                    clean_slug = slug.replace(" ", "-").replace(",", "")
+                    # r-period-slug (2026-07-06): strip periods too — 'St. Louis'
+                    # → 'st-louis' (was 'st.-louis', a soft-404 dup of canonical).
+                    clean_slug = slug.replace(" ", "-").replace(",", "").replace(".", "")
                     iso = _state_to_iso(state)
                     lat = float(lat) if lat is not None else None
                     lon = float(lon) if lon is not None else None
@@ -1648,6 +1652,29 @@ def recompute_all_scores(source: str = "manual",
             c.commit()
     except Exception as _dedup_err:
         print(f"[dcpi] recompute dedup skipped: {_dedup_err}")
+
+    # r-period-slug (2026-07-06): collapse malformed period-slug duplicates.
+    # 'st.-louis' is a soft-404 duplicate of the canonical 'st-louis' (same
+    # market_name 'St. Louis', two rows) — it was born because the CTE slug
+    # (LOWER(city)) + the .replace(" ","-") clean-up never stripped the period.
+    # Delete any period-containing market_slug whose '-'-normalized twin ALSO
+    # exists as a row, so a market that ONLY has a period form is never
+    # orphaned. The _load_markets_dynamic write guard (period-strip) keeps the
+    # deleted row from being re-created on this same run. Best-effort — never
+    # blocks the recompute.
+    try:
+        with _conn() as c, c.cursor() as cur:
+            cur.execute("""
+                DELETE FROM market_power_scores
+                 WHERE market_slug LIKE '%.%'
+                   AND EXISTS (
+                       SELECT 1 FROM market_power_scores t
+                        WHERE t.market_slug = REPLACE(market_power_scores.market_slug, '.', '')
+                   )
+            """)
+            c.commit()
+    except Exception as _pslug_err:
+        print(f"[dcpi] period-slug collapse skipped: {_pslug_err}")
 
     # Phase QQ+3 (2026-05-13): use MARKETS only (canonical 6-tuple shape).
     # Previously: `_dcpi_dynamic_markets() or MARKETS`. The dynamic helper
@@ -5243,6 +5270,16 @@ def _cite_as_header(slug: str) -> str:
 @dcpi_bp.route("/dcpi/<slug>", methods=["GET"], strict_slashes=False)
 def public_market_page(slug):
     _ensure_tables()
+    # r-period-slug (2026-07-06): strip periods and 301 to the '-'-normalized
+    # slug BEFORE the candidate lookup below. A malformed period slug like
+    # 'st.-louis' has its OWN published market_power_scores row, so the
+    # candidate loop would match it first (cand == slug → no redirect) and
+    # serve a soft-404 duplicate of the canonical /dcpi/st-louis. A period is
+    # never valid in a canonical slug — consolidate to the normalized page.
+    _pnorm = (slug or "").replace(".", "")
+    if _pnorm and _pnorm != slug:
+        from flask import redirect
+        return redirect(f"/dcpi/{_pnorm}", code=301)
     # Phase JJ (2026-05-14): slug aliasing. The market_power_scores table
     # uses bare slugs (e.g. 'allen' not 'allen-tx'), but external links
     # often append state suffix because that's the natural-language
