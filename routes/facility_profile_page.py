@@ -390,6 +390,40 @@ def _narrative(fac: dict, dcpi) -> str:
             'margin:6px 0 18px;max-width:720px">' + " ".join(bits) + "</p>")
 
 
+def _market_context_html(mslug: str, mname: str) -> str:
+    """r-soft404-rag (2026-07-06): bare facility pages are Google soft-404s (thin,
+    ~82 words). When the facility's market has a RAG-generated deep-dive narrative
+    (market_deep_dives.narrative_md), splice its first ~2 paragraphs in — with a
+    citable /dcpi link — so the page carries SUBSTANTIVE, UNIQUE, indexable content
+    instead of bare metadata. Fail-soft: '' on any miss/thin narrative; Redis-cached
+    read (no self-request); auto-covers a market the moment its deep-dive backfills."""
+    if not mslug:
+        return ""
+    try:
+        from routes.market_deep_dive import read_deep_dive
+        import re as _re
+        dd = read_deep_dive(mslug)
+        md = ((dd or {}).get("narrative_md") or "").strip()
+        if len(md) < 200:
+            return ""
+        paras = [p.strip() for p in md.split("\n\n")
+                 if p.strip() and not p.strip().lstrip().startswith("#")]
+        snippet = " ".join(paras[:2])
+        snippet = _re.sub(r'[*_`>#\[\]()]+', '', snippet).strip()
+        if len(snippet) > 900:
+            snippet = snippet[:900].rsplit(" ", 1)[0] + "…"
+        if len(snippet) < 140:
+            return ""
+        return (
+            '<div class="section"><div class="section-head"><h2>Market context</h2></div>'
+            f'<p class="section-sub">DC Hub analyst read on {_esc(mname)} &mdash; the market '
+            f'this facility sits in (<a href="/dcpi/{_esc(mslug)}" class="link">full deep-dive '
+            f'&rarr;</a>).</p><p>{_esc(snippet)}</p></div>'
+        )
+    except Exception:
+        return ""
+
+
 def _render_profile(fac: dict, slug: str) -> str:
     """Server-rendered facility profile. Matches the static file
     visual style so transitions between static + dynamic are seamless."""
@@ -585,6 +619,10 @@ def _render_profile(fac: dict, slug: str) -> str:
 
     narrative_html = _narrative(fac, _dcpi)
     comps_html = _comparables_html(fac)
+    # r-soft404-rag: RAG market-narrative snippet — turns a thin facility page into
+    # substantive, indexable content when its market has a deep-dive (fail-soft '').
+    _mkt_context_html = _market_context_html(
+        _mslug0, ((_dcpi.get("market_name") if _dcpi else "") or region or "this market"))
 
     map_block = ""
     if lat and lng:
@@ -737,6 +775,8 @@ def _render_profile(fac: dict, slug: str) -> str:
     <div class="stats-grid">{stats_html}</div>
 
     {dcpi_html}
+
+    {_mkt_context_html}
 
     {map_block}
 
