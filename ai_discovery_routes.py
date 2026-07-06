@@ -99,7 +99,13 @@ def register_discovery_routes(app):
                 "license": {
                     "name": "Proprietary",
                     "url": "https://dchub.cloud/terms"
-                }
+                },
+                # r-envelope (2026-07-06): version discriminator for the universal
+                # response envelope. Agents introspect this to confirm the envelope
+                # contract is live before wiring branch-before-execute logic
+                # (field ABSENT = legacy/pre-envelope). Pairs with
+                # components.schemas.DCHubEnvelope.
+                "x-dchub-envelope": "1.0"
             },
             "servers": [
                 {"url": BASE_URL, "description": "Production"}
@@ -267,6 +273,48 @@ def register_discovery_routes(app):
                         "in": "header",
                         "name": "X-API-Key",
                         "description": "API key from https://dchub.cloud/pricing"
+                    }
+                },
+                "schemas": {
+                    "DCHubEnvelope": {
+                        "type": "object",
+                        "description": (
+                            "Universal response envelope for every DC Hub tool and "
+                            "endpoint. The STABLE anchor an agent branches on before "
+                            "parsing the entity payload: full-data, gated-preview and "
+                            "error responses all share it. `_entity` is the type "
+                            "discriminator; the entity-specific payload is passthrough "
+                            "(additionalProperties). Branch on `_entity` + `ok`."
+                        ),
+                        "required": ["_entity"],
+                        "additionalProperties": True,
+                        "properties": {
+                            "_entity": {
+                                "type": "string",
+                                "description": "Payload type discriminator \u2014 branch on this before parsing.",
+                                "enum": ["facility", "market", "grid", "fiber", "gas",
+                                         "deal", "site", "news", "energy", "incentives",
+                                         "risk", "index", "pipeline", "infrastructure",
+                                         "export", "changes", "alert", "meta",
+                                         "semantic_search", "error", "record"]
+                            },
+                            "ok": {"type": "boolean", "description": "Success flag; false + _entity='error' on failure."},
+                            "_source": {"type": "string", "example": "DC Hub \u2014 dchub.cloud"},
+                            "_cite": {"type": "string", "description": "Attribution string (CC-BY-4.0)."},
+                            "citation": {
+                                "type": "object",
+                                "properties": {
+                                    "source": {"type": "string"},
+                                    "url": {"type": "string"},
+                                    "license": {"type": "string"},
+                                    "cite_as": {"type": "string"}
+                                }
+                            },
+                            "next_session": {
+                                "type": "object",
+                                "description": "Context-aware next-step hints \u2014 the agent's state-machine menu for what to call next."
+                            }
+                        }
                     }
                 }
             },
