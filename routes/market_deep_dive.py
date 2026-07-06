@@ -104,30 +104,45 @@ def _gather_market_facts(cur, slug: str) -> dict | None:
         "verdict":   r[4],
         "computed":  r[5].isoformat() if r[5] else None,
     }
-    # Facilities + MW
+    # Facilities + MW. r-market-facts (2026-07-06): the old query matched ONLY
+    # discovered_facilities.market = market_name — correct for US metros (e.g.
+    # 'Northern Virginia' = 9 fac) but returned 0 for city-keyed markets whose
+    # facilities live in the `facilities` table by CITY (Amsterdam=108, Paris=89,
+    # Frankfurt=85, Atlanta=67). That made Haiku write "zero tracked facilities /
+    # 0 MW" for ~140 real markets. Now count by market_name OR city across BOTH
+    # tables, deduped by name|provider. Metro markets (city-join=0) still resolve
+    # via the disc.market clause, so NoVa-style counts are unchanged.
+    _fac_union = """
+        WITH fac AS (
+          SELECT LOWER(COALESCE(name,''))||'|'||LOWER(COALESCE(provider,'')) AS k,
+                 COALESCE(power_mw,0) AS mw, provider
+            FROM facilities
+           WHERE LOWER(COALESCE(city,'')) = LOWER(%(name)s)
+          UNION
+          SELECT LOWER(COALESCE(name,''))||'|'||LOWER(COALESCE(provider,'')),
+                 COALESCE(power_mw,0), provider
+            FROM discovered_facilities
+           WHERE (LOWER(COALESCE(market,'')) = LOWER(%(name)s)
+               OR LOWER(COALESCE(city,''))   = LOWER(%(name)s))
+             AND merged_at IS NULL AND is_duplicate = 0
+        )
+    """
     try:
-        cur.execute("""
-            SELECT COUNT(*), COALESCE(SUM(power_mw),0)
-              FROM discovered_facilities
-             WHERE LOWER(COALESCE(market,'')) = LOWER(%s)
-               AND merged_at IS NULL AND is_duplicate = 0
-        """, (out["name"],))
+        cur.execute(_fac_union + "SELECT COUNT(*), COALESCE(SUM(mw),0) FROM fac",
+                    {"name": out["name"]})
         f = cur.fetchone()
         out["facility_count"] = int(f[0] or 0)
         out["total_mw"]       = float(f[1] or 0)
     except Exception:
         out["facility_count"] = 0
         out["total_mw"]       = 0
-    # Top operators
+    # Top operators (same market-OR-city union)
     try:
-        cur.execute("""
-            SELECT provider, COUNT(*) AS n
-              FROM discovered_facilities
-             WHERE LOWER(COALESCE(market,'')) = LOWER(%s)
-               AND provider IS NOT NULL
-               AND merged_at IS NULL AND is_duplicate = 0
+        cur.execute(_fac_union + """
+            SELECT provider, COUNT(*) AS n FROM fac
+             WHERE provider IS NOT NULL
              GROUP BY provider ORDER BY n DESC LIMIT 5
-        """, (out["name"],))
+        """, {"name": out["name"]})
         out["top_operators"] = [{"name": p[0], "count": int(p[1])} for p in cur.fetchall()]
     except Exception:
         out["top_operators"] = []
