@@ -370,7 +370,7 @@ def facility_page(id_or_slug: str):
             #   3. name-slug fallback: /facility/switch-tahoe-reno
             cur.execute("""
                 SELECT id, name, provider, address, city, state, country,
-                       latitude, longitude, power_mw, status,
+                       latitude, longitude, power_mw, status, canonical_slug,
                        source, source_url, confidence_score, last_updated
                   FROM discovered_facilities
                  WHERE (CAST(id AS TEXT) = %s)
@@ -394,6 +394,7 @@ def facility_page(id_or_slug: str):
                 cur.execute("""
                     SELECT id, name, provider, address, city, state, country,
                            latitude, longitude, power_mw, status, sqft, tier,
+                           canonical_slug,
                            source, source_url, confidence_score, last_updated
                       FROM facilities
                      WHERE (id = %s)
@@ -417,7 +418,13 @@ def facility_page(id_or_slug: str):
         # built (name too short/empty) do we still render the page below.
         # /facility/aws-<code> + the ADDRESS_MAP landings have their own more-
         # specific routes, so they never reach this handler.
-        _canon_slug = _canonical_facility_slug(row.get('provider'), row.get('name'))
+        # r-frozen-slug (2026-07-06): 301 to the STORED canonical_slug (the exact
+        # slug the sitemap emits), not a live recompute. A recompute that drifted
+        # from the frozen slug after re-ingestion was minting redirect/404/
+        # canonical churn (~8k GSC pages not-indexed). Prefer stored; recompute
+        # only for un-backfilled rows (name-too-short still returns None → render).
+        _stored_slug = row.get('canonical_slug')
+        _canon_slug = _stored_slug if _stored_slug else _canonical_facility_slug(row.get('provider'), row.get('name'))
         if _canon_slug:
             _resp = redirect(f"https://dchub.cloud/facilities/{_canon_slug}", code=301)
             _resp.headers['Cache-Control'] = 'public, max-age=86400'

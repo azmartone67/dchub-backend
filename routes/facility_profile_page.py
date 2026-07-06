@@ -422,7 +422,12 @@ def _render_profile(fac: dict, slug: str) -> str:
             f"{f'Power capacity: {power} MW. ' if power else ''}"
             f"View specs, location, power & connectivity on DC Hub.")
 
-    canonical = f"https://dchub.cloud/facilities/{slug}"
+    # r-frozen-slug (2026-07-06): canonicalize to the facility's FROZEN slug (the
+    # one the sitemap + the /facility 301 both use), not whatever slug the request
+    # arrived on — else a page reached via an alias/legacy slug declares ITSELF
+    # canonical, splitting Google's index signals (GSC alternate/canonical churn).
+    _fslug = fac.get("canonical_slug") or slug
+    canonical = f"https://dchub.cloud/facilities/{_fslug}"
 
     # Schema.org JSON-LD
     import json as _json
