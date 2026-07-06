@@ -366,6 +366,13 @@ _ISO_TTP_MONTHS = {  # ISO avg interconnection wait (DCPI); per-project ETA = ge
 # Firm / dispatchable = baseload-capable for AI load; exclude intermittent + storage-only.
 # NOTE: Postgres POSIX regex uses \y for word boundary (not \b).
 _NON_BASELOAD_RE = r"(wind|solar|\ypv\y|storage|battery|\ywin\y|\ybess\y)"
+# status=active (default) = "still progressing through interconnection". ISOs label
+# this differently (PJM/CAISO literal "active"; SPP "IA FULLY EXECUTED/ON SCHEDULE",
+# "DISIS STAGE", "IA PENDING", ...), so a literal LIKE '%active%' silently zeroed SPP
+# (the fastest-TTP ISO). Define active by EXCLUDING terminal states instead of matching
+# a word: drop withdrawn/cancelled/terminated/suspended/online. Keep studies + IA-pending
+# + on-schedule + under-construction. status=all skips the filter; any other value = LIKE.
+_DEAD_STATUS_RE = r"(withdraw|cancel|terminat|suspend|commercial operation|deactivat)"
 
 
 @interconnection_queues_bp.route("/api/v1/interconnection-queue/refined")
@@ -401,7 +408,12 @@ def api_refined_queue():
         if _iso_toks:
             where.append("regexp_replace(upper(coalesce(iso,'')),'[^A-Z0-9]','','g') = ANY(%s)")
             params.append(_iso_toks)
-    if status and status != "all":
+    if status == "all":
+        pass  # no status filter
+    elif status == "active":
+        # in-progress = not terminal; cross-ISO safe (SPP labels lack the word "active")
+        where.append("coalesce(queue_status,'') !~* %s"); params.append(_DEAD_STATUS_RE)
+    elif status:
         where.append("lower(coalesce(queue_status,'')) LIKE %s"); params.append("%" + status + "%")
     if baseload_only:
         where.append("coalesce(fuel_type,'') !~* %s"); params.append(_NON_BASELOAD_RE)
@@ -468,7 +480,11 @@ def api_refined_queue():
         "note": ("Server-side set-reduction over the live ISO interconnection queue "
                  "(~5,300 projects, 7 ISOs). fuel_type is an inclusive substring match on "
                  "the raw fuel label (e.g. 'gas' hits GAS/Natural Gas); baseload_only excludes "
-                 "wind/solar/storage. estimated_ttp_months is the ISO-level average "
+                 "wind/solar/storage; iso accepts a comma-separated union. status=active (default) "
+                 "means still-progressing — it excludes terminal states (withdrawn/cancelled/"
+                 "suspended/in-commercial-operation) rather than matching the literal word, so it "
+                 "is cross-ISO safe (SPP labels its live projects 'IA FULLY EXECUTED/ON SCHEDULE', "
+                 "'DISIS STAGE', etc.). estimated_ttp_months is the ISO-level average "
                  "interconnection wait (DCPI); a per-project ETA + a fiber_km predicate + a "
                  "per-survivor site_evaluation_handoff arrive once the queue rows are geocoded "
                  "(they carry state/county/POI, not lat/lng)."),
