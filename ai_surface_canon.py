@@ -23,8 +23,8 @@ _BASE = os.environ.get("DCHUB_BACKEND_BASE",
 
 # ── Pinned structural canon (changes rarely; edit HERE, nowhere else) ──
 PINNED = {
-    "version": "2.4.3",                       # == registry isLatest record
-    "tools_advertised": 53,                   # canonical advertised count == registry 2.4.3 == live tools/list (incl. Deep Research search/fetch)
+    "version": "2.4.4",                       # == repo canonical (server.mjs/server.json); registry mirror auto-bumps to latest+1
+    "tools_advertised": 58,                   # canonical advertised count == live tools/list (58, incl. predict_market_trajectory + semantic_search + search_intelligence + get_market_context + get_iso_context)
     "mcp_endpoint": "https://dchub.cloud/mcp",
     "registry_id": "cloud.dchub/mcp-server",
     "rest_base": "https://dchub.cloud/api/v1",     # canonical host (NOT api.dchub.cloud)
@@ -52,8 +52,8 @@ PINNED = {
     # the ACTIVE roll-call; availability is a broader, valid claim.
     "stale_markers": ["10,706", "10706", "50,000+", "50000", "317 ", "332 ",
                       "232 ", "100 calls/day", "3,000+ M&A",
-                      "24 tools", "48 tools", "49 tools", "51 tools",
-                      "2.1.22", "2.3.3", "2.1.0"],
+                      "24 tools", "48 tools", "49 tools", "51 tools", "53 tools",
+                      "2.1.22", "2.3.3", "2.1.0", "2.4.3"],
 }
 
 

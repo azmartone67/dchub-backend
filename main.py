@@ -1938,6 +1938,17 @@ try:
     except Exception as _flms:
         import logging
         logging.getLogger(__name__).warning('flywheel_master_shell wiring failed: %s', _flms)
+    # 2026-07-06: Registry Freshness master shell — the sentinel that was missing
+    # when Glama sat at "33 tools" while live was 58. Read-only DIAGNOSTIC:
+    # flags external MCP-registry listings drifting from canonical, + honest
+    # watch-only push posture. GET /admin/registry-freshness
+    try:
+        from routes.registry_freshness_master_shell import registry_freshness_master_shell_bp
+        app.register_blueprint(registry_freshness_master_shell_bp)
+        print("[main] registry_freshness_master_shell_bp registered: GET /admin/registry-freshness", flush=True)
+    except Exception as _rfms:
+        import logging
+        logging.getLogger(__name__).warning('registry_freshness_master_shell wiring failed: %s', _rfms)
     # 2026-07-03: Agent-enablement portal — the ONE HTML pane over the agent stack
     # (north-star agents/wk, onboarding shell score+worklist, AI-adoption snapshot,
     # tool-tuner freshness). Read-only. GET /admin/agents
