@@ -10,24 +10,28 @@ The five lanes (one per priority — the actual back-half-of-the-funnel work):
      minted+persisted on first call (claim_api), real agents come back on a
      SECOND day, and mature key-reuse % isn't regressing.
   2. BRAIN DEDUP + FACILITIES BACKLOG — findings dedup to one row per
-     (issue,url) (no row-explosion), and the unverified discovery backlog at
-     /api/v1/facilities/delta is actually DRAINING (verified moving).
+     (issue,url) (no row-explosion), and the unverified discovery backlog is
+     actually DRAINING (verified moving).
   3. CANONICAL IDENTITY — the north-star reads mcp_calls_identity (fresh,
      non-zero), NOT the deprecated de-looped raw-call metric that produced the
      phantom "-96% collapse" the brain kept citing.
   4. MEDIA DISTRIBUTION — the publishing ARM is alive: a real X/social post
      went out recently (not x_publisher_dead), the monthly-trend send fired
-     within cadence (not unsent_3d), and /dc-hub-media isn't multi-second slow.
+     within cadence (not unsent_3d), and the pipeline published SOMETHING in 7d.
   5. SEO SLUG-FREEZE — every facility carries a frozen canonical_slug, the
-     legacy /facility/<id> 301 points at that STORED slug (not a recompute),
-     and the sitemap index is healthy — i.e. the ~8k-page 404/redirect bleed
-     is stopped.
+     legacy /facility/<id> 301 target (recomputed IN-PROCESS via the same
+     _canonical_facility_slug the handler uses) still equals the STORED slug,
+     and the sitemap has frozen-slug content to emit — i.e. the ~8k-page
+     404/redirect bleed is stopped.
 
-Design mirrors the house master-shell pattern (see fixwave_master_shell.py):
-admin-gated, killable (FLYWHEEL_DISABLED=1), every probe fail-soft +
-timeout-bounded, snapshot row per tick, 30s cache. READ-ONLY / DIAGNOSTIC:
-each lane NAMES an actuator but this shell fires NOTHING — the fixes ship via
-their own PRs/crons.
+★ PURE-DB shell: every probe is a Neon query or an in-process computation —
+NO outbound HTTP. (2026-07-06 incident: an earlier revision fetched
+/sitemap.xml and /facility/<id> through the public edge, which routed back
+into THIS SAME Flask origin and amplified a chronically-hot connection pool
+into thread starvation + 502s. A master-shell tick must never issue a
+self-request.) Mirrors the house pattern otherwise: admin-gated, killable
+(FLYWHEEL_DISABLED=1), fail-soft, snapshot row per tick, 30s cache.
+READ-ONLY / DIAGNOSTIC: each lane NAMES an actuator but fires NOTHING.
 
 Endpoints:
   GET/POST /api/v1/admin/flywheel/master-tick   JSON scoreboard (5 lanes)
@@ -44,8 +48,6 @@ import logging
 import os
 import threading
 import time
-import urllib.error
-import urllib.request
 from datetime import datetime, timezone
 from html import escape as _esc
 
@@ -56,11 +58,9 @@ logger = logging.getLogger(__name__)
 flywheel_master_shell_bp = Blueprint("flywheel_master_shell", __name__)
 
 # ── targets ───────────────────────────────────────────────────────────
-# Public site surfaces (media page, sitemap, facility redirect) are probed
-# through the edge because that's where the leak/regression actually lives.
-_EDGE = "https://dchub.cloud"
-_BROWSER_UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-               "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36")
+# No network targets: this shell is PURE-DB. See the module docstring for why
+# (2026-07-06 self-request/pool-saturation incident). Every lane reads Neon
+# via a short-lived raw connection or computes in-process.
 
 # ── auth / kill ───────────────────────────────────────────────────────
 
@@ -76,49 +76,12 @@ def _disabled() -> bool:
     return (os.environ.get("FLYWHEEL_DISABLED") or "").strip() == "1"
 
 
-# ── helpers ───────────────────────────────────────────────────────────
-
-def _http(url: str, *, timeout: float = 6.0) -> tuple[int, str, int]:
-    """Bounded GET. Returns (status, body_text[:200k], elapsed_ms). Never raises."""
-    t0 = time.time()
-    try:
-        req = urllib.request.Request(url)
-        req.add_header("User-Agent", _BROWSER_UA)
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            return r.getcode(), r.read(200_000).decode("utf-8", "replace"), int((time.time() - t0) * 1000)
-    except urllib.error.HTTPError as e:
-        try:
-            txt = e.read(50_000).decode("utf-8", "replace")
-        except Exception:
-            txt = ""
-        return e.code, txt, int((time.time() - t0) * 1000)
-    except Exception as e:
-        return 0, f"{type(e).__name__}: {e}", int((time.time() - t0) * 1000)
-
-
-def _http_no_redirect(url: str, *, timeout: float = 6.0) -> tuple[int, str, int]:
-    """GET that does NOT follow redirects. Returns (status, Location, ms).
-    Used to inspect the /facility/<id> 301 target without chasing it."""
-    class _NR(urllib.request.HTTPRedirectHandler):
-        def redirect_request(self, *a, **k):  # returning None => raise HTTPError
-            return None
-
-    t0 = time.time()
-    try:
-        opener = urllib.request.build_opener(_NR)
-        req = urllib.request.Request(url)
-        req.add_header("User-Agent", _BROWSER_UA)
-        with opener.open(req, timeout=timeout) as r:
-            return r.getcode(), r.headers.get("Location", "") or "", int((time.time() - t0) * 1000)
-    except urllib.error.HTTPError as e:
-        loc = (e.headers.get("Location", "") if e.headers else "") or ""
-        return e.code, loc, int((time.time() - t0) * 1000)
-    except Exception as e:
-        return 0, f"{type(e).__name__}: {e}", int((time.time() - t0) * 1000)
-
+# ── db helpers ────────────────────────────────────────────────────────
 
 def _conn():
-    """Raw psycopg2 connection (mirrors fixwave._conn). None on failure."""
+    """Raw psycopg2 connection (mirrors fixwave._conn). None on failure.
+    Deliberately OUTSIDE the app pool — one short-lived connection per tick,
+    opened and closed here, so a tick never checks out a shared pool slot."""
     try:
         import psycopg2 as _pg
         url = os.environ.get("DATABASE_URL") or os.environ.get("NEON_DATABASE_URL")
@@ -134,9 +97,9 @@ def _conn():
 
 def _scalar(c, sql: str):
     """Fail-soft scalar. None on error (NOT 0 — a probe must tell 'query broke'
-    from 'count is zero'). Literal SQL only, NO params tuple: every de-loop /
-    regex predicate here carries a literal % or {n} and psycopg2 would try to
-    %-substitute an empty tuple (the empty-tuple % trap)."""
+    from 'count is zero'). Literal SQL only, NO params tuple: several predicates
+    here carry a literal % or {n} regex and psycopg2 would try to %-substitute
+    an empty tuple (the empty-tuple % trap)."""
     try:
         with c.cursor() as cur:
             cur.execute(sql)
@@ -170,9 +133,6 @@ def _check(cid: str, name: str, passed, detail: str, ms: int = 0) -> dict:
     # passed: True / False / None (None = indeterminate/gauge, shown as "?")
     return {"id": cid, "name": name, "pass": passed,
             "detail": (detail or "")[:300], "ms": ms}
-
-
-_CB = lambda: f"_fl={int(time.time())}"  # cache-buster for edge-cached surfaces
 
 
 # ── lane 1 · retention / durable-identity ─────────────────────────────
@@ -308,113 +268,125 @@ def _lane_identity(c) -> list[dict]:
     return out
 
 
-# ── lane 4 · media distribution arm ───────────────────────────────────
+# ── lane 4 · media distribution arm (pure-DB) ─────────────────────────
 
 def _lane_media(c) -> list[dict]:
     out = []
+    if c is None:
+        return [_check("md_nodb", "media lane needs db", None, "no db")]
 
-    # 4a — X publisher alive: a real X/social post published < 7d ago. Handles
-    # the live schema trap (posted_at=timestamp, published_at=TEXT) by casting
-    # ::text and regex-guarding an ISO date before ::timestamp.
-    if c is not None:
-        xage = _scalar(c,
+    # Live schema trap: posted_at=timestamp but published_at=TEXT → cast
+    # ::text and regex-guard an ISO date before ::timestamp, take MAX of both.
+    def _last_post_age_days(platform_pred: str):
+        return _scalar(c,
             "SELECT EXTRACT(EPOCH FROM (now() - MAX(ts)))/86400.0 FROM ("
             " SELECT NULLIF(published_at::text,'')::timestamp AS ts FROM social_media_posts"
-            "  WHERE status='published' AND publish_platform IN ('twitter','x')"
+            "  WHERE status='published'" + platform_pred +
             "  AND published_at::text ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}'"
             " UNION ALL"
             " SELECT NULLIF(posted_at::text,'')::timestamp AS ts FROM social_media_posts"
-            "  WHERE status='published' AND publish_platform IN ('twitter','x')"
+            "  WHERE status='published'" + platform_pred +
             "  AND posted_at::text ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}') q")
-        if xage is None:
-            out.append(_check("md_x_publisher", "X publisher alive (post <7d)",
-                              False, "no successful X post on record (x_publisher_dead)"))
-        else:
-            out.append(_check("md_x_publisher", "X publisher alive (post <7d)",
-                              float(xage) < 7.0, f"last X post {round(float(xage),1)}d ago"))
 
-        # 4b — monthly-trend send fired within cadence (<35d). Empty => unsent.
-        mage = _scalar(c, "SELECT EXTRACT(EPOCH FROM (now() - MAX(sent_at)))/86400.0 "
-                          "FROM monthly_outreach_log")
-        if mage is None:
-            out.append(_check("md_monthly_trend", "monthly-trend send within cadence (<35d)",
-                              False, "no monthly outreach on record (monthly_trend_unsent)"))
-        else:
-            out.append(_check("md_monthly_trend", "monthly-trend send within cadence (<35d)",
-                              float(mage) < 35.0, f"last monthly send {round(float(mage),1)}d ago"))
+    # 4a — X publisher alive: a real X post published < 7d ago.
+    xage = _last_post_age_days(" AND publish_platform IN ('twitter','x')")
+    if xage is None:
+        out.append(_check("md_x_publisher", "X publisher alive (post <7d)",
+                          False, "no successful X post on record (x_publisher_dead)"))
     else:
-        out.append(_check("md_x_publisher", "X publisher alive (post <7d)", None, "no db"))
-        out.append(_check("md_monthly_trend", "monthly-trend send within cadence (<35d)", None, "no db"))
+        out.append(_check("md_x_publisher", "X publisher alive (post <7d)",
+                          float(xage) < 7.0, f"last X post {round(float(xage),1)}d ago"))
 
-    # 4c — /dc-hub-media not multi-second slow (brain flagged ~5.2s).
-    st, _, ms = _http(f"{_EDGE}/dc-hub-media?{_CB()}", timeout=12.0)
-    out.append(_check("md_page_fast", "/dc-hub-media responds < 3s",
-                      (st == 200 and ms < 3000) if st else None,
-                      f"HTTP {st} · {ms}ms", ms))
+    # 4b — monthly-trend send fired within cadence (<35d). Empty => unsent.
+    mage = _scalar(c, "SELECT EXTRACT(EPOCH FROM (now() - MAX(sent_at)))/86400.0 "
+                      "FROM monthly_outreach_log")
+    if mage is None:
+        out.append(_check("md_monthly_trend", "monthly-trend send within cadence (<35d)",
+                          False, "no monthly outreach on record (monthly_trend_unsent)"))
+    else:
+        out.append(_check("md_monthly_trend", "monthly-trend send within cadence (<35d)",
+                          float(mage) < 35.0, f"last monthly send {round(float(mage),1)}d ago"))
+
+    # 4c — the pipeline published SOMETHING (any platform) in 7d. Replaces the
+    # old /dc-hub-media edge fetch — page latency is a CF-static frontend
+    # concern, not measurable (or fixable) from this origin without a
+    # self-request. This is the real "arm still moving" signal.
+    aage = _last_post_age_days("")
+    if aage is None:
+        out.append(_check("md_pipeline_publishing", "media pipeline published something (7d)",
+                          False, "no successful post on any platform"))
+    else:
+        out.append(_check("md_pipeline_publishing", "media pipeline published something (7d)",
+                          float(aage) < 7.0, f"last publish (any platform) {round(float(aage),1)}d ago"))
     return out
 
 
-# ── lane 5 · SEO slug-freeze ──────────────────────────────────────────
+# ── lane 5 · SEO slug-freeze (pure-DB) ────────────────────────────────
 
 def _lane_seo_slug(c) -> list[dict]:
     out = []
+    if c is None:
+        return [_check("seo_nodb", "slug lane needs db", None, "no db")]
 
     # 5a — every sluggable facility carries a frozen canonical_slug (pending=0
     # on BOTH facilities and discovered_facilities).
-    if c is not None:
-        fpend = _scalar(c, "SELECT COUNT(*) FROM facilities "
-                           "WHERE canonical_slug IS NULL AND name IS NOT NULL AND name <> ''")
-        dpend = _scalar(c, "SELECT COUNT(*) FROM discovered_facilities "
-                           "WHERE canonical_slug IS NULL AND name IS NOT NULL AND name <> ''")
-        if fpend is None or dpend is None:
-            out.append(_check("seo_slug_frozen", "all facilities have a frozen canonical_slug",
-                              None, f"facilities pending={fpend}, discovered pending={dpend}"))
-        else:
-            out.append(_check("seo_slug_frozen", "all facilities have a frozen canonical_slug",
-                              int(fpend) == 0 and int(dpend) == 0,
-                              f"pending: facilities={fpend} discovered={dpend}"))
+    fpend = _scalar(c, "SELECT COUNT(*) FROM facilities "
+                       "WHERE canonical_slug IS NULL AND name IS NOT NULL AND name <> ''")
+    dpend = _scalar(c, "SELECT COUNT(*) FROM discovered_facilities "
+                       "WHERE canonical_slug IS NULL AND name IS NOT NULL AND name <> ''")
+    if fpend is None or dpend is None:
+        out.append(_check("seo_slug_frozen", "all facilities have a frozen canonical_slug",
+                          None, f"facilities pending={fpend}, discovered pending={dpend}"))
     else:
-        out.append(_check("seo_slug_frozen", "all facilities have a frozen canonical_slug", None, "no db"))
+        out.append(_check("seo_slug_frozen", "all facilities have a frozen canonical_slug",
+                          int(fpend) == 0 and int(dpend) == 0,
+                          f"pending: facilities={fpend} discovered={dpend}"))
 
-    # 5b — LOAD-BEARING: the legacy /facility/<id> 301 must point at the STORED
-    # slug, not a recompute-from-name. Sample 3 recent frozen rows; PASS only
-    # if all 301 Locations end in the stored canonical_slug.
-    if c is not None:
-        samples = _rows(c, "SELECT id, canonical_slug FROM facilities "
+    # 5b — LOAD-BEARING, now IN-PROCESS (no self-request): recompute the 301
+    # target with the SAME helper the /facility/<id> handler uses
+    # (seo_pages._canonical_facility_slug) and compare to the STORED slug on
+    # the row the 301 resolves against (discovered_facilities). Divergence =
+    # the handler would 301 to a URL != the frozen slug = duplicate-URL bleed.
+    try:
+        from routes.seo_pages import _canonical_facility_slug
+    except Exception as e:
+        _canonical_facility_slug = None
+        logger.debug("[flywheel] seo_pages import failed: %s", e)
+    if _canonical_facility_slug is None:
+        out.append(_check("seo_301_slug_match", "301 recompute == stored canonical_slug (sampled)",
+                          None, "seo_pages helper unavailable"))
+    else:
+        samples = _rows(c, "SELECT provider, name, canonical_slug FROM discovered_facilities "
                            "WHERE canonical_slug IS NOT NULL AND canonical_slug <> '' "
-                           "ORDER BY id DESC LIMIT 3")
+                           "AND name IS NOT NULL ORDER BY id DESC LIMIT 5")
         if not samples:
-            out.append(_check("seo_301_slug_match", "301 target == stored canonical_slug (sampled)",
+            out.append(_check("seo_301_slug_match", "301 recompute == stored canonical_slug (sampled)",
                               None, "no frozen slugs to sample"))
         else:
-            match = 0
-            diverged = []
-            last_ms = 0
-            for fid, slug in samples:
-                st, loc, ms = _http_no_redirect(f"{_EDGE}/facility/{fid}", timeout=6.0)
-                last_ms = ms
-                served = loc.rstrip("/").rsplit("/", 1)[-1].split("?")[0] if loc else ""
-                if st in (301, 302, 308) and served == slug:
+            match, diverged = 0, []
+            for provider, name, slug in samples:
+                try:
+                    recomputed = _canonical_facility_slug(provider, name)
+                except Exception as e:
+                    recomputed = None
+                    logger.debug("[flywheel] slug recompute failed: %s", e)
+                if recomputed and recomputed == slug:
                     match += 1
-                elif st in (301, 302, 308):
-                    diverged.append(f"id{fid}: served '{served}' != stored '{slug}'")
                 else:
-                    diverged.append(f"id{fid}: HTTP {st}")
-            out.append(_check("seo_301_slug_match", "301 target == stored canonical_slug (sampled)",
+                    diverged.append(f"'{recomputed}' != stored '{slug}'")
+            out.append(_check("seo_301_slug_match", "301 recompute == stored canonical_slug (sampled)",
                               match == len(samples),
-                              f"{match}/{len(samples)} match" + (" · " + "; ".join(diverged[:2]) if diverged else ""),
-                              last_ms))
-    else:
-        out.append(_check("seo_301_slug_match", "301 target == stored canonical_slug (sampled)", None, "no db"))
+                              f"{match}/{len(samples)} match"
+                              + (" · " + "; ".join(diverged[:2]) if diverged else "")))
 
-    # 5c — sitemap index healthy (has shard/loc entries) — the crawl surface
-    # is intact, not a wall of 404/redirects.
-    st, body, ms = _http(f"{_EDGE}/sitemap.xml", timeout=8.0)
-    nloc = body.count("<loc>") if st == 200 else 0
-    healthy = st == 200 and ("<sitemapindex" in body or nloc > 0)
-    out.append(_check("seo_sitemap_healthy", "sitemap index healthy (has entries)",
-                      healthy if st else None,
-                      f"HTTP {st} · {nloc} <loc> entries", ms))
+    # 5c — sitemap has content to emit: facilities carry frozen slugs (the
+    # sitemap is derived from them). DB proxy for "crawl surface intact" — no
+    # HTTP fetch of the (backend-served, expensive) /sitemap.xml.
+    slugged = _scalar(c, "SELECT COUNT(*) FROM discovered_facilities "
+                         "WHERE canonical_slug IS NOT NULL AND canonical_slug <> ''")
+    out.append(_check("seo_sitemap_content", "sitemap has frozen-slug content (>1000 urls)",
+                      (slugged > 1000) if slugged is not None else None,
+                      f"{slugged} facilities with frozen slugs" if slugged is not None else "query failed"))
     return out
 
 
@@ -470,8 +442,9 @@ def _run_tick() -> dict:
         "lanes_pass": sum(1 for l in lanes if l["pass"]),
         "lanes_total": len(lanes),
         "lanes": lanes,
-        "note": "read-only DIAGNOSTIC probes; names an actuator per lane but "
-                "fires nothing; see routes/flywheel_master_shell.py",
+        "note": "read-only DIAGNOSTIC probes (pure-DB, no self-requests); names "
+                "an actuator per lane but fires nothing; see "
+                "routes/flywheel_master_shell.py",
     }
     if c is not None:
         try:
@@ -505,7 +478,11 @@ def _tick_cached() -> dict:
 @flywheel_master_shell_bp.route("/api/v1/admin/flywheel/master-tick", methods=["GET", "POST"])
 def flywheel_master_tick():
     if _disabled():
-        return jsonify(ok=False, error="disabled"), 503
+        # 404 not 503: the CF worker's failover breaker (proxyWithRetry) treats
+        # ANY 5xx from Railway as a dead-origin signal and fails the request
+        # over to the stale Render backend — and 2 within 10s trip the breaker
+        # site-wide for 30s. A kill-switch must NEVER return 5xx. (2026-07-06.)
+        return jsonify(ok=False, error="disabled"), 404
     if not _admin_ok():
         return jsonify(ok=False, error="forbidden"), 403
     fresh = (request.args.get("fresh") or "") == "1"
@@ -519,7 +496,9 @@ def flywheel_master_tick():
 @flywheel_master_shell_bp.route("/api/v1/admin/flywheel", methods=["GET"])
 def flywheel_dashboard():
     if _disabled():
-        return Response("flywheel disabled", status=503)
+        # 404 not 503 — see flywheel_master_tick: a 5xx here trips the CF
+        # failover breaker and bounces the whole site to stale Render.
+        return Response("flywheel disabled", status=404)
     if not _admin_ok():
         return Response("forbidden — X-Admin-Key or ?admin_key=", status=403)
     p = _tick_cached()
@@ -561,8 +540,8 @@ def flywheel_dashboard():
         f"<span style='color:{'#22c55e' if green else '#eab308'}'>"
         f"{p['lanes_pass']}/{p['lanes_total']} lanes green</span></h2>"
         f"<div style='color:#64748b;font-size:12px'>07-05 flywheel priorities · read-only "
-        f"DIAGNOSTIC (names an actuator per lane, fires nothing) · 30s tick cache · "
-        f"auto-refresh 60s · generated {_esc(p['generated_at'])} · "
+        f"DIAGNOSTIC (pure-DB, no self-requests; names an actuator per lane, fires nothing) · "
+        f"30s tick cache · auto-refresh 60s · generated {_esc(p['generated_at'])} · "
         f"JSON: /api/v1/admin/flywheel/master-tick</div>"
         + "".join(cards) + "</body>")
     return Response(html, mimetype="text/html")
