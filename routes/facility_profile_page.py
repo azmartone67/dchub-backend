@@ -117,18 +117,49 @@ def _fetch_facility_by_slug(slug: str) -> dict | None:
         return None
 
 
-def _market_dcpi(city: str, state: str) -> dict | None:
-    """Best-effort DCPI verdict for the facility's market (by city/state) so
-    the profile shows real intelligence, not just sparse metadata."""
-    cands = []
+def _market_dcpi(city: str, state: str, lat=None, lng=None) -> dict | None:
+    """Best-effort DCPI verdict for the facility's market so the profile shows
+    real intelligence, not just sparse metadata.
+
+    Resolution order (r-market-resolve 2026-07-06): (1) exact city/metro slug
+    match; (2) if that misses, the geographically NEAREST metro in the same
+    state by lat/lng; (3) otherwise the most-recent row in the state. The old
+    single-query `market_slug OR state ... ORDER BY computed_at` collapsed every
+    facility in a state onto one arbitrary (most-recently-computed) metro — e.g.
+    a Dallas facility resolving to Midland-Odessa (/dcpi/midland-tx) even when a
+    `dallas` row existed, because the state clause returned it too and a fresher
+    computed_at won the tie. The RAG "Market context" splice (93037e04) now names
+    the resolved market prominently, so a wrong market is user- and SEO-visible.
+    See memory reference_dchub_market_slugs (markets=METRO, dcpi=CITY)."""
+    _COLS = ("market_slug, market_name, iso, verdict, "
+             "excess_power_score, constraint_score, time_to_power_months")
+
+    # City/metro slug candidates. The bare state code is deliberately NOT here —
+    # it belongs only to the geographic fallback below, never the exact match.
+    city_cands = []
     if city:
-        cands.append(city.lower().replace(" ", "-"))
-        cands.append(city.lower().split(",")[0].strip().replace(" ", "-"))
-    if state:
-        cands.append(state.lower())
-    cands = [c for c in cands if c]
-    if not cands:
+        base = city.lower().split(",")[0].strip().replace(" ", "-")
+        if base:
+            city_cands.append(base)
+        full = city.lower().replace(" ", "-")
+        if full:
+            city_cands.append(full)
+        if base and state and len(state.strip()) == 2:
+            # bulk_dcpi_score stores some slugs as '<city>-<st>' (e.g. st-louis-mo)
+            city_cands.append(f"{base}-{state.strip().lower()}")
+    city_cands = list(dict.fromkeys(c for c in city_cands if c))  # order-preserving de-dupe
+    st = (state or "").strip().lower()
+    if not city_cands and not st:
         return None
+
+    # Facility coords (for the nearest-metro fallback). Coerce defensively —
+    # fac dict values can be str/Decimal/None.
+    try:
+        flat = float(lat) if lat not in (None, "") else None
+        flng = float(lng) if lng not in (None, "") else None
+    except (TypeError, ValueError):
+        flat = flng = None
+
     try:
         from main import get_read_db
         conn = get_read_db()
@@ -136,17 +167,64 @@ def _market_dcpi(city: str, state: str) -> dict | None:
             return None
         try:
             c = conn.cursor()
-            c.execute("""
-                SELECT market_slug, market_name, iso, verdict,
-                       excess_power_score, constraint_score, time_to_power_months
-                  FROM market_power_scores
-                 WHERE LOWER(market_slug) = ANY(%s) OR LOWER(state) = ANY(%s)
-                 ORDER BY computed_at DESC LIMIT 1
-            """, (cands, cands))
-            row = c.fetchone()
-            if not row:
+
+            def _fetch(sql, params):
+                c.execute(sql, params)
+                r = c.fetchone()
+                return dict(zip([d[0] for d in c.description], r)) if r else None
+
+            # (1) Exact city/metro slug match. Constrain to the facility's state
+            # (when known) so same-name cities in other states can't collide.
+            if city_cands:
+                if st:
+                    row = _fetch(
+                        f"SELECT {_COLS} FROM market_power_scores "
+                        "WHERE LOWER(market_slug) = ANY(%s) "
+                        "  AND (state IS NULL OR LOWER(state) = %s) "
+                        "ORDER BY computed_at DESC LIMIT 1",
+                        (city_cands, st))
+                else:
+                    row = _fetch(
+                        f"SELECT {_COLS} FROM market_power_scores "
+                        "WHERE LOWER(market_slug) = ANY(%s) "
+                        "ORDER BY computed_at DESC LIMIT 1",
+                        (city_cands,))
+                if row:
+                    return row
+
+            if not st:
                 return None
-            return dict(zip([d[0] for d in c.description], row))
+
+            # (2) Nearest metro in the state by lat/lng. Local flat-earth metric:
+            # weight longitude by cos(latitude) so E-W and N-S degrees are
+            # comparable. Only relative ordering matters, so squared distance is
+            # fine (no sqrt). Coord coverage in market_power_scores is sparse —
+            # e.g. in TX only Midland-Odessa carries coords while Dallas/Houston/
+            # Austin are NULL — so a SINGLE coord-bearing metro must NOT be
+            # treated as "nearest" to every uncovered city in the state (that's
+            # the exact Dallas->Midland collapse we're fixing). Require >=2
+            # coord-bearing metros before trusting the geographic pick; otherwise
+            # ranking on one point is meaningless and we defer to (3).
+            if flat is not None and flng is not None:
+                c.execute(
+                    f"SELECT {_COLS} FROM market_power_scores "
+                    "WHERE LOWER(state) = %s "
+                    "  AND latitude IS NOT NULL AND longitude IS NOT NULL "
+                    "ORDER BY (POWER(latitude - %s, 2) + "
+                    "          POWER((longitude - %s) * COS(RADIANS(%s)), 2)) ASC "
+                    "LIMIT 2",
+                    (st, flat, flng, flat))
+                rows = c.fetchall()
+                if len(rows) >= 2:
+                    return dict(zip([d[0] for d in c.description], rows[0]))
+
+            # (3) Fallback: most-recent row in the state (legacy behavior — used
+            # only when we have no city match and no usable coords).
+            return _fetch(
+                f"SELECT {_COLS} FROM market_power_scores "
+                "WHERE LOWER(state) = %s "
+                "ORDER BY computed_at DESC LIMIT 1",
+                (st,))
         finally:
             try: conn.close()
             except Exception: pass
@@ -545,7 +623,7 @@ def _render_profile(fac: dict, slug: str) -> str:
     # links (Market → its DCPI page, Coordinates → the map). Doubles as onward-nav
     # (lifts the ~1.19 pages/session). _dcpi is fetched here (moved up) so the
     # Market tile can point at the same guaranteed-resolving /dcpi/<slug>.
-    _dcpi = _market_dcpi(city, state)
+    _dcpi = _market_dcpi(city, state, lat, lng)
     _mslug0 = (_dcpi.get("market_slug") or "") if _dcpi else ""
     _osm_href = (f"https://www.openstreetmap.org/?mlat={lat}&mlon={lng}#map=14/{lat}/{lng}"
                  if (lat and lng) else "")
