@@ -21961,13 +21961,22 @@ def fiber_routes_api():
     # (tier-varying full-vs-teaser body must never edge-cache cross-tier).
     if _fiber_full_access_ok():
         _now = time.time()
-        if (_FIBER_INTEL_CACHE["data"] is not None
+        # r-fibercache3 (2026-07-06): the single-slot cache is only valid for the
+        # UNFILTERED full build — it was serving the first caller's result to every
+        # subsequent access-granted caller, silently ignoring carrier/class/bbox
+        # (and now market=). Cache ONLY the unfiltered build; any filtered call
+        # builds fresh (it's narrowed, so cheaper than the full build anyway).
+        _flt = bool(request.args.get('carrier') or request.args.get('type')
+                    or request.args.get('class') or request.args.get('bbox')
+                    or request.args.get('market'))
+        if (not _flt and _FIBER_INTEL_CACHE["data"] is not None
                 and (_now - _FIBER_INTEL_CACHE["at"]) < _FIBER_INTEL_TTL):
             payload = _FIBER_INTEL_CACHE["data"]
         else:
             payload = _build_fiber_routes_geojson()
-            _FIBER_INTEL_CACHE["data"] = payload
-            _FIBER_INTEL_CACHE["at"] = _now
+            if not _flt:
+                _FIBER_INTEL_CACHE["data"] = payload
+                _FIBER_INTEL_CACHE["at"] = _now
     else:
         payload = _fiber_teaser_response()
     resp = jsonify(payload)
@@ -22046,13 +22055,22 @@ def fiber_intel_api():
     never touch the cache."""
     if _fiber_full_access_ok():
         _now = time.time()
-        if (_FIBER_INTEL_CACHE["data"] is not None
+        # r-fibercache3 (2026-07-06): the single-slot cache is only valid for the
+        # UNFILTERED full build — it was serving the first caller's result to every
+        # subsequent access-granted caller, silently ignoring carrier/class/bbox
+        # (and now market=). Cache ONLY the unfiltered build; any filtered call
+        # builds fresh (it's narrowed, so cheaper than the full build anyway).
+        _flt = bool(request.args.get('carrier') or request.args.get('type')
+                    or request.args.get('class') or request.args.get('bbox')
+                    or request.args.get('market'))
+        if (not _flt and _FIBER_INTEL_CACHE["data"] is not None
                 and (_now - _FIBER_INTEL_CACHE["at"]) < _FIBER_INTEL_TTL):
             payload = _FIBER_INTEL_CACHE["data"]
         else:
             payload = _build_fiber_routes_geojson()
-            _FIBER_INTEL_CACHE["data"] = payload
-            _FIBER_INTEL_CACHE["at"] = _now
+            if not _flt:
+                _FIBER_INTEL_CACHE["data"] = payload
+                _FIBER_INTEL_CACHE["at"] = _now
     else:
         payload = _fiber_teaser_response()
     resp = jsonify(payload)
