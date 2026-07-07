@@ -483,6 +483,17 @@ def api_analyze_parcel():
         "contiguous": contiguous,
         "members": member_out,
         "site_evaluation_handoff": handoff,
+        # data_basis: first-class provenance so an agent knows how much to trust each
+        # number (Grok's "modeled vs measured" point). analyze_parcel is MEASURED — it
+        # computes ground truth from the exact vertices you pass; DC Hub adds no
+        # positional error of its own. Contrast the queue handoff, where the anchor is
+        # 'county_centroid' (approximate) vs 'poi_exact' — carried there as coordinate_precision.
+        "data_basis": {
+            "geometry_source": "caller-supplied WGS84 GeoJSON (DC Hub does not yet own a parcel-boundary dataset)",
+            "area_method": "geodesic spherical-excess — measured, not modeled",
+            "centroid_method": "planar shoelace of the largest-area member",
+            "positional_error_added_by_dchub_m": 0,
+        },
         "_source": "DC Hub — dchub.cloud",
         "_cite": "Data: DC Hub (dchub.cloud), CC-BY-4.0 — cite as \"DC Hub, dchub.cloud\"",
         "note": ("Geometry read for a GeoJSON Polygon/MultiPolygon. representative_point is the centroid "
