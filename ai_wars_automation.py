@@ -1110,6 +1110,24 @@ def _run_battle_inner(conn, question, category, fighters_config, api_base):
         conn.close()
         return None, "Need at least 2 platforms to run a battle"
 
+    # Pre-fetch historical stats, then RELEASE the DB connection for the whole
+    # slow AI-call loop below. Holding a Neon connection idle across ~30-60s of
+    # model API calls gets it dropped by the pooler ("SSL connection has been
+    # closed unexpectedly") and every downstream write fails — this is what
+    # silently killed live battles. We reopen a fresh connection for the write
+    # phase after the loop.
+    stats_by_platform = {}
+    try:
+        c.execute("SELECT * FROM wars_platform_stats")
+        stats_by_platform = {row['platform']: dict(row) for row in c.fetchall()}
+    except Exception:
+        pass
+    try:
+        conn.close()
+    except Exception:
+        pass
+    conn = c = None
+
     # Enrich with DC Hub data
     context = _enrich_question_with_data(question, api_base)
     context_str = json.dumps(context, default=str)[:2000] if context else ""
@@ -1168,8 +1186,8 @@ Reference DC Hub data where relevant. This is a scored competition."""
                                      elapsed_seconds=elapsed)
         else:
             # No response at all — use historical stats with randomization
-            c.execute("SELECT * FROM wars_platform_stats WHERE platform = %s", (platform_key,))
-            stats = c.fetchone()
+            # (pre-fetched above; the DB connection is released during this loop)
+            stats = stats_by_platform.get(platform_key)
             if stats:
                 import random
                 base = dict(stats)
@@ -1222,6 +1240,11 @@ Reference DC Hub data where relevant. This is a scored competition."""
     winner_info = platforms.get(winner['platform'], {})
     winner_name = winner_info.get('name', winner['platform'].title())
     winner_label = f"{winner_name} — Score: {winner['scores']['overall']}"
+
+    # Reopen a fresh connection for the write phase — the one we had was released
+    # before the AI loop above (a held one would be dead by now).
+    conn = _get_db()
+    c = conn.cursor()
 
     c.execute("""
         INSERT INTO wars_battles
