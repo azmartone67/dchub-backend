@@ -368,6 +368,28 @@ def job_evolution():
         return jsonify({'success': False, 'job': 'evolution', 'error': str(e)}), 500
 
 
+@jobs_bp.route('/api/jobs/ai-wars', methods=['POST'])
+def job_ai_wars():
+    """Cron (daily): AI Wars master shell. Drains stuck/orphaned challenge-queue
+    battles and runs one fresh auto-battle so the arena leaderboard stays live.
+    The scheduler already has an 'ai_wars' registry entry (interval 86400) — this
+    endpoint was the missing piece that stalled battles on 2026-07-01."""
+    auth_err = _require_admin_key()
+    if auth_err:
+        return auth_err
+    try:
+        from ai_wars_automation import run_master_tick
+        summary = run_master_tick()
+        _reg_update('ai_wars')
+        logger.info("JOB ai-wars: ✅ %s", summary)
+        return jsonify({'success': True, 'job': 'ai-wars', 'result': summary, 'ts': datetime.utcnow().isoformat()})
+    except ImportError:
+        return jsonify({'success': True, 'job': 'ai-wars', 'skipped': 'ai_wars_automation not available', 'ts': datetime.utcnow().isoformat()})
+    except Exception as e:
+        logger.error("JOB ai-wars: ❌ %s", e)
+        return jsonify({'success': False, 'job': 'ai-wars', 'error': str(e)}), 500
+
+
 @jobs_bp.route('/api/jobs/ai-ecosystem', methods=['POST'])
 def job_ai_ecosystem():
     """Cron: AI Ecosystem Agent enrichment cycle"""

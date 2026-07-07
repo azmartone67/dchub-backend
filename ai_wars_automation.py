@@ -1225,9 +1225,13 @@ Reference DC Hub data where relevant. This is a scored competition."""
         })
         total_api_calls += api_calls
 
-    # Determine winner
+    # Determine winner. Integrity: a platform that did NOT actually answer (no real
+    # API response) is scored from historical stats for roster continuity, but it
+    # cannot WIN a live battle — the winner must have genuinely competed. Rank the
+    # full field for display, but pick the winner from real responders only.
     fighter_results.sort(key=lambda f: f['scores']['overall'], reverse=True)
-    winner = fighter_results[0]
+    _responders = [f for f in fighter_results if f.get('had_real_response')]
+    winner = _responders[0] if _responders else fighter_results[0]
 
     # Get week number
     now = datetime.now(timezone.utc)
@@ -1343,6 +1347,90 @@ def _recalculate_all_stats(conn):
                 round(row['ins'] or 0, 1), round(row['ovr'] or 0, 1),
                 now,
             ))
+
+
+def _reconstruct_battle_result(cur, battle_id):
+    """Rebuild a battle result payload from the DB (wars_battles + wars_fighters).
+    Used when result_json was never persisted — e.g. a battle drained by the
+    master-tick, or one whose in-memory queue entry was lost on a container
+    restart. Keeps /battle-status returning the winner + per-model scores instead
+    of an empty 'completed' with no payload."""
+    if not battle_id:
+        return None
+    try:
+        cur.execute("SELECT winner_platform FROM wars_battles WHERE id=%s", (battle_id,))
+        b = cur.fetchone()
+        cur.execute("""SELECT platform, score_overall, had_real_response, used_mcp
+                       FROM wars_fighters WHERE battle_id=%s ORDER BY score_overall DESC""", (battle_id,))
+        fighters = cur.fetchall()
+        return {
+            'battle_id': battle_id,
+            'winner': (b.get('winner_platform') if b else None),
+            'results': [{
+                'platform': f['platform'],
+                'overall': f['score_overall'],
+                'had_real_response': f.get('had_real_response', False),
+                'used_mcp': f.get('used_mcp', False),
+            } for f in fighters],
+        }
+    except Exception:
+        return {'battle_id': battle_id}
+
+
+def run_master_tick(api_base='https://dchub-backend-production.up.railway.app', max_drain=5):
+    """AI Wars master shell — one cron tick that keeps the arena alive:
+      1. Drain stuck challenges (queued / orphaned 'running' from a prior restart)
+         so user-submitted battles actually complete.
+      2. Run ONE fresh auto-generated battle to keep the leaderboard moving.
+      3. Refresh platform aggregate stats.
+    Idempotent + cost-bounded (max_drain + 1 fresh battle per tick). Invoked daily
+    by the scheduler via POST /api/jobs/ai-wars."""
+    summary = {'drained': 0, 'drain_failed': 0, 'fresh_battle': None, 'stuck_found': 0, 'errors': []}
+
+    # 1. Drain stuck queue rows
+    stuck = []
+    try:
+        with _db_conn() as conn:
+            c = conn.cursor()
+            c.execute("""SELECT id, question, category FROM wars_battle_queue
+                         WHERE status IN ('queued', 'running')
+                         ORDER BY created_at ASC NULLS FIRST LIMIT %s""", (max_drain,))
+            stuck = [dict(r) for r in c.fetchall()]
+    except Exception as e:
+        summary['errors'].append(f"queue_read:{str(e)[:80]}")
+    summary['stuck_found'] = len(stuck)
+
+    for row in stuck:
+        try:
+            battle_id, results = _run_battle(row['question'],
+                                             row.get('category') or 'stump-the-ai',
+                                             api_base=api_base)
+            with _db_conn() as conn:
+                c = conn.cursor()
+                if battle_id:
+                    c.execute("""UPDATE wars_battle_queue SET status='completed',
+                                 battle_id=%s, completed_at=NOW() WHERE id=%s""",
+                              (battle_id, row['id']))
+                    summary['drained'] += 1
+                else:
+                    c.execute("""UPDATE wars_battle_queue SET status='failed',
+                                 error=%s, completed_at=NOW() WHERE id=%s""",
+                              (str(results)[:200], row['id']))
+                    summary['drain_failed'] += 1
+                conn.commit()
+        except Exception as e:
+            summary['drain_failed'] += 1
+            summary['errors'].append(f"drain[{row.get('id')}]:{str(e)[:80]}")
+
+    # 2. One fresh auto-battle to keep the leaderboard current
+    try:
+        q = _generate_question()
+        battle_id, _ = _run_battle(q['question'], q.get('category', 'stump-the-ai'), api_base=api_base)
+        summary['fresh_battle'] = battle_id
+    except Exception as e:
+        summary['errors'].append(f"fresh:{str(e)[:100]}")
+
+    return summary
 
 
 def _weekly_battle_runner(api_base='https://dchub-backend-production.up.railway.app'):
@@ -1607,7 +1695,8 @@ def register_wars_automation(app):
                 c = conn.cursor()
                 c.execute("SELECT * FROM wars_battle_queue WHERE id = %s", (queue_id,))
                 row = c.fetchone()
-                conn.close()
+                # NB: do NOT close conn here — the reconstruction below needs the
+                # cursor. The _db_conn() context manager closes it on exit.
 
                 if row:
                     response = {
@@ -1618,11 +1707,18 @@ def register_wars_automation(app):
                         'started_at': str(row.get('started_at', '')) if row.get('started_at') else None,
                         'completed_at': str(row.get('completed_at', '')) if row.get('completed_at') else None,
                     }
-                    if row['status'] == 'completed' and row.get('result_json'):
-                        try:
-                            response['battle'] = json.loads(row['result_json'])
-                        except:
-                            response['battle'] = {'battle_id': row.get('battle_id')}
+                    if row['status'] == 'completed':
+                        # Prefer the stored result_json; if it was never persisted
+                        # (drained via master-tick, or in-memory queue lost on
+                        # restart), reconstruct the payload from the DB by battle_id
+                        # so the frontend still gets winner + per-model scores.
+                        if row.get('result_json'):
+                            try:
+                                response['battle'] = json.loads(row['result_json'])
+                            except Exception:
+                                response['battle'] = _reconstruct_battle_result(c, row.get('battle_id'))
+                        else:
+                            response['battle'] = _reconstruct_battle_result(c, row.get('battle_id'))
                     elif row['status'] == 'failed':
                         response['error'] = row.get('error')
                     return jsonify(response)
