@@ -209,27 +209,31 @@ def _lane_brain_backlog(c) -> list[dict]:
                       f"max seen_count = {maxseen} (stateful-detector actuator not yet shipped)"
                       if maxseen is not None else "no seen_count column"))
 
-    # 2c — backlog DRAINING: verified facilities moved >=100 over 7d (mirrors
-    # the dedup_pipeline_stalled trigger). No dedup cron => expect RED until
-    # /api/v1/admin/dedup/run|drain is put on a schedule.
-    latest = _scalar(c, "SELECT verified_count FROM facility_count_snapshots "
-                        "ORDER BY snapshot_date DESC LIMIT 1")
-    prior = _scalar(c, "SELECT verified_count FROM facility_count_snapshots "
-                       "WHERE snapshot_date <= (CURRENT_DATE - 7) "
-                       "ORDER BY snapshot_date DESC LIMIT 1")
-    if latest is None or prior is None:
-        out.append(_check("bl_backlog_draining", "verified facilities moving (>=100/7d)",
-                           None, f"snapshots: latest={latest} prior7d={prior}"))
-    else:
-        moved = int(latest) - int(prior)
-        out.append(_check("bl_backlog_draining", "verified facilities moving (>=100/7d)",
-                           moved >= 100, f"verified moved {moved:+d} over 7d ({prior}->{latest})"))
+    # 2c — backlog DRAINING (r-probe-fix 2026-07-07): measure real THROUGHPUT —
+    # rows actually drained (discovered_facilities.merged_at stamped) in the last
+    # 7d; >=100 = healthy. The OLD probe read the 7d DELTA of
+    # facility_count_snapshots.verified_count, but verified_count IS the UN-drained
+    # REMAINDER (COUNT WHERE merged_at IS NULL AND is_duplicate=0) — a number the
+    # drain keeps NEAR ZERO, so a small delta was mis-read as "not moving" and the
+    # lane was FALSELY RED. The drain IS firing (GH Actions dchub-jobs.yml
+    # auto-approve, ~482/7d; pending queue = 0). This now reflects it.
+    drained = _scalar(c, "SELECT COUNT(*) FROM discovered_facilities "
+                         "WHERE merged_at::timestamptz >= now() - interval '7 days'")
+    out.append(_check("bl_backlog_draining", "facilities DRAINED >=100/7d (real throughput)",
+                       (int(drained) >= 100) if drained is not None else None,
+                       f"{drained} drained/7d (merged_at stamped)" if drained is not None else "query failed"))
 
-    # 2d — GAUGE: current unverified backlog (watch it trend down from ~21,422).
-    backlog = _scalar(c, "SELECT COUNT(*) FROM discovered_facilities "
-                         "WHERE NOT (merged_at IS NULL AND is_duplicate = 0)")
-    out.append(_check("bl_backlog_size", "unverified discovery backlog (trend down)",
-                      None, f"{backlog} unverified" if backlog is not None else "query failed"))
+    # 2d — GAUGE (r-probe-fix 2026-07-07): the REAL drainable queue = pending rows
+    # awaiting auto-approve (status='pending'). The old gauge counted
+    # `NOT (merged_at IS NULL AND is_duplicate=0)` = rows ALREADY PROCESSED
+    # (merged OR marked duplicate) and mislabeled ~21,904 DONE rows as "unverified
+    # backlog". Show pending + processed honestly.
+    pending = _scalar(c, "SELECT COUNT(*) FROM discovered_facilities WHERE status='pending'")
+    processed = _scalar(c, "SELECT COUNT(*) FROM discovered_facilities "
+                           "WHERE NOT (merged_at IS NULL AND is_duplicate = 0)")
+    out.append(_check("bl_backlog_size", "drainable queue (pending) + processed",
+                      None, f"{pending} pending in queue · {processed} already processed (merged+dup)"
+                      if pending is not None else "query failed"))
     return out
 
 
