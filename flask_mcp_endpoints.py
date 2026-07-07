@@ -981,6 +981,19 @@ def identify_key():
                     "UPDATE mcp_high_intent_sessions SET claim_email = %s "
                     "WHERE mcp_session_id = %s AND (claim_email IS NULL OR claim_email = '')",
                     (email, _mcp_sess))
+                # r-lead-bridge (2026-07-07): ALSO stamp mcp_upgrade_signals.user_email
+                # for this session — that's the table lost_conversion_outreach reads to
+                # reach non-converted high-intent leads. The web capture path reaches it
+                # via mcp_email_capture + the backfill, but the AGENT bind_email path
+                # (this endpoint) wrote only the KEY tables + the high-intent row, so an
+                # agent-bound email was INVISIBLE to the nurture machinery (~1 reachable
+                # lead / 603 high-intent sessions). This only makes the lead REACHABLE +
+                # measurable; marketing SENDS stay gated by the explicit marketing_opt_in
+                # in lost_conversion_outreach (transactional-only binds are never emailed).
+                _scur.execute(
+                    "UPDATE mcp_upgrade_signals SET user_email = %s "
+                    "WHERE session_id = %s AND (user_email IS NULL OR user_email = '')",
+                    (email, _mcp_sess))
                 _sc.commit()
     except Exception:
         pass
