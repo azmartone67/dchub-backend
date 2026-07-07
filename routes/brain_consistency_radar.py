@@ -3347,21 +3347,38 @@ def check_page_content_drift() -> list[dict]:
     conn = _db()
     if conn is None: return []
     findings: list[dict] = []
+    # r-sentinel-gated (2026-07-07): content-drift only makes sense between two
+    # SUCCESSFUL full renders. Exclude admin-gated + known-dynamic endpoints
+    # (heartbeat's stale-while-revalidate body, admin JSON that answers 401 when
+    # the Sentinel is unauthenticated) — their size legitimately flaps, and a
+    # 401 gate body vs a 200 baseline reads as a -96% 'drift' that is an auth/
+    # cache artifact, not a stealth regression. This was the #1484 false 'deploy
+    # regression' (heartbeat + 3 admin endpoints). Best-effort; empty set on any
+    # import error so drift still runs for the static content pages it targets.
+    try:
+        from routes.site_sentinel import _MANIFEST as _SS_MANIFEST
+        _drift_skip = {e.get("path") for e in _SS_MANIFEST
+                       if e.get("needs_admin") or e.get("skip_drift")}
+    except Exception:
+        _drift_skip = set()
     try:
         import psycopg2.extras
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             try:
                 cur.execute("""
                     SELECT path, label, bytes, prev_bytes, content_hash,
-                           prev_content_hash
+                           prev_content_hash, status_code
                       FROM site_sentinel_results
                      WHERE healthy = TRUE
                        AND content_hash IS NOT NULL
                        AND prev_content_hash IS NOT NULL
                        AND content_hash != prev_content_hash
                        AND prev_bytes > 0
+                       AND (status_code IS NULL OR status_code < 400)
                 """)
                 for r in cur.fetchall():
+                    if r["path"] in _drift_skip:
+                        continue
                     delta_pct = abs(100.0 * (int(r["bytes"] or 0) - int(r["prev_bytes"] or 0)) / max(1, int(r["prev_bytes"] or 1)))
                     if delta_pct < 25:
                         continue

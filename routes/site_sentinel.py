@@ -185,7 +185,7 @@ _MANIFEST: list[dict] = [
     {"path": "/glossary",                "category": "normal", "min_bytes": 1500, "label": "Glossary"},
 
     # Healthcheck APIs
-    {"path": "/api/v1/brain/heartbeat",  "category": "high",   "min_bytes":  200, "label": "Brain Heartbeat", "expected_status": [200, 202]},  # r33: 256-byte stale-while-revalidate response is valid; old 500 floor false-flagged the warming path
+    {"path": "/api/v1/brain/heartbeat",  "category": "high",   "min_bytes":  200, "label": "Brain Heartbeat", "expected_status": [200, 202], "skip_drift": True},  # r33: 256-byte stale-while-revalidate response is valid; old 500 floor false-flagged the warming path. r-sentinel-gated: skip_drift — this is a dynamic stale-while-revalidate JSON body whose size legitimately flaps (the #1484 heartbeat 8710→313 'drift' was a transient cache blip, not a regression)
     {"path": "/api/v1/dcpi/scores?limit=1","category": "high","min_bytes": 200, "label": "DCPI Scores API"},
     {"path": "/api/v1/surfaces",         "category": "normal", "min_bytes":  300, "label": "Surfaces API"},
     {"path": "/api/v1/mcp/growth",       "category": "normal", "min_bytes":  200, "label": "MCP Growth"},
@@ -615,6 +615,24 @@ def _scan_one(entry: dict) -> dict:
                     out["healthy"] = True
                     out["reason"] = "waf_challenge_skipped"
                     return out
+            # r-sentinel-gated (2026-07-07): a 401/403 on a needs_admin route is
+            # the AUTH GATE working, NOT a page outage. The probe attaches the
+            # admin key only when _ADMIN_KEY is set in the Sentinel's OWN runtime
+            # (line ~522); when it isn't — or the key is stale — every admin page
+            # answers 401/403. Flagging that as 'page down' + feeding the tiny
+            # gate body into content-drift was the #1484 false 'deploy
+            # regression' (4 admin endpoints reading -96%/502 while all were
+            # correctly gated). Treat it as gated-healthy; keep whether a key was
+            # even sent so a REAL auth misconfig (key sent + still rejected)
+            # stays distinguishable, and mark it so content-drift skips it.
+            if entry.get("needs_admin") and out["status_code"] in (401, 403):
+                out["healthy"] = True
+                out["gated"] = True
+                out["reason"] = (
+                    "admin_gated_auth_rejected (key sent but rejected — check "
+                    "DCHUB_ADMIN_KEY)" if _ADMIN_KEY
+                    else "admin_gated_no_key (gate healthy; sentinel unauthenticated)")
+                return out
             out["reason"] = f"http_status:{out['status_code']}"
             return out
         if out["bytes"] < min_bytes:
