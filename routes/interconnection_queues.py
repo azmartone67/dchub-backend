@@ -524,6 +524,37 @@ def api_rank_sites():
     cands = body.get("candidates") or []
     constraints = body.get("constraints") or {}
     objectives = body.get("objectives") or {}
+    # shortlist_name (alias shortlist_id) → one-shot re-rank of a SAVED shortlist:
+    # load its sites (owner-scoped) as candidates so an agent re-ranks a persistent
+    # shortlist against the current baseline in a single call (Phase 5 ergonomics).
+    _shortlist = (body.get("shortlist_name") or body.get("shortlist_id") or "").strip()
+    _from_shortlist = None
+    if _shortlist and not cands:
+        try:
+            import hashlib
+            _key = (request.headers.get("X-API-Key", "") or "").strip()
+            _own = ("k_" + hashlib.sha256(_key.encode()).hexdigest()[:24]) if _key else "public"
+            with psycopg.connect(NEON_URL, autocommit=True) as _sc:
+                _cur = _sc.cursor()
+                _cur.execute("SELECT site_ref, lat, lng, capacity_mw, saved_metrics, saved_objectives "
+                             "FROM agent_shortlist_sites WHERE owner=%s AND shortlist_name=%s",
+                             (_own, _shortlist))
+                _rows = _cur.fetchall()
+            _saved_obj = {}
+            for _sr, _la, _ln, _cap, _mx, _ob in _rows:
+                row = dict(_mx) if isinstance(_mx, dict) else {}
+                row.update({"site_ref": _sr, "lat": (float(_la) if _la is not None else None),
+                            "lng": (float(_ln) if _ln is not None else None),
+                            "capacity_mw": (float(_cap) if _cap is not None else None)})
+                cands.append(row)
+                if isinstance(_ob, dict) and not _saved_obj:
+                    _saved_obj = _ob
+            # if the caller didn't pass objectives, reuse the ones the shortlist was saved under
+            if not objectives and _saved_obj:
+                objectives = _saved_obj
+            _from_shortlist = {"shortlist_name": _shortlist, "sites_loaded": len(cands)}
+        except Exception as _e:
+            return jsonify(ok=False, _entity="error", error=f"shortlist load failed: {str(_e)[:120]}"), 200
     # absolute=true → score each objective on a FIXED 0-100 scale (the raw value,
     # clamped, direction-adjusted) instead of min-max within the batch. Gives
     # cross-run-stable scores (Grok's relative-vs-absolute gap) — but ONLY valid
@@ -631,6 +662,8 @@ def api_rank_sites():
     _mode = "percentile" if percentile else ("absolute" if absolute else "relative")
     _extra = {}
     _caveats = []
+    if _from_shortlist:
+        _extra["from_shortlist"] = _from_shortlist
     if percentile:
         _extra["percentile_baseline_available"] = sorted(_baseline.keys())
         if _unbaselined:
