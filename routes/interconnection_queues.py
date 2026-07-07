@@ -531,6 +531,20 @@ def api_rank_sites():
     # risk_resilience, fiber_connectivity, water score). Pass 0-100 score fields,
     # NOT raw distances like fiber_km, in absolute mode.
     absolute = str(body.get("absolute", "")).lower() in ("1", "true", "yes")
+    # percentile=true → score each objective as its PERCENTILE against the viable-site
+    # population (the reference distribution maintained by the site-baseline master
+    # tick). Answers "better than X% of viable sites", stable across runs AND
+    # comparable across regions — the global-comparability layer Gemini+Grok flagged.
+    # Takes precedence over absolute. Fields with no baseline fall back to absolute.
+    percentile = str(body.get("percentile", "")).lower() in ("1", "true", "yes")
+    _baseline = {}
+    _unbaselined = []
+    if percentile:
+        try:
+            from site_baseline import load_baseline, percentile_of as _pct_of
+            _baseline = load_baseline(force=True)
+        except Exception:
+            _baseline = {}
     try:
         top_k = max(1, int(body.get("top_k") or 3))
     except Exception:
@@ -572,7 +586,18 @@ def api_rank_sites():
         vals = [v for v in vals if v is not None]
         if not vals:
             continue
-        if absolute:
+        if percentile and f in _baseline:
+            bmeta = _baseline[f]
+            norm_basis[f] = {"scale": "percentile vs population", "p50": bmeta.get("p50"),
+                             "sample_size_metric": None, "direction": "maximize" if w >= 0 else "minimize"}
+            for c in survivors:
+                pv = _pct_of(f, _num(c.get(f)), _baseline)
+                if pv is None:
+                    continue
+                c.setdefault("_norm", {})[f] = round(pv if w >= 0 else (100.0 - pv), 1)
+        elif absolute or (percentile and f not in _baseline):
+            if percentile and f not in _baseline and f not in _unbaselined:
+                _unbaselined.append(f)
             norm_basis[f] = {"scale": "0-100 fixed", "direction": "maximize" if w >= 0 else "minimize"}
             for c in survivors:
                 v = _num(c.get(f))
@@ -603,10 +628,17 @@ def api_rank_sites():
     for i, c in enumerate(survivors):
         c["rank"] = i + 1
 
+    _mode = "percentile" if percentile else ("absolute" if absolute else "relative")
+    _extra = {}
+    if percentile:
+        _extra["percentile_baseline_available"] = sorted(_baseline.keys())
+        if _unbaselined:
+            _extra["unbaselined_fields_fell_back_to_absolute"] = _unbaselined
     return jsonify({
         "_entity": "ranked_sites",
         "ok": True,
-        "scoring_mode": "absolute" if absolute else "relative",
+        "scoring_mode": _mode,
+        **_extra,
         "count_ranked": len(survivors),
         "count_returned": min(top_k, len(survivors)),
         "dropped_by_constraints": dropped,

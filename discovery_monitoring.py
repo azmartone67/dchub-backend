@@ -67,6 +67,7 @@ def discovery_scheduler_status():
         'promotion': {'job_key': 'promotion', 'interval': 86400},
         'content_publish': {'job_key': 'content-publish', 'interval': 86400},
         'ai_wars': {'job_key': 'ai-wars', 'interval': 86400},
+        'site_baseline': {'job_key': 'site-baseline', 'interval': 86400},
     }
 
     schedulers = {}

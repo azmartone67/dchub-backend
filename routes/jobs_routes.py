@@ -395,6 +395,35 @@ def job_ai_wars():
         return jsonify({'success': False, 'job': 'ai-wars', 'error': str(e)}), 500
 
 
+@jobs_bp.route('/api/jobs/site-baseline', methods=['POST'])
+def job_site_baseline():
+    """Cron: recompute the site-score REFERENCE DISTRIBUTION (percentile baseline)
+    across a sample of viable geocoded queue survivors. Powers rank_sites
+    percentile mode ("better than X% of viable sites"). Runs async — the tick makes
+    ~40 internal /api/site-score calls (~1-3 min)."""
+    auth_err = _require_admin_key()
+    if auth_err:
+        return auth_err
+    try:
+        from site_baseline import run_site_baseline_tick
+        import threading
+        n = 40
+        try:
+            n = max(10, min(120, int(request.args.get('sample_n') or 40)))
+        except Exception:
+            n = 40
+        threading.Thread(target=run_site_baseline_tick, args=(n,),
+                         name='site-baseline-tick', daemon=True).start()
+        _reg_update('site_baseline')
+        logger.info("JOB site-baseline: ✅ tick spawned (n=%s)", n)
+        return jsonify({'success': True, 'job': 'site-baseline', 'result': f'baseline tick started (async, sample_n={n})', 'ts': datetime.utcnow().isoformat()})
+    except ImportError:
+        return jsonify({'success': True, 'job': 'site-baseline', 'skipped': 'site_baseline not available', 'ts': datetime.utcnow().isoformat()})
+    except Exception as e:
+        logger.error("JOB site-baseline: ❌ %s", e)
+        return jsonify({'success': False, 'job': 'site-baseline', 'error': str(e)}), 500
+
+
 @jobs_bp.route('/api/jobs/ai-ecosystem', methods=['POST'])
 def job_ai_ecosystem():
     """Cron: AI Ecosystem Agent enrichment cycle"""
