@@ -305,6 +305,13 @@ def autopsy():
     except (TypeError, ValueError):
         limit = 15
 
+    # Core-vs-full comparables (2026-07-07 payload pressure-test): the full
+    # comparables array was ~65% of the paid payload. Default to a compact
+    # summary; callers drilling into a deal pass comparables=full.
+    comps_mode = (request.args.get("comparables") or "summary").strip().lower()
+    if comps_mode not in ("summary", "full", "none"):
+        comps_mode = "summary"
+
     try:
         from routes.tier_gate import _resolve_caller_tier
         tier, _ = _resolve_caller_tier()
@@ -321,7 +328,7 @@ def autopsy():
     # are structurally different answers and can NEVER collide. tier is
     # part of the key — a FREE cached answer can never serve a paid caller
     # (and vice versa). Fail-soft: any cache trouble = miss.
-    _cache_params = {"limit": limit}
+    _cache_params = {"limit": limit, "comps": comps_mode}
     try:
         from routes.brain_answer_cache import get_cached, put_cached
         _cached = get_cached("deal_autopsy", tier, "deal autopsy",
@@ -355,8 +362,19 @@ def autopsy():
             comps = _rag_comparables(d, mk)
             if comps:
                 read = (read + f" [Grounded against {len(comps)} comparable "
-                        f"{'signal' if len(comps) == 1 else 'signals'} — see below.]")
-                row["comparables"] = comps
+                        f"{'signal' if len(comps) == 1 else 'signals'}.]")
+                if comps_mode == "full":
+                    row["comparables"] = comps
+                elif comps_mode == "summary":
+                    row["comparables_summary"] = {
+                        "count": len(comps),
+                        "top": [{"kind": c.get("kind"), "emoji": c.get("emoji"),
+                                 "text": (c.get("text") or "")[:160]} for c in comps[:2]],
+                        "note": ("compact — call deal_autopsy with comparables=full "
+                                 "for the complete cited set"),
+                    }
+                else:  # none
+                    row["comparables_count"] = len(comps)
             row["autopsy_read"] = read
         items.append(row)
 
@@ -418,7 +436,7 @@ _PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 async function load(){
  var out=document.getElementById('out');
  try{
-  var r=await fetch('/api/v1/deal-autopsy?limit=15');var d=await r.json();
+  var r=await fetch('/api/v1/deal-autopsy?limit=15&comparables=full');var d=await r.json();
   if(!d.ok){out.innerHTML='<p class="sub">'+(d.error||'No data')+'</p>';return;}
   var h='<p class="sub">'+d.count+' recent deals · '+d.grid_checked+' grid-checked against DCPI.</p>';
   d.deals.forEach(function(x){
