@@ -75,7 +75,7 @@ TOOL_TIER_MAP = {
 TIER_PRICE_LABEL = {
     "starter":    "$9/mo",
     "developer":  "$49/mo",
-    "pro":        "$199/mo",
+    "pro":        "$299/mo",
     "pro_annual": "$1,188/yr",
     "metered":    "$10 / 1,000 API calls",
     "pack5":      "$10 / 1,000 API calls (one-time)",

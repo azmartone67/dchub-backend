@@ -156,7 +156,7 @@ def start():
     ref     = (request.args.get("ref") or "").strip()
     tier = _resolve_tier(tool, tier_param)
     stripe_url = STRIPE_LINKS[tier]
-    price = {"starter":"$9/mo","developer":"$49/mo","pro":"$199/mo","enterprise":"Custom"}.get(tier, "—")
+    price = {"starter":"$9/mo","developer":"$49/mo","pro":"$299/mo","enterprise":"Custom"}.get(tier, "—")
     html = (_CAPTURE_HTML
             .replace("__TOOL__", _esc_attr(tool) or "MCP")
             .replace("__TIER__", _esc_attr(tier))

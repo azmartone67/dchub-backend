@@ -97,7 +97,7 @@ def paywall_checkout_json():
         "stripe_managed": True,
         "tier_pricing":   {
             "developer": "$49/mo",
-            "pro":       "$199/mo",
+            "pro":       "$299/mo",
             "starter":   "$9/mo",
             "enterprise": "Custom",
         }.get(chosen, "—"),
