@@ -707,6 +707,18 @@ def claim_key():
     # client_name claims from the same IP, that's a new agent, mint a
     # new key. Anonymous claims (no client_name) still fall back to IP
     # dedup to prevent random-bot key flooding.
+    #
+    # r-durable-key (2026-07-06): the reuse window was a hard-coded 24h, so a
+    # returning agent the NEXT day always missed the dedupe and minted a fresh
+    # dch_live_ key — mature key-reuse stuck ~1.7% (retention is a cross-week
+    # signal; a sub-day window structurally can't produce it). Widen to an
+    # env-tunable default of 30d (720h). Pairs with the MCP server now forwarding
+    # the real caller IP (X-Forwarded-For) so metadata->>'ip' is the agent, not
+    # the shared proxy egress.
+    try:
+        _reuse_hours = max(1, int(os.environ.get("DCHUB_CLAIM_REUSE_HOURS", "720")))
+    except Exception:
+        _reuse_hours = 720
     try:
         with _pool.connection() as conn, conn.cursor() as cur:
             if client_name:
@@ -718,10 +730,10 @@ def claim_key():
                         WHERE metadata->>'source' = 'claim_api'
                           AND metadata->>'client_name' = %s
                           AND metadata->>'ip' = %s
-                          AND created_at > NOW() - INTERVAL '24 hours'
+                          AND created_at > NOW() - make_interval(hours => %s)
                         ORDER BY created_at DESC
                         LIMIT 1""",
-                    (client_name, ip),
+                    (client_name, ip, _reuse_hours),
                 )
             else:
                 # Legacy path for anonymous (no client_name) claims —
@@ -733,10 +745,10 @@ def claim_key():
                           AND metadata->>'ip' = %s
                           AND (metadata->>'client_name' IS NULL
                                OR metadata->>'client_name' = '')
-                          AND created_at > NOW() - INTERVAL '24 hours'
+                          AND created_at > NOW() - make_interval(hours => %s)
                         ORDER BY created_at DESC
                         LIMIT 1""",
-                    (ip,),
+                    (ip, _reuse_hours),
                 )
             existing = cur.fetchone()
         if existing:
@@ -757,7 +769,7 @@ def claim_key():
                 daily_calls=(50 if existing_tier == "identified" else 100),
                 reused=True,
                 note=(f"Existing key reused for client_name='{client_name or '(anon)'}' "
-                      f"from this IP within the last 24h. This is idempotent — call "
+                      f"from this IP within the reuse window. This is idempotent — call "
                       f"again with a different client_name to mint a fresh key for "
                       f"a different agent on the same machine."),
             ), 200

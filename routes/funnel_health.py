@@ -912,9 +912,15 @@ def _build_data() -> dict:
                         "    AND COALESCE(u.plan, 'free') NOT IN ('free','')"
                         " UNION "
                         " SELECT h.id FROM " + _hi_real_from() +
-                        "   JOIN mcp_topups t ON t.api_key_hash = "
-                        "        LEFT(ENCODE(SHA256(CONVERT_TO(h.minted_api_key,'UTF8')),'hex'),32)"
-                        "  WHERE h.minted_api_key IS NOT NULL"
+                        # r-attr-sid (2026-07-06): join on the Mcp-Session-Id
+                        # (survives end-to-end via client_reference_id) — the old
+                        # sha256(dch_trial_ key) vs api_key_hash(dch_live_) leg can
+                        # never match. Mirrors routes/mcp_high_intent_claim.py.
+                        "   JOIN mcp_topups t ON ("
+                        "        t.mcp_session_id = h.mcp_session_id"
+                        "     OR t.api_key_hash = "
+                        "        LEFT(ENCODE(SHA256(CONVERT_TO(h.minted_api_key,'UTF8')),'hex'),32))"
+                        "  WHERE h.mcp_session_id IS NOT NULL"
                         "    AND h.claim_used_at >= NOW() - INTERVAL '30 days'"
                         "    AND t.paid_at IS NOT NULL"
                         ") q")

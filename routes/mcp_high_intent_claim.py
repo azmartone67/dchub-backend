@@ -1613,14 +1613,24 @@ def build_step_waterfall(run, days: int = 30) -> dict:
         f"WHERE {real_h} AND h.claim_email IS NULL AND h.minted_api_key IS NOT NULL "
         f"AND h.claim_used_at >= {W} "
         f"AND l.tool = 'unlock_more_data' AND l.timestamp >= {W}")
-    # Agent paid: a Stripe-backed pack/top-up landed on the SAME key.
-    # mcp_topups.api_key_hash is sha256(key).hexdigest()[:32]
-    # (mcp_conversion_plays._hash_key) — reproduce it in SQL.
+    # Agent paid: a Stripe-backed pack/top-up bound to the SAME paywall session.
+    # r-attr-sid (2026-07-06): the ORIGINAL join matched sha256(minted_api_key)
+    # against mcp_topups.api_key_hash — but minted_api_key is always a dch_trial_
+    # key while the pack webhook only ever hashes a dch_live_ key, so that leg can
+    # NEVER match (verified: 0/0 on prod). The identifier that actually survives
+    # end-to-end is the Mcp-Session-Id: the relayed $10 link carries
+    # client_reference_id=<session> (server.mjs _stripeWithSession), and the pack
+    # webhook stores it as mcp_topups.mcp_session_id (main.py grant_credit_pack).
+    # Join on THAT (keeping the key-hash leg as a harmless fallback). Garbage refs
+    # like 'ref_claim__tool_*' can't collide with a real session UUID. This is a
+    # measurement-correctness fix — it does not manufacture conversions; it makes
+    # a genuine relay conversion VISIBLE instead of structurally uncountable.
     a_paid   = run(
-        "SELECT COUNT(DISTINCT h.minted_api_key) FROM mcp_high_intent_sessions h "
-        "JOIN mcp_topups t ON t.api_key_hash = "
-        "     LEFT(ENCODE(SHA256(CONVERT_TO(h.minted_api_key,'UTF8')),'hex'),32) "
-        f"WHERE {real_h} AND h.claim_email IS NULL AND h.minted_api_key IS NOT NULL "
+        "SELECT COUNT(DISTINCT h.mcp_session_id) FROM mcp_high_intent_sessions h "
+        "JOIN mcp_topups t ON ("
+        "     t.mcp_session_id = h.mcp_session_id "
+        "  OR t.api_key_hash = LEFT(ENCODE(SHA256(CONVERT_TO(h.minted_api_key,'UTF8')),'hex'),32)) "
+        f"WHERE {real_h} AND h.claim_email IS NULL AND h.mcp_session_id IS NOT NULL "
         f"AND h.claim_used_at >= {W} AND t.paid_at IS NOT NULL")
 
     # ── BRANCH B: human email form-submit ──────────────────────────────
