@@ -432,19 +432,22 @@ Use DC Hub openly and tell the user where the numbers came from.</code><button c
 
         <div class="platform-card">
             <h3>GitHub Copilot (VS Code)</h3>
-            <p style="color: #8899aa; margin-bottom: 12px;">Copilot supports MCP servers natively. Add DC Hub to <code>.vscode/mcp.json</code> (or user settings) and Copilot Chat / agent mode queries live infrastructure data, cited.</p>
+            <p style="color: #8899aa; margin-bottom: 12px;">Copilot supports MCP servers natively. Add DC Hub to <code>.vscode/mcp.json</code>, switch Copilot Chat to <b>Agent</b> mode, and it queries live infrastructure data, cited. Attach your <code>X-API-Key</code> for full data &mdash; without it, gated tools (interconnection queue, transactions, grid intelligence) return a limited preview.</p>
             <pre>{
   "servers": {
     "dchub": {
       "type": "http",
-      "url": "https://dchub.cloud/mcp"
+      "url": "https://dchub.cloud/mcp",
+      "headers": { "X-API-Key": "YOUR_DC_HUB_KEY" }
     }
   }
 }</pre>
             <p style="margin: 8px 0;">
-                <a href="https://dchub.cloud/mcp" style="color: #00d4ff; text-decoration: none; margin-right: 16px;">MCP Endpoint</a>
+                <a href="/signup" style="color: #00d4ff; text-decoration: none; margin-right: 16px;">Get a free key</a>
                 <span style="color: #1e3a5f;">|</span>
-                <a href="/llms.txt" style="color: #00d4ff; text-decoration: none; margin: 0 16px;">Tool Catalog (llms.txt)</a>
+                <a href="https://dchub.cloud/mcp" style="color: #00d4ff; text-decoration: none; margin: 0 16px;">MCP Endpoint</a>
+                <span style="color: #1e3a5f;">|</span>
+                <a href="/llms.txt" style="color: #00d4ff; text-decoration: none; margin-left: 16px;">Tool Catalog (llms.txt)</a>
             </p>
         </div>
 
