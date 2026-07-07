@@ -14,12 +14,70 @@ Endpoints:
   GET /api/v1/interconnection-queue/snapshot — full snapshot, all ISOs
   GET /api/v1/interconnection-queue/by-iso?iso=ERCOT — single-ISO detail
 """
-import os, json
+import os, json, math
 from datetime import datetime, timezone
 from flask import Blueprint, jsonify, Response, request
 import psycopg
 
 interconnection_queues_bp = Blueprint("interconnection_queues", __name__)
+
+
+# ── Phase 3 parcel geometry (self-contained; no shapely/PostGIS needed) ──────
+# analyze_parcel operates on ANY caller-provided GeoJSON — the interface ships
+# ahead of DC Hub owning a parcel-boundary dataset (Regrid/assessor). The queue
+# handoff won't carry `geometry` until that data is sourced; this lets an agent
+# that already HAS a polygon get DC Hub's structured read today.
+_ACRES_PER_M2 = 1.0 / 4046.8564224
+
+def _ring_area_m2(ring):
+    """Geodesic area of a ring [[lng,lat],...] via the spherical-excess formula."""
+    R = 6378137.0
+    n = len(ring)
+    if n < 3:
+        return 0.0
+    total = 0.0
+    for i in range(n):
+        lon1, lat1 = ring[i][0], ring[i][1]
+        lon2, lat2 = ring[(i + 1) % n][0], ring[(i + 1) % n][1]
+        total += math.radians(lon2 - lon1) * (2 + math.sin(math.radians(lat1)) + math.sin(math.radians(lat2)))
+    return abs(total * R * R / 2.0)
+
+def _ring_centroid(ring):
+    """Planar (shoelace) centroid of a ring [[lng,lat],...] -> [lng, lat]. Good to
+    a few metres at parcel scale; falls back to the vertex mean for degenerate rings."""
+    n = len(ring)
+    if n < 3:
+        return [sum(p[0] for p in ring) / n, sum(p[1] for p in ring) / n] if n else [0.0, 0.0]
+    A = cx = cy = 0.0
+    for i in range(n):
+        x0, y0 = ring[i][0], ring[i][1]
+        x1, y1 = ring[(i + 1) % n][0], ring[(i + 1) % n][1]
+        cross = x0 * y1 - x1 * y0
+        A += cross
+        cx += (x0 + x1) * cross
+        cy += (y0 + y1) * cross
+    if abs(A) < 1e-12:
+        return [sum(p[0] for p in ring) / n, sum(p[1] for p in ring) / n]
+    A *= 0.5
+    return [cx / (6 * A), cy / (6 * A)]
+
+def _members_from_geometry(geom):
+    """Extract each member's OUTER ring from a GeoJSON Polygon / MultiPolygon."""
+    if not isinstance(geom, dict):
+        return []
+    t = (geom.get("type") or "").lower()
+    coords = geom.get("coordinates") or []
+    members = []
+    try:
+        if t == "polygon" and coords:
+            members.append(coords[0])
+        elif t == "multipolygon":
+            for poly in coords:
+                if poly:
+                    members.append(poly[0])
+    except Exception:
+        return []
+    return [r for r in members if isinstance(r, list) and len(r) >= 3]
 NEON_URL = os.environ.get("NEON_DATABASE_URL") or os.environ.get("DATABASE_URL")
 
 
@@ -373,6 +431,69 @@ _NON_BASELOAD_RE = r"(wind|solar|\ypv\y|storage|battery|\ywin\y|\ybess\y)"
 # a word: drop withdrawn/cancelled/terminated/suspended/online. Keep studies + IA-pending
 # + on-schedule + under-construction. status=all skips the filter; any other value = LIKE.
 _DEAD_STATUS_RE = r"(withdraw|cancel|terminat|suspend|commercial operation|deactivat)"
+
+
+@interconnection_queues_bp.route("/api/v1/analyze-parcel", methods=["POST"])
+def api_analyze_parcel():
+    """Phase 3 interface: structured read of a GeoJSON parcel. Body:
+    {"geometry": <GeoJSON Polygon|MultiPolygon>, "capacity_mw": <optional>}.
+    Returns geodesic acreage, the largest-member centroid as representative_point,
+    a contiguity flag + per-member breakdown, and a ready-to-pipe
+    site_evaluation_handoff (analyze_site + get_water_risk at the anchor)."""
+    body = request.get_json(silent=True) or {}
+    geom = body.get("geometry") or {}
+    capacity_mw = body.get("capacity_mw")
+    try:
+        capacity_mw = float(capacity_mw) if capacity_mw not in (None, "") else None
+    except Exception:
+        capacity_mw = None
+
+    members = _members_from_geometry(geom)
+    if not members:
+        return jsonify(ok=False, _entity="error",
+                       error="geometry must be a GeoJSON Polygon or MultiPolygon with >=3-point outer rings"), 400
+
+    member_out = []
+    for ring in members:
+        cen = _ring_centroid(ring)  # [lng, lat]
+        member_out.append({
+            "acres": round(_ring_area_m2(ring) * _ACRES_PER_M2, 2),
+            "centroid": {"lat": round(cen[1], 6), "lng": round(cen[0], 6)},
+        })
+    total_acres = round(sum(m["acres"] for m in member_out), 2)
+    # representative_point = centroid of the LARGEST-area member — never the
+    # multi-part geometric center, which can land off-parcel (highway median,
+    # river) and poison every point-keyed read.
+    largest = max(member_out, key=lambda m: m["acres"])
+    rp = largest["centroid"]
+    contiguous = len(member_out) == 1
+
+    handoff = {
+        "analyze_site": ({"lat": rp["lat"], "lon": rp["lng"], "capacity_mw": capacity_mw, "include_risk": True, "include_fiber": True}
+                         if capacity_mw else {"lat": rp["lat"], "lon": rp["lng"], "include_risk": True, "include_fiber": True}),
+        "get_water_risk": {"lat": rp["lat"], "lng": rp["lng"]},
+    }
+
+    return jsonify({
+        "_entity": "parcel_analysis",
+        "ok": True,
+        "representative_point": rp,
+        "total_acres": total_acres,
+        "member_count": len(member_out),
+        "contiguous": contiguous,
+        "members": member_out,
+        "site_evaluation_handoff": handoff,
+        "_source": "DC Hub — dchub.cloud",
+        "_cite": "Data: DC Hub (dchub.cloud), CC-BY-4.0 — cite as \"DC Hub, dchub.cloud\"",
+        "note": ("Geometry read for a GeoJSON Polygon/MultiPolygon. representative_point is the centroid "
+                 "of the largest-area member (never the multi-part center, which can land off-parcel). "
+                 "contiguous=false means members are DISCONTINUOUS — treat setbacks, fencing and "
+                 "point-of-interconnection per-member, not as one summed footprint. Pipe "
+                 "site_evaluation_handoff into analyze_site for grid/fiber/water/verdict at the anchor. "
+                 "Acreage is geodesic (spherical-excess). NOTE: this interface ships ahead of DC Hub "
+                 "owning a parcel-boundary dataset — it reads any polygon you pass; the get_refined_queue "
+                 "handoff will only auto-carry `geometry` once a parcel GIS layer (Regrid/assessor) is sourced."),
+    })
 
 
 @interconnection_queues_bp.route("/api/v1/interconnection-queue/refined")
