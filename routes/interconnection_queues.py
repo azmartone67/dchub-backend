@@ -482,12 +482,18 @@ def api_refined_queue():
         if lat is not None and lng is not None:
             n_geocoded += 1
             mw = d["capacity_mw"]
+            # representative_point = the invariant contract anchor an agent keys on.
+            # Phase 3 will add an optional `geometry` passenger ALONGSIDE it (the
+            # point never changes shape); for a future MultiPolygon this is the
+            # centroid of the largest-area member, never the multi-part center.
+            d["representative_point"] = {"lat": lat, "lng": lng}
             d["site_evaluation_handoff"] = {
                 "analyze_site": ({"lat": lat, "lon": lng, "capacity_mw": mw, "include_risk": True, "include_fiber": True}
                                  if mw else {"lat": lat, "lon": lng, "include_risk": True, "include_fiber": True}),
                 "get_water_risk": {"lat": lat, "lng": lng},
             }
         else:
+            d["representative_point"] = None
             d["site_evaluation_handoff"] = None
         by_iso[iso_u] = by_iso.get(iso_u, 0) + 1
         by_fuel[d["fuel_class"]] = by_fuel.get(d["fuel_class"], 0) + 1
@@ -515,9 +521,10 @@ def api_refined_queue():
                  "means still-progressing — it excludes terminal states (withdrawn/cancelled/"
                  "suspended/in-commercial-operation) rather than matching the literal word, so it "
                  "is cross-ISO safe (SPP labels its live projects 'IA FULLY EXECUTED/ON SCHEDULE', "
-                 "'DISIS STAGE', etc.). PHASE 2 LIVE: ~83% of rows now carry lat/lng + a compact "
-                 "per-survivor site_evaluation_handoff (ready-to-pipe analyze_site + get_water_risk "
-                 "args). coordinate_precision is 'poi_exact' (matched a named substation) or "
+                 "'DISIS STAGE', etc.). PHASE 2 LIVE: ~83% of rows now carry a representative_point "
+                 "{lat,lng} (the invariant anchor — Phase 3 adds an optional GeoJSON `geometry` "
+                 "passenger alongside it) + a compact per-survivor site_evaluation_handoff (ready-to-pipe "
+                 "analyze_site + get_water_risk args). coordinate_precision is 'poi_exact' (matched a named substation) or "
                  "'county_centroid' (county-median of substation locations, ~county resolution — not "
                  "parcel-exact). fiber_km + max_fiber_km = km to the nearest MAPPED long-haul route "
                  "endpoint (coarse backbone-proximity from a sparse ~260-node dataset, NOT last-mile "
