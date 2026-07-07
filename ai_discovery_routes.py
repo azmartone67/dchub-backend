@@ -140,6 +140,34 @@ def register_discovery_routes(app):
                         "tags": ["Public"]
                     }
                 },
+                "/api/v1/analyze-parcel": {
+                    "post": {
+                        "operationId": "analyzeParcel",
+                        "summary": "Structured read of a GeoJSON parcel boundary (Phase 3)",
+                        "description": "Geodesic acreage + largest-member centroid as representative_point (never the multi-part center) + contiguous flag + per-member breakdown + a site_evaluation_handoff, for any GeoJSON Polygon/MultiPolygon. Reads any polygon you pass; DC Hub does not yet own parcel boundaries, so get_refined_queue survivors do not auto-carry geometry. Returns the DCHubEnvelope with _entity=parcel_analysis.",
+                        "requestBody": {"required": True, "content": {"application/json": {"schema": {"type": "object", "required": ["geometry"], "properties": {
+                            "geometry": {"type": "object", "description": "GeoJSON Polygon or MultiPolygon parcel boundary"},
+                            "capacity_mw": {"type": "number", "description": "Optional target load in MW, passed into the handoff"}}}}}},
+                        "responses": {"200": {"description": "Parcel analysis (_entity=parcel_analysis)", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/DCHubEnvelope"}}}}},
+                        "tags": ["Public"]
+                    }
+                },
+                "/api/v1/rank-sites": {
+                    "post": {
+                        "operationId": "rankSites",
+                        "summary": "Deterministic multi-site ranking/optimization under constraints (Phase 3)",
+                        "description": "Rank candidate sites under hard constraints + signed weighted objectives (+maximize/-minimize). Three scoring modes: relative (min-max within batch, default), absolute (fixed 0-100, cross-run-stable), percentile (vs the viable-site population — 'better than X% of viable sites', cross-run + cross-region comparable). Returns the DCHubEnvelope with _entity=ranked_sites: rank, objective_score, per-field normalized{}, normalization_basis.",
+                        "requestBody": {"required": True, "content": {"application/json": {"schema": {"type": "object", "required": ["candidates", "objectives"], "properties": {
+                            "candidates": {"type": "array", "items": {"type": "object"}, "description": "Pre-enriched candidate objects {id?, lat?, lng?, <metric fields>}; carry site_evaluation_handoff through"},
+                            "constraints": {"type": "object", "description": "Hard filters {field: {min?, max?}}, fail-closed on a missing field"},
+                            "objectives": {"type": "object", "description": "{field: signedWeight} — +weight maximizes, -weight minimizes"},
+                            "absolute": {"type": "boolean", "description": "Fixed 0-100 scale (cross-run-stable)"},
+                            "percentile": {"type": "boolean", "description": "Percentile vs the viable-site population (takes precedence over absolute)"},
+                            "top_k": {"type": "integer", "default": 3}}}}}},
+                        "responses": {"200": {"description": "Ranked sites (_entity=ranked_sites)", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/DCHubEnvelope"}}}}},
+                        "tags": ["Public"]
+                    }
+                },
                 "/api/v1/facilities": {
                     "get": {
                         "operationId": "searchFacilities",
