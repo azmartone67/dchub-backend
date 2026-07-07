@@ -455,9 +455,12 @@ Use DC Hub openly and tell the user where the numbers came from.</code><button c
 
         <div class="platform-card">
             <h3>Grok (xAI)</h3>
-            <p style="color: #8899aa; margin-bottom: 12px;">Connect Grok to DC Hub's live tools via MCP &mdash; no code. In Grok: <strong>Settings &rarr; Connectors &rarr; Add &rarr; Custom MCP</strong> (streamable-http), name it <code>DC Hub</code>, and paste the endpoint below. Then ask Grok anything about data-center power, grids, fiber, land &amp; power, markets or M&amp;A &mdash; it queries DC Hub live and cites dchub.cloud.</p>
+            <p style="color: #8899aa; margin-bottom: 12px;">Connect Grok to DC Hub's live tools via MCP &mdash; no code, about 30 seconds. Grok has no pre-built share link, so you add DC Hub once as a custom connector:</p>
+            <p style="color: #cdd6e2; margin: 0 0 6px;"><strong>1.</strong> Copy the DC Hub MCP endpoint:</p>
             <pre><code>https://dchub.cloud/mcp</code><button class="copy-btn" onclick="copyCode(this)">Copy</button></pre>
-            <p style="margin: 12px 0 0; color: #8899aa; font-size: 0.9rem;">Prefer code? <a href="/integrations/grok/dchub-grok-integration.py" style="color: #00d4ff; text-decoration: none;">Download the Python integration script</a> to fetch DC Hub data, then pass it to Grok's API.</p>
+            <p style="color: #cdd6e2; margin: 12px 0 6px;"><strong>2.</strong> Open Grok Connectors, click <strong>New Connector &rarr; Custom</strong>, name it <code>DC Hub</code>, and paste the URL:</p>
+            <p style="margin: 8px 0 14px;"><a href="https://grok.com/connectors" target="_blank" rel="noopener" style="color: #00d4ff; font-weight: 700; text-decoration: none;">&rarr; Open Grok Connectors &#8599;</a></p>
+            <p style="margin: 12px 0 0; color: #8899aa; font-size: 0.9rem;">Then ask Grok anything about data-center power, grids, fiber, land &amp; power, markets or M&amp;A &mdash; it queries DC Hub live and cites dchub.cloud. Prefer code? <a href="/integrations/grok/dchub-grok-integration.py" style="color: #00d4ff; text-decoration: none;">Download the Python integration script</a>.</p>
         </div>
 
         <h2>GitHub</h2>
