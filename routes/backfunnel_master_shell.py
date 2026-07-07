@@ -282,15 +282,74 @@ def _lane_demand(c) -> list[dict]:
     return out
 
 
+# ── lane 4 · reachability & activation (phase 2 levers) ───────────────
+
+def _lane_reachability(c) -> list[dict]:
+    out = []
+    if c is None:
+        return [_check("reach_nodb", "reachability lane needs db", None, "no db")]
+
+    # 4a — GAUGE, THE binding constraint: are high-intent prospects captured as
+    # REACHABLE (an email) or lost anonymous? reachable emails / distinct
+    # hi-intent sessions (30d). Baseline ~1/1565 = 0.06%. Watch it climb as the
+    # r-lead-bridge stamp (bind_email→mcp_upgrade_signals.user_email) + the
+    # tightened free-taste (DCHUB_TRIAL_TOOL_DAILY_FULL) drive binds.
+    r = _row(c,
+        "SELECT COUNT(DISTINCT user_email) FILTER (WHERE user_email IS NOT NULL AND user_email<>''),"
+        " COUNT(DISTINCT session_id) FILTER (WHERE session_id IS NOT NULL AND session_id<>'') "
+        "FROM mcp_upgrade_signals WHERE created_at > now()-interval '30 days'")
+    if r is None:
+        out.append(_check("reach_emails", "reachable high-intent emails (30d)", None, "query failed"))
+    else:
+        emails, sess = int(r[0] or 0), int(r[1] or 0)
+        rate = round(100.0*emails/sess, 2) if sess else 0.0
+        out.append(_check("reach_emails", "reachable high-intent emails (30d)",
+                          None, f"{emails} reachable of {sess} sessions = {rate}% — r-lead-bridge shipped 07-07, watch climb"))
+
+    # 4b — PASS/FAIL: the nurture's actual sendable audience — signals with an
+    # email that maps to a key with EXPLICIT marketing_opt_in (what
+    # lost_conversion_outreach gates on), not converted, not already worked.
+    # >=1 = the nurture has someone to work; 0 = starved (capture + opt-in must
+    # produce a CONSENTED lead — marketing consent is correctly explicit).
+    n = _row(c,
+        "SELECT COUNT(*) FROM mcp_upgrade_signals s "
+        "WHERE s.user_email IS NOT NULL AND s.user_email<>'' "
+        "AND COALESCE(s.converted,false)=false AND COALESCE(s.outreach_sent,false)=false "
+        "AND EXISTS (SELECT 1 FROM mcp_dev_keys k WHERE LOWER(k.email)=LOWER(s.user_email) "
+        "           AND k.metadata->>'marketing_opt_in'='true')")
+    v = (n[0] if n else None)
+    out.append(_check("reach_optin_audience", "nurture has an opted-in lead to work (>=1)",
+                      (int(v) >= 1) if v is not None else None,
+                      f"{v} opted-in sendable leads" if v is not None else "query failed"))
+
+    # 4c — GAUGE: the nurture arm itself (lost_conversion_outreach — scheduled
+    # 16:00 UTC daily on the worker, real-send, opt-in + suppression gated). It
+    # only fires when 4b > 0. Shows all-time sent + days since last (went dark
+    # ~28d ago when the opted-in audience dried to 0 — machine works, funnel dry).
+    r = _row(c,
+        "SELECT COUNT(*) FILTER (WHERE outreach_sent), "
+        "ROUND(EXTRACT(EPOCH FROM (now()-MAX(outreach_sent_at)))/86400.0,1) "
+        "FROM mcp_upgrade_signals")
+    if r is None or r[0] is None:
+        out.append(_check("reach_nurture_sends", "nurture outreach fired (lost_conversion, daily 16:00)",
+                          None, "no outreach yet"))
+    else:
+        out.append(_check("reach_nurture_sends", "nurture outreach fired (lost_conversion, daily 16:00)",
+                          None, f"{int(r[0] or 0)} sent all-time · last {r[1]}d ago (fires only when 4b>0)"))
+    return out
+
+
 # ── tick orchestration ────────────────────────────────────────────────
 
 _LANES = [
     ("retention",   "1 · Retention / durable keys (corrected)", _lane_retention,
      "SHIPPED: forward real caller IP (server.mjs) + 30d claim window (DCHUB_CLAIM_REUSE_HOURS) → durable-identity build"),
     ("attribution", "2 · Attribution / claim→paid",             _lane_attribution,
-     "SHIPPED: session-id join (mcp_high_intent_claim + funnel_health) + relay-link client_reference_id"),
+     "SHIPPED: session-id join (mcp_high_intent_claim + funnel_health) + relay-link client_reference_id (+ sid-preserve bridge 07-07)"),
     ("demand",      "3 · Conversion demand (the real leak)",    _lane_demand,
      "NOT shipped — product/offer: depth-tease / unlock_more_data value-moment (relay converts ~0; the 8 are web/organic)"),
+    ("reachability","4 · Reachability & activation (phase 2)",  _lane_reachability,
+     "SHIPPED: r-lead-bridge (bind_email→mcp_upgrade_signals.user_email) + free-taste tighten (DCHUB_TRIAL_TOOL_DAILY_FULL 8→4); nurture=lost_conversion_outreach daily+opt-in gated. NEXT lever: consented-lead volume"),
 ]
 
 _cache: dict = {"ts": 0.0, "payload": None}

@@ -12613,6 +12613,16 @@ def stripe_webhook():
                 # first real sale. amount_subtotal is always 500 for the $5 pack.
                 _p5_sub  = int(data.get('amount_subtotal') or 0)
                 _p5_ref  = (data.get('client_reference_id') or '').strip()
+                # sid-preserve (2026-07-07): the relay bridge encodes the paywall
+                # Mcp-Session-Id as :sess=<sid> inside mcp:tool=…:ref=…:sess=<sid>.
+                # grant_credit_pack stores its 2nd arg as mcp_topups.mcp_session_id
+                # (the claim→paid join + same-session unlock look it up by the BARE
+                # session id), so pass the bare sid — not the whole ref. No :sess=
+                # (legacy/web/bare refs) → _p5_sess falls back to _p5_ref = today's
+                # exact behavior. Note ':sess=' does not trip _p5_reserved below.
+                import re as _re_p5s
+                _p5_sm   = _re_p5s.search(r":sess=([A-Za-z0-9_.-]+)", _p5_ref)
+                _p5_sess = _p5_sm.group(1) if _p5_sm else _p5_ref
                 # qa-0704: ref_claim__tool_* is the claim-page $10-pack link's
                 # attribution tag (routes/mcp_high_intent_claim.py). phase17
                 # only LOGS ref_* to mcp_conversions — it never grants credits —
@@ -12660,7 +12670,7 @@ def stripe_webhook():
                              json.dumps({"source": _pack_src,
                                          "stripe_session_id": data.get('id')})))
                     _p5_grant = grant_credit_pack(
-                        _p5_key, _p5_ref or None, _pack_credits,
+                        _p5_key, _p5_sess or None, _pack_credits,
                         stripe_session_id=data.get('id'), source=_pack_src,
                         expires_days=_pack_expiry)
                     print(f"💳 Pack grant ({_pack_src}): key={_p5_key[:14]}… email={_p5_email or '(none)'} "

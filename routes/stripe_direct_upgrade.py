@@ -30,7 +30,7 @@ stripe_direct_bp = Blueprint("stripe_direct_upgrade", __name__)
 from routes._stripe_links import STRIPE_LINKS, TOOL_TIER_MAP, resolve_tier as _resolve_tier
 
 
-def _build_url(tier, tool, ref, surface=None):
+def _build_url(tier, tool, ref, surface=None, sid=None):
     base = STRIPE_LINKS[tier]
     # per-surface-attr (2026-06-20): when a WEB surface drove the click
     # (?surface=market|facility|dcpi|pricing|…) emit the parseable
@@ -44,6 +44,17 @@ def _build_url(tier, tool, ref, surface=None):
         ref_str = build_web_ref(surface, ref)
     else:
         ref_str = f"mcp:tool={tool or 'none'}:ref={ref or 'paywall'}"
+        # sid-preserve (2026-07-07): when the paywall carried an Mcp-Session-Id,
+        # append :sess=<sid> so the checkout.session.completed webhook binds the
+        # grant back to the REAL session (claim→paid attribution + same-session
+        # instant unlock). conversion_attribution._TOOL_RE still finds tool= via
+        # .search(); this is NOT a reserved DCM-/tu-/ref_/web__ ref. No sid →
+        # byte-identical to before.
+        if sid:
+            import re as _re_sid
+            _s = _re_sid.sub(r"[^A-Za-z0-9_.-]", "", str(sid))[:120]
+            if _s:
+                ref_str = f"{ref_str}:sess={_s}"
     sep = "&" if "?" in base else "?"
     return f"{base}{sep}client_reference_id={quote(ref_str)}"
 
@@ -60,6 +71,12 @@ def upgrade_redirect():
     ref     = (request.args.get("ref")  or "paywall").strip()
     surface = (request.args.get("surface") or "").strip()  # per-surface-attr
     direct  = (request.args.get("direct") or "").strip() in ("1","true","yes")
+    # sid-preserve (2026-07-07): the relay carries the Mcp-Session-Id so the
+    # webhook can bind the conversion back to the paywall session (?sid= or the
+    # forwarded X-MCP-Session header).
+    sid     = (request.args.get("sid")
+               or request.headers.get("X-MCP-Session")
+               or request.headers.get("Mcp-Session-Id") or "").strip()
     chosen  = _resolve_tier(tool, tier)
 
     # r39: route through email capture for identity gating BEFORE Stripe.
@@ -67,12 +84,12 @@ def upgrade_redirect():
     # pair-code redeem flow that was here pre-r38.
     if not direct and request.path.startswith("/pricing/upgrade"):
         from urllib.parse import urlencode
-        params = {"tool": tool, "tier": chosen, "ref": ref, "surface": surface}
+        params = {"tool": tool, "tier": chosen, "ref": ref, "surface": surface, "sid": sid}
         params = {k: v for k, v in params.items() if v}
         return redirect(f"/pricing/checkout/start?{urlencode(params)}", code=302)
 
     # Direct path or /upgrade legacy: straight to Stripe
-    url = _build_url(chosen, tool, ref, surface)
+    url = _build_url(chosen, tool, ref, surface, sid)
     return redirect(url, code=302)
 
 
