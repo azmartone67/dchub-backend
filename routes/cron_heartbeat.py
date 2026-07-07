@@ -701,6 +701,23 @@ _DISPATCH = [
      f"{BASE}/api/v1/analyst-note/generate",
      "POST",
      lambda now: now.weekday() == 3 and now.hour == 14 and now.minute < 55),
+
+    # r-dedupcron (2026-07-07): DRAIN the discovered_facilities verify->merge
+    # backlog on a schedule. This is the "actuator (not fired)" the flywheel
+    # flagged — verified moved only +38/7d while ~21k rows sat unverified,
+    # because /api/v1/admin/dedup/drain existed but nothing ever called it.
+    # The endpoint is bounded (?max), idempotent (merged_at IS NULL AND
+    # is_duplicate=0), savepoint-per-row, commits per batch, and is now guarded
+    # by a pg SESSION advisory lock so overlapping fires can't race. _hit()
+    # attaches X-Admin-Key. Wide window (~3x/hour) so a sporadic heartbeat still
+    # catches it; the advisory lock makes double-fires a safe no-op; a redeploy
+    # that kills a batch just resumes on the next fire. No-deploy kill switch:
+    # DEDUP_DRAIN_CRON_DISABLE=1 (scoped to the cron only — manual POST still works).
+    ("dedup_drain",
+     f"{BASE}/api/v1/admin/dedup/drain?max=300",
+     "POST",
+     lambda now: (now.minute % 20 < 3)
+                 and os.environ.get("DEDUP_DRAIN_CRON_DISABLE") != "1"),
 ]
 
 # r-poolfix (2026-07-04): the DB/LLM-heavy ticks. When a herd of these comes
@@ -720,6 +737,7 @@ _HEAVY_LABELS = frozenset({
     "brain_detectors_daily", "brain_issue_janitor_daily",
     "brain_lane_driver_6h", "brain_rag_reindex_4h", "brain_warmer_hourly",
     "iso_queue_ingest_daily", "gas_feeds_ingest_daily",
+    "dedup_drain",
     "reach_rollup_daily", "market_deep_dive_rotate_daily",
     "strategic_synthesis_weekly", "strategic_digest_weekly",
     "analyst_note_weekly",

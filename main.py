@@ -37540,6 +37540,25 @@ def _admin_dedup_drain():
         conn.autocommit = False
         cur = conn.cursor()
 
+        # r-dedupcron (2026-07-07): TRANSACTION advisory lock so a SCHEDULED
+        # drain can never run concurrently with itself (overlapping heartbeat
+        # fires / multiple pingers) and race two batches onto the same backlog
+        # rows. MUST be the *_xact_ variant, NOT session: DATABASE_URL is Neon's
+        # transaction-mode pooler, where DISCARD ALL at txn-end wipes SESSION
+        # advisory locks (the verified 2026-07-02 double-post bug — see
+        # _leader_lock_url). The whole drain runs in ONE txn (autocommit=False,
+        # single commit at the end), so an xact lock is held for exactly that
+        # txn on the pinned backend and auto-releases on COMMIT/ROLLBACK — and
+        # is released for free if a redeploy aborts the txn mid-drain, so the
+        # next fire just resumes. Read-only dry-runs don't take it.
+        if not dryrun:
+            cur.execute("SELECT pg_try_advisory_xact_lock(8730021)")
+            if not cur.fetchone()[0]:
+                conn.rollback(); conn.close()
+                return jsonify(ok=True, mode="drain", skipped="already_running",
+                               hint="another drain holds the advisory lock; "
+                                    "skipping this fire (safe — it is running)."), 200
+
         # Always report the current backlog split (read-only).
         cur.execute(f"SELECT COUNT(*) FROM discovered_facilities WHERE {SEL_WHERE}")
         backlog = cur.fetchone()[0]
