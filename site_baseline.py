@@ -200,6 +200,61 @@ def load_baseline(force=False):
     return out
 
 
+def baseline_meta():
+    """Freshness metadata for the current baseline: {computed_at, age_hours,
+    metrics, min_sample_size}. Lets rank_sites tell an agent how fresh the
+    reference distribution is (reproducibility awareness — Phase 4)."""
+    meta = {"computed_at": None, "age_hours": None, "metrics": 0, "min_sample_size": None}
+    try:
+        c = _conn()
+        cur = c.cursor()
+        cur.execute("SELECT max(computed_at), count(*), min(sample_size), "
+                    "EXTRACT(EPOCH FROM (now() - max(computed_at)))/3600.0 "
+                    "FROM site_score_baseline")
+        row = cur.fetchone()
+        c.close()
+        if row and row[0] is not None:
+            meta["computed_at"] = row[0].isoformat()
+            meta["metrics"] = int(row[1] or 0)
+            meta["min_sample_size"] = int(row[2]) if row[2] is not None else None
+            meta["age_hours"] = round(float(row[3]), 1) if row[3] is not None else None
+    except Exception:
+        pass
+    return meta
+
+
+def score_site(metrics, objectives, baseline=None):
+    """Weighted-percentile objective_score for ONE site's metric dict, using the
+    population baseline — mirrors rank_sites percentile mode for a single site so
+    saved shortlist entries can be re-scored against the current distribution
+    (Phase 5). Returns (objective_score, per_field_normalized_dict)."""
+    bl = baseline if baseline is not None else load_baseline()
+    if not objectives:
+        return None, {}
+    wsum = 0.0
+    total = 0.0
+    per = {}
+    for f, w in objectives.items():
+        try:
+            w = float(w)
+        except Exception:
+            continue
+        wsum += abs(w)
+        pct = percentile_of(f, metrics.get(f), bl)
+        if pct is None:
+            v = metrics.get(f)
+            try:
+                pct = max(0.0, min(100.0, float(v)))
+            except Exception:
+                continue
+        directed = pct if w >= 0 else (100.0 - pct)
+        per[f] = round(directed, 1)
+        total += abs(w) * directed
+    if wsum <= 0:
+        return None, per
+    return round(total / wsum, 1), per
+
+
 def percentile_of(metric, value, baseline=None):
     """Map a raw metric value to its 0-100 percentile in the population (0 = at/below
     the lowest sampled value, 100 = at/above the highest). Direction (maximize vs

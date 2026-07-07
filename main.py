@@ -34390,6 +34390,13 @@ try:
 except Exception as _e:
     print(f"[main] interconnection_queues_bp register failed: {_e}", file=sys.stderr)
 
+try:
+    from routes.shortlists import shortlists_bp
+    app.register_blueprint(shortlists_bp)
+    print("[main] shortlists_bp registered: /api/v1/shortlist/save + /get (Phase 5 stateful shortlists)")
+except Exception as _e:
+    print(f"[main] shortlists_bp register failed: {_e}", file=sys.stderr)
+
 # r47.2 (2026-05-25): daily ingest cron for ISO queue snapshots.
 # Fired by cron_heartbeat at 06:00 UTC; hits ERCOT/PJM/MISO/SPP/CAISO/
 # NYISO/ISO-NE public pages and UPSERTs whatever it parses.

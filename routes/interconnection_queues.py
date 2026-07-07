@@ -630,10 +630,27 @@ def api_rank_sites():
 
     _mode = "percentile" if percentile else ("absolute" if absolute else "relative")
     _extra = {}
+    _caveats = []
     if percentile:
         _extra["percentile_baseline_available"] = sorted(_baseline.keys())
         if _unbaselined:
             _extra["unbaselined_fields_fell_back_to_absolute"] = _unbaselined
+        # Phase 4: baseline freshness so an agent can reason about reproducibility.
+        try:
+            from site_baseline import baseline_meta
+            _extra["baseline"] = baseline_meta()
+            _bage = (_extra["baseline"] or {}).get("age_hours")
+            if _bage is not None and _bage > 48:
+                _caveats.append(f"reference baseline is {round(_bage)}h old — trigger /api/jobs/site-baseline to refresh")
+        except Exception:
+            pass
+    # Phase 4: small-candidate-set caveat — percentiles are vs the national
+    # population, so a small submitted set can look poor even if it's the best
+    # available; the agent should read percentiles as population rank, not set rank.
+    if percentile and len(survivors) < 8:
+        _caveats.append(f"only {len(survivors)} candidate(s) scored — percentile is rank vs the full viable population, NOT vs these {len(survivors)}; a low score means 'below the national median', not 'worst of your set'")
+    if _caveats:
+        _extra["caveats"] = _caveats
     return jsonify({
         "_entity": "ranked_sites",
         "ok": True,
