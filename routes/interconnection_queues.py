@@ -508,6 +508,18 @@ def api_analyze_parcel():
 
 
 @interconnection_queues_bp.route("/api/v1/rank-sites", methods=["POST"])
+# Objectives whose data is not yet in the stack. Declared EXPLICITLY so an agent
+# gets "unavailable + reason" in constraint_coverage — never a silent skip, and
+# never a fabricated proxy. (ChatGPT's "Constraint Coverage" pattern, 2026-07-07.)
+_UNSUPPORTED_OBJECTIVES = {
+    "water_stress": ("Awaiting WRI Aqueduct ingest — no direction-correct water-stress "
+                     "data in the stack yet; the legacy groundwater proxy was inverted and is not surfaced."),
+    "water_score": "Awaiting WRI Aqueduct ingest — see water_stress.",
+    "water_risk": "Awaiting WRI Aqueduct ingest — see water_stress.",
+    "water": "Awaiting WRI Aqueduct ingest — see water_stress.",
+}
+
+
 def api_rank_sites():
     """Deterministic multi-site ranking/optimization under constraints — the
     normalization contract that lets an agent compare sites across separate
@@ -611,12 +623,33 @@ def api_rank_sites():
     # 2. score each objective 0-100. absolute mode = fixed 0-100 scale (stable across
     #    runs); relative mode (default) = min-max within THIS batch (100 = best in set).
     norm_basis = {}
+    coverage = {}          # {objective: validated | unavailable}  (ChatGPT's Constraint Coverage)
+    objective_status = []  # [{objective, status, basis|reason}] — declare, never silently skip
     for f, w in objectives.items():
         w = _num(w) or 0.0
         vals = [_num(c.get(f)) for c in survivors]
         vals = [v for v in vals if v is not None]
-        if not vals:
+        # ── Constraint coverage: an unsupported/absent objective is DECLARED, not
+        #    dropped, and is excluded from the weighted score so it can't dilute or
+        #    fabricate the ranking. The recommendation is "conditionally complete".
+        if f in _UNSUPPORTED_OBJECTIVES:
+            coverage[f] = "unavailable"
+            objective_status.append({"objective": f, "status": "unavailable",
+                                     "reason": _UNSUPPORTED_OBJECTIVES[f]})
             continue
+        if not vals:
+            coverage[f] = "unavailable"
+            objective_status.append({"objective": f, "status": "unavailable",
+                                     "reason": "no candidate carried a numeric value for this objective"})
+            continue
+        coverage[f] = "validated"
+        if percentile and f in _baseline:
+            objective_status.append({"objective": f, "status": "validated", "basis": "percentile_vs_population"})
+        elif absolute or (percentile and f not in _baseline):
+            objective_status.append({"objective": f, "status": "validated",
+                                     "basis": ("absolute_fallback_not_in_baseline" if percentile else "absolute_0_100")})
+        else:
+            objective_status.append({"objective": f, "status": "validated", "basis": "relative_in_set"})
         if percentile and f in _baseline:
             bmeta = _baseline[f]
             norm_basis[f] = {"scale": "percentile vs population", "p50": bmeta.get("p50"),
@@ -648,11 +681,13 @@ def api_rank_sites():
                 n = (v - lo) / span * 100.0
                 c.setdefault("_norm", {})[f] = round(n if w >= 0 else (100.0 - n), 1)
 
-    # 3. weighted objective score + rank
-    wsum = sum(abs(_num(w) or 0.0) for w in objectives.values()) or 1.0
+    # 3. weighted objective score + rank — over VALIDATED objectives only, so an
+    #    unavailable objective neither dilutes the score nor gets silently zero-filled.
+    _validated = [f for f in objectives if coverage.get(f) == "validated"]
+    wsum = sum(abs(_num(objectives[f]) or 0.0) for f in _validated) or 1.0
     for c in survivors:
         nrm = c.get("_norm", {})
-        s = sum((abs(_num(objectives[f]) or 0.0)) * nrm.get(f, 0.0) for f in objectives)
+        s = sum((abs(_num(objectives[f]) or 0.0)) * nrm.get(f, 0.0) for f in _validated)
         c["objective_score"] = round(s / wsum, 1)
         c["normalized"] = c.pop("_norm", {})
     survivors.sort(key=lambda c: c["objective_score"], reverse=True)
@@ -682,6 +717,17 @@ def api_rank_sites():
     # available; the agent should read percentiles as population rank, not set rank.
     if percentile and len(survivors) < 8:
         _caveats.append(f"only {len(survivors)} candidate(s) scored — percentile is rank vs the full viable population, NOT vs these {len(survivors)}; a low score means 'below the national median', not 'worst of your set'")
+    # Constraint Coverage — declare which objectives were actually evaluated, so an
+    # agent (or human) sees a "conditionally complete" answer instead of a silently
+    # partial one. An unavailable objective is named + reasoned, never approximated.
+    _extra["constraint_coverage"] = coverage
+    _extra["objective_status"] = objective_status
+    _unavail = [f for f in objectives if coverage.get(f) == "unavailable"]
+    if _unavail:
+        _extra["coverage_note"] = (
+            f"{len(_validated)} of {len(objectives)} objectives evaluated; ranking reflects ONLY "
+            f"validated objectives. Unavailable ({', '.join(_unavail)}) were excluded from the weighted "
+            f"score — not fabricated, not zero-filled. Treat the result as conditionally complete.")
     if _caveats:
         _extra["caveats"] = _caveats
     return jsonify({
