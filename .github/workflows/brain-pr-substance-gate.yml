@@ -1,0 +1,105 @@
+# brain-pr-substance-gate.yml — 2026-07-07
+#
+# WHY: The brain's L6 "strategic-draft" and agenda PRs merge green while
+# changing NOTHING that runs. They add only docs/ + routes/_proposed_*.py
+# scaffolds — and routes/_proposed_*.py files are NEVER imported/registered
+# in main.py (main.py:364 only *syntax-checks* them). So a "merged ✓" brain
+# PR can be pure dead weight, manufacturing a false "shipped" signal while the
+# finding it claims to fix stays broken and re-fires next cycle.
+#
+# This gate makes that impossible to miss. On every PR it classifies the diff:
+#   SCAFFOLD-ONLY  = every changed file is under docs/ or is routes/_proposed_*
+#                    (or is this workflow) => touches no code path that runs.
+# For a scaffold-only PR it posts a loud comment and a NON-BLOCKING check so
+# the state is legible before a human merges. It NEVER hard-fails (respects the
+# human-merged, advisory ethos) — but if the PR body claims to "close"/"fixes"
+# an issue while being scaffold-only, it escalates the comment to a warning,
+# because that is the exact false-resolution pattern.
+#
+# Kill switch: set repo variable BRAIN_SUBSTANCE_GATE_DISABLE=1.
+
+name: brain-pr-substance-gate
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  contents: read
+  pull-requests: write
+  checks: write
+
+jobs:
+  substance-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Classify diff and comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          GATE_DISABLE: ${{ vars.BRAIN_SUBSTANCE_GATE_DISABLE }}
+        run: |
+          set -euo pipefail
+          if [ "${GATE_DISABLE:-0}" = "1" ]; then
+            echo "gate disabled via BRAIN_SUBSTANCE_GATE_DISABLE"; exit 0
+          fi
+
+          files=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA")
+          echo "Changed files:"; echo "$files"
+
+          # A file is "inert" if it can never change a running code path:
+          #   docs/**                      -> markdown, never executed
+          #   routes/_proposed_*.py        -> never imported/registered
+          #   .github/workflows/brain-pr-substance-gate.yml -> this gate itself
+          inert=1
+          real_count=0
+          while IFS= read -r f; do
+            [ -z "$f" ] && continue
+            case "$f" in
+              docs/*|routes/_proposed_*|.github/workflows/brain-pr-substance-gate.yml) : ;;
+              *) inert=0; real_count=$((real_count+1)) ;;
+            esac
+          done <<< "$files"
+
+          if [ "$inert" -eq 1 ]; then
+            # Does the PR claim to resolve an issue?
+            claims_fix=0
+            if echo "$PR_BODY $PR_TITLE" | grep -qiE '\b(clos(e|es|ed)|fix(es|ed)?|resolv(e|es|ed))\b'; then
+              claims_fix=1
+            fi
+            scaffolds=$(echo "$files" | grep -c '^routes/_proposed_' || true)
+
+            if [ "$claims_fix" -eq 1 ]; then
+              hdr="🛑 **Substance gate: SCAFFOLD-ONLY PR that CLAIMS a fix**"
+              note="This PR's body/title claims to close or fix something, but the diff touches **no running code path** — only docs and \`routes/_proposed_*\` scaffolds (which \`main.py\` never imports; it only syntax-checks them). Merging this will mark the finding \"done\" while it stays broken and re-fires next cycle. **Do not merge as a fix.** Either wire the change into \`main.py\` / a registered blueprint (so the diff shows real deletions/edits), or drop the fix claim."
+            else
+              hdr="ℹ️ **Substance gate: scaffold-only PR (no running code changed)**"
+              note="Every changed file is docs or a \`routes/_proposed_*\` scaffold — nothing here executes at runtime. That's fine for a spec/record, but this PR does **not** ship a feature or resolve a finding on its own. Track the real implementation separately."
+            fi
+
+            foot="<sub>${real_count} runtime file(s) changed · ${scaffolds} routes/_proposed_* scaffold(s) touched · brain-pr-substance-gate</sub>"
+            body=$(printf '%s\n\n%s\n\n%s\n' "$hdr" "$note" "$foot")
+
+            gh pr comment "$PR_NUMBER" --body "$body" --repo "$GITHUB_REPOSITORY" || true
+            gh api -X POST "repos/$GITHUB_REPOSITORY/check-runs" \
+              -f name="substance-gate" -f head_sha="$HEAD_SHA" \
+              -f status="completed" -f conclusion="neutral" \
+              -f "output[title]=Scaffold-only PR — changes no running code" \
+              -f "output[summary]=$hdr" || true
+          else
+            echo "PR changes $real_count runtime file(s) — substance OK"
+            gh api -X POST "repos/$GITHUB_REPOSITORY/check-runs" \
+              -f name="substance-gate" -f head_sha="$HEAD_SHA" \
+              -f status="completed" -f conclusion="success" \
+              -f "output[title]=Changes real code ($real_count file(s))" \
+              -f "output[summary]=Diff touches running code paths." || true
+          fi

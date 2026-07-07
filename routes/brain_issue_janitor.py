@@ -8,12 +8,16 @@ only grows (11 open brain-l15 issues as of 2026-07-01).
 
 This janitor closes the loop:
 
-  RESOLVED close — a brain-l15-auto issue older than the grace window whose
-    chain title is NO LONGER present in the CURRENT L14 causal chains is
-    considered fixed (L14 re-derives chains 4x/day; a fixed problem drops out).
-    Closed as state_reason=completed. If the problem recurs, L14 re-derives the
-    chain and L15 re-files a fresh issue (its dedup only blocks against OPEN
-    issues + a 7d local title window) — so closing is safe, not lossy.
+  DE-PRIORITISED close — a brain-l15-auto issue older than the grace window
+    whose chain title is NO LONGER present in the CURRENT top-ranked L14 causal
+    chains. NOTE (2026-07-07 honesty fix): a chain dropping out of the ranked
+    set is NOT proof the problem was fixed — chains thrash in/out every cycle.
+    So this is closed as state_reason=not_planned with an explicit "NOT a
+    verified fix" note, NOT state_reason=completed. A TRUE completed close
+    requires the issue's own "How to verify" metric to pass (brain_fix_outcome
+    _verify) — wiring that in is the tracked follow-up. If the problem recurs,
+    L14 re-derives the chain and L15 re-files a fresh issue (dedup blocks only
+    against OPEN issues + a 7d local title window) — so closing is safe.
 
   STALE close — a brain-l15-auto issue open longer than STALE_DAYS (default 21)
     is closed as state_reason=not_planned regardless: three weeks un-actioned
@@ -239,13 +243,27 @@ def janitor_sweep(dry_run: bool = True) -> dict:
                             f"issue automatically."),
             })
         elif age >= grace and chain_titles is not None and chain_title[:120] not in chain_titles:
+            # HONESTY FIX (2026-07-07): a chain dropping out of the CURRENT
+            # top-ranked L14 set is NOT evidence the underlying problem was
+            # fixed — chains thrash in and out of the ranked set every cycle, so
+            # closing these as state_reason="completed" ("reads as resolved")
+            # manufactured a false "done ✓" that inflated the brain's success
+            # numbers and let the SAME finding re-file next cycle. We close as
+            # "not_planned" (honest: de-prioritised, NOT verified fixed) and say
+            # so. A TRUE "completed" close belongs to a metric-verified path
+            # (the issue body's own "How to verify" condition) — see
+            # brain_fix_outcome_verify; wiring that in is the follow-up.
             candidates.append({
-                "number": num, "title": title, "reason": "resolved_not_redetected",
-                "state_reason": "completed",
+                "number": num, "title": title, "reason": "dropped_from_causal_set_unverified",
+                "state_reason": "not_planned",
                 "comment": ("🤖 **Auto-closed by the brain issue janitor** — this "
-                            "causal chain is no longer present in the current L14 "
-                            "analysis, so the underlying problem reads as resolved. "
-                            "If it recurs, L15 will re-file automatically."),
+                            "causal chain is no longer in the current top-ranked "
+                            "L14 set, so it's being de-prioritised. **This is NOT a "
+                            "verified fix** — the underlying condition was not "
+                            "checked against this issue's own \"How to verify\" "
+                            "metric. If the problem persists it will re-surface and "
+                            "L15 will re-file. Closing to keep the queue honest, not "
+                            "to claim resolution."),
             })
 
     for issue in _open_issues(_L23_LABEL):
