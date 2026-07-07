@@ -162,16 +162,25 @@ def _lane_retention(c) -> list[dict]:
                       (multiday or 0) >= 1 if multiday is not None else None,
                       f"{multiday} multi-day agents/7d" if multiday is not None else "query failed"))
 
-    # 1c — mature key-reuse % (30d cohort minted >7d ago). Regression floor 8%
-    # (dashboard baseline ~12.8%). This is the r-return signal — watch it climb.
-    reuse = _scalar(c, "SELECT ROUND(100.0*COUNT(*) FILTER (WHERE minted_at < now() - interval '7 days'"
+    # 1c — mature key-reuse % across BOTH durable cohorts (auto_trial_keys ∪
+    # dch_live_ mcp_dev_keys). r-durable-key (2026-07-06): was auto_trial-ONLY,
+    # blind to the dch_live_ claim-key cohort agents are told to SAVE — the exact
+    # cohort the forward-IP + 30d-window fix targets, so the auto_trial-only read
+    # could never reflect that fix landing. UNION both (mirrors mcp_retention.py
+    # + routes/backfunnel_master_shell.py). Regression floor 8%.
+    reuse = _scalar(c, "WITH k AS ("
+                       " SELECT minted_at AS anchor, last_used_at FROM auto_trial_keys"
+                       "  WHERE minted_at >= now() - interval '30 days'"
+                       " UNION ALL"
+                       " SELECT created_at AS anchor, last_used_at FROM mcp_dev_keys"
+                       "  WHERE api_key LIKE 'dch_live_%' AND created_at >= now() - interval '30 days')"
+                       " SELECT ROUND(100.0*COUNT(*) FILTER (WHERE anchor < now() - interval '7 days'"
                        " AND last_used_at IS NOT NULL"
-                       " AND date_trunc('week', last_used_at) > date_trunc('week', minted_at))"
-                       " /NULLIF(COUNT(*) FILTER (WHERE minted_at < now() - interval '7 days'),0),1)"
-                       " FROM auto_trial_keys WHERE minted_at >= now() - interval '30 days'")
-    out.append(_check("ret_key_reuse", "mature key-reuse % >= 8 (30d)",
+                       " AND date_trunc('week', last_used_at) > date_trunc('week', anchor))"
+                       " /NULLIF(COUNT(*) FILTER (WHERE anchor < now() - interval '7 days'),0),1) FROM k")
+    out.append(_check("ret_key_reuse", "mature key-reuse % >= 8 (BOTH cohorts, 30d)",
                       (float(reuse) >= 8.0) if reuse is not None else None,
-                      f"{reuse}% mature reuse" if reuse is not None else "no mature cohort yet"))
+                      f"{reuse}% mature reuse (auto_trial ∪ dch_live_)" if reuse is not None else "no mature cohort yet"))
     return out
 
 
