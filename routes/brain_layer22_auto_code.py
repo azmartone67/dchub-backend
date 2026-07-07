@@ -147,6 +147,67 @@ def _diff_within_limits(diff_text: str) -> bool:
     return (added + removed) <= _MAX_DIFF_LINES
 
 
+# r-l22harden (2026-07-07): noise guards. The L22 queue was 100% non-actionable
+# (#1478 proposed a route that already exists; #1482 a page path served by CF;
+# #1489 a garbled 'unscheduled cron endpoint' signal). These helpers stop each
+# class BEFORE a draft is opened. All are best-effort + fail-OPEN (return the
+# non-blocking value on any error) so they can never suppress a legitimate fix.
+
+def _route_already_registered(pattern: str) -> bool:
+    """True if the Flask url_map already has a rule matching `pattern`,
+    comparing route SHAPE (converter-agnostic: <slug>, <path:slug>, <id> all
+    collapse to one token). L21 normalizes real slugs to <slug>, so a 404 on
+    an ALREADY-REGISTERED pattern is app-level 'resource not found' (bad slug),
+    NOT a missing route — adding an alias does nothing (the #1478 false-draft:
+    /api/v1/facilities/<slug> was already served). Fail-OPEN → False on any
+    error (no app context / import fail) so it never blocks a real draft."""
+    try:
+        from flask import current_app
+        def _norm(s: str) -> str:
+            return re.sub(r"<[^>]+>", "<*>", s or "").rstrip("/")
+        want = _norm(pattern)
+        if not want or "<*>" not in want:
+            # Only guard parameterized routes; a bare literal path is handled
+            # by the missing_route recipe's own /api scoping.
+            return False
+        for rule in current_app.url_map.iter_rules():
+            if _norm(str(rule)) == want:
+                return True
+        return False
+    except Exception:
+        return False
+
+
+def _is_backend_owned_path(path: str) -> bool:
+    """True only for paths a Flask route could legitimately own — i.e. /api/*.
+    Page paths (/dcpi/*, /markets/*, /facility/*, /connect ...) are served by
+    the SEO/CF surface, NOT main.py; proposing a Flask handler for them would
+    SHADOW the real serving path (#1482 was /dcpi/<slug>). Fail-CLOSED for
+    non-/api so missing_route only fires where a backend route makes sense."""
+    p = (path or "").strip()
+    return p.startswith("/api/")
+
+
+def _is_valid_404_pattern(path: str) -> bool:
+    """Reject un-interpolated template URLs a crawler leaked. L21 normalizes a
+    real slug segment to a single <slug>/<id>/<path:...> token, so a LEGIT
+    pattern has at most that. A path carrying a literal example-placeholder like
+    <your-slug>, <market>, {id}, :id, %7B is a template leak, never a real
+    route to add. Returns False to skip. Fail-OPEN → True on empty."""
+    p = (path or "")
+    if not p:
+        return True
+    # Strip the recognized single-segment converter tokens L21 emits, then any
+    # residual brace/colon/percent placeholder means a template leak.
+    stripped = re.sub(r"<(?:path:)?(?:slug|id|facility_id|market|state_slug)>",
+                      "", p)
+    if re.search(r"<[^>]*>", stripped):   # a NON-standard <...> token remains
+        return False
+    if re.search(r"[{}]|%7[BbDd]|/:[a-zA-Z]", p):  # {id}, :id, encoded braces
+        return False
+    return True
+
+
 # Recipes that represent ONE standing concept (not per-target): the cron
 # collision + schema drift findings get drafted by multiple code paths
 # (inspector-brief, radar scan, L21) each with a DIFFERENT target_path key,
@@ -218,6 +279,12 @@ def _try_recipe_route_alias(finding: dict) -> dict | None:
     # Only deal with clean /api/v1/... patterns
     if "/api/v1/" not in pattern: return None
     if _is_forbidden_path(pattern): return None
+    # r-l22harden: template-leak / already-served guards (see helpers above).
+    if not _is_valid_404_pattern(pattern): return None
+    if _route_already_registered(pattern):
+        # The route EXISTS — this 404 is app-level 'resource not found' (bad
+        # slug), not a missing route. Adding an alias is a no-op (#1478).
+        return None
 
     # Heuristic: try the singular ↔ plural transform
     # /api/v1/facility/<slug>  ->  /api/v1/facilities/<slug>
@@ -321,6 +388,12 @@ def _try_recipe_cron_mismatch(finding: dict) -> dict | None:
     if finding.get("issue") != "cron_schedule_collision":
         return None
     expr = (finding.get("url") or "").strip() or "?"
+    # r-l22harden: the signal must carry a REAL cron expression (5 fields of
+    # [0-9*/,-]). #1489 fired on a placeholder ('unscheduled cron endpoint') and
+    # drafted a 'stagger' fix for a collision it couldn't parse. Reject anything
+    # that isn't a well-formed cron so garbled signals never become issues.
+    if not re.fullmatch(r"[\d*/,\-]+(?:\s+[\d*/,\-]+){4}", expr):
+        return None
     if _already_drafted("cron_if_mismatched", "workflows:" + expr):
         return None
     return {
@@ -656,6 +729,13 @@ def _try_recipe_missing_route(pattern_key: str, count: int) -> dict | None:
     method, path, status = m.group(1), m.group(2), m.group(3)
     if status != "404": return None
     if _is_forbidden_path(path): return None
+    # r-l22harden: only propose a Flask handler where one could legitimately
+    # live (/api/*). Page paths (/dcpi/*, /markets/* ...) are SEO/CF-served, so
+    # a backend route would shadow them (#1482 was /dcpi/<slug>). Also skip
+    # template-leak paths and any route that already resolves.
+    if not _is_backend_owned_path(path): return None
+    if not _is_valid_404_pattern(path): return None
+    if _route_already_registered(path): return None
     if _already_drafted("missing_api_route", path):
         return None
 
@@ -803,7 +883,8 @@ def _scan_and_draft(dry_run: bool, brief_id: int | None = None) -> dict:
     /api/v1/brain/http-errors/patterns endpoint. The radar's
     check_repeated_404_patterns detector requires 10 hits/hour which
     is too high for fresh-deploy traffic. The ring buffer threshold
-    here is 2 hits/hour — lower friction, more actionable.
+    here is 4 hits/hour (r-l22harden: was 2 — too noisy; 2-hit crawler
+    pairs on leaked template URLs were the whole L22 noise queue).
 
     r86: when called with a brief_id (the Inspector→L22 auto-fire passes one),
     FIRST consume that brief's parsed Code-fix RECIPE candidates and draft them.
@@ -897,7 +978,10 @@ def _scan_and_draft(dry_run: bool, brief_id: int | None = None) -> dict:
         for p in (patterns.get("patterns") or []):
             key = p.get("pattern", "")
             n = int(p.get("count", 0))
-            if n < 2: continue
+            # r-l22harden: 2 hits/hour was noise — #1478/#1482 were 2-hit
+            # template-leak crawls. Require >=4/hour so a genuine spike drafts
+            # but a stray crawler pair does not.
+            if n < 4: continue
             if "[404]" not in key: continue
             # Try route-alias first (singular/plural)
             synthetic = {
