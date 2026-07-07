@@ -306,11 +306,12 @@ def autopsy():
         limit = 15
 
     # Core-vs-full comparables (2026-07-07 payload pressure-test): the full
-    # comparables array was ~65% of the paid payload. Default to a compact
-    # summary; callers drilling into a deal pass comparables=full.
-    comps_mode = (request.args.get("comparables") or "summary").strip().lower()
+    # comparables array was ~60% of the paid payload. Progressive disclosure —
+    # default to Level 1 (count only; the autopsy_read verdict is retained);
+    # callers pass comparables=summary (top-2 grounding) or =full (complete set).
+    comps_mode = (request.args.get("comparables") or "none").strip().lower()
     if comps_mode not in ("summary", "full", "none"):
-        comps_mode = "summary"
+        comps_mode = "none"
 
     try:
         from routes.tier_gate import _resolve_caller_tier
