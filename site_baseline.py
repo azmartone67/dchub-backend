@@ -174,6 +174,14 @@ def run_site_baseline_tick(sample_n=40):
         c.close()
     except Exception as e:
         summary["errors"].append(f"upsert:{str(e)[:100]}")
+
+    # After the reference distribution refreshes, evaluate drift alerts on saved
+    # shortlists and notify on breach (the daily "wake me when it matters" loop).
+    try:
+        from routes.shortlists import evaluate_shortlist_alerts
+        summary["alerts"] = evaluate_shortlist_alerts()
+    except Exception as e:
+        summary["errors"].append(f"alerts:{str(e)[:80]}")
     return summary
 
 

@@ -189,3 +189,157 @@ def api_shortlist_get():
                  "the objectives saved per-site. Shortlist scoped to your API key."),
         "_source": "DC Hub — dchub.cloud",
     })
+
+
+# ── Drift-triggered shortlist alerts (Grok's #1 fast-follow) ────────────────
+def _ensure_alert_table():
+    c = _conn()
+    try:
+        cur = c.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS shortlist_alerts (
+                id bigserial PRIMARY KEY,
+                owner text NOT NULL,
+                shortlist_name text NOT NULL,
+                percentile_below numeric,
+                delta_below numeric,
+                notify_webhook text,
+                notify_email text,
+                active boolean DEFAULT true,
+                created_at timestamptz DEFAULT now(),
+                last_fired_at timestamptz,
+                last_result jsonb
+            )
+        """)
+        c.commit()
+    finally:
+        c.close()
+
+
+@shortlists_bp.route("/api/v1/shortlist/alert", methods=["POST"])
+def api_shortlist_alert():
+    """Set a drift alert on a shortlist. Fires when any saved site's current
+    percentile score drops below percentile_below OR its score_delta_since_saved
+    drops below delta_below. Body: {shortlist_name, percentile_below?, delta_below?,
+    notify:{webhook?, email?}}. Evaluated after each daily baseline refresh."""
+    body = request.get_json(silent=True) or {}
+    name = (body.get("shortlist_name") or "").strip()
+    notify = body.get("notify") or {}
+    pct_below = body.get("percentile_below")
+    delta_below = body.get("delta_below")
+    if not name or (pct_below is None and delta_below is None):
+        return jsonify(ok=False, _entity="error",
+                       error="shortlist_name and at least one of percentile_below / delta_below are required"), 400
+    if not (notify.get("webhook") or notify.get("email")):
+        return jsonify(ok=False, _entity="error", error="notify.webhook or notify.email is required"), 400
+    _ensure_alert_table()
+    owner = _owner()
+    try:
+        c = _conn(); cur = c.cursor()
+        cur.execute("""INSERT INTO shortlist_alerts
+            (owner, shortlist_name, percentile_below, delta_below, notify_webhook, notify_email)
+            VALUES (%s,%s,%s,%s,%s,%s) RETURNING id""",
+            (owner, name, pct_below, delta_below, notify.get("webhook"), notify.get("email")))
+        aid = cur.fetchone()[0]; c.commit(); c.close()
+    except Exception as e:
+        return jsonify(ok=False, _entity="error", error=str(e)[:200]), 200
+    return jsonify({
+        "_entity": "shortlist_alert_set", "ok": True, "id": aid, "shortlist_name": name,
+        "condition": {"percentile_below": pct_below, "delta_below": delta_below},
+        "note": ("Evaluated after each daily baseline refresh; fires the webhook/email when any site "
+                 "in the shortlist crosses the threshold. Scoped to your API key."),
+        "_source": "DC Hub — dchub.cloud",
+    })
+
+
+def _notify(alert, hits):
+    """Best-effort delivery: webhook POST + email (Resend if configured)."""
+    import json as _json
+    import urllib.request as _u
+    payload = {"event": "shortlist_drift_alert", "shortlist_name": alert["shortlist_name"],
+               "condition": {"percentile_below": alert.get("percentile_below"),
+                             "delta_below": alert.get("delta_below")},
+               "sites": hits, "source": "DC Hub (dchub.cloud)"}
+    if alert.get("notify_webhook"):
+        try:
+            req = _u.Request(alert["notify_webhook"], data=_json.dumps(payload).encode(),
+                             method="POST", headers={"Content-Type": "application/json",
+                                                     "User-Agent": "dchub-shortlist-alert/1.0"})
+            _u.urlopen(req, timeout=15)
+        except Exception:
+            pass
+    email = alert.get("notify_email")
+    rk = os.environ.get("DCHUB_RESEND_API_KEY") or os.environ.get("RESEND_API_KEY")
+    if email and rk:
+        try:
+            lines = "\n".join(f"- {h['site_ref']}: score {h.get('current_score')} (delta {h.get('score_delta_since_saved')})" for h in hits)
+            eb = {"from": "DC Hub <" + (os.environ.get("DCHUB_FROM_EMAIL") or "jonathan@dchub.cloud") + ">",
+                  "to": [email], "subject": f"DC Hub drift alert — {alert['shortlist_name']}",
+                  "text": f"{len(hits)} site(s) in '{alert['shortlist_name']}' crossed your threshold:\n{lines}\n\n— DC Hub (dchub.cloud)"}
+            req = _u.Request("https://api.resend.com/emails", data=_json.dumps(eb).encode(),
+                             method="POST", headers={"Authorization": f"Bearer {rk}", "Content-Type": "application/json"})
+            _u.urlopen(req, timeout=15)
+        except Exception:
+            pass
+
+
+def evaluate_shortlist_alerts():
+    """Called after the baseline tick recomputes the reference distribution: check
+    every active alert's shortlist against the fresh baseline and notify on breach."""
+    summary = {"alerts_checked": 0, "alerts_fired": 0, "errors": []}
+    try:
+        from site_baseline import score_site, load_baseline
+        load_baseline(force=True)
+    except Exception as e:
+        summary["errors"].append(f"baseline:{str(e)[:60]}")
+        return summary
+    _ensure_alert_table()
+    try:
+        c = _conn()
+        cur = c.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute("SELECT * FROM shortlist_alerts WHERE active = true")
+        alerts = cur.fetchall()
+        c.close()
+    except Exception as e:
+        summary["errors"].append(f"load:{str(e)[:60]}")
+        return summary
+    for al in alerts:
+        summary["alerts_checked"] += 1
+        try:
+            c = _conn()
+            cur = c.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+            cur.execute("""SELECT site_ref, saved_metrics, saved_objectives, saved_score
+                           FROM agent_shortlist_sites WHERE owner=%s AND shortlist_name=%s""",
+                        (al["owner"], al["shortlist_name"]))
+            rows = cur.fetchall(); c.close()
+            hits = []
+            for r in rows:
+                m = r["saved_metrics"] if isinstance(r["saved_metrics"], dict) else {}
+                o = r["saved_objectives"] if isinstance(r["saved_objectives"], dict) else {}
+                cur_score, _ = score_site(m, o)
+                if cur_score is None:
+                    continue
+                saved = float(r["saved_score"]) if r["saved_score"] is not None else None
+                delta = round(cur_score - saved, 1) if saved is not None else None
+                breach = False
+                if al.get("percentile_below") is not None and cur_score < float(al["percentile_below"]):
+                    breach = True
+                if al.get("delta_below") is not None and delta is not None and delta < float(al["delta_below"]):
+                    breach = True
+                if breach:
+                    hits.append({"site_ref": r["site_ref"], "current_score": cur_score,
+                                 "saved_score": saved, "score_delta_since_saved": delta})
+            if hits:
+                _notify(al, hits)
+                summary["alerts_fired"] += 1
+                try:
+                    c = _conn(); cc = c.cursor()
+                    cc.execute("UPDATE shortlist_alerts SET last_fired_at=now(), last_result=%s WHERE id=%s",
+                               (json.dumps(hits), al["id"]))
+                    c.commit(); c.close()
+                except Exception:
+                    pass
+        except Exception as e:
+            if len(summary["errors"]) < 3:
+                summary["errors"].append(str(e)[:80])
+    return summary
