@@ -524,6 +524,13 @@ def api_rank_sites():
     cands = body.get("candidates") or []
     constraints = body.get("constraints") or {}
     objectives = body.get("objectives") or {}
+    # absolute=true → score each objective on a FIXED 0-100 scale (the raw value,
+    # clamped, direction-adjusted) instead of min-max within the batch. Gives
+    # cross-run-stable scores (Grok's relative-vs-absolute gap) — but ONLY valid
+    # when the objective fields are already 0-100 (e.g. analyze_site's scores:
+    # risk_resilience, fiber_connectivity, water score). Pass 0-100 score fields,
+    # NOT raw distances like fiber_km, in absolute mode.
+    absolute = str(body.get("absolute", "")).lower() in ("1", "true", "yes")
     try:
         top_k = max(1, int(body.get("top_k") or 3))
     except Exception:
@@ -556,7 +563,8 @@ def api_rank_sites():
     survivors = [dict(c) for c in cands if isinstance(c, dict) and _passes(c)]
     dropped = len(cands) - len(survivors)
 
-    # 2. min-max normalize each objective across survivors (100 = best given weight sign)
+    # 2. score each objective 0-100. absolute mode = fixed 0-100 scale (stable across
+    #    runs); relative mode (default) = min-max within THIS batch (100 = best in set).
     norm_basis = {}
     for f, w in objectives.items():
         w = _num(w) or 0.0
@@ -564,16 +572,25 @@ def api_rank_sites():
         vals = [v for v in vals if v is not None]
         if not vals:
             continue
-        lo, hi = min(vals), max(vals)
-        span = (hi - lo) or 1.0
-        norm_basis[f] = {"min": round(lo, 3), "max": round(hi, 3),
-                         "direction": "maximize" if w >= 0 else "minimize"}
-        for c in survivors:
-            v = _num(c.get(f))
-            if v is None:
-                continue
-            n = (v - lo) / span * 100.0
-            c.setdefault("_norm", {})[f] = round(n if w >= 0 else (100.0 - n), 1)
+        if absolute:
+            norm_basis[f] = {"scale": "0-100 fixed", "direction": "maximize" if w >= 0 else "minimize"}
+            for c in survivors:
+                v = _num(c.get(f))
+                if v is None:
+                    continue
+                v = max(0.0, min(100.0, v))
+                c.setdefault("_norm", {})[f] = round(v if w >= 0 else (100.0 - v), 1)
+        else:
+            lo, hi = min(vals), max(vals)
+            span = (hi - lo) or 1.0
+            norm_basis[f] = {"min": round(lo, 3), "max": round(hi, 3),
+                             "direction": "maximize" if w >= 0 else "minimize"}
+            for c in survivors:
+                v = _num(c.get(f))
+                if v is None:
+                    continue
+                n = (v - lo) / span * 100.0
+                c.setdefault("_norm", {})[f] = round(n if w >= 0 else (100.0 - n), 1)
 
     # 3. weighted objective score + rank
     wsum = sum(abs(_num(w) or 0.0) for w in objectives.values()) or 1.0
@@ -589,6 +606,7 @@ def api_rank_sites():
     return jsonify({
         "_entity": "ranked_sites",
         "ok": True,
+        "scoring_mode": "absolute" if absolute else "relative",
         "count_ranked": len(survivors),
         "count_returned": min(top_k, len(survivors)),
         "dropped_by_constraints": dropped,
@@ -602,9 +620,12 @@ def api_rank_sites():
                  "|weight|-weighted mean -> objective_score. objectives: +weight maximizes, "
                  "-weight minimizes. Each result carries normalized{} (the per-field 0-100 you can "
                  "cite) + rank + objective_score; normalization_basis gives the min/max/direction "
-                 "used. Scores are RELATIVE to the submitted set — re-rank the SAME candidate set "
-                 "for stable comparisons, and pass the site_evaluation_handoff through on each "
-                 "candidate so the rail stays unbroken into the winners."),
+                 "used. DEFAULT (relative) scores are relative to the submitted set — re-rank the SAME "
+                 "candidate set for stable comparisons. Pass absolute=true for CROSS-RUN-STABLE scores "
+                 "on a fixed 0-100 scale (use only when the objective fields are already 0-100, e.g. "
+                 "analyze_site's risk_resilience / fiber_connectivity scores — not raw distances like "
+                 "fiber_km). scoring_mode echoes which was used. Pass the site_evaluation_handoff through "
+                 "on each candidate so the rail stays unbroken into the winners."),
     })
 
 
