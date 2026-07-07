@@ -379,10 +379,15 @@ def job_ai_wars():
         return auth_err
     try:
         from ai_wars_automation import run_master_tick
-        summary = run_master_tick()
+        import threading
+        # A tick runs up to ~6 sequential battles (~1 min each) — far longer than
+        # any HTTP/edge timeout. Spawn it and return immediately; the scheduler
+        # only needs the trigger acknowledged. The drain is idempotent, so a
+        # container restart mid-tick is recovered by the next daily tick.
+        threading.Thread(target=run_master_tick, name='ai-wars-master-tick', daemon=True).start()
         _reg_update('ai_wars')
-        logger.info("JOB ai-wars: ✅ %s", summary)
-        return jsonify({'success': True, 'job': 'ai-wars', 'result': summary, 'ts': datetime.utcnow().isoformat()})
+        logger.info("JOB ai-wars: ✅ master-tick spawned")
+        return jsonify({'success': True, 'job': 'ai-wars', 'result': 'master-tick started (async)', 'ts': datetime.utcnow().isoformat()})
     except ImportError:
         return jsonify({'success': True, 'job': 'ai-wars', 'skipped': 'ai_wars_automation not available', 'ts': datetime.utcnow().isoformat()})
     except Exception as e:
