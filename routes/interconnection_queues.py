@@ -507,7 +507,6 @@ def api_analyze_parcel():
     })
 
 
-@interconnection_queues_bp.route("/api/v1/rank-sites", methods=["POST"])
 # Objectives whose data is not yet in the stack. Declared EXPLICITLY so an agent
 # gets "unavailable + reason" in constraint_coverage — never a silent skip, and
 # never a fabricated proxy. (ChatGPT's "Constraint Coverage" pattern, 2026-07-07.)
@@ -520,6 +519,7 @@ _UNSUPPORTED_OBJECTIVES = {
 }
 
 
+@interconnection_queues_bp.route("/api/v1/rank-sites", methods=["POST"])
 def api_rank_sites():
     """Deterministic multi-site ranking/optimization under constraints — the
     normalization contract that lets an agent compare sites across separate
