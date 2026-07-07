@@ -1938,6 +1938,17 @@ try:
     except Exception as _flms:
         import logging
         logging.getLogger(__name__).warning('flywheel_master_shell wiring failed: %s', _flms)
+    # 2026-07-06: Back-of-Funnel Truth master shell — ONE pane for the 07-06
+    # funnel fix-wave (retention durable-keys, claim→paid attribution, conversion
+    # demand) measured with CORRECTED metrics the older panes were blind to.
+    # Read-only DIAGNOSTIC, pure-DB. GET /admin/backfunnel · /api/v1/admin/backfunnel/master-tick
+    try:
+        from routes.backfunnel_master_shell import backfunnel_master_shell_bp
+        app.register_blueprint(backfunnel_master_shell_bp)
+        print("[main] backfunnel_master_shell_bp registered: GET /admin/backfunnel", flush=True)
+    except Exception as _bfms:
+        import logging
+        logging.getLogger(__name__).warning('backfunnel_master_shell wiring failed: %s', _bfms)
     # 2026-07-06: Registry Freshness master shell — the sentinel that was missing
     # when Glama sat at "33 tools" while live was 58. Read-only DIAGNOSTIC:
     # flags external MCP-registry listings drifting from canonical, + honest
