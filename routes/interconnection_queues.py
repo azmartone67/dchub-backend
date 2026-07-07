@@ -507,6 +507,107 @@ def api_analyze_parcel():
     })
 
 
+@interconnection_queues_bp.route("/api/v1/rank-sites", methods=["POST"])
+def api_rank_sites():
+    """Deterministic multi-site ranking/optimization under constraints — the
+    normalization contract that lets an agent compare sites across separate
+    analyze_site calls WITHOUT dropping into code (Grok's rails-thin gap). Body:
+      {
+        "candidates": [{"id":.., "lat":.., "lng":.., "<metric>":num, ..}, ...],
+        "constraints": {"<field>": {"min":num, "max":num}, ...},   # hard filters
+        "objectives":  {"<field>": weight, ...},   # +weight maximizes, -minimizes
+        "top_k": 3
+      }
+    Each objective is min-max normalized 0-100 across the candidates that pass the
+    constraints (100=best in that set), then combined as a |weight|-weighted mean."""
+    body = request.get_json(silent=True) or {}
+    cands = body.get("candidates") or []
+    constraints = body.get("constraints") or {}
+    objectives = body.get("objectives") or {}
+    try:
+        top_k = max(1, int(body.get("top_k") or 3))
+    except Exception:
+        top_k = 3
+    if not isinstance(cands, list) or not cands:
+        return jsonify(ok=False, _entity="error", error="candidates must be a non-empty list"), 400
+    if not isinstance(objectives, dict) or not objectives:
+        return jsonify(ok=False, _entity="error",
+                       error="objectives required: {field: weight} — +weight maximizes, -weight minimizes"), 400
+
+    def _num(v):
+        try:
+            return float(v)
+        except Exception:
+            return None
+
+    # 1. hard constraints (fail-closed: a candidate missing a constrained field is dropped)
+    def _passes(c):
+        for f, rule in (constraints or {}).items():
+            v = _num(c.get(f))
+            if v is None:
+                return False
+            if isinstance(rule, dict):
+                if "min" in rule and rule["min"] is not None and v < float(rule["min"]):
+                    return False
+                if "max" in rule and rule["max"] is not None and v > float(rule["max"]):
+                    return False
+        return True
+
+    survivors = [dict(c) for c in cands if isinstance(c, dict) and _passes(c)]
+    dropped = len(cands) - len(survivors)
+
+    # 2. min-max normalize each objective across survivors (100 = best given weight sign)
+    norm_basis = {}
+    for f, w in objectives.items():
+        w = _num(w) or 0.0
+        vals = [_num(c.get(f)) for c in survivors]
+        vals = [v for v in vals if v is not None]
+        if not vals:
+            continue
+        lo, hi = min(vals), max(vals)
+        span = (hi - lo) or 1.0
+        norm_basis[f] = {"min": round(lo, 3), "max": round(hi, 3),
+                         "direction": "maximize" if w >= 0 else "minimize"}
+        for c in survivors:
+            v = _num(c.get(f))
+            if v is None:
+                continue
+            n = (v - lo) / span * 100.0
+            c.setdefault("_norm", {})[f] = round(n if w >= 0 else (100.0 - n), 1)
+
+    # 3. weighted objective score + rank
+    wsum = sum(abs(_num(w) or 0.0) for w in objectives.values()) or 1.0
+    for c in survivors:
+        nrm = c.get("_norm", {})
+        s = sum((abs(_num(objectives[f]) or 0.0)) * nrm.get(f, 0.0) for f in objectives)
+        c["objective_score"] = round(s / wsum, 1)
+        c["normalized"] = c.pop("_norm", {})
+    survivors.sort(key=lambda c: c["objective_score"], reverse=True)
+    for i, c in enumerate(survivors):
+        c["rank"] = i + 1
+
+    return jsonify({
+        "_entity": "ranked_sites",
+        "ok": True,
+        "count_ranked": len(survivors),
+        "count_returned": min(top_k, len(survivors)),
+        "dropped_by_constraints": dropped,
+        "results": survivors[:top_k],
+        "normalization_basis": norm_basis,
+        "_source": "DC Hub — dchub.cloud",
+        "_cite": "Data: DC Hub (dchub.cloud), CC-BY-4.0 — cite as \"DC Hub, dchub.cloud\"",
+        "note": ("Deterministic ranking. constraints are HARD filters (fail-closed on a missing "
+                 "constrained field). Each objective is min-max normalized to 0-100 ACROSS the "
+                 "candidates that passed constraints (100=best in THIS set), then combined as a "
+                 "|weight|-weighted mean -> objective_score. objectives: +weight maximizes, "
+                 "-weight minimizes. Each result carries normalized{} (the per-field 0-100 you can "
+                 "cite) + rank + objective_score; normalization_basis gives the min/max/direction "
+                 "used. Scores are RELATIVE to the submitted set — re-rank the SAME candidate set "
+                 "for stable comparisons, and pass the site_evaluation_handoff through on each "
+                 "candidate so the rail stays unbroken into the winners."),
+    })
+
+
 @interconnection_queues_bp.route("/api/v1/interconnection-queue/refined")
 def api_refined_queue():
     import re as _re
