@@ -1949,6 +1949,16 @@ try:
     except Exception as _bfms:
         import logging
         logging.getLogger(__name__).warning('backfunnel_master_shell wiring failed: %s', _bfms)
+    # 2026-07-07: Growth-Ops digest — daily operator email consolidating the
+    # back-of-funnel + flywheel master shells (passive validation). Scheduled via
+    # crawler_scheduler _run_growth_ops_digest. GET /api/v1/admin/growth-digest/preview
+    try:
+        from routes.growth_ops_digest import growth_ops_digest_bp
+        app.register_blueprint(growth_ops_digest_bp)
+        print("[main] growth_ops_digest_bp registered: /api/v1/admin/growth-digest", flush=True)
+    except Exception as _gods:
+        import logging
+        logging.getLogger(__name__).warning('growth_ops_digest wiring failed: %s', _gods)
     # 2026-07-06: Registry Freshness master shell — the sentinel that was missing
     # when Glama sat at "33 tools" while live was 58. Read-only DIAGNOSTIC:
     # flags external MCP-registry listings drifting from canonical, + honest

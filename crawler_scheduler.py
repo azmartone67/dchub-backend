@@ -115,6 +115,10 @@ SCHEDULE = [
     # per-target Resend guard in ai_lab_outreach._perform_resend_send.
     (16, 16, "lost_conversion",     "_run_lost_conversion_outreach"),
     (17, 17, "ai_lab_outreach",     "_run_ai_lab_auto_outreach"),
+    # r-growth-digest (2026-07-07): daily operator digest consolidating the
+    # back-of-funnel + flywheel master shells (passive validation of the funnel
+    # fix-wave). Same-hour pairing = once/day. Kill: GROWTH_DIGEST_DISABLE=1.
+    (13, 13, "growth_ops_digest",   "_run_growth_ops_digest"),
     # r-auto-interconnect (2026-06-04): scan novel UAs + pending buckets
     # once daily, write findings + email digest. Endpoint is admin-gated
     # AND idempotent (UNIQUE index on user_agent for pending/approved
@@ -1534,6 +1538,32 @@ def _run_ai_lab_auto_outreach():
                        d.get("sent"), d.get("skipped"), d.get("candidates"))
     except Exception as e:
         logger.error("📧 ai_lab_outreach autopilot: error — %s", e)
+
+
+def _run_growth_ops_digest():
+    """r-growth-digest (2026-07-07): fire /api/v1/admin/growth-digest/send — the
+    daily operator digest over the back-of-funnel + flywheel master shells. Sends
+    to the OPERATOR inbox only (no customer email). Kill: GROWTH_DIGEST_DISABLE=1."""
+    if (os.environ.get("GROWTH_DIGEST_DISABLE") or "").strip() == "1":
+        return
+    import requests as _rq
+    key = (os.environ.get("DCHUB_ADMIN_KEY")
+           or os.environ.get("DCHUB_INTERNAL_KEY")
+           or os.environ.get("DCHUB_ADMIN_API_KEY") or "")
+    if not key:
+        logger.warning("📧 growth_ops_digest: skipped — DCHUB_ADMIN_KEY not set")
+        return
+    base = (os.environ.get("DCHUB_INTERNAL_API", "http://127.0.0.1:8080") or "").strip()
+    try:
+        r = _rq.post(
+            f"{base}/api/v1/admin/growth-digest/send?confirm=true",
+            headers={"X-Internal-Key": key, "X-Admin-Key": key,
+                     "User-Agent": "dchub-cron-growth-digest/1.0"},
+            timeout=120)
+        d = (r.json() if r.headers.get("content-type", "").startswith("application/json") else {}) or {}
+        logger.info("📧 growth_ops_digest: status=%s sent_to=%s", r.status_code, d.get("sent_to"))
+    except Exception as e:
+        logger.warning("📧 growth_ops_digest error: %s", e)
 
 
 def _run_lost_conversion_outreach():
