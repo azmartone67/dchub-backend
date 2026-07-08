@@ -518,6 +518,46 @@ _UNSUPPORTED_OBJECTIVES = {
     "water": "Awaiting WRI Aqueduct ingest — see water_stress.",
 }
 
+# 2026-07-08: the four water objectives are DATA-GATED, not code-gated. They stay
+# "unavailable" until a VERIFIED WRI Aqueduct ingest lands real rows in water_risk
+# (routes/water_aqueduct_ingest.py). The moment real WRI-sourced rows exist they
+# drop out of the unsupported set and become scorable — with NO code change and,
+# critically, NEVER off a fabricated proxy (the water_score pause of 2026-07-07
+# holds until real data arrives). See [[reference_dchub_water_score_integrity]].
+_WATER_OBJECTIVES = ("water_stress", "water_score", "water_risk", "water")
+_water_avail_cache = {"ts": 0.0, "val": False}
+
+
+def _wri_water_available() -> bool:
+    """True only when water_risk carries REAL WRI-sourced rows. 5-min cache;
+    fail-closed to False on any error (so an outage can never fabricate a
+    water score by accident)."""
+    import time as _t
+    now = _t.time()
+    if now - _water_avail_cache["ts"] < 300:
+        return _water_avail_cache["val"]
+    val = False
+    try:
+        with psycopg.connect(NEON_URL, autocommit=True) as _c:
+            cur = _c.cursor()
+            cur.execute("SELECT 1 FROM water_risk "
+                        "WHERE LOWER(COALESCE(source,'')) LIKE 'wri%%' LIMIT 1")
+            val = cur.fetchone() is not None
+    except Exception:
+        val = False
+    _water_avail_cache["ts"] = now
+    _water_avail_cache["val"] = val
+    return val
+
+
+def _effective_unsupported() -> dict:
+    """The unsupported-objectives set for THIS request. Water objectives become
+    scorable the instant a verified WRI ingest lands — data-gated, no code flip."""
+    if _wri_water_available():
+        return {k: v for k, v in _UNSUPPORTED_OBJECTIVES.items()
+                if k not in _WATER_OBJECTIVES}
+    return _UNSUPPORTED_OBJECTIVES
+
 
 @interconnection_queues_bp.route("/api/v1/rank-sites", methods=["POST"])
 def api_rank_sites():
@@ -625,6 +665,7 @@ def api_rank_sites():
     norm_basis = {}
     coverage = {}          # {objective: validated | unavailable}  (ChatGPT's Constraint Coverage)
     objective_status = []  # [{objective, status, basis|reason}] — declare, never silently skip
+    unsupported = _effective_unsupported()  # water drops out once real WRI rows land
     for f, w in objectives.items():
         w = _num(w) or 0.0
         vals = [_num(c.get(f)) for c in survivors]
@@ -632,10 +673,10 @@ def api_rank_sites():
         # ── Constraint coverage: an unsupported/absent objective is DECLARED, not
         #    dropped, and is excluded from the weighted score so it can't dilute or
         #    fabricate the ranking. The recommendation is "conditionally complete".
-        if f in _UNSUPPORTED_OBJECTIVES:
+        if f in unsupported:
             coverage[f] = "unavailable"
             objective_status.append({"objective": f, "status": "unavailable",
-                                     "reason": _UNSUPPORTED_OBJECTIVES[f]})
+                                     "reason": unsupported[f]})
             continue
         if not vals:
             coverage[f] = "unavailable"
