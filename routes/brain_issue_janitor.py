@@ -101,6 +101,71 @@ def _max_per_run() -> int:
     return max(0, _env_int("BRAIN_ISSUE_JANITOR_MAX_PER_RUN", 10))
 
 
+def _verify_completed_closes() -> bool:
+    """BRAIN_JANITOR_VERIFY_COMPLETED (default OFF). When ON, a dropped-from-
+    causal-set issue may be closed state_reason=completed — but ONLY when a
+    brain_fix_outcomes row proves the finding was VERIFIED RESOLVED on main.
+    Off = legacy honest path (every drop closes not_planned). This is the
+    tracked follow-up named in the 2026-07-07 honesty note above: it gives the
+    janitor its FIRST honest 'completed' path instead of forcing every real fix
+    to read as a mere de-prioritisation."""
+    return os.environ.get("BRAIN_JANITOR_VERIFY_COMPLETED", "0") == "1"
+
+
+def _verify_window_days() -> int:
+    return max(1, _env_int("BRAIN_JANITOR_VERIFY_WINDOW_DAYS", 14))
+
+
+def _verified_resolution_for(chain_title: str):
+    """Return an evidence dict {id, klass, file_path, reason, verified_at} if a
+    brain_fix_outcomes row with resolved IS TRUE confidently matches THIS issue's
+    causal chain title within the verify window; else None.
+
+    Deliberately CONSERVATIVE — a false 'completed' is exactly the dishonesty the
+    janitor honesty-fix removed. brain_fix_outcomes has no issue backlink (the
+    tracked gap), so we require a SPECIFIC token match (the outcome's klass, or
+    its file basename, appearing in the chain title) and we CITE the outcome id +
+    reason in the close comment for audit. Any ambiguity or error -> None (fall
+    through to the honest not_planned path). Read-only; never raises."""
+    title = (chain_title or "").strip().lower()
+    if len(title) < 8:
+        return None
+    conn = None
+    try:
+        from main import get_db
+        conn = get_db()
+        if not conn:
+            return None
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT id, COALESCE(klass,''), COALESCE(file_path,''), COALESCE(reason,''), verified_at "
+            "FROM brain_fix_outcomes "
+            "WHERE resolved IS TRUE AND verified_at >= NOW() - (%s || ' days')::interval "
+            "ORDER BY verified_at DESC LIMIT 200",
+            (str(_verify_window_days()),),
+        )
+        rows = cur.fetchall() or []
+        try: cur.close()
+        except Exception: pass
+        for rid, klass, fpath, reason, vat in rows:
+            k = (klass or "").strip().lower()
+            base = ""
+            if fpath:
+                base = fpath.replace("\\", "/").split("/")[-1].rsplit(".", 1)[0].strip().lower()
+            # require a specific (>=4 char) token to actually appear in the title
+            if (k and len(k) >= 4 and k in title) or (base and len(base) >= 4 and base in title):
+                return {"id": rid, "klass": klass, "file_path": fpath,
+                        "reason": reason, "verified_at": str(vat)}
+        return None
+    except Exception as e:
+        logger.warning("issue-janitor verify lookup failed: %s", e)
+        return None
+    finally:
+        if conn is not None:
+            try: conn.close()
+            except Exception: pass
+
+
 def _gh(method: str, path: str, body=None, params=None):
     import requests
     return requests.request(
@@ -248,23 +313,43 @@ def janitor_sweep(dry_run: bool = True) -> dict:
             # fixed — chains thrash in and out of the ranked set every cycle, so
             # closing these as state_reason="completed" ("reads as resolved")
             # manufactured a false "done ✓" that inflated the brain's success
-            # numbers and let the SAME finding re-file next cycle. We close as
-            # "not_planned" (honest: de-prioritised, NOT verified fixed) and say
-            # so. A TRUE "completed" close belongs to a metric-verified path
-            # (the issue body's own "How to verify" condition) — see
-            # brain_fix_outcome_verify; wiring that in is the follow-up.
-            candidates.append({
-                "number": num, "title": title, "reason": "dropped_from_causal_set_unverified",
-                "state_reason": "not_planned",
-                "comment": ("🤖 **Auto-closed by the brain issue janitor** — this "
-                            "causal chain is no longer in the current top-ranked "
-                            "L14 set, so it's being de-prioritised. **This is NOT a "
-                            "verified fix** — the underlying condition was not "
-                            "checked against this issue's own \"How to verify\" "
-                            "metric. If the problem persists it will re-surface and "
-                            "L15 will re-file. Closing to keep the queue honest, not "
-                            "to claim resolution."),
-            })
+            # numbers and let the SAME finding re-file next cycle.
+            #
+            # FOLLOW-UP WIRED (2026-07-08, BRAIN_JANITOR_VERIFY_COMPLETED, default
+            # OFF): before de-prioritising, check for a brain_fix_outcomes row
+            # that VERIFIED this finding resolved on main. If one exists (specific
+            # token match, cited in the comment) we close state_reason=completed —
+            # the janitor's first HONEST 'completed' path, so a real verified fix
+            # stops reading as a mere de-prioritisation. Otherwise (flag off, or no
+            # verified outcome) we keep the honest not_planned close below.
+            _ev = _verified_resolution_for(chain_title) if _verify_completed_closes() else None
+            if _ev:
+                _tag = (_ev.get("klass") or _ev.get("file_path") or "n/a")
+                candidates.append({
+                    "number": num, "title": title, "reason": "verified_resolved",
+                    "state_reason": "completed",
+                    "comment": ("🤖 **Auto-closed by the brain issue janitor — VERIFIED "
+                                "RESOLVED.** A fix-outcome check confirmed this finding's "
+                                f"condition is resolved on `main`: outcome #{_ev.get('id')} "
+                                f"(`{_tag}`), verified {_ev.get('verified_at')} — "
+                                f"{_ev.get('reason') or 'anti-pattern gone from main'}. "
+                                "Closing as completed (evidence cited above). If the "
+                                "condition regresses, L14 re-derives the chain and L15 "
+                                "re-files automatically."),
+                })
+            else:
+                candidates.append({
+                    "number": num, "title": title, "reason": "dropped_from_causal_set_unverified",
+                    "state_reason": "not_planned",
+                    "comment": ("🤖 **Auto-closed by the brain issue janitor** — this "
+                                "causal chain is no longer in the current top-ranked "
+                                "L14 set, so it's being de-prioritised. **This is NOT a "
+                                "verified fix** — the underlying condition was not "
+                                "checked against this issue's own \"How to verify\" "
+                                "metric. If the problem persists it will re-surface and "
+                                "L15 will re-file. Closing to keep the queue honest, not "
+                                "to claim resolution."),
+                })
 
     for issue in _open_issues(_L23_LABEL):
         num, title = issue.get("number"), (issue.get("title") or "")

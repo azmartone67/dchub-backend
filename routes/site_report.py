@@ -1950,15 +1950,27 @@ def site_report():
                 return [clean(x) for x in o]
             return o
         _resp = {"ok": True, "lat": lat, "lon": lon, "survey": clean(survey)}
-        if form == "premium":
-            # Signed link the agent's human can open to download the branded PDF
-            # (no Pro session needed); valid ~7 days, scoped to this report.
-            _resp["pdf_report_url"] = _signed_pdf_url(lat, lon, extra={
-                "capacity_mw": (int(capacity_mw) if capacity_mw else None),
-                "prepared_for": prepared_for, "prepared_by": prepared_by,
-                "latency_target": latency_target,
-            })
-            _resp["deliverable"] = "Branded 5-page Site Analysis PDF"
+        # VALUE-MOMENT (2026-07-08): every json report yields a BRANDED, shareable
+        # 5-page Site Analysis PDF the agent can hand to a named human — the
+        # anon-agent → named-human bridge. The signed link opens with NO Pro
+        # session (scoped to this lat/lon, ~7d). This branch is reached ONLY after
+        # the PRO gate / admin / signed bypass above, so surfacing the link never
+        # leaks the paywalled deliverable to a free caller. (Previously gated on
+        # form=="premium"; the signed URL always mints the premium template, so a
+        # standard json call now gets the shareable artifact too.)
+        _pdf_url = _signed_pdf_url(lat, lon, extra={
+            "capacity_mw": (int(capacity_mw) if capacity_mw else None),
+            "prepared_for": prepared_for, "prepared_by": prepared_by,
+            "latency_target": latency_target,
+        })
+        _resp["pdf_report_url"] = _pdf_url
+        _resp["deliverable"] = "Branded 5-page DC Hub Site Analysis PDF"
+        _resp["share_text"] = (
+            f"DC Hub Site Analysis · {lat:.4f}, {lon:.4f}"
+            + (f" · prepared for {prepared_for}" if prepared_for else "")
+            + f" · download (no login, ~7-day link): {_pdf_url}")
+        _resp["share_hint"] = ("Hand `pdf_report_url` to your human — it opens the branded "
+                               "DC Hub PDF with no login. `share_text` is paste-ready.")
         return jsonify(_resp)
 
     if fmt == "pdf":

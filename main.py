@@ -1927,6 +1927,28 @@ try:
     except Exception as _fwms:
         import logging
         logging.getLogger(__name__).warning('fixwave_master_shell wiring failed: %s', _fwms)
+    # 2026-07-08: Deep-Dive Command Deck — ONE cockpit for the 07-08 flywheel deep
+    # dive. Aggregates flywheel/backfunnel/registry/media verdicts + adds fix-signal
+    # trust, autonomy-arm posture, and product-build lanes. Read-only; surfaces
+    # owner decisions (arm auto-merge / pay X / Glama refresh) but never flips them.
+    # GET /admin/deepdive · /api/v1/admin/deepdive/master-tick · kill DEEPDIVE_DISABLED=1
+    try:
+        from routes.deepdive_master_shell import deepdive_master_shell_bp
+        app.register_blueprint(deepdive_master_shell_bp)
+        print("[main] deepdive_master_shell_bp registered: GET /admin/deepdive", flush=True)
+    except Exception as _ddms:
+        import logging
+        logging.getLogger(__name__).warning('deepdive_master_shell wiring failed: %s', _ddms)
+    # 2026-07-08: WRI Aqueduct water-stress ingest — replaces the paused inverted
+    # proxy. Honest by construction (writes ONLY verified-source rows; no-op without
+    # WRI_AQUEDUCT_URL). rank_sites water objectives auto-enable once real rows land.
+    try:
+        from routes.water_aqueduct_ingest import water_aqueduct_ingest_bp
+        app.register_blueprint(water_aqueduct_ingest_bp)
+        print("[main] water_aqueduct_ingest_bp registered: POST /api/v1/admin/water/aqueduct-ingest", flush=True)
+    except Exception as _wai:
+        import logging
+        logging.getLogger(__name__).warning('water_aqueduct_ingest wiring failed: %s', _wai)
     # 2026-07-05: Flywheel master shell — ONE pane over the FIVE back-half-of-
     # the-funnel priorities (retention/durable-identity, brain dedup + facilities
     # backlog, canonical identity, media distribution, SEO slug-freeze). Read-only
