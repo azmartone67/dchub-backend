@@ -1639,6 +1639,252 @@ def register_site_planner_routes(app):
                 'message': str(e),
             }), 500
 
+    # ── POST /api/v1/site-planner/composite-score ──
+    @app.route('/api/v1/site-planner/composite-score', methods=['GET', 'POST'])
+    @require_pro
+    def site_planner_composite_score():
+        """Composite site suitability score (0-100) with an EXPLICIT per-factor
+        coverage map. Synthesizes power/grid, fiber, natural-hazard risk, water,
+        and market/DCPI — but scores ONLY over factors whose data is actually
+        sourced (constraint-coverage). Unsourced factors are DECLARED
+        `unavailable`, never imputed — so water stays out until the WRI Aqueduct
+        ingest lands (the 2026-07-07 paused proxy is never surfaced), and the
+        composite is honest about what it does and doesn't know.
+
+        Body: { "lat":.., "lng":.., "state":"VA" }  or  { "address": ".." }.
+        This is the honest counterpart to the composite a raw analyze_site dump
+        makes you assemble yourself."""
+        # GET (MCP callAPI sends query params) or POST JSON. Accept lng or lon.
+        data = flask_request.get_json(silent=True) or flask_request.values
+
+        def _f(v):
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                return None
+        lat = _f(data.get('lat'))
+        lng = _f(data.get('lng') if data.get('lng') is not None else data.get('lon'))
+        state = (data.get('state') or '')
+        address = (data.get('address') or '')
+        if address and (not lat or not lng):
+            geo = geocode_address(address)
+            if geo:
+                lat, lng = geo['lat'], geo['lng']
+                state = geo.get('state_code', state) or state
+        if not lat or not lng:
+            return jsonify({'success': False, 'error': 'lat/lng or address required'}), 400
+        if not state:
+            try:
+                rev = reverse_geocode(lat, lng)
+                if rev:
+                    state = rev.get('state_code', '') or state
+            except Exception:
+                pass
+
+        sub = {}
+        env = None
+        # ── power_grid (real: HIFLD substations/transmission + ISO queue + congestion + gas) ──
+        try:
+            substations = find_nearest_substations(lat, lng, limit=5) or []
+            transmission = find_nearest_transmission(lat, lng)
+            iso = identify_iso_region(lat, lng, state)
+            congestion = estimate_congestion(lat, lng)
+            env = screen_environmental(lat, lng)
+            gas = find_nearby_gas_pipelines(lat, lng)
+            nearby_dcs = find_nearby_facilities(lat, lng)
+            scoring = compute_suitability_score(substations, transmission, iso, env,
+                                                congestion, gas=gas, nearby_dcs=nearby_dcs) or {}
+            pg = scoring.get('score')
+            sub['power_grid'] = {'score': pg,
+                                 'coverage': 'validated' if isinstance(pg, (int, float)) else 'unavailable',
+                                 'basis': 'substation proximity/voltage, ISO queue depth, transmission, congestion, gas access, DC corridor (HIFLD + ISO)'}
+        except Exception as e:
+            logger.warning(f"composite power_grid failed: {e}")
+            sub['power_grid'] = {'score': None, 'coverage': 'unavailable', 'basis': f'gather failed: {type(e).__name__}'}
+
+        # ── fiber (carrier presence + FCC hex) ──
+        try:
+            fiber = check_fiber_proximity(lat, lng) or {}
+            fscore = fiber.get('score')
+            try:
+                from routes.connectivity_score import score_connectivity
+                cc = score_connectivity(lat, lng, 50)
+                if cc and not cc.get('error') and cc.get('score') is not None:
+                    fscore = cc.get('score')
+            except Exception:
+                pass
+            sub['fiber'] = {'score': fscore,
+                            'coverage': 'validated' if isinstance(fscore, (int, float)) else 'unavailable',
+                            'basis': 'carrier facility presence + FCC fiber hex'}
+        except Exception as e:
+            sub['fiber'] = {'score': None, 'coverage': 'unavailable', 'basis': f'{type(e).__name__}'}
+
+        # ── risk_resilience (FEMA flood + FWS critical habitat + NWI wetlands) ──
+        try:
+            e = env if isinstance(env, dict) else screen_environmental(lat, lng)
+            rscore = e.get('env_score') if isinstance(e, dict) else None
+            sub['risk_resilience'] = {'score': rscore,
+                                      'coverage': 'validated' if isinstance(rscore, (int, float)) else 'unavailable',
+                                      'basis': 'FEMA flood + FWS critical habitat + NWI wetlands'}
+        except Exception as e:
+            sub['risk_resilience'] = {'score': None, 'coverage': 'unavailable', 'basis': f'{type(e).__name__}'}
+
+        # ── water: DATA-GATED. Real ONLY when WRI rows exist; else declared unavailable
+        #    (the paused inverted state proxy is NEVER surfaced — integrity). ──
+        water_validated = False
+        try:
+            from routes.interconnection_queues import _wri_water_available
+            water_validated = bool(_wri_water_available())
+        except Exception:
+            water_validated = False
+        if water_validated:
+            try:
+                w = assess_water_risk(state) or {}
+                wscore = w.get('water_risk_score')
+                sub['water'] = {'score': wscore,
+                                'coverage': 'validated' if isinstance(wscore, (int, float)) else 'unavailable',
+                                'basis': 'WRI Aqueduct baseline water stress'}
+            except Exception as e:
+                sub['water'] = {'score': None, 'coverage': 'unavailable', 'basis': f'{type(e).__name__}'}
+        else:
+            sub['water'] = {'score': None, 'coverage': 'unavailable',
+                            'basis': 'Awaiting WRI Aqueduct ingest — the paused state proxy is withheld for integrity'}
+
+        # ── market_dcpi: declared but unavailable in v1 (no fabricated market score) ──
+        sub['market_dcpi'] = {'score': None, 'coverage': 'unavailable',
+                              'basis': 'v1: use rank_markets / get_market_dcpi_rank for the DCPI verdict; composite market synthesis planned'}
+
+        # ── composite over VALIDATED factors ONLY (never impute a missing one) ──
+        weights = {'power_grid': 0.32, 'fiber': 0.20, 'water': 0.18,
+                   'risk_resilience': 0.15, 'market_dcpi': 0.15}
+        num = den = 0.0
+        validated = []
+        for k, w in weights.items():
+            s = sub.get(k) or {}
+            if s.get('coverage') == 'validated' and isinstance(s.get('score'), (int, float)):
+                num += float(s['score']) * w
+                den += w
+                validated.append(k)
+        composite = round(num / den, 1) if den > 0 else None
+        verdict = None
+        if composite is not None:
+            verdict = 'BUILD' if composite >= 70 else 'CAUTION' if composite >= 45 else 'AVOID'
+
+        caveats = [c for c in [
+            None if water_validated else 'water: unavailable until the WRI Aqueduct ingest lands (the paused proxy is withheld for integrity).',
+            'market_dcpi: unavailable in v1 — use rank_markets / get_market_dcpi_rank.',
+            'natural-hazard layer is FEMA flood + FWS habitat + NWI wetlands only (no seismic/climate-projection layer yet).',
+            'advisory only — pair with analyze_site (raw data), get_water_risk, and rank_markets.',
+        ] if c]
+
+        return jsonify({
+            'success': True,
+            '_entity': 'site',
+            'location': {'lat': lat, 'lng': lng, 'state': state, 'address': address},
+            'composite_score': composite,
+            'verdict': verdict,
+            'confidence': 'complete' if len(validated) == len(weights) else 'conditional',
+            'coverage': {k: (sub.get(k) or {}).get('coverage') for k in weights},
+            'coverage_ratio': f'{len(validated)}/{len(weights)}',
+            'sub_scores': sub,
+            'weights_over_validated': ({k: round(weights[k] / den, 3) for k in validated} if den > 0 else {}),
+            'methodology': ('Weighted mean over VALIDATED factors only; unsourced factors are declared '
+                            'unavailable, never imputed (constraint-coverage). Grid/fiber/hazard are live; '
+                            'water auto-enables when the WRI ingest lands.'),
+            'caveats': caveats,
+            'meta': {'version': 'v1.0', 'timestamp': datetime.utcnow().isoformat()},
+        })
+
+    # ── GET/POST /api/v1/site-planner/disaster-risk ──
+    @app.route('/api/v1/site-planner/disaster-risk', methods=['GET', 'POST'])
+    @require_pro
+    def site_planner_disaster_risk():
+        """Natural-hazard risk for a lat/lon, grounded in the FEMA National Risk
+        Index (NRI) — the authoritative county-level US hazard dataset. LIVE
+        point-in-county query; NEVER fabricates. Returns the composite NRI risk
+        score + rating + national percentile, all 18 hazard ratings, and the
+        elevated 'top' hazards. Points outside US NRI coverage return
+        coverage='unavailable' (declared, not estimated)."""
+        import urllib.request as _u
+        import urllib.parse as _up
+        import json as _j
+        data = flask_request.get_json(silent=True) or flask_request.values
+
+        def _f(v):
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                return None
+        lat = _f(data.get('lat'))
+        lng = _f(data.get('lng') if data.get('lng') is not None else data.get('lon'))
+        if lat is None or lng is None:
+            return jsonify({'success': False, 'error': 'lat/lng required'}), 400
+
+        _HZ = {'AVLN': 'Avalanche', 'CFLD': 'Coastal Flooding', 'CWAV': 'Cold Wave',
+               'DRGT': 'Drought', 'ERQK': 'Earthquake', 'HAIL': 'Hail', 'HRCN': 'Hurricane',
+               'HWAV': 'Heat Wave', 'IFLD': 'Riverine Flooding', 'ISTM': 'Ice Storm',
+               'LNDS': 'Landslide', 'LTNG': 'Lightning', 'SWND': 'Strong Wind',
+               'TRND': 'Tornado', 'TSUN': 'Tsunami', 'VLCN': 'Volcanic Activity',
+               'WFIR': 'Wildfire', 'WNTW': 'Winter Weather'}
+        _ELEV = {'Very High', 'Relatively High'}
+        _NRI = ('https://services.arcgis.com/XG15cJAlne2vxtgt/arcgis/rest/services/'
+                'National_Risk_Index_Counties/FeatureServer/0/query')
+        attrs = None
+        try:
+            out_fields = 'STATE,COUNTY,RISK_SCORE,RISK_RATNG,RISK_SPCTL,' + ','.join(f'{c}_RISKR' for c in _HZ)
+            qs = _up.urlencode({
+                'geometry': _j.dumps({'x': lng, 'y': lat, 'spatialReference': {'wkid': 4326}}),
+                'geometryType': 'esriGeometryPoint', 'inSR': '4326',
+                'spatialRel': 'esriSpatialRelIntersects', 'outFields': out_fields,
+                'returnGeometry': 'false', 'f': 'json'})
+            req = _u.Request(f'{_NRI}?{qs}', headers={'User-Agent': 'dchub-disaster-risk/1.0'})
+            with _u.urlopen(req, timeout=12) as r:
+                feats = (_j.loads(r.read(2_000_000).decode('utf-8', 'replace')) or {}).get('features') or []
+            if feats:
+                attrs = feats[0].get('attributes') or {}
+        except Exception as e:
+            logger.warning(f"FEMA NRI query failed: {e}")
+            attrs = None
+
+        if not attrs:
+            return jsonify({'success': True, '_entity': 'risk',
+                            'location': {'lat': lat, 'lng': lng},
+                            'disaster_risk': None, 'coverage': 'unavailable',
+                            'source': 'FEMA National Risk Index (NRI)',
+                            'note': ('No NRI county intersects this point (outside US NRI coverage / '
+                                     'offshore) or the source was unreachable — declared unavailable, '
+                                     'never estimated.')})
+
+        hazards = {}
+        for code, name in _HZ.items():
+            rr = attrs.get(f'{code}_RISKR')
+            if rr and str(rr).strip() and str(rr).strip().lower() not in (
+                    'not applicable', 'no rating', 'insufficient data', 'no expected annual losses'):
+                hazards[name] = rr
+        top = sorted([{'hazard': n, 'rating': r} for n, r in hazards.items() if r in _ELEV],
+                     key=lambda h: 0 if h['rating'] == 'Very High' else 1)
+        return jsonify({
+            'success': True, '_entity': 'risk',
+            'location': {'lat': lat, 'lng': lng,
+                         'county': attrs.get('COUNTY'), 'state': attrs.get('STATE')},
+            'disaster_risk': {
+                'composite_score': attrs.get('RISK_SCORE'),
+                'rating': attrs.get('RISK_RATNG'),
+                'national_percentile': attrs.get('RISK_SPCTL'),
+            },
+            'hazards': hazards,
+            'top_hazards': top,
+            'coverage': 'validated',
+            'source': 'FEMA National Risk Index (NRI), county-level',
+            'methodology': ('Live point-in-county query of the FEMA NRI FeatureServer. Composite = '
+                            'Expected Annual Loss × Social Vulnerability ÷ Community Resilience; '
+                            'higher score = higher risk. 18 hazards rated Very Low→Very High.'),
+            'caveats': ['County-level resolution (not parcel).',
+                        'US only — points outside NRI coverage return coverage=unavailable.',
+                        'Acute natural hazards; for chronic water stress use get_water_risk (WRI Aqueduct).'],
+            'meta': {'version': 'v1.0', 'timestamp': datetime.utcnow().isoformat()},
+        })
+
     # ── POST /api/v1/site-planner/compare ──
     @app.route('/api/v1/site-planner/compare', methods=['POST'])
     @require_pro

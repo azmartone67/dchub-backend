@@ -46,6 +46,8 @@ _TOOL_REST = {
     "list_saved_sites":       ("/api/v1/lp/saved", "GET"),
     "analyze_site":           ("/api/site-score", "GET"),
     "compare_sites":          ("/api/site-score", "GET"),
+    "get_composite_site_score": ("/api/v1/site-planner/composite-score", "GET"),
+    "get_disaster_risk":      ("/api/v1/site-planner/disaster-risk", "GET"),
     "score_facility":         ("/api/v1/mcp/tools/score_facility", "GET"),
     "find_alternatives":      ("/api/v1/mcp/tools/find_alternatives", "GET"),
     "generate_site_analysis": ("/api/v1/site-report", "GET"),
