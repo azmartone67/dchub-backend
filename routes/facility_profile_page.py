@@ -121,8 +121,8 @@ def _market_dcpi(city: str, state: str, lat=None, lng=None) -> dict | None:
     """Best-effort DCPI verdict for the facility's market so the profile shows
     real intelligence, not just sparse metadata.
 
-    Resolution order (r-market-resolve 2026-07-06): (1) exact city/metro slug
-    match; (2) if that misses, the geographically NEAREST metro in the same
+    Resolution order (r-market-resolve 2026-07-06): (1) exact city/metro slug match;
+    (2) if that misses, the geographically NEAREST metro in the same
     state by lat/lng; (3) otherwise the most-recent row in the state. The old
     single-query `market_slug OR state ... ORDER BY computed_at` collapsed every
     facility in a state onto one arbitrary (most-recently-computed) metro — e.g.

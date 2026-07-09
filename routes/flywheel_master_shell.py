@@ -342,7 +342,9 @@ def _lane_seo_slug(c) -> list[dict]:
         return [_check("seo_nodb", "slug lane needs db", None, "no db")]
 
     # 5a — every sluggable facility carries a frozen canonical_slug (pending=0
-    # on BOTH facilities and discovered_facilities).
+    # on BOTH facilities and discovered_facilities). This check DELIBERATELY
+    # audits the legacy facilities table (comparing it against
+    # discovered_facilities), so the legacy source is intentional. lint: legacy-facilities-ok
     fpend = _scalar(c, "SELECT COUNT(*) FROM facilities "
                        "WHERE canonical_slug IS NULL AND name IS NOT NULL AND name <> ''")
     dpend = _scalar(c, "SELECT COUNT(*) FROM discovered_facilities "

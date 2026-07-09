@@ -13,6 +13,26 @@ def _src(fn):
     return inspect.getsource(fn)
 
 
+def _top_level_func_src(rel_path, name):
+    """Source of a top-level ``def <name>`` sliced from a file's TEXT.
+
+    Deliberately avoids importing the module: this suite never imports the
+    Flask app / DB (see tests/conftest.py), and CI runs pytest with no
+    DATABASE_URL / JWT_SECRET, so ``import main`` would raise there. Reading
+    the source text keeps this a pure source-level regression guard."""
+    import os
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    lines = open(os.path.join(root, rel_path), encoding="utf-8").read().splitlines()
+    start = next(i for i, l in enumerate(lines)
+                 if l.startswith(f"def {name}(") or l.startswith(f"def {name} "))
+    body = [lines[start]]
+    for l in lines[start + 1:]:
+        if l and not l[0].isspace():   # next col-0 construct ends the function
+            break
+        body.append(l)
+    return "\n".join(body)
+
+
 def test_market_dcpi_signature_takes_coords():
     """_market_dcpi must accept lat/lng — the nearest-metro fallback needs them.
     Regression: original was _market_dcpi(city, state) and callers dropped coords."""
@@ -53,8 +73,7 @@ def test_load_markets_dynamic_uses_median_centroid():
 def test_grid_ext_metrics_helper_is_failsoft():
     """The grid extended-metrics wiring must be fail-soft (never break the base
     grid payload) and pull from grid_ext_metrics / iso_lmp_snapshots."""
-    import main
-    src = _src(main._grid_ext_metrics_for)
+    src = _top_level_func_src("main.py", "_grid_ext_metrics_for")
     assert "grid_ext_metrics" in src
     assert "iso_lmp_snapshots" in src
     assert "return {}" in src  # fail-soft on error

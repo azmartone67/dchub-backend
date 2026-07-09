@@ -87,6 +87,9 @@ def _wire_retrieval(monkeypatch, rows=ROWS):
 # ── (1) cosine passthrough ────────────────────────────────────────────
 def test_cosine_present_and_score_is_rerank_when_rerank_on(monkeypatch):
     monkeypatch.delenv("BRAIN_RAG_RERANK", raising=False)  # default ON
+    # rerank is Cohere-only (_rerank_on gates on the embed provider) — pin the
+    # provider so the rerank path actually fires in this isolated test.
+    monkeypatch.setattr(br, "_embed_provider", lambda: "cohere")
     _wire_retrieval(monkeypatch)
     # Cross-encoder puts the LOWEST-cosine doc first, on its own ~0.3 scale.
     monkeypatch.setattr(br, "_rerank", lambda q, docs, top_n: [(2, 0.31), (0, 0.05)])

@@ -493,7 +493,7 @@ def test_deal_autopsy_cache_hit_short_circuits(monkeypatch):
     j = r.get_json()
     assert j["_cache"]["hit"] is True and j["ok"] is True
     # The lookup is EXACT-key: structural params, exact_only mode.
-    assert seen["exact_only"] is True and seen["params"] == {"limit": 15}
+    assert seen["exact_only"] is True and seen["params"] == {"limit": 15, "comps": "none"}
 
 
 def test_deal_autopsy_miss_computes_and_stores_exact_key(monkeypatch):
@@ -519,7 +519,7 @@ def test_deal_autopsy_miss_computes_and_stores_exact_key(monkeypatch):
     # intact, EXACT structural key (limit is params, not free text), and no
     # verification meta — deal_autopsy is deterministic, never verified.
     assert stored["tool"] == "deal_autopsy" and stored["tier"] == "FREE"
-    assert stored["params"] == {"limit": 5} and stored["exact_only"] is True
+    assert stored["params"] == {"limit": 5, "comps": "none"} and stored["exact_only"] is True
     assert stored["answer"]["autopsy"]["locked"] is True
     assert "verification" not in stored["answer"]
 
