@@ -1719,13 +1719,42 @@ def register_site_planner_routes(app):
         except Exception as e:
             sub['fiber'] = {'score': None, 'coverage': 'unavailable', 'basis': f'{type(e).__name__}'}
 
-        # ── risk_resilience (FEMA flood + FWS critical habitat + NWI wetlands) ──
+        # ── risk_resilience: prefer FEMA NRI (authoritative county hazard) —
+        #    resilience = 100 - NRI composite risk; fall back to the site-level
+        #    environmental screen (FEMA flood + FWS + NWI) when NRI is out of coverage. ──
         try:
             e = env if isinstance(env, dict) else screen_environmental(lat, lng)
-            rscore = e.get('env_score') if isinstance(e, dict) else None
-            sub['risk_resilience'] = {'score': rscore,
-                                      'coverage': 'validated' if isinstance(rscore, (int, float)) else 'unavailable',
-                                      'basis': 'FEMA flood + FWS critical habitat + NWI wetlands'}
+            env_score = e.get('env_score') if isinstance(e, dict) else None
+            nri_score = nri_rating = None
+            try:
+                import urllib.request as _u2
+                import urllib.parse as _up2
+                import json as _j2
+                _nq = _up2.urlencode({
+                    'geometry': _j2.dumps({'x': lng, 'y': lat, 'spatialReference': {'wkid': 4326}}),
+                    'geometryType': 'esriGeometryPoint', 'inSR': '4326',
+                    'spatialRel': 'esriSpatialRelIntersects', 'outFields': 'RISK_SCORE,RISK_RATNG',
+                    'returnGeometry': 'false', 'f': 'json'})
+                _nu = ('https://services.arcgis.com/XG15cJAlne2vxtgt/arcgis/rest/services/'
+                       'National_Risk_Index_Counties/FeatureServer/0/query?' + _nq)
+                with _u2.urlopen(_u2.Request(_nu, headers={'User-Agent': 'dchub-composite/1.0'}), timeout=10) as _r:
+                    _feats = (_j2.loads(_r.read(1_000_000).decode('utf-8', 'replace')) or {}).get('features') or []
+                if _feats:
+                    _a = _feats[0].get('attributes') or {}
+                    _rs = _a.get('RISK_SCORE')
+                    if isinstance(_rs, (int, float)):
+                        nri_score = round(max(0.0, min(100.0, 100.0 - _rs)), 1)  # resilience = inverse of hazard
+                        nri_rating = _a.get('RISK_RATNG')
+            except Exception:
+                nri_score = None
+            if nri_score is not None:
+                sub['risk_resilience'] = {'score': nri_score, 'coverage': 'validated',
+                                          'basis': f'FEMA National Risk Index (county hazard: {nri_rating}); resilience = 100 − NRI risk',
+                                          'nri_rating': nri_rating}
+            else:
+                sub['risk_resilience'] = {'score': env_score,
+                                          'coverage': 'validated' if isinstance(env_score, (int, float)) else 'unavailable',
+                                          'basis': 'FEMA flood + FWS critical habitat + NWI wetlands (NRI out of coverage)'}
         except Exception as e:
             sub['risk_resilience'] = {'score': None, 'coverage': 'unavailable', 'basis': f'{type(e).__name__}'}
 
@@ -1882,6 +1911,142 @@ def register_site_planner_routes(app):
             'caveats': ['County-level resolution (not parcel).',
                         'US only — points outside NRI coverage return coverage=unavailable.',
                         'Acute natural hazards; for chronic water stress use get_water_risk (WRI Aqueduct).'],
+            'meta': {'version': 'v1.0', 'timestamp': datetime.utcnow().isoformat()},
+        })
+
+    # ── GET/POST /api/v1/site-planner/climate-intel ──
+    @app.route('/api/v1/site-planner/climate-intel', methods=['GET', 'POST'])
+    @require_pro
+    def site_planner_climate_intel():
+        """Seismic + climate intel for a lat/lon, grounded STRICTLY in USGS
+        (ASCE 7 seismic) and NOAA (climate normals via ACIS). Every number traces
+        to a federal source; missing data is declared unavailable, never
+        estimated. DC-relevant: seismic drives structural bracing cost; cooling
+        degree-days + extreme temps drive cooling design (wet-bulb null when the
+        source lacks it — never approximated)."""
+        import urllib.request as _u
+        import urllib.parse as _up
+        import json as _j
+        import math as _m
+        data = flask_request.get_json(silent=True) or flask_request.values
+
+        def _f(v):
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                return None
+        lat = _f(data.get('lat'))
+        lng = _f(data.get('lng') if data.get('lng') is not None else data.get('lon'))
+        if lat is None or lng is None:
+            return jsonify({'success': False, 'error': 'lat/lng required'}), 400
+        radius_km = _f(data.get('radius_km') or data.get('search_radius_km')) or 25.0
+
+        # ── seismic (USGS ASCE 7-16 building-codes) ──
+        seismic = {'status': 'unavailable', 'source': 'USGS ASCE 7-16'}
+        try:
+            su = ('https://earthquake.usgs.gov/ws/building-codes/asce7-16/calculate?'
+                  + _up.urlencode({'latitude': lat, 'longitude': lng, 'riskCategory': 'III',
+                                   'siteClass': 'D', 'title': 'dchub'}))
+            req = _u.Request(su, headers={'User-Agent': 'dchub-climate-intel/1.0'})
+            with _u.urlopen(req, timeout=12) as r:
+                sd = ((_j.loads(r.read(500_000).decode('utf-8', 'replace')) or {})
+                      .get('response', {}).get('data', {}))
+            pga = sd.get('pga')
+            if isinstance(pga, (int, float)):
+                lvl = ('very high' if pga >= 0.6 else 'high' if pga >= 0.3
+                       else 'moderate' if pga >= 0.1 else 'low')
+                seismic = {'status': 'available', 'source': 'USGS ASCE 7-16 (earthquake.usgs.gov)',
+                           'peak_ground_acceleration_g': pga, 'ss': sd.get('ss'), 's1': sd.get('s1'),
+                           'seismic_design_category': sd.get('sdc'), 'hazard_class': lvl,
+                           'reference': 'ASCE 7-16, Risk Category III, Site Class D'}
+        except Exception as e:
+            logger.warning(f"climate-intel seismic failed: {e}")
+
+        # ── climate normals (NOAA via ACIS, tokenless) ──
+        climate = {'status': 'unavailable', 'source': 'NOAA (ACIS/NCEI)'}
+        try:
+            bb = f'{lng - 0.7},{lat - 0.7},{lng + 0.7},{lat + 0.7}'
+            mreq = _u.Request('https://data.rcc-acis.org/StnMeta',
+                              data=_j.dumps({'bbox': bb, 'meta': 'name,ll,sids'}).encode(),
+                              headers={'Content-Type': 'application/json',
+                                       'User-Agent': 'dchub-climate-intel/1.0'})
+            with _u.urlopen(mreq, timeout=12) as r:
+                stns = (_j.loads(r.read(2_000_000).decode('utf-8', 'replace')) or {}).get('meta') or []
+
+            def _hav(la1, lo1, la2, lo2):
+                R = 6371.0
+                p = _m.pi / 180
+                a = (_m.sin((la2 - la1) * p / 2) ** 2
+                     + _m.cos(la1 * p) * _m.cos(la2 * p) * _m.sin((lo2 - lo1) * p / 2) ** 2)
+                return 2 * R * _m.asin(min(1.0, _m.sqrt(a)))
+            best = None
+            for s in stns:
+                ll = s.get('ll')
+                sids = s.get('sids') or []
+                if not ll or not sids:
+                    continue
+                d = _hav(lat, lng, ll[1], ll[0])
+                if best is None or d < best[0]:
+                    best = (d, s)
+            if best is None:
+                climate = {'status': 'unavailable', 'reason': 'no_station_in_area',
+                           'source': 'NOAA (ACIS/NCEI)'}
+            elif best[0] > radius_km:
+                climate = {'status': 'unavailable_exceeds_radius', 'source': 'NOAA (ACIS/NCEI)',
+                           'reason': (f'nearest NOAA station {round(best[0], 1)}km > radius '
+                                      f'{radius_km}km — climate normals not estimated')}
+            else:
+                s = best[1]
+                sid = (s.get('sids') or [''])[0].split(' ')[0]
+                dreq = _u.Request('https://data.rcc-acis.org/StnData',
+                                  data=_j.dumps({'sid': sid, 'sdate': '2022-01-01', 'edate': '2024-12-31',
+                                                 'elems': [{'name': 'cdd', 'interval': 'yly', 'duration': 'yly', 'reduce': 'sum', 'base': 65},
+                                                           {'name': 'maxt', 'interval': 'yly', 'duration': 'yly', 'reduce': 'max'}]}).encode(),
+                                  headers={'Content-Type': 'application/json',
+                                           'User-Agent': 'dchub-climate-intel/1.0'})
+                with _u.urlopen(dreq, timeout=12) as r:
+                    dd = (_j.loads(r.read(500_000).decode('utf-8', 'replace')) or {}).get('data') or []
+                cdd = maxt = vintage = None
+                for row in reversed(dd):
+                    def _n(x):
+                        try:
+                            return float(x)
+                        except (TypeError, ValueError):
+                            return None
+                    if _n(row[1]) is not None or _n(row[2]) is not None:
+                        cdd, maxt, vintage = _n(row[1]), _n(row[2]), row[0]
+                        break
+                climate = {'status': 'available', 'source': 'NOAA (ACIS/NCEI)',
+                           'reference_station': {'id': sid, 'name': s.get('name'),
+                                                 'distance_km': round(best[0], 1)},
+                           'cooling_design_metrics': {
+                               'cooling_degree_days_annual': cdd,
+                               'extreme_max_dry_bulb_f': maxt,
+                               'extreme_max_wet_bulb_f': None,
+                               'data_vintage': vintage},
+                           'note': ('Annual values, latest available year at the nearest NOAA station. '
+                                    'Wet-bulb null (not in source; never estimated).')}
+        except Exception as e:
+            logger.warning(f"climate-intel normals failed: {e}")
+
+        parts = []
+        if seismic.get('status') == 'available':
+            parts.append(f"seismic {seismic.get('hazard_class')} (PGA {seismic.get('peak_ground_acceleration_g')}g)")
+        if climate.get('status') == 'available':
+            _cdd = (climate.get('cooling_design_metrics') or {}).get('cooling_degree_days_annual')
+            if _cdd is not None:
+                parts.append(f"~{int(_cdd)} cooling degree-days/yr")
+        return jsonify({
+            'success': True, '_entity': 'climate',
+            'site_coordinates': {'lat': lat, 'lon': lng},
+            'seismic_hazard_usgs': seismic,
+            'climate_normals_noaa': climate,
+            'overall_climate_summary': ('; '.join(parts) if parts else None),
+            'data_availability': {'seismic': seismic.get('status'), 'climate_normals': climate.get('status')},
+            'sources': ['USGS ASCE 7-16', 'NOAA ACIS/NCEI'],
+            'caveats': ['Seismic = ASCE 7-16 (US); non-US points may return seismic unavailable.',
+                        'Climate from the nearest NOAA station (US/territories); beyond radius → unavailable, never interpolated.',
+                        'Wet-bulb reported null when the source lacks it — never approximated.'],
             'meta': {'version': 'v1.0', 'timestamp': datetime.utcnow().isoformat()},
         })
 
