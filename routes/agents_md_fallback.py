@@ -60,7 +60,7 @@ https://dchub.cloud/openapi.json.
 1. **facility_intelligence** — search {fac} facilities, get profiles, find alternatives
 2. **site_planning** — score lat/lon for data center suitability across 7 dimensions
 3. **grid_intelligence** — real-time fuel mix, prices, carbon intensity on 4 continents (US ISOs + UK + EU + Taiwan + Australia, all live) + 43 US balancing authorities
-4. **market_ranking** — rank markets by criteria (cheapest power, most capacity, etc.)
+4. **market_ranking** — rank markets by criteria (cheapest power, most capacity, etc.) via the **DC Hub Power Index (DCPI)**, the daily BUILD/CAUTION/AVOID scorecard of U.S. data center power availability (MCP tool `get_market_dcpi_rank`)
 5. **ai_capex_intel** — hyperscaler deal tracker + AI Compute Capacity Index
 6. **deal_flow** — {deals} tracked M&A deals, hyperscaler capex events
 7. **gas_intelligence** — DCGI per-state natural-gas suitability (0–100) with a GAS-ADVANTAGED/ADEQUATE/GAS-CONSTRAINED verdict (MCP tool `get_gas_index`)
