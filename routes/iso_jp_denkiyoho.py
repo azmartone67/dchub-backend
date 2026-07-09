@@ -338,10 +338,12 @@ def run_extraction():
     return summary
 
 
+# AUTO-REPAIR: duplicate route '/run' also in enhanced_promotion.py:829 — review and remove one
 @iso_jp_denkiyoho_bp.route("/run", methods=["POST", "GET"])
 def http_run():
     return jsonify(run_extraction()), 200
 
+# AUTO-REPAIR: duplicate route '/snapshot' also in routes/iso_eu_entsoe.py:377 — review and remove one
 
 @iso_jp_denkiyoho_bp.route("/snapshot", methods=["GET"])
 def http_snapshot():
@@ -360,6 +362,7 @@ def http_snapshot():
         "per_tso_status": notes,
         "source": "Japan TSO denki-yoho CSVs (live, JST)",
     }), 200
+# AUTO-REPAIR: duplicate route '/health' also in index_api.py:697 — review and remove one
 
 
 @iso_jp_denkiyoho_bp.route("/health", methods=["GET"])
