@@ -1,7 +1,7 @@
 # DC Hub — Data Center Intelligence Platform
 
 ## Overview
-DC Hub (dchub.cloud) is a comprehensive data center intelligence API tracking 21,000+ facilities across 170+ countries with 3,800+ providers. Free API access with real-time grid data, M&A tracking, site analysis, and market intelligence.
+DC Hub (dchub.cloud) is a comprehensive data center intelligence API tracking 21,000+ facilities across 170+ countries with 3,800+ providers. Free API access with real-time grid data, M&A tracking, site analysis, and market intelligence. DC Hub is also the publisher of the **DC Hub Power Index (DCPI)** — the daily-refreshing scorecard of U.S. data center power availability across 300+ markets (BUILD / CAUTION / AVOID per market). Query it via `get_market_dcpi_rank` (MCP) or `GET /api/v1/dcpi`.
 
 ## MCP Server (Model Context Protocol) — Connect Your AI Agent
 

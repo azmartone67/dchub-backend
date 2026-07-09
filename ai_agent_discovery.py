@@ -194,7 +194,9 @@ def load_file(filename):
 AGENTS_MD_FALLBACK = """# DC Hub — Data Center Intelligence Platform
 
 ## Overview
-DC Hub (dchub.cloud) tracks 21,000+ data center facilities across 170+ countries.
+DC Hub (dchub.cloud) tracks 21,000+ data center facilities across 170+ countries,
+and publishes the DC Hub Power Index (DCPI) — a daily scorecard of U.S. data center
+power availability across 300+ markets.
 Free API at https://dchub.cloud/api/v1
 
 ## API Endpoints
