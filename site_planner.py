@@ -1795,6 +1795,96 @@ def register_site_planner_routes(app):
             'meta': {'version': 'v1.0', 'timestamp': datetime.utcnow().isoformat()},
         })
 
+    # ── GET/POST /api/v1/site-planner/disaster-risk ──
+    @app.route('/api/v1/site-planner/disaster-risk', methods=['GET', 'POST'])
+    @require_pro
+    def site_planner_disaster_risk():
+        """Natural-hazard risk for a lat/lon, grounded in the FEMA National Risk
+        Index (NRI) — the authoritative county-level US hazard dataset. LIVE
+        point-in-county query; NEVER fabricates. Returns the composite NRI risk
+        score + rating + national percentile, all 18 hazard ratings, and the
+        elevated 'top' hazards. Points outside US NRI coverage return
+        coverage='unavailable' (declared, not estimated)."""
+        import urllib.request as _u
+        import urllib.parse as _up
+        import json as _j
+        data = flask_request.get_json(silent=True) or flask_request.values
+
+        def _f(v):
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                return None
+        lat = _f(data.get('lat'))
+        lng = _f(data.get('lng') if data.get('lng') is not None else data.get('lon'))
+        if lat is None or lng is None:
+            return jsonify({'success': False, 'error': 'lat/lng required'}), 400
+
+        _HZ = {'AVLN': 'Avalanche', 'CFLD': 'Coastal Flooding', 'CWAV': 'Cold Wave',
+               'DRGT': 'Drought', 'ERQK': 'Earthquake', 'HAIL': 'Hail', 'HRCN': 'Hurricane',
+               'HWAV': 'Heat Wave', 'IFLD': 'Riverine Flooding', 'ISTM': 'Ice Storm',
+               'LNDS': 'Landslide', 'LTNG': 'Lightning', 'SWND': 'Strong Wind',
+               'TRND': 'Tornado', 'TSUN': 'Tsunami', 'VLCN': 'Volcanic Activity',
+               'WFIR': 'Wildfire', 'WNTW': 'Winter Weather'}
+        _ELEV = {'Very High', 'Relatively High'}
+        _NRI = ('https://services.arcgis.com/XG15cJAlne2vxtgt/arcgis/rest/services/'
+                'National_Risk_Index_Counties/FeatureServer/0/query')
+        attrs = None
+        try:
+            out_fields = 'STATE,COUNTY,RISK_SCORE,RISK_RATNG,RISK_SPCTL,' + ','.join(f'{c}_RISKR' for c in _HZ)
+            qs = _up.urlencode({
+                'geometry': _j.dumps({'x': lng, 'y': lat, 'spatialReference': {'wkid': 4326}}),
+                'geometryType': 'esriGeometryPoint', 'inSR': '4326',
+                'spatialRel': 'esriSpatialRelIntersects', 'outFields': out_fields,
+                'returnGeometry': 'false', 'f': 'json'})
+            req = _u.Request(f'{_NRI}?{qs}', headers={'User-Agent': 'dchub-disaster-risk/1.0'})
+            with _u.urlopen(req, timeout=12) as r:
+                feats = (_j.loads(r.read(2_000_000).decode('utf-8', 'replace')) or {}).get('features') or []
+            if feats:
+                attrs = feats[0].get('attributes') or {}
+        except Exception as e:
+            logger.warning(f"FEMA NRI query failed: {e}")
+            attrs = None
+
+        if not attrs:
+            return jsonify({'success': True, '_entity': 'risk',
+                            'location': {'lat': lat, 'lng': lng},
+                            'disaster_risk': None, 'coverage': 'unavailable',
+                            'source': 'FEMA National Risk Index (NRI)',
+                            'note': ('No NRI county intersects this point (outside US NRI coverage / '
+                                     'offshore) or the source was unreachable — declared unavailable, '
+                                     'never estimated.')})
+
+        hazards = {}
+        for code, name in _HZ.items():
+            rr = attrs.get(f'{code}_RISKR')
+            if rr and str(rr).strip() and str(rr).strip().lower() not in (
+                    'not applicable', 'no rating', 'insufficient data', 'no expected annual losses'):
+                hazards[name] = rr
+        top = sorted([{'hazard': n, 'rating': r} for n, r in hazards.items() if r in _ELEV],
+                     key=lambda h: 0 if h['rating'] == 'Very High' else 1)
+        return jsonify({
+            'success': True, '_entity': 'risk',
+            'location': {'lat': lat, 'lng': lng,
+                         'county': attrs.get('COUNTY'), 'state': attrs.get('STATE')},
+            'disaster_risk': {
+                'composite_score': attrs.get('RISK_SCORE'),
+                'rating': attrs.get('RISK_RATNG'),
+                'national_percentile': attrs.get('RISK_SPCTL'),
+            },
+            'hazards': hazards,
+            'top_hazards': top,
+            'coverage': 'validated',
+            'source': 'FEMA National Risk Index (NRI), county-level',
+            'methodology': ('Live point-in-county query of the FEMA NRI FeatureServer. Composite = '
+                            'Expected Annual Loss × Social Vulnerability ÷ Community Resilience; '
+                            'higher score = higher risk. 18 hazards rated Very Low→Very High.'),
+            'caveats': ['County-level resolution (not parcel).',
+                        'US only — points outside NRI coverage return coverage=unavailable.',
+                        'Acute natural hazards; for chronic water stress use get_water_risk (WRI Aqueduct).'],
+            'meta': {'version': 'v1.0', 'timestamp': datetime.utcnow().isoformat()},
+        })
+
     # ── POST /api/v1/site-planner/compare ──
     @app.route('/api/v1/site-planner/compare', methods=['POST'])
     @require_pro
