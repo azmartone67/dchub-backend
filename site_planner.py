@@ -1758,26 +1758,36 @@ def register_site_planner_routes(app):
         except Exception as e:
             sub['risk_resilience'] = {'score': None, 'coverage': 'unavailable', 'basis': f'{type(e).__name__}'}
 
-        # ── water: DATA-GATED. Real ONLY when WRI rows exist; else declared unavailable
-        #    (the paused inverted state proxy is NEVER surfaced — integrity). ──
-        water_validated = False
+        # ── water: LIVE from the AUTHORITATIVE WRI Aqueduct 4.0 baseline water
+        #    stress (Esri Living Atlas, point query). Suitability = 100 − stress
+        #    (bws_score 0–5 → 0–100). Outside basin coverage → unavailable. The
+        #    paused inverted state proxy is NEVER surfaced. ──
         try:
-            from routes.interconnection_queues import _wri_water_available
-            water_validated = bool(_wri_water_available())
-        except Exception:
-            water_validated = False
-        if water_validated:
-            try:
-                w = assess_water_risk(state) or {}
-                wscore = w.get('water_risk_score')
-                sub['water'] = {'score': wscore,
-                                'coverage': 'validated' if isinstance(wscore, (int, float)) else 'unavailable',
-                                'basis': 'WRI Aqueduct baseline water stress'}
-            except Exception as e:
-                sub['water'] = {'score': None, 'coverage': 'unavailable', 'basis': f'{type(e).__name__}'}
-        else:
-            sub['water'] = {'score': None, 'coverage': 'unavailable',
-                            'basis': 'Awaiting WRI Aqueduct ingest — the paused state proxy is withheld for integrity'}
+            import urllib.request as _u4
+            import urllib.parse as _up4
+            import json as _j4
+            _aq = ('https://services.arcgis.com/P3ePLMYs2RVChkJx/arcgis/rest/services/'
+                   'aqueduct_water_risk/FeatureServer/1/query?' + _up4.urlencode({
+                       'geometry': _j4.dumps({'x': lng, 'y': lat, 'spatialReference': {'wkid': 4326}}),
+                       'geometryType': 'esriGeometryPoint', 'inSR': '4326',
+                       'spatialRel': 'esriSpatialRelIntersects',
+                       'outFields': 'bws_score,bws_cat,bws_label,name_1', 'returnGeometry': 'false',
+                       'resultRecordCount': '1', 'f': 'json'}))
+            with _u4.urlopen(_u4.Request(_aq, headers={'User-Agent': 'dchub-composite/1.0'}), timeout=10) as _r:
+                _wf = (_j4.loads(_r.read(1_000_000).decode('utf-8', 'replace')) or {}).get('features') or []
+            _wa = (_wf[0].get('attributes') or {}) if _wf else {}
+            _bws = _wa.get('bws_score')
+            if isinstance(_bws, (int, float)):
+                _wscore = round(max(0.0, min(100.0, 100.0 - _bws / 5.0 * 100.0)), 1)  # suitability = low stress
+                sub['water'] = {'score': _wscore, 'coverage': 'validated',
+                                'basis': f"WRI Aqueduct 4.0 baseline water stress: {_wa.get('bws_label')} ({_wa.get('name_1')})",
+                                'bws_score_0_5': _bws, 'bws_category': _wa.get('bws_cat')}
+            else:
+                sub['water'] = {'score': None, 'coverage': 'unavailable',
+                                'basis': 'Outside WRI Aqueduct basin coverage (offshore / no basin)'}
+        except Exception as _we:
+            logger.warning(f"composite water (Aqueduct) failed: {_we}")
+            sub['water'] = {'score': None, 'coverage': 'unavailable', 'basis': 'WRI Aqueduct source unreachable'}
 
         # ── market_dcpi: declared but unavailable in v1 (no fabricated market score) ──
         sub['market_dcpi'] = {'score': None, 'coverage': 'unavailable',
