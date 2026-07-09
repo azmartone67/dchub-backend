@@ -1,8 +1,8 @@
 """
 routes/registry_freshness_master_shell.py — Registry Freshness Master Shell (2026-07-06).
 
-The sentinel that was MISSING when Glama sat at "33 tools" for weeks while our
-live server served 58 — nobody was watching whether the external MCP-registry
+The sentinel that was MISSING when Glama's listing sat at a stale 33 for weeks
+while our live server served far more — nobody was watching whether the external MCP-registry
 listings still matched our canonical tool count. This pane flags that drift the
 moment the presence crawler observes it, so a stale listing surfaces on a
 scoreboard instead of by accident.

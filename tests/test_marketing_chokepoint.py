@@ -129,6 +129,15 @@ _TRANSACTIONAL_SENDERS = frozenset({
     "brain_innovation_email.py",     # operator innovation digest — transactional, not marketing
     "enterprise_inquiry.py",         # enterprise data-licensing inquiry receipts
     "feedback_triage.py",            # routes /feedback to operator (ops, not promo)
+    "growth_ops_digest.py",          # operator growth-ops digest (wins/watch/red-lane
+                                     # report to the OWNER inbox, admin-gated
+                                     # /admin/growth-digest/send) — mirrors
+                                     # paid_intent_ledger/morning_briefing: an ops
+                                     # report to the operator, not customer marketing
+    "shortlists.py",                 # user-configured shortlist DRIFT alert: fires only
+                                     # when the caller's OWN saved sites cross the
+                                     # threshold they set (opt-in notify_email, event-
+                                     # triggered) — a transactional alert, not promo
     "health_alerter.py",             # ops alert on backend restart-loop/health (to operator)
     "morning_briefing.py",           # operator's PERSONAL CEO daily report (self)
     "outreach_cap_exceeded.py",      # reactive limit-hit -> transactional notice
