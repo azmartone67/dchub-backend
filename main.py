@@ -1949,6 +1949,16 @@ try:
     except Exception as _wai:
         import logging
         logging.getLogger(__name__).warning('water_aqueduct_ingest wiring failed: %s', _wai)
+    # 2026-07-09: get_facility_risk_delta — temporal risk intelligence (real DCPI
+    # market delta; static hazard dims declared, never a fabricated delta). The
+    # honest counterpart to the brain's proposed temporal-risk tool.
+    try:
+        from routes.facility_risk_delta import facility_risk_delta_bp
+        app.register_blueprint(facility_risk_delta_bp)
+        print("[main] facility_risk_delta_bp registered: GET /api/v1/facility-risk-delta", flush=True)
+    except Exception as _frd:
+        import logging
+        logging.getLogger(__name__).warning('facility_risk_delta wiring failed: %s', _frd)
     # 2026-07-05: Flywheel master shell — ONE pane over the FIVE back-half-of-
     # the-funnel priorities (retention/durable-identity, brain dedup + facilities
     # backlog, canonical identity, media distribution, SEO slug-freeze). Read-only

@@ -43,6 +43,7 @@ _TOOL_REST = {
     "get_grid_scoreboard":    ("/api/v1/iso/<region>/snapshot", "GET"),
     "grid_transition_radar":  ("/api/v1/grid-transition/radar", "GET"),
     "get_changes":            ("/api/v1/changes/since", "GET"),
+    "get_facility_risk_delta": ("/api/v1/facility-risk-delta", "GET"),
     "list_saved_sites":       ("/api/v1/lp/saved", "GET"),
     "analyze_site":           ("/api/site-score", "GET"),
     "compare_sites":          ("/api/site-score", "GET"),
