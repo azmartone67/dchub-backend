@@ -49,6 +49,39 @@ GATED_PREFIXES = [
     '/api/v1/competitor',
 ]
 
+# ── 2026-07-10: server-side map SESSION cap ─────────────────────────────────
+# The Land+Power map's "1 session/month" cap + layer limit used to live ONLY in
+# the browser (localStorage: dchub-map-session-cap.js / anon-wall.js). A flipped
+# `dchub_dev_unlock` flag or a client-set `dchub_plan='pro'` bypassed the whole
+# thing. We now enforce the SESSION cap server-side, keyed off a durable caller
+# identity (API key → JWT user → /24 IP prefix) that no client-set flag can
+# change. Enforcement is applied to the PROPRIETARY / metered map data
+# endpoints below (returns a real 402 once the cap is exceeded).
+#
+# Deliberately EXCLUDES the intentional public HIFLD geo surfaces
+# (gas-pipelines / substations / transmission) — those stay open (they're
+# public-domain government data and are shared with non-map surfaces). Widening
+# this list to those feeders is the higher-risk "full lockdown" follow-up that
+# the 2026-07-10 sweep deferred pending per-feeder credential-flow verification.
+METERED_MAP_PREFIXES = [
+    '/api/v1/land-power/data',   # consolidated L&P endpoint
+    '/api/v1/power-plants',      # DC Hub discovered power assets (proprietary)
+    '/api/v1/fiber/routes',      # proprietary fiber routing
+    '/api/v1/fiber/intel',
+    '/api/v1/fiber/sources',
+    '/api/v1/grid/intelligence',  # proprietary grid headroom/intel
+    '/api/v1/capacity-headroom',
+    '/api/v1/energy-discovery',
+    '/api/energy-discovery',
+    '/api/v1/competitive-intel',
+    '/api/v1/competitor',
+    '/api/v1/site-score',
+    '/api/site-score',
+    '/api/v1/site-planner',
+]
+
+_PAID_PLANS = ('pro', 'enterprise', 'founding')
+
 # Never gated
 ALWAYS_OPEN_PREFIXES = [
     '/api/v1/fiber/metro',
@@ -106,6 +139,29 @@ INSERT INTO free_map_usage (user_id, session_date, sessions_used, layer_toggles,
 VALUES (%s, CURRENT_DATE, 0, 1, NOW())
 ON CONFLICT (user_id, session_date) DO UPDATE SET
     layer_toggles = free_map_usage.layer_toggles + 1,
+    last_access = NOW();
+"""
+
+# 2026-07-10 — combined read for the server-side session gate. Returns
+# (active_days_in_30d, is_today_active). One row per calendar day per identity is
+# marked (sessions_used capped at 1/day by MARK_SESSION_SQL), so SUM over the
+# 30-day window == number of distinct map-active days == "sessions this month".
+METERED_USAGE_SQL = """
+SELECT COALESCE(SUM(CASE WHEN sessions_used > 0 THEN 1 ELSE 0 END), 0) AS active_days,
+       COALESCE(BOOL_OR(session_date = CURRENT_DATE), FALSE)          AS today
+FROM free_map_usage
+WHERE user_id = %s
+  AND session_date > CURRENT_DATE - INTERVAL '30 days';
+"""
+
+# Idempotent "mark today active" — sessions_used stays 1 for the day no matter
+# how many feeder calls the map fires, so a single visit burns exactly one
+# session. Only the FIRST hit of a new day inserts; repeats just touch
+# last_access (they hit the not-today branch of the gate rarely).
+MARK_SESSION_SQL = """
+INSERT INTO free_map_usage (user_id, session_date, sessions_used, layer_toggles, last_access)
+VALUES (%s, CURRENT_DATE, 1, 0, NOW())
+ON CONFLICT (user_id, session_date) DO UPDATE SET
     last_access = NOW();
 """
 
@@ -302,6 +358,175 @@ def increment_usage(user_id, usage_type, get_db_conn):
                     pass
 
 
+# ── 2026-07-10: server-side session-cap primitives ──────────────────────────
+
+def _client_ip_prefix():
+    """/24 of the caller's IPv4 (or first 4 hextets of IPv6). Stable per
+    network, and — unlike localStorage — not something the client can spoof
+    past Cloudflare, which sets CF-Connecting-IP from the real edge socket."""
+    ip = (request.headers.get('CF-Connecting-IP')
+          or request.headers.get('X-Forwarded-For', '').split(',')[0].strip()
+          or request.remote_addr or '')
+    if not ip:
+        return ''
+    if ':' in ip:
+        return ':'.join(ip.split(':')[:4])
+    parts = ip.split('.')
+    if len(parts) == 4:
+        return '.'.join(parts[:3])
+    return ip[:24]
+
+
+def _resolve_caller(get_db_conn):
+    """Returns (is_privileged, identity).
+
+    is_privileged → True for paid keys/plans, internal MCP, admin radar, and
+    loopback self-calls — these are never session-capped.
+
+    identity → a durable, un-spoofable string for the counter when NOT
+    privileged: 'key:…' (any API key), 'user:…' (logged-in free JWT), or
+    'ip:…' (/24 fallback). Does at most ONE DB lookup (key OR JWT, not both).
+    Fails OPEN: on any error returns (False, ip-identity) so the map never
+    breaks — worst case a transient error lets a call through uncounted."""
+    # 1. Internal / loopback / admin → privileged, no cap.
+    try:
+        from internal_auth import is_valid_internal_key
+        if is_valid_internal_key(request.headers.get('X-Internal-Key')):
+            return True, None
+    except Exception:
+        pass
+    try:
+        if request.remote_addr in ('127.0.0.1', '::1', 'localhost'):
+            return True, None
+    except Exception:
+        pass
+    _admin = os.environ.get('DCHUB_ADMIN_KEY', '')
+    if _admin and request.headers.get('X-Admin-Key') == _admin:
+        return True, None
+
+    # 2. API key (X-API-Key / ?api_key / Bearer dchub_…) — paid key bypasses,
+    #    any other key still gives a stable identity to count.
+    auth = request.headers.get('Authorization', '') or ''
+    key = request.headers.get('X-API-Key') or request.args.get('api_key')
+    if not key and auth.startswith('Bearer '):
+        _t = auth[7:]
+        if _t.startswith('dchub_'):
+            key = _t
+    if key:
+        try:
+            u = _user_from_api_key(key, get_db_conn)
+            if u and u.get('plan') in _PAID_PLANS:
+                return True, None
+        except Exception:
+            pass
+        return False, 'key:' + key[:24]
+
+    # 3. Logged-in JWT — paid plan bypasses, free plan gives a stable user id.
+    if auth:
+        try:
+            u = get_user_from_jwt(auth, get_db_conn)
+            if u:
+                if u.get('plan') in _PAID_PLANS:
+                    return True, None
+                if u.get('id'):
+                    return False, 'user:' + str(u['id'])
+        except Exception:
+            pass
+
+    # 4. Anonymous browser — key off the /24 IP prefix.
+    pfx = _client_ip_prefix()
+    return False, ('ip:' + pfx if pfx else None)
+
+
+def _metered_usage(identity, get_db_conn):
+    """(active_days_in_30d, is_today_active) for identity, or None on error."""
+    conn = None
+    try:
+        conn = get_db_conn()
+        cur = conn.cursor()
+        cur.execute(METERED_USAGE_SQL, (identity,))
+        row = cur.fetchone()
+        cur.close()
+        if not row:
+            return 0, False
+        return int(row[0] or 0), bool(row[1])
+    except Exception as e:
+        logger.error(f"metered usage read error: {e}")
+        return None
+    finally:
+        if conn:
+            try:
+                from main import return_pg_connection
+                return_pg_connection(conn)
+            except Exception:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
+
+def _mark_session_today(identity, get_db_conn):
+    """Idempotently mark today as an active session-day for identity."""
+    conn = None
+    try:
+        conn = get_db_conn()
+        cur = conn.cursor()
+        cur.execute(MARK_SESSION_SQL, (identity,))
+        conn.commit()
+        cur.close()
+    except Exception as e:
+        logger.error(f"mark session error: {e}")
+    finally:
+        if conn:
+            try:
+                from main import return_pg_connection
+                return_pg_connection(conn)
+            except Exception:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
+
+def _metered_402():
+    resp = jsonify({
+        'error': 'upgrade_required',
+        'gate': 'map_session_cap',
+        'message': (f"You've used your free map session"
+                    f"{'s' if FREE_MAP_SESSIONS != 1 else ''} for this period "
+                    f"({FREE_MAP_SESSIONS}/30 days). Upgrade for unlimited map access."),
+        'sessions_limit': FREE_MAP_SESSIONS,
+        'upgrade_url': 'https://dchub.cloud/pricing?utm_source=map_session_cap',
+    })
+    resp.headers['Cache-Control'] = 'private, no-store'
+    return resp, 402
+
+
+def _metered_session_gate(get_db_conn):
+    """Server-side map SESSION cap. Returns a 402 response tuple when a
+    non-privileged caller has exceeded FREE_MAP_SESSIONS active days in the
+    trailing 30 days, else None. Only fires on GET to METERED_MAP_PREFIXES.
+    Wrapped by the caller in try/except; also fails open internally so a DB
+    hiccup can never wall the map."""
+    if request.method != 'GET':
+        return None
+    path = request.path
+    if not any(path == p or path.startswith(p + '/') for p in METERED_MAP_PREFIXES):
+        return None
+    priv, identity = _resolve_caller(get_db_conn)
+    if priv or not identity:
+        return None                      # paid/internal/loopback, or unidentifiable → allow
+    usage = _metered_usage(identity, get_db_conn)
+    if usage is None:
+        return None                      # DB error → fail open
+    active_days, today = usage
+    if not today and active_days >= FREE_MAP_SESSIONS:
+        return _metered_402()            # a NEW day beyond the allowance → wall
+    if not today:
+        _mark_session_today(identity, get_db_conn)  # first hit today → burn one session
+    return None                          # within allowance (or already active today) → allow
+
+
 # ── Flask Integration ──────────────────────────────────────────────────────
 
 def init_free_tier_gate(app, get_db_conn):
@@ -344,6 +569,17 @@ def init_free_tier_gate(app, get_db_conn):
         _admin_key = os.environ.get("DCHUB_ADMIN_KEY", "")
         if _admin_key and request.headers.get("X-Admin-Key") == _admin_key:
             return None
+        # 2026-07-10: server-side map SESSION cap. Runs BEFORE the referer
+        # bypass below so the metered/proprietary map layers are counted even
+        # when the CF worker injects a dchub.cloud Referer. Fully fail-open:
+        # any error here must NEVER take the map down, so a broad except lets
+        # the request through unchanged.
+        try:
+            _cap = _metered_session_gate(get_db_conn)
+            if _cap is not None:
+                return _cap
+        except Exception as _e:
+            logger.error(f"metered session gate error (failing open): {_e}")
         # Phase ZZZZZ-round22c (2026-05-23): /land-power map endpoint
         # bypass. The user's main complaint was 401/403 errors on map
         # data. enforce_free_tier runs BEFORE any route decorator and
@@ -517,28 +753,34 @@ def init_free_tier_gate(app, get_db_conn):
         if request.method == 'OPTIONS':
             return '', 204
 
-        token = request.headers.get('Authorization')
-        user = get_user_from_jwt(token, get_db_conn)
+        # 2026-07-10: keyed off the same durable identity + idempotent per-day
+        # accounting as the server-side gate, so the client UX counter matches
+        # what the server actually enforces and a load never double-burns a
+        # session. Fails open (never 500s the map boot).
+        priv, identity = _resolve_caller(get_db_conn)
+        if priv:
+            return jsonify({'status': 'ok', 'unlimited': True})
+        if not identity:
+            return jsonify({'status': 'ok', 'sessions_limit': FREE_MAP_SESSIONS})
 
-        if not user:
-            return jsonify({'error': 'authentication_required'}), 401
-
-        if user.get('plan') in PAID_PLANS:
-            return jsonify({'status': 'ok', 'plan': user['plan'], 'unlimited': True})
-
-        usage = get_usage(user['id'], get_db_conn)
-        if usage['sessions'] >= FREE_MAP_SESSIONS:
+        usage = _metered_usage(identity, get_db_conn)
+        if usage is None:
+            return jsonify({'status': 'ok'})          # DB error → fail open
+        active_days, today = usage
+        if not today and active_days >= FREE_MAP_SESSIONS:
             return jsonify({
                 'status': 'limit_reached',
-                'message': 'Free map session already used.',
+                'message': 'Free map session already used for this period.',
+                'sessions_used': active_days,
+                'sessions_limit': FREE_MAP_SESSIONS,
                 'upgrade_url': 'https://dchub.cloud/pricing'
             }), 403
-
-        increment_usage(user['id'], 'session', get_db_conn)
+        if not today:
+            _mark_session_today(identity, get_db_conn)
         return jsonify({
             'status': 'ok',
             'plan': 'free',
-            'sessions_used': usage['sessions'] + 1,
+            'sessions_used': active_days if today else active_days + 1,
             'sessions_limit': FREE_MAP_SESSIONS,
         })
 
