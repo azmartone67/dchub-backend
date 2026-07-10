@@ -207,7 +207,8 @@ def _drafts(f: dict) -> dict:
         f"over MCP, no signup.\n\n"
         f"Analysts ship quarterly PDFs. We ship a living dataset your agents can query "
         f"today, across {ctry} countries.\n\n"
-        f"→ dchub.cloud   ·   Data: DC Hub (dchub.cloud), CC-BY-4.0"
+        f"→ Connect your AI in 60 seconds: dchub.cloud/connect#start   ·   "
+        f"Data: DC Hub (dchub.cloud), CC-BY-4.0"
     )
 
     x = (
@@ -215,7 +216,8 @@ def _drafts(f: dict) -> dict:
         f"+{added} infra records on DC Hub, incl. +{deals_7} data-center deals "
         f"({deals_t} tracked).\n\n"
         f"{dc_v}+ verified DCs in a {dc_t}-tracked frontier + grid/gas/fiber, "
-        f"unified. Daily-refreshed, CC-BY-4.0, queryable over MCP.\n\ndchub.cloud"
+        f"unified. Daily-refreshed, CC-BY-4.0, queryable over MCP.\n\n"
+        f"Connect: dchub.cloud/connect"
     )
 
     email_subject = f"{deals_7} new data-center deals landed this week — here's the live feed"
@@ -231,6 +233,7 @@ def _drafts(f: dict) -> dict:
         f"Unlike a quarterly PDF, this refreshes daily and it's queryable: facilities, "
         f"deals, grid ({subs}+ substations), gas, and fiber / middle-mile ({mid}+ records) "
         f"in one layer, machine-readable over MCP, open under CC-BY-4.0.\n\n"
+        f"Connect your AI in 60 seconds (no code): https://dchub.cloud/connect#start\n"
         f"See the live coverage feed: https://dchub.cloud/whats-new\n"
         f"Query it (no signup): https://dchub.cloud/playground\n\n"
         f"— The DC Hub team\n"
@@ -252,7 +255,10 @@ def _drafts(f: dict) -> dict:
         f"DC Hub)\n"
         f"- **Deals** — {deals_t} tracked transactions, curated by DC Hub\n\n"
         f"All refreshed daily, open under CC-BY-4.0, and queryable by agents over MCP — no "
-        f"signup. Cite it as *DC Hub (dchub.cloud)*.\n"
+        f"signup. Cite it as *DC Hub (dchub.cloud)*.\n\n"
+        f"Want it inside your own AI? [Connect in 60 seconds]"
+        f"(https://dchub.cloud/connect#start) — Claude, ChatGPT, Gemini, Copilot, Grok "
+        f"and any MCP agent.\n"
     )
 
     return {
