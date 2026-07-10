@@ -1375,16 +1375,69 @@ def high_intent_stats():
                 )
                 out["claims_with_key_30d"] = int((cur.fetchone() or [0])[0] or 0)
             except Exception: pass
+            # r-email-reconcile (2026-07-10): claim_email_captured used to read ONLY
+            # mcp_high_intent_sessions.claim_email — but the OPERATIVE bind path
+            # (bind_email -> POST /auto-trial/bind) writes auto_trial_keys.operator_email
+            # and /auto-trial/redeem writes signed_up_email, so this metric read 0 while
+            # the auto-trial funnel correctly counted the binds (same bug class as the
+            # auto_trial r78 signed_up-only fix). Reconcile to the CANONICAL UNION of
+            # every email sink — claim_flow u operator_bind u signed_up u paid_conversion
+            # — deduped by lower(email), 30d. _email_captured_sources keeps the per-sink
+            # split (claim_flow preserves the old number). Fail-soft: seed from the
+            # claim-path-only count so a wrong column in any sink can never regress <0.
             try:
                 cur.execute(
-                    """SELECT COUNT(DISTINCT mcp_session_id)
+                    """SELECT COUNT(DISTINCT LOWER(TRIM(claim_email)))
                          FROM mcp_high_intent_sessions
                         WHERE claim_email IS NOT NULL AND claim_email <> ''
                           AND claim_used_at >= NOW() - INTERVAL '30 days'"""
                     + " AND " + _hi_real_sql(),
                 )
                 out["claim_email_captured_30d"] = int((cur.fetchone() or [0])[0] or 0)
-            except Exception: pass
+            except Exception:
+                try: c.rollback()
+                except Exception: pass
+            # Union across all four email sinks (built once; reused for the deduped
+            # total + the per-source breakdown). claim_flow keeps the real-traffic
+            # guard; the other sinks are inherently real (an email was supplied).
+            _email_sink_union = (
+                "SELECT 'claim_flow' AS src, LOWER(TRIM(claim_email)) AS email "
+                "  FROM mcp_high_intent_sessions "
+                " WHERE claim_email IS NOT NULL AND claim_email <> '' "
+                "   AND claim_used_at >= NOW() - INTERVAL '30 days' AND " + _hi_real_sql() + " "
+                "UNION ALL "
+                "SELECT 'operator_bind', LOWER(TRIM(operator_email)) "
+                "  FROM auto_trial_keys "
+                " WHERE operator_email IS NOT NULL AND operator_email <> '' "
+                "   AND COALESCE(last_used_at, minted_at) >= NOW() - INTERVAL '30 days' "
+                "UNION ALL "
+                "SELECT 'signed_up', LOWER(TRIM(signed_up_email)) "
+                "  FROM auto_trial_keys "
+                " WHERE signed_up_email IS NOT NULL AND signed_up_email <> '' "
+                "   AND COALESCE(last_used_at, minted_at) >= NOW() - INTERVAL '30 days' "
+                "UNION ALL "
+                "SELECT 'paid_conversion', LOWER(TRIM(user_email)) "
+                "  FROM mcp_conversions "
+                " WHERE user_email IS NOT NULL AND user_email <> '' "
+                "   AND created_at >= NOW() - INTERVAL '30 days' "
+            )
+            try:
+                cur.execute("SELECT COUNT(DISTINCT email) FROM (" + _email_sink_union
+                            + ") u WHERE email IS NOT NULL AND email <> ''")
+                out["claim_email_captured_30d"] = int((cur.fetchone() or [0])[0] or 0)
+            except Exception:
+                try: c.rollback()
+                except Exception: pass
+            try:
+                cur.execute("SELECT src, COUNT(DISTINCT email) FROM (" + _email_sink_union
+                            + ") u WHERE email <> '' GROUP BY src")
+                _by = {r[0]: int(r[1] or 0) for r in (cur.fetchall() or [])}
+                out["_email_captured_sources"] = {
+                    k: _by.get(k, 0) for k in
+                    ("claim_flow", "operator_bind", "signed_up", "paid_conversion")}
+            except Exception:
+                try: c.rollback()
+                except Exception: pass
             # claim → paid conversion (DISTINCT session). Attribute on the captured
             # claim_email landing in the canonical mcp_conversions table after the
             # redeem. NOTE: this honestly reads ~0 until the redeem actually captures
@@ -1395,7 +1448,7 @@ def high_intent_stats():
                 cur.execute(
                     """SELECT COUNT(DISTINCT h.mcp_session_id)
                          FROM mcp_high_intent_sessions h
-                         JOIN mcp_conversions mc ON LOWER(mc.email) = LOWER(h.claim_email)
+                         JOIN mcp_conversions mc ON LOWER(mc.user_email) = LOWER(h.claim_email)
                         WHERE h.claim_used_at IS NOT NULL
                           AND h.claim_used_at >= NOW() - INTERVAL '30 days'
                           AND h.claim_email IS NOT NULL AND h.claim_email <> ''
