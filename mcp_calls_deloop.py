@@ -226,7 +226,7 @@ def external_platform_predicate(col: str = "platform") -> str:
 _SCRIPT_INTERNAL_UA = (
     "python-httpx|python-urllib|urllib|curl/|wget|libwww|node-fetch|undici|axios|"
     "got/|go-http|okhttp|java/|requests/|aiohttp|scrapy|httpie|restsharp|"
-    "dchub-|dchubhealer|self.?heal|value-harness|regression|brain-radar|uptimerobot"
+    "dchub-|dchubhealer|self.?heal|value-harness|regression|brain-radar|brain-v2-headless|render-verify|uptimerobot"
 )
 
 

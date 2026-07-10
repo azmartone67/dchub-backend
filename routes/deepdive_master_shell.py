@@ -197,7 +197,8 @@ def _lane_fix_signal(c) -> list[dict]:
     chains = 0
     if isinstance(cj, dict):
         an = cj.get("analysis") or {}
-        chains = len(an.get("chains") or []) if isinstance(an, dict) else 0
+        if isinstance(an, dict):
+            chains = len(an.get("causal_chains") or an.get("chains") or [])
         if not chains and isinstance(cj.get("chains"), list):
             chains = len(cj["chains"])
     out.append(_check("causal_live", "L14 causal chains available (janitor resolved-arm)",

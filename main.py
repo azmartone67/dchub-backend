@@ -35052,7 +35052,7 @@ def _media_diagnose():
 
     probes = [
         ("news",
-         "SELECT COUNT(*) FROM news WHERE published_at > NOW() - INTERVAL '14 days'"),
+         "SELECT COUNT(*) FROM news WHERE published_date > NOW() - INTERVAL '14 days'"),
         ("press_releases_table",
          "SELECT COUNT(*) FROM press_releases"),
         ("announcements_feed_press",
@@ -35299,7 +35299,7 @@ def _health_deep():
 
         # 9. news fresh (last 14 days)
         try:
-            cur.execute("SELECT COUNT(*) FROM news WHERE published_at > NOW() - INTERVAL '14 days';")
+            cur.execute("SELECT COUNT(*) FROM news WHERE published_date > NOW() - INTERVAL '14 days';")
             n_news = cur.fetchone()[0]
             add("news fresh (14d)", n_news >= 5, f"{n_news} recent")
         except Exception as e: add("news fresh (14d)", False, str(e))

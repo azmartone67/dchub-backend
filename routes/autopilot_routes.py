@@ -379,6 +379,9 @@ def self_learning_status():
     try:
         from self_learning_discovery import get_discovery_stats
         stats = get_discovery_stats()
+        if isinstance(stats, dict) and 'does not exist' in str(stats.get('error', '')):
+            return jsonify({'enabled': False, 'available': False,
+                            'reason': 'legacy engine — discovered_sources table never provisioned'})
         return jsonify({'enabled': True, 'interval': '30 min', 'stats': stats})
     except Exception as e:
         return jsonify({'error': str(e), 'enabled': False}), 500
@@ -401,6 +404,9 @@ def deep_learning_status():
     try:
         from deep_learning_engine import get_deep_learning_stats
         stats = get_deep_learning_stats()
+        if isinstance(stats, dict) and 'does not exist' in str(stats.get('error', '')):
+            return jsonify({'enabled': False, 'available': False,
+                            'reason': 'legacy engine — learned_entities table never provisioned'})
         return jsonify({'enabled': True, 'interval': '15 min', 'stats': stats})
     except Exception as e:
         return jsonify({'error': str(e), 'enabled': False}), 500
