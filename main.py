@@ -37412,11 +37412,43 @@ def _admin_churn_risk():
                     "risk_reasons": risk_reasons,
                 })
 
-        at_risk.sort(key=lambda x: x["risk_score"], reverse=True)
+        # r-churn-dedup (2026-07-10): this endpoint LEFT JOINs api_keys, so a
+        # customer with N keys produced N identical rows — the owner's own account
+        # showed up ~15x and one enterprise user 4x, inflating total_at_risk from
+        # ~8 real payers to 47. Collapse to one row per email (keep the highest-risk
+        # row), and by default drop our own internal/QA/comp seats (@dchub.cloud) +
+        # the owner's personal accounts so the number reflects REAL at-risk
+        # customers. Pass ?include_internal=1 to see the raw, unfiltered set.
+        _seen = {}
+        for _c in at_risk:
+            _e = (_c.get("email") or "").lower()
+            if _e and (_e not in _seen or _c["risk_score"] > _seen[_e]["risk_score"]):
+                _seen[_e] = _c
+        deduped = list(_seen.values())
+        _OWNER_EMAILS = {
+            "azmartone@gmail.com", "azmartone+stripe1@gmail.com",
+            "azmartone@icloud.com", "nicomartone@icloud.com",
+            "jonathan.martone@arcadianinfra.com",
+        }
+        _incl_internal = request.args.get("include_internal") in ("1", "true", "yes")
+        excluded_internal = 0
+        if not _incl_internal:
+            _kept = []
+            for _c in deduped:
+                _e = (_c.get("email") or "").lower()
+                if _e.endswith("@dchub.cloud") or _e in _OWNER_EMAILS:
+                    excluded_internal += 1
+                else:
+                    _kept.append(_c)
+            deduped = _kept
+        deduped.sort(key=lambda x: x["risk_score"], reverse=True)
         return jsonify({
             "threshold_days": days,
-            "total_at_risk": len(at_risk),
-            "customers": at_risk,
+            "total_at_risk": len(deduped),
+            "raw_rows": len(at_risk),
+            "excluded_internal": excluded_internal,
+            "include_internal": _incl_internal,
+            "customers": deduped,
         })
     except Exception as e:
         import traceback
