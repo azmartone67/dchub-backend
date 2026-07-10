@@ -32760,6 +32760,10 @@ except Exception as _in_e:
 try:
     from routes.mcp_registry_watch import mcp_registry_watch_bp
     app.register_blueprint(mcp_registry_watch_bp)
+    # r-clarity-deadclicks (2026-07-10): Clarity dead/rage-click hotspots →
+    # brain_findings so the brain sees UX breakage. No-op without CLARITY_API_TOKEN.
+    from routes.clarity_insights import clarity_insights_bp
+    app.register_blueprint(clarity_insights_bp)
     print("[main] mcp_registry_watch_bp registered: GET /api/v1/brain/mcp-registries + POST /api/v1/admin/brain/mcp-registries/scan", flush=True)
 except Exception as _mrw_e:
     print(f"[main] mcp_registry_watch_bp register failed: {_mrw_e}", flush=True)
