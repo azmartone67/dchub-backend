@@ -2582,6 +2582,17 @@ try:
     except Exception as _ije:
         import logging
         logging.getLogger(__name__).warning('brain_issue_janitor wiring failed: %s', _ije)
+    # 2026-07-09: Merge Reconciler — the CREDIT half of the brain-PR loop.
+    # Human-merged brain-spec/ + brain/autofix- PRs get recorded into
+    # brain_proposed_code_fixes / brain_review_decisions / brain_fix_outcomes
+    # so effectiveness + the deepdive fix-signal lane see real merge counts.
+    # Cron: routes/cron_heartbeat.py 'brain_merge_reconciler' (2x daily).
+    try:
+        from routes.brain_merge_reconciler import brain_merge_reconciler_bp
+        app.register_blueprint(brain_merge_reconciler_bp)
+    except Exception as _mre:
+        import logging
+        logging.getLogger(__name__).warning('brain_merge_reconciler wiring failed: %s', _mre)
     # Phase RRR-newsletter-hotfix3 (2026-05-18): registering via a
     # routes/*.py module silently failed for reasons we couldn't
     # diagnose live. Switching to inline-route definitions on the

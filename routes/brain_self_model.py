@@ -155,6 +155,25 @@ def compute_self_model() -> dict:
                                 if verified_sample >= 5 else None)
             attempted = ok_30d + fail_30d
 
+            # 2026-07-09 merge-reconciler wave: brain_fix_outcomes rows are the
+            # OTHER real effect-verifier — post-merge checks of brain code-fix
+            # PRs (brain_fix_outcome_verify + brain_merge_reconciler), tri-state
+            # still_broken with NULL = indeterminate → excluded, same rule as
+            # autopilot_outcomes.succeeded. Fold them into ONE combined
+            # verified-effect signal so a human-merged brain PR finally counts.
+            code_ok_30d, code_fail_30d = _safe_dual(cur, """
+                SELECT
+                  COUNT(*) FILTER (WHERE still_broken IS FALSE
+                                    AND checked_at >= NOW() - INTERVAL '30 days'),
+                  COUNT(*) FILTER (WHERE still_broken IS TRUE
+                                    AND checked_at >= NOW() - INTERVAL '30 days')
+                  FROM brain_fix_outcomes
+            """, default=(0, 0))
+            combined_ok = verified_ok_30d + code_ok_30d
+            combined_sample = verified_sample + code_ok_30d + code_fail_30d
+            combined_rate = (round(combined_ok / combined_sample, 3)
+                             if combined_sample >= 5 else None)
+
             recent_rows = _safe_rows(cur, """
                 SELECT pattern_name, finding_issue, outcome, started_at
                   FROM brain_autopilot_actions
@@ -209,18 +228,20 @@ def compute_self_model() -> dict:
 
     # ── Honest self-assessment ──
     # R3: grade on the REAL verified-effect rate; be explicit that endpoint fires
-    # (executed_ok = 2xx) are NOT the success signal.
-    if fix_success_rate is None:
-        verdict = (f"insufficient verified sample ({verified_sample} effect-verified "
+    # (executed_ok = 2xx) are NOT the success signal. 2026-07-09: graded on the
+    # COMBINED signal (autopilot_outcomes + brain_fix_outcomes) — both are true
+    # effect-verifiers; when code-fix outcomes are zero this is identical to R3.
+    if combined_rate is None:
+        verdict = (f"insufficient verified sample ({combined_sample} effect-verified "
                    f"of {ok_30d} endpoint-fires/30d) — cannot grade fix success honestly")
-    elif fix_success_rate >= 0.8:
-        verdict = f"healthy — {int(fix_success_rate*100)}% of autonomous fixes produced a verified real effect over 30d ({verified_ok_30d}/{verified_sample})"
-    elif fix_success_rate >= 0.5:
-        verdict = f"mixed — {int(fix_success_rate*100)}% verified real-effect rate; many actions fire but don't land ({verified_ok_30d}/{verified_sample})"
+    elif combined_rate >= 0.8:
+        verdict = f"healthy — {int(combined_rate*100)}% of autonomous fixes produced a verified real effect over 30d ({combined_ok}/{combined_sample})"
+    elif combined_rate >= 0.5:
+        verdict = f"mixed — {int(combined_rate*100)}% verified real-effect rate; many actions fire but don't land ({combined_ok}/{combined_sample})"
     else:
-        verdict = f"degraded — only {int(fix_success_rate*100)}% of actions produce a verified real effect ({verified_ok_30d}/{verified_sample}); endpoint-fires ({ok_30d}) overstate success"
+        verdict = f"degraded — only {int(combined_rate*100)}% of actions produce a verified real effect ({combined_ok}/{combined_sample}); endpoint-fires ({ok_30d}) overstate success"
 
-    pct = f"{int(fix_success_rate*100)}%" if fix_success_rate is not None else "n/a"
+    pct = f"{int(combined_rate*100)}%" if combined_rate is not None else "n/a"
     cap_str = (f"{ap_auto}/{ap_total} remediation patterns autonomously (the rest escalate to a human)"
                if ap_total else "an unknown number of remediation patterns")
     open_types = ", ".join(t["issue_label"] for t in top_open[:3]) or "none"
@@ -260,6 +281,8 @@ def compute_self_model() -> dict:
             "fix_success_rate_30d": fix_success_rate,            # R3: verified REAL-EFFECT rate (autopilot_outcomes.succeeded), not endpoint-fire
             "verified_real_effects_30d": verified_ok_30d,
             "verified_sample_30d": verified_sample,              # actions with a real verifier (TRUE+FALSE); cannot-verify (NULL) excluded
+            "verified_sample": combined_sample,                  # COMBINED effect-verified sample (autopilot + code-fix outcomes) — the deepdive fix-signal lane reads this exact key
+            "code_fix_outcomes_30d": {"ok": code_ok_30d, "fail": code_fail_30d},  # brain_fix_outcomes (post-merge verify + merge reconciler)
             "endpoint_fires_30d": ok_30d,                        # executed_ok (2xx) — NOT success; coverage context only
             "endpoint_fire_failures_30d": fail_30d,
             "recent_actions": recent_actions,
@@ -275,6 +298,14 @@ def compute_self_model() -> dict:
             "note": ("prediction-vs-outcome calibration is computed by L16; null/0 here means "
                      "the prediction layers haven't run (often ANTHROPIC_API_KEY unset)."),
         },
+        # Top-level aliases — routes/deepdive_master_shell._lane_fix_signal
+        # reads j["fix_success_rate"] / j["verified_sample"] FIRST; before
+        # 2026-07-09 neither key existed anywhere in the payload (only
+        # *_30d-suffixed nested ones), so the fix-signal lane read
+        # sample=None forever. These carry the COMBINED verified-effect
+        # signal (autopilot_outcomes + brain_fix_outcomes).
+        "fix_success_rate": combined_rate,
+        "verified_sample": combined_sample,
         "self_assessment": verdict,
         "prompt_digest": digest,
         "consumers": ("Prepend prompt_digest to LLM-layer prompts (L4/L5/L7/L8/L14/L16/L23) so "
