@@ -21,7 +21,8 @@ Both admin-key gated (fail-closed), same pattern as mcp_registry_watch.
 import json
 import logging
 import os
-import urllib.request
+
+import requests
 
 from flask import Blueprint, jsonify, request
 
@@ -53,12 +54,12 @@ def _token():
 
 
 def _fetch_insights(token):
-    req = urllib.request.Request(_EXPORT_URL, headers={
+    resp = requests.get(_EXPORT_URL, timeout=30, headers={
         "Authorization": "Bearer " + token,
         "User-Agent": "dchub-clarity-detector/1.0",
     })
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+    resp.raise_for_status()
+    return resp.json()
 
 
 def _hotspots(payload):
@@ -152,7 +153,11 @@ def _file_findings(spots):
                                 "INSERT INTO brain_findings"
                                 " (issue, url, count, detail, detector)"
                                 " VALUES ('ux_dead_clicks', %s, %s, %s,"
-                                " 'clarity_dead_clicks')",
+                                " 'clarity_dead_clicks')"
+                                # dedup = the UPDATE-first path above; the
+                                # only unique index is the pkey, so this
+                                # arbiter-less form never masks real rows
+                                " ON CONFLICT DO NOTHING",
                                 (s["url"], s["dead_sessions"], detail))
                             filed += 1
                         cur.execute("RELEASE SAVEPOINT cl_sp")
