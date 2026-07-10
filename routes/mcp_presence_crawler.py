@@ -126,12 +126,14 @@ SEED_REGISTRIES: list[dict] = [
         "submit_url":    "https://yellowmcp.com/submit-mcp",
     },
     {
-        # 2026-06-06: registry.modelcontextprotocol.io 404'd on
-        # /servers/<slug>; the canonical (Anthropic-maintained) registry
-        # is mcp.so (registry.mcp.so is the API; humans browse mcp.so).
-        # Submit flow = GitHub PR to modelcontextprotocol/registry.
+        # 2026-07-09: reversed the 2026-06-06 workaround. Back then
+        # registry.modelcontextprotocol.io 404'd so this pointed at
+        # registry.mcp.so — but that host is now DEAD (curl → 000) while the
+        # official registry resolves 200 and carries our live entry (v2.4.5,
+        # published daily by daily-manifest-sync). Point at the official API
+        # search so the crawler confirms presence against the real source.
         "registry_name": "mcp_official_registry",
-        "listing_url":   "https://registry.mcp.so/server/dchub-mcp-server",
+        "listing_url":   "https://registry.modelcontextprotocol.io/v0/servers?search=cloud.dchub",
         "submit_url":    "https://github.com/modelcontextprotocol/registry",
     },
     {
@@ -1413,11 +1415,11 @@ RESEED_BROKEN_REGISTRIES: list[dict] = [
     },
     {
         "registry_name": "mcp_official_registry",
-        "listing_url":   "https://registry.mcp.so/server/dchub-mcp-server",
+        "listing_url":   "https://registry.modelcontextprotocol.io/v0/servers?search=cloud.dchub",
         "submit_url":    "https://github.com/modelcontextprotocol/registry",
-        "notes_patch":   {"reseed_reason": "registry.modelcontextprotocol.io "
-                                            "404'd; canonical registry humans "
-                                            "browse is mcp.so (PR-based submit)"},
+        "notes_patch":   {"reseed_reason": "2026-07-09: registry.mcp.so now DEAD "
+                                            "(000); official registry resolves + "
+                                            "carries our live v2.4.5 entry"},
     },
     {
         "registry_name": "smithery",
