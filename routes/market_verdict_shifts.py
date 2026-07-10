@@ -156,10 +156,16 @@ def init_verdict_shift_tables() -> None:
 def _ensure_log_table(cur) -> None:
     """Create market_verdict_post_log if missing. Idempotent.
 
-    UNIQUE(market_slug, shift_to, DATE(posted_at)) is enforced via a
+    One post per (market_slug, shift_to, UTC-day) is enforced via a
     functional unique index because Postgres doesn't allow expressions
-    in inline UNIQUE constraints — we materialize posted_date for the
-    index AND keep posted_at for sorting/diagnostics."""
+    in inline UNIQUE constraints. The day expression MUST be pinned to a
+    fixed zone — `posted_at::date` casts a TIMESTAMPTZ using the session
+    TimeZone, which is only STABLE (not IMMUTABLE), so Postgres refuses to
+    build the index ("functions in index expression must be marked
+    IMMUTABLE") and the whole CREATE TABLE + INDEX transaction aborts on
+    every boot. `(posted_at AT TIME ZONE 'UTC')::date` is IMMUTABLE.
+    `_already_posted_today` uses the same UTC-day expression so the dedup
+    check and the unique index can never disagree."""
     global _TABLES_READY
     if _TABLES_READY:
         return
@@ -181,7 +187,7 @@ def _ensure_log_table(cur) -> None:
         cur.execute("""
             CREATE UNIQUE INDEX IF NOT EXISTS uq_mvpl_slug_to_day
                 ON market_verdict_post_log
-                   (market_slug, shift_to, (posted_at::date))
+                   (market_slug, shift_to, ((posted_at AT TIME ZONE 'UTC')::date))
         """)
         cur.execute("CREATE INDEX IF NOT EXISTS ix_mvpl_posted_at "
                     "ON market_verdict_post_log(posted_at DESC)")
@@ -416,7 +422,7 @@ def _already_posted_today(cur, slug: str, shift_to: str) -> bool:
             SELECT 1 FROM market_verdict_post_log
              WHERE market_slug = %s
                AND shift_to    = %s
-               AND posted_at::date = CURRENT_DATE
+               AND (posted_at AT TIME ZONE 'UTC')::date = (now() AT TIME ZONE 'UTC')::date
              LIMIT 1
         """, (slug, shift_to))
         return cur.fetchone() is not None
