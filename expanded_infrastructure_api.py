@@ -409,6 +409,25 @@ def get_substations():
     min_kv = request.args.get('min_kv', min_voltage, type=int)
     limit = min(request.args.get('limit', 100, type=int), 5000)  # 2026-06-15: was 500 — the map transformer/HV-substation layer was hard-capped at 500 nationwide; the substations table has ~126k rows so a viewport-bounded query should return far more. Client clusters.
 
+    # 2026-07-10 anon-paywall follow-up (sweep e125ff23): this HIFLD substations
+    # feeder was the last raw geo feeder returning exact lat/lng + capacity_mva +
+    # owner to ANY anonymous caller (the sibling power-plants / transmission-lines
+    # feeders already coarsen coords for non-privileged callers). Gate on the
+    # UNFORGEABLE signal caller_is_privileged (api-key tier / dchub_token cookie /
+    # r43-G signed session cookie / loopback / internal key — explicitly NOT the
+    # CF-injected dchub.cloud Referer, which leaks to anon curl). Non-privileged
+    # callers still get the PUBLIC HIFLD fields (name / voltage / city / state)
+    # with coords coarsened to ~0.1° (~11 km) and the proprietary capacity_mva +
+    # owner nulled. Coarsen-not-drop is deliberate: the Land & Power map page is a
+    # CF Pages static asset, so a cookieless anon visitor may reach this feeder
+    # without the r43-G cookie — coarsened markers still render + cluster, so the
+    # flagship map never blanks. Fail-closed to the teaser.
+    try:
+        from routes.tier_gate import caller_is_privileged
+        _full = caller_is_privileged('IDENTIFIED')
+    except Exception:
+        _full = False
+
     try:
         from db_utils import get_db
         conn = get_db()
@@ -464,27 +483,47 @@ def get_substations():
         substations = []
         for row in rows:
             r = dict(zip(cols, row))
+            _lat = r.get('lat')
+            _lng = r.get('lng')
+            _dist = float(r['distance_miles']) if r.get('distance_miles') is not None else None
+            if not _full:
+                # Precise siting is the paid upgrade — coarsen coords to ~0.1°
+                # (~11 km). Markers still render + cluster at this resolution, so
+                # the map layer is unaffected. Drop the exact distance (nulled)
+                # so it can't be used to triangulate back to the exact point.
+                _lat = round(_lat, 1) if _lat is not None else None
+                _lng = round(_lng, 1) if _lng is not None else None
+                _dist = None
             substations.append({
                 'name': r.get('name'),
                 'city': r.get('city'),
                 'state': r.get('state'),
                 'status': r.get('status'),
                 'max_voltage_kv': r.get('voltage_kv'),
-                'capacity_mva': r.get('capacity_mva'),
-                'lat': r.get('lat'),
-                'lng': r.get('lng'),
-                'owner': r.get('owner'),
-                'distance_miles': float(r['distance_miles']) if r.get('distance_miles') is not None else None,
+                # capacity_mva + owner are the proprietary intel — nulled for anon
+                'capacity_mva': r.get('capacity_mva') if _full else None,
+                'lat': _lat,
+                'lng': _lng,
+                'owner': r.get('owner') if _full else None,
+                'distance_miles': _dist,
                 'source': 'HIFLD/Neon'
             })
 
-        return jsonify({
+        payload = {
             'success': True,
             'count': len(substations),
             'total_available': '1,042 in Neon',
             'source': 'HIFLD/DHS (Neon PostgreSQL)',
             'substations': substations
-        })
+        }
+        if not _full:
+            payload['_gated'] = True
+            payload['_upgrade_cta'] = (
+                "Free preview: public HIFLD substations with approximate (~11 km) "
+                "locations. Exact coordinates, capacity (MVA) and owner require a "
+                "free key or sign-in — dchub.cloud/pricing")
+            payload['_pricing_url'] = "https://dchub.cloud/pricing"
+        return jsonify(payload)
     except Exception as e:
         import traceback
         print(f"HIFLD substations Neon error: {traceback.format_exc()}")
