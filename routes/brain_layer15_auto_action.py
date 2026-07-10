@@ -114,6 +114,74 @@ def _recently_issued_titles() -> set[str]:
     return out
 
 
+def _chain_fingerprint(chain: dict) -> str:
+    """Stable id for a chain's ROOT CAUSE, independent of the LLM-phrased title.
+    L14 re-words the title every run ("Edge gating change…", "Edge routing/WAF
+    change…", "Edge/WAF change is blocking all AI agents"), which defeats the
+    exact-title dedup and floods duplicates. The chain's SYMPTOMS lead with a
+    stable metric key (e.g. `ai_platform_crawl_drop: chatgpt -95%`), so fingerprint
+    the sorted set of those keys instead."""
+    import hashlib
+    import re as _re
+    keys = set()
+    for s in (chain.get("symptoms", []) or []):
+        m = _re.match(r"\s*([a-z0-9_]+)", str(s), _re.I)
+        if m:
+            keys.add(m.group(1).lower())
+    if not keys:  # no structured symptoms → fall back to a normalized title
+        keys.add(_re.sub(r"[^a-z0-9]+", "", str(chain.get("title", "")).lower())[:40])
+    return hashlib.sha1("|".join(sorted(keys)).encode()).hexdigest()[:12]
+
+
+def _verify_chain(chain: dict) -> tuple[bool, str]:
+    """For chains that make a LIVE-CHECKABLE claim, test it before filing a
+    high-confidence issue. Returns (True, '') when the claim holds or isn't
+    checkable, (False, reason) when live evidence CONTRADICTS the hypothesis.
+
+    This kills the self-perpetuating false-positive loop: L14 kept deriving
+    "a WAF/edge change is blocking all AI crawlers" (confidence-high), but the
+    crawlers actually return 200 and the worker IS on the route — so the fix
+    targets a non-problem, the chain never 'resolves', the janitor never closes
+    it, and L15 re-files it forever. Fail OPEN (a verification error keeps the
+    normal filing path) so we never SUPPRESS a real finding by accident."""
+    blob = " ".join([
+        str(chain.get("title", "")),
+        str(chain.get("root_cause_hypothesis", "")),
+        " ".join(str(x) for x in (chain.get("symptoms", []) or [])),
+    ]).lower()
+    claims_crawler_block = (
+        ("block" in blob or "challeng" in blob)
+        and any(k in blob for k in ("crawler", "ai-agent", "ai agent", "waf",
+                                     "edge gating", "edge routing", "worker route",
+                                     "worker_version_header_missing"))
+    )
+    if not claims_crawler_block:
+        return True, ""
+    try:
+        import requests as _rq
+        base = "https://dchub.cloud"
+        ok200 = 0
+        for ua in ("GPTBot/1.0 (+https://openai.com/gptbot)", "ClaudeBot/1.0"):
+            try:
+                if _rq.get(base + "/llms.txt", headers={"User-Agent": ua},
+                           timeout=8).status_code == 200:
+                    ok200 += 1
+            except Exception:
+                pass
+        worker_ok = False
+        try:
+            worker_ok = bool(_rq.get(base + "/api/v1/dcpi/scores?limit=1",
+                                     timeout=8).headers.get("x-dc-worker-version"))
+        except Exception:
+            pass
+        if ok200 >= 1 and worker_ok:
+            return False, (f"verify_contradicted: crawlers HTTP 200 ({ok200}/2) "
+                           f"on /llms.txt + worker header present — not a block")
+    except Exception:
+        return True, ""   # verification failed → fail open, keep filing
+    return True, ""
+
+
 def _open_issue(chain: dict) -> tuple[bool, str]:
     """Open one GitHub issue for a causal chain. Returns (ok, url_or_err)."""
     # r65 (2026-06-01): runtime kill switch — set BRAIN_L15_DISABLE=1 in
@@ -124,6 +192,27 @@ def _open_issue(chain: dict) -> tuple[bool, str]:
     if not _GITHUB_TOKEN:
         return False, "no_github_token"
     title = chain.get("title", "Brain L14 auto-action")[:120]
+    fp = _chain_fingerprint(chain)
+    _fp_marker = f"brain_chain_fp_{fp}"   # embedded in the body; searchable
+    # r-fp-dedup (2026-07-10): dedup by ROOT-CAUSE FINGERPRINT, not exact title.
+    # L14 re-words the title every run, so the exact-title search below let the
+    # SAME chain spawn 4 dupes (#1521/#1524/#1527/#1531). The fp is stable, is
+    # stamped into every issue body, and is searched here. FAIL CLOSED on error.
+    try:
+        import requests as _rq0
+        _fr = _rq0.get(
+            "https://api.github.com/search/issues",
+            headers={"Authorization": f"Bearer {_GITHUB_TOKEN}",
+                     "Accept": "application/vnd.github+json"},
+            params={"q": f'repo:{_GITHUB_REPO} is:issue is:open label:{_ISSUE_LABEL} "{_fp_marker}"'},
+            timeout=10,
+        )
+        if _fr.status_code != 200:
+            return False, f"dedup_fp_search_http_{_fr.status_code}_skip"
+        if (_fr.json() or {}).get("items"):
+            return False, f"dedup_same_chain_fp_#{_fr.json()['items'][0].get('number')}"
+    except Exception as _e:
+        return False, f"dedup_fp_search_error_skip_{type(_e).__name__}"
     # r65: HARD dedup against GitHub itself. The local brain_auto_actions
     # dedup table failed to prevent re-creation and FLOODED 100+ identical
     # "404 spike" issues (#3-#949), emailing a real repo watcher. Before
@@ -175,6 +264,8 @@ def _open_issue(chain: dict) -> tuple[bool, str]:
         f"Same chain title won't be re-issued for {_DEDUP_WINDOW_DAYS}d. "
         f"The brain issue janitor auto-closes this once the chain stops "
         f"being re-detected; if it recurs, L15 re-files._",
+        "",
+        f"<!-- {_fp_marker} -->",   # stable root-cause fingerprint for dedup
     ]
     body = "\n".join(body_lines)
 
@@ -323,6 +414,13 @@ def auto_action_run():
             continue
         if title in recently_issued:
             skipped.append({"title": title, "reason": "dedup_recently_issued"})
+            continue
+        # r-verify (2026-07-10): don't file a high-confidence claim that live
+        # evidence contradicts (e.g. "crawlers blocked" when they return 200).
+        _vok, _vreason = _verify_chain(c)
+        if not _vok:
+            skipped.append({"title": title, "reason": _vreason})
+            _record(c, False, _vreason)
             continue
         ok, url_or_err = _open_issue(c)
         _record(c, ok, url_or_err)
