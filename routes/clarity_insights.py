@@ -149,14 +149,14 @@ def _file_findings(spots):
                         if cur.rowcount:
                             refreshed += 1
                         else:
+                            # dedup = the UPDATE-first path above; the only
+                            # unique index is the pkey, so the arbiter-less
+                            # ON CONFLICT form never masks real rows
                             cur.execute(
                                 "INSERT INTO brain_findings"
                                 " (issue, url, count, detail, detector)"
                                 " VALUES ('ux_dead_clicks', %s, %s, %s,"
                                 " 'clarity_dead_clicks')"
-                                # dedup = the UPDATE-first path above; the
-                                # only unique index is the pkey, so this
-                                # arbiter-less form never masks real rows
                                 " ON CONFLICT DO NOTHING",
                                 (s["url"], s["dead_sessions"], detail))
                             filed += 1
