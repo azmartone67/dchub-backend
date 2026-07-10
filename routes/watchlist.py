@@ -270,8 +270,11 @@ def init_watchlist_tables() -> None:
                 "ON watchlist_alerts_sent (watchlist_id, sent_at DESC)",
                 "CREATE INDEX IF NOT EXISTS ix_was_status_sent "
                 "ON watchlist_alerts_sent (status, sent_at DESC)",
+                # UTC-pinned day: timestamptz::date is only STABLE (uses session
+                # TimeZone), which Postgres rejects in an index expression ("must be
+                # marked IMMUTABLE"). (x AT TIME ZONE 'UTC')::date is IMMUTABLE.
                 "CREATE INDEX IF NOT EXISTS ix_was_slug_shift_day "
-                "ON watchlist_alerts_sent (market_slug, shift_to, (sent_at::date))",
+                "ON watchlist_alerts_sent (market_slug, shift_to, ((sent_at AT TIME ZONE 'UTC')::date))",
             ]:
                 try:
                     cur.execute(ix)

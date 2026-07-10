@@ -905,8 +905,10 @@ SCHEMA_STATEMENTS = [
             sample_titles   JSONB DEFAULT '[]'::jsonb,
             detected_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
         )""",
+        # UTC-pinned day: timestamptz::date is only STABLE (session TimeZone),
+        # which Postgres rejects in an index ("must be marked IMMUTABLE").
         "CREATE UNIQUE INDEX IF NOT EXISTS media_trending_topics_uq "
-        "ON media_trending_topics(topic, source, (detected_at::date))",
+        "ON media_trending_topics(topic, source, ((detected_at AT TIME ZONE 'UTC')::date))",
         "CREATE INDEX IF NOT EXISTS media_trending_topics_score_idx "
         "ON media_trending_topics(detected_at DESC, score DESC)",
     ]),
