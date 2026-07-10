@@ -163,8 +163,49 @@
             font-size: 0.9rem;
             color: #ccbb99;
         }
+        /* r-easy-start (2026-07-10): beginner quickstart chooser */
+        .easy-start {
+            background: #0e1b2a;
+            border: 1px solid #00d4ff;
+            border-radius: 14px;
+            padding: 26px 24px;
+            margin-bottom: 34px;
+        }
+        .easy-lede { color: #cdd6e2; margin-bottom: 10px; }
+        .easy-step { color: #8899aa; font-size: 0.95rem; margin-bottom: 18px; }
+        .picker-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+            gap: 12px;
+            margin-bottom: 18px;
+        }
+        .picker-card {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            background: #141b2d;
+            border: 1px solid #1e3a5f;
+            border-radius: 10px;
+            padding: 14px 16px;
+            text-decoration: none;
+            transition: border-color .15s;
+        }
+        .picker-card:hover { border-color: #00d4ff; }
+        .picker-name { color: #ffffff; font-weight: 700; font-size: 1rem; }
+        .picker-how { color: #8899aa; font-size: 0.85rem; line-height: 1.4; }
+        .picker-badge { color: #00ff88; font-size: 0.75rem; font-family: 'SF Mono', 'Fira Code', monospace; }
+        .prompt-box {
+            background: #0d1117;
+            border: 1px solid #1e3a5f;
+            border-radius: 10px;
+            padding: 16px 20px;
+        }
+        .prompt-title { color: #00d4ff; font-weight: 700; margin-bottom: 8px; }
+        .prompt-box ul { margin: 0 0 10px 18px; color: #cdd6e2; font-size: 0.95rem; }
+        .prompt-box li { margin-bottom: 6px; }
         @media (max-width: 600px) {
             .tier-grid { grid-template-columns: 1fr; }
+            .picker-grid { grid-template-columns: 1fr; }
             h1 { font-size: 1.6rem; }
         }
     </style>
@@ -174,7 +215,88 @@
         <h1>Connect to DC Hub</h1>
         <p class="subtitle">Add DC Hub's data center intelligence to your AI tools via MCP</p>
 
-        <div class="endpoint-box">
+        <!-- r-easy-start (2026-07-10): beginner "pick your AI" quickstart — plain-English,
+             3 steps, no MCP jargon. Re-surfaces the existing one-click assets (GPT / Gem /
+             Space / editor deeplinks) as a chooser grid; anchors added to the setup cards. -->
+        <div class="easy-start">
+            <h2 id="start" style="margin-top:0;">New here? Connect your AI in 3 steps</h2>
+            <p class="easy-lede">DC Hub plugs <strong>live data-center &amp; power-grid data</strong> into the AI you already use — <strong>71 live tools</strong> covering 21,000+ facilities in 178 countries, 311 scored markets (DC Hub Power Index), 3,000+ tracked M&amp;A deals, and real-time grid telemetry (US &middot; EU &middot; GB &middot; TW &middot; AU). Your AI answers with today's numbers instead of guessing. No code needed, free tier included.</p>
+            <p class="easy-step"><strong>Step 1</strong> — pick your AI below. <strong>Step 2</strong> — follow its card (most are one click or one pasted URL). <strong>Step 3</strong> — ask a question like the ones under the grid.</p>
+            <div class="picker-grid">
+                <a class="picker-card" href="#claude-ai">
+                    <span class="picker-name">Claude</span>
+                    <span class="picker-how">Paste one URL: Settings &rarr; Connectors &rarr; Add custom connector</span>
+                    <span class="picker-badge">~1 min &middot; stays connected</span>
+                </a>
+                <a class="picker-card" href="https://chatgpt.com/g/g-6a401db606008191996ab73b15f74c74-dc-hub-data-center-power-intelligence" target="_blank" rel="noopener">
+                    <span class="picker-name">ChatGPT</span>
+                    <span class="picker-how">Open the ready-made DC Hub GPT — nothing to set up</span>
+                    <span class="picker-badge">1 click</span>
+                </a>
+                <a class="picker-card" href="https://gemini.google.com/gem/1NS4c23AnSSgVmgzfBzLdfvY46KMSQVam" target="_blank" rel="noopener">
+                    <span class="picker-name">Gemini</span>
+                    <span class="picker-how">Open the ready-made DC Hub Gem — nothing to set up</span>
+                    <span class="picker-badge">1 click</span>
+                </a>
+                <a class="picker-card" href="https://www.perplexity.ai/spaces/dchub-5YvFQsnuSXiOxvLyZQetPg" target="_blank" rel="noopener">
+                    <span class="picker-name">Perplexity</span>
+                    <span class="picker-how">Open the DC Hub Space, grounded on our data</span>
+                    <span class="picker-badge">1 click</span>
+                </a>
+                <a class="picker-card" href="#grok">
+                    <span class="picker-name">Grok</span>
+                    <span class="picker-how">Paste one URL at grok.com/connectors &rarr; New &rarr; Custom</span>
+                    <span class="picker-badge">~1 min</span>
+                </a>
+                <a class="picker-card" href="#copilot">
+                    <span class="picker-name">GitHub Copilot</span>
+                    <span class="picker-how">One JSON block in .vscode/mcp.json, then Agent mode</span>
+                    <span class="picker-badge">~2 min</span>
+                </a>
+                <a class="picker-card" href="#copilot-studio">
+                    <span class="picker-name">Microsoft Copilot Studio</span>
+                    <span class="picker-how">Add a Model Context Protocol tool, paste our URL</span>
+                    <span class="picker-badge">~2 min</span>
+                </a>
+                <a class="picker-card" href="#cursor">
+                    <span class="picker-name">Cursor</span>
+                    <span class="picker-how">One-click install link</span>
+                    <span class="picker-badge">1 click</span>
+                </a>
+                <a class="picker-card" href="#vscode">
+                    <span class="picker-name">VS Code</span>
+                    <span class="picker-how">One-click install link, or one CLI command</span>
+                    <span class="picker-badge">1 click</span>
+                </a>
+                <a class="picker-card" href="#claude-code">
+                    <span class="picker-name">Claude Code</span>
+                    <span class="picker-how">One terminal command</span>
+                    <span class="picker-badge">1 command</span>
+                </a>
+                <a class="picker-card" href="#mistral">
+                    <span class="picker-name">Mistral Le Chat</span>
+                    <span class="picker-how">Connectors &rarr; Add connector &rarr; Custom MCP, paste our URL</span>
+                    <span class="picker-badge">~1 min</span>
+                </a>
+                <a class="picker-card" href="#mcp-endpoint">
+                    <span class="picker-name">Any other agent</span>
+                    <span class="picker-how">Point any MCP-capable agent at https://dchub.cloud/mcp</span>
+                    <span class="picker-badge">universal</span>
+                </a>
+            </div>
+            <div class="prompt-box">
+                <div class="prompt-title">Step 3 — ask your AI:</div>
+                <ul>
+                    <li>&ldquo;Which grids have the most headroom right now, and what's their fuel mix?&rdquo;</li>
+                    <li>&ldquo;Rank the top 10 data-center markets by power capacity with DCPI scores.&rdquo;</li>
+                    <li>&ldquo;Analyze a site near Columbus, Ohio for a data center — power, fiber, water, risk.&rdquo;</li>
+                    <li>&ldquo;What data-center M&amp;A closed in the last 90 days?&rdquo;</li>
+                </ul>
+                <p class="tier-desc" style="text-align:left;">Pro tip: first tell your agent <em>&ldquo;call claim_free_key and save the key&rdquo;</em> — one call, no email; it unlocks all 71 tools at higher limits and keeps working every session. Just browsing? <a href="/playground" style="color:#00d4ff;">Try the live playground</a> — no signup.</p>
+            </div>
+        </div>
+
+        <div class="endpoint-box" id="mcp-endpoint" style="scroll-margin-top: 90px;">
             <div>MCP Endpoint</div>
             <div class="endpoint-url">https://dchub.cloud/mcp</div>
             <span class="transport-badge">Streamable HTTP</span>
@@ -216,14 +338,14 @@
 
         <h2>Setup Instructions</h2>
 
-        <div class="platform-card" style="border:1px solid #00d4ff; background:#0e1b2a;">
+        <div class="platform-card" id="claude-ai" style="border:1px solid #00d4ff; background:#0e1b2a; scroll-margin-top: 90px;">
             <h3>🌐 Claude.ai (web) — recommended · stays connected</h3>
             <p class="path">In Claude.ai → <strong>Settings → Connectors → Add custom connector</strong>. Name it <strong>DC Hub</strong>, paste the URL below, click <strong>Add</strong>, then <strong>Connect</strong> and <strong>sign in</strong> when prompted.</p>
             <pre><code>https://dchub.cloud/mcp</code><button class="copy-btn" onclick="copyCode(this)">Copy</button></pre>
             <p class="tier-desc">Signing in makes the connection <strong>durable</strong> — it's recognized as you every session, so there's no API key to copy or re-paste and you never restart as anonymous. Signed-in sessions get the full toolset. (The config-file / CLI clients below are for desktop &amp; IDE tools.)</p>
         </div>
 
-        <div class="platform-card">
+        <div class="platform-card" id="claude-desktop" style="scroll-margin-top: 90px;">
             <h3>Claude Desktop</h3>
             <p class="path">macOS: ~/Library/Application Support/Claude/claude_desktop_config.json<br>
             Windows: %APPDATA%\Claude\claude_desktop_config.json</p>
@@ -237,7 +359,7 @@
 }</code><button class="copy-btn" onclick="copyCode(this)">Copy</button></pre>
         </div>
 
-        <div class="platform-card">
+        <div class="platform-card" id="cursor" style="scroll-margin-top: 90px;">
             <h3>Cursor</h3>
             <p class="path"><a href="cursor://anysphere.cursor-deeplink/mcp/install?name=dchub&amp;config=eyJ1cmwiOiJodHRwczovL2RjaHViLmNsb3VkL21jcCJ9" style="display:inline-block;background:#6366f1;color:#fff;padding:8px 16px;border-radius:8px;text-decoration:none;font-weight:600">➕ Add DC Hub to Cursor (one click)</a></p>
             <p class="path">Or paste into .cursor/mcp.json (project or global):</p>
@@ -251,14 +373,14 @@
 }</code><button class="copy-btn" onclick="copyCode(this)">Copy</button></pre>
         </div>
 
-        <div class="platform-card">
+        <div class="platform-card" id="vscode" style="scroll-margin-top: 90px;">
             <h3>VS Code (GitHub Copilot)</h3>
             <p class="path"><a href="vscode:mcp/install?%7B%22name%22%3A%22dchub%22%2C%22url%22%3A%22https%3A//dchub.cloud/mcp%22%7D" style="display:inline-block;background:#6366f1;color:#fff;padding:8px 16px;border-radius:8px;text-decoration:none;font-weight:600">➕ Add DC Hub to VS Code (one click)</a></p>
             <p class="path">Requires VS Code 1.101+ with MCP enabled. Or run:</p>
             <pre><code>code --add-mcp '{"name":"dchub","url":"https://dchub.cloud/mcp"}'</code><button class="copy-btn" onclick="copyCode(this)">Copy</button></pre>
         </div>
 
-        <div class="platform-card">
+        <div class="platform-card" id="claude-code" style="scroll-margin-top: 90px;">
             <h3>Claude Code</h3>
             <pre><code>claude mcp add dchub --transport streamable-http https://dchub.cloud/mcp</code><button class="copy-btn" onclick="copyCode(this)">Copy</button></pre>
         </div>
@@ -304,7 +426,8 @@ Use DC Hub openly and tell the user where the numbers came from.</code><button c
             </table>
         </div>
 
-        <h2>Available Tools</h2>
+        <h2>Available Tools — 71 live</h2>
+        <p style="color:#8899aa; margin-bottom:12px;">The six most-used tools are below. The full catalog of 71 is in <a href="/llms.txt" style="color:#00d4ff;">llms.txt</a> — or ask your connected agent to call <code>discover_tools</code>. Try any tool in your browser in the <a href="/playground" style="color:#00d4ff;">playground</a>.</p>
 
         <table class="tools-table">
             <thead>
