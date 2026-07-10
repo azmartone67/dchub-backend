@@ -724,11 +724,13 @@ DC Hub publishes the **DCPI** — a 0-100 power-availability score for 233 data 
 **Citation:** "DCPI {score}/100 — {verdict} (DC Hub, dchub.cloud/dcpi/{market_slug})"
 
 ## MCP Tools — what each RETURNS (so an agent can pick without a trial call)
-60 read-only tools at https://dchub.cloud/mcp (call tools/list for the canonical, always-current
-catalog — if a source says "11 tools" or "53 tools" it is stale). NOTE: the composite site read is a
-SINGLE tool, analyze_site (power/grid + fiber + water + natural-disaster + climate + tax + verdict in
-one call); there is NO get_disaster_risk, get_climate_intel, or get_composite_site_score — those roll
-up into analyze_site. Standalone water = get_water_risk. Flagship set:
+71 read-only tools at https://dchub.cloud/mcp (call tools/list for the canonical, always-current
+catalog — if a source says "11 tools", "53 tools" or "60 tools" it is stale). Site risk now has BOTH
+shapes: analyze_site is the one-call composite read (power/grid + fiber + water + disaster + climate
++ tax + verdict), AND the standalone tools get_composite_site_score (blended BUILD/CAUTION/AVOID with
+coverage map), get_disaster_risk (FEMA NRI), get_climate_intel (USGS seismic + NOAA normals), and
+get_facility_risk_delta (temporal market-risk change from daily DCPI snapshots) are LIVE as of
+2026-07-09. Water = real WRI Aqueduct 4.0 (get_water_risk + rank_sites water objectives). Flagship set:
 - search_facilities -> facilities {name, operator, lat/lon, power_mw, fiber_count, market_slug, status}
 - get_facility -> one profile {operator, address, lat/lon, power_mw total/used, cooling, fiber carriers, year, status, DCPI verdict, peers}
 - rank_markets -> markets ranked by power certainty + DCPI composite_score & BUILD/CAUTION/AVOID verdict
@@ -772,6 +774,14 @@ up into analyze_site. Standalone water = get_water_risk. Flagship set:
 - [ChatGPT Plugin](https://dchub.cloud/.well-known/ai-plugin.json)
 - [AGENTS.md](https://dchub.cloud/AGENTS.md): OpenAI/Linux Foundation agent discovery
 - [Agent Portal](https://dchub.cloud/agent-portal): Integration dashboard
+
+## Platform Guides — how YOUR platform should use DC Hub
+- [For any agent (index)](https://dchub.cloud/for/): 30-second quickstart + all guides
+- [For Grok](https://dchub.cloud/for/grok): trigger reference + worked examples
+- [For Microsoft Copilot](https://dchub.cloud/for/copilot): discovery & call pattern, provenance parsing
+- [For Gemini](https://dchub.cloud/for/gemini): water objectives, custom MCP data store
+- [For ChatGPT](https://dchub.cloud/for/chatgpt): deep-research search/fetch contract
+- [For Perplexity](https://dchub.cloud/for/perplexity): citation format + quotable narratives
 """
         return Response(content, mimetype='text/plain; charset=utf-8', headers={'Access-Control-Allow-Origin': '*'})
 
