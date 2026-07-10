@@ -369,13 +369,13 @@ def backfill_proposal_row(cur, pr):
         INSERT INTO brain_proposed_code_fixes
             (loop_name, file_path, search_text, replace_text, rationale,
              model, status, proposed_at, reviewed_at, pr_url)
-        VALUES (%s, %s, %s, '', %s, 'github-merge-reconciler', 'merged',
-                %s, %s, %s)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         ON CONFLICT (loop_name, file_path, search_text) DO NOTHING
         RETURNING id""",
-        (_BACKFILL_LOOP, f"github:{pr['branch']}", pr["branch"],
+        (_BACKFILL_LOOP, f"github:{pr['branch']}", pr["branch"], "",
          (f"Backfilled from merged GitHub PR #{pr['number']}: "
           f"{pr['title']}")[:500],
+         "github-merge-reconciler", "merged",
          pr["created_at"] or pr["merged_at"], pr["merged_at"],
          pr["html_url"]))
     row = cur.fetchone()
@@ -392,10 +392,10 @@ def record_review_decision(pid, label, pr) -> bool:
                 INSERT INTO brain_review_decisions
                     (proposal_kind, proposal_id, issue_hash, issue_label,
                      decision, reviewer, reviewer_note)
-                VALUES ('code', %s, %s, %s, 'approve', %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT DO NOTHING""",
-                (pid, issue_hash(label or pr["branch"]),
-                 (label or "")[:200],
+                ("code", pid, issue_hash(label or pr["branch"]),
+                 (label or "")[:200], "approve",
                  # list API exposes the AUTHOR, not who merged — stay neutral
                  "github-merge",
                  (f"PR #{pr['number']} (author {pr['author'] or '?'}) merged "
