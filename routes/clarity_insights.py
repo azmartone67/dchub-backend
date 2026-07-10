@@ -118,8 +118,13 @@ def _file_findings(spots):
     instead of re-emitting (the stateless-detector re-emission trap)."""
     filed = refreshed = 0
     try:
-        from db_utils import get_pg_connection
-        conn = get_pg_connection()
+        # psycopg2 direct (water_aqueduct_ingest._conn pattern) — the pooled
+        # helper lives in main.py, which route modules must never import.
+        import psycopg2 as _pg
+        url = os.environ.get("DATABASE_URL") or os.environ.get("NEON_DATABASE_URL")
+        if not url:
+            return 0, 0
+        conn = _pg.connect(url, connect_timeout=8)
         try:
             with conn.cursor() as cur:
                 for s in spots:
