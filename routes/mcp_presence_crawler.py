@@ -112,7 +112,10 @@ SEED_REGISTRIES: list[dict] = [
     },
     {
         "registry_name": "glama",
-        "listing_url":   "https://glama.ai/mcp/servers/dchub",
+        # 2026-07-09: point at the HEALTHY connector listing (verified tested + graded
+        # A) — the old /mcp/servers/dchub redirects to a search, and the /cloud.dchub/
+        # mcp-server connector is a Glama-flagged deprecated DUPLICATE.
+        "listing_url":   "https://glama.ai/mcp/connectors/cloud.dchub/dc-hub-data-center-intelligence-mcp-server",
         "submit_url":    "https://glama.ai/mcp/servers/new",
     },
     {
@@ -489,7 +492,9 @@ def _extractor_generic(html: str) -> dict | None:
 # Each function returns the canonical extractor dict shape
 # (tools/uptime/last_updated/status) or None on failure. NEVER raises.
 _DCHUB_SMITHERY_SLUG = "azmartone67/dchub"
-_DCHUB_GLAMA_SLUG    = "dchub"
+# 2026-07-09 FIX: was "dchub" → glama.ai/api/mcp/v1/servers/dchub 400s. The
+# Glama server slug is namespaced (matches scripts/registry_monitor.py REPO_SLUG).
+_DCHUB_GLAMA_SLUG    = "azmartone67/dchub-mcp-server"
 _DCHUB_LOBEHUB_SLUG  = "dchub-mcp-server"
 _DCHUB_MCPHIVE_SLUG  = "dchub"
 
@@ -541,12 +546,17 @@ def _api_get_json(url: str, timeout: int | None = None) -> Any:
 
 
 def _extractor_smithery_api(slug: str = _DCHUB_SMITHERY_SLUG) -> dict | None:
-    """Hit Smithery's public REST API directly. The /api/v1/servers/<slug>
-    response carries a tool list + qualifiedName + updatedAt. Cheaper
-    than rendering the SPA. Returns None if the API doesn't 200."""
+    """Hit Smithery's public registry API directly. The
+    registry.smithery.ai/servers/<slug> response carries a `tools` list +
+    qualifiedName + updatedAt. Cheaper than rendering the SPA. Returns None if
+    the API doesn't 200.
+    2026-07-09 FIX: was `smithery.ai/api/v1/servers/<slug>` which 404s (that
+    host serves the SPA, not the API) — so the crawler false-flagged Smithery as
+    stale/discovered while the LIVE listing carries 70 tools. The working host is
+    registry.smithery.ai (same one scripts/registry_monitor.py uses)."""
     try:
         # Smithery URL-encodes the leading '@' but the server canonicalizes
-        url = (f"https://smithery.ai/api/v1/servers/"
+        url = (f"https://registry.smithery.ai/servers/"
                f"{requests.utils.quote(slug, safe='@/')}")
         data = _api_get_json(url)
         if not isinstance(data, dict):
