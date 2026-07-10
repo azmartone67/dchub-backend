@@ -3012,12 +3012,14 @@ def stripe_webhook_mcp():
                         "ORDER BY created_at DESC LIMIT 1", (email,))
             _ex = cur.fetchone()
             _newmint = False
+            _upgraded = False
             if _ex:
                 provisioned_key = _ex[0]
                 if (_ex[1] or "free").lower() in ("free", "trial", "anon", ""):
                     cur.execute("UPDATE mcp_dev_keys SET tier=%s WHERE api_key=%s",
                                 (_ptier, provisioned_key))
                     conn.commit()
+                    _upgraded = True  # free/trial key just became paid → deliver it
             else:
                 provisioned_key = "dch_live_" + _sec.token_hex(16)
                 _newmint = True
@@ -3029,13 +3031,29 @@ def stripe_webhook_mcp():
                                          "stripe_customer_id": customer_id,
                                          "stripe_subscription_id": sub_id})))
                 conn.commit()
-        # Email the key only on a fresh mint (existing-key buyers already have it;
-        # this also makes Stripe webhook re-delivery a no-op email-wise). Lazy import
-        # of main (main imports us, so a top-level import would be circular).
-        if _newmint and provisioned_key:
+        # Email the key on a fresh mint OR when a buyer's pre-existing free/trial key
+        # was just upgraded to paid. The upgrade case is the white-glove gap that bit
+        # our first Pro customer (eren@globeholder.ai, 2026-07-10): she claimed a free
+        # key BEFORE paying, so the sub webhook reused it and — under the old
+        # `_newmint`-only guard — sent NO welcome, leaving a paying customer who never
+        # received her key. mcp_dev_keys stores api_key in plaintext, so we can deliver
+        # the actual key even on reuse. Both branches are one-time state transitions
+        # (mint / free→paid), so Stripe webhook re-delivery is a no-op email-wise: the
+        # 2nd delivery finds tier already 'paid' → no upgrade → no email. Lazy import of
+        # main (main imports us, so a top-level import would be circular).
+        if (_newmint or _upgraded) and provisioned_key:
             try:
                 import main as _main_mod
                 _main_mod.send_welcome_email_sendgrid(email, provisioned_key, plan_name=_ptier)
+                # Audit-log the send so onboarding is verifiable via
+                # /api/v1/admin/welcome-log. The old path logged nothing — which is
+                # why eren's original signup welcome left no trace and we couldn't
+                # tell it had been skipped until we reverse-engineered the flow.
+                try:
+                    _main_mod._log_welcome_email(
+                        email, f"{_ptier}:{'mint' if _newmint else 'upgrade'}", "sent")
+                except Exception:
+                    pass
             except Exception as _ee:
                 # send_welcome_email_sendgrid already admin-alerts on SendGrid
                 # failure; swallow here so provisioning never breaks the webhook.
