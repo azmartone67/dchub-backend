@@ -135,6 +135,18 @@ _DISPATCH = [
      "POST",
      lambda now: now.minute < 5),
 
+    # 2026-07-09: merged-PR credit reconciler — lists merged brain-spec/ +
+    # brain/autofix- PRs (GitHub, read-only) and records merge outcomes in
+    # the brain's own tables so /brain/effectiveness stops reading merged=0
+    # the day the operator merges seven brain PRs. Wide hour windows because
+    # the throttled heartbeat lands ~hourly at random minutes; the handler
+    # self-throttles (MIN_INTERVAL 120min) + a per-PR ledger makes re-fires
+    # no-ops. _hit() attaches X-Admin-Key (the /run endpoint is admin-gated).
+    ("brain_merge_reconciler",
+     f"{BASE}/api/v1/brain/merge-reconciler/run",
+     "POST",
+     lambda now: now.hour in (9, 21)),
+
     # Press publisher cadence check — every 2h on :07
     ("press_publisher",
      f"{BASE}/api/v1/press-publisher/run",
