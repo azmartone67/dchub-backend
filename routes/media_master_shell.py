@@ -154,6 +154,27 @@ def tier1_measure() -> dict:
         attempts_24h = sum(_num(v.get("attempts_24h")) or 0 for v in loops.values())
     else:
         posts_24h, attempts_24h = 0, 0
+    # r-durable-cadence (2026-07-10): the publisher loop counters live in
+    # process memory and zero out on every redeploy (the web service redeploys
+    # many times a day), so this shell chronically read 0 posts/24h -> STARVED
+    # and re-fired the evergreen while LinkedIn was in fact posting on
+    # schedule (linkedin_posts rows with real URNs). Prefer the durable ledger
+    # when the in-process counters say zero.
+    if not posts_24h:
+        c = _conn()
+        if c is not None:
+            try:
+                with c.cursor() as cur:
+                    cur.execute(
+                        "SELECT COUNT(*) FROM linkedin_posts "
+                        "WHERE status = 'success' "
+                        "AND created_at > NOW() - INTERVAL '24 hours'")
+                    posts_24h = max(posts_24h, int(cur.fetchone()[0] or 0))
+            except Exception:
+                pass
+            finally:
+                try: c.close()
+                except Exception: pass
     cv7 = (_num(north.get("citation_velocity_7d"))
            or _num(north.get("distinct_agents_citing_7d"))
            or _num(north.get("citations_7d")))
