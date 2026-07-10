@@ -374,6 +374,10 @@ PLATFORM_CARDS = [
 # API ENDPOINTS
 # ═══════════════════════════════════════════════════════════════
 
+_DISCOVERED_CACHE = {"at": 0.0, "cards": []}
+_DISCOVERED_TTL = 300.0
+
+
 @platforms_bp.route('/api/v1/platform-cards', methods=['GET'])
 def get_platform_cards():
     """Return all platform cards, optionally filtered by category."""
@@ -381,13 +385,22 @@ def get_platform_cards():
 
     cards = list(PLATFORM_CARDS)
 
-    try:
-        from mcp_auto_register import get_discovered_platforms_as_cards
-        discovered = get_discovered_platforms_as_cards()
-        if discovered:
-            cards.extend(discovered)
-    except Exception:
-        pass
+    # r-pool-storm (2026-07-10): /ai auto-refreshes every 30s per visitor and
+    # every hit ran the discovered_platforms scan — the pool hit 80/80 at
+    # 04:03Z with 30s+ request times. Serve the discovered roster from a 5-min
+    # in-process cache; on refresh failure keep serving the stale copy and
+    # retry in 60s instead of hammering a saturated pool.
+    import time as _t
+    now = _t.time()
+    if now - _DISCOVERED_CACHE["at"] > _DISCOVERED_TTL:
+        try:
+            from mcp_auto_register import get_discovered_platforms_as_cards
+            _DISCOVERED_CACHE["cards"] = get_discovered_platforms_as_cards() or []
+            _DISCOVERED_CACHE["at"] = now
+        except Exception:
+            _DISCOVERED_CACHE["at"] = now - _DISCOVERED_TTL + 60.0
+    if _DISCOVERED_CACHE["cards"]:
+        cards.extend(_DISCOVERED_CACHE["cards"])
 
     if category:
         cards = [c for c in cards if c.get('category') == category]

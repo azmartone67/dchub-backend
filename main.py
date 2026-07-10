@@ -28628,6 +28628,9 @@ def api_site_score():
             conn.close()
 
 
+_INTEL_IDX_CACHE = {"at": 0.0, "payload": None}
+
+
 @app.route('/api/agents/intelligence-index', methods=['GET'])
 def api_agents_intelligence_index():
     """DC Hub Intelligence Index for MCP get_intelligence_index tool.
@@ -28641,6 +28644,12 @@ def api_agents_intelligence_index():
     /intelligence dashboard alive even with partial backend degradation.
     """
     from datetime import datetime
+    # r-pool-storm (2026-07-10): five COUNT(*) sub-queries (incl. a 126K-row
+    # substations seq scan) ran on EVERY call — 42.5s during the 04:03Z pool
+    # storm. The numbers move slowly; serve a 5-min in-process cache.
+    import time as _t
+    if _INTEL_IDX_CACHE["payload"] is not None and _t.time() - _INTEL_IDX_CACHE["at"] < 300.0:
+        return jsonify(_INTEL_IDX_CACHE["payload"])
     facility_count = pipeline_gw = recent_deals = substation_count = 0
     top_markets: list = []
     errors: list = []
@@ -28694,7 +28703,7 @@ def api_agents_intelligence_index():
             try: conn.close()
             except Exception: pass
     pulse = min(99, round((min(facility_count/150,1)*30)+(min(pipeline_gw/400,1)*25)+(min(recent_deals/20,1)*20)+(min(substation_count/80000,1)*15)+(len(top_markets)/10*10),1))
-    return jsonify({
+    _ii_payload = {
         'dc_hub_intelligence_index': {
             'global_pulse_score': pulse,
             'generated_at': datetime.utcnow().isoformat()+'+00:00',
@@ -28717,7 +28726,11 @@ def api_agents_intelligence_index():
             'degraded': bool(errors),
             'partial_errors': errors[:5] if errors else None,
         }
-    })
+    }
+    if not errors:
+        _INTEL_IDX_CACHE["payload"] = _ii_payload
+        _INTEL_IDX_CACHE["at"] = _t.time()
+    return jsonify(_ii_payload)
 
 @app.route('/api/agents/recommend', methods=['GET'])
 def api_agents_recommend():
