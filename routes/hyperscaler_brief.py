@@ -437,6 +437,15 @@ def _is_pro(tier: str) -> bool:
 # Section fan-out (each is best-effort — one bad query never 404s the page)
 # ─────────────────────────────────────────────────────────────────────
 
+# 2026-07-10 FIX: the dedup pipeline (merge_discovered_v3.py) stamps
+# merged_at = NOW() on every clean row it PROMOTES into the canonical
+# facilities table, so "merged_at IS NULL AND is_duplicate = 0" selects the
+# EMPTY pending-review queue, not the fleet — every brief rendered 0 MW /
+# 0 facilities (AWS included, while captioned "largest hyperscaler by MW").
+# The fleet = all non-duplicate rows, regardless of merged_at.
+_FLEET_FILTER = "COALESCE(is_duplicate, 0) = 0"
+
+
 def _section_hero(cur, slug: str, meta: dict) -> dict:
     """Section 1: Hero. Total MW + invested capital + Live as of.
 
@@ -473,7 +482,7 @@ def _section_hero(cur, slug: str, meta: dict) -> dict:
                    COALESCE(SUM(power_mw), 0) AS total_mw
               FROM discovered_facilities
              WHERE {where}
-               AND merged_at IS NULL AND is_duplicate = 0
+               AND {_FLEET_FILTER}
             """,
             ['%operat%', '%active%', '%construction%', '%planned%', '%announced%'] + params,
         )
@@ -563,20 +572,28 @@ def _section_pipeline(cur, meta: dict) -> list[dict]:
     aliases = meta["aliases"]
     out: list[dict] = []
     # Pass 1: discovered_facilities pipeline (provider ILIKE %alias%).
+    # 2026-07-10 FIX: the previous query selected facility_name + eta_year —
+    # neither column exists in discovered_facilities — so pass 1 threw on
+    # every call and only the thinner fallback ever ran. ETA lives in
+    # expected_completion (text) / operational_year (int); source_url is
+    # pulled so the pipeline table can link each row to its source.
     try:
         where, params = _ilike_clauses("provider", aliases)
         cur.execute(
             f"""
             SELECT provider,
-                   COALESCE(facility_name, name, address) AS facility,
-                   power_mw, status, eta_year,
+                   COALESCE(name, address) AS facility,
+                   power_mw, status,
+                   COALESCE(NULLIF(expected_completion, ''),
+                            operational_year::text) AS eta,
                    COALESCE(city, '') AS city, COALESCE(state, country) AS region,
-                   COALESCE(market, '') AS market
+                   COALESCE(market, '') AS market,
+                   source_url
               FROM discovered_facilities
              WHERE {where}
                AND (status ILIKE %s OR status ILIKE %s OR status ILIKE %s)
-               AND merged_at IS NULL AND is_duplicate = 0
-             ORDER BY COALESCE(eta_year, 9999), power_mw DESC NULLS LAST
+               AND {_FLEET_FILTER}
+             ORDER BY power_mw DESC NULLS LAST
              LIMIT 12
             """,
             params + ['%construction%', '%planned%', '%announced%'],
@@ -589,10 +606,11 @@ def _section_pipeline(cur, meta: dict) -> list[dict]:
                 "eta":      r[4],
                 "location": ", ".join([p for p in (r[5], r[6]) if p]),
                 "market":   r[7],
+                "url":      r[8],
                 "source":   "discovered_facilities",
             })
     except Exception:
-        # eta_year may be missing — retry without it
+        # Defensive fallback — minimal column set.
         try:
             where, params = _ilike_clauses("provider", aliases)
             cur.execute(
@@ -603,7 +621,7 @@ def _section_pipeline(cur, meta: dict) -> list[dict]:
                   FROM discovered_facilities
                  WHERE {where}
                    AND (status ILIKE %s OR status ILIKE %s)
-                   AND merged_at IS NULL AND is_duplicate = 0
+                   AND {_FLEET_FILTER}
                  ORDER BY power_mw DESC NULLS LAST
                  LIMIT 12
                 """,
@@ -798,7 +816,7 @@ def _section_water(cur, meta: dict) -> dict:
               FROM discovered_facilities
              WHERE {where}
                AND COALESCE(country, 'US') IN ('US', 'United States', '')
-               AND merged_at IS NULL AND is_duplicate = 0
+               AND {_FLEET_FILTER}
              GROUP BY UPPER(COALESCE(state, ''))
              HAVING COALESCE(SUM(power_mw), 0) > 0
              ORDER BY mw DESC LIMIT 25
@@ -875,7 +893,7 @@ def _section_iso(cur, meta: dict) -> dict:
                      ON LOWER(d.market) = LOWER(m.market_slug)
                      OR LOWER(d.market) = LOWER(m.market_name)
              WHERE {where}
-               AND d.merged_at IS NULL AND d.is_duplicate = 0
+               AND COALESCE(d.is_duplicate, 0) = 0
                AND d.power_mw > 0
              GROUP BY 1
              HAVING COALESCE(SUM(d.power_mw), 0) > 0
@@ -921,19 +939,21 @@ def _section_time_to_power(cur, meta: dict) -> dict:
     try:
         where, params = _ilike_clauses("provider", aliases)
         # discovered_facilities doesn't reliably store an `announced_at`
-        # column — best-effort projection over (created_at → eta_year).
+        # column — best-effort projection over (first_seen → operational_year).
+        # (2026-07-10: was created_at/eta_year, neither of which exists, so
+        # this section always threw and reported "insufficient data".)
         cur.execute(
             f"""
             SELECT
-                EXTRACT(YEAR FROM created_at) AS year_announced,
-                eta_year,
+                EXTRACT(YEAR FROM first_seen) AS year_announced,
+                operational_year,
                 power_mw
               FROM discovered_facilities
              WHERE {where}
-               AND merged_at IS NULL AND is_duplicate = 0
-               AND eta_year IS NOT NULL
-               AND created_at IS NOT NULL
-             ORDER BY created_at DESC LIMIT 200
+               AND {_FLEET_FILTER}
+               AND operational_year IS NOT NULL
+               AND first_seen IS NOT NULL
+             ORDER BY first_seen DESC LIMIT 200
             """,
             params,
         )
@@ -1101,7 +1121,7 @@ def _section_capital_velocity(cur, meta: dict, hero: dict) -> dict:
                 f"""
                 SELECT COALESCE(SUM(power_mw), 0) FROM discovered_facilities
                  WHERE {prov_where}
-                   AND merged_at IS NULL AND is_duplicate = 0
+                   AND {_FLEET_FILTER}
                 """,
                 prov_params,
             )
@@ -1327,15 +1347,23 @@ def _render_html(brief: dict) -> str:
         return (str(s).replace("&", "&amp;").replace("<", "&lt;")
                 .replace(">", "&gt;").replace('"', "&quot;"))
 
-    # ── Pipeline rows
+    # ── Pipeline rows — facility cell links to the source URL when we have
+    # one (Clarity showed these rows as a dead-click hotspot: they look
+    # clickable but were inert).
     pipe_rows = []
     for p in pipeline:
         mw = p.get("power_mw")
         mw_disp = f"{mw:,.0f} MW" if mw else "—"
         loc = p.get("location") or p.get("market") or ""
         eta = p.get("eta") or ""
+        url = (p.get("url") or "").strip()
+        if url.startswith("http"):
+            facility_cell = (f'<a href="{_esc(url)}" target="_blank" '
+                             f'rel="noopener">{_esc(p.get("facility"))}</a>')
+        else:
+            facility_cell = _esc(p.get("facility"))
         pipe_rows.append(
-            f'<tr><td>{_esc(p.get("facility"))}</td>'
+            f'<tr><td>{facility_cell}</td>'
             f'<td>{_esc(loc)}</td>'
             f'<td style="text-align:right">{_esc(mw_disp)}</td>'
             f'<td>{_esc(p.get("status"))}</td>'
@@ -1488,6 +1516,7 @@ def _render_html(brief: dict) -> str:
 <link rel="canonical" href="https://dchub.cloud/hyperscalers/{_esc(slug)}/brief">
 <link rel="stylesheet" href="/static/dchub-brand.css">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap">
+<script src="/js/dchub-nav.js" defer></script>
 <style>
  :root{{--bg:#0a0a0f;--surf:#131319;--surf2:#1a1a22;--b:rgba(255,255,255,.09);--tx:#fafafa;--mut:#a1a1aa;--dim:#71717a;--ind:#818cf8;--vio:#a855f7;--cy:#22d3ee}}
  *{{box-sizing:border-box}}
