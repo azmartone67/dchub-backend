@@ -254,6 +254,95 @@ def caller_is_privileged(min_tier: str = "IDENTIFIED") -> bool:
     return False
 
 
+# ── r-intl-gate (2026-07-10) — shared gate for international ISO /snapshot ──
+# The international grid snapshot routes (routes/iso_*_*.py, grid_snapshot.py,
+# iso_snapshot.py) shipped WIDE OPEN: full per-zone/per-country fuel mix,
+# generation mix, installed capacity and demand series to any anonymous caller
+# — while the US path (main.py phase19b_grid_intelligence) has gated the same
+# class of data since ZZZZZ-round12. Root cause: gating is opt-in per route, so
+# every new snapshot blueprint defaulted to open. This one helper closes the
+# whole family and is the pattern any FUTURE snapshot route must call.
+#
+# Privileged callers (paid/identified key, internal server-to-server, loopback,
+# or a real dchub.cloud browser via the r43-G session cookie — i.e. the live
+# grid dashboard) get the FULL payload unchanged. Anonymous external scrapers
+# get identity + a single headline demand number, with the heavy fuel/zone
+# detail redacted behind a free-dev-key CTA (same taste-preserving teaser shape
+# the US grid path uses — a 200, never a hard error, so agents still convert).
+_INTL_SNAPSHOT_REDACT = frozenset({
+    "metrics", "zones", "generation_mix", "tsos", "installed_capacity_mw",
+    "renewable_pct", "annual_generation_twh", "by_iso", "facilities",
+    "dcpi", "pipeline", "per_tso", "per_tso_status", "fuel_mix",
+})
+
+
+def _extract_headline_demand(payload: dict):
+    """Pull ONE demand number to keep as the free headline (parity with the US
+    grid path, which exposes demand_mw free). Best-effort; None if not found."""
+    for k in ("aggregate_demand_mw", "demand_mw", "total_demand_mw"):
+        v = payload.get(k)
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            return round(float(v), 1)
+    m = payload.get("metrics")
+    if isinstance(m, dict):
+        for k, v in m.items():
+            if "demand" in str(k).lower():
+                val = v.get("value") if isinstance(v, dict) else v
+                if isinstance(val, (int, float)) and not isinstance(val, bool):
+                    return round(float(val), 1)
+    return None
+
+
+def gate_intl_snapshot(payload, tier: str = "IDENTIFIED"):
+    """Gate an international ISO /snapshot payload for anonymous callers.
+
+    Returns (payload_out, was_gated). Privileged callers get (payload, False)
+    unchanged. Anonymous callers get a redacted headline dict + free-key CTA.
+    Non-dict payloads (error bodies) pass through untouched."""
+    if not isinstance(payload, dict):
+        return payload, False
+    # Never gate an upstream error/unavailable body — let it surface as-is.
+    if payload.get("error"):
+        return payload, False
+    if caller_is_privileged(tier):
+        return payload, False
+    keep = {k: v for k, v in payload.items() if k not in _INTL_SNAPSHOT_REDACT}
+    demand = _extract_headline_demand(payload)
+    keep["demand_mw"] = demand
+    keep["gated"] = True
+    keep["tier_required"] = "identified"
+    keep["metrics"] = "<gated: free dev key unlocks full fuel mix + per-zone detail>"
+    keep["message"] = (
+        f"You got the headline for {payload.get('iso') or 'this grid'}"
+        + (f" ({demand} MW demand)." if demand is not None else ".")
+        + " Full generation mix, per-zone/per-country breakdown and demand"
+          " series require a free dev key (email-only signup, no credit card)."
+    )
+    keep["agent_action"] = {
+        "type": "claim_free_key", "method": "POST",
+        "url": "https://dchub.cloud/api/v1/keys/claim",
+        "headers": {"Content-Type": "application/json"},
+        "body": {"client_name": "<your agent identifier>"},
+        "then": "Retry this GET with header 'X-API-Key: <api_key>'",
+    }
+    keep["upgrade_url"] = ("https://dchub.cloud/signup?next=/onboarding"
+                           "&utm_source=intl_grid_snapshot")
+    keep["enterprise_url"] = "https://dchub.cloud/enterprise"
+    return keep, True
+
+
+def jsonify_gated_snapshot(payload, status: int = 200, tier: str = "IDENTIFIED"):
+    """Convenience wrapper: gate + jsonify + tag. Snapshot routes call this
+    instead of `jsonify(payload), status`."""
+    out, was_gated = gate_intl_snapshot(payload, tier=tier)
+    resp = jsonify(out)
+    resp.headers["Access-Control-Allow-Origin"] = "*"
+    if was_gated:
+        resp.headers["X-Tier-Gated"] = "true"
+        resp.headers["Cache-Control"] = "public, max-age=60"
+    return resp, status
+
+
 def _gate_response(current_tier: str, required_tier: str,
                    gate_id: str, preview: dict | None = None):
     """Standardized 402 response — conversion-friendly. Includes

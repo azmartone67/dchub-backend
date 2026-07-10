@@ -3026,6 +3026,21 @@ def api_leaderboard():
             r["reasoning"] = (f"{(r.get('verdict') or '').upper()} verdict. "
                               "Numeric DCPI scores are Pro — https://dchub.cloud/pricing.")
 
+    if fmt == "csv" and not _lb_paid:
+        # r-csv-gate (2026-07-10): CSV export is advertised Developer+ only. The
+        # score cells were already masked for non-paid, but the CSV *file* itself
+        # was served to anyone — the format gate was never enforced. Refuse the
+        # file for non-paid callers (they can still use ?format=json for the gated
+        # preview). _lb_paid is computed above (same flag that masks the cells).
+        return jsonify({
+            "error": "csv_export_requires_developer",
+            "tier_required": "developer",
+            "message": ("CSV export of the DCPI leaderboard is a Developer "
+                        "($49/mo) feature. Use ?format=json for the gated preview, "
+                        "or upgrade at https://dchub.cloud/pricing."),
+            "upgrade_url": "https://dchub.cloud/pricing?utm_source=dcpi_leaderboard_csv",
+        }), 402
+
     if fmt == "csv":
         import csv, io
         buf = io.StringIO()

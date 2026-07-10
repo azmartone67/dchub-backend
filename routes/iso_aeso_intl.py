@@ -186,7 +186,8 @@ def http_run():
 
 @iso_aeso_intl_bp.route("/snapshot", methods=["GET"])
 def http_snapshot():
-    return jsonify({
+    from routes.tier_gate import jsonify_gated_snapshot
+    return jsonify_gated_snapshot({
         "iso": ISO_CODE,
         "as_of": datetime.datetime.utcnow().isoformat() + "Z",
         "method": "baseline_model_v1",
@@ -194,7 +195,7 @@ def http_snapshot():
         "generation_mix": GENERATION_MIX,
         "installed_capacity_mw": INSTALLED_CAPACITY_MW,
         "renewable_pct": RENEWABLE_PCT,
-    }), 200
+    }, 200)
 
 
 @iso_aeso_intl_bp.route("/latest", methods=["GET"])

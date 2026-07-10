@@ -349,7 +349,8 @@ def http_snapshot():
     if not results:
         return jsonify({"iso": ISO_CODE, "error": "denkiyoho_live_unavailable",
                         "per_tso": notes}), 503
-    return jsonify({
+    from routes.tier_gate import jsonify_gated_snapshot
+    return jsonify_gated_snapshot({
         "iso": ISO_CODE, "live": True,
         "tsos": {c: {k: v for k, v in p.items() if k != "stale"}
                  for c, p in results.items()},
@@ -359,7 +360,7 @@ def http_snapshot():
                           f"(of 10 Japanese TSO areas; see /health for exclusions)"),
         "per_tso_status": notes,
         "source": "Japan TSO denki-yoho CSVs (live, JST)",
-    }), 200
+    }, 200)
 
 
 @iso_jp_denkiyoho_bp.route("/health", methods=["GET"])

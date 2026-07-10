@@ -332,6 +332,33 @@ def public_transactions():
                 'date': date, 'notes': notes,
                 'source': 'DC Hub Intelligence',
             })
+        # r-deals-gate (2026-07-10): this /public twin leaked deal $ value +
+        # power_mw + seller to anonymous callers, bypassing the /api/v1/
+        # transactions anon path (3 newest, value+MW masked). Gate to match:
+        # anon → 3 newest with value/MW/seller masked; privileged callers
+        # (key/internal/logged-in browser) get the full payload unchanged.
+        try:
+            from routes.tier_gate import caller_is_privileged
+            _priv = caller_is_privileged("IDENTIFIED")
+        except Exception:
+            _priv = False
+        if not _priv:
+            transactions = transactions[:3]
+            for _t in transactions:
+                _t['seller'] = None
+                _t['value_usd_millions'] = None
+                _t['value_display'] = '🔒 upgrade'
+                _t['power_mw'] = None
+                _t['title'] = f"{_t.get('buyer')} — deal details gated"
+            return jsonify({
+                'success': True, 'data': transactions,
+                'total': len(transactions), 'gated': True,
+                'tier_required': 'starter',
+                'message': ('Preview: 3 newest deals with value + MW masked. The '
+                            'full M&A tracker requires Starter ($9/mo); a free dev '
+                            'key unlocks the basics — https://dchub.cloud/pricing'),
+                'upgrade_url': 'https://dchub.cloud/pricing?utm_source=transactions_public',
+            })
         return jsonify({'success': True, 'data': transactions, 'total': len(transactions)})
     except Exception as e:
         logger.error(f"/api/transactions/public error: {e}")

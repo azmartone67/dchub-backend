@@ -7840,7 +7840,21 @@ MCP_TEASER_TOOLS = {'analyze_site', 'get_grid_data', 'get_infrastructure', 'get_
                     'get_energy_prices', 'get_renewable_energy', 'get_intelligence_index',
                     'get_market_intel', 'list_transactions', 'compare_sites',
                     'get_grid_intelligence', 'get_tax_incentives', 'get_water_risk',
-                    'get_site_forecast'}
+                    'get_site_forecast',
+                    # r-mcp-teaser-gate (2026-07-10): these premium tools were returning
+                    # FULL data to anonymous/free MCP callers. Root cause:
+                    # _gate_mcp_response_bytes only degrades tools listed here (or in
+                    # MCP_FACILITY_TOOLS); EVERY other tool passed through unmasked
+                    # (rate-limit check only). They now degrade to a teaser + upgrade CTA
+                    # for the free tier; paid tiers still get full data. The generic
+                    # fallback in _gate_teaser_result masks the payload safely regardless
+                    # of result shape. NOTE: get_grid_scoreboard is deliberately NOT here
+                    # — it is the intentionally-free flagship (keyless per MCP server
+                    # instructions) and must keep returning live data to anon.
+                    'hyperscaler_deals', 'deal_autopsy', 'get_interconnection_queue',
+                    'rank_markets', 'compare_isos', 'get_market_dcpi_rank',
+                    'grid_transition_radar', 'ai_capacity_index', 'score_facility',
+                    'get_gas_index'}
 
 # User-facing notes per tool category — AI agents surface these to end users
 MCP_USER_NOTES = {

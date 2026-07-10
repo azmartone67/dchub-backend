@@ -242,7 +242,44 @@ def get_all_facilities():
 
         finally:
             conn.close()
-        
+
+        # r-facilities-gate (2026-07-10): this endpoint shipped the flagship
+        # gated field (power_mw / capacity) plus provider for up to 5,000 rows
+        # to ANY anonymous caller — the exact bulk capacity table the MCP
+        # get_facility / search_facilities tools mask. Gate it consistently:
+        # anonymous scrapers get a small capacity-masked preview + a free-key
+        # CTA; privileged callers (paid/identified key, internal server call,
+        # or a logged-in dchub.cloud browser via the session cookie — incl. the
+        # map) pass through with the FULL payload unchanged.
+        try:
+            from routes.tier_gate import caller_is_privileged
+            _priv = caller_is_privileged("IDENTIFIED")
+        except Exception:
+            _priv = False
+
+        if not _priv:
+            facilities = facilities[:50]
+            for _f in facilities:
+                if isinstance(_f, dict):
+                    _f['power_mw'] = None
+            return jsonify({
+                'success': True,
+                'total': total,
+                'limit': 50,
+                'offset': offset,
+                'returned': len(facilities),
+                'facilities': facilities,
+                'gated': True,
+                'tier_required': 'identified',
+                'message': ("Preview: first 50 sites with capacity (power_mw) "
+                            "masked. The full 21k-site database WITH capacity "
+                            "requires a free dev key (email-only, no card) — "
+                            "POST https://dchub.cloud/api/v1/keys/claim, then "
+                            "retry with header 'X-API-Key: <key>'."),
+                'upgrade_url': ('https://dchub.cloud/signup?next=/onboarding'
+                                '&utm_source=facilities_all'),
+            })
+
         return jsonify({
             'success': True,
             'total': total,
@@ -250,7 +287,7 @@ def get_all_facilities():
             'offset': offset,
             'facilities': facilities
         })
-        
+
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 

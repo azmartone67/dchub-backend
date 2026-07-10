@@ -272,20 +272,21 @@ def iso_snapshot(iso_code):
             dcpi = _dcpi_for_iso(cur, iso)
             pipeline = _pipeline_for_iso(cur, iso)
             facilities = _facilities_for_iso(cur, iso)
-        return jsonify(
-            ok=True,
-            iso=iso,
-            heartbeat=heartbeat,
-            dcpi=dcpi,
-            pipeline=pipeline,
-            facilities=facilities,
-            drill_deeper={
+        from routes.tier_gate import jsonify_gated_snapshot
+        return jsonify_gated_snapshot({
+            "ok": True,
+            "iso": iso,
+            "heartbeat": heartbeat,
+            "dcpi": dcpi,
+            "pipeline": pipeline,
+            "facilities": facilities,
+            "drill_deeper": {
                 "live_grid": f"/api/v1/grid/{iso}",
                 "dcpi_markets_in_iso": f"/api/v1/dcpi/iso/{iso}",
                 "comparison_with_other_isos": "/api/v1/iso/comparison",
             },
-            generated_at=datetime.now(timezone.utc).isoformat(),
-        ), 200
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+        }, 200)
     except Exception as e:
         return jsonify(ok=False, error=str(e)[:300]), 200
 

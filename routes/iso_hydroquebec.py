@@ -250,7 +250,8 @@ def http_snapshot():
     """Return the current snapshot WITHOUT persisting to DB. Read-only.
     Useful for the live grid dashboard."""
     try:
-        return jsonify({
+        from routes.tier_gate import jsonify_gated_snapshot
+        return jsonify_gated_snapshot({
             "iso": ISO_CODE,
             "as_of": datetime.datetime.utcnow().isoformat() + "Z",
             "method": "baseline_model_v1",
@@ -259,7 +260,7 @@ def http_snapshot():
             "installed_capacity_mw": INSTALLED_CAPACITY_MW,
             "annual_generation_twh": ANNUAL_GENERATION_TWH,
             "renewable_pct": RENEWABLE_PCT,
-        }), 200
+        }, 200)
     except Exception as e:
         return jsonify({"error": str(e), "iso": ISO_CODE}), 500
 

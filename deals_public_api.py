@@ -382,7 +382,22 @@ def get_public_deals():
         total = len(filtered)
         page = filtered[offset:offset + limit]
 
-        return jsonify({
+        # r-deals-gate (2026-07-10): this /public twin bypassed the value/MW
+        # mask enforced on /api/v1/deals and the 3-row cap on
+        # /api/v1/transactions — anonymous scrapers got up to 1,000 deals WITH
+        # $ value + MW. Gate to match the canonical path: anon → 3 newest with
+        # value_m + mw masked; privileged callers (paid/identified key, internal
+        # server call, or a logged-in dchub.cloud browser) get the full payload.
+        try:
+            from routes.tier_gate import caller_is_privileged
+            _priv = caller_is_privileged("IDENTIFIED")
+        except Exception:
+            _priv = False
+        gated = not _priv
+        if gated:
+            page = [dict(d, value_m=None, mw=None) for d in page[:3]]
+
+        out = {
             "success": True,
             "count": len(page),
             "total": total,
@@ -391,7 +406,17 @@ def get_public_deals():
             "transactions": page,
             "value_unit": "millions_usd",
             "timestamp": datetime.utcnow().isoformat(),
-        })
+        }
+        if gated:
+            out["gated"] = True
+            out["tier_required"] = "starter"
+            out["message"] = (
+                "Preview: 3 newest deals with $ value and MW masked. The full "
+                "M&A tracker (2,200+ deals with values + capacity) is Starter "
+                "($9/mo); a free dev key unlocks the basics — "
+                "https://dchub.cloud/pricing")
+            out["upgrade_url"] = "https://dchub.cloud/pricing?utm_source=deals_public"
+        return jsonify(out)
     except Exception as e:
         return jsonify({
             "success": False,

@@ -243,9 +243,10 @@ def http_snapshot():
     snap = _live_snapshot()
     if snap is None:
         return jsonify({"iso": ISO_CODE, "error": "elexon_live_unavailable"}), 503
-    return jsonify({"iso": ISO_CODE, "live": True,
+    from routes.tier_gate import jsonify_gated_snapshot
+    return jsonify_gated_snapshot({"iso": ISO_CODE, "live": True,
                     "metrics": {k: v["value"] for k, v in snap.items()},
-                    "source": "Elexon Insights"}), 200
+                    "source": "Elexon Insights"}, 200)
 
 
 @iso_uk_elexon_bp.route("/dcpi-score", methods=["GET"])

@@ -444,6 +444,16 @@ def get_deals():
     except Exception:
         _deals_paid = False
 
+    # r-deals-rowcap (2026-07-10): match the /api/v1/transactions freemium cap
+    # (3 newest). Previously /api/deals + /api/v1/deals masked $/MW but still
+    # returned up to `limit` (default 200) rows to anon scrapers — the audit
+    # flagged the row-count divergence (the alias skipped the 3-cap). Cap
+    # non-privileged callers to 3; browsers / Pro / internal (caller_is_privileged
+    # via cookie/tier/loopback) keep the full list. Applies to BOTH return paths
+    # below (each slices cached_data[:limit] / deals[:limit]).
+    if not _deals_paid:
+        limit = min(limit, 3)
+
     def _mask_d(d):
         if _deals_paid:
             return d

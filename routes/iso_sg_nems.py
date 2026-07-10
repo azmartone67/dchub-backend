@@ -156,12 +156,13 @@ def http_snapshot():
     snap = _live_snapshot()
     if snap is None:
         return jsonify({"iso": ISO_CODE, "error": "nems_mirror_unavailable_or_stale"}), 503
-    return jsonify({"iso": ISO_CODE, "live": True,
+    from routes.tier_gate import jsonify_gated_snapshot
+    return jsonify_gated_snapshot({"iso": ISO_CODE, "live": True,
                     "metrics": {k: v["value"] for k, v in snap.items()
                                 if not k.startswith("_")},
                     "as_of_utc": snap["_as_of_utc"],
                     "age_seconds": snap["_age_s"],
-                    "source": "NEMS half-hourly (nems.sn.sg mirror)"}), 200
+                    "source": "NEMS half-hourly (nems.sn.sg mirror)"}, 200)
 
 
 @iso_sg_nems_bp.route("/health", methods=["GET"])

@@ -59,12 +59,13 @@ def snapshot():
             )):
                 by_iso[iso]["latest_at"] = ts.isoformat() if ts else None
 
-    return jsonify(
-        as_of=datetime.now(timezone.utc).isoformat(),
-        iso_count=len([i for i in by_iso.values() if i["metric_count"] > 0]),
-        total_metric_count=sum(i["metric_count"] for i in by_iso.values()),
-        by_iso=by_iso,
-    ), 200
+    from routes.tier_gate import jsonify_gated_snapshot
+    return jsonify_gated_snapshot({
+        "as_of": datetime.now(timezone.utc).isoformat(),
+        "iso_count": len([i for i in by_iso.values() if i["metric_count"] > 0]),
+        "total_metric_count": sum(i["metric_count"] for i in by_iso.values()),
+        "by_iso": by_iso,
+    }, 200)
 
 
 @grid_snapshot_bp.route("/totals", methods=["GET"])
