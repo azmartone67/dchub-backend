@@ -175,9 +175,13 @@ def _project_counts():
         return {}, 0
 
 
-def _snapshot_provenance(as_of=None):
+def _snapshot_provenance(as_of=None, *, default_v):
     """provenance-v1 collection block for the queue surfaces. Fail-soft:
-    returns None on any error (jsonify serializes None harmlessly)."""
+    returns None on any error (jsonify serializes None harmlessly).
+
+    default_v (v1 lock, REQUIRED): the tier a record without ``v`` inherits.
+    snapshot/by-iso rows are pure ISO disclosures → "published"; the refined
+    endpoint mixes in DC Hub enrichments → "inferred"."""
     try:
         from routes.provenance import provenance_block
         return provenance_block(
@@ -187,6 +191,7 @@ def _snapshot_provenance(as_of=None):
                     "per-record v: published = the ISO's own figure, "
                     "inferred = DC Hub derivation"),
             as_of=as_of,
+            default_v=default_v,
         )
     except Exception:
         return None
@@ -252,7 +257,7 @@ def api_snapshot():
         # provenance-v1 (2026-07-11): collection block. Per-record v on each
         # by_iso row: published = the ISO's own disclosed figure (source_name/
         # source_url per row); inferred would mark a DC Hub derivation.
-        "provenance": _snapshot_provenance(_latest),
+        "provenance": _snapshot_provenance(_latest, default_v="published"),
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }), 200, {
         # r47.4 (2026-05-25): CF Pages was caching the earlier 500-then-404
@@ -277,7 +282,8 @@ def api_by_iso():
     # (top 25 by MW) from interconnect_queue — the drill-down the GW aggregate lacks.
     out["projects"] = _top_projects(iso, 25)
     out["project_count"] = _project_counts()[0].get(iso, 0)
-    out["provenance"] = _snapshot_provenance(snap[0].get("as_of"))
+    out["provenance"] = _snapshot_provenance(snap[0].get("as_of"),
+                                             default_v="published")
     return jsonify(out)
 
 
@@ -1078,7 +1084,10 @@ def api_refined_queue():
         # _source/_cite strings above stay for back-compat). Per-record v on
         # each result: published = the ISO's own queue row; coordinate_precision
         # + estimated_ttp_months flag the inferred enrichments per row.
-        "provenance": _snapshot_provenance(),
+        # v1 default_v=inferred: refined rows carry DC Hub enrichments
+        # (county-centroid geocoding, ISO-average TTP), so an unflagged
+        # record conservatively inherits inferred.
+        "provenance": _snapshot_provenance(default_v="inferred"),
         "note": ("Server-side set-reduction over the live ISO interconnection queue "
                  "(~5,300 projects, 7 ISOs). fuel_type is an inclusive substring match on "
                  "the raw fuel label (e.g. 'gas' hits GAS/Natural Gas); baseload_only excludes "

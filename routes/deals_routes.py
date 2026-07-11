@@ -424,6 +424,11 @@ def _deals_provenance(data_source):
                     else "DC Hub labelled seed fallback (DB unavailable)"),
             method=("tracked M&A / capex / AI-contract ingestion; per-deal "
                     "date + value_confirmed carry row-level provenance"),
+            # v1: deals are TRACKED from published sources, not independently
+            # verified (value_confirmed=False rows are estimates) — and the
+            # seed fallback is a curated static snapshot. Conservative tier
+            # for both paths is tracked.
+            default_v="tracked",
         )
     except Exception:
         return None

@@ -2387,6 +2387,9 @@ def api_score_market(slug):
             method="DCPI daily scoring (see data_basis/data_basis_source for the score's input basis)",
             as_of=row.get("computed_at"),
             cite_template=DCPI_CITE_TEMPLATE,
+            # v1: DCPI scores are DC Hub's own model output (derived, not a
+            # source's published figure) — inferred is the honest baseline.
+            default_v="inferred",
         )
     except Exception:
         pass

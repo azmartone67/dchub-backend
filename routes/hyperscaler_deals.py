@@ -188,6 +188,10 @@ def api_hyperscaler_deals():
                     "regex-extracted, actors name-matched — verify against the "
                     "per-deal source url before citing figures"),
             as_of=_computed_at,
+            # v1: the $-figures and MW on every row are regex EXTRACTIONS
+            # (DC Hub derivations from published text) — inferred, not
+            # published figures.
+            default_v="inferred",
         )
     except Exception:
         _prov = None

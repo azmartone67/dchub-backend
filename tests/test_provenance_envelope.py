@@ -16,8 +16,13 @@ import pytest
 from routes.provenance import (
     CITE_AS,
     DCPI_CITE_TEMPLATE,
+    DEFAULT_FALLBACK_URL,
+    FACILITIES_FALLBACK_URL,
     FACILITY_CITE_TEMPLATE,
     LICENSE,
+    MARKET_CITE_TEMPLATE,
+    MARKETS_FALLBACK_URL,
+    PROVENANCE_VERSION,
     attach_provenance,
     facility_verification_counts,
     provenance_block,
@@ -35,6 +40,7 @@ def test_block_full_shape():
         as_of=datetime.datetime(2026, 7, 11, 12, 0, 0),
         counts={"verified": 4903, "tracked": 21938},
         cite_template=FACILITY_CITE_TEMPLATE,
+        default_v="tracked",
     )
     assert blk["source"].startswith("DC Hub facilities registry")
     assert blk["license"] == LICENSE == "CC-BY-4.0"
@@ -42,20 +48,28 @@ def test_block_full_shape():
     assert blk["as_of"] == "2026-07-11T12:00:00"
     assert blk["verification_counts"] == {"verified": 4903, "tracked": 21938}
     assert blk["cite_url_template"] == "https://dchub.cloud/facilities/{slug}"
+    # v1 lock — the three contract-hardening keys are always present.
+    assert blk["provenance_version"] == PROVENANCE_VERSION == 1
+    assert blk["default_v"] == "tracked"
+    assert blk["fallback_url"] == "https://dchub.cloud/facilities/directory"
 
 
 def test_block_minimal_omits_optional_keys():
-    """Payload discipline: optional keys must be ABSENT (not null) when unset."""
-    blk = provenance_block("src", "how")
+    """Payload discipline: optional keys must be ABSENT (not null) when unset.
+    v1 lock: provenance_version, default_v and fallback_url are NOT optional —
+    they are always present."""
+    blk = provenance_block("src", "how", default_v="tracked")
     assert "as_of" not in blk
     assert "verification_counts" not in blk
     assert "cite_url_template" not in blk
-    assert set(blk) == {"source", "method", "license", "cite_as"}
+    assert set(blk) == {"provenance_version", "source", "method", "default_v",
+                        "fallback_url", "license", "cite_as"}
 
 
 def test_block_accepts_string_as_of_and_coerces_count_values():
     blk = provenance_block("s", "m", as_of="2026-07-10",
-                           counts={"verified": "4903", "tracked": 21938.0})
+                           counts={"verified": "4903", "tracked": 21938.0},
+                           default_v="tracked")
     assert blk["as_of"] == "2026-07-10"
     assert blk["verification_counts"] == {"verified": 4903, "tracked": 21938}
 
@@ -67,16 +81,71 @@ def test_block_never_raises_on_garbage():
             raise RuntimeError("boom")
 
     blk = provenance_block(Boom(), Boom(), as_of=Boom(), counts=Boom(),
-                           cite_template=None)
+                           cite_template=None, default_v="tracked")
     assert isinstance(blk, dict)
     assert blk["license"] == LICENSE
     assert blk["cite_as"] == CITE_AS
+    # v1 lock survives even the degraded minimal block.
+    assert blk["provenance_version"] == 1
+    assert blk["fallback_url"] == DEFAULT_FALLBACK_URL
+    assert blk["default_v"] == "tracked"
 
 
 def test_block_drops_unusable_counts_not_the_block():
-    blk = provenance_block("s", "m", counts={"verified": None})
+    blk = provenance_block("s", "m", counts={"verified": None},
+                           default_v="tracked")
     assert "verification_counts" not in blk
     assert blk["source"] == "s"
+
+
+# ─── v1 lock: provenance_version / fallback_url / default_v ──────────────
+
+def test_v1_version_always_present_and_is_1():
+    assert provenance_block("s", "m", default_v="inferred")[
+        "provenance_version"] == 1
+
+
+def test_v1_default_v_is_required_keyword():
+    """Every wiring site MUST declare default_v explicitly — omitting it is
+    a TypeError at the call site (caught by each site's fail-soft wrapper,
+    but red in tests/review so future wirings can't forget it)."""
+    with pytest.raises(TypeError):
+        provenance_block("s", "m")          # no default_v
+    with pytest.raises(TypeError):
+        attach_provenance({}, "s", "m")     # no default_v
+    with pytest.raises(TypeError):
+        # positional smuggling must not work either (keyword-only)
+        provenance_block("s", "m", None, None, None, None, "tracked")
+
+
+def test_v1_fallback_url_always_present_and_surface_specific():
+    # facilities template → facilities directory
+    blk = provenance_block("s", "m", cite_template=FACILITY_CITE_TEMPLATE,
+                           default_v="tracked")
+    assert blk["fallback_url"] == FACILITIES_FALLBACK_URL \
+        == "https://dchub.cloud/facilities/directory"
+    # markets + DCPI templates → markets directory
+    for tpl in (MARKET_CITE_TEMPLATE, DCPI_CITE_TEMPLATE):
+        blk = provenance_block("s", "m", cite_template=tpl,
+                               default_v="inferred")
+        assert blk["fallback_url"] == MARKETS_FALLBACK_URL \
+            == "https://dchub.cloud/markets/directory"
+    # no template → site root (still ALWAYS present)
+    blk = provenance_block("s", "m", default_v="published")
+    assert "cite_url_template" not in blk
+    assert blk["fallback_url"] == DEFAULT_FALLBACK_URL == "https://dchub.cloud"
+
+
+def test_v1_fallback_url_explicit_override_wins():
+    blk = provenance_block("s", "m", cite_template=DCPI_CITE_TEMPLATE,
+                           fallback_url=FACILITIES_FALLBACK_URL,
+                           default_v="inferred")
+    assert blk["fallback_url"] == FACILITIES_FALLBACK_URL
+
+
+def test_v1_default_v_carried_verbatim():
+    for tier in ("verified", "tracked", "published", "inferred"):
+        assert provenance_block("s", "m", default_v=tier)["default_v"] == tier
 
 
 # ─── verified_flag (facilities: canonical fleet filter) ──────────────────
@@ -111,15 +180,26 @@ def test_queue_flag():
 
 def test_attach_stamps_once_and_never_overwrites():
     payload = {"ok": True}
-    attach_provenance(payload, "s1", "m1")
+    attach_provenance(payload, "s1", "m1", default_v="tracked")
     assert payload["provenance"]["source"] == "s1"
-    attach_provenance(payload, "s2", "m2")   # must NOT overwrite
+    attach_provenance(payload, "s2", "m2", default_v="inferred")  # must NOT overwrite
     assert payload["provenance"]["source"] == "s1"
+    assert payload["provenance"]["default_v"] == "tracked"
 
 
 def test_attach_is_safe_on_non_dict():
-    assert attach_provenance(None, "s", "m") is None
-    assert attach_provenance([1, 2], "s", "m") == [1, 2]
+    assert attach_provenance(None, "s", "m", default_v="tracked") is None
+    assert attach_provenance([1, 2], "s", "m", default_v="tracked") == [1, 2]
+
+
+def test_attach_passes_v1_keys_through():
+    payload = {}
+    attach_provenance(payload, "s", "m", cite_template=FACILITY_CITE_TEMPLATE,
+                      default_v="tracked")
+    prov = payload["provenance"]
+    assert prov["provenance_version"] == 1
+    assert prov["default_v"] == "tracked"
+    assert prov["fallback_url"] == FACILITIES_FALLBACK_URL
 
 
 # ─── facility_verification_counts (no DB → canonical floors) ─────────────
@@ -159,9 +239,27 @@ def test_queue_snapshot_carries_collection_provenance(queue_client):
     assert prov["cite_as"] == "DC Hub, dchub.cloud"
     assert "published" in prov["method"]          # names the v convention
     assert "interconnection queues" in prov["source"]
+    # v1 lock: version + fallback_url + per-surface default_v. Snapshot rows
+    # are pure ISO published disclosures → default_v = published; no
+    # cite_url_template on this surface → fallback is the site root.
+    assert prov["provenance_version"] == 1
+    assert prov["default_v"] == "published"
+    assert prov["fallback_url"] == "https://dchub.cloud"
     # Additive-only: the legacy citation fields must survive.
     assert body.get("source") == "https://dchub.cloud/interconnection-queues"
     assert "methodology" in body
+
+
+def test_queue_snapshot_provenance_default_v_required_and_per_surface():
+    """The shared queue block builder inherits the v1 lock: default_v is a
+    required keyword (snapshot/by-iso pass 'published'; refined passes
+    'inferred' because its rows carry DC Hub enrichments)."""
+    from routes.interconnection_queues import _snapshot_provenance
+    with pytest.raises(TypeError):
+        _snapshot_provenance()                       # no default_v
+    assert _snapshot_provenance(default_v="published")["default_v"] == "published"
+    assert _snapshot_provenance(default_v="inferred")["default_v"] == "inferred"
+    assert _snapshot_provenance(default_v="published")["provenance_version"] == 1
 
 
 def test_queue_serialize_rows_flag_published():

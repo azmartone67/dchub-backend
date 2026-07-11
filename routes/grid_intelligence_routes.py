@@ -807,6 +807,9 @@ def list_grid_regions():
                 source="DC Hub Grid Intelligence (grid_regions)",
                 method=("per-region ISO queue + corridor analysis over HIFLD/"
                         "EIA/EPA/FEMA/USGS data, maintained by DC Hub"),
+                # v1: region rows are DC Hub-maintained analysis (derived
+                # from public data, not the source's own published figures).
+                default_v="inferred",
             )
         except Exception:
             pass
@@ -1037,6 +1040,9 @@ def get_grid_region(region_id):
                 method=("corridor-level grid analysis: queue GW, congestion, "
                         "infrastructure counts within 50km, maintained per "
                         "region by DC Hub"),
+                # v1: corridor rows are DC Hub-derived analysis (scores,
+                # 50km rollups) — conservative baseline is inferred.
+                default_v="inferred",
             )
         except Exception:
             pass

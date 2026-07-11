@@ -3896,7 +3896,10 @@ def phase19b_grid_intelligence(region):
             _pv_gi(gated,
                    source=f"EIA-930 hourly RTO/BA feed ({rto_code}) + DC Hub grid intelligence",
                    method="realtime EIA generation + demand assembly per region",
-                   as_of=out.get('demand_period'))
+                   as_of=out.get('demand_period'),
+                   # v1: gated headline serves EIA's own published demand
+                   # figure only — nothing DC Hub-derived in this payload.
+                   default_v="published")
         except Exception:
             pass
         resp = jsonify(gated)
@@ -3922,7 +3925,11 @@ def phase19b_grid_intelligence(region):
                 source=f"EIA-930 hourly RTO/BA feed ({rto_code}) + DC Hub grid intelligence",
                 method=("realtime EIA generation mix + demand, assembled per "
                         "region (5-min cache); as_of = demand_period"),
-                as_of=out.get('demand_period'))
+                as_of=out.get('demand_period'),
+                # v1: the FULL payload mixes published EIA figures with DC
+                # Hub derivations (headroom_preview estimate, load_factor,
+                # data_center_load) — conservative baseline is inferred.
+                default_v="inferred")
     except Exception:
         pass
     resp = jsonify(out)
@@ -18172,7 +18179,8 @@ def facility_by_slug(slug):
                           source="DC Hub facilities registry (discovered_facilities)",
                           method=("multi-source discovery + dedup verification; "
                                   "v: verified = passes the canonical fleet filter"),
-                          counts=_pv_c(), cite_template=_PV_FC)
+                          counts=_pv_c(), cite_template=_PV_FC,
+                          default_v="tracked")
                 except Exception:
                     _data_id.pop('is_duplicate', None)
                 return jsonify(_resp_id)
@@ -18259,7 +18267,8 @@ def facility_by_slug(slug):
                    method=("multi-source discovery + dedup verification; "
                            "v: verified = passes the canonical fleet filter, "
                            "tracked = not yet fleet-verified"),
-                   counts=_pv_c2(), cite_template=_PV_FC2)
+                   counts=_pv_c2(), cite_template=_PV_FC2,
+                   default_v="tracked")
         except Exception:
             data.pop('is_duplicate', None)
         return jsonify(_resp_slug)
@@ -18555,6 +18564,7 @@ def _list_facilities_full():
                     "tracked = not yet fleet-verified (conservative default)"),
             counts=_pv_counts2(),
             cite_template=_PV_FAC_CITE2,
+            default_v="tracked",
         )
     except Exception:
         pass
@@ -18720,6 +18730,7 @@ def _list_facilities_free():
                     "tracked = discovery pile (not yet verified)"),
             counts=_pv_counts(),
             cite_template=_PV_FAC_CITE,
+            default_v="tracked",
         )
     except Exception:
         pass
@@ -22158,6 +22169,9 @@ def _build_fiber_routes_geojson(max_features=None):
                 method=("carrier-published route geometries where surveyed; "
                         "2-point synthetic segments otherwise (per-feature "
                         "carrier/route_type identify the dataset)"),
+                # v1: synthetic (DC Hub-derived) segments can appear in any
+                # unfiltered response — conservative baseline is inferred.
+                default_v="inferred",
             )
         except Exception:
             pass

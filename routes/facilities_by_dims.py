@@ -241,13 +241,20 @@ def stats_canonical():
         }
         # provenance-v1: standard envelope on the citeable stats surface itself.
         try:
-            from routes.provenance import attach_provenance
+            from routes.provenance import (attach_provenance,
+                                           FACILITIES_FALLBACK_URL)
             attach_provenance(
                 _canon_payload,
                 source="DC Hub canonical stats (Neon live counts)",
                 method=("live COUNT() at request time; facilities_verified = "
                         "canonical fleet filter COALESCE(is_duplicate,0)=0 "
                         "over discovered_facilities"),
+                # v1: facilities surface — counts cover the whole discovery
+                # pile, so the conservative facilities tier is tracked; the
+                # explicit fallback pins the facilities directory (no
+                # cite_url_template on a stats surface).
+                fallback_url=FACILITIES_FALLBACK_URL,
+                default_v="tracked",
             )
         except Exception:
             pass

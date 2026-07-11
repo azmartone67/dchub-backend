@@ -299,6 +299,9 @@ def iso_snapshot(iso_code):
                         "DCPI market/pipeline/facility rollup"),
                 as_of=((heartbeat or {}).get("last_updated")
                        or _payload["generated_at"]),
+                # v1: the snapshot mixes published feed data with DC Hub
+                # DCPI scoring (modeled) — conservative baseline is inferred.
+                default_v="inferred",
             )
         except Exception:
             pass
@@ -379,6 +382,9 @@ def iso_comparison():
                     "data_method=baseline_model_v1 are modeled baselines, "
                     "not live telemetry"),
             as_of=_cmp_payload["generated_at"],
+            # v1: baseline_model_v1 (modeled) rows + DCPI rollups can appear
+            # alongside realtime rows — conservative baseline is inferred.
+            default_v="inferred",
         )
     except Exception:
         pass
