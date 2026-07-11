@@ -93,9 +93,20 @@ def extract_all():
         # denki-yoho CSVs (6 verified-live areas incl TEPCO; fans out
         # internally like eia_utility_bas, so one slot) and Singapore via the
         # NEMS community mirror. Both LIVE-only with staleness guards.
-        # Korea (KPX key-gated) and India (WAF-blocked realtime) stay future.
+        # 2026-07-11: Japan's slot now ALSO ingests the eria_jukyu 30-min
+        # FULL fuel mix for all 10 areas (same internal fan-out, same slot).
         ("iso_jp_denkiyoho", "OCCTO"),
         ("iso_sg_nems",     "EMA"),
+        # Global expansion (2026-07-11): Brazil ONS (first South American
+        # grid — live minute-level balanço, full renewable split, thermal
+        # bundled) and South Korea KPX (5-min full fuel mix scraped from the
+        # token-free real-time dashboard; the data.go.kr API alternative is
+        # key-gated). Both LIVE-only with staleness+sanity guards. NOTE:
+        # KPX responds in 14-18s from US IPs — its thread can outlive the
+        # 12s result budget below; the write still lands, the summary just
+        # reports late (visible in this endpoint's per-ISO results).
+        ("iso_br_ons",  "ONS"),
+        ("iso_kr_kpx",  "KEPCO-KR"),
         # 2026-05-30: non-ISO utility/co-op balancing authorities (40+ BAs:
         # APS/SRP/FPL + big IOUs + Pacific-NW PUDs + WAPA + co-ops).
         # run_extraction() fans out all of them in parallel internally
@@ -199,10 +210,21 @@ def health():
         # OCCTO aggregate + TEPCO/JP_<area> rows from 6 verified denki-yoho
         # CSVs (of 10 areas; Kansai/Tohoku serve stale mirrors, honestly
         # skipped) and EMA from the NEMS community mirror (nems.sn.sg).
+        # 2026-07-11 (global expansion): Japan upgraded to FULL fuel mix
+        # (eria_jukyu 30-min CSVs, all 10 areas incl Kansai/Tohoku); Brazil
+        # (ONS, minute-level, first South American grid) + South Korea (KPX
+        # 5-min full mix — the dashboard is token-free; only the data.go.kr
+        # API needs a key) now LIVE.
         international_live=["NGESO (GB, Elexon)", "AEMO (AU)",
                             "ENTSOE (EU, 12 zones)", "TAIPOWER (TW)",
-                            "OCCTO (JP, 6 TSO denki-yoho areas incl TEPCO)",
-                            "EMA (SG, NEMS mirror)"],
-        future_isos=["Korea (KPX)", "India (Grid-India)"],
-        future_isos_note="KPX is API-key-gated; India realtime is WAF-blocked (daily CEA .xls is BIFF w/ 2-3d lag) — no clean tokenless live feed",
+                            "OCCTO (JP, 5-min demand 6 areas + 30-min full fuel mix all 10 areas)",
+                            "EMA (SG, NEMS mirror)",
+                            "ONS (BR, 4 subsystems, minute-level full renewable split)",
+                            "KEPCO-KR (KR, KPX 5-min full fuel mix)"],
+        future_isos=["India (Grid-India)"],
+        future_isos_note=("India's fuel-mix sources (grid-india.in, meritindia.in) "
+                          "TLS-reset non-Indian IPs — needs an India-region relay "
+                          "(~$5/mo Mumbai VPS) before a live feed is possible; "
+                          "npp.gov.in works from US but is daily per-plant MU with "
+                          "no wind/solar split"),
     ), 200

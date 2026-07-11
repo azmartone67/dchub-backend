@@ -25545,7 +25545,7 @@ def _canonical_mcp_manifest():
         {"name": "rank_markets",             "description": "DCPI-driven ranking of 300+ markets"},
         {"name": "score_facility",           "description": "Composite single-facility score"},
         {"name": "compare_isos",             "description": "Head-to-head across the 7 US ISOs + modeled baselines (Hydro-Québec, AESO, Nord Pool)"},
-        {"name": "get_grid_scoreboard",      "description": "All 7 US ISO grids ranked live by renewable share — fuel mix, gas %, demand"},
+        {"name": "get_grid_scoreboard",      "description": "Live global grid scoreboard ranked by renewable share — 7 US ISOs + GB + 24 EU zones + Taiwan + Japan + South Korea + Brazil (fuel mix, gas %, demand); Australia + Singapore listed as partial feeds"},
         {"name": "get_market_dcpi_rank",     "description": "DCPI rank + verdict for a single market"},
         {"name": "get_gas_index",            "description": "DCGI — per-state natural-gas suitability (0-100), gas analog to DCPI"},
         {"name": "get_intelligence_index",   "description": "Composite intelligence index per region"},
@@ -31713,6 +31713,20 @@ try:
     print("[main] iso_sg_nems_bp registered — LIVE Singapore grid (NEMS mirror, tokenfree, APAC #4)", flush=True)
 except Exception as _sg_e:
     print(f"[main] iso_sg_nems_bp register failed: {_sg_e}", flush=True)
+
+try:
+    from routes.iso_br_ons import iso_br_ons_bp
+    app.register_blueprint(iso_br_ons_bp)
+    print("[main] iso_br_ons_bp registered — LIVE Brazil grid (ONS balanço, tokenfree, first South American grid)", flush=True)
+except Exception as _br_e:
+    print(f"[main] iso_br_ons_bp register failed: {_br_e}", flush=True)
+
+try:
+    from routes.iso_kr_kpx import iso_kr_kpx_bp
+    app.register_blueprint(iso_kr_kpx_bp)
+    print("[main] iso_kr_kpx_bp registered — LIVE South Korea grid (KPX 5-min fuel mix, tokenfree, APAC #5)", flush=True)
+except Exception as _kr_e:
+    print(f"[main] iso_kr_kpx_bp register failed: {_kr_e}", flush=True)
 
 # Phase ZZZZZ-round34 (2026-05-24): Tier 2 MCP tools — PDF site reports + CSV export
 try:
