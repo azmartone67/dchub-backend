@@ -1438,6 +1438,15 @@ _WORKER_PROXY_POST_PATHS = frozenset({
     # r-sentinel-edge (2026-07-03): the Site Sentinel master tick fans out
     # 101 probes + KV/R2 writes — worker-owned, and fire-and-forget (202).
     '/api/v1/admin/sentinel/master-tick',
+    # r-eval-fixwave-2 (2026-07-11): the site-baseline tick makes ~40 HTTP
+    # self-calls back into the WEB pool when triggered on web — during the
+    # 09:38Z refresh a concurrent rank-sites request queued past the edge
+    # timeout and 502'd (caught live by the Llama 4 platform eval; the retry's
+    # baseline.computed_at matched the tick finishing to the second). Same
+    # class as r-poolfix/r-starve: background tick, no live request depends
+    # on it → worker-owned. eia-retirements pages ~28k EIA rows — same deal.
+    '/api/jobs/site-baseline',
+    '/api/jobs/eia-retirements',
     # r-poolfix (2026-07-04): the remaining brain + master-shell heartbeat
     # ticks ran in-process on the web pool and drove the 03:17-herd 80/80
     # saturation. Same rationale as brain/sentinel above — worker-owned
