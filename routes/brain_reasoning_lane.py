@@ -275,13 +275,27 @@ def _route_for(candidate_type: str, confidence: float) -> tuple[str, str]:
 
 def _already_reasoned(conn, issue: str, url: str) -> bool:
     """True if there's already a fresh (<7d) candidate for this finding, so a
-    drain doesn't re-spend budget on the same issue. Fail-open to False."""
+    drain doesn't re-spend budget on the same issue. Fail-open to False.
+
+    2026-07-11 STALL FIX: freshness must be judged on updated_at, NOT
+    created_at. _write_candidate UPSERTs on (finding_issue, finding_url) and
+    only bumps updated_at — created_at stays the first-reasoning time forever.
+    With the old created_at check, the moment a chronic top-ranked finding's
+    candidate aged past 7 days (06-29 rows crossed on 07-06) it became
+    permanently "not already reasoned": every tick re-reasoned the SAME
+    finding, the UPSERT refreshed only updated_at, and the per-tick budget
+    (REASON_PER_TICK=1) never reached a new finding — the lane burned ~12 LLM
+    calls/day while producing zero new candidates. GREATEST(+COALESCE for any
+    legacy NULL updated_at) makes a re-reasoned candidate count as fresh, so
+    the drain skips it for 7 days and the budget advances to unreasoned
+    findings."""
     try:
         with conn.cursor() as cur:
             cur.execute(
                 "SELECT 1 FROM brain_reasoning_candidates "
                 "WHERE finding_issue = %s AND finding_url = %s "
-                "AND created_at > NOW() - INTERVAL '7 days' LIMIT 1",
+                "AND GREATEST(created_at, COALESCE(updated_at, created_at)) "
+                "    > NOW() - INTERVAL '7 days' LIMIT 1",
                 (issue, url or ""))
             return cur.fetchone() is not None
     except Exception:
