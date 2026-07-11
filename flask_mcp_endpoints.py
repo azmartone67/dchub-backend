@@ -3119,6 +3119,10 @@ def stripe_webhook_mcp():
         "price_1Tml5XJ9ey2ATcQl0pbU4htM": "founding",       # $99/mo founding (_stripe_links.py)
         "price_1TecqhJ9ey2ATcQl4Hmp99OU": "pro_annual",     # $1,188/yr campaign (campaign_halfprice_annual.py)
         "price_1TdNixJ9ey2ATcQldRAdlc7z": "metered_usage",  # metered price (stripe_metered.py)
+        # 2026-07-10 (#1551): the $49/mo Developer price behind the paywall's
+        # direct buy.stripe.com link has no lookup_key/nickname, so it recorded
+        # as plan 'unknown' (mcp_conversions row 62). STRIPE_PRICE_DEV_MONTHLY.
+        "price_1TB2WrJ9ey2ATcQlth13YBUT": "developer",      # $49/mo Developer (env STRIPE_PRICE_DEV_MONTHLY)
     }
     items = obj.get("items", {}).get("data", []) if obj.get("items") else []
     plan_to   = "unknown"
@@ -3139,7 +3143,9 @@ def stripe_webhook_mcp():
                       or _PRICE_ID_PLAN.get(price.get("id") or ""))
             if _label:
                 plan_to, _label_defaulted = _label, False
-    if mrr_cents < 100 and _label_defaulted:
+    # 2026-07-10 (#1551): warn on EVERY unlabeled plan, not just mrr<$1 — the
+    # old gate meant a real $49 sub recorded as 'unknown' silently (row 62).
+    if _label_defaulted:
         import logging as _lg
         _lg.getLogger(__name__).warning(
             "stripe subscription webhook: unlabeled plan (sub=%s price=%s) "
