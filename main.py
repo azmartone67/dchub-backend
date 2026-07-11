@@ -34828,6 +34828,13 @@ try:
 except Exception as _e:
     print(f"[main] shortlists_bp register failed: {_e}", file=sys.stderr)
 
+try:
+    from routes.parcels import parcels_bp
+    app.register_blueprint(parcels_bp)
+    print("[main] parcels_bp registered: /api/v1/parcels/lookup + /coverage (parcel GIS pilot)")
+except Exception as _e:
+    print(f"[main] parcels_bp register failed: {_e}", file=sys.stderr)
+
 # r47.2 (2026-05-25): daily ingest cron for ISO queue snapshots.
 # Fired by cron_heartbeat at 06:00 UTC; hits ERCOT/PJM/MISO/SPP/CAISO/
 # NYISO/ISO-NE public pages and UPSERTs whatever it parses.
