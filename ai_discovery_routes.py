@@ -371,8 +371,13 @@ def register_discovery_routes(app):
                 {"name": "Pro", "description": "Requires API key ($49/mo)"}
             ]
         }
+        # r-eval-fixwave (2026-07-11, Sonar's finding): serve COMPACT, not
+        # indent=2. Pretty-printing pushed the spec to ~21.5K chars and a
+        # context-budgeted evaluator that truncated at 15K never saw
+        # /api/site-score (declared "missing from the spec" — a pure
+        # serialization artifact). Minified it's ~13.8K and every path fits.
         return Response(
-            json.dumps(spec, indent=2),
+            json.dumps(spec, separators=(',', ':')),
             mimetype='application/json',
             headers={'Access-Control-Allow-Origin': '*'}
         )

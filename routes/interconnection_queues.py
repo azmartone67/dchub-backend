@@ -683,7 +683,21 @@ def api_rank_sites():
                     return False
         return True
 
-    survivors = [dict(c) for c in cands if isinstance(c, dict) and _passes(c)]
+    # r-eval-fixwave (2026-07-11): accept the {"id", "fields": {...}} candidate
+    # shape — two independent platform evaluators (Mistral Large, Llama 4 Scout)
+    # and our own showcase demo all reached for a nested fields wrapper, and it
+    # silently no-op'd every objective (coverage honestly said "0 evaluated" but
+    # ranks came back as input order with 0.0 scores). Postel: flatten fields
+    # into the candidate; explicit top-level keys win on collision.
+    def _flat(c):
+        if isinstance(c.get("fields"), dict):
+            merged = dict(c["fields"])
+            merged.update({k: v for k, v in c.items() if k != "fields"})
+            return merged
+        return dict(c)
+
+    cands = [_flat(c) for c in cands if isinstance(c, dict)]
+    survivors = [dict(c) for c in cands if _passes(c)]
     dropped = len(cands) - len(survivors)
 
     # 2. score each objective 0-100. absolute mode = fixed 0-100 scale (stable across
@@ -750,14 +764,28 @@ def api_rank_sites():
 
     # 3. weighted objective score + rank — over VALIDATED objectives only, so an
     #    unavailable objective neither dilutes the score nor gets silently zero-filled.
+    # r-eval-fixwave (2026-07-11): PER-CANDIDATE renormalization. A candidate
+    # missing a set-validated objective used to have it scored as 0 — silent
+    # dilution (Mistral: "rank poorly even if they might score well"). Now the
+    # weighted mean runs over the objectives the candidate actually carries,
+    # the gap is DECLARED in missing_objectives, and a candidate carrying none
+    # of them scores null (ranked last), never a fabricated 0.0.
     _validated = [f for f in objectives if coverage.get(f) == "validated"]
-    wsum = sum(abs(_num(objectives[f]) or 0.0) for f in _validated) or 1.0
     for c in survivors:
         nrm = c.get("_norm", {})
-        s = sum((abs(_num(objectives[f]) or 0.0)) * nrm.get(f, 0.0) for f in _validated)
-        c["objective_score"] = round(s / wsum, 1)
+        present = [f for f in _validated if f in nrm]
+        missing = [f for f in _validated if f not in nrm]
+        cw = sum(abs(_num(objectives[f]) or 0.0) for f in present)
+        if present and cw:
+            s = sum((abs(_num(objectives[f]) or 0.0)) * nrm[f] for f in present)
+            c["objective_score"] = round(s / cw, 1)
+        else:
+            c["objective_score"] = None
+        if missing:
+            c["missing_objectives"] = missing
         c["normalized"] = c.pop("_norm", {})
-    survivors.sort(key=lambda c: c["objective_score"], reverse=True)
+    survivors.sort(key=lambda c: (c["objective_score"] is not None,
+                                  c["objective_score"] or 0.0), reverse=True)
     for i, c in enumerate(survivors):
         c["rank"] = i + 1
 
