@@ -798,7 +798,7 @@ TOOL_TEASER = {
     "get_tax_incentives":     "state-level sales-tax abatements, property-tax exemptions, and incentive program ROI estimates.",
     "get_pipeline":           "540+ active DC projects globally — operator, capacity, status, ETA, preleased %.",
     "get_infrastructure":     "substations, transmission lines, gas pipelines, and power plants within 50km of any site.",
-    "get_fiber_intel":        "3,200+ long-haul routes — carriers, latency, lit/dark availability, IX presence.",
+    "get_fiber_intel":        "3,200+ long-haul routes — carriers, route geometries, route classes incl. carrier-advertised dark corridors, IX presence; per-route lit capacity not tracked.",
     "list_transactions":      "2,000+ tracked DC M&A deals — buyer, seller, MW, $/kW, date, region.",
     "analyze_site":           "composite site-score for any lat/lon: power, fiber, water, tax, climate, latency to top markets.",
     "compare_sites":          "PRO multi-site ranker — side-by-side scoring across up to 5 candidate sites with weighted rankings. The killer broker workflow.",

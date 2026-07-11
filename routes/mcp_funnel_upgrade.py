@@ -63,14 +63,19 @@ _TOOL_PREVIEWS = {
         ),
     },
     "get_fiber_intel": {
-        "category": "Dark + Lit Fiber Routes",
-        "you_unlock": ("North America fiber map: route operators, "
-                        "lit/dark capacity, peering points, latency "
-                        "estimates between any two markets."),
-        "sample_question": "Which carriers serve Ashburn → Council Bluffs?",
+        # provenance-honesty (2026-07-11): we track route classes incl.
+        # carrier-advertised dark corridors — NOT per-route lit capacity or
+        # latency. Copy must not promise fields the data doesn't have.
+        "category": "Fiber Routes (incl. dark corridors)",
+        "you_unlock": ("North America fiber map: route operators, full "
+                        "route geometries, and route classes incl. "
+                        "carrier-advertised dark-fiber corridors "
+                        "(per-route lit capacity not tracked)."),
+        "sample_question": "Which carriers have routes through Ashburn?",
         "sample_answer_template": (
-            "8 carriers, 12 paths, latency 22-31ms. Top: Lumen direct route 27ms, "
-            "Cogent via Chicago 31ms. Lit capacity: 14.4 Tbps aggregate."
+            "8 carriers, 214 route segments touching Ashburn — incl. 12 "
+            "carrier-advertised dark-fiber corridors. GeoJSON geometries "
+            "included, ready for your map."
         ),
     },
     "analyze_site": {

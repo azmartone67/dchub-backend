@@ -172,7 +172,27 @@ def route_plan():
         n = 4
     fibre = "1440F" if a.get("fibre") == "1440F" else "720F"
     bore_m = float(a.get("bore_m", 0) or 0)
-    return jsonify(plan(frm, to, n, fibre, bore_m))
+    res = plan(frm, to, n, fibre, bore_m)
+    # provenance-v1 (2026-07-11): auto-routed corridors + indicative cost
+    # model = DC Hub inference → default_v="inferred". Fail-soft; idempotent
+    # on cache hits (attach_provenance never overwrites an existing block).
+    try:
+        if isinstance(res, dict) and not res.get("error"):
+            from routes.provenance import attach_provenance
+            attach_provenance(
+                res,
+                source=("DC Hub fibre route planner — OSRM public road "
+                        "network + DC Hub indicative unit-rate cost model"),
+                method=("OSRM road-corridor auto-routing (driving paths) "
+                        "with diversity offsets + indicative default "
+                        "unit-rate costing — NOT engineered alignments or "
+                        "carrier quotes; subject to survey, DBYD and "
+                        "carrier confirmation"),
+                default_v="inferred",
+            )
+    except Exception:
+        pass
+    return jsonify(res)
 
 if __name__ == "__main__":
     import sys

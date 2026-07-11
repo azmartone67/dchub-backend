@@ -212,7 +212,7 @@ def _tool_value_blurb(tool: str) -> str:
         "get_water_risk": "WRI Aqueduct water-stress + drought + flood per lat/lon",
         "get_energy_prices": "exact ¢/kWh by state with industrial/commercial/residential split",
         "get_renewable_energy": "solar + wind capacity with project-level MW, COD, PPA prices",
-        "get_fiber_intel": "3,282 long-haul routes — carriers, lit/dark, latency, IX",
+        "get_fiber_intel": "3,282 long-haul routes — carriers, geometries, carrier-advertised dark corridors, IX",
         "analyze_site": "composite site-score for any lat/lon — power, fiber, water, tax",
         "compare_sites": "side-by-side scoring across up to 5 candidate sites",
         "get_tax_incentives": "50-state sales-tax abatements + property exemptions",

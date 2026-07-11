@@ -21,6 +21,13 @@ import os, time, math
 from flask import Blueprint, request, jsonify
 import psycopg2, psycopg2.extras
 
+# provenance-v1 (2026-07-11): collection-level stamp helper. Fail-soft — the
+# scorer must keep working even if the provenance module is unavailable.
+try:
+    from routes.provenance import attach_provenance as _attach_provenance
+except Exception:
+    _attach_provenance = None
+
 connectivity_score_bp = Blueprint("connectivity_score_r88", __name__)
 
 _cache = {}          # key -> (ts, data)
@@ -199,5 +206,24 @@ def connectivity_score():
                          "and the 0-100 connectivity score."),
             "source": data["source"],
         }
+    # provenance-v1 (2026-07-11): the score is a DC Hub-derived composite,
+    # not a carrier quote → default_v="inferred". Stamped on both the full
+    # and teaser shapes, before caching (idempotent; never overwrites).
+    try:
+        if _attach_provenance:
+            _attach_provenance(
+                data,
+                source=("DC Hub connectivity scorer — PeeringDB carrier "
+                        "presence (carrier_facility_presence) + FCC BDC "
+                        "fiber coverage hexes (fcc_fiber_hex)"),
+                method=("derived composite: nearest-carrier distance (45%) + "
+                        "distinct-carrier depth (40%) + path diversity (15%) "
+                        "around the queried point — a DC Hub inference from "
+                        "public datasets, not a carrier quote or surveyed "
+                        "lateral"),
+                default_v="inferred",
+            )
+    except Exception:
+        pass
     _cache[key] = (now, data)
     return jsonify(data), 200

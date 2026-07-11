@@ -22105,6 +22105,19 @@ def _build_fiber_routes_geojson(max_features=None):
         columns = [desc[0] for desc in cursor.description]
         rows = cursor.fetchall()
 
+        # provenance-v1 (2026-07-11, dark-fiber honesty pass): per-record
+        # helpers — source→v tier, vintage as_of (2016-wayback Zayo KMZ),
+        # dark/lit service_class. Pure module; any import failure leaves the
+        # legacy property shape untouched (fail-soft).
+        try:
+            from routes.fiber_provenance import (source_v as _fp_source_v,
+                                                 source_as_of as _fp_as_of,
+                                                 service_class as _fp_svc,
+                                                 DARK_BASIS as _fp_dark_basis)
+        except Exception:
+            _fp_source_v = _fp_as_of = _fp_svc = None
+            _fp_dark_basis = "carrier-advertised"
+
         features = []
         for row in rows:
             row_dict = dict(zip(columns, row))
@@ -22133,22 +22146,45 @@ def _build_fiber_routes_geojson(max_features=None):
             if _simplify_geo and len(coords) > 2:
                 coords = [coords[0], coords[-1]]
 
+            props = {
+                "name": row_dict.get('name', ''),
+                "carrier": row_dict.get('provider', ''),
+                "route_type": row_dict.get('route_type', ''),
+                "fiber_count": row_dict.get('fiber_count'),
+                "lit_capacity_gbps": row_dict.get('lit_capacity_gbps'),
+                "start_point": row_dict.get('start_location', ''),
+                "end_point": row_dict.get('end_location', ''),
+                "distance_miles": row_dict.get('distance_miles'),
+                "distance_km": (round(float(row_dict['distance_miles']) * 1.60934, 1)
+                                if row_dict.get('distance_miles') is not None else None),
+                "capacity": row_dict.get('capacity', ''),
+                "color": row_dict.get('color', ''),
+            }
+            # provenance-v1 per-record fields (compact — bytes discipline):
+            # v ONLY when the source maps to a tier (unknown → omit, inherits
+            # collection default_v="inferred"); as_of ONLY for known-vintage
+            # datasets (2016-wayback Zayo); service_class always present, with
+            # dark_basis making "dark" honest (carrier-advertised, NOT
+            # confirmed strands). Fail-soft: never breaks the feature.
+            try:
+                if _fp_svc:
+                    _sc = _fp_svc(row_dict.get('route_type'))
+                    props["service_class"] = _sc
+                    if _sc == "dark":
+                        props["dark_basis"] = _fp_dark_basis
+                if _fp_source_v:
+                    _pv = _fp_source_v(row_dict.get('source'))
+                    if _pv:
+                        props["v"] = _pv
+                    _pao = _fp_as_of(row_dict.get('source'))
+                    if _pao:
+                        props["as_of"] = _pao
+            except Exception:
+                pass
+
             features.append({
                 "type": "Feature",
-                "properties": {
-                    "name": row_dict.get('name', ''),
-                    "carrier": row_dict.get('provider', ''),
-                    "route_type": row_dict.get('route_type', ''),
-                    "fiber_count": row_dict.get('fiber_count'),
-                    "lit_capacity_gbps": row_dict.get('lit_capacity_gbps'),
-                    "start_point": row_dict.get('start_location', ''),
-                    "end_point": row_dict.get('end_location', ''),
-                    "distance_miles": row_dict.get('distance_miles'),
-                    "distance_km": (round(float(row_dict['distance_miles']) * 1.60934, 1)
-                                    if row_dict.get('distance_miles') is not None else None),
-                    "capacity": row_dict.get('capacity', ''),
-                    "color": row_dict.get('color', ''),
-                },
+                "properties": props,
                 "geometry": {
                     "type": "LineString",
                     "coordinates": coords
@@ -22167,8 +22203,13 @@ def _build_fiber_routes_geojson(max_features=None):
                 source=("DC Hub fiber_routes — surveyed carrier KMZ (Zayo) + "
                         "NTIA middle-mile + synthetic endpoint pairs"),
                 method=("carrier-published route geometries where surveyed; "
-                        "2-point synthetic segments otherwise (per-feature "
-                        "carrier/route_type identify the dataset)"),
+                        "2-point synthetic segments otherwise. Per-feature v: "
+                        "published=carrier/government-published dataset (KMZ, "
+                        "NTIA, state broadband), inferred=DC Hub synthetic/"
+                        "seeded; per-feature as_of flags known vintages (e.g. "
+                        "2016 Zayo wayback). service_class dark="
+                        "carrier-advertised dark corridor, not confirmed "
+                        "strands; per-route lit capacity not tracked"),
                 # v1: synthetic (DC Hub-derived) segments can appear in any
                 # unfiltered response — conservative baseline is inferred.
                 default_v="inferred",
@@ -22273,7 +22314,8 @@ def _fiber_teaser_response():
             'agent_quotable': (
                 f"DC Hub returned {len(feats)} of {total:,} fiber routes as a "
                 f"free preview. Full dataset (carriers, route geometries, "
-                f"lit/dark status across {total:,} segments) needs a Pro key "
+                f"route classes incl. carrier-advertised dark corridors "
+                f"across {total:,} segments) needs a Pro key "
                 f"at $199/mo — https://dchub.cloud/pricing. For fund-grade "
                 f"access (raw exports, custom DCPI weights, monthly briefings), "
                 f"see Enterprise at $25K+/yr — https://dchub.cloud/enterprise."),
@@ -22546,7 +22588,15 @@ def fiber_metro_api(market_name=None):
                     'key_ix_points': row[7], 'key_carrier_hotels': row[8], 'notes': row[9]
                 }
             cur.close()
-            return jsonify({'success': True, 'market': market_name, 'summary': summary, 'carriers': carriers})
+            payload = {'success': True, 'market': market_name, 'summary': summary, 'carriers': carriers}
+            # provenance-v1 (2026-07-11): collection-level stamp — public-
+            # carrier-material profiles, approximations, seed vintage. Fail-soft.
+            try:
+                from routes.fiber_provenance import metro_fiber_provenance_block as _mfp
+                payload['provenance'] = _mfp()
+            except Exception:
+                pass
+            return jsonify(payload)
 
         else:
             # All markets summary
@@ -22569,19 +22619,31 @@ def fiber_metro_api(market_name=None):
                 cols2 = ['market','route_miles_approx','on_net_buildings','services']
                 carrier_markets = [dict(zip(cols2, r)) for r in cur.fetchall()]
                 cur.close()
-                return jsonify({'success': True, 'carrier': carrier_filter, 'markets': carrier_markets, 'total_markets': len(carrier_markets)})
+                payload = {'success': True, 'carrier': carrier_filter, 'markets': carrier_markets, 'total_markets': len(carrier_markets)}
+                try:
+                    from routes.fiber_provenance import metro_fiber_provenance_block as _mfp
+                    payload['provenance'] = _mfp()
+                except Exception:
+                    pass
+                return jsonify(payload)
 
             cur.execute("SELECT COUNT(*), SUM(route_miles_approx) FROM metro_dark_fiber")
             row = cur.fetchone()
             cur.close()
-            return jsonify({
+            payload = {
                 'success': True,
                 'markets': markets,
                 'total_markets': len(markets),
                 'total_carrier_market_records': row[0] or 0,
                 'total_route_miles': row[1] or 0,
                 'source': 'DC Hub Metro Dark Fiber Intelligence (dchub.cloud)'
-            })
+            }
+            try:
+                from routes.fiber_provenance import metro_fiber_provenance_block as _mfp
+                payload['provenance'] = _mfp()
+            except Exception:
+                pass
+            return jsonify(payload)
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
     finally:
