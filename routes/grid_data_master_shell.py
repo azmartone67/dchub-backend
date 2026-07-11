@@ -49,7 +49,7 @@ import hmac
 import urllib.request
 import urllib.parse
 import urllib.error
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 from flask import Blueprint, jsonify, request
 
@@ -191,6 +191,9 @@ TARGET_DATASETS = [
     {"id": "miso_load_forecast",   "iso": "MISO",  "dom": "grid", "cat": "load_forecast", "value_col": "load_forecast", "unit": "MW"},
     {"id": "nyiso_load_forecast",  "iso": "NYISO", "dom": "grid", "cat": "load_forecast", "value_col": "load_forecast", "unit": "MW"},
     {"id": "spp_load_forecast",    "iso": "SPP",   "dom": "grid", "cat": "load_forecast", "value_col": "load_forecast", "unit": "MW"},
+    # 2026-07-11 expansion: ISO-NE forward load — completes load_forecast for all
+    # 7 US ISOs (was 6/7; ISONE previously carried only the real-time LMP row).
+    {"id": "isone_load_forecast",  "iso": "ISONE", "dom": "grid", "cat": "load_forecast", "value_col": "load_forecast", "unit": "MW"},
     # ISO-NE real-time LMP — CLOSES the "ISO-NE LMP registration-gated" gap
     {"id": "isone_lmp_real_time_5_min", "iso": "ISONE", "dom": "grid", "cat": "lmp", "value_col": "lmp", "unit": "$/MWh"},
     # operating reserves + forward operating margin (toward the never-live reserve_margin)
@@ -211,6 +214,7 @@ TARGET_DATASETS = [
     # ── GAS ──────────────────────────────────────────────────────────
     {"id": "eia_henry_hub_natural_gas_spot_prices_daily", "iso": "US", "dom": "gas", "cat": "gas_price", "value_col": "price", "unit": "$/MMBtu"},
 ]
+_REGISTRY_IDS = {t["id"] for t in TARGET_DATASETS}
 _LOAD_FC_ISOS = {t["iso"] for t in TARGET_DATASETS if t["cat"] == "load_forecast"}
 # depth = the structurally-missing high-value signals the weakest-depth lever pulls first
 _DEPTH_CATS = ("lmp", "reserves", "margin", "capacity", "emissions", "gas_price")
@@ -297,8 +301,8 @@ def _ensure_tables() -> bool:
 
 
 def _ingested_state() -> dict:
-    """Return {dataset_id: {'as_of': ts, 'iso': .., 'category': ..}} for what we
-    already carry in grid_ext_metrics (latest as_of per dataset)."""
+    """Return {dataset_id: {'as_of': ts, 'ingested_at': ts, 'iso': .., 'category': ..}}
+    for what we already carry in grid_ext_metrics (latest per dataset)."""
     c = _conn()
     if c is None:
         return {}
@@ -306,11 +310,13 @@ def _ingested_state() -> dict:
     try:
         with c.cursor() as cur:
             cur.execute("""
-                SELECT dataset_id, iso, category, MAX(as_of) AS latest
+                SELECT dataset_id, iso, category, MAX(as_of) AS latest,
+                       MAX(ingested_at) AS last_ingested
                 FROM grid_ext_metrics GROUP BY dataset_id, iso, category
             """)
-            for did, iso, cat, latest in cur.fetchall():
-                out[did] = {"iso": iso, "category": cat, "as_of": latest}
+            for did, iso, cat, latest, last_ing in cur.fetchall():
+                out[did] = {"iso": iso, "category": cat, "as_of": latest,
+                            "ingested_at": last_ing}
     except Exception:
         return {}
     finally:
@@ -475,12 +481,27 @@ def tier1_measure() -> dict:
                 green += 1
     green_ratio = round(green / total, 3) if total else None
 
-    ingested = _ingested_state()
+    # registry rows ONLY — grid_ext_metrics also carries the Depth shell's
+    # capacity_price/dc_load_queue/hosting_capacity dataset_ids, which used to
+    # inflate breadth to 66/20 and could hand _stalest_tapped a non-registry id.
+    ingested = {k: v for k, v in _ingested_state().items() if k in _REGISTRY_IDS}
     dom_tapped = {}
     for did in ingested:
         d = _DATASET_DOM.get(did)
         if d:
             dom_tapped[d] = dom_tapped.get(d, 0) + 1
+    # ...and how much of what we absorbed is actually being kept fresh (48h) —
+    # the signal that catches the ingest lane silently stalling (07-03→07-10).
+    fresh_cut = datetime.now(timezone.utc) - timedelta(hours=48)
+    fresh_n = 0
+    for v in ingested.values():
+        ts = v.get("ingested_at")
+        try:
+            if ts is not None and ts >= fresh_cut:
+                fresh_n += 1
+        except TypeError:
+            pass
+    ext_fresh_ratio = round(fresh_n / len(ingested), 3) if ingested else None
     return {
         "core": {
             "iso_zone_count": zone_count,
@@ -488,6 +509,7 @@ def tier1_measure() -> dict:
             "queue_isos": q_n,
             "queue_dc_share_isos": dc_share_isos,
             "data_health_green_ratio": green_ratio,
+            "ext_fresh_ratio_48h": ext_fresh_ratio,
         },
         "breadth_tapped": len(ingested),
         "breadth_target": len(TARGET_DATASETS),
@@ -512,6 +534,9 @@ def tier2_score_levers(m: dict) -> dict:
     gr = core.get("data_health_green_ratio")
     if gr is not None:
         fresh_bits.append(float(gr))
+    efr = core.get("ext_fresh_ratio_48h")
+    if efr is not None:
+        fresh_bits.append(float(efr))
     freshness = round(sum(fresh_bits) / len(fresh_bits), 3)
 
     # 2. BREADTH — registry coverage (how much of the firehose we've absorbed)
@@ -551,10 +576,12 @@ def _next_untapped(ingested: dict, prefer_cats: tuple | None = None,
 
 
 def _stalest_tapped(ingested: dict) -> dict | None:
-    """When everything is tapped, re-ingest the oldest to maintain freshness."""
+    """When everything is tapped, re-ingest the least-recently-INGESTED dataset.
+    Ranked by our own ingested_at, not the data's as_of — capacity/auction rows
+    carry old as_of timestamps by nature and would otherwise always win."""
     if not ingested:
         return None
-    oldest_id = min(ingested, key=lambda k: str(ingested[k].get("as_of") or ""))
+    oldest_id = min(ingested, key=lambda k: str(ingested[k].get("ingested_at") or ""))
     return next((t for t in TARGET_DATASETS if t["id"] == oldest_id), None)
 
 
@@ -567,18 +594,24 @@ def tier3_act(m: dict, levers: dict) -> dict:
     ingested = m.get("_ingested") or {}
 
     if lever == "freshness":
-        # self-heal: re-trigger whichever core feed is empty (default: the ISO fan-out)
+        # self-heal: re-trigger whichever core feed is EMPTY. When every core
+        # feed is serving, fall through to grid_ext_metrics upkeep below — the
+        # old unconditional iso/all/extract burned every tick as a no-op and
+        # starved the gridstatus lane (zero re-ingests 07-03→07-10).
         core = m.get("core") or {}
+        r = tgt = None
         if (core.get("lmp_locations") or 0) == 0:
             r = _fire("/api/v1/iso-lmp/ingest"); tgt = "iso-lmp/ingest"
         elif (core.get("queue_isos") or 0) == 0:
             r = _fire("/api/v1/iso-queue/ingest"); tgt = "iso-queue/ingest"
-        else:
+        elif (core.get("iso_zone_count") or 0) == 0:
             r = _fire("/api/v1/iso/all/extract"); tgt = "iso/all/extract"
-        return {"action": "self_heal_refresh", "lever": lever, "target": tgt,
-                "dispatched": r.get("dispatched")}
+        if tgt:
+            return {"action": "self_heal_refresh", "lever": lever, "target": tgt,
+                    "dispatched": r.get("dispatched")}
 
-    # breadth / depth / forecast → absorb the next relevant untapped dataset
+    # breadth / depth / forecast (+ healthy-core freshness) → absorb the next
+    # relevant untapped dataset, else re-ingest the stalest to keep it fresh
     prefer_cats = _DEPTH_CATS if lever == "depth" else None
     prefer_isos = (_LOAD_FC_ISOS - set(m.get("forecast_isos_tapped") or [])) if lever == "forecast" else None
     target = _next_untapped(ingested, prefer_cats=prefer_cats, prefer_isos=prefer_isos)
@@ -590,6 +623,15 @@ def tier3_act(m: dict, levers: dict) -> dict:
     if target is None:
         return {"action": "none", "reason": "no target datasets"}
     res = _ingest_gridstatus_dataset(target)
+    if not res.get("ok") and mode == "absorb_new_source":
+        # a permanently-failing registry id must not pin the lane — keep the
+        # stalest tapped dataset fresh in the same bounded tick instead
+        fb = _stalest_tapped(ingested)
+        if fb is not None and fb["id"] != target["id"]:
+            return {"action": "ingest_gridstatus", "mode": "maintain_freshness_fallback",
+                    "lever": lever, "dataset": fb["id"],
+                    "failed_absorb": {"dataset": target["id"], "error": res.get("error")},
+                    "result": _ingest_gridstatus_dataset(fb)}
     return {"action": "ingest_gridstatus", "mode": mode, "lever": lever,
             "dataset": target["id"], "result": res}
 
@@ -684,7 +726,7 @@ def grid_extended(iso):
         import psycopg2.extras
         with c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute("""
-                SELECT DISTINCT ON (category) category, primary_value, unit, as_of
+                SELECT DISTINCT ON (category) category, primary_value, unit, as_of, raw
                 FROM grid_ext_metrics
                 WHERE upper(iso) = %s AND primary_value IS NOT NULL
                 ORDER BY category, as_of DESC NULLS LAST
@@ -697,19 +739,31 @@ def grid_extended(iso):
             "operating_margin_mw": "margin",
             "grid_carbon_intensity_lb_mwh": "emissions",
             "zone_lmp_usd_mwh": "lmp",
+            "dc_load_queue_gw": "dc_load_queue",
         }
         for field, c0 in mapping.items():
             r = cat.get(c0)
             if r and r.get("primary_value") is not None:
                 out[field] = float(r["primary_value"])
                 out[field + "_as_of"] = str(r.get("as_of"))
-        # capacity-MARKET clearing price ($/MW-day) — cited seed with provenance
-        ca = _capacity_auction(iso)
-        if ca.get("price_usd_mw_day") is not None:
-            out["capacity_auction_price_usd_mw_day"] = ca["price_usd_mw_day"]
-            out["capacity_auction_delivery_year"] = ca.get("delivery_year")
-            out["capacity_auction_source"] = ca.get("source")
-            out["capacity_auction_as_of"] = ca.get("as_of")
+        # capacity-MARKET clearing price ($/MW-day) — prefer the Depth shell's
+        # ingested published-auction rows (latest delivery year, e.g. PJM 2027/28
+        # 333.44), falling back to the static seed (which alone had gone stale
+        # at 2025/26 269.92).
+        cp = cat.get("capacity_price")
+        if cp and cp.get("primary_value") is not None:
+            r0 = cp.get("raw") if isinstance(cp.get("raw"), dict) else {}
+            out["capacity_auction_price_usd_mw_day"] = float(cp["primary_value"])
+            out["capacity_auction_delivery_year"] = r0.get("delivery_year")
+            out["capacity_auction_source"] = r0.get("source")
+            out["capacity_auction_as_of"] = str(cp.get("as_of"))
+        else:
+            ca = _capacity_auction(iso)
+            if ca.get("price_usd_mw_day") is not None:
+                out["capacity_auction_price_usd_mw_day"] = ca["price_usd_mw_day"]
+                out["capacity_auction_delivery_year"] = ca.get("delivery_year")
+                out["capacity_auction_source"] = ca.get("source")
+                out["capacity_auction_as_of"] = ca.get("as_of")
         if len(out) > 3:
             out["available"] = True
             out["note"] = ("Forward/supply signals absorbed from gridstatus.io by the grid-data "

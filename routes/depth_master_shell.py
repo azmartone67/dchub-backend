@@ -14,8 +14,10 @@ fail-soft.
 Four lanes (weakest → one bounded action/tick):
   1. capacity_price   — ISO capacity-auction clearing prices ($/MW-day): PJM RPM/BRA,
                         ISO-NE FCA, MISO PRA. The #1-cited DC-power economic signal.
-  2. large_load_queue — DC-classified interconnection LOAD per ISO, inferred from
-                        interconnect_queue (fuel_type='Load' + data-center name match).
+  2. large_load_queue — DC-classified interconnection LOAD per ISO: published
+                        figures from iso_queue_snapshots (ERCOT TAC large-load,
+                        NESO/AESO/IESO demand queues) merged with an inferred read
+                        from interconnect_queue (fuel_type='Load' + DC name match).
   3. hosting_capacity — region/parcel substation headroom from the 126k-row
                         substations layer (capacity_mva/available_mva) — replaces the
                         Colorado-default grid-headroom stub with a real, region-aware read.
@@ -229,9 +231,47 @@ def _capacity_price_state() -> dict:
 # labeled INFERRED (name/fuel heuristic) — closing the "DC-load queue = ERCOT-only"
 # gap for every ISO that publishes load interconnections. ERCOT's 225 GW stays on
 # its dedicated large-load feed (not this queue table).
+def _published_dc_load() -> dict:
+    """Published per-ISO DC/large-load queue figures from iso_queue_snapshots —
+    the ISO's OWN figure where one exists (ERCOT TAC large-load ~225 GW, NESO,
+    AESO, IESO demand queues). Authoritative over the name-match inference below:
+    the regex saw exactly ONE ERCOT project (0.13 GW) while ERCOT publishes
+    >225 GW on its dedicated large-load feed."""
+    c = _conn()
+    if c is None:
+        return {}
+    out = {}
+    try:
+        with c.cursor() as cur:
+            cur.execute("""
+                SELECT DISTINCT ON (iso) iso, queued_load_data_center_gw, as_of,
+                       source_url, source_name
+                  FROM iso_queue_snapshots
+                 WHERE queued_load_data_center_gw IS NOT NULL
+                 ORDER BY iso, as_of DESC
+            """)
+            for iso, gw, as_of, url, name in cur.fetchall():
+                g = _num(gw)
+                if g is None or g <= 0:
+                    continue
+                out[iso] = {"gw": round(g, 2), "as_of": str(as_of),
+                            "source_url": url, "source_name": name}
+    except Exception:
+        return {}
+    finally:
+        try: c.close()
+        except Exception: pass
+    return out
+
+
 def _act_large_load() -> dict:
-    """Classify DC-driven LOAD in interconnect_queue and upsert per-ISO GW into
-    grid_ext_metrics (category='dc_load_queue', unit='GW', source='inferred')."""
+    """DC-classified LOAD per ISO into grid_ext_metrics (category='dc_load_queue',
+    unit='GW'). Two sources, published-first:
+      1. published — iso_queue_snapshots.queued_load_data_center_gw where the ISO
+         itself publishes a large-load/DC figure (ERCOT ~225 GW, NESO, AESO, IESO).
+      2. inferred  — interconnect_queue fuel_type='Load' + DC name-match for the
+         rest (NYISO's explicit Load class)."""
+    published = _published_dc_load()
     c = _conn()
     if c is None:
         return {"ok": False, "reason": "db_unavailable"}
@@ -250,27 +290,53 @@ def _act_large_load() -> dict:
             """)
             rows = cur.fetchall()
             wrote = 0
+            by_iso = {}
             now_iso = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
             for iso, gw, n in rows:
+                if iso in published:
+                    continue   # the ISO's own published figure wins below
                 dataset_id = f"dc_load_queue:{iso}"
                 raw = {"iso": iso, "dc_gw": float(gw), "project_count": int(n),
-                       "method": "inferred: interconnect_queue fuel_type=Load OR DC name-match",
-                       "note": "ERCOT large-load (~225GW) tracked separately via its dedicated feed"}
+                       "method": "inferred: interconnect_queue fuel_type=Load OR DC name-match"}
                 try:
                     cur.execute("""
                         INSERT INTO grid_ext_metrics
                           (source, dataset_id, iso, category, primary_value, unit, as_of, raw)
                         VALUES ('inferred', %s, %s, 'dc_load_queue', %s, 'GW', %s, %s)
                         ON CONFLICT (dataset_id, as_of) DO UPDATE
-                          SET primary_value = EXCLUDED.primary_value,
+                          SET source = EXCLUDED.source,
+                              primary_value = EXCLUDED.primary_value,
                               raw = EXCLUDED.raw, ingested_at = NOW()
                     """, (dataset_id, iso, float(gw), now_iso, json.dumps(raw)))
                     wrote += 1
+                    by_iso[iso] = float(gw)
                 except Exception:
                     c.rollback()
                     continue
-        return {"ok": True, "isos_classified": len(rows), "rows_upserted": wrote,
-                "by_iso": {iso: float(gw) for iso, gw, n in rows}}
+            for iso, p in published.items():
+                dataset_id = f"dc_load_queue:{iso}"
+                raw = {"iso": iso, "dc_gw": p["gw"],
+                       "method": "published: ISO large-load/DC queue figure (iso_queue_snapshots)",
+                       "queue_as_of": p.get("as_of"),
+                       "source_url": p.get("source_url"),
+                       "source_name": p.get("source_name")}
+                try:
+                    cur.execute("""
+                        INSERT INTO grid_ext_metrics
+                          (source, dataset_id, iso, category, primary_value, unit, as_of, raw)
+                        VALUES ('published_queue', %s, %s, 'dc_load_queue', %s, 'GW', %s, %s)
+                        ON CONFLICT (dataset_id, as_of) DO UPDATE
+                          SET source = EXCLUDED.source,
+                              primary_value = EXCLUDED.primary_value,
+                              raw = EXCLUDED.raw, ingested_at = NOW()
+                    """, (dataset_id, iso, p["gw"], now_iso, json.dumps(raw)))
+                    wrote += 1
+                    by_iso[iso] = p["gw"]
+                except Exception:
+                    c.rollback()
+                    continue
+        return {"ok": True, "isos_classified": len(by_iso), "rows_upserted": wrote,
+                "published_isos": sorted(published.keys()), "by_iso": by_iso}
     except Exception as e:
         return {"ok": False, "error": f"{type(e).__name__}: {str(e)[:120]}"}
     finally:
@@ -488,9 +554,10 @@ _GAP_FINDINGS = [
      "grid_ext_metrics(category=capacity_price) + surfaced. Upgrade path: a live parser "
      "for each ISO auction (PJM RPM, ISO-NE FCA, MISO PRA) so new results refresh without a deploy."),
     ("depth_dc_load_queue_inferred_only",
-     "DC-load-queue GW is now derived per ISO from interconnect_queue (fuel_type=Load + name), "
-     "closing ERCOT-only — but it is INFERRED. Upgrade path: ingest each ISO's large-LOAD "
-     "interconnection study where published (NYISO/PJM load queues) for a classified figure."),
+     "DC-load-queue GW now merges PUBLISHED ISO figures (iso_queue_snapshots: ERCOT ~225 GW, "
+     "NESO/AESO/IESO) with the inferred interconnect_queue read (NYISO Load class). Remaining "
+     "gap: PJM/MISO/SPP/CAISO/ISO-NE publish no load-interconnection figure — ingest their "
+     "large-load studies/dockets when one appears for a classified figure."),
     ("depth_hosting_capacity_feeder_gis",
      "Hosting capacity is now a real transmission-proximity read from the substations layer "
      "(replaces the Colorado-default stub). Upgrade path: ingest per-utility feeder hosting-"
@@ -608,6 +675,14 @@ def act(m: dict, levers: dict) -> dict:
     if _act_disabled():
         return {"action": "none", "reason": "DEPTH_MASTER_ACT_DISABLED (shadow)"}
     lever = levers.get("weakest")
+    scores = levers.get("scores") or {}
+    if scores and min(scores.values()) >= 1.0:
+        # no gap anywhere → rotate the maintained lane daily. Without this the
+        # stable sort pins tick #1's lane forever and the other full lanes rot
+        # (hosting_capacity had not refreshed since 07-06).
+        lanes = [n for n in scores if not _lever_off(n)]
+        if lanes:
+            lever = lanes[datetime.now(timezone.utc).timetuple().tm_yday % len(lanes)]
     if _lever_off(lever):
         return {"action": "none", "reason": f"lever '{lever}' killed"}
     if lever == "capacity_price":
