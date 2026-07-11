@@ -162,6 +162,16 @@ _DISPATCH = [
      "POST",
      lambda now: now.hour in (9, 21)),
 
+    # 2026-07-11 (brain-stall audit): the enhancer lane had NO cron caller —
+    # POST /api/v1/brain/enhance ran exactly once ever (its 06-19 ship day),
+    # so the daily innovation digest's enhancement section always looked
+    # stalled. Async enqueue endpoint, admin-gated (_hit attaches keys),
+    # idempotent per run. Kill: BRAIN_ENHANCER_ENABLED=0 (checked in-handler).
+    ("brain_enhancer_daily",
+     f"{BASE}/api/v1/brain/enhance",
+     "POST",
+     lambda now: now.hour == 18 and now.minute < 55),
+
     # 2026-07-11: ground-truth verifier for merged MECHANICAL brain fixes.
     # BRAIN_FIX_VERIFY was armed for weeks but its recorder INSERTed into a
     # column set that doesn't exist on the live brain_fix_outcomes table, so
