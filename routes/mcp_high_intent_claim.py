@@ -1420,6 +1420,15 @@ def high_intent_stats():
                 "  FROM mcp_conversions "
                 " WHERE user_email IS NOT NULL AND user_email <> '' "
                 "   AND created_at >= NOW() - INTERVAL '30 days' "
+                # 2026-07-10 (deep-dive audit): 5th sink — dch_live_ keys bound via
+                # /api/v1/keys/identify write mcp_dev_keys.email; header-less binds
+                # never reach mcp_high_intent_sessions.claim_email, so they were
+                # invisible to this union.
+                "UNION ALL "
+                "SELECT 'dev_key_bind', LOWER(TRIM(email)) "
+                "  FROM mcp_dev_keys "
+                " WHERE email IS NOT NULL AND email <> '' "
+                "   AND COALESCE(last_used_at, created_at) >= NOW() - INTERVAL '30 days' "
             )
             try:
                 cur.execute("SELECT COUNT(DISTINCT email) FROM (" + _email_sink_union

@@ -1433,6 +1433,7 @@ _WORKER_PROXY_POST_PATHS = frozenset({
     '/api/v1/admin/media/master-tick',
     '/api/v1/admin/distribution/master-tick',
     '/api/v1/admin/grid-data/master-tick',
+    '/api/v1/admin/depth/master-tick',   # 2026-07-10: the one _HEAVY_LABELS shell that was missing here — acted (LLM+ingest) on the web pool
     '/api/v1/admin/gaps/master-tick',
     '/api/v1/admin/reliability/master-tick',
     '/api/v1/admin/rag/master-tick',
@@ -24423,7 +24424,7 @@ def _build_sitemap_sections():
     # ONLY when you actually edit the static_pages / markets / locations lists.
     # DB-driven shards below carry their REAL per-row timestamps: dcpi →
     # computed_at, city-state markets → MAX(first_seen), facilities → first_seen.
-    _STATIC_LASTMOD = '2026-07-04'
+    _STATIC_LASTMOD = '2026-07-10'
 
     def slugify(text):
         """Convert facility name to URL slug."""
@@ -24609,6 +24610,27 @@ def _build_sitemap_sections():
         # r-seo-redirect (2026-06-27): /for-ai REMOVED — it 301s to /ai (listed
         # below; verified live 301→/ai). Don't sitemap a redirecting URL.
         ('/connect', '0.7', 'weekly'),
+        # 2026-07-10 (deep-dive audit): live, linkworthy pages that were absent
+        # from the crawled sitemap — the /for/ platform guides (GEO surface for
+        # "use <platform> with live data-center data" queries), /capabilities
+        # (live MCP tool surface), /whats-new, /testimonials. All verified 200
+        # on the apex 2026-07-10.
+        ('/for/', '0.8', 'weekly'),
+        ('/for/claude', '0.8', 'weekly'),
+        ('/for/chatgpt', '0.8', 'weekly'),
+        ('/for/gemini', '0.8', 'weekly'),
+        ('/for/grok', '0.8', 'weekly'),
+        ('/for/copilot', '0.8', 'weekly'),
+        ('/for/perplexity', '0.8', 'weekly'),
+        ('/for/mistral', '0.8', 'weekly'),
+        ('/for/huggingface', '0.8', 'weekly'),
+        ('/for/deepseek', '0.8', 'weekly'),
+        ('/for/meta', '0.8', 'weekly'),
+        ('/for/cursor', '0.8', 'weekly'),
+        ('/for/windsurf', '0.8', 'weekly'),
+        ('/capabilities', '0.8', 'weekly'),
+        ('/whats-new', '0.7', 'weekly'),
+        ('/testimonials', '0.7', 'weekly'),
         # r-seo-coverage (2026-06-19): live 200 + index public pages that were
         # ABSENT from this CRAWLED sitemap (they existed only in the unadvertised
         # /api/v1/sitemap.xml). Verified 200+index at the apex 2026-06-19, additive

@@ -399,6 +399,23 @@ def validate_key():
                         "(Agents can't pay — the email is how the upgrade reaches "
                         "your human.)"),
                 }), 200
+            # 2026-07-10 (funnel audit): bind_email_required — the ONE gate with
+            # teeth (10 cumulative unbound calls) — previously fell through to a
+            # bare {valid:False, tier:free}, so the agent saw a silent downgrade
+            # and never learned that binding restores the key. Surface it.
+            if _reason == "bind_email_required":
+                return jsonify({
+                    "valid":  False,
+                    "tier":   "free",
+                    "reason": _reason,
+                    "upgrade_hint": (
+                        "This DC Hub key used its 10 free unbound calls. It keeps "
+                        "working FREE (50 calls/day) the moment it's bound to your "
+                        "operator's email — call the bind_email tool, or POST "
+                        "/api/v1/keys/auto-trial/bind {api_key, email}. PAUSE and "
+                        "ask your human: 'DC Hub needs an email to keep the free "
+                        "tier — which address should I use?' Never invent one."),
+                }), 200
         except Exception:
             pass
         # ── 2026-06-10: paid REST/dashboard key used directly at the MCP ──

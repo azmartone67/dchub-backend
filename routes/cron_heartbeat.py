@@ -610,6 +610,32 @@ _DISPATCH = [
      "GET",
      lambda now: now.hour == 12 and now.minute < 55),
 
+    # 2026-07-10: the last 4 orphaned diagnostic shells, wired exactly like the
+    # 07-04 batch above. All are pure-DB / read-only (flywheel + backfunnel
+    # scoreboards, coverage drafts-only, registry-freshness watch-only) — without
+    # a tick their snapshot/trend tables only advance when a human loads the
+    # dashboard. Staggered on quiet hours. Kills: FLYWHEEL_DISABLED,
+    # BACKFUNNEL_DISABLED, COVERAGE_SHELL_DISABLED, REGISTRY_FRESHNESS_DISABLED.
+    ("flywheel_master_tick_daily",
+     f"{BASE}/api/v1/admin/flywheel/master-tick",
+     "POST",
+     lambda now: now.hour == 14 and now.minute < 55),
+
+    ("backfunnel_master_tick_daily",
+     f"{BASE}/api/v1/admin/backfunnel/master-tick",
+     "POST",
+     lambda now: now.hour == 15 and now.minute < 55),
+
+    ("coverage_master_tick_daily",
+     f"{BASE}/api/v1/admin/coverage/master-tick",
+     "POST",
+     lambda now: now.hour == 16 and now.minute < 55),
+
+    ("registry_freshness_master_tick_daily",
+     f"{BASE}/api/v1/admin/registry-freshness/master-tick",
+     "POST",
+     lambda now: now.hour == 17 and now.minute < 55),
+
     # ─────────────────────────────────────────────────────────────────────
     # 2026-07-03: RE-HOMED off the retiring off-repo Replit scheduler
     # (dchub-scheduler.py). Replit is decommissioned; these five Replit jobs
