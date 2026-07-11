@@ -120,12 +120,12 @@ _COMPETITOR_BY_SLUG: dict[str, dict] = {c["slug"]: c for c in _COMPETITORS}
 #      • markets scored ~286 → routes/agent_capabilities_feed.py default
 #        counts.markets_scored = 286 (live-overridden from
 #        market_power_scores). We state "~285+" conservatively.
-#      • grids with live data = live grid operators on 4 continents + 43 US
+#      • grids with live data = live grid operators on 5 continents + 43 US
 #        utility balancing authorities = 53 US grid regions. The 10 are the
 #        7 live US ISOs (PJM,CAISO,ERCOT,MISO,SPP,NYISO,ISO-NE — each with a
 #        working extractor in routes/iso_orchestrator.py) plus TVA, BPA and
 #        Ontario's IESO. The 43 utility BAs are live EIA-930
-#        (routes/eia_utility_bas.py). live UK/EU/Taiwan/Australia grids (Hydro-Québec,
+#        (routes/eia_utility_bas.py). live UK/EU/TW/JP/KR/BR(+AU/SG partial) grids (Hydro-Québec,
 #        AESO, Nord Pool) are a MODELED baseline, NOT live telemetry, so we
 #        cite them as "modeled". We deliberately do NOT claim "51 grids"
 #        (an arithmetic error) and NEVER list SOCO/FRCC as ISOs (no extractor).
@@ -157,10 +157,10 @@ _DCHUB_DIFFERENTIATORS: list[dict] = [
     {
         "key":    "live_grid_data",
         "label":  "Live grid & energy data",
-        "value":  ("Real-time grid telemetry across 4 continents — 7 US ISOs "
+        "value":  ("Real-time grid telemetry across 5 continents — 7 US ISOs "
                    "(PJM, CAISO, ERCOT, MISO, SPP, NYISO, ISO-NE) + TVA, BPA, "
                    "Ontario's IESO and 43 US balancing authorities, Great "
-                   "Britain (NESO), ~12 EU bidding zones (ENTSO-E), Taiwan "
+                   "Britain (NESO), ~24 EU bidding zones (ENTSO-E), Taiwan "
                    "(Taipower) and Australia (AEMO) — all live; plus EU gas "
                    "flows (ENTSOG). Hydro-Québec, AESO, Nord Pool modeled."),
         "proof":  "https://dchub.cloud/api/v1/reports/state-of-power",
@@ -788,8 +788,8 @@ def why_dchub():
     pitch = (
         "DC Hub is the agent-native data-center intelligence platform. An "
         "AI agent can query it directly over a live MCP server (40+ tools), "
-        "get real-time grid and energy data across live grids on 4 continents (US "
-        "ISOs + UK + EU + Taiwan + Australia) + 43 US balancing authorities, read two "
+        "get real-time grid and energy data across live grids on 5 continents (US "
+        "ISOs + UK + EU + Taiwan + Japan + South Korea + Brazil + Australia) + 43 US balancing authorities, read two "
         "proprietary daily "
         "indices (the DC Hub Power Index and the DC Hub Gas Index), and "
         "cite any answer via CC-BY-4.0 datasets with stable URLs and "
@@ -872,7 +872,7 @@ def media_drafts():
             "text": (
                 "Power is the constraint on every AI data-center build. So "
                 "DC Hub tracks it live: real-time grid data across 11 US "
-                "ISOs/balancing authorities + live UK/EU/Taiwan/Australia grids, fuel "
+                "ISOs/balancing authorities + live UK/EU/Taiwan/Japan/South-Korea/Brazil/Australia grids, fuel "
                 "mix, interconnection-queue depth, and gas access by "
                 "state.\n\n"
                 "Ask an AI agent \"where can I get power in 90 days?\" and "

@@ -38,11 +38,15 @@ _FALLBACK = {
     "grid_operators": 10,    # 10 North-American grid operators w/ live data (7 US ISOs + TVA + BPA + IESO)
     "utility_bas": 43,       # 43 US utility balancing authorities (live EIA-930)
     # #60 (2026-06-02): live grid telemetry is now GLOBAL — 4 continents.
+    # r-intl-0711 (2026-07-11): 5 continents — Japan (OCCTO areas, TSO
+    # eria_jukyu), South Korea (KPX) and Brazil (ONS, adds South America) now
+    # rank full-mix; Singapore (EMA/NEMS) live partial (demand+USEP, no mix).
     # Intl live grids beyond N. America: Great Britain (NESO/Elexon), 24 EU
-    # bidding zones (ENTSO-E), Taiwan (Taipower), Australia (AEMO); plus EU gas
-    # transmission flows (ENTSOG, 10 countries). All LIVE, not modeled.
-    "grid_continents": 4,
-    "intl_grid_regions": 27,  # GB(1) + EU(24) + Taiwan(1) + Australia(1)
+    # bidding zones (ENTSO-E), Taiwan (Taipower), Japan (OCCTO), South Korea
+    # (KPX), Brazil (ONS) — ranked; Australia (AEMO) + Singapore (EMA) partial;
+    # plus EU gas transmission flows (ENTSOG, 10 countries). LIVE, not modeled.
+    "grid_continents": 5,
+    "intl_grid_regions": 31,  # GB(1) + EU(24) + TW(1) + JP(1) + KR(1) + BR(1) + AU(1) + SG(1)
     "eu_zones": 24,           # live ENTSO-E bidding zones (verified get_grid_scoreboard 2026-06-25; was ~12)
     "substations": 126427,    # HIFLD substations (had no SoT home before)
     "pipeline_gw": 369,       # construction pipeline GW (had no SoT home before)
@@ -225,21 +229,23 @@ def grid_coverage_phrase(style: str = "full") -> str:
       style='short' → compact tag
     """
     if style == "short":
-        return "live grid telemetry on 4 continents (US, UK, EU, Taiwan, Australia)"
-    return ("live grid telemetry across 4 continents — 7 US ISOs (ERCOT, PJM, "
+        return "live grid telemetry on 5 continents (US, UK, EU, Taiwan, Japan, South Korea, Brazil, Australia)"
+    return ("live grid telemetry across 5 continents — 7 US ISOs (ERCOT, PJM, "
             "CAISO, MISO, SPP, NYISO, ISO-NE) + TVA/BPA + 43 US balancing "
             "authorities, Great Britain (NESO), 24 EU bidding zones (ENTSO-E), "
-            "Taiwan (Taipower) and Australia (AEMO) — all live; plus EU gas "
-            "transmission flows (ENTSOG). (Hydro-Québec, AESO, Nord Pool remain "
-            "modeled baselines.)")
+            "Taiwan (Taipower), Japan (OCCTO areas), South Korea (KPX) and "
+            "Brazil (ONS) — all live full-mix; Australia (AEMO) and Singapore "
+            "(EMA) live partial feeds; plus EU gas transmission flows (ENTSOG). "
+            "(Hydro-Québec, AESO, Nord Pool remain modeled baselines.)")
 
 
 def headline_blurb() -> str:
     """One-liner generators can drop into a prompt or post, always consistent.
     e.g. '21,000+ data center facilities across 170+ countries, 300+ markets,
-    and live grid telemetry on 4 continents (US, UK, EU, Taiwan, Australia)'."""
+    and live grid telemetry on 5 continents (US, UK, EU, Taiwan, Japan, South
+    Korea, Brazil, Australia)'."""
     s = get_canonical_stats()
     return (f"{facilities_phrase()} data center facilities across "
             f"{countries_phrase()} countries, {markets_phrase()} markets, and "
-            f"live grid telemetry across {s.get('grid_continents', 4)} continents "
-            f"(US, UK, EU, Taiwan, Australia) + {s.get('utility_bas', 43)} US balancing authorities")
+            f"live grid telemetry across {s.get('grid_continents', 5)} continents "
+            f"(US, UK, EU, Taiwan, Japan, South Korea, Brazil, Australia) + {s.get('utility_bas', 43)} US balancing authorities")

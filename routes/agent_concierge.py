@@ -460,7 +460,8 @@ _COOKBOOK = [
             {"tool": "get_grid_scoreboard",
              "args": {},
              "why":  "Live greenest-first ranking of US + EU + GB + Taiwan "
-                     "+ Australia grids (renewable share, fuel mix, demand) "
+                     "+ Japan + South Korea + Brazil grids (renewable share, "
+                     "fuel mix, demand; Australia + Singapore partial) "
                      "— pick the green candidates."},
             {"tool": "get_grid_intelligence",
              "args": {"region_id": "<iso_code>"},

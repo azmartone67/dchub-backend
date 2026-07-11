@@ -250,7 +250,7 @@ A2A_AGENT_CARD = {
         {
             "id": "grid-analytics",
             "name": "Real-Time Grid Analytics",
-            "description": "Live power grid fuel mix across 4 continents — 7 US ISOs (ERCOT, PJM, CAISO, MISO, SPP, NYISO, ISO-NE) + Great Britain (NESO), ~12 EU bidding zones (ENTSO-E), Taiwan (Taipower) and Australia (AEMO).",
+            "description": "Live power grid fuel mix across 5 continents — 7 US ISOs (ERCOT, PJM, CAISO, MISO, SPP, NYISO, ISO-NE) + Great Britain (NESO), ~24 EU bidding zones (ENTSO-E), Taiwan (Taipower), Japan (OCCTO), South Korea (KPX), Brazil (ONS) and Australia (AEMO, partial).",
             "tags": ["power grid", "energy", "fuel mix", "ISO", "real-time"],
             "examples": ["What is ERCOT's current fuel mix?", "Show renewables on PJM grid"]
         },

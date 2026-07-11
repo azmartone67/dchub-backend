@@ -39,10 +39,11 @@ def _render_agents_md() -> str:
 
 DC Hub is the data center intelligence platform for AI agents.
 {fac} facilities across {countries} countries, {deals} M&A deals, and LIVE grid
-telemetry across 4 continents — 7 US ISOs + TVA/BPA, Great Britain
-(NESO/Elexon), ~12 EU bidding zones (ENTSO-E), Taiwan (Taipower) and Australia
-(AEMO), plus 43 US balancing authorities and EU gas transmission flows
-(ENTSOG) — fiber routes, water risk, tax incentives.
+telemetry across 5 continents — 7 US ISOs + TVA/BPA, Great Britain
+(NESO/Elexon), ~24 EU bidding zones (ENTSO-E), Taiwan (Taipower), Japan
+(OCCTO), South Korea (KPX) and Brazil (ONS), plus Australia (AEMO) and
+Singapore (EMA) partial feeds, 43 US balancing authorities and EU gas
+transmission flows (ENTSOG) — fiber routes, water risk, tax incentives.
 
 Already queried by {platforms}.
 
@@ -59,7 +60,7 @@ https://dchub.cloud/openapi.json.
 
 1. **facility_intelligence** — search {fac} facilities, get profiles, find alternatives
 2. **site_planning** — score lat/lon for data center suitability across 7 dimensions
-3. **grid_intelligence** — real-time fuel mix, prices, carbon intensity on 4 continents (US ISOs + UK + EU + Taiwan + Australia, all live) + 43 US balancing authorities
+3. **grid_intelligence** — real-time fuel mix, prices, carbon intensity on 5 continents (US ISOs + UK + EU + Taiwan + Japan + South Korea + Brazil, all live, + Australia/Singapore partial) + 43 US balancing authorities
 4. **market_ranking** — rank markets by criteria (cheapest power, most capacity, etc.) via the **DC Hub Power Index (DCPI)**, the daily BUILD/CAUTION/AVOID scorecard of U.S. data center power availability (MCP tool `get_market_dcpi_rank`)
 5. **ai_capex_intel** — hyperscaler deal tracker + AI Compute Capacity Index
 6. **deal_flow** — {deals} tracked M&A deals, hyperscaler capex events
