@@ -32,10 +32,12 @@ routes/dchub_media_hub.py.
                             platform))
 
 Dedup across the two tables: a citation is unique by url when url is
-non-empty, else by the coalesced source string. We UNION both tables
-into a normalized (src, url, ts, platform, agent_name, quote) CTE,
-dedup that set, then derive every window count from it so a quote that
-lands in BOTH tables is counted once.
+non-empty, else by the coalesced source string PER DAY (r-cv-freeze
+2026-07-11 — keying url-less rows on source alone kept only each
+engine's first-ever ts, permanently freezing every window count at 0).
+We UNION both tables into a normalized (src, url, ts, platform,
+agent_name, quote) CTE, dedup that set, then derive every window count
+from it so a quote that lands in BOTH tables is counted once.
 
 CORS-open, no auth, Cache-Control public max-age=300. Designed to be
 the homepage / pitch-deck scoreboard for "AI citations of DC Hub".
@@ -381,9 +383,26 @@ def _compute() -> dict:
                 ),
                 keyed AS (
                     SELECT
+                        -- r-cv-freeze (2026-07-11): url-less rows (the live
+                        -- ai_citations feed emits url='') used to key on
+                        -- 's:'||src alone; DISTINCT ON then kept the
+                        -- EARLIEST ts per engine FOREVER, so once an
+                        -- engine's first-ever citation aged past 7 days its
+                        -- new citations could never appear in any window
+                        -- again — citation_velocity_7d flatlined to 0 while
+                        -- real dchub_cited rows landed daily (verified on
+                        -- prod: 7 cited rows in-window, velocity 0). Key
+                        -- url-less rows per SOURCE-DAY instead: repeat
+                        -- observations still collapse (one row per engine
+                        -- per day, earliest ts kept), but a fresh citation
+                        -- is once again visible in the window it happened.
+                        -- url-keyed rows are unchanged — a re-ingested
+                        -- quote with the same url still can't inflate a
+                        -- later window.
                         CASE WHEN COALESCE(url, '') <> ''
                              THEN 'u:' || url
                              ELSE 's:' || COALESCE(NULLIF(src, ''), 'unknown')
+                                  || ':' || COALESCE(to_char(ts, 'YYYY-MM-DD'), 'na')
                         END                              AS dedup_key,
                         src, url, ts, platform, agent_name, quote
                       FROM raw

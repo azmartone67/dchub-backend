@@ -158,26 +158,55 @@ def tier1_measure() -> dict:
     # process memory and zero out on every redeploy (the web service redeploys
     # many times a day), so this shell chronically read 0 posts/24h -> STARVED
     # and re-fired the evergreen while LinkedIn was in fact posting on
-    # schedule (linkedin_posts rows with real URNs). Prefer the durable ledger
-    # when the in-process counters say zero.
-    if not posts_24h:
-        c = _conn()
-        if c is not None:
-            try:
-                with c.cursor() as cur:
-                    cur.execute(
-                        "SELECT COUNT(*) FROM linkedin_posts "
-                        "WHERE status = 'success' "
-                        "AND created_at > NOW() - INTERVAL '24 hours'")
-                    posts_24h = max(posts_24h, int(cur.fetchone()[0] or 0))
-            except Exception:
-                pass
-            finally:
-                try: c.close()
-                except Exception: pass
-    cv7 = (_num(north.get("citation_velocity_7d"))
-           or _num(north.get("distinct_agents_citing_7d"))
-           or _num(north.get("citations_7d")))
+    # schedule (linkedin_posts rows with real URNs).
+    # r-multiplatform-cadence (2026-07-11): the durable fallback only counted
+    # linkedin_posts, so X/Bluesky publishes (durable ONLY in
+    # social_media_posts) were invisible — the lane read "1 posts/24h" while
+    # 7 posts actually shipped across platforms. Count BOTH durable ledgers
+    # every tick and take the max with the in-memory counters. LinkedIn rows
+    # are excluded from the social_media_posts count because a successful
+    # social-queue LinkedIn publish is dual-written into linkedin_posts (see
+    # content_publisher._persist_linkedin_urn) and would double-count.
+    c = _conn()
+    if c is not None:
+        durable = 0
+        try:
+            with c.cursor() as cur:
+                cur.execute(
+                    "SELECT COUNT(*) FROM linkedin_posts "
+                    "WHERE status = 'success' "
+                    "AND created_at > NOW() - INTERVAL '24 hours'")
+                durable += int(cur.fetchone()[0] or 0)
+                # published_at is TEXT on social_media_posts (mixed
+                # 'YYYY-MM-DD HH:MI+00' / 'YYYY-MM-DDTHH:MIZ' formats, so
+                # plain text comparison misorders across variants) — cast
+                # to timestamptz; all prod rows are ISO (verified 2026-07-11).
+                cur.execute(
+                    "SELECT COUNT(*) FROM social_media_posts "
+                    "WHERE status = 'published' "
+                    "AND COALESCE(publish_platform, platform) <> 'linkedin' "
+                    "AND NULLIF(published_at, '') IS NOT NULL "
+                    "AND published_at::timestamptz > NOW() - INTERVAL '24 hours'")
+                durable += int(cur.fetchone()[0] or 0)
+        except Exception:
+            pass
+        finally:
+            try: c.close()
+            except Exception: pass
+        posts_24h = max(posts_24h, durable)
+    # r-cv-none (2026-07-11): the old `a or b or c` chain conflated a REAL 0
+    # with "field absent" — north-star ALWAYS returns citation_velocity_7d
+    # (int, possibly 0), so a 0 fell through to fields that don't exist and
+    # the lane displayed "citations None/7d" forever (masking the north-star
+    # dedup freeze fixed in media_north_star.py r-cv-freeze). Take the FIRST
+    # PRESENT field instead; None now only means the request itself failed.
+    cv7 = None
+    for _k in ("citation_velocity_7d", "distinct_agents_citing_7d",
+               "citations_7d"):
+        _v = _num(north.get(_k))
+        if _v is not None:
+            cv7 = _v
+            break
     return {
         "posts_24h": posts_24h,
         "attempts_24h": attempts_24h,
