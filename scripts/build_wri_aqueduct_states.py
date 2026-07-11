@@ -37,8 +37,9 @@ USAGE
       --src Aq40_baseline_annual.gpkg --states cb_2022_us_state_500k.shp \
       --out data/wri_aqueduct_us_states.csv
 
-  Then host the CSV (repo raw / R2) and set WRI_AQUEDUCT_URL to it, POST the
-  admin ingest ?dry=1, confirm direction_sane=true, then ?dry=0.
+  Then host the CSV on R2 and set WRI_AQUEDUCT_S3_PATH=<bucket>/<key> (preferred —
+  authenticated fetch, no presign expiry) or WRI_AQUEDUCT_URL=<raw/presigned url>,
+  POST the admin ingest ?dry=1, confirm direction_sane=true, then ?dry=0.
 
 INTEGRITY: refuses to write the CSV if arid states (AZ/NV/NM/CA/UT) don't clearly
 out-score wet states (IL/OH/MI/WI/MN/PA). Same guard as the ingest — no inversion,
@@ -215,7 +216,7 @@ def main():
             w.writerow([st, r["water_stress_score"], r["baseline_water_stress"],
                         r["bws_category"], "wri_aqueduct_40"])
     print(f"✓ wrote {len(by_state)} rows → {args.out}  (source tag: wri_aqueduct_40)")
-    print("  next: host this CSV, set WRI_AQUEDUCT_URL=<raw url>, POST /api/v1/admin/water/aqueduct-ingest?dry=1")
+    print("  next: upload to R2, set WRI_AQUEDUCT_S3_PATH=<bucket>/<key> (or legacy WRI_AQUEDUCT_URL=<raw url>), POST /api/v1/admin/water/aqueduct-ingest?dry=1")
 
 
 if __name__ == "__main__":

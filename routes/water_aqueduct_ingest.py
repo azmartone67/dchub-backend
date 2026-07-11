@@ -8,14 +8,32 @@ baseline water stress. See [[reference_dchub_water_score_integrity]].
 ★ INTEGRITY CONTRACT (do not break):
   This module NEVER fabricates a water number. It writes rows to `water_risk`
   ONLY for records it actually parsed from a configured, verified WRI source
-  (WRI_AQUEDUCT_URL). With no source set — or on any fetch/parse failure — it is
-  an honest NO-OP (writes nothing, returns skipped=...). Until real WRI rows tag
-  `source='wri_aqueduct'`, the rank_sites water objectives stay "unavailable"
+  (WRI_AQUEDUCT_S3_PATH and/or WRI_AQUEDUCT_URL). With no source set — or on any
+  fetch/parse failure — it is an honest NO-OP (writes nothing, returns
+  skipped=...). Until real WRI rows tag `source='wri_aqueduct'`, the rank_sites
+  water objectives stay "unavailable"
   (routes/interconnection_queues._wri_water_available). So the water lever
   auto-enables the moment verified data lands and NEVER a moment before.
 
+★ SOURCE FETCH LADDER (2026-07-11 — kills the 7-day presign treadmill):
+  Presigned R2 URLs expire every 7 days, so WRI_AQUEDUCT_URL alone silently
+  goes stale (same failure class as issue #1509, the dead USGS cron). The
+  permanent path is an AUTHENTICATED S3 fetch straight from R2 using the env
+  creds the backend already holds (R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY /
+  R2_ENDPOINT_URL — the same trio db_backup.py and r2_exports.py use).
+  Resolution order, fail-soft at every rung:
+    1. WRI_AQUEDUCT_S3_PATH env ("bucket/key", e.g.
+       "dchub-daily/wri/wri_aqueduct_us_states.json") → boto3 get_object.
+    2. No S3 path set but WRI_AQUEDUCT_URL looks like an R2 presigned URL →
+       derive bucket/key from the URL path and try the authenticated fetch
+       (self-heals even after the presign expires, zero operator action).
+    3. Legacy: plain HTTPS GET of WRI_AQUEDUCT_URL (the pre-existing behavior;
+       still works while the presign is fresh, or for any non-R2 host).
+  Whichever rung supplied the payload is logged + returned as fetch_path.
+
 CRAWL-FIRST rollout (deliberate):
-  1. Point WRI_AQUEDUCT_URL at a verified WRI Aqueduct subnational file
+  1. Point WRI_AQUEDUCT_S3_PATH (preferred, "bucket/key" on R2) or
+     WRI_AQUEDUCT_URL at a verified WRI Aqueduct subnational file
      (GeoJSON FeatureCollection or JSON/CSV array with a US-state key +
      baseline-water-stress score/category).
   2. POST /api/v1/admin/water/aqueduct-ingest?dry=1  → parse + preview, write 0.
@@ -82,6 +100,111 @@ def _admin_ok() -> bool:
 
 def _source_url() -> str:
     return (os.environ.get("WRI_AQUEDUCT_URL") or "").strip()
+
+
+def _source_s3_path() -> str:
+    return (os.environ.get("WRI_AQUEDUCT_S3_PATH") or "").strip()
+
+
+# ---------------------------------------------------------------------------
+# Authenticated R2/S3 fetch (permanent path — no presign expiry treadmill)
+# ---------------------------------------------------------------------------
+
+def _parse_s3_path(s: str):
+    """'bucket/key/with/slashes' (optional s3:// prefix) → (bucket, key) | None.
+    Never raises; None for anything that doesn't clearly name both parts."""
+    if not s:
+        return None
+    s = str(s).strip()
+    if s.lower().startswith("s3://"):
+        s = s[5:]
+    s = s.lstrip("/")
+    if "/" not in s:
+        return None
+    bucket, _, key = s.partition("/")
+    bucket, key = bucket.strip(), key.strip()
+    if not bucket or not key:
+        return None
+    return bucket, key
+
+
+def _derive_s3_from_url(url: str):
+    """Derive (bucket, key) from an R2 presigned URL, so the authenticated
+    fetch can self-heal after the presign expires. Handles both R2 URL forms:
+      path-style:    https://<account>.r2.cloudflarestorage.com/<bucket>/<key>?X-Amz-...
+      virtual-host:  https://<bucket>.<account>.r2.cloudflarestorage.com/<key>?X-Amz-...
+    Conservative: only R2 hosts; None for anything else (never guesses)."""
+    if not url:
+        return None
+    try:
+        from urllib.parse import urlparse, unquote
+        p = urlparse(str(url).strip())
+        host = (p.hostname or "").lower()
+        suffix = ".r2.cloudflarestorage.com"
+        if not host.endswith(suffix):
+            return None
+        labels = host[: -len(suffix)].split(".")
+        path = unquote(p.path or "").lstrip("/")
+        if not path:
+            return None
+        if len(labels) == 1:
+            # path-style: first path segment is the bucket
+            return _parse_s3_path(path)
+        if len(labels) == 2:
+            # virtual-hosted: bucket is the first host label
+            return (labels[0], path) if labels[0] else None
+        return None
+    except Exception:
+        return None
+
+
+def _resolve_s3_target():
+    """(bucket, key, origin) for the authenticated fetch, or None.
+    Explicit WRI_AQUEDUCT_S3_PATH wins; else derived from WRI_AQUEDUCT_URL."""
+    explicit = _parse_s3_path(_source_s3_path())
+    if explicit:
+        return explicit[0], explicit[1], "env"
+    derived = _derive_s3_from_url(_source_url())
+    if derived:
+        return derived[0], derived[1], "derived_from_url"
+    return None
+
+
+def _r2_creds_present() -> bool:
+    return bool((os.environ.get("R2_ENDPOINT_URL") or "").strip()
+                and (os.environ.get("R2_ACCESS_KEY_ID") or "").strip()
+                and (os.environ.get("R2_SECRET_ACCESS_KEY") or "").strip())
+
+
+def _fetch_via_s3(bucket: str, key: str):
+    """(payload, None) on success, (None, why) on any failure. Never raises."""
+    if not _r2_creds_present():
+        return None, "r2_creds_missing"
+    try:
+        import boto3
+        client = boto3.client(
+            "s3",
+            endpoint_url=os.environ.get("R2_ENDPOINT_URL", "").strip(),
+            aws_access_key_id=os.environ.get("R2_ACCESS_KEY_ID", "").strip(),
+            aws_secret_access_key=os.environ.get("R2_SECRET_ACCESS_KEY", "").strip(),
+            region_name="auto",
+        )
+        resp = client.get_object(Bucket=bucket, Key=key)
+        body = resp["Body"].read(40_000_000)
+        return body.decode("utf-8", "replace"), None
+    except Exception as e:
+        return None, f"{type(e).__name__}: {str(e)[:160]}"
+
+
+def _fetch_via_presigned(url: str):
+    """Legacy HTTPS GET (presigned URL or any public URL).
+    (payload, None) on success, (None, why) on any failure. Never raises."""
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "dchub-water-aqueduct/1.0"})
+        with urllib.request.urlopen(req, timeout=45) as r:
+            return r.read(40_000_000).decode("utf-8", "replace"), None
+    except Exception as e:
+        return None, f"{type(e).__name__}: {str(e)[:160]}"
 
 
 def _conn():
@@ -244,23 +367,52 @@ def _extract_rows(payload: str) -> list[dict]:
     return list(best.values())
 
 
+def _fetch_source():
+    """Walk the fetch ladder (authenticated S3 → legacy presigned/HTTPS).
+    Returns (payload|None, fetch_path|None, errors dict). Fail-soft: an S3
+    failure NEVER breaks the legacy path that works today."""
+    url = _source_url()
+    target = _resolve_s3_target()
+    errors: dict[str, str] = {}
+    if target is not None:
+        bucket, key, origin = target
+        payload, err = _fetch_via_s3(bucket, key)
+        if payload is not None:
+            fetch_path = f"s3_authenticated({origin}:{bucket}/{key})"
+            logger.info("[water-ingest] fetched via %s", fetch_path)
+            return payload, fetch_path, errors
+        errors["s3_authenticated"] = f"{origin}:{bucket}/{key} — {err}"
+        logger.warning("[water-ingest] authenticated S3 fetch failed (%s); "
+                       "falling back to presigned URL", errors["s3_authenticated"])
+    if url:
+        payload, err = _fetch_via_presigned(url)
+        if payload is not None:
+            logger.info("[water-ingest] fetched via presigned_url (legacy path)")
+            return payload, "presigned_url", errors
+        errors["presigned_url"] = err
+        logger.warning("[water-ingest] presigned URL fetch failed: %s", err)
+    return None, None, errors
+
+
 def run_ingest(dry_run: bool = True) -> dict:
     url = _source_url()
-    if not url:
-        return {"ok": True, "skipped": "WRI_AQUEDUCT_URL not set — honest no-op; "
-                "water objectives stay 'unavailable' until a verified source is configured.",
+    if not url and _resolve_s3_target() is None:
+        return {"ok": True, "skipped": "no source configured (set WRI_AQUEDUCT_S3_PATH "
+                "bucket/key for the authenticated R2 fetch, or legacy WRI_AQUEDUCT_URL) — "
+                "honest no-op; water objectives stay 'unavailable' until a verified "
+                "source is configured.",
                 "wrote": 0, "source_tag": _SOURCE_TAG}
-    try:
-        req = urllib.request.Request(url, headers={"User-Agent": "dchub-water-aqueduct/1.0"})
-        with urllib.request.urlopen(req, timeout=45) as r:
-            payload = r.read(40_000_000).decode("utf-8", "replace")
-    except Exception as e:
-        return {"ok": False, "error": f"fetch_failed: {type(e).__name__}: {str(e)[:160]}",
-                "wrote": 0, "source_url": url}
+    payload, fetch_path, fetch_errors = _fetch_source()
+    if payload is None:
+        return {"ok": False,
+                "error": "fetch_failed: " + ("; ".join(f"{k}: {v}" for k, v in fetch_errors.items())
+                                             or "no fetchable source"),
+                "wrote": 0, "source_url": url or None}
     rows = _extract_rows(payload)
     if not rows:
         return {"ok": False, "error": "parse_yielded_0_us_states — source shape unrecognised; "
-                "nothing written (integrity: never fabricate)", "wrote": 0, "source_url": url}
+                "nothing written (integrity: never fabricate)", "wrote": 0,
+                "source_url": url or None, "fetch_path": fetch_path}
     preview = sorted(rows, key=lambda x: (x["score100"] or -1), reverse=True)[:8]
     by_state = {r["state"]: r for r in rows}
     sane = _direction_sane(by_state)   # True / False / None(uncheckable)
@@ -269,7 +421,7 @@ def run_ingest(dry_run: bool = True) -> dict:
     if dry_run:
         return {"ok": True, "dry_run": True, "parsed_states": len(rows),
                 "preview_most_stressed": preview, "direction_sane": sane,
-                "direction_refs": ref,
+                "direction_refs": ref, "fetch_path": fetch_path,
                 "note": ("dry run — 0 rows written. direction_sane must be true "
                          "(arid AZ/NV/NM > wet IL/OH/MI by >10pt) before ?dry=0 will write."),
                 "wrote": 0}
@@ -302,6 +454,7 @@ def run_ingest(dry_run: bool = True) -> dict:
         except Exception: pass
     return {"ok": True, "wrote": wrote, "parsed_states": len(rows),
             "preview_most_stressed": preview, "source_tag": _SOURCE_TAG,
+            "fetch_path": fetch_path,
             "note": "rank_sites water objectives now auto-enable (data-gated)."}
 
 
@@ -323,7 +476,12 @@ def water_ingest_status():
         finally:
             try: c.close()
             except Exception: pass
-    return jsonify(ok=True, source_url_set=bool(_source_url()), wri_rows=wri_rows,
+    target = _resolve_s3_target()
+    return jsonify(ok=True, source_url_set=bool(_source_url()),
+                   s3_path_set=bool(_parse_s3_path(_source_s3_path())),
+                   s3_target=(f"{target[0]}/{target[1]} ({target[2]})" if target else None),
+                   r2_creds_present=_r2_creds_present(),
+                   wri_rows=wri_rows,
                    total_rows=total, source_tag=_SOURCE_TAG,
                    water_objective_enabled=bool(wri_rows))
 
