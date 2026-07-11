@@ -24474,11 +24474,24 @@ def _build_sitemap_sections():
                 except Exception: pass
                 _has_canon = False
             _canon_sel = "canonical_slug" if _has_canon else "NULL AS canonical_slug"
+            # r-osm-junk (2026-07-10): exclude nameless OSM imports (ingested as
+            # name='OSM DC <osm_id>', provider='Unknown' → frozen slug
+            # 'unknown-osm-dc-<osm_id>-<hash8>'). 673 of them pass the dup filter
+            # and render ~zero-content pages — pure crawl-budget burn. The names
+            # were cleaned post-freeze, so ONLY the frozen canonical_slug still
+            # carries the prefix — a name-based filter matches nothing. Excluding
+            # them from the sitemap does NOT touch the slug (slug FREEZE intact);
+            # the pages still serve 200 for anyone holding the URL. SQL clause is
+            # conditional on the column existing; the loop guard below is the
+            # authoritative catch-all for every query path.
+            _osm_excl = ("AND COALESCE(canonical_slug, '') NOT LIKE 'unknown-osm-%'"
+                         if _has_canon else "")
             c.execute("""
                 SELECT name, provider, city, state, country, id, first_seen, """ + _canon_sel + """
                 FROM discovered_facilities
                 WHERE name IS NOT NULL AND name != ''
                   AND COALESCE(is_duplicate, 0) = 0
+                  """ + _osm_excl + """
                 LIMIT 50000
             """)
             fac_rows = c.fetchall()
@@ -24520,10 +24533,16 @@ def _build_sitemap_sections():
                 except Exception: pass
                 _has_canon_legacy = False
             _canon_sel_legacy = "canonical_slug" if _has_canon_legacy else "NULL AS canonical_slug"
+            # r-osm-junk (2026-07-10): same 673 OSM-junk slugs exist here too
+            # (identical frozen slugs — seen_slugs would dedup them, but exclude
+            # at source so the union count log stays honest).
+            _osm_excl_legacy = ("AND COALESCE(canonical_slug, '') NOT LIKE 'unknown-osm-%'"
+                                if _has_canon_legacy else "")
             c.execute("""
                 SELECT name, provider, city, state, country, id, first_seen, """ + _canon_sel_legacy + """
                 FROM facilities
                 WHERE name IS NOT NULL AND name != ''
+                """ + _osm_excl_legacy + """
                 LIMIT 50000
             """)
             _legacy_rows = c.fetchall()
@@ -25022,6 +25041,7 @@ def _build_sitemap_sections():
     # Sharding (10k/file) keeps every emitted file far below the 50k/50MB
     # sitemap hard limits, so no per-file cap juggling is needed anymore.
     seen_slugs = set()
+    _osm_junk_skipped = 0
     for row in fac_rows:
         name = row[0] if row[0] else ''
         provider = row[1] if row[1] else ''
@@ -25050,6 +25070,15 @@ def _build_sitemap_sections():
         if _stored:
             full_slug = _stored
 
+        # r-osm-junk (2026-07-10): authoritative junk guard on the FINAL slug —
+        # catches the SQL-fallback paths and rows whose canonical_slug is NULL
+        # (slug computed live from name='OSM DC …'/provider='Unknown' above).
+        # Live shard had 678 of these thin pages burning crawl budget. Slugs
+        # themselves are untouched (slug FREEZE); the pages still serve 200.
+        if full_slug.startswith('unknown-osm-'):
+            _osm_junk_skipped += 1
+            continue
+
         # per-facility lastmod from first_seen (trustworthy) — fall back to today
         _lm = today
         if fac_has_date and len(row) > 6 and row[6]:
@@ -25067,7 +25096,8 @@ def _build_sitemap_sections():
 
     logger.info(
         f"sitemap: {len(seen_slugs)} unique facility slugs "
-        f"(collision-losers dropped — they 301 to the winner now)")
+        f"(collision-losers dropped — they 301 to the winner now; "
+        f"{_osm_junk_skipped} unknown-osm junk slugs excluded)")
 
     # ---- Facilities hub (2026-06-29) — countries index + per-country lists ----
     # The geography hub (facilities_hub.py) that un-orphans the /facilities/<slug>
