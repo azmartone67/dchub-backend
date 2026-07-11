@@ -666,6 +666,23 @@ _DISPATCH = [
      "POST",
      lambda now: now.hour == 17 and now.minute < 55),
 
+    # 2026-07-11: Cadence dead-man sentinel — evaluates the lane registry
+    # (publisher cadences, ingest freshness, automerge activity, citations)
+    # and files cadence_stall_* brain findings on gap/queue stalls. Built
+    # after 3 silent stalls (Bluesky 29h, gridstatus 7d, LinkedIn verdict
+    # queue) that nothing alerted on. Pure-DB + findings-only; idempotent
+    # (canonical upsert dedupe + 10-min in-process tick cache), so the wide
+    # minute window's in-hour re-fires are cheap no-ops. Every 3h.
+    # Deliberately NOT in _HEAVY_LABELS / _WORKER_PROXY_*: it's a light
+    # aggregate-query tick, and the alarm must run on WEB — several watched
+    # lanes live on the worker, so a wedged worker would kill a worker-
+    # hosted sentinel along with the lanes it exists to report.
+    # _hit() attaches X-Admin-Key. Kill: CADENCE_SENTINEL_DISABLE=1.
+    ("cadence_sentinel_tick_3h",
+     f"{BASE}/api/v1/admin/cadence-sentinel/master-tick",
+     "POST",
+     lambda now: now.hour % 3 == 2 and now.minute < 55),
+
     # ─────────────────────────────────────────────────────────────────────
     # 2026-07-03: RE-HOMED off the retiring off-repo Replit scheduler
     # (dchub-scheduler.py). Replit is decommissioned; these five Replit jobs

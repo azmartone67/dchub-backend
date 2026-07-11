@@ -2004,6 +2004,19 @@ try:
     except Exception as _rfms:
         import logging
         logging.getLogger(__name__).warning('registry_freshness_master_shell wiring failed: %s', _rfms)
+    # 2026-07-11: Cadence dead-man sentinel — generic lane registry (publishers,
+    # ingests, automerge, citations) that files cadence_stall_* brain findings
+    # when a lane exceeds its expected gap or its queue accumulates with zero
+    # drain. Built after 3 silent stalls (Bluesky 29h, gridstatus 7d, LinkedIn
+    # verdict queue) that nothing alerted on. Findings-only; kill:
+    # CADENCE_SENTINEL_DISABLE=1. GET /admin/cadence-sentinel
+    try:
+        from routes.cadence_sentinel import cadence_sentinel_bp
+        app.register_blueprint(cadence_sentinel_bp)
+        print("[main] cadence_sentinel_bp registered: GET /admin/cadence-sentinel", flush=True)
+    except Exception as _cds:
+        import logging
+        logging.getLogger(__name__).warning('cadence_sentinel wiring failed: %s', _cds)
     # 2026-07-03: Agent-enablement portal — the ONE HTML pane over the agent stack
     # (north-star agents/wk, onboarding shell score+worklist, AI-adoption snapshot,
     # tool-tuner freshness). Read-only. GET /admin/agents
