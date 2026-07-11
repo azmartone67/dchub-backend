@@ -474,10 +474,51 @@ def api_analyze_parcel():
     except Exception:
         capacity_mw = None
 
+    # r-parcel-lookup (2026-07-11): no geometry but a point? Serve the polygon
+    # from the hosted parcel_boundaries layer (free county/state GIS pilot;
+    # /api/v1/parcels/coverage lists live markets). Geometry callers unchanged;
+    # point callers light up wherever hosted coverage exists.
+    hosted_parcel = None
+    if not geom:
+        def _num_arg(*keys):
+            for k in keys:
+                v = body.get(k)
+                if v not in (None, ""):
+                    try:
+                        return float(v)
+                    except Exception:
+                        return None
+            return None
+        _lat, _lng = _num_arg("lat"), _num_arg("lng", "lon")
+        if _lat is not None and _lng is not None:
+            try:
+                with psycopg.connect(NEON_URL, autocommit=True) as _c, _c.cursor() as _cur:
+                    _cur.execute(
+                        """SELECT parcel_id, county, state, acres_gis,
+                                  ST_AsGeoJSON(geom, 6)
+                           FROM parcel_boundaries
+                           WHERE geom && ST_SetSRID(ST_MakePoint(%s,%s),4326)
+                             AND ST_Contains(geom, ST_SetSRID(ST_MakePoint(%s,%s),4326))
+                           LIMIT 1""", (_lng, _lat, _lng, _lat))
+                    _row = _cur.fetchone()
+                if _row:
+                    geom = json.loads(_row[4])
+                    hosted_parcel = {
+                        "parcel_id": _row[0], "county": _row[1], "state": _row[2],
+                        "acres_per_source": _row[3], "hosted_lookup": True,
+                        "data_basis": "county/state public GIS parcel layer hosted by DC Hub",
+                    }
+            except Exception:
+                pass  # fail-soft: fall through to the geometry-required error
+            if not geom:
+                return jsonify(ok=False, _entity="error",
+                               error="no hosted parcel contains that point — coverage is rolling out by market (GET /api/v1/parcels/coverage); pass an explicit GeoJSON geometry to analyze any boundary",
+                               coverage_url="/api/v1/parcels/coverage"), 404
+
     members = _members_from_geometry(geom)
     if not members:
         return jsonify(ok=False, _entity="error",
-                       error="geometry must be a GeoJSON Polygon or MultiPolygon with >=3-point outer rings"), 400
+                       error="geometry must be a GeoJSON Polygon or MultiPolygon with >=3-point outer rings — or pass lat+lng inside a hosted-coverage market (GET /api/v1/parcels/coverage)"), 400
 
     member_out = []
     for ring in members:
@@ -503,6 +544,7 @@ def api_analyze_parcel():
     return jsonify({
         "_entity": "parcel_analysis",
         "ok": True,
+        **({"hosted_parcel": hosted_parcel} if hosted_parcel else {}),
         "representative_point": rp,
         "total_acres": total_acres,
         "member_count": len(member_out),
