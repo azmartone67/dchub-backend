@@ -30,7 +30,7 @@ import threading
 # "*_phrase()" helpers. Never set these above the true live numbers.
 _FALLBACK = {
     "facilities": 21000,            # raw "tracked" floor (discovery pile, incl unmerged dupes)
-    "facilities_verified": 400,    # deduped/active floor — citation-safe. 2026-06-23: re-floored 1800->1000 (live=1,066, so 1800 was a ~69% over-claim on DB-failure — the canonical_floor_above_live_reality finding). Trend kept dropping 3,141->2,848->1,903->1,066 as re-ingestion churns dedup flags. MUST stay <= reality — floors round DOWN; re-floor whenever live drops below it. [flag: verified set is shrinking fast — investigate whether dedup is over-merging.] 2026-06-30: re-floored 1000->400 (live verified ~427 per brain L15; 1000 was again above reality).
+    "facilities_verified": 400,    # deduped/active floor — citation-safe. 2026-06-23: re-floored 1800->1000 (live=1,066, so 1800 was a ~69% over-claim on DB-failure — the canonical_floor_above_live_reality finding). Trend kept dropping 3,141->2,848->1,903->1,066 as re-ingestion churns dedup flags. MUST stay <= reality — floors round DOWN; re-floor whenever live drops below it. [flag RESOLVED 2026-07-10 (issue #1539): the 'shrinking' 3,141->1,066->427->5 was the pending QUEUE draining (old filter included merged_at IS NULL); true fleet ~4,903 — dedup was never over-merging.] 2026-06-30: re-floored 1000->400 (live verified ~427 per brain L15; 1000 was again above reality).
     "countries": 170,
     "countries_verified": 30,       # deduped/active distinct floor (live ~33; country field dirty -> conservative)
     "markets": 300,          # 2026-06-08: Neon-verified COUNT(DISTINCT market_name) minus 3 aggregates = 300 (grew from 232 via intl expansion). Live query below; this is the fallback.
@@ -90,13 +90,19 @@ def _query_live() -> dict:
                 out["facilities"] = n            # raw "tracked" discovery pile
         except Exception:
             pass
-        # VERIFIED/ACTIVE subset (deduped): excludes duplicate + merged rows.
-        # This is the count the map + dedup pipeline already use internally
-        # (is_duplicate=0 AND merged_at IS NULL). Lead honest copy with this;
-        # "tracked" (raw, above) is the discovery pile incl unmerged candidates.
+        # VERIFIED/ACTIVE subset (deduped): the FLEET filter — excludes only
+        # flagged duplicates. Lead honest copy with this; "tracked" (raw, above)
+        # is the discovery pile including flagged duplicates.
+        # 2026-07-10 (issue #1539): dropped `AND merged_at IS NULL` — the merge
+        # pipeline stamps merged_at on EVERY promoted fleet row, so the old
+        # combined filter counted the *unmerged pending queue* (which drains to
+        # ~0 as the pipeline works), not the verified fleet (~4.9K). That
+        # artifact fired canonical_floor_above_live_reality ("live=5 vs floor
+        # 400") and made a healthy pipeline look dead. Queue counts belong to
+        # the dedup/approval loops, never to "verified".
         try:
             cur.execute("SELECT COUNT(*) FROM discovered_facilities "
-                        "WHERE COALESCE(is_duplicate,0)=0 AND merged_at IS NULL")
+                        "WHERE COALESCE(is_duplicate,0)=0")
             n = int((cur.fetchone() or [0])[0] or 0)
             if n > 0:
                 out["facilities_verified"] = n
@@ -117,7 +123,7 @@ def _query_live() -> dict:
         try:
             cur.execute("SELECT COUNT(DISTINCT country) FROM discovered_facilities "
                         "WHERE country IS NOT NULL AND country <> '' "
-                        "AND COALESCE(is_duplicate,0)=0 AND merged_at IS NULL")
+                        "AND COALESCE(is_duplicate,0)=0")
             n = int((cur.fetchone() or [0])[0] or 0)
             if n > 0:
                 out["countries_verified"] = n

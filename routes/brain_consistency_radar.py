@@ -5527,7 +5527,14 @@ def check_dedup_backlog_growing() -> list[dict]:
     cur = d.get("current") or {}
     total    = int(cur.get("total")    or 0)
     verified = int(cur.get("verified") or 0)
-    gap = total - verified
+    # 2026-07-10 (issue #1539): the backlog is the rows actually AWAITING
+    # dedup/merge (the pending queue), NOT total-verified. total-verified
+    # counts rows already FLAGGED as duplicates (processed, kept for lineage)
+    # as if they were still waiting — combined with the old queue-as-verified
+    # counter this read "21,937 candidates, 0 verified of 21,937 raw" while
+    # the pipeline was actively merging (516 merges in the prior 7 days).
+    pending = cur.get("pending")
+    gap = int(pending) if pending is not None else (total - verified)
     if gap < 5000:
         return []
     # If we have baseline, check whether verified has moved
@@ -5539,8 +5546,8 @@ def check_dedup_backlog_growing() -> list[dict]:
             "issue":  "dedup_pipeline_stalled",
             "url":    "/api/v1/facilities/delta",
             "count":  gap,
-            "detail": (f"Facility dedup backlog: {gap:,} raw rows not yet "
-                       f"deduped (raw {total:,} vs verified {verified:,}). "
+            "detail": (f"Facility dedup backlog: {gap:,} rows awaiting "
+                       f"dedup/merge (raw {total:,}, verified fleet {verified:,}). "
                        f"Verified count moved only {verified_delta} over the "
                        f"last 7 days. The dedup worker has stalled or slowed "
                        f"dramatically; users see a stale facility count on "
@@ -5554,7 +5561,7 @@ def check_dedup_backlog_growing() -> list[dict]:
         "count":  gap,
         "count_kind": "backlog_size",  # VALUE not a recurrence count (see brain_work_selector.VALUE_NOT_COUNT_ISSUES)
         "detail": (f"Facility dedup backlog: {gap:,} candidates "
-                   f"awaiting dedup ({verified:,} verified of {total:,} raw). "
+                   f"awaiting dedup/merge (verified fleet {verified:,} of {total:,} raw). "
                    f"Not yet flagged as stalled — need 7d of snapshots for "
                    f"that. If this gap doesn't shrink over the next week, "
                    f"check the dedup pipeline."),

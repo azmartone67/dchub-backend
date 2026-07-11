@@ -316,9 +316,13 @@ def test_canonical_stats_is_dedup_aware():
     active). The dynamic 'floor <= live count' check runs in the brain."""
     src = open(os.path.join(ROOT, "canonical_stats.py"), encoding="utf-8").read()
     assert "facilities_verified" in src, "canonical_stats lost the verified/active count"
-    assert "is_duplicate" in src and "merged_at IS NULL" in src, (
-        "the verified count must filter the deduped/active set "
-        "(COALESCE(is_duplicate,0)=0 AND merged_at IS NULL)")
+    assert "COALESCE(is_duplicate,0)=0" in src, (
+        "the verified count must filter the deduped fleet "
+        "(COALESCE(is_duplicate,0)=0)")
+    assert "COALESCE(is_duplicate,0)=0 AND merged_at IS NULL" not in src, (
+        "issue #1539 regression: pairing merged_at IS NULL with the dup filter "
+        "counts the drained pending queue (reads ~0), not the verified fleet — "
+        "the merge pipeline stamps merged_at on every promoted fleet row")
     import importlib, sys
     sys.path.insert(0, ROOT)
     cs = importlib.import_module("canonical_stats")

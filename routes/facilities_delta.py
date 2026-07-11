@@ -72,13 +72,17 @@ def _current_counts(cur) -> dict:
     """Read current counts from discovered_facilities. Phase KKKK +
     OOOO (2026-05-16): returns three counts:
       - total     raw COUNT(*) of discovered_facilities (21,374)
-      - verified  deduped: merged_at IS NULL AND is_duplicate = 0
+      - verified  deduped fleet: COALESCE(is_duplicate,0)=0 (2026-07-10,
+                   issue #1539 — merged_at IS NOT NULL means PROMOTED, so the
+                   old `merged_at IS NULL AND is_duplicate=0` filter counted
+                   the drained pending queue and read 0 while merges ran)
+      - pending   the actual dedup/merge queue: is_dup=0 AND merged_at IS NULL
       - published the count from the curated `facilities` table that
                    main.py:5862 reads for the homepage stat
     Three counts surface drift between the discovery pipeline, the
     dedup worker, and the published curation step — any pair
     diverging by >X% is a brain finding (Phase PPPP detector)."""
-    out = {"total": 0, "verified": 0, "published": 0,
+    out = {"total": 0, "verified": 0, "pending": 0, "published": 0,
            "operating": 0, "pipeline": 0, "by_state": {}}
     try:
         cur.execute("SELECT to_regclass('public.discovered_facilities')")
@@ -91,9 +95,17 @@ def _current_counts(cur) -> dict:
     try:
         cur.execute("""
             SELECT COUNT(*) FROM discovered_facilities
-             WHERE merged_at IS NULL AND is_duplicate = 0
+             WHERE COALESCE(is_duplicate,0) = 0
         """)
         out["verified"] = int((cur.fetchone() or [0])[0] or 0)
+    except Exception: pass
+    # The rows genuinely AWAITING dedup/merge (the auto-approval queue).
+    try:
+        cur.execute("""
+            SELECT COUNT(*) FROM discovered_facilities
+             WHERE merged_at IS NULL AND COALESCE(is_duplicate,0) = 0
+        """)
+        out["pending"] = int((cur.fetchone() or [0])[0] or 0)
     except Exception: pass
     # OOOO: also count the curated `facilities` table (what users see)
     try:
