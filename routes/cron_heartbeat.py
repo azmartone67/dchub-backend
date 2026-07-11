@@ -524,6 +524,17 @@ _DISPATCH = [
      "POST",
      lambda now: now.hour == 10 and now.minute < 55),
 
+    # 2026-07-11: MONETIZE & RETAIN master shell — the fourth motion after the
+    # three moat pillars. Meters grid/fiber paid-demand usage into leads
+    # (NEVER blocks; enforcement = separate MONETIZE_METERED_ENFORCE, default
+    # off), snapshots weekly retention (pillar-3 truth), and canaries the
+    # structured-citation interconnect contract. One bounded action/tick.
+    # Kill: MONETIZE_MASTER_DISABLED. Daily 12:xx UTC (offset from grid=11/depth=10).
+    ("monetize_master_tick_daily",
+     f"{BASE}/api/v1/admin/monetize/master-tick",
+     "POST",
+     lambda now: now.hour == 12 and now.minute < 55),
+
     # 2026-07-03: brain RAG reindex — embed new findings/recs/news/deals into
     # brain_corpus_embeddings so the L6 planner's semantic recall stays fresh.
     # Every 4h at :20, cap 500/run (incremental backfill; catches up over runs).

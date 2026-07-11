@@ -2239,6 +2239,9 @@ try:
         from routes.depth_master_shell import depth_master_shell_bp
         app.register_blueprint(depth_master_shell_bp)
         print("[main] depth_master_shell_bp registered: POST /api/v1/admin/depth/master-tick", flush=True)
+        from routes.monetization_master_shell import monetization_master_shell_bp
+        app.register_blueprint(monetization_master_shell_bp)
+        print("[main] monetization_master_shell_bp registered: POST /api/v1/admin/monetize/master-tick", flush=True)
     except Exception as _dms:
         import logging
         logging.getLogger(__name__).warning('depth_master_shell wiring failed: %s', _dms)
