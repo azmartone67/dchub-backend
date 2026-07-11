@@ -557,7 +557,8 @@ def api_analyze_parcel():
         # positional error of its own. Contrast the queue handoff, where the anchor is
         # 'county_centroid' (approximate) vs 'poi_exact' — carried there as coordinate_precision.
         "data_basis": {
-            "geometry_source": "caller-supplied WGS84 GeoJSON (DC Hub does not yet own a parcel-boundary dataset)",
+            "geometry_source": ("DC Hub hosted county/state GIS parcel layer (point lookup)"
+                                if hosted_parcel else "caller-supplied WGS84 GeoJSON"),
             "area_method": "geodesic spherical-excess — measured, not modeled",
             "centroid_method": "planar shoelace of the largest-area member",
             "positional_error_added_by_dchub_m": 0,
@@ -569,9 +570,10 @@ def api_analyze_parcel():
                  "contiguous=false means members are DISCONTINUOUS — treat setbacks, fencing and "
                  "point-of-interconnection per-member, not as one summed footprint. Pipe "
                  "site_evaluation_handoff into analyze_site for grid/fiber/water/verdict at the anchor. "
-                 "Acreage is geodesic (spherical-excess). NOTE: this interface ships ahead of DC Hub "
-                 "owning a parcel-boundary dataset — it reads any polygon you pass; the get_refined_queue "
-                 "handoff will only auto-carry `geometry` once a parcel GIS layer (Regrid/assessor) is sourced."),
+                 "Acreage is geodesic (spherical-excess). Pass lat+lng with no geometry to look up the "
+                 "containing parcel from DC Hub's hosted county/state GIS layer (rolling out by market — "
+                 "GET /api/v1/parcels/coverage). get_refined_queue handoffs still never auto-carry "
+                 "`geometry`: ISO queue rows have no parcel identity (proven 2026-07-06)."),
     })
 
 
