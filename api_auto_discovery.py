@@ -35,6 +35,7 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 from urllib.parse import urljoin
 from db_utils import get_db, get_read_db
+from routes._swallowed_writes import note_swallowed_write
 
 logger = logging.getLogger(__name__)
 
@@ -448,6 +449,7 @@ class APIAutoDiscovery:
                 else:
                     results['existing'] += 1
             except Exception:
+                note_swallowed_write("discovered_apis", where="api_auto_discovery.seed_known_apis")
                 pass
 
         conn.commit()
@@ -876,6 +878,7 @@ class APIAutoDiscovery:
                         WHERE id = %s
                     ''', row)
                 except Exception:
+                    note_swallowed_write("discovered_apis", where="api_auto_discovery.health_check_registered_apis")
                     pass
             for row in health_rows:
                 try:
@@ -885,6 +888,7 @@ class APIAutoDiscovery:
                         VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                     ''', row)
                 except Exception:
+                    note_swallowed_write("api_health_checks", where="api_auto_discovery.health_check_registered_apis")
                     pass
             for ev in change_events:
                 try:
@@ -1084,6 +1088,7 @@ class APIAutoDiscovery:
                         WHERE id = %s
                     ''', row)
                 except Exception:
+                    note_swallowed_write("discovered_apis", where="api_auto_discovery.test_all_apis")
                     pass
             conn.commit()
             conn.close()
@@ -1517,6 +1522,7 @@ class APIAutoDiscovery:
             conn.commit()
             return added
         except Exception:
+            note_swallowed_write("discovered_apis", where="api_auto_discovery._add_discovered_api")
             return False
         finally:
             conn.close()
@@ -1529,6 +1535,7 @@ class APIAutoDiscovery:
                 VALUES (%s, %s, %s, %s, %s)
             ''', (api_id, event_type, old_value, new_value, description))
         except Exception:
+            note_swallowed_write("api_change_events", where="api_auto_discovery._log_change_event")
             pass
 
 

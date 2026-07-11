@@ -37,6 +37,7 @@ import secrets
 import datetime
 import hashlib
 from flask import Blueprint, jsonify, request
+from routes._swallowed_writes import note_swallowed_write
 
 
 auto_trial_bp = Blueprint("auto_trial", __name__)
@@ -208,7 +209,9 @@ def mint_trial_for_request(req=None, tool_name: str = "", client_name: str = "",
                                 (operator_email.strip().lower(), (operator_name or None),
                                  (client_name[:80] or None) if client_name else None, g[0]))
                             _bound_now = True
-                        except Exception: pass
+                        except Exception:
+                            note_swallowed_write("auto_trial_keys", where="auto_trial.mint_trial_for_request")
+                            pass
                     import datetime as _dt
                     days_left = None
                     if g[1]:
@@ -258,7 +261,9 @@ def mint_trial_for_request(req=None, tool_name: str = "", client_name: str = "",
                             f"Use api_key in X-API-Key header. "
                             f"{TRIAL_DAILY_CALLS} calls/day.")
                     return out
-            except Exception: pass
+            except Exception:
+                note_swallowed_write("auto_trial_keys", where="auto_trial.mint_trial_for_request")
+                pass
 
             # Check for existing recent trial key for this caller
             try:
@@ -295,7 +300,9 @@ def mint_trial_for_request(req=None, tool_name: str = "", client_name: str = "",
                                 "WHERE api_key = %s",
                                 (operator_email.strip().lower(), (operator_name or None),
                                  (client_name[:80] or None) if client_name else None, r[0]))
-                        except Exception: pass
+                        except Exception:
+                            note_swallowed_write("auto_trial_keys", where="auto_trial.mint_trial_for_request")
+                            pass
                     # Compute days_remaining for the countdown CTA
                     import datetime as _dt
                     days_left = None
@@ -330,7 +337,9 @@ def mint_trial_for_request(req=None, tool_name: str = "", client_name: str = "",
                                          f"{TRIAL_DAILY_UNBOUND} calls/day; bind your "
                                          f"operator email to unlock {TRIAL_DAILY_CALLS}/day."),
                     }
-            except Exception: pass
+            except Exception:
+                note_swallowed_write("auto_trial_keys", where="auto_trial.mint_trial_for_request")
+                pass
 
             # ── 2026-07-10 (leak #1, part 2): CARRY THE COUNTER FORWARD. Even
             # when no live gated trial exists (expired, or the identity's usage
@@ -387,6 +396,7 @@ def mint_trial_for_request(req=None, tool_name: str = "", client_name: str = "",
                 r = cur.fetchone()
                 expires = r[0].isoformat() if r and r[0] else None
             except Exception:
+                note_swallowed_write("auto_trial_keys", where="auto_trial.mint_trial_for_request")
                 return {"error": "mint_failed", "ok": False}
     finally:
         try: c.close()
@@ -529,7 +539,9 @@ def validate_trial_key(api_key: str) -> tuple[bool, str]:
                                daily_date   = %s
                          WHERE api_key = %s
                     """, (today, today, api_key))
-                except Exception: pass
+                except Exception:
+                    note_swallowed_write("auto_trial_keys", where="auto_trial.validate_trial_key")
+                    pass
                 return True, "ok"
             except Exception:
                 # FAIL-OPEN: daily_* not migrated yet OR a transient error → fall
@@ -546,6 +558,7 @@ def validate_trial_key(api_key: str) -> tuple[bool, str]:
                                 "call_count = call_count + 1 WHERE api_key = %s", (api_key,))
                     return True, "ok"
                 except Exception:
+                    note_swallowed_write("auto_trial_keys", where="auto_trial.validate_trial_key")
                     return False, "validation_failed"
     finally:
         try: c.close()
@@ -603,6 +616,7 @@ def _mirror_trial_to_mcp_dev_keys(api_key: str, email: str):
             try: c.close()
             except Exception: pass
     except Exception:
+        note_swallowed_write("mcp_dev_keys", where="auto_trial._mirror_trial_to_mcp_dev_keys")
         pass
 
 

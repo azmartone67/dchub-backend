@@ -117,6 +117,7 @@ app = Flask(__name__)
 import decimal as _dchub_decimal
 import datetime as _dchub_datetime
 import uuid as _dchub_uuid
+from routes._swallowed_writes import note_swallowed_write
 
 def _dchub_json_default(o):
     if isinstance(o, _dchub_decimal.Decimal):
@@ -835,6 +836,7 @@ def google_auth():
             """, (email, name, 'google_signup', 'google_oauth_registration', 30, datetime.utcnow().isoformat()))
             conn.commit()
         except:
+            note_swallowed_write("leads", where="api_server.google_auth")
             pass
         
         # Start welcome email series for new Google users
@@ -1523,6 +1525,7 @@ def generate_report():
             conn.commit()
             conn.close()
         except:
+            note_swallowed_write("leads", where="api_server.generate_report")
             pass
     
     # Generate report
@@ -2820,6 +2823,7 @@ def process_discovery_source(source_name, discovery_func, conn):
                 ))
                 conn.commit()
             except:
+                note_swallowed_write("discovery_runs", where="api_server.process_discovery_source")
                 pass
         
     except Exception as e:
@@ -2831,6 +2835,7 @@ def process_discovery_source(source_name, discovery_func, conn):
                 """, (str(e), run_id))
                 conn.commit()
             except:
+                note_swallowed_write("discovery_runs", where="api_server.process_discovery_source")
                 pass
     
     return result

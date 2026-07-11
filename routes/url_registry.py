@@ -19,6 +19,7 @@ can create it idempotently on cold deploys.
 import os, re, sys, json, datetime
 from contextlib import contextmanager
 from flask import Blueprint, jsonify, request
+from routes._swallowed_writes import note_swallowed_write
 
 try:
     import psycopg2 as _pg
@@ -219,6 +220,7 @@ def mark_published(emission_id, ref_id=None):
             """, (ref_id, emission_id))
         return True
     except Exception:
+        note_swallowed_write("url_emissions", where="url_registry.mark_published")
         return False
 
 
@@ -235,6 +237,7 @@ def mark_failed(emission_id, reason=""):
             """, (reason[:200], emission_id))
         return True
     except Exception:
+        note_swallowed_write("url_emissions", where="url_registry.mark_failed")
         return False
 
 
@@ -333,6 +336,7 @@ def cron_url_smoke():
                         "UPDATE url_emissions SET last_smoke_at=NOW(), smoke_status=%s WHERE id=%s",
                         (status, rid))
             except Exception:
+                note_swallowed_write("url_emissions", where="url_registry.cron_url_smoke")
                 pass
             if state == "published" and (status == 0 or status >= 400):
                 # 404 path -> mark dead + auto-revoke linkedin
@@ -340,6 +344,7 @@ def cron_url_smoke():
                     with _conn() as c, c.cursor() as cur:
                         cur.execute("UPDATE url_emissions SET state='dead_404' WHERE id=%s", (rid,))
                 except Exception:
+                    note_swallowed_write("url_emissions", where="url_registry.cron_url_smoke")
                     pass
                 if channel == "linkedin" and ref_id:
                     rd = _linkedin_delete(ref_id)
@@ -352,6 +357,7 @@ def cron_url_smoke():
                                                       revoke_reason='auto_404'
                                                 WHERE id=%s""", (rid,))
                         except Exception:
+                            note_swallowed_write("url_emissions", where="url_registry.cron_url_smoke")
                             pass
                         revoked += 1
                 _brain_finding("media_404_auto_revoke", url,
@@ -370,6 +376,7 @@ def cron_url_smoke():
                     _brain_finding("media_404_recovered", url,
                                    f"channel={channel} now_2xx")
                 except Exception:
+                    note_swallowed_write("url_emissions", where="url_registry.cron_url_smoke")
                     pass
         return jsonify(ok=True, checked=checked, revoked=revoked,
                        republished=republished, findings=findings[:20])

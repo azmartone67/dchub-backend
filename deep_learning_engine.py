@@ -28,6 +28,7 @@ from typing import Dict, List, Optional, Set, Tuple
 from urllib.parse import urlparse, urljoin
 from collections import defaultdict
 from db_utils import get_db
+from routes._swallowed_writes import note_swallowed_write
 
 try:
     from bs4 import BeautifulSoup
@@ -274,6 +275,7 @@ class DeepLearningEngine:
                         UPDATE announcements SET processed_for_learning = 1 WHERE id = %s
                     ''', (article_id,))
                 except:
+                    note_swallowed_write("announcements", where="deep_learning_engine.learn_from_news")
                     pass
             
             conn.commit()
@@ -750,6 +752,7 @@ class DeepLearningEngine:
             
             return is_new
         except Exception as e:
+            note_swallowed_write("learned_entities", where="deep_learning_engine._learn_entity")
             return False
     
     def _save_transaction(self, tx: Dict) -> bool:
@@ -770,6 +773,7 @@ class DeepLearningEngine:
             conn.close()
             return is_new
         except:
+            note_swallowed_write("transaction_intelligence", where="deep_learning_engine._save_transaction")
             return False
     
     def _save_capacity_update(self, cap: Dict) -> bool:
@@ -790,6 +794,7 @@ class DeepLearningEngine:
             conn.close()
             return is_new
         except:
+            note_swallowed_write("capacity_tracking", where="deep_learning_engine._save_capacity_update")
             return False
     
     def _add_discovered_source(self, url: str, source_type: str) -> bool:
@@ -808,6 +813,7 @@ class DeepLearningEngine:
             conn.close()
             return is_new
         except:
+            note_swallowed_write("discovered_sources", where="deep_learning_engine._add_discovered_source")
             return False
     
     def _extract_naming_patterns(self, name: str, operator: str) -> List[str]:
@@ -891,6 +897,7 @@ class DeepLearningEngine:
             conn.commit()
             conn.close()
         except:
+            note_swallowed_write("learning_log", where="deep_learning_engine._log_learning_run")
             pass
     
     def get_stats(self) -> Dict:

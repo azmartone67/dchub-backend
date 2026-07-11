@@ -65,6 +65,7 @@ mcp_bp = Blueprint("mcp_bp", __name__)
 # column upstream; we drop those so platform counts stay honest). Defined at
 # module scope so any handler can use it. Local copies elsewhere predate this.
 import re as _re_mod
+from routes._swallowed_writes import note_swallowed_write
 _UUID_RE_MOD = _re_mod.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
 )
@@ -510,6 +511,7 @@ def validate_key():
                         (api_key,),
                     )
             except Exception:
+                note_swallowed_write("mcp_dev_keys", where="flask_mcp_endpoints.validate_key")
                 pass
     else:
         try:
@@ -519,6 +521,7 @@ def validate_key():
                     (api_key,),
                 )
         except Exception:
+            note_swallowed_write("mcp_dev_keys", where="flask_mcp_endpoints.validate_key")
             pass
     if _gated_unbound:
         return jsonify({
@@ -1199,6 +1202,7 @@ def identify_key():
                     (email, _mcp_sess))
                 _sc.commit()
     except Exception:
+        note_swallowed_write("mcp_high_intent_sessions", where="flask_mcp_endpoints.identify_key")
         pass
 
     try:
@@ -3268,6 +3272,7 @@ def stripe_webhook_mcp():
                 # failure; swallow here so provisioning never breaks the webhook.
                 pass
     except Exception:
+        note_swallowed_write("mcp_dev_keys", where="flask_mcp_endpoints.stripe_webhook_mcp")
         pass
 
     # r68-canonical (2026-06-02): write-back attribution on signals.converted.

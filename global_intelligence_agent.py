@@ -15,6 +15,7 @@ from typing import Dict, List, Optional, Any
 import threading
 import time
 from db_utils import get_db
+from routes._swallowed_writes import note_swallowed_write
 
 logger = logging.getLogger(__name__)
 
@@ -284,6 +285,7 @@ class GlobalIntelligenceAgent:
                 if cursor.rowcount > 0:
                     seeded += 1
             except Exception:
+                note_swallowed_write("fiber_carrier_routes", where="global_intelligence_agent._seed_carrier_routes")
                 pass
         conn.commit()
         if seeded > 0:
@@ -334,6 +336,7 @@ class GlobalIntelligenceAgent:
                                 if cursor.rowcount > 0:
                                     results['new_facilities'] += 1
                             except Exception as e:
+                                note_swallowed_write("facilities", where="global_intelligence_agent.discover_international_facilities")
                                 pass
 
                             region_count += 1
@@ -535,6 +538,7 @@ class GlobalIntelligenceAgent:
                                     ))
                                     results['new_added'] += 1
                                 except Exception as e:
+                                    note_swallowed_write("facilities", where="global_intelligence_agent.discover_apac_emea_facilities")
                                     pass
 
                             results['total_discovered'] += 1
@@ -601,6 +605,7 @@ class GlobalIntelligenceAgent:
                                 ))
                                 results['new_added'] += 1
                             except Exception:
+                                note_swallowed_write("facilities", where="global_intelligence_agent.discover_australia_facilities")
                                 pass
 
                         results['facilities'].append({
@@ -654,6 +659,7 @@ class GlobalIntelligenceAgent:
                                 ))
                                 results['new_added'] += 1
                             except Exception:
+                                note_swallowed_write("facilities", where="global_intelligence_agent.discover_australia_facilities")
                                 pass
             except Exception as e:
                 print(f"  OpenStreetMap error: {e}")
@@ -732,6 +738,7 @@ class GlobalIntelligenceAgent:
                                 results['by_operator'][op] = results['by_operator'].get(op, 0) + cap.get('mw', 0)
 
                         except Exception as e:
+                            note_swallowed_write("capacity_pipeline", where="global_intelligence_agent.track_capacity_pipeline")
                             pass
 
             conn.commit()
@@ -915,6 +922,7 @@ class GlobalIntelligenceAgent:
                         ))
                         results['total_km'] += route.get('distance_km', 0)
                     except Exception as e:
+                        note_swallowed_write("fiber_kmz_routes", where="global_intelligence_agent.parse_kmz_file")
                         pass
 
                 conn.commit()

@@ -47,6 +47,7 @@ from dotenv import load_dotenv
 from internal_auth import is_valid_internal_key, get_internal_key_for_client
 from csp_report import csp_report_bp
 from utils.anthropic_helper import anthropic_messages_url
+from routes._swallowed_writes import note_swallowed_write
 
 
 def _phase22_audit_check():
@@ -2899,7 +2900,8 @@ try:
                         finally:
                             try: conn.close()
                             except Exception: pass
-                    except Exception: pass
+                    except Exception:
+                        note_swallowed_write("weekly_public_subscribers", where="main._weekly_send_public")
                 else:
                     failed += 1
             except Exception:
@@ -7931,6 +7933,7 @@ def _check_mcp_daily_limit(ip_address, limit=None):
             return False, 0, used
         return True, limit - used, used
     except Exception:
+        note_swallowed_write("mcp_rate_limits", where="main._check_mcp_daily_limit")
         pass  # Fall through to in-memory
 
     # ── In-memory fallback ──
@@ -14855,6 +14858,7 @@ def handle_invoice_paid(invoice):
         conn.commit()
         _sync_tables_bg('users')
     except Exception:
+        note_swallowed_write("users", where="main.handle_invoice_paid")
         pass
     finally:
         try: conn.close()
@@ -14923,6 +14927,7 @@ def handle_payment_failed(invoice):
         conn.commit()
         _sync_tables_bg('users')
     except Exception:
+        note_swallowed_write("users", where="main.handle_payment_failed")
         pass
     finally:
         try: conn.close()
@@ -15782,6 +15787,7 @@ def generate_report():
             conn.commit()
             conn.close()
         except:
+            note_swallowed_write("leads", where="main.generate_report")
             pass
 
     # Generate report
@@ -20455,6 +20461,7 @@ def daily_cron():
                         (aid,(a.get('title') or '')[:500],(a.get('summary') or '')[:2000],(a.get('url') or '')[:1000],(a.get('source') or '')[:200],(a.get('url') or '')[:1000],pub,(a.get('category') or 'Industry')[:100]))
                     if cur2.rowcount > 0: pushed += 1
                 except Exception as re:
+                    note_swallowed_write("announcements", where="main.daily_cron._run")
                     pg2.rollback()
             pg2.commit(); cur2.close(); pg2.close()
             results['news_sync'] = {'success': True, 'pushed': pushed, 'fetched': len(articles_rss)}
@@ -26212,7 +26219,8 @@ def api_patch_propose():
                     VALUES (%s, %s, %s, 'claude_error', %s, %s)
                 """, (check_name, finding.get("id"), prompt, result.get("error", "")[:300], result.get("duration_ms", 0)))
                 pg.commit()
-        except Exception: pass
+        except Exception:
+            note_swallowed_write("patch_attempts", where="main.api_patch_propose")
         return jsonify({"status": "claude_error", "error": result.get("error"),
                         "duration_ms": result.get("duration_ms")}), 502
 
