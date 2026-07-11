@@ -57,6 +57,7 @@ from __future__ import annotations
 import os
 import json
 import time
+from routes._swallowed_writes import note_swallowed_write
 
 
 # ── env helpers ──────────────────────────────────────────────────────
@@ -440,6 +441,7 @@ def record_merge(*, pr_number, proposal_id, merge_sha, file_path,
             conn.commit()
         return True
     except Exception:
+        note_swallowed_write("brain_automerge_log", where="brain_automerge.record_merge")
         return False
 
 
@@ -493,6 +495,7 @@ def _set_row_status(row_id, *, status: str, canary_done: bool,
             conn.commit()
         return True
     except Exception:
+        note_swallowed_write("brain_automerge_log", where="brain_automerge._set_row_status")
         return False
 
 
@@ -547,6 +550,7 @@ def trip_breaker(reason: str) -> bool:
             conn.commit()
         return True
     except Exception:
+        note_swallowed_write("brain_automerge_log", where="brain_automerge.trip_breaker")
         return False
 
 
@@ -572,6 +576,7 @@ def clear_breaker(note: str = "") -> bool:
             conn.commit()
         return True
     except Exception:
+        note_swallowed_write("brain_automerge_log", where="brain_automerge.clear_breaker")
         return False
 
 
@@ -640,6 +645,7 @@ def _record_token_dead(detail: str) -> None:
                 "<p>Regenerate a classic PAT (scopes <code>repo</code> + <code>workflow</code>) and run:<br>"
                 "<code>railway variables --service dchub-backend --set PR_SUBMIT_TOKEN=ghp_NEW</code></p>")
     except Exception:
+        note_swallowed_write("brain_automerge_log", where="brain_automerge._record_token_dead")
         pass
 
 

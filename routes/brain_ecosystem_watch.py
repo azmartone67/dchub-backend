@@ -28,6 +28,7 @@ import urllib.error
 from typing import Any
 
 from flask import Blueprint, jsonify, request
+from routes._swallowed_writes import note_swallowed_write
 
 
 brain_ecosystem_watch_bp = Blueprint("brain_ecosystem_watch", __name__)
@@ -332,6 +333,7 @@ def _record(finding: dict) -> None:
                 finding.get("detail"),
             ))
     except Exception:
+        note_swallowed_write("brain_ecosystem_watch", where="brain_ecosystem_watch._record")
         pass
     finally:
         try: c.close()

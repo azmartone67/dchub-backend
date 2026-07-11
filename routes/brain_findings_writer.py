@@ -34,6 +34,7 @@ All brain_findings writers should call upsert_brain_finding(cur, ...)
 instead of hand-rolling an INSERT. New writers: import this, done.
 """
 import logging
+from routes._swallowed_writes import note_swallowed_write
 
 logger = logging.getLogger(__name__)
 
@@ -256,6 +257,7 @@ def upsert_brain_finding(cur, issue: str, url: str = "", count: int = 1,
                         pass
                 return "updated"
         except Exception:
+            note_swallowed_write("brain_findings", where="brain_findings_writer.upsert_brain_finding")
             _rollback_sp(cur, "bfw_upd")
 
     # ── 2. INSERT new row — only columns that exist ──

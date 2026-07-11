@@ -56,6 +56,7 @@ import urllib.request
 from datetime import datetime, timezone
 
 from flask import Blueprint, jsonify, request
+from routes._swallowed_writes import note_swallowed_write
 
 audience_master_shell_bp = Blueprint("audience_master_shell", __name__)
 
@@ -332,6 +333,7 @@ def _persist(m: dict, geo: dict) -> bool:
             ))
         return True
     except Exception:
+        note_swallowed_write("audience_snapshots", where="audience_master_shell._persist")
         return False
     finally:
         try: c.close()

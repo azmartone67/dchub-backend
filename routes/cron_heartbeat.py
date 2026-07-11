@@ -44,6 +44,21 @@ def _register_analyst_note(state):
         print(f"[cron_heartbeat] analyst_note_bp register skipped: {_an_e}",
               flush=True)
 
+
+# 2026-07-11: METRIC GROUND-TRUTH CHECKER (routes/metric_truth_check.py)
+# rides on this blueprint's registration for the same frozen-main.py reason
+# as analyst_note above. Defensive: a broken import never breaks the
+# heartbeat (or boot).
+@cron_heartbeat_bp.record_once
+def _register_metric_truth(state):
+    try:
+        from routes.metric_truth_check import metric_truth_bp
+        if "metric_truth" not in state.app.blueprints:
+            state.app.register_blueprint(metric_truth_bp)
+    except Exception as _mt_e:
+        print(f"[cron_heartbeat] metric_truth_bp register skipped: {_mt_e}",
+              flush=True)
+
 # r78: the dispatcher runs INSIDE this Flask app — its job POSTs were going
 # out to api.dchub.cloud and back through Cloudflare to reach itself (and
 # api.dchub.cloud's non-/api/* routing 522s, which is what minted the
@@ -771,6 +786,25 @@ _DISPATCH = [
      "POST",
      lambda now: (now.minute % 20 < 3)
                  and os.environ.get("DEDUP_DRAIN_CRON_DISABLE") != "1"),
+
+    # 2026-07-11: METRIC GROUND-TRUTH CHECKER — weekly recompute of 5
+    # headline shell metrics straight from the raw tables (media posts/24h,
+    # citation velocity 7d, verified facilities, real agents/wk, automerge
+    # activity); files a brain finding via the canonical writer when a
+    # shell-reported value diverges >30% from the recompute or the lane's
+    # snapshot went stale. Motivated by this week's 35-vs-100 media score
+    # and 5-vs-4,903 verified-facilities measurement bugs — both invisible
+    # because nothing re-derived the headlines independently. Sun 15:xx UTC
+    # (empty slot; analyst-note owns Thu 14); WIDE minute window because the
+    # heartbeat is sporadic; endpoint is IDEMPOTENT per ISO week
+    # (metric_truth_runs PK claim — repeat fires are cheap no-ops); admin-
+    # gated — _hit() sends X-Admin-Key. No-deploy kill switch checked BOTH
+    # here and in the endpoint: METRIC_TRUTH_CHECK_DISABLE=1.
+    ("metric_truth_check_weekly",
+     f"{BASE}/api/v1/admin/metric-truth/check",
+     "POST",
+     lambda now: now.weekday() == 6 and now.hour == 15 and now.minute < 55
+                 and os.environ.get("METRIC_TRUTH_CHECK_DISABLE") != "1"),
 ]
 
 # r-poolfix (2026-07-04): the DB/LLM-heavy ticks. When a herd of these comes
@@ -793,7 +827,7 @@ _HEAVY_LABELS = frozenset({
     "dedup_drain",
     "reach_rollup_daily", "market_deep_dive_rotate_daily",
     "strategic_synthesis_weekly", "strategic_digest_weekly",
-    "analyst_note_weekly",
+    "analyst_note_weekly", "metric_truth_check_weekly",
 })
 
 

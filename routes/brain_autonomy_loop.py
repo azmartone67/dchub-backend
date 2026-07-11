@@ -54,6 +54,7 @@ import os
 import re
 import time
 from datetime import datetime, timezone
+from routes._swallowed_writes import note_swallowed_write
 
 
 # ── Tunables (env-driven; conservative defaults) ─────────────────────
@@ -395,6 +396,7 @@ def _insert_proposal(cand: dict):
             conn.commit()
         return row[0] if row else None
     except Exception:
+        note_swallowed_write("brain_proposed_code_fixes", where="brain_autonomy_loop._insert_proposal")
         return None
 
 

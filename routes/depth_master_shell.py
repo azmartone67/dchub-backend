@@ -42,6 +42,7 @@ import math
 from datetime import datetime, timezone
 
 from flask import Blueprint, jsonify, request
+from routes._swallowed_writes import note_swallowed_write
 
 depth_master_shell_bp = Blueprint("depth_master_shell", __name__)
 
@@ -184,6 +185,7 @@ def _act_capacity_price() -> dict:
                           as_of or None, json.dumps(r)))
                     wrote += 1
                 except Exception:
+                    note_swallowed_write("grid_ext_metrics", where="depth_master_shell._act_capacity_price")
                     c.rollback()
                     continue
         return {"ok": True, "rows_upserted": wrote,
@@ -311,6 +313,7 @@ def _act_large_load() -> dict:
                     wrote += 1
                     by_iso[iso] = float(gw)
                 except Exception:
+                    note_swallowed_write("grid_ext_metrics", where="depth_master_shell._act_large_load")
                     c.rollback()
                     continue
             for iso, p in published.items():
@@ -333,6 +336,7 @@ def _act_large_load() -> dict:
                     wrote += 1
                     by_iso[iso] = p["gw"]
                 except Exception:
+                    note_swallowed_write("grid_ext_metrics", where="depth_master_shell._act_large_load")
                     c.rollback()
                     continue
         return {"ok": True, "isos_classified": len(by_iso), "rows_upserted": wrote,
@@ -511,6 +515,7 @@ def _act_hosting_capacity() -> dict:
                     """, (dataset_id, slug, hr["headroom_score"], now_iso, json.dumps(hr)))
                     wrote += 1
                 except Exception:
+                    note_swallowed_write("grid_ext_metrics", where="depth_master_shell._act_hosting_capacity")
                     c2.rollback()
                     continue
         return {"ok": True, "markets_scored": wrote}
@@ -724,6 +729,7 @@ def _persist(m: dict, levers: dict, score: float, action: dict, findings: int) -
                               "longhaul": m.get("longhaul"), "action": action})))
         return True
     except Exception:
+        note_swallowed_write("depth_snapshots", where="depth_master_shell._persist")
         return False
     finally:
         try: c.close()

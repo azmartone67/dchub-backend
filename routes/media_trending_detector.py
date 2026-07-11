@@ -94,6 +94,7 @@ import datetime
 from typing import Any, Iterable
 
 from flask import Blueprint, jsonify, request
+from routes._swallowed_writes import note_swallowed_write
 
 
 media_trending_detector_bp = Blueprint("media_trending_detector", __name__)
@@ -588,6 +589,7 @@ def _persist_rows(rows: list[dict], per_source_rows: list[dict]) -> int:
                           json.dumps(r.get("samples", []))))
                     n += 1
                 except Exception:
+                    note_swallowed_write("media_trending_topics", where="media_trending_detector._persist_rows")
                     continue
     except Exception as e:
         _log(f"persist failed: {e}")

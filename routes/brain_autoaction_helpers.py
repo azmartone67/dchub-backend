@@ -37,6 +37,7 @@ from flask import Blueprint, request, jsonify
 
 import psycopg2
 import psycopg2.extras
+from routes._swallowed_writes import note_swallowed_write
 
 logger = logging.getLogger(__name__)
 
@@ -357,6 +358,7 @@ def stripe_webhook_replay():
                     if cur.rowcount > 0:
                         queued += 1
                 except Exception:
+                    note_swallowed_write("stripe_webhook_replay_log", where="brain_autoaction_helpers.stripe_webhook_replay")
                     continue
         conn.commit()
     except Exception as e:
@@ -580,6 +582,7 @@ def admin_news_clamp_future_dates():
                 """)
                 touched_news = cur.rowcount
             except Exception:
+                note_swallowed_write("news", where="brain_autoaction_helpers.admin_news_clamp_future_dates")
                 pass  # `news` table may not exist in all envs
         conn.commit()
     except Exception as e:

@@ -22,6 +22,7 @@ import json
 import hashlib
 import datetime as _dt
 from flask import Blueprint, request, jsonify
+from routes._swallowed_writes import note_swallowed_write
 
 logger = logging.getLogger(__name__)
 brain_press_loop_bp = Blueprint("brain_press_loop", __name__)
@@ -327,6 +328,7 @@ def press_loop_endpoint():
                                 ON CONFLICT (commit_sha, win_keyword) DO NOTHING
                             """, (w["keyword"], w["commit"], slug))
                         except Exception:
+                            note_swallowed_write("press_brain_outcomes", where="brain_press_loop.press_loop_endpoint")
                             pass
                     else:
                         skipped_existing += 1

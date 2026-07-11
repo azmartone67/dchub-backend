@@ -20,6 +20,7 @@ import json
 import logging
 import datetime as _dt
 from flask import Blueprint, request, jsonify
+from routes._swallowed_writes import note_swallowed_write
 
 logger = logging.getLogger(__name__)
 brain_memory_bp = Blueprint("brain_memory", __name__)
@@ -234,6 +235,7 @@ def record_verified_resolved(issue, url="", evidence="", *, fix_kind="auto_verif
             try: c.close()
             except Exception: pass
     except Exception:
+        note_swallowed_write("brain_finding_outcomes", where="brain_memory.record_verified_resolved")
         return "skipped"
 
 

@@ -46,6 +46,7 @@ import sys
 import urllib.request
 import urllib.error
 from typing import Optional
+from routes._swallowed_writes import note_swallowed_write
 
 # 2026-06-15 FREEZE FIX: this module used `logger.info(...)` in the durable-
 # persist summary block (_persist_findings_to_db) but never defined `logger`.
@@ -9726,6 +9727,7 @@ def _persist_findings_to_db(findings: list[dict], full_sweep: bool = False) -> i
                         resolved_now = cur.rowcount or 0
                         _persist_release_sp(cur, "bf_resolve_absent")
                     except Exception:
+                        note_swallowed_write("brain_findings", where="brain_consistency_radar._persist_findings_to_db")
                         _persist_rollback_sp(cur, "bf_resolve_absent")
                         resolved_now = 0
                 # Open/resolved/new-rate summary (read-only, for the

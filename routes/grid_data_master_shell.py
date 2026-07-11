@@ -52,6 +52,7 @@ import urllib.error
 from datetime import datetime, timezone, timedelta
 
 from flask import Blueprint, jsonify, request
+from routes._swallowed_writes import note_swallowed_write
 
 grid_data_master_shell_bp = Blueprint("grid_data_master_shell", __name__)
 
@@ -665,6 +666,7 @@ def _persist(m: dict, levers: dict, score: float, action: dict, findings: int) -
             ))
         return True
     except Exception:
+        note_swallowed_write("grid_data_snapshots", where="grid_data_master_shell._persist")
         return False
     finally:
         try: c.close()

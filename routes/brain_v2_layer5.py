@@ -63,6 +63,7 @@ from routes.brain_v2_layer4 import (
     _call_claude, ANTHROPIC_API_KEY, BRAIN_MODEL, _require_admin, ADMIN_KEY,
     BRAIN_MAX_LEARN,
 )
+from routes._swallowed_writes import note_swallowed_write
 
 brain_v2_layer5_bp = Blueprint("brain_v2_layer5", __name__)
 
@@ -687,6 +688,7 @@ def _validate_and_store_proposal(source_name: str, prop: dict) -> dict:
                          WHERE recipe_key = %s
                     """, (new_approval, new_cycles, _rkey))
                 except Exception:
+                    note_swallowed_write("brain_proposed_code_fixes", where="brain_v2_layer5._validate_and_store_proposal")
                     pass
             conn.commit()
         # Outcome: "proposed" on first insert, "duplicate" on conflict
@@ -1373,6 +1375,7 @@ def _escalate_ttl_breaches(cur) -> int:
         """, (_OPUS_TTL_CYCLES,))
         return cur.rowcount or 0
     except Exception:
+        note_swallowed_write("brain_proposed_code_fixes", where="brain_v2_layer5._escalate_ttl_breaches")
         return 0
 
 

@@ -56,6 +56,7 @@ import urllib.request
 from datetime import datetime, timezone
 
 from flask import Blueprint, Response, jsonify, request
+from routes._swallowed_writes import note_swallowed_write
 
 gap_master_shell_bp = Blueprint("gap_master_shell", __name__)
 
@@ -425,6 +426,7 @@ def _persist(m: dict, overall: float, action: dict) -> bool:
                               "action": action})))
         return True
     except Exception:
+        note_swallowed_write("gap_snapshots", where="gap_master_shell._persist")
         return False
     finally:
         try: c.close()

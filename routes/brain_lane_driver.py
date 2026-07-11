@@ -84,6 +84,7 @@ import urllib.request
 from datetime import datetime, timezone
 
 from flask import Blueprint, jsonify, request
+from routes._swallowed_writes import note_swallowed_write
 
 logger = logging.getLogger(__name__)
 
@@ -550,6 +551,7 @@ def _verify_lane(lane: str, kpi_main_now: float) -> dict | None:
         c.commit()
         return {"decision_id": dec_id, "outcome": outcome, "note": note}
     except Exception:
+        note_swallowed_write("brain_lane_decisions", where="brain_lane_driver._verify_lane")
         return None
     finally:
         try: c.close()
@@ -578,6 +580,7 @@ def _persist(lane: str, kpi: dict, decision: dict, act: dict) -> bool:
         c.commit()
         return True
     except Exception:
+        note_swallowed_write("brain_lane_decisions", where="brain_lane_driver._persist")
         return False
     finally:
         try: c.close()

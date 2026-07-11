@@ -62,6 +62,7 @@ from __future__ import annotations
 
 import os
 import time
+from routes._swallowed_writes import note_swallowed_write
 
 
 # ── env helpers ──────────────────────────────────────────────────────
@@ -237,6 +238,7 @@ def quarantine_recipe(*, file_path: str, klass: str, note: str = "") -> bool:
             conn.commit()
         return True
     except Exception:
+        note_swallowed_write("brain_proposed_code_fixes", where="brain_pr_janitor.quarantine_recipe")
         return False
 
 

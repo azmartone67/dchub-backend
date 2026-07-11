@@ -52,6 +52,7 @@ import urllib.request
 import urllib.error
 
 from flask import Blueprint, jsonify, request
+from routes._swallowed_writes import note_swallowed_write
 
 brain_master_orchestrator_bp = Blueprint("brain_master_orchestrator", __name__)
 
@@ -220,6 +221,7 @@ def _persist(report: dict):
                      json.dumps(report)))
             conn.commit()
     except Exception:
+        note_swallowed_write("brain_master_ticks", where="brain_master_orchestrator._persist")
         pass
 
 

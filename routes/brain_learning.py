@@ -37,6 +37,7 @@ from datetime import datetime, timezone, timedelta
 from functools import wraps
 
 from flask import Blueprint, jsonify, request
+from routes._swallowed_writes import note_swallowed_write
 
 try:
     from util.provenance import src, attach_sources, now_iso
@@ -215,6 +216,7 @@ def record_proposal_outcome(proposal_id, proposal_kind, still_broken,
                  (evidence_note or '')[:500]))
         return True
     except Exception:
+        note_swallowed_write("brain_fix_outcomes", where="brain_learning.record_proposal_outcome")
         return False
 
 
@@ -241,6 +243,7 @@ def record_model_run(layer, model, outcome, latency_ms=None,
                  (notes or '')[:300]))
         return True
     except Exception:
+        note_swallowed_write("brain_model_performance", where="brain_learning.record_model_run")
         return False
 
 
@@ -282,6 +285,7 @@ def bump_temporal(issue_label, url=""):
                     (klass, issue_label[:200], (url or '')[:300]))
         return True
     except Exception:
+        note_swallowed_write("brain_temporal_patterns", where="brain_learning.bump_temporal")
         return False
 
 

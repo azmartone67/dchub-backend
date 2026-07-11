@@ -51,6 +51,7 @@ import urllib.error
 from datetime import datetime, timezone
 
 from flask import Blueprint, jsonify, request
+from routes._swallowed_writes import note_swallowed_write
 
 rag_master_shell_bp = Blueprint("rag_master_shell", __name__)
 
@@ -679,6 +680,7 @@ def _persist(m: dict, levers: dict, score: float, action: dict) -> bool:
             ))
         return True
     except Exception:
+        note_swallowed_write("rag_snapshots", where="rag_master_shell._persist")
         return False
     finally:
         try: c.close()

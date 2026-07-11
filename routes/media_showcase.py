@@ -43,6 +43,7 @@ import urllib.request
 from datetime import datetime, timezone
 
 from flask import Blueprint, jsonify, request
+from routes._swallowed_writes import note_swallowed_write
 
 logger = logging.getLogger(__name__)
 media_showcase_bp = Blueprint("media_showcase", __name__)
@@ -121,6 +122,7 @@ def _mark_showcase_published(kind: str, post: str = "") -> None:
                     published_at = NOW()
             """, (kind, (post or "")[:800]))
     except Exception:
+        note_swallowed_write("media_showcase_publishes", where="media_showcase._mark_showcase_published")
         pass
     finally:
         try: c.close()

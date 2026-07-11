@@ -63,6 +63,7 @@ import datetime
 from typing import Any
 
 from flask import Blueprint, jsonify, request
+from routes._swallowed_writes import note_swallowed_write
 
 
 media_spike_responder_bp = Blueprint("media_spike_responder", __name__)
@@ -685,6 +686,7 @@ def _log_autoresponse(post: dict, thread: list[dict], status: str,
                        AND autoresponse_triggered_at IS NULL
                 """, (post.get("post_id"),))
             except Exception:
+                note_swallowed_write("linkedin_posts", where="media_spike_responder._log_autoresponse")
                 pass
             try:
                 cur.execute("""

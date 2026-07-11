@@ -32,6 +32,7 @@ import os
 import logging
 import datetime as _dt
 from flask import Blueprint, jsonify, Response
+from routes._swallowed_writes import note_swallowed_write
 
 logger = logging.getLogger(__name__)
 brain_layer6_bp = Blueprint("brain_layer6", __name__)
@@ -92,6 +93,7 @@ def _record_metric(key: str, value: float):
             try: c.close()
             except Exception: pass
     except Exception:
+        note_swallowed_write("brain_metric_snapshots", where="brain_layer6_predictive._record_metric")
         pass
 
 

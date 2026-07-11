@@ -53,6 +53,7 @@ from typing import Any
 
 from flask import Blueprint, jsonify, request, current_app
 from utils.anthropic_helper import anthropic_messages_url
+from routes._swallowed_writes import note_swallowed_write
 
 
 brain_lifecycle_bp = Blueprint("brain_lifecycle", __name__)
@@ -336,6 +337,7 @@ def _snapshot_history(composite: float, findings_count: int,
             ))
         _HISTORY_LAST_SNAPSHOT_AT = now
     except Exception:
+        note_swallowed_write("brain_lifecycle_history", where="brain_layer23_lifecycle._snapshot_history")
         pass
     finally:
         try: c.close()

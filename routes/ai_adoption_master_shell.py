@@ -48,6 +48,7 @@ import time
 from datetime import datetime, timezone
 
 from flask import Blueprint, Response, jsonify, request
+from routes._swallowed_writes import note_swallowed_write
 
 ai_adoption_master_shell_bp = Blueprint("ai_adoption_master_shell", __name__)
 
@@ -432,6 +433,7 @@ def _persist(measure: dict, discovery: dict, legibility: dict, reinforcement: di
             ))
         return True
     except Exception:
+        note_swallowed_write("ai_adoption_snapshots", where="ai_adoption_master_shell._persist")
         return False
     finally:
         try: c.close()

@@ -23,6 +23,7 @@ from __future__ import annotations
 import os
 import datetime
 from flask import Blueprint, jsonify, request
+from routes._swallowed_writes import note_swallowed_write
 
 
 autopilot_outcomes_bp = Blueprint("autopilot_outcomes", __name__)
@@ -392,6 +393,7 @@ def verify_pending(window_minutes: int = 30, max_actions: int = 50) -> dict:
                               "no_verifier_defined"))
                         out["cannot_verify"] = out.get("cannot_verify", 0) + 1
                     except Exception:
+                        note_swallowed_write("autopilot_outcomes", where="autopilot_outcomes.verify_pending")
                         pass
                     out["skipped"] += 1
                     continue
@@ -408,7 +410,9 @@ def verify_pending(window_minutes: int = 30, max_actions: int = 50) -> dict:
                         ON CONFLICT DO NOTHING
                     """, (a["id"], pattern, a["started_at"], succeeded,
                           evidence, (None if succeeded else evidence)))
-                except Exception: pass
+                except Exception:
+                    note_swallowed_write("autopilot_outcomes", where="autopilot_outcomes.verify_pending")
+                    pass
 
                 # ── CLOSE THE LOOP (INV1 + INV3, 2026-06-02) ────────────
                 # Write the outcome BACK to brain_issue_persistence so a

@@ -25,6 +25,7 @@ import logging
 import os
 
 import psycopg2
+from routes._swallowed_writes import note_swallowed_write
 
 logger = logging.getLogger("brain_capability_radar")
 
@@ -319,6 +320,7 @@ def seed_milestone_baselines() -> dict:
                                     (src["key"], cur_val))
                         seeded.append({src["key"]: cur_val})
                     except Exception:
+                        note_swallowed_write("data_milestone_snapshots", where="brain_capability_radar.seed_milestone_baselines")
                         c.rollback()
     except Exception as e:
         return {"ok": False, "error": str(e)[:160]}

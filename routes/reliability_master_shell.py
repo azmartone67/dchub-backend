@@ -51,6 +51,7 @@ import urllib.error
 from datetime import datetime, timezone
 
 from flask import Blueprint, jsonify, request
+from routes._swallowed_writes import note_swallowed_write
 
 reliability_master_shell_bp = Blueprint("reliability_master_shell", __name__)
 
@@ -558,6 +559,7 @@ def _persist(m: dict, levers: dict, gate: dict, score: float, action: dict) -> b
             ))
         return True
     except Exception:
+        note_swallowed_write("reliability_snapshots", where="reliability_master_shell._persist")
         return False
     finally:
         try: c.close()

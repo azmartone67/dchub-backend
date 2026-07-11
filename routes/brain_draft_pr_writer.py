@@ -44,6 +44,7 @@ where every GitHub primitive is monkeypatched.
 from __future__ import annotations
 
 import os
+from routes._swallowed_writes import note_swallowed_write
 
 
 # ── Rate cap (env-driven) ────────────────────────────────────────────
@@ -239,6 +240,7 @@ def _mark_pr_opened(proposal_id, pr_url: str) -> bool:
             conn.commit()
         return True
     except Exception:
+        note_swallowed_write("brain_proposed_code_fixes", where="brain_draft_pr_writer._mark_pr_opened")
         return False
 
 
@@ -304,6 +306,7 @@ def log_proposal_for_automerge(*, branch: str, file_path: str,
             conn.commit()
         return True
     except Exception:
+        note_swallowed_write("brain_automerge_proposals", where="brain_draft_pr_writer.log_proposal_for_automerge")
         return False
 
 
@@ -511,6 +514,7 @@ def _mark_dup_skipped(proposal_id, dup_of_pr_url: str = "",
             conn.commit()
         return True
     except Exception:
+        note_swallowed_write("brain_proposed_code_fixes", where="brain_draft_pr_writer._mark_dup_skipped")
         return False
 
 

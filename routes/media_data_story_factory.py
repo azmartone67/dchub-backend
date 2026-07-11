@@ -67,6 +67,7 @@ import logging
 from datetime import datetime
 
 from flask import Blueprint, request, jsonify
+from routes._swallowed_writes import note_swallowed_write
 
 logger = logging.getLogger("media_data_story_factory")
 
@@ -591,6 +592,7 @@ def run_factory():
                               brief, pitch, reason[:480]))
                         conn.commit()
                     except Exception:
+                        note_swallowed_write("media_story_queue", where="media_data_story_factory.run_factory")
                         conn.rollback()
                     rejected.append({"market": sh.get("market_name"),
                                      "kind": sh.get("kind"), "reason": reason})
