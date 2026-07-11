@@ -28456,7 +28456,14 @@ def api_site_score():
     lat = request.args.get('lat', type=float)
     lon = request.args.get('lon', type=float)
     state = request.args.get('state', '').upper()
-    capacity = request.args.get('capacity', 0, type=float)
+    # r-handoff-parity (2026-07-11): the site_evaluation_handoff (and the
+    # analyze_site MCP tool) hand agents `capacity_mw`, but this endpoint only
+    # read the legacy `capacity` name — a rail-verbatim caller got
+    # capacity_requested_mw:0 echoed back (platform-eval pre-flight finding).
+    # Accept the envelope name first, legacy second.
+    capacity = request.args.get('capacity_mw', type=float)
+    if capacity is None:
+        capacity = request.args.get('capacity', 0, type=float) or 0
 
     if not lat or not lon:
         return jsonify({'success': False, 'error': 'lat and lon are required'}), 400
