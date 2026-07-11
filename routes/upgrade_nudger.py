@@ -25,6 +25,7 @@ import os
 import datetime
 import hashlib
 from flask import Blueprint, jsonify, request
+from routes._swallowed_writes import note_swallowed_write
 
 
 upgrade_nudger_bp = Blueprint("upgrade_nudger", __name__)
@@ -270,7 +271,9 @@ def send_pending_nudges(dry_run: bool = False) -> dict:
                           "IDENTIFIED", "DEVELOPER",
                           u["heavy_days_7d"], u["peak_day_calls"],
                           "sent" if ok else "send_failed", info))
-                except Exception: pass
+                except Exception:
+                    note_swallowed_write("tier_upgrade_nudges_sent", where="upgrade_nudger.send_pending_nudges")
+                    pass
                 (out["sent"] if ok else out["errors"]).append({**u, "info": info})
     finally:
         try: c.close()

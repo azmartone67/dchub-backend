@@ -29,6 +29,11 @@ from functools import wraps
 
 from flask import Blueprint, request, jsonify
 from psycopg_pool import ConnectionPool
+try:
+    from routes._swallowed_writes import note_swallowed_write
+except Exception:  # standalone run: repo root may not be on sys.path
+    def note_swallowed_write(table, where=""):
+        pass
 
 mcp_bp = Blueprint("mcp_bp", __name__)
 
@@ -86,6 +91,7 @@ def validate_key():
                 (api_key,),
             )
     except Exception:
+        note_swallowed_write("mcp_dev_keys", where="flask_mcp_endpoints.validate_key")
         pass
 
     return jsonify({

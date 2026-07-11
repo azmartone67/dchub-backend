@@ -20,6 +20,11 @@ import traceback
 import urllib.request
 import urllib.parse
 import math
+try:
+    from routes._swallowed_writes import note_swallowed_write
+except Exception:  # standalone run: repo root may not be on sys.path
+    def note_swallowed_write(table, where=""):
+        pass
 
 # phase12m: ArcGIS REST rejects URL-encoded = and , in where/outFields.
 # Use quote() with safe chars instead of urlencode().
@@ -130,6 +135,7 @@ def insert_batch(conn, substations):
             inserted += 1
         except Exception as e:
             # Skip individual errors (e.g., constraint violations)
+            note_swallowed_write("substations", where="hifld_substation_loader.insert_batch")
             pass
     
     conn.commit()

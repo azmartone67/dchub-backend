@@ -62,6 +62,7 @@ from datetime import datetime, timezone
 from html import escape as _esc
 
 from flask import Blueprint, Response, jsonify, request
+from routes._swallowed_writes import note_swallowed_write
 
 
 logger = logging.getLogger(__name__)
@@ -898,6 +899,7 @@ def claim_form(token: str):
                     "SET claim_page_opened_at = COALESCE(claim_page_opened_at, NOW()) "
                     "WHERE mcp_session_id = %s AND tool_name = %s", (sid, tool))
         except Exception:
+            note_swallowed_write("mcp_high_intent_sessions", where="mcp_high_intent_claim.claim_form")
             pass
         count = int(row[0] or 0)
         used_at = row[2]

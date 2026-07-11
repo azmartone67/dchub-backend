@@ -34,6 +34,7 @@ import datetime
 from flask import Blueprint, jsonify, request
 import psycopg2
 import psycopg2.extras
+from routes._swallowed_writes import note_swallowed_write
 
 
 experiments_bp = Blueprint("experiments", __name__)
@@ -255,6 +256,7 @@ def assign_variant(exp_id):
                     ON CONFLICT (experiment_id, anon_id) DO NOTHING
                 """, (exp_id, anon_id, variant))
             except Exception:
+                note_swallowed_write("experiment_assignments", where="experiments.assign_variant")
                 pass
         return jsonify(experiment_id=exp_id, anon_id=anon_id, variant=variant), 200
     finally:

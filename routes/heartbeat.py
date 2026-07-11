@@ -11,6 +11,7 @@ and auto-regenerates content that's gone stale. The site is alive.
 import os, json, datetime
 from flask import Blueprint, jsonify, request, render_template_string
 import psycopg2, psycopg2.extras
+from routes._swallowed_writes import note_swallowed_write
 
 heartbeat_bp = Blueprint("heartbeat", __name__)
 
@@ -431,7 +432,9 @@ def api_auto_refresh():
                            AND (refresh_func IS NULL OR refresh_func = '')
                     """, (fn_name, r["surface"]))
                     _c.commit()
-            except Exception: pass
+            except Exception:
+                note_swallowed_write("freshness_checks", where="heartbeat.api_auto_refresh")
+                pass
         fn = REFRESH_FUNCS.get(fn_name) or REFRESH_FUNCS.get("noop_default")
         if not fn: continue
         # Heavy fns → fire-and-forget background thread, mark surfaces

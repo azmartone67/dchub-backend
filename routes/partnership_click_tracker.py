@@ -30,6 +30,7 @@ except Exception:
     _pg = None
 
 from routes.linkedin_partnership_weekly import _TRACKS as _LINKEDIN_TRACKS
+from routes._swallowed_writes import note_swallowed_write
 
 partnership_click_bp = Blueprint("partnership_click", __name__)
 
@@ -86,6 +87,7 @@ def _log_click(slug, src=None):
                 VALUES (%s, %s, %s, %s, %s)
             """, (slug, ip[:80], ua, ref, src or ""))
     except Exception:
+        note_swallowed_write("partnership_clicks", where="partnership_click_tracker._log_click")
         pass
 
 

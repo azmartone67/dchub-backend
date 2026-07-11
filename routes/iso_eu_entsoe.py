@@ -34,6 +34,7 @@ from contextlib import contextmanager
 
 import psycopg2 as _pg
 from flask import Blueprint, jsonify, request
+from routes._swallowed_writes import note_swallowed_write
 
 try:
     import requests as _rq
@@ -303,6 +304,7 @@ def _persist_metrics(snap):
                 if cur.rowcount > 0:
                     rows += 1
             except Exception:
+                note_swallowed_write("grid_data", where="iso_eu_entsoe._ins")
                 pass
         for name, data in snap["metrics"].items():
             _ins(ISO_CODE, name, data["value"], data.get("unit", ""))

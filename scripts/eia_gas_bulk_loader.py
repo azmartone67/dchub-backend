@@ -2,6 +2,11 @@
 eia_gas_bulk_loader.py — Pull all US gas pipelines from EIA ArcGIS into Neon
 """
 import os, sys, json, time, math, urllib.request, psycopg2
+try:
+    from routes._swallowed_writes import note_swallowed_write
+except Exception:  # standalone run: repo root may not be on sys.path
+    def note_swallowed_write(table, where=""):
+        pass
 
 EIA_URL = "https://services2.arcgis.com/FiaPA4ga0iQKduv3/arcgis/rest/services/Natural_Gas_Interstate_and_Intrastate_Pipelines_1/FeatureServer/0/query"
 
@@ -94,7 +99,9 @@ def main():
                 cur.execute("""INSERT INTO gas_pipelines (name,operator,pipeline_type,diameter_inches,capacity_mcf,status,lat,lng,city,state,source,source_id) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT (source_id) DO NOTHING""",
                     (f"{op} ({tp})"[:200], str(op)[:100], pt, None, None, 'active', lat, lng, '', state, 'eia', f"eia_gas_{fv}"[:100]))
                 if cur.rowcount > 0: bi += 1; total_ins += 1
-            except: pass
+            except:
+                note_swallowed_write("gas_pipelines", where="eia_gas_bulk_loader.main")
+                pass
         print(f"{len(feats)} fetched, {bi} new")
         fid = fe
         time.sleep(0.5)

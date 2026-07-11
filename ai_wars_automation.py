@@ -38,6 +38,7 @@ import threading
 import re
 from contextlib import contextmanager
 from datetime import datetime, timezone, timedelta
+from routes._swallowed_writes import note_swallowed_write
 
 # Try importing the battle runner helpers — graceful fallback if not available
 try:
@@ -980,6 +981,7 @@ def _run_battle_async(queue_id, question, category):
                 c.execute("UPDATE wars_battle_queue SET status='running', started_at=NOW() WHERE id=%s", (queue_id,))
                 conn.commit()
         except Exception:
+            note_swallowed_write("wars_battle_queue", where="ai_wars_automation._run_battle_async")
             pass
 
         # Actually run the battle
@@ -1012,6 +1014,7 @@ def _run_battle_async(queue_id, question, category):
                               (battle_id, json.dumps(result_summary), queue_id))
                     conn.commit()
             except Exception:
+                note_swallowed_write("wars_battle_queue", where="ai_wars_automation._run_battle_async")
                 pass
         else:
             error_msg = results if isinstance(results, str) else 'Battle returned no results'
@@ -1026,6 +1029,7 @@ def _run_battle_async(queue_id, question, category):
                               (error_msg, queue_id))
                     conn.commit()
             except Exception:
+                note_swallowed_write("wars_battle_queue", where="ai_wars_automation._run_battle_async")
                 pass
 
     except Exception as e:
@@ -1041,6 +1045,7 @@ def _run_battle_async(queue_id, question, category):
                           (str(e), queue_id))
                 conn.commit()
         except Exception:
+            note_swallowed_write("wars_battle_queue", where="ai_wars_automation._run_battle_async")
             pass
 
 
@@ -1624,6 +1629,7 @@ def register_wars_automation(app):
             """, (challenge_id, question, email, category, ip))
                 conn.commit()
         except Exception:
+            note_swallowed_write("wars_challenges", where="ai_wars_automation.ai_wars_submit_challenge")
             pass
 
         # Store in memory for fast polling

@@ -70,6 +70,7 @@ import math
 from typing import Any
 
 from flask import Blueprint, jsonify, request, redirect, make_response
+from routes._swallowed_writes import note_swallowed_write
 
 
 media_topic_tuner_bp = Blueprint("media_topic_tuner", __name__)
@@ -345,6 +346,7 @@ def _backfill_table(cur, table: str, content_col: str, id_col: str = "id",
                 (json.dumps(tags), rid))
             n += 1
         except Exception:
+            note_swallowed_write("dynamic", where="media_topic_tuner._backfill_table")
             continue
     return n
 

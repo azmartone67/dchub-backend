@@ -11,6 +11,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 
 import psycopg2 as _pg
+from routes._swallowed_writes import note_swallowed_write
 
 
 def dsn():
@@ -117,6 +118,7 @@ def persist_metrics(iso, metrics):
                 if cur.rowcount > 0:
                     rows += 1
             except Exception:
+                note_swallowed_write("grid_data", where="_iso_common.persist_metrics")
                 pass
         c.commit()
     return rows

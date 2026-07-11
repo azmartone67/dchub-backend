@@ -46,6 +46,7 @@ from datetime import datetime, timezone, timedelta, date
 from functools import wraps
 from flask import Blueprint, jsonify, request
 from utils.anthropic_helper import anthropic_messages_url
+from routes._swallowed_writes import note_swallowed_write
 
 marketing_bp = Blueprint("marketing_engine", __name__)
 
@@ -3163,6 +3164,7 @@ def _mark_published(post_id: int, platform: str) -> None:
                            AND linkedin_sent_at IS NULL
                     """, (post_id,))
                 except Exception:
+                    note_swallowed_write("auto_press_releases", where="marketing_engine._mark_published")
                     pass
         c.commit()
     except Exception as e:

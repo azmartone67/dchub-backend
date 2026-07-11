@@ -13,6 +13,7 @@ import os
 import logging
 from datetime import datetime, timezone
 from flask import Blueprint, request, jsonify
+from routes._swallowed_writes import note_swallowed_write
 
 logger = logging.getLogger(__name__)
 
@@ -241,6 +242,7 @@ def stripe_webhook_alert():
                 """, (auto_fix_result, email, now))
                 upd_conn.commit()
             except Exception:
+                note_swallowed_write("webhook_alerts", where="webhook_alert_endpoint.stripe_webhook_alert")
                 pass
             finally:
                 try:

@@ -65,6 +65,7 @@ import datetime
 from typing import Any
 
 from flask import Blueprint, jsonify, request
+from routes._swallowed_writes import note_swallowed_write
 
 
 market_verdict_shifts_bp = Blueprint("market_verdict_shifts", __name__)
@@ -672,6 +673,7 @@ def scan_verdict_shifts(live: bool = False) -> dict[str, Any]:
                             "DELETE FROM social_media_posts WHERE id = %s",
                             (smp_id,))
                     except Exception:
+                        note_swallowed_write("social_media_posts", where="market_verdict_shifts.scan_verdict_shifts")
                         pass
                     result["errors"].append(
                         f"log_failed_rollback slug={s['market_slug']}")

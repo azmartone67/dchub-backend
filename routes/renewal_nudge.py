@@ -36,6 +36,7 @@ from __future__ import annotations
 import os
 import datetime
 from flask import Blueprint, jsonify, request
+from routes._swallowed_writes import note_swallowed_write
 
 
 renewal_nudge_bp = Blueprint("renewal_nudge", __name__)
@@ -351,6 +352,7 @@ def run_renewal_nudge(dry_run: bool = False) -> dict:
                     """, (u["user_id"], u["email"], u["days_remaining"],
                           msg_id, "sent" if ok else "send_failed", info))
                 except Exception:
+                    note_swallowed_write("renewal_nudge_log", where="renewal_nudge.run_renewal_nudge")
                     pass
                 rec = {
                     "user_id":        u["user_id"],

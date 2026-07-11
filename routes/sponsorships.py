@@ -29,6 +29,7 @@ import json
 import logging
 import datetime
 from flask import Blueprint, jsonify, request
+from routes._swallowed_writes import note_swallowed_write
 
 logger = logging.getLogger(__name__)
 sponsorships_bp = Blueprint("sponsorships", __name__)
@@ -239,6 +240,7 @@ def active_sponsorships():
                     try: conn.rollback()
                     except Exception: pass
     except Exception:
+        note_swallowed_write("sponsorships", where="sponsorships.active_sponsorships")
         pass
     finally:
         try: conn.close()

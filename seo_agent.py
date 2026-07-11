@@ -14,6 +14,7 @@ import os
 import requests
 import hashlib
 from db_utils import get_db
+from routes._swallowed_writes import note_swallowed_write
 
 seo_agent_bp = Blueprint('seo_agent', __name__)
 
@@ -102,6 +103,7 @@ def ping_indexnow(urls):
         finally:
             conn.close()
     except Exception:
+        note_swallowed_write("seo_indexing_log", where="seo_agent.ping_indexnow")
         pass
     return {
         "success": ok,

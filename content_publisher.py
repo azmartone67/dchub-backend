@@ -15,6 +15,7 @@ from datetime import datetime, timedelta
 from flask import Blueprint, request, jsonify
 from utils.anthropic_helper import anthropic_messages_url
 from linkedin_text import escape_li_commentary  # /rest/posts commentary escaping
+from routes._swallowed_writes import note_swallowed_write
 
 # phase57_landing — daily landing URL helper for LinkedIn rich-card preview
 def _phase30c_landing_url(d=None):
@@ -1522,6 +1523,7 @@ def publish_bluesky():
                             ('published', now, now, 'bluesky', post_id))
                 conn.commit()
             except Exception:
+                note_swallowed_write("social_media_posts", where="content_publisher.publish_bluesky")
                 pass
         if conn is not None:
             try: conn.close()
@@ -2206,6 +2208,7 @@ def _record_media_block(platform: str, reason: str, content: str = ""):
                 try: conn.close()
                 except Exception: pass
     except Exception:
+        note_swallowed_write("media_review_log", where="content_publisher._record_media_block")
         pass
 
 
@@ -3427,7 +3430,9 @@ def start_auto_publisher():
                             try:
                                 cur.execute("UPDATE social_media_posts SET status = 'failed' WHERE id = %s", (post_id,))
                                 conn.commit()
-                            except Exception: pass
+                            except Exception:
+                                note_swallowed_write("social_media_posts", where="content_publisher._auto_publish_loop")
+                                pass
                         _attempts += 1
                         if _attempts < _drain_budget:
                             time.sleep(8)
@@ -3783,7 +3788,9 @@ def start_bluesky_publisher():
                             try:
                                 cur.execute("UPDATE social_media_posts SET status = 'failed' WHERE id = %s", (post_id,))
                                 conn.commit()
-                            except Exception: pass
+                            except Exception:
+                                note_swallowed_write("social_media_posts", where="content_publisher._bsky_loop")
+                                pass
                         _attempts += 1
                         if _attempts < _drain_budget:
                             time.sleep(5)

@@ -22,6 +22,7 @@ from typing import Dict, List, Optional
 from urllib.parse import urljoin, quote
 import xml.etree.ElementTree as ET
 from db_utils import get_db
+from routes._swallowed_writes import note_swallowed_write
 
 DB_PATH = 'dc_nexus.db'
 SITE_URL = os.environ.get('SITE_URL', 'https://dchub.cloud')
@@ -401,6 +402,7 @@ Visit {self.site_url} to explore the platform.
             conn.commit()
             conn.close()
         except:
+            note_swallowed_write("seo_submissions", where="seo_promotion_engine._log_submission")
             pass
     
     def run_promotion_cycle(self) -> Dict:

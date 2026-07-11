@@ -29,6 +29,7 @@ from __future__ import annotations
 import os
 import json
 import datetime as _dt
+from routes._swallowed_writes import note_swallowed_write
 
 
 # ── Cloudflare KV (#4) ────────────────────────────────────────────────
@@ -206,4 +207,5 @@ def prune_latency_history(conn, keep_days: int = 45) -> int:
                         (keep_days,))
             return cur.rowcount or 0
     except Exception:
+        note_swallowed_write("site_sentinel_latency_history", where="sentinel_edge_sink.prune_latency_history")
         return 0

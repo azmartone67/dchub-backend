@@ -32,6 +32,7 @@ from contextlib import contextmanager
 
 import psycopg2 as _pg
 from flask import Blueprint, jsonify
+from routes._swallowed_writes import note_swallowed_write
 
 iso_nordpool_intl_bp = Blueprint("iso_nordpool_intl", __name__,
                                   url_prefix="/api/v1/iso/nordpool-intl")
@@ -129,7 +130,9 @@ def _persist_metrics(metrics):
                     (ISO_CODE, name, data["value"], data.get("unit", "")),
                 )
                 if cur.rowcount > 0: rows += 1
-            except Exception: pass
+            except Exception:
+                note_swallowed_write("grid_data", where="iso_nordpool_intl._persist_metrics")
+                pass
         c.commit()
     return rows
 

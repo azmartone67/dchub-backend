@@ -35,6 +35,7 @@ from flask import Blueprint, jsonify, request, Response
 # saved-sites table. PRO/ENTERPRISE callers stay under the limit
 # during normal use; abusers get 429 with Retry-After.
 from routes.tier_gate import rate_limit as _rl
+from routes._swallowed_writes import note_swallowed_write
 
 
 lp_sites_bp = Blueprint("lp_sites", __name__)
@@ -105,6 +106,7 @@ def lp_sentinel_report():
             (layer, kind, since, ver, url, ua),
         )
     except Exception:
+        note_swallowed_write("lp_sentinel_reports", where="lp_sites.lp_sentinel_report")
         pass
     finally:
         try: c.close()

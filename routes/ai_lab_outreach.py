@@ -50,6 +50,7 @@ import json
 import os
 
 from flask import Blueprint, jsonify, request
+from routes._swallowed_writes import note_swallowed_write
 
 
 ai_lab_outreach_bp = Blueprint("ai_lab_outreach", __name__)
@@ -274,6 +275,7 @@ def _ensure_table():
                     )
             c.commit()
     except Exception:
+        note_swallowed_write("ai_lab_outreach_drafts", where="ai_lab_outreach._ensure_table")
         pass
     finally:
         try: c.close()
@@ -505,6 +507,7 @@ def draft_one(slug):
                 new_id = (cur.fetchone() or [None])[0]
                 c.commit()
         except Exception:
+            note_swallowed_write("ai_lab_outreach_drafts", where="ai_lab_outreach.draft_one")
             pass
         finally:
             try: c.close()
@@ -548,6 +551,7 @@ def draft_all():
                     new_id = (cur.fetchone() or [None])[0]
                     c.commit()
             except Exception:
+                note_swallowed_write("ai_lab_outreach_drafts", where="ai_lab_outreach.draft_all")
                 pass
             finally:
                 try: c.close()
@@ -830,6 +834,7 @@ def _perform_resend_send(draft_id: int, force: bool = False) -> tuple:
             """, (resend_id, draft_id))
             c.commit()
     except Exception:
+        note_swallowed_write("ai_lab_outreach_drafts", where="ai_lab_outreach._perform_resend_send")
         pass
     finally:
         try: c.close()

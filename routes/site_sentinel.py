@@ -40,6 +40,7 @@ import time
 import json
 from typing import Iterable
 from flask import Blueprint, jsonify, request, Response
+from routes._swallowed_writes import note_swallowed_write
 
 
 site_sentinel_bp = Blueprint("site_sentinel", __name__)
@@ -903,6 +904,7 @@ def scan_all() -> list[dict]:
                         """, (path, scan["elapsed_ms"], scan.get("edge_ms"),
                               scan["status_code"], scan["healthy"]))
                 except Exception:
+                    note_swallowed_write("site_sentinel_results", where="site_sentinel.scan_all")
                     pass
     finally:
         if c is not None:
@@ -1654,6 +1656,7 @@ def sentinel_inbox_probe_one():
                       scan.get("has_nav"), scan.get("stale_days"),
                       scan.get("data_age_src"), scan.get("content_hash")))
         except Exception:
+            note_swallowed_write("site_sentinel_results", where="site_sentinel.sentinel_inbox_probe_one")
             pass
         finally:
             try: c.close()

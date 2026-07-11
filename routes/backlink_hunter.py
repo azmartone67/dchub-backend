@@ -19,6 +19,7 @@ import os
 import datetime
 import requests
 from flask import Blueprint, jsonify, request
+from routes._swallowed_writes import note_swallowed_write
 
 
 backlink_hunter_bp = Blueprint("backlink_hunter", __name__)
@@ -177,7 +178,9 @@ def hunt_all() -> dict:
                           h.get("points"), h.get("comment_count")))
                     if cur.fetchone():
                         out["new_mentions"] += 1
-                except Exception: continue
+                except Exception:
+                    note_swallowed_write("external_mentions", where="backlink_hunter.hunt_all")
+                    continue
     finally:
         try: c.close()
         except Exception: pass

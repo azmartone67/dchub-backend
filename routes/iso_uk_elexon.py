@@ -27,6 +27,7 @@ from contextlib import contextmanager
 
 import psycopg2 as _pg
 from flask import Blueprint, jsonify
+from routes._swallowed_writes import note_swallowed_write
 
 try:
     import requests as _rq
@@ -177,6 +178,7 @@ def _persist_metrics(metrics):
                 if cur.rowcount > 0:
                     rows += 1
             except Exception:
+                note_swallowed_write("grid_data", where="iso_uk_elexon._persist_metrics")
                 pass
         c.commit()
     return rows

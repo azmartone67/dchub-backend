@@ -42,6 +42,7 @@ import json
 import os
 
 from flask import Blueprint, jsonify, request
+from routes._swallowed_writes import note_swallowed_write
 
 
 paywall_ab_admin_bp = Blueprint("paywall_ab_admin", __name__)
@@ -199,6 +200,7 @@ def _log_ab_event(variant: str, status: int, path: str,
                 conn.commit()
     except Exception:
         # Never break a response by failing to log
+        note_swallowed_write("ab_funnel_log", where="paywall_hint_middleware._log_ab_event")
         pass
 
 

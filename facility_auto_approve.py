@@ -23,6 +23,7 @@ import logging
 import uuid
 from datetime import datetime, timezone
 from internal_auth import is_valid_internal_key, get_internal_key_for_client
+from routes._swallowed_writes import note_swallowed_write
 
 logger = logging.getLogger('facility_auto_approve')
 
@@ -371,6 +372,7 @@ def run_auto_approve(conn, batch_size=100, dry_run=False):
                             VALUES (%s) ON CONFLICT (facility_id) DO NOTHING
                         ''', (str(new_id),))
                     except Exception:
+                        note_swallowed_write("permit_enrichment_queue", where="facility_auto_approve.run_auto_approve")
                         pass
 
             except Exception as e:

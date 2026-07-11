@@ -33,6 +33,7 @@ import datetime
 import random
 from flask import Blueprint, jsonify, request
 from utils.anthropic_helper import anthropic_messages_url
+from routes._swallowed_writes import note_swallowed_write
 
 
 citation_hunter_bp = Blueprint("citation_hunter", __name__)
@@ -217,7 +218,9 @@ def hunt_citations(query_count: int = 5) -> dict:
                         VALUES (CURRENT_DATE, %s, %s, %s, %s::jsonb)
                         ON CONFLICT DO NOTHING
                     """, (q, excerpt, dchub_hit, _j.dumps(list(comp_hits.keys()))))
-            except Exception: pass
+            except Exception:
+                note_swallowed_write("citation_probes", where="citation_hunter.hunt_citations")
+                pass
 
     # Persist day-aggregate
     score_pct = (100.0 * out["dchub_mentions"] / max(1, out["queries_run"]))

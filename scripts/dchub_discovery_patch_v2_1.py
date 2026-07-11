@@ -23,6 +23,11 @@ from datetime import datetime
 from urllib.request import urlopen, Request
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
+try:
+    from routes._swallowed_writes import note_swallowed_write
+except Exception:  # standalone run: repo root may not be on sys.path
+    def note_swallowed_write(table, where=""):
+        pass
 
 EIA_API_KEY = os.environ.get("EIA_API_KEY", "SuphqqIra7G46LHVDwb9CL5n4WYRwLu7ujeFXJMG")
 DATABASE_URL = os.environ.get("NEON_DATABASE_URL") or os.environ.get("DATABASE_URL", "")
@@ -233,6 +238,7 @@ def fix_eia_generators(conn):
                 ))
                 insert_count += 1
             except Exception as e:
+                note_swallowed_write("eia_generators", where="dchub_discovery_patch_v2_1.fix_eia_generators")
                 conn.rollback()
                 continue
         
@@ -431,6 +437,7 @@ def _load_arcgis_features(conn, cur, table_name, url_base, total_count):
                 cur.execute(f"INSERT INTO {table_name} ({','.join(cols)}) VALUES ({','.join(phs)})", vals)
                 loaded += 1
             except:
+                note_swallowed_write("dynamic", where="dchub_discovery_patch_v2_1._load_arcgis_features")
                 conn.rollback()
         
         conn.commit()
@@ -494,6 +501,7 @@ def _load_geojson_features(conn, cur, table_name, features):
             cur.execute(f"INSERT INTO {table_name} ({','.join(cols)}) VALUES ({','.join(phs)})", vals)
             loaded += 1
         except:
+            note_swallowed_write("dynamic", where="dchub_discovery_patch_v2_1._load_geojson_features")
             conn.rollback()
     
     conn.commit()

@@ -19,6 +19,7 @@ from flask import Blueprint, jsonify, request
 
 import psycopg2
 import psycopg2.extras
+from routes._swallowed_writes import note_swallowed_write
 
 shortlists_bp = Blueprint("shortlists", __name__)
 
@@ -521,6 +522,7 @@ def evaluate_shortlist_alerts():
                                (json.dumps(hits), al["id"]))
                     c.commit(); c.close()
                 except Exception:
+                    note_swallowed_write("shortlist_alerts", where="shortlists.evaluate_shortlist_alerts")
                     pass
         except Exception as e:
             if len(summary["errors"]) < 3:

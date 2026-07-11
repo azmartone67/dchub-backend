@@ -33,6 +33,7 @@ from datetime import datetime, timezone, timedelta
 
 from flask import Blueprint, jsonify, request
 from utils.anthropic_helper import anthropic_messages_url
+from routes._swallowed_writes import note_swallowed_write
 
 demo_bp = Blueprint("demo", __name__)
 
@@ -204,6 +205,7 @@ def _check_and_bump_rate(ip):
         return used, used <= PER_IP_DAILY
     except Exception:
         # If rate-limit table fails, allow once (fail open) but log internally
+        note_swallowed_write("demo_rate_limit", where="demo._check_and_bump_rate")
         return 1, True
 
 
@@ -245,6 +247,7 @@ def _cache_set(qh, question, answer, tool_calls):
                 (qh, question[:500], answer[:4000],
                  json.dumps(tool_calls)[:8000]))
     except Exception:
+        note_swallowed_write("demo_question_cache", where="demo._cache_set")
         pass
 
 

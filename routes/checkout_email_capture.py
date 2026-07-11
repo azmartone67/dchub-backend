@@ -37,6 +37,7 @@ checkout_email_bp = Blueprint("checkout_email_capture", __name__)
 
 # r39 (2026-05-25): centralized in routes/_stripe_links.py
 from routes._stripe_links import STRIPE_LINKS, TOOL_TIER_MAP
+from routes._swallowed_writes import note_swallowed_write
 
 
 def _dsn():
@@ -194,6 +195,7 @@ def submit():
                 """, (email, tool or None, tier, stripe_url, ua, ip))
                 c.commit()
         except Exception:
+            note_swallowed_write("identified_checkout_signals", where="checkout_email_capture.submit")
             pass
 
     # Build Stripe URL with prefilled email + attribution.

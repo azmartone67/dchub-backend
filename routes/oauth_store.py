@@ -21,6 +21,7 @@ import logging
 
 from flask import Blueprint, request, jsonify
 import psycopg2
+from routes._swallowed_writes import note_swallowed_write
 
 logger = logging.getLogger(__name__)
 oauth_store_bp = Blueprint("oauth_store", __name__)
@@ -73,6 +74,7 @@ def _cleanup(cur):
     try:
         cur.execute("DELETE FROM oauth_store WHERE expires_at IS NOT NULL AND expires_at < now()")
     except Exception:
+        note_swallowed_write("oauth_store", where="oauth_store._cleanup")
         pass
 
 

@@ -15,6 +15,7 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Set, Tuple, Any
 from collections import defaultdict
 from db_utils import get_db
+from routes._swallowed_writes import note_swallowed_write
 
 try:
     import anthropic
@@ -650,6 +651,7 @@ Format as JSON: [{{"insight": "...", "category": "...", "action": "..."}}]"""
             conn.close()
             return True
         except Exception as e:
+            note_swallowed_write("knowledge_items", where="evolution_engine._learn_entity")
             return False
 
     def _generate_ai_insights(self) -> List[Dict]:
@@ -758,6 +760,7 @@ Return as JSON: [{{"improvement": "...", "priority": "high/medium/low"}}]"""
             conn.commit()
             conn.close()
         except:
+            note_swallowed_write("quality_issues", where="evolution_engine._log_quality_issue")
             pass
 
     def _enrich_facility_data(self) -> Dict:
@@ -789,6 +792,7 @@ Return as JSON: [{{"improvement": "...", "priority": "high/medium/low"}}]"""
             conn.commit()
             conn.close()
         except:
+            note_swallowed_write("api_registry", where="evolution_engine._register_api_source")
             pass
 
     def _validate_data_quality(self) -> Dict:

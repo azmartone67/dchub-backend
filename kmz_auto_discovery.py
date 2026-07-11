@@ -39,6 +39,7 @@ from psycopg2.extras import execute_values  # r-batch (2026-06-18): batched rout
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any
 from math import radians, sin, cos, sqrt, atan2
+from routes._swallowed_writes import note_swallowed_write
 
 logger = logging.getLogger(__name__)
 
@@ -1291,6 +1292,7 @@ class KMZAutoDiscovery:
             cur.close()
             return added
         except Exception:
+            note_swallowed_write("kmz_discovered_sources", where="kmz_auto_discovery._add_discovered_source")
             return False
         finally:
             _release(conn)
@@ -1308,6 +1310,7 @@ class KMZAutoDiscovery:
             conn.commit()
             cur.close()
         except Exception:
+            note_swallowed_write("kmz_discovered_sources", where="kmz_auto_discovery._update_source_status")
             pass
         finally:
             _release(conn)

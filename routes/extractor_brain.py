@@ -29,6 +29,7 @@ from typing import Any, Optional
 
 import psycopg2 as _pg
 from flask import Blueprint, jsonify, request
+from routes._swallowed_writes import note_swallowed_write
 
 try:
     from dchub_heartbeat import heartbeat as _heartbeat
@@ -751,6 +752,7 @@ def record_extraction(source_id: str, outcome: str = "success",
             )
             c.commit()
     except Exception:
+        note_swallowed_write("extraction_intelligence", where="extractor_brain.record_extraction")
         pass
 
 

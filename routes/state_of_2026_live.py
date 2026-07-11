@@ -70,6 +70,7 @@ from html import escape as _esc
 from typing import Any, Optional
 
 from flask import Blueprint, Response, jsonify, redirect, request
+from routes._swallowed_writes import note_swallowed_write
 
 try:
     import requests as _rq  # type: ignore
@@ -749,6 +750,7 @@ def state_of_2026_subscribe():
                              (request.cookies.get("dch_sid") or "")[:64]),
                         )
                     except Exception:
+                        note_swallowed_write("state_of_2026_clicks", where="state_of_2026_live.state_of_2026_subscribe")
                         pass
             finally:
                 try: c.close()
@@ -1261,6 +1263,7 @@ def state_of_2026_page():
                 try: c.close()
                 except Exception: pass
     except Exception:
+        note_swallowed_write("state_of_2026_pageviews", where="state_of_2026_live.state_of_2026_page")
         pass
 
     # Round 3 (2026-06-07): prefer the persisted-cache row over a live

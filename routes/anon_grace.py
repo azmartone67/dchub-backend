@@ -35,6 +35,7 @@ import os
 import datetime
 import hashlib
 from flask import Blueprint, jsonify, request
+from routes._swallowed_writes import note_swallowed_write
 
 
 anon_grace_bp = Blueprint("anon_grace", __name__)
@@ -141,6 +142,7 @@ def consume_grace(req=None, tool: str = "", trial_key: str | None = None) -> boo
                 """, (h, (tool or "")[:40] or None, (trial_key or "")[:64] or None))
                 return True
             except Exception:
+                note_swallowed_write("anon_grace_log", where="anon_grace.consume_grace")
                 return False
     finally:
         try: c.close()

@@ -56,6 +56,7 @@ from datetime import datetime, timedelta, timezone
 
 import psycopg2 as _pg
 from flask import Blueprint, jsonify
+from routes._swallowed_writes import note_swallowed_write
 
 try:
     import requests as _rq
@@ -287,6 +288,7 @@ def _persist(results):
                 if cur.rowcount > 0:
                     rows += 1
             except Exception:
+                note_swallowed_write("grid_data", where="iso_jp_denkiyoho._ins")
                 pass
         for code, parsed in results.items():
             iso = _TSOS[code][0]

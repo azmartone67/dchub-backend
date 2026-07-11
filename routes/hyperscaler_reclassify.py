@@ -2,6 +2,7 @@
 import os
 from contextlib import contextmanager
 from flask import Blueprint, jsonify
+from routes._swallowed_writes import note_swallowed_write
 try:
     import psycopg2 as _pg
     import psycopg2.extras
@@ -35,7 +36,9 @@ def reclassify():
                     cur.execute("UPDATE hyperscaler_alerts SET actor=%s WHERE id=%s", (new_actor, r["id"]))
                     c.commit()
                     updated += 1
-            except Exception: pass
+            except Exception:
+                note_swallowed_write("hyperscaler_alerts", where="hyperscaler_reclassify.reclassify")
+                pass
     except Exception as e:
         return jsonify({"error": str(e)[:200]}), 500
     return jsonify({"reclassified": updated}), 200

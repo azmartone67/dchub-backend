@@ -35,6 +35,7 @@ import json
 import logging
 import datetime
 from flask import Blueprint, jsonify, request, Response
+from routes._swallowed_writes import note_swallowed_write
 
 logger = logging.getLogger(__name__)
 founding_customers_bp = Blueprint("founding_customers", __name__)
@@ -412,7 +413,9 @@ Real thanks for the bet.
                     )
                 try: c.commit()
                 except Exception: pass
-        except Exception: pass
+        except Exception:
+            note_swallowed_write("founding_customers", where="founding_customers.send_founding_welcome_email")
+            pass
         finally:
             if c is not None:
                 try: c.close()

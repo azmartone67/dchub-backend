@@ -23,6 +23,7 @@ import threading
 from datetime import datetime, timedelta
 from functools import wraps
 from flask import Blueprint, request, jsonify, make_response
+from routes._swallowed_writes import note_swallowed_write
 
 logger = logging.getLogger(__name__)
 
@@ -407,6 +408,7 @@ def login_user():
                                     (datetime.utcnow().isoformat(), uid))
                         conn.commit()
                 except:
+                    note_swallowed_write("users", where="auth_routes._update_last_login_bg")
                     pass
             threading.Thread(target=_update_last_login_bg, args=(user_id,), daemon=True).start()
 

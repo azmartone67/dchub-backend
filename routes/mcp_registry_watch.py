@@ -31,6 +31,7 @@ import urllib.request
 from typing import Dict, List
 
 from flask import Blueprint, jsonify, request
+from routes._swallowed_writes import note_swallowed_write
 
 
 mcp_registry_watch_bp = Blueprint("mcp_registry_watch", __name__)
@@ -504,6 +505,7 @@ def mcp_registries_scan():
                             cur.execute("ROLLBACK TO SAVEPOINT mrw_sp")
                 conn.commit()
     except Exception as _e:
+        note_swallowed_write("brain_findings", where="mcp_registry_watch.mcp_registries_scan")
         pass
 
     return jsonify({

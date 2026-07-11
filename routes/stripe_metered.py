@@ -35,6 +35,7 @@ from contextlib import contextmanager
 import psycopg2 as _pg
 import psycopg2.extras
 from flask import Blueprint, request, jsonify
+from routes._swallowed_writes import note_swallowed_write
 
 stripe_metered_bp = Blueprint("stripe_metered", __name__,
                                 url_prefix="/api/v1/billing")
@@ -413,6 +414,7 @@ def _agentic_key_for_email(email):
                      json.dumps({"source": "agentic_commerce"})))
                 c.commit()
         except Exception:
+            note_swallowed_write("mcp_dev_keys", where="stripe_metered._agentic_key_for_email")
             pass
     return key
 
@@ -535,6 +537,7 @@ def link_metered_key():
                 # metered_keys row is the source of truth that this is usage-billed.
                 cur.execute("UPDATE mcp_dev_keys SET tier = 'enterprise' WHERE api_key = %s", (api_key,))
             except Exception:
+                note_swallowed_write("mcp_dev_keys", where="stripe_metered.link_metered_key")
                 pass
             c.commit()
     except Exception as e:

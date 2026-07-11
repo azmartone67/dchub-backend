@@ -36,6 +36,7 @@ import hashlib
 import os
 
 from flask import Blueprint, Response, jsonify, request
+from routes._swallowed_writes import note_swallowed_write
 
 
 partner_landing_bp = Blueprint("partner_landing", __name__)
@@ -433,11 +434,13 @@ def _track_visit(slug: str) -> None:
                 """, (slug, ip_hash, ua, referer))
                 c.commit()
         except Exception:
+            note_swallowed_write("partner_visits", where="partner_landing._track_visit")
             pass
         finally:
             try: c.close()
             except Exception: pass
     except Exception:
+        note_swallowed_write("partner_visits", where="partner_landing._track_visit")
         pass
 
 

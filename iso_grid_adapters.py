@@ -34,6 +34,7 @@ import datetime
 import urllib.request
 import urllib.parse
 import urllib.error
+from routes._swallowed_writes import note_swallowed_write
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -113,6 +114,7 @@ def store_records(records: list[dict]) -> int:
                     ))
                     n += 1
                 except Exception:
+                    note_swallowed_write("grid_telemetry", where="iso_grid_adapters.store_records")
                     continue
     except Exception as e:
         print(f"[iso_grid] store skipped: {e}", flush=True)

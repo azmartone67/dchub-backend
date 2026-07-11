@@ -28,6 +28,7 @@ import os
 import datetime
 import urllib.parse
 from flask import Blueprint, jsonify, request
+from routes._swallowed_writes import note_swallowed_write
 
 
 winback_outreach_bp = Blueprint("winback_outreach", __name__)
@@ -256,7 +257,9 @@ def deliver_pending(dry_run: bool = False) -> dict:
                     """, (platform, "operator_briefing", _OPERATOR_EMAIL,
                           "sent" if ok else "send_failed",
                           _json.dumps(p)))
-                except Exception: pass
+                except Exception:
+                    note_swallowed_write("winback_outreach_sent", where="winback_outreach.deliver_pending")
+                    pass
 
                 if ok:
                     out["emailed"].append({"platform": platform,

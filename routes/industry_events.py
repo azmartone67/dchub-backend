@@ -17,6 +17,7 @@ from __future__ import annotations
 import os
 import datetime
 from flask import Blueprint, Response, jsonify, request
+from routes._swallowed_writes import note_swallowed_write
 
 
 industry_events_bp = Blueprint("industry_events", __name__)
@@ -130,7 +131,9 @@ def seed_events() -> dict:
                           e["location"], e["url"], e["organizer"],
                           e.get("submission_deadline")))
                     inserted += 1
-                except Exception: pass
+                except Exception:
+                    note_swallowed_write("industry_events", where="industry_events.seed_events")
+                    pass
     finally:
         try: c.close()
         except Exception: pass

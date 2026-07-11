@@ -31,6 +31,7 @@ from datetime import datetime, timezone, date
 
 import psycopg2 as _pg
 from flask import Blueprint, jsonify, request
+from routes._swallowed_writes import note_swallowed_write
 
 try:
     from dchub_heartbeat import heartbeat as _heartbeat
@@ -167,6 +168,7 @@ def _persist_filings(filings, cik, ticker, company_name, category):
                 if cur.rowcount > 0:
                     rows_inserted += 1
             except Exception:
+                note_swallowed_write("sec_filings_v2", where="sec_edgar._persist_filings")
                 pass
         c.commit()
     return rows_inserted

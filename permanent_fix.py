@@ -34,6 +34,11 @@ print("\n📊 PHASE 1: Database Status")
 print("-" * 40)
 
 import psycopg2
+try:
+    from routes._swallowed_writes import note_swallowed_write
+except Exception:  # standalone run: repo root may not be on sys.path
+    def note_swallowed_write(table, where=""):
+        pass
 
 neon_url = os.environ.get('NEON_DATABASE_URL', '')
 replit_url = os.environ.get('DATABASE_URL', '')
@@ -437,6 +442,7 @@ if diff > 0:
                         )
                         synced_news += 1
                     except Exception as e:
+                        note_swallowed_write("news_articles", where="permanent_fix.<module>")
                         neon_conn.rollback()
                 
                 neon_conn.commit()

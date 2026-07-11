@@ -39,6 +39,7 @@ import os
 import secrets
 import datetime
 from flask import Blueprint, jsonify, request, Response
+from routes._swallowed_writes import note_swallowed_write
 
 
 spare_capacity_bp = Blueprint("spare_capacity", __name__)
@@ -575,7 +576,9 @@ def spare_capacity_tracker(ref):
                            SET tenant_inquiries = tenant_inquiries + 1
                          WHERE referral_code = %s
                     """, (ref,))
-                except Exception: pass
+                except Exception:
+                    note_swallowed_write("spare_capacity_listings", where="spare_capacity.spare_capacity_tracker")
+                    pass
     finally:
         try: c.close()
         except Exception: pass

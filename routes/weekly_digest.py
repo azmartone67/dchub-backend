@@ -47,6 +47,7 @@ from datetime import datetime, timezone
 from functools import wraps
 
 from flask import Blueprint, jsonify, request
+from routes._swallowed_writes import note_swallowed_write
 
 weekly_digest_bp = Blueprint("weekly_digest", __name__)
 
@@ -432,6 +433,7 @@ def _stamp_sent(api_key, tier="soft"):
             )
             c.commit()
     except Exception:
+        note_swallowed_write("mcp_dev_keys", where="weekly_digest._stamp_sent")
         pass
 
 

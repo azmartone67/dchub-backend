@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from typing import Dict, List, Optional, Any
 import requests
 from internal_auth import is_valid_internal_key, get_internal_key_for_client
+from routes._swallowed_writes import note_swallowed_write
 
 logger = logging.getLogger(__name__)
 SQLITE_DB = os.environ.get('SQLITE_DB', 'dc_nexus.db')
@@ -304,6 +305,7 @@ class InfrastructureLayerDB:
                           feat.get('category','infrastructure')))
                     inserted += 1
                 except Exception as e:
+                    note_swallowed_write("infrastructure_layers", where="kmz_processor.insert_features")
                     conn.rollback()
                     continue
             conn.commit()

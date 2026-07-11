@@ -23,6 +23,7 @@ import urllib.error
 import urllib.request
 
 from flask import Blueprint, jsonify, request
+from routes._swallowed_writes import note_swallowed_write
 
 indexnow_bp = Blueprint("indexnow", __name__)
 
@@ -63,6 +64,7 @@ def _save_last(d):
                         "at = EXCLUDED.at, submitted = EXCLUDED.submitted, status = EXCLUDED.status",
                         (d.get("at"), int(d.get("submitted") or 0), d.get("status")))
     except Exception:
+        note_swallowed_write("indexnow_last", where="indexnow._save_last")
         pass
     finally:
         try:

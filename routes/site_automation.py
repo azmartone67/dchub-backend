@@ -29,6 +29,7 @@ import os
 import urllib.request
 
 from flask import Blueprint, Response, jsonify, request
+from routes._swallowed_writes import note_swallowed_write
 
 site_automation_bp = Blueprint("site_automation", __name__)
 
@@ -379,6 +380,7 @@ def ci_triage():
                          cls["classification"], action, json.dumps({**body, **cls})))
                 c.close()
         except Exception:
+            note_swallowed_write("ci_triage_log", where="site_automation.ci_triage")
             pass
         return jsonify({"ok": True, **cls, "action": action})
 

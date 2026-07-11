@@ -27,6 +27,7 @@ from contextlib import contextmanager
 
 import psycopg2 as _pg
 from flask import Blueprint, jsonify
+from routes._swallowed_writes import note_swallowed_write
 
 iso_aeso_intl_bp = Blueprint("iso_aeso_intl", __name__,
                               url_prefix="/api/v1/iso/aeso-intl")
@@ -115,7 +116,9 @@ def _persist_metrics(metrics):
                     (ISO_CODE, name, data["value"], data.get("unit", "")),
                 )
                 if cur.rowcount > 0: rows += 1
-            except Exception: pass
+            except Exception:
+                note_swallowed_write("grid_data", where="iso_aeso_intl._persist_metrics")
+                pass
         c.commit()
     return rows
 

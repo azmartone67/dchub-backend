@@ -41,6 +41,7 @@ from flask import (Blueprint, Response, jsonify, render_template, request,
                    stream_with_context, url_for)
 
 from utils.cache import BoundedCache
+from routes._swallowed_writes import note_swallowed_write
 
 logger = logging.getLogger(__name__)
 
@@ -355,6 +356,7 @@ def _log_widget_embed(slug: str, host: str, url: str, tier: str) -> None:
                 try: conn.rollback()
                 except Exception: pass
     except Exception:
+        note_swallowed_write("widget_embeds", where="market_brief._log_widget_embed")
         pass
     finally:
         try: conn.close()
@@ -3274,6 +3276,7 @@ def _bulk_log_call(tool: str, tier: str, status: str = "ok",
                 try: conn.rollback()
                 except Exception: pass
     except Exception:
+        note_swallowed_write("mcp_call_log", where="market_brief._bulk_log_call")
         pass
     finally:
         try: conn.close()

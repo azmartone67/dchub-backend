@@ -31,6 +31,7 @@ import threading
 import datetime as _dt
 
 from flask import Blueprint, jsonify, request
+from routes._swallowed_writes import note_swallowed_write
 
 sentinel_master_bp = Blueprint("sentinel_master", __name__)
 
@@ -81,6 +82,7 @@ def _persist_report(report: dict):
             try: conn.close()
             except Exception: pass
     except Exception:
+        note_swallowed_write("sentinel_master_ticks", where="sentinel_master_orchestrator._persist_report")
         pass
 
 

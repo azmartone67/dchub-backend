@@ -30,6 +30,7 @@ from typing import Any, Optional
 
 import psycopg2 as _pg
 from flask import Blueprint, jsonify, request
+from routes._swallowed_writes import note_swallowed_write
 
 try:
     from dchub_heartbeat import heartbeat as _heartbeat
@@ -168,6 +169,7 @@ def _persist_metrics(metrics: dict) -> int:
                     rows += 1
             except Exception:
                 # one bad metric doesn't kill the batch
+                note_swallowed_write("grid_data", where="iso_ercot._persist_metrics")
                 pass
         c.commit()
     return rows

@@ -53,6 +53,7 @@ import datetime
 from datetime import timezone
 from urllib.parse import quote
 from flask import Blueprint, request, jsonify, Response, redirect
+from routes._swallowed_writes import note_swallowed_write
 
 logger = logging.getLogger(__name__)
 
@@ -1805,6 +1806,7 @@ def newsletter_open_pixel(token):
                         try: c.close()
                         except Exception: pass
     except Exception:
+        note_swallowed_write("newsletter_open_events", where="weekly_newsletter.newsletter_open_pixel")
         pass
     return Response(_TRANSPARENT_GIF_BYTES, mimetype="image/gif",
                      headers={"Cache-Control":

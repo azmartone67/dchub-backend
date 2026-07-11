@@ -14,6 +14,7 @@ is public); same-origin beacon, so no auth.
 from __future__ import annotations
 import os, hashlib
 from flask import Blueprint, request, jsonify
+from routes._swallowed_writes import note_swallowed_write
 
 web_ref_bp = Blueprint("web_ref", __name__)
 
@@ -59,6 +60,7 @@ def web_ref():
                 "INSERT INTO web_ref_visits (ref, page, ip_hash) VALUES (%s,%s,%s)",
                 (ref, page or None, iph))
     except Exception:
+        note_swallowed_write("web_ref_visits", where="web_ref_visit.web_ref")
         pass
     finally:
         try: c.close()

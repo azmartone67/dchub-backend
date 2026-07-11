@@ -7,6 +7,7 @@ import time
 from datetime import datetime, timedelta
 from functools import wraps
 from db_utils import get_db
+from routes._swallowed_writes import note_swallowed_write
 
 DB_PATH = 'dc_nexus.db'
 
@@ -844,6 +845,7 @@ def mark_processed(article_id, facility_id=None):
         conn.commit()
         conn.close()
     except:
+        note_swallowed_write("announcements", where="discovery_pipeline.mark_processed")
         pass
 
 

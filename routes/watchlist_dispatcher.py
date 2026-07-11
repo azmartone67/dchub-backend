@@ -37,6 +37,7 @@ import json
 import logging
 import hashlib
 from datetime import datetime, timezone
+from routes._swallowed_writes import note_swallowed_write
 
 logger = logging.getLogger(__name__)
 
@@ -581,6 +582,7 @@ def _ship_pending_digest(cur, summary: dict) -> None:
                         "SET status = 'skipped' WHERE id = ANY(%s)",
                         (ids,))
                 except Exception:
+                    note_swallowed_write("watchlist_alerts_sent", where="watchlist_dispatcher._ship_pending_digest")
                     pass
                 summary["alerts_skipped"] += len(ids)
                 continue
@@ -593,6 +595,7 @@ def _ship_pending_digest(cur, summary: dict) -> None:
                         "WHERE id = ANY(%s)",
                         (ids,))
                 except Exception:
+                    note_swallowed_write("watchlist_alerts_sent", where="watchlist_dispatcher._ship_pending_digest")
                     pass
                 summary["alerts_sent"] += len(ids)
             else:

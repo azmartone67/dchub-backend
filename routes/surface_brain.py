@@ -34,6 +34,7 @@ from typing import Any, Optional
 from flask import Blueprint, jsonify, request
 import psycopg2
 import psycopg2.extras
+from routes._swallowed_writes import note_swallowed_write
 
 
 surface_brain_bp = Blueprint("surface_brain", __name__)
@@ -582,4 +583,5 @@ def auto_log(surface_id: str, event_type: str = "view",
             try: c.close()
             except Exception: pass
     except Exception:
+        note_swallowed_write("surface_telemetry", where="surface_brain.auto_log")
         pass   # never crash a request from instrumentation

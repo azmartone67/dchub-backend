@@ -50,6 +50,7 @@ from datetime import datetime, timezone
 from flask import Blueprint, jsonify, request
 
 from internal_auth import accepted_internal_keys
+from routes._swallowed_writes import note_swallowed_write
 
 
 logger = logging.getLogger(__name__)
@@ -416,6 +417,7 @@ def _process_one(c, row: dict) -> dict:
                 try: c.commit()
                 except Exception: pass
             except Exception:
+                note_swallowed_write("ai_platform_submissions", where="ai_platform_onboarder._process_one")
                 pass
 
     return {"id": sub_id, "name": row.get("name"), "fit_score": fit_score,

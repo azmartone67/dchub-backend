@@ -26,6 +26,7 @@ from email.mime.text import MIMEText
 from contextlib import contextmanager
 
 from flask import Blueprint, jsonify, request
+from routes._swallowed_writes import note_swallowed_write
 
 try:
     import psycopg2 as _pg
@@ -255,7 +256,9 @@ def process_pending():
                     """, (lead["id"],))
                     c.commit()
                 out["results"].append({"id": lead["id"], "email": email, "status": "skipped_test"})
-            except Exception: pass
+            except Exception:
+                note_swallowed_write("identified_checkout_signals", where="outreach_cron.process_pending")
+                pass
             continue
 
         # Phase 3 — honor CAN-SPAM suppression list (opted-out addresses).
@@ -269,7 +272,9 @@ def process_pending():
                          WHERE id = %s
                     """, (lead["id"],))
                     c.commit()
-            except Exception: pass
+            except Exception:
+                note_swallowed_write("identified_checkout_signals", where="outreach_cron.process_pending")
+                pass
             out["results"].append({"id": lead["id"], "email": email, "status": "skipped_suppressed"})
             continue
 
@@ -285,7 +290,9 @@ def process_pending():
                          WHERE id = %s
                     """, (lead["id"],))
                     c.commit()
-            except Exception: pass
+            except Exception:
+                note_swallowed_write("identified_checkout_signals", where="outreach_cron.process_pending")
+                pass
             out["results"].append({"id": lead["id"], "email": email, "status": "no_provider"})
             continue
 
@@ -330,6 +337,7 @@ def process_pending():
                     out["failed"] += 1
                 c.commit()
         except Exception as e:
+            note_swallowed_write("identified_checkout_signals", where="outreach_cron.process_pending")
             pass
 
         out["results"].append({

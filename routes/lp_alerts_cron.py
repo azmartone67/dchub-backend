@@ -25,6 +25,7 @@ from __future__ import annotations
 import os
 import datetime
 from flask import Blueprint, jsonify, request
+from routes._swallowed_writes import note_swallowed_write
 
 
 lp_alerts_cron_bp = Blueprint("lp_alerts_cron", __name__)
@@ -327,7 +328,9 @@ def fire_pending_alerts(dry_run: bool = False, max_alerts: int = 100) -> dict:
                         try:
                             cur.execute("UPDATE saved_lp_alerts SET last_value=%s WHERE id=%s",
                                         (curr, a["alert_id"]))
-                        except Exception: pass
+                        except Exception:
+                            note_swallowed_write("saved_lp_alerts", where="lp_alerts_cron.fire_pending_alerts")
+                            pass
                         continue
                     # Force fire by treating prev as None (first-time semantics)
                     prev = None
@@ -355,7 +358,9 @@ def fire_pending_alerts(dry_run: bool = False, max_alerts: int = 100) -> dict:
                             UPDATE saved_lp_alerts SET last_value = %s
                              WHERE id = %s
                         """, (curr, a["alert_id"]))
-                    except Exception: pass
+                    except Exception:
+                        note_swallowed_write("saved_lp_alerts", where="lp_alerts_cron.fire_pending_alerts")
+                        pass
                     continue
 
                 # Fire (or pretend to in dry-run)
@@ -394,7 +399,9 @@ def fire_pending_alerts(dry_run: bool = False, max_alerts: int = 100) -> dict:
                                    last_value = %s
                              WHERE id = %s
                         """, (curr, a["alert_id"]))
-                    except Exception: pass
+                    except Exception:
+                        note_swallowed_write("saved_lp_alerts", where="lp_alerts_cron.fire_pending_alerts")
+                        pass
                     out["fired"].append({"alert_id": int(a["alert_id"]),
                                           "to": email, "info": info,
                                           "curr": curr, "prev": prev})

@@ -20,6 +20,11 @@ import time
 import requests
 import psycopg2
 from datetime import datetime
+try:
+    from routes._swallowed_writes import note_swallowed_write
+except Exception:  # standalone run: repo root may not be on sys.path
+    def note_swallowed_write(table, where=""):
+        pass
 
 # ── Config ──────────────────────────────────────────────────────────────────
 
@@ -406,6 +411,7 @@ def seed_fcc_fallback(conn):
                 ON CONFLICT (county_fips, technology_code) DO NOTHING
             """, (state, fips, name, providers, coverage))
         except:
+            note_swallowed_write("fcc_fiber_availability", where="fiber_connectivity_discovery.seed_fcc_fallback")
             pass
     
     conn.commit()

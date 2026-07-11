@@ -21,6 +21,7 @@ from datetime import datetime, timezone, timedelta
 
 import psycopg2 as _pg
 from flask import Blueprint, jsonify, request
+from routes._swallowed_writes import note_swallowed_write
 
 try:
     from dchub_heartbeat import heartbeat as _heartbeat
@@ -99,7 +100,9 @@ def _persist_metrics(metrics):
                     ("NYISO", name, data["value"], data.get("unit", "")),
                 )
                 if cur.rowcount > 0: rows += 1
-            except Exception: pass
+            except Exception:
+                note_swallowed_write("grid_data", where="iso_nyiso._persist_metrics")
+                pass
         c.commit()
     return rows
 

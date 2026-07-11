@@ -16,6 +16,7 @@ https://dchub.cloud/onboard/<code> instead of /api/v1/redeem/<code>.
 import os, html as _html
 from flask import Blueprint, request, jsonify, Response
 import psycopg
+from routes._swallowed_writes import note_swallowed_write
 
 onboarding_bp = Blueprint("onboarding_page", __name__)
 NEON_URL = os.environ.get("NEON_DATABASE_URL") or os.environ.get("DATABASE_URL")
@@ -135,6 +136,7 @@ def onboarding_page(code):
                 (api_key, request.headers.get("Referer", ""), (request.headers.get("User-Agent", "") or "")[:500])
             )
     except Exception:
+        note_swallowed_write("mcp_call_log", where="onboarding_page.onboarding_page")
         pass
 
     page = HTML.replace("__API_KEY__", _html.escape(api_key))

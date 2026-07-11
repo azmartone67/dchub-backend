@@ -62,6 +62,7 @@ import hashlib
 import logging
 import datetime
 from flask import Blueprint, jsonify, request
+from routes._swallowed_writes import note_swallowed_write
 
 logger = logging.getLogger(__name__)
 osm_crawler_bp = Blueprint("osm_crawler", __name__)
@@ -411,7 +412,9 @@ def _insert_row(cur, r: dict) -> tuple[bool, str]:
                 r.get("city"), r.get("state"), r.get("country", ""),
                 r.get("address") or None, source_id,
             ))
-        except Exception: pass
+        except Exception:
+            note_swallowed_write("facilities", where="osm_crawler._insert_row")
+            pass
 
     return True, source_id
 

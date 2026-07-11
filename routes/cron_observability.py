@@ -28,6 +28,7 @@ import os
 import datetime
 from contextlib import contextmanager
 from flask import Blueprint, jsonify, request
+from routes._swallowed_writes import note_swallowed_write
 
 try:
     import psycopg2 as _pg
@@ -105,6 +106,7 @@ def log_heartbeat(jobs_run=None, jobs_total=None, elapsed_ms=None, ua=None, ip=N
                 VALUES (%s, %s, %s, %s, %s)
             """, (ua, ip, jobs_run, jobs_total, elapsed_ms))
     except Exception:
+        note_swallowed_write("cron_heartbeat_log", where="cron_observability.log_heartbeat")
         pass
 
 

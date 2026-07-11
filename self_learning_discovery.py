@@ -22,6 +22,7 @@ from typing import Dict, List, Optional, Set, Tuple
 from urllib.parse import urljoin, urlparse
 from html import unescape
 from db_utils import get_db
+from routes._swallowed_writes import note_swallowed_write
 
 try:
     from bs4 import BeautifulSoup
@@ -675,6 +676,7 @@ class SelfLearningDiscovery:
             conn.commit()
             conn.close()
         except:
+            note_swallowed_write("discovered_sources", where="self_learning_discovery._log_permit_discovery")
             pass
 
 

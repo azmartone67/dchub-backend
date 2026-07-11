@@ -26,6 +26,7 @@ import datetime
 from contextlib import contextmanager
 
 from flask import Blueprint, jsonify, request
+from routes._swallowed_writes import note_swallowed_write
 
 try:
     import psycopg2 as _pg
@@ -545,6 +546,7 @@ def _record(slot_date, slot_hour, topic, style, text, landing, og_url, result,
                    story_type, _lead_kind, (_lead_entity or None)))
             c.commit()
     except Exception:
+        note_swallowed_write("linkedin_quad_posts", where="linkedin_quad_daily._record")
         pass
 
 

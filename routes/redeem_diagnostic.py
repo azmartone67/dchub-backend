@@ -23,6 +23,7 @@ from typing import Any, Optional
 
 import psycopg2 as _pg
 from flask import Blueprint, jsonify, request
+from routes._swallowed_writes import note_swallowed_write
 
 
 redeem_diagnostic_bp = Blueprint("redeem_diagnostic", __name__, url_prefix="/api/v1/redeem/diagnostic")
@@ -98,6 +99,7 @@ def record_redeem_attempt(
             c.commit()
             return run_id
     except Exception:
+        note_swallowed_write("redeem_attempts", where="redeem_diagnostic.record_redeem_attempt")
         return None
 
 

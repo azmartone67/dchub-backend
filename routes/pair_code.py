@@ -59,6 +59,7 @@ import secrets as _secrets
 import string
 from datetime import datetime, timezone, timedelta
 from flask import Blueprint, jsonify, request, Response
+from routes._swallowed_writes import note_swallowed_write
 
 pair_code_bp = Blueprint("pair_code", __name__)
 DATABASE_URL = os.environ.get("DATABASE_URL")
@@ -831,6 +832,7 @@ def upgrade_redirect():
                         "WHERE code = %s", (code,))
                     c.commit()
             except Exception:
+                note_swallowed_write("mcp_pair_codes", where="pair_code.upgrade_redirect")
                 pass
             return redirect(dest, code=302)
         # _stripe_links unavailable — legacy interstitial as a safe fallback
@@ -963,6 +965,7 @@ def pair_code_clicked(code):
             """, (code.upper(),))
         c.commit()
     except Exception:
+        note_swallowed_write("mcp_pair_codes", where="pair_code.pair_code_clicked")
         pass
     finally:
         try: c.close()

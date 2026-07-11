@@ -22,6 +22,7 @@ Phase 98b — conversion fix.
 import json
 import os
 from typing import Any, Optional
+from routes._swallowed_writes import note_swallowed_write
 
 
 REDEEM_BASE = os.environ.get(
@@ -177,6 +178,7 @@ def _track_paywall_hit(tool_name: str, tier_required: str) -> None:
             )
             c.commit()
     except Exception:
+        note_swallowed_write("redeem_funnel_events", where="dchub_paywall._track_paywall_hit")
         pass
 
 

@@ -17,6 +17,7 @@ from contextlib import contextmanager
 
 import psycopg
 from flask import Blueprint, jsonify, request
+from routes._swallowed_writes import note_swallowed_write
 
 logger = logging.getLogger("mcp_outreach_bridge")
 
@@ -228,6 +229,7 @@ def queue_keyed_user_nurture():
                         (email, f"mcp-upgrade-signal-{sig_id}"),
                     )
                 except Exception:
+                    note_swallowed_write("email_drip_log", where="mcp_outreach_bridge.queue_keyed_user_nurture")
                     pass
                 queued += 1
             except Exception as e:

@@ -63,6 +63,7 @@ from urllib.parse import urlparse
 
 import requests
 from flask import Blueprint, jsonify, request
+from routes._swallowed_writes import note_swallowed_write
 
 logger = logging.getLogger(__name__)
 
@@ -904,6 +905,7 @@ def crawl_mcp_presence() -> dict:
                                     (int(status_code or 0), row_id),
                                 )
                             except Exception:
+                                note_swallowed_write("mcp_presence_listings", where="mcp_presence_crawler.crawl_mcp_presence")
                                 pass
                             continue
 

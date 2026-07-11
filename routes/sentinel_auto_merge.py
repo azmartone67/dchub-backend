@@ -55,6 +55,7 @@ import re
 from typing import Any
 
 from flask import Blueprint, Response, jsonify, request
+from routes._swallowed_writes import note_swallowed_write
 
 
 logger = logging.getLogger(__name__)
@@ -1133,6 +1134,7 @@ def _finalize_followup(row_id: int, outcome: str, grade: str | None,
                  WHERE id = %s
             """, (outcome, grade, status_code, row_id))
     except Exception:
+        note_swallowed_write("sentinel_auto_merge_log", where="sentinel_auto_merge._finalize_followup")
         pass
     finally:
         try:

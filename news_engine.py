@@ -20,6 +20,7 @@ from urllib.parse import quote_plus, urlparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
 from db_utils import get_db
+from routes._swallowed_writes import note_swallowed_write
 
 logger = logging.getLogger(__name__)
 
@@ -389,6 +390,7 @@ def update_feed_health(url, name, success, article_count=0, db_path=NEWS_DB_PATH
                 (url, name, now))
         conn.commit()
     except Exception:
+        note_swallowed_write("feed_health", where="news_engine.update_feed_health")
         pass
     finally:
         if conn:

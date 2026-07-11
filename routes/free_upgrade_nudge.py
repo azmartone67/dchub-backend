@@ -28,6 +28,7 @@ from datetime import datetime, timezone
 
 import requests
 from flask import Blueprint, request, jsonify
+from routes._swallowed_writes import note_swallowed_write
 
 free_upgrade_nudge_bp = Blueprint("free_upgrade_nudge", __name__)
 
@@ -353,6 +354,7 @@ def nudge_fire():
                      detail if (live and ok) else None))
                 c.commit()
         except Exception:
+            note_swallowed_write("upgrade_nudge_log", where="free_upgrade_nudge.nudge_fire")
             pass
     return jsonify({"mode": "live" if live else "dry_run",
                     "sent": sum(1 for r in results if r["ok"]),

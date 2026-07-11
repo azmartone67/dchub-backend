@@ -15,6 +15,7 @@ from datetime import datetime
 import json
 import os
 from db_utils import get_db
+from routes._swallowed_writes import note_swallowed_write
 
 # Try to import anthropic for AI-powered responses
 try:
@@ -221,6 +222,7 @@ class AgentBus:
             c.execute("INSERT INTO agent_bus_activity (agent, last_active) VALUES (%s, %s) ON CONFLICT DO NOTHING", (agent, now))
             conn.commit()
         except:
+            note_swallowed_write("agent_bus_activity", where="agent_hub._update_agent_active")
             pass
         finally:
             if conn:
@@ -350,6 +352,7 @@ class AgentBus:
             conn.commit()
             return True
         except:
+            note_swallowed_write("agent_bus_messages", where="agent_hub.mark_read")
             return False
         finally:
             if conn:
@@ -738,6 +741,7 @@ def learn_from_interaction(agent: str, user_message: str, response: str, success
         
         conn.commit()
     except Exception:
+        note_swallowed_write("agent_interactions", where="agent_hub.learn_from_interaction")
         pass
     finally:
         if conn:

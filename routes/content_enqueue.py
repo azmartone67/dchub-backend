@@ -38,6 +38,7 @@ import os
 import random
 
 from flask import Blueprint, jsonify, request
+from routes._swallowed_writes import note_swallowed_write
 
 
 content_enqueue_bp = Blueprint("content_enqueue", __name__)
@@ -548,6 +549,7 @@ def _enqueue_post(content: str, platform: str) -> int | None:
             c.commit()
             return new_id
     except Exception as e:
+        note_swallowed_write("social_media_posts", where="content_enqueue._enqueue_post")
         return None
     finally:
         try: c.close()

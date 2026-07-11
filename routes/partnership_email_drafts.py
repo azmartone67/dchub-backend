@@ -35,6 +35,7 @@ except Exception:
     _pg = None
 
 from routes.linkedin_partnership_weekly import _TRACKS as _LINKEDIN_TRACKS
+from routes._swallowed_writes import note_swallowed_write
 
 partnership_email_bp = Blueprint("partnership_email", __name__,
                                   url_prefix="/api/v1/partnerships/email")
@@ -274,6 +275,7 @@ def _record_send(slug, to_email, subject, personal_note, status, detail):
                   smtp_detail=EXCLUDED.smtp_detail
             """, (slug, to_email, subject, personal_note or "", status, detail[:500]))
     except Exception:
+        note_swallowed_write("partnership_emails_sent", where="partnership_email_drafts._record_send")
         pass
 
 

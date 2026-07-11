@@ -23,6 +23,7 @@ import os
 import sys
 from contextlib import contextmanager
 from flask import Blueprint, request, jsonify
+from routes._swallowed_writes import note_swallowed_write
 
 try:
     import psycopg2 as _pg
@@ -259,6 +260,7 @@ def _record(iso_year, iso_week, track, result):
                   bool((result or {}).get("ok")),
                   (result or {}).get("error", "")[:500]))
     except Exception:
+        note_swallowed_write("linkedin_partnership_posts", where="linkedin_partnership_weekly._record")
         pass
 
 

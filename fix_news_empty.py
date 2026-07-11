@@ -19,6 +19,11 @@ import json
 import time
 import hashlib
 from datetime import datetime, timezone
+try:
+    from routes._swallowed_writes import note_swallowed_write
+except Exception:  # standalone run: repo root may not be on sys.path
+    def note_swallowed_write(table, where=""):
+        pass
 
 try:
     import psycopg2
@@ -167,6 +172,7 @@ def sync_rss_to_neon():
                     if cur.rowcount > 0:
                         new_count += 1
                 except Exception as e:
+                    note_swallowed_write("news_articles", where="fix_news_empty.sync_rss_to_neon")
                     pass  # Skip duplicates silently
             
             conn.commit()

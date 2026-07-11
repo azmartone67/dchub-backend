@@ -21,6 +21,7 @@ import time
 from datetime import datetime, timezone
 from flask import Blueprint, jsonify, request
 import json
+from routes._swallowed_writes import note_swallowed_write
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +68,7 @@ def _ensure_fiber_routes_table():
                 cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_fiber_routes_source_id ON fiber_routes(source, source_id)")
                 conn.commit()
             except Exception:
+                note_swallowed_write("fiber_routes", where="fiber_network_discovery._ensure_fiber_routes_table")
                 conn.rollback()
         # r43-H (2026-05-29): the seed upsert writes `capacity` + `discovered_at`,
         # but the production fiber_routes schema (from infrastructure_discovery)

@@ -27,6 +27,7 @@ import urllib.request
 import urllib.error
 from contextlib import contextmanager
 from flask import Blueprint, jsonify
+from routes._swallowed_writes import note_swallowed_write
 
 try:
     import psycopg2 as _pg
@@ -157,6 +158,7 @@ def _log(target, url, method, result):
             """, (target, url, method, result.get("status_code"),
                   result.get("elapsed_ms"), result.get("note", "")[:300]))
     except Exception:
+        note_swallowed_write("agent_broadcast_log", where="agent_broadcast_loop._log")
         pass
 
 

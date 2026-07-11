@@ -21,6 +21,7 @@ from typing import Optional
 
 import psycopg2 as _pg
 from flask import Blueprint, jsonify, request
+from routes._swallowed_writes import note_swallowed_write
 
 
 redeem_tracking_bp = Blueprint("redeem_tracking", __name__, url_prefix="/api/v1/redeem")
@@ -104,6 +105,7 @@ def _record_event(event_type, **fields):
             )
             c.commit()
     except Exception:
+        note_swallowed_write("redeem_funnel_events", where="redeem_tracking._record_event")
         pass
 
 
@@ -154,6 +156,7 @@ def record_funnel_event(event_type, *, tool=None, tier=None, source=None,
             )
             c.commit()
     except Exception:
+        note_swallowed_write("redeem_funnel_events", where="redeem_tracking.record_funnel_event")
         pass
 
 
@@ -255,6 +258,7 @@ def _send_identify_welcome_blocking(email, api_key):
                     (datetime.now(timezone.utc).isoformat(), api_key))
                 c.commit()
         except Exception:
+            note_swallowed_write("mcp_dev_keys", where="redeem_tracking._send_identify_welcome_blocking")
             pass
 
 

@@ -22,6 +22,7 @@ import urllib.request
 import urllib.error
 
 from flask import Blueprint, jsonify, request
+from routes._swallowed_writes import note_swallowed_write
 
 render_build_monitor_bp = Blueprint("render_build_monitor", __name__)
 
@@ -59,6 +60,7 @@ def _already_alerted(deploy_id):
                         "ON CONFLICT (deploy_id) DO NOTHING", (deploy_id,))
             return cur.rowcount == 0  # 0 rows inserted => conflict => already alerted
     except Exception:
+        note_swallowed_write("render_build_alerts", where="render_build_monitor._already_alerted")
         return False
     finally:
         try:

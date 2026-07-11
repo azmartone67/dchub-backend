@@ -33,6 +33,7 @@ import json
 import os
 
 from flask import Blueprint, jsonify, request
+from routes._swallowed_writes import note_swallowed_write
 
 
 dcpi_auto_press_bp = Blueprint("dcpi_auto_press", __name__)
@@ -251,6 +252,7 @@ def _insert_release(release: dict) -> int | None:
             c.commit()
             return new_id
     except Exception:
+        note_swallowed_write("press_releases", where="dcpi_auto_press._insert_release")
         return None
     finally:
         try: c.close()

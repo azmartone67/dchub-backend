@@ -20,6 +20,11 @@ import time
 import math
 import requests
 import psycopg2
+try:
+    from routes._swallowed_writes import note_swallowed_write
+except Exception:  # standalone run: repo root may not be on sys.path
+    def note_swallowed_write(table, where=""):
+        pass
 
 # ============================================================
 # DATABASE CONNECTION
@@ -210,6 +215,7 @@ else:
                     ))
                     batch_inserted += 1
                 except Exception as e:
+                    note_swallowed_write("gas_pipelines", where="ingest_rankings_data.<module>")
                     pass  # Skip duplicates
 
             inserted += batch_inserted

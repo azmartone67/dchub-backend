@@ -17,6 +17,7 @@ Safety:
   • re-running is idempotent (skips already-emailed customers)
 """
 import os
+from routes._swallowed_writes import note_swallowed_write
 # ============================================================================
 # Phase 267: INTERNAL EMAIL EXCLUSIONS — never email these
 # ============================================================================
@@ -163,6 +164,7 @@ def log_send(email, subject, template_key, success, resend_id, response_body, dr
             """, (email, subject[:300], template_key, success, resend_id, (response_body or "")[:1000], dry_run))
             c.commit()
     except Exception:
+        note_swallowed_write("email_outreach_log", where="dchub_outreach.log_send")
         pass
 
 
@@ -461,6 +463,7 @@ def dispatch(dry_run=True, limit=10):
                     """, (customer["email"],))
                     c.commit()
             except Exception:
+                note_swallowed_write("mcp_upgrade_signals", where="dchub_outreach.dispatch")
                 pass
 
             results["sent"].append({**preview, "resend_id": resend_id})

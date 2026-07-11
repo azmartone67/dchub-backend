@@ -29,6 +29,7 @@ import time
 import logging
 import threading
 from datetime import datetime, timezone, timedelta
+from routes._swallowed_writes import note_swallowed_write
 
 logger = logging.getLogger("crawler_scheduler")
 
@@ -95,6 +96,7 @@ def _release_crawler_run(name):
         finally:
             conn.close()
     except Exception:
+        note_swallowed_write("crawler_run_claims", where="crawler_scheduler._release_crawler_run")
         pass
 
 # Schedule: (hour_utc_run1, hour_utc_run2, crawler_name, runner_func_name)
