@@ -2151,7 +2151,11 @@ CONTENT_TYPE_PROBES = [
     {"label": "daily_returns_html",   "url": "https://dchub.cloud/daily",          "expect": "text/html"},
     {"label": "news_returns_html",    "url": "https://dchub.cloud/news",           "expect": "text/html"},
     {"label": "dcpi_returns_html",    "url": "https://dchub.cloud/dcpi",           "expect": "text/html"},
-    {"label": "brain_returns_html",   "url": "https://dchub.cloud/brain",          "expect": "text/html"},
+    # r-heal-contract (2026-07-11, frontend#1062): /brain is the ADMIN page —
+    # unauthed callers get a DESIGNED 403 whose body must still be HTML
+    # (ok_status below). The PUBLIC brain surface is /brain-live (must 200).
+    {"label": "brain_returns_html",   "url": "https://dchub.cloud/brain",          "expect": "text/html", "ok_status": (403,)},
+    {"label": "brain_live_returns_html", "url": "https://dchub.cloud/brain-live",  "expect": "text/html"},
     {"label": "digest_returns_html",  "url": "https://dchub.cloud/digest",         "expect": "text/html"},
     # Phase DD (2026-05-12): pair-code conversion funnel endpoints
     {"label": "funnel_diagnostics_json", "url": "https://dchub.cloud/api/v1/mcp/funnel/diagnostics", "expect": "application/json"},
@@ -2219,10 +2223,18 @@ def fix_api_contract_scan():
                 body = he.read().decode("utf-8", errors="ignore")
             except Exception:
                 body = ""
-        except Exception as e:
-            findings[url] = {f"api_contract_unreachable: {probe['label']}": 1,
-                             "_error": str(e)[:120]}
-            total_violations += 1
+        except Exception:
+            # r-heal-contract (2026-07-11, frontend#1062): a transient
+            # network failure is NOT a contract violation — this scan
+            # asserts body SEMANTICS; availability is scan_and_heal's job.
+            # One-shot flakes (e.g. the healer's own internal-bot 429
+            # backing up into a timeout) kept filing
+            # "api_contract_unreachable: paywall_response_includes_human_message"
+            # as an unfixable frontend issue even though the anon 403
+            # paywall envelope on /api/v1/pipeline/summary is exactly as
+            # designed (human_message + one_click_upgrade_url — validated
+            # below whenever the probe DOES land). A persistent outage
+            # still surfaces via every availability scanner.
             continue
         # Attempt to parse JSON; if the endpoint returns HTML it's already
         # a contract violation (every probed endpoint MUST return JSON).
@@ -2231,6 +2243,12 @@ def fix_api_contract_scan():
         except Exception:
             findings[url] = {f"api_contract_non_json: {probe['label']}": 1}
             total_violations += 1
+            continue
+        if status == 429 and isinstance(data, dict) \
+                and data.get("error") == "internal_bot_rate_limited":
+            # Self-probe tripped our own internal-bot circuit breaker
+            # (DCHubHealer UA bucket, 30 req/min) — rate-limit noise, not
+            # the endpoint's contract. Skip without recording a finding.
             continue
         # Run the validator
         try:
@@ -2260,11 +2278,22 @@ def fix_api_contract_scan():
                 ctype = (r.headers.get("Content-Type") or "").lower()
                 final_url = r.url
         except _HTTPError2 as he:
-            ctype = ""
-            final_url = url
-            findings[url] = {f"api_contract_status_{he.code}: {probe['label']}": 1}
-            total_violations += 1
-            continue
+            # r-heal-contract (2026-07-11, frontend#1062): some pages are
+            # DESIGNED to answer non-200 — /brain (admin) 403s for unauthed
+            # callers but must still serve HTML. Probes may declare
+            # ok_status: those statuses fall through to the content-type
+            # assertion instead of being filed as api_contract_status_NNN.
+            # 429s from our own internal-bot circuit breaker (self-probe
+            # rate limit) are never contract findings.
+            if he.code in probe.get("ok_status", ()):
+                ctype = (he.headers.get("Content-Type") or "").lower()
+                final_url = url
+            elif he.code == 429:
+                continue
+            else:
+                findings[url] = {f"api_contract_status_{he.code}: {probe['label']}": 1}
+                total_violations += 1
+                continue
         except Exception as e:
             findings[url] = {f"api_contract_unreachable: {probe['label']}": 1}
             total_violations += 1
