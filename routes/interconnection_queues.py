@@ -724,11 +724,23 @@ def api_rank_sites():
                                      "reason": "no candidate carried a numeric value for this objective"})
             continue
         coverage[f] = "validated"
+        # r-eval-fixwave-3 (2026-07-11): the percentile→absolute fallback
+        # CLAMPED raw-scale fields (capacity_mw 960/1310/1400 → all 100.0,
+        # ttp 24 → 76.0 for everyone) — zero discriminative signal while
+        # objective_status still said "validated" (GPT-5.5 finding, confirmed
+        # again on the Llama re-run harness). Unbaselined fields under
+        # percentile now fall back to RELATIVE (min-max within this batch),
+        # which discriminates at any scale; the explicit absolute=true mode
+        # keeps its documented fixed-scale contract for 0-100 fields.
         if percentile and f in _baseline:
             objective_status.append({"objective": f, "status": "validated", "basis": "percentile_vs_population"})
-        elif absolute or (percentile and f not in _baseline):
+        elif percentile and f not in _baseline:
+            if f not in _unbaselined:
+                _unbaselined.append(f)
             objective_status.append({"objective": f, "status": "validated",
-                                     "basis": ("absolute_fallback_not_in_baseline" if percentile else "absolute_0_100")})
+                                     "basis": "relative_fallback_not_in_baseline"})
+        elif absolute:
+            objective_status.append({"objective": f, "status": "validated", "basis": "absolute_0_100"})
         else:
             objective_status.append({"objective": f, "status": "validated", "basis": "relative_in_set"})
         if percentile and f in _baseline:
@@ -740,9 +752,7 @@ def api_rank_sites():
                 if pv is None:
                     continue
                 c.setdefault("_norm", {})[f] = round(pv if w >= 0 else (100.0 - pv), 1)
-        elif absolute or (percentile and f not in _baseline):
-            if percentile and f not in _baseline and f not in _unbaselined:
-                _unbaselined.append(f)
+        elif absolute and not percentile:
             norm_basis[f] = {"scale": "0-100 fixed", "direction": "maximize" if w >= 0 else "minimize"}
             for c in survivors:
                 v = _num(c.get(f))
@@ -797,7 +807,7 @@ def api_rank_sites():
     if percentile:
         _extra["percentile_baseline_available"] = sorted(_baseline.keys())
         if _unbaselined:
-            _extra["unbaselined_fields_fell_back_to_absolute"] = _unbaselined
+            _extra["unbaselined_fields_fell_back_to_relative"] = _unbaselined
         # Phase 4: baseline freshness so an agent can reason about reproducibility.
         try:
             from site_baseline import baseline_meta
@@ -905,7 +915,24 @@ def api_refined_queue():
         if _toks:
             where.append("coalesce(fuel_type,'') ~* %s")
             params.append("(" + "|".join(_toks) + ")")
+    # r-eval-fixwave-3 (2026-07-11): make the TTP hard cut SELF-EXPLAINING.
+    # Two independent evaluators (GPT-5.5, Llama 4) hit a zero-result set from
+    # max_ttp_months below the ISO averages and read it as missing data / a
+    # geocode bug — one burned half its call budget on structurally-empty
+    # queries. The zero was CORRECT but not legible at the moment it happened.
+    # Now the response always carries isos_excluded_by_ttp + the minimum
+    # satisfiable threshold for the requested scope.
+    _ttp_excluded = {}
+    _ttp_min_satisfiable = None
     if max_ttp is not None:
+        _requested = ([t for t in _iso_toks] if (iso and _iso_toks) else
+                      [_re.sub(r"[^A-Z0-9]", "", k.upper()) for k in _ISO_TTP_MONTHS])
+        _ttp_by_norm = {_re.sub(r"[^A-Z0-9]", "", k.upper()): v
+                        for k, v in _ISO_TTP_MONTHS.items()}
+        _ttp_excluded = {k: _ttp_by_norm[k] for k in _requested
+                         if k in _ttp_by_norm and _ttp_by_norm[k] > max_ttp}
+        _in_scope = [_ttp_by_norm[k] for k in _requested if k in _ttp_by_norm]
+        _ttp_min_satisfiable = min(_in_scope) if _in_scope else None
         ttp_isos = [k.upper() for k, v in _ISO_TTP_MONTHS.items() if v <= max_ttp]
         if ttp_isos:
             where.append("upper(iso) = ANY(%s)"); params.append(ttp_isos)
@@ -992,6 +1019,12 @@ def api_refined_queue():
                             "iso": iso or None, "baseload_only": baseload_only,
                             "fuel_type": fuel_type or None, "status": status,
                             "max_fiber_km": max_fiber_km, "geocoded_only": geocoded_only},
+        # r-eval-fixwave-3: the TTP hard cut explains itself — which requested
+        # ISOs it eliminated (with their averages) and the smallest
+        # max_ttp_months that would return anything for this scope.
+        **({"isos_excluded_by_ttp": _ttp_excluded,
+            "min_satisfiable_max_ttp_months": _ttp_min_satisfiable}
+           if max_ttp is not None else {}),
         "results": survivors,
         "summary": {"by_iso": by_iso, "by_fuel_class": by_fuel,
                     "geocoded_returned": n_geocoded},
