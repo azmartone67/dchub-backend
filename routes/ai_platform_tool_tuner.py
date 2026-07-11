@@ -380,7 +380,14 @@ def _claude_rewrite(tool_name: str, generic_desc: str, platform: str,
         try:
             body = json.dumps({
                 "model": model,
-                "max_tokens": 300,
+                # 2026-07-10: 300 → 2000. brain_model_for('routine') can
+                # resolve to a THINKING-tier model, and thinking tokens
+                # count against max_tokens — at 300 the model's reasoning
+                # ate the whole budget and the text block came back empty
+                # (same trap as the brain's Fable restore). 2000 leaves
+                # headroom for thinking + the ≤280-char description; the
+                # [:280] clamp below still bounds the stored output.
+                "max_tokens": 2000,
                 "system": ("You are an MCP tool-description copywriter. You "
                            "tune one tool description at a time for a specific "
                            "AI platform. You output ONLY the description."),

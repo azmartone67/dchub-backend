@@ -782,6 +782,7 @@ def build_agent_coaching(tool_name: str, retry_request: str,
         upgrade_url:   "https://dchub.cloud/pricing",
         gating_matrix: "https://dchub.cloud/api/v1/gating-matrix",
         tier_required: <tier_required>,
+        learn:         {cookbook: <url>, hint: <discover_tools pointer>},
       }
     """
     try:
@@ -814,6 +815,17 @@ def build_agent_coaching(tool_name: str, retry_request: str,
                                  'unlocks raw exports + monthly briefings + '
                                  'custom DCPI weights. https://dchub.cloud/enterprise'),
             'gating_matrix': 'https://dchub.cloud/api/v1/gating-matrix',
+            # 2026-07-10 training-loop closure: a gated agent should leave
+            # with a LEARNING path, not just a payment path. ADDITIVE only
+            # — every caller merges via .update(), so this key simply
+            # appears alongside the existing coaching fields.
+            'learn': {
+                'cookbook': 'https://dchub.cloud/api/v1/agent/cookbook',
+                'hint': ('Unsure which of the 71 tools fits? Call the '
+                         'discover_tools MCP tool for the 8 tool families, '
+                         'or GET the cookbook for ready-made tool-chain '
+                         'recipes (args + tier + citation included).'),
+            },
         }
     except Exception:
         return {}

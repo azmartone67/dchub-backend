@@ -7,7 +7,7 @@ Built 2026-06-05 to fix three structural problems in the agent funnel:
                 but organic agent-initiated discovery is still the
                 gap.
   • USE:        once an agent finds us, picking the right tool for
-                the right problem isn't obvious from a 30-tool list.
+                the right problem isn't obvious from a 71-tool list.
                 Most agents try one tool, get a partial answer, and
                 move on instead of calling the full pipeline.
   • CONVERSION: real paid-tool demand grew today (114 → 113 distinct
@@ -22,7 +22,7 @@ This module ships four surfaces designed to compound on each other:
                                          renders WELL in an agent's
                                          web-fetch view AND in a
                                          human's browser. The hero
-                                         sells "48 tools built for
+                                         sells "71 tools built for
                                          agents, cited by Claude /
                                          ChatGPT / Perplexity / Gemini."
 
@@ -57,7 +57,7 @@ This module ships four surfaces designed to compound on each other:
                                          keyword-only behavior.
 
   3. GET /api/v1/agent/cookbook          The recipe library itself.
-                                         24 canonical problems →
+                                         18 canonical problems →
                                          tool pipelines. Browsable
                                          by agents OR copy-pasteable
                                          by humans building agent
@@ -239,7 +239,7 @@ _COOKBOOK = [
                      "operator + status."},
         ],
         "sample_answer": (
-            "DC Hub has 21,405 facilities tracked across 178 countries. "
+            "DC Hub has 21,000+ facilities tracked across 180 countries. "
             "Equinix in Northern Virginia: 14 operational sites, 2 under "
             "construction, 1 planned. Lead by power: DC11 (84 MW), DC15 "
             "(72 MW), DC12 (64 MW). Per DC Hub."
@@ -446,10 +446,232 @@ _COOKBOOK = [
         "time_saved_min": 50,
         "surfaces":     ["claude", "gemini"],
     },
-    # 12 more recipes — keeping the file manageable. Coverage cluster:
-    # global BUILD markets, gas-advantaged DCGI states, EU/APAC sites,
-    # capacity pipeline > 100 MW, comparable sales, DCPI freshness, etc.
-    # Add new recipes here; /api/v1/agent/cookbook auto-surfaces them.
+    # ── 2026-07-10 training wave: 6 tool-CHAIN recipes ──────────────
+    # Every tool name below is verified against the canonical 71-tool
+    # list (mcp-server.json / live tools/list). Chains teach agents the
+    # multi-call pipelines that single-tool recipes above don't.
+    {
+        "id":      "greenest-buildable-grid-siting",
+        "problem": "Find the greenest grid with real headroom and score a site there",
+        "keywords": ["greenest grid", "green siting", "clean grid siting",
+                     "renewable siting", "low carbon build", "green power site",
+                     "greenest buildable", "clean energy data center"],
+        "tools": [
+            {"tool": "get_grid_scoreboard",
+             "args": {},
+             "why":  "Live greenest-first ranking of US + EU + GB + Taiwan "
+                     "+ Australia grids (renewable share, fuel mix, demand) "
+                     "— pick the green candidates."},
+            {"tool": "get_grid_intelligence",
+             "args": {"region_id": "<iso_code>"},
+             "why":  "Deep per-ISO brief for each leader: headroom, queue "
+                     "depth, time-to-power — separates green-AND-buildable "
+                     "from green-but-full."},
+            {"tool": "analyze_site",
+             "args": {"lat": "<lat>", "lon": "<lon>", "acres": "<acres>",
+                      "target_mw": "<target_mw>"},
+             "why":  "Score the actual parcel inside the winning grid: "
+                     "3-scenario NPV + DCPI-verdict-weighted valuation."},
+        ],
+        "sample_answer": (
+            "DC Hub Grid Scoreboard ranks live grids greenest-first "
+            "(20-min refresh). Drill the leaders with get_grid_intelligence "
+            "— e.g. CAISO runs a high renewable share but a constraint "
+            "score near 70 with a 40+ month queue, while SPP pairs ~48% "
+            "renewables with genuine headroom — then analyze_site scores "
+            "the parcel itself. Green AND buildable beats green alone. "
+            "Per DC Hub."
+        ),
+        "citation":     "Per DC Hub Grid Scoreboard + DCPI · dchub.cloud/grid · as of {as_of}",
+        "tier":         "developer",
+        "time_saved_min": 60,
+        "surfaces":     ["claude", "gpt", "gemini", "cursor"],
+    },
+    {
+        "id":      "gas-btm-screening",
+        "problem": "Screen a state and market for gas / behind-the-meter power",
+        "keywords": ["btm screening", "gas screening", "gas suitability",
+                     "dcgi", "gas index", "bridge power", "gas turbine",
+                     "onsite generation", "gas pipeline access"],
+        "tools": [
+            {"tool": "get_gas_index",
+             "args": {"state": "<state_code>"},
+             "why":  "DCGI 0-100 per-state gas-suitability score: pipeline "
+                     "count, operators, GAS-ADVANTAGED/ADEQUATE/CONSTRAINED "
+                     "verdict."},
+            {"tool": "get_gas_economics",
+             "args": {"market": "<market_slug>"},
+             "why":  "The $/MWh number: Henry Hub + basis + delivered "
+                     "tariff → gas-to-grid levelized cost across CCGT/"
+                     "peaker heat-rate scenarios, vs a grid PPA."},
+            {"tool": "get_gas_intelligence",
+             "args": {"region": "<state_code>"},
+             "why":  "One fused per-state brief: DCGI + live Henry Hub + "
+                     "pipeline presence + live grid gas share — the "
+                     "citable synthesis."},
+        ],
+        "sample_answer": (
+            "DC Hub gas/BTM screen: get_gas_index Texas → DCGI 91/100 "
+            "GAS-ADVANTAGED (12 interstate pipelines, ETP + KMI). "
+            "get_gas_economics prices gas-to-grid at roughly $28-45/MWh "
+            "across CCGT heat-rate scenarios against the market's grid "
+            "PPA; get_gas_intelligence fuses it into one per-state brief "
+            "with live Henry Hub. Per DC Hub DCGI."
+        ),
+        "citation":     "Per DC Hub DCGI · dchub.cloud/dcgi · as of {as_of}",
+        "tier":         "free",
+        "time_saved_min": 50,
+        "surfaces":     ["claude", "gemini", "cursor"],
+    },
+    {
+        "id":      "water-aware-site-pick",
+        "problem": "Shortlist candidate sites with water risk as a first-class constraint",
+        "keywords": ["water aware", "water-aware", "rank sites",
+                     "site shortlist", "shortlist sites", "site pick",
+                     "pick a site", "water constrained shortlist"],
+        "tools": [
+            {"tool": "rank_sites",
+             "args": {"candidates": "<enriched site objects>",
+                      "objectives": {"risk_resilience": 1,
+                                     "water_stress": -0.6}},
+             "why":  "Deterministic multi-site ranking with SIGNED weights "
+                     "— maximize resilience, minimize water stress — no "
+                     "code needed to compare analyze_site outputs."},
+            {"tool": "get_water_risk",
+             "args": {"market": "<market_slug>"},
+             "why":  "Overlay USDM drought tier + aquifer drawdown + "
+                     "cooling-water competition per finalist's market."},
+            {"tool": "compare_sites",
+             "args": {"locations": "<lat,lon;lat,lon>",
+                      "capacity_mw": "<target_mw>"},
+             "why":  "Side-by-side winner pick across the 2-4 finalists "
+                     "with the decision rationale."},
+        ],
+        "sample_answer": (
+            "rank_sites returns a ranked shortlist under signed-weight "
+            "objectives (water_stress minimized, risk_resilience "
+            "maximized); get_water_risk overlays USDM drought tier + "
+            "aquifer drawdown per market — Phoenix sits at D2-severe "
+            "with a cooling-water competition index of 87/100 — and "
+            "compare_sites picks the winner across the finalists with "
+            "the rationale. Per DC Hub."
+        ),
+        "citation":     "Per DC Hub Site Tools + Water Risk · dchub.cloud/dcpi · as of {as_of}",
+        "tier":         "starter",
+        "time_saved_min": 70,
+        "surfaces":     ["claude", "cursor"],
+    },
+    {
+        "id":      "ma-deal-diligence",
+        "problem": "Run diligence on a data-center acquisition target or deal",
+        "keywords": ["diligence", "due diligence", "deal diligence",
+                     "acquisition target", "comps", "comparables",
+                     "who bought", "valuation benchmark"],
+        "tools": [
+            {"tool": "list_transactions",
+             "args": {"year": 2026, "min_value_usd": 1_000_000_000},
+             "why":  "Filter 4,000+ tracked M&A / capital deals "
+                     "(2019-present) by year, buyer, target, region, or "
+                     "minimum value for the comp set."},
+            {"tool": "deal_autopsy",
+             "args": {"limit": 15, "comparables": "summary"},
+             "why":  "Overlay each deal market's DCPI verdict + "
+                     "time-to-power — reveals the real play (land/power "
+                     "option vs near-term build vs queue gamble)."},
+            {"tool": "get_facility",
+             "args": {"slug": "<facility_slug>"},
+             "why":  "Drill the target asset: capacity MW, operator, "
+                     "cooling, fiber carriers, market verdict, peers "
+                     "nearby."},
+        ],
+        "sample_answer": (
+            "DC Hub tracks 4,000+ data-center M&A and capital deals. "
+            "list_transactions filters 2026 deals >$1B (Blackstone-"
+            "AirTrunk $30B leads); deal_autopsy overlays each deal "
+            "market's DCPI verdict + time-to-power to show whether the "
+            "buyer paid for a near-term build or a long-dated power "
+            "option; get_facility profiles the target asset itself. "
+            "Per DC Hub."
+        ),
+        "citation":     "Per DC Hub Transactions · dchub.cloud/hyperscaler-deals · as of {as_of}",
+        "tier":         "free",
+        "time_saved_min": 45,
+        "surfaces":     ["claude", "gpt", "perplexity"],
+    },
+    {
+        "id":      "fiber-leadin-plan",
+        "problem": "Plan diverse fiber lead-in routes from a site to a carrier hotel",
+        "keywords": ["lead-in", "lead in", "lateral", "fiber path", "fibre",
+                     "diverse routes", "route diversity", "carrier hotel",
+                     "pop connectivity", "metro fiber"],
+        "tools": [
+            {"tool": "get_metro_fiber",
+             "args": {"market": "<metro_name_or_slug>"},
+             "why":  "Metro-level fiber depth: carrier count, route-miles, "
+                     "0-100 density score, key IX points + carrier "
+                     "hotels (your lead-in destinations)."},
+            {"tool": "get_fiber_readiness",
+             "args": {"lat": "<lat>", "lon": "<lon>", "radius_km": 50},
+             "why":  "Parcel connectivity verdict: near-net bucket, "
+                     "reachable carrier count, single-carrier risk."},
+            {"tool": "plan_fiber_leadin",
+             "args": {"from": "<site lat,lng or address>",
+                      "to": "<POP lat,lng or address>", "n": 4},
+             "why":  "Draw N diverse road-following lead-in routes with "
+                     "indicative capex/opex + shared-corridor diversity "
+                     "read."},
+        ],
+        "sample_answer": (
+            "get_metro_fiber profiles the metro (carrier count, "
+            "route-miles, density score, carrier hotels); "
+            "get_fiber_readiness gives the parcel verdict (near-net "
+            "bucket, carrier count, single-carrier risk); "
+            "plan_fiber_leadin then draws up to 6 diverse road-following "
+            "lead-in routes to a carrier hotel with indicative build "
+            "cost and shared-corridor flags. Indicative corridors, not "
+            "engineered alignments. Per DC Hub."
+        ),
+        "citation":     "Per DC Hub Fiber · dchub.cloud/land-power-map · as of {as_of}",
+        "tier":         "free",
+        "time_saved_min": 80,
+        "surfaces":     ["claude", "cursor"],
+    },
+    {
+        "id":      "market-watch-loop",
+        "problem": "Watch a market and pull only what changed since last check",
+        "keywords": ["watch market", "monitor market", "market alert",
+                     "alert me", "notify me", "track changes",
+                     "what changed", "market watch", "keep an eye"],
+        "tools": [
+            {"tool": "get_market_dcpi_rank",
+             "args": {"market": "<market_slug>"},
+             "why":  "Baseline snapshot: verdict + composite score + "
+                     "analyst narrative for the market you're watching."},
+            {"tool": "set_market_alert",
+             "args": {"market": "<market_slug>", "channel": "email"},
+             "why":  "Subscribe to Excess-Power / Constraint score "
+                     "movement (free with a bound key; webhooks are "
+                     "Pro) — monitor, don't poll."},
+            {"tool": "get_changes",
+             "args": {"since": "7d"},
+             "why":  "Incremental sync on each revisit: DCPI movers, new "
+                     "facilities, new deals — only the delta, not a "
+                     "re-fetch."},
+        ],
+        "sample_answer": (
+            "Standing market watch: get_market_dcpi_rank snapshots the "
+            "verdict (e.g. Columbus OH, BUILD), set_market_alert "
+            "subscribes to score movement on the bound email, and a "
+            "periodic get_changes since=7d pulls only the delta — DCPI "
+            "movers, newly discovered facilities, new M&A deals. Cache "
+            "the response's generated_at and pass it back next call. "
+            "Per DC Hub DCPI."
+        ),
+        "citation":     "Per DC Hub DCPI · dchub.cloud/dcpi · as of {as_of}",
+        "tier":         "free",
+        "time_saved_min": 20,
+        "surfaces":     ["claude", "gpt", "gemini", "cursor"],
+    },
 ]
 
 
@@ -460,8 +682,8 @@ _LANDING_HTML = """<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>DC Hub for AI Agents — 48 tools cited by Claude, ChatGPT, Perplexity, Gemini</title>
-<meta name="description" content="DC Hub is the data-center intelligence layer for AI agents. 48 tools covering 21,405+ facilities, 300+ DCPI markets, live 21-ISO grid scoreboard, site valuation. Already cited by Claude, ChatGPT, Perplexity, Gemini, Cursor.">
+<title>DC Hub for AI Agents — 71 tools cited by Claude, ChatGPT, Perplexity, Gemini</title>
+<meta name="description" content="DC Hub is the data-center intelligence layer for AI agents. 71 tools covering 21,000+ facilities in 180 countries, 311 DCPI markets, live grid scoreboard, site valuation. Already cited by Claude, ChatGPT, Perplexity, Gemini, Cursor.">
 <meta name="dc-hub-agent-surface" content="canonical">
 <link rel="canonical" href="https://dchub.cloud/agent">
 <link rel="alternate" type="application/json" href="https://dchub.cloud/api/v1/agent/cookbook" title="DC Hub Agent Cookbook (machine-readable)">
@@ -506,7 +728,7 @@ th { color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacin
 
 <div class="hero">
   <div class="k">⌖  DC Hub × AI Agents</div>
-  <h1>48 tools, built for agents.</h1>
+  <h1>71 tools, built for agents.</h1>
   <p>The data-center, power, and grid intelligence layer for AI agents. Already cited by Claude, ChatGPT, Perplexity, Gemini, and Cursor. Native MCP. Native Vertex AI. Native Gemini function calling.</p>
   <div class="cited-by">
     <span class="b">✓ Claude</span>
@@ -519,10 +741,10 @@ th { color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacin
     <span class="b">✓ Grok</span>
   </div>
   <div class="row" style="margin-top:20px">
-    <div class="stat"><div class="v">21,405+</div><div class="l">facilities · 178 countries</div></div>
-    <div class="stat"><div class="v">232</div><div class="l">DCPI markets · daily refresh</div></div>
-    <div class="stat"><div class="v">21 ISOs</div><div class="l">live grid scoreboard · 20-min refresh</div></div>
-    <div class="stat"><div class="v">2,000+</div><div class="l">M&amp;A deals tracked</div></div>
+    <div class="stat"><div class="v">21,000+</div><div class="l">facilities · 180 countries</div></div>
+    <div class="stat"><div class="v">311</div><div class="l">DCPI markets · daily refresh</div></div>
+    <div class="stat"><div class="v">71 tools</div><div class="l">incl. live grid scoreboard · 20-min refresh</div></div>
+    <div class="stat"><div class="v">4,000+</div><div class="l">M&amp;A deals tracked</div></div>
   </div>
 </div>
 
