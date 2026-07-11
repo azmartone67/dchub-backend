@@ -181,13 +181,17 @@ LANES = [
     {
         "key": "grid_ext_breadth",
         "label": "gridstatus per-dataset refresh breadth (grid_ext_metrics)",
-        "why": "age of the 5th-freshest dataset's ingested_at — catches "
+        "why": "age of the 3rd-freshest dataset's ingested_at — catches "
                "'one dataset still ingesting, the rest stuck', which the "
-               "overall MAX(ingested_at) dead-man cannot see",
+               "overall MAX(ingested_at) dead-man cannot see. Top-3 (not "
+               "wider): the table also holds one-shot Depth-shell "
+               "absorptions (hosting_capacity:*) that legitimately never "
+               "refresh; only ~3 dataset families recur (live-calibrated "
+               "07-11: 67 dataset_ids, 3 recurring)",
         "age_sql": (
             "SELECT EXTRACT(EPOCH FROM (now() - last_ing)) / 3600.0 FROM ("
             "SELECT MAX(ingested_at) AS last_ing FROM grid_ext_metrics "
-            "GROUP BY dataset_id ORDER BY 1 DESC LIMIT 5) t "
+            "GROUP BY dataset_id ORDER BY 1 DESC LIMIT 3) t "
             "ORDER BY last_ing ASC LIMIT 1"),
         "max_gap_hours": 72,
     },
