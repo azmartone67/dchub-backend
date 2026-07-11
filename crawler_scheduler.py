@@ -234,6 +234,15 @@ SCHEDULE = [
     # market. Same-hour-same-day cap → one per slot. Bounded: <=5
     # spikes × ~3s Claude call = ~15s worst case. Runner never raises.
     (10, 22, "media_spike_responder", "_run_media_spike_responder"),
+    # r-model-relations (2026-07-11): shell #18 — the platform-eval loop
+    # (each AI platform's own flagship model pressure-tests the live rail
+    # with its comp partner key; verdicts → model_relations_runs for HUMAN
+    # review, findings → brain via the canonical writer; NEVER publishes).
+    # Daily 23:00 UTC slot, but the runner self-gates to ~MONTHLY via a DB
+    # check on the last run — restart/replica-safe, no wall-clock counting.
+    # Kill: MODEL_RELATIONS_CRON_DISABLE=1. Manual off-cycle fire (e.g. a
+    # platform ships a new flagship): POST /api/jobs/model-relations.
+    (23, 23, "model_relations",     "_run_model_relations"),
     # CRM Reverse-ETL flush (r74, 2026-06-07): twice daily 7/19 UTC, push
     # status='queued' rows from crm_outbound_queue to the configured CRM
     # (Salesforce / HubSpot / stub). Each capture_event() hook (MCP HI,
@@ -2019,6 +2028,41 @@ def _run_media_topic_tune():
         bfd.get("linkedin_posts_tagged"),
         tnd.get("wrote"), top, len(mix),
     )
+
+
+def _run_model_relations():
+    """r-model-relations (2026-07-11): shell #18 monthly tick. The daily 23:00
+    slot fires this, but it self-gates on the DB: if ANY run started in the
+    last 28 days, skip — restart/replica-safe (no since-boot wall clock).
+    Direct in-process call (this scheduler is worker-only; the eval's origin
+    self-calls hit web where they belong, the LLM round-trips stay here).
+    NEVER publishes — verdicts land in model_relations_runs for human review
+    via /api/v1/admin/model-relations/status. Kill: MODEL_RELATIONS_CRON_DISABLE=1."""
+    if (os.environ.get("MODEL_RELATIONS_CRON_DISABLE") or "").strip() == "1":
+        return
+    try:
+        import psycopg2
+        from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+        last = None
+        try:
+            _c = psycopg2.connect(os.environ["DATABASE_URL"], sslmode="require",
+                                  connect_timeout=5)
+            _cur = _c.cursor()
+            _cur.execute("SELECT MAX(started_at) FROM model_relations_runs")
+            last = (_cur.fetchone() or [None])[0]
+            _c.close()
+        except Exception:
+            last = None  # table absent pre-first-tick → run
+        if last is not None and (_dt.now(_tz.utc) - last) < _td(days=28):
+            logger.info("🤝 model_relations: skipped — last tick %s (<28d, monthly cadence)",
+                        last.date())
+            return
+        from model_relations import run_model_relations_tick
+        out = run_model_relations_tick()
+        logger.info("🤝 model_relations: monthly tick done: %s",
+                    {k: v.get("status") for k, v in (out.get("runs") or {}).items()})
+    except Exception as e:
+        logger.error("🤝 model_relations: ❌ %s", str(e)[:200])
 
 
 def _run_media_spike_responder():
