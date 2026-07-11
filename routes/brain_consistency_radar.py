@@ -2495,15 +2495,24 @@ def _platform_conversions_30d() -> int:
     """Account-level conversions in the last 30d (ANY tool). A paid key unlocks
     ALL tools, so conversion is account-level — used to sanity-check a per-tool
     'ZERO converted' signal before alarming. Returns -1 on DB miss (don't
-    suppress on a miss)."""
+    suppress on a miss).
+
+    2026-07-10 (issue #1551): read mcp_conversions — the canonical ledger the
+    Stripe webhooks write — NOT pair-code redemptions. The pair-code redeem
+    flow is dead (0 of 1,097 codes ever minted were redeemed), so the old
+    query pinned this gate at 0 while real money landed in the ledger (9
+    non-test conversions in the 30d before this fix: 3x $99 founding, 1x $49,
+    starter, metered...). Result: the r88 honesty gate never suppressed and
+    check_mcp_funnel_leak screamed '446 paywalled callers, ZERO conversions'
+    — conversions happened but were invisible to the brain."""
     c = _db()
     if c is None:
         return -1
     try:
         with c.cursor() as cur:
-            cur.execute("SELECT COUNT(*) FROM mcp_pair_codes "
-                        "WHERE redeemed_at IS NOT NULL "
-                        "AND redeemed_at >= NOW() - INTERVAL '30 days'")
+            cur.execute("SELECT COUNT(*) FROM mcp_conversions "
+                        "WHERE created_at >= NOW() - INTERVAL '30 days' "
+                        "AND COALESCE(is_test, FALSE) = FALSE")
             return int((cur.fetchone() or [0])[0])
     except Exception:
         return -1

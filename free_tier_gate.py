@@ -489,7 +489,7 @@ def _mark_session_today(identity, get_db_conn):
 
 
 def _metered_402():
-    resp = jsonify({
+    payload = {
         'error': 'upgrade_required',
         'gate': 'map_session_cap',
         'message': (f"You've used your free map session"
@@ -497,7 +497,27 @@ def _metered_402():
                     f"({FREE_MAP_SESSIONS}/30 days). Upgrade for unlimited map access."),
         'sessions_limit': FREE_MAP_SESSIONS,
         'upgrade_url': 'https://dchub.cloud/pricing?utm_source=map_session_cap',
-    })
+    }
+    # 2026-07-10 (issue #1551 "agent path blocked"): this 402 fronts metered
+    # API surfaces (e.g. /api/v1/grid/intelligence/*) for ANONYMOUS callers
+    # and used to carry only a human pricing URL — an AI agent hitting it had
+    # no machine-readable next step. Attach the shared claim_free_key +
+    # email_capture coaching (same envelope as the MCP tool gate and
+    # /api/v1/market-brief/all). Keyed callers PASS this gate (verified live:
+    # anon 402 -> POST /api/v1/keys/claim 200 -> keyed retry 200), so the
+    # coached retry genuinely unlocks. Fail-safe: build_agent_coaching
+    # returns {} on any error, so the 402 shape never breaks.
+    try:
+        from routes.email_capture import build_agent_coaching
+        payload.update(build_agent_coaching(
+            'metered_map_api',
+            'Retry this request with header X-API-Key: <api_key>'))
+        # Keep the utm-tagged map-cap pricing URL (coaching's generic
+        # /pricing would otherwise clobber the attribution).
+        payload['upgrade_url'] = 'https://dchub.cloud/pricing?utm_source=map_session_cap'
+    except Exception:
+        pass
+    resp = jsonify(payload)
     resp.headers['Cache-Control'] = 'private, no-store'
     return resp, 402
 
