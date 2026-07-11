@@ -171,9 +171,95 @@ def mint_trial_for_request(req=None, tool_name: str = "", client_name: str = "",
     c = _conn()
     if c is None:
         return {"error": "no_database", "ok": False}
+    # Reuse window, hoisted so BOTH the gated-identity probe and the legacy
+    # (ip_hash, ua) reuse share it. _reuse_days is int()-built → f-string safe.
+    _reuse_days = max(1, int(os.environ.get("AUTO_TRIAL_REUSE_DAYS", "30") or 30))
     try:
         _ensure_schema(c)
         with c.cursor() as cur:
+            # ── 2026-07-10 (funnel audit, leak #1: RE-MINT ESCAPE) ──────────
+            # The (ip_hash, ua) reuse below misses a UA change, so an identity
+            # gated at TRIAL_FREE_CALLS_UNBOUND cumulative calls could re-mint
+            # a fresh trial with a reset counter. If this IP holds a GATED
+            # unbound live trial under ANY UA, hand back that SAME key. If the
+            # agent finally supplied an operator email on THIS call, bind it —
+            # that's the conversion we wanted — and the gate lifts. FAIL-OPEN.
+            try:
+                cur.execute(f"""
+                    SELECT api_key, expires_at FROM auto_trial_keys
+                     WHERE request_ip_hash = %s
+                       AND signed_up_email IS NULL AND operator_email IS NULL
+                       AND COALESCE(call_count, 0) >= %s
+                       AND minted_at >= NOW() - INTERVAL '{_reuse_days} days'
+                       AND expires_at > NOW()
+                     ORDER BY minted_at DESC LIMIT 1
+                """, (ip_hash, TRIAL_FREE_CALLS_UNBOUND))
+                g = cur.fetchone()
+                if g:
+                    _bound_now = False
+                    if operator_email:
+                        try:
+                            cur.execute(
+                                "UPDATE auto_trial_keys SET "
+                                "operator_email = COALESCE(operator_email, %s), "
+                                "operator_name  = COALESCE(operator_name, %s), "
+                                "client_name    = COALESCE(client_name, %s) "
+                                "WHERE api_key = %s",
+                                (operator_email.strip().lower(), (operator_name or None),
+                                 (client_name[:80] or None) if client_name else None, g[0]))
+                            _bound_now = True
+                        except Exception: pass
+                    import datetime as _dt
+                    days_left = None
+                    if g[1]:
+                        delta = g[1] - _dt.datetime.now(_dt.timezone.utc)
+                        days_left = max(0, int(delta.total_seconds() / 86400))
+                    out = {
+                        "ok":          True,
+                        "api_key":     g[0],
+                        "expires_at":  g[1].isoformat() if g[1] else None,
+                        "tier":        "IDENTIFIED",
+                        "daily_calls": (TRIAL_DAILY_CALLS if _bound_now
+                                        else TRIAL_DAILY_UNBOUND),
+                        "daily_calls_when_email_bound": TRIAL_DAILY_CALLS,
+                        "trial_days":  TRIAL_DAYS,
+                        "days_remaining": days_left,
+                        "reused":      True,
+                    }
+                    if not _bound_now:
+                        out.update({
+                            "bind_required": True,
+                            "gate": "bind_email_required",
+                            "free_calls_unbound": TRIAL_FREE_CALLS_UNBOUND,
+                            "upgrade_cta": (
+                                f"🔒 This identity already used its "
+                                f"{TRIAL_FREE_CALLS_UNBOUND} free unbound calls — "
+                                f"re-minting returns the SAME key, not a fresh "
+                                f"allowance. Bind your operator's email (free) to "
+                                f"restore {TRIAL_DAILY_CALLS}/day: POST "
+                                f"/api/v1/keys/auto-trial/bind {{api_key, email}}."),
+                            "operator_action": (
+                                f"ACTION FOR YOUR HUMAN OPERATOR: this key used its "
+                                f"{TRIAL_FREE_CALLS_UNBOUND} free unbound calls. "
+                                f"Reply with your work email and your agent binds it "
+                                f"via POST /api/v1/keys/auto-trial/bind "
+                                f"{{api_key, email}} to unlock {TRIAL_DAILY_CALLS}/day."),
+                            "instructions": (
+                                f"Use api_key in X-API-Key header. Unbound free calls "
+                                f"are exhausted for this identity — bind your "
+                                f"operator's email to keep the free tier "
+                                f"({TRIAL_DAILY_CALLS}/day)."),
+                        })
+                    else:
+                        out["upgrade_cta"] = (
+                            f"✅ Operator email bound — {TRIAL_DAILY_CALLS}/day "
+                            f"unlocked on this key.")
+                        out["instructions"] = (
+                            f"Use api_key in X-API-Key header. "
+                            f"{TRIAL_DAILY_CALLS} calls/day.")
+                    return out
+            except Exception: pass
+
             # Check for existing recent trial key for this caller
             try:
                 # r-retention (2026-06-19): widen the same-(ip_hash,ua) reuse
@@ -185,9 +271,8 @@ def mint_trial_for_request(req=None, tool_name: str = "", client_name: str = "",
                 # and makes the key-reuse retention metric meaningful (avg 0.67
                 # calls/key today = re-mint churn, not real one-shot use). Web hosts
                 # on ROTATING egress IPs still won't match — email-bind is their
-                # durable path. _reuse_days is int()-built, so the f-string is
-                # injection-safe.
-                _reuse_days = max(1, int(os.environ.get("AUTO_TRIAL_REUSE_DAYS", "30") or 30))
+                # durable path. _reuse_days is int()-built (hoisted above), so
+                # the f-string is injection-safe.
                 cur.execute(f"""
                     SELECT api_key, expires_at FROM auto_trial_keys
                      WHERE request_ip_hash = %s
@@ -247,20 +332,58 @@ def mint_trial_for_request(req=None, tool_name: str = "", client_name: str = "",
                     }
             except Exception: pass
 
+            # ── 2026-07-10 (leak #1, part 2): CARRY THE COUNTER FORWARD. Even
+            # when no live gated trial exists (expired, or the identity's usage
+            # sits on a dch_live_ claim key — the other mint door), a fresh
+            # unbound mint from a GATED identity inherits the cumulative count,
+            # so it is born gated and binding stays cheaper than re-minting.
+            # Seeded ONLY when the identity already crossed the gate (partial
+            # counts are NOT carried — that would pollute the activated-stage
+            # funnel stat, which reads call_count > 0). notes stamps the seed
+            # provenance so stats can exclude these later. FAIL-OPEN → 0.
+            _carry = 0
+            if not operator_email:
+                try:
+                    cur.execute(f"""
+                        SELECT COALESCE(MAX(COALESCE(call_count, 0)), 0)
+                          FROM auto_trial_keys
+                         WHERE request_ip_hash = %s
+                           AND signed_up_email IS NULL AND operator_email IS NULL
+                           AND minted_at >= NOW() - INTERVAL '{_reuse_days} days'
+                    """, (ip_hash,))
+                    _carry = int((cur.fetchone() or [0])[0] or 0)
+                    cur.execute(f"""
+                        SELECT COALESCE(MAX(COALESCE((metadata->>'validate_calls')::int, 0)), 0)
+                          FROM mcp_dev_keys
+                         WHERE metadata->>'source' = 'claim_api'
+                           AND metadata->>'ip' = %s
+                           AND (email IS NULL OR email = '')
+                           AND created_at >= NOW() - INTERVAL '{_reuse_days} days'
+                    """, (ip,))
+                    _carry = max(_carry, int((cur.fetchone() or [0])[0] or 0))
+                except Exception:
+                    _carry = 0
+            _seed = _carry if _carry >= TRIAL_FREE_CALLS_UNBOUND else 0
+
             # Mint a new trial key
             api_key = "dch_trial_" + secrets.token_urlsafe(24).replace("_", "x").replace("-", "x")[:32]
             try:
                 cur.execute(f"""
                     INSERT INTO auto_trial_keys
                       (api_key, minted_for_tool, request_ip_hash, request_ua,
-                       expires_at, client_name, operator_email, operator_name)
-                    VALUES (%s, %s, %s, %s, NOW() + INTERVAL '{TRIAL_DAYS} days', %s, %s, %s)
+                       expires_at, client_name, operator_email, operator_name,
+                       call_count, notes)
+                    VALUES (%s, %s, %s, %s, NOW() + INTERVAL '{TRIAL_DAYS} days', %s, %s, %s, %s, %s)
                     ON CONFLICT (api_key) DO NOTHING
                     RETURNING expires_at
                 """, (api_key, tool_name[:40] or None, ip_hash, ua,
                       (client_name[:80] or None) if client_name else None,
                       (operator_email.strip().lower() or None) if operator_email else None,
-                      (operator_name[:120] or None) if operator_name else None))
+                      (operator_name[:120] or None) if operator_name else None,
+                      _seed,
+                      (f"gate_carry:{_seed} (cumulative unbound usage carried "
+                       f"from this identity — re-minting does not reset the "
+                       f"bind gate)") if _seed else None))
                 r = cur.fetchone()
                 expires = r[0].isoformat() if r and r[0] else None
             except Exception:
@@ -280,6 +403,41 @@ def mint_trial_for_request(req=None, tool_name: str = "", client_name: str = "",
             })
     except Exception:
         pass
+
+    # Born-gated mint (identity carried past the gate): overwrite the cheery
+    # fresh-mint CTAs with the honest bind-first ask so the agent isn't told
+    # it has N free calls it doesn't have.
+    if _seed:
+        return {
+            "ok":          True,
+            "api_key":     api_key,
+            "expires_at":  expires,
+            "tier":        "IDENTIFIED",
+            "daily_calls": TRIAL_DAILY_UNBOUND,
+            "daily_calls_when_email_bound": TRIAL_DAILY_CALLS,
+            "trial_days":  TRIAL_DAYS,
+            "days_remaining": TRIAL_DAYS,
+            "reused":      False,
+            "bind_required": True,
+            "gate": "bind_email_required",
+            "free_calls_unbound": TRIAL_FREE_CALLS_UNBOUND,
+            "upgrade_cta": (
+                f"🔒 This identity already used its {TRIAL_FREE_CALLS_UNBOUND} "
+                f"free unbound calls and the counter carries onto this key — "
+                f"re-minting does not reset it. Bind your operator's email "
+                f"(free) to restore {TRIAL_DAILY_CALLS}/day: POST "
+                f"/api/v1/keys/auto-trial/bind {{api_key, email}}."),
+            "operator_action": (
+                f"ACTION FOR YOUR HUMAN OPERATOR: this key's identity used its "
+                f"{TRIAL_FREE_CALLS_UNBOUND} free unbound calls. Reply with your "
+                f"work email and your agent binds it via POST "
+                f"/api/v1/keys/auto-trial/bind {{api_key, email}} to unlock "
+                f"{TRIAL_DAILY_CALLS}/day."),
+            "instructions": (
+                f"Use api_key in X-API-Key header. Unbound free calls are "
+                f"exhausted for this identity — bind your operator's email to "
+                f"keep the free tier ({TRIAL_DAILY_CALLS}/day)."),
+        }
 
     return {
         "ok":          True,

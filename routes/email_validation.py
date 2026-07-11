@@ -13,7 +13,10 @@ infrastructure failing. We only return ok=False when the email is DEFINITIVELY
 bad for a reason that is the *sender's* fault:
   * format invalid
   * a role account (postmaster@, abuse@, noreply@, ...) — mail to these is
-    routinely auto-rejected or black-holed, so binding one is a dead end
+    routinely auto-rejected or black-holed, so binding one is a dead end.
+    NOTE (2026-07-10): only machine/dead-end localparts count; human-monitored
+    shared inboxes (info@, admin@, support@, it@, ops@, ...) are ACCEPTED —
+    they are real operator addresses in our audience
   * a known disposable/throwaway domain — the bound address evaporates and key
     recovery becomes impossible
   * the domain DEFINITIVELY has no MX and no A record (it can receive no mail)
@@ -49,20 +52,23 @@ _DNS_TIMEOUT = 2.5
 # the exact thing the soft-fail philosophy forbids).
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
-# Role / functional accounts. Mail to these is commonly auto-handled, shared, or
-# rejected — a poor target to BIND a personal key to. Compared case-folded
+# Role / functional accounts — HARD-REJECT only the DEAD ENDS: localparts that
+# are machine-generated, machine-consumed, or routinely black-holed, where mail
+# sent to them reaches no human by construction (so binding one makes key
+# recovery impossible). 2026-07-10 funnel audit: the previous list also
+# rejected the shared-inbox roles real operators actually use — info@ / admin@ /
+# support@ / it@ / ops@ are often THE working address at a small data-center or
+# infra shop (exactly our audience) — so genuine binds bounced off this
+# validator with reason='role_account'. Those human-monitored roles now pass;
+# deliverability is still enforced by the MX/A check. Compared case-folded
 # against the localpart (and against the localpart before any "+tag").
 ROLE_LOCALPARTS = frozenset({
-    "postmaster", "abuse", "noreply", "no-reply", "no_reply", "donotreply",
-    "do-not-reply", "mailer-daemon", "mailerdaemon", "hostmaster", "webmaster",
-    "admin", "administrator", "root", "sysadmin", "support", "help", "helpdesk",
-    "info", "contact", "sales", "marketing", "billing", "accounts", "accounting",
-    "security", "privacy", "legal", "compliance", "hr", "jobs", "careers",
-    "press", "media", "team", "office", "mail", "email", "spam", "bounce",
-    "bounces", "notifications", "notification", "alerts", "noc", "ops",
-    "operations", "it", "service", "services", "feedback", "enquiries",
-    "enquiry", "inquiries", "inquiry", "newsletter", "subscribe", "unsubscribe",
-    "automated", "robot", "daemon", "nobody", "null", "void", "test", "testing",
+    "postmaster", "abuse", "mailer-daemon", "mailerdaemon",
+    "noreply", "no-reply", "no_reply", "donotreply", "do-not-reply",
+    "bounce", "bounces", "spam",
+    "nobody", "null", "void", "daemon", "robot", "automated",
+    "test", "testing",
+    "newsletter", "subscribe", "unsubscribe",
 })
 
 # Placeholder / documentation domains. These PASS the MX/A check (example.com
@@ -187,11 +193,13 @@ def _split(norm):
 
 
 def is_role_account(localpart):
-    """True if the localpart looks like a role/functional account.
+    """True if the localpart is a machine/dead-end role account.
 
-    The '+tag' suffix is stripped first (admin+ci@ is still an admin account),
-    and matching is case-insensitive. A bare localpart of e.g. "admin" or
-    "no-reply" returns True."""
+    The '+tag' suffix is stripped first (noreply+ci@ is still noreply),
+    and matching is case-insensitive. A bare localpart of e.g. "noreply" or
+    "mailer-daemon" returns True; human-monitored shared inboxes ("info",
+    "admin", "support", "it", "ops", ...) return False — real operators
+    bind those."""
     if not isinstance(localpart, str):
         return False
     lp = localpart.strip().lower()

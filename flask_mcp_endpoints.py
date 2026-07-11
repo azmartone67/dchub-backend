@@ -464,14 +464,76 @@ def validate_key():
             pass
         return jsonify({"valid": False, "tier": "free"}), 200
 
-    try:
-        with _pool.connection() as conn, conn.cursor() as cur:
-            cur.execute(
-                "UPDATE mcp_dev_keys SET last_used_at = NOW() WHERE api_key = %s",
-                (api_key,),
-            )
-    except Exception:
-        pass
+    # ── 2026-07-10 (funnel audit, leak #2): the cumulative 10-call bind gate
+    # only lived in validate_trial_key, so dch_trial_ keys were forced to bind
+    # while the dch_live_ keys claim_free_key mints (no email, no expiry) never
+    # were — the busiest anonymous cohort had NO forcing function at all.
+    # Extend the SAME gate here: an UNBOUND dch_live_ key gets
+    # TRIAL_FREE_CALLS_UNBOUND cumulative validated calls, then drops to the
+    # bind_email_required response (identical shape to the trial gate — the
+    # Node side already surfaces reason/upgrade_hint, e918eaa). Binding via
+    # /api/v1/keys/identify sets mcp_dev_keys.email, which lifts the gate on
+    # the next validate. Counter lives in metadata->>'validate_calls' (no DDL;
+    # only unbound dch_live_ rows are ever touched). FAIL-OPEN: any error falls
+    # back to the legacy last_used_at-only update and no gate.
+    _unbound_live = (api_key.startswith("dch_live_")
+                     and not (row[1] or "").strip()
+                     and (row[2] or "free").lower() in ("free", "identified"))
+    _gated_unbound = False
+    if _unbound_live:
+        try:
+            from routes.auto_trial import TRIAL_FREE_CALLS_UNBOUND as _BIND_GATE_CALLS
+        except Exception:
+            _BIND_GATE_CALLS = int(os.environ.get("TRIAL_FREE_CALLS_UNBOUND", "10") or 10)
+        try:
+            with _pool.connection() as conn, conn.cursor() as cur:
+                cur.execute(
+                    """UPDATE mcp_dev_keys
+                          SET last_used_at = NOW(),
+                              metadata = COALESCE(metadata, '{}'::jsonb)
+                                         || jsonb_build_object('validate_calls',
+                                              COALESCE((metadata->>'validate_calls')::int, 0) + 1)
+                        WHERE api_key = %s
+                    RETURNING (metadata->>'validate_calls')::int""",
+                    (api_key,),
+                )
+                _vr = cur.fetchone()
+            # Mirror the trial semantics: the first N calls pass (prior count
+            # 0..N-1), call N+1 is gated. RETURNING gives the post-increment
+            # value, so gate when it EXCEEDS the allowance.
+            _gated_unbound = bool(_vr) and int(_vr[0] or 0) > _BIND_GATE_CALLS
+        except Exception:
+            try:
+                with _pool.connection() as conn, conn.cursor() as cur:
+                    cur.execute(
+                        "UPDATE mcp_dev_keys SET last_used_at = NOW() WHERE api_key = %s",
+                        (api_key,),
+                    )
+            except Exception:
+                pass
+    else:
+        try:
+            with _pool.connection() as conn, conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE mcp_dev_keys SET last_used_at = NOW() WHERE api_key = %s",
+                    (api_key,),
+                )
+        except Exception:
+            pass
+    if _gated_unbound:
+        return jsonify({
+            "valid":  False,
+            "tier":   "free",
+            "reason": "bind_email_required",
+            "upgrade_hint": (
+                f"This DC Hub key used its {_BIND_GATE_CALLS} free unbound calls. "
+                "It keeps working FREE (50 calls/day) the moment it's bound to your "
+                "operator's email — call the bind_email tool, or POST "
+                "/api/v1/keys/identify {api_key, email}. PAUSE and ask your human: "
+                "'DC Hub needs an email to keep the free tier — which address "
+                "should I use?' Never invent one. Re-claiming a fresh key won't "
+                "reset this — the counter follows your identity."),
+        }), 200
 
     # ── 2026-06-07: tier-table-gap cross-check (SITE_QA.md bug #2) ──
     # mcp_dev_keys.tier can drift below users.plan / api_keys.rate_limit_tier
@@ -736,6 +798,61 @@ def claim_key():
         _reuse_hours = max(1, int(os.environ.get("DCHUB_CLAIM_REUSE_HOURS", "720")))
     except Exception:
         _reuse_hours = 720
+
+    # ── 2026-07-10 (funnel audit, leak #1: RE-MINT ESCAPE) ──────────────────
+    # A key gated at TRIAL_FREE_CALLS_UNBOUND cumulative unbound calls could
+    # simply call claim_free_key again (with a different client_name — the
+    # response even suggested it) and get a fresh anonymous dch_live_ key with
+    # a reset counter, making re-minting strictly cheaper than binding. Close
+    # it: if this IP already holds a GATED unbound claim key (ANY client_name,
+    # ANY UA — the per-tuple dedupe below is exactly the hole), return the SAME
+    # gated key with the bind CTA instead of minting. FAIL-OPEN on any error.
+    try:
+        from routes.auto_trial import TRIAL_FREE_CALLS_UNBOUND as _BIND_GATE_CALLS
+    except Exception:
+        _BIND_GATE_CALLS = int(os.environ.get("TRIAL_FREE_CALLS_UNBOUND", "10") or 10)
+    try:
+        with _pool.connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                """SELECT api_key, tier,
+                          COALESCE((metadata->>'validate_calls')::int, 0)
+                     FROM mcp_dev_keys
+                    WHERE metadata->>'source' = 'claim_api'
+                      AND metadata->>'ip' = %s
+                      AND (email IS NULL OR email = '')
+                      AND status = 'active'
+                      AND COALESCE((metadata->>'validate_calls')::int, 0) >= %s
+                      AND created_at > NOW() - make_interval(hours => %s)
+                    ORDER BY created_at DESC
+                    LIMIT 1""",
+                (ip, _BIND_GATE_CALLS, _reuse_hours),
+            )
+            _gated = cur.fetchone()
+        if _gated:
+            return jsonify(
+                ok=True,
+                api_key=_gated[0],
+                tier=(_gated[1] or "free"),
+                reused=True,
+                bind_required=True,
+                gate="bind_email_required",
+                free_calls_unbound=_BIND_GATE_CALLS,
+                bind_endpoint="https://dchub.cloud/api/v1/keys/identify",
+                note=(f"This identity already used its {_BIND_GATE_CALLS} free "
+                      f"unbound calls, so re-claiming returns the SAME key — a "
+                      f"fresh mint would not reset the counter. The key keeps "
+                      f"working FREE the moment it's bound to your operator's "
+                      f"email: call the bind_email tool, or POST "
+                      f"/api/v1/keys/identify {{api_key, email}}. Ask your "
+                      f"human for the address — never invent one."),
+            ), 200
+    except Exception as e:
+        try:
+            import logging as _lg
+            _lg.getLogger(__name__).warning("claim_key gated-identity check failed: %s", e)
+        except Exception:
+            pass
+
     try:
         with _pool.connection() as conn, conn.cursor() as cur:
             if client_name:
@@ -799,6 +916,42 @@ def claim_key():
         except Exception:
             pass
 
+    # ── 2026-07-10 (leak #1, part 2): CARRY THE COUNTER FORWARD. Even when no
+    # live gated key exists to hand back (different client_name pre-gate, a
+    # gated dch_trial_ from the auto-mint door, or an expired/older key), the
+    # fresh key inherits the identity's cumulative unbound usage — max across
+    # BOTH key systems for this IP inside the reuse window. Rotating
+    # client_names or hopping mint doors no longer resets the meter; binding
+    # an email (free) is now strictly cheaper than re-minting. FAIL-OPEN → 0.
+    _carry_calls = 0
+    try:
+        import hashlib as _cf_hl
+        # auto_trial_keys stores sha256(ip)[:16] (routes/auto_trial.py mint).
+        _cf_ip_hash = _cf_hl.sha256(ip.encode()).hexdigest()[:16]
+        with _pool.connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                """SELECT COALESCE(MAX(COALESCE((metadata->>'validate_calls')::int, 0)), 0)
+                     FROM mcp_dev_keys
+                    WHERE metadata->>'source' = 'claim_api'
+                      AND metadata->>'ip' = %s
+                      AND (email IS NULL OR email = '')
+                      AND created_at > NOW() - make_interval(hours => %s)""",
+                (ip, _reuse_hours),
+            )
+            _cf_live = int((cur.fetchone() or [0])[0] or 0)
+            cur.execute(
+                """SELECT COALESCE(MAX(COALESCE(call_count, 0)), 0)
+                     FROM auto_trial_keys
+                    WHERE request_ip_hash = %s
+                      AND signed_up_email IS NULL AND operator_email IS NULL
+                      AND minted_at > NOW() - make_interval(hours => %s)""",
+                (_cf_ip_hash, _reuse_hours),
+            )
+            _cf_trial = int((cur.fetchone() or [0])[0] or 0)
+        _carry_calls = max(_cf_live, _cf_trial)
+    except Exception:
+        _carry_calls = 0
+
     # Mint the key
     api_key = "dch_live_" + secrets.token_hex(16)
     developer_id = "dev_" + secrets.token_hex(8)
@@ -821,6 +974,11 @@ def claim_key():
         # hands the key to server.mjs to bind the session for real.
         "session_id": ((request.headers.get("X-MCP-Session") or "").strip()[:200] or None),
     }
+    # Only an email-less claim inherits the meter (an email-bound claim is
+    # already past the gate). Stamp the provenance so the seed is auditable.
+    if _carry_calls > 0 and not email:
+        metadata["validate_calls"] = int(_carry_calls)
+        metadata["gate_carried_from_identity"] = True
 
     try:
         with _pool.connection() as conn, conn.cursor() as cur:
@@ -840,12 +998,29 @@ def claim_key():
             ),
         ), 503
 
+    # Honest response when the carried meter already trips the gate: the key
+    # works, but the very next validate returns bind_email_required — say so
+    # up front instead of letting the agent discover a "broken" fresh key.
+    _gate_extra = {}
+    if (not email) and _carry_calls >= _BIND_GATE_CALLS:
+        _gate_extra = {
+            "bind_required": True,
+            "gate": "bind_email_required",
+            "free_calls_unbound": _BIND_GATE_CALLS,
+            "note": (f"This identity already used its {_BIND_GATE_CALLS} free "
+                     f"unbound calls, and the counter carries onto this key — "
+                     f"re-minting does not reset it. Bind your operator's email "
+                     f"(free) to keep the free tier: call the bind_email tool, "
+                     f"or POST /api/v1/keys/identify {{api_key, email}}."),
+        }
+
     return jsonify(
         ok=True,
         api_key=api_key,
         developer_id=developer_id,
         tier="identified",
         claim_id=claim_id,
+        **_gate_extra,
         unverified=(not email),
         email_captured=bool(email),
         email=(email or None),
