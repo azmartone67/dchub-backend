@@ -34,8 +34,10 @@ DAILY_TIERS = ["free", "identified", "starter", "developer", "pro", "enterprise"
 
 
 def _markets_floor() -> str:
-    n = int(c.get_canonical_stats().get("markets", 300))
-    return f"{(n // 100) * 100}+"          # 311 -> "300+"
+    # 2026-07-10: exact live count, not a floor — "300+" undersold 311 and
+    # drifted the registry surfaces off the honest-numbers canon.
+    n = int(c.get_canonical_stats().get("markets", 311))
+    return str(n)
 
 
 def build() -> dict:
@@ -56,8 +58,8 @@ def build() -> dict:
         "numbers": {
             "facilities": c.facilities_phrase(),       # "21,000+"
             "countries": c.countries_phrase(),         # "170+"
-            "markets": _markets_floor(),               # "300+"
-            "deals": "3,000+",                         # canonical floor (live ~3,079)
+            "markets": _markets_floor(),               # "311" (exact live count)
+            "deals": "4,000+",                         # canonical floor (live ~4,025 on 07-10)
             "substations": f'{int(s.get("substations", 126427)):,}',
             "pipeline_gw": int(s.get("pipeline_gw", 369)),
         },
