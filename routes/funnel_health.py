@@ -955,6 +955,15 @@ def _build_data() -> dict:
         # paid_rate so the dashboard surfaces the A/B winner directly.
         # Defensive: claim_variant might be absent on a still-deploying box;
         # the try/except + per-row column-present check keeps the page green.
+        #
+        # r-variant-honest-split (2026-07-11): `used` split into the two
+        # redemption channels (Branch-A/B convention: claim_email IS NULL =
+        # server-side machine auto-redeem, IS NOT NULL = human form-submit)
+        # plus `opened` (claim_page_opened_at). Raw `used` compared machine-
+        # capable cohorts (gateway agents, auto-redeemed 0-25s after mint
+        # since 07-04) against human-click-only cohorts (Claude.ai/desktop,
+        # header-less) — generic 99.3% vs claude 0% was that artifact, not a
+        # copy verdict. The A/B signal is used_human/opened.
         try:
             cur.execute(
                 "SELECT "
@@ -962,10 +971,18 @@ def _build_data() -> dict:
                 "    COUNT(*) FILTER (WHERE claim_minted_at IS NOT NULL "
                 "                     AND claim_minted_at >= NOW() - INTERVAL '30 days') AS minted, "
                 "    COUNT(*) FILTER (WHERE claim_used_at IS NOT NULL "
-                "                     AND claim_used_at   >= NOW() - INTERVAL '30 days') AS used "
+                "                     AND claim_used_at   >= NOW() - INTERVAL '30 days' "
+                "                     AND claim_email IS NULL) AS used_agent, "
+                "    COUNT(*) FILTER (WHERE claim_used_at IS NOT NULL "
+                "                     AND claim_used_at   >= NOW() - INTERVAL '30 days' "
+                "                     AND claim_email IS NOT NULL) AS used_human, "
+                "    COUNT(*) FILTER (WHERE claim_page_opened_at IS NOT NULL "
+                "                     AND claim_page_opened_at >= NOW() - INTERVAL '30 days') AS opened "
                 "  FROM " + _hi_real_from() +
                 " GROUP BY 1 "
-                " ORDER BY minted DESC, used DESC")
+                # ordinals: PG forbids expressions over output aliases in
+                # ORDER BY (used_agent + used_human would error).
+                " ORDER BY 2 DESC, 3 DESC, 4 DESC")
             v_rows = cur.fetchall() or []
             # Paid join is a SEPARATE query so a missing 'users' table or
             # email-column mismatch doesn't blow away the minted/used numbers.
@@ -988,18 +1005,26 @@ def _build_data() -> dict:
                 except Exception: pass
 
             variant_breakdown = []
-            for v_name, minted, used in v_rows:
-                minted = int(minted or 0)
-                used   = int(used or 0)
-                paid   = int(paid_by_variant.get(v_name or "generic", 0))
-                use_rate  = round(100.0 * used / minted, 1) if minted else 0.0
-                paid_rate = round(100.0 * paid / minted, 1) if minted else 0.0
+            for v_name, minted, used_agent, used_human, opened in v_rows:
+                minted     = int(minted or 0)
+                used_agent = int(used_agent or 0)
+                used_human = int(used_human or 0)
+                opened     = int(opened or 0)
+                used       = used_agent + used_human
+                paid       = int(paid_by_variant.get(v_name or "generic", 0))
+                use_rate       = round(100.0 * used / minted, 1) if minted else 0.0
+                human_use_rate = round(100.0 * used_human / minted, 1) if minted else 0.0
+                paid_rate      = round(100.0 * paid / minted, 1) if minted else 0.0
                 variant_breakdown.append({
                     "variant": v_name or "generic",
                     "minted": minted,
                     "used": used,
+                    "used_agent": used_agent,
+                    "used_human": used_human,
+                    "opened": opened,
                     "paid": paid,
                     "use_rate_pct": use_rate,
+                    "human_use_rate_pct": human_use_rate,
                     "paid_rate_pct": paid_rate,
                 })
             # Add zero-rows for variants that haven't fired yet (signal-to-
@@ -1008,8 +1033,10 @@ def _build_data() -> dict:
             for v in ("claude", "cursor", "cline", "chatgpt", "generic"):
                 if v not in seen:
                     variant_breakdown.append({
-                        "variant": v, "minted": 0, "used": 0, "paid": 0,
-                        "use_rate_pct": 0.0, "paid_rate_pct": 0.0})
+                        "variant": v, "minted": 0, "used": 0,
+                        "used_agent": 0, "used_human": 0, "opened": 0,
+                        "paid": 0, "use_rate_pct": 0.0,
+                        "human_use_rate_pct": 0.0, "paid_rate_pct": 0.0})
             out["high_intent"]["variant_breakdown"] = variant_breakdown
         except Exception:
             try: conn.rollback()
@@ -2006,25 +2033,31 @@ def _render_html(data: dict, admin_key: str) -> str:
   <!-- Round 2 (2026-06-07): per-variant A/B breakdown
        The claim copy is platform-specific (claude/cursor/cline/chatgpt/generic).
        This card surfaces minted → used → paid per variant so we can pick a
-       winner. Endpoint: GET /api/v1/admin/mcp/claim-variant-conversion -->
+       winner. Endpoint: GET /api/v1/admin/mcp/claim-variant-conversion
+       r-variant-honest-split (2026-07-11): Used split into agent-auto vs human
+       so machine auto-redeem can't masquerade as a copy win. -->
   <div class="card" style="margin-bottom:18px;">
-    <h2>Claim copy A/B by platform <span style="font-size:10px;color:var(--accent);">NEW · 5 variants · {len(hi.get('variant_breakdown', []) or [])} rows</span></h2>
+    <h2>Claim copy A/B by platform <span style="font-size:10px;color:var(--accent);">5 variants · {len(hi.get('variant_breakdown', []) or [])} rows · used split agent/human</span></h2>
     <table>
       <thead><tr>
         <th>Variant</th>
         <th style="text-align:right">Minted</th>
-        <th style="text-align:right">Used</th>
+        <th style="text-align:right" title="Machine auto-redeem by server.mjs (X-Internal-Key, ~1s after mint) — NOT a copy signal">Used (agent auto)</th>
+        <th style="text-align:right" title="Human email form-submit on /claim/&lt;token&gt; — THE copy signal">Used (human)</th>
+        <th style="text-align:right" title="Human loaded the /claim page">Opened</th>
         <th style="text-align:right">Paid</th>
-        <th style="text-align:right">Use rate</th>
+        <th style="text-align:right" title="used_human / minted — the only rate comparable across variants">Human use rate</th>
         <th style="text-align:right">Paid rate</th>
       </tr></thead>
       <tbody>
       {''.join(
         f'<tr><td>{_esc(vb.get("variant","generic"))}</td>'
         f'<td style="text-align:right">{_fmt_n(vb.get("minted",0))}</td>'
-        f'<td style="text-align:right">{_fmt_n(vb.get("used",0))}</td>'
+        f'<td style="text-align:right;color:var(--muted)">{_fmt_n(vb.get("used_agent", vb.get("used",0)))}</td>'
+        f'<td style="text-align:right;color:{("#22c55e" if vb.get("used_human",0)>0 else "var(--muted)")}">{_fmt_n(vb.get("used_human",0))}</td>'
+        f'<td style="text-align:right">{_fmt_n(vb.get("opened",0))}</td>'
         f'<td style="text-align:right;color:{("#22c55e" if vb.get("paid",0)>0 else "var(--muted)")}">{_fmt_n(vb.get("paid",0))}</td>'
-        f'<td style="text-align:right">{vb.get("use_rate_pct",0):.1f}%</td>'
+        f'<td style="text-align:right">{vb.get("human_use_rate_pct",0):.1f}%</td>'
         f'<td style="text-align:right;color:{("#22c55e" if vb.get("paid_rate_pct",0)>=10 else "#f59e0b" if vb.get("paid_rate_pct",0)>0 else "var(--muted)")}">{vb.get("paid_rate_pct",0):.1f}%</td>'
         f'</tr>'
         for vb in (hi.get('variant_breakdown', []) or []))}
@@ -2033,8 +2066,14 @@ def _render_html(data: dict, admin_key: str) -> str:
     <div style="font-size:11px;color:var(--muted);margin-top:10px;">
       Each minted claim records the variant the human saw (locked on first observation).
       The mcp-server picks the variant from the inbound MCP <code>clientInfo.name</code>
-      (Claude.ai / Cursor / Cline / ChatGPT) and falls back to UA matching. The variant
-      controls the AGENT-facing relay copy — the URL is the same across all variants.
+      (Claude.ai / Cursor / Cline / ChatGPT) and falls back to UA matching.
+      <strong>Used (agent auto)</strong> is the server-side machine auto-redeem
+      (<code>claim_email IS NULL</code>, live since 07-04) — it fires ~1s after mint for
+      any variant and measures redeem-path uptime, not copy. Cross-variant copy verdicts
+      must use <strong>Used (human)</strong>/<strong>Opened</strong>: header-less hosts
+      (Claude.ai / desktop) can only convert via a human click, and gateway-fronted
+      sessions (<code>clientInfo.name='mcp'</code>, UA <code>node</code>) hide their real
+      platform under <em>generic</em>.
       JSON: <a href="/api/v1/admin/mcp/claim-variant-conversion?admin_key={admin_key_safe}&amp;days=30"
             style="color:var(--accent)">/api/v1/admin/mcp/claim-variant-conversion</a>
     </div>

@@ -1184,6 +1184,16 @@ def claim_redeem_agent():
     email = (body.get("email") or "").strip().lower()
     if email and not _EMAIL_RE.match(email):
         email = ""
+    # r-variant-honest-split (2026-07-11): OPTIONAL redemption-time variant
+    # hint. Gateway-fronted sessions (mcp-remote → clientInfo.name='mcp',
+    # UA='node') lock claim_variant='generic' at track/mint time even when
+    # the actual host is Claude/Cursor/…, masking the platform A/B. When the
+    # redeeming caller knows the real platform, it may send {variant:...} and
+    # we UPGRADE a generic/NULL lock — a specific platform lock is never
+    # overwritten (first SPECIFIC observation still wins).
+    redeem_variant = (body.get("variant") or "").strip().lower()
+    if redeem_variant not in VALID_VARIANTS or redeem_variant == "generic":
+        redeem_variant = None
 
     c = _conn()
     if c is None:
@@ -1251,10 +1261,14 @@ def claim_redeem_agent():
             with c.cursor() as cur:
                 cur.execute(
                     """UPDATE mcp_high_intent_sessions
-                          SET claim_used_at = NOW(), claim_email = %s, minted_api_key = %s
+                          SET claim_used_at = NOW(), claim_email = %s, minted_api_key = %s,
+                              claim_variant = CASE
+                                  WHEN %s IS NOT NULL
+                                   AND COALESCE(NULLIF(claim_variant,''),'generic') = 'generic'
+                                  THEN %s ELSE claim_variant END
                         WHERE mcp_session_id = %s AND tool_name = %s
                           AND claim_used_at IS NULL""",
-                    ((email or None), api_key, sid, tool))
+                    ((email or None), api_key, redeem_variant, redeem_variant, sid, tool))
                 won = (cur.rowcount == 1)
         except Exception as e:
             logger.warning("[redeem-agent] mark-used failed: %s", e)
@@ -1485,9 +1499,49 @@ def high_intent_stats():
 
 # ── GET /api/v1/admin/mcp/claim-variant-conversion ────────────────────
 # Round 2 (2026-06-07): per-platform A/B reporting. Surfaces:
-#   minted (claim URLs sent) → used (human entered email + key minted)
+#   minted (claim URLs sent) → used (claim token redeemed, ANY channel)
 #                            → paid (joined to users.email + plan != free)
 # Window: ?days=N (default 30, max 365). Admin-keyed.
+#
+# r-variant-honest-split (2026-07-11): `used` alone was a cross-cohort LIE.
+# Since r-agent-redeem was restored (07-04), server.mjs machine-auto-redeems
+# every fresh mint ~0-25s later with X-Internal-Key — no human, no browser.
+# That stamped 'generic' (gateway/mcp-remote agents, clientInfo.name='mcp')
+# at 99.3% "used" while 'claude' sat at 0% — but ALL 8 live claude mints
+# (06-11→06-22) PREDATE the auto-redeem restore, and Claude.ai/desktop are
+# header-less hosts whose only redemption path is a HUMAN clicking
+# /claim/<token> (0 human email submissions in 30d). The 99.3%-vs-0% gap
+# measured "was machine auto-redeem live at mint time", not copy quality.
+# So: split used → used_agent (claim_email IS NULL = machine auto-redeem,
+# Branch-A convention) vs used_human (claim_email IS NOT NULL = human
+# form-submit, Branch B), plus opened (claim_page_opened_at) — the copy A/B
+# signal is used_human/opened, never the machine channel.
+
+
+def _variant_conversion_row(variant: str, minted: int, used_agent: int,
+                            used_human: int, opened: int, paid: int) -> dict:
+    """Pure builder for one per-variant A/B row. `used` stays the sum of both
+    redemption channels for backward compatibility, but the copy-A/B signal
+    is the HUMAN side (human_use_rate_pct / opened) — used_agent is the
+    server-side machine auto-redeem and says nothing about the copy."""
+    minted = int(minted or 0)
+    used_agent = int(used_agent or 0)
+    used_human = int(used_human or 0)
+    opened = int(opened or 0)
+    paid = int(paid or 0)
+    used = used_agent + used_human
+    return {
+        "variant": variant or "generic",
+        "minted": minted,
+        "used": used,
+        "used_agent": used_agent,
+        "used_human": used_human,
+        "opened": opened,
+        "paid": paid,
+        "use_rate_pct": round(100.0 * used / minted, 2) if minted else 0.0,
+        "human_use_rate_pct": round(100.0 * used_human / minted, 2) if minted else 0.0,
+        "paid_rate_pct": round(100.0 * paid / minted, 2) if minted else 0.0,
+    }
 
 @mcp_high_intent_claim_bp.route(
     "/api/v1/admin/mcp/claim-variant-conversion", methods=["GET"])
@@ -1517,7 +1571,13 @@ def claim_variant_conversion():
                         COUNT(*) FILTER (WHERE h.claim_minted_at IS NOT NULL
                                          AND h.claim_minted_at >= NOW() - %s * INTERVAL '1 day') AS minted,
                         COUNT(*) FILTER (WHERE h.claim_used_at IS NOT NULL
-                                         AND h.claim_used_at   >= NOW() - INTERVAL '%s days') AS used,
+                                         AND h.claim_used_at   >= NOW() - %s * INTERVAL '1 day'
+                                         AND h.claim_email IS NULL) AS used_agent,
+                        COUNT(*) FILTER (WHERE h.claim_used_at IS NOT NULL
+                                         AND h.claim_used_at   >= NOW() - %s * INTERVAL '1 day'
+                                         AND h.claim_email IS NOT NULL) AS used_human,
+                        COUNT(*) FILTER (WHERE h.claim_page_opened_at IS NOT NULL
+                                         AND h.claim_page_opened_at >= NOW() - %s * INTERVAL '1 day') AS opened,
                         COUNT(DISTINCT CASE
                             WHEN h.claim_used_at IS NOT NULL
                                  AND h.claim_used_at >= NOW() - %s * INTERVAL '1 day'
@@ -1528,30 +1588,21 @@ def claim_variant_conversion():
                     FROM mcp_high_intent_sessions h
                     LEFT JOIN users u ON LOWER(u.email) = LOWER(h.claim_email)
                     GROUP BY 1
-                    ORDER BY minted DESC, used DESC, paid DESC
-                    """ % (days, days, days)
+                    -- ordinals: PG forbids expressions over output aliases in
+                    -- ORDER BY (used_agent + used_human would error).
+                    ORDER BY 2 DESC, 3 DESC, 4 DESC, 6 DESC
+                    """ % (days, days, days, days, days)
                 )
                 for r in cur.fetchall():
-                    variant, minted, used, paid = (r[0] or "generic",
-                                                   int(r[1] or 0),
-                                                   int(r[2] or 0),
-                                                   int(r[3] or 0))
-                    use_rate = round(100.0 * used / minted, 2) if minted else 0.0
-                    paid_rate = round(100.0 * paid / minted, 2) if minted else 0.0
+                    row = _variant_conversion_row(
+                        r[0] or "generic", r[1], r[2], r[3], r[4], r[5])
                     # Only include variants that have actually been minted —
                     # an empty 'generic' row from pre-Round-2 data is fine,
                     # but variants that have NEVER fired are skipped to keep
                     # the dashboard signal-to-noise high.
-                    if minted == 0 and used == 0 and paid == 0:
+                    if row["minted"] == 0 and row["used"] == 0 and row["paid"] == 0:
                         continue
-                    rows.append({
-                        "variant": variant,
-                        "minted": minted,
-                        "used": used,
-                        "paid": paid,
-                        "use_rate_pct": use_rate,
-                        "paid_rate_pct": paid_rate,
-                    })
+                    rows.append(row)
             except Exception as e:
                 logger.warning("[claim_variant_conversion] query failed: %s", e)
                 try: c.rollback()
@@ -1563,13 +1614,15 @@ def claim_variant_conversion():
         seen = {r["variant"] for r in rows}
         for v in sorted(VALID_VARIANTS):
             if v not in seen:
-                rows.append({"variant": v, "minted": 0, "used": 0, "paid": 0,
-                             "use_rate_pct": 0.0, "paid_rate_pct": 0.0})
+                rows.append(_variant_conversion_row(v, 0, 0, 0, 0, 0))
 
         # Totals across all variants (handy for the dashboard header).
-        total_minted = sum(r["minted"] for r in rows)
-        total_used   = sum(r["used"]   for r in rows)
-        total_paid   = sum(r["paid"]   for r in rows)
+        total_minted     = sum(r["minted"]     for r in rows)
+        total_used       = sum(r["used"]       for r in rows)
+        total_used_agent = sum(r["used_agent"] for r in rows)
+        total_used_human = sum(r["used_human"] for r in rows)
+        total_opened     = sum(r["opened"]     for r in rows)
+        total_paid       = sum(r["paid"]       for r in rows)
         return jsonify(
             ok=True,
             window_days=days,
@@ -1577,10 +1630,20 @@ def claim_variant_conversion():
             totals={
                 "minted": total_minted,
                 "used": total_used,
+                "used_agent": total_used_agent,
+                "used_human": total_used_human,
+                "opened": total_opened,
                 "paid": total_paid,
                 "use_rate_pct": round(100.0 * total_used / total_minted, 2) if total_minted else 0.0,
+                "human_use_rate_pct": round(100.0 * total_used_human / total_minted, 2) if total_minted else 0.0,
                 "paid_rate_pct": round(100.0 * total_paid / total_minted, 2) if total_minted else 0.0,
             },
+            note=("used_agent = server-side machine auto-redeem (server.mjs "
+                  "_autoRedeemClaim, no human involved — restored 2026-07-04); "
+                  "used_human = human email form-submit on /claim/<token>; "
+                  "opened = human loaded the claim page. Copy A/B verdicts must "
+                  "read used_human/opened — comparing raw `used` across variants "
+                  "compares machine-capable cohorts against human-click cohorts."),
             threshold=HIGH_INTENT_THRESHOLD,
             generated_at=datetime.now(timezone.utc).isoformat(),
         )
