@@ -7520,6 +7520,10 @@ MCP_PLATFORM_MAP = {
     # (Mistral/You.com already mapped above). Grok/Meta-style: roster + attribute.
     'huggingface': 'Hugging Face', 'hf': 'Hugging Face', 'hugging face': 'Hugging Face',
     'base44': 'base44',
+    # r-platform-rollout (2026-07-11): Meta was the ONE unmapped platform of the
+    # six-platform wave (Llama agents reach us via REST/MCP libs, UA carries
+    # llama/meta-llama). Everything else was already mapped above.
+    'meta': 'Meta', 'llama': 'Meta', 'meta-llama': 'Meta', 'meta ai': 'Meta',
 }
 
 # Session-to-platform cache: maps MCP session IDs to detected platforms
