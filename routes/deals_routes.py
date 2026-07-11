@@ -666,8 +666,20 @@ def get_transactions():
     return _get_transactions_free()
 
 
+# r-poolfix2 (2026-07-11): the anon /api/v1/transactions payload is identical
+# for every unkeyed caller, but each hit ran a 200-row page fetch + TWO
+# full-table COUNT(*) sweeps over deals (observed 3.3s per request during the
+# 2026-07-11 self-probe storm). Memoize the finished payload dict for 5 min —
+# only the FREE path uses this; keyed/Pro callers never touch it.
+_FREE_TX_CACHE = BoundedCache(max_size=1, ttl=300)
+
+
 def _get_transactions_free():
     """Freemium transactions -- 3 most recent deals, basic fields only. PG first, SQLite fallback."""
+    _hit = _FREE_TX_CACHE.get('payload')
+    if _hit is not None:
+        return jsonify(_hit)
+
     FREE_LIMIT = 3
     BASIC_FIELDS = ('buyer', 'seller', 'market', 'date', 'type', 'region')
 
@@ -736,7 +748,7 @@ def _get_transactions_free():
     for d in limited:
         basic_deals.append({k: d.get(k) for k in BASIC_FIELDS})
 
-    return jsonify({
+    payload = {
         'success': True,
         'transactions': basic_deals,
         'data': basic_deals,
@@ -748,7 +760,12 @@ def _get_transactions_free():
         'tier': 'free',
         'upgrade_url': 'https://dchub.cloud/pricing',
         'note': f'Free tier: showing {len(basic_deals)} of {total_matching} transactions with basic fields. Upgrade for full data including deal values, MW capacity, and detailed analytics.'
-    })
+    }
+    # Only memoize LIVE results — a transient DB failure must not pin the
+    # seed-fallback payload for 5 minutes.
+    if loaded_from_db:
+        _FREE_TX_CACHE.set('payload', payload)
+    return jsonify(payload)
 
 # =============================================================================
 # CONSTRUCTION PIPELINE API (v86)

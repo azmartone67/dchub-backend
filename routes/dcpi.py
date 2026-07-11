@@ -1937,29 +1937,23 @@ def _dcpi_gated_meta(total_available=None):
 # ---------------------------------------------------------------------------
 # JSON endpoints
 # ---------------------------------------------------------------------------
-@dcpi_bp.route("/api/v1/dcpi/scores", methods=["GET"])
-def api_scores():
-    """List DCPI scores. Query params:
-        sort=excess|constraint|time_to_power  (default excess)
-        sort_by=<same as sort, alt name>
-        verdict=BUILD|CAUTION|AVOID|LOW_SIGNAL  (filter, Phase MM 2026-05-15)
-        iso=<iso_code>  (filter, Phase MM)
-        state=<state_code>  (filter, Phase MM)
-        limit=N  (slice, Phase MM)
-    Phase MM Bundle 9 caught in QA sweep: ?verdict= was being IGNORED —
-    all 300+ markets were returned regardless of filter. Fix shipped here.
-    """
-    _ensure_tables()
-    sort_by = (request.args.get("sort") or request.args.get("sort_by")
-               or "excess").lower().strip()
-    verdict_filter = (request.args.get("verdict") or "").strip().upper() or None
-    iso_filter = (request.args.get("iso") or "").strip().upper() or None
-    state_filter = (request.args.get("state") or "").strip().upper() or None
-    try:
-        limit = int(request.args.get("limit") or 0)
-    except Exception:
-        limit = 0
+# r-poolfix2 (2026-07-11): in-process memo of the PROCESSED score rows.
+# /api/v1/dcpi/scores ran the SELECT DISTINCT ON full scan + Python
+# post-processing on EVERY origin hit (observed 0.4-2.3s, 6 hits in one 18s
+# self-probe window on 2026-07-11) — a steady feeder of web pool checkouts.
+# The base rows are caller-INDEPENDENT: filters, sorting, row-capping and
+# tier masking all happen downstream in api_scores on copies, so one shared
+# 300s memo is leak-safe. Rows are dict-copied on every read so downstream
+# in-place edits can never poison the cache. DCPI recomputes 4x/day; the
+# edge already caches this path at 1800s, so 300s in-process is strictly
+# fresher than what anon callers could already see.
+_SCORES_ROWS_CACHE: dict = {}
+_SCORES_ROWS_TTL_S = 300
 
+
+def _fetch_scores_rows() -> list:
+    """The DB fetch + post-processing api_scores always ran inline.
+    Caller-independent by construction — no request state touched."""
     with _conn() as c, c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute("""
             SELECT DISTINCT ON (market_slug)
@@ -2000,6 +1994,46 @@ def api_scores():
             r.get("time_to_power_months"),
             r.get("verdict"),
         )
+    return rows
+
+
+def _scores_rows_cached() -> list:
+    """Fetch + post-process the published DCPI score rows, memoized 300s.
+    Returns fresh dict copies — callers may mutate freely."""
+    import time as _t
+    _now = _t.time()
+    _hit = _SCORES_ROWS_CACHE.get("rows")
+    if _hit is not None and (_now - _hit[0]) < _SCORES_ROWS_TTL_S:
+        return [dict(r) for r in _hit[1]]
+    rows = _fetch_scores_rows()
+    _SCORES_ROWS_CACHE["rows"] = (_now, rows)
+    return [dict(r) for r in rows]
+
+
+@dcpi_bp.route("/api/v1/dcpi/scores", methods=["GET"])
+def api_scores():
+    """List DCPI scores. Query params:
+        sort=excess|constraint|time_to_power  (default excess)
+        sort_by=<same as sort, alt name>
+        verdict=BUILD|CAUTION|AVOID|LOW_SIGNAL  (filter, Phase MM 2026-05-15)
+        iso=<iso_code>  (filter, Phase MM)
+        state=<state_code>  (filter, Phase MM)
+        limit=N  (slice, Phase MM)
+    Phase MM Bundle 9 caught in QA sweep: ?verdict= was being IGNORED —
+    all 300+ markets were returned regardless of filter. Fix shipped here.
+    """
+    _ensure_tables()
+    sort_by = (request.args.get("sort") or request.args.get("sort_by")
+               or "excess").lower().strip()
+    verdict_filter = (request.args.get("verdict") or "").strip().upper() or None
+    iso_filter = (request.args.get("iso") or "").strip().upper() or None
+    state_filter = (request.args.get("state") or "").strip().upper() or None
+    try:
+        limit = int(request.args.get("limit") or 0)
+    except Exception:
+        limit = 0
+
+    rows = _scores_rows_cached()
 
     # Phase MM Bundle 9: apply filters (server-side instead of client-side).
     if verdict_filter:

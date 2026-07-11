@@ -595,9 +595,22 @@ def _forced_reclaim_loop():
                     f"   Checkout stack:\n{info['stack']}"
                 )
 
-                if _pg_pool_obj:
+                # r-poolfix2 (2026-07-11): psycopg2's AbstractConnectionPool._used
+                # maps int KEY -> connection (pool.py: `self._used[key] = conn`),
+                # so iterating .keys() yielded integers and `id(conn_obj) == conn_id`
+                # NEVER matched — the forced reclaim had been a silent NO-OP since
+                # it shipped: leaked conns were never closed, their pool slots never
+                # freed, and the pop() below hid them from get_pool_health()'s leak
+                # report. Iterate .values() (the actual connection objects), and
+                # search the READ pool too — its checkouts land in _active_checkouts
+                # via get_read_db/get_read_connection but were never searched here.
+                _read_pool = globals().get('_pg_pool_read')
+                _reclaimed = False
+                for _pool, _pool_name in ((_pg_pool_obj, 'main'), (_read_pool, 'read')):
+                    if not _pool or _reclaimed:
+                        continue
                     try:
-                        used_conns = list(_pg_pool_obj._used.keys()) if hasattr(_pg_pool_obj, '_used') else []
+                        used_conns = list(_pool._used.values()) if hasattr(_pool, '_used') else []
                         for conn_obj in used_conns:
                             if id(conn_obj) == conn_id:
                                 try:
@@ -605,15 +618,18 @@ def _forced_reclaim_loop():
                                 except Exception:
                                     pass
                                 try:
-                                    _pg_pool_obj.putconn(conn_obj, close=True)
+                                    _pool.putconn(conn_obj, close=True)
                                 except Exception:
                                     try:
                                         conn_obj.close()
                                     except Exception:
                                         pass
-                                _pool_stats['returned'] += 1
+                                if _pool_name == 'main':
+                                    # acquired/returned counters track the MAIN pool only
+                                    _pool_stats['returned'] += 1
                                 _pool_stats['forced_reclaims'] += 1
-                                reclaim_logger.warning(f"✅ Connection {conn_id} forcibly reclaimed and closed")
+                                _reclaimed = True
+                                reclaim_logger.warning(f"✅ Connection {conn_id} forcibly reclaimed and closed ({_pool_name} pool)")
                                 break
                     except Exception as e:
                         reclaim_logger.error(f"❌ Reclaim failed for {conn_id}: {e}")
@@ -1444,6 +1460,30 @@ _WORKER_PROXY_POST_PATHS = frozenset({
     '/api/v1/admin/agent-usefulness/master-tick',
     '/api/v1/admin/brain/rag/reindex',      # embeds chunks — DB + Cohere
     '/api/v1/admin/brain/lane-driver/tick',
+    # r-poolfix2 (2026-07-11): the two remaining externally-cronned brain ticks
+    # still executing IN-PROCESS on web. self-direct/tick runs a synchronous
+    # LLM investigate() (observed 121.3s on web, 2026-07-11 08:40Z — the direct
+    # feeder of that morning's 79/80 pool convoy); autonomy/tick was observed
+    # at 5.7s. Brain work is worker-owned (r-rolesplit). Both handlers are
+    # synchronous but neither cron consumes the body beyond success — they get
+    # the default (5,15) relay budget: web frees its thread in <=15s with an
+    # honest 202 while the worker finishes the cycle.
+    '/api/v1/brain/self-direct/tick',
+    '/api/v1/brain/autonomy/tick',
+    # r-poolfix2 (2026-07-11): every one of these was OBSERVED executing
+    # in-process on web in the 06:35-08:09Z deploy window (SLOW REQUEST log):
+    # kmz-discovery/run 1061.2s(!), dcpi/recompute 40-62s x3, brief/generate
+    # 61.0s, learn-backend-issues 71.5s, news-ner/run 52.1s, draft-prs/run
+    # 37.1s, self-critique/run 32.2s. All are cron/orchestrator-triggered
+    # batch jobs (LLM calls, KMZ crawls, full-table recomputes) — worker-owned
+    # work occupying web threads + the web DB pool for minutes at a time.
+    '/api/kmz-discovery/run',            # KMZ crawl+parse, observed 17.7 MINUTES
+    '/api/v1/dcpi/recompute',            # full-market rescore, 40-62s
+    '/api/v1/brain/brief/generate',      # LLM narrative, ~61s
+    '/api/v1/brain/learn-backend-issues',# LLM classify, ~72s
+    '/api/v1/brain/self-critique/run',   # LLM re-verify, ~32s
+    '/api/v1/admin/brain/draft-prs/run', # GH PR opener, ~37s
+    '/api/v1/admin/news-ner/run',        # NER scan, ~52s
     '/api/v1/brain/issue-janitor/run',
     '/api/v1/brain-warming/warm',
     '/api/v1/iso-queue/ingest',
@@ -1487,6 +1527,17 @@ _WORKER_PROXY_SYNC_PATHS = frozenset({
     '/api/jobs/ambassador',
     '/api/jobs/backup',              # pg_dump → R2, minutes
     '/api/jobs/db-backup',
+    # r-poolfix2 (2026-07-11): the observed-heavy jobs whose callers (brain
+    # orchestrator / babysitter / Replit crons) read the result body — all
+    # complete well inside the 180s budget. kmz-discovery/run is deliberately
+    # NOT here (observed 1061s — it gets the (5,15) 202 relay and finishes on
+    # the worker), and neither are the two brain ticks (crons ignore bodies).
+    '/api/v1/dcpi/recompute',
+    '/api/v1/brain/brief/generate',
+    '/api/v1/brain/learn-backend-issues',
+    '/api/v1/brain/self-critique/run',
+    '/api/v1/admin/brain/draft-prs/run',
+    '/api/v1/admin/news-ner/run',
 })
 
 

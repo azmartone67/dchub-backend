@@ -49,9 +49,22 @@ import os
 import re
 from flask import Blueprint, Response, jsonify, request
 
+from utils.cache import BoundedCache
+
 logger = logging.getLogger(__name__)
 
 hyperscaler_brief_bp = Blueprint("hyperscaler_brief", __name__)
+
+# r-poolfix2 (2026-07-11): in-process TTL cache of the full brief, keyed
+# (canonical_slug, is_pro) — the exact pattern state_brief.py has carried
+# since r-boot-cache (its 2nd hits drop ~870ms → ~150ms; hyperscaler briefs
+# stayed at ~430ms/hit because every request re-ran the 8-section fan-out).
+# These pages are deliberately no-store at the edge (per-tier payload, the
+# 2026-06-06 anon-copy-served-to-PRO leak), so THIS is the only cache layer
+# — and it is leak-safe because is_pro is part of the key. The self-probe
+# sweep (DCHub-Sentinel / schema-audit, ~8-10 req/s) re-hits these briefs
+# continuously; each miss was 1 pool checkout + 8 sections of DB work.
+_BRIEF_CACHE = BoundedCache(max_size=64, ttl=600)
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -1274,6 +1287,19 @@ def _build_brief(slug: str, tier: str) -> dict:
         out["valid_slugs"] = list(HYPERSCALER_ALIASES.keys())
         return out
     is_pro = _is_pro(tier)
+
+    # r-poolfix2 (2026-07-11): serve from the tier-keyed cache when warm.
+    # Copy the dict and re-stamp the request-specific fields so a cached
+    # canonical render still answers alias requests correctly.
+    _ck = f"{canonical}|{1 if is_pro else 0}"
+    _hit = _BRIEF_CACHE.get(_ck)
+    if _hit is not None:
+        cached = dict(_hit)
+        cached["requested"]   = requested
+        cached["redirect_to"] = out["redirect_to"]
+        cached["tier"]        = tier
+        return cached
+
     c = _conn()
     if c is None:
         out["error"] = "no_database"
@@ -1313,6 +1339,8 @@ def _build_brief(slug: str, tier: str) -> dict:
             c.close()
         except Exception:
             pass
+    if out.get("ok"):
+        _BRIEF_CACHE.set(_ck, dict(out))
     return out
 
 
