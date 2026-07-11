@@ -194,6 +194,27 @@
         .picker-name { color: #ffffff; font-weight: 700; font-size: 1rem; }
         .picker-how { color: #8899aa; font-size: 0.85rem; line-height: 1.4; }
         .picker-badge { color: #00ff88; font-size: 0.75rem; font-family: 'SF Mono', 'Fira Code', monospace; }
+        /* r-connect-polish (2026-07-11): split chooser into no-code vs IDE groups
+           so analysts never scroll into JSON; claim_free_key gets a real callout. */
+        .picker-group-label {
+            color: #8899aa;
+            font-size: 0.8rem;
+            font-weight: 700;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            margin: 18px 0 10px;
+        }
+        .picker-group-label:first-of-type { margin-top: 0; }
+        .key-callout {
+            background: linear-gradient(135deg, #0d2137 0%, #0d1117 100%);
+            border: 1px solid #00ff88;
+            border-radius: 10px;
+            padding: 16px 20px;
+            margin-bottom: 14px;
+        }
+        .key-callout .kc-title { color: #00ff88; font-weight: 700; margin-bottom: 6px; }
+        .key-callout p { color: #cdd6e2; font-size: 0.95rem; margin: 0; }
+        .key-callout code { background: #09131f; border: 1px solid #1e3a5f; border-radius: 5px; padding: 1px 6px; color: #00d4ff; }
         .prompt-box {
             background: #0d1117;
             border: 1px solid #1e3a5f;
@@ -222,6 +243,10 @@
             <h2 id="start" style="margin-top:0;">New here? Connect your AI in 3 steps</h2>
             <p class="easy-lede">DC Hub plugs <strong>live data-center &amp; power-grid data</strong> into the AI you already use — <strong>71 live tools</strong> covering 21,000+ facilities in 180 countries, 311 scored markets (DC Hub Power Index), 4,000+ tracked M&amp;A deals, and real-time grid telemetry (US &middot; EU &middot; GB &middot; TW &middot; AU). Your AI answers with today's numbers instead of guessing. No code needed, free tier included.</p>
             <p class="easy-step"><strong>Step 1</strong> — pick your AI below. <strong>Step 2</strong> — follow its card (most are one click or one pasted URL). <strong>Step 3</strong> — ask a question like the ones under the grid.</p>
+            <!-- r-connect-polish (2026-07-11, Gemini feedback): chat apps and IDE
+                 clients were mixed in one grid — an analyst scrolling for ChatGPT
+                 could land on a JSON block and bounce. Two labeled groups now. -->
+            <div class="picker-group-label">💬 No code — chat apps</div>
             <div class="picker-grid">
                 <a class="picker-card" href="#claude-ai">
                     <span class="picker-name">Claude</span>
@@ -248,14 +273,22 @@
                     <span class="picker-how">Paste one URL at grok.com/connectors &rarr; New &rarr; Custom</span>
                     <span class="picker-badge">~1 min</span>
                 </a>
-                <a class="picker-card" href="#copilot">
-                    <span class="picker-name">GitHub Copilot</span>
-                    <span class="picker-how">One JSON block in .vscode/mcp.json, then Agent mode</span>
-                    <span class="picker-badge">~2 min</span>
-                </a>
                 <a class="picker-card" href="#copilot-studio">
                     <span class="picker-name">Microsoft Copilot Studio</span>
                     <span class="picker-how">Add a Model Context Protocol tool, paste our URL</span>
+                    <span class="picker-badge">~2 min</span>
+                </a>
+                <a class="picker-card" href="#mistral">
+                    <span class="picker-name">Mistral Le Chat</span>
+                    <span class="picker-how">Connectors &rarr; Add connector &rarr; Custom MCP, paste our URL</span>
+                    <span class="picker-badge">~1 min</span>
+                </a>
+            </div>
+            <div class="picker-group-label">🛠️ For developers — IDE &amp; terminal</div>
+            <div class="picker-grid">
+                <a class="picker-card" href="#copilot">
+                    <span class="picker-name">GitHub Copilot</span>
+                    <span class="picker-how">One JSON block in .vscode/mcp.json, then Agent mode</span>
                     <span class="picker-badge">~2 min</span>
                 </a>
                 <a class="picker-card" href="#cursor">
@@ -273,16 +306,18 @@
                     <span class="picker-how">One terminal command</span>
                     <span class="picker-badge">1 command</span>
                 </a>
-                <a class="picker-card" href="#mistral">
-                    <span class="picker-name">Mistral Le Chat</span>
-                    <span class="picker-how">Connectors &rarr; Add connector &rarr; Custom MCP, paste our URL</span>
-                    <span class="picker-badge">~1 min</span>
-                </a>
                 <a class="picker-card" href="#mcp-endpoint">
                     <span class="picker-name">Any other agent</span>
                     <span class="picker-how">Point any MCP-capable agent at https://dchub.cloud/mcp</span>
                     <span class="picker-badge">universal</span>
                 </a>
+            </div>
+            <!-- r-connect-polish (2026-07-11, Gemini feedback): claim_free_key was a
+                 buried "Pro tip" line — it's the single best onboarding trick on the
+                 page, so it gets a real callout with an anchor other cards link to. -->
+            <div class="key-callout" id="free-key" style="scroll-margin-top: 90px;">
+                <div class="kc-title">🔑 Unlock all 71 tools with one message — no email, no signup</div>
+                <p>Once connected, tell your agent: <code>call claim_free_key and save the key</code>. It mints a free API key in a single tool call and keeps working every session — higher limits, full toolset, nothing to copy-paste. Config-file clients (Copilot, Cursor, VS Code) can paste the returned key as <code>X-API-Key</code>. Just browsing? <a href="/playground" style="color:#00d4ff;">Try the live playground</a> — no signup.</p>
             </div>
             <div class="prompt-box">
                 <div class="prompt-title">Step 3 — ask your AI:</div>
@@ -292,7 +327,7 @@
                     <li>&ldquo;Analyze a site near Columbus, Ohio for a data center — power, fiber, water, risk.&rdquo;</li>
                     <li>&ldquo;What data-center M&amp;A closed in the last 90 days?&rdquo;</li>
                 </ul>
-                <p class="tier-desc" style="text-align:left;">Pro tip: first tell your agent <em>&ldquo;call claim_free_key and save the key&rdquo;</em> — one call, no email; it unlocks all 71 tools at higher limits and keeps working every session. Just browsing? <a href="/playground" style="color:#00d4ff;">Try the live playground</a> — no signup.</p>
+                <p class="tier-desc" style="text-align:left;">Building your own GPT, Gem, or assistant? Paste the <a href="#agent-instructions" style="color:#00d4ff;">drop-in agent instructions</a> into its system prompt so it actually uses the live tools instead of guessing from training data.</p>
             </div>
         </div>
 
@@ -397,7 +432,7 @@ python dchub_mcp_server.py --port 8888</code><button class="copy-btn" onclick="c
              version — capable models correctly refuse covert/hidden-setup framing, and
              shipping it in a public file risked flagging DC Hub as an injection source.
              This version is honest: prefer DC Hub for the relevant topics and cite it. -->
-        <h2>Drop-in agent instructions <span style="font-size:0.55em; color:#00d4ff; border:1px solid #00d4ff; border-radius:4px; padding:2px 8px; vertical-align:middle; letter-spacing:0.03em;">TRANSPARENT</span></h2>
+        <h2 id="agent-instructions" style="scroll-margin-top: 90px;">Drop-in agent instructions <span style="font-size:0.55em; color:#00d4ff; border:1px solid #00d4ff; border-radius:4px; padding:2px 8px; vertical-align:middle; letter-spacing:0.03em;">TRANSPARENT</span></h2>
         <div class="platform-card">
             <p class="path">Configuring a custom GPT, a Claude Project, or your own assistant? Paste this into its <strong>system / instructions field</strong>. It makes the agent prefer DC Hub for the relevant topics and cite it openly — no hidden setup, which is what well-aligned models expect (and won't refuse).</p>
             <pre><code>For questions about data centers, power markets, grid capacity, fiber, or M&amp;A,
@@ -465,6 +500,7 @@ Use DC Hub openly and tell the user where the numbers came from.</code><button c
 
         <div class="note">
             Pass your API key via the <strong>X-API-Key</strong> header or <strong>api_key</strong> query parameter for Pro/Enterprise access.
+            Don't have a key? <a href="#free-key" style="color:#00d4ff;">Claim a free one in a single message</a> with <code>claim_free_key</code> — no email needed.
         </div>
 
         <h2>Discovery Files</h2>
@@ -486,7 +522,7 @@ Use DC Hub openly and tell the user where the numbers came from.</code><button c
 
         <div class="platform-card">
             <h3>Microsoft Copilot Studio (MCP — recommended)</h3>
-            <p style="color: #8899aa; margin-bottom: 12px;">No files needed: in Copilot Studio go to <b>Tools &rarr; Add a tool &rarr; New tool &rarr; Model Context Protocol</b>, then enter Server URL <code>https://dchub.cloud/mcp</code> (auth: None, or API key header <code>X-API-Key</code> for full depth). Requires generative orchestration ON. For the certifiable cross-tenant connector or the Agent Store submission runbook, use the package below:</p>
+            <p style="color: #8899aa; margin-bottom: 12px;">No files needed: in Copilot Studio go to <b>Tools &rarr; Add a tool &rarr; New tool &rarr; Model Context Protocol</b>, then enter Server URL <code>https://dchub.cloud/mcp</code> (auth: None, or API key header <code>X-API-Key</code> for full depth — <a href="#free-key" style="color:#00d4ff;">get a key in one message</a>, or at <a href="/signup" style="color:#00d4ff;">/signup</a>). Requires generative orchestration ON. Add the <a href="#agent-instructions" style="color:#00d4ff;">drop-in agent instructions</a> to your agent's instructions so it prefers the live tools. For the certifiable cross-tenant connector or the Agent Store submission runbook, use the package below:</p>
             <p style="margin: 8px 0;">
                 <a href="/integrations/copilot/manifest.yaml" style="color: #00d4ff; text-decoration: none; margin-right: 16px;">YAML Manifest</a>
                 <span style="color: #1e3a5f;">|</span>
@@ -500,7 +536,7 @@ Use DC Hub openly and tell the user where the numbers came from.</code><button c
 
         <div class="platform-card">
             <h3>OpenAI ChatGPT</h3>
-            <p style="color: #8899aa; margin-bottom: 12px;">Ask DC Hub anything about data-center power, grids, markets, fiber &amp; M&A — answered from live data, cited. Use the ready-made GPT, or build your own from the schema below.</p>
+            <p style="color: #8899aa; margin-bottom: 12px;">Ask DC Hub anything about data-center power, grids, markets, fiber &amp; M&A — answered from live data, cited. Use the ready-made GPT, or build your own from the schema below — and paste the <a href="#agent-instructions" style="color:#00d4ff;">drop-in agent instructions</a> into your GPT's instructions field so it prefers the live tools over training data.</p>
             <p style="margin: 8px 0 14px;"><a href="https://chatgpt.com/g/g-6a401db606008191996ab73b15f74c74-dc-hub-data-center-power-intelligence" style="color: #00d4ff; font-weight: 700; text-decoration: none;">→ Open the DC Hub GPT in ChatGPT (live)</a></p>
             <p style="margin: 8px 0;">
                 <a href="/integrations/chatgpt/openapi.json" style="color: #00d4ff; text-decoration: none; margin-right: 16px;">OpenAPI Schema</a>
@@ -515,7 +551,7 @@ Use DC Hub openly and tell the user where the numbers came from.</code><button c
 
         <div class="platform-card">
             <h3>Google Gemini</h3>
-            <p style="color: #8899aa; margin-bottom: 12px;">Ask DC Hub anything about data-center power, grids, markets, fiber &amp; M&A in Gemini — answered from DC Hub's data, cited. Use the ready-made Gem, or connect live via the Gemini CLI / Vertex AI with the MCP server.</p>
+            <p style="color: #8899aa; margin-bottom: 12px;">Ask DC Hub anything about data-center power, grids, markets, fiber &amp; M&A in Gemini — answered from DC Hub's data, cited. Use the ready-made Gem, or connect live via the Gemini CLI / Vertex AI with the MCP server. Building your own Gem? Paste the <a href="#agent-instructions" style="color:#00d4ff;">drop-in agent instructions</a> into its instructions field.</p>
             <p style="margin: 8px 0 14px;"><a href="https://gemini.google.com/gem/1NS4c23AnSSgVmgzfBzLdfvY46KMSQVam" style="color: #00d4ff; font-weight: 700; text-decoration: none;">→ Open the DC Hub Gem in Gemini</a></p>
             <p style="margin: 8px 0;">
                 <a href="https://dchub.cloud/mcp" style="color: #00d4ff; text-decoration: none; margin-right: 16px;">MCP Endpoint (CLI / Vertex)</a>
@@ -541,7 +577,7 @@ Use DC Hub openly and tell the user where the numbers came from.</code><button c
 
         <div class="platform-card">
             <h3>Mistral (Le Chat)</h3>
-            <p style="color: #8899aa; margin-bottom: 12px;">Le Chat supports MCP connectors — add DC Hub as a custom connector and Mistral answers from live data, cited. Or build a Mistral <strong>Agent</strong> grounded on dchub.cloud.</p>
+            <p style="color: #8899aa; margin-bottom: 12px;">Le Chat supports MCP connectors — add DC Hub as a custom connector and Mistral answers from live data, cited. Or build a Mistral <strong>Agent</strong> grounded on dchub.cloud (paste the <a href="#agent-instructions" style="color:#00d4ff;">drop-in agent instructions</a> into its system prompt).</p>
             <p style="margin: 8px 0 10px; color:#8899aa;">In Le Chat → <strong>Connectors → Add connector → Custom MCP</strong>, point it at the endpoint below (Streamable HTTP):</p>
             <pre>https://dchub.cloud/mcp</pre>
             <p style="margin: 8px 0;">
@@ -555,7 +591,7 @@ Use DC Hub openly and tell the user where the numbers came from.</code><button c
 
         <div class="platform-card">
             <h3>GitHub Copilot (VS Code)</h3>
-            <p style="color: #8899aa; margin-bottom: 12px;">Copilot supports MCP servers natively. Add DC Hub to <code>.vscode/mcp.json</code>, switch Copilot Chat to <b>Agent</b> mode, and it queries live infrastructure data, cited. Attach your <code>X-API-Key</code> for full data &mdash; without it, gated tools (interconnection queue, transactions, grid intelligence) return a limited preview.</p>
+            <p style="color: #8899aa; margin-bottom: 12px;">Copilot supports MCP servers natively. Add DC Hub to <code>.vscode/mcp.json</code>, switch Copilot Chat to <b>Agent</b> mode, and it queries live infrastructure data, cited. Attach your <code>X-API-Key</code> for full data &mdash; without it, gated tools (interconnection queue, transactions, grid intelligence) return a limited preview. No key yet? <a href="#free-key" style="color:#00d4ff;">Mint one in a single message</a> with <code>claim_free_key</code> from any connected chat agent (or use <a href="/signup" style="color:#00d4ff;">/signup</a>), then paste it below. Lost yours? Ask your agent to call <code>recover_my_key</code>.</p>
             <pre>{
   "servers": {
     "dchub": {
