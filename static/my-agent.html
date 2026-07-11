@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>My Agent — see what your AI did on DC Hub</title>
+    <meta name="description" content="Paste your DC Hub API key and see your agent's live query log: tools called, calls today, gate hits, and top tools — the data your AI is actually using.">
+    <link rel="canonical" href="https://dchub.cloud/my-agent">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #0a0e1a; color: #e8ecf1; line-height: 1.6; min-height: 100vh;
+        }
+        .container { max-width: 900px; margin: 0 auto; padding: 40px 20px; }
+        h1 { color: #00d4ff; font-size: 2rem; margin-bottom: 8px; }
+        .subtitle { color: #8899aa; margin-bottom: 28px; }
+        a { color: #00d4ff; }
+        .key-row { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+        .key-row input {
+            flex: 1; min-width: 260px; background: #0d1117; border: 1px solid #1e3a5f;
+            border-radius: 8px; padding: 12px 14px; color: #e8ecf1; font-family: 'SF Mono','Fira Code',monospace;
+            font-size: 0.9rem;
+        }
+        .key-row input:focus { outline: none; border-color: #00d4ff; }
+        .key-row button {
+            background: #00d4ff; color: #06121f; border: 0; border-radius: 8px;
+            padding: 12px 22px; font-weight: 700; font-size: 0.95rem; cursor: pointer;
+        }
+        .key-row button:hover { background: #4de1ff; }
+        .hint { color: #556677; font-size: 0.85rem; margin-bottom: 26px; }
+        .hint code { color: #00d4ff; background: #0d1117; padding: 1px 6px; border-radius: 5px; border: 1px solid #1e3a5f; }
+        .banner { border-radius: 10px; padding: 14px 18px; margin: 18px 0; font-size: 0.95rem; display: none; }
+        .banner.bind { background: #1f1a0b; border: 1px solid #ffc107; color: #ffe08a; }
+        .banner.upgrade { background: #0d2137; border: 1px solid #00d4ff; color: #cdd6e2; }
+        .banner.error { background: #2a1215; border: 1px solid #ff5566; color: #ffb3ba; }
+        .banner code { background: #09131f; border: 1px solid #1e3a5f; border-radius: 5px; padding: 1px 6px; color: #00d4ff; }
+        .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin: 22px 0; }
+        .card { background: #141b2d; border: 1px solid #1e3a5f; border-radius: 10px; padding: 16px; }
+        .card .v { font-size: 1.7rem; font-weight: 700; color: #ffffff; line-height: 1.2; }
+        .card .l { font-size: 0.78rem; color: #8899aa; text-transform: uppercase; letter-spacing: 0.05em; margin-top: 4px; }
+        .card.accent .v { color: #00d4ff; }
+        .card.warn .v { color: #ffc107; }
+        h2 { color: #00d4ff; font-size: 1.15rem; margin: 30px 0 12px; }
+        .bars .row { display: flex; align-items: center; gap: 10px; margin-bottom: 7px; }
+        .bars .name { width: 220px; font-family: 'SF Mono','Fira Code',monospace; font-size: 0.82rem; color: #cdd6e2;
+                      white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .bars .track { flex: 1; background: #0d1117; border-radius: 5px; height: 14px; overflow: hidden; }
+        .bars .fill { background: linear-gradient(90deg, #0088aa, #00d4ff); height: 100%; }
+        .bars .n { width: 52px; text-align: right; font-size: 0.82rem; color: #8899aa; }
+        table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+        th { text-align: left; color: #556677; font-weight: 600; text-transform: uppercase; font-size: 0.72rem;
+             letter-spacing: 0.05em; padding: 8px 10px; border-bottom: 1px solid #1e3a5f; }
+        td { padding: 7px 10px; border-bottom: 1px solid #10192b; color: #cdd6e2; }
+        td.tool { font-family: 'SF Mono','Fira Code',monospace; color: #e8ecf1; }
+        .badge { display: inline-block; border-radius: 5px; padding: 1px 8px; font-size: 0.75rem; font-weight: 600; }
+        .badge.ok { background: #0c2418; color: #00ff88; }
+        .badge.gate { background: #241d0c; color: #ffc107; }
+        .badge.other { background: #141b2d; color: #8899aa; }
+        .meta { color: #556677; font-size: 0.82rem; margin-top: 8px; }
+        #results { display: none; }
+        .foot { margin-top: 40px; color: #556677; font-size: 0.85rem; border-top: 1px solid #10192b; padding-top: 18px; }
+        @media (max-width: 600px) { .bars .name { width: 130px; } }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>My Agent</h1>
+        <p class="subtitle">See what your AI actually did on DC Hub — its live query log, tool mix, and limits. Data is scoped to your key and never cached.</p>
+
+        <div class="key-row">
+            <input id="key" type="password" placeholder="Paste your DC Hub API key (dch_trial_… or dchub_live_…)" autocomplete="off">
+            <button onclick="load()">Show my agent</button>
+        </div>
+        <p class="hint">Your key stays in this browser (localStorage) and is sent only as a request header to dchub.cloud — never in a URL.
+           No key yet? Tell your connected agent: <code>call claim_free_key and save the key</code>.
+           Lost it? Ask your agent to <code>call recover_my_key</code> with your email. Not connected yet? <a href="/connect#start">Connect in 3 steps</a>.</p>
+
+        <div id="err" class="banner error"></div>
+        <div id="bind" class="banner bind"></div>
+        <div id="upgrade" class="banner upgrade"></div>
+
+        <div id="results">
+            <div class="cards" id="cards"></div>
+            <h2>Top tools · last 30 days</h2>
+            <div class="bars" id="bars"></div>
+            <h2>Recent calls</h2>
+            <div style="overflow-x:auto;">
+                <table>
+                    <thead><tr><th>When (UTC)</th><th>Tool</th><th>Status</th><th>ms</th><th>Platform</th></tr></thead>
+                    <tbody id="rows"></tbody>
+                </table>
+            </div>
+            <p class="meta" id="meta"></p>
+        </div>
+
+        <div class="foot">
+            Powered by the same call log the platform bills from — no sampling.
+            Want more depth (full grid intelligence, transactions, interconnection queues)?
+            <a href="/pricing">See plans</a> or have your agent call <code style="color:#00d4ff;">unlock_more_data</code>.
+        </div>
+    </div>
+
+    <script>
+    function esc(s) {
+        return String(s == null ? '' : s).replace(/[&<>"']/g, function (ch) {
+            return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch];
+        });
+    }
+    function card(v, l, cls) {
+        return '<div class="card ' + (cls || '') + '"><div class="v">' + esc(v) + '</div><div class="l">' + esc(l) + '</div></div>';
+    }
+    function load() {
+        var key = document.getElementById('key').value.trim();
+        if (!key) return;
+        try { localStorage.setItem('dchub_my_key', key); } catch (e) {}
+        ['err', 'bind', 'upgrade'].forEach(function (id) { document.getElementById(id).style.display = 'none'; });
+        document.getElementById('results').style.display = 'none';
+        fetch('/api/v1/my/usage', { headers: { 'X-API-Key': key } })
+            .then(function (r) { return r.json(); })
+            .then(function (d) {
+                if (!d.ok) {
+                    var e = document.getElementById('err');
+                    e.textContent = d.hint || d.error || 'Something went wrong.';
+                    e.style.display = 'block';
+                    return;
+                }
+                render(d);
+            })
+            .catch(function () {
+                var e = document.getElementById('err');
+                e.textContent = 'Network error — try again.';
+                e.style.display = 'block';
+            });
+    }
+    function render(d) {
+        var id = d.identity, u = d.usage;
+        var cards = card(id.plan, 'plan', 'accent')
+            + card(u.calls_today, 'calls today' + (id.daily_limit ? ' / ' + id.daily_limit : ''))
+            + card(u.calls_7d, 'calls · 7 days')
+            + card(u.calls_total, 'calls · all time')
+            + card(u.active_days_30d, 'active days · 30d');
+        if (u.gated_7d > 0) cards += card(u.gated_7d, 'gate hits · 7d', 'warn');
+        document.getElementById('cards').innerHTML = cards;
+
+        var max = 0;
+        (u.top_tools_30d || []).forEach(function (t) { if (t.calls > max) max = t.calls; });
+        document.getElementById('bars').innerHTML = (u.top_tools_30d || []).map(function (t) {
+            return '<div class="row"><div class="name">' + esc(t.tool) + '</div>'
+                + '<div class="track"><div class="fill" style="width:' + Math.max(3, Math.round(100 * t.calls / (max || 1))) + '%"></div></div>'
+                + '<div class="n">' + t.calls + '</div></div>';
+        }).join('') || '<p class="meta">No tool calls in the last 30 days.</p>';
+
+        document.getElementById('rows').innerHTML = (u.recent || []).map(function (r) {
+            var b = r.gated ? 'gate' : (r.status === 'ok' ? 'ok' : 'other');
+            return '<tr><td>' + esc((r.ts || '').replace('T', ' ').slice(0, 19)) + '</td>'
+                + '<td class="tool">' + esc(r.tool || '—') + '</td>'
+                + '<td><span class="badge ' + b + '">' + esc(r.status || '—') + '</span></td>'
+                + '<td>' + (r.ms == null ? '—' : r.ms) + '</td>'
+                + '<td>' + esc(r.platform || '—') + '</td></tr>';
+        }).join('') || '<tr><td colspan="5">No calls logged yet — ask your agent a question and refresh.</td></tr>';
+
+        document.getElementById('meta').textContent = 'Key ' + d.key_masked
+            + (id.created_at ? ' · created ' + id.created_at.slice(0, 10) : '')
+            + (u.first_call ? ' · first call ' + u.first_call.slice(0, 10) : '')
+            + (id.expired ? ' · ⚠ key inactive/expired' : '');
+
+        if (id.email_bound === false) {
+            var b = document.getElementById('bind');
+            b.innerHTML = '🔓 <strong>This key isn\'t recoverable yet.</strong> '
+                + (id.bind_gate_hit
+                    ? 'It already hit the ' + id.bind_gate_calls + '-call unbound limit — binding your email restores it free (50 calls/day). '
+                    : 'If it\'s lost, it\'s gone' + (id.bind_gate_calls ? ', and unbound keys pause after ' + id.bind_gate_calls + ' calls. ' : '. '))
+                + 'Tell your agent: <code>call bind_email with you@company.com</code> — that also makes <code>recover_my_key</code> work forever.';
+            b.style.display = 'block';
+        }
+        if (u.gated_7d > 0 && id.plan === 'free') {
+            var up = document.getElementById('upgrade');
+            up.innerHTML = '⚡ ' + u.gated_7d + ' of your agent\'s calls hit a gate this week — it asked for data your plan doesn\'t include. '
+                + '<a href="/pricing">Upgrade</a> or have your agent call <code>unlock_more_data</code> for a one-click checkout link ($10 = 1,000 calls).';
+            up.style.display = 'block';
+        }
+        document.getElementById('results').style.display = 'block';
+    }
+    (function () {
+        try {
+            var k = localStorage.getItem('dchub_my_key');
+            if (k) { document.getElementById('key').value = k; load(); }
+        } catch (e) {}
+    })();
+    document.getElementById('key').addEventListener('keydown', function (e) { if (e.key === 'Enter') load(); });
+    </script>
+</body>
+</html>

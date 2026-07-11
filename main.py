@@ -34058,6 +34058,17 @@ try:
 except Exception as _e:
     print(f"[main] auto_trial register failed: {_e}", file=sys.stderr)
 
+# r-my-agent (2026-07-11): self-serve "what did my agent do" dashboard —
+# /my-agent page + GET /api/v1/my/usage (key-scoped query log from
+# mcp_call_log). Retention hook for the email-bind funnel gap.
+try:
+    from routes.my_agent import my_agent_bp
+    app.register_blueprint(my_agent_bp)
+    print("[main] my_agent_bp registered: GET /my-agent + /api/v1/my/usage "
+          "(self-serve per-key agent query log)")
+except Exception as _e:
+    print(f"[main] my_agent register failed: {_e}", file=sys.stderr)
+
 try:
     from routes.onboard_universal import onboard_universal_bp
     app.register_blueprint(onboard_universal_bp)
