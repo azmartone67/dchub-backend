@@ -147,6 +147,21 @@ _DISPATCH = [
      "POST",
      lambda now: now.hour in (9, 21)),
 
+    # 2026-07-11: ground-truth verifier for merged MECHANICAL brain fixes.
+    # BRAIN_FIX_VERIFY was armed for weeks but its recorder INSERTed into a
+    # column set that doesn't exist on the live brain_fix_outcomes table, so
+    # 39 merged single-file fixes carried NO effect verdict while the
+    # fix-signal trust gate (deepdive lane 1) read 0.426. The sweep verifies
+    # each merged proposal's fix (search_text GONE + replace_text PRESENT in
+    # the file on main) and records the tri-state verdict through the
+    # canonical writer (brain_learning.record_proposal_outcome). Idempotent
+    # (NOT EXISTS per proposal) + LIMIT 25/run; hours offset from
+    # brain_merge_reconciler (9,21) so merge credit lands before the sweep.
+    ("brain_fix_verify_sweep",
+     f"{BASE}/api/v1/brain/verify-merged-fixes?limit=25",
+     "POST",
+     lambda now: now.hour in (10, 22)),
+
     # Press publisher cadence check — every 2h on :07
     ("press_publisher",
      f"{BASE}/api/v1/press-publisher/run",

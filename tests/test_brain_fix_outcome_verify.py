@@ -309,3 +309,63 @@ def test_no_merge_in_verifier_source():
                encoding="utf-8").read()
     assert "/merge" not in src, "verifier must never hit the REST merge endpoint"
     assert "squash_merge" not in src, "verifier must never merge"
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 8. R66 (2026-07-11): recording routes through the CANONICAL writer.
+#    The old hand-rolled INSERT targeted columns that don't exist on the
+#    live brain_fix_outcomes table (created by brain_learning._SCHEMA with
+#    still_broken/checked_at/evidence_note) — every verdict was silently
+#    dropped for weeks. Now record_fix_outcome must delegate to
+#    brain_learning.record_proposal_outcome with the tri-state mapped
+#    resolved True/False/None → still_broken False/True/None.
+# ══════════════════════════════════════════════════════════════════════
+def _fake_brain_learning(captured):
+    import types as _t
+    mod = _t.ModuleType("routes.brain_learning")
+    mod._ensure_schema = lambda: True
+
+    def record_proposal_outcome(pid, kind, still_broken,
+                                evidence_url=None, evidence_note=None):
+        captured.append({"pid": pid, "kind": kind,
+                         "still_broken": still_broken,
+                         "url": evidence_url, "note": evidence_note})
+        return True
+
+    mod.record_proposal_outcome = record_proposal_outcome
+    return mod
+
+
+@pytest.mark.parametrize("resolved,expected_broken", [
+    (True, False),   # fix held      → NOT still broken
+    (False, True),   # no-op/drifted → still broken
+    (None, None),    # indeterminate → NULL (checked, excluded by readers)
+])
+def test_record_maps_tristate_through_canonical_writer(
+        monkeypatch, resolved, expected_broken):
+    monkeypatch.setenv("BRAIN_FIX_VERIFY", "1")
+    captured = []
+    monkeypatch.setitem(sys.modules, "routes.brain_learning",
+                        _fake_brain_learning(captured))
+    ok = fv.record_fix_outcome(
+        {"resolved": resolved, "reason": "why", "file_path": "routes/x.py"},
+        proposal_id=77, pr_number=1600, branch="brain/autofix-k-77-abcd")
+    assert ok is True
+    assert len(captured) == 1
+    rec = captured[0]
+    assert rec["pid"] == 77 and rec["kind"] == "code"
+    assert rec["still_broken"] is expected_broken
+    assert rec["note"].startswith("ground-truth: why")
+    assert "routes/x.py" in rec["note"]
+    assert "/pull/1600" in rec["url"]
+
+
+def test_record_refuses_without_proposal_id(monkeypatch):
+    """No proposal to attribute the verdict to ⇒ refuse (never guess),
+    without ever importing the writer."""
+    monkeypatch.setenv("BRAIN_FIX_VERIFY", "1")
+    captured = []
+    monkeypatch.setitem(sys.modules, "routes.brain_learning",
+                        _fake_brain_learning(captured))
+    assert fv.record_fix_outcome({"resolved": True, "reason": "x"}) is False
+    assert captured == []

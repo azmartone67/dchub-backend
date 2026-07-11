@@ -193,8 +193,11 @@ def check_rejection_skip(issue_label, find_text="", reject_threshold=2):
 def record_proposal_outcome(proposal_id, proposal_kind, still_broken,
                             evidence_url=None, evidence_note=None):
     """Record a post-merge outcome check. `proposal_kind` ∈ {'text','code'}.
-    `still_broken` = True means the fix didn't work; False means it did.
-    Returns True if recorded."""
+    `still_broken` is TRI-STATE (2026-07-11): True = the fix didn't work;
+    False = it did; None = CHECKED but indeterminate (cannot verify) — the
+    NULL row marks the proposal as checked (so probes don't re-select it)
+    while every rate reader excludes it, same rule as
+    autopilot_outcomes.succeeded IS NULL. Returns True if recorded."""
     if proposal_id is None or proposal_kind not in ('text', 'code'):
         return False
     try:
@@ -206,7 +209,8 @@ def record_proposal_outcome(proposal_id, proposal_kind, still_broken,
                         check_count)
                    VALUES (%s, %s, NOW(), %s, %s, %s, 1)
                    ON CONFLICT DO NOTHING""",
-                (proposal_id, proposal_kind, bool(still_broken),
+                (proposal_id, proposal_kind,
+                 (None if still_broken is None else bool(still_broken)),
                  (evidence_url or '')[:300],
                  (evidence_note or '')[:500]))
         return True
@@ -658,6 +662,38 @@ def brain_needs_human_resolve():
 # ─────────────────────────────────────────────────────────────────────
 # 4A — Outcome prober (cron-callable)
 # ─────────────────────────────────────────────────────────────────────
+
+# Patterns whose autonomous action is a STAGING / WORKLIST step BY DESIGN
+# (routes/brain_autopilot._PATTERN_LIBRARY): build the L13 nudge drafts DRY
+# (a human flips dry=false to send), persist a growth snapshot for L5, or
+# record a collision into cron_collision_proposals ("actual YAML edit remains
+# human work"). The action's own success criterion is "worklist/record
+# written" — which the executed_ok 2xx already proved. The FINDING is a
+# standing business condition (unconverted demand, trial stagnation, a
+# collision backlog) that only HUMAN follow-through can clear, so grading
+# these actions by finding-persistence fabricates a permanent-failure signal:
+# measured 2026-07-10, 302 of the 385 autopilot still_broken=TRUE rows in the
+# 30d fix-signal sample came from exactly this check, and its 82 "absent"
+# passes were detector-cadence noise (<30m freshness vs slower detector
+# scans). Honest verdict for these: cannot_verify (NULL) — the same exclusion
+# rule as autopilot_outcomes.succeeded IS NULL (R3).
+_STAGING_PATTERNS = frozenset({
+    "addressable_demand_unconverted",   # _action_conversion_build_worklist (DRY)
+    "trial_to_paid_stagnation",         # _action_conversion_build_worklist (DRY)
+    "tool_signal_to_conversion_leak",   # _action_conversion_build_worklist (DRY)
+    "mcp_conversion_rate_below_floor",  # _action_conversion_build_worklist (DRY)
+    "cron_schedule_collision",          # records worklist; YAML edit is human work
+    "mcp_demand_gap_unaddressed",       # persists a growth snapshot for L5
+})
+
+# decide_outcome dormancy window for autopilot probes: the finding must have
+# been live within this many days BEFORE the action for its silence after the
+# action to be creditable to the action at all (mirrors the reconciler's
+# BRAIN_MERGE_RECONCILER_RECENT_DAYS discipline, tightened for the faster
+# autopilot loop).
+_PROBE_RECENT_DAYS = 7
+
+
 @brain_learning_bp.route("/api/v1/brain/probe-outcomes", methods=["POST", "GET"])
 @_require_admin
 def probe_outcomes():
@@ -677,18 +713,27 @@ def probe_outcomes():
       • Autopilot (L21) actions that actually executed an action_endpoint
         with a 2xx — brain_autopilot_actions.outcome='executed_ok'. These
         ARE applied (a real cron/cache/refresh endpoint fired). For each one
-        older than a 6h settle window that we haven't mirrored yet, we record
-        still_broken = is the original (finding_issue, finding_url) STILL in
-        brain_findings? — the same in-process findings table Layer-5 / the
-        autopilot verifier read (NOT an HTTP self-call to /heal/findings).
-        Where the autopilot verifier has already computed outcome_verified
-        (TRUE=resolved/FALSE=still broken) we reuse THAT (it's the same
-        check) rather than re-deriving it.
+        older than a 6h settle window that we haven't mirrored yet:
+          - the per-pattern EFFECT verifier's verdict
+            (autopilot_outcomes.succeeded, latest per action) is reused
+            verbatim when it exists — it IS the real signal (R3b);
+          - STAGING/WORKLIST patterns (_STAGING_PATTERNS) are recorded
+            cannot_verify (still_broken=NULL) — grading a worklist-builder
+            by finding-persistence fabricates failures (see the constant's
+            comment for the 07-10 measurements);
+          - everything else is judged with the merge reconciler's
+            unit-tested decide_outcome discipline against
+            brain_findings.last_seen: re-seen AFTER the action ⇒ TRUE,
+            live before + quiet since ⇒ FALSE, dormant/never-tracked ⇒
+            NULL (refuse to fabricate). This replaces the old
+            "seen in the last 30 minutes" recheck, whose verdicts measured
+            detector CADENCE, not fix effect (R66, 2026-07-11).
 
       • Code proposals whose merge_outcome is set (merged_healthy /
         merged_reverted) already flow into brain_fix_outcomes via
         record_proposal_outcome() at mark-merge time (brain_v2_layer5 r64), so
-        they need no probing here.
+        they need no probing here. Merged MECHANICAL code fixes are verified
+        against ground truth on main by /api/v1/brain/verify-merged-fixes.
 
     Skips anything not genuinely applied. It is intentionally better for
     fix_success to stay honestly null than to report a fabricated number.
@@ -697,7 +742,6 @@ def probe_outcomes():
     """
     _ensure_schema()
     SETTLE_HOURS = 6
-    FINDINGS_FRESH_MIN = 30   # a finding is "still present" if seen this recently
     checked = 0
     new_outcomes = 0
     errors = []
@@ -716,8 +760,8 @@ def probe_outcomes():
                 # (cannot_verify) falls through to the in-process brain_findings
                 # re-check below, unchanged.
                 cur.execute("""
-                    SELECT a.id, a.finding_issue, a.finding_url,
-                           a.started_at, o.succeeded
+                    SELECT a.id, a.pattern_name, a.finding_issue,
+                           a.finding_url, a.started_at, o.succeeded
                       FROM brain_autopilot_actions a
                       LEFT JOIN LATERAL (
                           SELECT succeeded FROM autopilot_outcomes ao
@@ -739,11 +783,11 @@ def probe_outcomes():
                 candidates = []
                 errors.append(f"autopilot-select: {str(e)[:120]}")
 
-            for act_id, issue, url, applied_at, verified in candidates:
+            for act_id, pattern, issue, url, applied_at, verified in candidates:
                 checked += 1
                 try:
-                    # Prefer the autopilot verifier's own result (same check);
-                    # else re-derive in-process from brain_findings(issue,url).
+                    # Prefer the autopilot verifier's own result (the real
+                    # per-pattern effect check).
                     if verified is not None:
                         # succeeded TRUE  => verified real effect (fixed)
                         # succeeded FALSE => no real effect (still broken)
@@ -751,20 +795,41 @@ def probe_outcomes():
                         evidence = ("autopilot_outcomes.succeeded="
                                     f"{bool(verified)} (effect verifier re-checked "
                                     "brain_findings)")
+                    elif (pattern or "") in _STAGING_PATTERNS:
+                        # Worklist/record-only action: the finding is cleared
+                        # by human follow-through, never by the staging call —
+                        # refuse to grade it (see _STAGING_PATTERNS comment).
+                        still_broken = None
+                        evidence = (f"cannot_verify: staging/worklist action "
+                                    f"({pattern}) — stages human work; finding "
+                                    "persistence is not its success criterion")
                     else:
-                        # Same query the autopilot verifier uses: is this exact
-                        # finding still freshly present in brain_findings?
+                        # R66 (2026-07-11): judge with the merge reconciler's
+                        # unit-tested grace/dormancy discipline against the
+                        # finding's ACTUAL last_seen — not the old "seen in
+                        # the last 30 minutes" recheck, whose verdicts tracked
+                        # detector cadence instead of fix effect.
                         cur.execute("""
-                            SELECT 1 FROM brain_findings
-                             WHERE issue = %s AND COALESCE(url,'') = %s
-                               AND last_seen > NOW() - (%s * INTERVAL '1 minute')
-                             LIMIT 1""",
-                            (issue, (url or ''), FINDINGS_FRESH_MIN))
-                        still_broken = cur.fetchone() is not None
-                        evidence = ("finding "
-                                    + ("still present in" if still_broken
-                                       else "absent from")
-                                    + f" brain_findings (<{FINDINGS_FRESH_MIN}m)")
+                            SELECT MAX(last_seen) FROM brain_findings
+                             WHERE issue = %s AND COALESCE(url,'') = %s""",
+                            (issue, (url or '')))
+                        row = cur.fetchone()
+                        last_seen = row[0] if row else None
+                        if last_seen is None:
+                            still_broken = None
+                            evidence = ("cannot_verify: finding not tracked in "
+                                        "brain_findings — refusing to fabricate")
+                        else:
+                            from routes.brain_merge_reconciler import decide_outcome
+                            state, still_broken, evidence = decide_outcome(
+                                applied_at, last_seen,
+                                datetime.now(timezone.utc),
+                                SETTLE_HOURS, _PROBE_RECENT_DAYS,
+                                noun="action")
+                            if state != "outcome":
+                                # dormant-before-action / no-evidence ⇒
+                                # indeterminate, keep the honest reason.
+                                still_broken = None
                     cur.execute("""
                         INSERT INTO brain_fix_outcomes
                             (proposal_id, proposal_kind, applied_at,
@@ -772,7 +837,8 @@ def probe_outcomes():
                              evidence_note, check_count)
                         VALUES (%s, 'autopilot', %s, NOW(), %s, %s, %s, 1)
                         ON CONFLICT DO NOTHING""",
-                        (act_id, applied_at, bool(still_broken),
+                        (act_id, applied_at,
+                         (None if still_broken is None else bool(still_broken)),
                          (url or '')[:300], evidence[:500]))
                     new_outcomes += 1
                 except Exception as e:
@@ -791,6 +857,117 @@ def probe_outcomes():
                          "longer probed (would fabricate fix_success). Code "
                          "merges flow in via record_proposal_outcome."),
                    errors=errors[:5], generated_at=now_iso()), 200
+
+
+# ─────────────────────────────────────────────────────────────────────
+# 4A.2 — Ground-truth verifier for merged MECHANICAL code fixes
+# ─────────────────────────────────────────────────────────────────────
+@brain_learning_bp.route("/api/v1/brain/verify-merged-fixes",
+                         methods=["POST", "GET"])
+@_require_admin
+def verify_merged_fixes():
+    """Verify merged MECHANICAL brain code fixes against GROUND TRUTH (the
+    file on main) and record the verdicts through the canonical
+    brain_fix_outcomes writer.
+
+    WHY (2026-07-11): the fix-outcome verifier
+    (routes/brain_fix_outcome_verify.verify_fix_resolved — armed via
+    BRAIN_FIX_VERIFY=1) existed since 06-19 but its recorder INSERTed into
+    columns that don't exist on the live brain_fix_outcomes table (created by
+    THIS module's _SCHEMA), so not one verdict ever landed: 39 of 40 merged
+    single-file fixes in the 30d window had NO effect verdict while the
+    fix-signal trust rate was dragged by doc-only spec PRs and detector-
+    cadence noise. This sweep closes that gap with the verifier the system
+    already designed:
+
+      resolved (search_text GONE from the file on main AND replace_text
+      PRESENT — the fix landed and HELD)          → still_broken = FALSE
+      anti-pattern STILL present on main (no-op /
+      drifted back)                               → still_broken = TRUE
+      indeterminate (file unreadable / replaced by
+      a later edit / nothing to check)            → still_broken = NULL
+                                                    (checked, excluded)
+
+    Scope: status='merged' proposals with a real file_path + search_text
+    (reconciler backfills use file_path='github:<branch>' and are doc-only —
+    skipped), merged within the last 30 days, not already verdict-carrying.
+    Idempotent via NOT EXISTS; LIMIT per run; cron-driven from
+    routes/cron_heartbeat._DISPATCH ('brain_fix_verify_sweep').
+
+    Honors the same arm switch as the verifier module: BRAIN_FIX_VERIFY=1
+    (record-only, never blocks or reverts anything)."""
+    if os.environ.get("BRAIN_FIX_VERIFY", "0") != "1":
+        return jsonify(ok=False, disabled=True,
+                       error="BRAIN_FIX_VERIFY!=1 — verifier not armed"), 200
+    try:
+        limit = max(1, min(50, int(request.args.get("limit", "25"))))
+    except Exception:
+        limit = 25
+    _ensure_schema()
+    try:
+        from routes.brain_fix_outcome_verify import verify_fix_resolved
+    except Exception as e:
+        return jsonify(ok=False, error=f"verifier import: {str(e)[:120]}"), 200
+
+    resolved_n = still_broken_n = indeterminate_n = 0
+    rows_out, errors = [], []
+    try:
+        with _conn() as c, c.cursor() as cur:
+            cur.execute("""
+                SELECT p.id, p.file_path, p.search_text, p.replace_text,
+                       p.pr_url
+                  FROM brain_proposed_code_fixes p
+                 WHERE p.status = 'merged'
+                   AND p.file_path NOT LIKE 'github:%%'
+                   AND COALESCE(p.search_text, '') <> ''
+                   AND COALESCE(p.reviewed_at, p.proposed_at)
+                       >= NOW() - INTERVAL '30 days'
+                   AND NOT EXISTS (
+                       SELECT 1 FROM brain_fix_outcomes bo
+                        WHERE bo.proposal_id = p.id
+                          AND bo.proposal_kind = 'code')
+                 ORDER BY p.reviewed_at DESC NULLS LAST
+                 LIMIT %s""", (limit,))
+            candidates = cur.fetchall()
+    except Exception as e:
+        return jsonify(ok=False, error=str(e)[:200]), 200
+
+    for pid, fp, st, rt, pr_url in candidates:
+        try:
+            verdict = verify_fix_resolved({
+                "id": pid, "file_path": fp,
+                "search_text": st, "replace_text": rt,
+            })
+            resolved = verdict.get("resolved")
+            reason = str(verdict.get("reason") or "")[:300]
+            still_broken = (None if resolved is None else (not resolved))
+            if resolved is True:
+                resolved_n += 1
+            elif resolved is False:
+                still_broken_n += 1
+            else:
+                indeterminate_n += 1
+            recorded = record_proposal_outcome(
+                pid, "code", still_broken,
+                evidence_url=(pr_url or fp),
+                evidence_note=f"ground-truth: {reason} [{fp}]")
+            rows_out.append({"proposal_id": pid, "file": fp,
+                             "resolved": resolved, "reason": reason,
+                             "recorded": bool(recorded)})
+        except Exception as e:
+            errors.append(f"pid={pid}: {str(e)[:80]}")
+            if len(errors) >= 5:
+                break
+
+    return jsonify(ok=True,
+                   measured_source="merged_mechanical_code_fixes",
+                   candidates=len(candidates),
+                   resolved=resolved_n,
+                   still_broken=still_broken_n,
+                   indeterminate=indeterminate_n,
+                   detail=rows_out[:50],
+                   errors=errors[:5],
+                   generated_at=now_iso()), 200
 
 
 # ─────────────────────────────────────────────────────────────────────

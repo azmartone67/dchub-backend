@@ -209,43 +209,8 @@ def verify_fix_resolved(proposal_or_pr: dict) -> dict:
 
 # ════════════════════════════════════════════════════════════════════
 #  CALIBRATION FEED — record verified vs unverified (best-effort).
-#  Mirrors routes/autopilot_outcomes' autopilot_outcomes table convention so
-#  the same calibration surface can read fix-outcome verifications. NEVER
-#  raises; a failure here must never affect a merge or a tick.
+#  NEVER raises; a failure here must never affect a merge or a tick.
 # ════════════════════════════════════════════════════════════════════
-def _ensure_fix_outcomes_table() -> bool:
-    """CREATE TABLE IF NOT EXISTS brain_fix_outcomes. Idempotent. Returns False
-    on any failure (no DB, no psycopg2). Never raises."""
-    try:
-        import psycopg2
-    except Exception:
-        return False
-    url = _db_url()
-    if not url:
-        return False
-    try:
-        with psycopg2.connect(url, connect_timeout=5) as conn, conn.cursor() as cur:
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS brain_fix_outcomes (
-                    id            BIGSERIAL PRIMARY KEY,
-                    proposal_id   BIGINT,
-                    pr_number     INTEGER,
-                    branch        TEXT,
-                    file_path     TEXT,
-                    klass         TEXT,
-                    resolved      BOOLEAN,   -- NULL = unverified/indeterminate
-                    reason        TEXT,
-                    verified_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
-                );
-                CREATE INDEX IF NOT EXISTS brain_fix_outcomes_recent_idx
-                  ON brain_fix_outcomes(verified_at DESC);
-            """)
-            conn.commit()
-        return True
-    except Exception:
-        return False
-
-
 def record_fix_outcome(verdict: dict, *, proposal_id=None, pr_number=None,
                        branch: str = "") -> bool:
     """Persist a fix-outcome verdict to the calibration feed. Best-effort:
@@ -253,69 +218,52 @@ def record_fix_outcome(verdict: dict, *, proposal_id=None, pr_number=None,
     so it is a no-op unless BRAIN_FIX_VERIFY=1 (and BRAIN_VERIFY_RESOLVE!=0).
     NEVER raises.
 
-    Also writes a NEUTRAL outcome into the shared autopilot_outcomes feed (when
-    that module is importable) keyed pattern='brain_fix_outcome' so the existing
-    /api/v1/brain/autopilot/outcomes surface shows fix-verification calibration
-    alongside the autopilot outcomes — succeeded mirrors `resolved` (tri-state:
-    None = cannot/indeterminate, mapped to the cannot_verify bucket)."""
+    REWRITTEN 2026-07-11: the original hand-rolled INSERT here targeted
+    columns (pr_number, branch, klass, resolved, …) that do NOT exist on the
+    live brain_fix_outcomes table — brain_learning._SCHEMA created it first
+    with (still_broken, checked_at, evidence_note, …), this module's
+    CREATE TABLE IF NOT EXISTS silently no-opped against it, psycopg2 raised
+    on the INSERT, and the bare except swallowed it. Result: BRAIN_FIX_VERIFY
+    was armed for weeks and NOT ONE verdict ever landed. Now routes through
+    brain_learning.record_proposal_outcome — the canonical writer the merge
+    reconciler also uses (never hand-roll a second brain_fix_outcomes
+    writer). Tri-state maps resolved True/False/None →
+    still_broken False/True/NULL (NULL = checked-but-indeterminate, excluded
+    by every rate reader).
+
+    The old best-effort mirror into autopilot_outcomes
+    (pattern='brain_fix_outcome') is intentionally GONE: the self-model's
+    combined fix-signal counts autopilot_outcomes rows AND brain_fix_outcomes
+    code rows, so mirroring the same verdict into both double-counted it —
+    and it stuffed CODE proposal ids into autopilot_action_id, a foreign id
+    space."""
     if not _record_enabled():
         return False
     resolved = (verdict or {}).get("resolved")
-    reason = str((verdict or {}).get("reason") or "")[:500]
+    reason = str((verdict or {}).get("reason") or "")[:300]
     file_path = (verdict or {}).get("file_path") or ""
-    klass = (verdict or {}).get("klass")
 
-    wrote = False
-    # 1) Our own dedicated table (always when records are enabled).
-    if _ensure_fix_outcomes_table():
-        try:
-            import psycopg2
-            url = _db_url()
-            if url:
-                with psycopg2.connect(url, connect_timeout=5) as conn, conn.cursor() as cur:
-                    cur.execute(
-                        "INSERT INTO brain_fix_outcomes "
-                        "(proposal_id, pr_number, branch, file_path, klass, "
-                        " resolved, reason) "
-                        "VALUES (%s,%s,%s,%s,%s,%s,%s)",
-                        (proposal_id, pr_number, (branch or None), file_path,
-                         klass, resolved, reason),
-                    )
-                    conn.commit()
-                wrote = True
-        except Exception:
-            wrote = False
-
-    # 2) Best-effort mirror into the shared calibration feed (if it exists).
-    #    succeeded is tri-state and mirrors `resolved` exactly (None stays None
-    #    → the outcomes endpoint buckets it as cannot_verify, not a failure).
+    pid = proposal_id
+    if pid is None:
+        return False  # nothing to attribute the verdict to — refuse to guess
     try:
-        from routes import autopilot_outcomes as ao
-        c = ao._conn()
-        if c is not None:
-            try:
-                ao._ensure_schema(c)
-                import datetime as _dt
-                with c.cursor() as cur:
-                    cur.execute(
-                        "INSERT INTO autopilot_outcomes "
-                        "(autopilot_action_id, pattern_name, fired_at, "
-                        " succeeded, evidence, failure_reason) "
-                        "VALUES (%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING",
-                        (proposal_id, "brain_fix_outcome",
-                         _dt.datetime.utcnow(), resolved,
-                         (reason or "")[:500],
-                         (None if resolved else reason)[:500] if reason else None),
-                    )
-            finally:
-                try:
-                    c.close()
-                except Exception:
-                    pass
+        from routes.brain_learning import (_ensure_schema as _bl_ensure_schema,
+                                           record_proposal_outcome)
+        _bl_ensure_schema()
+        evidence_url = ""
+        if pr_number:
+            repo = (os.environ.get("GITHUB_REPO")
+                    or "azmartone67/dchub-backend").strip()
+            evidence_url = f"https://github.com/{repo}/pull/{pr_number}"
+        return bool(record_proposal_outcome(
+            pid, "code",
+            (None if resolved is None else (not resolved)),
+            evidence_url=(evidence_url or file_path),
+            evidence_note=(f"ground-truth: {reason}"
+                           + (f" [{file_path}]" if file_path else "")
+                           + (f" (branch {branch})" if branch else ""))))
     except Exception:
-        pass
-
-    return wrote
+        return False
 
 
 def verify_and_record(proposal_or_pr: dict, *, proposal_id=None,

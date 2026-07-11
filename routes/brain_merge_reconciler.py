@@ -309,32 +309,37 @@ def match_proposal(cur, pr: dict):
     return None, "unmatched", "no row derivable from branch/url/label"
 
 
-def decide_outcome(merged_at, last_seen_at, now, grace_hours, recent_days):
-    """Honest outcome verdict for a finding vs a merge. Pure — unit-tested.
+def decide_outcome(merged_at, last_seen_at, now, grace_hours, recent_days,
+                   noun="merge"):
+    """Honest outcome verdict for a finding vs an applied fix. Pure —
+    unit-tested. `noun` names the applied event in the evidence text
+    ("merge" for PR merges — the default; brain_learning.probe_outcomes
+    passes "action" so autopilot actions are verified with the SAME
+    grace/dormancy discipline instead of a second hand-rolled check).
     Returns (state, still_broken, evidence):
       state ∈ pending_grace | outcome (still_broken set) | no_evidence"""
     if merged_at is None:
-        return "no_evidence", None, "merge timestamp unavailable"
+        return "no_evidence", None, f"{noun} timestamp unavailable"
     age_h = (now - merged_at).total_seconds() / 3600.0
     if age_h < grace_hours:
         return ("pending_grace", None,
-                f"merged {age_h:.1f}h ago < {grace_hours}h grace — too early to judge")
+                f"{noun} {age_h:.1f}h ago < {grace_hours}h grace — too early to judge")
     if last_seen_at is None:
         return ("no_evidence", None,
                 "finding label never tracked in brain_issue_persistence — "
                 "cannot verify, refusing to fabricate")
     if last_seen_at > merged_at:
         return ("outcome", True,
-                f"finding re-seen {last_seen_at.isoformat()} AFTER merge "
+                f"finding re-seen {last_seen_at.isoformat()} AFTER {noun} "
                 f"{merged_at.isoformat()} — fix did not hold")
     dormant_d = (merged_at - last_seen_at).total_seconds() / 86400.0
     if dormant_d > recent_days:
         return ("no_evidence", None,
-                f"finding already dormant {dormant_d:.1f}d before merge "
-                f"(>{recent_days}d) — its absence is not creditable to this merge")
+                f"finding already dormant {dormant_d:.1f}d before {noun} "
+                f"(>{recent_days}d) — its absence is not creditable to this {noun}")
     return ("outcome", False,
-            f"finding live {dormant_d:.1f}d before merge, not re-seen "
-            f"≥{grace_hours}h after merge {merged_at.isoformat()}")
+            f"finding live {dormant_d:.1f}d before {noun}, not re-seen "
+            f"≥{grace_hours}h after {noun} {merged_at.isoformat()}")
 
 
 def _last_seen(cur, label):
@@ -533,6 +538,19 @@ def run_reconciliation(dry: bool = False) -> dict:
                     state, still_broken, evidence = decide_outcome(
                         pr["merged_at"], _last_seen(cur, label), now,
                         _grace_hours(), _recent_days())
+                if state == "outcome" and ref.startswith(_SPEC_PREFIX):
+                    # HONESTY (2026-07-11): a brain-spec PR adds a DOC only —
+                    # zero code execution (brain_pr_opener.open_spec_pr). Its
+                    # merge is CREDIT (review decision, effectiveness counts)
+                    # but grading a standing detector against a document
+                    # fabricates a fix verdict in BOTH directions: the
+                    # detector re-firing says nothing about a doc, and its
+                    # going quiet is not the doc's doing. Measured 07-10:
+                    # 8 of the 9 code-kind brain_fix_outcomes rows were spec
+                    # PRs auto-failed this way. Label it; write NO outcome.
+                    state, still_broken = "spec_doc_ungraded", None
+                    evidence = ("doc-only spec PR — merge credited, not "
+                                "graded as a fix outcome; " + evidence)[:500]
                 entry.update(outcome_state=state, still_broken=still_broken,
                              evidence=evidence)
                 if not dry:

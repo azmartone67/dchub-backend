@@ -161,14 +161,69 @@ def compute_self_model() -> dict:
             # still_broken with NULL = indeterminate → excluded, same rule as
             # autopilot_outcomes.succeeded. Fold them into ONE combined
             # verified-effect signal so a human-merged brain PR finally counts.
-            code_ok_30d, code_fail_30d = _safe_dual(cur, """
+            #
+            # R66 honesty re-scope (2026-07-11) — measured against the live
+            # 827-row sample (rate 0.426): four row classes in
+            # brain_fix_outcomes are NOT independent real-effect verdicts and
+            # are EXCLUDED here, each counted transparently in
+            # verified_exclusions_30d below:
+            #   · duplicate_of_autopilot_verifier — probe-outcomes mirror rows
+            #     ('autopilot_outcomes.succeeded=…'); the SAME verdict is
+            #     already counted once from autopilot_outcomes above (was 167
+            #     rows counted twice, 65 fail / 102 ok).
+            #   · legacy_outcome_verified_check — rows carrying the R3b-
+            #     DISCREDITED a.outcome_verified check ('scored no-ops as
+            #     fixed'); 99 rows (81 ok / 18 fail).
+            #   · detector_cadence_recheck — the retired '<30m freshness'
+            #     probe fallback: guaranteed-FAIL for standing business
+            #     findings, coin-flip 'absent' for slow detectors — it
+            #     measured detector CADENCE, not fix effect (384 rows,
+            #     302 fail / 82 ok).
+            #   · spec_doc_pr_not_a_fix — doc-only brain-spec PR merges
+            #     (zero code execution) auto-failed by a standing detector
+            #     re-firing (9 rows, 8 fail / 1 ok).
+            # Every exclusion is direction-blind (each bucket removes OKs and
+            # FAILs alike by the same rule). What remains counted: verdicts
+            # from real effect verifiers — the reconciler's decide_outcome
+            # discipline, the probe's decide_outcome-based re-verify (R66),
+            # and the ground-truth-on-main mechanical-fix verifier
+            # ('ground-truth: …' via /brain/verify-merged-fixes).
+            _bfo_rows = _safe_rows(cur, """
+                WITH w AS (
+                    SELECT bo.still_broken,
+                           (COALESCE(bo.evidence_note, '')
+                              LIKE 'autopilot_outcomes.succeeded=%') AS dup_mirror,
+                           (COALESCE(bo.evidence_note, '')
+                              LIKE 'autopilot outcome_verified=%') AS legacy_check,
+                           (COALESCE(bo.evidence_note, '')
+                              LIKE 'finding still present in brain_findings%'
+                            OR COALESCE(bo.evidence_note, '')
+                              LIKE 'finding absent from brain_findings%') AS cadence_check,
+                           (bo.proposal_kind = 'code'
+                            AND COALESCE(p.file_path, '')
+                                LIKE 'github:brain-spec/%') AS spec_doc
+                      FROM brain_fix_outcomes bo
+                      LEFT JOIN brain_proposed_code_fixes p
+                        ON bo.proposal_kind = 'code' AND p.id = bo.proposal_id
+                     WHERE bo.checked_at >= NOW() - INTERVAL '30 days'
+                )
                 SELECT
-                  COUNT(*) FILTER (WHERE still_broken IS FALSE
-                                    AND checked_at >= NOW() - INTERVAL '30 days'),
-                  COUNT(*) FILTER (WHERE still_broken IS TRUE
-                                    AND checked_at >= NOW() - INTERVAL '30 days')
-                  FROM brain_fix_outcomes
-            """, default=(0, 0))
+                  COUNT(*) FILTER (WHERE NOT (dup_mirror OR legacy_check
+                                              OR cadence_check OR spec_doc)
+                                     AND still_broken IS FALSE),
+                  COUNT(*) FILTER (WHERE NOT (dup_mirror OR legacy_check
+                                              OR cadence_check OR spec_doc)
+                                     AND still_broken IS TRUE),
+                  COUNT(*) FILTER (WHERE dup_mirror),
+                  COUNT(*) FILTER (WHERE legacy_check),
+                  COUNT(*) FILTER (WHERE cadence_check),
+                  COUNT(*) FILTER (WHERE spec_doc)
+                  FROM w
+            """, default=[(0, 0, 0, 0, 0, 0)])
+            (code_ok_30d, code_fail_30d, excl_mirror, excl_legacy,
+             excl_cadence, excl_spec) = (
+                tuple(int(v or 0) for v in _bfo_rows[0])
+                if _bfo_rows else (0, 0, 0, 0, 0, 0))
             combined_ok = verified_ok_30d + code_ok_30d
             combined_sample = verified_sample + code_ok_30d + code_fail_30d
             combined_rate = (round(combined_ok / combined_sample, 3)
@@ -282,7 +337,16 @@ def compute_self_model() -> dict:
             "verified_real_effects_30d": verified_ok_30d,
             "verified_sample_30d": verified_sample,              # actions with a real verifier (TRUE+FALSE); cannot-verify (NULL) excluded
             "verified_sample": combined_sample,                  # COMBINED effect-verified sample (autopilot + code-fix outcomes) — the deepdive fix-signal lane reads this exact key
-            "code_fix_outcomes_30d": {"ok": code_ok_30d, "fail": code_fail_30d},  # brain_fix_outcomes (post-merge verify + merge reconciler)
+            "code_fix_outcomes_30d": {"ok": code_ok_30d, "fail": code_fail_30d},  # brain_fix_outcomes (post-merge verify + merge reconciler), after R66 exclusions
+            # R66 honesty ledger: brain_fix_outcomes rows EXCLUDED from the
+            # combined signal and WHY — transparent, not silent. See the
+            # comment on the query above for the per-bucket rationale.
+            "verified_exclusions_30d": {
+                "duplicate_of_autopilot_verifier": excl_mirror,
+                "legacy_outcome_verified_check": excl_legacy,
+                "detector_cadence_recheck": excl_cadence,
+                "spec_doc_pr_not_a_fix": excl_spec,
+            },
             "endpoint_fires_30d": ok_30d,                        # executed_ok (2xx) — NOT success; coverage context only
             "endpoint_fire_failures_30d": fail_30d,
             "recent_actions": recent_actions,
