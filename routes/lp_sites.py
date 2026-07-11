@@ -292,6 +292,301 @@ def _bound_email_from_request():
         except Exception: pass
 
 
+# ── Portfolio deltas (2026-07-11) ────────────────────────────────
+# r-portfolio: get_changes was 100% GLOBAL (California movers for an agent
+# whose only saved site is Phoenix) and list_saved_sites returned static
+# rows — the one question a returning agent actually has ("did MY sites
+# move?") was unanswerable. These helpers compute per-saved-site deltas
+# (DCPI verdict flip, excess-power move, alert fired, new facility nearby)
+# so both endpoints can answer it. Every query is individually fail-soft:
+# a missing table/column degrades that signal to empty, never the response.
+
+def _haversine_km(lat1, lon1, lat2, lon2):
+    import math
+    dlat = math.radians(lat2 - lat1)
+    dlon = math.radians(lon2 - lon1)
+    a = (math.sin(dlat / 2) ** 2
+         + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2))
+         * math.sin(dlon / 2) ** 2)
+    return 6371.0 * 2 * math.asin(min(1.0, math.sqrt(a)))
+
+
+def _market_match_keys(market):
+    """Normalize a saved site's market string for matching against both
+    market_slug ('northern-virginia') and market_name ('Northern Virginia')."""
+    m = (market or "").strip().lower()
+    return (m.replace(" ", "-"), m)
+
+
+def _match_new_facilities(sites, facilities, radius_km=50.0, cap_per_site=3):
+    """Pure matcher: {site_id: [up to cap_per_site nearest new facilities]}.
+    Sites/facilities are dicts with latitude/longitude; bad rows are skipped."""
+    out = {}
+    for s in sites:
+        try:
+            slat, slon = float(s["latitude"]), float(s["longitude"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        near = []
+        for f in facilities:
+            try:
+                flat, flon = f.get("latitude"), f.get("longitude")
+                if flat is None or flon is None:
+                    continue
+                km = _haversine_km(slat, slon, float(flat), float(flon))
+            except (TypeError, ValueError):
+                continue
+            if km <= radius_km:
+                near.append({"name": f.get("name"), "state": f.get("state"),
+                             "capacity_mw": f.get("capacity_mw"),
+                             "km": round(km, 1)})
+        if near:
+            near.sort(key=lambda x: x["km"])
+            out[s["id"]] = near[:cap_per_site]
+    return out
+
+
+def _site_movement(site):
+    """Pure: did this enriched site 'move' since the window start? Any of:
+    verdict flipped, excess-power moved >= 1pt, an alert fired, or a new
+    facility appeared nearby."""
+    try:
+        if site.get("verdict_changed"):
+            return True
+        d = site.get("excess_power_delta_window")
+        if d is not None and abs(float(d)) >= 1.0:
+            return True
+        if site.get("alerts_fired_window"):
+            return True
+        if site.get("new_facilities_nearby"):
+            return True
+    except (TypeError, ValueError):
+        pass
+    return False
+
+
+def _clamp_since(since_dt):
+    """Clamp a portfolio window start to [now-30d, now-1h]; default 7d."""
+    now = datetime.datetime.now(datetime.timezone.utc)
+    if since_dt is None:
+        return now - datetime.timedelta(days=7)
+    try:
+        if since_dt.tzinfo is None:
+            since_dt = since_dt.replace(tzinfo=datetime.timezone.utc)
+        floor = now - datetime.timedelta(days=30)
+        ceil = now - datetime.timedelta(hours=1)
+        return max(floor, min(since_dt, ceil))
+    except Exception:
+        return now - datetime.timedelta(days=7)
+
+
+def portfolio_snapshot(user_id, since_dt=None, max_sites=100):
+    """Per-saved-site deltas for a returning agent, one compact dict:
+
+      {saved_sites, alerts_armed, since, moved_count,
+       moved: [{id, name, market, verdict_was, verdict_now, ...} cap 10],
+       sites: [every saved site + enrichment fields]}
+
+    Returns {"saved_sites": 0} when the user has no saved sites, or None on
+    total failure (caller keeps its unpersonalized response). ~5 grouped
+    queries regardless of site count; each signal fails soft to empty."""
+    if not user_id:
+        return None
+    since_dt = _clamp_since(since_dt)
+    c = _conn()
+    if c is None:
+        return None
+    try:
+        import psycopg2.extras
+        with c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            try:
+                cur.execute("""
+                    SELECT id, name, latitude, longitude, state, market,
+                           target_mw, dcpi_score_at_save, saved_at
+                      FROM saved_lp_sites
+                     WHERE user_id = %s
+                     ORDER BY saved_at DESC LIMIT %s
+                """, (user_id, max_sites))
+                rows = cur.fetchall()
+            except Exception:
+                return None
+            if not rows:
+                return {"saved_sites": 0}
+            sites = []
+            for r in rows:
+                sites.append({
+                    "id": int(r["id"]), "name": r["name"],
+                    "latitude": float(r["latitude"]),
+                    "longitude": float(r["longitude"]),
+                    "state": r["state"], "market": r["market"],
+                    "target_mw": float(r["target_mw"]) if r["target_mw"] is not None else None,
+                    "dcpi_at_save": int(r["dcpi_score_at_save"]) if r["dcpi_score_at_save"] is not None else None,
+                    "saved_at": r["saved_at"].isoformat() if r["saved_at"] else None,
+                })
+
+            slugs, names = set(), set()
+            for s in sites:
+                if s.get("market"):
+                    sl, nm = _market_match_keys(s["market"])
+                    slugs.add(sl); names.add(nm)
+
+            # (a) window verdict + excess-power delta from the history-preserving
+            # daily snapshots (same source as get_changes dcpi_movers).
+            snap = {}
+            if slugs:
+                try:
+                    cur.execute("""
+                        WITH latest AS (
+                          SELECT DISTINCT ON (market_slug) market_slug,
+                                 LOWER(market_name) AS lname,
+                                 excess_power_score AS now_e, verdict AS now_v
+                            FROM dcpi_daily_snapshots
+                           ORDER BY market_slug, snapshot_date DESC
+                        ), prev AS (
+                          SELECT DISTINCT ON (market_slug) market_slug,
+                                 excess_power_score AS prev_e, verdict AS prev_v
+                            FROM dcpi_daily_snapshots
+                           WHERE snapshot_date <= %s::date
+                           ORDER BY market_slug, snapshot_date DESC
+                        )
+                        SELECT l.market_slug, l.lname, l.now_e, l.now_v,
+                               p.prev_e, p.prev_v
+                          FROM latest l LEFT JOIN prev p USING (market_slug)
+                         WHERE l.market_slug = ANY(%s) OR l.lname = ANY(%s)
+                    """, (since_dt, list(slugs), list(names)))
+                    for r in cur.fetchall():
+                        d = {"now_e": r["now_e"], "now_v": r["now_v"],
+                             "prev_e": r["prev_e"], "prev_v": r["prev_v"]}
+                        snap[r["market_slug"]] = d
+                        if r["lname"]:
+                            snap[r["lname"]] = d
+                except Exception:
+                    try: c.rollback()
+                    except Exception: pass
+
+            # (b) current composite DCPI (0-100) so dcpi_at_save has a live
+            # counterpart — same derivation as the /lp/saved/<id> detail view.
+            comp = {}
+            if slugs:
+                try:
+                    cur.execute("""
+                        SELECT DISTINCT ON (LOWER(market_slug))
+                               LOWER(market_slug) AS mslug,
+                               LOWER(market_name) AS mname,
+                               excess_power_score, constraint_score,
+                               time_to_power_months, verdict
+                          FROM market_power_scores
+                         WHERE LOWER(market_slug) = ANY(%s)
+                            OR LOWER(market_name) = ANY(%s)
+                         ORDER BY LOWER(market_slug), computed_at DESC
+                    """, (list(slugs), list(names)))
+                    from routes.dcpi import derive_composite_score
+                    for r in cur.fetchall():
+                        try:
+                            v = round(float(derive_composite_score(
+                                r["excess_power_score"], r["constraint_score"],
+                                r["time_to_power_months"], r["verdict"])), 1)
+                        except Exception:
+                            continue
+                        comp[r["mslug"]] = v
+                        if r["mname"]:
+                            comp[r["mname"]] = v
+                except Exception:
+                    try: c.rollback()
+                    except Exception: pass
+
+            # (c) armed alerts + fired-in-window per site
+            alerts = {}
+            try:
+                cur.execute("""
+                    SELECT saved_site_id,
+                           COUNT(*) FILTER (WHERE enabled) AS armed,
+                           COUNT(*) FILTER (WHERE last_fired_at > %s) AS fired,
+                           MAX(last_fired_at) AS last_fired
+                      FROM saved_lp_alerts
+                     WHERE user_id = %s
+                     GROUP BY saved_site_id
+                """, (since_dt, user_id))
+                for r in cur.fetchall():
+                    alerts[int(r["saved_site_id"])] = {
+                        "armed": int(r["armed"] or 0),
+                        "fired": int(r["fired"] or 0),
+                        "last_fired": r["last_fired"].isoformat() if r["last_fired"] else None,
+                    }
+            except Exception:
+                try: c.rollback()
+                except Exception: pass
+
+            # (d) new facilities in the window (fleet filter per canonical
+            # formula), matched to sites in Python — one query, not N.
+            nearby = {}
+            try:
+                cur.execute("""
+                    SELECT name, state, latitude, longitude, capacity_mw
+                      FROM discovered_facilities
+                     WHERE created_at > %s AND COALESCE(is_duplicate, 0) = 0
+                       AND latitude IS NOT NULL AND longitude IS NOT NULL
+                     ORDER BY created_at DESC LIMIT 300
+                """, (since_dt,))
+                new_fac = [dict(r) for r in cur.fetchall()]
+                if new_fac:
+                    nearby = _match_new_facilities(sites, new_fac)
+            except Exception:
+                try: c.rollback()
+                except Exception: pass
+    except Exception:
+        return None
+    finally:
+        try: c.close()
+        except Exception: pass
+
+    total_armed = 0
+    for s in sites:
+        key_slug, key_name = _market_match_keys(s.get("market"))
+        sn = snap.get(key_slug) or snap.get(key_name)
+        if sn:
+            if sn.get("now_v") is not None:
+                s["verdict_now"] = sn["now_v"]
+            if sn.get("prev_v") is not None:
+                s["verdict_was"] = sn["prev_v"]
+            if sn.get("now_v") and sn.get("prev_v"):
+                s["verdict_changed"] = sn["now_v"] != sn["prev_v"]
+            if sn.get("now_e") is not None and sn.get("prev_e") is not None:
+                s["excess_power_delta_window"] = round(float(sn["now_e"]) - float(sn["prev_e"]), 1)
+        cv = comp.get(key_slug) or comp.get(key_name)
+        if cv is not None:
+            s["dcpi_now"] = cv
+            if s.get("dcpi_at_save") is not None:
+                s["dcpi_delta_since_save"] = round(cv - float(s["dcpi_at_save"]), 1)
+        al = alerts.get(s["id"])
+        if al:
+            s["alerts_armed"] = al["armed"]
+            total_armed += al["armed"]
+            if al["fired"]:
+                s["alerts_fired_window"] = al["fired"]
+            if al["last_fired"]:
+                s["last_alert_fired_at"] = al["last_fired"]
+        if nearby.get(s["id"]):
+            s["new_facilities_nearby"] = nearby[s["id"]]
+        s["moved"] = _site_movement(s)
+
+    moved = [s for s in sites if s["moved"]]
+    _MOVED_FIELDS = ("id", "name", "market", "state", "verdict_was",
+                     "verdict_now", "verdict_changed",
+                     "excess_power_delta_window", "dcpi_now",
+                     "dcpi_delta_since_save", "alerts_fired_window",
+                     "new_facilities_nearby")
+    return {
+        "saved_sites": len(sites),
+        "alerts_armed": total_armed,
+        "since": since_dt.isoformat(),
+        "moved_count": len(moved),
+        "moved": [{k: s[k] for k in _MOVED_FIELDS if s.get(k) is not None}
+                  for s in moved[:10]],
+        "sites": sites,
+    }
+
+
 # ── REST endpoints ────────────────────────────────────────────────
 
 @lp_sites_bp.route("/api/v1/lp/save", methods=["POST"])
@@ -321,7 +616,33 @@ def lp_save():
     if c is None: return jsonify(error="no_database"), 503
     try:
         _ensure_schema(c)
+        # r-portfolio (2026-07-11): self-derive the DCPI baseline when the
+        # caller didn't pass one. The MCP save_site tool never sends
+        # dcpi_score_at_save, so every agent-saved site had a NULL baseline
+        # and "your site's score moved since you saved it" could never fire.
+        # Same derivation as the /lp/saved/<id> detail view; fail-soft.
+        if dcpi_score is None and market:
+            try:
+                _slug, _name = _market_match_keys(market)
+                with c.cursor() as cur:
+                    cur.execute("""
+                        SELECT excess_power_score, constraint_score,
+                               time_to_power_months, verdict
+                          FROM market_power_scores
+                         WHERE LOWER(market_name) = %s OR LOWER(market_slug) = %s
+                         ORDER BY computed_at DESC LIMIT 1
+                    """, (_name, _slug))
+                    r = cur.fetchone()
+                    if r:
+                        from routes.dcpi import derive_composite_score
+                        dcpi_score = int(round(float(derive_composite_score(
+                            r[0], r[1], r[2], r[3]))))
+            except Exception:
+                try: c.rollback()
+                except Exception: pass
         with c.cursor() as cur:
+            # ON CONFLICT keeps the ORIGINAL baseline (deltas measure from
+            # first save) but backfills it when the existing row has NULL.
             cur.execute("""
                 INSERT INTO saved_lp_sites
                   (user_id, name, latitude, longitude, state, market,
@@ -332,7 +653,9 @@ def lp_save():
                       state = EXCLUDED.state,
                       market = EXCLUDED.market,
                       notes = EXCLUDED.notes,
-                      target_mw = EXCLUDED.target_mw
+                      target_mw = EXCLUDED.target_mw,
+                      dcpi_score_at_save = COALESCE(saved_lp_sites.dcpi_score_at_save,
+                                                    EXCLUDED.dcpi_score_at_save)
                 RETURNING id, saved_at
             """, (user_id, name, lat, lon, state, market, notes,
                   target_mw, dcpi_score))
@@ -346,6 +669,26 @@ def lp_save():
         try: c.close()
         except Exception: pass
     return jsonify(ok=False, error="save_failed"), 500
+
+
+def _parse_since_param(raw):
+    """Parse an optional ?since= ('24h'/'7d' shorthand or ISO-8601) into a
+    tz-aware datetime, or None (caller defaults). Mirrors changes_feed."""
+    if not raw:
+        return None
+    now = datetime.datetime.now(datetime.timezone.utc)
+    try:
+        s = str(raw).strip().lower()
+        if s.endswith("h") and s[:-1].isdigit():
+            return now - datetime.timedelta(hours=int(s[:-1]))
+        if s.endswith("d") and s[:-1].isdigit():
+            return now - datetime.timedelta(days=int(s[:-1]))
+        dt = datetime.datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=datetime.timezone.utc)
+        return dt
+    except Exception:
+        return None
 
 
 @lp_sites_bp.route("/api/v1/lp/saved", methods=["GET"])
@@ -384,7 +727,55 @@ def lp_list_saved():
             "dcpi_score_at_save": int(r["dcpi_score_at_save"]) if r["dcpi_score_at_save"] is not None else None,
             "saved_at":   r["saved_at"].isoformat() if r["saved_at"] else None,
         })
-    return jsonify(saved=out, count=len(out)), 200
+
+    # r-portfolio (2026-07-11): the static read-back answered "what did I
+    # save?" but not the returning agent's real question — "what MOVED?".
+    # Merge per-site deltas (verdict flip, excess-power move, alerts fired,
+    # new facilities nearby) + a compact summary. ?since=24h/7d/ISO sets the
+    # window (default 7d). Fully fail-soft: enrichment failure returns the
+    # plain list exactly as before.
+    payload = {"saved": out, "count": len(out)}
+    if out:
+        try:
+            pf = portfolio_snapshot(
+                user_id, since_dt=_parse_since_param(request.args.get("since")),
+                max_sites=500)
+            if pf and pf.get("sites"):
+                _ENRICH = ("verdict_now", "verdict_was", "verdict_changed",
+                           "excess_power_delta_window", "dcpi_now",
+                           "dcpi_delta_since_save", "alerts_armed",
+                           "alerts_fired_window", "last_alert_fired_at",
+                           "new_facilities_nearby", "moved")
+                by_id = {s["id"]: s for s in pf["sites"]}
+                for row in out:
+                    e = by_id.get(row["id"])
+                    if e:
+                        for k in _ENRICH:
+                            if e.get(k) is not None:
+                                row[k] = e[k]
+                summary = {
+                    "saved_sites": pf.get("saved_sites"),
+                    "alerts_armed": pf.get("alerts_armed"),
+                    "moved_count": pf.get("moved_count"),
+                    "since": pf.get("since"),
+                }
+                if pf.get("moved_count"):
+                    _mv = [s["name"] for s in pf.get("moved", [])[:3] if s.get("name")]
+                    summary["agent_hint"] = (
+                        f"{pf['moved_count']} of your {pf['saved_sites']} saved "
+                        f"site(s) moved in this window"
+                        + (f" ({', '.join(_mv)})" if _mv else "")
+                        + " — rows carry verdict_was/verdict_now + deltas.")
+                unalerted = [r["id"] for r in out if not r.get("alerts_armed")]
+                if unalerted:
+                    summary["unwatched_site_ids"] = unalerted[:20]
+                    summary["arm_hint"] = (
+                        "Sites without an alert armed — set_site_alert on these "
+                        "ids emails your human the moment one moves.")
+                payload["portfolio"] = summary
+        except Exception:
+            pass
+    return jsonify(**payload), 200
 
 
 # Phase QQQQ + GGGG consolidated handler — single decorator for both

@@ -261,13 +261,55 @@ def changes_since():
     except Exception as e:
         payload["error_partial"] = str(e)[:200]
 
+    # r-portfolio (2026-07-11): the feed was 100% GLOBAL — an agent with a
+    # saved Phoenix site got California movers and no mention its own
+    # portfolio existed. For identified callers, overlay per-saved-site
+    # deltas (verdict flips, excess-power moves, alerts fired, new
+    # facilities nearby) since the SAME `since` the agent passed. This is
+    # the retention answer nothing else provides: "did MY sites move?".
+    # Fail-soft: any failure and the response is exactly the global feed.
+    portfolio = None
+    try:
+        from routes.lp_sites import _user_id_from_request, portfolio_snapshot
+        uid = _user_id_from_request()
+        if uid:
+            pf = portfolio_snapshot(uid, since_dt=since)
+            if pf is not None:
+                if pf.get("saved_sites"):
+                    pf.pop("sites", None)   # feed carries the movers, not the roster
+                    portfolio = pf
+                    counts["portfolio_sites_moved"] = int(pf.get("moved_count") or 0)
+                else:
+                    portfolio = {
+                        "saved_sites": 0,
+                        "hint": ("You have no saved sites yet — save_site "
+                                 "persists candidates to your key, and this "
+                                 "feed will then lead with per-site deltas "
+                                 "(verdict flips, score moves, alerts fired) "
+                                 "instead of only global movers."),
+                    }
+    except Exception:
+        portfolio = None
+
     payload["counts"] = counts
     payload["total_changes"] = sum(counts.values())
+    if portfolio is not None:
+        payload["portfolio"] = portfolio
     payload["diff"] = diff
-    payload["agent_tip"] = (
+    _tip = (
         "Cache this response's `generated_at`. On your next session, "
         "pass it back as `?since=<that-value>` to get only what's new. "
         "If total_changes is 0, your previous full pull is still fresh.")
+    if portfolio and portfolio.get("moved_count"):
+        _names = [m["name"] for m in portfolio.get("moved", [])[:3] if m.get("name")]
+        _tip = (f"{portfolio['moved_count']} of your {portfolio['saved_sites']} "
+                f"saved site(s) moved since {payload['since'][:10]}"
+                + (f" — {', '.join(_names)}" if _names else "")
+                + ". See `portfolio.moved` for verdict/score deltas. " + _tip)
+    elif portfolio and portfolio.get("saved_sites"):
+        _tip = (f"None of your {portfolio['saved_sites']} saved site(s) moved "
+                f"in this window (alerts stay armed). " + _tip)
+    payload["agent_tip"] = _tip
     payload["drill_deeper"] = {
         "pipeline_full":      "/api/v1/pipeline",
         "news_full":          "/api/v1/news",
