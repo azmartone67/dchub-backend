@@ -34201,6 +34201,16 @@ try:
 except Exception as _e:
     print(f"[main] auto_trial register failed: {_e}", file=sys.stderr)
 
+# r-retirement-headroom (2026-07-11, Gemini co-design r3): deterministic
+# retirement-adjacency scan — filed EIA-860M retirements + substations +
+# queue pressure + handoff. Data via eia_retirements.py (monthly job).
+try:
+    from routes.retirement_headroom import retirement_headroom_bp
+    app.register_blueprint(retirement_headroom_bp)
+    print("[main] retirement_headroom_bp registered: GET /api/v1/retirement-headroom")
+except Exception as _e:
+    print(f"[main] retirement_headroom register failed: {_e}", file=sys.stderr)
+
 # r-my-agent (2026-07-11): self-serve "what did my agent do" dashboard —
 # /my-agent page + GET /api/v1/my/usage (key-scoped query log from
 # mcp_call_log). Retention hook for the email-bind funnel gap.

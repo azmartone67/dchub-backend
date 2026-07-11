@@ -424,6 +424,33 @@ def job_site_baseline():
         return jsonify({'success': False, 'job': 'site-baseline', 'error': str(e)}), 500
 
 
+@jobs_bp.route('/api/jobs/eia-retirements', methods=['POST'])
+def job_eia_retirements():
+    """Cron (monthly) + manual backfill: EIA-860M planned-retirement ingest —
+    the data layer behind /api/v1/retirement-headroom (Gemini co-design r3).
+    Async: pages ~28k generator rows from the EIA API (~1-3 min)."""
+    auth_err = _require_admin_key()
+    if auth_err:
+        return auth_err
+    try:
+        from eia_retirements import run_eia_retirements_ingest
+        import threading
+        threading.Thread(target=run_eia_retirements_ingest,
+                         name='eia-retirements-ingest', daemon=True).start()
+        _reg_update('eia_retirements')
+        logger.info("JOB eia-retirements: ✅ ingest spawned")
+        return jsonify({'success': True, 'job': 'eia-retirements',
+                        'result': 'ingest started (async, ~1-3 min)',
+                        'ts': datetime.utcnow().isoformat()})
+    except ImportError:
+        return jsonify({'success': True, 'job': 'eia-retirements',
+                        'skipped': 'eia_retirements not available',
+                        'ts': datetime.utcnow().isoformat()})
+    except Exception as e:
+        logger.error("JOB eia-retirements: ❌ %s", e)
+        return jsonify({'success': False, 'job': 'eia-retirements', 'error': str(e)}), 500
+
+
 @jobs_bp.route('/api/jobs/ai-ecosystem', methods=['POST'])
 def job_ai_ecosystem():
     """Cron: AI Ecosystem Agent enrichment cycle"""
