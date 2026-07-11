@@ -1447,6 +1447,10 @@ _WORKER_PROXY_POST_PATHS = frozenset({
     # on it → worker-owned. eia-retirements pages ~28k EIA rows — same deal.
     '/api/jobs/site-baseline',
     '/api/jobs/eia-retirements',
+    '/api/jobs/model-relations',   # r-model-relations (2026-07-11): the
+                                   # platform-eval tick = up to 5 platforms x
+                                   # 8 LLM round-trips x origin self-calls —
+                                   # worker-owned, same class as site-baseline.
     # r-poolfix (2026-07-04): the remaining brain + master-shell heartbeat
     # ticks ran in-process on the web pool and drove the 03:17-herd 80/80
     # saturation. Same rationale as brain/sentinel above — worker-owned
@@ -34233,6 +34237,17 @@ try:
     print("[main] retirement_headroom_bp registered: GET /api/v1/retirement-headroom")
 except Exception as _e:
     print(f"[main] retirement_headroom register failed: {_e}", file=sys.stderr)
+
+# r-model-relations (2026-07-11): the platform-eval loop as a master shell —
+# POST /api/jobs/model-relations tick (worker-proxied) + admin review queue.
+# NEVER publishes; verdicts are human-reviewed, publication stays consent-gated.
+try:
+    from routes.model_relations_routes import model_relations_bp
+    app.register_blueprint(model_relations_bp)
+    print("[main] model_relations_bp registered: POST /api/jobs/model-relations "
+          "+ GET /api/v1/admin/model-relations/status")
+except Exception as _e:
+    print(f"[main] model_relations register failed: {_e}", file=sys.stderr)
 
 # r-my-agent (2026-07-11): self-serve "what did my agent do" dashboard —
 # /my-agent page + GET /api/v1/my/usage (key-scoped query log from
