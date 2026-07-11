@@ -9,8 +9,11 @@ verbs, Perplexity surfaces them as citation-source titles.
 This module:
   1. Stores per-(platform, tool_name) description overrides in
      `mcp_tool_descriptions_per_platform` (schema in schema_repair.py).
-  2. Exposes a Claude-driven generator that produces 50 initial variants
-     (top-10 tools × top-5 platforms).
+  2. Exposes a Claude-driven generator that produces the initial variants
+     (top-10 tools × tuned platforms — 5 seeded 2026-06-07, expanded to 11
+     on 2026-07-11: +gemini/grok/copilot/meta/deepseek/mistral, driven by
+     the Agent-Enablement Portal's live request mix — Meta AI is the #3
+     requester with zero prior enablement).
   3. Exposes a read endpoint /api/v1/mcp/tool-descriptions?platform=X
      that the MCP server hits at tool/list time. Falls back to the
      generic description when no override exists.
@@ -34,7 +37,8 @@ Endpoints:
 
 Safety:
   * Kill switch: AI_AGENT_EXPANSION_DISABLE=1
-  * Seed is bounded: at most 50 Claude calls per /seed invocation
+  * Seed is bounded: at most len(TOP_10_TOOLS) × len(TUNED_PLATFORMS)
+    Claude calls per /seed invocation (110 at 11 platforms)
   * Read endpoint is public (descriptions are not secret) but cached 5min
   * Generator is admin-keyed
 """
@@ -75,7 +79,7 @@ def _disabled() -> bool:
     return os.environ.get("AI_AGENT_EXPANSION_DISABLE", "").strip() == "1"
 
 
-# ── Config: top-10 tools + top-5 platforms ───────────────────────────
+# ── Config: top-10 tools + tuned platforms ───────────────────────────
 TOP_10_TOOLS = [
     "search_facilities",
     "get_facility",
@@ -90,7 +94,14 @@ TOP_10_TOOLS = [
 ]
 
 # Each entry: (canonical name, lowercase aliases for UA-sniff, voice cue)
-TOP_5_PLATFORMS = [
+# 2026-07-11 EXPANSION: 5 → 11 platforms (+gemini, grok, copilot, meta,
+# deepseek, mistral). Rationale: live 7d request mix has Meta AI at #3
+# (32K req/wk) with zero enablement, and the portal's weakest onboarding
+# scores include Mistral (41.2), Grok (51.8), Gemini (55.0). Aliases must
+# stay lowercase; they are matched BOTH as exact platform tags (see
+# main.py MCP_PLATFORM_MAP canonicalization → lowercased in
+# _outcome_signal) and as UA substrings.
+TUNED_PLATFORMS = [
     ("claude",     ["claude", "anthropic", "claude-desktop", "claudebot"],
      "Anthropic Claude · concise, factual, terms-of-art aware; "
      "Claude expects 'tool that does X' phrasing."),
@@ -106,18 +117,48 @@ TOP_5_PLATFORMS = [
     ("perplexity", ["perplexity", "perplexitybot"],
      "Perplexity Answer Engine · descriptions surface as citation "
      "source titles. Treat them like a 1-line search result."),
+    # ── 2026-07-11 expansion wave ────────────────────────────────────
+    ("gemini",     ["gemini", "google-gemini", "gemini-cli", "google-genai",
+                    "vertex"],
+     "Google Gemini · descriptions read like typed function declarations; "
+     "state capability, scope, and what comes back in plain spec-like "
+     "language — Gemini selects on explicit parameter/result clarity."),
+    ("grok",       ["grok", "xai", "grokbot"],
+     "xAI Grok · direct, no-hedge phrasing; lead with the live/real-time "
+     "angle — Grok favors tools that promise current signals over archives."),
+    ("copilot",    ["copilot", "ms-copilot", "microsoft-copilot", "bingchat"],
+     "Microsoft Copilot · enterprise assistant inside Office/365 and Bing "
+     "workflows; frame outputs as business-ready answers (markets, costs, "
+     "risk) with plugin-style action verbs."),
+    ("meta",       ["meta", "meta-ai", "metaai", "llama-stack",
+                    "meta-externalagent", "meta-externalfetcher"],
+     "Meta AI / Llama · llama-stack tool runtime feeds descriptions "
+     "verbatim into small agent contexts; short, literal, verb-first — "
+     "say exactly what the tool returns, no flourish."),
+    ("deepseek",   ["deepseek", "deepseek-chat", "deepseek-coder"],
+     "DeepSeek · OpenAI-compatible function calling with an engineering-"
+     "heavy user base; terse spec-style wording with concrete nouns and "
+     "counts beats marketing phrasing."),
+    ("mistral",    ["mistral", "lechat", "le-chat", "le chat"],
+     "Mistral Le Chat / Agents API · connector tools surface with minimal "
+     "chrome; one compact sentence with explicit data scope wins tool "
+     "selection."),
 ]
 
+# Back-compat alias — the seed shipped 2026-06-07 as literally the top-5;
+# keep the old name pointing at the full tuned list.
+TOP_5_PLATFORMS = TUNED_PLATFORMS
 
-PLATFORM_MAP = {alias: canon for canon, aliases, _ in TOP_5_PLATFORMS for alias in aliases}
+
+PLATFORM_MAP = {alias: canon for canon, aliases, _ in TUNED_PLATFORMS for alias in aliases}
 
 
 def _platform_from_ua(ua: str) -> str | None:
-    """Lower-case substring match against TOP_5_PLATFORMS."""
+    """Lower-case substring match against TUNED_PLATFORMS."""
     if not ua:
         return None
     low = ua.lower()
-    for canon, aliases, _ in TOP_5_PLATFORMS:
+    for canon, aliases, _ in TUNED_PLATFORMS:
         for a in aliases:
             if a in low:
                 return canon
@@ -282,7 +323,7 @@ def _outcome_signal(c) -> dict:
     this returned {} on every reseed (a silent no-op that never surfaced). Repoint
     to mcp_tool_calls, whose platform + client_name are populated by the live MCP
     gateway (see main.py schema / flask_mcp_endpoints insert). Canonicalize the
-    raw platform/client_name to one of the 5 tuned platforms; rows we can't map
+    raw platform/client_name to one of the TUNED_PLATFORMS; rows we can't map
     are dropped (best-effort signal only), so an all-'mcp'/'unknown' table simply
     yields {} and the rewrites behave exactly as no-signal."""
     out: dict = {}
@@ -517,9 +558,11 @@ def get_tool_descriptions():
 @ai_platform_tool_tuner_bp.route("/api/v1/admin/mcp/tool-tuner/seed",
                                  methods=["POST"])
 def seed_variants():
-    """Generate the 50 initial per-platform variants (top-10 tools × top-5
-    platforms). Bounded; idempotent; skips entries that already exist
-    unless ?force=1 is set."""
+    """Generate the initial per-platform variants (top-10 tools × the
+    TUNED_PLATFORMS list — 110 cells at 11 platforms). Bounded; idempotent;
+    skips entries that already exist unless ?force=1 is set — so after the
+    2026-07-11 platform expansion a plain (no-force) seed fills ONLY the
+    six new platforms and leaves the 5 seeded ones untouched."""
     if not _admin_ok():
         return jsonify(ok=False, error="forbidden"), 403
     if _disabled():
@@ -564,7 +607,7 @@ def seed_variants():
     jobs = []  # (canon, tool_name, generic, voice)
     for tool_name in TOP_10_TOOLS:
         generic = canonical.get(tool_name, tool_name)
-        for canon, _aliases, voice in TOP_5_PLATFORMS:
+        for canon, _aliases, voice in TUNED_PLATFORMS:
             if (canon, tool_name) in existing and not force:
                 skipped.append({"platform": canon, "tool": tool_name,
                                 "reason": "already_exists"})
@@ -677,12 +720,12 @@ def coverage():
         _ensure_table(c)
         all_tuned = _load_all_tuned(c)
         matrix = {}
-        for canon, _, _ in TOP_5_PLATFORMS:
+        for canon, _, _ in TUNED_PLATFORMS:
             row = {}
             for tool in TOP_10_TOOLS:
                 row[tool] = (canon in all_tuned and tool in all_tuned[canon])
             matrix[canon] = row
-        total_cells = len(TOP_5_PLATFORMS) * len(TOP_10_TOOLS)
+        total_cells = len(TUNED_PLATFORMS) * len(TOP_10_TOOLS)
         filled = sum(1 for canon in matrix for t in matrix[canon] if matrix[canon][t])
         # Per-platform freshness — the whole point of the reseed. A fresh, non-
         # cached read so a monitor can assert every platform's newest row is
@@ -710,16 +753,17 @@ def coverage():
         return jsonify(ok=True, total_cells=total_cells, filled=filled,
                        percent=round(100 * filled / max(total_cells, 1), 1),
                        matrix=matrix, freshness=freshness, top_tools=TOP_10_TOOLS,
-                       top_platforms=[p for p, _, _ in TOP_5_PLATFORMS])
+                       top_platforms=[p for p, _, _ in TUNED_PLATFORMS])
     finally:
         _put_db(c)
 
 
 # ── Smoke ────────────────────────────────────────────────────────────
 def _smoke():
-    logger.info("[ai_platform_tool_tuner] loaded · disabled=%s · 50 cells "
+    logger.info("[ai_platform_tool_tuner] loaded · disabled=%s · %d cells "
                 "(%d tools × %d platforms)", _disabled(),
-                len(TOP_10_TOOLS), len(TOP_5_PLATFORMS))
+                len(TOP_10_TOOLS) * len(TUNED_PLATFORMS),
+                len(TOP_10_TOOLS), len(TUNED_PLATFORMS))
 
 
 _smoke()
