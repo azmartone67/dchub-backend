@@ -543,6 +543,33 @@ def _extract_og_image_url(page_url):
         return None
 
 
+# 2026-07-11 (LinkedIn queue-drain audit): valid image magic numbers. The CF
+# worker's failover layer was serving og-card PNGs whose bytes had been
+# text-decoded upstream — every non-ASCII byte replaced with the UTF-8
+# replacement char (b'\xef\xbf\xbd'), so the PNG signature read
+# b'\xef\xbf\xbdPNG' instead of b'\x89PNG'. Those bytes pass the size check,
+# upload fine (PUT 201), then die ASYNC in LinkedIn's processor
+# (PROCESSING_FAILED), burning 3 full re-init/re-PUT/poll retries (~40-60s and
+# LinkedIn image-API quota) per attempt — verified live against
+# /dcpi/og/papillion.png on 2026-07-11. Reject non-images BEFORE upload so the
+# publisher falls straight through to the next (valid) image source.
+_IMAGE_MAGIC_PREFIXES = (
+    b'\x89PNG\r\n\x1a\n',   # PNG
+    b'\xff\xd8\xff',        # JPEG
+    b'GIF87a', b'GIF89a',   # GIF
+)
+
+
+def _looks_like_image_bytes(data) -> bool:
+    """True when `data` starts with a PNG/JPEG/GIF/WebP signature."""
+    if not data or len(data) < 12:
+        return False
+    if any(data.startswith(m) for m in _IMAGE_MAGIC_PREFIXES):
+        return True
+    # WebP: RIFF....WEBP
+    return data[:4] == b'RIFF' and data[8:12] == b'WEBP'
+
+
 def _fetch_image_bytes_for_linkedin(image_url):
     """r51 (2026-05-29): fetch image bytes for LinkedIn asset upload.
 
@@ -550,6 +577,10 @@ def _fetch_image_bytes_for_linkedin(image_url):
     images <1KB (transparent gif fallbacks) and >5MB. Pattern lifted
     from routes/linkedin_quad_daily.py:_fetch_image_bytes (proven
     working in the 4×/day quad publisher).
+
+    2026-07-11: also validates magic bytes — a 200 image/png response whose
+    body is NOT a real image (the worker-failover mojibake corruption) is
+    rejected here instead of dying async in LinkedIn's image processor.
     """
     if not image_url:
         return None
@@ -561,6 +592,13 @@ def _fetch_image_bytes_for_linkedin(image_url):
             return None
         data = r.content
         if not (1000 < len(data) < 5_000_000):
+            return None
+        if not _looks_like_image_bytes(data):
+            logger.warning(
+                "image bytes from %s are not a valid PNG/JPEG/GIF/WebP "
+                "(first bytes=%r) — likely text-decoded/corrupt upstream "
+                "(worker-failover mojibake); skipping upload", image_url,
+                data[:8])
             return None
         return data
     except Exception:
@@ -724,6 +762,28 @@ def _is_recent_linkedin_duplicate(content_text, days=7):
     except Exception as e:
         logger.warning("[LinkedIn] dup-check failed (fail-open): %s", e)
         return False
+
+
+# 2026-07-11 (LinkedIn queue-drain audit): _post_to_linkedin has TWO distinct
+# failure shapes — (False, {'error': <gate>, 'reason': ...}) for its own
+# editorial-gate refusals (quality / policy / duplicate), and (False, "LinkedIn
+# API error ...") strings for real transport/API errors. The drain used to
+# mark BOTH 'failed', so the queue-flood repeats that the duplicate gate
+# correctly refused showed up as 21 "publish failures" in 7d (all
+# market-verdict posts) while auth/API were perfectly healthy. Gate refusals
+# are content-intrinsic — retrying the same row can NEVER succeed — so they
+# belong in the r78 terminal 'rejected' state, not 'failed'.
+_LI_GATE_ERRORS = ('content_quality_gate', 'editorial_policy_gate',
+                   'duplicate_gate')
+
+
+def _li_gate_refusal(result):
+    """Return 'gate: reason' when a (False, result) from _post_to_linkedin is
+    an editorial-gate refusal (content-intrinsic; never passes on retry),
+    else None (a real API/transport error that deserves status='failed')."""
+    if isinstance(result, dict) and result.get('error') in _LI_GATE_ERRORS:
+        return f"{result.get('error')}: {str(result.get('reason') or '')[:200]}"
+    return None
 
 
 def _post_to_linkedin(content_text, access_token, article_url=None,
@@ -3327,11 +3387,29 @@ def start_auto_publisher():
                             # rotates to a DIFFERENT topic in the same drain.
                             _skip, _why = _should_skip_publish(cur, _ctext or '', 'linkedin')
                             if _skip:
+                                _cand_id = (_cand.get('id') if hasattr(_cand, 'get') else (_cand[0] if _cand else None))
                                 logger.warning(
                                     "Auto-publisher: SKIPPED LinkedIn candidate %s for dedup/judgment — %s",
-                                    (_cand.get('id') if hasattr(_cand, 'get') else (_cand[0] if _cand else '?')),
-                                    _why)
+                                    _cand_id if _cand_id is not None else '?', _why)
                                 _record_media_block('linkedin', _why, _ctext)   # r66 evolving loop
+                                # 2026-07-11: r78 parity with the Twitter/Bluesky
+                                # loops — _should_skip_publish reasons are
+                                # content-intrinsic (quality/editor/dup-vs-
+                                # published) and never pass on retry, so mark the
+                                # row TERMINAL 'rejected'. Before this, skipped
+                                # candidates stayed 'approved' forever: the same
+                                # ~39-row backlog was re-judged (editor-LLM cost
+                                # included) every 6h fire while aging toward the
+                                # 14d TTL sweep, and the queue looked permanently
+                                # sick. The time-scoped class/hook checks ABOVE
+                                # keep their non-terminal `continue`.
+                                if _cand_id is not None:
+                                    try:
+                                        cur.execute("UPDATE social_media_posts SET status = 'rejected' WHERE id = %s", (_cand_id,))
+                                        conn.commit()
+                                    except Exception:
+                                        note_swallowed_write("social_media_posts", where="content_publisher._auto_publish_loop.skip_reject")
+                                        pass
                                 _filtered_skips += 1
                                 continue
                             row = _cand
@@ -3424,15 +3502,39 @@ def start_auto_publisher():
                             logger.info(f"Auto-published post {post_id} to LinkedIn (drain {_attempts+1}/{_drain_budget}, queued={_queued}, urn={result})")
                             _record_attempt("linkedin", "ok")
                         else:
-                            logger.warning(f"Auto-publish failed for post {post_id}: {result}")
-                            _record_attempt("linkedin", "error",
-                                             error_class=_classify_publish_error(result))
-                            try:
-                                cur.execute("UPDATE social_media_posts SET status = 'failed' WHERE id = %s", (post_id,))
-                                conn.commit()
-                            except Exception:
-                                note_swallowed_write("social_media_posts", where="content_publisher._auto_publish_loop")
-                                pass
+                            # 2026-07-11: split editorial-gate refusals from real
+                            # API errors. Refusals (quality/policy/duplicate gates
+                            # inside _post_to_linkedin) are content-intrinsic and
+                            # never pass on retry → terminal 'rejected' (r78
+                            # contract), recorded to the media-review loop so the
+                            # generator learns. 'failed' is reserved for actual
+                            # API/transport errors so failure metrics mean
+                            # something again (21/21 "failures" in the 07-11
+                            # audit were duplicate-gate refusals of queue-flood
+                            # repeats, not publish errors).
+                            _refusal = _li_gate_refusal(result)
+                            if _refusal:
+                                logger.warning(
+                                    "Auto-publisher: REJECTED post %s (gate refusal, not an error) — %s",
+                                    post_id, _refusal)
+                                _record_media_block('linkedin', _refusal, content_text or '')
+                                _record_attempt("linkedin", "refused_gate")
+                                try:
+                                    cur.execute("UPDATE social_media_posts SET status = 'rejected' WHERE id = %s", (post_id,))
+                                    conn.commit()
+                                except Exception:
+                                    note_swallowed_write("social_media_posts", where="content_publisher._auto_publish_loop")
+                                    pass
+                            else:
+                                logger.warning(f"Auto-publish failed for post {post_id}: {result}")
+                                _record_attempt("linkedin", "error",
+                                                 error_class=_classify_publish_error(result))
+                                try:
+                                    cur.execute("UPDATE social_media_posts SET status = 'failed' WHERE id = %s", (post_id,))
+                                    conn.commit()
+                                except Exception:
+                                    note_swallowed_write("social_media_posts", where="content_publisher._auto_publish_loop")
+                                    pass
                         _attempts += 1
                         if _attempts < _drain_budget:
                             time.sleep(8)

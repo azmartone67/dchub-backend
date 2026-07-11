@@ -11,9 +11,11 @@ This module fills the queue continuously:
   POST /api/v1/content-engine/enqueue
        — Reuses the topic builders from linkedin_quad_daily +
          the narrative arc to drop 3 rows (linkedin + twitter +
-         bluesky) on every call. Idempotent within a 4-hour window
-         (so the cron firing every 2h enqueues fresh content but
-         doesn't spam the queue if something stalls).
+         bluesky) on every call. Idempotent on the shaped content's
+         normalized opening within a 7-day window (2026-07-11: was a
+         broken 4h topic_key LIKE that never matched — see
+         _DEDUP_WINDOW_HOURS), so the 2h cron keeps the queue primed
+         without flooding it with identical copies.
 
   GET  /api/v1/content-engine/status
        — Snapshot: queue depth per platform, posts published in
@@ -44,8 +46,33 @@ from routes._swallowed_writes import note_swallowed_write
 content_enqueue_bp = Blueprint("content_enqueue", __name__)
 
 
-# Don't enqueue the same (platform, topic_key) twice within this window
-_DEDUP_WINDOW_HOURS = 4
+# Don't enqueue the same post content twice within this window.
+#
+# 2026-07-11 (LinkedIn queue-drain audit): was 4h keyed on a "slug:VERDICT"
+# topic_key matched with content LIKE '%slug:VERDICT%' — a substring that NEVER
+# appears in any shaped post (content carries ".../dcpi/<slug>" and "rates
+# BUILD", never "slug:BUILD"), so the dedup NEVER fired and the 2h cron
+# enqueued the SAME market copy 8-10x/week (Papillion alone: 8 identical rows).
+# The publish-side duplicate gate (content_publisher._is_recent_linkedin_
+# duplicate, 7d window on the normalized opening) then correctly refused every
+# repeat, and the drain marked them 'failed' — 21 bogus "failures" in 7 days.
+# Fix: dedup on the SAME key the publish gate uses (normalized content
+# opening) over the SAME 7-day window, so we never enqueue a row the
+# publisher is guaranteed to refuse. A market whose score CHANGES gets a new
+# opening (the score is embedded in the first sentence) and re-enqueues fine.
+_DEDUP_WINDOW_HOURS = 168
+
+
+def _content_dedup_key(content: str, n: int = 60) -> str:
+    """First `n` chars of whitespace-normalized content — same style of key as
+    the publish-side duplicate gate (first-80 normalized), so enqueue-side and
+    publish-side can never disagree about what "the same post" means."""
+    return " ".join((content or "").split())[:n]
+
+
+def _like_escape(s: str) -> str:
+    """Escape LIKE wildcards so content chars can't wildcard-match."""
+    return (s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_"))
 
 
 def _db_conn():
@@ -461,8 +488,18 @@ def _shape_agent_pitch_bluesky(arc: dict | None = None) -> str:
 
 # ── Dedup + enqueue ─────────────────────────────────────────────────
 
-def _already_enqueued_recently(platform: str, topic_key: str) -> bool:
-    """Did we enqueue same platform+topic within window?"""
+def _already_enqueued_recently(platform: str, content: str) -> bool:
+    """Did we enqueue this same post (by normalized opening) for this platform
+    within the dedup window? Takes the SHAPED content, not a topic key — see
+    the 2026-07-11 note on _DEDUP_WINDOW_HOURS for why (the old topic_key
+    substring never matched any row, so the check was a no-op).
+
+    Prefix-match on the whitespace-normalized opening: every shaped post
+    starts with its market/hook sentence, and the DCPI score embedded there
+    makes a genuinely-new story (score moved) produce a new key. Fail-open."""
+    key = _content_dedup_key(content)
+    if not key:
+        return False
     c = _db_conn()
     if not c: return False
     try:
@@ -470,9 +507,9 @@ def _already_enqueued_recently(platform: str, topic_key: str) -> bool:
             cur.execute("""
                 SELECT COUNT(*) FROM social_media_posts
                  WHERE platform = %s
-                   AND content LIKE %s
+                   AND regexp_replace(btrim(COALESCE(content,'')), '\\s+', ' ', 'g') LIKE %s
                    AND created_at > NOW() - (%s || ' hours')::interval
-            """, (platform, f"%{topic_key[:60]}%", str(_DEDUP_WINDOW_HOURS)))
+            """, (platform, _like_escape(key) + "%", str(_DEDUP_WINDOW_HOURS)))
             n = (cur.fetchone() or [0])[0]
             return int(n or 0) > 0
     except Exception:
@@ -674,11 +711,17 @@ def enqueue():
 
     results = {"enqueued": [], "skipped": []}
 
+    # Dedup is now CONTENT-based (2026-07-11): shape first, then check the
+    # shaped opening against what's already in the queue/published set, so a
+    # market whose copy hasn't changed can't re-enqueue within the window
+    # (the publish-side duplicate gate would refuse the repeat anyway).
+    #
     # LinkedIn — only enqueue if linkedin_quad_daily didn't already
     # fire this slot (lighter dedup since quad-daily writes its own
     # linkedin_quad_posts table; here we just check social_media_posts).
-    if not _already_enqueued_recently("linkedin", topic_key):
-        new_id = _enqueue_post(_shape_linkedin(mover, arc), "linkedin")
+    _li_content = _shape_linkedin(mover, arc)
+    if not _already_enqueued_recently("linkedin", _li_content):
+        new_id = _enqueue_post(_li_content, "linkedin")
         if new_id:
             results["enqueued"].append({"platform": "linkedin", "id": new_id})
         else:
@@ -689,8 +732,9 @@ def enqueue():
                                      "reason": "dedup_hit"})
 
     # Twitter
-    if not _already_enqueued_recently("twitter", topic_key):
-        new_id = _enqueue_post(_shape_twitter(mover, arc), "twitter")
+    _tw_content = _shape_twitter(mover, arc)
+    if not _already_enqueued_recently("twitter", _tw_content):
+        new_id = _enqueue_post(_tw_content, "twitter")
         if new_id:
             results["enqueued"].append({"platform": "twitter", "id": new_id})
         else:
@@ -701,8 +745,9 @@ def enqueue():
                                      "reason": "dedup_hit"})
 
     # Bluesky
-    if not _already_enqueued_recently("bluesky", topic_key):
-        new_id = _enqueue_post(_shape_bluesky(mover, arc), "bluesky")
+    _bs_content = _shape_bluesky(mover, arc)
+    if not _already_enqueued_recently("bluesky", _bs_content):
+        new_id = _enqueue_post(_bs_content, "bluesky")
         if new_id:
             results["enqueued"].append({"platform": "bluesky", "id": new_id})
         else:
