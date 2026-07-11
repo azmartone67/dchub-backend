@@ -273,7 +273,7 @@ def iso_snapshot(iso_code):
             pipeline = _pipeline_for_iso(cur, iso)
             facilities = _facilities_for_iso(cur, iso)
         from routes.tier_gate import jsonify_gated_snapshot
-        return jsonify_gated_snapshot({
+        _payload = {
             "ok": True,
             "iso": iso,
             "heartbeat": heartbeat,
@@ -286,7 +286,23 @@ def iso_snapshot(iso_code):
                 "comparison_with_other_isos": "/api/v1/iso/comparison",
             },
             "generated_at": datetime.now(timezone.utc).isoformat(),
-        }, 200)
+        }
+        # provenance-v1 (2026-07-11): collection-level block. as_of = the ISO
+        # heartbeat's last real refresh when known (the data vintage), else
+        # generation time. Fail-soft — never breaks the snapshot.
+        try:
+            from routes.provenance import attach_provenance
+            attach_provenance(
+                _payload,
+                source=f"{iso} public ISO/RTO feed + DC Hub DCPI scoring",
+                method=("realtime per-ISO ingestion (heartbeat-tracked) + "
+                        "DCPI market/pipeline/facility rollup"),
+                as_of=((heartbeat or {}).get("last_updated")
+                       or _payload["generated_at"]),
+            )
+        except Exception:
+            pass
+        return jsonify_gated_snapshot(_payload, 200)
     except Exception as e:
         return jsonify(ok=False, error=str(e)[:300]), 200
 
@@ -339,14 +355,31 @@ def iso_comparison():
     # Rank by avg excess-power (best opportunity first); push None to end.
     out.sort(key=lambda r: (r["avg_excess_power_score"] is None,
                              -(r["avg_excess_power_score"] or 0)))
-    return jsonify(
-        ok=True,
-        generated_at=datetime.now(timezone.utc).isoformat(),
-        isos=out,
-        ranking_by="avg_excess_power_score",
-        iso_count=len(out),
-        coverage={
+    _cmp_payload = {
+        "ok": True,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "isos": out,
+        "ranking_by": "avg_excess_power_score",
+        "iso_count": len(out),
+        "coverage": {
             "realtime_us_ca": _KNOWN_ISOS,
             "baseline_intl": [d["code"] for d in _INTL_ISOS],
         },
-    ), 200
+    }
+    # provenance-v1 (2026-07-11): collection block. Per-record confidence is
+    # the EXISTING data_method field (realtime | baseline_model_v1) — the
+    # block just names the convention instead of adding a duplicate flag.
+    try:
+        from routes.provenance import attach_provenance
+        attach_provenance(
+            _cmp_payload,
+            source=("US/CA ISO public realtime feeds + international "
+                    "baseline models (per-record data_method)"),
+            method=("realtime per-ISO ingestion + DCPI rollup; rows with "
+                    "data_method=baseline_model_v1 are modeled baselines, "
+                    "not live telemetry"),
+            as_of=_cmp_payload["generated_at"],
+        )
+    except Exception:
+        pass
+    return jsonify(_cmp_payload), 200

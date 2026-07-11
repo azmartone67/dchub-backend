@@ -410,6 +410,24 @@ PIPELINE_DATA = [
 DEALS_CACHE = BoundedCache(max_size=50, ttl=300)
 DEALS_CACHE_DURATION = 300  # 5 minutes cache
 
+
+def _deals_provenance(data_source):
+    """provenance-v1 (2026-07-11) collection block for deal/transaction
+    surfaces. No collection as_of — every deal row carries its own date.
+    Fail-soft: returns None on any error."""
+    try:
+        from routes.provenance import provenance_block
+        live = data_source in ('live', 'cached')
+        return provenance_block(
+            source=("DC Hub deals registry (Neon `deals` — SEC filings, press "
+                    "releases, industry feeds)" if live
+                    else "DC Hub labelled seed fallback (DB unavailable)"),
+            method=("tracked M&A / capex / AI-contract ingestion; per-deal "
+                    "date + value_confirmed carry row-level provenance"),
+        )
+    except Exception:
+        return None
+
 @deals_bp.route('/api/deals', methods=['GET'])
 @_lazy_protect_data
 def get_deals():
@@ -471,6 +489,7 @@ def get_deals():
             'total_value': (sum((d.get('value') or 0) for d in cached_data) if _deals_paid else None),
             'data_source': 'cached',
             'cached': True,
+            'provenance': _deals_provenance('cached'),
             'tier': ('paid' if _deals_paid else 'free'),
             'upgrade_url': (None if _deals_paid else 'https://dchub.cloud/pricing'),
             'note': (None if _deals_paid else 'Free: deal $ values + MW are Pro. Upgrade at https://dchub.cloud/pricing for confirmed values + capacity.'),
@@ -618,6 +637,7 @@ def get_deals():
         'total_count': len(deals),
         'total_value': (sum((d.get('value') or 0) for d in deals) if _deals_paid else None),
         'data_source': data_source,
+        'provenance': _deals_provenance(data_source),
         'stats_by_type': (stats_by_type if _deals_paid else {k: {'count': v['count'], 'value': None} for k, v in stats_by_type.items()}),
         'stats_by_year': (stats_by_year if _deals_paid else {k: {'count': v['count'], 'value': None} for k, v in stats_by_year.items()}),
         'tier': ('paid' if _deals_paid else 'free'),
@@ -757,6 +777,7 @@ def _get_transactions_free():
         'total_tracked': total_tracked if (loaded_from_db and total_tracked is not None) else total_matching,
         'full_results_available': total_matching > FREE_LIMIT,
         'data_source': 'live' if loaded_from_db else 'fallback_seed',
+        'provenance': _deals_provenance('live' if loaded_from_db else 'fallback_seed'),
         'tier': 'free',
         'upgrade_url': 'https://dchub.cloud/pricing',
         'note': f'Free tier: showing {len(basic_deals)} of {total_matching} transactions with basic fields. Upgrade for full data including deal values, MW capacity, and detailed analytics.'

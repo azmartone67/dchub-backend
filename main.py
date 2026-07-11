@@ -3876,6 +3876,16 @@ def phase19b_grid_intelligence(region):
             'gating_matrix': 'https://dchub.cloud/api/v1/gating-matrix',
             'note':          out.get('note'),
         }
+        # provenance-v1 (2026-07-11): even the gated headline is citeable —
+        # stamp the collection block so anon agents cite with confidence.
+        try:
+            from routes.provenance import attach_provenance as _pv_gi
+            _pv_gi(gated,
+                   source=f"EIA-930 hourly RTO/BA feed ({rto_code}) + DC Hub grid intelligence",
+                   method="realtime EIA generation + demand assembly per region",
+                   as_of=out.get('demand_period'))
+        except Exception:
+            pass
         resp = jsonify(gated)
         resp.headers['Cache-Control'] = 'public, max-age=60'  # Shorter — encourage re-fetch with key
         resp.headers['Access-Control-Allow-Origin'] = '*'
@@ -3885,12 +3895,23 @@ def phase19b_grid_intelligence(region):
     # r-rag-tooldata (2026-07-04): OPT-IN grounding on the FULL (keyed/internal)
     # path only. `out` is a shared 5-min in-process cache entry, so copy before
     # mutating or the RAG block would leak to non-rag callers of the same ISO.
+    # provenance-v1 (2026-07-11): same copy-before-mutate rule applies to the
+    # provenance stamp below — never mutate the shared cache entry.
+    out = dict(out)
     if request.args.get('rag'):
-        out = dict(out)
         out['related_intel'] = _rag_related_intel(
             f"{out.get('region') or region} grid power demand data center capacity",
             corpus=["news_articles", "market_narratives", "deals"], k=4,
         )
+    try:
+        from routes.provenance import attach_provenance as _pv_gi2
+        _pv_gi2(out,
+                source=f"EIA-930 hourly RTO/BA feed ({rto_code}) + DC Hub grid intelligence",
+                method=("realtime EIA generation mix + demand, assembled per "
+                        "region (5-min cache); as_of = demand_period"),
+                as_of=out.get('demand_period'))
+    except Exception:
+        pass
     resp = jsonify(out)
     resp.headers['Cache-Control'] = 'public, max-age=300'
     resp.headers['Access-Control-Allow-Origin'] = '*'
@@ -18117,13 +18138,31 @@ def facility_by_slug(slug):
             _c = _conn_id.cursor()
             _c.execute("""
                 SELECT id, name, provider, city, state, country, market AS region,
-                       latitude, longitude, power_mw, status, address
+                       latitude, longitude, power_mw, status, address,
+                       COALESCE(is_duplicate, 0) AS is_duplicate
                 FROM discovered_facilities WHERE id = %s LIMIT 1
             """, (int(slug),))
             _r = _c.fetchone()
             if _r:
                 _cols = [d[0] for d in _c.description]
-                return jsonify({'success': True, 'data': dict(zip(_cols, _r))})
+                _data_id = dict(zip(_cols, _r))
+                _resp_id = {'success': True, 'data': _data_id}
+                # provenance-v1 (2026-07-11): per-record v + collection block.
+                try:
+                    from routes.provenance import (verified_flag as _pv_f,
+                                                   attach_provenance as _pv_a,
+                                                   facility_verification_counts as _pv_c,
+                                                   FACILITY_CITE_TEMPLATE as _PV_FC)
+                    _data_id['v'] = _pv_f(_data_id)
+                    _data_id.pop('is_duplicate', None)
+                    _pv_a(_resp_id,
+                          source="DC Hub facilities registry (discovered_facilities)",
+                          method=("multi-source discovery + dedup verification; "
+                                  "v: verified = passes the canonical fleet filter"),
+                          counts=_pv_c(), cite_template=_PV_FC)
+                except Exception:
+                    _data_id.pop('is_duplicate', None)
+                return jsonify(_resp_id)
             return jsonify({'success': False, 'error': 'Facility not found', 'id': slug}), 404
         except Exception as _e_id:
             return jsonify({'success': False, 'error': str(_e_id)}), 500
@@ -18143,6 +18182,7 @@ def facility_by_slug(slug):
         c.execute("""
             SELECT id, name, provider, city, state, country, market AS region,
                    latitude, longitude, power_mw, status, address,
+                   COALESCE(is_duplicate, 0) AS is_duplicate,
                    (
                      SELECT array_agg(carrier_name ORDER BY carrier_name)
                      FROM (
@@ -18190,7 +18230,26 @@ def facility_by_slug(slug):
         data['connectivity_note'] = (
             f"{_cc} on-site fiber carrier(s)" if _cc
             else "No on-site fiber carriers mapped yet (connectivity not yet linked)")
-        return jsonify({'success': True, 'data': data})
+        _resp_slug = {'success': True, 'data': data}
+        # provenance-v1 (2026-07-11): per-record v (verified/tracked from the
+        # canonical fleet filter; the legacy-facilities fallback rows carry no
+        # is_duplicate key so they default to 'tracked') + collection block.
+        try:
+            from routes.provenance import (verified_flag as _pv_f2,
+                                           attach_provenance as _pv_a2,
+                                           facility_verification_counts as _pv_c2,
+                                           FACILITY_CITE_TEMPLATE as _PV_FC2)
+            data['v'] = _pv_f2(data)
+            data.pop('is_duplicate', None)
+            _pv_a2(_resp_slug,
+                   source="DC Hub facilities registry (discovered_facilities)",
+                   method=("multi-source discovery + dedup verification; "
+                           "v: verified = passes the canonical fleet filter, "
+                           "tracked = not yet fleet-verified"),
+                   counts=_pv_c2(), cite_template=_PV_FC2)
+        except Exception:
+            data.pop('is_duplicate', None)
+        return jsonify(_resp_slug)
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
     finally:
@@ -18432,6 +18491,17 @@ def _list_facilities_full():
         except Exception:
             pass  # Never let badge enrichment crash the response
 
+        # provenance-v1 (2026-07-11): per-record verification flag. The legacy
+        # `facilities` table has no is_duplicate column, so rows here default
+        # to the conservative 'tracked' (verified applies to the canonical
+        # discovered_facilities fleet filter — floors never over-claim).
+        try:
+            from routes.provenance import verified_flag as _pv_flag2
+            for f in facilities:
+                f['v'] = _pv_flag2(f)
+        except Exception:
+            pass
+
         if resolve_location_name:
             for f in facilities:
                 f['state_name'] = get_state_name(f.get('state', ''), f.get('country', 'US'))
@@ -18449,7 +18519,7 @@ def _list_facilities_full():
             except:
                 pass
 
-    return jsonify({
+    _full_payload = {
         'success': True,
         'data': facilities,
         'pagination': {
@@ -18458,7 +18528,24 @@ def _list_facilities_full():
             'total': total,
             'pages': (total + limit - 1) // limit
         }
-    })
+    }
+    # provenance-v1: collection-level block (once per response — fail-soft).
+    try:
+        from routes.provenance import (attach_provenance as _pv_attach2,
+                                       facility_verification_counts as _pv_counts2,
+                                       FACILITY_CITE_TEMPLATE as _PV_FAC_CITE2)
+        _pv_attach2(
+            _full_payload,
+            source="DC Hub facilities registry (curated facilities table)",
+            method=("multi-source discovery + editorial curation; per-record "
+                    "v: verified = passes the canonical dedup fleet filter, "
+                    "tracked = not yet fleet-verified (conservative default)"),
+            counts=_pv_counts2(),
+            cite_template=_PV_FAC_CITE2,
+        )
+    except Exception:
+        pass
+    return jsonify(_full_payload)
 
 
 def _list_facilities_free():
@@ -18548,10 +18635,20 @@ def _list_facilities_free():
             except:
                 pass
 
+    # provenance-v1 (2026-07-11): per-record verification flag from the
+    # canonical fleet filter (COALESCE(is_duplicate,0)=0 — issue #1539).
+    # ONE compact field per row; the collection-level block is stamped below.
+    try:
+        from routes.provenance import verified_flag as _pv_flag
+    except Exception:
+        _pv_flag = None
+
     facilities = []
     for row in rows:
         full = dict_from_row(row)
         fac = {k: full.get(k) for k in BASIC_FIELDS}
+        if _pv_flag is not None:
+            fac['v'] = _pv_flag(full)
         # NOTE (2026-06-08): emit the stored `slug` column as-is — get_facility_by_id
         # resolves by df.slug, so search->get_facility round-trips for any facility
         # that has a stored slug. (An earlier attempt to force the hash form here
@@ -18587,7 +18684,7 @@ def _list_facilities_free():
     except Exception:
         pass
 
-    return jsonify({
+    _free_payload = {
         'success': True,
         'data': facilities,
         'count': len(facilities),
@@ -18596,7 +18693,24 @@ def _list_facilities_free():
         'tier': 'free',
         'upgrade_url': 'https://dchub.cloud/pricing',
         'note': f'Free tier: showing {len(facilities)} of {total_matching} matching facilities with basic fields. Upgrade for full data including capacity, coordinates, and detailed specs.'
-    })
+    }
+    # provenance-v1: collection-level block (once per response — fail-soft).
+    try:
+        from routes.provenance import (attach_provenance as _pv_attach,
+                                       facility_verification_counts as _pv_counts,
+                                       FACILITY_CITE_TEMPLATE as _PV_FAC_CITE)
+        _pv_attach(
+            _free_payload,
+            source="DC Hub facilities registry (discovered_facilities)",
+            method=("multi-source discovery + dedup verification; per-record "
+                    "v: verified = passes the canonical fleet filter, "
+                    "tracked = discovery pile (not yet verified)"),
+            counts=_pv_counts(),
+            cite_template=_PV_FAC_CITE,
+        )
+    except Exception:
+        pass
+    return jsonify(_free_payload)
 
 
 
@@ -22018,6 +22132,22 @@ def _build_fiber_routes_geojson(max_features=None):
             })
 
         result = {"type": "FeatureCollection", "features": features, "total": len(features)}
+        # provenance-v1 (2026-07-11): collection block (GeoJSON foreign member —
+        # spec-legal, ignored by geometry parsers). Carrier dataset vintage:
+        # surveyed carrier KMZ (Zayo) + NTIA middle-mile routes, plus synthetic
+        # 2-point endpoint pairs for legacy rows. Fail-soft.
+        try:
+            from routes.provenance import attach_provenance as _pv_fiber
+            _pv_fiber(
+                result,
+                source=("DC Hub fiber_routes — surveyed carrier KMZ (Zayo) + "
+                        "NTIA middle-mile + synthetic endpoint pairs"),
+                method=("carrier-published route geometries where surveyed; "
+                        "2-point synthetic segments otherwise (per-feature "
+                        "carrier/route_type identify the dataset)"),
+            )
+        except Exception:
+            pass
         if _simplify_geo:
             # Tell the caller how to get the full polylines back.
             result["_geometry"] = "endpoints"
@@ -22107,6 +22237,8 @@ def _fiber_teaser_response():
     return {
         'type': 'FeatureCollection',
         'features': feats,
+        # provenance-v1: reuse the builder's block (None-safe if the build failed)
+        'provenance': (sample.get('provenance') if isinstance(sample, dict) else None),
         '_teaser': True,
         '_total_features_behind_paywall': max(0, total - len(feats)),
         **_coach,

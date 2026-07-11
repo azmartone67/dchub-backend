@@ -175,14 +175,31 @@ def api_hyperscaler_deals():
     except (TypeError, ValueError):
         limit = 20
     deals, err = _fetch_deals(limit)
+    _computed_at = datetime.datetime.utcnow().isoformat() + "Z"
+    # provenance-v1 (2026-07-11): collection block. Records are published news
+    # items (per-row url/source/published); the $/MW figures are regex
+    # EXTRACTIONS from those published texts — named honestly in method.
+    # Fail-soft; the legacy methodology string stays for back-compat.
+    try:
+        from routes.provenance import provenance_block
+        _prov = provenance_block(
+            source="dc_news industry feed (40+ sources: Bloomberg, DCD, Reuters, Google News)",
+            method=("keyword filter over published articles; $-figures + MW "
+                    "regex-extracted, actors name-matched — verify against the "
+                    "per-deal source url before citing figures"),
+            as_of=_computed_at,
+        )
+    except Exception:
+        _prov = None
     return jsonify({
         "feed_name":   "Hyperscaler AI Deal Tracker",
-        "computed_at": datetime.datetime.utcnow().isoformat() + "Z",
+        "computed_at": _computed_at,
         "result_count": len(deals),
         "deals":       deals,
         "error":       err,
         "methodology": ("Filters dc_news for 30+ hyperscaler/AI-capex keywords. "
                         "Extracts $-figures + MW via regex. Actors detected by name match."),
+        "provenance":  _prov,
         "live_feed":   "https://api.dchub.cloud/api/v1/hyperscaler-deals",
         "landing":     "https://dchub.cloud/hyperscaler-deals",
     }), 200, {"Cache-Control": "public, max-age=600, s-maxage=1800"}

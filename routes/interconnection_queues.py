@@ -118,6 +118,10 @@ def _serialize(r):
         "top_subregions": r["top_subregions"],
         "source_url": r["source_url"],
         "source_name": r["source_name"],
+        # provenance-v1 (2026-07-11): every iso_queue_snapshots row is the
+        # ISO's OWN published disclosure (source_name/source_url above) —
+        # never a DC Hub inference. Compact per-record flag.
+        "v": "published",
     }
 
 
@@ -169,6 +173,23 @@ def _project_counts():
             return by, sum(by.values())
     except Exception:
         return {}, 0
+
+
+def _snapshot_provenance(as_of=None):
+    """provenance-v1 collection block for the queue surfaces. Fail-soft:
+    returns None on any error (jsonify serializes None harmlessly)."""
+    try:
+        from routes.provenance import provenance_block
+        return provenance_block(
+            source=("US ISO public interconnection queues (ERCOT GIS / PJM "
+                    "NSQ / MISO GI / SPP / CAISO / NYISO / ISO-NE)"),
+            method=("published ISO queue disclosures, ingested per-ISO; "
+                    "per-record v: published = the ISO's own figure, "
+                    "inferred = DC Hub derivation"),
+            as_of=as_of,
+        )
+    except Exception:
+        return None
 
 
 @interconnection_queues_bp.route("/api/v1/interconnection-queue/snapshot")
@@ -228,6 +249,10 @@ def api_snapshot():
         },
         "methodology": "DCPI maps ISO queue position + load growth vs signed contracts -> Excess Power / Constraint scoring. Per-ISO BUILD/CAUTION/AVOID verdicts at https://dchub.cloud/dcpi.",
         "source": "https://dchub.cloud/interconnection-queues",
+        # provenance-v1 (2026-07-11): collection block. Per-record v on each
+        # by_iso row: published = the ISO's own disclosed figure (source_name/
+        # source_url per row); inferred would mark a DC Hub derivation.
+        "provenance": _snapshot_provenance(_latest),
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }), 200, {
         # r47.4 (2026-05-25): CF Pages was caching the earlier 500-then-404
@@ -252,6 +277,7 @@ def api_by_iso():
     # (top 25 by MW) from interconnect_queue — the drill-down the GW aggregate lacks.
     out["projects"] = _top_projects(iso, 25)
     out["project_count"] = _project_counts()[0].get(iso, 0)
+    out["provenance"] = _snapshot_provenance(snap[0].get("as_of"))
     return jsonify(out)
 
 
@@ -894,6 +920,12 @@ def api_refined_queue():
         d["estimated_ttp_months"] = _ISO_TTP_MONTHS.get(iso_u) or _ISO_TTP_MONTHS.get(iso_u.replace("-", ""))
         firm = not _re.search(_NON_BASELOAD_RE.replace(r"\y", r"\b"), d.get("fuel_type") or "", _re.I)
         d["fuel_class"] = "firm/baseload-capable" if firm else "intermittent"
+        # provenance-v1 (2026-07-11): every interconnect_queue row is a
+        # published ISO queue entry (project/MW/status straight from the ISO's
+        # public queue). Inferred ENRICHMENTS stay flagged by their own
+        # fields: coordinate_precision (county_centroid = inferred locus) and
+        # estimated_ttp_months (ISO-average, not per-project).
+        d["v"] = "published"
         # Phase-2 geo enrichment: normalize coords + fiber_km, attach a compact
         # ready-to-pipe site_evaluation_handoff (verbose 'why' stays in the top-level
         # handoff / note, so per-survivor payload stays lean).
@@ -937,6 +969,11 @@ def api_refined_queue():
                     "geocoded_returned": n_geocoded},
         "_source": "DC Hub — dchub.cloud",
         "_cite": "Data: DC Hub (dchub.cloud), CC-BY-4.0 — cite as \"DC Hub, dchub.cloud\"",
+        # provenance-v1 (2026-07-11): collection block (additive — the legacy
+        # _source/_cite strings above stay for back-compat). Per-record v on
+        # each result: published = the ISO's own queue row; coordinate_precision
+        # + estimated_ttp_months flag the inferred enrichments per row.
+        "provenance": _snapshot_provenance(),
         "note": ("Server-side set-reduction over the live ISO interconnection queue "
                  "(~5,300 projects, 7 ISOs). fuel_type is an inclusive substring match on "
                  "the raw fuel label (e.g. 'gas' hits GAS/Natural Gas); baseload_only excludes "

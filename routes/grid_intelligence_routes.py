@@ -798,6 +798,18 @@ def list_grid_regions():
             'total':   len(regions),
             'source':  'DC Hub Grid Intelligence',
         }
+        # provenance-v1 (2026-07-11): collection block (additive; the legacy
+        # 'source' string above stays for back-compat). Fail-soft.
+        try:
+            from routes.provenance import attach_provenance
+            attach_provenance(
+                body,
+                source="DC Hub Grid Intelligence (grid_regions)",
+                method=("per-region ISO queue + corridor analysis over HIFLD/"
+                        "EIA/EPA/FEMA/USGS data, maintained by DC Hub"),
+            )
+        except Exception:
+            pass
         if _gated:
             body['_gated'] = True
             body['_preview_only'] = True
@@ -1014,6 +1026,20 @@ def get_grid_region(region_id):
                 'DC Hub (facilities, market intel)',
             ],
         }
+        # provenance-v1 (2026-07-11): collection block normalizing the
+        # data_sources list above into the standard envelope. Fail-soft.
+        try:
+            from routes.provenance import attach_provenance
+            attach_provenance(
+                response,
+                source=("HIFLD + EIA + EPA eGRID + FEMA + USGS + DC Hub "
+                        "facilities/market intel (see data_sources)"),
+                method=("corridor-level grid analysis: queue GW, congestion, "
+                        "infrastructure counts within 50km, maintained per "
+                        "region by DC Hub"),
+            )
+        except Exception:
+            pass
 
         # Upgrade CTA for free/developer
         if tier == 'free':

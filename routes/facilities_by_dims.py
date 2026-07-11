@@ -210,14 +210,48 @@ def stats_canonical():
                 stats["dcpi_markets_scored"] = int(cur.fetchone()[0] or 0)
             except Exception:
                 pass
-        resp = jsonify({
+            # provenance-v1 (2026-07-11): the PUBLICLY CITEABLE verified count —
+            # the canonical fleet filter (COALESCE(is_duplicate,0)=0 on
+            # discovered_facilities; issue #1539). This is the number we grow in
+            # public; facilities_tracked = the raw discovery pile it comes from.
+            # Placed LAST in the tx block (a failed statement aborts the tx for
+            # any query after it); falls back to cached canonical_stats.
+            try:
+                cur.execute("SELECT COUNT(*) FROM discovered_facilities "
+                            "WHERE COALESCE(is_duplicate,0)=0")
+                stats["facilities_verified"] = int(cur.fetchone()[0] or 0)
+                cur.execute("SELECT COUNT(*) FROM discovered_facilities")
+                stats["facilities_tracked"] = int(cur.fetchone()[0] or 0)
+            except Exception:
+                try:
+                    from canonical_stats import get_canonical_stats
+                    _cs = get_canonical_stats()
+                    stats.setdefault("facilities_verified",
+                                     _cs.get("facilities_verified"))
+                    stats.setdefault("facilities_tracked", _cs.get("facilities"))
+                except Exception:
+                    pass
+        _canon_payload = {
             "ok":         True,
             "stats":      stats,
             "source":     "Neon — live COUNT() at request time",
             "purpose":    ("Canonical truth for facility/news/deals/DCPI "
                             "counts. Use this endpoint when site copy, "
                             "AI agents, and reports need to agree."),
-        })
+        }
+        # provenance-v1: standard envelope on the citeable stats surface itself.
+        try:
+            from routes.provenance import attach_provenance
+            attach_provenance(
+                _canon_payload,
+                source="DC Hub canonical stats (Neon live counts)",
+                method=("live COUNT() at request time; facilities_verified = "
+                        "canonical fleet filter COALESCE(is_duplicate,0)=0 "
+                        "over discovered_facilities"),
+            )
+        except Exception:
+            pass
+        resp = jsonify(_canon_payload)
         # Edge-cache 5 min — these counts change slowly
         resp.headers["Cache-Control"] = "public, max-age=300, stale-while-revalidate=1800"
         return resp, 200

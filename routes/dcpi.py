@@ -2375,6 +2375,21 @@ def api_score_market(slug):
     if _g:
         row["forecast"] = {"available": False, "reason": "pro_only"}
         row.update(_dcpi_gated_meta())
+    # provenance-v1 (2026-07-11): collection block, stamped AFTER masking so
+    # gating never strips it. as_of = the score's computed_at (already
+    # isoformat by here); data_basis/data_basis_source above stay as the
+    # legacy per-field labels. Fail-soft.
+    try:
+        from routes.provenance import attach_provenance, DCPI_CITE_TEMPLATE
+        attach_provenance(
+            row,
+            source="DC Hub Power Index (DCPI) — market_power_scores",
+            method="DCPI daily scoring (see data_basis/data_basis_source for the score's input basis)",
+            as_of=row.get("computed_at"),
+            cite_template=DCPI_CITE_TEMPLATE,
+        )
+    except Exception:
+        pass
     return jsonify(row), 200
 
 
