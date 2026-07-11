@@ -763,8 +763,19 @@ def claim_key():
     if email and not _kc_re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email):
         email = ""  # invalid → ignore, still mint the anonymous key
 
-    # Real IP behind Cloudflare / Railway proxy. Trust the first hop in XFF.
-    ip = (request.headers.get("X-Forwarded-For", request.remote_addr or "")
+    # Real IP behind Cloudflare / Railway proxy. 2026-07-10: prefer
+    # CF-Connecting-IP (the SAME resolution routes/auto_trial.py uses) — on
+    # the direct-REST path through the CF zone worker, XFF's first hop is the
+    # worker's ROTATING egress (verified live: two same-client_name claims 12s
+    # apart stored 104.23.187.147 vs 104.23.190.144), so the (client_name, ip)
+    # dedupe and the gated-identity/carry checks could never match two
+    # requests from the same caller. Aligning with auto_trial also makes the
+    # cross-system counter carry (sha256(ip) hash vs metadata->>'ip') match
+    # the same caller across both key tables. The MCP-server path sends no CF
+    # header and falls back to XFF, whose first hop it already sets to the
+    # real caller IP (r-durable-key 2026-07-06).
+    ip = (request.headers.get("CF-Connecting-IP", "").strip()
+          or request.headers.get("X-Forwarded-For", request.remote_addr or "")
           .split(",")[0].strip())[:64]
     ua = (request.headers.get("User-Agent") or "")[:300]
 
