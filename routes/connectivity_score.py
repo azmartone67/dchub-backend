@@ -28,6 +28,17 @@ try:
 except Exception:
     _attach_provenance = None
 
+# dark-fiber §4.3 (2026-07-11): INFERRED dark-availability point screen —
+# dark-capable carriers (fiber_providers.dark_fiber=TRUE, alias-mapped to
+# PeeringDB names) among the carriers already found around the query point.
+# Pure function over names we already fetched (same radius, no extra SQL, no
+# zones-table dependency). Fail-soft: import failure just omits the field.
+try:
+    from routes.dark_availability_zones import (
+        dark_screen_from_carriers as _dark_screen)
+except Exception:
+    _dark_screen = None
+
 connectivity_score_bp = Blueprint("connectivity_score_r88", __name__)
 
 _cache = {}          # key -> (ts, data)
@@ -157,6 +168,15 @@ def score_connectivity(lat, lon, radius_km=50.0):
                     "diversity": round(div_score, 1)},
         "source": "DC Hub (dchub.cloud) — PeeringDB carrier presence + FCC fiber coverage",
     })
+    # dark-fiber §4.3: the instant screening read — which of the carriers in
+    # range are dark-CAPABLE. Always stamped v:"inferred" with the method
+    # named ("… NOT confirmed strand availability; screening signal only");
+    # level "none" is itself the answer that eliminates a region. Fail-soft.
+    if _dark_screen is not None:
+        try:
+            out["dark_screen"] = _dark_screen(carriers.keys())
+        except Exception:
+            pass
     return out
 
 
@@ -203,7 +223,8 @@ def connectivity_score():
             "_teaser": True,
             "_upgrade": ("Add X-API-Key (free tier: claim_free_key) for the full fiber-readiness "
                          "score — distinct carrier count, top carriers, single-carrier-risk flag, "
-                         "and the 0-100 connectivity score."),
+                         "the 0-100 connectivity score, and the inferred dark-fiber "
+                         "availability screen (dark_screen)."),
             "source": data["source"],
         }
     # provenance-v1 (2026-07-11): the score is a DC Hub-derived composite,

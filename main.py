@@ -22592,6 +22592,20 @@ def fiber_metro_api(market_name=None):
                 }
             cur.close()
             payload = {'success': True, 'market': market_name, 'summary': summary, 'carriers': carriers}
+            # dark-fiber §4.3 (2026-07-11): INFERRED dark-availability zone
+            # summary for this metro, derived from fiber_providers.dark_fiber
+            # × carrier_facility_presence (PeeringDB). The sub-block carries
+            # its OWN v:"inferred" + method per record (the collection stamp
+            # below stays "tracked" for the curated carrier profiles).
+            # Fail-soft: empty/missing zone table or no match ⇒ field omitted.
+            try:
+                from routes.dark_availability_zones import metro_dark_zone_summary as _mdz
+                _dz = _mdz(market_name.replace('-', ' '),
+                           state=(summary or {}).get('state'))
+                if _dz:
+                    payload['dark_availability_zones'] = _dz
+            except Exception:
+                pass
             # provenance-v1 (2026-07-11): collection-level stamp — public-
             # carrier-material profiles, approximations, seed vintage. Fail-soft.
             try:
@@ -22612,6 +22626,21 @@ def fiber_metro_api(market_name=None):
             """)
             cols = ['market','state','total_carriers','total_route_miles','total_on_net_buildings','fiber_density_score','tier']
             markets = [dict(zip(cols, r)) for r in cur.fetchall()]
+
+            # dark-fiber §4.3 (2026-07-11): compact per-metro INFERRED
+            # dark-availability summary ({v:"inferred", level, count} only —
+            # payload discipline). Zones are read once through a 15-min
+            # in-process cache, so this loop is pure-Python matching.
+            # Fail-soft: empty/missing zone table ⇒ fields omitted.
+            try:
+                from routes.dark_availability_zones import metro_dark_zone_summary as _mdz
+                for _m in markets:
+                    _dz = _mdz(_m.get('market') or '', state=_m.get('state'),
+                               compact=True)
+                    if _dz:
+                        _m['dark_availability_zones'] = _dz
+            except Exception:
+                pass
 
             if carrier_filter:
                 cur.execute("""

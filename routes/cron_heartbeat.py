@@ -59,6 +59,20 @@ def _register_metric_truth(state):
         print(f"[cron_heartbeat] metric_truth_bp register skipped: {_mt_e}",
               flush=True)
 
+# 2026-07-11: DARK-AVAILABILITY ZONES (routes/dark_availability_zones.py,
+# Gemini dark-fiber §4.3) rides on this blueprint's registration for the
+# same frozen-main.py reason as analyst_note above. Defensive: a broken
+# import never breaks the heartbeat (or boot).
+@cron_heartbeat_bp.record_once
+def _register_dark_zones(state):
+    try:
+        from routes.dark_availability_zones import dark_zones_bp
+        if "dark_availability_zones" not in state.app.blueprints:
+            state.app.register_blueprint(dark_zones_bp)
+    except Exception as _dz_e:
+        print(f"[cron_heartbeat] dark_zones_bp register skipped: {_dz_e}",
+              flush=True)
+
 # r78: the dispatcher runs INSIDE this Flask app — its job POSTs were going
 # out to api.dchub.cloud and back through Cloudflare to reach itself (and
 # api.dchub.cloud's non-/api/* routing 522s, which is what minted the
@@ -825,6 +839,24 @@ _DISPATCH = [
      lambda now: (now.minute % 20 < 3)
                  and os.environ.get("DEDUP_DRAIN_CRON_DISABLE") != "1"),
 
+    # 2026-07-11 (Gemini dark-fiber §4.3): DARK-AVAILABILITY ZONES rebuild —
+    # crosses dark-capable carriers (fiber_providers.dark_fiber=TRUE, alias-
+    # mapped to PeeringDB carrier names) against carrier_facility_presence
+    # and upserts ~800 INFERRED screening-zone rows into fiber_coverage_zones
+    # (zone_type='dark_availability'). Every row is stamped v:"inferred" —
+    # capability × presence inference, NEVER confirmed strand availability.
+    # Daily 01:xx UTC (quiet hour — 02..17/21/22 are taken); WIDE minute
+    # window because the heartbeat is sporadic; the endpoint SELF-THROTTLES
+    # (skips if rebuilt <20h ago) + upserts ON CONFLICT(zone_id), so in-hour
+    # re-fires are one cheap SELECT. Admin-gated — _hit() sends X-Admin-Key.
+    # No-deploy kill switch checked BOTH here and in the endpoint:
+    # DARK_ZONES_DISABLE=1.
+    ("dark_zones_rebuild_daily",
+     f"{BASE}/api/v1/admin/dark-zones/rebuild",
+     "POST",
+     lambda now: now.hour == 1 and now.minute < 55
+                 and os.environ.get("DARK_ZONES_DISABLE") != "1"),
+
     # 2026-07-11: METRIC GROUND-TRUTH CHECKER — weekly recompute of 5
     # headline shell metrics straight from the raw tables (media posts/24h,
     # citation velocity 7d, verified facilities, real agents/wk, automerge
@@ -866,6 +898,7 @@ _HEAVY_LABELS = frozenset({
     "reach_rollup_daily", "market_deep_dive_rotate_daily",
     "strategic_synthesis_weekly", "strategic_digest_weekly",
     "analyst_note_weekly", "metric_truth_check_weekly",
+    "dark_zones_rebuild_daily",
 })
 
 
