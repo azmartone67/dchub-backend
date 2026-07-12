@@ -173,7 +173,10 @@ def is_gated(path):
     # planner, routes/fiber_route_plan.py) — indicative OSRM corridors + unit
     # rates, no proprietary data. Documented as open-to-any-address; without
     # this exemption the '/api/v1/fiber' GATED_PREFIX 401'd it.
-    if any(path.startswith(p) for p in ['/api/v1/fiber/summary', '/api/v1/fiber/coverage', '/api/v1/fiber/nearby', '/api/v1/fiber/routes/public', '/api/v1/fiber/route-plan', '/api/v1/subsea/', '/api/v1/carriers', '/api/jobs/', '/api/admin/mcp/', '/api/v1/track-conversion']):
+    # /api/v1/fiber/cluster-latency: OPEN like route-plan (routes/
+    # cluster_latency.py) — deterministic physics screen + inferred
+    # enrichment, no proprietary bulk data; adoption-first.
+    if any(path.startswith(p) for p in ['/api/v1/fiber/summary', '/api/v1/fiber/coverage', '/api/v1/fiber/nearby', '/api/v1/fiber/routes/public', '/api/v1/fiber/route-plan', '/api/v1/fiber/cluster-latency', '/api/v1/subsea/', '/api/v1/carriers', '/api/jobs/', '/api/admin/mcp/', '/api/v1/track-conversion']):
         return False
     return any(path.startswith(p) for p in GATED_PREFIXES)
 

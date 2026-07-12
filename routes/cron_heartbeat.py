@@ -73,6 +73,20 @@ def _register_dark_zones(state):
         print(f"[cron_heartbeat] dark_zones_bp register skipped: {_dz_e}",
               flush=True)
 
+# 2026-07-11: LATENCY CLUSTER SCREEN (routes/cluster_latency.py, Gemini
+# partnership spec — /api/v1/fiber/cluster-latency) rides on this blueprint's
+# registration for the same frozen-main.py reason as analyst_note above.
+# Defensive: a broken import never breaks the heartbeat (or boot).
+@cron_heartbeat_bp.record_once
+def _register_cluster_latency(state):
+    try:
+        from routes.cluster_latency import cluster_latency_bp
+        if "cluster_latency" not in state.app.blueprints:
+            state.app.register_blueprint(cluster_latency_bp)
+    except Exception as _cl_e:
+        print(f"[cron_heartbeat] cluster_latency_bp register skipped: {_cl_e}",
+              flush=True)
+
 # r78: the dispatcher runs INSIDE this Flask app — its job POSTs were going
 # out to api.dchub.cloud and back through Cloudflare to reach itself (and
 # api.dchub.cloud's non-/api/* routing 522s, which is what minted the
