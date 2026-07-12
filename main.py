@@ -25430,6 +25430,9 @@ def _build_sitemap_sections():
     # ---- Facilities hub (2026-06-29) — countries index + per-country lists ----
     # The geography hub (facilities_hub.py) that un-orphans the /facilities/<slug>
     # pages above: give Google the shallow crawl path it was missing.
+    # r-candidate-v1 (2026-07-11): the executable-handoff contract doc — the
+    # normative page agents build against (GEO surface for the agent-native story).
+    sections['static'].append(f'  <url><loc>https://dchub.cloud/docs/candidate-lifecycle</loc><lastmod>2026-07-11</lastmod><changefreq>monthly</changefreq><priority>0.6</priority></url>')
     sections['static'].append(f'  <url><loc>https://dchub.cloud/facilities</loc><lastmod>{_STATIC_LASTMOD}</lastmod><changefreq>weekly</changefreq><priority>0.7</priority></url>')
     _hub_countries = set()
     for _frow in fac_rows:
