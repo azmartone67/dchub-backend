@@ -59,6 +59,20 @@ def _register_metric_truth(state):
         print(f"[cron_heartbeat] metric_truth_bp register skipped: {_mt_e}",
               flush=True)
 
+
+# 2026-07-12: ERROR_CODE REGISTRY (routes/error_registry.py — the Gemini
+# 'Normative Grounding' delta: a published, versioned error_code taxonomy at
+# /api/v1/errors/registry) rides on this blueprint's registration for the same
+# frozen-main.py reason as above. Defensive: a broken import never breaks boot.
+@cron_heartbeat_bp.record_once
+def _register_error_registry(state):
+    try:
+        from routes.error_registry import register as _reg_err_registry
+        _reg_err_registry(state.app)
+    except Exception as _er_e:
+        print(f"[cron_heartbeat] error_registry register skipped: {_er_e}",
+              flush=True)
+
 # 2026-07-11: DARK-AVAILABILITY ZONES (routes/dark_availability_zones.py,
 # Gemini dark-fiber §4.3) rides on this blueprint's registration for the
 # same frozen-main.py reason as analyst_note above. Defensive: a broken
