@@ -112,13 +112,31 @@ def mint_candidates(cur, survivors, snapshot_id, search_context):
 
 def load_candidate(cur, candidate_id):
     """→ (frozen_dict | None, expired: bool). Frozen values only — the
-    no-reinterpretation guarantee lives here."""
-    _ensure_ddl(cur)
-    cur.execute(
-        "SELECT candidate_id, snapshot_id, queue_id, project_name, iso, state, "
-        "county, fuel_type, capacity_mw, lat, lng, fiber_km, coordinate_precision, "
-        "search_context, minted_at, expires_at, (expires_at < now()) AS expired "
-        "FROM search_candidates WHERE candidate_id = %s", (candidate_id,))
+    no-reinterpretation guarantee lives here.
+
+    READ-ONLY by contract: never runs DDL. load_candidate is served from the
+    READ REPLICA (resolve-candidate / site-score / cluster all read there),
+    where CREATE TABLE fails 'read-only transaction'. The table is created by
+    mint_candidates on the PRIMARY; a reader assumes it exists and, if it
+    somehow doesn't (pre-first-mint on a fresh DB), the SELECT's
+    UndefinedTable is caught → (None, False) = 'unknown candidate', never a
+    500. (Prior bug: _ensure_ddl here 500'd any read that ran before a mint
+    in the same process — production only survived on mint-first ordering +
+    the _ddl_done process global.)"""
+    try:
+        cur.execute(
+            "SELECT candidate_id, snapshot_id, queue_id, project_name, iso, state, "
+            "county, fuel_type, capacity_mw, lat, lng, fiber_km, coordinate_precision, "
+            "search_context, minted_at, expires_at, (expires_at < now()) AS expired "
+            "FROM search_candidates WHERE candidate_id = %s", (candidate_id,))
+    except Exception:
+        # UndefinedTable (no mint has ever run) or a read-path hiccup → treat
+        # as unknown, never raise into the caller's request path.
+        try:
+            cur.connection.rollback()
+        except Exception:
+            pass
+        return None, False
     r = cur.fetchone()
     if not r:
         return None, False

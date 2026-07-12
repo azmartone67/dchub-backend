@@ -412,16 +412,84 @@ def published_check_from_points(sites, points, pad=PAIR_BBOX_PAD_DEG):
 
 
 # ── HTTP surface ─────────────────────────────────────────────────────────
+def _resolve_candidate_sites(src):
+    """r-candidate-cluster (2026-07-12, Grok's high-priority review item):
+    let tool #73 consume the candidate contract instead of coordinate-only.
+    Accepts candidate_ids (array or comma/semicolon string) AND cand_… tokens
+    embedded in the sites string. Each resolves to a frozen "lat,lon:label"
+    token (label = project_name or the short id) — coordinates come from the
+    mint, never re-specified (same no-transposition guarantee as site-score /
+    rank_sites). Expired/unknown ids are DROPPED AND DECLARED, never silently
+    resolved (the fail-closed contract). Returns
+    (normalized_sites_string, {expired:[], unknown:[], resolved:[]}) or
+    (None, contract) when the DB/loader is unavailable (fail-soft: caller
+    falls back to the raw sites string). Pure of Flask; reads the replica."""
+    contract = {"expired": [], "unknown": [], "resolved": []}
+    ids = []
+    raw_ids = src.get("candidate_ids")
+    if isinstance(raw_ids, (list, tuple)):
+        ids.extend(str(x).strip() for x in raw_ids if str(x).strip())
+    elif raw_ids:
+        ids.extend(t.strip() for t in str(raw_ids).replace(";", ",").split(",")
+                   if t.strip())
+    # cand_ tokens embedded in the sites string (Grok's mixed-input option B)
+    raw_sites = str(src.get("sites") or "")
+    passthrough = []
+    for tok in (t.strip() for t in raw_sites.split(";") if t.strip()):
+        head = tok.partition(":")[0].strip()
+        if head.startswith("cand_") and "," not in head:
+            ids.append(head)
+        else:
+            passthrough.append(tok)
+    ids = list(dict.fromkeys(ids))  # de-dupe, preserve order
+    if not ids:
+        return None, contract  # no candidates in play — use raw sites as-is
+    try:
+        import psycopg2
+        from routes.candidates import load_candidate
+        db = (os.environ.get("NEON_REPLICA_URL")
+              or os.environ.get("DATABASE_URL"))
+        conn = psycopg2.connect(db, sslmode="require", connect_timeout=5)
+        conn.autocommit = True
+        cur = conn.cursor()
+        for cid in ids:
+            cand, expired = load_candidate(cur, cid)
+            if cand is None:
+                contract["unknown"].append(cid)
+            elif expired:
+                contract["expired"].append(cid)
+            elif cand.get("lat") is None or cand.get("lng") is None:
+                contract["unknown"].append(cid)  # ungeocoded → unusable here
+            else:
+                label = (cand.get("project_name") or cid)
+                label = str(label).replace(":", " ").replace(";", " ")[:64]
+                passthrough.append(f"{cand['lat']},{cand['lng']}:{label}")
+                contract["resolved"].append(cid)
+        conn.close()
+    except Exception:
+        return None, contract  # fail-soft: caller uses raw sites string
+    return ";".join(passthrough), contract
+
+
 @cluster_latency_bp.route("/api/v1/fiber/cluster-latency",
                           methods=["GET", "POST"])
 def cluster_latency():
     src = request.get_json(silent=True) or request.values
-    sites, err = parse_sites(src.get("sites"))
+    # candidate contract (Grok review): resolve candidate_ids / cand_ tokens to
+    # frozen coordinates before parsing. Fail-soft — falls back to raw sites.
+    _sites_str, _cand_contract = _resolve_candidate_sites(src)
+    _sites_input = _sites_str if _sites_str is not None else src.get("sites")
+    sites, err = parse_sites(_sites_input)
     if err:
-        return jsonify(error=err,
-                       example=("?sites=39.04,-77.48:ashburn;40.42,-79.99:"
-                                "pittsburgh;39.96,-83.0:columbus"
-                                "&max_latency_us=8000")), 400
+        _e = {"error": err,
+              "example": ("?sites=39.04,-77.48:ashburn;40.42,-79.99:"
+                          "pittsburgh;39.96,-83.0:columbus"
+                          "&max_latency_us=8000")}
+        # if candidates were in play, tell the agent WHY the set is short
+        if any(_cand_contract[k] for k in ("expired", "unknown", "resolved")):
+            _e["_entity"] = "error"
+            _e["candidate_contract"] = _cand_contract
+        return jsonify(_e), 400
     budget = parse_budget(src.get("max_latency_us"))
     min_conf = parse_min_confidence(src.get("min_confidence"))
 
@@ -431,6 +499,14 @@ def cluster_latency():
         sites, budget_us=budget, min_confidence=min_conf,
         enrichment=enrichment,
         published_pair_check=published_check_from_points(sites, points))
+
+    # r-entity (2026-07-12, Grok review): the envelope discriminator every
+    # other DC Hub tool carries — agents branch on _entity before parsing.
+    res = {"_entity": "latency_clusters", **res}
+    # candidate contract: declare resolved/expired/unknown so an agent that
+    # passed candidate_ids sees exactly what happened to each (fail-closed).
+    if any(_cand_contract[k] for k in ("expired", "unknown", "resolved")):
+        res["candidate_contract"] = _cand_contract
 
     # provenance-v1: floors are physics but est_rtt/route_factor and the
     # screening enrichment are DC Hub inferences → default_v="inferred";

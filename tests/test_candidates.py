@@ -58,3 +58,17 @@ def test_doc_page_mirrors_the_contract():
                    "analysis_version", "no automatic lineage",
                    "7 days", "originating search", "cannot be overridden"):
         assert phrase.lower() in DOC.lower(), phrase
+
+
+def test_load_candidate_never_runs_ddl():
+    """Regression (2026-07-12): load_candidate is served from the READ REPLICA
+    (resolve / site-score / cluster) where CREATE TABLE fails 'read-only
+    transaction'. It must NOT call _ensure_ddl — only mint_candidates (the
+    primary/write path) may. Prior bug 500'd any read that ran before a mint
+    in the same worker; production survived only on mint-first ordering."""
+    import re as _re
+    load_src = SRC[SRC.index("def load_candidate"):SRC.index("def expired_response")]
+    assert "_ensure_ddl" not in load_src, "load_candidate must not run DDL (replica is read-only)"
+    assert "return None, False" in load_src, "missing-table/read hiccup must degrade, not raise"
+    mint_src = SRC[SRC.index("def mint_candidates"):SRC.index("def load_candidate")]
+    assert "_ensure_ddl" in mint_src, "mint_candidates (write path) still creates the table"
