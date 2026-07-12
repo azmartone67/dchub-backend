@@ -56,5 +56,5 @@ def test_resolve_stays_narrow():
 def test_doc_page_mirrors_the_contract():
     for phrase in ("candidate_expired", "Re-run the search", "snap_",
                    "analysis_version", "no automatic lineage",
-                   "7 days"):
+                   "7 days", "originating search", "cannot be overridden"):
         assert phrase.lower() in DOC.lower(), phrase

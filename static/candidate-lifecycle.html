@@ -44,6 +44,7 @@
 
     <h2>What snapshot_id guarantees</h2>
     <p><code>snapshot_id</code> is <b>immutable</b> — it names the queue-data vintage (the load date of the underlying ISO disclosures). Two candidates sharing a snapshot were produced from identical underlying data. Re-running the same search against the same snapshot returns the <b>same</b> candidate ids.</p>
+    <div class="rule"><b>First-mint-wins — read search_context as "originating search."</b> Candidate identity is per <code>(queue_id, snapshot_id)</code>, so if a <i>different</i> search already minted the same survivor within this snapshot, your search returns that existing identity — and <code>resolve-candidate</code>'s <code>search_context</code> reflects the <b>first</b> search that minted it, not necessarily yours. Same underlying result = same identity across searches (this is also why re-searching can never extend a TTL). If your workflow needs your own filter context preserved, it belongs in your orchestration state, not the candidate. <i>(Documented from Grok's first external audit, 2026-07-11.)</i></div>
 
     <h2>When ids expire</h2>
     <p>Identity and freshness are separate. A candidate expires <b>7 days after first mint</b> — matching the refresh cadence of the underlying queue data, because a TTL longer than the data's own truth would be a lie. Re-searching does not extend a TTL.</p>
@@ -75,6 +76,7 @@ POST /api/v1/rank-sites   {"candidates":[{"candidate_id":"cand_7f9c5d…",
                             "overall_score": 77.7}], "objectives":{…}}
 GET /api/v1/resolve-candidate?candidate_id=cand_7f9c5d…</pre>
     <p><code>resolve-candidate</code> is deliberately narrow: identity, location, snapshot metadata, provenance, and the originating search context. Never analysis, never a recompute — a dependable anchor for orchestration, not another analysis endpoint.</p>
+    <div class="rule"><b>Recommended minimal rank_sites payload:</b> <code>{"candidate_id": "cand_…", &lt;your enrichment metrics&gt;}</code> — e.g. <code>overall_score</code> from a site-score call. That's the whole contract: frozen identity fields (<code>lat</code>, <code>lng</code>, <code>capacity_mw</code>, <code>fiber_km</code>, <code>iso</code>) load from the mint automatically and <b>cannot be overridden</b>; anything else you attach is treated as an enrichment metric and is rankable. Do not re-send coordinates — that's the transcription-drift path this contract exists to close.</div>
 
     <h2>When to re-run search</h2>
     <ul>
