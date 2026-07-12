@@ -28796,13 +28796,27 @@ def api_site_score():
     _cand_id = (request.args.get('candidate_id') or '').strip()
     if _cand_id:
         _cexp = False
+        # audit-fix 2026-07-12: a TRANSIENT candidate-read fault must return 503
+        # 'retry', NOT a false 404 'unknown' (which told the agent to re-search /
+        # that its id was mistyped, and could mask an expired candidate's 410).
+        # Only a genuinely-absent candidate (load_candidate → None) is 404.
+        from routes.candidates import (load_candidate, expired_response,
+                                       CandidateReadUnavailable)
         try:
-            from routes.candidates import load_candidate, expired_response
             _cconn = get_read_db()
             _cand, _cexp = load_candidate(_cconn.cursor(), _cand_id)
             _cconn.close()
+        except CandidateReadUnavailable as _cre:
+            return jsonify({'success': False, '_entity': 'error',
+                            'error': 'candidate_read_unavailable',
+                            'message': 'Candidate store temporarily unavailable — retry.',
+                            'candidate_id': _cand_id}), 503
         except Exception:
-            _cand = None
+            # connection-level failure (get_read_db / cursor) — also transient
+            return jsonify({'success': False, '_entity': 'error',
+                            'error': 'candidate_read_unavailable',
+                            'message': 'Candidate store temporarily unavailable — retry.',
+                            'candidate_id': _cand_id}), 503
         if _cand is None:
             return jsonify({'success': False, '_entity': 'error',
                             'error': 'unknown_candidate', 'candidate_id': _cand_id}), 404

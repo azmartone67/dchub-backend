@@ -43,6 +43,26 @@ from flask import Blueprint, jsonify, request
 
 candidates_bp = Blueprint("candidates", __name__)
 
+
+class CandidateReadUnavailable(Exception):
+    """A TRANSIENT candidate-read failure (replica unreachable, statement
+    timeout, connection reset) — as opposed to a genuinely-absent candidate.
+    Consumers map this to 503 'retry later', NEVER to 404 unknown / a silent
+    drop (audit 2026-07-12: collapsing transient faults into 'unknown 404'
+    told agents 'mistyped/re-search' when the truth was 'retry', and could
+    mask an EXPIRED candidate's deterministic 410). The contract's whole
+    value is deterministic, retry-classifiable errors."""
+
+
+def _is_missing_table(exc):
+    """True iff exc is Postgres UndefinedTable (42P01) — the legitimate
+    pre-first-mint case where the table doesn't exist yet → treat as
+    'no candidates', not a transient fault."""
+    code = getattr(exc, "pgcode", None)
+    if code == "42P01":
+        return True
+    return "does not exist" in str(exc).lower() and "relation" in str(exc).lower()
+
 SEARCH_VERSION = "refined-queue/2026-07-11"
 TTL_DAYS = 7
 _CITATION = {"source": "DC Hub (dchub.cloud) — ISO interconnection queues + EIA",
@@ -129,14 +149,19 @@ def load_candidate(cur, candidate_id):
             "county, fuel_type, capacity_mw, lat, lng, fiber_km, coordinate_precision, "
             "search_context, minted_at, expires_at, (expires_at < now()) AS expired "
             "FROM search_candidates WHERE candidate_id = %s", (candidate_id,))
-    except Exception:
-        # UndefinedTable (no mint has ever run) or a read-path hiccup → treat
-        # as unknown, never raise into the caller's request path.
+    except Exception as e:
         try:
             cur.connection.rollback()
         except Exception:
             pass
-        return None, False
+        # audit-fix 2026-07-12: distinguish the two failure modes the old bare
+        # catch conflated. Missing table (pre-first-mint) is legitimately
+        # "no candidates" → (None, False). Anything else is a TRANSIENT fault →
+        # raise so the caller returns 503/declares-degraded, never a false
+        # 'unknown 404' (which would also mask an expired candidate's 410).
+        if _is_missing_table(e):
+            return None, False
+        raise CandidateReadUnavailable(str(e)[:200]) from e
     r = cur.fetchone()
     if not r:
         return None, False
@@ -191,9 +216,14 @@ def resolve_candidate():
     db = os.environ.get("NEON_REPLICA_URL") or os.environ.get("DATABASE_URL")
     if not db:
         return jsonify(ok=False, _entity="error", error="no_db"), 503
-    conn = psycopg2.connect(db, sslmode="require", connect_timeout=5)
-    conn.autocommit = True
+    # audit-fix 2026-07-12: connect() INSIDE the try (was outside → a replica
+    # connect failure/timeout 500'd instead of the 503 the no_db case returns
+    # for the same DB-unavailable condition). Transient reads → 503 retry,
+    # never a 500 'server bug' or a false 404 'unknown'.
+    conn = None
     try:
+        conn = psycopg2.connect(db, sslmode="require", connect_timeout=5)
+        conn.autocommit = True
         cand, expired = load_candidate(conn.cursor(), cid)
         if cand is None:
             return jsonify(ok=False, _entity="error", error="unknown_candidate",
@@ -226,8 +256,18 @@ def resolve_candidate():
             "echo": candidate_echo(cand, analysis_version="resolve/1.0"),
             "_cite": "DC Hub (dchub.cloud)",
         }), 200
+    except CandidateReadUnavailable as e:
+        return jsonify(ok=False, _entity="error", error="candidate_read_unavailable",
+                       message="Candidate store temporarily unavailable — retry.",
+                       detail=str(e)[:160]), 503
+    except Exception as e:
+        # a psycopg2 connect() failure (replica unreachable/timeout) lands here
+        return jsonify(ok=False, _entity="error", error="candidate_read_unavailable",
+                       message="Candidate store temporarily unavailable — retry.",
+                       detail=str(e)[:160]), 503
     finally:
         try:
-            conn.close()
+            if conn is not None:
+                conn.close()
         except Exception:
             pass

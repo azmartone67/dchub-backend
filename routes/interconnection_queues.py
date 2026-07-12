@@ -763,35 +763,50 @@ def api_rank_sites():
     # iso) come from the mint — never reinterpreted, agent metrics overlay the
     # rest. Expired/unknown ids are DROPPED AND DECLARED (fail-closed, the
     # deterministic-expiry contract) — never silently re-resolved.
-    _expired_cands, _unknown_cands = [], []
+    # audit-fix 2026-07-12: expired/unknown/READ-FAILED candidate_id entries are
+    # all DECLARED (fail-closed) — a transient read fault must NOT silently let
+    # an entry rank on its raw caller fields (that would reinterpret a candidate
+    # the mint should have frozen). read_failed is distinct from unknown so an
+    # agent can retry vs. re-search.
+    _expired_cands, _unknown_cands, _readfailed_cands = [], [], []
     if any(c.get("candidate_id") for c in cands):
+        from routes.candidates import load_candidate, CandidateReadUnavailable
+        _resolved, _cc = [], None
         try:
-            from routes.candidates import load_candidate
-            with psycopg.connect(NEON_URL, autocommit=True) as _cc:
-                _ccur = _cc.cursor()
-                _resolved = []
-                for c in cands:
-                    cid = (c.get("candidate_id") or "").strip()
-                    if not cid:
-                        _resolved.append(c)
-                        continue
-                    cand, _exp = load_candidate(_ccur, cid)
-                    if cand is None:
-                        _unknown_cands.append(cid)
-                        continue
-                    if _exp:
-                        _expired_cands.append(cid)
-                        continue
-                    frozen = {k: v for k, v in {
-                        "id": c.get("id") or cand.get("project_name") or cid,
-                        "candidate_id": cid, "lat": cand.get("lat"),
-                        "lng": cand.get("lng"), "capacity_mw": cand.get("capacity_mw"),
-                        "fiber_km": cand.get("fiber_km"), "iso": cand.get("iso"),
-                    }.items() if v is not None}
-                    _resolved.append({**c, **frozen})
-                cands = _resolved
+            _cc = psycopg.connect(NEON_URL, autocommit=True)
+            _ccur = _cc.cursor()
         except Exception:
-            pass  # fail-soft: entries rank on their explicit fields only
+            _ccur = None
+        for c in cands:
+            cid = (c.get("candidate_id") or "").strip()
+            if not cid:
+                _resolved.append(c)
+                continue
+            if _ccur is None:  # connection down → declare, never reinterpret
+                _readfailed_cands.append(cid)
+                continue
+            try:
+                cand, _exp = load_candidate(_ccur, cid)
+            except CandidateReadUnavailable:
+                _readfailed_cands.append(cid)
+                continue
+            if cand is None:
+                _unknown_cands.append(cid)
+                continue
+            if _exp:
+                _expired_cands.append(cid)
+                continue
+            frozen = {k: v for k, v in {
+                "id": c.get("id") or cand.get("project_name") or cid,
+                "candidate_id": cid, "lat": cand.get("lat"),
+                "lng": cand.get("lng"), "capacity_mw": cand.get("capacity_mw"),
+                "fiber_km": cand.get("fiber_km"), "iso": cand.get("iso"),
+            }.items() if v is not None}
+            _resolved.append({**c, **frozen})
+        if _cc is not None:
+            try: _cc.close()
+            except Exception: pass
+        cands = _resolved
 
     survivors = [dict(c) for c in cands if _passes(c)]
     dropped = len(cands) - len(survivors)
@@ -945,13 +960,22 @@ def api_rank_sites():
         _extra["excluded_incomplete"] = _excluded_incomplete
     # r-candidate-v1: the declared fail-closed outcomes for candidate_id entries,
     # + the contract echo so an auditor knows which implementations touched this.
-    if _expired_cands or _unknown_cands or any(c.get("candidate_id") for c in survivors):
-        _extra["candidate_contract"] = {
+    if (_expired_cands or _unknown_cands or _readfailed_cands
+            or any(c.get("candidate_id") for c in survivors)):
+        _cc_block = {
             "search_version": "refined-queue/2026-07-11",
             "analysis_version": "rank-sites/2026-07-11",
             "expired_candidates": _expired_cands,
             "unknown_candidates": _unknown_cands,
         }
+        # read_failed = transient store fault; declared so an agent RETRIES
+        # these rather than treating them as unknown/re-search (audit-fix).
+        if _readfailed_cands:
+            _cc_block["read_failed_candidates"] = _readfailed_cands
+            _cc_block["read_failed_note"] = ("candidate store temporarily "
+                "unavailable for these ids — retry; they were NOT ranked and "
+                "NOT reinterpreted on caller fields")
+        _extra["candidate_contract"] = _cc_block
     _unavail = [f for f in objectives if coverage.get(f) == "unavailable"]
     if _unavail:
         _extra["coverage_note"] = (

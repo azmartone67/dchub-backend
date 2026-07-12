@@ -419,12 +419,17 @@ def _resolve_candidate_sites(src):
     embedded in the sites string. Each resolves to a frozen "lat,lon:label"
     token (label = project_name or the short id) — coordinates come from the
     mint, never re-specified (same no-transposition guarantee as site-score /
-    rank_sites). Expired/unknown ids are DROPPED AND DECLARED, never silently
-    resolved (the fail-closed contract). Returns
-    (normalized_sites_string, {expired:[], unknown:[], resolved:[]}) or
-    (None, contract) when the DB/loader is unavailable (fail-soft: caller
-    falls back to the raw sites string). Pure of Flask; reads the replica."""
-    contract = {"expired": [], "unknown": [], "resolved": []}
+    rank_sites). Expired/unknown/read-failed ids are DROPPED AND DECLARED,
+    never silently resolved (the fail-closed contract). Returns
+    (normalized_sites_string_or_None, contract) where contract =
+    {expired:[], unknown:[], read_failed:[], resolved:[], snapshot_id}.
+    ★ audit-fix 2026-07-12: a transient store fault no longer makes the ids
+    VANISH (old bare-except returned an empty contract, caller fell back to raw
+    sites, candidate_ids gone undeclared). Now every id that couldn't resolve
+    is declared read_failed so the agent can retry. Pure of Flask; reads the
+    replica."""
+    contract = {"expired": [], "unknown": [], "read_failed": [],
+                "resolved": [], "snapshot_id": None}
     ids = []
     raw_ids = src.get("candidate_ids")
     if isinstance(raw_ids, (list, tuple)):
@@ -444,30 +449,42 @@ def _resolve_candidate_sites(src):
     ids = list(dict.fromkeys(ids))  # de-dupe, preserve order
     if not ids:
         return None, contract  # no candidates in play — use raw sites as-is
+    import psycopg2
+    from routes.candidates import load_candidate, CandidateReadUnavailable
+    db = (os.environ.get("NEON_REPLICA_URL") or os.environ.get("DATABASE_URL"))
+    conn = None
     try:
-        import psycopg2
-        from routes.candidates import load_candidate
-        db = (os.environ.get("NEON_REPLICA_URL")
-              or os.environ.get("DATABASE_URL"))
         conn = psycopg2.connect(db, sslmode="require", connect_timeout=5)
         conn.autocommit = True
         cur = conn.cursor()
-        for cid in ids:
+    except Exception:
+        # connection down → declare ALL ids read_failed (never silently drop);
+        # keep any raw-coordinate passthrough so a mixed request still runs.
+        contract["read_failed"] = list(ids)
+        return (";".join(passthrough) if passthrough else ""), contract
+    for cid in ids:
+        try:
             cand, expired = load_candidate(cur, cid)
-            if cand is None:
-                contract["unknown"].append(cid)
-            elif expired:
-                contract["expired"].append(cid)
-            elif cand.get("lat") is None or cand.get("lng") is None:
-                contract["unknown"].append(cid)  # ungeocoded → unusable here
-            else:
-                label = (cand.get("project_name") or cid)
-                label = str(label).replace(":", " ").replace(";", " ")[:64]
-                passthrough.append(f"{cand['lat']},{cand['lng']}:{label}")
-                contract["resolved"].append(cid)
+        except CandidateReadUnavailable:
+            contract["read_failed"].append(cid)
+            continue
+        if cand is None:
+            contract["unknown"].append(cid)
+        elif expired:
+            contract["expired"].append(cid)
+        elif cand.get("lat") is None or cand.get("lng") is None:
+            contract["unknown"].append(cid)  # ungeocoded → unusable here
+        else:
+            if not contract["snapshot_id"]:
+                contract["snapshot_id"] = cand.get("snapshot_id")
+            label = (cand.get("project_name") or cid)
+            label = str(label).replace(":", " ").replace(";", " ")[:64]
+            passthrough.append(f"{cand['lat']},{cand['lng']}:{label}")
+            contract["resolved"].append(cid)
+    try:
         conn.close()
     except Exception:
-        return None, contract  # fail-soft: caller uses raw sites string
+        pass
     return ";".join(passthrough), contract
 
 
@@ -486,7 +503,7 @@ def cluster_latency():
                           "pittsburgh;39.96,-83.0:columbus"
                           "&max_latency_us=8000")}
         # if candidates were in play, tell the agent WHY the set is short
-        if any(_cand_contract[k] for k in ("expired", "unknown", "resolved")):
+        if any(_cand_contract[k] for k in ("expired", "unknown", "read_failed", "resolved")):
             _e["_entity"] = "error"
             _e["candidate_contract"] = _cand_contract
         return jsonify(_e), 400
@@ -503,10 +520,22 @@ def cluster_latency():
     # r-entity (2026-07-12, Grok review): the envelope discriminator every
     # other DC Hub tool carries — agents branch on _entity before parsing.
     res = {"_entity": "latency_clusters", **res}
-    # candidate contract: declare resolved/expired/unknown so an agent that
-    # passed candidate_ids sees exactly what happened to each (fail-closed).
-    if any(_cand_contract[k] for k in ("expired", "unknown", "resolved")):
+    # candidate contract: declare resolved/expired/unknown/read_failed so an
+    # agent that passed candidate_ids sees exactly what happened to each
+    # (fail-closed). I6 (audit-fix 2026-07-12): when candidates were resolved,
+    # carry the identity echo — snapshot_id + SEPARATE search/analysis versions
+    # so an auditor can tell data drift from implementation drift.
+    if any(_cand_contract[k] for k in ("expired", "unknown", "read_failed", "resolved")):
         res["candidate_contract"] = _cand_contract
+        if _cand_contract.get("resolved"):
+            from datetime import datetime as _dt, timezone as _tz
+            res["echo"] = {
+                "snapshot_id": _cand_contract.get("snapshot_id"),
+                "search_version": "refined-queue/2026-07-11",
+                "analysis_version": "cluster-latency/2026-07-12",
+                "retrieved_at": _dt.now(_tz.utc).isoformat(),
+                "citation": {"source": "DC Hub (dchub.cloud)", "license": "CC-BY-4.0"},
+            }
 
     # provenance-v1: floors are physics but est_rtt/route_factor and the
     # screening enrichment are DC Hub inferences → default_v="inferred";
