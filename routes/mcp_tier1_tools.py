@@ -15,11 +15,17 @@ tables; runtime is just SELECT.
 """
 import os
 import math
+import difflib
 from typing import Any
 from contextlib import contextmanager
 
 from flask import Blueprint, request, jsonify
 from routes.facility_slug import hash_sql
+from routes.error_envelope import merge_error_mitigation
+
+# Declared parameter names for rank_markets — the STRICT-SUBSET allow-list
+# any error_version:1 suggested_params must validate against.
+RANK_MARKETS_PARAMS = ("criteria", "region", "limit", "min_capacity_mw")
 
 try:
     import psycopg2
@@ -76,10 +82,25 @@ def rank_markets():
     valid_criteria = {"cheapest_power", "most_capacity", "most_operators",
                        "fastest_growing", "best_overall"}
     if criteria not in valid_criteria:
-        return jsonify({
-            "error": "invalid criteria",
-            "valid_options": sorted(valid_criteria),
-        }), 400
+        # error_version:1 — a bad enum arg is a parameter_adjustment: suggest
+        # the closest VALID criteria value (real param + real enum value) so
+        # the agent re-runs immediately. Existing human text preserved.
+        _close = difflib.get_close_matches(
+            criteria, sorted(valid_criteria), n=1, cutoff=0.3)
+        _suggest = _close[0] if _close else "best_overall"
+        body = merge_error_mitigation(
+            {
+                "error": "invalid criteria",
+                "valid_options": sorted(valid_criteria),
+            },
+            "invalid_criteria",
+            "parameter_adjustment",
+            (f"criteria='{criteria}' is not a recognized option; use one of "
+             f"{sorted(valid_criteria)}. Re-run with the suggested criteria."),
+            suggested_params={"criteria": _suggest},
+            allowed_params=RANK_MARKETS_PARAMS,
+        )
+        return jsonify(body), 400
 
     # Map region to country filter
     region_countries = {
@@ -94,7 +115,12 @@ def rank_markets():
 
     with _conn() as c:
         if c is None:
-            return jsonify({"error": "database unavailable"}), 503
+            return jsonify(merge_error_mitigation(
+                {"error": "database unavailable"},
+                "database_unavailable", "transient_backoff",
+                "The database connection pool is momentarily unavailable; "
+                "wait ~500ms and retry the same request.",
+            )), 503
 
         # Country filter SQL
         if countries:
@@ -233,7 +259,12 @@ def find_alternatives():
 
     with _conn() as c:
         if c is None:
-            return jsonify({"error": "database unavailable"}), 503
+            return jsonify(merge_error_mitigation(
+                {"error": "database unavailable"},
+                "database_unavailable", "transient_backoff",
+                "The database connection pool is momentarily unavailable; "
+                "wait ~500ms and retry the same request.",
+            )), 503
         try:
             with c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                 # Get the target facility (cast id since discovered_facilities.id is SERIAL int)
@@ -401,7 +432,12 @@ def score_facility():
 
     with _conn() as c:
         if c is None:
-            return jsonify({"error": "database unavailable"}), 503
+            return jsonify(merge_error_mitigation(
+                {"error": "database unavailable"},
+                "database_unavailable", "transient_backoff",
+                "The database connection pool is momentarily unavailable; "
+                "wait ~500ms and retry the same request.",
+            )), 503
         try:
             with c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                 # discovered_facilities lacks tier/sqft/certifications/connectivity

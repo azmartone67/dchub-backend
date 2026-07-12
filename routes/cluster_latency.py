@@ -48,7 +48,19 @@ import time
 
 from flask import Blueprint, jsonify, request
 
+from routes.error_envelope import error_mitigation, merge_error_mitigation
+
 cluster_latency_bp = Blueprint("cluster_latency", __name__)
+
+# The endpoint's declared parameter names — the STRICT-SUBSET allow-list any
+# error_version:1 suggested_params must validate against (an out-of-contract
+# key would break an agent's merge-and-retry loop).
+CLUSTER_LATENCY_PARAMS = ("sites", "max_latency_us", "min_confidence")
+
+# A canonical valid ``sites`` value handed back as the deterministic
+# corrector when parsing fails (Ashburn / Pittsburgh / Columbus).
+_SITES_EXAMPLE = ("39.04,-77.48:ashburn;40.42,-79.99:pittsburgh;"
+                  "39.96,-83.0:columbus")
 
 # ── constants (cited verbatim in the provenance method string) ──────────
 FIBER_US_PER_KM = 4.9      # one-way µs/km — light in SMF-28 fiber, n≈1.468
@@ -411,6 +423,44 @@ def published_check_from_points(sites, points, pad=PAIR_BBOX_PAD_DEG):
     return check
 
 
+# ── pure: the deterministic state-machine corrector ─────────────────────
+def physics_impossible_mitigation(res):
+    """When EVERY candidate pair is physics_impossible for the requested
+    ``max_latency_us``, return a parameter_adjustment ``_error_mitigation``
+    block whose suggested_params carries the minimum viable ``max_latency_us``
+    computed from the smallest floor_rtt_us. This is the deterministic
+    corrector: the agent merges the one param and re-runs to get at least one
+    viable cluster. Returns None when at least one pair is already within
+    physics reach (nothing to correct). Pure; never raises."""
+    try:
+        pairs = res.get("pairs") or []
+        if not pairs or not all(p.get("physics_impossible") for p in pairs):
+            return None
+        floors = [p.get("floor_rtt_us") for p in pairs
+                  if isinstance(p.get("floor_rtt_us"), (int, float))]
+        if not floors:
+            return None
+        # Minimum viable budget = smallest est_rtt (= smallest floor ×
+        # route_factor): at this budget the closest pair clears BOTH the
+        # physics floor and the est_rtt viability test. Round up so the
+        # suggested value is genuinely ≥ the requirement.
+        min_viable = int(math.ceil(min(floors) * ROUTE_FACTOR))
+        env = error_mitigation(
+            "max_latency_us_below_physics_floor",
+            "parameter_adjustment",
+            ("Every candidate pair's round-trip physics floor exceeds "
+             f"max_latency_us={res.get('max_latency_us')}; the closest pair "
+             f"needs at least {min_viable} µs. Re-run with the suggested "
+             "max_latency_us to surface at least one viable low-latency "
+             "cluster."),
+            suggested_params={"max_latency_us": min_viable},
+            allowed_params=CLUSTER_LATENCY_PARAMS,
+        )
+        return env["_error_mitigation"]
+    except Exception:
+        return None
+
+
 # ── HTTP surface ─────────────────────────────────────────────────────────
 def _resolve_candidate_sites(src):
     """r-candidate-cluster (2026-07-12, Grok's high-priority review item):
@@ -499,14 +549,25 @@ def cluster_latency():
     sites, err = parse_sites(_sites_input)
     if err:
         _e = {"error": err,
-              "example": ("?sites=39.04,-77.48:ashburn;40.42,-79.99:"
-                          "pittsburgh;39.96,-83.0:columbus"
-                          "&max_latency_us=8000")}
+              "example": "?sites=" + _SITES_EXAMPLE + "&max_latency_us=8000"}
         # if candidates were in play, tell the agent WHY the set is short
         if any(_cand_contract[k] for k in ("expired", "unknown", "read_failed", "resolved")):
             _e["_entity"] = "error"
             _e["candidate_contract"] = _cand_contract
-        return jsonify(_e), 400
+        # error_version:1 — a bad ``sites`` value is a parameter_adjustment:
+        # wrap the (candidate-aware) error dict so the agent re-runs immediately
+        # with a valid ``sites`` string. merge_error_mitigation preserves the
+        # candidate_contract / _entity keys set above.
+        body = merge_error_mitigation(
+            _e,
+            "invalid_sites_param",
+            "parameter_adjustment",
+            err + " — re-run with the suggested sites value (semicolon-"
+            "separated lat,lon pairs, 2-8, optional :label).",
+            suggested_params={"sites": _SITES_EXAMPLE},
+            allowed_params=CLUSTER_LATENCY_PARAMS,
+        )
+        return jsonify(body), 400
     budget = parse_budget(src.get("max_latency_us"))
     min_conf = parse_min_confidence(src.get("min_confidence"))
 
@@ -550,6 +611,16 @@ def cluster_latency():
             method=METHOD_STRING,
             default_v="inferred",
         )
+    except Exception:
+        pass
+
+    # error_version:1 advisory — a SUCCESS response (HTTP 200, not isError)
+    # that still carries a corrector when the requested budget made every
+    # pair physics-impossible: the agent can widen max_latency_us and re-run.
+    try:
+        advisory = physics_impossible_mitigation(res)
+        if advisory:
+            res["_error_mitigation"] = advisory
     except Exception:
         pass
     return jsonify(res), 200

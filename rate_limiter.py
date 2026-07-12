@@ -445,11 +445,25 @@ def _resp(retry_after):
     """429 Too Many Requests — with the standard rate-limit headers so a client
     knows the cap (Limit), that it's exhausted (Remaining 0), and exactly when to
     retry (Retry-After + Reset)."""
-    r = jsonify({
+    body = {
         'error': 'rate_limit_exceeded',
         'message': f'Too many requests. Retry after {retry_after}s.',
         'retry_after': retry_after
-    })
+    }
+    # error_version:1 — rate-limit is transient_backoff: NO suggested_params
+    # (no param change unlocks it; the agent waits and retries the same call).
+    # Fail-soft: the envelope must never break the 429 response.
+    try:
+        from routes.error_envelope import merge_error_mitigation
+        merge_error_mitigation(
+            body,
+            'rate_limit_exceeded', 'transient_backoff',
+            f'Per-window request cap exhausted; wait {retry_after}s '
+            '(Retry-After) and retry the same request.',
+        )
+    except Exception:
+        pass
+    r = jsonify(body)
     r.status_code = 429
     r.headers['Retry-After'] = str(retry_after)
     lim = getattr(g, '_rl_limit', None)
