@@ -107,8 +107,15 @@ def validate_suggested_params(suggested_params, allowed_params):
     agent's merge-and-retry loop). Behaviour:
 
       * suggested_params falsy / not a dict  -> {}
-      * allowed_params is None               -> trust caller, keep all keys
-                                                (still coerced to a plain dict)
+      * allowed_params is None               -> FAIL CLOSED: drop all keys and
+                                                warn. An emitted key that isn't a
+                                                real tool param breaks the agent's
+                                                merge-and-retry loop (Gemini's
+                                                load-bearing rule), so a caller
+                                                that forgot to declare the
+                                                allowed-set must never leak keys.
+                                                Matches the MCP side's fail-closed
+                                                behaviour (lib/error-envelope.mjs).
       * allowed_params given                 -> keep only the intersection
 
     Pure; never raises. Callers treat an empty result as "omit the key".
@@ -117,7 +124,12 @@ def validate_suggested_params(suggested_params, allowed_params):
         if not suggested_params or not isinstance(suggested_params, dict):
             return {}
         if allowed_params is None:
-            return dict(suggested_params)
+            logger.warning(
+                "error_envelope: suggested_params passed WITHOUT allowed_params "
+                "— failing closed (dropping all %d keys). Pass the tool's "
+                "declared param names so a valid subset can be emitted.",
+                len(suggested_params))
+            return {}
         try:
             allowed = set(allowed_params)
         except TypeError:

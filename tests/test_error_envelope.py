@@ -89,10 +89,13 @@ def test_empty_dict_suggested_params_omits_key():
     assert "suggested_params" not in env["_error_mitigation"]
 
 
-def test_allowed_none_trusts_caller():
+def test_allowed_none_fails_closed():
+    # 2026-07-12 hardening: no allowed-set => FAIL CLOSED (drop all), so a
+    # caller that forgot to declare params can never leak an invalid key that
+    # would break the agent's merge-retry loop. Matches the MCP side.
     env = error_mitigation("e", "parameter_adjustment", "h",
                            suggested_params={"anything": 1})
-    assert env["_error_mitigation"]["suggested_params"] == {"anything": 1}
+    assert "suggested_params" not in env["_error_mitigation"]  # dropped -> omitted
 
 
 def test_validate_suggested_params_direct():
@@ -100,7 +103,7 @@ def test_validate_suggested_params_direct():
     assert validate_suggested_params({"a": 1}, ()) == {}      # nothing allowed
     assert validate_suggested_params(None, ("a",)) == {}
     assert validate_suggested_params("notadict", ("a",)) == {}
-    assert validate_suggested_params({"a": 1}, None) == {"a": 1}  # trust
+    assert validate_suggested_params({"a": 1}, None) == {}    # fail closed w/o allowed-set
 
 
 # ── severity ─────────────────────────────────────────────────────────────
