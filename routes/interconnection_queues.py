@@ -708,6 +708,16 @@ def api_rank_sites():
         top_k = max(1, int(body.get("top_k") or 3))
     except Exception:
         top_k = 3
+    # r-require-complete (2026-07-12, Grok's Option A from its unhappy-path
+    # audit): declared missing_objectives is necessary but NOT sufficient — an
+    # incomplete candidate could win rank 1 on its single best metric while
+    # naive agents just take rank 1. require_complete=true (opt-in, default
+    # false preserves current behavior) DROPS candidates missing any VALIDATED
+    # objective and DECLARES them in excluded_incomplete — control stays with
+    # the agent, fail-closed house style. Completeness is measured against
+    # validated objectives only (a set-wide-unavailable objective can't
+    # disqualify everyone).
+    require_complete = str(body.get("require_complete", "")).lower() in ("1", "true", "yes")
     if not isinstance(cands, list) or not cands:
         return jsonify(ok=False, _entity="error", error="candidates must be a non-empty list"), 400
     if not isinstance(objectives, dict) or not objectives:
@@ -880,6 +890,23 @@ def api_rank_sites():
         if missing:
             c["missing_objectives"] = missing
         c["normalized"] = c.pop("_norm", {})
+    # r-require-complete: opt-in drop of incomplete candidates — declared,
+    # never silent (Grok: "declaring the missing fields is necessary but not
+    # sufficient" when rank 1 is all a naive agent reads).
+    _excluded_incomplete = []
+    if require_complete:
+        _keep = []
+        for c in survivors:
+            if c.get("missing_objectives") or c["objective_score"] is None:
+                _excluded_incomplete.append({
+                    "id": c.get("id") or c.get("project_name"),
+                    **({"candidate_id": c["candidate_id"]} if c.get("candidate_id") else {}),
+                    "missing_objectives": c.get("missing_objectives")
+                        or [f for f in _validated],
+                })
+            else:
+                _keep.append(c)
+        survivors = _keep
     survivors.sort(key=lambda c: (c["objective_score"] is not None,
                                   c["objective_score"] or 0.0), reverse=True)
     for i, c in enumerate(survivors):
@@ -913,6 +940,9 @@ def api_rank_sites():
     # partial one. An unavailable objective is named + reasoned, never approximated.
     _extra["constraint_coverage"] = coverage
     _extra["objective_status"] = objective_status
+    if require_complete:
+        _extra["require_complete"] = True
+        _extra["excluded_incomplete"] = _excluded_incomplete
     # r-candidate-v1: the declared fail-closed outcomes for candidate_id entries,
     # + the contract echo so an auditor knows which implementations touched this.
     if _expired_cands or _unknown_cands or any(c.get("candidate_id") for c in survivors):
