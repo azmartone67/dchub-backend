@@ -598,11 +598,27 @@ async def search_facilities(
         conditions = []
         params_list = []
 
-        # Text search on name, provider, city, state
+        # Text search on name, provider, city, state — multi-word aware
+        # (r-search-multiword 2026-07-12): the old single-phrase ILIKE returned
+        # 0 rows for "Ashburn data centers". Match ANY meaningful token (domain
+        # stopwords like "data"/"centers" dropped), ranked by token overlap.
+        _mcp_rank_sql, _mcp_rank_params = "", []
         if effective_query:
-            q = f"%{effective_query}%"
-            conditions.append("(name ILIKE %s OR provider ILIKE %s OR city ILIKE %s OR state ILIKE %s)")
-            params_list.extend([q, q, q, q])
+            _toks = None
+            try:
+                from search_matching import meaningful_tokens, token_where, token_rank, SEARCH_FIELD_WEIGHTS
+                _toks = meaningful_tokens(effective_query)
+            except Exception:
+                _toks = None
+            if _toks:
+                _wsql, _wparams = token_where(_toks, ("name", "city", "state", "provider"))
+                conditions.append(_wsql)
+                params_list.extend(_wparams)
+                _mcp_rank_sql, _mcp_rank_params = token_rank(_toks, SEARCH_FIELD_WEIGHTS)
+            else:
+                q = f"%{effective_query}%"
+                conditions.append("(name ILIKE %s OR provider ILIKE %s OR city ILIKE %s OR state ILIKE %s)")
+                params_list.extend([q, q, q, q])
 
         if country:
             conditions.append("country = %s")
@@ -639,13 +655,18 @@ async def search_facilities(
 
         where = "WHERE " + " AND ".join(conditions) if conditions else ""
         safe_limit = min(limit, 100)
+        # Relevance rank slots in after WHERE params, before the LIMIT/OFFSET.
+        _order_sql = "ORDER BY power_mw DESC NULLS LAST, name ASC"
+        if _mcp_rank_sql:
+            _order_sql = f"ORDER BY ({_mcp_rank_sql}) DESC, power_mw DESC NULLS LAST, name ASC"
+            params_list.extend(_mcp_rank_params)
         params_list.extend([safe_limit, offset])
 
         cur.execute(f"""
             SELECT id, name, provider, city, state, country, status, power_mw, slug
             FROM discovered_facilities
             {where}
-            ORDER BY power_mw DESC NULLS LAST, name ASC
+            {_order_sql}
             LIMIT %s OFFSET %s
         """, params_list)
 

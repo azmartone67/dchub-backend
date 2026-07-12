@@ -18470,10 +18470,17 @@ def _list_facilities_full():
     count_sql = "SELECT COUNT(*) FROM facilities WHERE 1=1"
     params = []
 
+    # Multi-word aware search (r-search-multiword 2026-07-12). This is the
+    # endpoint the MCP search_facilities / ChatGPT Deep Research `search` tool
+    # hit (see routes/tools_manifest.py). Old code ILIKE'd the whole phrase, so
+    # "Ashburn data centers" -> 0 rows. plan_search: exact alias -> stopword-
+    # reduced alias -> OR-any-token, ranked by token overlap.
+    _rank_sql, _rank_params = '', []
     if q:
-        query_lower = q.lower()
-        if query_lower in MARKET_ALIASES:
-            search_cities = MARKET_ALIASES[query_lower]
+        from search_matching import plan_search, token_where, token_rank, SEARCH_FIELD_WEIGHTS
+        _ptype, _pval = plan_search(q, MARKET_ALIASES)
+        if _ptype == 'alias':
+            search_cities = MARKET_ALIASES[_pval]
             conditions = []
             for city in search_cities:
                 if len(city) == 2 and city.isupper():
@@ -18483,12 +18490,15 @@ def _list_facilities_full():
                     conditions.append('city ILIKE %s')
                     params.append(f'%{city}%')
             search_clause = f" AND ({' OR '.join(conditions)})"
-        else:
-            search_clause = " AND (city ILIKE %s OR state ILIKE %s OR name ILIKE %s OR provider ILIKE %s)"
-            params.extend([f'%{q}%', f'%{q}%', f'%{q}%', f'%{q}%'])
-
-        sql += search_clause
-        count_sql += search_clause
+            sql += search_clause
+            count_sql += search_clause
+        elif _pval:
+            _wsql, _wparams = token_where(_pval, ('name', 'city', 'state', 'provider'))
+            search_clause = " AND " + _wsql
+            params.extend(_wparams)
+            sql += search_clause
+            count_sql += search_clause
+            _rank_sql, _rank_params = token_rank(_pval, SEARCH_FIELD_WEIGHTS)
 
     if country:
         sql += " AND country = %s"
@@ -18540,7 +18550,13 @@ def _list_facilities_full():
         count_sql += " AND confidence >= %s"
         params.append(min_confidence)
 
-    sql += f" ORDER BY confidence DESC, power_mw DESC LIMIT {limit} OFFSET {offset}"
+    # Rank multi-token matches above the confidence tie-break. The relevance
+    # params slot into the ORDER BY (after the WHERE params, before the literal
+    # LIMIT/OFFSET) so they go on the MAIN query only, never the count query.
+    if _rank_sql:
+        sql += f" ORDER BY ({_rank_sql}) DESC, confidence DESC, power_mw DESC LIMIT {limit} OFFSET {offset}"
+    else:
+        sql += f" ORDER BY confidence DESC, power_mw DESC LIMIT {limit} OFFSET {offset}"
 
     conn = None
     try:
@@ -18550,7 +18566,7 @@ def _list_facilities_full():
         c.execute(count_sql, params)
         row = c.fetchone(); total = row['count'] if isinstance(row, dict) else row[0]
 
-        c.execute(sql, params)
+        c.execute(sql, params + _rank_params)
         facilities = [dict_from_row(row) for row in c.fetchall()]
 
         # r-1348 (2026-06-30): canonical resolvable slug + profile_url (mirror
@@ -18661,10 +18677,15 @@ def _list_facilities_free():
     count_sql = "SELECT COUNT(*) FROM discovered_facilities WHERE 1=1"
     params = []
 
+    # Multi-word aware search (r-search-multiword 2026-07-12) — mirror of the
+    # authed path. Old code ILIKE'd the whole phrase so "Ashburn data centers"
+    # returned 0; plan_search resolves it via the stopword-reduced alias.
+    _rank_sql, _rank_params = '', []
     if q:
-        query_lower = q.lower()
-        if query_lower in MARKET_ALIASES:
-            search_cities = MARKET_ALIASES[query_lower]
+        from search_matching import plan_search, token_where, token_rank, SEARCH_FIELD_WEIGHTS
+        _ptype, _pval = plan_search(q, MARKET_ALIASES)
+        if _ptype == 'alias':
+            search_cities = MARKET_ALIASES[_pval]
             conditions = []
             for city in search_cities:
                 if len(city) == 2 and city.isupper():
@@ -18674,11 +18695,15 @@ def _list_facilities_free():
                     conditions.append('city ILIKE %s')
                     params.append(f'%{city}%')
             search_clause = f" AND ({' OR '.join(conditions)})"
-        else:
-            search_clause = " AND (city ILIKE %s OR state ILIKE %s OR name ILIKE %s OR provider ILIKE %s)"
-            params.extend([f'%{q}%', f'%{q}%', f'%{q}%', f'%{q}%'])
-        sql += search_clause
-        count_sql += search_clause
+            sql += search_clause
+            count_sql += search_clause
+        elif _pval:
+            _wsql, _wparams = token_where(_pval, ('name', 'city', 'state', 'provider'))
+            search_clause = " AND " + _wsql
+            params.extend(_wparams)
+            sql += search_clause
+            count_sql += search_clause
+            _rank_sql, _rank_params = token_rank(_pval, SEARCH_FIELD_WEIGHTS)
 
     if country:
         sql += " AND country = %s"
@@ -18706,7 +18731,12 @@ def _list_facilities_free():
         count_sql += " AND city ILIKE %s"
         params.append(f"%{city}%")
 
-    sql += f" ORDER BY confidence_score DESC, power_mw DESC LIMIT {FREE_LIMIT}"
+    # Relevance params go on the MAIN query only (after WHERE, before the
+    # literal LIMIT), never on the count query.
+    if _rank_sql:
+        sql += f" ORDER BY ({_rank_sql}) DESC, confidence_score DESC, power_mw DESC LIMIT {FREE_LIMIT}"
+    else:
+        sql += f" ORDER BY confidence_score DESC, power_mw DESC LIMIT {FREE_LIMIT}"
 
     conn = None
     try:
@@ -18716,7 +18746,7 @@ def _list_facilities_free():
         c.execute(count_sql, params)
         row = c.fetchone(); total_matching = row['count'] if isinstance(row, dict) else row[0]
 
-        c.execute(sql, params)
+        c.execute(sql, params + _rank_params)
         rows = c.fetchall()
     except Exception as e:
         logger.error(f"Facilities free endpoint error: {e}")
@@ -18871,11 +18901,16 @@ def search_facilities():
         conditions = []
         params = []
 
-        # Full-text q — check MARKET_ALIASES first
+        # Full-text q — multi-word aware (r-search-multiword 2026-07-12).
+        # Old code ILIKE'd the WHOLE phrase, so "Ashburn data centers" -> 0 rows
+        # while "Ashburn" -> 25. plan_search: exact market alias -> stopword-
+        # reduced alias ("ashburn data centers" -> "ashburn") -> OR-any-token.
+        _rank_sql, _rank_params = '', []
         if query:
-            query_lower = query.lower()
-            if query_lower in MARKET_ALIASES:
-                cities = MARKET_ALIASES[query_lower]
+            from search_matching import plan_search, token_where, token_rank, SEARCH_FIELD_WEIGHTS
+            _ptype, _pval = plan_search(query, MARKET_ALIASES)
+            if _ptype == 'alias':
+                cities = MARKET_ALIASES[_pval]
                 market_conds = []
                 for mkt_city in cities:
                     if len(mkt_city) == 2 and mkt_city.isupper():
@@ -18887,10 +18922,12 @@ def search_facilities():
                 conditions.append(f"({' OR '.join(market_conds)})")
                 # MARKET_ALIASES are all US markets — guard against ISO code collisions (AZ=Azerbaijan)
                 conditions.append("(country = 'US' OR country = 'USA' OR country IS NULL OR country = '')")
-            else:
-                q = f'%{query}%'
-                conditions.append('(city ILIKE %s OR state ILIKE %s OR name ILIKE %s OR provider ILIKE %s)')
-                params.extend([q, q, q, q])
+            elif _pval:
+                # OR-any-token match across weighted columns; rank by token overlap.
+                _wsql, _wparams = token_where(_pval, ('name', 'city', 'state', 'provider'))
+                conditions.append(_wsql)
+                params.extend(_wparams)
+                _rank_sql, _rank_params = token_rank(_pval, SEARCH_FIELD_WEIGHTS)
 
         if operator:
             conditions.append('provider ILIKE %s')
@@ -18932,6 +18969,13 @@ def search_facilities():
             params.append(min_confidence)
 
         where = 'WHERE ' + ' AND '.join(conditions) if conditions else ''
+        # Relevance-rank multi-token matches above the confidence tie-break,
+        # unless the caller asked for an explicit sort column. _rank_params must
+        # slot in AFTER the WHERE params and BEFORE limit/offset (ORDER BY sits
+        # after WHERE in the statement below).
+        if _rank_sql and sort_req not in SORT_COLUMNS:
+            order_by_sql = f"ORDER BY ({_rank_sql}) DESC, confidence_score DESC, power_mw DESC"
+            params.extend(_rank_params)
         params.extend([limit, offset])
 
         c.execute(f"""
