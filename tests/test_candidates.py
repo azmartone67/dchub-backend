@@ -68,7 +68,8 @@ def test_load_candidate_never_runs_ddl():
     in the same worker; production survived only on mint-first ordering."""
     import re as _re
     load_src = SRC[SRC.index("def load_candidate"):SRC.index("def expired_response")]
-    assert "_ensure_ddl" not in load_src, "load_candidate must not run DDL (replica is read-only)"
+    # match the CALL _ensure_ddl(...), not the docstring mention of the name
+    assert "_ensure_ddl(" not in load_src, "load_candidate must not run DDL (replica is read-only)"
     assert "return None, False" in load_src, "missing-table/read hiccup must degrade, not raise"
     mint_src = SRC[SRC.index("def mint_candidates"):SRC.index("def load_candidate")]
-    assert "_ensure_ddl" in mint_src, "mint_candidates (write path) still creates the table"
+    assert "_ensure_ddl(" in mint_src, "mint_candidates (write path) still creates the table"
