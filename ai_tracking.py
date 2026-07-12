@@ -90,6 +90,15 @@ AI_PLATFORMS = {
     "groq":        {"name": "Groq",         "color": "#f55036", "company": "Groq",         "agents": ["Groq", "groq"]},
     "huggingface": {"name": "Hugging Face", "color": "#ff9d00", "company": "Hugging Face", "agents": ["huggingface", "hf_hub", "HuggingFace"]},
     "mistral":     {"name": "Mistral",      "color": "#ff7000", "company": "Mistral AI",   "agents": ["mistralai", "Mistral", "mistral"]},
+    # webmcp-lane (2026-07-11): in-page agents executing our WebMCP page tools
+    # (js/dchub-webmcp.js, Chrome origin trial). Their fetches carry the
+    # BROWSER UA (Chrome), which detect_platform buckets as 'direct' — so
+    # classification is request-marker-based (is_webmcp_request below: the
+    # src=webmcp param / X-DC-Source: webmcp header the script stamps on every
+    # bound call), never UA-based. The 'webmcp' agent marker here only matters
+    # if a client self-identifies in its UA; it exists so the /ai dashboard
+    # has canonical name/color/company metadata for the bucket.
+    "webmcp":      {"name": "WebMCP",       "color": "#f4b400", "company": "In-page agents (Chrome origin trial)", "agents": ["webmcp"]},
 }
 
 # Endpoints that indicate AI platform activity
@@ -216,6 +225,38 @@ def detect_platform(user_agent: str) -> str:
 def is_ai_endpoint(path: str) -> bool:
     """Check if path matches AI-relevant endpoint patterns."""
     return any(re.match(p, path) for p in AI_ENDPOINT_PATTERNS)
+
+
+# ── WebMCP attribution (webmcp-lane, 2026-07-11) ────────────────────────
+# js/dchub-webmcp.js (frontend) stamps every bound page-tool API call with
+# BOTH markers: `src=webmcp` query param and `X-DC-Source: webmcp` header.
+# These fetches run in the user's browser, so the UA is plain Chrome and
+# detect_platform() returns 'direct' — which the tracking hook SKIPS. This
+# marker check runs first so WebMCP traffic is attributed as platform
+# 'webmcp'. Strictly ADDITIVE: nothing else sends these markers, so no
+# existing traffic is ever reclassified; a request without the markers takes
+# exactly the pre-existing path.
+WEBMCP_PLATFORM = "webmcp"
+
+
+def is_webmcp_request(req) -> bool:
+    """True when a request carries the WebMCP attribution markers
+    (src=webmcp query param OR X-DC-Source: webmcp header). Pure over the
+    request object; never raises."""
+    try:
+        if (req.args.get("src") or "").strip().lower() == "webmcp":
+            return True
+        if (req.headers.get("X-DC-Source") or "").strip().lower() == "webmcp":
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def path_marks_webmcp(path: str) -> bool:
+    """True when a forwarded path string (CF-worker fire-and-forget tracking
+    sends path only, no headers) carries the src=webmcp marker. Pure."""
+    return "src=webmcp" in (path or "").lower()
 
 
 def extract_tool_name(body):
@@ -1245,11 +1286,19 @@ def init_ai_tracking(app: Flask):
         """After request: log if it's from an AI platform to an AI endpoint."""
         try:
             path = request.path
-            if not is_ai_endpoint(path):
+            # webmcp-lane (2026-07-11): WebMCP page tools stamp src=webmcp /
+            # X-DC-Source: webmcp on every bound call. Classify those as
+            # platform 'webmcp' BEFORE the UA detector (their UA is the plain
+            # browser → 'direct' → previously skipped, i.e. invisible). The
+            # marker also bypasses the endpoint-pattern gate so a bound path
+            # outside AI_ENDPOINT_PATTERNS (e.g. /api/rankings/<cat>) still
+            # lands. Additive: unmarked requests take the exact old path.
+            webmcp = is_webmcp_request(request)
+            if not webmcp and not is_ai_endpoint(path):
                 return response
 
             ua = request.headers.get("User-Agent", "")
-            platform = detect_platform(ua)
+            platform = WEBMCP_PLATFORM if webmcp else detect_platform(ua)
 
             # Skip direct/browser traffic and SEO bots for cleaner analytics
             if platform in ("direct", "seo_bot"):
@@ -1346,7 +1395,11 @@ def init_ai_tracking(app: Flask):
             if not path:
                 return cors_jsonify({"status": "skipped", "reason": "no path"})
 
-            platform = detect_platform(user_agent)
+            # webmcp-lane (2026-07-11): the worker forwards path+UA only (no
+            # request headers), so the src=webmcp query marker in the path is
+            # the WebMCP signal here. Additive — see is_webmcp_request().
+            platform = (WEBMCP_PLATFORM if path_marks_webmcp(path)
+                        else detect_platform(user_agent))
             if platform in ("direct", "seo_bot"):
                 return cors_jsonify({"status": "skipped", "platform": platform})
 
@@ -1374,7 +1427,15 @@ def init_ai_tracking(app: Flask):
             if not path and not plat:
                 return cors_jsonify({"status": "skipped", "reason": "no path or platform"})
 
-            platform = plat if plat else detect_platform(user_agent)
+            # webmcp-lane (2026-07-11): explicit platform wins; otherwise the
+            # src=webmcp path marker beats the UA detector (browser UA →
+            # 'direct' → skipped). Additive — see is_webmcp_request().
+            if plat:
+                platform = plat
+            elif path_marks_webmcp(path):
+                platform = WEBMCP_PLATFORM
+            else:
+                platform = detect_platform(user_agent)
             if platform in ("direct", "unknown", "seo_bot"):
                 return cors_jsonify({"status": "skipped", "platform": platform})
 

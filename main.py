@@ -7229,6 +7229,66 @@ def _inject_clarity(response):
         pass
     return response
 
+
+# ── WebMCP enablement for BACKEND-served pages (webmcp-lane, 2026-07-11) ──
+# The frontend (CF Pages) serves the Origin-Trial token via _headers and
+# includes js/dchub-webmcp.js on its pages. Backend-rendered page families
+# (/markets/*, /facilities*, /dcpi*, /grid*) had NEITHER — so in-page agents
+# got zero WebMCP tools exactly on the surfaces with the richest data. Same
+# chokepoint rationale as _inject_clarity above (no shared base template →
+# after_request is the reliable spot). Marker-guarded + idempotent:
+#  (a) Origin-Trial response header ← env WEBMCP_ORIGIN_TRIAL_TOKEN on every
+#      200 text/html page (skipped for /api//admin/internal surfaces) —
+#      Chrome accepts the trial from header OR meta tag, header is ours;
+#  (b) <script src="/js/dchub-webmcp.js?v=3" defer> injected before </body>
+#      on the four page families only (/js/* is served by the frontend on
+#      the same public origin, so the include resolves site-wide).
+# Both no-op unless the env token is set. Kill: WEBMCP_BACKEND_DISABLE=1.
+_WEBMCP_SCRIPT_TAG = '<script src="/js/dchub-webmcp.js?v=3" defer></script>'
+_WEBMCP_PAGE_PREFIXES = ('/markets', '/facilities', '/dcpi', '/grid')
+
+
+@app.after_request
+def _webmcp_enable(response):
+    """Attach the WebMCP origin-trial header + page-tool script include to
+    backend-rendered HTML. Defensive twin of _inject_clarity: only 200
+    text/html, never buffers a passthrough response, never raises."""
+    try:
+        if (os.environ.get('WEBMCP_BACKEND_DISABLE') or '').strip().lower() in (
+                '1', 'true', 'yes'):
+            return response
+        token = (os.environ.get('WEBMCP_ORIGIN_TRIAL_TOKEN') or '').strip()
+        if not token:
+            return response
+        if response.status_code != 200:
+            return response
+        if 'text/html' not in (response.headers.get('Content-Type') or '').lower():
+            return response
+        if getattr(response, 'direct_passthrough', False):
+            return response
+        path = (request.path or '')
+        # PAGE surfaces only — never API payloads that happen to be HTML,
+        # never admin/internal dashboards (mirrors the _inject_clarity gate).
+        if path.startswith(('/api/', '/admin', '/brain', '/internal')):
+            return response
+        # (a) the origin-trial header — idempotent (never clobber one already
+        # set by an upstream layer, e.g. the CF Pages _headers rule).
+        if not response.headers.get('Origin-Trial'):
+            response.headers['Origin-Trial'] = token
+        # (b) the script include — backend page families only.
+        if not path.startswith(_WEBMCP_PAGE_PREFIXES):
+            return response
+        html = response.get_data(as_text=True)
+        if not html or '</body>' not in html:
+            return response
+        if 'dchub-webmcp.js' in html:
+            return response  # idempotent — already present
+        response.set_data(html.replace(
+            '</body>', _WEBMCP_SCRIPT_TAG + '</body>', 1))
+    except Exception:
+        pass
+    return response
+
 # Setup Google & Meta Integration Routes
 try:
     setup_google_routes(app)
@@ -7568,6 +7628,13 @@ MCP_PLATFORM_MAP = {
     # six-platform wave (Llama agents reach us via REST/MCP libs, UA carries
     # llama/meta-llama). Everything else was already mapped above.
     'meta': 'Meta', 'llama': 'Meta', 'meta-llama': 'Meta', 'meta ai': 'Meta',
+    # webmcp-lane (2026-07-11): in-page agents executing our WebMCP page tools
+    # (js/dchub-webmcp.js, Chrome origin trial). REST-side classification is
+    # marker-based in ai_tracking (src=webmcp param / X-DC-Source header —
+    # the browser UA is plain Chrome, so UA matching can't see it); this map
+    # entry covers any MCP client/UA/referer that self-identifies as webmcp.
+    # Additive — nothing pre-existing carries this substring.
+    'webmcp': 'WebMCP',
 }
 
 # Session-to-platform cache: maps MCP session IDs to detected platforms

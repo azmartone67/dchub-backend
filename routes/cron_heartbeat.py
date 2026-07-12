@@ -87,6 +87,21 @@ def _register_cluster_latency(state):
         print(f"[cron_heartbeat] cluster_latency_bp register skipped: {_cl_e}",
               flush=True)
 
+
+# 2026-07-11: WEBMCP MASTER SHELL (routes/webmcp_master_shell.py, webmcp-lane)
+# rides on this blueprint's registration for the same frozen-main.py reason
+# as analyst_note above. Defensive: a broken import never breaks the
+# heartbeat (or boot).
+@cron_heartbeat_bp.record_once
+def _register_webmcp_shell(state):
+    try:
+        from routes.webmcp_master_shell import webmcp_master_shell_bp
+        if "webmcp_master_shell" not in state.app.blueprints:
+            state.app.register_blueprint(webmcp_master_shell_bp)
+    except Exception as _wm_e:
+        print(f"[cron_heartbeat] webmcp_master_shell_bp register skipped: {_wm_e}",
+              flush=True)
+
 # r78: the dispatcher runs INSIDE this Flask app — its job POSTs were going
 # out to api.dchub.cloud and back through Cloudflare to reach itself (and
 # api.dchub.cloud's non-/api/* routing 522s, which is what minted the
@@ -214,6 +229,20 @@ _DISPATCH = [
      f"{BASE}/api/v1/brain/verify-merged-fixes?limit=25",
      "POST",
      lambda now: now.hour in (10, 22)),
+
+    # 2026-07-11 (webmcp-lane): WebMCP master shell daily tick — attribution
+    # rows landing, Origin-Trial header on 3 key pages, trial-token expiry
+    # countdown (<30d files a finding), and bound-API drift (every path
+    # js/dchub-webmcp.js binds returns 200 keyless). Read-only diagnostic;
+    # findings on breakage only. Daily 20:xx UTC (quiet hour — no other
+    # daily job on 20); WIDE minute window because the throttled heartbeat
+    # lands ~hourly at random minutes. ?fresh=1 bypasses the 30s tick cache
+    # so the daily run always measures live. _hit() attaches X-Admin-Key.
+    # Kill: WEBMCP_SHELL_DISABLE=1 (in-handler, 404).
+    ("webmcp_shell_daily",
+     f"{BASE}/api/v1/admin/webmcp/master-tick?fresh=1",
+     "POST",
+     lambda now: now.hour == 20 and now.minute < 55),
 
     # Press publisher cadence check — every 2h on :07
     ("press_publisher",
