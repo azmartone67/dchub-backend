@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Candidate Lifecycle — DC Hub's executable-handoff contract</title>
+    <meta name="description" content="The candidate_id contract: how DC Hub search results become durable, opaque identities that downstream analysis tools consume without transcription — deterministic, reproducible, fail-closed.">
+    <link rel="canonical" href="https://dchub.cloud/docs/candidate-lifecycle">
+    <style>
+        * { margin:0; padding:0; box-sizing:border-box; }
+        body { font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+               background:#0a0e1a; color:#e8ecf1; line-height:1.65; }
+        .container { max-width:820px; margin:0 auto; padding:44px 22px; }
+        h1 { color:#00d4ff; font-size:1.8rem; margin-bottom:6px; }
+        .sub { color:#8899aa; margin-bottom:30px; }
+        h2 { color:#00d4ff; font-size:1.15rem; margin:30px 0 10px; }
+        p, li { color:#cdd6e2; font-size:0.96rem; }
+        ul { margin:8px 0 8px 22px; }
+        code { font-family:'SF Mono','Fira Code',monospace; background:#0d1117; border:1px solid #1e3a5f;
+               border-radius:5px; padding:1px 6px; color:#00d4ff; font-size:0.88em; }
+        pre { background:#0d1117; border:1px solid #1e3a5f; border-radius:10px; padding:14px 16px;
+              overflow-x:auto; margin:10px 0; font-size:0.84rem; color:#cdd6e2;
+              font-family:'SF Mono','Fira Code',monospace; }
+        .rule { background:#141b2d; border-left:3px solid #00d4ff; border-radius:0 8px 8px 0;
+                padding:12px 16px; margin:12px 0; }
+        .rule b { color:#fff; }
+        a { color:#00d4ff; }
+        .foot { margin-top:36px; padding-top:16px; border-top:1px solid #10192b; color:#556677; font-size:0.85rem; }
+    </style>
+</head>
+<body>
+<div class="container">
+    <h1>Candidate Lifecycle</h1>
+    <p class="sub">The executable-handoff contract: search results become durable, opaque identities that downstream tools consume without re-specifying coordinates or filters. Co-designed with GPT-5.5 from its live evaluation of this API, 2026-07-11.</p>
+
+    <h2>What a candidate_id represents</h2>
+    <p>A <code>candidate_id</code> identifies a <b>specific search result</b> — not just a location. It binds the result to the exact data snapshot and search assumptions that produced it. It is <b>opaque</b>: never parse it, never construct one.</p>
+    <pre>GET /api/v1/interconnection-queue/refined?min_mw=500&iso=MISO&geocoded_only=true
+
+→ each survivor now carries:
+  "candidate_id": "cand_7f9c5d2ab4e1f30a8c61",
+  "snapshot_id":  "snap_2026-07-08",
+  "expires_at":   "2026-07-18T18:00:00Z"</pre>
+
+    <h2>What snapshot_id guarantees</h2>
+    <p><code>snapshot_id</code> is <b>immutable</b> — it names the queue-data vintage (the load date of the underlying ISO disclosures). Two candidates sharing a snapshot were produced from identical underlying data. Re-running the same search against the same snapshot returns the <b>same</b> candidate ids.</p>
+
+    <h2>When ids expire</h2>
+    <p>Identity and freshness are separate. A candidate expires <b>7 days after first mint</b> — matching the refresh cadence of the underlying queue data, because a TTL longer than the data's own truth would be a lie. Re-searching does not extend a TTL.</p>
+
+    <h2>What candidate_expired means</h2>
+    <div class="rule"><b>Fail closed, deterministically.</b> Every consumer returns the identical error — no tool ever silently recomputes an expired candidate against newer data, because that would destroy reproducibility.</div>
+    <pre>HTTP 410
+{ "error": "candidate_expired",
+  "message": "Re-run the search to obtain a fresh candidate." }</pre>
+    <p>If an agent wants fresh data, it makes an explicit new search. That is the contract.</p>
+
+    <h2>What every downstream tool echoes</h2>
+    <p>Any response produced from a candidate carries the identity block, so an agent (or auditor) can reconstruct the chain of reasoning — including whether a difference came from newer <i>data</i> (search_version/snapshot) or a newer <i>analysis implementation</i> (analysis_version — they move independently):</p>
+    <pre>"echo": {
+  "candidate_id":        "cand_7f9c5d2ab4e1f30a8c61",
+  "snapshot_id":         "snap_2026-07-08",
+  "search_version":      "refined-queue/2026-07-11",
+  "analysis_version":    "site-score/2026-07-11",
+  "methodology_version": "composite-v2.3",
+  "retrieved_at":        "2026-07-11T21:04:00Z",
+  "citation": { "source": "DC Hub (dchub.cloud) — ISO interconnection queues + EIA",
+                "as_of": "2026-07-08", "license": "CC-BY-4.0" }
+}</pre>
+
+    <h2>Consuming a candidate</h2>
+    <p>Tools accept <code>candidate_id</code> alongside (and in preference to) raw coordinates. When a candidate is given, location comes from the <b>frozen mint</b> — explicit lat/lon args are ignored, and no re-geocoding, re-ranking, or rounding occurs. <code>capacity_mw</code> stays caller-suppliable: it is your DC target, not candidate identity.</p>
+    <pre>GET /api/site-score?candidate_id=cand_7f9c5d…&capacity_mw=50
+POST /api/v1/rank-sites   {"candidates":[{"candidate_id":"cand_7f9c5d…",
+                            "overall_score": 77.7}], "objectives":{…}}
+GET /api/v1/resolve-candidate?candidate_id=cand_7f9c5d…</pre>
+    <p><code>resolve-candidate</code> is deliberately narrow: identity, location, snapshot metadata, provenance, and the originating search context. Never analysis, never a recompute — a dependable anchor for orchestration, not another analysis endpoint.</p>
+
+    <h2>When to re-run search</h2>
+    <ul>
+        <li>A consumer returned <code>candidate_expired</code> (HTTP 410).</li>
+        <li>You need data newer than the candidate's <code>snapshot_id</code> vintage.</li>
+        <li>Your search constraints changed — a candidate binds its original assumptions.</li>
+    </ul>
+
+    <h2>Scope, honestly</h2>
+    <p>v1 covers the REST rail: <code>/api/v1/interconnection-queue/refined</code> mints; <code>/api/site-score</code>, <code>/api/v1/rank-sites</code>, and <code>/api/v1/resolve-candidate</code> consume. The MCP tools (<code>analyze_site</code>, <code>get_water_risk</code>, <code>rank_sites</code>) accept <code>candidate_id</code> in the next server release. There is deliberately <b>no automatic lineage graph</b>: search creates, tools accept, every response echoes — the contract stays simpler than a workflow engine.</p>
+
+    <div class="foot">
+        DC Hub (dchub.cloud) · Contract spec co-designed with GPT-5.5 (interactive evaluation, 2026-07-11); grounding deltas: real tool-surface mapping, snapshot = queue-load vintage, 7-day TTL. Questions: the full API surface is in <a href="/openapi.json">/openapi.json</a> · <a href="/llms.txt">/llms.txt</a>.
+    </div>
+</div>
+</body>
+</html>

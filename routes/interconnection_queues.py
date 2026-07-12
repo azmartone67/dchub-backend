@@ -747,6 +747,42 @@ def api_rank_sites():
         return dict(c)
 
     cands = [_flat(c) for c in cands if isinstance(c, dict)]
+
+    # r-candidate-v1 (2026-07-11, ChatGPT co-design): accept {"candidate_id":
+    # "cand_…"} entries. Frozen identity fields (lat/lng/capacity_mw/fiber_km/
+    # iso) come from the mint — never reinterpreted, agent metrics overlay the
+    # rest. Expired/unknown ids are DROPPED AND DECLARED (fail-closed, the
+    # deterministic-expiry contract) — never silently re-resolved.
+    _expired_cands, _unknown_cands = [], []
+    if any(c.get("candidate_id") for c in cands):
+        try:
+            from routes.candidates import load_candidate
+            with psycopg.connect(NEON_URL, autocommit=True) as _cc:
+                _ccur = _cc.cursor()
+                _resolved = []
+                for c in cands:
+                    cid = (c.get("candidate_id") or "").strip()
+                    if not cid:
+                        _resolved.append(c)
+                        continue
+                    cand, _exp = load_candidate(_ccur, cid)
+                    if cand is None:
+                        _unknown_cands.append(cid)
+                        continue
+                    if _exp:
+                        _expired_cands.append(cid)
+                        continue
+                    frozen = {k: v for k, v in {
+                        "id": c.get("id") or cand.get("project_name") or cid,
+                        "candidate_id": cid, "lat": cand.get("lat"),
+                        "lng": cand.get("lng"), "capacity_mw": cand.get("capacity_mw"),
+                        "fiber_km": cand.get("fiber_km"), "iso": cand.get("iso"),
+                    }.items() if v is not None}
+                    _resolved.append({**c, **frozen})
+                cands = _resolved
+        except Exception:
+            pass  # fail-soft: entries rank on their explicit fields only
+
     survivors = [dict(c) for c in cands if _passes(c)]
     dropped = len(cands) - len(survivors)
 
@@ -877,6 +913,15 @@ def api_rank_sites():
     # partial one. An unavailable objective is named + reasoned, never approximated.
     _extra["constraint_coverage"] = coverage
     _extra["objective_status"] = objective_status
+    # r-candidate-v1: the declared fail-closed outcomes for candidate_id entries,
+    # + the contract echo so an auditor knows which implementations touched this.
+    if _expired_cands or _unknown_cands or any(c.get("candidate_id") for c in survivors):
+        _extra["candidate_contract"] = {
+            "search_version": "refined-queue/2026-07-11",
+            "analysis_version": "rank-sites/2026-07-11",
+            "expired_candidates": _expired_cands,
+            "unknown_candidates": _unknown_cands,
+        }
     _unavail = [f for f in objectives if coverage.get(f) == "unavailable"]
     if _unavail:
         _extra["coverage_note"] = (
@@ -1059,9 +1104,33 @@ def api_refined_queue():
         by_fuel[d["fuel_class"]] = by_fuel.get(d["fuel_class"], 0) + 1
         survivors.append(d)
 
+    # r-candidate-v1 (2026-07-11, ChatGPT co-design): mint a durable, opaque
+    # candidate_id per survivor — downstream tools consume the id instead of
+    # transposing coordinates/filters (the transcription-drift class). Fail-
+    # soft: a mint failure must never break the search response itself.
+    _snapshot_id = None
+    _SV = _TTL = None
+    try:
+        from routes.candidates import mint_candidates, SEARCH_VERSION as _SV, TTL_DAYS as _TTL
+        with psycopg.connect(NEON_URL, autocommit=True) as _mc:
+            _mcur = _mc.cursor()
+            _mcur.execute("SELECT 'snap_' || MAX(loaded_at)::date FROM interconnect_queue")
+            _snapshot_id = (_mcur.fetchone() or [None])[0] or None
+            if _snapshot_id:
+                mint_candidates(_mcur, survivors, _snapshot_id,
+                                {"min_mw": min_mw, "max_ttp_months": max_ttp,
+                                 "iso": iso or None, "baseload_only": baseload_only,
+                                 "fuel_type": fuel_type or None, "status": status,
+                                 "max_fiber_km": max_fiber_km,
+                                 "geocoded_only": geocoded_only})
+    except Exception:
+        _snapshot_id = None  # search still serves; candidates just absent this response
+
     return jsonify({
         "_entity": "queue_results",
         "ok": True,
+        **({"snapshot_id": _snapshot_id, "search_version": _SV,
+            "candidate_ttl_days": _TTL} if _snapshot_id else {}),
         "count_returned": len(survivors),
         "count_total_matching": int(total_n or 0),
         "total_queued_mw": round(float(total_mw or 0), 1),

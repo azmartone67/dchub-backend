@@ -28717,6 +28717,31 @@ def api_site_score():
     capacity = request.args.get('capacity_mw', type=float)
     if capacity is None:
         capacity = request.args.get('capacity', 0, type=float) or 0
+    # r-candidate-v1 (2026-07-11, ChatGPT co-design): candidate_id → coords come
+    # from the FROZEN mint (explicit lat/lon args are ignored when a candidate
+    # is given — no transposition is the whole point). capacity_mw stays
+    # caller-suppliable (it's the DC target, not candidate identity). Expired →
+    # the deterministic fail-closed error, never a silent re-resolve.
+    _cand = None
+    _cand_id = (request.args.get('candidate_id') or '').strip()
+    if _cand_id:
+        _cexp = False
+        try:
+            from routes.candidates import load_candidate, expired_response
+            _cconn = get_read_db()
+            _cand, _cexp = load_candidate(_cconn.cursor(), _cand_id)
+            _cconn.close()
+        except Exception:
+            _cand = None
+        if _cand is None:
+            return jsonify({'success': False, '_entity': 'error',
+                            'error': 'unknown_candidate', 'candidate_id': _cand_id}), 404
+        if _cexp:
+            return jsonify(dict(expired_response(_cand_id),
+                                _entity='error', success=False)), 410
+        lat = _cand.get('lat')
+        lon = _cand.get('lng')
+        state = (_cand.get('state') or state or '').upper()
 
     if not lat or not lon:
         return jsonify({'success': False, 'error': 'lat and lon are required'}), 400
@@ -28977,8 +29002,22 @@ def api_site_score():
         except Exception as _pce:
             logger.warning(f"site-score power_cost lookup failed: {_pce}")
 
+        # r-candidate-v1: when a candidate was consumed, echo the full identity
+        # block (the reproducibility contract — an auditor reconstructs which
+        # search snapshot AND which analysis implementation produced this).
+        _cand_echo = {}
+        if _cand is not None:
+            try:
+                from routes.candidates import candidate_echo
+                _cand_echo = {'echo': candidate_echo(
+                    _cand, analysis_version='site-score/2026-07-11',
+                    methodology_version='composite-v2.3')}
+            except Exception:
+                _cand_echo = {}
+
         return jsonify({
             'success': True,
+            **_cand_echo,
             'location': {'lat': lat, 'lon': lon, 'state': state},
             'capacity_requested_mw': capacity,
             'overall_score': overall,
@@ -34345,6 +34384,17 @@ try:
     print("[main] retirement_headroom_bp registered: GET /api/v1/retirement-headroom")
 except Exception as _e:
     print(f"[main] retirement_headroom register failed: {_e}", file=sys.stderr)
+
+# r-candidate-v1 (2026-07-11, ChatGPT co-design): the executable-handoff
+# contract — search results become durable opaque candidate_ids; downstream
+# tools consume the id (frozen, fail-closed on expiry, echoed provenance).
+try:
+    from routes.candidates import candidates_bp
+    app.register_blueprint(candidates_bp)
+    print("[main] candidates_bp registered: GET /api/v1/resolve-candidate "
+          "+ /docs/candidate-lifecycle")
+except Exception as _e:
+    print(f"[main] candidates register failed: {_e}", file=sys.stderr)
 
 # r-model-relations (2026-07-11): the platform-eval loop as a master shell —
 # POST /api/jobs/model-relations tick (worker-proxied) + admin review queue.
