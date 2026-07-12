@@ -113,6 +113,13 @@ TOOL_TIER = {
     "get_facility":            Tier.FREE,  # 1 facility = preview, kept free
     "get_dchub_recommendation":Tier.FREE,
     "get_agent_registry":      Tier.FREE,
+    # r-cluster-open (2026-07-11): OPEN/adoption-first by design (Gemini
+    # partnership spec; endpoint on free_tier_gate's open-exemption list;
+    # server.mjs FREE_FULL_TOOLS). Listed EXPLICITLY because the gate lookup
+    # defaults an ABSENT tool to Tier.DEVELOPER — despite the Phase-GG comment
+    # below saying unlisted tools "default to free" — so absence would
+    # silently paywall it if this surface ever serves the tool.
+    "cluster_sites_by_latency":Tier.FREE,  # derived math + screening, cheap
 
     # IDENTIFIED — Phase XXX promotion. These two tools alone
     # represent ~50% of 14-day MCP traffic; gating at email-signup

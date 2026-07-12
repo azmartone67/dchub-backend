@@ -194,6 +194,14 @@ TOOLS = [
     ("plan_fiber_leadin",     "infrastructure", "identified",
      "Plan N diverse, road-following fibre lead-in routes from a candidate site to a carrier hotel / POP, each with length + GeoJSON geometry, a route-diversity read, and indicative build cost. Indicative auto-routed corridors, not engineered alignments.",
      'plan_fiber_leadin(from="250 Paringa Rd, Murarrie QLD", to="20 Wharf St, Brisbane QLD", n=4)'),
+    # r-cluster-open (2026-07-11): OPEN/adoption-first by design (Gemini
+    # partnership spec) — /api/v1/fiber/cluster-latency is on free_tier_gate's
+    # open-exemption list and the MCP layer exempts it from the anon trim
+    # (server.mjs FREE_FULL_TOOLS), so the catalog tier is "free", NOT
+    # "identified" like the other fiber tools.
+    ("cluster_sites_by_latency", "infrastructure", "free",
+     "Physics-bounded latency clustering across 2-8 candidate sites: per-pair haversine distance, round-trip physics floor (km × 4.9 µs/km ×2), estimated real RTT, viable vs physics-impossible against your µs budget, and the largest site subsets whose pairwise estimates all fit — deterministic pruning before detailed routing.",
+     'cluster_sites_by_latency(sites="39.04,-77.48:ashburn;38.98,-77.42:sterling", max_latency_us=2000)'),
     # ── PORTFOLIO ──
     ("set_site_alert",        "portfolio",      "pro",
      "Arm an email watch on a site you already saved (PRO): DC Hub emails you when that site's DCPI score, grid capacity, or nearby facilities move — the 'monitor my shortlist' loop. Call save_site first, then set_site_alert on the returned id.",
