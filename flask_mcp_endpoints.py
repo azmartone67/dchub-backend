@@ -548,6 +548,7 @@ def validate_key():
     user_email = row[1]
     plan_tier = None
     api_key_tier = None
+    _metered_over = False
     try:
         with _pool.connection() as conn, conn.cursor() as cur:
             # Check users.plan via email join (most paying customers)
@@ -570,6 +571,22 @@ def validate_key():
             ar = cur.fetchone()
             if ar and ar[0]:
                 api_key_tier = ar[0].lower()
+            # r-metered-enforce (2026-07-12, DARK behind MONETIZE_METERED_ENFORCE):
+            # has the daily monetize cron already flagged this keyed identity over the
+            # grid/fiber free threshold (metered_billing_decisions)? The Node gate
+            # turns a true here into a $10 402 on the next metered call. Only runs
+            # while the env switch is on; fail-open (missing table / drift → no flag).
+            if os.environ.get("MONETIZE_METERED_ENFORCE", "0") == "1":
+                try:
+                    cur.execute(
+                        "SELECT 1 FROM metered_billing_decisions "
+                        "WHERE id_kind = 'api_key' AND identity = %s "
+                        "AND decision = 'over_threshold_free' LIMIT 1",
+                        (api_key,),
+                    )
+                    _metered_over = cur.fetchone() is not None
+                except Exception:
+                    _metered_over = False
     except Exception:
         # fail-soft: stick with mcp_dev_keys.tier if cross-check fails
         pass
@@ -605,11 +622,16 @@ def validate_key():
         except Exception:
             pass
 
+    # r-metered-enforce: only ever enforce a FREE-tier identity — a key that has
+    # since upgraded (paid) must never be blocked. Dark unless the env switch is on.
+    metered_enforce = bool(_metered_over and _RANK.get(effective_tier, 0) <= 1)
+
     return jsonify({
         "valid":        True,
         "tier":         effective_tier,
         "developer_id": row[0],
         "email":        row[1],
+        "metered_enforce": metered_enforce,
         "tier_source":  "highest_of_3" if effective_tier != mcp_tier else "mcp_dev_keys",
         "tier_detail":  {
             "mcp_dev_keys": mcp_tier,
