@@ -22,7 +22,7 @@ This module ships four surfaces designed to compound on each other:
                                          renders WELL in an agent's
                                          web-fetch view AND in a
                                          human's browser. The hero
-                                         sells "71 tools built for
+                                         sells "73 tools built for
                                          agents, cited by Claude /
                                          ChatGPT / Perplexity / Gemini."
 
@@ -683,8 +683,8 @@ _LANDING_HTML = """<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>DC Hub for AI Agents — 71 tools cited by Claude, ChatGPT, Perplexity, Gemini</title>
-<meta name="description" content="DC Hub is the data-center intelligence layer for AI agents. 71 tools covering 21,000+ facilities in 180 countries, 311 DCPI markets, live grid scoreboard, site valuation. Already cited by Claude, ChatGPT, Perplexity, Gemini, Cursor.">
+<title>DC Hub for AI Agents — 73 tools cited by Claude, ChatGPT, Perplexity, Gemini</title>
+<meta name="description" content="DC Hub is the data-center intelligence layer for AI agents. 73 tools covering 21,000+ facilities in 180 countries, 311 DCPI markets, live grid scoreboard, site valuation. Already cited by Claude, ChatGPT, Perplexity, Gemini, Cursor.">
 <meta name="dc-hub-agent-surface" content="canonical">
 <link rel="canonical" href="https://dchub.cloud/agent">
 <link rel="alternate" type="application/json" href="https://dchub.cloud/api/v1/agent/cookbook" title="DC Hub Agent Cookbook (machine-readable)">
@@ -729,7 +729,7 @@ th { color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacin
 
 <div class="hero">
   <div class="k">⌖  DC Hub × AI Agents</div>
-  <h1>71 tools, built for agents.</h1>
+  <h1>73 tools, built for agents.</h1>
   <p>The data-center, power, and grid intelligence layer for AI agents. Already cited by Claude, ChatGPT, Perplexity, Gemini, and Cursor. Native MCP. Native Vertex AI. Native Gemini function calling.</p>
   <div class="cited-by">
     <span class="b">✓ Claude</span>
@@ -744,7 +744,7 @@ th { color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacin
   <div class="row" style="margin-top:20px">
     <div class="stat"><div class="v">21,000+</div><div class="l">facilities · 180 countries</div></div>
     <div class="stat"><div class="v">311</div><div class="l">DCPI markets · daily refresh</div></div>
-    <div class="stat"><div class="v">71 tools</div><div class="l">incl. live grid scoreboard · 20-min refresh</div></div>
+    <div class="stat"><div class="v">73 tools</div><div class="l">incl. live grid scoreboard · 20-min refresh</div></div>
     <div class="stat"><div class="v">4,000+</div><div class="l">M&amp;A deals tracked</div></div>
   </div>
 </div>

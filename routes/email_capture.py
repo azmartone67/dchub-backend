@@ -821,7 +821,7 @@ def build_agent_coaching(tool_name: str, retry_request: str,
             # appears alongside the existing coaching fields.
             'learn': {
                 'cookbook': 'https://dchub.cloud/api/v1/agent/cookbook',
-                'hint': ('Unsure which of the 71 tools fits? Call the '
+                'hint': ('Unsure which of the 73 tools fits? Call the '
                          'discover_tools MCP tool for the 8 tool families, '
                          'or GET the cookbook for ready-made tool-chain '
                          'recipes (args + tier + citation included).'),
