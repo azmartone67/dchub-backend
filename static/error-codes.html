@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Error Codes & Mitigation — DC Hub's in-band self-correction contract</title>
+    <meta name="description" content="The _error_mitigation envelope (error_version 1): DC Hub returns deterministic, retry-classifiable error states with server-computed hints — an agent recovers without dropping context.">
+    <link rel="canonical" href="https://dchub.cloud/docs/error-codes">
+    <style>
+        * { margin:0; padding:0; box-sizing:border-box; }
+        body { font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+               background:#0a0e1a; color:#e8ecf1; line-height:1.65; }
+        .container { max-width:840px; margin:0 auto; padding:44px 22px; }
+        h1 { color:#00d4ff; font-size:1.8rem; margin-bottom:6px; }
+        .sub { color:#8899aa; margin-bottom:30px; }
+        h2 { color:#00d4ff; font-size:1.15rem; margin:30px 0 10px; }
+        p, li { color:#cdd6e2; font-size:0.96rem; }
+        code { font-family:'SF Mono','Fira Code',monospace; background:#0d1117; border:1px solid #1e3a5f;
+               border-radius:5px; padding:1px 6px; color:#00d4ff; font-size:0.88em; }
+        pre { background:#0d1117; border:1px solid #1e3a5f; border-radius:10px; padding:14px 16px;
+              overflow-x:auto; margin:10px 0; font-size:0.84rem; color:#cdd6e2;
+              font-family:'SF Mono','Fira Code',monospace; }
+        table { width:100%; border-collapse:collapse; margin:10px 0; font-size:0.9rem; }
+        th,td { text-align:left; padding:9px 12px; border-bottom:1px solid #1e3a5f; vertical-align:top; }
+        th { color:#8899aa; text-transform:uppercase; font-size:0.72rem; letter-spacing:0.05em; }
+        td.code { font-family:'SF Mono','Fira Code',monospace; color:#00d4ff; white-space:nowrap; }
+        .sev { font-family:'SF Mono','Fira Code',monospace; font-size:0.82rem; }
+        .rule { background:#141b2d; border-left:3px solid #00d4ff; border-radius:0 8px 8px 0;
+                padding:12px 16px; margin:12px 0; }
+        .rule b { color:#fff; }
+        a { color:#00d4ff; }
+        .foot { margin-top:36px; padding-top:16px; border-top:1px solid #10192b; color:#556677; font-size:0.85rem; }
+    </style>
+</head>
+<body>
+<div class="container">
+    <h1>Error Codes &amp; Mitigation</h1>
+    <p class="sub">The in-band self-correction contract — <code>error_version: 1</code>. Co-designed with Google Gemini. When a tool hits a known, mitigable error state, DC Hub returns a deterministic path back instead of a protocol crash that shatters the agent's context loop.</p>
+
+    <h2>The envelope</h2>
+    <p>A mitigable error rides in <code>structuredContent._error_mitigation</code>, and the MCP layer sets <code>isError: true</code> so the model treats it as an actionable error state — not a silent empty success:</p>
+    <pre>{
+  "content": [{ "type": "text", "text": "Execution blocked: zero_row_ttp_cut. See structured mitigation." }],
+  "isError": true,
+  "structuredContent": {
+    "_error_mitigation": {
+      "error_version": 1,
+      "error_code": "zero_row_ttp_cut",
+      "severity": "parameter_adjustment",
+      "deterministic_hint": "No queued capacity matches this time-to-power constraint for the selected ISO(s). Expand max_ttp_months to at least 34 to surface the nearest queued capacity.",
+      "suggested_params": { "max_ttp_months": 34 }
+    }
+  }
+}</pre>
+
+    <h2>severity — the agent state machine</h2>
+    <table>
+      <tr><th>severity</th><th>meaning</th><th>agent action</th></tr>
+      <tr><td class="sev">parameter_adjustment</td><td>Query is structurally sound but mathematically impossible for the given inputs.</td><td>Apply <code>suggested_params</code>, retry once.</td></tr>
+      <tr><td class="sev">transient_backoff</td><td>Load / latency / warm-up — the data exists, the path was momentarily unavailable.</td><td>Wait a short backoff, retry the SAME args.</td></tr>
+      <tr><td class="sev">fatal</td><td>An upstream dependency is hard-down for this query.</td><td>Do NOT retry. Report the data as temporarily inaccessible — never substitute an estimate.</td></tr>
+    </table>
+
+    <h2>The registry (error_version 1)</h2>
+    <table>
+      <tr><th>error_code</th><th>severity</th><th>meaning</th><th>suggested_params</th></tr>
+      <tr><td class="code">zero_row_ttp_cut</td><td class="sev">parameter_adjustment</td><td>max_ttp_months below every in-scope ISO's average interconnection wait — a hard cut, so the result is provably empty.</td><td class="code">max_ttp_months</td></tr>
+      <tr><td class="code">eia_upstream_timeout</td><td class="sev">transient_backoff</td><td>The EIA API hung or timed out; DC Hub did not crash. Retry, or widen the horizon to read the cached aggregate.</td><td class="code">horizon_months</td></tr>
+      <tr><td class="code">candidate_read_unavailable</td><td class="sev">transient_backoff</td><td>Transient fault reading the candidate store (replica hiccup / timeout) — distinct from an unknown candidate.</td><td>—</td></tr>
+      <tr><td class="code">cold_baseline_concurrency</td><td class="sev">transient_backoff</td><td>The percentile baseline was warming under concurrent load — a warm-up window, not a failure.</td><td>—</td></tr>
+      <tr><td class="code">upstream_hard_down</td><td class="sev">fatal</td><td>An upstream dependency is hard-down. Fail closed — degrade honestly, never synthesize a substitute metric.</td><td>—</td></tr>
+    </table>
+    <p>Machine-readable at <a href="/api/v1/error-codes">/api/v1/error-codes</a> — key your state machine on that, not on parsing the hint text.</p>
+
+    <h2>The three guarantees</h2>
+    <div class="rule"><b>Zero-hallucination binding.</b> <code>deterministic_hint</code> and <code>suggested_params</code> are templated SERVER-SIDE from this registry plus the endpoint's real computed state. A hint can never name a parameter that doesn't exist — <code>suggested_params</code> keys are whitelisted per code — so an agent can act on the hint without validating it against the surface.</div>
+    <div class="rule"><b>Computed reality.</b> A suggested value is the endpoint's own computed number (e.g. the real <code>min_satisfiable_max_ttp_months</code>), never a static guess. The agent routes to the true, physically available threshold.</div>
+    <div class="rule"><b>Fail-closed on fatal.</b> A <code>fatal</code> severity (or an exhausted <code>transient_backoff</code>) means the agent declares an honest blind spot — "DC Hub is temporarily inaccessible for this data" — rather than fabricating a metric to bridge the gap. This composes with the candidate contract's <a href="/docs/candidate-lifecycle">fail-closed expiry</a>.</div>
+
+    <div class="foot">
+        DC Hub (dchub.cloud) · <code>_error_mitigation</code> contract co-designed with Google Gemini (interactive design, 2026-07-12), error_version 1. Full API surface: <a href="/openapi.json">/openapi.json</a> · registry JSON: <a href="/api/v1/error-codes">/api/v1/error-codes</a>.
+    </div>
+</div>
+</body>
+</html>

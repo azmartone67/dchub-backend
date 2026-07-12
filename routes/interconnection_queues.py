@@ -1180,7 +1180,7 @@ def api_refined_queue():
     except Exception:
         _snapshot_id = None  # search still serves; candidates just absent this response
 
-    return jsonify({
+    _resp = {
         "_entity": "queue_results",
         "ok": True,
         **({"snapshot_id": _snapshot_id, "search_version": _SV,
@@ -1228,4 +1228,24 @@ def api_refined_queue():
                  "fiber). Use geocoded_only=true to keep only survivors an agent can pipe into "
                  "analyze_site. estimated_ttp_months stays the ISO-level average (DCPI); a per-project "
                  "ETA is the remaining refinement."),
-    })
+    }
+    # _error_mitigation (2026-07-12, Gemini error_version:1): the TTP zero-cut is
+    # the reference in-band self-correction rail. When the max_ttp_months filter
+    # provably eliminated everything, attach a deterministic path back — severity
+    # parameter_adjustment, suggested_params.max_ttp_months = the COMPUTED
+    # min-satisfiable value (never a static guess). The MCP layer flips
+    # isError:true on presence so the agent acts on it instead of reading an
+    # empty success. Registry/templating in routes/error_mitigation.py.
+    if (max_ttp is not None and int(total_n or 0) == 0
+            and _ttp_excluded and _ttp_min_satisfiable is not None):
+        try:
+            from routes.error_mitigation import build_mitigation
+            _mit = build_mitigation(
+                "zero_row_ttp_cut",
+                computed={"min_satisfiable": _ttp_min_satisfiable},
+                suggested={"max_ttp_months": _ttp_min_satisfiable})
+            if _mit:
+                _resp["_error_mitigation"] = _mit
+        except Exception:
+            pass
+    return jsonify(_resp)

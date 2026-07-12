@@ -34480,6 +34480,16 @@ try:
 except Exception as _e:
     print(f"[main] candidates register failed: {_e}", file=sys.stderr)
 
+# r-error-envelope (2026-07-12, Gemini co-design, error_version:1): the in-band
+# self-correction rail — GET /api/v1/error-codes registry + /docs/error-codes.
+try:
+    from routes.error_mitigation import error_mitigation_bp
+    app.register_blueprint(error_mitigation_bp)
+    print("[main] error_mitigation_bp registered: GET /api/v1/error-codes "
+          "+ /docs/error-codes")
+except Exception as _e:
+    print(f"[main] error_mitigation register failed: {_e}", file=sys.stderr)
+
 # r-model-relations (2026-07-11): the platform-eval loop as a master shell —
 # POST /api/jobs/model-relations tick (worker-proxied) + admin review queue.
 # NEVER publishes; verdicts are human-reviewed, publication stays consent-gated.
