@@ -98,7 +98,8 @@ def main():
 
     # ---- optional compare against the live source ----
     src = {}
-    ext_owned = set()  # tables created by CREATE EXTENSION (e.g. postgis.spatial_ref_sys)
+    ext_owned = set()  # tables CREATED by an extension (e.g. postgis.spatial_ref_sys)
+    ext_typed = set()  # tables that merely USE an extension-provided column type
     if SOURCE:
         try:
             sconn = psycopg2.connect(SOURCE, connect_timeout=20)
@@ -116,7 +117,28 @@ def main():
                 """
             )
             ext_owned = {r[0] for r in sc.fetchall()}
-            print(f"\nSource public tables: {len(src)}  (extension-owned: {len(ext_owned)})")
+            # Tables that merely USE an extension-provided column TYPE (postgis
+            # geometry/geography, pgvector vector, h3 h3index) are NOT extension-
+            # OWNED, so the pg_depend deptype='e' query above misses them — yet
+            # they still cannot be created in a vanilla test container (the column
+            # type does not exist there) and legitimately fail to restore. Detect
+            # them dynamically so a newly added geo/vector table never re-reds this
+            # DR gate (the chronic false-RED this class of table caused).
+            sc.execute(
+                """
+                SELECT DISTINCT c.relname
+                FROM pg_attribute a
+                JOIN pg_class c ON c.oid = a.attrelid
+                JOIN pg_namespace n ON n.oid = c.relnamespace
+                JOIN pg_type ty ON ty.oid = a.atttypid
+                JOIN pg_depend d ON d.objid = ty.oid AND d.deptype = 'e'
+                WHERE n.nspname = 'public' AND c.relkind = 'r'
+                  AND a.attnum > 0 AND NOT a.attisdropped
+                """
+            )
+            ext_typed = {r[0] for r in sc.fetchall()}
+            print(f"\nSource public tables: {len(src)}  "
+                  f"(extension-owned: {len(ext_owned)}, extension-typed: {len(ext_typed)})")
         except Exception as e:
             print(f"(source compare skipped — could not read source: {str(e)[:140]})")
 
@@ -125,16 +147,18 @@ def main():
 
     if src:
         missing = [t for t in src if t not in restored]
-        # Extension-owned tables (postgis spatial_ref_sys, etc.) are recreated by
-        # CREATE EXTENSION on a real Neon target — their absence in a vanilla
-        # container is expected, never data loss, regardless of row count.
-        expected_absent = sorted(t for t in missing if t in ext_owned or t in NEON_EXT_DEPENDENT)
-        real_missing = [t for t in missing if t not in ext_owned and t not in NEON_EXT_DEPENDENT]
+        # Extension-owned tables (postgis spatial_ref_sys, etc.) AND extension-typed
+        # tables (geometry/vector columns) are recreated by CREATE EXTENSION on a
+        # real Neon target — their absence in a vanilla container is expected, never
+        # data loss, regardless of row count.
+        skip = lambda t: t in ext_owned or t in ext_typed or t in NEON_EXT_DEPENDENT
+        expected_absent = sorted(t for t in missing if skip(t))
+        real_missing = [t for t in missing if not skip(t)]
         sig_missing = sorted(t for t in real_missing if src.get(t, 0) >= SIGNIFICANT_ROWS)
         minor_missing = sorted(t for t in real_missing if t not in sig_missing)
         if expected_absent:
-            print("INFO — extension-owned tables absent from the vanilla test container "
-                  "(restored by CREATE EXTENSION on a real Neon target):")
+            print("INFO — extension-owned/typed tables absent from the vanilla test "
+                  "container (restored by CREATE EXTENSION on a real Neon target):")
             for t in expected_absent:
                 print(f"  . {t}  (source est. {int(src.get(t, 0))} rows)")
         for t in minor_missing:
