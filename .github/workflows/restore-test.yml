@@ -2,9 +2,18 @@ name: Restore test — verify Neon→R2 backup is restorable
 
 # Hardening tier (2026-06-10): backup-neon-r2.yml proves we CAN make a dump.
 # This proves the dump can be RESTORED: download the latest R2 backup, restore
-# it into a throwaway Postgres 18 service container, and verify table count +
-# row counts (restore_verify.py). An untested backup is not a backup.
+# it into a throwaway Postgres 18, and verify table count + row counts
+# (restore_verify.py). An untested backup is not a backup.
 # Never mutates prod — the only prod touch is a read-only table-presence compare.
+#
+# 2026-07-13: the throwaway DB must have the SAME extensions prod uses. A plain-SQL
+# restore into a vanilla postgres:18 desyncs: CREATE TABLE(...geometry/vector/
+# h3index) fails (type missing) -> its COPY fails -> psql loses stream sync and
+# SILENTLY drops LATER tables' data (users/deals/facilities came back empty with no
+# error of their own). So we now build a Postgres image WITH postgis + pgvector
+# (+ h3) — every CREATE+COPY succeeds, the WHOLE dump restores, and every table is
+# data-verified. Regressed in late June when the first pgvector/postgis-typed
+# tables landed in prod; that is exactly when this test started going red.
 #
 # Reuses the same repo secrets as the backup job: DATABASE_URL, R2_ACCESS_KEY_ID,
 # R2_SECRET_ACCESS_KEY, R2_ENDPOINT_URL.
@@ -21,35 +30,50 @@ concurrency:
 jobs:
   restore-test:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
-    services:
-      pg:
-        image: postgres:18
-        env:
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: restore_test
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres"
-          --health-interval 5s --health-timeout 5s --health-retries 20
+    timeout-minutes: 40          # full ~17GB restore is heavier than the old ext-skipping one
     env:
       RESTORE_TARGET_URL: postgres://postgres:postgres@localhost:5432/restore_test
     steps:
       - uses: actions/checkout@v4
 
-      - name: Free up runner disk (the DB outgrew default headroom)
-        # 2026-07-13: the restore silently truncated (~13.7M of 39.7M rows, later
-        # tables empty) because the grown DB filled the runner disk mid-restore.
-        # Reclaim ~12-15 GB the restore doesn't need. Do NOT touch
-        # /opt/hostedtoolcache — the `python` used by later steps lives there.
+      - name: Free up runner disk (a full restore of the grown DB needs headroom)
+        # The restore now loads EVERY table (incl. fiber_kmz_routes ~8GB), so the
+        # throwaway DB is ~prod size. Reclaim space the job doesn't need. Do NOT
+        # remove all of /opt/hostedtoolcache — the `python` used below lives there.
         run: |
           echo "before:"; df -h / | tail -1
           sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
-                      /usr/local/share/boost /usr/share/swift /usr/local/graalvm 2>/dev/null || true
+                      /usr/local/share/boost /usr/share/swift /usr/local/graalvm \
+                      /opt/hostedtoolcache/CodeQL 2>/dev/null || true
           sudo docker image prune -af 2>/dev/null || true
           sudo apt-get clean 2>/dev/null || true
           echo "after:";  df -h / | tail -1
+
+      - name: Build Postgres 18 image with prod extensions (postgis / pgvector / h3)
+        run: |
+          cat > Dockerfile.restoretest <<'EOF'
+          FROM postgres:18
+          RUN apt-get update \
+           && apt-get install -y --no-install-recommends postgresql-18-postgis-3 \
+           && apt-get install -y --no-install-recommends postgresql-18-pgvector \
+           && ( apt-get install -y --no-install-recommends postgresql-18-h3 \
+                || echo "WARN: postgresql-18-h3 unavailable — h3-typed tables (e.g. fcc_fiber_hex) stay WARN-listed" ) \
+           && rm -rf /var/lib/apt/lists/*
+          EOF
+          docker build -t pg-restoretest:18 -f Dockerfile.restoretest .
+
+      - name: Start throwaway Postgres (durability off = faster restore, less WAL)
+        run: |
+          docker run -d --name pgrt \
+            -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=restore_test \
+            -p 5432:5432 pg-restoretest:18 \
+            -c fsync=off -c synchronous_commit=off -c full_page_writes=off -c max_wal_size=6GB
+          echo "waiting for postgres to accept connections..."
+          for i in $(seq 1 45); do docker exec pgrt pg_isready -U postgres -q && break; sleep 2; done
+          docker exec pgrt pg_isready -U postgres
+          echo "extensions available in the throwaway DB:"
+          docker exec pgrt psql -U postgres -d restore_test -tAc \
+            "select name from pg_available_extensions where name in ('postgis','vector','h3','h3_postgis') order by 1" || true
 
       - name: Install pg client 18 + python deps
         run: |
@@ -87,13 +111,13 @@ jobs:
           set +e   # a failing pipeline must not abort the step (bash -e); we inspect it below
           echo "Restoring $(cat BACKUP_KEY.txt) ..."
           echo "disk before:"; df -h / | tail -1
-          # ON_ERROR_STOP=0: continue past benign per-statement noise (missing
-          # extensions/roles); restore_verify.py is the real data gate. But a
-          # gunzip/psql PIPE failure means a TRUNCATED restore — surface it loudly
-          # instead of hiding it behind '|| true' (that masked a disk-exhaustion
-          # truncation on 2026-07-13: 13.7M of 39.7M rows, later tables empty).
+          # ON_ERROR_STOP=0: continue past benign per-statement noise (pg_session_jwt
+          # is Neon-only and unavailable anywhere — its CREATE EXTENSION fails, but no
+          # table has a pg_session_jwt column TYPE, so it can't desync the stream).
+          # restore_verify.py is the real data gate.
           gunzip -c backup.sql.gz | psql "$RESTORE_TARGET_URL" -v ON_ERROR_STOP=0 > restore.out 2> restore.err
-          gz_rc=${PIPESTATUS[0]}; psql_rc=${PIPESTATUS[1]}
+          rc=("${PIPESTATUS[@]}")   # capture the WHOLE array in one statement (a later assignment resets PIPESTATUS)
+          gz_rc=${rc[0]}; psql_rc=${rc[1]}
           echo "pipeline rc: gunzip=$gz_rc  psql=$psql_rc"
           echo "disk after:";  df -h / | tail -1
           echo "--- last 12 lines of restore.out (where psql stopped) ---"
@@ -107,9 +131,9 @@ jobs:
           grep -aiE "does not exist|is not available|cannot|violates|invalid input|no such" restore.err \
             | grep -aviE "syntax error at or near" | sort -u | head -30 || echo "(none)"
           if [ "$gz_rc" != "0" ] || [ "$psql_rc" != "0" ]; then
-            echo "::warning::restore pipeline non-zero (gunzip=$gz_rc psql=$psql_rc) — restore likely TRUNCATED; the verify step will fail if rows are missing"
+            echo "::warning::restore pipeline non-zero (gunzip=$gz_rc psql=$psql_rc) — restore may be TRUNCATED; the verify step will fail if rows are missing"
           fi
-          exit 0   # verify step is the gate; diagnostics above explain any truncation
+          exit 0   # verify step is the gate; diagnostics above explain any shortfall
 
       - name: Verify restore
         env:
