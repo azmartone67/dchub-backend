@@ -341,10 +341,13 @@ def _compute_growth() -> dict:
             except Exception:
                 pass
             try:
+                # #1551 fix (2026-07-13): mcp_pair_codes.redeemed_at is 0 rows EVER
+                # (pair codes mint but the redeem path was never the conversion sink),
+                # so conversions_7d only ever reflected the auto_trial augmentation
+                # below and printed a false ~0. Count the CANONICAL ledger instead.
                 cur.execute("""
-                    SELECT COUNT(*) AS n FROM mcp_pair_codes
-                     WHERE redeemed_at IS NOT NULL
-                       AND redeemed_at >= NOW() - INTERVAL '7 days'
+                    SELECT COUNT(*) AS n FROM mcp_conversions
+                     WHERE created_at >= NOW() - INTERVAL '7 days'
                 """)
                 out["conversions_7d"] = int((cur.fetchone() or {"n":0})["n"] or 0)
             except Exception:

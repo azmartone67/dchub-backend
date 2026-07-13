@@ -476,7 +476,18 @@ def _build_data() -> dict:
             "SELECT COUNT(*) FROM auto_trial_keys "
             " WHERE signed_up_email IS NOT NULL AND signed_up_email <> '' "
             "   AND minted_at >= NOW() - INTERVAL '30 days'") or 0
-        out["kpis"]["emails_captured_30d"] = int(emails_cap) + int(trial_binds)
+        # #1551 fix (2026-07-13): the REAL bind_email sink is mcp_dev_keys.email
+        # (flask_mcp_endpoints ~1310 UPDATE mcp_dev_keys SET email=…), which this KPI
+        # omitted → it printed ~0 while the identify flow was actually binding operators.
+        # Add distinct in-window dev-key emails. No bind-timestamp col exists, so
+        # created_at is the safe, non-erroring window (may miss late binds of old keys).
+        devkey_binds = _scalar(cur,
+            "SELECT COUNT(DISTINCT LOWER(email)) FROM mcp_dev_keys "
+            " WHERE email IS NOT NULL AND email <> '' "
+            "   AND created_at >= NOW() - INTERVAL '30 days'") or 0
+        out["kpis"]["emails_captured_30d"] = (
+            int(emails_cap) + int(trial_binds) + int(devkey_binds))
+        out["kpis"]["emails_captured_30d_devkey_binds"] = int(devkey_binds)
 
         # Agent demand (denominator for the agent-funnel-leak verdict): how many
         # high-intent agent sessions minted a claim in 30d, and active trials.

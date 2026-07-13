@@ -2061,11 +2061,13 @@ def check_mcp_conversion_stale() -> list[dict]:
                 signals = 0
             conversions = 0
             try:
-                cur.execute("SELECT to_regclass('public.mcp_pair_codes')")
+                # #1551 fix (2026-07-13): mcp_pair_codes.redeemed_at is 0 rows EVER,
+                # so this detector fired a PERPETUAL false 'stale-critical'. Count the
+                # canonical ledger (the auto_trial augmentation below is preserved).
+                cur.execute("SELECT to_regclass('public.mcp_conversions')")
                 if (cur.fetchone() or [None])[0]:
-                    cur.execute("SELECT COUNT(*) FROM mcp_pair_codes "
-                                "WHERE redeemed_at IS NOT NULL "
-                                "  AND redeemed_at >= NOW() - INTERVAL '7 days'")
+                    cur.execute("SELECT COUNT(*) FROM mcp_conversions "
+                                "WHERE created_at >= NOW() - INTERVAL '7 days'")
                     conversions = int((cur.fetchone() or [0])[0] or 0)
             except Exception:
                 conversions = 0
