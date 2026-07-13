@@ -14553,6 +14553,37 @@ def handle_checkout_completed(session):
         except Exception as _mcp_err:
             print(f"⚠️ mcp_dev_keys tier upgrade failed (non-fatal): {str(_mcp_err)[:120]}")
 
+        # ── r-durable-sub-key (2026-07-13): SUBSCRIPTION tier → durable dch_live_ KEY ──
+        # Mirror of the pk- pack fix for the tier ladder. server.mjs binds a KEYED caller's
+        # Starter/Developer/Pro checkout to client_reference_id 'k-<sha256hex(key)>' (NEW
+        # prefix; keyless keeps session-bind). Stamp the tier we ALREADY resolved above from
+        # the Stripe line item (_paid_mcp_tier — NEVER from the ref; the ref only says WHICH
+        # key) onto the caller's OWN durable key so the paid tier survives session rotation.
+        # Schema (same rail as DCM-, routes/pair_code.py:330-349): mcp_dev_keys stores the
+        # RAW api_key (no hash col) → match by recomputing the hash in SQL,
+        # encode(sha256(api_key::bytea),'hex') = <full 64-char ref>. tier CHECK is
+        # (free|paid|enterprise) and _paid_mcp_tier is already normalized, so the write is
+        # legal. Guarded to mode=subscription + a webhook-resolved paid tier so a k- ref
+        # can't ride a cheaper/one-time link into a paid tier. Never downgrades enterprise.
+        # Idempotent (tier IS DISTINCT FROM). Fail-soft — must never break the webhook.
+        try:
+            _kref = (session.get('client_reference_id') or '').strip()
+            if (_paid_mcp_tier and session_mode == 'subscription'
+                    and _kref.lower().startswith('k-')):
+                _khash = _kref[2:].strip().lower()
+                if len(_khash) == 64 and all(_ch in '0123456789abcdef' for _ch in _khash):
+                    _kc2, _ = _pg_execute(
+                        "UPDATE mcp_dev_keys SET tier = %s "
+                        "WHERE encode(sha256(api_key::bytea), 'hex') = %s "
+                        "  AND status = 'active' "
+                        "  AND tier IS DISTINCT FROM %s "
+                        "  AND tier <> 'enterprise'",
+                        (_paid_mcp_tier, _khash, _paid_mcp_tier))
+                    print(f"🔑 k- sub tier '{_paid_mcp_tier}' → durable key "
+                          f"(hash={_khash[:12]}…, rows={_kc2})")
+        except Exception as _ksub_err:
+            print(f"⚠️ k- sub tier bind failed (non-fatal): {str(_ksub_err)[:120]}")
+
         if rows_updated == 0 and sqlite_rows == 0 and customer_email:
             import secrets as sec
             new_user_id = f"stripe_{sec.token_hex(8)}"
@@ -14782,6 +14813,12 @@ def handle_checkout_completed(session):
                 _fixe_upper.startswith('DCM-')
                 or _fixe_lower.startswith('tu-')
                 or _fixe_cref.startswith('ref_')
+                # r-durable-sub-key (2026-07-13): pk- (durable pack) and k- (durable sub)
+                # are handled by their own dedicated key-hash branches — exclude them so a
+                # keyed checkout doesn't ALSO write an orphan mcp_session_upgrades row keyed
+                # by 'pk-/k-<hash>' (harmless — no real UUID session matches — but noise).
+                or _fixe_lower.startswith('pk-')
+                or _fixe_lower.startswith('k-')
             )
             if not _is_reserved:
                 _fixe_session_id = _fixe_data.get('id') or ''
