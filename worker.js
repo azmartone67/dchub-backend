@@ -544,7 +544,8 @@ function isFlaskHtmlPath(pathname) {
 const MCP_SERVER_INFO = {
   name:             'DC Hub MCP Server',
   version:          '2.4.4',
-  description:      'Real-time data center, power & hyperscale intelligence for AI agents — 72 tools over 21,000+ facilities across 170+ countries, live grid data for 10 ISOs/markets, fiber routes, 4,000+ tracked M&A deals, capacity pipeline, interconnection-queue snapshots, daily AI Capacity Index, and DCPI BUILD/CAUTION/AVOID market verdicts.',
+  // NOTE: static literal — evaluated before MCP_FALLBACK_TOOLS is defined, so it can't derive the count. Keep "73" in sync with live tools/list (dchub.cloud/mcp). The mcp.json/server-card pricing prose IS derived from the live count.
+  description:      'Real-time data center, power & hyperscale intelligence for AI agents — 73 tools over 21,000+ facilities across 170+ countries, live grid data for 10 ISOs/markets, fiber routes, 4,000+ tracked M&A deals, capacity pipeline, interconnection-queue snapshots, daily AI Capacity Index, and DCPI BUILD/CAUTION/AVOID market verdicts.',
   url:              'https://dchub.cloud/mcp',
   transport:        'streamable-http',
   protocol_version: '2024-11-05',
@@ -565,7 +566,7 @@ const MCP_LANDING_HTML_V1 = `<!DOCTYPE html>
 <html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Connect DC Hub MCP · Claude, Cursor, Cline</title>
-<meta name="description" content="Add DC Hub's MCP server to any AI agent runtime. 72 tools, 21,000+ facilities, no signup for free tier.">
+<meta name="description" content="Add DC Hub's MCP server to any AI agent runtime. 73 tools, 21,000+ facilities, no signup for free tier.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600;700&display=swap" rel="stylesheet">
@@ -599,7 +600,7 @@ const MCP_LANDING_HTML_V1 = `<!DOCTYPE html>
 <header>
   <div class="eyebrow">Model Context Protocol · MCP Server</div>
   <h1>Connect DC Hub to your AI in 30 seconds.</h1>
-  <p class="lead">Native MCP server. 72 tools covering 21,000+ facilities, M&amp;A, grid intelligence, fiber, water risk, tax incentives. No signup needed for the free tier.</p>
+  <p class="lead">Native MCP server. 73 tools covering 21,000+ facilities, M&amp;A, grid intelligence, fiber, water risk, tax incentives. No signup needed for the free tier.</p>
 </header>
 
 <div class="urlbox">
@@ -1961,9 +1962,9 @@ async function wellKnownResponse(pathname, kv) {
       authentication: { type: 'api_key', header: 'X-API-Key', optional_for: ['free_tier'] },
       pricing: {
         anonymous:  '3 calls/day taste, no signup',
-        free_tier:  `Free key — 10 calls/day, all ${MCP_FALLBACK_TOOLS.length} tools, no credit card`,
+        free_tier:  `Free key — 10 calls/day, all ${mcpTools.length} tools, no credit card`,
         starter:    '$9/mo — 200 calls/day, unlocks every paid tool except Pro-only ones',
-        developer:  `$49/mo — 500 calls/day, full result sets, all ${MCP_FALLBACK_TOOLS.length} tools`,
+        developer:  `$49/mo — 500 calls/day, full result sets, all ${mcpTools.length} tools`,
         pro:        '$299/mo — 2,000 calls/day + Pro tools (grid_intelligence, fiber_intel, analyze_site, compare_sites)',
         enterprise: 'Custom — 100,000 calls/day, dedicated support, SLAs, custom integrations',
       },
@@ -1997,9 +1998,9 @@ async function wellKnownResponse(pathname, kv) {
       gated_tools:    ['get_intelligence_index', 'compare_sites', 'analyze_site', 'get_infrastructure', 'get_fiber_intel', 'get_grid_intelligence'],
       pricing: {
         anonymous:  '3 calls/day taste, no signup',
-        free:       `Free key — 10 calls/day, all ${MCP_FALLBACK_TOOLS.length} tools`,
+        free:       `Free key — 10 calls/day, all ${tools.length} tools`,
         starter:    '$9/mo — 200 calls/day, unlocks paid tools',
-        developer:  `$49/mo — 500 calls/day, all ${MCP_FALLBACK_TOOLS.length} tools, full results`,
+        developer:  `$49/mo — 500 calls/day, all ${tools.length} tools, full results`,
         pro:        '$299/mo — 2,000 calls/day + Pro tools',
         enterprise: 'Custom — 100,000 calls/day, dedicated support, SLAs',
       },
@@ -2594,9 +2595,9 @@ export default {
         tools_endpoint:  'POST /mcp with {"jsonrpc":"2.0","id":1,"method":"tools/list"}',
         pricing: {
           anonymous:  '3 calls/day taste, no signup',
-          free:       `Free key — 10 calls/day, all ${MCP_FALLBACK_TOOLS.length} tools, no credit card`,
+          free:       `Free key — 10 calls/day, all ${_mTools.length} tools, no credit card`,
           starter:    '$9/mo — 200 calls/day, unlocks every paid tool except Pro-only ones',
-          developer:  `$49/mo — 500 calls/day, all ${MCP_FALLBACK_TOOLS.length} tools, full results`,
+          developer:  `$49/mo — 500 calls/day, all ${_mTools.length} tools, full results`,
           pro:        '$299/mo — 2,000 calls/day + Pro tools (grid_intelligence, fiber_intel, analyze_site, compare_sites)',
           enterprise: 'Custom — 100,000 calls/day, dedicated support, SLAs, custom integrations',
         },
