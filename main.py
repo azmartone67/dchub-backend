@@ -12766,24 +12766,34 @@ def stripe_webhook():
                     # on the Stripe session id (grant_credit_pack dedupes).
                     from routes.mcp_conversion_plays import (
                         grant_credit_pack as _gcp, PACK5_CREDITS as _p5c,
-                        PACK5_EXPIRY_DAYS as _p5e, PACK5_PRICE_CENTS as _p5pc)
+                        PACK5_EXPIRY_DAYS as _p5e, PACK5_PRICE_CENTS as _p5pc,
+                        PACK10_CREDITS as _p10c, PACK10_EXPIRY_DAYS as _p10e,
+                        PACK10_PRICE_CENTS as _p10pc)
                     # SECURITY (adversarial review 2026-06-24): client_reference_id is
-                    # attacker-controllable, so VERIFY the buyer actually paid the $5
-                    # pack price (mode=payment + amount==PACK5_PRICE_CENTS pre/post-tax,
-                    # mirroring the amount-based pack5 block) before crediting — else a
-                    # pk- ref ridden on a cheaper Stripe link would grant 1,000 for less.
+                    # attacker-controllable, so VERIFY the buyer actually paid a PACK
+                    # price (mode=payment + amount==PACK5 or PACK10 pre/post-tax, mirroring
+                    # the amount-based pack block) before crediting — else a pk- ref ridden
+                    # on a cheaper Stripe link would grant credits for less.
+                    # r-pack10-keybound (2026-07-13): the LIVE pack is the $10/1,000 SKU
+                    # (PACK10). The keyless pack branch below accepts BOTH $5 and $10, but
+                    # this pk- (durable-key) branch previously accepted ONLY $5 — so a keyed
+                    # $10 purchase was REJECTED and the durable-key credit silently no-op'd
+                    # (the durable-key pack fix was inert for the real price). Accept both,
+                    # granting the credits/expiry of whichever pack was actually paid.
                     _pk_mode = (data.get('mode') or '').lower()
                     _pk_amt  = int(data.get('amount_total') or 0)
                     _pk_sub  = int(data.get('amount_subtotal') or 0)
+                    _pk_is10 = _p10pc in (_pk_sub, _pk_amt)
                     _pk_grant = None
-                    if _pk_mode == 'payment' and _p5pc in (_pk_sub, _pk_amt):
-                        _pk_grant = _gcp(None, None, _p5c,
+                    if _pk_mode == 'payment' and (_p5pc in (_pk_sub, _pk_amt) or _pk_is10):
+                        _pk_grant = _gcp(None, None, (_p10c if _pk_is10 else _p5c),
                                          stripe_session_id=data.get('id'),
-                                         source='pack5_keybound', expires_days=_p5e,
+                                         source=('pack10_keybound' if _pk_is10 else 'pack5_keybound'),
+                                         expires_days=(_p10e if _pk_is10 else _p5e),
                                          api_key_hash=ref[3:].strip())
-                        print(f"💳 Key-bound pack5 redemption: {_pk_grant}")
+                        print(f"💳 Key-bound pack redemption: {_pk_grant}")
                     else:
-                        print(f"⚠️ pk- ref ignored (non-pack5 amount/mode: "
+                        print(f"⚠️ pk- ref ignored (non-pack amount/mode: "
                               f"mode={_pk_mode} sub={_pk_sub} amt={_pk_amt})")
                     if _pk_grant and _pk_grant.get('ok'):
                         try:
