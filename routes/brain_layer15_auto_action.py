@@ -133,6 +133,30 @@ def _chain_fingerprint(chain: dict) -> str:
     return hashlib.sha1("|".join(sorted(keys)).encode()).hexdigest()[:12]
 
 
+def _chain_tokens(chain: dict) -> set[str]:
+    """The set of SIGNIFICANT metric-key tokens a chain's symptoms lead with
+    (e.g. `conversions_30d`, `ai_agent_requests_total`, `calls_by_platform_30d`).
+
+    Used for near-duplicate detection: L14 re-words the title AND shuffles WHICH
+    metrics it cites for the same finding across runs, so the exact-fp hash drifts
+    and the same problem re-files under a new title (the funnel/attribution flood:
+    #1577/#1583/#1585 and #1584/#1597/#1599/#1600). Overlap on these stable metric
+    keys survives that drift. Tokens < 5 chars or in a small generic stopword set
+    are dropped so a shared token means a real shared metric, not a common word."""
+    import re as _re
+    _STOP = {"error", "value", "total", "count", "delta", "ratio", "brain",
+             "layer", "check", "issue", "metric", "status", "which", "there",
+             "these", "their", "signal", "signals"}
+    toks = set()
+    for s in (chain.get("symptoms", []) or []):
+        m = _re.match(r"\s*([a-z0-9_]+)", str(s), _re.I)
+        if m:
+            t = m.group(1).lower()
+            if len(t) >= 5 and t not in _STOP:
+                toks.add(t)
+    return toks
+
+
 def _verify_chain(chain: dict) -> tuple[bool, str]:
     """For chains that make a LIVE-CHECKABLE claim, test it before filing a
     high-confidence issue. Returns (True, '') when the claim holds or isn't
@@ -194,6 +218,7 @@ def _open_issue(chain: dict) -> tuple[bool, str]:
     title = chain.get("title", "Brain L14 auto-action")[:120]
     fp = _chain_fingerprint(chain)
     _fp_marker = f"brain_chain_fp_{fp}"   # embedded in the body; searchable
+    _tokens = _chain_tokens(chain)        # stable metric keys for overlap-dedup
     # r-fp-dedup (2026-07-10): dedup by ROOT-CAUSE FINGERPRINT, not exact title.
     # L14 re-words the title every run, so the exact-title search below let the
     # SAME chain spawn 4 dupes (#1521/#1524/#1527/#1531). The fp is stable, is
@@ -213,6 +238,34 @@ def _open_issue(chain: dict) -> tuple[bool, str]:
             return False, f"dedup_same_chain_fp_#{_fr.json()['items'][0].get('number')}"
     except Exception as _e:
         return False, f"dedup_fp_search_error_skip_{type(_e).__name__}"
+    # r-fp-overlap (2026-07-13): the exact-fp match above is brittle — L14 shuffles
+    # WHICH metrics it cites for the same finding run-to-run, so the fp hash drifts
+    # and the SAME problem re-files under a fresh title (the funnel + attribution
+    # dupe floods). Also dedup on METRIC-TOKEN OVERLAP: if this chain shares >=2
+    # significant metric keys with an already-open L15 issue, it's that finding
+    # reworded → skip. FAIL-OPEN (any error → fall through and file) so this can
+    # never silently suppress a genuine new finding; over-suppression is bounded
+    # by requiring >=2 shared >=5-char metric tokens.
+    if len(_tokens) >= 2:
+        try:
+            import requests as _rq2, re as _re2
+            _lr = _rq2.get(
+                "https://api.github.com/search/issues",
+                headers={"Authorization": f"Bearer {_GITHUB_TOKEN}",
+                         "Accept": "application/vnd.github+json"},
+                params={"q": f"repo:{_GITHUB_REPO} is:issue is:open label:{_ISSUE_LABEL}",
+                        "per_page": 50},
+                timeout=10,
+            )
+            if _lr.status_code == 200:
+                for _it in (_lr.json() or {}).get("items", []):
+                    _mm = _re2.search(r"brain_chain_tokens:\s*([a-z0-9_ ]+)",
+                                      _it.get("body") or "", _re2.I)
+                    _other = set((_mm.group(1) if _mm else "").split())
+                    if len(_tokens & _other) >= 2:
+                        return False, f"dedup_token_overlap_#{_it.get('number')}"
+        except Exception:
+            pass  # fail-open: overlap dedup is best-effort, never blocks a real finding
     # r65: HARD dedup against GitHub itself. The local brain_auto_actions
     # dedup table failed to prevent re-creation and FLOODED 100+ identical
     # "404 spike" issues (#3-#949), emailing a real repo watcher. Before
@@ -266,6 +319,7 @@ def _open_issue(chain: dict) -> tuple[bool, str]:
         f"being re-detected; if it recurs, L15 re-files._",
         "",
         f"<!-- {_fp_marker} -->",   # stable root-cause fingerprint for dedup
+        f"<!-- brain_chain_tokens: {' '.join(sorted(_tokens))} -->",  # metric keys for overlap-dedup
     ]
     body = "\n".join(body_lines)
 
