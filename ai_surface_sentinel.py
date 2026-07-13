@@ -72,7 +72,8 @@ def _fetch(url, timeout=15):
 
 
 _HIGH = {"10,706", "10706", "50,000+", "2.1.22", "2.3.3", "2.1.0",
-         "24 tools", "48 tools", "49 tools"}
+         "24 tools", "48 tools", "49 tools", "51 tools", "53 tools",
+         "58 tools", "60 tools", "72 tools"}
 
 
 def _audit_surface(key, url, kind, canon):
@@ -107,9 +108,9 @@ def _audit_surface(key, url, kind, canon):
             if v and v != canon["version"]:
                 add("version", v, canon["version"], "high")
             tools = d.get("tools")
-            ok_counts = {canon.get("tools_live"), 51, 53}
+            ok_counts = {canon.get("tools_live"), canon.get("tools_advertised")}
             if isinstance(tools, list) and len(tools) not in ok_counts:
-                add("tools[]_count", str(len(tools)), "51/53", "high")
+                add("tools[]_count", str(len(tools)), str(canon.get("tools_live") or canon.get("tools_advertised")), "high")
         except Exception:
             add("json_parse", "invalid/HTML", "valid JSON", "high")
     # 4) robots.txt must welcome the required crawlers
@@ -190,6 +191,10 @@ def _count_fix_replacement(marker, canon):
         "48 tools": f"{tools} tools" if tools else None,
         "49 tools": f"{tools} tools" if tools else None,
         "51 tools": f"{tools} tools" if tools else None,
+        "53 tools": f"{tools} tools" if tools else None,
+        "58 tools": f"{tools} tools" if tools else None,
+        "60 tools": f"{tools} tools" if tools else None,
+        "72 tools": f"{tools} tools" if tools else None,
     }
     return fixes.get(marker)
 

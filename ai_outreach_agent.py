@@ -366,7 +366,7 @@ AI_PLATFORMS = {
     'base44': {
         'name': 'base44',
         'discovery_hint': f'{BASE_URL}/openapi.json',
-        'pitch': 'DC Hub is a ready tool/API for base44 agents — 53 MCP tools + OpenAPI over 21,000+ facilities at dchub.cloud/mcp.',
+        'pitch': 'DC Hub is a ready tool/API for base44 agents — 73 MCP tools + OpenAPI over 21,000+ facilities at dchub.cloud/mcp.',
         'crawl_endpoints': [
             'https://base44.com/robots.txt',
             'https://app.base44.com/robots.txt',

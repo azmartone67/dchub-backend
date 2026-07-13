@@ -516,7 +516,7 @@ def well_known_mcp_server():
     try:
         from ai_surface_canon import PINNED as _C
         _ver = _C["version"]
-        _tools = _C.get("tools_advertised", 53)
+        _tools = _C.get("tools_advertised", 73)
         _endpoint = _C["mcp_endpoint"]
     except Exception:
         _ver, _tools, _endpoint = "2.4.3", 53, "https://dchub.cloud/mcp"

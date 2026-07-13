@@ -946,7 +946,7 @@ Server endpoint: https://dchub.cloud/mcp
 Server card: https://dchub.cloud/.well-known/mcp/server-card.json
 Protocol: JSON-RPC 2.0 over Streamable HTTP
 
-Available MCP tools (60 total; flagship set below — each line shows what the
+Available MCP tools (73 total; flagship set below — each line shows what the
 tool RETURNS so an agent can choose the right tool WITHOUT a trial call).
 NOTE: the composite site read is a SINGLE tool, analyze_site (power/grid + fiber +
 water + natural-disaster + climate + tax + verdict in one call) — there is NO
