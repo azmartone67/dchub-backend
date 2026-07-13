@@ -19,6 +19,10 @@ agent_a2a_bp = Blueprint("agent_a2a", __name__)
 AGENT_CARD = {
     "schema_version": "1.0",
     "spec":           "A2A (Agent-to-Agent) v1",
+    # Marketplace-readiness marker: OAuth2 authorization_code + DCR advertised in
+    # auth.oauth2 below, wired to WorkOS AuthKit. Enables Google Cloud Marketplace
+    # / Gemini Enterprise Custom-MCP OAuth data-store connect.
+    "a2a_marketplace_ready": True,
     "agent": {
         "name":         "DC Hub Intelligence",
         "version":      "2.1.2",
@@ -35,12 +39,23 @@ AGENT_CARD = {
     },
     "endpoints": {
         "mcp":          "https://dchub.cloud/mcp",
+        # Full machine-readable MCP manifest — authoritative source of truth for
+        # the complete live tool list (the `skills` block below is a curated
+        # flagship subset, not the full tool count).
+        "mcp_manifest": "https://dchub.cloud/.well-known/mcp.json",
         "rest":         "https://api.dchub.cloud/api/v1",
         "openapi":      "https://api.dchub.cloud/openapi-live.json",
         "llms_txt":     "https://dchub.cloud/llms.txt",
         "agents_md":    "https://dchub.cloud/AGENTS.md",
         "freshness":    "https://dchub.cloud/freshness",
         "sitemap":      "https://api.dchub.cloud/sitemap-index.xml",
+    },
+    # Live MCP tool total (source of truth = mcp_manifest above). The `skills`
+    # array intentionally lists a flagship subset for readability, not all tools.
+    "mcp_tools": {
+        "total":          73,
+        "manifest":       "https://dchub.cloud/.well-known/mcp.json",
+        "skills_are_subset": True,
     },
     "auth": {
         "modes":        ["none", "api_key", "oauth2"],
@@ -52,9 +67,25 @@ AGENT_CARD = {
             "free_tier": {"requests_per_day": 10, "no_signup": True},
         },
         "oauth2": {
-            "spec":     "MCP 2025-06-18 OAuth Protected Resource",
-            "metadata": "https://api.dchub.cloud/.well-known/oauth-protected-resource",
-            "note":     "Enterprise tier — contact api@dchub.cloud for DCR provisioning.",
+            "type":                    "oauth2",
+            "grant_type":              "authorization_code",
+            "flow":                    "authorization_code",
+            "spec":                    "MCP 2025-06-18 OAuth Protected Resource",
+            "issuer":                  "https://beloved-stream-52.authkit.app",
+            "authorization_endpoint":  "https://beloved-stream-52.authkit.app/oauth2/authorize",
+            "token_endpoint":          "https://beloved-stream-52.authkit.app/oauth2/token",
+            # Dynamic Client Registration (RFC 7591) — required by Google Cloud
+            # Marketplace / Gemini Enterprise Custom-MCP OAuth data-store connect.
+            "registration_endpoint":   "https://beloved-stream-52.authkit.app/oauth2/register",
+            "scopes":                  ["openid", "profile", "email", "offline_access"],
+            # RFC 8414 / RFC 9728 discovery docs (WorkOS AuthKit is the real AS).
+            "metadata":                "https://api.dchub.cloud/.well-known/oauth-protected-resource",
+            "authorization_server_metadata": "https://api.dchub.cloud/.well-known/oauth-authorization-server",
+            "note":     ("ENTERPRISE / marketplace path (Google Cloud Marketplace, "
+                         "Gemini Enterprise). OAuth2 is ADDITIVE and OPTIONAL — the "
+                         "free tier stays keyless (auth.default='none') and is NEVER "
+                         "required to use OAuth. DCR provisioning is automatic via the "
+                         "WorkOS registration_endpoint (RFC 7591)."),
         },
     },
     "skills": [

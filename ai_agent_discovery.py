@@ -286,12 +286,32 @@ A2A_AGENT_CARD = {
     "defaultInputModes": ["text/plain", "application/json"],
     "defaultOutputModes": ["application/json", "text/plain"],
     "authentication": {
-        "schemes": [{
-            "scheme": "apiKey",
-            "in": "header",
-            "name": "X-API-Key",
-            "description": "Optional. Free tier: 100 req/day without key."
-        }]
+        "schemes": [
+            {
+                "scheme": "apiKey",
+                "in": "header",
+                "name": "X-API-Key",
+                "description": "Optional. Free tier: 100 req/day without key."
+            },
+            {
+                # ADDITIVE enterprise/marketplace path — free tier stays keyless
+                # (apiKey scheme above is unchanged). OAuth2 authorization_code via
+                # WorkOS AuthKit with RFC 7591 Dynamic Client Registration. Required
+                # by Google Cloud Marketplace / Gemini Enterprise Custom-MCP connect.
+                "scheme": "oauth2",
+                "flow": "authorizationCode",
+                "grantType": "authorization_code",
+                "issuer": "https://beloved-stream-52.authkit.app",
+                "authorizationUrl": "https://beloved-stream-52.authkit.app/oauth2/authorize",
+                "tokenUrl": "https://beloved-stream-52.authkit.app/oauth2/token",
+                "registrationUrl": "https://beloved-stream-52.authkit.app/oauth2/register",
+                "scopes": ["openid", "profile", "email", "offline_access"],
+                "description": ("Enterprise / marketplace path (Google Cloud "
+                                "Marketplace, Gemini Enterprise) via WorkOS AuthKit. "
+                                "Additive and OPTIONAL — the free tier stays keyless "
+                                "and never requires OAuth.")
+            }
+        ]
     }
 }
 
