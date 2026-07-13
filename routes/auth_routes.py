@@ -346,7 +346,8 @@ def register_user():
             }), 201)
             resp.set_cookie('dchub_token', token, domain='.dchub.cloud',
                             httponly=False, secure=True, samesite='Lax',
-                            max_age=30 * 24 * 60 * 60)
+                            max_age=30 * 24 * 60 * 60)  # 30 days (client hint; JWT is 7d)
+            issue_refresh_cookie(resp, user_id)  # durable 90-day rotating refresh token
             return resp
     except Exception as e:
         # r43-H (2026-05-27): the SELECT-then-INSERT above isn't atomic, so
@@ -424,7 +425,7 @@ def login_user():
                     'role': role or 'user'
                 }
             }))
-            # Set cross-subdomain cookie so dchub.cloud picks up auth from dashboard.dchub.cloud
+            # Set cross-subdomain cookie so dchub.cloud picks up auth from dashboard.dchub.cloud.
             resp.set_cookie(
                 'dchub_token',
                 token,
@@ -432,12 +433,178 @@ def login_user():
                 httponly=False,   # JS must read this for access gate
                 secure=True,
                 samesite='Lax',
-                max_age=30 * 24 * 60 * 60  # 30 days
+                max_age=30 * 24 * 60 * 60  # 30 days (client "logged in" hint; JWT itself is 7d)
             )
+            issue_refresh_cookie(resp, user_id)  # durable 90-day rotating refresh token
             return resp
     except Exception as e:
         logger.error(f"Login error: {e}")
         return jsonify({'error': 'Login failed'}), 500
+
+
+# =============================================================================
+# REFRESH TOKENS (2026-07-13) — durable session across access-JWT expiry
+# =============================================================================
+# The access JWT lives 7 days (JWT_EXPIRY_HOURS); the dchub_token cookie used to
+# live 30 days, so a user returning between day 7 and day 30 carried a DEAD JWT —
+# "logged in" client-side but 401/402 on every authed call (the Land & Power map
+# 402 flood, 2026-07-13). A rotating, revocable refresh token (httpOnly, 90d,
+# hashed at rest) lets the client silently re-mint a fresh JWT on boot, so a
+# paying user who returns within 90 days never lapses and the gate never sees
+# them as anonymous. Stateful → a stolen/rotated token can be revoked and reuse
+# detected. See reference_dchub_map_session_expired_402.
+_REFRESH_COOKIE = 'dchub_refresh'
+_REFRESH_TTL_DAYS = 90
+_refresh_table_ready = False
+
+
+def _ensure_refresh_table():
+    """Lazily create the refresh-token table on first use (NOT at boot — avoids
+    the boot-DDL storm; a single CREATE IF NOT EXISTS is cheap)."""
+    global _refresh_table_ready
+    if _refresh_table_ready:
+        return
+    try:
+        with _pg_connection() as conn:
+            cur = conn.cursor()
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS auth_refresh_tokens (
+                    token_hash  TEXT PRIMARY KEY,
+                    user_id     TEXT NOT NULL,
+                    issued_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    expires_at  TIMESTAMPTZ NOT NULL,
+                    last_used   TIMESTAMPTZ,
+                    revoked_at  TIMESTAMPTZ,
+                    ip_prefix   TEXT,
+                    replaced_by TEXT
+                )""")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_art_user ON auth_refresh_tokens(user_id)")
+            conn.commit()
+        _refresh_table_ready = True
+    except Exception as e:
+        logger.warning(f"auth_refresh_tokens init failed: {e}")
+
+
+def _refresh_ip_prefix():
+    ip = (request.headers.get('CF-Connecting-IP')
+          or request.headers.get('X-Forwarded-For', '').split(',')[0].strip()
+          or request.remote_addr or '')
+    if ':' in ip:
+        return ':'.join(ip.split(':')[:4])
+    p = ip.split('.')
+    return '.'.join(p[:2]) if len(p) == 4 else ip[:16]
+
+
+def _hash_refresh(raw):
+    return hashlib.sha256((raw or '').encode()).hexdigest()
+
+
+def issue_refresh_cookie(resp, user_id):
+    """Mint a fresh refresh token, persist its hash, set the httpOnly cookie on
+    `resp`. Best-effort — a failure here must never break the login response."""
+    try:
+        _ensure_refresh_table()
+        raw = secrets.token_urlsafe(48)
+        exp = datetime.utcnow() + timedelta(days=_REFRESH_TTL_DAYS)
+        with _pg_connection() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "INSERT INTO auth_refresh_tokens (token_hash, user_id, expires_at, ip_prefix) "
+                "VALUES (%s, %s, %s, %s)",
+                (_hash_refresh(raw), str(user_id), exp, _refresh_ip_prefix()))
+            conn.commit()
+        resp.set_cookie(_REFRESH_COOKIE, raw, domain='.dchub.cloud',
+                        httponly=True, secure=True, samesite='Lax',
+                        max_age=_REFRESH_TTL_DAYS * 24 * 60 * 60, path='/')
+    except Exception as e:
+        logger.warning(f"issue_refresh_cookie failed for {user_id}: {e}")
+    return resp
+
+
+@auth_bp.route('/api/auth/refresh', methods=['POST'])
+def refresh_token():
+    """Exchange a valid refresh cookie for a fresh access JWT, rotating the
+    refresh token. 401 if the cookie is absent/expired/revoked/reused. This is
+    what lets a returning paid user re-authenticate silently instead of hitting
+    the metered map gate as an 'anonymous' caller."""
+    raw = request.cookies.get(_REFRESH_COOKIE, '')
+    if not raw:
+        return jsonify({'error': 'no_refresh_token'}), 401
+    th = _hash_refresh(raw)
+    try:
+        _ensure_refresh_table()
+        with _pg_connection() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT user_id, (expires_at < NOW()) AS expired, "
+                "       (revoked_at IS NOT NULL) AS revoked, "
+                "       (replaced_by IS NOT NULL) AS replaced "
+                "FROM auth_refresh_tokens WHERE token_hash = %s", (th,))
+            row = cur.fetchone()
+            if not row:
+                return jsonify({'error': 'invalid_refresh_token'}), 401
+            user_id, expired, revoked, replaced = row
+            # Reuse detection: a token already rotated/revoked but presented again
+            # → likely theft. Revoke the whole live chain for this user.
+            if revoked or replaced:
+                cur.execute("UPDATE auth_refresh_tokens SET revoked_at = NOW() "
+                            "WHERE user_id = %s AND revoked_at IS NULL", (user_id,))
+                conn.commit()
+                logger.warning(f"refresh-token reuse detected for user {user_id} — chain revoked")
+                return jsonify({'error': 'refresh_reused'}), 401
+            if expired:
+                return jsonify({'error': 'refresh_expired'}), 401
+            cur.execute("SELECT id, email, name, company, plan, role FROM users WHERE id = %s", (user_id,))
+            u = cur.fetchone()
+            if not u:
+                return jsonify({'error': 'user_not_found'}), 401
+            uid, email, name, company, plan, role = u
+            # Rotate: mint a new refresh token, mark the old one replaced+revoked.
+            new_raw = secrets.token_urlsafe(48)
+            new_th = _hash_refresh(new_raw)
+            new_exp = datetime.utcnow() + timedelta(days=_REFRESH_TTL_DAYS)
+            cur.execute("INSERT INTO auth_refresh_tokens (token_hash, user_id, expires_at, ip_prefix) "
+                        "VALUES (%s, %s, %s, %s)", (new_th, str(uid), new_exp, _refresh_ip_prefix()))
+            cur.execute("UPDATE auth_refresh_tokens SET revoked_at = NOW(), last_used = NOW(), replaced_by = %s "
+                        "WHERE token_hash = %s", (new_th, th))
+            conn.commit()
+        access = generate_jwt(uid, email, role or 'user', plan or 'free')
+        resp = make_response(jsonify({
+            'success': True, 'token': access,
+            'user': {'id': uid, 'email': email, 'name': name or '', 'company': company or '',
+                     'plan': plan or 'free', 'role': role or 'user'}
+        }))
+        # Fresh access JWT (7d validity); cookie hint kept at 30d for parity with
+        # login. Longevity/self-heal is the refresh cookie's job.
+        resp.set_cookie('dchub_token', access, domain='.dchub.cloud', httponly=False,
+                        secure=True, samesite='Lax', max_age=30 * 24 * 60 * 60)
+        resp.set_cookie(_REFRESH_COOKIE, new_raw, domain='.dchub.cloud', httponly=True,
+                        secure=True, samesite='Lax',
+                        max_age=_REFRESH_TTL_DAYS * 24 * 60 * 60, path='/')
+        return resp
+    except Exception as e:
+        logger.error(f"refresh_token error: {e}")
+        return jsonify({'error': 'refresh_failed'}), 500
+
+
+@auth_bp.route('/api/auth/logout', methods=['POST'])
+def logout_revoke_refresh():
+    """Revoke the presented refresh token and clear both auth cookies."""
+    raw = request.cookies.get(_REFRESH_COOKIE, '')
+    if raw:
+        try:
+            _ensure_refresh_table()
+            with _pg_connection() as conn:
+                cur = conn.cursor()
+                cur.execute("UPDATE auth_refresh_tokens SET revoked_at = NOW() "
+                            "WHERE token_hash = %s AND revoked_at IS NULL", (_hash_refresh(raw),))
+                conn.commit()
+        except Exception as e:
+            logger.warning(f"logout revoke failed: {e}")
+    resp = make_response(jsonify({'success': True}))
+    resp.set_cookie('dchub_token', '', domain='.dchub.cloud', expires=0, path='/')
+    resp.set_cookie(_REFRESH_COOKIE, '', domain='.dchub.cloud', expires=0, path='/')
+    return resp
 
 
 @auth_bp.route('/api/auth/google/redirect', methods=['GET'])
@@ -546,7 +713,7 @@ def google_auth_callback():
 
         jwt_token = generate_jwt(user_id, email, user_role, user_plan)
 
-        return f"""<!DOCTYPE html><html><body><script>
+        _gcb_html = f"""<!DOCTYPE html><html><body><script>
         if (window.opener) {{
             window.opener.postMessage({{
                 type: 'google-auth-success',
@@ -561,6 +728,9 @@ def google_auth_callback():
             window.location.href = '/dashboard.html';
         }}
         </script></body></html>"""
+        _gcb_resp = make_response(_gcb_html)
+        issue_refresh_cookie(_gcb_resp, user_id)  # durable 90-day rotating refresh token
+        return _gcb_resp
 
     except Exception as e:
         logger.error(f"Google callback error: {e}")
@@ -676,7 +846,8 @@ def google_auth():
         }))
         resp.set_cookie('dchub_token', jwt_token, domain='.dchub.cloud',
                         httponly=False, secure=True, samesite='Lax',
-                        max_age=30 * 24 * 60 * 60)
+                        max_age=30 * 24 * 60 * 60)  # 30 days (client hint; JWT is 7d)
+        issue_refresh_cookie(resp, user_id)  # durable 90-day rotating refresh token
         return resp
     except Exception as e:
         logger.error(f"Google auth error: {e}")

@@ -685,6 +685,32 @@ def check_paywall_capacity_gating() -> list[dict]:
             })
     except Exception:
         pass
+    # (d) 2026-07-13: a paid key must NOT be 401/402/403'd on the metered MAP
+    # endpoints. This is the class the Land & Power map 402-flood fell into —
+    # free_tier_gate's session cap authenticates "paid" only via key/JWT and had
+    # no canary asserting a paying caller stays served. (a)-(c) only cover the
+    # /me/tier gating vocabulary, not the metered data endpoints themselves.
+    try:
+        for _ep in ("/api/v1/fiber/routes?limit=3",
+                    "/api/v1/power-plants?lat=40.41&lng=-80.58&radius=4&limit=3",
+                    "/api/v1/grid/intelligence/PJM"):
+            _sep = "&" if "?" in _ep else "?"
+            _u = "https://dchub.cloud" + _ep + _sep + "__cb=" + str(_rnd.randint(1, 10 ** 9))
+            _r = _req.get(_u, headers={"X-API-Key": canary, "Cache-Control": "no-cache"}, timeout=8)
+            if _r.status_code in (401, 402, 403):
+                findings.append({
+                    "issue": "paid_key_walled_on_map",
+                    "url": _ep.split("?")[0],
+                    "count": 1,
+                    "severity": "critical",
+                    "detail": (f"A known PAID canary key got HTTP {_r.status_code} on a "
+                               f"metered map endpoint — a paying user is being walled on the "
+                               f"flagship (the 2026-07-13 session-cap regression class). Check "
+                               f"free_tier_gate._resolve_caller / _metered_session_gate and any "
+                               f"require_plan on the route."),
+                })
+    except Exception:
+        pass
     return findings
 
 
