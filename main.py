@@ -2047,6 +2047,17 @@ try:
     except Exception as _bfms:
         import logging
         logging.getLogger(__name__).warning('backfunnel_master_shell wiring failed: %s', _bfms)
+    # 2026-07-13: Moat Pillars 1-3 master shell — live-verifies the three moat
+    # pillars (provenance envelope / international grid telemetry / agent-state
+    # persistence) then generates honesty-checked announcement copy for Media/BD.
+    # Read-only; drafts NOT auto-posted. GET /admin/pillars · kill PILLARS_SHELL_DISABLED=1
+    try:
+        from routes.pillars_master_shell import pillars_master_shell_bp
+        app.register_blueprint(pillars_master_shell_bp)
+        print("[main] pillars_master_shell_bp registered: GET /admin/pillars", flush=True)
+    except Exception as _pms:
+        import logging
+        logging.getLogger(__name__).warning('pillars_master_shell wiring failed: %s', _pms)
     # 2026-07-07: Growth-Ops digest — daily operator email consolidating the
     # back-of-funnel + flywheel master shells (passive validation). Scheduled via
     # crawler_scheduler _run_growth_ops_digest. GET /api/v1/admin/growth-digest/preview
