@@ -38,6 +38,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Free up runner disk (the DB outgrew default headroom)
+        # 2026-07-13: the restore silently truncated (~13.7M of 39.7M rows, later
+        # tables empty) because the grown DB filled the runner disk mid-restore.
+        # Reclaim ~12-15 GB the restore doesn't need. Do NOT touch
+        # /opt/hostedtoolcache — the `python` used by later steps lives there.
+        run: |
+          echo "before:"; df -h / | tail -1
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+                      /usr/local/share/boost /usr/share/swift /usr/local/graalvm 2>/dev/null || true
+          sudo docker image prune -af 2>/dev/null || true
+          sudo apt-get clean 2>/dev/null || true
+          echo "after:";  df -h / | tail -1
+
       - name: Install pg client 18 + python deps
         run: |
           sudo sh -c 'echo "deb https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
@@ -71,17 +84,32 @@ jobs:
 
       - name: Restore into throwaway Postgres
         run: |
+          set +e   # a failing pipeline must not abort the step (bash -e); we inspect it below
           echo "Restoring $(cat BACKUP_KEY.txt) ..."
-          # ON_ERROR_STOP=0: continue past benign noise (missing extensions/roles);
-          # the real pass/fail gate is restore_verify.py, not psql's exit code.
-          gunzip -c backup.sql.gz | psql "$RESTORE_TARGET_URL" -v ON_ERROR_STOP=0 > restore.out 2> restore.err || true
-          echo "--- restore ERROR/FATAL lines (deduped, top 40) ---"
-          grep -aiE "^psql:|ERROR|FATAL" restore.err | sed -E 's/[0-9]+/N/g' | sort | uniq -c | sort -rn | head -40 || echo "(none)"
+          echo "disk before:"; df -h / | tail -1
+          # ON_ERROR_STOP=0: continue past benign per-statement noise (missing
+          # extensions/roles); restore_verify.py is the real data gate. But a
+          # gunzip/psql PIPE failure means a TRUNCATED restore — surface it loudly
+          # instead of hiding it behind '|| true' (that masked a disk-exhaustion
+          # truncation on 2026-07-13: 13.7M of 39.7M rows, later tables empty).
+          gunzip -c backup.sql.gz | psql "$RESTORE_TARGET_URL" -v ON_ERROR_STOP=0 > restore.out 2> restore.err
+          gz_rc=${PIPESTATUS[0]}; psql_rc=${PIPESTATUS[1]}
+          echo "pipeline rc: gunzip=$gz_rc  psql=$psql_rc"
+          echo "disk after:";  df -h / | tail -1
+          echo "--- last 12 lines of restore.out (where psql stopped) ---"
+          tail -12 restore.out || true
+          echo "--- restore ERROR/FATAL / space / disconnect lines (deduped, top 40) ---"
+          grep -aiE "^psql:|ERROR|FATAL|No space|could not extend|server closed|connection to server|out of memory" restore.err \
+            | sed -E 's/[0-9]+/N/g' | sort | uniq -c | sort -rn | head -40 || echo "(none)"
           echo "--- non-data CREATE/dependency failures (diagnose missing app tables) ---"
           # 'syntax error at or near' lines are COPY data mis-parsed after an earlier
           # failure — drop them; the real cause is the missing type/extension/relation.
           grep -aiE "does not exist|is not available|cannot|violates|invalid input|no such" restore.err \
             | grep -aviE "syntax error at or near" | sort -u | head -30 || echo "(none)"
+          if [ "$gz_rc" != "0" ] || [ "$psql_rc" != "0" ]; then
+            echo "::warning::restore pipeline non-zero (gunzip=$gz_rc psql=$psql_rc) — restore likely TRUNCATED; the verify step will fail if rows are missing"
+          fi
+          exit 0   # verify step is the gate; diagnostics above explain any truncation
 
       - name: Verify restore
         env:
