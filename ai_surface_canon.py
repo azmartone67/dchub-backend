@@ -24,7 +24,7 @@ _BASE = os.environ.get("DCHUB_BACKEND_BASE",
 # ── Pinned structural canon (changes rarely; edit HERE, nowhere else) ──
 PINNED = {
     "version": "2.4.4",                       # == repo canonical (server.mjs/server.json); registry mirror auto-bumps to latest+1
-    "tools_advertised": 58,                   # canonical advertised count == live tools/list (58, incl. predict_market_trajectory + semantic_search + search_intelligence + get_market_context + get_iso_context)
+    "tools_advertised": 73,                   # canonical advertised count == live tools/list (73 as of 2026-07-12). This is the PINNED fallback; resolve_canon() overrides it with the live tools/list count so consumers using resolve_canon() never go stale. /AGENTS.md reads PINNED directly, so keep this current.
     "mcp_endpoint": "https://dchub.cloud/mcp",
     "registry_id": "cloud.dchub/mcp-server",
     "rest_base": "https://dchub.cloud/api/v1",     # canonical host (NOT api.dchub.cloud)
@@ -53,6 +53,7 @@ PINNED = {
     "stale_markers": ["10,706", "10706", "50,000+", "50000", "317 ", "332 ",
                       "232 ", "100 calls/day", "3,000+ M&A",
                       "24 tools", "48 tools", "49 tools", "51 tools", "53 tools",
+                      "58 tools", "72 tools",
                       "2.1.22", "2.3.3", "2.1.0", "2.4.3"],
 }
 
@@ -245,9 +246,12 @@ def resolve_canon() -> dict:
         c["deals_live"] = s.get("deals")
     except Exception as e:
         c["_stats_error"] = str(e)[:120]
-    # live tool count from the MCP server
+    # live tool count from the MCP server — override the pinned fallback so
+    # every resolve_canon() consumer tracks tools/list and never goes stale.
     try:
         c["tools_live"] = _mcp_tool_count()
+        if isinstance(c["tools_live"], int) and c["tools_live"] > 0:
+            c["tools_advertised"] = c["tools_live"]
     except Exception as e:
         c["_tools_error"] = str(e)[:120]
     # funnel metrics from the canonical identity views (fail-soft internally)
