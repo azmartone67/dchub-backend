@@ -2567,6 +2567,15 @@ def mcp_funnel():
                 # so the GROUP-BY classifier here and the tool_calls_7d_real
                 # FILTER below classify EVERY row identically — and identically
                 # to routes/funnel_health. (Was an inline copy of the same CASE.)
+                # brain-l15 #1600 (2026-07-14): this breakdown had NO probe filter,
+                # so internal self-traffic surfaced as demand (dchub-selfheal was
+                # #2, plus value-harness / clawith / probe / gating-audit — ~47% of
+                # 30d volume). Apply the SAME real_calls_predicate() the honest
+                # tool_calls_7d_real below FILTERs on, so the per-platform breakdown
+                # is the de-looped external count broken out, not raw traffic. The
+                # narrow _PROBE_PLATFORMS IN-list alone missed the dchub-%/harness/
+                # test/audit families; the shared predicate carries those prefix
+                # rules (mcp_calls_deloop.external_platform_predicate + real UA).
                 _platform_case = _DELOOP_PLATFORM_CASE
                 cur.execute(
                     f"""SELECT
@@ -2575,6 +2584,7 @@ def mcp_funnel():
                           COUNT(DISTINCT ip_address) AS unique_ips
                        FROM mcp_tool_calls
                        WHERE created_at >= NOW() - INTERVAL '30 days'
+                         AND {_deloop_real_calls_predicate()}
                        GROUP BY {_platform_case}
                        ORDER BY calls DESC
                        LIMIT 20"""
