@@ -163,6 +163,31 @@ def _probe(base: str, path: str, timeout: int = _PROBE_TIMEOUT) -> dict:
                 "error": f"{type(e).__name__}: {str(e)[:80]}"}
 
 
+def _probe_many(specs: dict, timeout: int = _PROBE_TIMEOUT, workers: int = 8) -> dict:
+    """Concurrently probe {key: (base, path)} → {key: result}. Bounded thread pool
+    so the whole tick is capped at ~one slow probe (~5s), not the serial sum.
+    Never raises — a failed probe becomes an error result under its key."""
+    out = {}
+    if not specs:
+        return out
+    import concurrent.futures as _cf
+    try:
+        with _cf.ThreadPoolExecutor(max_workers=min(workers, len(specs))) as ex:
+            futs = {ex.submit(_probe, base, path, timeout): k
+                    for k, (base, path) in specs.items()}
+            for fut in _cf.as_completed(futs):
+                k = futs[fut]
+                try:
+                    out[k] = fut.result()
+                except Exception as e:
+                    out[k] = {"ok": False, "http": None, "error": f"{type(e).__name__}: {str(e)[:60]}"}
+    except Exception:
+        # pool failure → fall back to serial (still correct, just slower)
+        for k, (base, path) in specs.items():
+            out[k] = _probe(base, path, timeout)
+    return out
+
+
 def _ensure_tables() -> bool:
     c = _conn()
     if c is None:
@@ -243,10 +268,11 @@ def _measure_slow_path_cache() -> dict:
         try: c.close()
         except Exception: pass
 
-    # probe the worst N distinct paths at the origin (bounded)
-    ranked = sorted(by_path.items(), key=lambda kv: kv[1]["max_seen"], reverse=True)
-    for api, e in ranked[:_MAX_PATH_PROBES]:
-        pr = _probe(_ORIGIN_BASE, api)
+    # probe the worst N distinct paths at the origin (bounded, concurrent)
+    ranked = sorted(by_path.items(), key=lambda kv: kv[1]["max_seen"], reverse=True)[:_MAX_PATH_PROBES]
+    probes = _probe_many({api: (_ORIGIN_BASE, api) for api, _ in ranked})
+    for api, e in ranked:
+        pr = probes.get(api) or {}
         # An auth-gated / per-user path (401/403 to an anon probe) is NOT a public
         # SWR-cache candidate — a blanket cache would leak or be wrong. Record it
         # but EXCLUDE it from the covered/total ratio (out of scope for this lane).
@@ -323,13 +349,19 @@ def _measure_edge_cacheability() -> dict:
     (no SWR cache either) — i.e. fast for nobody. no-store on a FAST endpoint is a
     deliberate, fine /api/* policy and is NOT dinged."""
     out = {"audited": 0, "healthy": 0, "no_store": 0, "endpoints": [], "error": None}
-    for path in _HOT_PUBLIC_PATHS[:8]:
-        edge = _probe(_EDGE_BASE, path)
+    hot = _HOT_PUBLIC_PATHS[:8]
+    specs = {}
+    for path in hot:
+        specs[("edge", path)] = (_EDGE_BASE, path)
+        specs[("origin", path)] = (_ORIGIN_BASE, path)
+    probes = _probe_many(specs)
+    for path in hot:
+        edge = probes.get(("edge", path)) or {}
         cc = edge.get("cache_control") or ""
         no_store = ("no-store" in cc) or ("max-age=0" in cc and "private" in cc)
         edge_cacheable = edge.get("ok") and not no_store
         # origin latency (loopback) — is it at least fast even if no-store?
-        origin = _probe(_ORIGIN_BASE, path)
+        origin = probes.get(("origin", path)) or {}
         origin_fast = origin.get("ok") and (origin.get("ms") or 0) < 2000
         healthy = bool(edge_cacheable or origin_fast)
         out["audited"] += 1
