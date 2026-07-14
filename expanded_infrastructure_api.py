@@ -480,6 +480,22 @@ def get_substations():
         cols = [desc[0] for desc in c.description]
         rows = c.fetchall()
 
+        def _clean_kv(v):
+            # HIFLD uses -999999 (occasionally 0/negative) as a NODATA sentinel for
+            # voltage. Never expose it raw — real substation voltage is ~1–1500 kV.
+            try:
+                v = float(v)
+            except (TypeError, ValueError):
+                return None
+            return v if 0 < v < 2000 else None
+
+        def _clean_mva(v):
+            try:
+                v = float(v)
+            except (TypeError, ValueError):
+                return None
+            return round(v, 1) if v > 0 else None
+
         substations = []
         for row in rows:
             r = dict(zip(cols, row))
@@ -499,9 +515,9 @@ def get_substations():
                 'city': r.get('city'),
                 'state': r.get('state'),
                 'status': r.get('status'),
-                'max_voltage_kv': r.get('voltage_kv'),
+                'max_voltage_kv': _clean_kv(r.get('voltage_kv')),
                 # capacity_mva + owner are the proprietary intel — nulled for anon
-                'capacity_mva': r.get('capacity_mva') if _full else None,
+                'capacity_mva': (_clean_mva(r.get('capacity_mva')) if _full else None),
                 'lat': _lat,
                 'lng': _lng,
                 'owner': r.get('owner') if _full else None,
@@ -512,7 +528,7 @@ def get_substations():
         payload = {
             'success': True,
             'count': len(substations),
-            'total_available': '1,042 in Neon',
+            'total_available': '~126,641 in Neon',
             'source': 'HIFLD/DHS (Neon PostgreSQL)',
             'substations': substations
         }
