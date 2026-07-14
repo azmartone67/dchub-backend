@@ -31,6 +31,42 @@ from flask import Blueprint, jsonify, request
 conversion_attribution_bp = Blueprint("conversion_attribution", __name__)
 
 _TOOL_RE = re.compile(r"tool=([a-z_0-9]+)", re.I)
+# :sess=<sid> is appended LAST by routes/stripe_direct_upgrade.py:_build_url when
+# the agent paywall link carried an Mcp-Session-Id. The sid charset is sanitized to
+# [A-Za-z0-9_.-] there, so this stops cleanly at any following ':'. findall+[-1]
+# takes the trailing (real) sess even in the pathological case where a caller-
+# supplied ?ref= smuggled its own ':sess=' earlier in the string.
+_SESS_RE = re.compile(r":sess=([A-Za-z0-9_.-]+)")
+
+# client_reference_id shapes that are NOT a bare MCP session id and must never be
+# treated as one (each has its own dedicated handler upstream): structured agent
+# ref without a sess, legacy/per-surface web refs, pair codes, top-ups, durable
+# pack/sub key refs. A plain server.mjs session id (a UUID) matches none of these.
+_RESERVED_CREF_PREFIXES = ("mcp:", "ref_", "web__", "dcm-", "tu-", "pk-", "k-")
+
+
+def session_id_from_cref(client_reference_id: str | None) -> str | None:
+    """Resolve the MCP session_id that a Stripe client_reference_id points at, so
+    it can be matched against mcp_upgrade_signals.session_id.
+
+    Two agent-driven shapes carry a session:
+      • 'mcp:tool=<t>:ref=<r>:sess=<sid>'  (routes/stripe_direct_upgrade.py) → <sid>
+      • '<sid>'  bare UUID (server.mjs _stripeWithSession / Fix E)          → as-is
+
+    Returns None for web/organic refs (ref_…, web__…), pair codes (DCM-…),
+    top-ups (tu-…), durable key refs (pk-/k-…), and an 'mcp:…' ref with no
+    ':sess=' — none of which name a signal session. Never raises."""
+    if not client_reference_id:
+        return None
+    s = str(client_reference_id).strip()
+    if not s:
+        return None
+    m = _SESS_RE.findall(s)
+    if m:
+        return m[-1]
+    if s.lower().startswith(_RESERVED_CREF_PREFIXES):
+        return None
+    return s
 
 
 def _conn():

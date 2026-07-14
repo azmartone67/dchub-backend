@@ -14743,63 +14743,85 @@ def handle_checkout_completed(session):
         traceback.print_exc()
 
 
-    # phase17_mcp_conversion: write the conversion to mcp_conversions table
+    # phase17_mcp_conversion → session-attribution backfill (2026-07-13, #1577 write-side).
+    #
+    # HISTORY / DEFECT: the block here used to INSERT into mcp_conversions with the
+    # columns (stripe_session_id, customer_email, amount_cents, currency, plan,
+    # client_reference_id, source_tool, source_ref) — NONE of which exist in the live
+    # table (id, user_email, stripe_customer_id, stripe_subscription_id, plan_from,
+    # plan_to, mrr_cents, source, attribution_signal_id, created_at, caller_id,
+    # web_source, web_tool, is_test). So every INSERT (rich AND the minimal fallback)
+    # errored and rolled back — a silent no-op that persisted nothing.
+    #
+    # RECONCILIATION: do NOT re-point that INSERT at the real schema. The canonical
+    # mcp_conversions writer is the /api/v1/stripe/webhook-mcp handler
+    # (flask_mcp_endpoints.stripe_webhook_mcp), which owns the row for BOTH
+    # subscription (customer.subscription.created) and one-time (mode=payment)
+    # checkouts. This endpoint (/api/v1/stripe/webhook) ALSO receives
+    # checkout.session.completed, so inserting here would DOUBLE-COUNT conversions.
+    #
+    # Instead: best-effort, idempotent session-attribution backfill. The agent
+    # paywall link (routes/stripe_direct_upgrade.py) carries the real Mcp-Session-Id
+    # as the ':sess=<sid>' tail of client_reference_id; resolve it, find the driving
+    # signal, and set attribution_signal_id on the (webhook-mcp-written) row if still
+    # NULL — belt-and-suspenders alongside the webhook-mcp handler and robust to the
+    # two endpoints racing. No agent session in the cref (today's 100% web/organic
+    # conversions) → clean no-op. Fully wrapped: an attribution error can NEVER break
+    # payment recording (which completed above).
     try:
         _p17_data = session if isinstance(session, dict) else {}
-        _p17_session_id = _p17_data.get('id')
-        _p17_email = (_p17_data.get('customer_email')
-                      or (_p17_data.get('customer_details') or {}).get('email') or '')
-        _p17_customer = _p17_data.get('customer')
-        _p17_amount = _p17_data.get('amount_total') or 0
-        _p17_currency = (_p17_data.get('currency') or 'usd')
+        _p17_email = ((_p17_data.get('customer_email')
+                       or (_p17_data.get('customer_details') or {}).get('email') or '')
+                      .strip().lower() or None)
+        _p17_customer = _p17_data.get('customer') or None
         _p17_cref = _p17_data.get('client_reference_id') or ''
-        _p17_meta = _p17_data.get('metadata') or {}
-        _p17_plan = _p17_meta.get('plan', 'unknown')
-        if _p17_plan == 'unknown' and _p17_amount:
-            _ah = int(_p17_amount) // 100
-            if _ah >= 600: _p17_plan = 'enterprise'
-            elif _ah >= 200: _p17_plan = 'pro'
-            elif _ah >= 30: _p17_plan = 'developer'
-        _p17_src = None; _p17_tool = None
-        if _p17_cref:
-            import re as _re17
-            _m = _re17.match(r'ref_([^_]+)__tool_(.+)', str(_p17_cref))
-            if _m: _p17_src, _p17_tool = _m.group(1), _m.group(2)
-        from db_utils import try_get_db as _p17_get_db
-        _p17_db = _p17_get_db()
-        if _p17_db:
-            _p17_c = _p17_db.cursor()
-            # Try the rich INSERT first; fall back to minimal columns if schema differs
-            try:
-                _p17_c.execute(
-                    '''INSERT INTO mcp_conversions
-                        (stripe_session_id, stripe_customer_id, customer_email,
-                         amount_cents, currency, plan, client_reference_id,
-                         source_tool, source_ref)
-                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                       ON CONFLICT DO NOTHING''',
-                    (_p17_session_id, _p17_customer, _p17_email,
-                     int(_p17_amount or 0), _p17_currency, _p17_plan,
-                     _p17_cref, _p17_tool, _p17_src))
-            except Exception as _e1:
-                _p17_db.rollback()
-                # Minimal-schema fallback: just the essentials
+        try:
+            from routes.conversion_attribution import session_id_from_cref as _p17_sid_of
+            _p17_sid = _p17_sid_of(_p17_cref)
+        except Exception:
+            _p17_sid = None
+        # Only touch the DB for an agent-driven checkout that names a real matcher.
+        if _p17_sid and (_p17_customer or _p17_email):
+            from db_utils import try_get_db as _p17_get_db
+            _p17_db = _p17_get_db()
+            if _p17_db:
+                _p17_linked = None
                 try:
-                    _p17_c2 = _p17_db.cursor()
-                    _p17_c2.execute(
-                        'INSERT INTO mcp_conversions (stripe_session_id, plan, amount_cents) VALUES (%s,%s,%s)',
-                        (_p17_session_id, _p17_plan, int(_p17_amount or 0)))
-                except Exception as _e2:
-                    _p17_db.rollback()
-                    try: logger.warning(f'phase17 mcp_conversions both insert paths failed: rich={_e1} minimal={_e2}')
+                    _p17_c = _p17_db.cursor()
+                    _p17_c.execute("""SELECT id FROM mcp_upgrade_signals
+                                        WHERE session_id = %s
+                                        ORDER BY created_at DESC LIMIT 1""", (_p17_sid,))
+                    _p17_row = _p17_c.fetchone()
+                    if _p17_row:
+                        _p17_sig = _p17_row[0]
+                        _p17_c.execute("""UPDATE mcp_conversions
+                                             SET attribution_signal_id = %s,
+                                                 source = 'mcp_session_attributed'
+                                           WHERE attribution_signal_id IS NULL
+                                             AND (stripe_customer_id = %s
+                                                  OR LOWER(user_email) = COALESCE(%s, ''))""",
+                                       (_p17_sig, _p17_customer, _p17_email))
+                        _p17_linked = {'signal_id': _p17_sig, 'rows': _p17_c.rowcount}
+                        # flip the driving signal so the funnel counts it converted
+                        _p17_c.execute("""UPDATE mcp_upgrade_signals
+                                             SET converted = TRUE,
+                                                 converted_at = COALESCE(converted_at, NOW())
+                                           WHERE session_id = %s
+                                             AND COALESCE(converted, false) = false""",
+                                       (_p17_sid,))
+                    _p17_db.commit()
+                    try: logger.info(f'phase17: session-attribution backfill sid={_p17_sid} linked={_p17_linked} ref={_p17_cref}')
                     except Exception: pass
-            _p17_db.commit()
-            try: _p17_db.close()
-            except Exception: pass
-            try: logger.info(f'phase17: conversion logged session={_p17_session_id} plan={_p17_plan} ref={_p17_cref}')
-            except Exception: pass
+                except Exception as _e1:
+                    try: _p17_db.rollback()
+                    except Exception: pass
+                    try: logger.warning(f'phase17 session-attribution backfill failed (non-fatal): {_e1}')
+                    except Exception: pass
+                finally:
+                    try: _p17_db.close()
+                    except Exception: pass
     except Exception as _p17_e:
-        try: logger.warning(f'phase17 mcp_conversions logging failed: {_p17_e}')
+        try: logger.warning(f'phase17 mcp_conversions attribution failed: {_p17_e}')
         except Exception: pass
 
     # Fix E (2026-06-06): mcp_session_upgrades — bind checkout to MCP session_id.
@@ -14838,7 +14860,25 @@ def handle_checkout_completed(session):
                 or _fixe_lower.startswith('pk-')
                 or _fixe_lower.startswith('k-')
             )
-            if not _is_reserved:
+            # sess-attr fix (2026-07-13, #1577 write-side): the agent paywall link
+            # (routes/stripe_direct_upgrade.py) carries the real Mcp-Session-Id as the
+            # ':sess=<sid>' TAIL of a 'mcp:tool=…:sess=<sid>' cref — NOT as the whole
+            # cref. The same-session-unlock READER (flask_mcp_endpoints trial-check,
+            # routes/lp_sites, routes/market_alerts) queries mcp_session_upgrades by
+            # the BARE sid, so binding the row under the whole cref meant an agent who
+            # paid via the mcp: link never got same-session unlock. Bind under the
+            # extracted sid instead. For a bare-UUID cref (server.mjs) the helper
+            # returns it unchanged → identical to before. An 'mcp:…' cref with no
+            # ':sess=' names no real session → skip (avoids an orphan key row, same
+            # rationale as the pk-/k- exclusions above).
+            _fixe_sid = _fixe_cref[:200]
+            try:
+                from routes.conversion_attribution import session_id_from_cref as _fixe_sid_of
+                _fixe_sid_resolved = _fixe_sid_of(_fixe_cref)
+                _fixe_sid = (_fixe_sid_resolved[:200] if _fixe_sid_resolved else None)
+            except Exception:
+                pass  # fall back to whole-cref key (pre-fix behavior) on any import error
+            if not _is_reserved and _fixe_sid:
                 _fixe_session_id = _fixe_data.get('id') or ''
                 _fixe_email = (
                     _fixe_data.get('customer_email')
@@ -14891,11 +14931,11 @@ def handle_checkout_completed(session):
                              amount_cents       = EXCLUDED.amount_cents,
                              upgraded_at        = NOW(),
                              consumed_at        = NULL""",
-                        (_fixe_cref[:200], _fixe_user_id, _fixe_email or None,
+                        (_fixe_sid, _fixe_user_id, _fixe_email or None,
                          _fixe_plan or 'unknown', _fixe_session_id,
                          _fixe_data.get('customer') or None, _fixe_amount))
                     try:
-                        print(f"FixE: mcp_session_upgrades bound sid={_fixe_cref[:12]}... plan={_fixe_plan} email={_fixe_email or '(none)'}")
+                        print(f"FixE: mcp_session_upgrades bound sid={str(_fixe_sid)[:12]}... plan={_fixe_plan} email={_fixe_email or '(none)'}")
                     except Exception: pass
                 except Exception as _fixe_ins_err:
                     try: logger.warning(f'FixE mcp_session_upgrades insert failed: {_fixe_ins_err}')

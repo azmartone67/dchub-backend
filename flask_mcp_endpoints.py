@@ -3000,19 +3000,32 @@ def stripe_webhook_mcp():
                     web_src, web_tool = _ws, _wt
             except Exception:
                 pass
+        # sess-attr fix (2026-07-13, #1577 write-side): the agent paywall link
+        # (routes/stripe_direct_upgrade.py) encodes the REAL Mcp-Session-Id as the
+        # ':sess=<sid>' TAIL of a 'mcp:tool=…:ref=…:sess=<sid>' client_reference_id —
+        # NOT as the whole cref. Matching the whole cref against
+        # mcp_upgrade_signals.session_id (a bare UUID) never hit, so
+        # attribution_signal_id was NULL on 100% of conversions. Resolve the sid
+        # ONCE here; session_id_from_cref also returns a bare-UUID cref as-is
+        # (server.mjs Fix E path, unchanged) and None for web/organic refs.
+        try:
+            from routes.conversion_attribution import session_id_from_cref as _sid_from_cref
+            attr_sid = _sid_from_cref(ref_session)
+        except Exception:
+            attr_sid = None
         attribution, linked = {}, None
         try:
             from mcp_signal_canonical import mark_signals_converted
             attribution = mark_signals_converted(
-                email=cust_email, stripe_customer_id=cust_id, session_id=ref_session)
+                email=cust_email, stripe_customer_id=cust_id, session_id=attr_sid)
         except Exception as _e:
             attribution = {"error": str(_e)[:120]}
         try:
-            if ref_session:
+            if attr_sid:
                 with _pool.connection() as conn, conn.cursor() as cur:
                     cur.execute("""SELECT id FROM mcp_upgrade_signals
                                     WHERE session_id = %s ORDER BY created_at DESC LIMIT 1""",
-                                (ref_session,))
+                                (attr_sid,))
                     r = cur.fetchone()
                     if r:
                         cur.execute("""UPDATE mcp_conversions
@@ -3056,10 +3069,10 @@ def stripe_webhook_mcp():
                     plan_to, mrr = "one_time", 0
                 with _pool.connection() as conn, conn.cursor() as cur:
                     attr_id = None
-                    if ref_session:
+                    if attr_sid:  # sess-attr fix: extracted sid, not the whole cref
                         cur.execute("""SELECT id FROM mcp_upgrade_signals
                                         WHERE session_id = %s ORDER BY created_at DESC LIMIT 1""",
-                                    (ref_session,))
+                                    (attr_sid,))
                         _rr = cur.fetchone()
                         attr_id = _rr[0] if _rr else None
                     # source priority: agent signal > web ref > organic.
