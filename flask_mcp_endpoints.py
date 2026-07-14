@@ -2470,9 +2470,17 @@ def mcp_funnel():
             # attribution + an explicit unattributed bucket. Answers "are the 9
             # conversions a severed join, or genuinely unattributable?" — each
             # conversion is mapped to the platform of the signal it references
-            # (attribution_signal_id first, then a caller_id match); anything with
-            # no signal link lands in 'unattributed' (identified web purchases with
-            # no MCP-signal trail). SUM(attributed)+unattributed == conversions_30d.
+            # (attribution_signal_id first, then a caller_id match).
+            # brain-l15 #1577 (2026-07-13): when there is NO signal link, fall back
+            # to the conversion's OWN source instead of a blanket 'unattributed'.
+            # The current conversions are all web:pricing-page / organic_no_mcp_touch
+            # — genuinely NOT agent-driven, so they have no MCP signal to join and
+            # calling them 'unattributed' overstated it as a severed join / lost data
+            # when the source column already names the real channel. Now: web/organic
+            # sales bucket as 'web-direct' / 'organic-direct' (a real attribution);
+            # only a genuinely MCP-originated conversion whose signal link is broken
+            # stays 'unattributed', so a REAL severance still surfaces.
+            # SUM(attributed)+unattributed == conversions_30d.
             try:
                 cur.execute(
                     """WITH conv AS (
@@ -2493,7 +2501,12 @@ def mcp_funnel():
                                   ORDER BY (s.id = c.attribution_signal_id) DESC NULLS LAST,
                                            s.created_at DESC
                                   LIMIT 1
-                                ), 'unattributed') AS platform
+                                ), CASE  -- no signal link: use the conversion's own channel
+                                     WHEN c.source LIKE 'web:%'
+                                          OR COALESCE(c.web_source,'') <> '' THEN 'web-direct'
+                                     WHEN c.source LIKE 'organic%' THEN 'organic-direct'
+                                     ELSE 'unattributed'
+                                   END) AS platform
                          FROM mcp_conversions c
                          WHERE c.created_at >= NOW() - INTERVAL '30 days'
                        )
