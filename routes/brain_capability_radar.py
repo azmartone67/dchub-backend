@@ -65,6 +65,41 @@ def _smithery_core_rank() -> dict | None:
             "terms_str": ", ".join(f'"{t}"' for t in at1)}
 
 
+def _canonical_stats() -> dict | None:
+    """LIVE check: DC Hub's canonical coverage numbers for the evergreen moat/pillar
+    sources — verified/tracked/countries/deals/markets from /api/v1/stats/canonical
+    (numbers nested under 'stats') + tool count from mcp.json. FAIL-SAFE: returns None
+    if unreachable or the counts look empty, so the radar SKIPS the source rather than
+    announce a wrong number. Honesty: 'verified' is the canonical fleet filter — always
+    reported as verified-inside-a-tracked-frontier, NEVER as the raw tracked total."""
+    import json as _json
+    import urllib.request
+
+    def _get(u):
+        req = urllib.request.Request(u, headers={"User-Agent": "dchub-brain-radar/1.0"})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return _json.load(r)
+    try:
+        s = (_get("https://dchub.cloud/api/v1/stats/canonical") or {}).get("stats") or {}
+        out = {
+            "verified":  float(s.get("facilities_verified") or 0),
+            "tracked":   float(s.get("facilities_tracked") or 0),
+            "countries": float(s.get("countries_covered") or 0),
+            "markets":   float(s.get("dcpi_markets_scored") or 0),
+            "deals":     float(s.get("deals_tracked") or 0),
+        }
+        try:
+            out["tools"] = float((_get("https://dchub.cloud/.well-known/mcp.json") or {}).get("tools_count") or 73)
+        except Exception:
+            out["tools"] = 73.0
+        # guard: any core count missing -> skip (never post a zero/garbage number)
+        if out["verified"] <= 0 or out["tracked"] <= 0 or out["countries"] <= 0:
+            return None
+        return out
+    except Exception:
+        return None
+
+
 # ── The registry: one row per announceable capability/metric ────────────────
 REGISTRY = [
     # ---- LAUNCH: new data feeds (announce once on ship) --------------------
@@ -159,6 +194,90 @@ REGISTRY = [
         "so_what": ("the live, MCP-native data layer agents reach for on data-center "
                     "infrastructure — query it and cite it at dchub.cloud/mcp."),
     },
+    # ---- EVERGREEN: the moat/pillar + platform story goldmine (r-media-goldmine
+    # 2026-07-14). mode="evergreen" re-emits every repost_days so first-party
+    # product news stays on the LinkedIn/X board on ordinary days instead of the
+    # DCPI-Cheyenne build lead. All numbers come from _canonical_stats (live,
+    # fail-safe). Honesty guards baked into every headline: verified is ALWAYS
+    # "inside a tracked frontier" (never raw-as-verified), no Brazil gas share, no
+    # Singapore/Australia "ranked", CC-BY where a dataset claim is made. --------
+    {
+        "key": "provenance_envelope", "mode": "evergreen", "repost_days": 12,
+        "check": _canonical_stats, "value_key": "verified", "score": 64,
+        "source_url": "https://dchub.cloud/whats-new#platform",
+        "headline": lambda r: (f"Every DC Hub record now ships a provenance stamp: "
+                               f"{int(r['verified']):,} analyst-verified data centers inside a "
+                               f"{int(r['tracked']):,}-facility tracked frontier — a per-record "
+                               f"verified-vs-tracked flag so agents cite live data with a stated "
+                               f"confidence level"),
+        "trend": ("Provenance Envelope v1 (provenance_version:1) on search_facilities and the "
+                  "canonical stats endpoint — source, method, as-of and a CC-BY-4.0 citation "
+                  "template on every record"),
+        "so_what": ("agents cite with confidence instead of guessing; the live verified/tracked "
+                    "split is public at /api/v1/stats/canonical."),
+    },
+    {
+        "key": "intl_grid_telemetry", "mode": "evergreen", "repost_days": 12,
+        "check": _canonical_stats, "value_key": "countries", "score": 63,
+        "source_url": "https://dchub.cloud/playground",
+        "headline": lambda r: ("Live grid telemetry now spans five continents: Japan (OCCTO), "
+                               "South Korea (KPX) and Brazil (ONS) now rank beside the US ISOs, "
+                               "EU zones, Great Britain and Taiwan on one real-time renewable-share "
+                               "scale — keyless via get_grid_scoreboard"),
+        "trend": ("one live, ranked scoreboard of national grids on a single renewable-share scale, "
+                  "refreshed continuously — not a quarterly PDF"),
+        "so_what": ("compare grids for LatAm and APAC siting the same way you compare US ISOs — "
+                    "get_grid_scoreboard, no key."),
+    },
+    {
+        "key": "agent_memory", "mode": "evergreen", "repost_days": 12,
+        "check": _canonical_stats, "value_key": "markets", "score": 62,
+        "source_url": "https://dchub.cloud/connect#start",
+        "headline": lambda r: ("DC Hub agents now have memory: save_site builds a durable shortlist, "
+                               "then get_changes returns per-site deltas next session — verdict flips, "
+                               "DCPI score moves and new nearby facilities on the exact sites you're "
+                               "watching, not the whole planet"),
+        "trend": ("persistent per-agent state — a data layer that remembers your shortlist, not a "
+                  "stateless query API"),
+        "so_what": "your agent returns to what changed on your list; save_site + get_changes over MCP.",
+    },
+    {
+        "key": "error_envelope", "mode": "evergreen", "repost_days": 14,
+        "check": _canonical_stats, "value_key": "verified", "score": 63,
+        "source_url": "https://dchub.cloud/docs/error-codes",
+        "headline": lambda r: ("DC Hub shipped error_version:1 — an in-band, versioned error contract "
+                               "co-designed with the Gemini team, plus a published error registry — so "
+                               "an agent that hits a bad parameter gets a deterministic recovery hint "
+                               "and auto-corrects instead of guessing"),
+        "trend": ("a machine-readable error contract with a severity class and server-computed "
+                  "suggested_params; the taxonomy is published at /docs/error-codes"),
+        "so_what": "agents recover from edge cases deterministically — fewer dead-ends, more completed tasks.",
+    },
+    {
+        "key": "tool_catalog", "mode": "evergreen", "repost_days": 10,
+        "check": _canonical_stats, "value_key": "tools", "score": 63,
+        "source_url": "https://dchub.cloud/capabilities",
+        "headline": lambda r: (f"DC Hub's MCP surface is now {int(r['tools']):,} live tools — the newest: "
+                               f"get_retirement_headroom (filed US generator retirements + nearest "
+                               f"substations) and cluster_sites_by_latency (physics-bounded fiber-latency "
+                               f"clustering)"),
+        "trend": ("new agent-callable primitives ship continuously — retirement headroom, latency "
+                  "clustering, provenance-stamped search"),
+        "so_what": "agents get site-selection signals no competitor exposes as a tool; browse them at /capabilities.",
+    },
+    {
+        "key": "weekly_ledger", "mode": "evergreen", "repost_days": 7,
+        "check": _canonical_stats, "value_key": "deals", "score": 62,
+        "source_url": "https://dchub.cloud/whats-new",
+        "headline": lambda r: (f"The DC Hub ledger: {int(r['tracked']):,} tracked data centers "
+                               f"({int(r['verified']):,} analyst-verified) across {int(r['countries'])}+ "
+                               f"countries, {int(r['deals']):,} tracked deals and {int(r['markets'])} "
+                               f"DCPI-scored markets — one live, machine-readable layer, refreshed daily, "
+                               f"open under CC-BY-4.0"),
+        "trend": ("the compounding coverage behind the physical AI buildout, queryable over MCP — "
+                  "cite as DC Hub (dchub.cloud)"),
+        "so_what": "one queryable ground-truth layer instead of a dozen stale PDFs; connect an agent in 60 seconds.",
+    },
 ]
 
 
@@ -210,10 +329,14 @@ def capability_radar_leads() -> list[dict]:
                             continue
                         if cur_val < float(src.get("min_value", 0)):
                             continue  # achievement threshold not met yet (e.g. not #1 enough)
-                        cur.execute("SELECT last_value FROM data_milestone_snapshots WHERE source_key=%s",
-                                    (src["key"],))
+                        cur.execute(
+                            "SELECT last_value, "
+                            "(announced_at IS NULL OR announced_at < NOW() - %s * INTERVAL '1 day') AS due "
+                            "FROM data_milestone_snapshots WHERE source_key=%s",
+                            (int(src.get("repost_days", 14)), src["key"]))
                         prev_row = cur.fetchone()
                         prev = prev_row[0] if prev_row else None
+                        _ever_due = (prev_row[1] if prev_row else True)  # no baseline row -> due
                         mode = src.get("mode", "launch")
                         jp = src.get("jump_pct")
                         rs = src.get("round_step")
@@ -225,6 +348,13 @@ def capability_radar_leads() -> list[dict]:
                                 kind = "capability_launch"
                             elif jp and prev and cur_val >= prev * (1 + jp):
                                 kind = "data_milestone"
+                        elif mode == "evergreen":
+                            # re-postable moat/pillar/product news: fire when never announced
+                            # OR when the last announce is older than repost_days. Distinct kind
+                            # per capability (cap_<key>) so the kind-cooldown rotates THROUGH them
+                            # instead of blocking the whole class.
+                            if is_new or _ever_due:
+                                kind = f"cap_{src['key']}"
                         else:  # milestone — needs a seeded baseline; never announces "new"
                             if is_new:
                                 continue
@@ -247,6 +377,7 @@ def capability_radar_leads() -> list[dict]:
                             "so_what": src.get("so_what", ""),
                             "source_url": src.get("source_url", "https://dchub.cloud"),
                             "dedup_key": (f"capability:{src['key']}" if kind == "capability_launch"
+                                          else f"cap:{src['key']}" if mode == "evergreen"
                                           else f"milestone:{src['key']}"),
                             "score": float(src.get("score", 70)),
                         })

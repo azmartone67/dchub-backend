@@ -309,7 +309,7 @@ _DISPATCH = [
     ("linkedin_quad_slot_08",
      f"{BASE}/api/v1/linkedin-quad/run",
      "POST",
-     lambda now: False),  # disabled — 4->2/day quality cut
+     lambda now: now.hour == 8 and now.minute < 55),  # r-media-goldmine 2026-07-14: re-enabled 2->4/day (diverse moat/pillar pool now feeds it)
     # 2026-06-20: widened minute<10 -> minute<55 so a THROTTLED heartbeat (the
     # GitHub-Actions "5-min" cron actually delivers ~26 runs/day, ~hourly at
     # random minutes) still lands inside the slot HOUR. Idempotency is enforced
@@ -334,7 +334,7 @@ _DISPATCH = [
     ("linkedin_quad_slot_20",
      f"{BASE}/api/v1/linkedin-quad/run",
      "POST",
-     lambda now: False),  # disabled — 4->2/day quality cut
+     lambda now: now.hour == 20 and now.minute < 55),  # r-media-goldmine 2026-07-14: re-enabled 2->4/day
 
     # r47.11 (2026-05-25): daily cross-post email — fires after slot_20
     # so the email body contains the freshest post for the day's

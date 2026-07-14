@@ -347,7 +347,11 @@ def rank_data_events() -> list[dict]:
             # keep #1 the strongest, decay lower ranks slightly so the sort still
             # prefers the leader when nothing blocks it, but the runners-up remain
             # newsworthy (>= _NEWSWORTHY_MIN) and can win when #1 is on cooldown.
-            "score": (ex or 0) * 0.45 * (1.0 - 0.04 * _rank),
+            # r-media-goldmine (2026-07-14): de-weighted 0.45 -> 0.30 so a ~70/100 build
+            # market scores ~21 (still > _NEWSWORTHY_MIN=8, so it never leaves the board on
+            # a genuinely quiet day) but loses to the evergreen moat/pillar leads (score 62-64)
+            # — the DCPI-Cheyenne repeat was this lead out-ranking a starved capability pool.
+            "score": (ex or 0) * 0.30 * (1.0 - 0.04 * _rank),
         })
 
     # 2) M&A deal of the week — largest disclosed transaction value.
