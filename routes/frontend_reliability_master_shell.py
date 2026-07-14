@@ -238,7 +238,7 @@ def _measure_slow_path_cache() -> dict:
                 SELECT detail, url, status, COALESCE(seen_count, 0), resolved_at
                   FROM brain_findings
                  WHERE issue IN ('frontend_endpoint_slow', 'frontend_endpoint_unreachable')
-                   AND last_seen >= NOW() - INTERVAL '%s days'
+                   AND last_seen >= NOW() - %s * INTERVAL '1 day'
                  ORDER BY COALESCE(seen_count,0) DESC LIMIT 60
             """ % int(_MEASURE_WINDOW_DAYS))
             for detail, url, status, seen, resolved_at in cur.fetchall():
