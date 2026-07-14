@@ -385,17 +385,25 @@ def share_page_html(date: datetime.date) -> str:
     cards = []
     for theme in THEMES:
         for size in SIZES:
-            # prefer R2 url if present, else fall back to inline /generate
-            if base:
-                src = f"{base}/{_r2_key(date, theme, size)}"
-            else:
-                src = f"/generate?theme={theme}&size={size}&date={date.isoformat()}"
+            # /generate always yields a valid PNG for a valid (theme,size): it
+            # renders on demand from the live snapshot and never 404s. R2 is the
+            # fast pre-rendered CDN copy, but the nightly render cron lands AFTER
+            # the UTC date rolls over, so for a few hours each morning the R2
+            # object for `date` doesn't exist yet — which showed as broken tiles.
+            # Serve R2 as primary (when configured) with an onerror fallback to
+            # the live render, and point download at the live render too, so the
+            # page is error-free even inside the pre-render gap. (Mirrors the
+            # R2 -> live -> placeholder chain already used in static daily.html.)
+            gen = f"/generate?theme={theme}&size={size}&date={date.isoformat()}"
+            src = f"{base}/{_r2_key(date, theme, size)}" if base else gen
+            onerr = "" if src == gen else \
+                f" onerror=\"this.onerror=null;this.src='{gen}'\""
             cards.append(f'''
             <figure class="card">
-              <img loading="lazy" src="{src}" alt="{theme} {size}" />
+              <img loading="lazy" src="{src}"{onerr} alt="{theme} {size}" />
               <figcaption>
                 <b>Theme {theme.upper()}</b> · {size}
-                <a href="{src}" download>download</a>
+                <a href="{gen}" download>download</a>
               </figcaption>
             </figure>''')
     grid = "\n".join(cards)
