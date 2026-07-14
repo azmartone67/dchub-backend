@@ -300,20 +300,44 @@ def energy_discovery_wind_projects():
 @energy_discovery_bp.route('/api/energy-discovery/pipelines', methods=['GET'])
 def energy_discovery_pipelines():
     """Gas pipelines for the Energy Discovery panel — live from gas_pipelines
-    (918 geocoded segments); curated seed fallback on error/empty."""
+    (918 geocoded segments); curated seed fallback on error/empty.
+
+    Location-aware: when lat/lng are supplied, return the pipeline points
+    NEAREST that point (bbox pre-filter + distance sort) rather than an
+    arbitrary unordered LIMIT slice. Without this the plain `LIMIT 200`
+    returned a Texas-heavy national sample, so regional operators near a
+    viewed site (e.g. National Fuel Gas around Bear Lake, PA) never surfaced
+    even though their segments are in the table. No lat/lng → prior behavior.
+    """
     try:
         market = request.args.get('market', '')
         limit = min(int(request.args.get('limit', 500)), 1000)
-        pipes = _rows_from_db(
-            "SELECT operator, lat, lng, pipeline_type FROM gas_pipelines "
-            "WHERE lat IS NOT NULL AND lng IS NOT NULL LIMIT %s",
-            [limit],
-            lambda r: {'name': (r[0] or 'Gas Pipeline'),
-                       'operator': r[0] or '',
-                       'lat': float(r[1]), 'lng': float(r[2]),
-                       'commodity': 'Natural Gas',
-                       'pipeline_type': r[3] or '',
-                       'state': '', 'market': ''})
+        lat = request.args.get('lat', type=float)
+        lng = request.args.get('lng', type=float)
+        radius = request.args.get('radius', default=150.0, type=float)  # miles
+        mapper = lambda r: {'name': (r[0] or 'Gas Pipeline'),
+                            'operator': r[0] or '',
+                            'lat': float(r[1]), 'lng': float(r[2]),
+                            'commodity': 'Natural Gas',
+                            'pipeline_type': r[3] or '',
+                            'state': '', 'market': ''}
+        if lat is not None and lng is not None:
+            import math
+            radius = max(1.0, min(radius, 1000.0))
+            dlat = radius / 69.0
+            dlng = radius / max(0.1, 69.0 * math.cos(math.radians(lat)))
+            pipes = _rows_from_db(
+                "SELECT operator, lat, lng, pipeline_type FROM gas_pipelines "
+                "WHERE lat IS NOT NULL AND lng IS NOT NULL "
+                "AND lat BETWEEN %s AND %s AND lng BETWEEN %s AND %s "
+                "ORDER BY power(lat - %s, 2) + power(lng - %s, 2) ASC LIMIT %s",
+                [lat - dlat, lat + dlat, lng - dlng, lng + dlng, lat, lng, limit],
+                mapper)
+        else:
+            pipes = _rows_from_db(
+                "SELECT operator, lat, lng, pipeline_type FROM gas_pipelines "
+                "WHERE lat IS NOT NULL AND lng IS NOT NULL LIMIT %s",
+                [limit], mapper)
         if not pipes:
             pipes = _filter_market(_PIPELINES, market)[:limit]
         return jsonify({'success': True, 'data': pipes, 'count': len(pipes)})
