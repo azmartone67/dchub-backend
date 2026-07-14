@@ -77,7 +77,24 @@ indexes = [
     # discovered_facilities — used by site-score spatial queries
     ("idx_discovered_fac_geo", 
      "CREATE INDEX IF NOT EXISTS idx_discovered_fac_geo ON discovered_facilities (latitude, longitude) WHERE latitude IS NOT NULL"),
-    
+
+    # r-facility-resolver (2026-07-14): /facility/<id_or_slug> (routes/seo_pages.py:371)
+    # matches on a 3-branch OR that was UN-indexable → a 21k-row seq scan per hit, which
+    # held pooler connections and turned into the ~3k /facility 5xx under pool pressure.
+    # These expression indexes let the planner do a BitmapOr instead. Each MUST match the
+    # query expression byte-for-byte — the MD5 slug mirrors hash_sql() (routes/facility_slug.py:13),
+    # the name-slug mirrors the LOWER(REPLACE(REPLACE(...))) branch. All functions are
+    # IMMUTABLE (MD5/LEFT/COALESCE/LOWER/REPLACE/int::text), so the expression indexes build.
+    # Verify adoption after apply: EXPLAIN the resolver SELECT and confirm Bitmap Index Scan.
+    ("idx_df_id_text",
+     "CREATE INDEX IF NOT EXISTS idx_df_id_text ON discovered_facilities ((CAST(id AS TEXT)))"),
+    ("idx_df_md5slug",
+     "CREATE INDEX IF NOT EXISTS idx_df_md5slug ON discovered_facilities ((LEFT(MD5(COALESCE(provider,'')||'|'||COALESCE(name,'')),8)))"),
+    ("idx_df_nameslug",
+     "CREATE INDEX IF NOT EXISTS idx_df_nameslug ON discovered_facilities ((LOWER(REPLACE(REPLACE(COALESCE(name,''),' ','-'),',',''))))"),
+    ("idx_df_canonical_slug",
+     "CREATE INDEX IF NOT EXISTS idx_df_canonical_slug ON discovered_facilities (canonical_slug)"),
+
     # News articles — used by /api/news/live
     ("idx_news_published", 
      "CREATE INDEX IF NOT EXISTS idx_news_published ON news_articles (published_at DESC)"),
@@ -99,7 +116,12 @@ indexes = [
     # Gas pipelines — geo index for spatial queries  
     ("idx_gas_pipelines_geo", 
      "CREATE INDEX IF NOT EXISTS idx_gas_pipelines_geo ON gas_pipelines (latitude, longitude) WHERE latitude IS NOT NULL"),
-    
+
+    # r-facility-resolver (2026-07-14): the /api/v1/gas-pipelines sort (deals_routes.py:1095
+    # ORDER BY diameter_inches DESC NULLS LAST) was a full-table sort without this.
+    ("idx_gas_pipelines_diam",
+     "CREATE INDEX IF NOT EXISTS idx_gas_pipelines_diam ON gas_pipelines (diameter_inches DESC NULLS LAST)"),
+
     # Power plants — geo + capacity
     ("idx_power_plants_geo", 
      "CREATE INDEX IF NOT EXISTS idx_power_plants_geo ON discovered_power_plants (latitude, longitude) WHERE latitude IS NOT NULL"),
