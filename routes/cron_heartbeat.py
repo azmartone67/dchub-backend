@@ -645,6 +645,17 @@ _DISPATCH = [
      "POST",
      lambda now: now.hour == 5 and now.minute < 8),
 
+    # 2026-07-14: Frontend-Reliability shell — DAILY shadow tick at 03:xx UTC.
+    # Scores the 3 public-page reliability lanes (slow_path_cache / false_close_
+    # refire / edge_cacheability), files ONE bounded finding on the weakest.
+    # Generalizes the #100095 /api/pipeline SWR-cache fix so the class is caught
+    # continuously. SHADOW unless FRONTEND_RELIABILITY_MASTER_ARM=1.
+    # Kill: FRONTEND_RELIABILITY_MASTER_DISABLED.
+    ("frontend_reliability_master_tick_daily",
+     f"{BASE}/api/v1/admin/frontend-reliability/master-tick",
+     "POST",
+     lambda now: now.hour == 3 and now.minute < 8),
+
     # 2026-07-04: RAG master shell — DAILY shadow tick at 06:xx UTC (after the
     # 04:20 reindex cycle so freshness reads warm, before the 09:xx deep-dive
     # rotation). Measures corpus freshness/coverage, runs the retrieval eval,
@@ -944,7 +955,8 @@ _HEAVY_LABELS = frozenset({
     "media_master_tick_daily", "distribution_master_tick_daily",
     "grid_data_master_tick_daily", "gap_master_tick_6h",
     "depth_master_tick_daily",
-    "reliability_master_tick_daily", "rag_master_tick_daily",
+    "reliability_master_tick_daily", "frontend_reliability_master_tick_daily",
+    "rag_master_tick_daily",
     "fixwave_master_tick_2h", "agent_onboarding_master_tick_daily",
     "conversion_loop_master_tick_daily", "agent_usefulness_master_tick_daily",
     "agent_pay_master_tick_daily",

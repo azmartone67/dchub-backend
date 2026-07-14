@@ -2272,6 +2272,18 @@ try:
     except Exception as _rms:
         import logging
         logging.getLogger(__name__).warning('reliability_master_shell wiring failed: %s', _rms)
+    # 2026-07-14: Frontend-Reliability master shell — generalizes the #100095
+    # /api/pipeline SWR-cache fix. 3 lanes (slow_path_cache, false_close_refire,
+    # edge_cacheability), files ONE bounded finding on the weakest. SHADOW BY
+    # DEFAULT (arm: FRONTEND_RELIABILITY_MASTER_ARM=1). Kill:
+    # FRONTEND_RELIABILITY_MASTER_DISABLED=1. POST /api/v1/admin/frontend-reliability/master-tick
+    try:
+        from routes.frontend_reliability_master_shell import frontend_reliability_master_shell_bp
+        app.register_blueprint(frontend_reliability_master_shell_bp)
+        print("[main] frontend_reliability_master_shell_bp registered: POST /api/v1/admin/frontend-reliability/master-tick", flush=True)
+    except Exception as _frms:
+        import logging
+        logging.getLogger(__name__).warning('frontend_reliability_master_shell wiring failed: %s', _frms)
     # 2026-07-03: brain context-assembly RAG — pgvector + Cohere embeddings over
     # the brain corpus (findings + recommendations). Gives the strategic planner
     # semantic RECALL of prior work. POST /api/v1/admin/brain/rag/reindex. Dark
