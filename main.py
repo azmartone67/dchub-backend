@@ -5128,6 +5128,13 @@ register_nav_config_route(app)
 def handle_well_known():
     from flask import request as req
     path = req.path
+    # ChatGPT Apps directory domain-verification challenge (2026-07-13): serve the
+    # OpenAI-issued token at the origin-root well-known URL so the submission passes
+    # domain verification. Static string; unknown .well-known paths reach here via the
+    # CF worker pass-through (same as /.well-known/ai-plugin.json).
+    if path == '/.well-known/openai-apps-challenge':
+        from flask import Response as _R
+        return _R('s5Ol_HlTZCxHpzaFeF1JqHp3bf-JyvZiB1AWqRyMTqU\n', mimetype='text/plain')
     if path == '/.well-known/mcp.json':
         import json as _j; from flask import Response as _R
         # r-fix (2026-06-06): the inline tool list below had drifted to 9
