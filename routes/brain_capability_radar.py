@@ -223,11 +223,11 @@ REGISTRY = [
         "key": "provenance_envelope", "mode": "evergreen", "repost_days": 12,
         "check": _canonical_stats, "value_key": "verified", "score": 64,
         "source_url": "https://dchub.cloud/whats-new#platform",
-        "headline": lambda r: (f"Every DC Hub record now ships a provenance stamp: "
-                               f"{int(r['verified']):,} analyst-verified data centers inside a "
-                               f"{int(r['tracked']):,}-facility tracked frontier — a per-record "
-                               f"verified-vs-tracked flag so agents cite live data with a stated "
-                               f"confidence level"),
+        "headline": lambda r: (f"{int(r['verified']):,} facilities, analyst-verified, now carry a "
+                               f"provenance stamp — every DC Hub record ships source, method, as-of "
+                               f"and a CC-BY-4.0 citation, with a verified-vs-tracked confidence flag "
+                               f"inside a {int(r['tracked']):,}-facility tracked frontier, so agents "
+                               f"cite live data instead of guessing"),
         "trend": ("Provenance Envelope v1 (provenance_version:1) on search_facilities and the "
                   "canonical stats endpoint — source, method, as-of and a CC-BY-4.0 citation "
                   "template on every record"),
@@ -238,10 +238,10 @@ REGISTRY = [
         "key": "intl_grid_telemetry", "mode": "evergreen", "repost_days": 12,
         "check": _canonical_stats, "value_key": "countries", "score": 63,
         "source_url": "https://dchub.cloud/playground",
-        "headline": lambda r: ("Live grid telemetry now spans five continents: Japan (OCCTO), "
-                               "South Korea (KPX) and Brazil (ONS) now rank beside the US ISOs, "
-                               "EU zones, Great Britain and Taiwan on one real-time renewable-share "
-                               "scale — keyless via get_grid_scoreboard"),
+        "headline": lambda r: ("Keyless grid telemetry, 10/day free: Japan (OCCTO), South Korea "
+                               "(KPX) and Brazil (ONS) just joined the DC Hub scoreboard — ranking "
+                               "beside the US ISOs, EU zones, Great Britain and Taiwan on one "
+                               "real-time renewable-share scale across five continents"),
         "trend": ("one live, ranked scoreboard of national grids on a single renewable-share scale, "
                   "refreshed continuously — not a quarterly PDF"),
         "so_what": ("compare grids for LatAm and APAC siting the same way you compare US ISOs — "
@@ -251,10 +251,11 @@ REGISTRY = [
         "key": "agent_memory", "mode": "evergreen", "repost_days": 12,
         "check": _canonical_stats, "value_key": "markets", "score": 62,
         "source_url": "https://dchub.cloud/connect#start",
-        "headline": lambda r: ("DC Hub agents now have memory: save_site builds a durable shortlist, "
-                               "then get_changes returns per-site deltas next session — verdict flips, "
-                               "DCPI score moves and new nearby facilities on the exact sites you're "
-                               "watching, not the whole planet"),
+        "headline": lambda r: (f"{int(r['tracked']):,} facilities are now saveable to a durable, "
+                               f"per-agent shortlist — DC Hub shipped memory: save_site remembers "
+                               f"your sites, then get_changes returns per-site deltas next session "
+                               f"(verdict flips, DCPI moves, new nearby facilities), not the whole "
+                               f"planet"),
         "trend": ("persistent per-agent state — a data layer that remembers your shortlist, not a "
                   "stateless query API"),
         "so_what": "your agent returns to what changed on your list; save_site + get_changes over MCP.",
@@ -263,10 +264,11 @@ REGISTRY = [
         "key": "error_envelope", "mode": "evergreen", "repost_days": 14,
         "check": _canonical_stats, "value_key": "verified", "score": 63,
         "source_url": "https://dchub.cloud/docs/error-codes",
-        "headline": lambda r: ("DC Hub shipped error_version:1 — an in-band, versioned error contract "
-                               "co-designed with the Gemini team, plus a published error registry — so "
-                               "an agent that hits a bad parameter gets a deterministic recovery hint "
-                               "and auto-corrects instead of guessing"),
+        "headline": lambda r: (f"{int(r['deals']):,} deals, {int(r['markets'])} markets and "
+                               f"{int(r['tracked']):,} facilities now speak one versioned error "
+                               f"contract — DC Hub shipped error_version:1, an in-band contract "
+                               f"co-designed with the Gemini team, so a bad parameter returns a "
+                               f"deterministic recovery hint, not a dead end"),
         "trend": ("a machine-readable error contract with a severity class and server-computed "
                   "suggested_params; the taxonomy is published at /docs/error-codes"),
         "so_what": "agents recover from edge cases deterministically — fewer dead-ends, more completed tasks.",
@@ -275,10 +277,11 @@ REGISTRY = [
         "key": "tool_catalog", "mode": "evergreen", "repost_days": 10,
         "check": _canonical_stats, "value_key": "tools", "score": 63,
         "source_url": "https://dchub.cloud/capabilities",
-        "headline": lambda r: (f"DC Hub's MCP surface is now {int(r['tools']):,} live tools — the newest: "
-                               f"get_retirement_headroom (filed US generator retirements + nearest "
-                               f"substations) and cluster_sites_by_latency (physics-bounded fiber-latency "
-                               f"clustering)"),
+        "headline": lambda r: (f"{int(r['markets'])} markets and {int(r['tracked']):,} facilities are "
+                               f"now served by 2 new agent tools — get_retirement_headroom (filed US "
+                               f"generator retirements + nearest substations) and "
+                               f"cluster_sites_by_latency (physics-bounded fiber-latency clustering); "
+                               f"the DC Hub MCP surface is now {int(r['tools'])} live tools"),
         "trend": ("new agent-callable primitives ship continuously — retirement headroom, latency "
                   "clustering, provenance-stamped search"),
         "so_what": "agents get site-selection signals no competitor exposes as a tool; browse them at /capabilities.",
@@ -287,11 +290,11 @@ REGISTRY = [
         "key": "weekly_ledger", "mode": "evergreen", "repost_days": 7,
         "check": _canonical_stats, "value_key": "deals", "score": 62,
         "source_url": "https://dchub.cloud/whats-new",
-        "headline": lambda r: (f"The DC Hub ledger: {int(r['tracked']):,} tracked data centers "
-                               f"({int(r['verified']):,} analyst-verified) across {int(r['countries'])}+ "
-                               f"countries, {int(r['deals']):,} tracked deals and {int(r['markets'])} "
-                               f"DCPI-scored markets — one live, machine-readable layer, refreshed daily, "
-                               f"open under CC-BY-4.0"),
+        "headline": lambda r: (f"{int(r['tracked']):,} facilities, {int(r['deals']):,} deals and "
+                               f"{int(r['markets'])} markets — the DC Hub ledger across "
+                               f"{int(r['countries'])}+ countries, {int(r['verified']):,} "
+                               f"analyst-verified, one live machine-readable layer refreshed daily "
+                               f"and open under CC-BY-4.0"),
         "trend": ("the compounding coverage behind the physical AI buildout, queryable over MCP — "
                   "cite as DC Hub (dchub.cloud)"),
         "so_what": "one queryable ground-truth layer instead of a dozen stale PDFs; connect an agent in 60 seconds.",
