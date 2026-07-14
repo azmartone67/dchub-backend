@@ -18,6 +18,7 @@ Dependencies injected via init_deals_routes():
 
 import os
 import time
+import threading
 import logging
 from datetime import datetime
 from utils.pipeline_alias import expand_query, matches_any  # phase32_alias_normalize
@@ -1245,9 +1246,28 @@ def get_markets():
         'generated_at': datetime.utcnow().isoformat()
     })
 
-@deals_bp.route('/api/pipeline', methods=['GET'])
-def get_public_pipeline():
-    """Public pipeline endpoint - returns construction/planning pipeline with curated + DB data"""
+# ── /api/pipeline stale-while-revalidate cache (fix agenda #100095) ──────────
+# The discovered_facilities scan in _compute_public_pipeline() intermittently
+# took 6–7s cold (radar findings #9235/#9237/#9314 @ /capacity-pipeline,
+# /ai-pipeline, /construction-pipeline — all one shared path) and sometimes a 7s
+# ReadTimeout, tripping the radar's 5s frontend_endpoint_slow cap so visitors
+# abandoned before the chart rendered. It is fast when Postgres buffers are warm
+# (~0.2s), so the fix is to never serve a COLD request on the hot path: cache the
+# payload and serve stale-while-revalidate. Every request returns the last good
+# copy instantly; a stale copy fires ONE background refresh. Only the first
+# request after a full cache eviction pays the scan. cache_get/cache_set degrade
+# to no-ops when Redis is down (redis_cache import fallback) → identical to the
+# pre-cache behaviour, never worse.
+_PIPELINE_CACHE_KEY = "public_pipeline:v1"
+_PIPELINE_FRESH_TTL = 300      # seconds a cached copy is served without refresh
+_PIPELINE_HARD_TTL = 3600      # seconds a stale copy survives for SWR fallback
+_pipeline_refresh_lock = threading.Lock()
+
+
+def _compute_public_pipeline():
+    """Build the public pipeline payload — the heavy discovered_facilities scan.
+    Context-free (touches no Flask request/g) so it is safe to run in a
+    background thread for the stale-while-revalidate refresh."""
     # Phase GG (2026-05-14): live discovered_facilities pipeline wins
     # COMPLETELY. The old code seeded `projects` from PIPELINE_DATA then
     # appended DB rows, so the frozen seed was always in the result. Now
@@ -1346,7 +1366,7 @@ def get_public_pipeline():
     for s, data in status_groups.items():
         by_status.append({'status': s, 'count': data['count'], 'total_mw': round(data['total_mw'], 1)})
 
-    return jsonify({
+    return {
         'success': True,
         'pipeline': projects,
         'count': len(projects),
@@ -1368,7 +1388,53 @@ def get_public_pipeline():
         'by_status': by_status,
         'data_source': data_source,
         'generated_at': datetime.utcnow().isoformat()
-    })
+    }
+
+
+def _refresh_public_pipeline_async():
+    """Recompute + re-cache the pipeline payload in the background. Non-blocking
+    single-flight per worker: a burst of stale reads triggers at most one DB
+    scan. Never raises — a refresh failure just leaves the last good copy served."""
+    if not _pipeline_refresh_lock.acquire(blocking=False):
+        return
+    try:
+        payload = _compute_public_pipeline()
+        payload['_computed_at'] = time.time()
+        cache_set(_PIPELINE_CACHE_KEY, payload, ttl=_PIPELINE_HARD_TTL)
+    except Exception as e:
+        logger.debug(f"public pipeline background refresh failed: {e}")
+    finally:
+        _pipeline_refresh_lock.release()
+
+
+@deals_bp.route('/api/pipeline', methods=['GET'])
+def get_public_pipeline():
+    """Public pipeline endpoint — construction/planning pipeline (curated + live
+    discovered_facilities), served stale-while-revalidate. See cache note above."""
+    now = time.time()
+    cached = cache_get(_PIPELINE_CACHE_KEY)
+    if cached is not None:
+        age = now - (cached.get('_computed_at') or 0)
+        if age >= _PIPELINE_FRESH_TTL:
+            # Stale but usable: serve it immediately, refresh in the background.
+            try:
+                threading.Thread(target=_refresh_public_pipeline_async,
+                                 name="pipeline-refresh", daemon=True).start()
+            except Exception:
+                pass
+        resp = jsonify({k: v for k, v in cached.items() if k != '_computed_at'})
+        resp.headers['X-Cache'] = 'HIT' if age < _PIPELINE_FRESH_TTL else 'STALE'
+        resp.headers['Cache-Control'] = 'public, max-age=120'
+        return resp
+
+    # Cold cache (first request / after eviction): compute once, synchronously.
+    payload = _compute_public_pipeline()
+    payload['_computed_at'] = now
+    cache_set(_PIPELINE_CACHE_KEY, payload, ttl=_PIPELINE_HARD_TTL)
+    resp = jsonify({k: v for k, v in payload.items() if k != '_computed_at'})
+    resp.headers['X-Cache'] = 'MISS'
+    resp.headers['Cache-Control'] = 'public, max-age=120'
+    return resp
 
 @deals_bp.route('/api/v1/pipeline/summary', methods=['GET'])
 @_lazy_require_plan('pro')
