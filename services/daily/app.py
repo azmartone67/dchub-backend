@@ -382,6 +382,16 @@ def share_page_html(date: datetime.date) -> str:
             rows = []
     base = os.environ.get("R2_PUBLIC_BASE", "")
     og_image_url = _resolve_og_image(date, base)
+    # Fallback/download must be ABSOLUTE to this render service's origin.
+    # The public page is proxied onto dchub.cloud/daily, where a root-relative
+    # "/generate" resolves to dchub.cloud/generate — which the CF worker does
+    # NOT route to this service (404). Pointing straight at the service origin
+    # is the same pattern the static daily.html hero already uses for its live
+    # fallback (FB = https://dchub-backend-production-f7dd…/generate).
+    render_origin = os.environ.get(
+        "DAILY_RENDER_ORIGIN",
+        "https://dchub-backend-production-f7dd.up.railway.app",
+    ).rstrip("/")
     cards = []
     for theme in THEMES:
         for size in SIZES:
@@ -394,7 +404,8 @@ def share_page_html(date: datetime.date) -> str:
             # the live render, and point download at the live render too, so the
             # page is error-free even inside the pre-render gap. (Mirrors the
             # R2 -> live -> placeholder chain already used in static daily.html.)
-            gen = f"/generate?theme={theme}&size={size}&date={date.isoformat()}"
+            gen = (f"{render_origin}/generate"
+                   f"?theme={theme}&size={size}&date={date.isoformat()}")
             src = f"{base}/{_r2_key(date, theme, size)}" if base else gen
             onerr = "" if src == gen else \
                 f" onerror=\"this.onerror=null;this.src='{gen}'\""
