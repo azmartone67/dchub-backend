@@ -51,6 +51,17 @@ SQLITE_BUFFER_PATH = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "ai_tracking_buffer.db"
 )
 SYNC_INTERVAL_SECONDS = 60  # flush SQLite buffer to Neon every 60s
+
+# r-failover-guard (2026-07-14): on the Render failover STANDBY (pointed at a
+# READ-ONLY Neon replica) these analytics INSERTs raise psycopg2 25006 ("cannot
+# execute INSERT in a read-only transaction") and spam the log every 60s. Skip the
+# writer on the standby. Env markers mirror main.py:82's IS_FAILOVER, computed
+# locally to avoid a main<->module circular import. Primary (Railway) = unchanged.
+_IS_FAILOVER = (
+    os.environ.get("RENDER", "").lower() in ("true", "1", "yes")
+    or bool(os.environ.get("RENDER_SERVICE_ID"))
+    or os.environ.get("DCHUB_FAILOVER", "").lower() in ("true", "1", "yes")
+)
 GATEWAY_VERSION = "4.2.0"
 
 # Declared shape of mcp_connections. Used by check_mcp_schema() at startup
@@ -823,6 +834,9 @@ def _sync_buffer_to_neon():
 
 def _start_sync_thread():
     """Start the background buffer sync thread."""
+    if _IS_FAILOVER:
+        logger.info("Buffer sync thread NOT started (IS_FAILOVER read-only replica)")
+        return
     global _sync_thread
     if _sync_thread is not None and _sync_thread.is_alive():
         return

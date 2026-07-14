@@ -300,7 +300,7 @@ def rate_limit_before():
     probe_marker = (request.headers.get('X-DC-Probe') or '').lower()
     if probe_marker in ('site-sentinel', 'brain-radar', 'self-heal',
                           'dc-brain-site-probe', 'dc-security-audit',
-                          'dc-healer', 'autopilot'):
+                          'dc-healer', 'autopilot', 'failover-warm', 'cache-warm'):
         return None
 
     # 2026-06-08: UA-based bypass for the platform's OWN read-only probes.
@@ -319,6 +319,9 @@ def rate_limit_before():
         'dchub-schema-audit', 'dchub-selfheal', 'dchub-failoverprobe',
         'dchub-renderflapcheck', 'brain-radar', 'brainuniformity',
         'dc-security-audit', 'deadlink', 'route-audit',
+        # r-warmer-429 (2026-07-14): the cache/failover warmer probes were 429ing
+        # themselves (DCHub-Warmer ~41k in CF over 7d) — same read-only-probe posture.
+        'dchub-warmer', 'dchub-failoverwarmer',
     )
     if _ua and any(m in _ua for m in _INTERNAL_PROBE_UA):
         return None

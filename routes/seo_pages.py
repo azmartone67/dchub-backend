@@ -450,6 +450,16 @@ def facility_page(id_or_slug: str):
                 nearby = cur.fetchall()
         except Exception:
             pass
+    except Exception as _fe:
+        # r-facility-5xx (2026-07-14): the outer try had ONLY a finally — any DB
+        # timeout / pooler reset in the resolver propagated uncaught as a Flask 500
+        # (the ~3k /facility 5xx bucket). Degrade to a 503 so crawlers back off
+        # instead of burning quota on 5xx. Not-found stays a clean 404 above.
+        try:
+            import logging as _lg; _lg.getLogger(__name__).warning(f"facility_page resolver failed for {id_or_slug!r}: {_fe}")
+        except Exception:
+            pass
+        return _error_page("Facility temporarily unavailable — please retry shortly.", 503)
     finally:
         try: c.close()
         except Exception: pass

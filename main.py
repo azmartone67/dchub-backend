@@ -10706,6 +10706,10 @@ AUTO_REGISTER_PATHS = {
 
 @app.before_request
 def auto_register_ai_visitor():
+    # r-failover-guard (2026-07-14): the discovered_platforms upsert INSERTs and
+    # can't run on the Render read-only-replica standby (psycopg2 25006 log-spam).
+    if IS_FAILOVER:
+        return
     try:
         if detect_and_register and request.path in AUTO_REGISTER_PATHS:
             detect_and_register(request, request.path)

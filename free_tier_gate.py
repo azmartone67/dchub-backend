@@ -534,6 +534,13 @@ def _metered_session_gate(get_db_conn):
     if request.method != 'GET':
         return None
     path = request.path
+    # r-watchdog-402 (2026-07-14): the map-metering sweep added the whole
+    # '/api/energy-discovery' prefix, which also caught the MONITORING endpoints
+    # (status/health) — giving the CI ingest-watchdog intermittent 402s that
+    # auto-filed GH issues (#1569/#1605). Never meter the non-proprietary monitors;
+    # the proprietary /export/* (KMZ) + map DATA endpoints stay metered.
+    if path in ('/api/energy-discovery/status', '/api/energy-discovery/health'):
+        return None
     if not any(path == p or path.startswith(p + '/') for p in METERED_MAP_PREFIXES):
         return None
     priv, identity = _resolve_caller(get_db_conn)

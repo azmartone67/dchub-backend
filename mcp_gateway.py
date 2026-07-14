@@ -43,6 +43,17 @@ from functools import wraps
 from flask import Flask, request, jsonify, make_response
 from db_utils import get_db, try_get_db
 
+# r-failover-guard (2026-07-14): on the Render failover STANDBY (read-only Neon
+# replica) these analytics INSERTs (agent_requests / platform_connections /
+# discovery_hits) raise psycopg2 25006 and spam the log on every request. Skip
+# them on the standby. Env markers mirror main.py:82 IS_FAILOVER (computed locally
+# to avoid a main<->module circular import). Primary (Railway) = unchanged.
+_IS_FAILOVER = (
+    os.environ.get("RENDER", "").lower() in ("true", "1", "yes")
+    or bool(os.environ.get("RENDER_SERVICE_ID"))
+    or os.environ.get("DCHUB_FAILOVER", "").lower() in ("true", "1", "yes")
+)
+
 logger = logging.getLogger("mcp_gateway")
 logger.setLevel(logging.INFO)
 
@@ -494,6 +505,8 @@ class GatewayDB:
                     method: str, path: str, query: str, body: str,
                     response_code: int, response_time: float,
                     tools: str = "", session_id: str = ""):
+        if _IS_FAILOVER:
+            return
         conn = None
         try:
             conn = try_get_db()
@@ -556,6 +569,8 @@ class GatewayDB:
 
     def log_discovery_hit(self, file_path: str, platform_id: str,
                           user_agent: str, ip: str, code: int):
+        if _IS_FAILOVER:
+            return
         conn = None
         try:
             conn = try_get_db()

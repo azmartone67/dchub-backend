@@ -60,6 +60,8 @@ _INTERNAL_UA_PATTERNS = [
     "uptimerobot",          # external monitor — count toward probe limit
     "dchub-quad",
     "dchub-mcp-probe",
+    "dchub-warmer",         # r-warmer-429 (2026-07-14): cache/failover warmer probes
+    "dchub-failoverwarmer",
 ]
 
 
@@ -157,7 +159,8 @@ def register_internal_bot_circuit_breaker(app):
             pass
         if (request.headers.get("X-DC-Probe") or "").strip().lower() in (
                 "brain-radar", "site-sentinel", "self-heal", "autopilot",
-                "dc-brain-site-probe", "dc-security-audit", "dc-healer"):
+                "dc-brain-site-probe", "dc-security-audit", "dc-healer",
+                "failover-warm", "cache-warm"):
             return None
         try:
             from railway_egress import is_railway_egress
