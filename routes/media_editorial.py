@@ -996,6 +996,19 @@ def editorial_decision_endpoint():
 @media_editorial_bp.route("/api/v1/brain/media/data-leads", methods=["GET"])
 def data_leads_endpoint():
     try:
+        # r-canon-diag 2026-07-14: surface why the evergreen capability leads
+        # are (or aren't) emitting — the source-of-truth stats + the raw lead list.
+        if request.args.get("debug") == "canon":
+            from routes.brain_capability_radar import (_canonical_stats, _dsn,
+                                                       capability_radar_leads)
+            try:
+                cs = _canonical_stats()
+            except Exception as _e:
+                cs = {"_exc": type(_e).__name__ + ": " + str(_e)[:200]}
+            crl = capability_radar_leads()
+            return jsonify({"dsn_set": bool(_dsn()), "canonical_stats": cs,
+                            "cap_leads_count": len(crl),
+                            "cap_kinds": [l.get("kind") for l in crl]}), 200
         return jsonify({"ok": True, "leads": rank_data_events(),
                         "generated_at": _dt.datetime.utcnow().isoformat() + "Z"}), 200
     except Exception as e:
