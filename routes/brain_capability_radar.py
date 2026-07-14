@@ -65,36 +65,54 @@ def _smithery_core_rank() -> dict | None:
             "terms_str": ", ".join(f'"{t}"' for t in at1)}
 
 
+_CANON_CACHE: dict = {"at": 0.0, "val": None}
+_CANON_TTL = 300.0  # 5-min memo so 6 evergreen rows in one leads() pass = 1 query set
+
+
 def _canonical_stats() -> dict | None:
     """LIVE check: DC Hub's canonical coverage numbers for the evergreen moat/pillar
-    sources — verified/tracked/countries/deals/markets from /api/v1/stats/canonical
-    (numbers nested under 'stats') + tool count from mcp.json. FAIL-SAFE: returns None
-    if unreachable or the counts look empty, so the radar SKIPS the source rather than
-    announce a wrong number. Honesty: 'verified' is the canonical fleet filter — always
-    reported as verified-inside-a-tracked-frontier, NEVER as the raw tracked total."""
-    import json as _json
-    import urllib.request
-
-    def _get(u):
-        req = urllib.request.Request(u, headers={"User-Agent": "dchub-brain-radar/1.0"})
-        with urllib.request.urlopen(req, timeout=10) as r:
-            return _json.load(r)
+    sources — verified/tracked/countries/deals/markets. Reads the SAME source-of-truth
+    COUNTs as /api/v1/stats/canonical (routes.facilities_by_dims.stats_canonical) but
+    IN-PROCESS over the DB, NOT via an HTTP self-request. The old self-request
+    (backend -> Cloudflare -> backend) timed out on Railway and silently starved these
+    leads, so the DCPI-Cheyenne build lead won every run. FAIL-SAFE: returns None if the
+    DB is unreachable or the core counts look empty, so the radar SKIPS the source rather
+    than announce a wrong/zero number. Honesty: 'verified' is the canonical fleet filter
+    (COALESCE(is_duplicate,0)=0) — always reported as verified-inside-a-tracked-frontier,
+    NEVER as the raw tracked total."""
+    import time as _time
+    now = _time.time()
+    if _CANON_CACHE["val"] is not None and (now - _CANON_CACHE["at"]) < _CANON_TTL:
+        return _CANON_CACHE["val"]
+    dsn = _dsn()
+    if not dsn:
+        return None
     try:
-        s = (_get("https://dchub.cloud/api/v1/stats/canonical") or {}).get("stats") or {}
-        out = {
-            "verified":  float(s.get("facilities_verified") or 0),
-            "tracked":   float(s.get("facilities_tracked") or 0),
-            "countries": float(s.get("countries_covered") or 0),
-            "markets":   float(s.get("dcpi_markets_scored") or 0),
-            "deals":     float(s.get("deals_tracked") or 0),
-        }
-        try:
-            out["tools"] = float((_get("https://dchub.cloud/.well-known/mcp.json") or {}).get("tools_count") or 73)
-        except Exception:
-            out["tools"] = 73.0
-        # guard: any core count missing -> skip (never post a zero/garbage number)
+        with psycopg2.connect(dsn, sslmode="require", connect_timeout=8) as c:
+            c.autocommit = True  # each COUNT is its own tx -> one failure can't poison the rest
+            with c.cursor() as cur:
+                def _count(sql: str) -> float:
+                    try:
+                        cur.execute(sql)
+                        row = cur.fetchone()
+                        return float(row[0] or 0) if row else 0.0
+                    except Exception:
+                        return 0.0
+                # byte-for-byte the queries stats_canonical() runs, so media numbers
+                # always agree with the public /api/v1/stats/canonical surface.
+                out = {
+                    "verified":  _count("SELECT COUNT(*) FROM discovered_facilities WHERE COALESCE(is_duplicate,0)=0"),
+                    "tracked":   _count("SELECT COUNT(*) FROM discovered_facilities"),
+                    "countries": _count("SELECT COUNT(DISTINCT country) FROM facilities WHERE country IS NOT NULL"),
+                    "markets":   _count("SELECT COUNT(*) FROM market_power_scores"),
+                    "deals":     _count("SELECT COUNT(*) FROM deals"),
+                    "tools":     73.0,
+                }
+        # guard: core counts missing -> skip (never post a zero/garbage number)
         if out["verified"] <= 0 or out["tracked"] <= 0 or out["countries"] <= 0:
             return None
+        _CANON_CACHE["at"] = now
+        _CANON_CACHE["val"] = out
         return out
     except Exception:
         return None
