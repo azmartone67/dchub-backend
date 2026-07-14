@@ -335,6 +335,16 @@ def capability_radar_leads() -> list[dict]:
     if not dsn:
         return []
     leads: list[dict] = []
+    # Warm the canonical-stats memo BEFORE opening our own DB connection below, so the
+    # per-source _canonical_stats() calls inside the loop hit the cache and never open a
+    # NESTED connection while `c` is held. That nested connect fails under the pooler and
+    # was silently starving every evergreen moat/pillar lead (returning None -> the source
+    # skipped), so the DCPI-Cheyenne build lead won every run. Called with no open
+    # connection here, it succeeds and caches (mirrors the working direct-call path).
+    try:
+        _canonical_stats()
+    except Exception:
+        pass
     try:
         with psycopg2.connect(dsn, sslmode="require", connect_timeout=8) as c:
             c.autocommit = True
