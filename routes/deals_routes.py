@@ -699,6 +699,15 @@ def get_transactions():
 # only the FREE path uses this; keyed/Pro callers never touch it.
 _FREE_TX_CACHE = BoundedCache(max_size=1, ttl=300)
 
+# r-gas-stats-cache (2026-07-14): the /api/v1/gas-pipelines stats aggregate
+# (COUNT(*)+2×COUNT(DISTINCT) on the full discovered_pipelines table) ran on EVERY
+# request and hit the 10s statement_timeout — the entire ~15s endpoint latency (the
+# main pipelines query is 216ms via idx_gas_pipelines_diam). These counts barely move,
+# so cache 1h; _GAS_STATS_RETRY throttles the expensive recompute to once / 5 min so a
+# stale cache can never make more than one request slow.
+_GAS_STATS_CACHE = BoundedCache(max_size=1, ttl=3600)
+_GAS_STATS_RETRY = {'at': 0.0}
+
 
 def _get_transactions_free():
     """Freemium transactions -- 3 most recent deals, basic fields only. PG first, SQLite fallback."""
@@ -1116,13 +1125,29 @@ def get_gas_pipelines():
                     'source': r[12]
                 })
 
-            # Stats query (safe — can't kill the main response)
-            stats = (0, 0, 0)
-            try:
-                c.execute("SELECT COUNT(*), COUNT(DISTINCT operator), COUNT(DISTINCT state) FROM discovered_pipelines WHERE commodity = 'Natural Gas'")
-                stats = c.fetchone()
-            except Exception:
-                pass
+            # Stats query (safe — can't kill the main response). r-gas-stats-cache
+            # (2026-07-14): cached 1h; the expensive recompute runs at most once / 5 min
+            # (was the ~15s endpoint cost — it ran every request and timed out at 10s).
+            import time as _t
+            stats = _GAS_STATS_CACHE.get('gas')
+            if stats is None:
+                stats = (0, 0, 0)
+                if (_t.time() - _GAS_STATS_RETRY['at']) >= 300:
+                    _GAS_STATS_RETRY['at'] = _t.time()
+                    try:
+                        c.execute("SET statement_timeout = 25000")  # let the DISTINCT aggregate finish
+                        c.execute("SELECT COUNT(*), COUNT(DISTINCT operator), COUNT(DISTINCT state) FROM discovered_pipelines WHERE commodity = 'Natural Gas'")
+                        _st = c.fetchone()
+                        if _st:
+                            stats = _st
+                            _GAS_STATS_CACHE.set('gas', _st)
+                    except Exception:
+                        pass
+                    finally:
+                        try:
+                            c.execute("SET statement_timeout = 10000")
+                        except Exception:
+                            pass
 
             return jsonify({
                 'success': True,
