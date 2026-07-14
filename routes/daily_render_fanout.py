@@ -165,6 +165,154 @@ def status():
     )
 
 
+# ── Public-page canary ──────────────────────────────────────────────
+# The R2 inventory /status probe above answers "did the renders land in
+# the bucket." It does NOT answer the question a human hits on their phone:
+# "does the PUBLIC /daily page show real images, or broken tiles." Those
+# diverge during the nightly UTC-rollover gap (the page advances to today's
+# date at 00:00 UTC; the render cron writes that folder ~06:00 UTC) and
+# whenever the CF edge serves a stale page. This canary fetches the live
+# public page, extracts every tile, and — mirroring the browser — treats a
+# tile as BROKEN only when BOTH its primary src AND its onerror fallback
+# fail. On a genuine break it files one `daily_page_broken_tiles` brain
+# finding; when healthy it resolves an open one. Findings-only + idempotent
+# (canonical upsert dedupe). Kill: DAILY_PAGE_CANARY_DISABLE=1.
+import re as _re
+from urllib.parse import urljoin as _urljoin
+
+PUBLIC_DAILY_URL = os.environ.get("DAILY_PUBLIC_URL", "https://dchub.cloud/daily")
+
+
+def _probe_status(url):
+    """HEAD (fall back to a 1-byte ranged GET when HEAD is refused).
+    Returns int status, or None on transport error."""
+    import requests
+    try:
+        r = requests.head(url, timeout=10, allow_redirects=True)
+        if r.status_code in (403, 405, 501):
+            r = requests.get(url, timeout=15, allow_redirects=True,
+                             stream=True, headers={"Range": "bytes=0-0"})
+            code = r.status_code
+            r.close()
+            return code
+        return r.status_code
+    except Exception:
+        return None
+
+
+def _canary_scan():
+    """Fetch the public page, HEAD every tile (+ its fallback), summarize.
+    A tile is broken only when primary AND fallback both fail — exactly what
+    a real browser renders as a broken image."""
+    import requests
+    out = {"ok": True, "url": PUBLIC_DAILY_URL, "checked": 0,
+           "broken": [], "page_status": None}
+    try:
+        resp = requests.get(PUBLIC_DAILY_URL, timeout=15,
+                            headers={"User-Agent": "DCHub-DailyCanary/1"})
+        out["page_status"] = resp.status_code
+        if resp.status_code != 200:
+            out["ok"] = False
+            out["error"] = f"page HTTP {resp.status_code}"
+            return out
+        html = resp.text
+    except Exception as e:
+        out["ok"] = False
+        out["error"] = f"page fetch failed: {str(e)[:120]}"
+        return out
+
+    for tag in _re.findall(r"<img[^>]+>", html):
+        m_src = _re.search(r'src="([^"]+)"', tag)
+        if not m_src:
+            continue
+        src = m_src.group(1)
+        # Only real tiles: R2 PNGs or a /generate render. Skip inline SVG
+        # placeholders (data:) and nav/logo imagery.
+        is_tile = (("r2.dev" in src and src.endswith(".png"))
+                   or "/generate?" in src)
+        if not is_tile:
+            continue
+        out["checked"] += 1
+        m_fb = _re.search(r"this\.src='([^']+)'", tag)
+        fb = _urljoin(PUBLIC_DAILY_URL, m_fb.group(1)) if m_fb else None
+        s_src = _probe_status(_urljoin(PUBLIC_DAILY_URL, src))
+        if s_src == 200:
+            continue
+        s_fb = _probe_status(fb) if fb else None
+        if s_fb == 200:
+            continue  # browser would silently recover — not user-visible
+        out["broken"].append({
+            "src": src, "src_status": s_src,
+            "fallback": fb, "fallback_status": s_fb,
+        })
+    out["ok"] = not out["broken"]
+    return out
+
+
+def _file_canary_finding(scan):
+    """Upsert one open finding when tiles are broken; resolve it when the
+    page recovers. Mirrors cadence_sentinel: transaction-mode conn, savepoint-
+    wrapped upsert, resolve only an already-open row so healthy ticks don't
+    inflate seen_count toward the runaway-quarantine threshold."""
+    issue = "daily_page_broken_tiles"
+    result = {"filed": 0, "resolved": 0}
+    db = os.environ.get("DATABASE_URL") or os.environ.get("NEON_DATABASE_URL")
+    if not db:
+        return result
+    conn = None
+    try:
+        import psycopg2 as _pg
+        from routes.brain_findings_writer import upsert_brain_finding
+        conn = _pg.connect(db, connect_timeout=8)
+        with conn.cursor() as cur:
+            if scan["broken"]:
+                n = len(scan["broken"])
+                sample = "; ".join(
+                    f"{b['src'].split('/')[-1]}(src={b['src_status']},"
+                    f"fb={b['fallback_status']})"
+                    for b in scan["broken"][:6])
+                detail = (f"{n}/{scan['checked']} tiles broken on {scan['url']} "
+                          f"(primary + fallback both failed). {sample}")
+                r = upsert_brain_finding(cur, issue=issue, url=scan["url"],
+                                         count=n, detail=detail,
+                                         detector="daily_page_canary")
+                result["filed"] = 1 if r in ("inserted", "updated") else 0
+            else:
+                cur.execute(
+                    "UPDATE brain_findings SET status='resolved' "
+                    "WHERE issue=%s AND COALESCE(status,'open') "
+                    "NOT IN ('resolved','wont_fix','dismissed')", (issue,))
+                result["resolved"] = cur.rowcount or 0
+        conn.commit()
+    except Exception as e:
+        logger.warning("[daily-canary] finding write failed: %s", e)
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+    return result
+
+
+@daily_render_fanout_bp.route("/api/jobs/daily-page-canary",
+                              methods=["GET", "POST"])
+def daily_page_canary():
+    """Public read-only canary over the live /daily page. Returns the scan and
+    files/resolves the brain finding (heartbeat POSTs every 3h). No auth:
+    read-only + findings-only, same posture as the /status inventory probe.
+    Always 200 (the finding is the alert channel). Kill: DAILY_PAGE_CANARY_DISABLE=1."""
+    if os.environ.get("DAILY_PAGE_CANARY_DISABLE") == "1":
+        return jsonify(ok=True, disabled=True), 200
+    scan = _canary_scan()
+    scan["findings"] = _file_canary_finding(scan)
+    return jsonify(**scan), 200
+
+
 def _smoke():
     logger.info("[daily-render-fanout] ready, target=%s%s", FRONTEND_URL, RENDER_PATH)
 

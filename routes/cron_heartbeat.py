@@ -786,6 +786,20 @@ _DISPATCH = [
      "POST",
      lambda now: now.hour % 3 == 2 and now.minute < 55),
 
+    # 2026-07-14: Daily-page canary — fetches the public /daily page and HEADs
+    # every tile (+ its onerror fallback), filing daily_page_broken_tiles only
+    # when a user would actually see broken images. Complements the R2 inventory
+    # /status probe, which checks the bucket, not the rendered public page —
+    # added after a nightly UTC-rollover gap (page date flips at 00:00 UTC, cron
+    # writes the folder ~06:00 UTC) showed broken tiles that nothing alerted on.
+    # Findings-only + idempotent; light HTTP tick, kept on WEB. Every 3h at
+    # hours 0/3/… so two ticks land inside the 00:00–06:00 UTC gap window,
+    # offset from the cadence sentinel. Kill: DAILY_PAGE_CANARY_DISABLE=1.
+    ("daily_page_canary_3h",
+     f"{BASE}/api/jobs/daily-page-canary",
+     "POST",
+     lambda now: now.hour % 3 == 0 and now.minute < 55),
+
     # ─────────────────────────────────────────────────────────────────────
     # 2026-07-03: RE-HOMED off the retiring off-repo Replit scheduler
     # (dchub-scheduler.py). Replit is decommissioned; these five Replit jobs
