@@ -200,9 +200,17 @@ def rank_markets():
         # Score 0-100 normalized to rank
         score = round(100 - (i * 100 / max(1, len(rows))), 1)
 
+        _slug = r["slug"]
+        # r-slugfix (2026-07-15): echo a DCPI-resolvable slug so agents can chain
+        # rank_markets → get_market_dcpi_rank / get_facility_risk_delta without a
+        # 404. 'ashburn-va' → 'ashburn' (the bare-city form those tools key on).
+        _metro_slug = (_slug.rsplit("-", 1)[0]
+                       if "-" in _slug and len(_slug.rsplit("-", 1)[1]) == 2
+                       else _slug)
         results.append({
             "rank":             i + 1,
             "market":           r["slug"],
+            "metro_slug":       _metro_slug,
             "city":             r["city"],
             "state":            r["state"],
             "country":          r["country"],

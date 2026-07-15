@@ -2278,9 +2278,20 @@ def api_score_market(slug):
     # caller knows what was returned.
     requested_slug = slug
     candidates = [slug]
-    _alias = DCPI_METRO_ALIASES.get(slug.lower())
-    if _alias and _alias not in candidates:
-        candidates.append(_alias)
+    _low = slug.lower()
+    # r-slugfix (2026-07-15): also accept the city+state slug that rank_markets
+    # emits (LOWER(city)-LOWER(state), e.g. 'ashburn-va') by stripping a trailing
+    # 2-letter state suffix to the bare city row ('ashburn'), mirroring the HTML
+    # /dcpi route's existing strip. Fixes the rank_markets → get_market_dcpi_rank
+    # 404 chain on the #1 market.
+    if "-" in _low and len(_low.rsplit("-", 1)[1]) == 2:
+        _stripped = _low.rsplit("-", 1)[0]
+        if _stripped not in candidates:
+            candidates.append(_stripped)
+    for _cand_slug in list(candidates):
+        _alias = DCPI_METRO_ALIASES.get(_cand_slug)
+        if _alias and _alias not in candidates:
+            candidates.append(_alias)
     row = None
     matched_slug = None
     with _conn() as c, c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:

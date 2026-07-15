@@ -84,21 +84,30 @@ def facility_risk_delta():
                                 "message": "Provide facility_id (resolvable to a market) or market="}), 400
 
             # ── DCPI market-health delta — the ONLY real short-term temporal series ──
+            # r-slugfix (2026-07-15): also accept the city+state slug form
+            # (discovered_facilities.market / rank_markets, e.g. 'ashburn-va') by
+            # trying the bare-city form the snapshots are keyed on ('ashburn').
+            _mk = market_key.lower()
+            _slug_cands = [_mk]
+            if "-" in _mk and len(_mk.rsplit("-", 1)[1]) == 2:
+                _stripped = _mk.rsplit("-", 1)[0]
+                if _stripped not in _slug_cands:
+                    _slug_cands.append(_stripped)
             cur.execute(
                 "WITH latest AS ("
                 "  SELECT excess_power_score AS now_e, market_name, market_slug, snapshot_date "
                 "  FROM dcpi_daily_snapshots "
-                "  WHERE LOWER(market_slug) = LOWER(%s) OR LOWER(market_name) = LOWER(%s) "
+                "  WHERE LOWER(market_slug) = ANY(%s) OR LOWER(market_name) = LOWER(%s) "
                 "  ORDER BY snapshot_date DESC LIMIT 1), "
                 "prev AS ("
                 "  SELECT excess_power_score AS prev_e "
                 "  FROM dcpi_daily_snapshots "
-                "  WHERE (LOWER(market_slug) = LOWER(%s) OR LOWER(market_name) = LOWER(%s)) "
+                "  WHERE (LOWER(market_slug) = ANY(%s) OR LOWER(market_name) = LOWER(%s)) "
                 "    AND snapshot_date <= CURRENT_DATE - %s "
                 "  ORDER BY snapshot_date DESC LIMIT 1) "
                 "SELECT l.now_e, l.market_name, l.market_slug, l.snapshot_date, p.prev_e "
                 "FROM latest l LEFT JOIN prev p ON TRUE",
-                (market_key, market_key, market_key, market_key, days))
+                (_slug_cands, market_key, _slug_cands, market_key, days))
             row = cur.fetchone()
     except Exception as e:
         return jsonify({"success": False, "error": "query_failed",
