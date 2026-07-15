@@ -176,42 +176,79 @@ def _build_status_payload():
     return out
 
 
+def _maybe_refresh_status_async():
+    """Single-flight background rebuild of the status snapshot. Non-blocking: if a
+    refresh is already running, do nothing (callers keep serving the stale copy).
+    The lock is a plain threading.Lock (not thread-owned), so acquiring it here and
+    releasing it in the worker thread is fine.
+
+    ★ _build_status_payload() → _safe_jget() reads `current_app.test_client()`,
+    which is UNBOUND in a bare background thread (would silently null every field
+    and overwrite the good snapshot). Capture the real app object here (we're on a
+    request thread, so app context is live) and push app_context() in the worker."""
+    if not _status_lock.acquire(blocking=False):
+        return
+    try:
+        from flask import current_app
+        _app = current_app._get_current_object()
+    except Exception:
+        try: _status_lock.release()
+        except Exception: pass
+        return
+
+    def _rebuild():
+        try:
+            with _app.app_context():
+                payload = _build_status_payload()
+            _status_cache["payload"] = payload
+            _status_cache["ts"] = time.time()
+        except Exception:
+            pass  # keep the last good snapshot
+        finally:
+            _status_lock.release()
+
+    try:
+        threading.Thread(target=_rebuild, name="status-refresh", daemon=True).start()
+    except Exception:
+        try: _status_lock.release()  # couldn't spawn → release so a later call retries
+        except Exception: pass
+
+
 def _get_status_snapshot():
-    """Return the memoized /status payload, rebuilding at most once per
-    _STATUS_TTL_SECONDS. Thread-safe and never-raises:
-      - Fast path (cache fresh): no lock, no rebuild, no worker re-entry.
-      - Refresh path: single thread rebuilds under the lock; concurrent
-        callers that lose the lock race serve the (now-refreshed or still
-        slightly-stale) cached copy instead of all stampeding the builder.
-      - If the rebuild itself throws, fall back to the last good snapshot,
-        or a minimal degraded payload — so /status never 500s."""
+    """Return the memoized /status payload, rebuilt at most once per
+    _STATUS_TTL_SECONDS — STALE-WHILE-REVALIDATE so NO request ever blocks on the
+    ~3s 6× test_client fan-out (agenda #100095: /api/v1/status tripped the radar's
+    5s cap once/minute because the request that hit the expired TTL ran the rebuild
+    synchronously). Thread-safe, never-raises:
+      - Fresh cache: return it, no lock, no rebuild.
+      - Stale cache: return the stale copy IMMEDIATELY and refresh in the
+        background (single-flight) — the request stays fast.
+      - Cold start (no cache yet): build synchronously once so the first caller
+        gets a real payload; a build failure degrades rather than 500s."""
     now = time.time()
     cached = _status_cache.get("payload")
     if cached is not None and (now - _status_cache.get("ts", 0.0)) < _STATUS_TTL_SECONDS:
         return cached
 
-    # Stale or cold. Try to acquire the refresh lock without blocking; if
-    # another thread is already rebuilding, serve whatever we have rather
-    # than queueing a second concurrent fan-out.
+    # Stale but we have a last-good copy → serve it now, rebuild off the request path.
+    if cached is not None:
+        _maybe_refresh_status_async()
+        return cached
+
+    # Cold start: no cache yet. Build synchronously (once), stampede-guarded.
     got = _status_lock.acquire(blocking=False)
     if not got:
-        if cached is not None:
-            return cached
-        _status_lock.acquire()  # cold start, no cache yet — wait for the build
+        _status_lock.acquire()  # another thread is doing the cold build — wait for it
     try:
-        # Re-check inside the lock: another thread may have just refreshed.
-        now = time.time()
         cached = _status_cache.get("payload")
-        if cached is not None and (now - _status_cache.get("ts", 0.0)) < _STATUS_TTL_SECONDS:
-            return cached
+        if cached is not None:
+            return cached  # the thread we waited on just built it
         try:
             payload = _build_status_payload()
             _status_cache["payload"] = payload
             _status_cache["ts"] = time.time()
             return payload
         except Exception:
-            if cached is not None:
-                return cached  # serve stale rather than 500
             return {
                 "ok": False,
                 "as_of": datetime.now(timezone.utc).isoformat(),
