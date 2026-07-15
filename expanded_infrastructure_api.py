@@ -454,7 +454,7 @@ def get_substations():
 
             where = 'WHERE ' + ' AND '.join(conditions) if conditions else ''
             query = f"""
-                SELECT name, city, state, status, voltage_kv, capacity_mva, lat, lng, owner,
+                SELECT name, city, state, status, voltage_kv, capacity_mva, lat, lng, owner, operator,
                     ROUND((3959 * acos(LEAST(1.0, cos(radians(%s)) * cos(radians(lat)) * cos(radians(lng) - radians(%s)) + sin(radians(%s)) * sin(radians(lat)))))::numeric, 2) as distance_miles
                 FROM substations
                 {where}
@@ -466,7 +466,7 @@ def get_substations():
         else:
             where = 'WHERE ' + ' AND '.join(conditions) if conditions else ''
             query = f"""
-                SELECT name, city, state, status, voltage_kv, capacity_mva, lat, lng, owner,
+                SELECT name, city, state, status, voltage_kv, capacity_mva, lat, lng, owner, operator,
                     NULL as distance_miles
                 FROM substations
                 {where}
@@ -521,6 +521,10 @@ def get_substations():
                 'lat': _lat,
                 'lng': _lng,
                 'owner': r.get('owner') if _full else None,
+                # r43: `owner` is 100% null in the table; the populated column is
+                # `operator` (~47k substations). Surface it (falling back to owner)
+                # so paid users see the utility instead of a blank field.
+                'operator': ((r.get('operator') or r.get('owner')) if _full else None),
                 'distance_miles': _dist,
                 'source': 'HIFLD/Neon'
             })
