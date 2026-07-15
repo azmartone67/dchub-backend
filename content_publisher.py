@@ -2208,6 +2208,17 @@ def _editor_review(content_text: str):
         f"{int(_cs.get('markets', 230))}+ markets (DCPI), 2,000+ tracked "
         "M&A deals, 7 live US ISOs. A post citing these (or consistent figures) is "
         "accurate, not fabricated.\n"
+        "DC Hub Media ALSO ships and announces PLATFORM / CAPABILITY UPDATES, not "
+        "only market-movement insight — new MCP tools, a provenance/citation "
+        "envelope (per-record source+method+as-of + CC-BY), an in-band versioned "
+        "error contract (error_version:1, published at /docs/error-codes), agent "
+        "memory (save_site / get_changes), and tools like get_retirement_headroom "
+        "and cluster_sites_by_latency. These are REAL, shipped features. A clear, "
+        "number-led product/platform-update post is a VALID, on-brand DC Hub Media "
+        "post: do NOT reject it merely for being a capability announcement rather "
+        "than a market insight, and do NOT call these named features 'internal "
+        "jargon', 'demo copy', or 'unverifiable'. Still hold it to the same bar "
+        "below (no fabrication, no cringe/over-claim, no thin/templated copy).\n"
     )
     sys_prompt = (
         "You are the Editor-in-Chief of DC Hub, a serious data-center & energy "
