@@ -339,6 +339,88 @@ def _lane_reachability(c) -> list[dict]:
     return out
 
 
+# ── lane 5 · quality-lift weekly watch (recipe/contract/provenance) ────
+# ITEM 5 WATCH (2026-07-15): a DURABLE weekly monitor for whether the recipe/
+# contract/provenance quality work is lifting first-call-success + return rate.
+# All three metrics are computed over the LAST COMPLETE ISO week
+# [date_trunc('week',now())-7d, date_trunc('week',now())) — the in-progress week
+# is excluded so a partial period never reads as a cliff (same discipline as
+# routes/mcp_retention.py). Snapshotted to backfunnel_snapshots each tick, so the
+# green/red history accumulates week over week without a manual eyeball.
+def _lane_quality_watch(c) -> list[dict]:
+    out = []
+    if c is None:
+        return [_check("qw_nodb", "quality-watch lane needs db", None, "no db")]
+
+    # 5a — FIRST-CALL SUCCESS %: of keys whose FIRST-EVER logged call landed in
+    # the last complete week, what share returned data (status='ok') vs an
+    # error/paywall. PASS >= 60%.
+    r = _row(c,
+        "WITH firsts AS ("
+        " SELECT DISTINCT ON (api_key) api_key, timestamp AS first_ts, status "
+        " FROM mcp_call_log WHERE api_key IS NOT NULL AND api_key <> '' "
+        " ORDER BY api_key, timestamp ASC) "
+        "SELECT COUNT(*), COUNT(*) FILTER (WHERE status='ok'), "
+        " ROUND(100.0*COUNT(*) FILTER (WHERE status='ok')/NULLIF(COUNT(*),0),1) "
+        "FROM firsts "
+        "WHERE first_ts >= date_trunc('week',now())-interval '7 days' "
+        "  AND first_ts <  date_trunc('week',now())")
+    if r is None or not r[0]:
+        out.append(_check("qw_first_call_ok", "first-call success % (new keys, last wk) >= 60",
+                          None, "no new keys last week"))
+    else:
+        total, okc, pct = int(r[0]), int(r[1] or 0), _num(r[2])
+        out.append(_check("qw_first_call_ok", "first-call success % (new keys, last wk) >= 60",
+                          (pct or 0) >= 60.0,
+                          f"{pct}% ({okc}/{total} new keys' first call = ok; rest error/paywall/trial)"))
+
+    # 5b — RETURNING-AGENT RATE: of distinct real external agents active last
+    # week, what share were active on >=2 DISTINCT days (mcp_calls_identity — the
+    # honest de-looped north-star). Baseline ~4.7%; PASS >= 5.0 so the lane flips
+    # GREEN only once the quality work pushes returns past today's floor.
+    r = _row(c,
+        "WITH wk AS ("
+        " SELECT agent_id, COUNT(DISTINCT date_trunc('day',created_at)) AS days "
+        " FROM mcp_calls_identity "
+        " WHERE is_real_external AND is_public_ip "
+        "   AND created_at >= date_trunc('week',now())-interval '7 days' "
+        "   AND created_at <  date_trunc('week',now()) "
+        " GROUP BY agent_id) "
+        "SELECT COUNT(*), COUNT(*) FILTER (WHERE days>=2), "
+        " ROUND(100.0*COUNT(*) FILTER (WHERE days>=2)/NULLIF(COUNT(*),0),1) FROM wk")
+    if r is None or not r[0]:
+        out.append(_check("qw_return_rate", "returning-agent rate (>=2 days, last wk) >= 5%",
+                          None, "no real-external agents last week"))
+    else:
+        agents, ret, pct = int(r[0]), int(r[1] or 0), _num(r[2])
+        out.append(_check("qw_return_rate", "returning-agent rate (>=2 days, last wk) >= 5%",
+                          (pct or 0) >= 5.0,
+                          f"{pct}% ({ret}/{agents} real agents on >=2 distinct days) — baseline ~4.7%"))
+
+    # 5c — KEY-REUSE %: the durable cross-week return also at /api/v1/mcp/retention
+    # (summary.pct_returned_next_week_all_durable) — mature 8-30d cohort across
+    # BOTH durable cohorts (auto_trial_keys ∪ dch_live_ mcp_dev_keys). Floor 8%
+    # (same as lane 1b / flywheel). The LIKE '%' literal is safe: _row passes NO
+    # params tuple, so psycopg2 never %-substitutes.
+    r = _row(c,
+        "WITH k AS ("
+        " SELECT minted_at t0, last_used_at t1 FROM auto_trial_keys WHERE minted_at>=now()-interval '30 days' "
+        " UNION ALL "
+        " SELECT created_at, last_used_at FROM mcp_dev_keys WHERE api_key LIKE 'dch_live_%' AND created_at>=now()-interval '30 days') "
+        "SELECT ROUND(100.0*COUNT(*) FILTER (WHERE t0<now()-interval '7 days' AND t1 IS NOT NULL "
+        " AND date_trunc('week',t1)>date_trunc('week',t0))/NULLIF(COUNT(*) FILTER (WHERE t0<now()-interval '7 days'),0),1), "
+        " COUNT(*) FILTER (WHERE t0<now()-interval '7 days') FROM k")
+    if r is None or r[0] is None:
+        out.append(_check("qw_key_reuse", "key-reuse % (mature, BOTH cohorts, 30d) >= 8",
+                          None, "no mature cohort yet — see /api/v1/mcp/retention"))
+    else:
+        pct = _num(r[0])
+        out.append(_check("qw_key_reuse", "key-reuse % (mature, BOTH cohorts, 30d) >= 8",
+                          (pct or 0) >= 8.0,
+                          f"{r[0]}% of {r[1]} mature keys = /api/v1/mcp/retention pct_returned_next_week_all_durable"))
+    return out
+
+
 # ── tick orchestration ────────────────────────────────────────────────
 
 _LANES = [
@@ -350,6 +432,8 @@ _LANES = [
      "NOT shipped — product/offer: depth-tease / unlock_more_data value-moment (relay converts ~0; the 8 are web/organic)"),
     ("reachability","4 · Reachability & activation (phase 2)",  _lane_reachability,
      "SHIPPED: r-lead-bridge (bind_email→mcp_upgrade_signals.user_email) + free-taste tighten (DCHUB_TRIAL_TOOL_DAILY_FULL 8→4); nurture=lost_conversion_outreach daily+opt-in gated. NEXT lever: consented-lead volume"),
+    ("quality_watch","5 · Quality-lift weekly watch (recipe/contract/provenance)", _lane_quality_watch,
+     "WATCH-ONLY (ITEM 5, 2026-07-15): first-call-success + returning-agent-rate + key-reuse over the LAST COMPLETE ISO week; snapshots to backfunnel_snapshots. No actuator — this pane exists to confirm the recipe/contract/provenance work moves retention"),
 ]
 
 _cache: dict = {"ts": 0.0, "payload": None}

@@ -654,6 +654,11 @@ def require_plan(min_plan='pro'):
                     '/api/v1/infrastructure/summary',
                     '/api/v1/energy/power-plants',
                     '/api/v1/energy/power-plants/nearby',
+                    # 2026-07-15: non-/energy/ alias of the same route -- the
+                    # land-power map (js/dchub-infrastructure.js) calls this path
+                    # keyless; keep it bypassed so the power-plant layer still
+                    # renders now that the route carries @require_plan('pro').
+                    '/api/v1/power-plants/nearby',
                     '/api/v1/energy/rto/demand',
                     '/api/v1/energy/rto/fuelmix',
                     '/api/v1/energy/naturalgas/price',
@@ -666,6 +671,12 @@ def require_plan(min_plan='pro'):
                     '/api/v1/connectivity/score',
                     '/api/v1/grid/overview',
                     '/api/v1/grid/status',
+                    # 2026-07-15: legacy CAISO map proxies
+                    # (js/gridstatus-integration.js) -- bypassed for the
+                    # dchub.cloud map now that both routes carry
+                    # @require_plan('pro').
+                    '/api/v1/grid/caiso/fuelmix',
+                    '/api/v1/grid/caiso/demand',
                     # r36 (2026-05-31): removed markets/compare + v1/deals +
                     # pipeline/summary (+ dead /api/deals) from this SECOND
                     # _MAP_BYPASS_PATHS too. This is the api_tier_gating /

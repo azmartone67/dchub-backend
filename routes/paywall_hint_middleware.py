@@ -40,6 +40,8 @@ import datetime
 import hashlib
 import json
 import os
+import threading
+import time
 
 from flask import Blueprint, jsonify, request
 from routes._swallowed_writes import note_swallowed_write
@@ -171,44 +173,95 @@ def _agent_quotable_for(variant: str, status: int) -> str:
     return v.get(status) or v.get(401)
 
 
+# DDL is bootstrapped ONCE per process (guarded below) and kept OUT of the
+# per-event INSERT path. 2026-07-15: the prior version ran CREATE TABLE /
+# CREATE INDEX IF NOT EXISTS in the SAME transaction as the INSERT, on the
+# after_request hot path, for EVERY 4xx. CREATE INDEX takes a ShareLock on
+# ab_funnel_log which conflicts with the RowExclusiveLock a concurrent INSERT
+# holds, so two overlapping after_request calls formed a lock cycle and Postgres
+# killed one with 40P01 DeadlockDetected — the funnel write was then swallowed
+# (corrupting the conversion-funnel metric) and the deadlocking txn held a pooled
+# connection for ~deadlock_timeout, feeding pool saturation. An INSERT-only hot
+# path (no unique constraint, sequence PK) cannot deadlock.
+_AB_DDL_LOCK = threading.Lock()
+_ab_ddl_ready = False
+
+
+def _ensure_ab_funnel_table() -> bool:
+    """Create ab_funnel_log + its index exactly once per process, in its own
+    short committed txn. Returns True once the table is known to exist. Uses the
+    raw psycopg2 cursor (getattr(_c,'_cur',_c)) because the safe_db wrapper SKIPS
+    DDL (SKIP_DDL default-on) and the lazy CREATE TABLE is load-bearing. Never
+    raises."""
+    global _ab_ddl_ready
+    if _ab_ddl_ready:
+        return True
+    with _AB_DDL_LOCK:
+        if _ab_ddl_ready:
+            return True
+        try:
+            from db_utils import safe_db
+            with safe_db() as conn:
+                _c = conn.cursor()
+                cur = getattr(_c, "_cur", _c)
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS ab_funnel_log (
+                        id          BIGSERIAL PRIMARY KEY,
+                        variant     TEXT NOT NULL,
+                        status      INT  NOT NULL,
+                        path        TEXT NOT NULL,
+                        ip_hash     TEXT NOT NULL,
+                        ts          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    )
+                """)
+                cur.execute("""
+                    CREATE INDEX IF NOT EXISTS ab_funnel_log_variant_ts_idx
+                    ON ab_funnel_log (variant, ts DESC)
+                """)
+                conn.commit()
+            _ab_ddl_ready = True
+        except Exception:
+            # Leave _ab_ddl_ready False so a later call retries the bootstrap.
+            note_swallowed_write("ab_funnel_log",
+                                 where="paywall_hint_middleware._ensure_ab_funnel_table")
+        return _ab_ddl_ready
+
+
 def _log_ab_event(variant: str, status: int, path: str,
                    ip_hash: str) -> None:
-    """Log to ab_funnel_log table. Best-effort, never raises."""
-    try:
-        # 2026-07-14: was `from db_utils import get_db_conn` — that name does NOT
-        # exist in db_utils, so this ImportError'd on EVERY call for 24h+ and
-        # ab_funnel_log got zero writes (the table below never got created). Use
-        # safe_db() for the guaranteed close, and the raw psycopg2 cursor
-        # (getattr(_c,'_cur',_c)) because the safe_db wrapper SKIPS DDL (SKIP_DDL
-        # default-on) and the lazy CREATE TABLE here is load-bearing.
-        from db_utils import safe_db
-        with safe_db() as conn:
-            _c = conn.cursor()
-            cur = getattr(_c, "_cur", _c)
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS ab_funnel_log (
-                    id          BIGSERIAL PRIMARY KEY,
-                    variant     TEXT NOT NULL,
-                    status      INT  NOT NULL,
-                    path        TEXT NOT NULL,
-                    ip_hash     TEXT NOT NULL,
-                    ts          TIMESTAMPTZ NOT NULL DEFAULT NOW()
-                )
-            """)
-            cur.execute("""
-                CREATE INDEX IF NOT EXISTS ab_funnel_log_variant_ts_idx
-                ON ab_funnel_log (variant, ts DESC)
-            """)
-            cur.execute("""
-                INSERT INTO ab_funnel_log
-                    (variant, status, path, ip_hash)
-                VALUES (%s, %s, %s, %s)
-            """, (variant, status, path[:200], ip_hash))
-            conn.commit()
-    except Exception:
-        # Never break a response by failing to log
-        note_swallowed_write("ab_funnel_log", where="paywall_hint_middleware._log_ab_event")
-        pass
+    """Log to ab_funnel_log table. Best-effort, never raises. INSERT-only hot
+    path (DDL is bootstrapped once via _ensure_ab_funnel_table) plus a bounded
+    retry on 40P01/40001 so a transient serialization error re-lands the funnel
+    event instead of silently dropping it (the conversion metric depends on it
+    landing)."""
+    if not _ensure_ab_funnel_table():
+        note_swallowed_write("ab_funnel_log",
+                             where="paywall_hint_middleware._log_ab_event")
+        return
+    for _attempt in range(3):
+        try:
+            from db_utils import safe_db
+            with safe_db() as conn:
+                _c = conn.cursor()
+                cur = getattr(_c, "_cur", _c)
+                cur.execute("""
+                    INSERT INTO ab_funnel_log
+                        (variant, status, path, ip_hash)
+                    VALUES (%s, %s, %s, %s)
+                """, (variant, status, path[:200], ip_hash))
+                conn.commit()
+            return
+        except Exception as _e:
+            # 40P01 = deadlock_detected, 40001 = serialization_failure: both are
+            # transient; retry on a fresh conn before giving up so the metric
+            # lands. Any other error is a real failure — note + stop.
+            pgcode = getattr(_e, "pgcode", None)
+            if pgcode in ("40P01", "40001") and _attempt < 2:
+                time.sleep(0.05 * (_attempt + 1))
+                continue
+            note_swallowed_write("ab_funnel_log",
+                                 where="paywall_hint_middleware._log_ab_event")
+            return
 
 
 def _safe_caller_id():

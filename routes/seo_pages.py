@@ -629,6 +629,22 @@ def _render_facility(f: dict, nearby: list) -> str:
 # ═════════════════════════════════════════════════════════════════════
 # MARKET PAGE — /markets/<slug>
 # ═════════════════════════════════════════════════════════════════════
+def _markets_dir_redirect():
+    # r-markets-404 (2026-07-15): unknown /markets/<slug> used to hard-404
+    # (~113/1000 of the GSC "Not found (404)" sample were dead /markets/*).
+    # These are INTERNAL links — /facility/<id> pages emit href="/markets/<slug>"
+    # for every facility, but (a) the city+state round-trip is lossy for
+    # multi-word cities/states (champs-sur-marne-ile-de-france) and (b) legacy
+    # facilities-table cities (Casper WY, Ottawa ON, Dubai) have no roll-up.
+    # Send crawlers to the server-rendered markets hub instead of a dead end
+    # (link equity → real market pages). 302 (not 301) + short cache so a market
+    # self-heals to its own 200 page the moment a facility backfills.
+    _r = redirect("/markets/directory", code=302)
+    _r.headers['Cache-Control'] = 'public, max-age=3600'
+    _r.headers['X-DC-Page-Source'] = 'seo-market-redirect'
+    return _r
+
+
 @seo_pages_bp.get("/markets/<slug>", strict_slashes=False)
 def market_page(slug: str):
     slug = slug.strip().lower()
@@ -641,7 +657,7 @@ def market_page(slug: str):
 
     parts = slug.replace('_', '-').split('-')
     if len(parts) < 2:
-        return _error_page(f"Market slug '{_h(slug)}' invalid.", 404)
+        return _markets_dir_redirect()
     state_guess = parts[-1].upper()
     city_guess = ' '.join(parts[:-1]).title()
 
@@ -676,9 +692,7 @@ def market_page(slug: str):
         except Exception: pass
 
     if not facilities:
-        return _error_page(
-            f"Market '{_h(city_guess)}, {_h(state_guess)}' not found. "
-            "Try a different city or check the URL.", 404)
+        return _markets_dir_redirect()
 
     return Response(
         _render_market(slug, city_guess, state_guess, facilities, stats),

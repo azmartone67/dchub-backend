@@ -31,6 +31,31 @@ logger = logging.getLogger(__name__)
 
 power_plant_bp = Blueprint('power_plant_intel', __name__)
 
+# Tier gating (2026-07-15): /grid/caiso/fuelmix, /grid/caiso/demand and
+# /energy/power-plants/nearby are listed 'pro' in main.py's LOCKED_GATE_MANIFEST
+# but were returning 200 to anonymous callers because no @require_plan decorator
+# was attached (the startup tier-audit canary flagged all three as UNGATED). Use
+# the canonical api_tier_gating.require_plan -- it carries the X-Internal-Key
+# bypass (MCP/scheduler internal calls) AND the dchub.cloud-Origin map bypass
+# (STEP 0b) so the land-power map keeps rendering. Defensive import (same pattern
+# as routes/epa_facilities.py): if api_tier_gating fails to load, FAIL CLOSED
+# (503) rather than silently ungate.
+try:
+    from api_tier_gating import require_plan
+except Exception as _rp_err:  # pragma: no cover
+    logger.warning(
+        "power_plant_intel: require_plan unavailable (%s) -- pro routes will "
+        "fail-closed with 503 until api_tier_gating loads cleanly.", _rp_err)
+
+    def require_plan(min_plan='pro'):  # type: ignore[no-redef]
+        def _decorator(fn):
+            def _wrapped(*a, **kw):
+                return jsonify({'success': False, 'error': 'gate_not_wired',
+                                'message': 'Tier-gating not loaded.'}), 503
+            _wrapped.__name__ = getattr(fn, '__name__', '_wrapped')
+            return _wrapped
+        return _decorator
+
 EIA_API_KEY = os.environ.get('EIA_API_KEY', '')
 EIA_BASE = 'https://api.eia.gov/v2'
 
@@ -240,6 +265,7 @@ def _envirofacts_cwa(state, rows=200):
 
 @power_plant_bp.route('/api/v1/power-plants/nearby')
 @power_plant_bp.route('/api/v1/energy/power-plants/nearby')  # MCP + brain probes use this path; was 404
+@require_plan('pro')
 def power_plants_nearby():
     """Find power plants near coordinates using EIA operating generator capacity data.
 
@@ -1049,6 +1075,7 @@ def _coords_to_state(lat, lng):
 # same _eia_request client, shaped to what the map JS reads.
 
 @power_plant_bp.route('/api/v1/grid/caiso/fuelmix')
+@require_plan('pro')
 def grid_caiso_fuelmix():
     """CAISO current fuel mix. Legacy shape: {success, sources, raw, totalMW,
     renewablesMW, renewablesPct}."""
@@ -1095,6 +1122,7 @@ def grid_caiso_fuelmix():
 
 
 @power_plant_bp.route('/api/v1/grid/caiso/demand')
+@require_plan('pro')
 def grid_caiso_demand():
     """CAISO current demand + upcoming day-ahead forecast peak. Legacy shape:
     {success, currentDemandMW, dayAheadForecastMW}."""
