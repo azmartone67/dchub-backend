@@ -2210,6 +2210,17 @@ try:
     except Exception as _mms:
         import logging
         logging.getLogger(__name__).warning('media_master_shell wiring failed: %s', _mms)
+    # 2026-07-15: Media GROWTH master shell — the level up from cadence: SEE
+    # (follower/X/referral telemetry) -> GOAL (targets + gap) -> MANAGE (one
+    # bounded strategy action). DARK by default: measures+snapshots+persists, only
+    # executes when MEDIA_GROWTH_ACT_ENABLED=1. Kill: MEDIA_GROWTH_DISABLED.
+    try:
+        from routes.media_growth_master_shell import register_media_growth_master_shell
+        register_media_growth_master_shell(app)
+        print("[main] media_growth_master_shell registered: POST /api/v1/admin/media-growth/master-tick", flush=True)
+    except Exception as _mgs:
+        import logging
+        logging.getLogger(__name__).warning('media_growth_master_shell wiring failed: %s', _mgs)
     # 2026-07-04: Coverage & Media master shell — scores the public /whats-new
     # feed for honesty (tracked-vs-verified facilities, no future date, public
     # layers labeled 'unify' not 'discover') and emits honesty-checked external

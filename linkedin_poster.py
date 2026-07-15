@@ -869,6 +869,39 @@ def _check_admin(request):
 
 # ── Route Registration ───────────────────────────────────────
 
+def fetch_linkedin_followers():
+    """Growth telemetry (2026-07-15): the DC Hub company page's TOTAL follower
+    count, for the media_growth_master_shell audience snapshot. Reads
+    /rest/networkSizes/{org}?edgeType=CompanyFollowedByMember → firstDegreeSize.
+    Read-only; no DB writes here (the shell persists the snapshot). FAIL-SOFT:
+    no token / non-200 / missing scope → {ok:False, reason}. The follower-stats
+    read may require r_organization_admin beyond the r_organization_social the
+    poster already holds — a 403 here is expected until that scope is granted and
+    is surfaced (not swallowed) so the shell can report the gap."""
+    import requests as req
+    token = _get_valid_token()
+    if not token:
+        return {"ok": False, "followers": None, "reason": "no_token"}
+    org_id = (os.environ.get("LINKEDIN_ORG_ID", "110894959") or "110894959").strip()
+    org_urn = f"urn:li:organization:{org_id}"
+    api_ver = (os.environ.get("LINKEDIN_API_VERSION", "202601") or "202601").strip()
+    headers = {"Authorization": f"Bearer {token}",
+               "X-Restli-Protocol-Version": "2.0.0",
+               "LinkedIn-Version": api_ver}
+    url = ("https://api.linkedin.com/rest/networkSizes/" + org_urn
+           + "?edgeType=CompanyFollowedByMember")
+    try:
+        r = req.get(url, headers=headers, timeout=10)
+        if r.status_code != 200:
+            return {"ok": False, "followers": None, "reason": f"http_{r.status_code}"}
+        n = (r.json() or {}).get("firstDegreeSize")
+        if n is None:
+            return {"ok": False, "followers": None, "reason": "no_firstDegreeSize"}
+        return {"ok": True, "followers": int(n), "reason": None}
+    except Exception as e:
+        return {"ok": False, "followers": None, "reason": type(e).__name__}
+
+
 def fetch_linkedin_engagement(days=21):
     """r70 (2026-06-03): native LinkedIn engagement → completes the measure→learn
     loop's native half (the on-site press_engagement loop already shipped). For

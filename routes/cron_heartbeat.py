@@ -569,6 +569,15 @@ _DISPATCH = [
      "POST",
      lambda now: now.hour == 13 and now.minute < 55),
 
+    # 2026-07-15: MEDIA GROWTH master shell — daily 14:xx UTC (AFTER the 13 UTC
+    # engagement sync + media master, so it manages on fresh data). SEE->GOAL->
+    # MANAGE toward a follower/citation target. DARK by default (measures only
+    # unless MEDIA_GROWTH_ACT_ENABLED=1). Kill: MEDIA_GROWTH_DISABLED.
+    ("media_growth_master_tick_daily",
+     f"{BASE}/api/v1/admin/media-growth/master-tick",
+     "POST",
+     lambda now: now.hour == 14 and now.minute < 55),
+
     # 2026-07-03: DISTRIBUTION master shell (lever #5) — daily 09:xx UTC. Measures
     # GEO coverage + registry presence, briefs gaps + submits registries. Kill:
     # DISTRIBUTION_MASTER_DISABLED.
