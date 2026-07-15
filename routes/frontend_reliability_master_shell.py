@@ -191,6 +191,28 @@ def _probe_many(specs: dict, timeout: int = _PROBE_TIMEOUT, workers: int = 8) ->
     return out
 
 
+def _confirm_probes(results: dict, specs: dict, timeout: int = _PROBE_TIMEOUT) -> dict:
+    """Serially re-probe any result that came back slow (>= the cap) or errored,
+    to distinguish a GENUINELY slow path from one that only timed out under the
+    tick's own concurrent probe burst (self-contention: the shell probes the very
+    backend serving it). The parallel pass is done, so the retry is uncontended.
+    Keep whichever is better — a real slow path stays slow; a contention blip or an
+    auth/method status (401/405) that the timeout hid is recovered. Bounded: only
+    the already-bad probes are retried, one at a time."""
+    cap_ms = _SLOW_CAP_S * 1000
+    for k, pr in list(results.items()):
+        bad = (not pr.get("ok")) or ((pr.get("ms") or 0) >= cap_ms)
+        if not bad or k not in specs:
+            continue
+        base, path = specs[k]
+        retry = _probe(base, path, timeout)
+        if retry.get("ok") and (not pr.get("ok") or (retry.get("ms") or 9e9) < (pr.get("ms") or 9e9)):
+            results[k] = retry                       # contention blip → the fast truth
+        elif (not pr.get("ok")) and retry.get("http") is not None:
+            results[k] = retry                       # timeout hid a real status (401/405/…)
+    return results
+
+
 def _ensure_tables() -> bool:
     c = _conn()
     if c is None:
@@ -273,7 +295,8 @@ def _measure_slow_path_cache() -> dict:
 
     # probe the worst N distinct paths at the origin (bounded, concurrent)
     ranked = sorted(by_path.items(), key=lambda kv: kv[1]["max_seen"], reverse=True)[:_MAX_PATH_PROBES]
-    probes = _probe_many({api: (_ORIGIN_BASE, api) for api, _ in ranked})
+    l1_specs = {api: (_ORIGIN_BASE, api) for api, _ in ranked}
+    probes = _confirm_probes(_probe_many(l1_specs), l1_specs)
     for api, e in ranked:
         pr = probes.get(api) or {}
         # A status where an anonymous GET probe can't represent the endpoint's real
@@ -360,7 +383,7 @@ def _measure_edge_cacheability() -> dict:
     for path in hot:
         specs[("edge", path)] = (_EDGE_BASE, path)
         specs[("origin", path)] = (_ORIGIN_BASE, path)
-    probes = _probe_many(specs)
+    probes = _confirm_probes(_probe_many(specs), specs)
     for path in hot:
         edge = probes.get(("edge", path)) or {}
         cc = edge.get("cache_control") or ""
