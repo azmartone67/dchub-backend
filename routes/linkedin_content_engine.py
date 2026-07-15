@@ -547,8 +547,12 @@ def _compose_with_claude(story_type: str, data: dict, landing: str,
 
     def _call(model: str) -> str | None:
         body = json.dumps({
+            # 2026-07-15: 1200 clipped rich analyst posts mid-word (the "…21,000+
+            # facil" cut the operator flagged) once the body + source footer ran
+            # long. 1800 gives an analytical LinkedIn post + citation room to
+            # finish; thinking stays OFF so all of it is output, not reasoning.
             "model": model,
-            "max_tokens": 1200,
+            "max_tokens": 1800,
             "system": _VOICE_SYSTEM,
             "messages": [{"role": "user", "content": user_prompt}],
         }).encode("utf-8")

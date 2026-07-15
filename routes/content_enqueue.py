@@ -292,6 +292,37 @@ def _shape_bluesky(mover: dict, arc: dict | None) -> str:
     )[:300]
 
 
+def _compose_linkedin_analytical(mover: dict, arc: dict | None):
+    """2026-07-15 (operator: 'isn't thinking like an analyst'): route the LinkedIn
+    drumbeat through the BRAIN composer — the same Fable analyst that writes the
+    quad-daily posts (the good 'curtailment is a price signal' read) — instead of a
+    formulaic f-string template that hardcodes 'rates BUILD' regardless of the
+    market's real verdict (the BUILD-text vs CAUTION-card contradiction the operator
+    flagged). Returns analytical, verdict-honest text; None to SKIP this cycle when
+    the composer judges nothing new (silence beats template filler). Falls back to
+    the old template ONLY on a hard composer error (no API key / import), so the
+    drumbeat never goes fully dark — but that is the exception, not the default."""
+    try:
+        from routes.linkedin_content_engine import compose_story_post
+        composed = compose_story_post(slot_topic="dcpi_mover") or {}
+        if composed.get("skip"):
+            return None
+        text = composed.get("text")
+        if text and len(text.strip()) >= 200:
+            return text.strip()
+    except Exception as e:
+        try:
+            note_swallowed_write("content_enqueue",
+                                 where=f"_compose_linkedin_analytical:{type(e).__name__}")
+        except Exception:
+            pass
+    # Hard failure only → template fallback (keeps a heartbeat; not the default path).
+    try:
+        return _shape_linkedin(mover, arc)
+    except Exception:
+        return None
+
+
 # ── Metrics-showcase template (r64, 2026-05-30) ─────────────────────
 # A punchy credibility post that weaves DC Hub's AI-adoption + coverage
 # metrics. Distinct from the per-market DCPI shaper above — this is the
@@ -719,8 +750,14 @@ def enqueue():
     # LinkedIn — only enqueue if linkedin_quad_daily didn't already
     # fire this slot (lighter dedup since quad-daily writes its own
     # linkedin_quad_posts table; here we just check social_media_posts).
-    _li_content = _shape_linkedin(mover, arc)
-    if not _already_enqueued_recently("linkedin", _li_content):
+    # 2026-07-15: the LinkedIn drumbeat now reasons like an analyst (brain
+    # composer) instead of a hardcoded-BUILD template. None => the composer had
+    # nothing genuinely new; SKIP the slot rather than post filler.
+    _li_content = _compose_linkedin_analytical(mover, arc)
+    if not _li_content:
+        results["skipped"].append({"platform": "linkedin",
+                                     "reason": "composer_skip_nothing_new"})
+    elif not _already_enqueued_recently("linkedin", _li_content):
         new_id = _enqueue_post(_li_content, "linkedin")
         if new_id:
             results["enqueued"].append({"platform": "linkedin", "id": new_id})
