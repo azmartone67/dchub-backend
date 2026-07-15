@@ -299,13 +299,18 @@ def _measure_slow_path_cache() -> dict:
     probes = _confirm_probes(_probe_many(l1_specs), l1_specs)
     for api, e in ranked:
         pr = probes.get(api) or {}
-        # A status where an anonymous GET probe can't represent the endpoint's real
-        # (cacheable) behaviour is NOT a public SWR-cache candidate: auth-gated /
-        # per-user (401/403 — a blanket cache would leak), wrong-method (405 — e.g.
-        # a POST-only endpoint like /api/v1/demo/ask), or absent (404/410/501). The
-        # 24h bake surfaced /api/v1/demo/ask being mis-flagged this way. Record it
-        # but EXCLUDE from the covered/total ratio (out of scope for this lane).
-        excluded = pr.get("http") in _UNSCOREABLE_HTTP
+        # Only a DEFINITIVE public 200 is scoreable. Everything else is excluded
+        # from the covered/total ratio because it can't safely support "file a
+        # finding": a non-2xx status (401/403 auth-gated — a cache would leak;
+        # 405 wrong-method like the POST-only /api/v1/demo/ask; 404/410/501 absent),
+        # OR a probe that errored/timed out (http is None → ambiguous: auth, backend
+        # load, or genuine — even after the serial confirmation re-probe). Counting
+        # an ambiguous timeout as "uncovered slow" is what made /api/v1/news +
+        # /api/v1/usage flap; being conservative here keeps the shell from filing a
+        # bogus finding. A genuinely slow PUBLIC path still counts (200 + slow + no
+        # cache); the radar catches timeout-only paths independently.
+        _st = pr.get("http")
+        excluded = (_st in _UNSCOREABLE_HTTP) or (_st is None)
         has_cache = bool(pr.get("xcache"))
         fast = pr.get("ok") and (pr.get("ms") or 0) < _SLOW_CAP_S * 1000
         covered = bool(has_cache or fast)
@@ -389,10 +394,14 @@ def _measure_edge_cacheability() -> dict:
         cc = edge.get("cache_control") or ""
         no_store = ("no-store" in cc) or ("max-age=0" in cc and "private" in cc)
         edge_cacheable = edge.get("ok") and not no_store
-        # origin latency (loopback) — is it at least fast even if no-store?
+        # origin latency (loopback). Only a CONFIRMED slow 200 counts as slow — a
+        # timed-out/errored origin probe is ambiguous (backend load, not necessarily
+        # this endpoint) and must not flip the audit. So an endpoint is unhealthy
+        # ONLY when it is no-store AND a definitive slow 200 AND not edge-cacheable.
         origin = probes.get(("origin", path)) or {}
         origin_fast = origin.get("ok") and (origin.get("ms") or 0) < 2000
-        healthy = bool(edge_cacheable or origin_fast)
+        origin_slow_confirmed = origin.get("ok") and (origin.get("ms") or 0) >= 2000
+        healthy = not (no_store and origin_slow_confirmed and not edge_cacheable)
         out["audited"] += 1
         if no_store:
             out["no_store"] += 1
