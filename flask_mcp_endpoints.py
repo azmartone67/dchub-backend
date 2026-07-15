@@ -150,6 +150,18 @@ class _PoolShim:
         return _conn_ctx()
 
 
+def _open_track_conn():
+    """Open ONE fresh autocommit connection for track_tool_call to reuse across
+    its attribution read + mcp_call_log write (was two fresh connects/call).
+    Autocommit → each statement is independent, so a failed read never leaves
+    the connection in an aborted-transaction state for the subsequent write."""
+    if _PSYCOPG_VERSION == 3:
+        return psycopg.connect(NEON_URL, autocommit=True)
+    conn = psycopg.connect(NEON_URL)
+    conn.autocommit = True
+    return conn
+
+
 _pool = _PoolShim()
 
 
@@ -258,9 +270,16 @@ def handoff_funnel():
                 "paywall_to_paid_pct": pct(paid, paywall),
             },
             "biggest_leak": (
+                # r-leak-truth (2026-07-15): relay→human_click is machine-mediated
+                # BY DESIGN — server.mjs auto-redeems the claim ~1s after mint, so
+                # claim_page_opened_at (human_click) is ~0 all-time and is NOT a
+                # leak. Point operators at the real drop-offs: minting relays,
+                # turning machine-redeemed claims into a captured email (identity),
+                # then into paid.
                 "paywall→relay_mint" if (paywall and (minted or 0) < paywall * 0.5)
-                else "relay→human_click" if ((minted or 0) and (opened or 0) < (minted or 0) * 0.5)
-                else "human_click→paid"),
+                else "relay→redeemed" if ((minted or 0) and (used or 0) < (minted or 0) * 0.5)
+                else "redeemed→identified" if ((used or 0) and (emailed or 0) < (used or 0) * 0.5)
+                else "identified→paid"),
         }
     out = {"ok": True, "metric": "agent_to_human_handoff_funnel", "unit": "distinct_sessions"}
     try:
@@ -1491,9 +1510,24 @@ def track_tool_call():
     _platform_was_uuid = bool(_UUID_RE.match(_r_platform.lower()))
     _client_was_uuid   = bool(_UUID_RE.match(_r_client.lower()))
 
-    if _r_session and (_looks_generic(_r_platform) or _looks_generic(_r_client)):
+    # r-poolsat (2026-07-15): reuse ONE fresh connection across this handler's
+    # attribution read + mcp_call_log write. /api/v1/mcp/track fires on EVERY
+    # MCP tool call (~5,400/day — the busiest DB-touching endpoint) and used to
+    # open TWO separate fresh Neon connections per call (this SELECT + the
+    # INSERT below), each paying a full TCP+TLS+Neon-pooler handshake. Under the
+    # Neon connection ceiling that churn drove the ~6s track latency and starved
+    # every other connect (main-pool getconn/validate → "Pool at 60-98% of 80").
+    # One connection, closed in the finally around the call_log write below.
+    _tc_conn = None
+    try:
+        _tc_conn = _open_track_conn()
+    except Exception:
+        _tc_conn = None
+
+    if (_r_session and _tc_conn is not None
+            and (_looks_generic(_r_platform) or _looks_generic(_r_client))):
         try:
-            with _pool.connection() as _sc_conn, _sc_conn.cursor() as _sc_cur:
+            with _tc_conn.cursor() as _sc_cur:
                 _sc_cur.execute(
                     "SELECT platform, client_name FROM mcp_sessions WHERE session_id = %s",
                     (str(_r_session)[:200],),
@@ -1657,7 +1691,9 @@ def track_tool_call():
             pass  # telemetry side-channel — never block the track callback
 
     try:
-        with _pool.connection() as conn, conn.cursor() as cur:
+        if _tc_conn is None:
+            _tc_conn = _open_track_conn()
+        with _tc_conn.cursor() as cur:
             cur.execute(
                 """INSERT INTO mcp_call_log
                      (timestamp, tool, params, platform, api_key, tier,
@@ -1684,6 +1720,12 @@ def track_tool_call():
             )
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 200
+    finally:
+        if _tc_conn is not None:
+            try:
+                _tc_conn.close()
+            except Exception:
+                pass
 
     return jsonify({"ok": True}), 200
 

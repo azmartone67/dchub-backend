@@ -966,6 +966,22 @@ _DISPATCH = [
      "POST",
      lambda now: now.weekday() == 6 and now.hour == 15 and now.minute < 55
                  and os.environ.get("METRIC_TRUTH_CHECK_DISABLE") != "1"),
+
+    # 2026-07-15 (r-slug-freeze recurrence guard): FREEZE canonical_slug for
+    # facilities ingested AFTER the 2026-07-03 one-shot admin freeze. That
+    # freeze only ran via a manual admin POST, so every newly-discovered row
+    # keeps canonical_slug NULL and can later re-hash exactly like the 6,168
+    # /facilities URLs that broke. This nightly tick re-runs the SET-ONCE
+    # backfill (WHERE canonical_slug IS NULL — it can NEVER overwrite a frozen
+    # value; the slug is pinned once and never rewritten). Endpoint is
+    # idempotent (set-once + ON CONFLICT DO NOTHING). Admin-gated via _hit().
+    # Daily 23:xx UTC (empty slot); narrow minute window bounds re-fires.
+    # Kill: SLUG_FREEZE_CRON_DISABLE=1.
+    ("slug_freeze_backfill_daily",
+     f"{BASE}/api/v1/admin/slug/freeze",
+     "POST",
+     lambda now: now.hour == 23 and now.minute < 8
+                 and os.environ.get("SLUG_FREEZE_CRON_DISABLE") != "1"),
 ]
 
 # r-poolfix (2026-07-04): the DB/LLM-heavy ticks. When a herd of these comes
@@ -991,6 +1007,7 @@ _HEAVY_LABELS = frozenset({
     "strategic_synthesis_weekly", "strategic_digest_weekly",
     "analyst_note_weekly", "metric_truth_check_weekly",
     "dark_zones_rebuild_daily",
+    "slug_freeze_backfill_daily",
 })
 
 

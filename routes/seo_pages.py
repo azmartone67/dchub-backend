@@ -1640,7 +1640,7 @@ def facilities_directory(page: int = 1):
                         "  AND COALESCE(is_duplicate,0) = 0")
             total = int((cur.fetchone() or [0])[0] or 0)
             cur.execute("""
-                SELECT name, provider, city, state, country
+                SELECT name, provider, city, state, country, canonical_slug
                   FROM discovered_facilities
                  WHERE name IS NOT NULL AND name <> ''
                    AND COALESCE(is_duplicate,0) = 0
@@ -1658,8 +1658,14 @@ def facilities_directory(page: int = 1):
     if page > pages:
         return _error_page("Page out of range", 404)
     items = []
-    for name, provider, city, state, country in rows:
-        slug = _facility_canonical_slug(provider, name)
+    for name, provider, city, state, country, canonical_slug in rows:
+        # r-frozen-slug (2026-07-15): serve the STORED canonical_slug (frozen,
+        # immutable). Recomputing from live provider/name drifts the URL the
+        # moment either string is cleaned on re-ingestion → a self-inflicted
+        # 301 (the exact recurrence this closes). Fall back to a live compute
+        # only for rows not yet frozen (canonical_slug NULL); the daily
+        # slug-freeze cron backfills those set-once so the link converges.
+        slug = (canonical_slug or "").strip() or _facility_canonical_slug(provider, name)
         if not slug:
             continue
         loc = ", ".join([x for x in (city, state, country) if x])

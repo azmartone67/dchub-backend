@@ -61,7 +61,7 @@ import time
 from datetime import datetime, timezone
 from html import escape as _esc
 
-from flask import Blueprint, Response, jsonify, request
+from flask import Blueprint, Response, jsonify, redirect, request
 from routes._swallowed_writes import note_swallowed_write
 
 
@@ -904,6 +904,25 @@ def claim_form(token: str):
         count = int(row[0] or 0)
         used_at = row[2]
         if used_at is not None:
+            # r-graceful-machine-burn (2026-07-15): claim_used_at is set by BOTH a
+            # genuine human form-submit (claim_email IS NOT NULL) AND the by-design
+            # server.mjs machine auto-redeem, which burns the single-use token ~1s
+            # after mint (claim_email IS NULL). A human who later clicks the relayed
+            # URL in the machine case double-used nothing — don't dead-end them on a
+            # bare 410; forward them to signup for their own free key. Keep the 410
+            # only for a real human re-use, and fail toward it on any DB error.
+            claimed_by_human = True
+            try:
+                with c.cursor() as cur:
+                    cur.execute(
+                        "SELECT claim_email FROM mcp_high_intent_sessions "
+                        "WHERE mcp_session_id = %s AND tool_name = %s", (sid, tool))
+                    _r = cur.fetchone()
+                claimed_by_human = bool(_r and _r[0])
+            except Exception:
+                claimed_by_human = True
+            if not claimed_by_human:
+                return redirect("https://dchub.cloud/signup?src=claim_relay", code=302)
             body = _render_form(tool, count,
                                 err="This claim was already used. "
                                     "Get another key at dchub.cloud/signup.")
