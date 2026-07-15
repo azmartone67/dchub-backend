@@ -941,6 +941,24 @@ def _card_url_for(story_type: str, data: dict, text: str) -> str | None:
         return None
 
 
+def _data_card_url(card: dict) -> str | None:
+    """Build a branded DATA-CARD url (style=data_card) from an editorial lead's
+    `card` spec — {kind, nums:{v,t,m,dl,c,tl}}. og_cards._draw_data_card owns the
+    per-kind layout + copy; the lead's LIVE canonical numbers ride along as params
+    so the card always shows real, current figures. Returns None on any problem so
+    the caller keeps the story-type card."""
+    try:
+        if not card or not card.get("kind"):
+            return None
+        params = {"style": "data_card", "kind": str(card["kind"])[:48]}
+        for k, val in (card.get("nums") or {}).items():
+            if k in ("v", "t", "m", "dl", "c", "tl") and val not in (None, ""):
+                params[k] = int(val)
+        return _OG_DYNAMIC_BASE + "?" + urllib.parse.urlencode(params)
+    except Exception:
+        return None
+
+
 def compose_story_post(slot_topic: str | None = None, lead: dict | None = None) -> dict:
     """Compose a story-driven LinkedIn post.
 
@@ -982,6 +1000,15 @@ def compose_story_post(slot_topic: str | None = None, lead: dict | None = None) 
     _dyn = _card_url_for(story_type, data, text)
     if _dyn:
         og_url = _dyn
+
+    # 2026-07-14: a capability / platform-update lead (editorial cap_* kinds)
+    # carries a `card` spec — render the branded DATA CARD (big hero number +
+    # kind-specific viz) instead of the generic story-type ai_hero card. This is
+    # what replaces the "ugly gray" card the operator flagged for these posts.
+    if lead and isinstance(lead, dict) and lead.get("card"):
+        _dc = _data_card_url(lead["card"])
+        if _dc:
+            og_url = _dc
 
     return {
         "story_type":   story_type,

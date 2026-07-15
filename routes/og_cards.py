@@ -1159,6 +1159,273 @@ DAILY_STYLES = {
     6: 'data_brutal',   # Sunday     — weekend DCPI score card
 }
 
+
+# ---------------------------------------------------------------------------
+# DATA CARD (2026-07-14) — stat-forward branded card for the capability /
+# platform-update stories (the editorial `cap_*` kinds). A huge hero number +
+# unit + a kind-specific mini-viz (ratio bar / chips / stat grid) on the
+# violet-cyan brand. Numbers come from the lead's LIVE canonical values
+# (pr['card']['nums']); the per-kind layout + copy live here. This replaces the
+# generic ai_hero/fallback card for capability posts (the "ugly gray" the
+# operator flagged). Standalone-styled so it never depends on a photo backdrop.
+# ---------------------------------------------------------------------------
+_DC_BORDER = (40, 50, 78)
+_DC_CHIP   = (30, 38, 66)
+_DC_BG     = (9, 12, 24)
+
+
+def _dc_hgrad(img, x0, y0, x1, y1, cl, cr):
+    from PIL import ImageDraw
+    d = ImageDraw.Draw(img); n = max(1, x1 - x0)
+    for i in range(n):
+        t = i / n
+        c = tuple(int(cl[k] + (cr[k] - cl[k]) * t) for k in range(3))
+        d.line([(x0 + i, y0), (x0 + i, y1)], fill=c)
+
+
+def _dc_glow(img, cx, cy, r, color, a=46):
+    from PIL import Image, ImageDraw
+    g = Image.new("RGBA", img.size, (0, 0, 0, 0)); gd = ImageDraw.Draw(g); steps = 40
+    for i in range(steps, 0, -1):
+        rr = int(r * i / steps); aa = int(a * (1 - i / steps))
+        gd.ellipse([cx - rr, cy - rr, cx + rr, cy + rr], fill=color + (aa,))
+    img.alpha_composite(g)
+
+
+def _dc_tw(d, t, f, tr=0):
+    b = d.textbbox((0, 0), t, font=f)
+    if tr == 0:
+        return b[2] - b[0], b[3] - b[1]
+    w = 0
+    for ch in t:
+        bb = d.textbbox((0, 0), ch, font=f); w += (bb[2] - bb[0]) + tr
+    return w, b[3] - b[1]
+
+
+def _dc_text(d, xy, t, f, fill, tr=0):
+    if tr == 0:
+        d.text(xy, t, font=f, fill=fill); return
+    x, y = xy
+    for ch in t:
+        d.text((x, y), ch, font=f, fill=fill)
+        bb = d.textbbox((0, 0), ch, font=f); x += (bb[2] - bb[0]) + tr
+
+
+def _dc_wrap(d, text, f, maxw):
+    out, cur = [], ""
+    for w_ in (text or "").split():
+        cand = (cur + " " + w_).strip()
+        if _dc_tw(d, cand, f)[0] <= maxw:
+            cur = cand
+        else:
+            if cur:
+                out.append(cur)
+            cur = w_
+    if cur:
+        out.append(cur)
+    return out
+
+
+def _dc_chrome(img, spec):
+    from PIL import ImageDraw
+    _dc_hgrad(img, 0, 0, W, 7, PURPLE, CYAN)
+    d = ImageDraw.Draw(img)
+    M = 68
+    _brand_chip(d, M, 44, 60)
+    _dc_text(d, (M + 78, 52), "DC HUB", _mono(30), CYAN, tr=4)
+    _dc_text(d, (M + 78, 88), "THE LIVE DATA LAYER FOR AI AGENTS", _mono(15), DIM, tr=2)
+    eb = (spec.get("eyebrow") or "").upper(); ef = _mono(18)
+    ew, _ = _dc_tw(d, eb, ef, tr=2); px1 = W - M; px0 = px1 - (ew + 44)
+    try:
+        d.rounded_rectangle([px0, 52, px1, 90], radius=19, outline=PURPLE_LT, width=2)
+    except Exception:
+        d.rectangle([px0, 52, px1, 90], outline=PURPLE_LT, width=2)
+    _dc_text(d, (px0 + 22, 61), eb, ef, PURPLE_LT, tr=2)
+    fy = 556
+    d.line([(M, fy - 12), (W - M, fy - 12)], fill=_DC_BORDER, width=1)
+    _brand_chip(d, M, fy, 44)
+    _dc_text(d, (M + 58, fy + 3), "dchub.cloud", _mono(22), TEXT, tr=1)
+    _dc_text(d, (M + 58, fy + 29), "CITE AS DC HUB (dchub.cloud)", _mono(13), DIM, tr=1)
+    tag = spec.get("footer_tag", "")
+    if tag:
+        tf = _mono(17); tgw, _ = _dc_tw(d, tag, tf, tr=1)
+        _dc_text(d, (W - M - tgw - 6, fy + 13), tag, tf, PURPLE_LT, tr=1)
+
+
+def _dc_ratio(img, vx0, vy, viz):
+    from PIL import ImageDraw
+    d = ImageDraw.Draw(img); vx1 = W - 68
+    _dc_text(d, (vx0, vy), viz["label"].upper(), _mono(15), MUTED, tr=2)
+    by = vy + 32; bw = vx1 - vx0
+    _rounded_rect(d, [vx0, by, vx1, by + 30], 8, PANEL)
+    frac = max(0.05, min(1.0, viz["filled"] / max(1, viz["total"]))); fw = int(bw * frac)
+    _dc_hgrad(img, vx0, by + 1, vx0 + fw, by + 29, PURPLE, CYAN)
+    d = ImageDraw.Draw(img)
+    try:
+        d.rounded_rectangle([vx0, by, vx1, by + 30], radius=8, outline=_DC_BORDER, width=1)
+    except Exception:
+        d.rectangle([vx0, by, vx1, by + 30], outline=_DC_BORDER, width=1)
+    d.text((vx0, by + 42), f"{viz['filled']:,}", font=_font(22), fill=CYAN)
+    tt = f"{viz['total']:,} tracked"; tf = _font(20, bold=False); tgw, _ = _dc_tw(d, tt, tf)
+    d.text((vx1 - tgw, by + 44), tt, font=tf, fill=MUTED)
+
+
+def _dc_chips(img, vx0, vy, viz):
+    from PIL import ImageDraw
+    d = ImageDraw.Draw(img); vx1 = W - 68
+    _dc_text(d, (vx0, vy), viz["label"].upper(), _mono(15), MUTED, tr=2)
+    y = vy + 32
+    for c in viz["chips"]:
+        cf = _mono(20); cwd, _ = _dc_tw(d, c, cf)
+        _rounded_rect(d, [vx0, y, min(vx1, vx0 + cwd + 40), y + 44], 10, _DC_CHIP)
+        try:
+            d.rounded_rectangle([vx0, y, min(vx1, vx0 + cwd + 40), y + 44], radius=10, outline=PURPLE, width=1)
+        except Exception:
+            pass
+        d.text((vx0 + 20, y + 11), c, font=cf, fill=PURPLE_LT); y += 58
+
+
+def _dc_statgrid(img, x0, y0, x1, stats, cols=2, big=False):
+    from PIL import ImageDraw
+    d = ImageDraw.Draw(img)
+    gap = 22; cellw = (x1 - x0 - gap * (cols - 1)) // cols
+    nf = _font(52 if big else 40); lf = _mono(16 if big else 14)
+    ch = 100 if big else 82; rh = 118 if big else 96
+    for i, s in enumerate(stats):
+        r = i // cols; c = i % cols
+        cx = x0 + c * (cellw + gap); cy = y0 + r * rh
+        _rounded_rect(d, [cx, cy, cx + cellw, cy + ch], 14, PANEL)
+        try:
+            d.rounded_rectangle([cx, cy, cx + cellw, cy + ch], radius=14, outline=_DC_BORDER, width=1)
+        except Exception:
+            pass
+        d.rectangle([cx, cy + 14, cx + 4, cy + ch - 14], fill=CYAN)
+        d.text((cx + 22, cy + (16 if big else 12)), s["n"], font=nf, fill=WHITE)
+        _dc_text(d, (cx + 24, cy + (74 if big else 58)), s["label"].upper(), lf, MUTED, tr=1)
+
+
+def _dc_nums(nums):
+    base = {"v": 4923, "t": 21958, "m": 316, "dl": 4135, "c": 181, "tl": 73}
+    for k in base:
+        try:
+            if nums and nums.get(k) not in (None, ""):
+                base[k] = int(float(nums[k]))
+        except Exception:
+            pass
+    return base
+
+
+def _dc_spec(kind, nums):
+    """Concrete card spec for a cap_* kind, numbers filled from live values."""
+    n = _dc_nums(nums)
+    v, t, m, dl, c, tl = n["v"], n["t"], n["m"], n["dl"], n["c"], n["tl"]
+    specs = {
+        "provenance_envelope": {
+            "eyebrow": "Platform update", "hero": "num", "number": f"{v:,}",
+            "unit": "facilities · analyst-verified",
+            "descriptor": ("Every record ships source, method, as-of and a CC-BY-4.0 "
+                           "citation, so agents cite live data with a stated confidence."),
+            "viz": {"type": "ratio", "label": "verified inside the tracked frontier",
+                    "filled": v, "total": t},
+            "footer_tag": "PROVENANCE ENVELOPE v1"},
+        "intl_grid_telemetry": {
+            "eyebrow": "Live grid telemetry", "hero": "num", "number": "5",
+            "unit": "continents · one live scoreboard",
+            "descriptor": ("Japan, South Korea and Brazil now rank beside the US ISOs, EU, "
+                           "Great Britain and Taiwan on one renewable-share scale — keyless."),
+            "viz": {"type": "chips", "label": "newly on the board",
+                    "chips": ["JAPAN — OCCTO", "S. KOREA — KPX", "BRAZIL — ONS"]},
+            "footer_tag": "GET_GRID_SCOREBOARD · KEYLESS"},
+        "agent_memory": {
+            "eyebrow": "New capability", "hero": "num", "number": "2",
+            "unit": "new primitives · agents now remember",
+            "descriptor": ("save_site builds a durable shortlist; get_changes returns "
+                           "per-site deltas next session — not the whole planet."),
+            "viz": {"type": "chips", "label": "the memory loop",
+                    "chips": ["save_site  →  shortlist", "get_changes  →  deltas"]},
+            "footer_tag": "AGENT MEMORY"},
+        "error_envelope": {
+            "eyebrow": "Co-designed with Gemini", "hero": "grid",
+            "kicker": "error_version:1 — one in-band, versioned error contract",
+            "stats": [{"n": f"{dl:,}", "label": "deals"}, {"n": f"{m:,}", "label": "markets"},
+                      {"n": f"{t:,}", "label": "facilities"}, {"n": f"{tl:,}", "label": "tools covered"}],
+            "descriptor": ("A bad parameter returns a deterministic recovery hint with a "
+                           "severity class — the agent auto-corrects instead of dead-ending."),
+            "footer_tag": "/docs/error-codes"},
+        "tool_catalog": {
+            "eyebrow": "MCP surface", "hero": "num", "number": f"{tl:,}",
+            "unit": "live agent tools · +2 this ship",
+            "descriptor": ("Retirement headroom (filed US retirements + nearest substations) "
+                           "and physics-bounded latency clustering just shipped."),
+            "viz": {"type": "chips", "label": "newest primitives",
+                    "chips": ["get_retirement_headroom", "cluster_sites_by_latency"]},
+            "footer_tag": "/capabilities · %d TOOLS" % tl},
+        "weekly_ledger": {
+            "eyebrow": "The DC Hub ledger", "hero": "grid",
+            "kicker": "One live, machine-readable layer — refreshed daily",
+            "stats": [{"n": f"{t:,}", "label": "facilities tracked"},
+                      {"n": f"{dl:,}", "label": "deals tracked"},
+                      {"n": f"{m:,}", "label": "DCPI markets"},
+                      {"n": f"{c:,}+", "label": "countries"}],
+            "descriptor": (f"{v:,} analyst-verified · open under CC-BY-4.0 · "
+                           f"cite as DC Hub (dchub.cloud)"),
+            "footer_tag": "REFRESHED DAILY · CC-BY-4.0"},
+    }
+    return specs.get(kind)
+
+
+def _draw_data_card(pr):
+    """Stat-forward capability card. Reads pr['card']={'kind':..,'nums':{..}};
+    falls back to a generic number card from the title if the kind is unknown so
+    the route never breaks (crawlers must never get a 4xx)."""
+    from PIL import Image, ImageDraw
+    card = (pr or {}).get("card") or {}
+    kind = card.get("kind") or (pr or {}).get("topic") or ""
+    spec = _dc_spec(kind, card.get("nums"))
+    if spec is None:
+        # generic fallback spec from the title/subheadline
+        title = str((pr or {}).get("title") or "DC Hub")[:140]
+        spec = {"eyebrow": "DC Hub Media", "hero": "num", "number": "",
+                "unit": (pr or {}).get("subheadline") or "the live data layer for AI agents",
+                "descriptor": title, "footer_tag": "dchub.cloud"}
+
+    img = Image.new("RGBA", (W, H), _DC_BG + (255,))
+    _dc_glow(img, 120, 90, 520, PURPLE, 46)
+    _dc_glow(img, 1120, 600, 460, CYAN, 28)
+    _dc_chrome(img, spec)
+    d = ImageDraw.Draw(img); M = 68
+
+    if spec.get("hero") == "grid":
+        _dc_text(d, (M, 150), (spec.get("kicker") or "").upper(), _mono(19), CYAN, tr=2)
+        _dc_statgrid(img, M, 192, W - M, spec["stats"], cols=2, big=True)
+        d = ImageDraw.Draw(img)
+        dy = 458
+        for l in _dc_wrap(d, spec.get("descriptor", ""), _font(24, bold=False), W - 2 * M)[:2]:
+            d.text((M, dy), l, font=_font(24, bold=False), fill=MUTED); dy += 32
+        return img.convert("RGB")
+
+    # number hero (left) + optional viz (upper-right) + full-width descriptor
+    ny = 166
+    num = spec.get("number") or ""
+    if num:
+        nf = _font(150); d.text((M - 4, ny), num, font=nf, fill=WHITE)
+        nw, _ = _dc_tw(d, num, nf)
+        d.rectangle([M, ny + 168, M + min(nw, 360), ny + 176], fill=CYAN)
+    if spec.get("unit"):
+        _dc_text(d, (M, ny + 190), spec["unit"].upper(), _mono(25), CYAN, tr=2)
+    viz = spec.get("viz")
+    if viz:
+        if viz["type"] == "ratio":
+            _dc_ratio(img, 720, 206, viz)
+        elif viz["type"] == "chips":
+            _dc_chips(img, 720, 196, viz)
+        d = ImageDraw.Draw(img)
+    dy = 398; df = _font(29, bold=False)
+    for l in _dc_wrap(d, spec.get("descriptor", ""), df, W - 2 * M)[:3]:
+        d.text((M, dy), l, font=df, fill=TEXT); dy += 39
+    return img.convert("RGB")
+
+
 def todays_style():
     """The style for today (UTC), per user-chosen Mon-Sun rotation.
 
@@ -1173,6 +1440,7 @@ STYLE_MAP = {
     'editorial':   _draw_editorial,
     'infographic': _draw_infographic,
     'ai_hero':     _draw_ai_hero,
+    'data_card':   _draw_data_card,
 }
 
 
@@ -1551,6 +1819,19 @@ def og_card_dynamic():
         'slug':        _slug,
         'topic':       (args.get('topic') or '').strip()[:80],
     }
+
+    # data_card (2026-07-14): capability/platform stat card. `kind` selects the
+    # per-kind layout; the 6 canonical numbers ride along as params so the card
+    # shows the lead's LIVE values (v=verified, t=tracked, m=markets, dl=deals,
+    # c=countries, tl=tools). Absent numbers fall back to canonical constants.
+    _kind = (args.get('kind') or '').strip()[:48]
+    if style == 'data_card' or _kind:
+        _nums = {}
+        for _k in ('v', 't', 'm', 'dl', 'c', 'tl'):
+            _vv = args.get(_k)
+            if _vv not in (None, ''):
+                _nums[_k] = _vv
+        pr['card'] = {'kind': _kind, 'nums': _nums}
 
     try:
         fn = STYLE_MAP.get(style, _draw_editorial)

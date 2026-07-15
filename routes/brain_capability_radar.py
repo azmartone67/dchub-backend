@@ -401,7 +401,7 @@ def capability_radar_leads() -> list[dict]:
                         trend = src.get("trend", "")
                         if kind == "data_milestone" and prev and mode == "launch":
                             trend = f"+{(cur_val / prev - 1) * 100:.0f}% since last reported. " + trend
-                        leads.append({
+                        lead = {
                             "kind": kind,
                             "headline_number": headline,
                             "trend": trend,
@@ -411,7 +411,24 @@ def capability_radar_leads() -> list[dict]:
                                           else f"cap:{src['key']}" if mode == "evergreen"
                                           else f"milestone:{src['key']}"),
                             "score": float(src.get("score", 70)),
-                        })
+                        }
+                        # 2026-07-14: evergreen cap_* leads carry a `card` spec so the
+                        # publisher renders the branded data-card (style=data_card) with
+                        # this lead's LIVE canonical numbers, instead of the generic
+                        # ai_hero card. Keyed by src['key'] → og_cards._dc_spec layout.
+                        if mode == "evergreen":
+                            lead["card"] = {
+                                "kind": src["key"],
+                                "nums": {
+                                    "v":  int(r.get("verified")  or 0),
+                                    "t":  int(r.get("tracked")   or 0),
+                                    "m":  int(r.get("markets")   or 0),
+                                    "dl": int(r.get("deals")     or 0),
+                                    "c":  int(r.get("countries") or 0),
+                                    "tl": int(r.get("tools")     or 0),
+                                },
+                            }
+                        leads.append(lead)
                     except Exception as e:
                         logger.warning("[capability-radar] source %s skipped: %s",
                                        src.get("key"), str(e)[:140])
