@@ -322,6 +322,32 @@ def _compose_linkedin_analytical(mover: dict, arc: dict | None):
     return None
 
 
+def _shorten_analytical(li_text, max_chars: int):
+    """2026-07-15: derive a <=max_chars X/Bluesky post from the composed analytical
+    LinkedIn text — the lead analytical sentence(s) + the post's own DCPI link — so
+    the short platforms speak in the SAME analyst voice (not the old 'rates BUILD'
+    template) at ZERO extra LLM cost. Returns None when there's nothing usable to
+    shorten (→ SKIP that platform; silence beats a template)."""
+    import re
+    if not li_text:
+        return None
+    m = re.search(r'https?://\S+', li_text)
+    url = (m.group(0).rstrip('.,)') if m else "")
+    # analytical body = everything before the first URL / footer / hashtags / stamp
+    body = re.split(r'https?://|\n\nSource:|\n\nFull index|\n\n#|\n\nDaily|\n\n\(DC Hub data',
+                    li_text)[0].strip()
+    budget = max_chars - (len(url) + 2 if url else 0)
+    out = ""
+    for sent in re.split(r'(?<=[.!?])\s+', body):
+        cand = (out + " " + sent).strip()
+        if len(cand) > budget:
+            break
+        out = cand
+    if len(out) < 60:
+        return None
+    return (f"{out}\n\n{url}" if url else out)[:max_chars]
+
+
 # ── Metrics-showcase template (r64, 2026-05-30) ─────────────────────
 # A punchy credibility post that weaves DC Hub's AI-adoption + coverage
 # metrics. Distinct from the per-market DCPI shaper above — this is the
@@ -767,9 +793,15 @@ def enqueue():
         results["skipped"].append({"platform": "linkedin",
                                      "reason": "dedup_hit"})
 
-    # Twitter
-    _tw_content = _shape_twitter(mover, arc)
-    if not _already_enqueued_recently("twitter", _tw_content):
+    # Twitter / Bluesky — 2026-07-15: same analyst voice as LinkedIn, DERIVED from
+    # the composed analysis (lead sentence + link), never the 'rates BUILD'
+    # template. None when there's no analytical source (LinkedIn skipped or nothing
+    # to shorten) → SKIP that platform. Silence beats a template.
+    _tw_content = _shorten_analytical(_li_content, 275)
+    if not _tw_content:
+        results["skipped"].append({"platform": "twitter",
+                                     "reason": "no_analytical_source"})
+    elif not _already_enqueued_recently("twitter", _tw_content):
         new_id = _enqueue_post(_tw_content, "twitter")
         if new_id:
             results["enqueued"].append({"platform": "twitter", "id": new_id})
@@ -781,8 +813,11 @@ def enqueue():
                                      "reason": "dedup_hit"})
 
     # Bluesky
-    _bs_content = _shape_bluesky(mover, arc)
-    if not _already_enqueued_recently("bluesky", _bs_content):
+    _bs_content = _shorten_analytical(_li_content, 295)
+    if not _bs_content:
+        results["skipped"].append({"platform": "bluesky",
+                                     "reason": "no_analytical_source"})
+    elif not _already_enqueued_recently("bluesky", _bs_content):
         new_id = _enqueue_post(_bs_content, "bluesky")
         if new_id:
             results["enqueued"].append({"platform": "bluesky", "id": new_id})
