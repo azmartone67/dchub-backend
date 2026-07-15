@@ -266,8 +266,8 @@ REGISTRY = [
         "source_url": "https://dchub.cloud/docs/error-codes",
         "headline": lambda r: (f"{int(r['deals']):,} deals, {int(r['markets'])} markets and "
                                f"{int(r['tracked']):,} facilities now speak one versioned error "
-                               f"contract — DC Hub shipped error_version:1, an in-band contract "
-                               f"co-designed with the Gemini team, so a bad parameter returns a "
+                               f"contract — DC Hub shipped error_version:1, an in-band, "
+                               f"machine-readable contract, so a bad parameter returns a "
                                f"deterministic recovery hint, not a dead end"),
         "trend": ("a machine-readable error contract with a severity class and server-computed "
                   "suggested_params; the taxonomy is published at /docs/error-codes"),

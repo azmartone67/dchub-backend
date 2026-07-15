@@ -1383,7 +1383,7 @@ def _dc_spec(kind, nums):
                     "chips": ["save_site  →  shortlist", "get_changes  →  deltas"]},
             "footer_tag": "AGENT MEMORY"},
         "error_envelope": {
-            "eyebrow": "Co-designed with Gemini", "hero": "grid",
+            "eyebrow": "Error contract", "hero": "grid",
             "kicker": "error_version:1 — one in-band, versioned error contract",
             "stats": [{"n": f"{dl:,}", "label": "deals"}, {"n": f"{m:,}", "label": "markets"},
                       {"n": f"{t:,}", "label": "facilities"}, {"n": f"{tl:,}", "label": "tools covered"}],
