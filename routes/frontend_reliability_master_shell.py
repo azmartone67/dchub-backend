@@ -71,6 +71,9 @@ _SLOW_CAP_S = float(os.environ.get("FRONTEND_RELIABILITY_SLOW_CAP_S", "5"))
 _MEASURE_WINDOW_DAYS = 14
 _MAX_PATH_PROBES = 5        # lane 1: bound origin probes/tick
 _PROBE_TIMEOUT = 5          # seconds/probe (a cold slow path trips this → "slow")
+# HTTP statuses where an anon GET probe can't represent the endpoint → excluded
+# from lane 1's covered/total ratio (auth-gated, wrong-method, absent).
+_UNSCOREABLE_HTTP = (401, 403, 404, 405, 410, 501)
 
 # Hot PUBLIC, non-personalized read endpoints (the API paths behind public pages,
 # from the consistency_radar probe set). Lane 3 audits these for no-store+slow.
@@ -238,7 +241,7 @@ def _measure_slow_path_cache() -> dict:
                 SELECT detail, url, status, COALESCE(seen_count, 0), resolved_at
                   FROM brain_findings
                  WHERE issue IN ('frontend_endpoint_slow', 'frontend_endpoint_unreachable')
-                   AND last_seen >= NOW() - %s * INTERVAL '1 day'
+                   AND last_seen >= NOW() - INTERVAL '%s days'
                  ORDER BY COALESCE(seen_count,0) DESC LIMIT 60
             """ % int(_MEASURE_WINDOW_DAYS))
             for detail, url, status, seen, resolved_at in cur.fetchall():
@@ -273,10 +276,13 @@ def _measure_slow_path_cache() -> dict:
     probes = _probe_many({api: (_ORIGIN_BASE, api) for api, _ in ranked})
     for api, e in ranked:
         pr = probes.get(api) or {}
-        # An auth-gated / per-user path (401/403 to an anon probe) is NOT a public
-        # SWR-cache candidate — a blanket cache would leak or be wrong. Record it
-        # but EXCLUDE it from the covered/total ratio (out of scope for this lane).
-        auth_gated = pr.get("http") in (401, 403)
+        # A status where an anonymous GET probe can't represent the endpoint's real
+        # (cacheable) behaviour is NOT a public SWR-cache candidate: auth-gated /
+        # per-user (401/403 — a blanket cache would leak), wrong-method (405 — e.g.
+        # a POST-only endpoint like /api/v1/demo/ask), or absent (404/410/501). The
+        # 24h bake surfaced /api/v1/demo/ask being mis-flagged this way. Record it
+        # but EXCLUDE from the covered/total ratio (out of scope for this lane).
+        excluded = pr.get("http") in _UNSCOREABLE_HTTP
         has_cache = bool(pr.get("xcache"))
         fast = pr.get("ok") and (pr.get("ms") or 0) < _SLOW_CAP_S * 1000
         covered = bool(has_cache or fast)
@@ -284,9 +290,9 @@ def _measure_slow_path_cache() -> dict:
             "api_path": api, "pages": sorted(e["pages"])[:4], "max_seen": e["max_seen"],
             "worst_took_s": e["worst_took_s"], "open": e["open"],
             "probe_ms": pr.get("ms"), "probe_http": pr.get("http"),
-            "x_cache": pr.get("xcache"), "covered": covered, "auth_gated": auth_gated,
+            "x_cache": pr.get("xcache"), "covered": covered, "excluded": excluded,
         })
-    scoreable = [p for p in out["slow_paths"] if not p["auth_gated"]]
+    scoreable = [p for p in out["slow_paths"] if not p["excluded"]]
     out["total_paths"] = len(scoreable)
     out["covered_paths"] = sum(1 for p in scoreable if p["covered"])
     return out
@@ -464,7 +470,7 @@ def tier3_act(m: dict, levers: dict) -> dict:
     if lever == "slow_path_cache":
         slow = m.get("slow_path_cache") or {}
         worst = next((p for p in (slow.get("slow_paths") or [])
-                      if not p.get("covered") and not p.get("auth_gated")), None)
+                      if not p.get("covered") and not p.get("excluded")), None)
         if not worst:
             return {"action": "none", "reason": "no uncached slow path"}
         detail = (
