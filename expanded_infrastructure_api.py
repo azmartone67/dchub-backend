@@ -496,6 +496,12 @@ def get_substations():
                 return None
             return round(v, 1) if v > 0 else None
 
+        _OP_PLACEHOLDERS = {'unknown', 'discovered', 'n/a', 'na', 'none', 'null',
+                            'not available', 'not applicable', 'tbd', 'other', ''}
+        def _clean_op(v):
+            v = (v or '').strip()
+            return None if v.lower() in _OP_PLACEHOLDERS else v
+
         substations = []
         for row in rows:
             r = dict(zip(cols, row))
@@ -524,7 +530,7 @@ def get_substations():
                 # r43: `owner` is 100% null in the table; the populated column is
                 # `operator` (~47k substations). Surface it (falling back to owner)
                 # so paid users see the utility instead of a blank field.
-                'operator': ((r.get('operator') or r.get('owner')) if _full else None),
+                'operator': ((_clean_op(r.get('operator')) or _clean_op(r.get('owner'))) if _full else None),
                 'distance_miles': _dist,
                 'source': 'HIFLD/Neon'
             })
