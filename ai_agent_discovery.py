@@ -344,6 +344,7 @@ def serve_agents_md():
 
 
 # ----- Google A2A Agent Card -----
+# AUTO-REPAIR: duplicate route '/.well-known/agent.json' also in main.py:25976 — review and remove one
 @discovery_bp.route('/.well-known/agent.json')
 def serve_a2a_agent_card():
     """Serve A2A Agent Card for Google Agent2Agent Protocol discovery"""
@@ -506,6 +507,7 @@ def route_a2a_query(query):
         return {"type": "error", "message": str(e)}
 
 
+# AUTO-REPAIR: duplicate route '/llms-full.txt' also in ai_discovery_routes.py:796 — review and remove one
 # ----- llms-full.txt -----
 @discovery_bp.route('/llms-full.txt')
 def serve_llms_full():
@@ -520,6 +522,7 @@ def serve_llms_full():
     response.headers['Access-Control-Allow-Origin'] = '*'
     return response
 
+# AUTO-REPAIR: duplicate route '/.well-known/security.txt' also in main.py:25996 — review and remove one
 
 # ----- security.txt -----
 @discovery_bp.route('/.well-known/security.txt')
@@ -531,6 +534,7 @@ def serve_security_txt():
     response.headers['Cache-Control'] = 'public, max-age=86400'
     response.headers['Access-Control-Allow-Origin'] = '*'
     return response
+# AUTO-REPAIR: duplicate route '/api/v1/ai-tracking/stats' also in main.py:19576 — review and remove one
 
 
 # ----- AI Tracking Stats -----
@@ -649,6 +653,8 @@ def ai_tracking_recent():
         return jsonify({"success": True, "data": accesses, "meta": {"count": len(accesses)}})
     
     except Exception as e:
+# AUTO-REPAIR: duplicate route '/api/v1/discovery' also in main.py:19730 — review and remove one
+# AUTO-REPAIR: duplicate route '/ai/discovery' also in main.py:19731 — review and remove one
         return jsonify({"success": False, "error": str(e)}), 500
 
 

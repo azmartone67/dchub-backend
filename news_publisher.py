@@ -217,6 +217,7 @@ def publish_to_linkedin(text: str, article_url: str = "", article_title: str = "
 # ---------------------------------------------------------------------------
 # Flask Routes
 # ---------------------------------------------------------------------------
+# AUTO-REPAIR: duplicate route '/health' also in index_api.py:697 — review and remove one
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({
