@@ -1192,6 +1192,44 @@ def _dc_glow(img, cx, cy, r, color, a=46):
     img.alpha_composite(g)
 
 
+def _dc_bolt(img, x, y, size):
+    """Canonical DC Hub logo — a violet lightning bolt in a navy circle, matching
+    dchub-frontend/icons/dchub-logo.svg (the site's single-source brand mark:
+    bolt path on a #1a1a2e disc, indigo→violet gradient #6366f1→#a855f7, #a78bfa
+    stroke). Replaces the flat "DC" chip so the real website logo rides every card.
+    The SVG path is authored in a 36×36 box and scales cleanly at any size."""
+    from PIL import Image, ImageDraw
+    # Supersample 3× and downscale (LANCZOS) so the disc + bolt edges are crisp
+    # at 44–60px instead of jagged (ellipse/polygon aren't antialiased natively).
+    ss = 3
+    sz = size * ss
+    logo = Image.new("RGBA", (sz, sz), (0, 0, 0, 0))
+    ld = ImageDraw.Draw(logo)
+    ld.ellipse([0, 0, sz - 1, sz - 1], fill=(26, 26, 46, 255))        # #1a1a2e disc
+    s = sz / 36.0
+    # bolt path M20.5 6 L10 20 h7 l-2 10 L27 16 h-7.5 l1-10 z (36×36 space)
+    pts36 = [(20.5, 6), (10, 20), (17, 20), (15, 30), (27, 16), (19.5, 16), (20.5, 6)]
+    pts = [(px * s, py * s) for (px, py) in pts36]
+    grad = Image.new("RGBA", (sz, sz), (0, 0, 0, 0))
+    gd = ImageDraw.Draw(grad)
+    for i in range(sz):
+        t = i / max(1, sz - 1)
+        gd.line([(0, i), (sz, i)],
+                fill=(int(99 + 69 * t), int(102 - 17 * t), int(241 + 6 * t), 255))
+    mask = Image.new("L", (sz, sz), 0)
+    ImageDraw.Draw(mask).polygon(pts, fill=255)
+    logo.alpha_composite(Image.composite(grad, Image.new("RGBA", (sz, sz), (0, 0, 0, 0)), mask))
+    try:
+        ld.line(pts, fill=(167, 139, 250, 255), width=max(2, sz // 30), joint="curve")
+    except TypeError:
+        ld.line(pts, fill=(167, 139, 250, 255), width=max(2, sz // 30))
+    try:
+        _rs = Image.LANCZOS
+    except AttributeError:
+        _rs = Image.Resampling.LANCZOS
+    img.alpha_composite(logo.resize((size, size), _rs), (x, y))
+
+
 def _dc_tw(d, t, f, tr=0):
     b = d.textbbox((0, 0), t, font=f)
     if tr == 0:
@@ -1231,7 +1269,7 @@ def _dc_chrome(img, spec):
     _dc_hgrad(img, 0, 0, W, 7, PURPLE, CYAN)
     d = ImageDraw.Draw(img)
     M = 68
-    _brand_chip(d, M, 44, 60)
+    _dc_bolt(img, M, 44, 60)
     _dc_text(d, (M + 78, 52), "DC HUB", _mono(30), CYAN, tr=4)
     _dc_text(d, (M + 78, 88), "THE LIVE DATA LAYER FOR AI AGENTS", _mono(15), DIM, tr=2)
     eb = (spec.get("eyebrow") or "").upper(); ef = _mono(18)
@@ -1243,7 +1281,7 @@ def _dc_chrome(img, spec):
     _dc_text(d, (px0 + 22, 61), eb, ef, PURPLE_LT, tr=2)
     fy = 556
     d.line([(M, fy - 12), (W - M, fy - 12)], fill=_DC_BORDER, width=1)
-    _brand_chip(d, M, fy, 44)
+    _dc_bolt(img, M, fy, 44)
     _dc_text(d, (M + 58, fy + 3), "dchub.cloud", _mono(22), TEXT, tr=1)
     _dc_text(d, (M + 58, fy + 29), "CITE AS DC HUB (dchub.cloud)", _mono(13), DIM, tr=1)
     tag = spec.get("footer_tag", "")
