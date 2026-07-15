@@ -1881,11 +1881,39 @@ _METRIC_PATTERNS = [
      _re_legacy.compile(r'\$\s*([\d,]+(?:\.\d+)?)\s*(?:B\b|billion)', _re_legacy.I)),
     ("mw_figure",
      _re_legacy.compile(r'([\d,]+(?:\.\d+)?)\s*MW\b', _re_legacy.I)),
+    # 2026-07-15: DC Hub's OWN coverage stats. Capability / platform posts
+    # (provenance, ledger, tool catalog, grid, memory — the editorial cap_*
+    # kinds) LEAD with these, but the scorer only knew market/deal/DCPI/MCP
+    # metrics, so a "4,923 facilities" provenance post scored ~0.55 and was gated
+    # out — silently blocking the whole capability-content push at publish time.
+    # These give the stat + novelty credit so those posts clear CONTENT_QUALITY_MIN
+    # honestly. Placed LAST so the specific labels above always win (e.g. an
+    # "18 MW facility" post stays mw_figure). Require >=2 leading digits so an
+    # incidental "5 markets" can't grab a label. EXCLUDED from metric-label dedup
+    # (_NO_METRIC_DEDUP) — capability rotation is the editorial (kind,entity)
+    # cooldown's job, not a shared coverage number (mirrors dcpi_score).
+    ("facilities_count",
+     _re_legacy.compile(r'([\d,]{2,})\s+(?:[a-z-]+\s+){0,2}(?:data\s+centers?|facilit\w*)', _re_legacy.I)),
+    ("markets_count",
+     _re_legacy.compile(r'([\d,]{2,})\s+(?:DCPI[\s-]?)?(?:scored\s+)?markets?\b', _re_legacy.I)),
+    ("countries_count",
+     _re_legacy.compile(r'([\d,]{2,})\+?\s+countries\b', _re_legacy.I)),
+    ("tools_count",
+     _re_legacy.compile(r'([\d,]{2,})\s+(?:live\s+)?(?:agent\s+)?tools?\b', _re_legacy.I)),
 ]
 
 # Labels that dedup on label+VALUE (generic units where the label alone would
 # over-collapse distinct stories, but the same figure re-leading = a repeat).
 _VALUE_DEDUP_LABELS = {"gw_figure", "usd_billion", "mw_figure"}
+
+# Labels EXCLUDED from metric-label dedup entirely. dcpi_score is per-market
+# (dedups via market_verdict); the coverage-count labels are DC Hub's own
+# platform stats whose rotation is handled by the editorial (kind,entity)
+# cooldown upstream — deduping them here would collapse distinct capability
+# posts (provenance vs ledger both cite facilities/markets). They still lift the
+# quality score; the opening-hook dedup still catches literal repeats.
+_NO_METRIC_DEDUP = {"dcpi_score", "facilities_count", "markets_count",
+                    "countries_count", "tools_count"}
 
 
 def _post_headline_signature(text: str) -> dict:
@@ -2478,7 +2506,10 @@ def _should_skip_publish(cur, content_text: str, platform: str):
                     # 2026-06-10: dcpi_score is per-market (value varies by
                     # market) — dedup it via market_verdict above, NOT the shared
                     # label, else every DCPI post after the first over-collapses.
-                    and sig.get("metric_label") != "dcpi_score"
+                    # 2026-07-15: same for the coverage-count labels (facilities/
+                    # markets/countries/tools) — capability posts rotate via the
+                    # editorial kind-cooldown, not this shared number.
+                    and sig.get("metric_label") not in _NO_METRIC_DEDUP
                     and psig.get("metric_label") == sig.get("metric_label")):
                 # 2026-07-02: generic-unit labels (GW/$B/MW) require the VALUE
                 # to match too — same label with a different figure is a
