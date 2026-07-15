@@ -50,7 +50,15 @@ jobs:
         run: |
           set -euo pipefail
           if [ "${GATE_DISABLE:-0}" = "1" ]; then
-            echo "gate disabled via BRAIN_SUBSTANCE_GATE_DISABLE"; exit 0
+            echo "gate disabled via BRAIN_SUBSTANCE_GATE_DISABLE"
+            # Still post a PASSING check so that, when substance-gate is a REQUIRED
+            # status check, hitting the kill switch never wedges every PR merge.
+            gh api -X POST "repos/$GITHUB_REPOSITORY/check-runs" \
+              -f name="substance-gate" -f head_sha="$HEAD_SHA" \
+              -f status="completed" -f conclusion="neutral" \
+              -f "output[title]=gate disabled" \
+              -f "output[summary]=BRAIN_SUBSTANCE_GATE_DISABLE=1" || true
+            exit 0
           fi
 
           files=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA")
@@ -81,9 +89,18 @@ jobs:
             if [ "$claims_fix" -eq 1 ]; then
               hdr="🛑 **Substance gate: SCAFFOLD-ONLY PR that CLAIMS a fix**"
               note="This PR's body/title claims to close or fix something, but the diff touches **no running code path** — only docs and \`routes/_proposed_*\` scaffolds (which \`main.py\` never imports; it only syntax-checks them). Merging this will mark the finding \"done\" while it stays broken and re-fires next cycle. **Do not merge as a fix.** Either wire the change into \`main.py\` / a registered blueprint (so the diff shows real deletions/edits), or drop the fix claim."
+              # 2026-07-15: the advisory 'neutral' let this exact false-resolution
+              # pattern keep merging (chronic non-sticky resolves climbing 107→149).
+              # FAIL only this case so, as a required check, it BLOCKS a scaffold PR
+              # that CLAIMS a fix — while honest scaffolds (below) stay neutral and
+              # real-code PRs pass. Drop the fix claim (or wire real code) to go green.
+              concl="failure"
+              ctitle="Scaffold-only PR CLAIMS a fix — changes no running code"
             else
               hdr="ℹ️ **Substance gate: scaffold-only PR (no running code changed)**"
               note="Every changed file is docs or a \`routes/_proposed_*\` scaffold — nothing here executes at runtime. That's fine for a spec/record, but this PR does **not** ship a feature or resolve a finding on its own. Track the real implementation separately."
+              concl="neutral"
+              ctitle="Scaffold-only PR — changes no running code"
             fi
 
             foot="<sub>${real_count} runtime file(s) changed · ${scaffolds} routes/_proposed_* scaffold(s) touched · brain-pr-substance-gate</sub>"
@@ -92,8 +109,8 @@ jobs:
             gh pr comment "$PR_NUMBER" --body "$body" --repo "$GITHUB_REPOSITORY" || true
             gh api -X POST "repos/$GITHUB_REPOSITORY/check-runs" \
               -f name="substance-gate" -f head_sha="$HEAD_SHA" \
-              -f status="completed" -f conclusion="neutral" \
-              -f "output[title]=Scaffold-only PR — changes no running code" \
+              -f status="completed" -f conclusion="$concl" \
+              -f "output[title]=$ctitle" \
               -f "output[summary]=$hdr" || true
           else
             echo "PR changes $real_count runtime file(s) — substance OK"
