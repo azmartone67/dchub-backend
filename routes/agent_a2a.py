@@ -157,6 +157,33 @@ AGENT_CARD = {
 def _card():
     out = dict(AGENT_CARD)
     out["computed_at"] = datetime.datetime.utcnow().isoformat() + "Z"
+    # r-a2a-0715: the card carried DC Hub's marketplace fields (agent{}, auth{},
+    # mcp_tools{}) but not the STRICT A2A v0.3 top-level shape
+    # (url/preferredTransport/protocolVersion/capabilities + skills[].id) that
+    # Gemini Enterprise / Spark ingestion requires. Add them ADDITIVELY so ONE
+    # card satisfies both the marketplace OAuth path and A2A v0.3 discovery —
+    # nothing existing is removed.
+    _agent = AGENT_CARD["agent"]
+    out["protocolVersion"]    = "0.3.0"
+    out["name"]               = _agent["name"]
+    out["description"]        = _agent["description"]
+    out["version"]            = _agent["version"]
+    out["url"]                = AGENT_CARD["endpoints"]["mcp"]
+    out["preferredTransport"] = "JSONRPC"
+    out["provider"]           = {"organization": _agent["vendor"], "url": _agent["homepage"]}
+    out["capabilities"]       = {"streaming": False, "pushNotifications": False,
+                                 "stateTransitionHistory": False}
+    out["defaultInputModes"]  = ["application/json"]
+    out["defaultOutputModes"] = ["application/json"]
+    # A2A skills require id/name/description/tags; map from the proprietary
+    # name/summary/tools shape without dropping the existing fields.
+    out["skills"] = [
+        {**s,
+         "id":          s["name"],
+         "description": s.get("summary", s.get("description", "")),
+         "tags":        s.get("tags") or (list(s.get("tools", [])) + [s["name"].replace("_", " ")])}
+        for s in AGENT_CARD["skills"]
+    ]
     return out
 
 
