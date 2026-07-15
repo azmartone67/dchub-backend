@@ -995,8 +995,20 @@ def compose_story_post(slot_topic: str | None = None, lead: dict | None = None) 
             "source": "claude_skip",
         }
     if not text or len(text) < 200:
-        text = _static_fallback(story_type, data, landing)
-        source = "fallback"
+        # 2026-07-15 (operator: 'the posts are terrible'): silence beats a
+        # template. When the analyst composer fails or thins, SKIP the slot
+        # rather than fall to a formulaic static template ("Quietly, X is
+        # becoming a top-10 BUILD candidate…") — the desk publishes real analysis
+        # or nothing, never filler.
+        return {
+            "story_type":   story_type,
+            "text":         None,
+            "skip":         True,
+            "skip_reason":  "composer unavailable/thin — refusing template fallback",
+            "landing_url":  landing,
+            "og_image_url": OG_IMAGE_BY_TYPE[story_type],
+            "source":       "skip_no_fallback",
+        }
 
     # Premium dynamic card from the story's real headline + stat (replaces the
     # frozen-blank static landing PNG). Falls back to the static map if the

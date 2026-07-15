@@ -316,11 +316,10 @@ def _compose_linkedin_analytical(mover: dict, arc: dict | None):
                                  where=f"_compose_linkedin_analytical:{type(e).__name__}")
         except Exception:
             pass
-    # Hard failure only → template fallback (keeps a heartbeat; not the default path).
-    try:
-        return _shape_linkedin(mover, arc)
-    except Exception:
-        return None
+    # Composer hard-failure (no API key / import error) → SKIP, never a template.
+    # Operator: 'the posts are terrible' — silence beats formulaic filler. The
+    # analytical quad path still owns the LinkedIn feed 4x/day either way.
+    return None
 
 
 # ── Metrics-showcase template (r64, 2026-05-30) ─────────────────────
