@@ -47,6 +47,7 @@ from mcp_calls_deloop import (
     PLATFORM_CASE as _DELOOP_PLATFORM_CASE,
     PROBE_PLATFORMS as _DELOOP_PROBE_PLATFORMS,
     real_calls_predicate as _deloop_real_calls_predicate,
+    external_platform_predicate as _deloop_external_platform_predicate,
     normalize_write_platform as _normalize_write_platform,
 )
 
@@ -2445,6 +2446,13 @@ def mcp_funnel():
                              ON c.attribution_signal_id = s.id
                             AND c.created_at >= NOW() - INTERVAL '30 days'
                            WHERE s.created_at >= NOW() - INTERVAL '30 days'
+                             -- brain-l15 #1600 followup (2026-07-14): exclude our own
+                             -- probe/harness/test signals (clawith, value-harness,
+                             -- funnel-diag, probe*, ...) so signals_by_platform shows
+                             -- real agent demand, not self-instrumentation. Same
+                             -- de-loop verdict as calls_by_platform; keeps anonymous
+                             -- browser signals ('web-unattributed') + NULL mcp_client.
+                             AND """ + _deloop_external_platform_predicate('s.mcp_client') + """
                        ) q
                        GROUP BY platform
                        ORDER BY signals DESC
@@ -2657,6 +2665,9 @@ def mcp_funnel():
                                 MIN(converted_at) FILTER (WHERE converted = TRUE) AS conv_at
                          FROM mcp_funnel_real
                          WHERE created_at >= NOW() - INTERVAL '90 days'
+                           -- brain-l15 #1600 followup (2026-07-14): drop self/probe
+                           -- signals (value-harness et al.) from the convert-timing too
+                           AND """ + _deloop_external_platform_predicate('mcp_client') + """
                          GROUP BY session_id, platform
                        )
                        SELECT platform,
