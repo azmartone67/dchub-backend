@@ -724,21 +724,19 @@ def market_short_html(slug):
         except Exception:
             _fac_ct = 0
         if _fac_ct == 0:
-            _404_html = (
-                "<!doctype html><html lang=en><head><meta charset=utf-8>"
-                "<title>Market not found · DC Hub</title>"
-                '<meta name="robots" content="noindex,follow">'
-                "<style>body{font-family:-apple-system,system-ui,sans-serif;"
-                "max-width:640px;margin:4rem auto;padding:0 1.25rem;"
-                "background:#0a0a0f;color:#d4d4d8;line-height:1.7}a{color:#818cf8}</style>"
-                "</head><body><h1>Market not found</h1>"
-                f"<p>DC Hub doesn’t have a data-center market page for "
-                f"“{slug_norm}”.</p>"
-                '<p>Browse <a href="/markets">all markets</a> or the '
-                '<a href="/dcpi">DC Hub Power Index</a>.</p>'
-                "</body></html>")
-            return Response(_404_html, status=404, mimetype="text/html",
-                            headers={"Cache-Control": "public, max-age=300"})
+            # r-markets-404 (2026-07-15): these junk /markets/<slug> URLs are
+            # almost all INTERNAL links — facility pages emit href="/markets/<city-state>"
+            # for cities with no curated/DB-backed market (Dubai, Ottawa, Casper),
+            # so Googlebot crawled ~380 of them into the "Not found (404)" bucket.
+            # The prior r-soft404 guard returned a bare 404; instead 302 to the
+            # crawlable markets hub so link equity flows and the already-indexed
+            # 404s resolve. Still NOT a soft-404 (a real redirect to a real 200
+            # page, not an empty 200 shell). 302 (not 301) + short cache so a
+            # market self-heals to its own 200 page the moment a facility backfills.
+            _r = redirect("/markets/directory", code=302)
+            _r.headers["Cache-Control"] = "public, max-age=3600"
+            _r.headers["X-DC-Page-Source"] = "market-deepdive-404-redirect"
+            return _r
 
     if not md:
         # Still return 200 — the market exists in our universe even if we
