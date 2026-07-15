@@ -175,29 +175,36 @@ def _log_ab_event(variant: str, status: int, path: str,
                    ip_hash: str) -> None:
     """Log to ab_funnel_log table. Best-effort, never raises."""
     try:
-        from db_utils import get_db_conn
-        with get_db_conn() as conn:
-            with conn.cursor() as cur:
-                cur.execute("""
-                    CREATE TABLE IF NOT EXISTS ab_funnel_log (
-                        id          BIGSERIAL PRIMARY KEY,
-                        variant     TEXT NOT NULL,
-                        status      INT  NOT NULL,
-                        path        TEXT NOT NULL,
-                        ip_hash     TEXT NOT NULL,
-                        ts          TIMESTAMPTZ NOT NULL DEFAULT NOW()
-                    )
-                """)
-                cur.execute("""
-                    CREATE INDEX IF NOT EXISTS ab_funnel_log_variant_ts_idx
-                    ON ab_funnel_log (variant, ts DESC)
-                """)
-                cur.execute("""
-                    INSERT INTO ab_funnel_log
-                        (variant, status, path, ip_hash)
-                    VALUES (%s, %s, %s, %s)
-                """, (variant, status, path[:200], ip_hash))
-                conn.commit()
+        # 2026-07-14: was `from db_utils import get_db_conn` — that name does NOT
+        # exist in db_utils, so this ImportError'd on EVERY call for 24h+ and
+        # ab_funnel_log got zero writes (the table below never got created). Use
+        # safe_db() for the guaranteed close, and the raw psycopg2 cursor
+        # (getattr(_c,'_cur',_c)) because the safe_db wrapper SKIPS DDL (SKIP_DDL
+        # default-on) and the lazy CREATE TABLE here is load-bearing.
+        from db_utils import safe_db
+        with safe_db() as conn:
+            _c = conn.cursor()
+            cur = getattr(_c, "_cur", _c)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS ab_funnel_log (
+                    id          BIGSERIAL PRIMARY KEY,
+                    variant     TEXT NOT NULL,
+                    status      INT  NOT NULL,
+                    path        TEXT NOT NULL,
+                    ip_hash     TEXT NOT NULL,
+                    ts          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+            """)
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS ab_funnel_log_variant_ts_idx
+                ON ab_funnel_log (variant, ts DESC)
+            """)
+            cur.execute("""
+                INSERT INTO ab_funnel_log
+                    (variant, status, path, ip_hash)
+                VALUES (%s, %s, %s, %s)
+            """, (variant, status, path[:200], ip_hash))
+            conn.commit()
     except Exception:
         # Never break a response by failing to log
         note_swallowed_write("ab_funnel_log", where="paywall_hint_middleware._log_ab_event")
@@ -504,37 +511,38 @@ def funnel_ab_stats():
     days = max(1, min(days, 90))
 
     try:
-        from db_utils import get_db_conn
-        with get_db_conn() as conn:
-            with conn.cursor() as cur:
-                # Per-variant totals
-                cur.execute("""
-                    SELECT variant, status, COUNT(*) AS n,
-                           COUNT(DISTINCT ip_hash) AS uniq_callers
-                    FROM ab_funnel_log
-                    WHERE ts > NOW() - (%s || ' days')::interval
-                    GROUP BY variant, status
-                    ORDER BY variant, status
-                """, (str(days),))
-                rows = cur.fetchall() or []
+        from db_utils import safe_db  # 2026-07-14: was the nonexistent get_db_conn
+        with safe_db() as conn:
+            _c = conn.cursor()
+            cur = getattr(_c, "_cur", _c)
+            # Per-variant totals
+            cur.execute("""
+                SELECT variant, status, COUNT(*) AS n,
+                       COUNT(DISTINCT ip_hash) AS uniq_callers
+                FROM ab_funnel_log
+                WHERE ts > NOW() - (%s || ' days')::interval
+                GROUP BY variant, status
+                ORDER BY variant, status
+            """, (str(days),))
+            rows = cur.fetchall() or []
 
-                # Top paths by variant
-                cur.execute("""
-                    SELECT variant, path, COUNT(*) AS n
-                    FROM ab_funnel_log
-                    WHERE ts > NOW() - (%s || ' days')::interval
-                    GROUP BY variant, path
-                    ORDER BY n DESC
-                    LIMIT 30
-                """, (str(days),))
-                top_rows = cur.fetchall() or []
+            # Top paths by variant
+            cur.execute("""
+                SELECT variant, path, COUNT(*) AS n
+                FROM ab_funnel_log
+                WHERE ts > NOW() - (%s || ' days')::interval
+                GROUP BY variant, path
+                ORDER BY n DESC
+                LIMIT 30
+            """, (str(days),))
+            top_rows = cur.fetchall() or []
 
-                # Total
-                cur.execute("""
-                    SELECT COUNT(*) FROM ab_funnel_log
-                    WHERE ts > NOW() - (%s || ' days')::interval
-                """, (str(days),))
-                total = (cur.fetchone() or [0])[0]
+            # Total
+            cur.execute("""
+                SELECT COUNT(*) FROM ab_funnel_log
+                WHERE ts > NOW() - (%s || ' days')::interval
+            """, (str(days),))
+            total = (cur.fetchone() or [0])[0]
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)[:200]}), 500
 
