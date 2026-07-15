@@ -989,128 +989,163 @@ def phase64c_dev_keys():
 # Phase 73 -- phase73_discovery_freshness
 # Daily breakdown of newly-discovered records across all data tables.
 # ----------------------------------------------------------------------------
+# ── /api/v1/discovery/last-7d SWR cache (fix agenda #100095, lane 1) ──────────
+# _compute_discovery_freshness fans ~40 COUNT/GROUP-BY queries across ~12 large
+# tables (facilities, discovered_facilities, transmission_lines, power_plants…)
+# filtered on created_at — 2–5s cold, spiking past the radar's 5s frontend_
+# endpoint_slow cap (finding #9235-class @ /snapshot; surfaced live by the
+# frontend-reliability shell). The result changes only when discovery ingests new
+# rows (daily), so serve it stale-while-revalidate: every request returns the last
+# good copy instantly; a stale copy (>10min) fires one background single-flight
+# refresh. Only the first request after a cache eviction pays the fan-out. Same
+# pattern as /api/pipeline (routes/deals_routes.py get_public_pipeline).
+import threading as _threading
+import time as _time_swr
+try:
+    from redis_cache import cache_get as _dfc_get, cache_set as _dfc_set
+except ImportError:
+    _dfc_get = lambda k: None
+    _dfc_set = lambda k, v, ttl=300: None
+_DISCOVERY_FRESH_TTL = 600     # serve without refresh for 10 min
+_DISCOVERY_HARD_TTL = 3600     # keep a stale copy up to 1h for SWR fallback
+_discovery_refresh_lock = _threading.Lock()
+
+
+def _compute_discovery_freshness(limit_days: int) -> dict:
+    """Per-table new-rows-in-last-N-days fan-out. Context-free (touches no Flask
+    request/g) so it is safe to run in a background SWR refresh thread. Raises on
+    hard failure (no DB url/driver) so the caller records the miss."""
+    import os
+    candidates = [
+        'facilities', 'main_facilities', 'discovered_facilities',
+        'substations', 'eia_generators', 'fiber_routes',
+        'gas_pipelines', 'transmission_lines', 'power_plants',
+        'mcp_upgrade_signals', 'mcp_tool_calls',
+        'nepa_filings',
+    ]
+    neon = os.environ.get('NEON_DATABASE_URL') or os.environ.get('DATABASE_URL')
+    if not neon:
+        raise RuntimeError('no DB url')
+    conn = None
+    for modname in ('psycopg', 'psycopg2'):
+        try:
+            mod = __import__(modname)
+            conn = mod.connect(neon); break
+        except Exception:
+            continue
+    if not conn:
+        raise RuntimeError('no postgres driver')
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT table_name FROM information_schema.tables "
+            "WHERE table_schema = 'public' AND table_name = ANY(%s)",
+            (candidates,)
+        )
+        existing = {r[0] for r in cur.fetchall()}
+        tables_with_created = []
+        for tbl in candidates:
+            if tbl not in existing:
+                continue
+            cur.execute(
+                "SELECT 1 FROM information_schema.columns "
+                "WHERE table_schema = 'public' AND table_name = %s "
+                "AND column_name = 'created_at' LIMIT 1",
+                (tbl,)
+            )
+            if cur.fetchone():
+                tables_with_created.append(tbl)
+        results = []
+        # phase73b_interval_fix -- embed sanitized int into INTERVAL literal
+        interval_clause = "NOW() - INTERVAL '" + str(int(limit_days)) + " days'"
+        for tbl in tables_with_created:
+            cur.execute('SELECT COUNT(*) FROM "' + tbl + '" WHERE created_at >= ' + interval_clause)
+            total_recent = int(cur.fetchone()[0] or 0)
+            cur.execute(
+                'SELECT DATE(created_at) AS d, COUNT(*) FROM "' + tbl + '" '
+                'WHERE created_at >= ' + interval_clause + ' GROUP BY d ORDER BY d DESC'
+            )
+            per_day = [{'date': str(r[0]), 'count': int(r[1])} for r in cur.fetchall()]
+            cur.execute(
+                "SELECT 1 FROM information_schema.columns "
+                "WHERE table_schema = 'public' AND table_name = %s "
+                "AND column_name = 'source' LIMIT 1",
+                (tbl,)
+            )
+            by_source = []
+            if cur.fetchone():
+                cur.execute(
+                    'SELECT COALESCE(source, \'unknown\') AS s, COUNT(*) FROM "' + tbl + '" '
+                    'WHERE created_at >= ' + interval_clause + ' GROUP BY s ORDER BY 2 DESC LIMIT 15'
+                )
+                by_source = [{'source': r[0], 'count': int(r[1])} for r in cur.fetchall()]
+            results.append({
+                'table': tbl,
+                'total_last_' + str(limit_days) + 'd': total_recent,
+                'per_day': per_day,
+                'by_source': by_source,
+            })
+    finally:
+        try: conn.close()
+        except Exception: pass
+    return {'phase': '73', 'days': limit_days,
+            'tables_checked': len(tables_with_created), 'results': results}
+
+
+def _refresh_discovery_freshness(limit_days: int, key: str):
+    """Background single-flight recompute + re-cache. Never raises."""
+    if not _discovery_refresh_lock.acquire(blocking=False):
+        return
+    try:
+        payload = _compute_discovery_freshness(limit_days)
+        payload['_computed_at'] = _time_swr.time()
+        _dfc_set(key, payload, ttl=_DISCOVERY_HARD_TTL)
+    except Exception:
+        pass
+    finally:
+        _discovery_refresh_lock.release()
+
+
 @observability_bp.route('/api/v1/discovery/last-7d', methods=['GET'])
 def phase73_discovery_freshness():
-    """For each table with a created_at column, report new rows in last 7d.
-
-    Useful as a morning glance: is auto-discovery actually finding things?
-    """
-    import os, traceback
+    """For each table with a created_at column, report new rows in last Nd.
+    Served stale-while-revalidate (see cache note above) — the fan-out spiked
+    past the 5s radar cap cold; now only a post-eviction miss pays it."""
     from flask import request, jsonify
-
     try:
-        try:
-            limit_days = int(request.args.get('days', '7'))
-        except (TypeError, ValueError):
-            limit_days = 7
-        limit_days = max(1, min(limit_days, 30))
+        limit_days = int(request.args.get('days', '7'))
+    except (TypeError, ValueError):
+        limit_days = 7
+    limit_days = max(1, min(limit_days, 30))
 
-        # Tables of interest (empty list => discover automatically)
-        candidates = [
-            'facilities', 'main_facilities', 'discovered_facilities',
-            'substations', 'eia_generators', 'fiber_routes',
-            'gas_pipelines', 'transmission_lines', 'power_plants',
-            'mcp_upgrade_signals', 'mcp_tool_calls',
-            'nepa_filings',
-        ]
-
-        neon = os.environ.get('NEON_DATABASE_URL') or os.environ.get('DATABASE_URL')
-        if not neon:
-            return jsonify({'error': 'no DB url'}), 500
-
-        conn = None
-        for modname in ('psycopg', 'psycopg2'):
+    key = "discovery_freshness:v1:%d" % limit_days
+    now = _time_swr.time()
+    cached = _dfc_get(key)
+    if cached is not None:
+        age = now - (cached.get('_computed_at') or 0)
+        if age >= _DISCOVERY_FRESH_TTL:
             try:
-                mod = __import__(modname)
-                conn = mod.connect(neon); break
+                _threading.Thread(target=_refresh_discovery_freshness,
+                                  args=(limit_days, key),
+                                  name="discovery-freshness-refresh", daemon=True).start()
             except Exception:
-                continue
-        if not conn:
-            return jsonify({'error': 'no postgres driver'}), 500
+                pass
+        resp = jsonify({k: v for k, v in cached.items() if k != '_computed_at'})
+        resp.headers['X-Cache'] = 'HIT' if age < _DISCOVERY_FRESH_TTL else 'STALE'
+        return resp
 
-        try:
-            cur = conn.cursor()
-
-            # Filter to tables that actually exist + have created_at
-            cur.execute(
-                "SELECT table_name FROM information_schema.tables "
-                "WHERE table_schema = 'public' AND table_name = ANY(%s)",
-                (candidates,)
-            )
-            existing = {r[0] for r in cur.fetchall()}
-
-            tables_with_created = []
-            for tbl in candidates:
-                if tbl not in existing:
-                    continue
-                cur.execute(
-                    "SELECT 1 FROM information_schema.columns "
-                    "WHERE table_schema = 'public' AND table_name = %s "
-                    "AND column_name = 'created_at' LIMIT 1",
-                    (tbl,)
-                )
-                if cur.fetchone():
-                    tables_with_created.append(tbl)
-
-            results = []
-            # phase73b_interval_fix -- embed sanitized int into INTERVAL literal
-            interval_clause = "NOW() - INTERVAL '" + str(int(limit_days)) + " days'"
-            for tbl in tables_with_created:
-                # Count last N days
-                cur.execute(
-                    'SELECT COUNT(*) FROM "' + tbl + '" '
-                    'WHERE created_at >= ' + interval_clause
-                )
-                total_recent = int(cur.fetchone()[0] or 0)
-
-                # Per-day breakdown
-                cur.execute(
-                    'SELECT DATE(created_at) AS d, COUNT(*) FROM "' + tbl + '" '
-                    'WHERE created_at >= ' + interval_clause + ' '
-                    'GROUP BY d ORDER BY d DESC'
-                )
-                per_day = [{'date': str(r[0]), 'count': int(r[1])} for r in cur.fetchall()]
-
-                # Source breakdown (if column exists)
-                cur.execute(
-                    "SELECT 1 FROM information_schema.columns "
-                    "WHERE table_schema = 'public' AND table_name = %s "
-                    "AND column_name = 'source' LIMIT 1",
-                    (tbl,)
-                )
-                by_source = []
-                if cur.fetchone():
-                    cur.execute(
-                        'SELECT COALESCE(source, \'unknown\') AS s, COUNT(*) FROM "' + tbl + '" '
-                        'WHERE created_at >= ' + interval_clause + ' '
-                        'GROUP BY s ORDER BY 2 DESC LIMIT 15'
-                    )
-                    by_source = [{'source': r[0], 'count': int(r[1])} for r in cur.fetchall()]
-
-                results.append({
-                    'table': tbl,
-                    'total_last_' + str(limit_days) + 'd': total_recent,
-                    'per_day': per_day,
-                    'by_source': by_source,
-                })
-        finally:
-            try: conn.close()
-            except Exception: pass
-
-        return jsonify({
-            'phase': '73',
-            'days': limit_days,
-            'tables_checked': len(tables_with_created),
-            'results': results,
-        })
-
+    # Cold cache (first request / after eviction): compute once, synchronously.
+    try:
+        payload = _compute_discovery_freshness(limit_days)
     except Exception as e:
-        return jsonify({
-            'error': 'unhandled',
-            'type': type(e).__name__,
-            'message': str(e),
-            'traceback': traceback.format_exc(),
-        }), 500
+        import traceback
+        return jsonify({'error': 'unhandled', 'type': type(e).__name__,
+                        'message': str(e), 'traceback': traceback.format_exc()}), 500
+    payload['_computed_at'] = now
+    _dfc_set(key, payload, ttl=_DISCOVERY_HARD_TTL)
+    resp = jsonify({k: v for k, v in payload.items() if k != '_computed_at'})
+    resp.headers['X-Cache'] = 'MISS'
+    return resp
 
 
 # ----------------------------------------------------------------------------
