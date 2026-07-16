@@ -2267,22 +2267,10 @@ try:
     except Exception as _dms:
         import logging
         logging.getLogger(__name__).warning('depth_master_shell wiring failed: %s', _dms)
-    # 2026-07-04: Reliability-recovery master shell — the inward-pointed loop whose
-    # single job is getting the brain's verified fix-success rate over (and HELD
-    # over) 50% so Phase-3 narrow auto-merge can be armed safely. Scores 5 levers
-    # (accounting, thrash, dead_route, verifier, calibration), finds the weakest,
-    # pulls ONE bounded action. Persists the A/B/C arm gate server-side, so
-    # /reliability/state is the single source of truth for "is auto-merge arm-ready".
-    # SHADOW BY DEFAULT (measure + score + persist, NO action) — arm with
-    # RELIABILITY_MASTER_ARM=1. Kill: RELIABILITY_MASTER_DISABLED=1; per-lever:
-    # RELIABILITY_LEVER_<NAME>_OFF=1. POST /api/v1/admin/reliability/master-tick
-    try:
-        from routes.reliability_master_shell import reliability_master_shell_bp
-        app.register_blueprint(reliability_master_shell_bp)
-        print("[main] reliability_master_shell_bp registered: POST /api/v1/admin/reliability/master-tick", flush=True)
-    except Exception as _rms:
-        import logging
-        logging.getLogger(__name__).warning('reliability_master_shell wiring failed: %s', _rms)
+    # NOTE (2026-07-16): the reliability_master_shell_bp registration that used to
+    # live here was a DUPLICATE of the one ~100 lines above — it always hit
+    # "name 'reliability_master_shell' is already registered" and logged a WARNING
+    # on every boot. Removed; the earlier block is the single registration.
     # 2026-07-14: Frontend-Reliability master shell — generalizes the #100095
     # /api/pipeline SWR-cache fix. 3 lanes (slow_path_cache, false_close_refire,
     # edge_cacheability), files ONE bounded finding on the weakest. SHADOW BY
