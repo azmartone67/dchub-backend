@@ -302,6 +302,34 @@ def _store(payload, now):
         pass
 
 
+_STALE_MAX = 3600.0   # serve-stale ceiling: an expired-but-present cache is served
+                      # instantly while a background refresh runs (stale-while-
+                      # revalidate) — but never past this age; beyond it, block and
+                      # recompute so a long source outage can't serve hour-old data
+                      # forever. Safe by construction: the dead-compute guard means
+                      # only GOOD frames ever enter _RESP.
+_REFRESH_LOCK = threading.Lock()  # single-flight for the background refresh
+
+
+def _refresh_async():
+    """Kick one background recompute (non-blocking; deduped by _REFRESH_LOCK).
+    2026-07-16: with 2 web replicas, the ~4-min heartbeat prewarm only reaches
+    each replica every other fire, so a replica's cache can expire between
+    warms — the first request after idle was paying the recompute (~8s). Now
+    it serves the last GOOD copy instantly and refreshes behind the scenes."""
+    if not _REFRESH_LOCK.acquire(blocking=False):
+        return
+    def _run():
+        try:
+            import time as _t
+            payload, complete, dead = _compute()
+            if complete and not dead:
+                _store(payload, _t.time())
+        finally:
+            _REFRESH_LOCK.release()
+    threading.Thread(target=_run, daemon=True).start()
+
+
 def warm(force: bool = False) -> dict:
     """In-process pre-warm — called by routes/engine_prewarm.py off the cron
     heartbeat (a direct function call, NOT an HTTP self-request) so no user /
@@ -325,8 +353,18 @@ def mcp_leadership():
     actuator per dimension; executes nothing. See module docstring."""
     import time as _t
     _now = _t.time()
-    if _RESP["v"] is not None and (_now - _RESP["at"]) < _RESP_TTL:
-        return jsonify(_RESP["v"]), 200
+    if _RESP["v"] is not None:
+        age = _now - _RESP["at"]
+        if age < _RESP_TTL:
+            return jsonify(_RESP["v"]), 200
+        if age < _STALE_MAX:
+            # stale-while-revalidate: answer <1s from the last GOOD copy and
+            # recompute in the background (single-flight). Only good frames
+            # ever enter _RESP, so stale here is safe — same semantic as the
+            # CF worker's KV-stale lane, one hop earlier.
+            _refresh_async()
+            return jsonify(dict(_RESP["v"], cache_age_s=round(age, 1),
+                                served="stale-while-revalidate")), 200
     payload, complete, dead = _compute()
     if dead:
         # dead-compute guard (2026-07-16): every source failed → this frame is

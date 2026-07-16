@@ -18,6 +18,9 @@ Covers:
   * partial source outage serves 200 but does NOT cache (retry next request)
   * healthy tick serves 200, caches, repeat hit is served from cache
   * _RESP_TTL is 300s on both engines
+  * stale-while-revalidate: expired-but-present cache answers instantly from
+    the last GOOD copy + refreshes in a background single-flight thread; dead
+    sources never overwrite the good copy; past _STALE_MAX it blocks (dead→503)
   * warm(): cold computes + caches; fresh is a TTL no-op; dead never caches
   * POST /api/v1/engines/prewarm warms BOTH engines in-process + kill switch
   * cron dispatch: engine_prewarm fires every invocation, POSTs the prewarm
@@ -182,15 +185,72 @@ def test_healthy_tick_caches_and_repeat_hit_is_served_from_cache(monkeypatch):
     assert second.get_json() == first.get_json()
 
 
-def test_expired_cache_recomputes_and_dead_sources_then_503(monkeypatch):
+def test_stale_past_ceiling_blocks_and_dead_sources_then_503(monkeypatch):
     _stub_sources(monkeypatch, L, LEAD_OK)
     client = _app().test_client()
     assert client.get("/api/v1/mcp/leadership").status_code == 200
-    # expire the cache, kill the sources — the recompute must 503, not serve zeros
-    L._RESP["at"] = time.time() - (L._RESP_TTL + 1)
+    # cache older than the serve-stale ceiling + dead sources — the blocking
+    # recompute must 503, not serve zeros (and not hour-old data forever)
+    L._RESP["at"] = time.time() - (L._STALE_MAX + 5)
     _stub_dead(monkeypatch, L)
     resp = client.get("/api/v1/mcp/leadership")
     assert resp.status_code == 503
+
+
+# ── stale-while-revalidate ─────────────────────────────────────────────────
+
+def _wait_for(cond, timeout=5.0):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if cond():
+            return True
+        time.sleep(0.02)
+    return False
+
+
+def test_expired_cache_serves_stale_instantly_and_refreshes(monkeypatch):
+    _stub_sources(monkeypatch, L, LEAD_OK)
+    client = _app().test_client()
+    first = client.get("/api/v1/mcp/leadership")
+    assert first.status_code == 200
+    stale_at = time.time() - (L._RESP_TTL + 5)
+    L._RESP["at"] = stale_at
+
+    # slow sources: the stale hit must NOT wait on the recompute
+    def _slow(path, timeout=18):
+        time.sleep(1.0)
+        return dict(LEAD_OK.get(path) or {})
+    monkeypatch.setattr(L, "_raw_get", _slow)
+
+    t0 = time.time()
+    resp = client.get("/api/v1/mcp/leadership")
+    elapsed = time.time() - t0
+    assert resp.status_code == 200
+    body = resp.get_json()
+    assert body.get("served") == "stale-while-revalidate"
+    assert body.get("cache_age_s", 0) > L._RESP_TTL
+    assert body["mcp_leadership_index"] == first.get_json()["mcp_leadership_index"]
+    assert elapsed < 0.5  # served from cache, not the 1s-per-source recompute
+    # the background refresh lands and re-stamps the cache
+    assert _wait_for(lambda: L._RESP["at"] > stale_at + 1)
+
+
+@pytest.mark.parametrize("mod,route,table", [
+    (L, "/api/v1/mcp/leadership", LEAD_OK),
+    (U, "/api/v1/agents/utilization", UTIL_OK)])
+def test_stale_serve_with_dead_sources_keeps_last_good_copy(monkeypatch, mod, route, table):
+    _stub_sources(monkeypatch, mod, table)
+    client = _app().test_client()
+    assert client.get(route).status_code == 200
+    good = mod._RESP["v"]
+    mod._RESP["at"] = time.time() - (mod._RESP_TTL + 5)
+    _stub_dead(monkeypatch, mod)
+    resp = client.get(route)
+    assert resp.status_code == 200  # stale GOOD copy beats a blocking 503 here
+    assert resp.get_json().get("served") == "stale-while-revalidate"
+    # the background refresh must NOT store the dead frame
+    assert _wait_for(lambda: not mod._REFRESH_LOCK.locked())
+    assert mod._RESP["v"] is good
 
 
 # ── FIX 2: warm() + the prewarm endpoint ───────────────────────────────────

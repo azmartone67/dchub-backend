@@ -235,6 +235,26 @@ def _store(payload, now):
         pass
 
 
+_STALE_MAX = 3600.0   # serve-stale ceiling — see mcp_leadership_engine._STALE_MAX
+_REFRESH_LOCK = threading.Lock()  # single-flight for the background refresh
+
+
+def _refresh_async():
+    """Kick one background recompute (non-blocking; deduped) — see
+    mcp_leadership_engine._refresh_async for the replica/cadence rationale."""
+    if not _REFRESH_LOCK.acquire(blocking=False):
+        return
+    def _run():
+        try:
+            import time as _t
+            payload, complete, dead = _compute()
+            if complete and not dead:
+                _store(payload, _t.time())
+        finally:
+            _REFRESH_LOCK.release()
+    threading.Thread(target=_run, daemon=True).start()
+
+
 def warm(force: bool = False) -> dict:
     """In-process pre-warm — called by routes/engine_prewarm.py off the cron
     heartbeat (direct function call, NOT an HTTP self-request). Honors
@@ -257,8 +277,16 @@ def agent_utilization():
     real agent lifecycle; names the actuator per track; executes nothing."""
     import time as _t
     _now = _t.time()
-    if _RESP["v"] is not None and (_now - _RESP["at"]) < _RESP_TTL:
-        return jsonify(_RESP["v"]), 200
+    if _RESP["v"] is not None:
+        age = _now - _RESP["at"]
+        if age < _RESP_TTL:
+            return jsonify(_RESP["v"]), 200
+        if age < _STALE_MAX:
+            # stale-while-revalidate — see mcp_leadership_engine: serve the
+            # last GOOD copy instantly, recompute in the background.
+            _refresh_async()
+            return jsonify(dict(_RESP["v"], cache_age_s=round(age, 1),
+                                served="stale-while-revalidate")), 200
     payload, complete, dead = _compute()
     if dead:
         # dead-compute guard (2026-07-16) — see mcp_leadership_engine: a
