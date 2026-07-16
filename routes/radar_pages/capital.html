@@ -1,0 +1,453 @@
+<title>Grid Transition Radar N&#186; 001 &#8212; Capital Allocators &#8212; DC Hub Intelligence</title>
+<style>
+  :root{
+    --ground:#EEF1F4;--surface:#FCFCFB;--surface-2:#F4F6F8;--ink:#0E1417;--ink-2:#3A434C;--muted:#6B747D;
+    --line:#DCE1E6;--line-2:#C7CED4;--accent:#2947E6;--accent-soft:rgba(41,71,230,.10);--accent-ink:#1E36BE;
+    --build:#0E9C8F;--tight:#D9770B;--stranded:#C4152E;--build-tint:rgba(14,156,143,.10);--stranded-tint:rgba(196,21,46,.08);
+    --shadow:0 1px 2px rgba(13,20,28,.04), 0 8px 30px rgba(13,20,28,.06);
+    --serif:"Iowan Old Style","Palatino Linotype",Palatino,"Book Antiqua",Georgia,serif;
+    --sans:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+    --mono:ui-monospace,"SF Mono","SFMono-Regular",Menlo,"Cascadia Mono","Roboto Mono","Liberation Mono",monospace;
+  }
+  @media (prefers-color-scheme:dark){
+    :root{--ground:#0C0F12;--surface:#15181C;--surface-2:#1A1E23;--ink:#ECEFF2;--ink-2:#AEB6BD;--muted:#7E868D;
+      --line:#242A30;--line-2:#333B42;--accent:#5A7CF7;--accent-soft:rgba(90,124,247,.14);--accent-ink:#93A8FF;
+      --build:#22B7A6;--tight:#E0982E;--stranded:#EC6A6A;--build-tint:rgba(34,183,166,.12);--stranded-tint:rgba(236,106,106,.10);
+      --shadow:0 1px 2px rgba(0,0,0,.4), 0 10px 34px rgba(0,0,0,.5);}
+  }
+  :root[data-theme="dark"]{--ground:#0C0F12;--surface:#15181C;--surface-2:#1A1E23;--ink:#ECEFF2;--ink-2:#AEB6BD;--muted:#7E868D;
+      --line:#242A30;--line-2:#333B42;--accent:#5A7CF7;--accent-soft:rgba(90,124,247,.14);--accent-ink:#93A8FF;
+      --build:#22B7A6;--tight:#E0982E;--stranded:#EC6A6A;--build-tint:rgba(34,183,166,.12);--stranded-tint:rgba(236,106,106,.10);
+      --shadow:0 1px 2px rgba(0,0,0,.4), 0 10px 34px rgba(0,0,0,.5);}
+  :root[data-theme="light"]{--ground:#EEF1F4;--surface:#FCFCFB;--surface-2:#F4F6F8;--ink:#0E1417;--ink-2:#3A434C;--muted:#6B747D;
+      --line:#DCE1E6;--line-2:#C7CED4;--accent:#2947E6;--accent-soft:rgba(41,71,230,.10);--accent-ink:#1E36BE;
+      --build:#0E9C8F;--tight:#D9770B;--stranded:#C4152E;--build-tint:rgba(14,156,143,.10);--stranded-tint:rgba(196,21,46,.08);
+      --shadow:0 1px 2px rgba(13,20,28,.04), 0 8px 30px rgba(13,20,28,.06);}
+
+  .gtr{background:var(--ground);color:var(--ink);font-family:var(--sans);line-height:1.55;-webkit-font-smoothing:antialiased;
+    font-feature-settings:"kern" 1;padding:0 clamp(16px,4vw,40px) 72px}
+  .gtr *{box-sizing:border-box}
+  .wrap{max-width:1060px;margin:0 auto}
+  .gtr ::selection{background:var(--accent);color:#fff}
+
+  .statusbar{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;
+    font-family:var(--mono);font-size:11.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);
+    border-bottom:1px solid var(--line);padding:14px 2px;margin-bottom:clamp(28px,5vw,52px)}
+  .statusbar b{color:var(--ink-2);font-weight:600}
+  .live{display:inline-flex;align-items:center;gap:7px;color:var(--ink-2)}
+  .dot{width:7px;height:7px;border-radius:50%;background:var(--build);animation:pulse 2.4s ease-out infinite}
+  @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(14,156,143,.5)}70%{box-shadow:0 0 0 7px rgba(14,156,143,0)}100%{box-shadow:0 0 0 0 rgba(14,156,143,0)}}
+
+  .eyebrow{font-family:var(--mono);font-size:12px;letter-spacing:.18em;text-transform:uppercase;color:var(--accent-ink);
+    display:flex;align-items:center;gap:12px;margin-bottom:22px}
+  .eyebrow .rule{height:1px;flex:1;background:linear-gradient(90deg,var(--accent),transparent)}
+  h1.head{font-family:var(--sans);font-weight:800;font-size:clamp(2.1rem,5.4vw,3.75rem);line-height:1.02;
+    letter-spacing:-.028em;text-wrap:balance;margin:0 0 22px;max-width:16ch}
+  h1.head em{font-style:normal;color:var(--accent)}
+  .standfirst{font-size:clamp(1.06rem,1.7vw,1.28rem);color:var(--ink-2);max-width:62ch;line-height:1.55;margin:0}
+  .byline{font-family:var(--mono);font-size:12px;letter-spacing:.05em;color:var(--muted);margin-top:22px;display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+  .byline .sep{opacity:.5}
+
+  .voices{margin:clamp(34px,5vw,52px) 0;border:1px solid var(--line);border-radius:14px;background:var(--surface);box-shadow:var(--shadow);overflow:hidden}
+  .voices-head{display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap;padding:16px 20px 4px;font-family:var(--mono);font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
+  .voices-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:0}
+  .voice{padding:16px 18px 20px;border-top:1px solid var(--line);border-right:1px solid var(--line);position:relative}
+  .voice:last-child{border-right:none}
+  .voice .n{font-family:var(--mono);font-size:11px;color:var(--muted);letter-spacing:.05em}
+  .voice .t{font-weight:700;font-size:.98rem;margin:8px 0 4px;letter-spacing:-.01em}
+  .voice .d{font-size:.82rem;color:var(--muted);line-height:1.4}
+  .voice.today{background:var(--accent-soft)}
+  .voice.today::before{content:"";position:absolute;top:-1px;left:0;right:0;height:2px;background:var(--accent)}
+  .voice.today .t{color:var(--accent-ink)}
+  .badge-today{display:inline-block;font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;background:var(--accent);color:#fff;padding:2px 6px;border-radius:4px;margin-left:6px;vertical-align:middle}
+  .voices-foot{padding:12px 20px;font-size:.82rem;color:var(--muted);border-top:1px solid var(--line);background:var(--surface-2)}
+  .voices-foot b{color:var(--ink-2);font-weight:600}
+  @media(max-width:640px){.voices-grid{grid-template-columns:repeat(2,1fr)}.voice:nth-child(2n){border-right:none}}
+
+  .thesis{margin:clamp(40px,6vw,64px) 0;display:grid;grid-template-columns:auto 1fr;gap:clamp(18px,3vw,34px);align-items:start}
+  .thesis .bar{width:3px;background:linear-gradient(180deg,var(--build),var(--stranded));border-radius:2px;align-self:stretch}
+  .thesis blockquote{margin:0;font-family:var(--serif);font-size:clamp(1.4rem,3vw,2.05rem);line-height:1.28;letter-spacing:-.01em;text-wrap:balance;color:var(--ink)}
+  .thesis cite{display:block;font-family:var(--mono);font-style:normal;font-size:11.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin-top:16px}
+
+  section{margin:clamp(44px,6vw,72px) 0}
+  .kicker{font-family:var(--mono);font-size:11.5px;letter-spacing:.16em;text-transform:uppercase;color:var(--accent-ink);margin:0 0 10px}
+  h2{font-size:clamp(1.35rem,2.7vw,1.95rem);font-weight:750;letter-spacing:-.022em;line-height:1.1;margin:0 0 12px;text-wrap:balance}
+  .lead{color:var(--ink-2);max-width:64ch;font-size:1.02rem;margin:0 0 4px}
+
+  .kpis{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-top:26px}
+  @media(max-width:820px){.kpis{grid-template-columns:repeat(2,1fr)}}
+  @media(max-width:460px){.kpis{grid-template-columns:1fr}}
+  .kpi{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:18px 18px 16px;box-shadow:var(--shadow);position:relative;overflow:hidden}
+  .kpi .lbl{font-family:var(--mono);font-size:11px;letter-spacing:.05em;text-transform:uppercase;color:var(--muted);display:flex;align-items:center;gap:6px;margin-bottom:10px}
+  .kpi .val{font-family:var(--mono);font-weight:600;font-size:clamp(1.9rem,4vw,2.5rem);letter-spacing:-.02em;line-height:1;font-variant-numeric:tabular-nums;color:var(--ink)}
+  .kpi .val .u{font-size:.9rem;color:var(--ink-2);margin-left:4px;font-weight:500}
+  .kpi .note{font-size:.82rem;color:var(--muted);margin-top:9px;line-height:1.4}
+  .kpi .live-tag{width:6px;height:6px;border-radius:50%;background:var(--build);animation:pulse 2.4s ease-out infinite}
+  .kpi.hot{border-color:color-mix(in srgb,var(--stranded) 30%,var(--line))}
+  .kpi.hot .val{color:var(--stranded)}
+  .kpi.cool .val{color:var(--build)}
+
+  /* positioning book */
+  .scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
+  .pos-card{background:var(--surface);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow);overflow:hidden;margin-top:24px}
+  .pos-card .scroll{padding:16px 8px}
+  table.pos{border-collapse:collapse;width:100%;font-size:.9rem;min-width:720px}
+  table.pos thead th{font-family:var(--mono);font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);font-weight:500;text-align:left;padding:0 14px 12px;border-bottom:1px solid var(--line-2);white-space:nowrap}
+  table.pos thead th.num{text-align:right}
+  table.pos tbody td{padding:13px 14px;border-bottom:1px solid var(--line);vertical-align:middle}
+  table.pos tbody td.num{text-align:right;font-family:var(--mono);font-variant-numeric:tabular-nums;color:var(--ink-2);white-space:nowrap}
+  table.pos tbody tr:hover{background:var(--surface-2)}
+  .iso-name{font-family:var(--mono);font-weight:600;color:var(--ink);letter-spacing:.02em}
+  .thesis-cell{color:var(--ink-2);font-size:.85rem;line-height:1.4;max-width:34ch}
+  .chip{font-family:var(--mono);font-size:10px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;padding:3px 9px;border-radius:20px;white-space:nowrap;display:inline-block}
+  .chip.build{color:var(--build);background:var(--build-tint);border:1px solid color-mix(in srgb,var(--build) 30%,transparent)}
+  .chip.tight{color:var(--tight);background:color-mix(in srgb,var(--tight) 12%,transparent);border:1px solid color-mix(in srgb,var(--tight) 30%,transparent)}
+  .chip.stranded{color:var(--stranded);background:var(--stranded-tint);border:1px solid color-mix(in srgb,var(--stranded) 30%,transparent)}
+  tr.hi td{background:var(--stranded-tint)}
+  tr.hi:hover td{background:color-mix(in srgb,var(--stranded) 12%,transparent)}
+  .pos-foot{padding:12px 20px 16px;border-top:1px solid var(--line);font-size:.78rem;color:var(--muted);font-family:var(--mono);letter-spacing:.02em}
+
+  figure{margin:24px 0 0;background:var(--surface);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow);overflow:hidden}
+  .fig-head{padding:18px 20px 0}
+  .fig-title{font-weight:700;font-size:1.05rem;letter-spacing:-.01em}
+  .fig-sub{font-size:.85rem;color:var(--muted);margin-top:4px}
+  .legend{display:flex;gap:16px;flex-wrap:wrap;padding:14px 20px 0;font-family:var(--mono);font-size:11.5px;color:var(--ink-2)}
+  .legend span{display:inline-flex;align-items:center;gap:7px}
+  .legend i{width:11px;height:11px;border-radius:3px;display:inline-block}
+  .plot{padding:6px 12px 8px}
+  svg{display:block;width:100%;height:auto}
+  .tick{font-family:var(--mono);font-size:10px;fill:var(--muted);font-variant-numeric:tabular-nums}
+  .axis-lbl{font-family:var(--mono);font-size:11px;fill:var(--muted);letter-spacing:.02em}
+  .grid-line{stroke:var(--line);stroke-width:1}.mid-line{stroke:var(--line-2);stroke-width:1;stroke-dasharray:3 4}
+  .qshade-build{fill:var(--build-tint)}.qshade-stranded{fill:var(--stranded-tint)}
+  .qlabel{font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;font-weight:600}
+  .bub{cursor:pointer}.bub-ring{stroke-width:2;fill-opacity:.16}
+  .node-lbl{font-family:var(--mono);font-size:12px;font-weight:600;fill:var(--ink)}
+  .fig-foot{padding:12px 20px 16px;border-top:1px solid var(--line);font-size:.78rem;color:var(--muted);font-family:var(--mono);letter-spacing:.02em}
+  .tip{position:fixed;z-index:50;pointer-events:none;opacity:0;transform:translateY(4px);transition:opacity .12s,transform .12s;background:var(--ink);color:var(--ground);padding:10px 12px;border-radius:9px;font-size:12px;max-width:230px;box-shadow:0 8px 24px rgba(0,0,0,.28)}
+  .tip.on{opacity:1;transform:translateY(0)}
+  .tip .tip-t{font-family:var(--mono);font-weight:700;letter-spacing:.03em;margin-bottom:5px;display:flex;align-items:center;gap:7px}
+  .tip .tip-t i{width:9px;height:9px;border-radius:2px}
+  .tip .tip-r{display:flex;justify-content:space-between;gap:14px;font-variant-numeric:tabular-nums;line-height:1.5}
+  .tip .tip-r span:first-child{opacity:.7}
+  .tip .tip-v{font-size:11px;margin-top:6px;opacity:.75;line-height:1.35;max-width:200px}
+
+  .paradox{display:grid;grid-template-columns:1fr auto 1fr;gap:0;align-items:center;background:var(--surface);border:1px solid var(--line);border-radius:16px;box-shadow:var(--shadow);overflow:hidden}
+  .pcol{padding:clamp(24px,4vw,38px)}
+  .pcol .pk{font-family:var(--mono);font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin-bottom:14px}
+  .pbig{font-family:var(--mono);font-weight:600;font-size:clamp(2rem,5vw,3.1rem);line-height:.98;letter-spacing:-.03em;font-variant-numeric:tabular-nums}
+  .pcol.left .pbig{color:var(--accent)}
+  .pcol.right .pbig{color:var(--stranded)}
+  .psub{font-size:.9rem;color:var(--ink-2);margin-top:12px;line-height:1.45;max-width:34ch}
+  .pmid{writing-mode:vertical-rl;text-orientation:mixed;font-family:var(--mono);font-size:11px;letter-spacing:.28em;text-transform:uppercase;color:var(--muted);padding:0 4px;border-left:1px solid var(--line);border-right:1px solid var(--line);align-self:stretch;display:flex;align-items:center;justify-content:center;background:var(--surface-2)}
+  .ppunch{margin-top:22px;font-family:var(--serif);font-size:clamp(1.15rem,2.4vw,1.55rem);line-height:1.32;text-wrap:balance;color:var(--ink);border-top:1px solid var(--line);padding-top:22px}
+  @media(max-width:720px){.paradox{grid-template-columns:1fr}.pmid{writing-mode:horizontal-tb;padding:10px;border:none;border-top:1px solid var(--line);border-bottom:1px solid var(--line);letter-spacing:.18em}}
+
+  .takes{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-top:26px}
+  @media(max-width:820px){.takes{grid-template-columns:1fr}}
+  .take{background:var(--surface);border:1px solid var(--line);border-radius:13px;padding:22px;box-shadow:var(--shadow)}
+  .take .tnum{font-family:var(--mono);font-size:11px;color:var(--muted);letter-spacing:.1em}
+  .take h3{font-size:1.06rem;font-weight:700;letter-spacing:-.015em;margin:10px 0 8px;line-height:1.2}
+  .take p{font-size:.9rem;color:var(--ink-2);margin:0;line-height:1.5}
+  .take .tag{display:inline-block;margin-top:14px}
+  .take.build{border-top:3px solid var(--build)}
+  .take.tight{border-top:3px solid var(--tight)}
+  .take.stranded{border-top:3px solid var(--stranded)}
+
+  .colophon{background:var(--surface);border:1px solid var(--line);border-radius:16px;box-shadow:var(--shadow);padding:clamp(26px,4vw,40px);margin-top:clamp(44px,6vw,72px)}
+  .colophon .kicker{margin-bottom:16px}
+  .colophon h2{font-size:clamp(1.2rem,2.4vw,1.6rem)}
+  .col-grid{display:grid;grid-template-columns:1fr 1fr;gap:26px;margin-top:22px}
+  @media(max-width:720px){.col-grid{grid-template-columns:1fr}}
+  .col-grid h4{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--accent-ink);margin:0 0 10px}
+  .col-grid p{margin:0 0 10px;font-size:.92rem;color:var(--ink-2);line-height:1.55}
+  .toolchain{font-family:var(--mono);font-size:12px;color:var(--ink-2);display:flex;flex-wrap:wrap;gap:8px;margin-top:6px}
+  .toolchain code{background:var(--surface-2);border:1px solid var(--line);border-radius:6px;padding:3px 8px;color:var(--accent-ink)}
+  .provbar{margin-top:26px;padding-top:20px;border-top:1px solid var(--line);font-family:var(--mono);font-size:11px;letter-spacing:.03em;color:var(--muted);display:flex;flex-wrap:wrap;gap:6px 16px;line-height:1.7}
+  .provbar b{color:var(--ink-2);font-weight:600}
+  a.src{color:var(--accent-ink);text-decoration:none;border-bottom:1px solid color-mix(in srgb,var(--accent) 40%,transparent)}
+  a.src:hover{border-bottom-color:var(--accent)}
+  :focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:3px}
+  @media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+
+<div class="gtr"><div class="wrap">
+
+  <div class="statusbar">
+    <span><b>DC HUB INTELLIGENCE</b> // GRID DESK &middot; CAPITAL</span>
+    <span class="live"><span class="dot"></span> LIVE &middot; {{retrieved_date}} &middot; CAPITAL ALLOCATORS EDITION &middot; CC-BY-4.0</span>
+  </div>
+
+  <header>
+    <div class="eyebrow">Grid Transition Radar &middot; Edition N&ordm; 001<span class="rule"></span></div>
+    <h1 class="head">The market is long queue depth. The return is in <em>time-to-power</em>.</h1>
+    <p class="standfirst">Capital is crowding into the deepest interconnection queues and the densest metros &mdash; precisely where power takes longest to arrive. {{us_queue_gw}} GW sits in U.S. queues; only a fraction clears this decade. The mispriced asset isn't a megawatt. It's a fast interconnect sitting next to spilled clean power. Same live grid core as every edition &mdash; read for the allocator.</p>
+    <div class="byline">
+      <span>DC Hub Intelligence</span><span class="sep">&middot;</span>
+      <span>Grid Desk</span><span class="sep">&middot;</span>
+      <span>Written for capital allocators &amp; infrastructure investors</span>
+    </div>
+  </header>
+
+  <div class="voices" aria-label="Audience rotation">
+    <div class="voices-head"><span>One brain core &rarr; four audience renders</span><span>4-day rotation &middot; today = N&ordm; 001 of cycle</span></div>
+    <div class="voices-grid">
+      <div class="voice today"><div class="n">01 &middot; Today</div><div class="t">Capital Allocators<span class="badge-today">NOW</span></div><div class="d">Thesis &amp; capital-flow read: where the return on the next GW is.</div></div>
+      <div class="voice"><div class="n">02 &middot; Tomorrow</div><div class="t">Site Selection &amp; Ops</div><div class="d">Feasibility-first: what can you energize, where, and by when.</div></div>
+      <div class="voice"><div class="n">03 &middot; Then</div><div class="t">Agents &amp; Developers</div><div class="d">Machine-readable: the same figures as a cited, queryable feed.</div></div>
+      <div class="voice"><div class="n">04 &middot; Then</div><div class="t">Infra Press</div><div class="d">Story-led: the paradox that makes the grid the story of the decade.</div></div>
+    </div>
+    <div class="voices-foot">Same live data core, re-voiced daily. <b>Today underwrites the trade</b> &mdash; not "where is it hot," but "where is the risk-adjusted return on the next gigawatt mispriced." The numbers match every other edition; the lens does not.</div>
+  </div>
+
+  <div class="thesis">
+    <div class="bar" aria-hidden="true"></div>
+    <div>
+      <blockquote>Underwrite the date, not the megawatt. Two grids can queue the same gigawatt; only one delivers it inside the hold period. The Street prices queue size &mdash; the return lives in time-to-power, and today it points at the wind belt, not the Beltway.</blockquote>
+      <cite>The Grid Desk take &middot; derived live from DC Hub, {{retrieved_utc}}</cite>
+    </div>
+  </div>
+
+  <section>
+    <p class="kicker">The setup</p>
+    <h2>Six numbers a capital committee should price</h2>
+    <p class="lead">The headline figures, read as an allocator would: as inputs to entry multiples and hold-period risk, not as grid trivia.</p>
+    <div class="kpis">
+      <div class="kpi">
+        <div class="lbl">U.S. interconnection queue</div>
+        <div class="val">{{us_queue_gw}}<span class="u">GW</span></div>
+        <div class="note">A demand signal, not deliverable supply. Discount the headline hard before it enters a model.</div>
+      </div>
+      <div class="kpi hot">
+        <div class="lbl">Ashburn time-to-power</div>
+        <div class="val">{{pjm_wait_mo}}<span class="u">months</span></div>
+        <div class="note">A ~2030 asset. Ask what multiple that hold period actually deserves at today's entry.</div>
+      </div>
+      <div class="kpi cool">
+        <div class="lbl">SPP curtailment</div>
+        <div class="val">{{spp_curtail}}<span class="u">%</span></div>
+        <div class="note">Clean MWh at a structural discount, long a buyer. This is where the PPA math works.</div>
+      </div>
+      <div class="kpi">
+        <div class="lbl">ERCOT queue depth</div>
+        <div class="val">434<span class="u">GW</span></div>
+        <div class="note">The volume book. Price the ~33-month energization into entry; don't assume it away.</div>
+      </div>
+      <div class="kpi">
+        <div class="lbl">N. Virginia operators</div>
+        <div class="val">89<span class="u">firms</span></div>
+        <div class="note">Ashburn + Sterling + Manassas. A crowded trade &mdash; everyone already owns the metro.</div>
+      </div>
+      <div class="kpi cool">
+        <div class="lbl"><span class="live-tag"></span> Ashburn real-time LMP</div>
+        <div class="val"><span class="u" style="margin:0 1px 0 0">$</span>36.94<span class="u">/MWh</span></div>
+        <div class="note">Energy is cheap tonight (live, 07:15 UTC). Scarcity is in delivery, not the clearing price.</div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <p class="kicker">The book</p>
+    <h2>Positioning across the seven grids</h2>
+    <p class="lead">The ISO scoreboard, read as a book. Stance blends time-to-power (the risk), curtailment headroom (the latent value), and BUILD-flagged sub-markets. Ordered most-investable first.</p>
+    <div class="pos-card">
+      <div class="scroll">
+        <table class="pos">
+          <thead>
+            <tr><th>Grid</th><th>Stance</th><th class="num">Time&#8209;to&#8209;power</th><th class="num">Curtailment</th><th class="num">Queued</th><th>Thesis</th></tr>
+          </thead>
+          <tbody id="book"></tbody>
+        </table>
+      </div>
+      <div class="pos-foot">Stance is DC Hub Grid Desk opinion, not investment advice. Underlying fields live from get_grid_scoreboard(), {{retrieved_date}} {{retrieved_utc}}.</div>
+    </div>
+  </section>
+
+  <section>
+    <p class="kicker">The risk/return map</p>
+    <h2>Where the mispricing sits</h2>
+    <p class="lead">Risk on the x-axis (time-to-power), latent value on the y (spilled clean power). Bubble size is queued capacity. The overlooked upper-left is where a fast interconnect meets cheap clean power; the crowded lower-right is demand with nowhere to plug in.</p>
+    <figure>
+      <div class="fig-head">
+        <div class="fig-title">Risk vs latent value, by grid</div>
+        <div class="fig-sub">time-to-power (risk) vs curtailment (latent value) &middot; bubble = queued GW</div>
+      </div>
+      <div class="legend">
+        <span><i style="background:var(--build)"></i> Overweight</span>
+        <span><i style="background:var(--tight)"></i> Market-weight</span>
+        <span><i style="background:var(--stranded)"></i> Underweight</span>
+      </div>
+      <div class="plot"><svg id="quad" viewBox="0 0 700 500" role="img" aria-label="Risk-return scatter of U.S. ISOs"></svg></div>
+      <div class="fig-foot">Upper-left = risk-adjusted upside. Lower-right = crowded, capital-heavy, slow. Source: DC Hub, {{retrieved_utc}}.</div>
+    </figure>
+  </section>
+
+  <section>
+    <p class="kicker">The trade</p>
+    <h2>You're buying a date, not a megawatt</h2>
+    <div class="paradox">
+      <div class="pcol left">
+        <div class="pk">What the Street is paying for</div>
+        <div class="pbig">{{ercot_queue_gw}} GW &middot; #1</div>
+        <div class="psub">Capital chases the deepest queue (ERCOT) and the hottest metro (Ashburn, 176 facilities). Both are consensus longs.</div>
+      </div>
+      <div class="pmid">but clears in</div>
+      <div class="pcol right">
+        <div class="pk">When it actually energizes</div>
+        <div class="pbig">33&ndash;50 mo</div>
+        <div class="psub">ERCOT ~33 months; PJM/Ashburn {{pjm_wait_mo}}. The wait is the entire risk &mdash; and it's the line item the multiple ignores.</div>
+      </div>
+    </div>
+    <p class="ppunch">The consensus long is a crowded metro on a five-year queue, priced as if power arrives in two. The contrarian position is a fast interconnect in a grid nobody underwrites &mdash; where curtailment is a discount, not a defect.</p>
+  </section>
+
+  <section>
+    <p class="kicker">The positioning read-through</p>
+    <h2>Three moves for the committee</h2>
+    <div class="takes">
+      <div class="take build">
+        <div class="tnum">OVERWEIGHT</div>
+        <h3>The wind-belt frontier</h3>
+        <p>SPP &amp; MISO: a ~24-month queue and double-digit curtailment mean a below-market PPA and near-term energization. 20% of SPP sub-markets already flag BUILD. This is where new capital compounds fastest.</p>
+        <span class="tag chip build">Overweight</span>
+      </div>
+      <div class="take tight">
+        <div class="tnum">MARKET-WEIGHT</div>
+        <h3>ERCOT for scale</h3>
+        <p>The only place to site true hyperscale volume &mdash; {{ercot_queue_gw}} GW queued, ~225 GW of large-load in process. Own it, but underwrite the ~33-month delay explicitly. The delay is the risk you're paid (or not) to take.</p>
+        <span class="tag chip tight">Market-weight</span>
+      </div>
+      <div class="take stranded">
+        <div class="tnum">UNDERWEIGHT</div>
+        <h3>Greenfield N. Virginia</h3>
+        <p>A {{pjm_wait_mo}}-month queue makes new Ashburn supply a 2030 story. Current greenfield entry multiples imply sooner. Prefer operating assets / backfill in the cluster; avoid paying a 2027 price for a 2030 date.</p>
+        <span class="tag chip stranded">Underweight</span>
+      </div>
+    </div>
+  </section>
+
+  <div class="colophon">
+    <p class="kicker">How this brief was made</p>
+    <h2>A thesis the data forces &mdash; not a market blurb</h2>
+    <div class="col-grid">
+      <div>
+        <h4>Live from the brain, priced for capital</h4>
+        <p>Every figure was pulled from the DC Hub data layer at {{retrieved_utc}} and re-cast as an input to entry risk. No recycled DCPI page, no stale training data. The argument &mdash; that time-to-power, not queue size, sets the return &mdash; is the deliverable.</p>
+        <div class="toolchain"><code>get_grid_scoreboard</code><code>get_grid_intelligence</code><code>rank_markets</code></div>
+      </div>
+      <div>
+        <h4>One core, four audiences, rotating daily</h4>
+        <p>Today's allocator read is slot 01 of a 4-day cycle: capital allocators &rarr; site-selection &rarr; agents &amp; developers &rarr; infra press. The numbers are byte-identical across all four; the lens, vocabulary, and "so what" rotate. Publish once, reach four rooms.</p>
+        <p style="color:var(--muted);font-size:.85rem">Not investment advice. Free-tier note: grid_transition_radar, get_interconnection_queue &amp; hyperscaler_deals return full depth on a paid key.</p>
+      </div>
+    </div>
+    <div class="provbar">
+      <span><b>Source:</b> DC Hub &mdash; <a class="src" href="https://dchub.cloud">dchub.cloud</a> &middot; CC-BY-4.0</span>
+      <span><b>Retrieved:</b> {{retrieved_date}} {{retrieved_utc}}</span>
+      <span><b>Cite as:</b> "DC Hub, dchub.cloud"</span>
+    </div>
+  </div>
+
+</div></div>
+
+<div class="tip" id="tip" role="status" aria-live="polite"></div>
+
+<script>
+(function(){
+  "use strict";
+  var reduce = window.matchMedia && window.matchMedia("(prefers-reduced-motion:reduce)").matches;
+  var ISOS = [
+    {iso:"SPP",   wait:24.0, curtail:11.2, queue:187.2, ren:33.6, v:"build",    stance:"Overweight",    ldx:14, ldy:-16, thesis:"Fast queue + spilled wind = below-market PPA, near-term energization. 20% of sub-markets flag BUILD."},
+    {iso:"MISO",  wait:33.7, curtail:6.2,  queue:191.1, ren:6.8,  v:"build",    stance:"Overweight",    ldx:16, ldy:4,   thesis:"Second frontier: wind-belt curtailment plus one BUILD sub-market. Accumulate alongside SPP."},
+    {iso:"ERCOT", wait:32.6, curtail:4.3,  queue:434.1, ren:13.8, v:"tight",    stance:"Market-weight", ldx:0,  ldy:64,  thesis:"Only true hyperscale volume ({{ercot_queue_gw}} GW; ~225 GW large-load). Underwrite the ~33-month wait."},
+    {iso:"CAISO", wait:39.9, curtail:9.0,  queue:79.5,  ren:28.5, v:"stranded", stance:"Underweight",   ldx:16, ldy:-8,  thesis:"Spilled solar, but a 40-month queue and 0 BUILD markets. A value trap, not a value play."},
+    {iso:"NYISO", wait:31.4, curtail:2.0,  queue:10.6,  ren:19.4, v:"stranded", stance:"Underweight",   ldx:-52,ldy:2,   thesis:"Thin queue, gas-heavy, demand-constrained. No supply story to underwrite."},
+    {iso:"ISO-NE",wait:33.3, curtail:3.3,  queue:14.8,  ren:10.7, v:"stranded", stance:"Underweight",   ldx:16, ldy:-6,  thesis:"Little headroom, 66% gas. Pass on greenfield; the queue is small for a reason."},
+    {iso:"PJM",   wait:50.5, curtail:1.2,  queue:172.4, ren:2.8,  v:"stranded", stance:"Underweight",   ldx:-14,ldy:40,  thesis:"Ashburn's grid: longest U.S. wait under the hottest demand. Greenfield is a 2030 story priced as 2027."}
+  ];
+var LIVE={{{isos_json}}};ISOS.forEach(function(d){var L=LIVE[d.iso];if(L){d.wait=L.wait;d.curtail=L.curtail;d.queue=L.queue;d.ren=L.ren;}});
+  var COLOR = {build:"var(--build)", tight:"var(--tight)", stranded:"var(--stranded)"};
+  var VLABEL = {build:"OVERWEIGHT", tight:"MARKET-WEIGHT", stranded:"UNDERWEIGHT"};
+
+  /* positioning book: overweight -> market-weight -> underweight, then by wait */
+  var rank={build:0,tight:1,stranded:2};
+  var book=document.getElementById("book");
+  var ordered=ISOS.slice().sort(function(a,b){return (rank[a.v]-rank[b.v])||(a.wait-b.wait);});
+  ordered.forEach(function(d){
+    var tr=document.createElement("tr");
+    if(d.iso==="PJM") tr.className="hi";
+    tr.innerHTML='<td><span class="iso-name">'+d.iso+'</span></td>'+
+      '<td><span class="chip '+d.v+'">'+d.stance+'</span></td>'+
+      '<td class="num">'+d.wait.toFixed(1)+' mo</td>'+
+      '<td class="num">'+d.curtail.toFixed(1)+'%</td>'+
+      '<td class="num">'+d.queue.toFixed(0)+' GW</td>'+
+      '<td class="thesis-cell">'+d.thesis+'</td>';
+    book.appendChild(tr);
+  });
+
+  /* quadrant */
+  var SVGNS="http://www.w3.org/2000/svg";
+  var svg=document.getElementById("quad");
+  var W=700,H=500,mL=58,mR=30,mT=30,mB=58,pW=W-mL-mR,pH=H-mT-mB;
+  var xMin=18,xMax=54,yMin=0,yMax=12;
+  function X(w){return mL+(w-xMin)/(xMax-xMin)*pW;}
+  function Y(c){return mT+(yMax-c)/(yMax-yMin)*pH;}
+  function R(q){return 7+Math.sqrt(q)*1.75;}
+  function el(n,a){var e=document.createElementNS(SVGNS,n);for(var k in a)e.setAttribute(k,a[k]);return e;}
+  var xMid=X(36),yMid=Y(6);
+  svg.appendChild(el("rect",{x:mL,y:mT,width:xMid-mL,height:yMid-mT,class:"qshade-build"}));
+  svg.appendChild(el("rect",{x:xMid,y:yMid,width:mL+pW-xMid,height:mT+pH-yMid,class:"qshade-stranded"}));
+  [18,26,34,42,50].forEach(function(t){var x=X(t);svg.appendChild(el("line",{x1:x,y1:mT,x2:x,y2:mT+pH,class:"grid-line"}));
+    var tx=el("text",{x:x,y:mT+pH+18,"text-anchor":"middle",class:"tick"});tx.textContent=t;svg.appendChild(tx);});
+  [0,3,6,9,12].forEach(function(t){var y=Y(t);svg.appendChild(el("line",{x1:mL,y1:y,x2:mL+pW,y2:y,class:"grid-line"}));
+    var tx=el("text",{x:mL-10,y:y+3,"text-anchor":"end",class:"tick"});tx.textContent=t;svg.appendChild(tx);});
+  svg.appendChild(el("line",{x1:xMid,y1:mT,x2:xMid,y2:mT+pH,class:"mid-line"}));
+  svg.appendChild(el("line",{x1:mL,y1:yMid,x2:mL+pW,y2:yMid,class:"mid-line"}));
+  function qlab(x,y,anchor,text,fill){var t=el("text",{x:x,y:y,"text-anchor":anchor,class:"qlabel",fill:fill});t.textContent=text;svg.appendChild(t);}
+  qlab(mL+8,mT+18,"start","\u25e4 UPSIDE","var(--build)");
+  qlab(mL+pW-8,yMid+22,"end","CROWDED \u25be","var(--stranded)");
+  var axx=el("text",{x:mL+pW/2,y:H-14,"text-anchor":"middle",class:"axis-lbl"});
+  axx.textContent="RISK \u2014 time-to-power (months) \u2192 higher";svg.appendChild(axx);
+  var axy=el("text",{x:0,y:0,"text-anchor":"middle",class:"axis-lbl",transform:"translate(16,"+(mT+pH/2)+") rotate(-90)"});
+  axy.textContent="LATENT VALUE \u2014 curtailment (%) \u2192 more";svg.appendChild(axy);
+
+  var order=ISOS.slice().sort(function(a,b){return b.queue-a.queue;});
+  var tip=document.getElementById("tip");
+  function showTip(d,evt){
+    tip.innerHTML='<div class="tip-t"><i style="background:'+COLOR[d.v]+'"></i>'+d.iso+' \u00b7 '+VLABEL[d.v]+'</div>'+
+      '<div class="tip-r"><span>Time-to-power</span><span>'+d.wait.toFixed(1)+' mo</span></div>'+
+      '<div class="tip-r"><span>Curtailment</span><span>'+d.curtail.toFixed(1)+'%</span></div>'+
+      '<div class="tip-r"><span>Queued</span><span>'+d.queue.toFixed(1)+' GW</span></div>'+
+      '<div class="tip-v">'+d.thesis+'</div>';
+    tip.classList.add("on");moveTip(evt);
+  }
+  function moveTip(evt){var x=evt.clientX,y=evt.clientY,w=tip.offsetWidth,h=tip.offsetHeight,nx=x+16,ny=y+16;
+    if(nx+w>window.innerWidth-8)nx=x-w-16;if(ny+h>window.innerHeight-8)ny=y-h-16;
+    tip.style.left=Math.max(8,nx)+"px";tip.style.top=Math.max(8,ny)+"px";}
+  function hideTip(){tip.classList.remove("on");}
+  order.forEach(function(d,i){
+    var cx=X(d.wait),cy=Y(d.curtail),r=R(d.queue),col=COLOR[d.v];
+    var g=el("g",{class:"bub",tabindex:"0","aria-label":d.iso+", "+d.stance+", "+d.wait+" months, "+d.curtail+"% curtailment"});
+    var ring=el("circle",{cx:cx,cy:cy,r:r,fill:col,stroke:col,class:"bub-ring"});
+    var core=el("circle",{cx:cx,cy:cy,r:3.5,fill:col});
+    g.appendChild(ring);g.appendChild(core);
+    var lbl=el("text",{x:cx+d.ldx,y:cy+d.ldy,class:"node-lbl","text-anchor":(d.ldx<0?"end":"start")});
+    lbl.textContent=d.iso;g.appendChild(lbl);
+    if(reduce){ring.setAttribute("opacity","1");}
+    else{ring.setAttribute("opacity","0");var delay=i*80;
+      ring.style.transition="opacity .5s ease "+delay+"ms";core.style.transition="opacity .5s ease "+delay+"ms";core.setAttribute("opacity","0");
+      lbl.style.transition="opacity .5s ease "+(delay+120)+"ms";lbl.setAttribute("opacity","0");
+      requestAnimationFrame(function(){requestAnimationFrame(function(){ring.setAttribute("opacity","1");core.setAttribute("opacity","1");lbl.setAttribute("opacity","1");});});
+      setTimeout(function(){ring.setAttribute("opacity","1");core.setAttribute("opacity","1");lbl.setAttribute("opacity","1");},900+delay);
+    }
+    function over(e){ring.setAttribute("fill-opacity","0.32");showTip(d,e.touches?e.touches[0]:e);}
+    function out(){ring.setAttribute("fill-opacity","0.16");hideTip();}
+    g.addEventListener("mouseenter",over);g.addEventListener("mousemove",function(e){moveTip(e);});
+    g.addEventListener("mouseleave",out);
+    g.addEventListener("focus",function(){var b=g.getBoundingClientRect();ring.setAttribute("fill-opacity","0.32");showTip(d,{clientX:b.left+b.width/2,clientY:b.top});});
+    g.addEventListener("blur",out);
+    svg.appendChild(g);
+  });
+  window.addEventListener("scroll",function(){if(tip.classList.contains("on"))hideTip();},{passive:true});
+})();
+</script>

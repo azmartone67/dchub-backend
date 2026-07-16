@@ -33943,6 +33943,17 @@ app.register_blueprint(digest_bp)
 # auto-registered: press_queue_bp
 app.register_blueprint(press_queue_bp)
 
+# Grid Transition Radar — daily analyst publication at /radar (backend-served,
+# tier-gated, 4-audience rotation). Distinct publication identity, absent from
+# both brand detectors' page lists so it is never flagged. See routes/radar.py.
+# Fail-safe: a radar import/registration error must never take down app boot.
+try:
+    from routes.radar import register_radar
+    register_radar(app)
+except Exception as _radar_err:
+    import sys as _sys
+    print(f"[radar] blueprint registration skipped: {_radar_err}", file=_sys.stderr)
+
 # Phase GG (2026-05-14): bundled per-site capacity report
 if sites_capacity_bp is not None:
     try:

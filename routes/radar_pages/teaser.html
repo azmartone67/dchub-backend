@@ -1,0 +1,288 @@
+<title>Grid Transition Radar &mdash; Free Preview &mdash; DC Hub Intelligence</title>
+<style>
+  :root{
+    --ground:#EEF1F4;--surface:#FCFCFB;--surface-2:#F4F6F8;--ink:#0E1417;--ink-2:#3A434C;--muted:#6B747D;
+    --line:#DCE1E6;--line-2:#C7CED4;--accent:#2947E6;--accent-soft:rgba(41,71,230,.10);--accent-ink:#1E36BE;
+    --build:#0E9C8F;--tight:#D9770B;--stranded:#C4152E;--build-tint:rgba(14,156,143,.10);--stranded-tint:rgba(196,21,46,.08);
+    --shadow:0 1px 2px rgba(13,20,28,.04), 0 8px 30px rgba(13,20,28,.06);
+    --serif:"Iowan Old Style","Palatino Linotype",Palatino,"Book Antiqua",Georgia,serif;
+    --sans:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+    --mono:ui-monospace,"SF Mono","SFMono-Regular",Menlo,"Cascadia Mono","Roboto Mono","Liberation Mono",monospace;
+  }
+  @media (prefers-color-scheme:dark){
+    :root{--ground:#0C0F12;--surface:#15181C;--surface-2:#1A1E23;--ink:#ECEFF2;--ink-2:#AEB6BD;--muted:#7E868D;
+      --line:#242A30;--line-2:#333B42;--accent:#5A7CF7;--accent-soft:rgba(90,124,247,.14);--accent-ink:#93A8FF;
+      --build:#22B7A6;--tight:#E0982E;--stranded:#EC6A6A;--build-tint:rgba(34,183,166,.12);--stranded-tint:rgba(236,106,106,.10);
+      --shadow:0 1px 2px rgba(0,0,0,.4), 0 10px 34px rgba(0,0,0,.5);}
+  }
+  :root[data-theme="dark"]{--ground:#0C0F12;--surface:#15181C;--surface-2:#1A1E23;--ink:#ECEFF2;--ink-2:#AEB6BD;--muted:#7E868D;
+      --line:#242A30;--line-2:#333B42;--accent:#5A7CF7;--accent-soft:rgba(90,124,247,.14);--accent-ink:#93A8FF;
+      --build:#22B7A6;--tight:#E0982E;--stranded:#EC6A6A;--build-tint:rgba(34,183,166,.12);--stranded-tint:rgba(236,106,106,.10);
+      --shadow:0 1px 2px rgba(0,0,0,.4), 0 10px 34px rgba(0,0,0,.5);}
+  :root[data-theme="light"]{--ground:#EEF1F4;--surface:#FCFCFB;--surface-2:#F4F6F8;--ink:#0E1417;--ink-2:#3A434C;--muted:#6B747D;
+      --line:#DCE1E6;--line-2:#C7CED4;--accent:#2947E6;--accent-soft:rgba(41,71,230,.10);--accent-ink:#1E36BE;
+      --build:#0E9C8F;--tight:#D9770B;--stranded:#C4152E;--build-tint:rgba(14,156,143,.10);--stranded-tint:rgba(196,21,46,.08);
+      --shadow:0 1px 2px rgba(13,20,28,.04), 0 8px 30px rgba(13,20,28,.06);}
+
+  .gtr{background:var(--ground);color:var(--ink);font-family:var(--sans);line-height:1.55;-webkit-font-smoothing:antialiased;font-feature-settings:"kern" 1;padding:0 clamp(16px,4vw,40px) 72px}
+  .gtr *{box-sizing:border-box}
+  .wrap{max-width:1020px;margin:0 auto}
+  .gtr ::selection{background:var(--accent);color:#fff}
+
+  .statusbar{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;font-family:var(--mono);font-size:11.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);border-bottom:1px solid var(--line);padding:14px 2px;margin-bottom:clamp(28px,5vw,52px)}
+  .statusbar b{color:var(--ink-2);font-weight:600}
+  .live{display:inline-flex;align-items:center;gap:7px;color:var(--ink-2)}
+  .dot{width:7px;height:7px;border-radius:50%;background:var(--build);animation:pulse 2.4s ease-out infinite}
+  @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(14,156,143,.5)}70%{box-shadow:0 0 0 7px rgba(14,156,143,0)}100%{box-shadow:0 0 0 0 rgba(14,156,143,0)}}
+  .free-badge{font-family:var(--mono);font-size:10px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;background:var(--build);color:#fff;padding:3px 8px;border-radius:5px}
+
+  .eyebrow{font-family:var(--mono);font-size:12px;letter-spacing:.18em;text-transform:uppercase;color:var(--accent-ink);display:flex;align-items:center;gap:12px;margin-bottom:22px}
+  .eyebrow .rule{height:1px;flex:1;background:linear-gradient(90deg,var(--accent),transparent)}
+  h1.head{font-family:var(--sans);font-weight:800;font-size:clamp(2.1rem,5.2vw,3.5rem);line-height:1.03;letter-spacing:-.028em;text-wrap:balance;margin:0 0 22px;max-width:17ch}
+  h1.head em{font-style:normal;color:var(--accent)}
+  .standfirst{font-size:clamp(1.06rem,1.7vw,1.26rem);color:var(--ink-2);max-width:62ch;line-height:1.55;margin:0}
+  .byline{font-family:var(--mono);font-size:12px;letter-spacing:.05em;color:var(--muted);margin-top:22px;display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+  .byline .sep{opacity:.5}
+
+  section{margin:clamp(40px,5vw,60px) 0}
+  .kicker{font-family:var(--mono);font-size:11.5px;letter-spacing:.16em;text-transform:uppercase;color:var(--accent-ink);margin:0 0 10px;display:flex;align-items:center;gap:10px}
+  .kicker .free{color:var(--build)}
+  .kicker .lockword{color:var(--muted)}
+  h2{font-size:clamp(1.3rem,2.6vw,1.85rem);font-weight:750;letter-spacing:-.022em;line-height:1.1;margin:0 0 12px;text-wrap:balance}
+  .lead{color:var(--ink-2);max-width:64ch;font-size:1.02rem;margin:0 0 4px}
+
+  /* unlocked KPIs */
+  .kpis{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:22px}
+  @media(max-width:560px){.kpis{grid-template-columns:1fr}}
+  .kpi{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:18px;box-shadow:var(--shadow);position:relative}
+  .kpi.open{border-color:color-mix(in srgb,var(--build) 32%,var(--line))}
+  .kpi .lbl{font-family:var(--mono);font-size:11px;letter-spacing:.05em;text-transform:uppercase;color:var(--muted);display:flex;align-items:center;gap:6px;margin-bottom:10px}
+  .kpi .val{font-family:var(--mono);font-weight:600;font-size:clamp(1.9rem,4vw,2.5rem);letter-spacing:-.02em;line-height:1;font-variant-numeric:tabular-nums;color:var(--ink)}
+  .kpi .val .u{font-size:.9rem;color:var(--ink-2);margin-left:4px;font-weight:500}
+  .kpi .note{font-size:.82rem;color:var(--muted);margin-top:9px;line-height:1.4}
+  .kpi .live-tag{width:6px;height:6px;border-radius:50%;background:var(--build);animation:pulse 2.4s ease-out infinite}
+  .open-tag{font-family:var(--mono);font-size:9.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--build);background:var(--build-tint);border:1px solid color-mix(in srgb,var(--build) 30%,transparent);padding:2px 7px;border-radius:20px;position:absolute;top:14px;right:14px}
+
+  /* locked grid */
+  .locked-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:14px;margin-top:22px}
+  @media(max-width:560px){.locked-grid{grid-template-columns:1fr}}
+  .lk{position:relative;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:18px;box-shadow:var(--shadow);overflow:hidden;min-height:118px}
+  .lk .lk-lbl{font-family:var(--mono);font-size:11px;letter-spacing:.05em;text-transform:uppercase;color:var(--ink-2);margin-bottom:10px;position:relative;z-index:2}
+  .lk .lk-val{font-family:var(--mono);font-weight:600;font-size:1.9rem;letter-spacing:-.02em;color:var(--ink);filter:blur(9px);opacity:.5;user-select:none}
+  .lk .lk-note{font-size:.82rem;color:var(--muted);margin-top:9px;filter:blur(5px);opacity:.5;user-select:none;line-height:1.4}
+  .lk .lockpill{position:absolute;top:14px;right:14px;z-index:2;display:inline-flex;align-items:center;gap:5px;font-family:var(--mono);font-size:9.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--accent-ink);background:var(--accent-soft);border:1px solid color-mix(in srgb,var(--accent) 28%,transparent);padding:3px 8px;border-radius:20px}
+  .lockpill svg{width:9px;height:9px}
+
+  /* teased chart */
+  .tease-fig{position:relative;background:var(--surface);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow);overflow:hidden;margin-top:22px}
+  .tease-fig .fig-head{padding:18px 20px 0}
+  .tease-fig .fig-title{font-weight:700;font-size:1.05rem}
+  .tease-fig .fig-sub{font-size:.85rem;color:var(--muted);margin-top:4px}
+  .tease-fig .blurwrap{filter:blur(7px);opacity:.7;padding:6px 12px 8px;pointer-events:none}
+  .tease-fig svg{display:block;width:100%;height:auto}
+  .veil{position:absolute;inset:56px 0 0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;
+    background:linear-gradient(180deg,color-mix(in srgb,var(--surface) 40%,transparent),color-mix(in srgb,var(--surface) 78%,transparent))}
+  .veil .vtitle{font-weight:700;font-size:1.05rem;text-align:center;max-width:26ch;text-wrap:balance}
+  .veil .vsub{font-size:.86rem;color:var(--muted);text-align:center;max-width:34ch;margin-top:-6px}
+  .tick{font-family:var(--mono);font-size:10px;fill:var(--muted)}
+  .grid-line{stroke:var(--line);stroke-width:1}.mid-line{stroke:var(--line-2);stroke-width:1;stroke-dasharray:3 4}
+  .qshade-build{fill:var(--build-tint)}.qshade-stranded{fill:var(--stranded-tint)}
+  .bub-ring{stroke-width:2;fill-opacity:.16}.node-lbl{font-family:var(--mono);font-size:12px;font-weight:600;fill:var(--ink)}
+
+  .btn{display:inline-flex;align-items:center;gap:8px;font-family:var(--sans);font-weight:650;font-size:.92rem;padding:11px 18px;border-radius:10px;text-decoration:none;border:1px solid transparent;cursor:pointer;transition:transform .12s}
+  .btn:hover{transform:translateY(-1px)}
+  .btn.primary{background:var(--accent);color:#fff}
+  .btn.ghost{background:transparent;color:var(--accent-ink);border-color:color-mix(in srgb,var(--accent) 34%,transparent)}
+
+  /* dual CTA */
+  .cta{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:22px}
+  @media(max-width:760px){.cta{grid-template-columns:1fr}}
+  .cta-card{border:1px solid var(--line);border-radius:14px;padding:clamp(22px,3vw,30px);box-shadow:var(--shadow);background:var(--surface)}
+  .cta-card.human{background:linear-gradient(180deg,var(--accent-soft),transparent),var(--surface)}
+  .cta-card .ct-k{font-family:var(--mono);font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin-bottom:12px}
+  .cta-card h3{font-size:1.2rem;font-weight:750;letter-spacing:-.02em;margin:0 0 8px;line-height:1.15}
+  .cta-card p{font-size:.92rem;color:var(--ink-2);margin:0 0 18px;line-height:1.5}
+  .cta-actions{display:flex;gap:10px;flex-wrap:wrap}
+  .term{background:var(--ink);border-radius:11px;overflow:hidden;border:1px solid var(--line)}
+  .term-bar{display:flex;align-items:center;gap:7px;padding:9px 13px;border-bottom:1px solid rgba(255,255,255,.08);font-family:var(--mono);font-size:10.5px;color:rgba(255,255,255,.5);letter-spacing:.04em}
+  .term-bar .tdot{width:8px;height:8px;border-radius:50%;background:rgba(255,255,255,.18)}
+  .term-bar .tdot.g{background:var(--build)}
+  .term-body{padding:14px 15px;font-family:var(--mono);font-size:11.5px;line-height:1.65;overflow-x:auto;white-space:pre;color:var(--ground)}
+  .t-key{color:#8aa0ff}.t-str{color:#5fd0c2}.t-bool{color:#ff9a9a}.t-com{color:rgba(255,255,255,.4)}
+
+  .provbar{margin-top:clamp(34px,5vw,52px);padding-top:20px;border-top:1px solid var(--line);font-family:var(--mono);font-size:11px;letter-spacing:.03em;color:var(--muted);display:flex;flex-wrap:wrap;gap:6px 16px;line-height:1.7}
+  .provbar b{color:var(--ink-2);font-weight:600}
+  a.src{color:var(--accent-ink);text-decoration:none;border-bottom:1px solid color-mix(in srgb,var(--accent) 40%,transparent)}
+  a.src:hover{border-bottom-color:var(--accent)}
+  :focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:3px}
+  @media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+
+<div class="gtr"><div class="wrap">
+
+  <div class="statusbar">
+    <span><b>DC HUB INTELLIGENCE</b> // GRID DESK</span>
+    <span class="live"><span class="free-badge">Free preview</span> <span class="dot"></span> LIVE &middot; {{retrieved_date}} &middot; CC-BY-4.0</span>
+  </div>
+
+  <header>
+    <div class="eyebrow">Grid Transition Radar &middot; Edition N&ordm; 002 &middot; Free Read<span class="rule"></span></div>
+    <h1 class="head">The queue is a mirage. The next gigawatt lands where the power is <em>already spilling</em>.</h1>
+    <p class="standfirst">{{us_queue_gw}} GW sits in U.S. interconnection queues &mdash; more than the entire installed U.S. fleet &mdash; yet the grid AI most wants to build on has the longest wait in the country. This is the free read: the thesis, and two of the numbers. The full brief goes deeper.</p>
+    <div class="byline">
+      <span>DC Hub Intelligence</span><span class="sep">&middot;</span>
+      <span>Grid Desk</span><span class="sep">&middot;</span>
+      <span>Refreshed daily from live grid data</span>
+    </div>
+  </header>
+
+  <!-- OPEN: the free numbers -->
+  <section>
+    <p class="kicker"><span class="free">&#9679; Free</span> &middot; the hook</p>
+    <h2>Two numbers, no signup</h2>
+    <div class="kpis">
+      <div class="kpi open">
+        <span class="open-tag">Open</span>
+        <div class="lbl">U.S. interconnection queue</div>
+        <div class="val">{{us_queue_gw}}<span class="u">GW</span></div>
+        <div class="note">More generation is waiting in line than the entire installed U.S. fleet. Volume isn't deliverable.</div>
+      </div>
+      <div class="kpi open">
+        <span class="open-tag">Open</span>
+        <div class="lbl"><span class="live-tag"></span> Ashburn time-to-power</div>
+        <div class="val">{{pjm_wait_mo}}<span class="u">months</span></div>
+        <div class="note">The longest queue of any major U.S. grid &mdash; sitting under the world's #1 market.</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- LOCKED: the deep read -->
+  <section>
+    <p class="kicker"><span class="lockword">&#128274; Pro</span> &middot; the full read</p>
+    <h2>What's in the complete brief</h2>
+    <p class="lead">The argument is free. The decision-grade detail &mdash; every ISO row, the buildability map, the live provenance envelope &mdash; is in the full edition.</p>
+    <div class="locked-grid">
+      <div class="lk">
+        <span class="lockpill"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg> Pro</span>
+        <div class="lk-lbl">SPP curtailment &amp; the build frontier</div>
+        <div class="lk-val">{{spp_curtail}}%</div>
+        <div class="lk-note">Where clean power is spilling for want of load &mdash; the arbitrage, with the markets named.</div>
+      </div>
+      <div class="lk">
+        <span class="lockpill"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg> Pro</span>
+        <div class="lk-lbl">ERCOT queue &amp; large-load</div>
+        <div class="lk-val">{{ercot_queue_gw}} GW</div>
+        <div class="lk-note">The deepest queue in the nation, and how much of it is data-center driven.</div>
+      </div>
+      <div class="lk">
+        <span class="lockpill"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg> Pro</span>
+        <div class="lk-lbl">Full 7-ISO scoreboard</div>
+        <div class="lk-val">7 rows</div>
+        <div class="lk-note">Renewable mix, queue depth, time-to-power &amp; verdict for every U.S. grid.</div>
+      </div>
+      <div class="lk">
+        <span class="lockpill"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg> Pro</span>
+        <div class="lk-lbl">The 3 operator moves</div>
+        <div class="lk-val">Read-through</div>
+        <div class="lk-note">Exactly where to build, where to wait, and where to walk &mdash; this week.</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- teased chart -->
+  <section>
+    <p class="kicker"><span class="lockword">&#128274; Pro</span> &middot; the signature map</p>
+    <h2>The buildability map</h2>
+    <div class="tease-fig">
+      <div class="fig-head">
+        <div class="fig-title">Where the next gigawatt can actually land</div>
+        <div class="fig-sub">U.S. ISOs &middot; time-to-power vs spilled clean power &middot; bubble = queued capacity</div>
+      </div>
+      <div class="blurwrap"><svg id="quad" viewBox="0 0 700 460" role="img" aria-label="Blurred preview of the buildability map"></svg></div>
+      <div class="veil">
+        <div class="vtitle">The full interactive map is in the complete brief</div>
+        <div class="vsub">Seven grids, positioned and named &mdash; hover any one for its record.</div>
+        <a class="btn primary" href="https://dchub.cloud/pricing/upgrade">Unlock the full edition</a>
+      </div>
+    </div>
+  </section>
+
+  <!-- DUAL CTA: human + agent -->
+  <section>
+    <p class="kicker">Keep reading</p>
+    <h2>Two ways in</h2>
+    <div class="cta">
+      <div class="cta-card human">
+        <div class="ct-k">If you're a person</div>
+        <h3>Read the full brief</h3>
+        <p>The complete edition &mdash; every ISO, the live buildability map, and the week's three moves &mdash; plus tomorrow's edition in your inbox. Connect DC Hub, or upgrade for full depth.</p>
+        <div class="cta-actions">
+          <a class="btn primary" href="https://dchub.cloud/pricing/upgrade">Upgrade &mdash; $10 / 1,000 calls</a>
+          <a class="btn ghost" href="https://dchub.cloud/playground">Explore free</a>
+        </div>
+      </div>
+      <div class="cta-card">
+        <div class="ct-k">If you're an agent</div>
+        <div class="term">
+          <div class="term-bar"><span class="tdot"></span><span class="tdot"></span><span class="tdot g"></span><span style="margin-left:6px">grid-radar &middot; teaser.json</span></div>
+<div class="term-body">{
+  <span class="t-key">"edition"</span>: <span class="t-str">"siteselect"</span>, <span class="t-key">"cycle_no"</span>: <span class="t-str">2</span>,
+  <span class="t-key">"teaser_metrics"</span>: [ <span class="t-com">/* 2 shown */</span> ],
+  <span class="t-key">"locked"</span>: {
+    <span class="t-key">"buildability_quadrant"</span>: <span class="t-bool">true</span>,
+    <span class="t-key">"full_ledger"</span>: <span class="t-bool">true</span>
+  },
+  <span class="t-key">"unlock"</span>: {
+    <span class="t-key">"free_path"</span>: <span class="t-str">"claim_free_key"</span>,
+    <span class="t-key">"agent_next_tool"</span>: <span class="t-str">"unlock_more_data"</span>
+  },
+  <span class="t-key">"citation"</span>: <span class="t-str">"DC Hub, dchub.cloud"</span>
+}</div>
+        </div>
+        <p style="margin-top:14px">Self-mint the free tier with <code style="font-family:var(--mono);color:var(--accent-ink)">claim_free_key</code>, then <code style="font-family:var(--mono);color:var(--accent-ink)">unlock_more_data</code> for full depth &mdash; no reconnect.</p>
+      </div>
+    </div>
+  </section>
+
+  <div class="provbar">
+    <span><b>Source:</b> DC Hub &mdash; <a class="src" href="https://dchub.cloud">dchub.cloud</a> &middot; CC-BY-4.0</span>
+    <span><b>Retrieved:</b> {{retrieved_date}} {{retrieved_utc}}</span>
+    <span><b>This is the free preview.</b> Full edition rotates daily across four audiences.</span>
+  </div>
+
+</div></div>
+
+<script>
+(function(){
+  var ISOS=[
+    {iso:"SPP",wait:24.0,curtail:11.2,queue:187.2,v:"build",ldx:14,ldy:-16},
+    {iso:"CAISO",wait:39.9,curtail:9.0,queue:79.5,v:"tight",ldx:16,ldy:-8},
+    {iso:"MISO",wait:33.7,curtail:6.2,queue:191.1,v:"build",ldx:16,ldy:4},
+    {iso:"ERCOT",wait:32.6,curtail:4.3,queue:434.1,v:"tight",ldx:0,ldy:60},
+    {iso:"ISO-NE",wait:33.3,curtail:3.3,queue:14.8,v:"stranded",ldx:16,ldy:-6},
+    {iso:"NYISO",wait:31.4,curtail:2.0,queue:10.6,v:"stranded",ldx:-50,ldy:2},
+    {iso:"PJM",wait:50.5,curtail:1.2,queue:172.4,v:"stranded",ldx:-14,ldy:38}
+  ];
+var LIVE={{{isos_json}}};ISOS.forEach(function(d){var L=LIVE[d.iso];if(L){d.wait=L.wait;d.curtail=L.curtail;d.queue=L.queue;d.ren=L.ren;}});
+  var COLOR={build:"var(--build)",tight:"var(--tight)",stranded:"var(--stranded)"};
+  var NS="http://www.w3.org/2000/svg",svg=document.getElementById("quad");
+  var W=700,H=460,mL=54,mR=28,mT=26,mB=48,pW=W-mL-mR,pH=H-mT-mB;
+  function X(w){return mL+(w-18)/36*pW;}function Y(c){return mT+(12-c)/12*pH;}
+  function R(q){return 7+Math.sqrt(q)*1.6;}
+  function el(n,a){var e=document.createElementNS(NS,n);for(var k in a)e.setAttribute(k,a[k]);return e;}
+  var xMid=X(36),yMid=Y(6);
+  svg.appendChild(el("rect",{x:mL,y:mT,width:xMid-mL,height:yMid-mT,class:"qshade-build"}));
+  svg.appendChild(el("rect",{x:xMid,y:yMid,width:mL+pW-xMid,height:mT+pH-yMid,class:"qshade-stranded"}));
+  [18,26,34,42,50].forEach(function(t){var x=X(t);svg.appendChild(el("line",{x1:x,y1:mT,x2:x,y2:mT+pH,class:"grid-line"}));var tx=el("text",{x:x,y:mT+pH+16,"text-anchor":"middle",class:"tick"});tx.textContent=t;svg.appendChild(tx);});
+  [0,3,6,9,12].forEach(function(t){var y=Y(t);svg.appendChild(el("line",{x1:mL,y1:y,x2:mL+pW,y2:y,class:"grid-line"}));});
+  svg.appendChild(el("line",{x1:xMid,y1:mT,x2:xMid,y2:mT+pH,class:"mid-line"}));
+  svg.appendChild(el("line",{x1:mL,y1:yMid,x2:mL+pW,y2:yMid,class:"mid-line"}));
+  ISOS.slice().sort(function(a,b){return b.queue-a.queue;}).forEach(function(d){
+    var cx=X(d.wait),cy=Y(d.curtail),r=R(d.queue),col=COLOR[d.v];
+    svg.appendChild(el("circle",{cx:cx,cy:cy,r:r,fill:col,stroke:col,class:"bub-ring"}));
+    svg.appendChild(el("circle",{cx:cx,cy:cy,r:3.5,fill:col}));
+    var lbl=el("text",{x:cx+d.ldx,y:cy+d.ldy,class:"node-lbl","text-anchor":(d.ldx<0?"end":"start")});
+    lbl.textContent=d.iso;svg.appendChild(lbl);
+  });
+})();
+</script>
