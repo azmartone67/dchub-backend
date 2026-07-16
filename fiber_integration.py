@@ -72,20 +72,32 @@ def register_fiber_intelligence(app, get_db):
             return f(*args, **kwargs)
         return decorated
 
+    # ── Direct DB factory for the minutes-long sync jobs ──────
+    # The app pool's forced-reclaim loop kills any pooled connection held
+    # >60s (_CONN_MAX_HOLD_SECONDS), which severed the 600k-row
+    # carrier-facility upsert mid-loop ("connection already closed",
+    # observed 2026-07-16). Bulk jobs open their own direct connection —
+    # same pattern as fiber_network_discovery — while the lightweight
+    # read routes and boot-time table init keep the pooled get_db.
+    def _job_db():
+        import psycopg2
+        return psycopg2.connect(os.environ.get('DATABASE_URL', ''),
+                                connect_timeout=10)
+
     # ── Admin Sync Endpoints ──────────────────────────────────
 
     @app.route('/api/jobs/subsea-sync', methods=['POST'])
     @require_internal_key
     def admin_subsea_sync():
         """Trigger TeleGeography submarine cable data sync."""
-        result = run_subsea_sync(get_db)
+        result = run_subsea_sync(_job_db)
         return jsonify(result)
 
     @app.route('/api/jobs/carrier-sync', methods=['POST'])
     @require_internal_key
     def admin_carrier_sync():
         """Trigger PeeringDB carrier-facility data sync."""
-        result = run_carrier_sync(get_db)
+        result = run_carrier_sync(_job_db)
         return jsonify(result)
 
     @app.route('/api/jobs/fiber-full-sync', methods=['POST'])
@@ -98,11 +110,11 @@ def register_fiber_intelligence(app, get_db):
         }
 
         # Subsea cables
-        subsea = run_subsea_sync(get_db)
+        subsea = run_subsea_sync(_job_db)
         results['subsea'] = subsea
 
         # Carriers + facilities + coverage zones
-        carrier = run_carrier_sync(get_db)
+        carrier = run_carrier_sync(_job_db)
         results['carriers'] = carrier
 
         results['success'] = subsea.get('success', False) and carrier.get('success', False)
