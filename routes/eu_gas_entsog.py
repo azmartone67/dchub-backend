@@ -247,6 +247,7 @@ def http_operators():
                     "operators": tsos}), 200
 
 
+# AUTO-REPAIR: duplicate route '/health' also in main.py:5842 — review and remove one
 @eu_gas_entsog_bp.route("/health", methods=["GET"])
 def http_health():
     tsos = _tso_operators()
