@@ -420,7 +420,7 @@ def rebuild_zones(force=False, now=None):
                  center_lat, center_lng, provider_count, lit_building_count,
                  dark_fiber_available, carrier_list, data_sources, notes,
                  updated_at)
-            VALUES (%(zone_id)s, %(zone_name)s, %(zone_type)s, %(state)s,
+            VALUES (%(zone_id) ON CONFLICT DO NOTHINGs, %(zone_name)s, %(zone_type)s, %(state)s,
                     %(country)s, %(center_lat)s, %(center_lng)s,
                     %(provider_count)s, %(lit_building_count)s,
                     %(dark_fiber_available)s, %(carrier_list)s,
@@ -638,6 +638,7 @@ def rebuild_endpoint():
     return jsonify(rebuild_zones(force=force)), 200
 
 
+# AUTO-REPAIR: duplicate route '/status' also in enhanced_promotion.py:824 — review and remove one
 @dark_zones_bp.route("/status", methods=["GET"])
 def status_endpoint():
     if not _admin_ok():
