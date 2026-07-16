@@ -129,7 +129,7 @@ def _refresh_leads_from_whales() -> dict:
                         (company, country, city, total_calls, days_active,
                          top_tools, suggested_action, last_seen,
                          last_refreshed)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, NOW() ON CONFLICT DO NOTHING, NOW())
                     ON CONFLICT (company) DO UPDATE SET
                         last_seen = EXCLUDED.last_seen,
                         total_calls = EXCLUDED.total_calls,
