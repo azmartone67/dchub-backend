@@ -318,6 +318,30 @@ def _market_match_keys(market):
     return (m.replace(" ", "-"), m)
 
 
+# r-lonfix (2026-07-16): callers name coordinates every way that exists in the
+# wild (lat/latitude, lon/lng/longitude) — and the old `or 0` default meant a
+# key-name miss saved a (0, 0) row while reporting "Saved!" (19 of the last 23
+# saved_lp_sites rows had longitude=0), poisoning every downstream delta/alert
+# read. Missing is now an ERROR; an explicit 0 stays a valid coordinate.
+def _extract_coords(d):
+    """Pull (lat, lon, err) from a save payload. err is None on success, else
+    one of 'missing_lat'/'missing_lon'/'missing_lat_lon'/'not_numeric'/
+    'out_of_range' (lat and lon are None whenever err is set)."""
+    lat_raw = next((d[k] for k in ("latitude", "lat") if d.get(k) is not None), None)
+    lon_raw = next((d[k] for k in ("longitude", "lon", "lng") if d.get(k) is not None), None)
+    if lat_raw is None or lon_raw is None:
+        missing = "_".join(n for n, v in (("lat", lat_raw), ("lon", lon_raw))
+                           if v is None)
+        return None, None, f"missing_{missing}"
+    try:
+        lat, lon = float(lat_raw), float(lon_raw)
+    except (ValueError, TypeError):
+        return None, None, "not_numeric"
+    if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+        return None, None, "out_of_range"
+    return lat, lon, None
+
+
 def _match_new_facilities(sites, facilities, radius_km=50.0, cap_per_site=3):
     """Pure matcher: {site_id: [up to cap_per_site nearest new facilities]}.
     Sites/facilities are dicts with latitude/longitude; bad rows are skipped."""
@@ -595,14 +619,13 @@ def lp_save():
     user_id, gate = _require_keyed_user()   # r-free-shortlist: save is free with a key
     if gate is not None: return gate
     d = request.get_json(silent=True) or {}
-    try:
-        lat = float(d.get("latitude") or d.get("lat") or 0)
-        lon = float(d.get("longitude") or d.get("lon") or 0)
-    except (ValueError, TypeError):
-        return jsonify(error="invalid_coords"), 400
+    lat, lon, coord_err = _extract_coords(d)
+    if coord_err:
+        return jsonify(
+            error="invalid_coords", detail=coord_err,
+            hint="pass BOTH lat (or latitude) AND lon (or lng/longitude) as "
+                 "decimal degrees, e.g. {\"lat\": 39.04, \"lon\": -77.48}"), 400
     name = (d.get("name") or "").strip()[:120] or "Untitled site"
-    if not (-90 <= lat <= 90 and -180 <= lon <= 180):
-        return jsonify(error="invalid_coords"), 400
     state  = (d.get("state") or "")[:8].upper() or None
     market = (d.get("market") or "")[:80] or None
     notes  = (d.get("notes") or "")[:1000] or None

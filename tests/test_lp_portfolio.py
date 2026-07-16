@@ -92,3 +92,34 @@ def test_parse_since_param():
     assert d is not None and d.tzinfo is not None
     assert _parse_since_param("") is None
     assert _parse_since_param("garbage") is None
+
+
+def test_extract_coords_accepts_all_aliases():
+    from routes.lp_sites import _extract_coords
+    assert _extract_coords({"lat": 36.9, "lon": -76.3}) == (36.9, -76.3, None)
+    assert _extract_coords({"latitude": 36.9, "longitude": -76.3}) == (36.9, -76.3, None)
+    # r-lonfix: `lng` is the convention half the repo (and many agents) use —
+    # it used to be silently dropped and the row saved with longitude=0.
+    assert _extract_coords({"lat": 36.9, "lng": -76.3}) == (36.9, -76.3, None)
+    # numeric strings coerce
+    assert _extract_coords({"lat": "36.9", "lng": "-76.3"}) == (36.9, -76.3, None)
+    # long names win over short when both present
+    assert _extract_coords({"latitude": 1.0, "lat": 2.0,
+                            "longitude": 3.0, "lon": 4.0}) == (1.0, 3.0, None)
+
+
+def test_extract_coords_missing_is_error_not_zero():
+    from routes.lp_sites import _extract_coords
+    assert _extract_coords({"lat": 36.9, "name": "x"}) == (None, None, "missing_lon")
+    assert _extract_coords({"lon": -76.3}) == (None, None, "missing_lat")
+    assert _extract_coords({}) == (None, None, "missing_lat_lon")
+    assert _extract_coords({"lat": None, "lon": None}) == (None, None, "missing_lat_lon")
+    # explicit 0 is a VALID coordinate, not missing
+    assert _extract_coords({"lat": 0, "lon": 0}) == (0.0, 0.0, None)
+
+
+def test_extract_coords_rejects_junk_and_range():
+    from routes.lp_sites import _extract_coords
+    assert _extract_coords({"lat": "x", "lon": -76.3}) == (None, None, "not_numeric")
+    assert _extract_coords({"lat": 91, "lon": 0}) == (None, None, "out_of_range")
+    assert _extract_coords({"lat": 0, "lon": -181}) == (None, None, "out_of_range")
