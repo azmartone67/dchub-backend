@@ -85,17 +85,26 @@ def _internal(path: str, timeout: int = 6) -> dict:
     except Exception:
         return {}
 
+def _norm_iso(iso) -> str:
+    k = str(iso).upper().replace("_", "-")
+    return "ISO-NE" if k in ("ISONE", "NEISO", "NE-ISO") else k
+
 def _iso_ttp() -> dict:
-    """Live per-ISO avg time-to-power (months) from the DCPI market_power_scores
-    table — the ungated source (mirrors routes/grid_transition_radar._iso_rollup).
-    Returns {ISO: avg_months}; {} on any error so the caller keeps baseline."""
+    """Live per-ISO avg time-to-power (months). time_to_power_months is a
+    pro-gated (_locked_fields) column on market_power_scores, so: (1) read it
+    directly from the DB (mirrors grid_transition_radar), (2) fall back to the
+    dcpi/scores endpoint over LOOPBACK (a 127.0.0.1 self-call bypasses the tier
+    gate). Logs both outcomes; {} on total failure so the caller keeps baseline."""
+    import logging as _lg
+    log = _lg.getLogger("radar")
+    # Source 1 — direct DB read
     try:
         try:
             from main import get_read_db as _gdb
         except Exception:
             from main import get_db as _gdb
         conn = _gdb()
-        agg = {}
+        agg = {}; nrows = 0; nttp = 0
         try:
             c = conn.cursor()
             c.execute(
@@ -104,17 +113,36 @@ def _iso_ttp() -> dict:
                 "ORDER BY market_slug, computed_at DESC"
             )
             for iso, ttp in c.fetchall():
+                nrows += 1
                 if iso is None or ttp is None:
                     continue
-                k = str(iso).upper().replace("_", "-")
-                if k in ("ISONE", "NEISO"):
-                    k = "ISO-NE"
-                s = agg.setdefault(k, [0.0, 0]); s[0] += float(ttp); s[1] += 1
+                nttp += 1
+                s = agg.setdefault(_norm_iso(iso), [0.0, 0]); s[0] += float(ttp); s[1] += 1
         finally:
             try: conn.close()
             except Exception: pass
-        return {k: round(v[0] / v[1], 1) for k, v in agg.items() if v[1]}
-    except Exception:
+        out = {k: round(v[0] / v[1], 1) for k, v in agg.items() if v[1]}
+        log.info("[radar] _iso_ttp DB rows=%s with_ttp=%s -> %s", nrows, nttp, out)
+        if out:
+            return out
+    except Exception as e:
+        log.warning("[radar] _iso_ttp DB failed: %s: %s", type(e).__name__, e)
+    # Source 2 — loopback dcpi/scores (self-call clears the pro gate)
+    try:
+        d = _internal("/api/v1/dcpi/scores?limit=400") or {}
+        rows = d if isinstance(d, list) else (d.get("scores") or d.get("markets")
+                                              or d.get("data") or d.get("results") or [])
+        agg = {}
+        for r in rows:
+            iso = r.get("iso"); ttp = r.get("time_to_power_months")
+            if not iso or not isinstance(ttp, (int, float)):
+                continue
+            s = agg.setdefault(_norm_iso(iso), [0.0, 0]); s[0] += ttp; s[1] += 1
+        out = {k: round(v[0] / v[1], 1) for k, v in agg.items() if v[1]}
+        log.info("[radar] _iso_ttp endpoint rows=%s -> %s", len(rows), out)
+        return out
+    except Exception as e:
+        log.warning("[radar] _iso_ttp endpoint failed: %s: %s", type(e).__name__, e)
         return {}
 
 
