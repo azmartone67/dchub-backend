@@ -72,11 +72,11 @@ _XLEGACY = "12" + ",?9" + "07"  # the dead legacy facilities-table count
 _XNEXUS = "Nex" + "us"        # the retired product-name suffix
 _BANNED = [
     (re.compile(r"\$\s?" + _X4_AGG + r"\s?B\b", re.I),
-     "the unverified M&A dollar aggregate (say '2,000+ tracked deals')"),
+     "the unverified M&A dollar aggregate (say '4,000+ tracked deals')"),
     (re.compile(_X4_AGG + r"\s?B\+", re.I),
-     "the unverified M&A dollar aggregate (say '2,000+ tracked deals')"),
+     "the unverified M&A dollar aggregate (say '4,000+ tracked deals')"),
     (re.compile(r"\$\s?" + _X4_AGG + r"\s*billion", re.I),
-     "the unverified M&A dollar aggregate (say '2,000+ tracked deals')"),
+     "the unverified M&A dollar aggregate (say '4,000+ tracked deals')"),
     (re.compile(r"\b" + _X50K + r"\+?\s*(?:data[\s-]?center\s+)?facilit", re.I),
      "inflated fifty-thousand facility count (real ~21,000 tracked)"),
     # allow an optional adjective ('power', 'US power', 'DCPI') between the

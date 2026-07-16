@@ -631,11 +631,11 @@ def _narrative(qinfo: dict, shifts: dict, energy: dict, mna: dict, stats: dict) 
             f"Capital kept moving: {mna['deal_count']} tracked data-center "
             f"M&A deals closed in {label} worth ${mna['deal_value_b']}B — an "
             f"annualized run-rate of roughly ${mna['annualized_b']}B against "
-            f"DC Hub's 2,000+ tracked historical M&A deals."
+            f"DC Hub's 4,000+ tracked historical M&A deals."
         )
     else:
         paras.append(
-            f"DC Hub tracks 2,000+ data-center M&A deals "
+            f"DC Hub tracks 4,000+ data-center M&A deals "
             f"across the full deal history; per-quarter deal flow is "
             f"detailed in the transactions database."
         )
@@ -1155,7 +1155,7 @@ def _render_minimal(qinfo: dict) -> str:
 <style>body{{background:#070b16;color:#e5e7eb;font-family:-apple-system,sans-serif;max-width:760px;margin:0 auto;padding:64px 24px;line-height:1.6}}a{{color:#93c5fd}}</style>
 </head><body>
 <h1>The State of Data Center Power — {_esc(q)}</h1>
-<p>DC Hub tracks {_CANON['facilities']:,}+ data-center facilities, {_CANON['markets']} DCPI markets, and 2,000+ tracked M&amp;A deals. Live verdicts: <a href="/state-of-power">/state-of-power</a>.</p>
+<p>DC Hub tracks {_CANON['facilities']:,}+ data-center facilities, {_CANON['markets']} DCPI markets, and 4,000+ tracked M&amp;A deals. Live verdicts: <a href="/state-of-power">/state-of-power</a>.</p>
 <p>Machine-readable: <a href="/api/v1/reports/quarterly/{_esc(qinfo['slug'])}.json">JSON</a> · <a href="/api/v1/reports/quarterly/{_esc(qinfo['slug'])}.csv">CSV</a>. Licensed CC-BY-4.0.</p>
 </body></html>"""
 

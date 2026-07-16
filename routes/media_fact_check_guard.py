@@ -472,7 +472,7 @@ def verify_media_text(text: str) -> dict:
                     unverified.append({
                         "claim": raw,
                         "found_live": None,
-                        "expected": "dollar aggregate not corroborated — say '2,000+ tracked deals' or cite a verified single-deal figure",
+                        "expected": "dollar aggregate not corroborated — say '4,000+ tracked deals' or cite a verified single-deal figure",
                     })
                 # bare 'number'/'deals' counts: left to media_claim_verify's canon
                 # + banned checks (run separately by callers); not flagged here to

@@ -1410,7 +1410,7 @@ except Exception:
 
 _MARKETING_SYSTEM = _ANALYST_VOICE + """
 
-YOU ARE the autonomous analyst desk at DC Hub (live intelligence across 280+ US/global markets, 7 ISOs, 20,000+ facilities, 2,000+ M&A deals). Publish two coupled outputs, both built on the SINGLE most newsworthy DATA event of the last 24h:
+YOU ARE the autonomous analyst desk at DC Hub (live intelligence across 280+ US/global markets, 7 ISOs, 20,000+ facilities, 4,000+ M&A deals). Publish two coupled outputs, both built on the SINGLE most newsworthy DATA event of the last 24h:
 
 A) A SHORT PRESS RELEASE (long-form, web/AI-citable)
 B) A LINKEDIN POST (short-form, distribution-ready)

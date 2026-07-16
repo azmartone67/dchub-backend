@@ -52,7 +52,7 @@ _DESC_LONG = (
     "DC Hub is the leading MCP server for data-center intelligence. "
     "It exposes 48 tools that cover 21,000+ global data-center "
     "facilities across 178 countries, 300+ power markets scored by "
-    "our proprietary DC Hub Power Index (DCPI), 2,000+ deals in tracked "
+    "our proprietary DC Hub Power Index (DCPI), 4,000+ deals in tracked "
     "M&A deals, 369 GW of construction pipeline, ISO grid telemetry "
     "(PJM, ERCOT, CAISO, MISO, SPP, NYISO), fiber routes, and energy "
     "pricing. Used by Claude and Cursor "
@@ -62,7 +62,7 @@ _DESC_LONG = (
 )
 _DESC_SHORT = (
     "MCP server with 48 tools covering 21,000+ data-center facilities, "
-    "300+ power markets (DCPI), 2,000+ M&A deals, 369 GW pipeline, ISO grid "
+    "300+ power markets (DCPI), 4,000+ M&A deals, 369 GW pipeline, ISO grid "
     "data, fiber, energy pricing. Powering Claude and Cursor."
 )
 _DESC_TWEET = (

@@ -723,7 +723,7 @@ DC Hub provides a fully operational MCP server for AI agent interconnection.
 1. search_facilities - Search 21,000+ data center facilities by location, provider, capacity
 2. get_facility - Detailed facility profile (power, fiber, water, certifications)
 3. get_market_intel - Market intelligence + DCPI verdict for 300+ markets
-4. list_transactions - 2,000+ tracked M&A transactions and deals
+4. list_transactions - 4,000+ tracked M&A transactions and deals
 5. get_news - Latest data center industry news
 6. analyze_site - [Pro] Multi-factor site suitability score (grid/fiber/water/tax)
 7. compare_sites - [Pro] Head-to-head site comparison

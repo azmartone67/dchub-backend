@@ -41,7 +41,7 @@ PINNED = {
     "public": {                                    # public-facing rounded strings
         "facilities": "21,000+",
         "markets": "300+",
-        "deals": "2,000+",
+        "deals": "4,000+",   # curated M&A floor (== canonical_stats.deals_phrase). ★NOT the raw ~11.5K `deals` COUNT(*) that /api/v1/stats returns — that's a ~2.5x over-claim as "M&A deals" (2026-07-16 double-count trap). resolve_canon() overrides this live.
         "countries": "170+",
     },
     # Values known to be STALE/WRONG on some surface — the sentinel flags these.
@@ -52,6 +52,8 @@ PINNED = {
     # the ACTIVE roll-call; availability is a broader, valid claim.
     "stale_markers": ["10,706", "10706", "50,000+", "50000", "317 ", "332 ",
                       "232 ", "100 calls/day", "3,000+ M&A",
+                      "2,000+ M&A", "2,000+ tracked deals", "2,000+ deals",
+                      "2,000+ tracked M&A", "2,000+ tracked transactions",
                       "24 tools", "48 tools", "49 tools", "51 tools", "53 tools",
                       "58 tools", "72 tools",
                       "2.1.22", "2.3.3", "2.1.0", "2.4.3"],
@@ -243,9 +245,20 @@ def resolve_canon() -> dict:
         s = _get("/api/v1/stats")
         c["facilities_live"] = s.get("facilities")
         c["markets_live"] = s.get("markets")
-        c["deals_live"] = s.get("deals")
     except Exception as e:
         c["_stats_error"] = str(e)[:120]
+    # Deals resolve from canonical_stats (curated buyer+seller subset), NOT
+    # /api/v1/stats `deals` — that field is the RAW ~11.5K pile (capex/
+    # undisclosed/junk) and publishing it as "M&A deals" is a ~2.5x over-claim
+    # (2026-07-16 double-count trap). Floors to "4,000+". Overrides the pinned
+    # public string so every resolve_canon() consumer self-heals.
+    try:
+        from canonical_stats import deals_phrase as _deals_phrase
+        _dp = _deals_phrase()
+        c["deals_live"] = _dp
+        c["public"]["deals"] = _dp
+    except Exception as e:
+        c["_deals_error"] = str(e)[:120]
     # live tool count from the MCP server — override the pinned fallback so
     # every resolve_canon() consumer tracks tools/list and never goes stale.
     try:

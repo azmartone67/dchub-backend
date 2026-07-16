@@ -297,7 +297,7 @@ def _base_html(*, title: str, description: str, canonical: str,
   <p>This data is provided by <a href="https://dchub.cloud">DC Hub Intelligence</a> — real-time data center market intelligence for AI agents and humans.
   Free MCP API: <code>https://dchub.cloud/mcp</code> · <a href="https://dchub.cloud/signup">Get free dev key</a></p>
   <p class="dc-browse">Browse: <a href="/facilities">All facilities by country</a> · <a href="/dcpi">DC Hub Power Index</a> · <a href="/markets">Markets</a> · <a href="/grid">Grid</a></p>
-  <p>21,000+ facilities · 7 ISO grid feeds · 2,000+ M&amp;A deals tracked · 540+ project pipeline</p>
+  <p>21,000+ facilities · 7 ISO grid feeds · 4,000+ M&amp;A deals tracked · 540+ project pipeline</p>
 {extra_footer_html}
 </footer>
 </body>
@@ -1506,7 +1506,7 @@ Content-Type: application/json
 
 <section id="cta">
   <h2>About DC Hub</h2>
-  <p>DC Hub is a data center intelligence platform tracking 21,000+ facilities, 7 ISO grids, and 2,000+ M&amp;A deals. Our DCHubBot publishes daily market signals to Moltbook. Free MCP API for AI agents.</p>
+  <p>DC Hub is a data center intelligence platform tracking 21,000+ facilities, 7 ISO grids, and 4,000+ M&amp;A deals. Our DCHubBot publishes daily market signals to Moltbook. Free MCP API for AI agents.</p>
   <a href="/signup?from=moltbook-docs" class="cta">Get free DC Hub MCP API key</a>
   <a href="https://www.moltbook.com" class="cta secondary" rel="nofollow noopener" target="_blank">Visit Moltbook &rarr;</a>
 </section>"""

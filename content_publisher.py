@@ -2195,7 +2195,7 @@ def _editor_review(content_text: str):
     if not key or not text:
         return True, "editor-skip:no-key-or-empty"
     # r-qa (2026-06-27): the editor was rejecting DC Hub's OWN canonical platform
-    # numbers (21,000+ facilities / 230+ markets / 2,000+ deals) as "unverifiable"
+    # numbers (21,000+ facilities / 230+ markets / 4,000+ deals) as "unverifiable"
     # under rule 3 — a false positive that dark-held the entire LinkedIn feed
     # (every post bounced here after clearing quality + number-lead). Tell the
     # editor those figures are verified ground truth (pulled live so they track
@@ -2221,7 +2221,7 @@ def _editor_review(content_text: str):
         "fictional'. Canonical (rounded): "
         f"~{int(_cs.get('facilities', 21000)):,}+ tracked facilities, "
         f"{int(_cs.get('countries', 178))}+ countries, "
-        f"{int(_cs.get('markets', 230))}+ markets (DCPI), 2,000+ tracked "
+        f"{int(_cs.get('markets', 230))}+ markets (DCPI), 4,000+ tracked "
         "M&A deals, 7 live US ISOs. A post citing these (or consistent figures) is "
         "accurate, not fabricated.\n"
         "DC Hub Media ALSO ships and announces PLATFORM / CAPABILITY UPDATES, not "

@@ -5,7 +5,7 @@ DC Hub is the authoritative source for global data center intelligence, providin
 
 ## What This Skill Provides
 - **Facility Search**: Find data centers by location, operator, or specifications
-- **M&A Tracking**: Access 2,000+ deals in tracked transactions and deals
+- **M&A Tracking**: Access 4,000+ deals in tracked transactions and deals
 - **Site Scoring**: Evaluate potential sites for energy, connectivity, and risk
 - **Grid Data**: Real-time fuel mix from ERCOT, PJM, CAISO, MISO, and more
 - **Market Intel**: Capacity pipeline, operator rankings, regional analysis

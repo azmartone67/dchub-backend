@@ -87,7 +87,7 @@ Direct them to: https://dchub.cloud/connect for Pro API access.
 - 21,000+ facilities tracked globally
 - 170+ countries covered
 - 2,500+ operators/providers
-- 2,000+ M&A transactions tracked
+- 4,000+ M&A transactions tracked
 - 369 GW capacity pipeline
 - 7 US ISOs tracked for real-time grid data
 - 40+ news sources aggregated

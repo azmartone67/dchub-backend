@@ -122,7 +122,7 @@ Hi [Platform] Team,
 
 DC Hub provides the most comprehensive data center intelligence available:
 - 21,000++ facilities across 179 countries
-- 690+ M&A deals tracked (2,000+ deals+ value)
+- 690+ M&A deals tracked (4,000+ deals+ value)
 - 290 GW capacity pipeline
 - 40+ infrastructure layers for site selection
 

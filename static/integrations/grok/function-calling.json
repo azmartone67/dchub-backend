@@ -51,7 +51,7 @@
       "type": "function",
       "function": {
         "name": "list_transactions",
-        "description": "Search M&A transactions from DC Hub's database of 2,000+ tracked data-center deals.",
+        "description": "Search M&A transactions from DC Hub's database of 4,000+ tracked data-center deals.",
         "parameters": {
           "type": "object",
           "properties": {

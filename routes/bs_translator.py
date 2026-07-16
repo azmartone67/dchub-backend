@@ -88,7 +88,7 @@ CLAIMS = [
         "category": "M&A / transactions",
         "claim":         "\"Deal flow intelligence\"",
         "translation":   "Quarterly deal-tracker PDF emailed to subscribers",
-        "dchub":         "2,000+ deals browsable at /transactions. Per-deal pages with schema.org Action markup so agents can read them. Filters by year, buyer, region, MW.",
+        "dchub":         "4,000+ deals browsable at /transactions. Per-deal pages with schema.org Action markup so agents can read them. Filters by year, buyer, region, MW.",
         "proof_url":     "/transactions",
         "proof_label":   "Browse 1,852 live deals",
     },

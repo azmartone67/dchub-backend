@@ -16,7 +16,7 @@ DC Hub is the live data layer for data-center infrastructure — every API, MCP 
 - **300+ markets** scored daily by the DC Hub Power Index (DCPI — BUILD / CAUTION / AVOID)
 - **DC Hub Gas Index (DCGI)** — per-state natural-gas suitability for siting
 - **Live ISO grid telemetry** — PJM, ERCOT, CAISO, MISO, SPP, NYISO, ISO-NE (fuel mix, carbon intensity, demand, prices, queue depth)
-- **2,000+ tracked M&A transactions** + hyperscaler capex tracker
+- **4,000+ tracked M&A transactions** + hyperscaler capex tracker
 - **Site factors** — fiber routes, water-stress, tax incentives, transmission & substations
 - **126,427 substations** with voltage class + capacity estimates
 - **NEPA filings** for upcoming federal energy + data center projects

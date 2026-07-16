@@ -129,7 +129,7 @@ AGENT_CARD = {
         },
         {
             "name":     "deal_flow",
-            "summary":  "2,000+ tracked M&A deals, hyperscaler capex events.",
+            "summary":  "4,000+ tracked M&A deals, hyperscaler capex events.",
             "tools":    ["list_transactions", "get_pipeline", "hyperscaler_deals"],
             "examples": ["All AWS acquisitions over $1B",
                           "Q1 2026 M&A in EMEA"],

@@ -260,7 +260,7 @@ def _pull_shipped_this_week() -> dict:
     mcp_tool_calls number. Now pulls the VETTED /api/v1/whats-new adds (the same
     figures the public What's-New page shows — avoids re-deriving table/column
     names and the 5,532-vs-21,000 facilities-count conflict). Canonical headline
-    totals (21,000+ facilities · 300+ markets · 2,000+ deals) are supplied by the
+    totals (21,000+ facilities · 300+ markets · 4,000+ deals) are supplied by the
     prompt, not queried here."""
     adds = {}
     try:
@@ -659,7 +659,7 @@ RULES:
   refresh quarterly — a new interconnect filing or closed deal is queryable in
   hours, not next quarter.
 - Anchor on the standing totals (use these EXACT figures, do not invent others):
-  {_t_fac} facilities, {_t_mkt} markets, 2,000+ tracked deals — updated daily.
+  {_t_fac} facilities, {_t_mkt} markets, 4,000+ tracked deals — updated daily.
 - Confident, factual, no hype words. If the adds data is empty, lead with the
   standing totals + "updated daily" instead.
 End with the value line + CTA: {landing}. Hashtags: #DataCenter #AIInfrastructure #DCPI."""

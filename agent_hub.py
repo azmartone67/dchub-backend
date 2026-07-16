@@ -824,7 +824,7 @@ You have comprehensive knowledge of:
 - Data center infrastructure (PUE, uptime tiers, N+1/2N redundancy)
 - Major operators: Equinix (260+ facilities), Digital Realty (300+ facilities), hyperscalers (AWS, Azure, Google)
 - Key markets: Northern Virginia (3.5 GW), Dallas-Fort Worth, Phoenix, Frankfurt, Singapore
-- Industry dynamics: 2,000+ tracked M&A deals, 4-6% cap rates, 1.6% vacancy in primary markets
+- Industry dynamics: 4,000+ tracked M&A deals, 4-6% cap rates, 1.6% vacancy in primary markets
 - Power: 5-10x density for AI/GPU workloads, nuclear PPAs trending
 - Pricing: $150-250/kW wholesale, $1.5-2.5M/MW construction costs
 
@@ -832,7 +832,7 @@ You have comprehensive knowledge of:
 DC Hub (dchub.cloud) tracks 21,000+ facilities across 170+ countries:
 - Land & Power: 40+ government data layers for site selection
 - Pipeline: 13+ GW capacity under construction
-- M&A tracker: 2,000+ tracked deals
+- M&A tracker: 4,000+ tracked deals
 - Infrastructure mapping: Fiber, substations, water data
 
 Pricing: Free (limited), Pro ($199/mo), Enterprise (custom)
@@ -915,7 +915,7 @@ Use this real-time data and expert knowledge to make your responses compelling a
                 trending = orch_context.get('trending_markets', ['Dallas', 'Phoenix', 'Northern Virginia'])[:3]
                 response = f"Hot markets right now: {', '.join(trending)}. Northern Virginia leads at 3.5 GW but faces power constraints. Phoenix and Dallas growing 22-35%. Emerging: Columbus, Nashville, Salt Lake City. What's your focus area?"
             elif any(word in message_lower for word in ['feature', 'what can', 'capabilities', 'do you']):
-                response = f"DC Hub offers: (1) Land & Power site analysis with 40+ government data layers, (2) {facilities:,}+ facility tracking globally, (3) {pipeline/1000:.1f} GW construction pipeline, (4) M&A deal tracking (2,000+ deals), (5) Real-time infrastructure mapping. What's your use case?"
+                response = f"DC Hub offers: (1) Land & Power site analysis with 40+ government data layers, (2) {facilities:,}+ facility tracking globally, (3) {pipeline/1000:.1f} GW construction pipeline, (4) M&A deal tracking (4,000+ deals), (5) Real-time infrastructure mapping. What's your use case?"
             else:
                 response = f"Thanks for reaching out! As a data center intelligence platform, DC Hub tracks {facilities:,}+ facilities, {pipeline/1000:.1f} GW pipeline, and provides Land & Power analysis for site selection. I can discuss markets, operators, or platform features. What interests you?"
         
@@ -1504,7 +1504,7 @@ def invite_external_agent():
                 "capabilities": [
                     "facility_search - Search 21,000+ data centers",
                     "market_intelligence - Real-time capacity tracking",
-                    "transaction_tracking - 2,000+ M&A deals",
+                    "transaction_tracking - 4,000+ M&A deals",
                     "infrastructure_mapping - Fiber, power, permits",
                     "news_aggregation - 60+ RSS feeds"
                 ],
@@ -1572,7 +1572,7 @@ def broadcast_capabilities():
 
 I provide real-time data center intelligence:
 • 21,000+ facilities across 170+ countries
-• 2,000+ tracked M&A transactions
+• 4,000+ tracked M&A transactions
 • Fiber routes, power substations, permits
 • 60+ RSS feeds for real-time news
 

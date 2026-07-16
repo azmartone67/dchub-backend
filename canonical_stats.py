@@ -34,6 +34,14 @@ _FALLBACK = {
     "countries": 170,
     "countries_verified": 30,       # deduped/active distinct floor (live ~33; country field dirty -> conservative)
     "markets": 300,          # 2026-06-08: Neon-verified COUNT(DISTINCT market_name) minus 3 aggregates = 300 (grew from 232 via intl expansion). Live query below; this is the fallback.
+    # Curated M&A deal count — the buyer+seller-present subset (~4,255 live
+    # 2026-07-16). This is DELIBERATELY NOT the raw `deals` table COUNT(*)
+    # (~11.5K), which is a broader pile incl. capex/undisclosed/junk rows: the
+    # live /api/v1/stats `deals` field returns that broad count, and publishing
+    # it as "M&A deals" is a ~2.5x over-claim (the 2026-07-16 double-count trap).
+    # Live-queried below with the same curated filter as /api/transactions;
+    # deals_phrase() floors DOWN to "4,000+" so we never over-claim.
+    "deals": 4000,
     "isos": 7,               # 7 live US ISOs (ERCOT, CAISO, NYISO, MISO, PJM, SPP, ISO-NE)
     "grid_operators": 10,    # 10 North-American grid operators w/ live data (7 US ISOs + TVA + BPA + IESO)
     "utility_bas": 43,       # 43 US utility balancing authorities (live EIA-930)
@@ -149,6 +157,25 @@ def _query_live() -> dict:
                 out["markets"] = n
         except Exception:
             pass
+        # Curated M&A deal count. ★DO NOT use COUNT(*) FROM deals here: that is
+        # the RAW ~11.5K pile (capex/undisclosed/junk rows) that the live
+        # /api/v1/stats `deals` field returns — publishing it as "M&A deals" is a
+        # ~2.5x over-claim (2026-07-16 double-count trap). The honest curated
+        # count is the buyer+seller-present subset (matches the live
+        # /api/transactions total ~4,255 and deals_public_api.is_quality_deal).
+        # deals_phrase() floors this DOWN to "4,000+".
+        try:
+            cur.execute(
+                "SELECT COUNT(*) FROM deals "
+                "WHERE buyer IS NOT NULL AND buyer <> '' "
+                "AND lower(buyer) NOT IN ('tbd','unknown','n/a','na','none','undisclosed') "
+                "AND seller IS NOT NULL AND seller <> '' "
+                "AND lower(seller) NOT IN ('tbd','unknown','n/a','na','none','undisclosed')")
+            n = int((cur.fetchone() or [0])[0] or 0)
+            if n > 0:
+                out["deals"] = n
+        except Exception:
+            pass
     finally:
         try:
             c.close()
@@ -218,6 +245,18 @@ def markets_phrase() -> str:
     # and countries_phrase() — citation-safe rounding, never above reality.
     n = int(get_canonical_stats().get("markets", _FALLBACK["markets"]))
     return f"{(n // 100) * 100}+"
+
+
+def deals_phrase() -> str:
+    """Curated M&A deal-count floor, e.g. '4,000+'. Floors DOWN to the nearest
+    1,000 so we never over-claim as the curated set grows (4,009 on 2026-07-10
+    -> ~4,255 on 2026-07-16). ★This floors the CURATED count (buyer+seller
+    present) — NOT the raw `deals` COUNT(*) (~11.5K broad pile), which the live
+    /api/v1/stats `deals` field returns and which would be a ~2.5x over-claim if
+    published as 'M&A deals'. Matches markets_phrase()/countries_phrase()
+    citation-safe rounding. See _query_live() deals block."""
+    n = int(get_canonical_stats().get("deals", _FALLBACK["deals"]))
+    return f"{(n // 1000) * 1000:,}+"
 
 
 def grid_coverage_phrase(style: str = "full") -> str:

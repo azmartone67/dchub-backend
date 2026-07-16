@@ -1643,7 +1643,7 @@ tbody tr:last-child td{{border-bottom:none}}
 
 <div class="citation">{citation}</div>
 
-<p class="footer">Powered by <a href="https://dchub.cloud">DC Hub</a> · Source-of-truth data center market intelligence · 2,000+ tracked deals · 21,433 facilities · 300+ markets · JSON: <a href="/api/v1/market-brief/{slug}">/api/v1/market-brief/{slug}</a></p>
+<p class="footer">Powered by <a href="https://dchub.cloud">DC Hub</a> · Source-of-truth data center market intelligence · 4,000+ tracked deals · 21,433 facilities · 300+ markets · JSON: <a href="/api/v1/market-brief/{slug}">/api/v1/market-brief/{slug}</a></p>
 
 <script src="/js/dchub-nav.js" defer></script>
 </body>

@@ -22,7 +22,7 @@ site scoring, and capacity pipeline tracking.
 
 **Why this is useful for the community list:**
 - Hosted (no install / npm step) — agents can connect immediately
-- Real-world data set (21,000+ facilities, 2,000+ deals, 7 US ISOs)
+- Real-world data set (21,000+ facilities, 4,000+ deals, 7 US ISOs)
 - Tested with Claude Desktop, Claude Code, Cursor, ChatGPT, Continue
 - Open API + manifest discovery — fits the MCP discovery convention
 - Free tier exists; paid tier ($12/mo) for deeper queries

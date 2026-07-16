@@ -544,7 +544,7 @@ def sentinel_drift():
 # live table, then — only if benign AND still above the canonical floor — resets
 # the stale baseline. It only ever touches the sentinel_row_baselines MONITORING
 # table, never `deals` data, and fails CLOSED (a real loss is never masked).
-_DEALS_CANONICAL_FLOOR = 2000  # public "2,000+" — never rebaseline below this
+_DEALS_CANONICAL_FLOOR = 2000  # public "4,000+" — never rebaseline below this
 
 
 def _internal_ok():

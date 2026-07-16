@@ -7,7 +7,7 @@
         "X-API-Key": "dchub_grok_2026_verify",
         "User-Agent": "Grok-DC-Hub/1.0"
       },
-      "description": "DC Hub — 21,000+ data centers (170+ countries), 300+ power markets (DCPI), 7 US ISO grids, interconnection queues, fiber, gas & 2,000+ M&A deals. 51 MCP tools.",
+      "description": "DC Hub — 21,000+ data centers (170+ countries), 300+ power markets (DCPI), 7 US ISO grids, interconnection queues, fiber, gas & 4,000+ M&A deals. 51 MCP tools.",
       "tools": [
         "search_facilities",
         "get_facility",

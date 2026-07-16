@@ -690,7 +690,7 @@ def _live_context(industry: str | None,
     ctx = {"primary_stat": "", "fallback_stat": ""}
     # Always have a safe fallback
     ctx["fallback_stat"] = (
-        "2,000+ tracked deals across 178 countries; "
+        "4,000+ tracked deals across 178 countries; "
         "300+ DCPI markets; 5,700+ discovered facilities"
     )
     conn = _db_conn()
@@ -966,7 +966,7 @@ def _templated_fallback(candidate: dict, contact: dict,
         f"{salutation},\n\n"
         f"Saw a few visits from {company} looking at {surface} "
         f"on dchub.cloud over the last few weeks. "
-        f"DC Hub tracks 2,000+ data center deals across 178 countries "
+        f"DC Hub tracks 4,000+ data center deals across 178 countries "
         f"and ranks 300+ markets by power, fiber, and land readiness — "
         f"useful if you're sizing up a specific market or operator. "
         f"Happy to walk you through the data — just reply. "
@@ -975,7 +975,7 @@ def _templated_fallback(candidate: dict, contact: dict,
     return {
         "subject": f"Saw {company} looking at DC Hub — quick walkthrough?",
         "body": body,
-        "data_point": "2,000+ tracked deals, 300+ DCPI markets",
+        "data_point": "4,000+ tracked deals, 300+ DCPI markets",
     }
 
 

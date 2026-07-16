@@ -2,7 +2,7 @@
   "slug": "dchub",
   "name": "DC Hub",
   "tagline": "Live data center, grid, and energy intelligence for AI agents",
-  "description": "21,000+ data center facilities across 170+ countries, 300+ markets with DCPI (Data Center Power Index) BUILD/AVOID verdicts, 126,000+ substations mapped, real-time grid intelligence across live grids on 4 continents — 7 US ISOs (plus TVA, BPA, Ontario's IESO), UK, ~12 EU zones, Taiwan, Australia and 43 US utility balancing authorities, per-state retail electricity rates, fiber routes, water risk, gas infrastructure, and 2,000+ tracked M&A transactions. Designed for AI assistants — instant programmatic auth, no browser required.",
+  "description": "21,000+ data center facilities across 170+ countries, 300+ markets with DCPI (Data Center Power Index) BUILD/AVOID verdicts, 126,000+ substations mapped, real-time grid intelligence across live grids on 4 continents — 7 US ISOs (plus TVA, BPA, Ontario's IESO), UK, ~12 EU zones, Taiwan, Australia and 43 US utility balancing authorities, per-state retail electricity rates, fiber routes, water risk, gas infrastructure, and 4,000+ tracked M&A transactions. Designed for AI assistants — instant programmatic auth, no browser required.",
   "url": "https://dchub.cloud/mcp",
   "transport": "streamable-http",
   "homepage": "https://dchub.cloud",

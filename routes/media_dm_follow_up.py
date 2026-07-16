@@ -516,7 +516,7 @@ def _live_context_for_dm(asset_kind: str) -> dict:
     conn = _db_conn()
     if conn is None:
         # Fall back to canonical numbers from HEALTH_BASELINE.md.
-        ctx["primary_stat"]  = "2,000+ tracked deals across 178 countries"
+        ctx["primary_stat"]  = "4,000+ tracked deals across 178 countries"
         ctx["fallback_stat"] = "300+ DCPI markets, 5,700+ discovered facilities"
         return ctx
     try:
@@ -572,14 +572,14 @@ def _live_context_for_dm(asset_kind: str) -> dict:
 
             # Always populate fallback from canonical numbers
             ctx["fallback_stat"] = (
-                "2,000+ tracked deals across 178 countries; "
+                "4,000+ tracked deals across 178 countries; "
                 "300+ DCPI markets; 5,700+ discovered facilities")
         # If primary still empty, lift fallback into primary
         if not ctx["primary_stat"]:
             ctx["primary_stat"] = ctx["fallback_stat"]
         return ctx
     except Exception:
-        ctx["primary_stat"] = "2,000+ tracked deals across 178 countries"
+        ctx["primary_stat"] = "4,000+ tracked deals across 178 countries"
         return ctx
     finally:
         try: conn.close()

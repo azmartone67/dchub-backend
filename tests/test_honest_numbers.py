@@ -15,7 +15,12 @@ VERIFIED CANONICAL NUMBERS — REFRESHED 2026-06-21 (growth-audit live pull from
 /api/v1/stats + tools/list on dchub.cloud/mcp). The 2026-06-03 values below several
 metrics had DRIFTED UP; the enforced regexes still only ban GROSS over/under-claims,
 so they remain green, but treat THESE as the say-numbers going forward:
-  deals        = 3,079  -> say "3,000+"   (was 2,032/"2,000+"; live /api/v1/stats total_deals.
+  deals        = ~4,255 -> say "4,000+"   (was 2,032/"2,000+", 3,079/"3,000+"; CURATED
+                                           buyer+seller subset == live /api/transactions total.
+                                           ★NOT raw COUNT(*) FROM deals (~11.5K = /api/v1/stats
+                                           `deals`, a broad capex/junk pile) — publishing that as
+                                           "M&A deals" is a ~2.5x over-claim (2026-07-16 double-count
+                                           trap). Source of truth = canonical_stats.deals_phrase().
                                            STILL never "$324B": uncomputable, value_usd sparse)
   countries    = 178    -> say "170+"      (unchanged)
   facilities   = 21,808 -> say "21,000+"   (was 21,432; floor phrase unchanged)
@@ -115,7 +120,8 @@ def test_no_324b_inflation():
     pats = [re.compile(r"\$324B"), re.compile(r"324B\+"), re.compile(r"\$324\s*billion", re.I)]
     hits = _scan(pats)
     assert not hits, ("Re-introduced the unverified $324B M&A aggregate — replace with "
-                      "'3,000+ tracked deals' (live COUNT(*)=3,079, 2026-06-21):\n" + _fmt(hits))
+                      "'4,000+ tracked deals' (curated buyer+seller subset ~4,255 == "
+                      "/api/transactions; NOT raw COUNT(*)~11.5K, 2026-07-16):\n" + _fmt(hits))
 
 
 def test_no_inflated_platform_counts():

@@ -1169,7 +1169,7 @@ _ABOUT = {
         {"v": "19,000+", "l": "facilities tracked"},
         {"v": "233", "l": "markets"},
         {"v": "170+", "l": "countries"},
-        {"v": "2,000+", "l": "M&A deals"},
+        {"v": "4,000+", "l": "M&A deals"},
     ],
     "capabilities": [
         ["DCPI™ — Data Center Power Index",

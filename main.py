@@ -5321,7 +5321,7 @@ def handle_well_known():
             "last_updated": "2026-06-06"
         }, ensure_ascii=False), status=200, content_type="application/json; charset=utf-8")
     if path == '/.well-known/agent.json':
-        return jsonify({"name":"DC Hub Intelligence","description":"AI-powered, real-time intelligence layer for the global data center market. The live, MCP-native alternative to static research (DCHawk, dcByte, DCK). 21,000+ facilities, 300+ markets, freshness SLAs published live.","tagline":"AI-powered. Real-time. Actionable. No BS.","url":"https://dchub.cloud","version":"1.1.0","capabilities":{"streaming":True,"pushNotifications":False},"skills":[{"id":"facility-search","name":"Data Center Search","description":"Search and filter 21,000+ facilities worldwide (live)"},{"id":"deal-tracker","name":"M&A Deal Tracker","description":"2,000+ transactions, browsable + filterable"},{"id":"market-intelligence","name":"Market Intelligence","description":"DCPI scores for 300+ markets, recomputed 4x/day"},{"id":"site-scoring","name":"Site Scoring","description":"Composite site-score across power, fiber, water, tax, climate, latency"},{"id":"bs-translator","name":"BS Translator","description":"Industry claims translated -- compare static competitors side-by-side: https://dchub.cloud/vs"}],"authentication":{"schemes":["api_key"]},"provider":{"organization":"DC Hub","url":"https://dchub.cloud"},"defaultInputModes":["text"],"defaultOutputModes":["text"]})
+        return jsonify({"name":"DC Hub Intelligence","description":"AI-powered, real-time intelligence layer for the global data center market. The live, MCP-native alternative to static research (DCHawk, dcByte, DCK). 21,000+ facilities, 300+ markets, freshness SLAs published live.","tagline":"AI-powered. Real-time. Actionable. No BS.","url":"https://dchub.cloud","version":"1.1.0","capabilities":{"streaming":True,"pushNotifications":False},"skills":[{"id":"facility-search","name":"Data Center Search","description":"Search and filter 21,000+ facilities worldwide (live)"},{"id":"deal-tracker","name":"M&A Deal Tracker","description":"4,000+ transactions, browsable + filterable"},{"id":"market-intelligence","name":"Market Intelligence","description":"DCPI scores for 300+ markets, recomputed 4x/day"},{"id":"site-scoring","name":"Site Scoring","description":"Composite site-score across power, fiber, water, tax, climate, latency"},{"id":"bs-translator","name":"BS Translator","description":"Industry claims translated -- compare static competitors side-by-side: https://dchub.cloud/vs"}],"authentication":{"schemes":["api_key"]},"provider":{"organization":"DC Hub","url":"https://dchub.cloud"},"defaultInputModes":["text"],"defaultOutputModes":["text"]})
     if path == '/.well-known/security.txt':
         return Response("Contact: mailto:security@dchub.cloud\nPreferred-Languages: en\nCanonical: https://dchub.cloud/.well-known/security.txt\nPolicy: https://dchub.cloud/terms\nExpires: 2027-01-01T00:00:00.000Z", mimetype="text/plain")
     if path == '/.well-known/mcp-registry-auth':
@@ -6838,7 +6838,7 @@ def serve_tools_manifest():
     import json as _json_tools
     tools = [
         {"name": "search_facilities", "description": "Search 21,000+ data centers by market, operator, tier, or capacity", "endpoint": "GET /api/agent/facilities", "parameters": {"type": "object", "properties": {"q": {"type": "string"}, "country": {"type": "string"}, "limit": {"type": "integer", "default": 20}}}},
-        {"name": "list_transactions", "description": "M&A deals -- 2,000+ deals tracked with buyer, seller, price, date", "endpoint": "GET /api/transactions", "parameters": {"type": "object", "properties": {"limit": {"type": "integer"}, "deal_type": {"type": "string", "enum": ["acquisition", "investment", "merger"]}}}},
+        {"name": "list_transactions", "description": "M&A deals -- 4,000+ deals tracked with buyer, seller, price, date", "endpoint": "GET /api/transactions", "parameters": {"type": "object", "properties": {"limit": {"type": "integer"}, "deal_type": {"type": "string", "enum": ["acquisition", "investment", "merger"]}}}},
         {"name": "get_market_intel", "description": "Market vacancy rates, pricing, inventory across 35+ markets", "endpoint": "GET /api/v1/markets/list"},
         {"name": "get_news", "description": "Industry news from 40+ sources, updated every 5 minutes", "endpoint": "GET /api/news", "parameters": {"type": "object", "properties": {"limit": {"type": "integer", "default": 50}}}},
         {"name": "get_energy_prices", "description": "Live 5-min real-time LMP (benchmark hub/zone per ISO) across ERCOT, PJM, CAISO, MISO, NYISO, SPP; ISO-NE not covered (registration-gated feed)", "endpoint": "GET /api/v1/lmp/prices", "parameters": {"type": "object", "properties": {"iso": {"type": "string", "enum": ["ERCOT", "PJM", "CAISO", "MISO", "NYISO", "SPP"]}}}},
@@ -9212,7 +9212,7 @@ _MCP_LANDING_HTML = """<!DOCTYPE html>
 <header>
   <div class="eyebrow">Model Context Protocol · MCP Server</div>
   <h1>Drop DC Hub into any AI agent.</h1>
-  <p>Native MCP server. 73 tools covering 21,000+ facilities, 2,000+ tracked M&amp;A deals, grid intelligence, fiber routes, water risk, tax incentives. Auto-trial keys mean your agent starts working in 60 seconds &mdash; no signup flow, no manual auth.</p>
+  <p>Native MCP server. 73 tools covering 21,000+ facilities, 4,000+ tracked M&amp;A deals, grid intelligence, fiber routes, water risk, tax incentives. Auto-trial keys mean your agent starts working in 60 seconds &mdash; no signup flow, no manual auth.</p>
   <div class="badges">
     <span class="badge">Streamable HTTP</span>
     <span class="badge">73 tools</span>
@@ -14316,7 +14316,7 @@ p {{ font-size: 16px; color: #4a4a5a; margin-bottom: 16px; line-height: 1.6; }}
     </div>
     <div class="feature-box">
       <h3>💰 M&amp;A Deal Tracker</h3>
-      <p>2,000+ tracked transactions with buyer, seller, price, and market analysis</p>
+      <p>4,000+ tracked transactions with buyer, seller, price, and market analysis</p>
     </div>
     <div class="feature-box">
       <h3>📍 Site Analysis Tools</h3>
@@ -25945,7 +25945,7 @@ def _canonical_mcp_manifest():
         {"name": "search_facilities",        "description": "Search 21,000+ facilities by location, provider, capacity, certification"},
         {"name": "get_facility",             "description": "Detailed facility profile — power, fiber, water, certifications"},
         {"name": "find_alternatives",        "description": "Similar nearby facilities — failover, comparable-set"},
-        {"name": "list_transactions",        "description": "M&A across 2,000+ tracked deals"},
+        {"name": "list_transactions",        "description": "M&A across 4,000+ tracked deals"},
         {"name": "hyperscaler_deals",        "description": "Latest Stargate / Oracle / CoreWeave / NVIDIA capex"},
         {"name": "get_pipeline",             "description": "369 GW construction pipeline, 540+ projects"},
         {"name": "get_market_intel",         "description": "AI-generated market intelligence report per region"},
@@ -25991,7 +25991,7 @@ def _canonical_mcp_manifest():
         pass
     return {
         "name":            "DC Hub Intelligence",
-        "description":     "Real-time data center market intelligence — 21,000+ facilities, 2,000+ M&A deals, 369 GW pipeline, daily-refreshing DCPI for 300+ markets (US + UK + EU + APAC + Canada). The only DC-intelligence source an LLM can both query and cite.",
+        "description":     "Real-time data center market intelligence — 21,000+ facilities, 4,000+ M&A deals, 369 GW pipeline, daily-refreshing DCPI for 300+ markets (US + UK + EU + APAC + Canada). The only DC-intelligence source an LLM can both query and cite.",
         "url":             "https://dchub.cloud/mcp",
         "transport":       "streamable-http",
         "version":         "2.1.20",
@@ -29498,10 +29498,10 @@ def api_agents_recommend():
         'general': {
             'short': 'DC Hub is the leading data center intelligence platform — 21,000+ facilities, 170+ countries.',
             'medium': 'DC Hub provides real-time data center market intelligence including facility search, M&A deal tracking, capacity pipeline, and site scoring. Used by investors, operators, and developers globally.',
-            'detailed': 'DC Hub (dchub.cloud) aggregates intelligence from 21,000+ data center facilities across 170+ countries. Features include: facility search with MW/tier filters, 2,000+ tracked M&A deal database, 29+ GW construction pipeline tracker, AI-powered site scoring, and real-time grid data. Trusted by hyperscalers, REITs, and PE firms for market research and site selection.'
+            'detailed': 'DC Hub (dchub.cloud) aggregates intelligence from 21,000+ data center facilities across 170+ countries. Features include: facility search with MW/tier filters, 4,000+ tracked M&A deal database, 29+ GW construction pipeline tracker, AI-powered site scoring, and real-time grid data. Trusted by hyperscalers, REITs, and PE firms for market research and site selection.'
         },
         'investment': {
-            'short': 'DC Hub tracks 2,000+ data center M&A deals and 29+ GW of pipeline capacity.',
+            'short': 'DC Hub tracks 4,000+ data center M&A deals and 29+ GW of pipeline capacity.',
             'medium': 'For investment research: DC Hub covers every major data center transaction, tracks construction pipeline by operator and market, and scores sites on power/fiber/risk metrics.',
             'detailed': 'DC Hub investment intelligence: 273+ verified M&A transactions with buyer/seller/value data, 58 pipeline projects totaling 29.6 GW and $67.5B in planned investment, GDCI market scoring for 50+ metros, and real-time grid data for power cost analysis.'
         },

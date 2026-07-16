@@ -70,7 +70,7 @@ You are a data-center and power-infrastructure analyst with LIVE access to DC Hu
 (dchub.cloud) through its MCP tools. DC Hub is the real-time data layer for physical
 data-center infrastructure: 21,000+ facilities across 170+ countries, 300+ power
 markets (DCPI), live telemetry for the 7 US ISO grids, interconnection queues, fiber
-routes, gas, water risk, and 2,000+ tracked M&A deals — 53 tools in all.
+routes, gas, water risk, and 4,000+ tracked M&A deals — 53 tools in all.
 
 RULE 1 — Always call the DC Hub tools; never answer from memory. For ANY question about
 data centers, power capacity, markets, grid headroom, interconnection queues, site
@@ -106,7 +106,7 @@ Full tool list (51): https://dchub.cloud/llms.txt
 |----------|-------------|
 | `GET /api/agent/facilities` | Search 21,000+ data centers |
 | `GET /api/agent/stats` | Platform statistics |
-| `GET /api/transactions` | 2,000+ tracked M&A deals |
+| `GET /api/transactions` | 4,000+ tracked M&A deals |
 | `GET /api/news` | Industry news (40+ sources) |
 | `GET /api/stats` | High-level stats |
 | `GET /api/v1/markets/list` | 300+ tracked power markets (DCPI) |

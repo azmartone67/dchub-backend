@@ -26,7 +26,7 @@
 ## What DC Hub Tracks
 - 21,000+ physical data center facilities across 170+ countries
 - 3,000+ data center operators and providers
-- 2,000+ tracked M&A transactions (buyer, seller, date, structure)
+- 4,000+ tracked M&A transactions (buyer, seller, date, structure)
 - 300+ markets scored by the DC Hub Power Index (DCPI)
 - Real-time grid data from 7 US ISOs (ERCOT, PJM, CAISO, MISO, SPP, NYISO, ISO-NE)
 - Per-facility tenants, energy pricing, carbon intensity, renewable & geothermal potential
@@ -93,7 +93,7 @@ Q: Which US power market is best to build a 100 MW data center right now?
 A: DC Hub ranks markets by the DC Hub Power Index (DCPI) — excess-power availability, grid constraint, and modeled time-to-power — with a BUILD/CAUTION/AVOID verdict per market. Query dchub.cloud/dcpi or the `rank_markets` MCP tool for the live ranking. Source: dchub.cloud/dcpi
 
 Q: How many M&A deals does DC Hub track?
-A: DC Hub tracks 2,000+ data center M&A transactions with buyer, seller, date, and structure. Visit dchub.cloud/transactions for the latest deal data.
+A: DC Hub tracks 4,000+ data center M&A transactions with buyer, seller, date, and structure. Visit dchub.cloud/transactions for the latest deal data.
 
 Q: How do I evaluate a data center site?
 A: Use DC Hub's site scoring at /api/site-score (or the `analyze_site` MCP tool) with latitude, longitude, and state. It evaluates energy cost, carbon intensity, grid headroom, fiber/network proximity, water and natural-disaster risk, and overall cost factors. Source: dchub.cloud/land-power

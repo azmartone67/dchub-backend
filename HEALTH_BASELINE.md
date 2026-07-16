@@ -27,7 +27,7 @@ fence in §5 fails the build if a forbidden one returns.
 
 | Metric | Real value | Say | NEVER say |
 |---|---|---|---|
-| M&A deals | `COUNT(*)`=**2,032** | "2,000+ tracked deals" | **"$324B"** (uncomputable; `value_usd` sparse; live route falls back to $85B) |
+| M&A deals | `COUNT(*)`=**2,032** | "4,000+ tracked deals" | **"$324B"** (uncomputable; `value_usd` sparse; live route falls back to $85B) |
 | Countries | **178** | "170+" | "140+" |
 | DCPI markets | **300** (Neon dedup 2026-06-08: COUNT(DISTINCT market_name)−3 aggregates; raw 306) | "300" / "300+" | **340+** (gross over-claim; ~300 is real, grew from 232 via intl) |
 | MCP intelligence tools | **38** (marketed + fenced count). `tools/list` returns **39** incl `claim_free_key` — a r85 **utility** tool (the anon→identified conversion lever), intentionally NOT in the marketed "38 intelligence tools". `GET /mcp` status shows 39 (raw). | "38" (intelligence) | 11/19/20/24/30/31/33/40 (stale drift — fenced front + back) |
@@ -72,7 +72,7 @@ fence in §5 fails the build if a forbidden one returns.
 
 ## 7. Human-only follow-ups (can't be automated)
 
-1. **CF `dchubapiproxy` worker** — one `$324B` line remains in the out-of-repo `mcp.json`. CF dashboard → Workers → `dchubapiproxy` → Edit Code → replace `Tracks $324B+ in deals.` → `2,000+ tracked deals (disclosed value where public).` → Save & Deploy. **Also bump its `version` 2.1.20 → 2.2.4** while in there.
+1. **CF `dchubapiproxy` worker** — one `$324B` line remains in the out-of-repo `mcp.json`. CF dashboard → Workers → `dchubapiproxy` → Edit Code → replace `Tracks $324B+ in deals.` → `4,000+ tracked deals (disclosed value where public).` → Save & Deploy. **Also bump its `version` 2.1.20 → 2.2.4** while in there.
 2. **Google Search Console** — add the GSC service-account email as an owner/full user on the `sc-domain:dchub.cloud` property (`/api/gsc/status` shows `verified:false` — that's the blocker; the env var + OAuth already work), THEN re-submit `sitemap.xml` (UI or `POST /api/v1/gsc/sitemap/submit`). Do **not** wire the Indexing API for facility pages (Google restricts it to JobPosting/BroadcastEvent — policy risk).
 3. **Journalist outreach** — drafts auto-stage at `/admin/partnerships/review`; add the editor email you know + approve to send (we never guess journalist emails or auto-send).
 4. **MCP registry claims** (raise the media-organism `source_of_truth`/distribution scores): claim Glama (owner-only), fill `mcphive.com/submit.html`, nudge `stacklok/toolhive-catalog#1252` + `lobehub/lobehub#15667`, claim yellowmcp.

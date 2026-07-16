@@ -13,7 +13,7 @@ Usage:
     python3 frontend_stat_normalizer.py /path/to/cloudflare-pages-root --dry-run
 
 What it fixes:
-    1. Deals tracked: legacy $51B / $70B / $324B $-stats → 2,000+ deals (verified count, canonical)
+    1. Deals tracked: legacy $51B / $70B / $324B $-stats → 4,000+ deals (verified count, canonical)
     2. MCP tools count: 11 / 15 → 20 (actual count from /connect)
     3. Facilities: 21,000+ → 20,000+ (consistent with hero)
     4. Pipeline GW: 21+ GW → 369 GW (matches homepage + nav)
@@ -36,7 +36,7 @@ CANONICAL = {
     'facilities': '21,000+',
     'facilities_number': '21000',
     'countries': '170+',
-    'deals_tracked': '2,000+ deals',
+    'deals_tracked': '4,000+ deals',
     'pipeline_projects': '540+',
     'pipeline_gw': '369 GW',
     'mcp_tools': '31',
@@ -54,9 +54,9 @@ CANONICAL = {
 
 REPLACEMENTS = [
     # --- Deals tracked ---
-    (r'\$51B\+', '2,000+ deals', 'deals: legacy $ stat → verified count'),
-    (r'\$70B\+', '2,000+ deals', 'deals: legacy $ stat → verified count'),
-    (r'\$70B\+ volume', '2,000+ tracked deals', 'deals nav: legacy $ stat → verified count'),
+    (r'\$51B\+', '4,000+ deals', 'deals: legacy $ stat → verified count'),
+    (r'\$70B\+', '4,000+ deals', 'deals: legacy $ stat → verified count'),
+    (r'\$70B\+ volume', '4,000+ tracked deals', 'deals nav: legacy $ stat → verified count'),
 
     # --- MCP tool count ---
     (r'\b11 MCP [Tt]ools\b', '20 MCP Tools', 'tools: 11 → 20'),
@@ -90,8 +90,8 @@ REPLACEMENTS = [
 PAGE_SPECIFIC_FIXES = {
     'developers.html': [
         # Normalize legacy deal $ stat → verified deal COUNT
-        (r'\$51B\+Deals Tracked', '2,000+Deals Tracked', 'developers hero stat'),
-        (r'\$51B\+', '2,000+ deals', 'developers: all $51B references'),
+        (r'\$51B\+Deals Tracked', '4,000+Deals Tracked', 'developers hero stat'),
+        (r'\$51B\+', '4,000+ deals', 'developers: all $51B references'),
     ],
     'connect.html': [
         # Fix tool count in header

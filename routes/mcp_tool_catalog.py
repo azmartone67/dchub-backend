@@ -89,7 +89,7 @@ TOOLS = [
      "Use when a user asks 'what is being built / announced / permitted' in a market or by an operator — the forward-looking construction pipeline (540+ projects, 369 GW). Example: 'What data centers are under construction in Northern Virginia and when do they come online?'. Params: status one of announced|permitted|construction|operational; operator (e.g. Equinix, Digital Realty, AWS); country (ISO-2 like US, DE); min_capacity_mw (e.g. 50 for hyperscale); expected_completion_before (ISO date). Returns: {projects:[{name, operator, capacity_mw, status, expected_commissioning, market_slug, country, lat, lon}], total}. Do NOT use for operational facilities (use search_facilities) or M&A flow (use list_transactions).",
      'get_pipeline(market="northern-virginia", status="construction")'),
     ("list_transactions",     "intelligence",   "identified",
-     "M&A and capital transactions in the data center sector — 2,000+ tracked deals (2019-present). Returns deal name, buyer, seller, value, date, market, target operator, and deal type.",
+     "M&A and capital transactions in the data center sector — 4,000+ tracked deals (2019-present). Returns deal name, buyer, seller, value, date, market, target operator, and deal type.",
      'list_transactions(year=2026, min_value_usd=1000000000)'),
     ("hyperscaler_deals",     "intelligence",   "identified",
      "Hyperscaler AI Deal Tracker — live feed of Stargate, OpenAI, Anthropic, Microsoft, Oracle, CoreWeave, NVIDIA, sovereign-AI deals. Extracts $-figures + MW and classifies by actor. ~$1B+/week typical.",

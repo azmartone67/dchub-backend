@@ -506,7 +506,7 @@ function createServer() {
   trackedTool(srv, 'get_intelligence_index', 'Real-time composite market health score.', {},
     async () => ({ content: [{ type: 'text', text: JSON.stringify(await callAPI('/api/agents/intelligence-index')) }] }));
 
-  trackedTool(srv, 'list_transactions', 'M&A transactions — 2,000+ tracked tracked.',
+  trackedTool(srv, 'list_transactions', 'M&A transactions — 4,000+ tracked tracked.',
     { buyer: S, seller: S, min_value_usd: N, max_value_usd: N, deal_type: S, date_from: S, date_to: S, region: S, limit: I, offset: I },
     async (a) => ({ content: [{ type: 'text', text: JSON.stringify(await callAPI('/api/v1/deals', a)) }] }));
 

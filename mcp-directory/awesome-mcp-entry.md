@@ -18,7 +18,7 @@ Title: feat: add DC Hub Intelligence MCP server
 
 Body:
 DC Hub is a hosted Streamable-HTTP MCP server giving AI agents live
-data-center intelligence: 21,000+ facilities, 2,000+ M&A transactions,
+data-center intelligence: 21,000+ facilities, 4,000+ M&A transactions,
 real-time ISO/RTO grid data, and site-suitability scoring for any US
 lat/long.
 

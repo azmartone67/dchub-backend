@@ -523,7 +523,7 @@ def _shape_agent_pitch_linkedin(arc: dict | None = None) -> str:
         "query instead:\n\n"
         f"• {facilities:,} facilities across 170+ countries\n"
         f"• real-time grid telemetry across {grids} grids/ISOs\n"
-        "• fiber, substations, gas pipelines, water risk, 2,000+ M&A deals\n"
+        "• fiber, substations, gas pipelines, water risk, 4,000+ M&A deals\n"
         "• 53 tools, machine-readable + citable, free tier (no card)\n\n"
         "Connect Claude / Cursor / any MCP client:\n"
         "claude mcp add --transport http dchub https://dchub.cloud/mcp\n\n"
