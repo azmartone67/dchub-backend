@@ -421,7 +421,7 @@ def triage_pending_submissions(limit: int = 20) -> dict:
                     try:
                         cur.execute(
                             "INSERT INTO feedback_spam_quarantine "
-                            "(raw_payload, classifier_reason) VALUES (%s, %s)",
+                            "(raw_payload, classifier_reason) VALUES (%s, %s) ON CONFLICT DO NOTHING",
                             (json.dumps({"id": sid, "title": row.get("title"),
                                           "description": row.get("description")})[:8000],
                              "brain_classified_spam")
