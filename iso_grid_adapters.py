@@ -169,9 +169,11 @@ def _to_float(v) -> float | None:
 # auth: "oauth_key" (ERCOT — bearer + subscription key) | "key" (header key)
 #       | "basic" (user/pass) | "public" (no auth)
 ISO_REGISTRY = {
-    "ERCOT": {"auth": "oauth_key", "base": "https://api.ercot.com/api/public-data",
+    "ERCOT": {"auth": "oauth_key", "base": "https://api.ercot.com/api/public-reports",
               "env": "ERCOT", "impl": "fetch_ercot",
-              "note": "Azure-APIM: Ocp-Apim-Subscription-Key + B2C ROPC bearer."},
+              "note": "Azure-APIM: Ocp-Apim-Subscription-Key + B2C ROPC bearer. "
+                      "Products: np6-625-cd gen + np6-235-cd demand "
+                      "(+ np4-733/738-cd wind/solar mix)."},
     "CAISO": {"auth": "public", "base": "https://www.caiso.com/outlook/current",
               "env": "CAISO", "impl": "fetch_caiso",
               "note": "Today's Outlook CSVs (fuelsource + demand) — public, no auth."},
@@ -266,37 +268,143 @@ def _ercot_bearer() -> str | None:
         return None
 
 
-def fetch_ercot() -> list[dict]:
-    """Pull ERCOT generation/load → normalized records. Fail-safe.
-
-    TODO (needs live key to confirm): pick the exact Data Product reportTypeId
-    for real-time generation + system load by zone via
-    `GET {base}/` (lists products), then download the artifact CSV and map
-    rows → _record(...). Until ERCOT_GEN_PRODUCT_ID is set + verified, this
-    lists products (proves auth works) and returns []."""
+# Confirmed live 2026-07-16 against https://api.ercot.com/api/public-reports
+# (the old /api/public-data base 302s to a loading page and then 401s — it was
+# never the product catalog):
+#   GET {base}                → {"_embedded":{"products":[{emilId,...}]}}
+#   GET {base}/{emilId}       → product detail; artifacts[]._links.endpoint.href
+#   GET <artifact endpoint>   → {"_meta":{"sortedBy":...},"fields":[{"name":..}],
+#                                "data":[[...]]} with ?size=N paging
+# Products used (EMIL ids, env-overridable):
+#   ERCOT_GEN_PRODUCT_ID   np6-625-cd  "State Estimator Load Report - Total
+#       ERCOT Generation" → se_ld_rpt_ercot_gen, hourly, sorted seExeTime DESC;
+#       seMW = total system generation output.
+#   ERCOT_LOAD_PRODUCT_ID  np6-235-cd  "System-Wide Demand" →
+#       system_wide_demand, 15-min actuals posted hourly, sorted
+#       deliveryDate DESC + timeEnding ASC → latest is resolved client-side.
+# Fuel mix (best-effort, never fatal): NP4-733-CD wind + NP4-738-CD solar
+# actual 5-min system-wide values. The public-reports catalog exposes no full
+# fuel-mix product, so the mix carries only the two renewables ERCOT publishes
+# here — consumers must not treat it as exhaustive.
+# KNOWN SEMANTICS: seMW is gross generation (includes private-use-network
+# units and storage-charging offset), so headroom_mw = gen − demand runs
+# persistently positive for ERCOT (~+13%) — the same class of structural
+# offset as the other system adapters (MISO runs ~−14% because its online gen
+# excludes imports). The DCPI blend clamps this (±LIVE_DELTA_CAP_PCT).
+def _ercot_headers() -> dict | None:
+    """Auth headers for api.ercot.com, or None when no subscription key."""
     key = _env("ERCOT_API_KEY")
     if not key:
-        return []
-    bearer = _ercot_bearer()
+        return None
     headers = {"Ocp-Apim-Subscription-Key": key}
+    bearer = _ercot_bearer()
     if bearer:
         headers["Authorization"] = f"Bearer {bearer}"
-    base = ISO_REGISTRY["ERCOT"]["base"]
+    return headers
+
+
+def _ercot_table(payload) -> list[dict]:
+    """ERCOT public-reports {fields,data} arrays → list of row dicts. Pure."""
+    if not isinstance(payload, dict):
+        return []
+    names = [f.get("name") for f in (payload.get("fields") or [])
+             if isinstance(f, dict) and f.get("name")]
+    if not names:
+        return []
+    return [dict(zip(names, row)) for row in (payload.get("data") or [])
+            if isinstance(row, (list, tuple))]
+
+
+def _ercot_latest_gen_mw(rows: list[dict]) -> float | None:
+    """Latest seMW by seExeTime (ISO-8601 strings — lexical max is temporal
+    max). Pure; does not rely on server-side sort order."""
+    best_ts, best = "", None
+    for r in rows:
+        ts = str(r.get("seExeTime") or "")
+        mw = _to_float(r.get("seMW"))
+        if mw is not None and ts > best_ts:
+            best_ts, best = ts, mw
+    return best
+
+
+def _ercot_latest_demand_mw(rows: list[dict], max_age_days: int = 2) -> float | None:
+    """Latest 15-min demand by (deliveryDate, timeEnding). Returns None when
+    the newest row is older than max_age_days — a frozen upstream feed must
+    degrade to the modeled fallback, never masquerade as live. Pure."""
+    best_key, best = ("", ""), None
+    for r in rows:
+        key = (str(r.get("deliveryDate") or ""), str(r.get("timeEnding") or ""))
+        mw = _to_float(r.get("demand"))
+        if mw is not None and key > best_key:
+            best_key, best = key, mw
+    if best is None:
+        return None
     try:
-        products = _http_json(f"{base}/", headers=headers)
-        # Proof-of-auth: we can list products. Real extraction is wired once
-        # ERCOT_GEN_PRODUCT_ID (the gen/load reportTypeId) is confirmed.
-        product_id = _env("ERCOT_GEN_PRODUCT_ID")
-        if not product_id:
-            print(f"[iso_grid] ERCOT auth OK — "
-                  f"{len(products) if isinstance(products, list) else '?'} products "
-                  f"visible. Set ERCOT_GEN_PRODUCT_ID to begin extraction.",
+        latest = datetime.date.fromisoformat(best_key[0])
+        today = datetime.datetime.now(datetime.timezone.utc).date()
+        if (today - latest).days > max_age_days:
+            return None
+    except Exception:
+        return None
+    return best
+
+
+def _ercot_latest_syswide_mw(rows: list[dict]) -> float | None:
+    """Latest genSystemWide by intervalEnding (wind/solar 5-min actuals). Pure."""
+    best_ts, best = "", None
+    for r in rows:
+        ts = str(r.get("intervalEnding") or "")
+        mw = _to_float(r.get("genSystemWide"))
+        if mw is not None and ts > best_ts:
+            best_ts, best = ts, mw
+    return best
+
+
+def _ercot_artifact_rows(headers: dict, product_id: str, size: int = 200) -> list[dict]:
+    """Resolve a product's data-artifact endpoint from its detail record and
+    fetch the most recent page as row dicts. Errors propagate to the caller."""
+    base = ISO_REGISTRY["ERCOT"]["base"]
+    pid = urllib.parse.quote((product_id or "").strip().lower())
+    detail = _http_json(f"{base}/{pid}", headers=headers)
+    for art in (detail or {}).get("artifacts") or []:
+        href = (((art.get("_links") or {}).get("endpoint") or {}).get("href")) or ""
+        if href:
+            return _ercot_table(_http_json(f"{href}?size={int(size)}", headers=headers))
+    return []
+
+
+def fetch_ercot() -> list[dict]:
+    """Pull ERCOT real-time system generation/load (+ wind/solar mix) → one
+    normalized record. Fail-safe → [] (never a fabricated number)."""
+    headers = _ercot_headers()
+    if headers is None:
+        return []
+    gen_pid = _env("ERCOT_GEN_PRODUCT_ID", "np6-625-cd")
+    load_pid = _env("ERCOT_LOAD_PRODUCT_ID", "np6-235-cd")
+    try:
+        # size: gen posts 1 SE row/hour → 30 covers a day; demand posts 96
+        # 15-min rows/day sorted date-DESC-but-time-ASC → 200 spans today fully.
+        gen = _ercot_latest_gen_mw(_ercot_artifact_rows(headers, gen_pid, size=30))
+        load = _ercot_latest_demand_mw(_ercot_artifact_rows(headers, load_pid, size=200))
+        if gen is None or gen <= 0 or load is None or load <= 0:
+            print(f"[iso_grid] ERCOT extraction incomplete (gen={gen}, "
+                  f"load={load}) — check {gen_pid}/{load_pid} shapes/freshness.",
                   flush=True)
             return []
-        # ── extraction stub (fill once product_id confirmed) ──
-        # arts = _http_json(f"{base}/{product_id}", headers=headers)
-        # download artifact CSV → parse → records.append(_record("ERCOT", zone, ...))
-        return []
+        fuel_mix = {}
+        for label, pid in (("Wind", "np4-733-cd"), ("Solar", "np4-738-cd")):
+            try:
+                mw = _ercot_latest_syswide_mw(
+                    _ercot_artifact_rows(headers, pid, size=5))
+                if mw is not None:
+                    fuel_mix[label] = round(mw, 1)
+            except Exception:
+                continue   # mix is contextual — never fail the record over it
+        return [_record("ERCOT", "ERCOT",
+                        online_gen_mw=round(gen, 1),
+                        load_mw=round(load, 1),
+                        fuel_mix=fuel_mix,
+                        source=f"ercot:{gen_pid}(seMW)+{load_pid}(demand)")]
     except urllib.error.HTTPError as e:
         print(f"[iso_grid] ERCOT HTTP {e.code} (check key/bearer/scope)", flush=True)
         return []
@@ -729,14 +837,17 @@ try:
             headers["Authorization"] = f"Bearer {bearer}"
         try:
             data = _http_json(f"{ISO_REGISTRY['ERCOT']['base']}/", headers=headers)
-            items = data if isinstance(data, list) else (data.get("products") or data.get("data") or [])
+            # public-reports catalog shape: {"_embedded":{"products":[...]}}
+            items = data if isinstance(data, list) else (
+                ((data.get("_embedded") or {}).get("products"))
+                or data.get("products") or data.get("data") or [])
             prods = []
             for p in (items or [])[:limit]:
                 if not isinstance(p, dict):
                     continue
                 # gen/load-relevant products bubble to the top for easy picking
                 prods.append({
-                    "productId": p.get("productId"),
+                    "emilId": p.get("emilId"),
                     "reportTypeId": p.get("reportTypeId"),
                     "name": p.get("name"),
                     "generationFrequency": p.get("generationFrequency"),

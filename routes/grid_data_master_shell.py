@@ -381,9 +381,10 @@ _GAP_FINDINGS = [
      "interconnectable capacity at THIS point'. Build adapters for utility hosting-capacity "
      "GIS (start Dominion/VA) and fuse with the substations layer."),
     ("grid_telemetry_headroom_stub_ercot_pjm_isone",
-     "grid_telemetry live headroom is written for only 4 of 7 ISOs — ERCOT is a stub "
-     "(needs ERCOT_GEN_PRODUCT_ID), PJM/ISONE fail closed (no creds). DCPI falls to "
-     "modeled anchors for those 3. Wire a public gen/load source (gridstatus) to fill them."),
+     "grid_telemetry live headroom is written for 5 of 7 ISOs — ERCOT went LIVE "
+     "2026-07-16 (public-reports np6-625-cd gen + np6-235-cd demand). PJM/ISONE still "
+     "fail closed pending owner-obtained credentials (PJM_API_KEY from Data Miner 2; "
+     "ISO-NE web-services account) — do NOT fake them; DCPI keeps modeled anchors for those 2."),
     ("grid_iso_ne_realtime_lmp_absent",
      "ISO-NE real-time LMP is now CAPTURED in grid_ext_metrics via gridstatus "
      "(isone_lmp_real_time_5_min). Promote it into the canonical iso_lmp_snapshots table + "
