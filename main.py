@@ -545,10 +545,18 @@ _checkout_lock = threading.Lock()
 def _track_checkout(conn):
     import traceback
     conn_id = id(conn)
+    endpoint = None
+    try:
+        from flask import request, has_request_context
+        if has_request_context():
+            endpoint = f"{request.method} {request.path}"
+    except Exception:
+        endpoint = None
     with _checkout_lock:
         _active_checkouts[conn_id] = {
             'checked_out_at': time.time(),
             'thread': threading.current_thread().name,
+            'endpoint': endpoint,
             'stack': ''.join(traceback.format_stack()[-5:-1]),
         }
 
@@ -557,7 +565,25 @@ def _track_return(conn):
         return
     conn_id = id(conn)
     with _checkout_lock:
-        _active_checkouts.pop(conn_id, None)
+        info = _active_checkouts.pop(conn_id, None)
+    # r-poolhold (2026-07-16): env-gated pool-hold attribution to name the
+    # sub-60s BURST holders that the >60s forced-reclaim loop never observes.
+    # Default OFF (POOL_HOLD_LOG_MS=0). This runs on the return path BEFORE
+    # putconn (main.py return_pg_connection/return_read_connection), so the whole
+    # block is wrapped in try/except — it must NEVER raise or it would leak a conn.
+    if info is None:
+        return
+    try:
+        _hold_log_ms = int(os.environ.get('POOL_HOLD_LOG_MS', '0'))
+        if _hold_log_ms > 0:
+            held = time.time() - info['checked_out_at']
+            if held * 1000 >= _hold_log_ms:
+                logging.getLogger('pool_hold').warning(
+                    f"⏱️ POOL HOLD: conn held {held:.1f}s by {info.get('endpoint') or 'no-endpoint'} "
+                    f"(thread '{info['thread']}')\n{info['stack']}"
+                )
+    except Exception:
+        pass
 
 def _get_leaked_connections():
     now = time.time()
