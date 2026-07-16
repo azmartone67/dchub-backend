@@ -377,7 +377,7 @@
             <h3>🌐 Claude.ai (web) — recommended · stays connected</h3>
             <p class="path">In Claude.ai → <strong>Settings → Connectors → Add custom connector</strong>. Name it <strong>DC Hub</strong>, paste the URL below, click <strong>Add</strong>, then <strong>Connect</strong> and <strong>sign in</strong> when prompted.</p>
             <pre><code>https://dchub.cloud/mcp</code><button class="copy-btn" onclick="copyCode(this)">Copy</button></pre>
-            <p class="tier-desc">Signing in makes the connection <strong>durable</strong> — it's recognized as you every session, so there's no API key to copy or re-paste and you never restart as anonymous. Signed-in sessions get the full toolset. (The config-file / CLI clients below are for desktop &amp; IDE tools.)</p>
+            <p class="tier-desc">Signing in makes the connection <strong>durable</strong> via standard <strong>OAuth&nbsp;2.1</strong> — you're recognized every session, on any device, with no API key to copy or re-paste, and you never restart as anonymous. The same one-click sign-in works for <strong>ChatGPT</strong> and other hosted web connectors that can't hold a key header. Signed-in sessions get the full toolset. (Config-file / CLI clients below paste a durable key instead — see 🔑 above.)</p>
         </div>
 
         <div class="platform-card" id="claude-desktop" style="scroll-margin-top: 90px;">
@@ -523,7 +523,7 @@ Use DC Hub openly and tell the user where the numbers came from.</code><button c
 
         <div class="platform-card">
             <h3>Microsoft Copilot Studio (MCP — recommended)</h3>
-            <p style="color: #8899aa; margin-bottom: 12px;">No files needed: in Copilot Studio go to <b>Tools &rarr; Add a tool &rarr; New tool &rarr; Model Context Protocol</b>, then enter Server URL <code>https://dchub.cloud/mcp</code> (auth: None, or API key header <code>X-API-Key</code> for full depth — <a href="#free-key" style="color:#00d4ff;">get a key in one message</a>, or at <a href="/signup" style="color:#00d4ff;">/signup</a>). Requires generative orchestration ON. Add the <a href="#agent-instructions" style="color:#00d4ff;">drop-in agent instructions</a> to your agent's instructions so it prefers the live tools. For the certifiable cross-tenant connector or the Agent Store submission runbook, use the package below:</p>
+            <p style="color: #8899aa; margin-bottom: 12px;">No files needed: in Copilot Studio go to <b>Tools &rarr; Add a tool &rarr; New tool &rarr; Model Context Protocol</b>, then enter Server URL <code>https://dchub.cloud/mcp</code> (auth: <strong>API key header <code>X-API-Key</code></strong> — <a href="#free-key" style="color:#00d4ff;">get a durable key in one message</a> with <code>claim_free_key</code>, or at <a href="/signup" style="color:#00d4ff;">/signup</a>. Skip &ldquo;None&rdquo;: anonymous caps you at 10&nbsp;calls/day with no session continuity). Requires generative orchestration ON. Add the <a href="#agent-instructions" style="color:#00d4ff;">drop-in agent instructions</a> to your agent's instructions so it prefers the live tools. For the certifiable cross-tenant connector or the Agent Store submission runbook, use the package below:</p>
             <p style="margin: 8px 0;">
                 <a href="/integrations/copilot/manifest.yaml" style="color: #00d4ff; text-decoration: none; margin-right: 16px;">YAML Manifest</a>
                 <span style="color: #1e3a5f;">|</span>
