@@ -434,6 +434,7 @@ def _deals_provenance(data_source):
     except Exception:
         return None
 
+# AUTO-REPAIR: duplicate route '/api/deals' also in transactions_news_api.py:238 — review and remove one
 @deals_bp.route('/api/deals', methods=['GET'])
 @_lazy_protect_data
 def get_deals():
@@ -659,6 +660,7 @@ def get_deals():
             'ai_infra': 'AI Infrastructure'
         }
     })
+# AUTO-REPAIR: duplicate route '/api/v1/transactions' also in deals_routes.py:575 — review and remove one
 
 @deals_bp.route('/api/v1/transactions', methods=['GET'])
 def get_transactions():
@@ -805,6 +807,7 @@ def _get_transactions_free():
 
 # =============================================================================
 # CONSTRUCTION PIPELINE API (v86)
+# AUTO-REPAIR: duplicate route '/api/v1/pipeline' also in deals_routes.py:664 — review and remove one
 # =============================================================================
 
 @deals_bp.route('/api/v1/pipeline', methods=['GET'])
@@ -986,6 +989,7 @@ def get_pipeline():
         },
         'by_quarter': quarters,
         'last_updated': datetime.utcnow().isoformat()
+# AUTO-REPAIR: duplicate route '/api/v1/gas-pipelines' also in deals_routes.py:777 — review and remove one
     })
 
 
@@ -1170,6 +1174,7 @@ def get_gas_pipelines():
                     'spatial_filter_applied': lat is not None and lng is not None
                 }
             })
+# AUTO-REPAIR: duplicate route '/api/v1/deals' also in deals_routes.py:857 — review and remove one
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 
@@ -1206,6 +1211,7 @@ SAMPLE_MARKETS = [
     {"id": 11, "name": "Sydney", "country": "AU", "region": "APAC", "facilities": 55, "total_mw": 380, "avg_pue": 1.45, "growth": 14.5, "power_cost": 95, "fiber_providers": 15},
     {"id": 12, "name": "São Paulo", "country": "BR", "region": "LATAM", "facilities": 45, "total_mw": 280, "avg_pue": 1.52, "growth": 18.2, "power_cost": 85, "fiber_providers": 12},
     {"id": 13, "name": "Atlanta", "country": "US", "region": "North America", "facilities": 78, "total_mw": 420, "avg_pue": 1.40, "growth": 16.8, "power_cost": 68, "fiber_providers": 24},
+# AUTO-REPAIR: duplicate route '/api/dc-markets' also in transactions_news_api.py:281 — review and remove one
     {"id": 14, "name": "Seattle", "country": "US", "region": "North America", "facilities": 65, "total_mw": 380, "avg_pue": 1.28, "growth": 12.5, "power_cost": 48, "fiber_providers": 22},
     {"id": 15, "name": "Dublin", "country": "IE", "region": "EMEA", "facilities": 72, "total_mw": 480, "avg_pue": 1.30, "growth": 14.2, "power_cost": 125, "fiber_providers": 18},
     {"id": 16, "name": "Paris", "country": "FR", "region": "EMEA", "facilities": 58, "total_mw": 320, "avg_pue": 1.42, "growth": 10.5, "power_cost": 155, "fiber_providers": 20},
@@ -1228,6 +1234,7 @@ def get_dc_markets():
     # schema — labelled `seed` honestly until Phase 4 builds a real
     # market-aggregation query off the facilities table.
     return jsonify({
+# AUTO-REPAIR: duplicate route '/api/markets' also in deals_routes.py:904 — review and remove one
         'success': True,
         'markets': markets,
         'count': len(markets),
@@ -1425,6 +1432,7 @@ def _refresh_public_pipeline_async():
     try:
         payload = _compute_public_pipeline()
         payload['_computed_at'] = time.time()
+# AUTO-REPAIR: duplicate route '/api/pipeline' also in deals_routes.py:932 — review and remove one
         cache_set(_PIPELINE_CACHE_KEY, payload, ttl=_PIPELINE_HARD_TTL)
     except Exception as e:
         logger.debug(f"public pipeline background refresh failed: {e}")
@@ -1453,6 +1461,7 @@ def get_public_pipeline():
         return resp
 
     # Cold cache (first request / after eviction): compute once, synchronously.
+# AUTO-REPAIR: duplicate route '/api/v1/pipeline/summary' also in deals_routes.py:1034 — review and remove one
     payload = _compute_public_pipeline()
     payload['_computed_at'] = now
     cache_set(_PIPELINE_CACHE_KEY, payload, ttl=_PIPELINE_HARD_TTL)
@@ -1562,6 +1571,7 @@ def get_pipeline_summary():
 
     return jsonify({
         'success': True,
+# AUTO-REPAIR: duplicate route '/api/v1/analytics' also in deals_routes.py:1123 — review and remove one
         'total_gw': round(total_mw / 1000, 1),
         'total_mw': round(total_mw, 1),
         'project_count': project_count,
@@ -1619,6 +1629,7 @@ def _get_pg_news_cat_col():
         _pg_news_cat_col = 'category'
     return _pg_news_cat_col
 
+# AUTO-REPAIR: duplicate route '/api/agent/news' also in deals_routes.py:1177 — review and remove one
 def _pg_news_select():
     """Build SELECT for PG news_articles with correct category column."""
     col = _get_pg_news_cat_col()
@@ -1689,10 +1700,12 @@ def get_agent_news():
             return jsonify({
                 'success': True,
                 'articles': articles,
+# AUTO-REPAIR: duplicate route '/api/news-feed' also in transactions_news_api.py:292 — review and remove one
                 'count': len(articles),
                 'total': total,
                 'source': 'postgresql'
             })
+# AUTO-REPAIR: duplicate route '/api/news/live' also in deals_routes.py:1253 — review and remove one
         except Exception as pg_err:
             logger.error(f"News PG read failed: {pg_err}")
             return jsonify({'success': False, 'error': str(pg_err), 'articles': []}), 200
@@ -1744,6 +1757,7 @@ def get_live_news():
                 articles.append(article)
 
             _news_result = {
+# AUTO-REPAIR: duplicate route '/api/news/sync' also in deals_routes.py:1303 — review and remove one
                 'success': True, 'articles': articles, 'count': len(articles),
                 'total': total, 'fetched_at': datetime.utcnow().isoformat(),
                 'source': 'postgresql'
@@ -1760,10 +1774,12 @@ def get_live_news():
 @deals_bp.route('/api/news/sync', methods=['POST'])
 def trigger_news_sync():
     """Manually trigger news sync"""
+# AUTO-REPAIR: duplicate route '/api/v1/news' also in api_fixes.py:149 — review and remove one
     try:
         from auto_sync import sync_news
         saved = sync_news()
         return jsonify({
+# AUTO-REPAIR: duplicate route '/api/v1/announcements' also in deals_routes.py:1337 — review and remove one
             'success': True,
             'message': f'News sync complete: {saved} new articles saved',
             'synced_at': datetime.utcnow().isoformat()

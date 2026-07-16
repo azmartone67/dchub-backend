@@ -216,7 +216,7 @@ def detect_data_growth_wins(dry_run=False, seed=None):
                 merged["_updated"] = datetime.datetime.utcnow().isoformat()
                 cur.execute(
                     """INSERT INTO brain_state (state_key, state_value, updated_at)
-                       VALUES (%s, %s, NOW())
+                       VALUES (%s, %s, NOW() ON CONFLICT DO NOTHING)
                        ON CONFLICT (state_key)
                        DO UPDATE SET state_value=EXCLUDED.state_value, updated_at=NOW()""",
                     (_BASELINE_KEY, json.dumps(merged)),
