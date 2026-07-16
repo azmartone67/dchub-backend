@@ -157,7 +157,7 @@ def run_auto_fix(pattern_id):
         except Exception as e: result = {"ok": False, "info": f"{type(e).__name__}: {str(e)[:300]}"}
         cur.execute("UPDATE qa_patterns SET auto_fix_at=NOW(), auto_fix_ok=%s, auto_fix_info=%s WHERE id=%s",
             (bool(result.get("ok")), str(result.get("info",""))[:1000], pattern_id))
-        cur.execute("INSERT INTO qa_fix_log (pattern_id, ok, info) VALUES (%s, %s, %s)",
+        cur.execute("INSERT INTO qa_fix_log (pattern_id, ok, info) VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
             (pattern_id, bool(result.get("ok")), str(result.get("info",""))[:1000]))
         c.commit()
     return result
