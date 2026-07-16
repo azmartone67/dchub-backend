@@ -104,6 +104,7 @@ def latest():
     return jsonify(iso="TVA", metrics=latest_for_iso("TVA")), 200
 
 
+# AUTO-REPAIR: duplicate route '/health' also in index_api.py:697 — review and remove one
 @iso_tva_bp.route("/health", methods=["GET"])
 def health():
     return jsonify(health_for_iso("TVA", SOURCE_ID)), 200
