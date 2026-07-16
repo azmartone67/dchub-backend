@@ -2283,6 +2283,19 @@ try:
     except Exception as _frms:
         import logging
         logging.getLogger(__name__).warning('frontend_reliability_master_shell wiring failed: %s', _frms)
+    # 2026-07-16: QA Fix-Wave master shell (#22) — one pane over the 07-16 QA
+    # fix-wave items: WRI presigned-URL freshness, Glama listing, detector
+    # dedup (open-proposal fingerprints), verified-flag consistency, retention
+    # metric labels, new-energy-layers map.on guard, edge /dashboard latency.
+    # READ-ONLY (replica-preferred reads; no writes, no self-requests).
+    # Kill: QA_FIXWAVE_DISABLED=1. GET /admin/qa-fixwave
+    try:
+        from routes.qa_fixwave_master_shell import qa_fixwave_master_shell_bp
+        app.register_blueprint(qa_fixwave_master_shell_bp)
+        print("[main] qa_fixwave_master_shell_bp registered: GET /admin/qa-fixwave", flush=True)
+    except Exception as _qfw:
+        import logging
+        logging.getLogger(__name__).warning('qa_fixwave_master_shell wiring failed: %s', _qfw)
     # 2026-07-03: brain context-assembly RAG — pgvector + Cohere embeddings over
     # the brain corpus (findings + recommendations). Gives the strategic planner
     # semantic RECALL of prior work. POST /api/v1/admin/brain/rag/reindex. Dark
