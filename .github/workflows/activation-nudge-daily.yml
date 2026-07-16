@@ -1,0 +1,47 @@
+name: Activation nudge (daily, paid + zero-call first-query email)
+
+# Emails paying customers who got their key but never made a first API call
+# (the real activation gap behind stranded Founding members). See
+# activation_nudge.py + PR that added /api/v1/admin/activation-nudge/run.
+#
+# SAFE BY DEFAULT: this workflow calls the endpoint WITHOUT ?confirm=1, so it
+# runs in DRY-RUN — it previews who WOULD be nudged and sends nothing. To ARM
+# it, set ACTIVATION_NUDGE_ARM=1 in the dchub-backend Railway env (the endpoint
+# treats that env OR ?confirm=1 as armed). Flip that one var and the same daily
+# run starts sending — no workflow edit, no secret in the cron. Un-set it to
+# pause. Idempotent server-side (email_drip_log UNIQUE), capped, one-nudge-ever.
+
+on:
+  schedule:
+    - cron: '43 15 * * *'   # 15:43 UTC daily, staggered off the herd
+  workflow_dispatch: {}       # manual runs (also honors ?confirm via server env)
+
+jobs:
+  nudge:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Run activation nudge (dry-run unless ACTIVATION_NUDGE_ARM=1 on Railway)
+        # Hits the Railway origin directly to avoid the CF Worker 15s timeout.
+        # No ?confirm=1 here on purpose — arming is a deliberate Railway env flip.
+        run: |
+          if [ -z "${{ secrets.DCHUB_ADMIN_KEY }}" ]; then
+            echo "::warning::DCHUB_ADMIN_KEY secret missing — skipping activation nudge"
+            exit 0
+          fi
+          echo "─── Activation nudge (paid + zero-call, 48h..21d) ───"
+          RESPONSE=$(curl -sS -X POST --max-time 120 \
+            "https://dchub-backend-production.up.railway.app/api/v1/admin/activation-nudge/run" \
+            -H "X-Admin-Key: ${{ secrets.DCHUB_ADMIN_KEY }}")
+          echo "${RESPONSE}" | python3 -m json.tool || { echo "::warning::Non-JSON response"; echo "${RESPONSE}"; exit 0; }
+          ARMED=$(echo "${RESPONSE}" | python3 -c "import sys,json; print((json.load(sys.stdin) or {}).get('armed'))" 2>/dev/null || echo "?")
+          CAND=$(echo "${RESPONSE}" | python3 -c "import sys,json; print((json.load(sys.stdin) or {}).get('candidates',0))" 2>/dev/null || echo "0")
+          SENT=$(echo "${RESPONSE}" | python3 -c "import sys,json; print((json.load(sys.stdin) or {}).get('sent',0))" 2>/dev/null || echo "0")
+          echo "═══════════════════════════════════════════════"
+          echo "Armed: ${ARMED}   Candidates: ${CAND}   Sent: ${SENT}"
+          if [ "${ARMED}" != "True" ]; then
+            echo "::notice::DRY-RUN — ${CAND} customer(s) would be nudged. Set ACTIVATION_NUDGE_ARM=1 on Railway to arm."
+          else
+            echo "::notice::ARMED — nudged ${SENT} customer(s)."
+          fi
+          echo "═══════════════════════════════════════════════"

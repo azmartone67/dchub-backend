@@ -10681,6 +10681,14 @@ if WELCOME_DRIP_AVAILABLE:
     except Exception as e:
         logger.warning(f"⚠️ Drip routes failed: {e}")
 
+# 48h post-purchase activation nudge (paid + zero-call). DRY-RUN unless armed.
+try:
+    from activation_nudge import setup_activation_nudge_routes
+    setup_activation_nudge_routes(app)
+    logger.info("✅ Activation-nudge route registered (/api/v1/admin/activation-nudge/run)")
+except Exception as e:
+    logger.warning(f"⚠️ Activation-nudge route failed: {e}")
+
 # =============================================================================
 # CRAWLER TRACKING SYSTEM
 # =============================================================================
