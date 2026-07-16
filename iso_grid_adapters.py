@@ -30,11 +30,16 @@ import os
 import io
 import csv
 import json
+import time
 import datetime
 import urllib.request
 import urllib.parse
 import urllib.error
 from routes._swallowed_writes import note_swallowed_write
+
+# Spacing between ERCOT fuel-mix fetches (seconds) — keeps the tail of the
+# request burst under APIM throttling. Tests set 0 via env.
+_ERCOT_FUEL_SPACING_S = float(os.environ.get("ERCOT_FUEL_SPACING_S", "1.5") or 0)
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -391,15 +396,30 @@ def fetch_ercot() -> list[dict]:
                   f"load={load}) — check {gen_pid}/{load_pid} shapes/freshness.",
                   flush=True)
             return []
+        # Mix is contextual — never fail the record over it. But do NOT fail
+        # silently either: the first prod deploy stored empty fuel_mix on every
+        # pull with zero log evidence. Prod→ERCOT latency is low enough that
+        # the 8-GET burst trips APIM tail throttling on these last requests
+        # (gen/load, first in the burst, always pass) — so space the fuel
+        # fetches out and retry once on 429.
         fuel_mix = {}
         for label, pid in (("Wind", "np4-733-cd"), ("Solar", "np4-738-cd")):
-            try:
-                mw = _ercot_latest_syswide_mw(
-                    _ercot_artifact_rows(headers, pid, size=5))
-                if mw is not None:
-                    fuel_mix[label] = round(mw, 1)
-            except Exception:
-                continue   # mix is contextual — never fail the record over it
+            for attempt in (1, 2):
+                try:
+                    if _ERCOT_FUEL_SPACING_S > 0:
+                        time.sleep(_ERCOT_FUEL_SPACING_S * attempt)
+                    mw = _ercot_latest_syswide_mw(
+                        _ercot_artifact_rows(headers, pid, size=5))
+                    if mw is not None:
+                        fuel_mix[label] = round(mw, 1)
+                    break
+                except Exception as fe:
+                    code = getattr(fe, "code", None)
+                    if attempt == 1 and code == 429:
+                        continue
+                    print(f"[iso_grid] ERCOT fuel-mix {label} ({pid}) skipped: "
+                          f"{type(fe).__name__} {code or str(fe)[:80]}", flush=True)
+                    break
         return [_record("ERCOT", "ERCOT",
                         online_gen_mw=round(gen, 1),
                         load_mw=round(load, 1),

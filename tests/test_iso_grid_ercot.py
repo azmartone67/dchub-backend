@@ -141,6 +141,7 @@ def test_fetch_ercot_emits_normalized_record(monkeypatch):
     monkeypatch.setenv("ERCOT_API_KEY", "test-key")
     monkeypatch.delenv("ERCOT_GEN_PRODUCT_ID", raising=False)
     monkeypatch.delenv("ERCOT_LOAD_PRODUCT_ID", raising=False)
+    monkeypatch.setattr(iga, "_ERCOT_FUEL_SPACING_S", 0)
     monkeypatch.setattr(iga, "_ercot_bearer", lambda: "tok")
     monkeypatch.setattr(iga, "_http_json", _fake_http_json(_today()))
     recs = iga.fetch_ercot()
@@ -158,6 +159,7 @@ def test_fetch_ercot_emits_normalized_record(monkeypatch):
 def test_fetch_ercot_stale_demand_returns_empty(monkeypatch):
     """gen fresh + demand frozen → no record at all (no partial fabrication)."""
     monkeypatch.setenv("ERCOT_API_KEY", "test-key")
+    monkeypatch.setattr(iga, "_ERCOT_FUEL_SPACING_S", 0)
     monkeypatch.setattr(iga, "_ercot_bearer", lambda: "tok")
     monkeypatch.setattr(iga, "_http_json", _fake_http_json("2026-01-01"))
     assert iga.fetch_ercot() == []
