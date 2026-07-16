@@ -13931,11 +13931,23 @@ def send_welcome_email_sendgrid(to_email, raw_api_key, plan_name='pro', temp_pas
                 return
             sg_key = os.environ.get('SENDGRID_API_KEY', '')
             if not sg_key:
+                # r-onboarding-fix (2026-07-16): an *unset* SENDGRID_API_KEY used
+                # to early-return here — BEFORE the Resend fallback that the rest
+                # of this function relies on ever ran. So a missing key (as
+                # opposed to a 401, which throws downstream INTO the fallback)
+                # stranded paying customers with no key email at all. Try Resend
+                # first — the live channel — and only alert admin if it's also
+                # unavailable. Idempotency (_welcome_recently_sent) already ran
+                # above, so this cannot double-send.
+                if _welcome_email_resend_fallback(to_email, raw_api_key, plan_name):
+                    print(f"📧 Welcome sent via Resend (SENDGRID_API_KEY unset) to {to_email}")
+                    _log_welcome_email(to_email, plan_name, status='sent_via_resend')
+                    return
                 # r43-H (2026-05-27): was a silent skip. Now alerts admin
                 # so we can manually deliver the temp_password / api_key
                 # to the paying customer before they think the signup
                 # broke. Carl-Braun-style lockouts started here.
-                print(f"⚠️ SENDGRID_API_KEY not set, CANNOT send welcome email for {to_email}")
+                print(f"⚠️ SENDGRID_API_KEY not set and Resend unavailable, CANNOT send welcome email for {to_email}")
                 try:
                     send_admin_alert_email(
                         f'🚨 URGENT: Welcome email NOT delivered to {to_email}',
@@ -38193,7 +38205,7 @@ def _admin_churn_risk():
                        k.is_active_bool
                 FROM users u
                 LEFT JOIN api_keys k ON k.user_id::text = u.id::text
-                WHERE u.plan IN ('developer', 'pro', 'paid', 'enterprise')
+                WHERE u.plan IN ('developer', 'pro', 'paid', 'enterprise', 'founding')
                   AND COALESCE(k.is_active_bool, true) = true
             """
             if plan_filter in ('developer', 'pro', 'paid', 'enterprise'):
@@ -38327,7 +38339,7 @@ def _admin_welcome_sequence():
                        k.created_at AS key_created
                 FROM users u
                 LEFT JOIN api_keys k ON k.user_id::text = u.id::text
-                WHERE u.plan IN ('developer', 'pro', 'paid', 'enterprise')
+                WHERE u.plan IN ('developer', 'pro', 'paid', 'enterprise', 'founding')
                 ORDER BY u.created_at DESC LIMIT 100;
             """)
             rows = cur.fetchall()
