@@ -38216,7 +38216,7 @@ def _admin_churn_risk():
             rows = cur.fetchall()
 
         import datetime
-        now = datetime.datetime.utcnow()
+        now = datetime.datetime.now(datetime.timezone.utc)  # tz-aware: last_used_at from PG is tz-aware
         at_risk = []
         for r in rows:
             email, name, company, user_plan, user_created = r[0:5]
@@ -38235,6 +38235,8 @@ def _admin_churn_risk():
             if last_used:
                 try:
                     last_used_dt = last_used if hasattr(last_used, "year") else datetime.datetime.fromisoformat(str(last_used).replace("Z",""))
+                    if last_used_dt.tzinfo is None:
+                        last_used_dt = last_used_dt.replace(tzinfo=datetime.timezone.utc)
                     days_inactive = (now - last_used_dt).days
                 except Exception:
                     days_inactive = None
@@ -38344,14 +38346,19 @@ def _admin_welcome_sequence():
             """)
             rows = cur.fetchall()
 
-        from datetime import datetime as DT, timedelta
-        cutoff = DT.utcnow() - timedelta(days=days)
+        from datetime import datetime as DT, timedelta, timezone
+        cutoff = DT.now(timezone.utc) - timedelta(days=days)
         first_call_made = []
         still_zero = []
         for r in rows:
             user_created = r[3]
             try:
                 created_dt = user_created if hasattr(user_created, "year") else DT.fromisoformat(str(user_created).replace("Z",""))
+                # created_at is stored as TEXT — some rows carry +00:00, some are
+                # naive. Normalize to UTC-aware so the compare below can't raise
+                # "can't compare offset-naive and offset-aware" (was a hard 500).
+                if created_dt.tzinfo is None:
+                    created_dt = created_dt.replace(tzinfo=timezone.utc)
             except: continue
             if created_dt < cutoff: continue
             entry = {
