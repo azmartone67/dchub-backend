@@ -85,6 +85,28 @@ def _scan_once():
     _file_finding(pat, verdict, data.get("global_err_pct"), n5xx)
     log.info("[brain-l14] filed slo finding pattern=%s verdict=%s n5xx=%s",
              pat, verdict, n5xx)
+    # r-slo-actuate (2026-07-16): DETECT -> ACT. A hard_burn on a DB-backed /api
+    # endpoint IS the facility-hard_burn class (unindexed seq-scan starving the
+    # pool). Trigger the self-growing index engine off-cycle so the missing index
+    # gets added NOW, not at the weekly tick. Safe: the engine only auto-applies
+    # additive single-column indexes (IF NOT EXISTS) + has its own kill switch.
+    # Runs in a daemon thread so this 300s scan loop never blocks on a build.
+    if verdict == "hard_burn" and isinstance(pat, str) and pat.startswith("/api/"):
+        try:
+            import threading as _th
+
+            def _actuate(_pat=pat):
+                try:
+                    import self_growing_index as _sgi
+                    out = _sgi.run_index_advisor(reason=f"slo_burn:{_pat}")
+                    log.info("[brain-l14] slo_burn->index engine: applied=%d proposed=%d",
+                             len(out.get("applied") or []), len(out.get("proposed") or []))
+                except Exception as _e:
+                    log.warning("[brain-l14] index-engine actuation failed: %s", str(_e)[:120])
+
+            _th.Thread(target=_actuate, daemon=True, name="l14-slo-index").start()
+        except Exception:
+            pass
 
 
 def _loop():

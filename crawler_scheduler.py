@@ -243,6 +243,10 @@ SCHEDULE = [
     # Kill: MODEL_RELATIONS_CRON_DISABLE=1. Manual off-cycle fire (e.g. a
     # platform ships a new flagship): POST /api/jobs/model-relations.
     (23, 23, "model_relations",     "_run_model_relations"),
+    # Self-growing DB index engine (2026-07-16): daily 4 UTC slot, self-gates to
+    # WEEKLY on index_advisor_runs. Auto-indexes hot seq-scans (the facility
+    # hard_burn class). Kill: SELF_GROWING_INDEX_DISABLE=1.
+    (4, 4, "self_growing_index",    "_run_self_growing_index"),
     # CRM Reverse-ETL flush (r74, 2026-06-07): twice daily 7/19 UTC, push
     # status='queued' rows from crm_outbound_queue to the configured CRM
     # (Salesforce / HubSpot / stub). Each capture_event() hook (MCP HI,
@@ -2074,6 +2078,37 @@ def _run_model_relations():
         logger.error("🤝 model_relations: ❌ %s", str(e)[:200])
 
 
+def _run_self_growing_index():
+    """Self-growing DB index engine (2026-07-16). Daily slot, self-gates to WEEKLY
+    on index_advisor_runs MAX(created_at) — restart/replica-safe, no wall clock.
+    Reads pg_stat_statements, EXPLAINs the hottest+slowest SELECTs, and AUTO-CREATES
+    safe single-column indexes for seq-scans on big tables — so a new hot path gets
+    its index without a human noticing the pool starvation (the class L14 DETECTED
+    but nothing ACTED on: /api/v1/facilities/<slug> hard_burn). Also runs the #3
+    edge/origin divergence check. Worker-only (this scheduler is worker-only).
+    Kill: SELF_GROWING_INDEX_DISABLE=1."""
+    if (os.environ.get("SELF_GROWING_INDEX_DISABLE") or "").strip() == "1":
+        return
+    try:
+        import self_growing_index as _sgi
+        age = _sgi.last_run_age_hours()
+        if age is not None and age < 168:   # weekly cadence (168h)
+            logger.info("🌱 self_growing_index: skipped — last run %.0fh ago (<168h)", age)
+            return
+        out = _sgi.run_index_advisor(reason="weekly")
+        logger.info("🌱 self_growing_index: applied=%d proposed=%d seen=%s",
+                    len(out.get("applied") or []), len(out.get("proposed") or []),
+                    out.get("seen"))
+        try:
+            div = _sgi.check_edge_origin_divergence()
+            if div.get("diverged"):
+                logger.warning("🚨 self_growing_index: edge/origin divergence %s", div["diverged"])
+        except Exception as _e:
+            logger.warning("self_growing_index: divergence check failed: %s", str(_e)[:120])
+    except Exception as e:
+        logger.error("🌱 self_growing_index: ❌ %s", str(e)[:200])
+
+
 def _run_media_spike_responder():
     """DC Hub Media ROUND 2 — engagement-spike auto-responder (2026-06-07).
 
@@ -3578,6 +3613,8 @@ _RUNNERS = {
     "state_of_2026_claim_evolve":    _run_state_of_2026_claim_evolve,
     # r74 (2026-06-07): CRM Reverse-ETL flush — twice-daily push queue → CRM
     "crm_outbound_flush":            _run_crm_outbound_flush,
+    # Self-growing DB index engine (2026-07-16) — auto-indexes hot seq-scans.
+    "self_growing_index":            _run_self_growing_index,
 }
 
 
