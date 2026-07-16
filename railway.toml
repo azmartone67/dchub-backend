@@ -3,6 +3,7 @@
 MISE_PYTHON_GITHUB_ATTESTATIONS = "false"
 
 [deploy]
+numReplicas = 2  # r-2026-07-15: web tier MUST run >=2 replicas (single-replica outage). Config-as-code overrides the dashboard so this can't silently drift to 1.
 startCommand = "bash start_web.sh"
 healthcheckPath = "/api/health"
 healthcheckTimeout = 900
