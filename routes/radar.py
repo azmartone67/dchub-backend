@@ -85,6 +85,39 @@ def _internal(path: str, timeout: int = 6) -> dict:
     except Exception:
         return {}
 
+def _iso_ttp() -> dict:
+    """Live per-ISO avg time-to-power (months) from the DCPI market_power_scores
+    table — the ungated source (mirrors routes/grid_transition_radar._iso_rollup).
+    Returns {ISO: avg_months}; {} on any error so the caller keeps baseline."""
+    try:
+        try:
+            from main import get_read_db as _gdb
+        except Exception:
+            from main import get_db as _gdb
+        conn = _gdb()
+        agg = {}
+        try:
+            c = conn.cursor()
+            c.execute(
+                "SELECT DISTINCT ON (market_slug) iso, time_to_power_months "
+                "FROM market_power_scores WHERE published = true "
+                "ORDER BY market_slug, computed_at DESC"
+            )
+            for iso, ttp in c.fetchall():
+                if iso is None or ttp is None:
+                    continue
+                k = str(iso).upper().replace("_", "-")
+                if k in ("ISONE", "NEISO"):
+                    k = "ISO-NE"
+                s = agg.setdefault(k, [0.0, 0]); s[0] += float(ttp); s[1] += 1
+        finally:
+            try: conn.close()
+            except Exception: pass
+        return {k: round(v[0] / v[1], 1) for k, v in agg.items() if v[1]}
+    except Exception:
+        return {}
+
+
 def _pull_core() -> dict:
     """Assemble the `core` dict radar_templates.normalize() expects.
 
@@ -113,6 +146,14 @@ def _pull_core() -> dict:
                 "build_markets":         0,
             },
         })
+    # LIVE per-ISO time-to-power from the DCPI table (the thesis metric); baseline
+    # curtail/queue stay (separate sources). Fail-soft: missing ISO keeps baseline.
+    _ttp = _iso_ttp()
+    for g in grids:
+        live = _ttp.get(g["iso"])
+        if live is not None:
+            g["dcpi_detail"]["avg_queue_wait_months"] = live
+
     # Headline "US interconnection queue" = canonical all-US total from the
     # interconnection-queue snapshot (~1,737 GW), LIVE. Fallback = baseline sum.
     _snap = _internal("/api/v1/interconnection-queue/snapshot")
