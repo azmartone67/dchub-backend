@@ -1810,7 +1810,7 @@ def register_site_planner_routes(app):
             verdict = 'BUILD' if composite >= 70 else 'CAUTION' if composite >= 45 else 'AVOID'
 
         caveats = [c for c in [
-            None if water_validated else 'water: unavailable until the WRI Aqueduct ingest lands (the paused proxy is withheld for integrity).',
+            None if 'water' in validated else f"water: {(sub.get('water') or {}).get('basis') or 'unavailable'}.",
             'market_dcpi: unavailable in v1 — use rank_markets / get_market_dcpi_rank.',
             'natural-hazard layer is FEMA flood + FWS habitat + NWI wetlands only (no seismic/climate-projection layer yet).',
             'advisory only — pair with analyze_site (raw data), get_water_risk, and rank_markets.',
