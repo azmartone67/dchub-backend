@@ -22,7 +22,11 @@
 <div class="grid" id="kpis"></div>
 <div class="card">
   <h3 style="margin-top:0">Top tools triggering upgrade signals (last 30d)</h3>
-  <div class="sub" style="margin:-4px 0 8px">⚠️ Raw signal <b>volume</b>, not distinct demand. The top rows are anonymous/automated traffic looping a few tools — note ~1 session per signal and <b>0 distinct callers (IP)</b>: these are <b>not</b> distinct prospects. For real addressable demand, read the next table ↓ (distinct IPs on actually-paywalled tools).</div>
+  <!-- 2026-07-16 metric-truth fix: the old caption claimed "~1 session per signal
+       and 0 distinct callers (IP)" while the table below showed 87-130 distinct
+       callers per tool. Keep the honest volume≠demand warning; the real
+       signals-per-caller ratio is computed live in load() from the same rows. -->
+  <div class="sub" style="margin:-4px 0 8px">⚠️ Raw signal <b>volume</b>, not distinct demand — the top rows are inflated by anonymous/automated traffic looping a few tools, so signal counts are <b>not</b> distinct prospects<span id="signal-ratio"></span>. For real addressable demand, read the next table ↓ (distinct IPs on actually-paywalled tools).</div>
   <table id="signals"><thead><tr><th>Tool</th><th>Distinct sessions</th><th>Distinct callers (IP)</th><th>Raw signals</th></tr></thead><tbody></tbody></table>
 </div>
 <div class="card" style="margin-top:14px">
@@ -56,6 +60,19 @@ async function load() {
     `;
     document.querySelector('#signals tbody').innerHTML = (d.top_signal_tools_30d || [])
       .map(r => `<tr><td>${r.tool || '—'}</td><td>${r.sessions ?? '—'}</td><td>${r.callers ?? '—'}</td><td style="color:#999">${r.n}</td></tr>`).join('') || '<tr><td colspan=4 style="color:#666">No signals yet — Python MCP is offline or no free users have hit a paid tool.</td></tr>';
+    // 2026-07-16: compute the REAL signals-per-caller ratio from the rows shown
+    // (the old caption hardcoded a false "0 distinct callers" claim). NB the
+    // caller sum is per-tool distinct counts, so one IP hitting several tools
+    // counts once per tool — an upper bound on distinct people, hence "~".
+    try {
+      const st = d.top_signal_tools_30d || [];
+      const totN = st.reduce((a, r) => a + (r.n || 0), 0);
+      const totC = st.reduce((a, r) => a + (r.callers || 0), 0);
+      const ratioEl = document.getElementById('signal-ratio');
+      if (ratioEl) ratioEl.textContent = (totN && totC)
+        ? ` (rows below: ${totN.toLocaleString()} raw signals from ~${totC.toLocaleString()} per-tool distinct caller IPs ≈ ${Math.round(totN / totC)} signals per caller)`
+        : '';
+    } catch (_) {}
     document.querySelector('#paid tbody').innerHTML = (d.paid_tool_demand_30d || [])
       .map(r => `<tr><td>${r.tool}</td><td>${r.calls}</td><td>${r.users}</td></tr>`).join('');
     const fa = document.getElementById('fetched-at'); if (fa) fa.textContent = 'fetched ' + new Date().toLocaleTimeString();

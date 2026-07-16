@@ -3175,7 +3175,12 @@ def check_tenant_coverage_thin() -> list[dict]:
                     WITH top50 AS (
                       SELECT id::text AS fid
                         FROM discovered_facilities
-                       WHERE merged_at IS NULL AND is_duplicate = 0
+                       -- 2026-07-16: fleet filter is COALESCE(is_duplicate,0)=0
+                       -- ONLY (issue #1539) — the old `merged_at IS NULL AND
+                       -- is_duplicate=0` matched the drained pending queue
+                       -- (0 rows), silently emptying top50 and killing this
+                       -- detector.
+                       WHERE COALESCE(is_duplicate,0) = 0
                          AND power_mw IS NOT NULL
                        ORDER BY power_mw DESC LIMIT 50
                     )
@@ -6153,7 +6158,15 @@ def check_data_freshness_sla_breach() -> list[dict]:
         ("iso_lmp_snapshots",      "fetched_at",   48,   "ISO LMP price feed"),
         ("henry_hub_spot",         "ingested_at",  96,   "Henry Hub spot price (EIA)"),
         ("lng_export_terminals",   "ingested_at",  1080, "LNG export terminals (EIA)"),
-        ("usgs_water_stress",      "updated_at",   504,  "USGS water levels (water-risk answers)"),
+        # 2026-07-16 — usgs_water_stress SLA RETIRED (was 504h). The table was
+        # SUPERSEDED 2026-07-10 by the WRI Aqueduct 4.0 ingest
+        # (routes/water_aqueduct_ingest.py → water_risk rows tagged
+        # source='wri_aqueduct', built from wri_aqueduct_us_states) and its
+        # producing cron is gone, so the detector fired data_freshness_sla_breach
+        # on it 2,800+ times with nothing left to fix. The WRI dataset is NOT
+        # added to this watch on purpose: it refreshes rarely by design
+        # (annual-cadence WRI baseline, crawl-first manual ingest), so any
+        # hours-scale SLA here would just mint a new false-alarm stream.
         ("competitor_snapshots",   "captured_at",  72,   "competitor gap-crawler inputs"),
     ]
     c = _db()

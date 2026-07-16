@@ -21,10 +21,15 @@ DESIGN (mirrors routes/brain_investigator.py Sources 1-6):
   · SCHEMA-CORRECT: column names confirmed at runtime via information_schema
     before any breakdown query runs; an absent column degrades gracefully.
 
-CANONICAL DEFINITIONS (match canonical_stats.py:88-89):
-  VERIFIED := COALESCE(is_duplicate,0)=0 AND merged_at IS NULL
+CANONICAL DEFINITIONS (match canonical_stats.py get_canonical_stats):
+  VERIFIED := COALESCE(is_duplicate,0)=0        -- the FLEET filter
   TRACKED  := COUNT(*)
-Live now: tracked 21,804 / verified 2,102 / unverified 19,702. Uses
+2026-07-16 metric-truth fix: dropped `AND merged_at IS NULL` from VERIFIED —
+same bug canonical_stats fixed on 2026-07-10 (issue #1539). The merge pipeline
+stamps merged_at on EVERY promoted fleet row, so the old combined predicate
+counted the drained pending queue (reads 0) and every breakdown reported
+"verified 0 / tracked 21,992" while canonical stats said ~4,958 verified.
+Live now: tracked 21,993 / verified 4,958 / unverified 17,035. Uses
 `discovered_facilities` ONLY — never joins the curated `facilities` table
 (conflating them is exactly the double-count this avoids).
 
@@ -123,15 +128,15 @@ _STATE_ISO_VALUES = """(VALUES
 
 _TOTAL_SQL = """
 SELECT COUNT(*) AS tracked,
-       COUNT(*) FILTER (WHERE COALESCE(is_duplicate,0)=0 AND merged_at IS NULL) AS verified,
-       COUNT(*) FILTER (WHERE NOT (COALESCE(is_duplicate,0)=0 AND merged_at IS NULL)) AS unverified
+       COUNT(*) FILTER (WHERE COALESCE(is_duplicate,0)=0) AS verified,
+       COUNT(*) FILTER (WHERE NOT (COALESCE(is_duplicate,0)=0)) AS unverified
 FROM discovered_facilities
 """
 
 _COUNTRY_SQL = """
 SELECT COALESCE(NULLIF(TRIM(country),''),'(unknown)') AS country,
        COUNT(*) AS tracked,
-       COUNT(*) FILTER (WHERE COALESCE(is_duplicate,0)=0 AND merged_at IS NULL) AS verified
+       COUNT(*) FILTER (WHERE COALESCE(is_duplicate,0)=0) AS verified
 FROM discovered_facilities
 GROUP BY 1 ORDER BY tracked DESC LIMIT 5
 """
@@ -139,7 +144,7 @@ GROUP BY 1 ORDER BY tracked DESC LIMIT 5
 _OPERATOR_SQL = """
 SELECT COALESCE(NULLIF(TRIM(provider),''),'(unknown)') AS operator,
        COUNT(*) AS tracked,
-       COUNT(*) FILTER (WHERE COALESCE(is_duplicate,0)=0 AND merged_at IS NULL) AS verified
+       COUNT(*) FILTER (WHERE COALESCE(is_duplicate,0)=0) AS verified
 FROM discovered_facilities
 GROUP BY 1 ORDER BY tracked DESC LIMIT 5
 """
@@ -147,7 +152,7 @@ GROUP BY 1 ORDER BY tracked DESC LIMIT 5
 _US_ISO_SQL = """
 SELECT COALESCE(m.iso,'(other/unmapped)') AS iso,
        COUNT(*) AS tracked,
-       COUNT(*) FILTER (WHERE COALESCE(d.is_duplicate,0)=0 AND d.merged_at IS NULL) AS verified
+       COUNT(*) FILTER (WHERE COALESCE(d.is_duplicate,0)=0) AS verified
 FROM discovered_facilities d
 LEFT JOIN {state_iso} ON UPPER(TRIM(d.state)) = m.st
 WHERE d.country = 'US'
@@ -197,11 +202,12 @@ def gather_facility_breakdowns() -> list[dict]:
             # breakdown whose required column is absent.
             present = _columns_present(
                 cur, "discovered_facilities",
-                {"country", "provider", "state", "is_duplicate", "merged_at"},
+                {"country", "provider", "state", "is_duplicate"},
             )
-            # Core verified/tracked definition needs these two; without them
-            # NO breakdown is meaningful, so bail cleanly.
-            if not {"is_duplicate", "merged_at"} <= present:
+            # Core verified/tracked definition needs the dup flag; without it
+            # NO breakdown is meaningful, so bail cleanly. (merged_at is NOT
+            # part of the verified predicate — issue #1539.)
+            if "is_duplicate" not in present:
                 return []
 
             # (1) TOTAL verified vs tracked.
@@ -214,7 +220,7 @@ def gather_facility_breakdowns() -> list[dict]:
                     )
                     items.append({
                         "claim": "facilities verified vs tracked vs unverified (canonical)",
-                        "source": "discovered_facilities (verified = is_duplicate=0 AND merged_at IS NULL)",
+                        "source": "discovered_facilities (verified = COALESCE(is_duplicate,0)=0, the fleet filter)",
                         "value": (f"verified {_fmt_int(verified)} / "
                                   f"tracked {_fmt_int(tracked)} / "
                                   f"unverified {_fmt_int(unverified)}"),

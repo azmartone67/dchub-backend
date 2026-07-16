@@ -213,7 +213,7 @@ def gather_evidence() -> list[dict]:
         if s.get("facilities_verified"):
             evidence.append({
                 "claim": "Verified/active facilities (deduped)",
-                "source": "canonical_stats (is_duplicate=0 AND merged_at IS NULL)",
+                "source": "canonical_stats (COALESCE(is_duplicate,0)=0 fleet filter; issue #1539 dropped merged_at)",
                 "value": int(s["facilities_verified"]),
             })
         if s.get("countries"):

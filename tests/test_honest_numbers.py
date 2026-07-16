@@ -323,6 +323,24 @@ def test_canonical_stats_is_dedup_aware():
         "issue #1539 regression: pairing merged_at IS NULL with the dup filter "
         "counts the drained pending queue (reads ~0), not the verified fleet — "
         "the merge pipeline stamps merged_at on every promoted fleet row")
+    # 2026-07-16: the brain GATHER breakdowns (routes/brain_data_gatherer.py)
+    # carried the same stale predicate and reported "verified 0 / tracked
+    # 21,992" per country/provider/ISO while canonical said ~4,958. Guard the
+    # SQL specs with the same #1539 check (docstrings may mention the old
+    # predicate historically, so only scan the _SQL constants).
+    gatherer_path = os.path.join(ROOT, "routes", "brain_data_gatherer.py")
+    if os.path.exists(gatherer_path):
+        gsrc = open(gatherer_path, encoding="utf-8").read()
+        assert "COALESCE(is_duplicate,0)=0" in gsrc, (
+            "brain_data_gatherer breakdowns must use the canonical fleet filter")
+        import re as _re
+        sql_blocks = _re.findall(r'_SQL = """(.*?)"""', gsrc, _re.S)
+        assert sql_blocks, "brain_data_gatherer lost its pre-written _SQL specs"
+        for blk in sql_blocks:
+            assert "merged_at IS NULL" not in blk, (
+                "issue #1539 regression in brain_data_gatherer.py: the verified "
+                "predicate must NOT pair merged_at IS NULL with the dup filter — "
+                "it counts the drained pending queue (verified reads 0)")
     import importlib, sys
     sys.path.insert(0, ROOT)
     cs = importlib.import_module("canonical_stats")

@@ -119,16 +119,33 @@ def _dim_adoption():
 
 def _dim_retention():
     ret = _get("/api/v1/mcp/retention").get("summary") or {}
-    returning = int(ret.get("latest_returning_ips") or 0)
+    # 2026-07-16 metric-truth fix: score on the CANONICAL retention metric —
+    # the mature cross-week return rate (summary.pct_returned_next_week_mature:
+    # durable api_key, keys minted 8-30d ago, first used again in a LATER ISO
+    # week — mcp_retention.py's declared primary_metric). The old inputs
+    # (latest_returning_ips + pct_reused_30d = "reused at least once in 30d")
+    # scored this dimension 100 "leading" while /api/v1/agents/utilization
+    # scored the SAME lifecycle stage the biggest leak on the mature metric
+    # (~4.9%) — two engines, two answers. The engines now converge; the score
+    # dropping from 100 is the point. pct_reused_30d stays visible as a
+    # SECONDARY detail, clearly labeled — it is engagement-within-session(s),
+    # not retention.
     try:
-        reuse = float(ret.get("pct_reused_30d") or 0)
+        mature_rate = float(ret.get("pct_returned_next_week_mature") or 0)
     except Exception:
-        reuse = 0.0
-    score = _clamp(0.5 * (100.0 * returning / 10.0) + 0.5 * (100.0 * reuse / 25.0))
+        mature_rate = 0.0
+    returned_mature = int(ret.get("returned_next_week_mature") or 0)
+    try:
+        reused_30d = float(ret.get("pct_reused_30d") or 0)
+    except Exception:
+        reused_30d = 0.0
+    score = _clamp(100.0 * mature_rate / 25.0)
     return {
         "dimension": "retention", "weight": 0.30, "score": round(score, 1),
-        "current": f"{returning} returning IPs/wk · {reuse:.1f}% key-reuse",
-        "target": "10+ returning IPs/wk · 25%+ reuse",
+        "current": (f"{mature_rate:.1f}% mature cross-week return "
+                    f"({returned_mature} keys returned, 8-30d cohort) · "
+                    f"secondary: {reused_30d:.1f}% reused at least once (30d)"),
+        "target": "25%+ mature cross-week return",
         "status": _status(score),
         "top_move": "THE binding constraint — measure r-return hook effect, then durable identity / OAuth connectors",
     }

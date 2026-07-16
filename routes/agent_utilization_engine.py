@@ -199,7 +199,10 @@ def agent_utilization():
             "arrive": f"{real_ips} real IPs/wk ({distinct_agents} distinct agents)",
             "identify": f"{identified} active keys (free {keys.get('free')}/paid {keys.get('paid')})",
             "activate": f"{real_calls} real calls/wk ({calls_per_real_ip}/real IP)",
-            "return": f"{returning}/wk · {reuse:.1f}% reuse",
+            # 2026-07-16 metric-truth fix: this figure IS the mature cross-week
+            # return (pct_returned_next_week_mature) — labeling it "reuse"
+            # conflated it with pct_reused_30d ("reused at least once in 30d").
+            "return": f"{returning} returners (mature 30d cohort) · {reuse:.1f}% cross-week return",
             "convert": f"{converts}/30d",
         },
         tracks=tracks,
