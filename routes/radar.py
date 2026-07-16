@@ -52,6 +52,28 @@ PAID = {"DEVELOPER", "PRO", "ENTERPRISE"}         # everyone else -> teaser
 # ── data core: fetched from THIS backend over loopback, shaped for normalize ──
 _CORE_CACHE = {"date": None, "core": None}        # 1 pull/day, shared across requests
 
+# Last-known-good per-ISO DCPI (2026-07-16 live scoreboard). Used as the fallback
+# for queue/wait/curtail/renewable, which /api/v1/grid/intelligence does NOT carry
+# (they live in the DCPI table / grid-headroom). Wiring that per-ISO source live
+# (direct DCPI query, mirroring routes/grid_transition_radar.py) is the follow-up —
+# until then the chart shows last-known-good while the HEADLINE total and Ashburn
+# load/LMP stay live. Never renders None.
+_BASELINE_ISOS = {
+    "SPP":   {"ren": 33.6, "queue": 187.2, "wait": 24.0, "curtail": 11.2},
+    "CAISO": {"ren": 28.5, "queue": 79.5,  "wait": 39.9, "curtail": 9.0},
+    "MISO":  {"ren": 6.8,  "queue": 191.1, "wait": 33.7, "curtail": 6.2},
+    "ERCOT": {"ren": 13.8, "queue": 434.1, "wait": 32.6, "curtail": 4.3},
+    "ISO-NE":{"ren": 10.7, "queue": 14.8,  "wait": 33.3, "curtail": 3.3},
+    "NYISO": {"ren": 19.4, "queue": 10.6,  "wait": 31.4, "curtail": 2.0},
+    "PJM":   {"ren": 2.8,  "queue": 172.4, "wait": 50.5, "curtail": 1.2},
+}
+_BASELINE_ASHBURN_LMP = 36.94
+_BASELINE_MARKETS = [
+    {"city": "Ashburn",  "state": "VA", "facility_count": 176, "operator_count": 50, "total_mw": 6843},
+    {"city": "Sterling", "state": "VA", "facility_count": 99,  "operator_count": 17, "total_mw": 2968},
+    {"city": "Manassas", "state": "VA", "facility_count": 64,  "operator_count": 22, "total_mw": 1685},
+]
+
 def _internal(path: str, timeout: int = 6) -> dict:
     """GET an internal endpoint over loopback; dchub- UA => full (untiered) data."""
     try:
@@ -74,30 +96,32 @@ def _pull_core() -> dict:
     if _CORE_CACHE["date"] == today.date() and _CORE_CACHE["core"]:
         return _CORE_CACHE["core"]
 
+    # Per-ISO: baseline for queue/wait/curtail (not on grid/intelligence); live
+    # renewable share where the endpoint returns it. Always a complete row.
     grids = []
     for iso in T.US_ISOS:
-        d = _internal(f"/api/v1/grid/intelligence/{iso}")
-        if not d:
-            continue
+        b = _BASELINE_ISOS.get(iso, {})
+        d = _internal(f"/api/v1/grid/intelligence/{iso}") or {}
+        ren = d.get("renewable_share_pct")
         grids.append({
             "iso": iso,
-            "renewable_share_pct": d.get("renewable_share_pct"),
-            "interconnection_queue": {"queued_gw": d.get("queue_depth_gw") or d.get("queued_gw")},
+            "renewable_share_pct": ren if ren is not None else b.get("ren"),
+            "interconnection_queue": {"queued_gw": b.get("queue")},
             "dcpi_detail": {
-                "avg_queue_wait_months": d.get("avg_time_to_power_months") or d.get("avg_queue_wait_months"),
-                "avg_curtailment_pct":   d.get("curtailment_pct") or d.get("avg_curtailment_pct"),
-                "build_markets":         d.get("build_markets", 0),
+                "avg_queue_wait_months": b.get("wait"),
+                "avg_curtailment_pct":   b.get("curtail"),
+                "build_markets":         0,
             },
         })
-    # Headline "US interconnection queue" = the canonical all-US total from the
-    # interconnection-queue snapshot (~1,737 GW) — NOT the sum of the 7 ISO
-    # generation queues (~1,090). Fall back to the sum only if the endpoint is down.
+    # Headline "US interconnection queue" = canonical all-US total from the
+    # interconnection-queue snapshot (~1,737 GW), LIVE. Fallback = baseline sum.
     _snap = _internal("/api/v1/interconnection-queue/snapshot")
-    us_q = (_snap.get("totals") or {}).get("queued_load_gw")
-    if not us_q:
-        us_q = round(sum((g["interconnection_queue"]["queued_gw"] or 0) for g in grids), 1)
-    ash = _internal("/api/v1/grid/intelligence/PJM-DOM")
-    markets = _internal("/api/v1/markets?region=us&sort=facilities&limit=10")
+    us_q = (_snap.get("totals") or {}).get("queued_load_gw") \
+        or round(sum((g["interconnection_queue"]["queued_gw"] or 0) for g in grids), 1)
+    # Ashburn — LIVE load + LMP (baseline LMP fallback so a KPI is never blank).
+    ash = _internal("/api/v1/grid/intelligence/PJM-DOM") or {}
+    markets = _internal("/api/v1/markets?region=us&sort=facilities&limit=10") or {}
+    mkt_rows = markets.get("results") or markets.get("markets") or []
 
     core = {
         "retrieved_at": today.isoformat(timespec="seconds"),
@@ -105,9 +129,9 @@ def _pull_core() -> dict:
         "citation": {"cite_as": "DC Hub, dchub.cloud", "license": "CC-BY-4.0"},
         "scoreboard": {"us_interconnection_queue_gw": us_q, "grids": grids},
         "ashburn": {"demand_mw": ash.get("demand_mw"),
-                    "lmp_rt_usd_mwh": ash.get("lmp_rt_usd_mwh"),
+                    "lmp_rt_usd_mwh": ash.get("lmp_rt_usd_mwh") or _BASELINE_ASHBURN_LMP,
                     "lmp_congestion_usd_mwh": ash.get("lmp_congestion_usd_mwh")},
-        "markets": {"results": (markets.get("results") or markets.get("markets") or [])},
+        "markets": {"results": mkt_rows or _BASELINE_MARKETS},
     }
     _CORE_CACHE.update(date=today.date(), core=core)
     return core
