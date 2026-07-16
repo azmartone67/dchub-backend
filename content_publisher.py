@@ -1020,7 +1020,18 @@ def _post_to_linkedin(content_text, access_token, article_url=None,
     # to the legacy path, pre-r51 behaviour). DRY_RUN already returned above.
     if _attach_images:
         _fb_slug = _og_today_slug_for(article_url)
-        _fallback = f"https://dchub.cloud/api/v1/og/today/{_fb_slug}.png"
+        # 2026-07-16: content-aware fallback card. Capability / platform / news
+        # posts (e.g. the error-contract /news post the operator flagged) get the
+        # branded DC Hub LEDGER data-card (live canonical stats, on-brand) instead
+        # of the generic ai_hero stock photo. Market pages (/dcpi, /markets) keep
+        # their DCPI card. Only hit when no better card was threaded (quad +
+        # drumbeat carry their own content-specific data-cards and never reach here).
+        _au = (article_url or '').lower()
+        if (not _au) or any(seg in _au for seg in
+                            ('/news/', '/whats-new', '/capabilities', '/docs/', '/connect', '/platforms')):
+            _fallback = "https://dchub.cloud/api/v1/og/dynamic.png?style=data_card&kind=weekly_ledger"
+        else:
+            _fallback = f"https://dchub.cloud/api/v1/og/today/{_fb_slug}.png"
         _fb_bytes = _fetch_image_bytes_for_linkedin(_fallback)
         if _fb_bytes:
             _fb_urn = _upload_image_to_linkedin(
