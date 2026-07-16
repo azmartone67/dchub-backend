@@ -142,6 +142,11 @@ def init_content_tables():
                 #   text already published (near-dup floods were shipping twice).
                 "priority INTEGER DEFAULT 0",
                 "content_hash TEXT",
+                # 2026-07-16: the INTENDED branded card for this row (the
+                # data/data_brutal card compose_story_post built). The drain
+                # attaches it directly as the LinkedIn image so drumbeat posts
+                # carry the same good card as the quad. NULL -> prior behaviour.
+                "og_image TEXT",
             ]:
                 col = col_def.split()[0]
                 try:
@@ -3398,10 +3403,10 @@ def start_auto_publisher():
                         # TTL 'expired' sweep (soft starvation). Filters and the
                         # approved/rejected/expired terminal-state contract are
                         # unchanged; this only widens what the filters get to see.
-                        cur.execute("SELECT id, content FROM social_media_posts WHERE status = 'approved' AND platform = 'linkedin' ORDER BY priority DESC, created_at ASC LIMIT 60")
+                        cur.execute("SELECT id, content, og_image FROM social_media_posts WHERE status = 'approved' AND platform = 'linkedin' ORDER BY priority DESC, created_at ASC LIMIT 60")
                         candidates = cur.fetchall() or []
                         if not candidates:
-                            cur.execute("SELECT id, content FROM social_media_posts WHERE status = 'approved' ORDER BY priority DESC, created_at ASC LIMIT 60")
+                            cur.execute("SELECT id, content, og_image FROM social_media_posts WHERE status = 'approved' ORDER BY priority DESC, created_at ASC LIMIT 60")
                             candidates = cur.fetchall() or []
 
                         row = None
@@ -3532,9 +3537,17 @@ def start_auto_publisher():
                         except Exception:
                             _art_url = None
                             _art_title = None
+                        # 2026-07-16: attach the row's intended branded card
+                        # DIRECTLY (no fragile scrape / ai_hero fallback). NULL ->
+                        # prior scrape/fallback behaviour.
+                        try:
+                            _row_og = (row.get('og_image') if hasattr(row, 'get') else None) or None
+                        except Exception:
+                            _row_og = None
                         success, result = _post_to_linkedin(
                             content_text, access_token,
-                            article_url=_art_url, article_title=_art_title)
+                            article_url=_art_url, article_title=_art_title,
+                            article_thumbnail_url=_row_og)
                         now = datetime.utcnow().isoformat() + 'Z'
                         if success:
                             cur.execute("UPDATE social_media_posts SET status = 'published', posted_at = %s, published_at = %s, publish_platform = 'linkedin' WHERE id = %s", (now, now, post_id))

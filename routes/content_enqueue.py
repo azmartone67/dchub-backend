@@ -309,7 +309,9 @@ def _compose_linkedin_analytical(mover: dict, arc: dict | None):
             return None
         text = composed.get("text")
         if text and len(text.strip()) >= 200:
-            return text.strip()
+            # 2026-07-16: return the composer's INTENDED card too so the drain
+            # attaches the same good branded card the quad uses.
+            return {"text": text.strip(), "og_image_url": composed.get("og_image_url")}
     except Exception as e:
         try:
             note_swallowed_write("content_enqueue",
@@ -604,8 +606,11 @@ def _enqueued_within_days(platform: str, marker: str, days: int) -> bool:
 _QUEUE_CAP = 50  # per-platform approved backlog beyond which enqueue refuses
 
 
-def _enqueue_post(content: str, platform: str) -> int | None:
+def _enqueue_post(content: str, platform: str, og_image: str | None = None) -> int | None:
     """Insert a single approved row. Returns new id or None.
+
+    2026-07-16: `og_image` carries the composer's intended branded card so the
+    drain attaches it directly. NULL is fine (drain falls back as before).
 
     #1373 (2026-07-02): BOUNDED queue + staleness expiry. The X publisher
     has been dark since 05-25 (app not enrolled in an X dev Project → 403)
@@ -634,10 +639,10 @@ def _enqueue_post(content: str, platform: str) -> int | None:
                 return None
             cur.execute("""
                 INSERT INTO social_media_posts
-                       (content, platform, status, created_at)
-                VALUES (%s, %s, 'approved', NOW())
+                       (content, platform, status, created_at, og_image)
+                VALUES (%s, %s, 'approved', NOW(), %s)
                 RETURNING id
-            """, (content, platform))
+            """, (content, platform, og_image))
             new_id = (cur.fetchone() or [None])[0]
             c.commit()
             return new_id
@@ -778,12 +783,14 @@ def enqueue():
     # 2026-07-15: the LinkedIn drumbeat now reasons like an analyst (brain
     # composer) instead of a hardcoded-BUILD template. None => the composer had
     # nothing genuinely new; SKIP the slot rather than post filler.
-    _li_content = _compose_linkedin_analytical(mover, arc)
+    _li = _compose_linkedin_analytical(mover, arc)
+    _li_content = (_li or {}).get("text")
+    _li_og = (_li or {}).get("og_image_url")
     if not _li_content:
         results["skipped"].append({"platform": "linkedin",
                                      "reason": "composer_skip_nothing_new"})
     elif not _already_enqueued_recently("linkedin", _li_content):
-        new_id = _enqueue_post(_li_content, "linkedin")
+        new_id = _enqueue_post(_li_content, "linkedin", og_image=_li_og)
         if new_id:
             results["enqueued"].append({"platform": "linkedin", "id": new_id})
         else:
