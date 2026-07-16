@@ -346,13 +346,14 @@ def ingest_carrier_facilities(get_db):
             fac_lookup[fac.get('id')] = fac
     logger.info(f"📦 Loaded {len(fac_lookup)} PeeringDB facilities for enrichment")
 
-    # Fetch carrier names for enrichment
-    carriers_data = _pdb_fetch(PEERINGDB_CARRIERS)
+    # Carrier names for enrichment come from the carrier_profiles table that
+    # ingest_carriers just populated in THIS same sync — populated below once
+    # the DB connection is open, NOT via a second /carrier API pull. PeeringDB
+    # rate-limits anonymous callers, and hitting /carrier twice per run tripped
+    # it (the 2nd pull 504'd → "Loaded 0 carrier names", leaving carrier_name
+    # blank on every link). Reading the table we just wrote is key-free and
+    # always fresh. r-fiberreg (2026-07-16).
     carrier_lookup = {}
-    if carriers_data:
-        for car in carriers_data:
-            carrier_lookup[car.get('id')] = car.get('name', '')
-    logger.info(f"📦 Loaded {len(carrier_lookup)} carrier names for enrichment")
 
     conn = None
     upserted = 0
@@ -384,6 +385,23 @@ def ingest_carrier_facilities(get_db):
             logger.info(f"📦 Loaded {sum(len(v) for v in dchub_fac_lookup.values())} DC Hub facilities for matching")
         except Exception as e:
             logger.warning(f"Could not load DC Hub facilities for matching: {e}")
+
+        # Carrier-name lookup from carrier_profiles (ingest_carriers wrote it
+        # earlier in this run). Keyed by pdb_id (TEXT) == the string carrier_id
+        # used below, so no int-cast needed. Fall back to a /carrier API pull
+        # ONLY if the table is somehow empty.
+        try:
+            c.execute("SELECT pdb_id, name FROM carrier_profiles WHERE pdb_id IS NOT NULL")
+            for pdb_id, cname in c.fetchall():
+                carrier_lookup[str(pdb_id)] = cname or ''
+        except Exception as e:
+            logger.warning(f"Could not load carrier names from carrier_profiles: {e}")
+        if not carrier_lookup:
+            carriers_data = _pdb_fetch(PEERINGDB_CARRIERS)
+            if carriers_data:
+                for car in carriers_data:
+                    carrier_lookup[str(car.get('id'))] = car.get('name', '')
+        logger.info(f"📦 Loaded {len(carrier_lookup)} carrier names for enrichment")
 
         for cfac in carrierfacs:
             try:
