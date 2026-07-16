@@ -317,7 +317,7 @@ def sync_to_neon(facilities):
                 certifications, connectivity, source, source_url, source_id,
                 confidence, first_seen, last_updated, raw_data)
             VALUES
-               (%(id)s, %(name)s, %(provider)s, %(address)s, %(city)s,
+               (%(id) ON CONFLICT DO NOTHINGs, %(name)s, %(provider)s, %(address)s, %(city)s,
                 %(state)s, %(country)s, %(region)s, %(latitude)s,
                 %(longitude)s, %(power_mw)s, %(sqft)s, %(status)s,
                 %(tier)s, %(certifications)s, %(connectivity)s,
