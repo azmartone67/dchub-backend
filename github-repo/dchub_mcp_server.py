@@ -84,7 +84,7 @@ def _track_mcp_request(tool_name: str, params: dict, source: str = "mcp"):
             )
         """)
         conn.execute(
-            "INSERT INTO mcp_requests (timestamp, tool, params, source) VALUES (?, ?, ?, ?)",
+            "INSERT INTO mcp_requests (timestamp, tool, params, source) VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING",
             (datetime.now(timezone.utc).isoformat(), tool_name, json.dumps(params), source),
         )
         conn.commit()
