@@ -140,7 +140,7 @@ def fetch_electricity_rates(conn):
                 try:
                     cur.execute("""
                         INSERT INTO eia_electricity_rates (state, sector, price_cents_kwh, period, retrieved_at)
-                        VALUES (%s, %s, %s, %s, NOW())
+                        VALUES (%s, %s, %s, %s, NOW() ON CONFLICT DO NOTHING)
                         ON CONFLICT (state, sector, period) DO UPDATE
                         SET price_cents_kwh = EXCLUDED.price_cents_kwh,
                             retrieved_at = NOW()
@@ -238,7 +238,7 @@ def fetch_natural_gas_prices(conn):
                 cur.execute("""
                     INSERT INTO eia_natural_gas_prices 
                     (state, series_id, price_dollars_mcf, period, sector, retrieved_at)
-                    VALUES (%s, %s, %s, %s, %s, NOW())
+                    VALUES (%s, %s, %s, %s, %s, NOW() ON CONFLICT DO NOTHING)
                     ON CONFLICT (state, sector, period) DO UPDATE
                     SET price_dollars_mcf = EXCLUDED.price_dollars_mcf,
                         series_id = EXCLUDED.series_id,
@@ -319,7 +319,7 @@ def fetch_gas_storage(conn):
             cur.execute("""
                 INSERT INTO eia_gas_storage_weekly 
                 (region, working_gas_bcf, net_change_bcf, period, retrieved_at)
-                VALUES (%s, %s, %s, %s, NOW())
+                VALUES (%s, %s, %s, %s, NOW() ON CONFLICT DO NOTHING)
                 ON CONFLICT (region, period) DO UPDATE
                 SET working_gas_bcf = EXCLUDED.working_gas_bcf,
                     net_change_bcf = EXCLUDED.net_change_bcf,

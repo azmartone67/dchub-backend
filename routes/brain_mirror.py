@@ -531,7 +531,7 @@ def mirror_run():
                         INSERT INTO brain_mirror_reports
                           (honest_score, claimed_score, backlog,
                            cluster_count, payload)
-                        VALUES (%s, %s, %s, %s, %s)
+                        VALUES (%s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
                     """, (
                         report["honest_grade"]["honest_score"],
                         report["honest_grade"]["claimed_score"],
