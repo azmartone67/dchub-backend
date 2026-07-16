@@ -16,6 +16,17 @@ evidence -> reason -> adversarially REFUTE -> synthesize), RANKS the resulting
 proposals by leverage x confidence via the REUSED brain_work_selector, and
 SURFACES them for a human to review/decide.
 
+STATEFUL DEDUP (2026-07-16, BRAIN_PROPOSAL_DEDUP default on): before drafting,
+each opportunity is fingerprinted on its UNDERLYING CONDITION (area +
+number-stripped signal — see routes/brain_proposal_dedup.py). A condition with
+an OPEN same-fingerprint proposal, or one inside the
+BRAIN_PROPOSAL_REDRAFT_DAYS cooldown (default 7), is SKIPPED before the
+draft + adversarial-refutation cycle is burned (33/37 stored proposals were
+the SAME data_coverage condition whose title counts drifted every run); after
+the cooldown it re-drafts only when its measured figures moved materially
+(>20% / shape change). Suppressed opportunities don't consume draft slots and
+are counted as dup_suppressed in the run summary. Fail-OPEN everywhere.
+
 LEARNING-DRIVEN scan (BRAIN_ENHANCER_LEARNED_SCAN, default on): instead of
 mining the four evidence sources in a FIXED canonical->findings->baseline->
 work_plan order, scan_opportunities() REORDERS the scanned opportunities so the
@@ -180,6 +191,7 @@ def init_enhancer_schema() -> None:
                         leverage_rank DOUBLE PRECISION,
                         status        TEXT NOT NULL DEFAULT 'proposed',
                         grade         TEXT,
+                        fingerprint   TEXT,
                         created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
                     )
                 """)
@@ -191,6 +203,29 @@ def init_enhancer_schema() -> None:
                 cur.execute(
                     "CREATE INDEX IF NOT EXISTS ix_brain_enh_props_created "
                     "ON brain_enhancement_proposals (created_at DESC)"
+                )
+                conn.commit()
+            except Exception:
+                try: conn.rollback()
+                except Exception: pass
+            # STATEFUL DEDUP (2026-07-16): nullable condition fingerprint so a
+            # condition with an OPEN same-fingerprint proposal is never
+            # re-drafted every cycle (33/37 stored proposals were the SAME
+            # data_coverage condition). ADD COLUMN IF NOT EXISTS migrates the
+            # live table in place; the CREATE TABLE above covers fresh DBs.
+            try:
+                cur.execute(
+                    "ALTER TABLE brain_enhancement_proposals "
+                    "ADD COLUMN IF NOT EXISTS fingerprint TEXT"
+                )
+                conn.commit()
+            except Exception:
+                try: conn.rollback()
+                except Exception: pass
+            try:
+                cur.execute(
+                    "CREATE INDEX IF NOT EXISTS ix_brain_enh_props_fp "
+                    "ON brain_enhancement_proposals (fingerprint, created_at DESC)"
                 )
                 conn.commit()
             except Exception:
@@ -519,6 +554,54 @@ def scan_opportunities() -> list[dict]:
     return out
 
 
+# ── STATEFUL DEDUP (2026-07-16): prior-condition state, ONE query ────
+def _proposal_fingerprint_state() -> dict:
+    """{fingerprint: {"age_days", "open", "text"}} for the MOST RECENT stored
+    proposal per fingerprint within the dedup lookback window — loaded in ONE
+    indexed query (no per-opportunity connection fan-out; the pool is chronic
+    at 80). "open" = status 'proposed' AND ungraded — the only live states:
+    the enhancer writes status='proposed' and the grade endpoint fills grade.
+    Fail-OPEN to {} on any error (a DB hiccup must never block proposing —
+    worst case is the prior behavior, a duplicate draft)."""
+    out: dict = {}
+    conn = _conn()
+    if conn is None:
+        return out
+    try:
+        from routes.brain_proposal_dedup import lookback_days
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT DISTINCT ON (fingerprint) fingerprint, status, grade, "
+                "proposal_json, "
+                "EXTRACT(EPOCH FROM (NOW() - created_at)) / 86400.0 "
+                "FROM brain_enhancement_proposals "
+                "WHERE fingerprint IS NOT NULL "
+                "AND created_at >= NOW() - (%s || ' days')::interval "
+                "ORDER BY fingerprint, created_at DESC",
+                (str(lookback_days()),),
+            )
+            for fp, status, grade, pj, age_days in (cur.fetchall() or []):
+                if isinstance(pj, str):
+                    try: pj = json.loads(pj)
+                    except Exception: pj = {}
+                signal = (pj or {}).get("signal") if isinstance(pj, dict) else None
+                out[fp] = {
+                    "age_days": float(age_days or 0.0),
+                    "open": (str(status or "") == "proposed") and not grade,
+                    "text": str(signal or ""),
+                }
+    except Exception as e:
+        logger.warning("brain_enhancer: fingerprint state read failed "
+                       "(dedup fails open): %s", e)
+        try: conn.rollback()
+        except Exception: pass
+        return {}
+    finally:
+        try: conn.close()
+        except Exception: pass
+    return out
+
+
 # ════════════════════════════════════════════════════════════════════
 #  Step 2 + 3: PROPOSE (reuse investigate per-opp) + RANK (reuse selector)
 # ════════════════════════════════════════════════════════════════════
@@ -586,14 +669,72 @@ def propose_enhancements(*, max_proposals: int = 3, depth: str = "default") -> d
         _budget = 55.0
     _start = _time.monotonic()
 
+    # ── STATEFUL DEDUP (2026-07-16): don't burn a draft + adversarial-
+    # refutation cycle on a condition that already has an OPEN (or cooling-
+    # down) proposal. 33/37 stored proposals were the SAME data_coverage
+    # condition — the title's live counts drifted every run so nothing ever
+    # matched. Fingerprint = area + number-stripped signal (falls back to the
+    # question). Kill: BRAIN_PROPOSAL_DEDUP=0. Fail-OPEN: any error here means
+    # "draft anyway" (the prior behavior). A suppressed opportunity does NOT
+    # consume a draft slot — the run moves on to the next fresh condition.
+    _fp_of = None
+    _skip_redraft = None
+    _dedup_on = False
+    _fp_state: dict = {}
+    try:
+        from routes.brain_proposal_dedup import (
+            dedup_enabled as _dd_enabled,
+            condition_fingerprint as _fp_of,
+            should_skip_redraft as _skip_redraft,
+        )
+        _dedup_on = _dd_enabled()
+        if _dedup_on:
+            _fp_state = _proposal_fingerprint_state()
+    except Exception as e:
+        logger.warning("brain_enhancer: proposal dedup unavailable "
+                       "(drafting without it): %s", e)
+        _dedup_on = False
+
+    dup_suppressed = 0
+    _drafted_fps: set = set()
     candidates: list[dict] = []
     last_model = None
-    for opp in opportunities[:n]:
+    for opp in opportunities:
+        if len(candidates) >= n:
+            break
         if candidates and (_time.monotonic() - _start) > _budget:
             logger.info("brain_enhancer: time budget %.0fs hit after %d proposal(s)",
                         _budget, len(candidates))
             break
         question = opp.get("question") or ""
+        # Fingerprint every drafted condition (stamped on the stored row even
+        # when the dedup flag is off, so history accrues for when it's on).
+        fp = None
+        if _fp_of is not None:
+            try:
+                fp = _fp_of(opp.get("area"), opp.get("signal"), question)
+            except Exception:
+                fp = None
+        if _dedup_on and fp and _skip_redraft is not None:
+            if fp in _drafted_fps:
+                # Two opportunities in ONE scan for the same condition — one
+                # draft is plenty.
+                dup_suppressed += 1
+                logger.info("brain_enhancer: dup-suppressed (in_run) fp=%s "
+                            "signal=%r", fp, str(opp.get("signal") or "")[:120])
+                continue
+            try:
+                skip, why = _skip_redraft(_fp_state.get(fp),
+                                          opp.get("signal") or question)
+            except Exception as e:
+                logger.warning("brain_enhancer: dedup check failed "
+                               "(drafting anyway): %s", e)
+                skip, why = False, None
+            if skip:
+                dup_suppressed += 1
+                logger.info("brain_enhancer: dup-suppressed (%s) fp=%s signal=%r",
+                            why, fp, str(opp.get("signal") or "")[:120])
+                continue
         try:
             inv = investigate(question, depth=depth)
         except Exception as e:
@@ -629,10 +770,13 @@ def propose_enhancements(*, max_proposals: int = 3, depth: str = "default") -> d
             refutation = dict(refutation)
             refutation["fabrication_flagged"] = True
 
+        if fp:
+            _drafted_fps.add(fp)
         candidates.append({
             "title": _proposal_title(opp.get("area", ""), opp.get("signal", "")),
             "area": opp.get("area"),
             "signal": opp.get("signal"),
+            "fingerprint": fp,
             "recommendation": recommendation,
             "confidence": confidence,
             "caveats": caveats,
@@ -641,8 +785,12 @@ def propose_enhancements(*, max_proposals: int = 3, depth: str = "default") -> d
         })
 
     result["model"] = last_model
+    result["dup_suppressed"] = dup_suppressed
     if not candidates:
-        result["cannot_enhance"] = "no_proposals_survived"
+        # Legible cron logs: "every condition already has an open/cooling
+        # proposal" is the dedup WORKING, not a drafting failure.
+        result["cannot_enhance"] = ("all_duplicates_suppressed"
+                                    if dup_suppressed else "no_proposals_survived")
         return result
 
     # ── RANK by leverage x confidence (REUSE brain_work_selector) ────
@@ -707,22 +855,65 @@ def _store_proposal(run_id: Optional[int], proposal: dict) -> Optional[int]:
     conn = _conn()
     if conn is None:
         return None
+    fp = (str(proposal.get("fingerprint") or "").strip() or None)
+    base_vals = (
+        int(run_id) if run_id is not None else None,
+        str(proposal.get("title") or "")[:500],
+        str(proposal.get("area") or "")[:64],
+        json.dumps(proposal)[:200000],
+        float(proposal.get("confidence") or 0.0),
+        float(proposal.get("leverage_rank") or 0.0)
+        if proposal.get("leverage_rank") is not None else None,
+    )
     try:
         with conn.cursor() as cur:
-            cur.execute(
-                "INSERT INTO brain_enhancement_proposals "
-                "(run_id, title, area, proposal_json, confidence, leverage_rank, status) "
-                "VALUES (%s, %s, %s, %s, %s, %s, 'proposed') RETURNING id",
-                (
-                    int(run_id) if run_id is not None else None,
-                    str(proposal.get("title") or "")[:500],
-                    str(proposal.get("area") or "")[:64],
-                    json.dumps(proposal)[:200000],
-                    float(proposal.get("confidence") or 0.0),
-                    float(proposal.get("leverage_rank") or 0.0)
-                    if proposal.get("leverage_rank") is not None else None,
-                ),
-            )
+            # STATEFUL DEDUP, store-time RACE guard (2026-07-16): the pre-draft
+            # check happens ~48s before this insert, and the in-process cron
+            # heartbeat runs on BOTH web replicas — two runs racing through the
+            # same hour wrote byte-identical proposals. Re-check for an OPEN
+            # same-fingerprint twin younger than the cooldown right before
+            # inserting. Best-effort: any error falls through to the insert.
+            if fp is not None:
+                try:
+                    from routes.brain_proposal_dedup import (
+                        dedup_enabled, redraft_days,
+                    )
+                    if dedup_enabled():
+                        cur.execute(
+                            "SELECT 1 FROM brain_enhancement_proposals "
+                            "WHERE fingerprint = %s AND status = 'proposed' "
+                            "AND grade IS NULL "
+                            "AND created_at >= NOW() - (%s || ' days')::interval "
+                            "LIMIT 1",
+                            (fp, str(redraft_days())),
+                        )
+                        if cur.fetchone():
+                            logger.info("brain_enhancer: dup-suppressed at store "
+                                        "(open twin) fp=%s", fp)
+                            return None
+                except Exception:
+                    try: conn.rollback()
+                    except Exception: pass
+            try:
+                cur.execute(
+                    "INSERT INTO brain_enhancement_proposals "
+                    "(run_id, title, area, proposal_json, confidence, "
+                    "leverage_rank, status, fingerprint) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, 'proposed', %s) RETURNING id",
+                    base_vals + (fp,),
+                )
+            except Exception:
+                # fingerprint column missing (DDL silently skipped on this
+                # host) — never lose the proposal over dedup bookkeeping.
+                try: conn.rollback()
+                except Exception: pass
+                cur.execute(
+                    "INSERT INTO brain_enhancement_proposals "
+                    "(run_id, title, area, proposal_json, confidence, "
+                    "leverage_rank, status) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, 'proposed') RETURNING id",
+                    base_vals,
+                )
             row = cur.fetchone()
             conn.commit()
             return int(row[0]) if row else None
@@ -785,6 +976,7 @@ def _run_enhance_async(run_id: int, max_props: int) -> None:
         "opportunities": len(result.get("opportunities") or []),
         "proposals_stored": len(stored_ids),
         "proposal_ids": stored_ids,
+        "dup_suppressed": result.get("dup_suppressed", 0),
         "model": result.get("model"),
         "cannot_enhance": result.get("cannot_enhance"),
     }
@@ -954,6 +1146,7 @@ def enhance():
         "opportunities": len(result.get("opportunities") or []),
         "proposals_stored": len(stored_ids),
         "proposal_ids": stored_ids,
+        "dup_suppressed": result.get("dup_suppressed", 0),
         "model": result.get("model"),
         "cannot_enhance": result.get("cannot_enhance"),
     }

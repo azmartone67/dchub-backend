@@ -12,7 +12,12 @@ UNPROMPTED, a tick:
      vetted brain_work_selector.build_work_plan() AND
      brain_enhancer.scan_opportunities(), then choosing the SINGLE
      highest-leverage candidate, DEDUPED against agenda items surfaced in the
-     last ~3 days (so it does not re-investigate the same thing every tick).
+     last ~3 days (so it does not re-investigate the same thing every tick)
+     AND against a STATEFUL condition fingerprint (2026-07-16, shared with the
+     enhancer via routes/brain_proposal_dedup.py): a condition with an open or
+     cooling-down (BRAIN_PROPOSAL_REDRAFT_DAYS, default 7) same-fingerprint
+     agenda row is not re-picked, and after the cooldown only re-fires when
+     its measured figures moved materially. Kill: BRAIN_PROPOSAL_DEDUP=0.
   2. INVESTIGATES it — by REUSING the verified
      brain_investigator.investigate() (decompose -> gather REAL evidence ->
      reason -> adversarially REFUTE -> synthesize). This is the ONLY model work
@@ -182,6 +187,7 @@ def init_self_director_schema() -> None:
                         confidence  DOUBLE PRECISION,
                         status      TEXT NOT NULL DEFAULT 'surfaced',
                         grade       TEXT,
+                        fingerprint TEXT,
                         created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
                     )
                 """)
@@ -193,6 +199,28 @@ def init_self_director_schema() -> None:
                 cur.execute(
                     "CREATE INDEX IF NOT EXISTS ix_brain_self_agenda_created "
                     "ON brain_self_agenda (created_at DESC)"
+                )
+                conn.commit()
+            except Exception:
+                try: conn.rollback()
+                except Exception: pass
+            # STATEFUL DEDUP (2026-07-16): nullable condition fingerprint (see
+            # routes/brain_proposal_dedup.py) so the same condition can't be
+            # re-picked every ~4 days forever once the 3-day _norm_sig window
+            # rolls past it (14 near-identical data_coverage agenda rows).
+            try:
+                cur.execute(
+                    "ALTER TABLE brain_self_agenda "
+                    "ADD COLUMN IF NOT EXISTS fingerprint TEXT"
+                )
+                conn.commit()
+            except Exception:
+                try: conn.rollback()
+                except Exception: pass
+            try:
+                cur.execute(
+                    "CREATE INDEX IF NOT EXISTS ix_brain_self_agenda_fp "
+                    "ON brain_self_agenda (fingerprint, created_at DESC)"
                 )
                 conn.commit()
             except Exception:
@@ -397,6 +425,95 @@ def _recent_sigs_and_lowyield(days: int) -> tuple[set, set]:
     return sigs, lowyield
 
 
+# ── STATEFUL DEDUP (2026-07-16): prior-condition state, ONE query ────
+def _agenda_fingerprint_state() -> dict:
+    """{fingerprint: {"age_days", "open", "text"}} for the MOST RECENT agenda
+    row per fingerprint within the dedup lookback window — ONE indexed query,
+    no per-candidate connection fan-out (the pool is chronic at 80). "open" =
+    status 'surfaced' AND ungraded (the only live states: _store_agenda writes
+    status='surfaced' and the grade endpoint fills grade). Fail-OPEN to {} on
+    any error — a DB hiccup must never freeze picking; the daily cap still
+    bounds cost."""
+    out: dict = {}
+    conn = _conn()
+    if conn is None:
+        return out
+    try:
+        from routes.brain_proposal_dedup import lookback_days
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT DISTINCT ON (fingerprint) fingerprint, status, grade, "
+                "title, EXTRACT(EPOCH FROM (NOW() - created_at)) / 86400.0 "
+                "FROM brain_self_agenda "
+                "WHERE fingerprint IS NOT NULL "
+                "AND created_at >= NOW() - (%s || ' days')::interval "
+                "ORDER BY fingerprint, created_at DESC",
+                (str(lookback_days()),),
+            )
+            for fp, status, grade, title, age_days in (cur.fetchall() or []):
+                out[fp] = {
+                    "age_days": float(age_days or 0.0),
+                    "open": (str(status or "") == "surfaced") and not grade,
+                    "text": str(title or ""),
+                }
+    except Exception as e:
+        logger.warning("brain_self_director: fingerprint state read failed "
+                       "(dedup fails open): %s", e)
+        try: conn.rollback()
+        except Exception: pass
+        return {}
+    finally:
+        try: conn.close()
+        except Exception: pass
+    return out
+
+
+def _stateful_dedup_filter(fresh: list[dict]) -> list[dict]:
+    """STATEFUL fingerprint dedup over the surviving candidates (2026-07-16).
+
+    The _norm_sig anti-loop above only looks back BRAIN_SELF_DIRECT_DEDUP_DAYS
+    (default 3), so the SAME condition was re-picked every ~4 days forever —
+    14 near-identical data_coverage agenda rows, each burning a full
+    investigate() (draft + adversarial-refutation) cycle. This filter drops a
+    candidate while a same-fingerprint agenda row is open/inside the
+    BRAIN_PROPOSAL_REDRAFT_DAYS cooldown, and after the cooldown re-admits it
+    ONLY when its measured figures moved materially (shared re-fire rule in
+    routes.brain_proposal_dedup). Survivors are stamped with their fingerprint
+    so _store_agenda persists it.
+
+    Kill: BRAIN_PROPOSAL_DEDUP=0. Fail-OPEN: on ANY error the input is
+    returned unchanged (worst case = the prior duplicate-drafting behavior)."""
+    try:
+        from routes.brain_proposal_dedup import (
+            dedup_enabled, condition_fingerprint, should_skip_redraft,
+        )
+        if not dedup_enabled():
+            return fresh
+        state = _agenda_fingerprint_state()
+        kept: list[dict] = []
+        suppressed = 0
+        for c in fresh:
+            fp = condition_fingerprint(
+                c.get("area"), c.get("title"), c.get("question"))
+            skip, why = should_skip_redraft(
+                state.get(fp), c.get("title") or c.get("question") or "")
+            if skip:
+                suppressed += 1
+                logger.info("brain_self_director: dup-suppressed (%s) fp=%s "
+                            "title=%r", why, fp, str(c.get("title") or "")[:120])
+                continue
+            c = dict(c)
+            c["fingerprint"] = fp
+            kept.append(c)
+        if suppressed:
+            logger.info("brain_self_director: stateful dedup suppressed %d/%d "
+                        "candidate(s)", suppressed, len(fresh))
+        return kept
+    except Exception as e:
+        logger.warning("brain_self_director: stateful dedup skipped: %s", e)
+        return fresh
+
+
 def pick_agenda_item() -> Optional[dict]:
     """ASSESS what is most worth thinking about RIGHT NOW.
 
@@ -460,6 +577,15 @@ def pick_agenda_item() -> Optional[dict]:
             if not fresh:
                 return None
 
+        # STATEFUL fingerprint dedup (2026-07-16): drop candidates whose
+        # condition already has an open / cooling-down agenda row beyond the
+        # short anti-loop window; stamp survivors with their fingerprint.
+        fresh = _stateful_dedup_filter(fresh)
+        if not fresh:
+            logger.info("brain_self_director: stateful dedup — every candidate "
+                        "already has an open/recent agenda row; skipping tick")
+            return None
+
         # Highest-leverage first; stable on ties by original pooled order so the
         # choice is deterministic.
         def _lev(c) -> float:
@@ -512,21 +638,36 @@ def _store_agenda(item: dict, result: dict) -> Optional[int]:
     conn = _conn()
     if conn is None:
         return None
+    fp = (str(item.get("fingerprint") or "").strip() or None)
+    base_vals = (
+        str(item.get("kind") or "")[:64],
+        str(item.get("title") or "")[:500],
+        str(item.get("question") or "")[:4000],
+        str(item.get("area") or "")[:64],
+        json.dumps(result)[:200000],
+        float(result.get("confidence") or 0.0),
+    )
     try:
         with conn.cursor() as cur:
-            cur.execute(
-                "INSERT INTO brain_self_agenda "
-                "(kind, title, question, area, result_json, confidence, status) "
-                "VALUES (%s, %s, %s, %s, %s, %s, 'surfaced') RETURNING id",
-                (
-                    str(item.get("kind") or "")[:64],
-                    str(item.get("title") or "")[:500],
-                    str(item.get("question") or "")[:4000],
-                    str(item.get("area") or "")[:64],
-                    json.dumps(result)[:200000],
-                    float(result.get("confidence") or 0.0),
-                ),
-            )
+            try:
+                cur.execute(
+                    "INSERT INTO brain_self_agenda "
+                    "(kind, title, question, area, result_json, confidence, "
+                    "status, fingerprint) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, 'surfaced', %s) RETURNING id",
+                    base_vals + (fp,),
+                )
+            except Exception:
+                # fingerprint column missing (DDL silently skipped on this
+                # host) — never lose the agenda row over dedup bookkeeping.
+                try: conn.rollback()
+                except Exception: pass
+                cur.execute(
+                    "INSERT INTO brain_self_agenda "
+                    "(kind, title, question, area, result_json, confidence, status) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, 'surfaced') RETURNING id",
+                    base_vals,
+                )
             row = cur.fetchone()
             conn.commit()
             return int(row[0]) if row else None
