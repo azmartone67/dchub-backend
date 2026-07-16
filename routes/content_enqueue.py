@@ -640,7 +640,7 @@ def _enqueue_post(content: str, platform: str, og_image: str | None = None) -> i
             cur.execute("""
                 INSERT INTO social_media_posts
                        (content, platform, status, created_at, og_image)
-                VALUES (%s, %s, 'approved', NOW(), %s)
+                VALUES (%s, %s, 'approved', NOW() ON CONFLICT DO NOTHING, %s)
                 RETURNING id
             """, (content, platform, og_image))
             new_id = (cur.fetchone() or [None])[0]
