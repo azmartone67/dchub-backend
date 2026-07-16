@@ -298,6 +298,43 @@ def test_prewarm_kill_switch(monkeypatch):
     assert L._RESP["v"] is None  # nothing computed
 
 
+# ── per-process self-warm loop ─────────────────────────────────────────────
+
+def test_selfwarm_only_starts_on_railway_and_only_once(monkeypatch):
+    import routes.engine_prewarm as P
+    monkeypatch.setitem(P._SELFWARM, "started", False)
+    started = []
+    monkeypatch.setattr(P.threading, "Thread",
+                        lambda **kw: type("T", (), {"start": lambda self: started.append(kw)})())
+
+    # local/dev/tests/Render: no Railway env → never starts
+    monkeypatch.delenv("RAILWAY_ENVIRONMENT", raising=False)
+    monkeypatch.delenv("RAILWAY_PROJECT_ID", raising=False)
+    monkeypatch.delenv("ENGINE_PREWARM_DISABLE", raising=False)
+    assert P._start_selfwarm_thread() is False
+    assert started == []
+
+    # kill switch wins even on Railway
+    monkeypatch.setenv("RAILWAY_PROJECT_ID", "proj")
+    monkeypatch.setenv("ENGINE_PREWARM_DISABLE", "1")
+    assert P._start_selfwarm_thread() is False
+
+    # Railway: starts exactly once, as a daemon thread
+    monkeypatch.delenv("ENGINE_PREWARM_DISABLE")
+    assert P._start_selfwarm_thread() is True
+    assert len(started) == 1
+    assert started[0]["daemon"] is True
+    assert started[0]["target"] is P._selfwarm_loop
+    assert P._start_selfwarm_thread() is False  # single-start
+    assert len(started) == 1
+
+
+def test_selfwarm_interval_stays_inside_response_ttl():
+    import routes.engine_prewarm as P
+    # the whole point: the per-process cache must never expire in steady state
+    assert P._SELFWARM_INTERVAL < min(L._RESP_TTL, U._RESP_TTL)
+
+
 # ── cron wiring ────────────────────────────────────────────────────────────
 
 def test_cron_dispatch_fires_prewarm_every_invocation():
