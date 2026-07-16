@@ -1133,6 +1133,7 @@ def heartbeat():
     }), 200
 
 
+# AUTO-REPAIR: duplicate route '/health' also in index_api.py:697 — review and remove one
 @cron_heartbeat_bp.route("/health", methods=["GET"])
 def health():
     now = datetime.datetime.utcnow()
