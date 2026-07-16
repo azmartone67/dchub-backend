@@ -227,7 +227,12 @@ _NAV = (
 )
 
 def _render_edition(slug: str, tier: str) -> str:
-    with open(os.path.join(_PAGES_DIR, f"{slug}.html"), encoding="utf-8") as f:
+    # TIER GATE: free/anon see the public teaser (thesis + free headline metrics +
+    # locked deep sections + upgrade/agent CTA — daily-fresh via live numbers, and
+    # crawlable for SEO/GEO reach); paid (DEVELOPER/PRO/ENTERPRISE) see the full
+    # edition. The tease is the acquisition hook; the decision-grade depth converts.
+    template = "teaser" if tier == "tease" else slug
+    with open(os.path.join(_PAGES_DIR, f"{template}.html"), encoding="utf-8") as f:
         body = T.render(f.read(), T.normalize(_pull_core()), tier)
     # frame the publication with a slim, navigable DC Hub bar (own identity below)
     return _NAV + body
