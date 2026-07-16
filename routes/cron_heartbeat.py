@@ -116,6 +116,21 @@ def _register_webmcp_shell(state):
         print(f"[cron_heartbeat] webmcp_master_shell_bp register skipped: {_wm_e}",
               flush=True)
 
+
+# 2026-07-16: ENGINE PRE-WARM (routes/engine_prewarm.py) — the never-cold tick
+# for the leadership/utilization optimization engines. Rides on this
+# blueprint's registration for the same frozen-main.py reason as above.
+# Defensive: a broken import never breaks the heartbeat (or boot).
+@cron_heartbeat_bp.record_once
+def _register_engine_prewarm(state):
+    try:
+        from routes.engine_prewarm import engine_prewarm_bp
+        if "engine_prewarm" not in state.app.blueprints:
+            state.app.register_blueprint(engine_prewarm_bp)
+    except Exception as _ep_e:
+        print(f"[cron_heartbeat] engine_prewarm_bp register skipped: {_ep_e}",
+              flush=True)
+
 # r78: the dispatcher runs INSIDE this Flask app — its job POSTs were going
 # out to api.dchub.cloud and back through Cloudflare to reach itself (and
 # api.dchub.cloud's non-/api/* routing 522s, which is what minted the
@@ -178,6 +193,22 @@ _DISPATCH = [
     # MCP SSE event refresh — every invocation (cheap DB query)
     ("mcp_sse_refresh",
      f"{BASE}/api/v1/mcp/events/refresh",
+     "POST",
+     lambda now: True),
+
+    # 2026-07-16: optimization-engine pre-warm — EVERY invocation. A COLD
+    # leadership/utilization tick costs ~13.7s (6 internal prefetches), which
+    # exceeds the CF worker's per-attempt timeout → failover → the stale
+    # Render backend's zeros-200 poisoned the worker's KV cache for ~40 min
+    # after every deploy. The endpoint warms BOTH engines IN-PROCESS (direct
+    # compute call, no HTTP self-request), each honoring its _RESP_TTL (300s)
+    # — a fresh cache makes a fire a cheap no-op, so every-tick dispatch is
+    # safe even on the sporadic (~hourly) real heartbeat cadence. Deliberately
+    # NOT in _HEAVY_LABELS: it must warm the WEB replica's in-process caches
+    # (the ones user/CF-worker requests read), not the worker's.
+    # Kill: ENGINE_PREWARM_DISABLE=1 (in-handler).
+    ("engine_prewarm",
+     f"{BASE}/api/v1/engines/prewarm",
      "POST",
      lambda now: True),
 

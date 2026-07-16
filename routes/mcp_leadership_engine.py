@@ -228,19 +228,27 @@ def _shadow_actions(dims):
 
 
 _RESP = {"at": 0.0, "v": None}
-_RESP_TTL = 45.0  # response cache: the engine makes 6 internal calls — cache so
-                  # repeat hits (dashboard 60s refresh) are instant and never trip
-                  # the CF worker's primary-timeout → failover to the stale backend.
+_RESP_TTL = 300.0  # response cache. 2026-07-16: 45s→300s — a COLD tick costs ~13.7s
+                   # (6 internal prefetches on cold source caches), so at 45s nearly
+                   # every CF-worker origin attempt after a deploy paid the cold tick,
+                   # tripped the worker's per-attempt timeout and failed over to the
+                   # stale backend. These are diagnostic engines — a 5-min-stale score
+                   # is fine (the dashboard refreshes every 60s), and the cron prewarm
+                   # (routes/engine_prewarm.py) re-ticks in-process before it expires.
 
 
-@mcp_leadership_bp.route("/api/v1/mcp/leadership", methods=["GET"])
-def mcp_leadership():
-    """MCP Leadership Index + shadow optimize-loop. Measures + proposes the
-    actuator per dimension; executes nothing. See module docstring."""
-    import time as _t
-    _now = _t.time()
-    if _RESP["v"] is not None and (_now - _RESP["at"]) < _RESP_TTL:
-        return jsonify(_RESP["v"]), 200
+def _compute():
+    """One full engine tick: parallel prefetch + the 6 dimension scores.
+
+    Returns (payload, complete, dead):
+      complete — every prefetched source returned data → safe to cache.
+      dead     — NO prefetched source returned data AND every dimension scored 0:
+                 the all-sources-dead frame a stale/failed-over backend produces
+                 (Render's loopback self-requests all fail server-side). Must be
+                 served as 503, never a valid-looking zeros-200 — the CF worker
+                 caches 200s, so a zeros-200 poisons the KV lane for a day. A
+                 legitimately-zero SINGLE dimension never trips this: its source
+                 responded, so sources_up > 0."""
     try:
         with ThreadPoolExecutor(max_workers=len(_PREFETCH)) as ex:
             _REQ.cache = dict(zip(_PREFETCH, ex.map(_raw_get, _PREFETCH)))
@@ -276,16 +284,62 @@ def mcp_leadership():
               "actuators run via their own crons/endpoints (e.g. the tool-tuner re-seed "
               "cron) or remain human-gated; treat this as a scoreboard, not an autopilot."),
     )
+    sources_up = sum(1 for p in _PREFETCH if _REQ.cache.get(p))
+    complete = sources_up == len(_PREFETCH)
+    dead = sources_up == 0 and all((d.get("score") or 0) == 0 for d in dims)
+    return payload, complete, dead
+
+
+def _store(payload, now):
+    _RESP["at"] = now
+    _RESP["v"] = payload
+    try:  # snapshot the headline for trend tracking (rate-limited ~hourly, fail-soft)
+        from routes.engine_trends import record as _rec
+        top = payload.get("top_priority") or {}
+        _rec("leadership", payload.get("mcp_leadership_index"),
+             {"verdict": payload.get("verdict"), "top_priority": top.get("dimension")})
+    except Exception:
+        pass
+
+
+def warm(force: bool = False) -> dict:
+    """In-process pre-warm — called by routes/engine_prewarm.py off the cron
+    heartbeat (a direct function call, NOT an HTTP self-request) so no user /
+    CF-worker request ever pays the ~13.7s cold tick. Honors _RESP_TTL: a
+    fresh cache makes this a cheap no-op, so every-heartbeat fires are safe."""
+    import time as _t
+    _now = _t.time()
+    if not force and _RESP["v"] is not None and (_now - _RESP["at"]) < _RESP_TTL:
+        return {"engine": "leadership", "warmed": False, "reason": "fresh",
+                "age_s": round(_now - _RESP["at"], 1)}
+    payload, complete, dead = _compute()
+    if complete and not dead:
+        _store(payload, _now)
+    return {"engine": "leadership", "warmed": bool(complete and not dead),
+            "complete": complete, "dead": dead}
+
+
+@mcp_leadership_bp.route("/api/v1/mcp/leadership", methods=["GET"])
+def mcp_leadership():
+    """MCP Leadership Index + shadow optimize-loop. Measures + proposes the
+    actuator per dimension; executes nothing. See module docstring."""
+    import time as _t
+    _now = _t.time()
+    if _RESP["v"] is not None and (_now - _RESP["at"]) < _RESP_TTL:
+        return jsonify(_RESP["v"]), 200
+    payload, complete, dead = _compute()
+    if dead:
+        # dead-compute guard (2026-07-16): every source failed → this frame is
+        # garbage, not a measurement. 503 so the CF worker's failover chain
+        # skips this backend and serves KV-stale (the last GOOD copy) instead
+        # of caching an all-zeros 200 that self-refreshes for a day.
+        return jsonify({"ok": False, "error": "engine sources unavailable",
+                        "engine": "MCP Leadership Engine",
+                        "detail": ("all internal prefetch sources failed; "
+                                   "refusing to serve an all-zeros frame")}), 503
     # Only cache a COMPLETE response — if any internal prefetch timed out / returned
     # {} (e.g. the slow /api/v1/ai/reach), a dimension degrades to 0; don't freeze
-    # that for 45s, let the next request retry.
-    if all(_REQ.cache.get(p) for p in _PREFETCH):
-        _RESP["at"] = _now
-        _RESP["v"] = payload
-        try:  # snapshot the headline for trend tracking (rate-limited ~hourly, fail-soft)
-            from routes.engine_trends import record as _rec
-            _rec("leadership", index, {"verdict": verdict,
-                                       "top_priority": (top or {}).get("dimension")})
-        except Exception:
-            pass
+    # that for the TTL, let the next request retry.
+    if complete:
+        _store(payload, _now)
     return jsonify(payload), 200

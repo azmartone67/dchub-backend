@@ -92,17 +92,19 @@ def _util_armed():
 
 
 _RESP = {"at": 0.0, "v": None}
-_RESP_TTL = 45.0  # response cache (see mcp_leadership_engine: keeps repeat hits fast)
+_RESP_TTL = 300.0  # response cache. 2026-07-16: 45s→300s + cron prewarm — see
+                   # mcp_leadership_engine._RESP_TTL for the full rationale (cold
+                   # tick ~13.7s > CF worker per-attempt timeout → failover).
 
 
-@agent_utilization_bp.route("/api/v1/agents/utilization", methods=["GET"])
-def agent_utilization():
-    """AI Agent Utilization Engine — SHADOW. onboard/incent/train tracks over the
-    real agent lifecycle; names the actuator per track; executes nothing."""
-    import time as _t
-    _now = _t.time()
-    if _RESP["v"] is not None and (_now - _RESP["at"]) < _RESP_TTL:
-        return jsonify(_RESP["v"]), 200
+def _compute():
+    """One full engine tick: parallel prefetch + the 3 track scores.
+
+    Returns (payload, complete, dead) — same contract as
+    mcp_leadership_engine._compute(): `dead` (no source returned data AND every
+    track scored 0) is the garbage frame a stale/failed-over backend produces
+    and must become a 503, never a cacheable zeros-200. A legitimately-zero
+    single track never trips it (its source responded)."""
     try:
         with ThreadPoolExecutor(max_workers=len(_PREFETCH)) as ex:
             _REQ.cache = dict(zip(_PREFETCH, ex.map(_raw_get, _PREFETCH)))
@@ -215,14 +217,59 @@ def agent_utilization():
               "executor. Named actuators run via their own crons/endpoints or are human-"
               "gated. Pairs with /api/v1/mcp/leadership + /api/v1/brain/ownership."),
     )
+    sources_up = sum(1 for p in _PREFETCH if _REQ.cache.get(p))
+    complete = sources_up == len(_PREFETCH)
+    dead = sources_up == 0 and all((t.get("score") or 0) == 0 for t in tracks)
+    return payload, complete, dead
+
+
+def _store(payload, now):
+    _RESP["at"] = now
+    _RESP["v"] = payload
+    try:  # snapshot the headline for trend tracking (rate-limited ~hourly, fail-soft)
+        from routes.engine_trends import record as _rec
+        leak = payload.get("biggest_leak") or {}
+        _rec("utilization", payload.get("utilization_score"),
+             {"biggest_leak": leak.get("track")})
+    except Exception:
+        pass
+
+
+def warm(force: bool = False) -> dict:
+    """In-process pre-warm — called by routes/engine_prewarm.py off the cron
+    heartbeat (direct function call, NOT an HTTP self-request). Honors
+    _RESP_TTL: a fresh cache makes this a cheap no-op."""
+    import time as _t
+    _now = _t.time()
+    if not force and _RESP["v"] is not None and (_now - _RESP["at"]) < _RESP_TTL:
+        return {"engine": "utilization", "warmed": False, "reason": "fresh",
+                "age_s": round(_now - _RESP["at"], 1)}
+    payload, complete, dead = _compute()
+    if complete and not dead:
+        _store(payload, _now)
+    return {"engine": "utilization", "warmed": bool(complete and not dead),
+            "complete": complete, "dead": dead}
+
+
+@agent_utilization_bp.route("/api/v1/agents/utilization", methods=["GET"])
+def agent_utilization():
+    """AI Agent Utilization Engine — SHADOW. onboard/incent/train tracks over the
+    real agent lifecycle; names the actuator per track; executes nothing."""
+    import time as _t
+    _now = _t.time()
+    if _RESP["v"] is not None and (_now - _RESP["at"]) < _RESP_TTL:
+        return jsonify(_RESP["v"]), 200
+    payload, complete, dead = _compute()
+    if dead:
+        # dead-compute guard (2026-07-16) — see mcp_leadership_engine: a
+        # zeros-200 from a failed-over backend poisons the CF worker's KV
+        # cache; 503 makes the failover chain serve the last GOOD copy.
+        return jsonify({"ok": False, "error": "engine sources unavailable",
+                        "engine": "AI Agent Utilization Engine",
+                        "detail": ("all internal prefetch sources failed; "
+                                   "refusing to serve an all-zeros frame")}), 503
     # Only cache a COMPLETE response (don't freeze a degraded frame from a timed-out
     # internal prefetch — see mcp_leadership_engine).
-    if all(_REQ.cache.get(p) for p in _PREFETCH):
-        _RESP["at"] = _now
-        _RESP["v"] = payload
-        try:  # snapshot the headline for trend tracking (rate-limited ~hourly, fail-soft)
-            from routes.engine_trends import record as _rec
-            _rec("utilization", util_score, {"biggest_leak": leak["track"]})
-        except Exception:
-            pass
+    if complete:
+        _store(payload, _now)
     return jsonify(payload), 200
