@@ -15573,7 +15573,17 @@ def list_markets():
     pipeline MW, $/kWh). Premium per-market intelligence lives in the
     gated tools like get_market_intel and analyze_site.
     """
-    conn = get_db()
+    # r-poolhold (2026-07-16): route the ~120-query market build to the READ
+    # REPLICA. Live pool-hold diagnostic named GET /api/v1/markets/list the #1
+    # primary-pool holder (6.4-6.8s per cold build, fired 8-wide by the internal
+    # fan-out → the "Pool at 80 / Connection pool timeout" bursts). get_read_db()
+    # is the replica-routing rebind (main.py:6514) with automatic primary
+    # fallback; its _ReadPoolConn proxy returns to the replica pool on .close(),
+    # so the existing `finally: conn.close()` below stays correct. Read-only
+    # (SELECT-only aggregates), staleness-tolerant (already 30-min cached) — same
+    # pattern get_market_stats already uses. The /api/v1/markets alias dispatches
+    # to this view, so it's covered too.
+    conn = get_read_db()
     try:
         c = conn.cursor()
         # r34 perf: 30-min memoize of the expensive ~120-query market build.
