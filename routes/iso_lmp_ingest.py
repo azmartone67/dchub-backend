@@ -600,7 +600,7 @@ def _upsert(iso, rows):
                         (iso, location, location_type, lmp_usd_mwh,
                          congestion_usd_mwh, energy_usd_mwh, loss_usd_mwh,
                          interval_ending, fetched_at, source_url, source_name)
-                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,NOW(),%s,%s)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,NOW() ON CONFLICT DO NOTHING,%s,%s)
                     ON CONFLICT (iso, location, interval_ending) DO UPDATE SET
                         lmp_usd_mwh        = EXCLUDED.lmp_usd_mwh,
                         congestion_usd_mwh = EXCLUDED.congestion_usd_mwh,
@@ -642,6 +642,7 @@ def _admin_gate():
 # ══════════════════════════════════════════════════════════════════════
 # HTTP endpoints
 # ══════════════════════════════════════════════════════════════════════
+# AUTO-REPAIR: duplicate route '/ingest' also in routes/iso_queue_ingest.py:1040 — review and remove one
 @iso_lmp_ingest_bp.route("/ingest", methods=["POST"])
 def ingest_all():
     gate = _admin_gate()
@@ -677,6 +678,7 @@ def ingest_all():
                 "ISO-NE absent (registration-gated).",
     }), 200 if healthy == len(INGESTORS) else 207
 
+# AUTO-REPAIR: duplicate route '/ingest/<iso>' also in routes/iso_queue_ingest.py:1080 — review and remove one
 
 @iso_lmp_ingest_bp.route("/ingest/<iso>", methods=["POST"])
 def ingest_one(iso):
@@ -697,6 +699,7 @@ def ingest_one(iso):
         "debug": debug, "upsert": up,
         "parser": PARSER_STATUS.get(iso, "unknown"),
     })
+# AUTO-REPAIR: duplicate route '/snapshot' also in routes/eu_gas_entsog.py:227 — review and remove one
 
 
 @iso_lmp_ingest_bp.route("/snapshot", methods=["GET"])
@@ -754,6 +757,7 @@ def snapshot():
                    "verified LMPs post next business day.",
             "ISO-NE": "Not covered — real-time LMP API is registration-gated.",
         },
+# AUTO-REPAIR: duplicate route '/parser-versions' also in routes/iso_queue_ingest.py:1126 — review and remove one
     })
 
 
