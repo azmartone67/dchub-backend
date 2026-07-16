@@ -900,6 +900,32 @@ def _card_url_for(story_type: str, data: dict, text: str) -> str | None:
             sub = " · ".join(parts) or "Compounding live intelligence, every day"
             style = "ai_hero"
 
+        # 2026-07-16: MARKET stories → the branded DCPI market scorecard
+        # (data_card kind=market) — big verdict pill (the market's REAL verdict,
+        # so it can't contradict the text), Excess-Power / Grid-Constraint gauges,
+        # time-to-power. Replaces the sparse data_brutal / generic ai_hero for
+        # dcpi_scoop + market_anomaly. Returns early with the card URL.
+        if story_type in ("dcpi_scoop", "market_anomaly") and market and score:
+            _src = d.get("scoop") or d.get("anomaly") or {}
+            _mp = {"style": "data_card", "kind": "market", "market": market,
+                   "verdict": (verdict or "BUILD"), "excess": score,
+                   "constraint": (constraint or "0")}
+            if sub:
+                _mp["descriptor"] = sub[:200]
+            _iso = _clean(_src.get("iso") or _src.get("iso_region"), 12)
+            if _iso:
+                _mp["iso"] = _iso
+            _ttp = _src.get("time_to_power_months")
+            if _ttp not in (None, ""):
+                try:
+                    _mp["ttp"] = int(float(_ttp))
+                except (TypeError, ValueError):
+                    pass
+            _slug = _src.get("market_slug") or _src.get("slug")
+            if _slug:
+                _mp["footer_tag"] = f"dchub.cloud/dcpi/{_slug}"[:60]
+            return _OG_DYNAMIC_BASE + "?" + urllib.parse.urlencode(_mp)
+
         # Generic fallback — pull the strongest line from the composed text
         if not title:
             for ln in (text or "").splitlines():

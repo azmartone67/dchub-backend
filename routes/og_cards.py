@@ -1412,6 +1412,72 @@ def _dc_spec(kind, nums):
     return specs.get(kind)
 
 
+def _dc_gauge(img, x, y, w, label, value, maxv, color):
+    """A labeled 0-maxv gauge bar (violet→color fill) with the value below."""
+    from PIL import ImageDraw
+    d = ImageDraw.Draw(img)
+    _dc_text(d, (x, y), (label or "").upper(), _mono(15), MUTED, tr=2)
+    by = y + 30
+    _rounded_rect(d, [x, by, x + w, by + 26], 7, PANEL)
+    frac = max(0.03, min(1.0, (value or 0) / max(1, maxv)))
+    _dc_hgrad(img, x, by + 1, x + int(w * frac), by + 25, PURPLE, color)
+    d = ImageDraw.Draw(img)
+    try:
+        d.rounded_rectangle([x, by, x + w, by + 26], radius=7, outline=_DC_BORDER, width=1)
+    except Exception:
+        pass
+    d.text((x, by + 36), f"{int(value or 0)}", font=_font(30), fill=WHITE)
+    sw, _ = _dc_tw(d, f"{int(value or 0)}", _font(30))
+    d.text((x + sw + 4, by + 50), f"/{int(maxv)}", font=_font(18, bold=False), fill=MUTED)
+
+
+def _dc_draw_market(card):
+    """Branded DCPI MARKET scorecard (2026-07-16) — market name + REAL verdict pill
+    + Excess-Power / Grid-Constraint gauges + time-to-power, on the violet-cyan
+    card. Replaces the sparse data_brutal for market posts; the verdict pill is the
+    market's actual verdict, so the card can never contradict the post text."""
+    from PIL import Image, ImageDraw
+    def _n(k, dv=0):
+        v = card.get(k)
+        try:
+            return float(v) if v not in (None, "") else dv
+        except Exception:
+            return dv
+    market = str(card.get("market") or "This market")[:32]
+    iso = str(card.get("iso") or "").upper()[:14]
+    verdict = str(card.get("verdict") or "BUILD").upper()[:10]
+    excess, constraint, ttp = _n("excess"), _n("constraint"), int(_n("ttp"))
+    descriptor = str(card.get("descriptor") or "")
+    img = Image.new("RGBA", (W, H), _DC_BG + (255,))
+    _dc_glow(img, 120, 90, 520, PURPLE, 46)
+    _dc_glow(img, 1120, 600, 460, CYAN, 28)
+    _dc_chrome(img, {"eyebrow": card.get("eyebrow") or "DCPI · Power Index",
+                     "footer_tag": card.get("footer_tag") or ""})
+    d = ImageDraw.Draw(img); M = 68
+    nf = _font(58); d.text((M, 150), market, font=nf, fill=WHITE)
+    nw, _ = _dc_tw(d, market, nf)
+    vc = _verdict_color(verdict); vf = _mono(22); vw, _ = _dc_tw(d, verdict, vf)
+    vx = M + nw + 26
+    _rounded_rect(d, [vx, 158, vx + vw + 40, 200], 21, vc)
+    d.text((vx + 20, 166), verdict, font=vf, fill=BG)
+    _dc_text(d, (M, 222), (f"{iso} · DC HUB POWER INDEX" if iso else "DC HUB POWER INDEX"),
+             _mono(17), CYAN, tr=2)
+    gy = 280; gw = int((W - 2 * M - 60) / 2)
+    _dc_gauge(img, M, gy, gw, "Excess power", excess, 100, CYAN)
+    _dc_gauge(img, M + gw + 60, gy, gw, "Grid constraint", constraint, 100, PURPLE_LT)
+    d = ImageDraw.Draw(img)
+    ty = gy + 128
+    _rounded_rect(d, [M, ty, M + 270, ty + 64], 12, PANEL)
+    d.rectangle([M, ty + 12, M + 4, ty + 52], fill=CYAN)
+    d.text((M + 20, ty + 8), f"{ttp} mo", font=_font(34), fill=WHITE)
+    _dc_text(d, (M + 22, ty + 46), "TIME TO POWER", _mono(13), MUTED, tr=1)
+    if descriptor:
+        df = _font(27, bold=False); dy = ty - 4
+        for l in _dc_wrap(d, descriptor, df, W - 2 * M - 300)[:3]:
+            d.text((M + 300, dy), l, font=df, fill=TEXT); dy += 35
+    return img.convert("RGB")
+
+
 def _draw_data_card(pr):
     """Stat-forward capability card. Reads pr['card']={'kind':..,'nums':{..}};
     falls back to a generic number card from the title if the kind is unknown so
@@ -1419,6 +1485,8 @@ def _draw_data_card(pr):
     from PIL import Image, ImageDraw
     card = (pr or {}).get("card") or {}
     kind = card.get("kind") or (pr or {}).get("topic") or ""
+    if kind == "market":
+        return _dc_draw_market(card)
     spec = _dc_spec(kind, card.get("nums"))
     if spec is None:
         # generic fallback spec from the title/subheadline
@@ -1864,12 +1932,22 @@ def og_card_dynamic():
     # c=countries, tl=tools). Absent numbers fall back to canonical constants.
     _kind = (args.get('kind') or '').strip()[:48]
     if style == 'data_card' or _kind:
-        _nums = {}
-        for _k in ('v', 't', 'm', 'dl', 'c', 'tl'):
-            _vv = args.get(_k)
-            if _vv not in (None, ''):
-                _nums[_k] = _vv
-        pr['card'] = {'kind': _kind, 'nums': _nums}
+        if _kind == 'market':
+            # 2026-07-16: branded DCPI MARKET scorecard params.
+            _card = {'kind': 'market'}
+            for _k in ('market', 'iso', 'verdict', 'excess', 'constraint', 'ttp',
+                       'descriptor', 'eyebrow', 'footer_tag'):
+                _vv = args.get(_k)
+                if _vv not in (None, ''):
+                    _card[_k] = str(_vv)[:220]
+            pr['card'] = _card
+        else:
+            _nums = {}
+            for _k in ('v', 't', 'm', 'dl', 'c', 'tl'):
+                _vv = args.get(_k)
+                if _vv not in (None, ''):
+                    _nums[_k] = _vv
+            pr['card'] = {'kind': _kind, 'nums': _nums}
 
     try:
         fn = STYLE_MAP.get(style, _draw_editorial)
