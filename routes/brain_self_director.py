@@ -349,6 +349,68 @@ def _opportunity_candidates() -> list[dict]:
     return out
 
 
+def _eval_findings_candidates() -> list[dict]:
+    """Candidate agenda items from the AGENT-EVAL loop (model_relations shell #18).
+    Each platform's OWN flagship model pressure-tests the live DC Hub rail monthly
+    and writes model_relations_runs.verdict.top_structural_gap — the external
+    model's #1 concrete structural ask — plus http_5xx (a regression it observed).
+    Until now that verdict died in a human-triage queue nobody polls (the one seam
+    where 'an agent noticed friction' never reached 'the brain starts a fix'). This
+    routes the freshest changed/first-run gap per platform in as a PROPOSE-ONLY
+    investigation question — closing the notice->start-the-fix half of the loop
+    WITHOUT any autonomous shipping (still one human-reviewed agenda row). REUSE-
+    ONLY: reads model_relations_runs; never raises."""
+    out: list[dict] = []
+    conn = _conn()
+    if conn is None:
+        return out
+    try:
+        with conn.cursor() as cur:
+            # latest changed/first-run verdict per platform — the actionable ones
+            cur.execute(
+                "SELECT DISTINCT ON (platform) platform, verdict_diff, verdict, "
+                "http_5xx FROM model_relations_runs "
+                "WHERE verdict_diff IN ('changed', 'first_run') "
+                "  AND started_at >= NOW() - INTERVAL '45 days' "
+                "ORDER BY platform, started_at DESC")
+            rows = cur.fetchall()
+    except Exception as e:
+        logger.warning("brain_self_director: eval-findings scan failed: %s", e)
+        return out
+    finally:
+        try: conn.close()
+        except Exception: pass
+    import json as _json
+    for platform, diff, verdict, http_5xx in rows or []:
+        v = verdict if isinstance(verdict, dict) else {}
+        if isinstance(verdict, str):
+            try: v = _json.loads(verdict)
+            except Exception: v = {}
+        gap = (v.get("top_structural_gap") or "").strip()
+        if not gap:
+            continue
+        saw_5xx = bool(http_5xx and int(http_5xx) > 0)
+        title = f"agent-eval: {platform}'s #1 structural ask"
+        question = (
+            f"The {platform} flagship model, pressure-testing DC Hub's live API "
+            f"(model_relations, verdict_diff={diff}"
+            + (f", observed {http_5xx} new 5xx" if saw_5xx else "")
+            + f"), named its #1 structural gap: \"{gap[:400]}\". Beyond a one-off "
+            "patch, what single change would most address what this external agent flagged?"
+        )
+        # A NEW 5xx an external model observed on the live rail is a concrete
+        # reliability regression -> higher leverage than a prose structural ask.
+        out.append({
+            "kind": "eval_finding",
+            "title": title,
+            "question": question,
+            "area": "reliability" if saw_5xx else "developer_ux",
+            "leverage": 1.6 if saw_5xx else 1.2,
+            "source": "model_relations_runs",
+        })
+    return out
+
+
 # ════════════════════════════════════════════════════════════════════
 #  Anti-loop (2026-06-20): the brain was re-investigating the SAME topic
 #  every tick — e.g. 8+ data_coverage "where to verify facilities" agenda
@@ -536,6 +598,10 @@ def pick_agenda_item() -> Optional[dict]:
             candidates.extend(_opportunity_candidates())
         except Exception as e:
             logger.warning("brain_self_director: opportunity candidates failed: %s", e)
+        try:
+            candidates.extend(_eval_findings_candidates())
+        except Exception as e:
+            logger.warning("brain_self_director: eval-findings candidates failed: %s", e)
 
         if not candidates:
             return None
