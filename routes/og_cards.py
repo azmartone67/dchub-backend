@@ -242,6 +242,21 @@ def _verdict_for(signals: dict, fallback='BUILD'):
     return fallback
 
 
+def _has_market_verdict(signals) -> bool:
+    """2026-07-16: True ONLY when a REAL market verdict is present (an explicit
+    BUILD/CAUTION/AVOID on a market entry). The DCPI verdict pill is a MARKET
+    signal — on a capability/platform card it's nonsense (the "BUILD" pill on the
+    error-contract press card the operator flagged). Draw the pill only when this
+    is true, so non-market cards never get a spurious verdict."""
+    if not isinstance(signals, dict):
+        return False
+    top = (signals.get('top_build_markets') or [])
+    if not (top and isinstance(top, list) and isinstance(top[0], dict)):
+        return False
+    v = str(top[0].get('verdict') or '').strip().upper()
+    return v in ('BUILD', 'CAUTION', 'AVOID')
+
+
 def _safe_date_str(pr_date, fmt='%Y-%m-%d'):
     """Format a date-or-None pr['date'] value. Falls back to UTC today
     if missing/null so cards never show an empty timestamp line."""
@@ -1015,9 +1030,11 @@ def _compose_photo_hero(bg, pr):
     d.text((130, 84),  _safe_date_str(pr.get('date'), '%b %d, %Y').upper(),
            font=_mono(16), fill=CYAN)
 
-    # Verdict pill — top-right if applicable
+    # Verdict pill — top-right ONLY for real market verdicts (2026-07-16: never on
+    # capability/platform cards — that was the nonsense "BUILD" pill the operator
+    # flagged on the error-contract press card).
     signals = pr.get('signals', {}) if isinstance(pr.get('signals', {}), dict) else {}
-    if signals.get('top_build_markets'):
+    if _has_market_verdict(signals):
         verdict = _verdict_for(signals)
         _verdict_pill(d, x=W - 280, y=44, verdict=verdict,
                       font_size=36, pad_x=32, pad_y=14)
@@ -1113,9 +1130,9 @@ def _draw_ai_hero(pr):
     d.text((330, 248), 'MEDIA  ·  DAILY POWER INDEX',
            font=_mono(22), fill=CYAN)
 
-    # Verdict pill — only if signals present
+    # Verdict pill — only for a real market verdict (never on capability cards)
     signals = pr.get('signals', {}) if isinstance(pr.get('signals', {}), dict) else {}
-    if signals.get('top_build_markets'):
+    if _has_market_verdict(signals):
         verdict = _verdict_for(signals)
         _verdict_pill(d, x=W - 280, y=44, verdict=verdict, font_size=36, pad_x=32, pad_y=14)
 
@@ -1901,7 +1918,10 @@ def og_card_dynamic():
         entry = {
             'market': market or (args.get('title') or '')[:30],
             'excess': sc,
-            'verdict': verdict or 'BUILD',
+            # 2026-07-16: do NOT default to BUILD — a missing verdict means "not a
+            # market-verdict post", so the ai_hero pill (gated on _has_market_verdict)
+            # stays off. data_brutal still falls back to BUILD via _verdict_for.
+            'verdict': verdict,
         }
         # v3 scorecard: optional 0-100 constraint → second gauge bar
         try:
