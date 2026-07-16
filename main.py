@@ -28474,6 +28474,49 @@ def _periodic_gc_loop():
 
 _deferred_bg_threads.append(('Periodic GC', _periodic_gc_loop))
 
+
+def _ensure_facility_slug_indexes():
+    """r-slug-perf (2026-07-16): facility_by_slug (/api/v1/facilities/<slug> +
+    /facility/<slug>) filters on LEFT(MD5(provider||'|'||name),8) over
+    discovered_facilities AND a fallback over the `facilities` table.
+    discovered_facilities has idx_df_md5slug; `facilities` had NO matching
+    functional index — so the fallback seq-scanned on every discovered-miss,
+    holding pooled read conns until the read pool starved. Under crawler load
+    this produced the /api/v1/facilities/<slug> hard_burn (brain L14, n5xx~247)
+    that CF surfaces as 'Backend unreachable' 503. Ensure BOTH hash indexes
+    exist so both the primary and fallback lookups are index scans (short conn
+    hold). Uses its OWN raw connection (never the read pool it's protecting);
+    plain CREATE INDEX IF NOT EXISTS builds in ~1-2s on 15-22k rows and does
+    NOT block reads. Idempotent, fail-soft, never raises."""
+    try:
+        import psycopg2 as _pg
+    except Exception:
+        return
+    dsn = os.environ.get("DATABASE_URL") or os.environ.get("NEON_DATABASE_URL")
+    if not dsn:
+        return
+    _c = None
+    try:
+        _c = _pg.connect(dsn, connect_timeout=10)
+        _c.autocommit = True
+        cur = _c.cursor()
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_df_md5slug ON discovered_facilities "
+                    "((LEFT(MD5(COALESCE(provider,'')||'|'||COALESCE(name,'')),8)))")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_facilities_md5slug ON facilities "
+                    "((LEFT(MD5(COALESCE(provider,'')||'|'||COALESCE(name,'')),8)))")
+        cur.close()
+        logger.info("✅ facility slug-hash indexes ensured (idx_df_md5slug, idx_facilities_md5slug)")
+    except Exception as _e:
+        logger.warning("facility slug-index ensure failed (non-fatal): %s", _e)
+    finally:
+        if _c:
+            try: _c.close()
+            except Exception: pass
+
+# Run FIRST in the staggered launch (insert at 0 → no 15s pre-stagger) so the
+# /facilities/<slug> hot path gets its index ASAP after a deploy.
+_deferred_bg_threads.insert(0, ('Facility Slug Indexes', _ensure_facility_slug_indexes))
+
 @app.route('/api/uptime-check', methods=['GET'])
 def uptime_check():
     proc = _psutil_mod.Process(os.getpid())

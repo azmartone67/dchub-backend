@@ -90,6 +90,13 @@ indexes = [
      "CREATE INDEX IF NOT EXISTS idx_df_id_text ON discovered_facilities ((CAST(id AS TEXT)))"),
     ("idx_df_md5slug",
      "CREATE INDEX IF NOT EXISTS idx_df_md5slug ON discovered_facilities ((LEFT(MD5(COALESCE(provider,'')||'|'||COALESCE(name,'')),8)))"),
+
+    # facilities-table twin of idx_df_md5slug — facility_by_slug's fallback
+    # query (WHERE LEFT(MD5(provider|name),8)=%s over `facilities`) was
+    # unindexed, seq-scanning under crawler load and starving the read pool
+    # (the /api/v1/facilities/<slug> hard_burn). 2026-07-16.
+    ("idx_facilities_md5slug",
+     "CREATE INDEX IF NOT EXISTS idx_facilities_md5slug ON facilities ((LEFT(MD5(COALESCE(provider,'')||'|'||COALESCE(name,'')),8)))"),
     ("idx_df_nameslug",
      "CREATE INDEX IF NOT EXISTS idx_df_nameslug ON discovered_facilities ((LOWER(REPLACE(REPLACE(COALESCE(name,''),' ','-'),',',''))))"),
     ("idx_df_canonical_slug",
