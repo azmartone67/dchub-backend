@@ -93,7 +93,7 @@ def init_carrier_tables(get_db):
                 facility_country TEXT,
                 facility_lat DOUBLE PRECISION,
                 facility_lng DOUBLE PRECISION,
-                dchub_facility_id INTEGER,
+                dchub_facility_id TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(carrier_pdb_id, facility_pdb_id)
@@ -155,15 +155,29 @@ def init_carrier_tables(get_db):
             )
         """)
 
-        # Migration: fix column types from INTEGER to TEXT if needed
+        # Migration: fix column types from INTEGER to TEXT if needed.
+        # r-fiberreg (2026-07-16): check information_schema first — this now
+        # runs at every boot via register_fiber_intelligence, and an
+        # unconditional ALTER takes an ACCESS EXCLUSIVE lock each time (the
+        # boot-DDL statement-timeout storm that flakes healthchecks).
+        # dchub_facility_id: DC Hub facility ids are hex text (MD5 slugs);
+        # INTEGER made every dchub-matched upsert error, freezing the
+        # link backfill (prod column ALTERed 2026-07-16 — keep in sync).
         for tbl, col in [
             ('carrier_profiles', 'pdb_id'),
             ('carrier_facility_presence', 'carrier_pdb_id'),
             ('carrier_facility_presence', 'facility_pdb_id'),
+            ('carrier_facility_presence', 'dchub_facility_id'),
         ]:
             try:
-                c.execute(f"ALTER TABLE {tbl} ALTER COLUMN {col} TYPE TEXT USING {col}::TEXT")
-                logger.info(f"  ✅ Migrated {tbl}.{col} to TEXT")
+                c.execute("""
+                    SELECT data_type FROM information_schema.columns
+                    WHERE table_name = %s AND column_name = %s
+                """, (tbl, col))
+                row = c.fetchone()
+                if row and row[0] != 'text':
+                    c.execute(f"ALTER TABLE {tbl} ALTER COLUMN {col} TYPE TEXT USING {col}::TEXT")
+                    logger.info(f"  ✅ Migrated {tbl}.{col} to TEXT")
             except Exception:
                 conn.rollback()  # rollback failed ALTER so next statement works
 

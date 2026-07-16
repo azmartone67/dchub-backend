@@ -1437,6 +1437,13 @@ _WORKER_PROXY_POST_PATHS = frozenset({
     '/api/deals/refresh',
     '/api/facilities/refresh',       # 3-source synchronous discovery crawl
     '/api/jobs/fiber-sync',          # PeeringDB+HIFLD+OSM, observed 117s
+    # r-fiberreg (2026-07-16): fiber_integration sync triggers — PeeringDB
+    # bulk pulls + coverage-zone rebuild run minutes. Deliberately NOT in
+    # _WORKER_PROXY_SYNC_PATHS: callers get the (5,15) 202 relay and the
+    # worker finishes the job (kmz-discovery precedent).
+    '/api/jobs/carrier-sync',
+    '/api/jobs/subsea-sync',
+    '/api/jobs/fiber-full-sync',
     '/api/jobs/permit-scraper',      # subprocess scraper
     '/api/jobs/sec-parser',          # subprocess EDGAR parser
     # routes/jobs_routes.py cron endpoints
@@ -34282,6 +34289,19 @@ try:
     app.register_blueprint(connectivity_score_bp)
 except Exception as _cs_e:
     print(f"[main] connectivity_score register failed: {_cs_e}", file=sys.stderr)
+
+# r-fiberreg (2026-07-16): fiber intelligence layer (subsea cables, PeeringDB
+# carriers, fiber coverage zones) — orphaned in the api_server→main.py
+# migration, which froze carrier_facility_presence on 2026-05-19. Registers
+# the /api/v1/subsea/*, /api/v1/carriers*, /api/v1/fiber/{coverage,nearby,
+# summary} reads plus the internal-key-gated /api/jobs/{subsea,carrier,
+# fiber-full}-sync triggers (worker-delegated via _WORKER_PROXY_POST_PATHS).
+try:
+    from fiber_integration import register_fiber_intelligence
+    register_fiber_intelligence(app, get_db)
+    print("[main] fiber_intelligence registered: /api/v1/carriers*, /api/v1/subsea/*, /api/jobs/carrier-sync", flush=True)
+except Exception as _fi_e:
+    print(f"[main] fiber_intelligence register failed: {_fi_e}", file=sys.stderr)
 
 # Durable MCP full-answer cap counter (/api/v1/mcp/full-cap/*) — persists the
 # per-identity per-tool daily full-answer count in Postgres so the MCP server's

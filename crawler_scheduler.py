@@ -742,6 +742,15 @@ SCHEDULE = [
     # feedback_triage 8/20 sharing with deals).
     (15,  3, "sales_outreach_detect",
               "_run_sales_outreach_detect"),
+    # r-fiberreg (2026-07-16): weekly PeeringDB carrier↔facility sync.
+    # fiber_integration.py was orphaned in the api_server→main.py migration,
+    # so carrier_facility_presence froze 2026-05-19 — this is the schedule
+    # entry that never existed. Same-hour pair caps to one run per UTC day;
+    # the runner gates internally to Sunday (the harness is hour-based, not
+    # weekly — watchlist_weekly_digest pattern). 04:00 UTC Sunday is
+    # off-peak (Saturday night US) and shares the hour only with the quick
+    # gas_pricing_refresh + brain_self_perception runs.
+    ( 4,  4, "carrier_facility_sync", "_run_carrier_facility_sync"),
 ]
 
 # ---------------------------------------------------------------------------
@@ -3452,6 +3461,55 @@ def _run_ai_surface_sentinel():
         logger.error("🛰️ ai_surface_sentinel: error — %s", e)
 
 
+def _run_carrier_facility_sync():
+    """Weekly PeeringDB carrier↔facility sync (r-fiberreg 2026-07-16).
+    Refreshes carrier_profiles, the carrier_facility_presence link table
+    (incl. the dchub_facility_id hex-id backfill) and fiber_coverage_zones.
+    Self-gates to Sundays (weekday()==6) — the SCHEDULE harness is
+    hour-based, not weekly (watchlist_weekly_digest pattern). Loopback POST
+    so the same internal-key gate serves cron and manual triggers; the
+    scheduler is worker-only, so this runs locally on the worker (no
+    delegation). PeeringDB rate-limits anonymous bulk pulls after ~one per
+    hours — set PEERINGDB_API_KEY on Railway for reliable weekly runs
+    (carrier_facility_ingestion._pdb_fetch sends it when present). Never
+    raises."""
+    import requests as _rq
+    now = datetime.now(timezone.utc)
+    if now.weekday() != 6:  # 6 == Sunday
+        logger.info(
+            "🔌 carrier_facility_sync: skipped — weekly gate "
+            "(today=%s, runs Sundays only)",
+            now.strftime("%A"),
+        )
+        return
+    key = (os.environ.get("DCHUB_INTERNAL_KEY")
+           or os.environ.get("DCHUB_SYNC_KEY")
+           or os.environ.get("DCHUB_ADMIN_KEY") or "")
+    if not key:
+        logger.warning("🔌 carrier_facility_sync: skipped — no internal key env set")
+        return
+    base = (os.environ.get("DCHUB_INTERNAL_API", "http://127.0.0.1:8080") or "").strip()  # strip(): trailing \n in env → %0a in URL → NameResolutionError
+    try:
+        r = _rq.post(
+            f"{base}/api/jobs/carrier-sync",
+            headers={"X-Internal-Key": key,
+                     "User-Agent": "dchub-cron-carrier-sync/1.0"},
+            timeout=1500,  # PeeringDB bulk pulls run minutes; < HARD_TIMEOUT_SECONDS
+        )
+        d = (r.json() if r.headers.get("content-type", "").startswith("application/json") else {}) or {}
+        cf = d.get("carrier_facilities") or {}
+        logger.info(
+            "🔌 carrier_facility_sync: status=%s success=%s "
+            "carriers_upserted=%s links_upserted=%s matched_to_dchub=%s zones=%s",
+            r.status_code, d.get("success"),
+            (d.get("carriers") or {}).get("upserted"),
+            cf.get("upserted"), cf.get("matched_to_dchub"),
+            (d.get("coverage_zones") or {}).get("zones_created"),
+        )
+    except Exception as e:
+        logger.error("🔌 carrier_facility_sync: error — %s", e)
+
+
 _RUNNERS = {
     "market_refresh":      _run_market_refresh,
     "news":                _run_news_crawler,
@@ -3487,6 +3545,7 @@ _RUNNERS = {
     "feedback_triage":     _run_feedback_triage,
     "brain_feature_proposer": _run_brain_feature_proposer,
     "sales_outreach_detect":  _run_sales_outreach_detect,
+    "carrier_facility_sync":  _run_carrier_facility_sync,
     "expired_onetime_demote": _run_expired_onetime_demote,
     "verdict_shift_post":  _run_verdict_shift_post,
     "weekly_newsletter":   _run_weekly_newsletter,
