@@ -2322,6 +2322,19 @@ try:
     except Exception as _qfw:
         import logging
         logging.getLogger(__name__).warning('qa_fixwave_master_shell wiring failed: %s', _qfw)
+    # 2026-07-16: Roadmap master shell (#23) — ONE ranked NOW/NEXT/LATER backlog
+    # over the four federated idea stores (brain_enhancement_proposals graded+open,
+    # brain_self_agenda, brain_strategic_recommendations dup-grouped, and the
+    # agent-onboarding distribution worklist) + a shipped-pillars context lane.
+    # READ-ONLY (replica-preferred reads; no writes, no self-requests).
+    # Kill: ROADMAP_SHELL_DISABLED=1. GET /admin/roadmap
+    try:
+        from routes.roadmap_master_shell import roadmap_master_shell_bp
+        app.register_blueprint(roadmap_master_shell_bp)
+        print("[main] roadmap_master_shell_bp registered: GET /admin/roadmap", flush=True)
+    except Exception as _rdm:
+        import logging
+        logging.getLogger(__name__).warning('roadmap_master_shell wiring failed: %s', _rdm)
     # 2026-07-03: brain context-assembly RAG — pgvector + Cohere embeddings over
     # the brain corpus (findings + recommendations). Gives the strategic planner
     # semantic RECALL of prior work. POST /api/v1/admin/brain/rag/reindex. Dark
