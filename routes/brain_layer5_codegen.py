@@ -284,7 +284,7 @@ def propose():
                 INSERT INTO brain_layer5_proposals
                     (error_class, finding_url, finding_detail, file_context,
                      proposal_md, model, status)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
                 RETURNING id
             """, (error_class, finding_url, finding_detail,
                   (file_context[:6000] if file_context else None),
