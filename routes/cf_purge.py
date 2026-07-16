@@ -81,6 +81,21 @@ def purge_markets_fix():
     ])), 200
 
 
+@cf_purge_bp.route("/api/v1/cf/purge/frontend-static", methods=["GET", "POST"])
+def purge_frontend_static():
+    """One-shot: purge the versionless frontend static assets that the CF edge
+    pins stale after a Pages deploy (nav.js, homepage, llms.txt, sitemap.xml) —
+    e.g. a nav change shipped but /js/dchub-nav.js kept serving the old copy
+    (cf-cache HIT, growing age) despite max-age=0. Public GET, idempotent +
+    read-side, same rationale as purge/markets-fix above."""
+    return jsonify(_purge_urls([
+        "https://dchub.cloud/js/dchub-nav.js",
+        "https://dchub.cloud/",
+        "https://dchub.cloud/llms.txt",
+        "https://dchub.cloud/sitemap.xml",
+    ])), 200
+
+
 def _cf_get(path: str) -> dict:
     """Helper: GET against CF API. Returns parsed JSON or error dict."""
     if not _CF_API_TOKEN:
