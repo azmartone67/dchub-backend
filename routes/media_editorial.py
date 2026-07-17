@@ -101,10 +101,19 @@ def _internal(path: str, timeout: int = 6) -> dict:
 
 # ── The number gate ──────────────────────────────────────────────────
 _YEAR_ONLY = re.compile(r"^\D*(?:19|20)\d{2}\D*$")
+# r-agent-demand (2026-07-17): agents/tools/countries/platforms were MISSING
+# units, so this gate silently DROPPED legitimate analyst leads — including our
+# own canonical honest numbers ("73 tools", "180 countries") and every
+# agent-demand lead ("202 agents asked for grid intelligence"). That is the same
+# starvation that forced all 6 capability headlines to be rewritten, and it is
+# why agent-demand — the ONE dataset that actually MOVES and moves UP (DCPI is
+# flat: 0.0 net change over 41 daily snapshots) — could never reach the feed.
 _HAS_METRIC = re.compile(
     r"\d[\d,\.]*\s*(?:%|pts?|GW|MW|kW|bps|x|×|"
     r"billion|million|B\b|M\b|markets?|facilit|deals?|MGD|gal|"
-    r"months?|weeks?|days?|points?|\$)|"
+    r"months?|weeks?|days?|points?|"
+    r"agents?|tools?|countries|country|platforms?|"
+    r"\$)|"
     r"\$\s*\d|\d[\d,\.]*\s*(?:per|/)",
     re.IGNORECASE,
 )
@@ -144,6 +153,20 @@ def leads_with_number(text: str, head_chars: int = 220) -> bool:
 #   queue    "ERCOT's interconnection queue holds 427 GW ..."
 #   facility "... 18 MW ... entered the tracker"
 _KIND_PATTERNS = [
+    # r-agent-demand (2026-07-17): what AI agents actually ASKED infrastructure
+    # for — the one angle nobody else on earth can publish, and the only dataset
+    # whose numbers MOVE and move UP (DCPI is flat: 41 daily snapshots, 0.0 net
+    # change, so "how it moved vs last week" is unanswerable from it). FIRST so a
+    # tool name containing "grid"/"fiber" cannot misclassify as interconnection.
+    # ★ PRIVACY (enforced upstream at the puller, never in prose): aggregate
+    # distinct-agent counts ONLY. NEVER tool params (lat/lon + capacity_mw is a
+    # customer's live site search), NEVER free-text queries, NEVER a named
+    # platform's scores (Model Relations #18 is internal-only), and k-anonymity
+    # >= 5 distinct agents or the tool is suppressed (several tools have n=1,
+    # which would identify one customer). Counts must come from
+    # mcp_calls_identity real-external rows — mcp_call_log is ~30x inflated by
+    # internal traffic and must never be published.
+    ("agent_demand",    re.compile(r"\bagents? (?:asked|queried|called|requested)|distinct agents?|agent demand|agents? (?:this|last) (?:week|month)|queried (?:us|dc hub)", re.I)),
     # r-tenant (2026-06-22): the uncontested moat — per-facility occupier data no
     # analyst PDF or directory publishes. FIRST so its "MW" mention doesn't
     # misclassify as new_facility; tenant-specific tokens won't match other leads.
@@ -763,6 +786,11 @@ except Exception:
 # rotation-weight bump. Unmapped kinds default to neutral. (grep-confirmed: the
 # tuner was armed + cron-live but NO poster-path code read media_topic_mix.)
 _KIND_TO_TOPIC = {
+    # r-agent-demand (2026-07-17): must be mapped or the kind gets NO learned
+    # engagement weight and silently loses selection forever (_engagement_weights
+    # keys off the mapped topic). Rides "industry_pulse" — it IS the pulse of who
+    # is actually building, read off real demand rather than a static index.
+    "agent_demand":     "industry_pulse",
     "dcpi_build":       "dcpi_verdict",
     "dcpi_mover":       "verdict_shift",
     "deal":             "ma_transaction",
