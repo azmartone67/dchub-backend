@@ -9600,9 +9600,15 @@ CREATE TABLE IF NOT EXISTS brain_findings (
     url          TEXT NOT NULL DEFAULT '',
     count        INTEGER,
     detail       TEXT,
+    detector     TEXT,
+    status       TEXT NOT NULL DEFAULT 'open',
+    resolved_at  TIMESTAMPTZ,
     first_seen   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     last_seen    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     seen_count   INTEGER NOT NULL DEFAULT 1,
+    episode_count      INTEGER NOT NULL DEFAULT 1,
+    episode_seen_count INTEGER NOT NULL DEFAULT 1,
+    episode_started_at TIMESTAMPTZ,
     UNIQUE (issue, url)
 );
 CREATE INDEX IF NOT EXISTS brain_findings_last_seen_idx
@@ -9756,6 +9762,17 @@ def _persist_findings_to_db(findings: list[dict], full_sweep: bool = False) -> i
                 # radar's open findings. Only the canonical full radar sweep
                 # passes full_sweep=True, where "open + stale last_seen" really
                 # does mean "not re-detected this sweep".
+                # EPISODE SCOPING (stateful-detector layer, 2026-07-17): the
+                # 2-min absence window is only valid for findings THIS sweep
+                # could have re-detected — the radar's own. Other detectors
+                # (fast_qa, master shells, sentinels…) write on slower
+                # cadences; resolving their rows 2 min after each write
+                # churned them resolved→open every cycle, which under episode
+                # semantics would mint a fake new episode per sighting (the
+                # exact inflation the episode ledger exists to kill). Radar
+                # rows keep the per-sweep window; foreign/NULL-detector rows
+                # only resolve after 24h of silence (detector had many
+                # chances to re-emit and didn't → the incident really ended).
                 if full_sweep and _persist_savepoint(cur, "bf_resolve_absent"):
                     try:
                         cur.execute("""
@@ -9763,7 +9780,9 @@ def _persist_findings_to_db(findings: list[dict], full_sweep: bool = False) -> i
                                SET status = 'resolved',
                                    resolved_at = NOW()
                              WHERE status = 'open'
-                               AND last_seen < NOW() - INTERVAL '2 minutes'
+                               AND ((detector = 'consistency_radar'
+                                     AND last_seen < NOW() - INTERVAL '2 minutes')
+                                    OR last_seen < NOW() - INTERVAL '24 hours')
                         """)
                         resolved_now = cur.rowcount or 0
                         _persist_release_sp(cur, "bf_resolve_absent")

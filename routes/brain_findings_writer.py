@@ -32,6 +32,27 @@ This module is the ONE place that writes brain_findings. It:
 
 All brain_findings writers should call upsert_brain_finding(cur, ...)
 instead of hand-rolling an INSERT. New writers: import this, done.
+
+EPISODE SEMANTICS (stateful-detector layer, 2026-07-17): detectors are
+stateless probes that re-emit the same finding every scan cycle, which
+used to bump seen_count per cycle (max observed: 1463 on a single
+month-open finding). A finding row is now an EPISODE ledger:
+
+  open ──(re-observation)──> still-observed ──(absence/resolve)──> resolved
+    └────────────(re-detect after resolved = NEW episode)◄────────────┘
+
+  · still-observed (row open, resolved_at NULL): bump last_seen +
+    episode_seen_count ONLY. seen_count does NOT move.
+  · reopen (row resolved, re-detected): episode_count += 1,
+    seen_count += 1, episode_seen_count resets to 1,
+    episode_started_at restamps. seen_count therefore counts
+    EPISODES ("recurred ×N incidents"), not scan cycles.
+  · explicit resolve (status='resolved'/'wont_fix'/'dismissed'):
+    transition only — stamps resolved_at if unset, no count bumps
+    (a resolve is not a sighting).
+
+The runaway guard keys on episode_seen_count (sightings within the
+current episode without resolution) — its original documented meaning.
 """
 import logging
 from routes._swallowed_writes import note_swallowed_write
@@ -40,7 +61,21 @@ logger = logging.getLogger(__name__)
 
 # Process-level schema cache. Re-introspected only if a write hits a
 # missing-column error (defensive against an ALTER landing mid-run).
-_schema = {"ensured": False, "cols": set(), "has_seen_count": False}
+_schema = {"ensured": False, "cols": set(), "has_seen_count": False,
+           "has_episodes": False}
+
+# Episode-ledger columns (stateful-detector layer). Added idempotently by
+# _ensure_schema, same self-heal pattern as the seen_count restore.
+_EPISODE_COL_DDL = (
+    ("episode_count",      "INTEGER NOT NULL DEFAULT 1"),
+    ("episode_seen_count", "INTEGER NOT NULL DEFAULT 1"),
+    ("episode_started_at", "TIMESTAMPTZ"),
+)
+# Episode UPDATE logic reads these pre-existing columns too; without any
+# of them we fall back to the legacy bump-per-sighting behavior.
+_EPISODE_REQUIRED = {"episode_count", "episode_seen_count",
+                     "episode_started_at", "status", "resolved_at",
+                     "first_seen", "seen_count"}
 
 
 def _savepoint(cur, name: str):
@@ -96,8 +131,41 @@ def _ensure_schema(cur, force: bool = False) -> None:
                 _rollback_sp(cur, "bfw_alter")
                 logger.warning("brain_findings_writer: could not add "
                                "seen_count: %s", e)
+    # Episode-ledger columns: add any that are missing (idempotent, no
+    # table rewrite — constant defaults are metadata-only in PG 11+).
+    ep_missing = [c for c, _ in _EPISODE_COL_DDL if c not in cols] if cols else []
+    if ep_missing:
+        if _savepoint(cur, "bfw_alter_episode"):
+            try:
+                for cname, ctype in _EPISODE_COL_DDL:
+                    cur.execute(
+                        f"ALTER TABLE brain_findings "
+                        f"ADD COLUMN IF NOT EXISTS {cname} {ctype}")
+                cols.update(c for c, _ in _EPISODE_COL_DDL)
+                _release_sp(cur, "bfw_alter_episode")
+                logger.info("brain_findings_writer: added episode columns %s",
+                            ep_missing)
+            except Exception as e:
+                _rollback_sp(cur, "bfw_alter_episode")
+                logger.warning("brain_findings_writer: could not add episode "
+                               "columns: %s", e)
+        # Backfill: pre-existing rows date their current episode from
+        # first_seen (their episode_seen_count starts at the DEFAULT 1 and
+        # climbs honestly from here — the legacy inflated seen_count is
+        # left frozen as history). Own savepoint so a backfill failure
+        # can't undo the column ADDs above.
+        if "episode_started_at" in cols and _savepoint(cur, "bfw_ep_backfill"):
+            try:
+                cur.execute(
+                    "UPDATE brain_findings SET episode_started_at = "
+                    "COALESCE(first_seen, NOW()) "
+                    "WHERE episode_started_at IS NULL")
+                _release_sp(cur, "bfw_ep_backfill")
+            except Exception:
+                _rollback_sp(cur, "bfw_ep_backfill")
     _schema["cols"] = cols
     _schema["has_seen_count"] = "seen_count" in cols
+    _schema["has_episodes"] = _EPISODE_REQUIRED <= cols
     _schema["ensured"] = True
 
 
@@ -125,6 +193,11 @@ def _maybe_quarantine_runaway(cur, issue: str, url: str,
     register it in brain_pattern_quarantine so the autopilot bench list
     suppresses it. Returns True if it ADDED a new quarantine row this
     call. Idempotent — repeated calls are no-ops once registered.
+
+    seen_count_after is sightings-without-resolution: on episode-aware
+    schemas the caller passes episode_seen_count (resets when an episode
+    resolves, so a recurring-but-resolving finding never trips this);
+    on legacy schemas it's the all-time seen_count.
 
     A finding marked resolved/wont_fix is exempt — only runaway 'open'
     findings get suppressed. The autopilot's existing 24h auto-release
@@ -209,35 +282,78 @@ def upsert_brain_finding(cur, issue: str, url: str = "", count: int = 1,
 
     # ── 1. UPDATE existing row (recurrence) ──
     if _savepoint(cur, "bfw_upd"):
+        has_ep = _schema["has_episodes"]
+        resolved_like = status in ("resolved", "wont_fix", "dismissed")
         set_parts = ["count = %s", "detail = %s"]
         params = [count, detail]
         if "last_seen" in cols:
             set_parts.append("last_seen = NOW()")
-        if has_sc:
-            set_parts.append("seen_count = COALESCE(seen_count, 1) + 1")
-        if "status" in cols:
-            set_parts.append("status = %s")
+        if has_ep and not resolved_like:
+            # EPISODE semantics (see module docstring). The CASE reads the
+            # row's PRE-update values (PG evaluates SET right-hand sides
+            # against the old row): an open, unresolved row is the same
+            # ongoing episode — absorb the re-observation (last_seen +
+            # episode_seen_count only, seen_count frozen). Anything else
+            # (auto-resolved by the radar's absence sweep, explicitly
+            # resolved, or a stale open+resolved_at inconsistency) means
+            # the incident went away and came back: a NEW episode —
+            # seen_count/episode_count move exactly once per episode.
+            still = "status = 'open' AND resolved_at IS NULL"
+            set_parts += [
+                f"seen_count = CASE WHEN {still} THEN COALESCE(seen_count, 1)"
+                f" ELSE COALESCE(seen_count, 1) + 1 END",
+                f"episode_count = CASE WHEN {still}"
+                f" THEN COALESCE(episode_count, 1)"
+                f" ELSE COALESCE(episode_count, 1) + 1 END",
+                f"episode_seen_count = CASE WHEN {still}"
+                f" THEN COALESCE(episode_seen_count, 1) + 1 ELSE 1 END",
+                f"episode_started_at = CASE WHEN {still}"
+                f" THEN COALESCE(episode_started_at, first_seen)"
+                f" ELSE NOW() END",
+                "status = %s",
+                # Reopen handling (durable-findings r-incentives): clear the
+                # stamp so the row never reads both open and resolved.
+                "resolved_at = NULL",
+            ]
             params.append(status)
-        # Reopen handling (durable-findings r-incentives): a finding that
-        # re-detects after having been auto-resolved must clear its
-        # resolved_at stamp, otherwise it reads as both open (status) and
-        # resolved (resolved_at non-NULL) → the open/resolved trajectory
-        # double-counts it. Only clear on a re-detect that is itself
-        # "open" (the normal scan path); an explicit resolve/wont_fix
-        # upsert keeps any prior resolved_at. Degrades safely if the
-        # column is absent (older schema) — the clause is just skipped.
-        if "resolved_at" in cols and status not in (
-                "resolved", "wont_fix", "dismissed"):
-            set_parts.append("resolved_at = NULL")
+        elif has_ep and resolved_like:
+            # Explicit resolve/wont_fix/dismiss = a state TRANSITION, not a
+            # sighting: no count bumps. Stamp resolved_at if the caller is
+            # the first to close this episode (fast_qa-style resolvers
+            # never stamped it before, starving the open→resolved
+            # trajectory metric).
+            set_parts += ["status = %s",
+                          "resolved_at = COALESCE(resolved_at, NOW())"]
+            params.append(status)
+        else:
+            # Legacy path (episode columns unavailable): original
+            # bump-per-sighting behavior, unchanged.
+            if has_sc:
+                set_parts.append("seen_count = COALESCE(seen_count, 1) + 1")
+            if "status" in cols:
+                set_parts.append("status = %s")
+                params.append(status)
+            # Reopen handling (durable-findings r-incentives): a finding that
+            # re-detects after having been auto-resolved must clear its
+            # resolved_at stamp, otherwise it reads as both open (status) and
+            # resolved (resolved_at non-NULL) → the open/resolved trajectory
+            # double-counts it. Only clear on a re-detect that is itself
+            # "open" (the normal scan path); an explicit resolve/wont_fix
+            # upsert keeps any prior resolved_at. Degrades safely if the
+            # column is absent (older schema) — the clause is just skipped.
+            if "resolved_at" in cols and not resolved_like:
+                set_parts.append("resolved_at = NULL")
         params += [issue, url]
         try:
-            # RETURNING lets the runaway guard see the post-update
-            # seen_count + live status without a second round trip.
+            # RETURNING lets the runaway guard see the post-update counts +
+            # live status without a second round trip.
             ret_cols = []
             if has_sc:
                 ret_cols.append("seen_count")
             if "status" in cols:
                 ret_cols.append("status")
+            if has_ep:
+                ret_cols.append("episode_seen_count")
             ret_clause = (" RETURNING " + ", ".join(ret_cols)) if ret_cols else ""
             cur.execute(
                 f"UPDATE brain_findings SET {', '.join(set_parts)} "
@@ -247,12 +363,19 @@ def upsert_brain_finding(cur, issue: str, url: str = "", count: int = 1,
             _release_sp(cur, "bfw_upd")
             if rc and rc > 0:
                 if row and ret_cols:
-                    seen_after = int(row[0]) if has_sc else 0
-                    status_after = (row[1] if "status" in cols and len(row) > 1
-                                    else status)
+                    retvals = dict(zip(ret_cols, row))
+                    status_after = retvals.get("status") or status
+                    # Guard input: sightings within the CURRENT episode
+                    # (episode_seen_count) — the guard's documented "N
+                    # sightings without resolution". Falls back to the
+                    # legacy all-time seen_count on old schemas.
+                    guard_seen = retvals.get("episode_seen_count")
+                    if guard_seen is None:
+                        guard_seen = retvals.get("seen_count") or 0
                     try:
                         _maybe_quarantine_runaway(
-                            cur, issue, url, seen_after, status_after or status)
+                            cur, issue, url, int(guard_seen),
+                            status_after or status)
                     except Exception:
                         pass
                 return "updated"
@@ -269,9 +392,14 @@ def upsert_brain_finding(cur, issue: str, url: str = "", count: int = 1,
             vals["status"] = status
         if has_sc:
             vals["seen_count"] = 1
+        # Episode ledger: a brand-new finding opens episode #1. (The
+        # `use` filter below drops these on pre-episode schemas.)
+        vals["episode_count"] = 1
+        vals["episode_seen_count"] = 1
         use = {c: v for c, v in vals.items() if c in cols}
         icols = list(use)
-        now_cols = [c for c in ("first_seen", "last_seen") if c in cols]
+        now_cols = [c for c in ("first_seen", "last_seen",
+                                "episode_started_at") if c in cols]
         collist = ", ".join(icols + now_cols)
         ph = ", ".join(["%s"] * len(icols) + ["NOW()"] * len(now_cols))
         try:

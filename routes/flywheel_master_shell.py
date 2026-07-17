@@ -199,15 +199,31 @@ def _lane_brain_backlog(c) -> list[dict]:
                       (nfind < 2000) if nfind is not None else None,
                       f"{nfind} distinct open/recent findings" if nfind is not None else "query failed"))
 
-    # 2b — GAUGE: max re-emit magnitude. seen_count still climbs because the
-    # DETECTORS re-fire per-cycle (per-episode logic not yet shipped). Shown
-    # as informational; the runaway quarantine trips at 200.
-    maxseen = _scalar(c, "SELECT COALESCE(MAX(seen_count),0) FROM brain_findings "
-                         "WHERE last_seen >= now() - interval '7 days'")
-    out.append(_check("bl_reemit_gauge", "top detector re-emit count (per-episode logic pending)",
-                      None,
-                      f"max seen_count = {maxseen} (stateful-detector actuator not yet shipped)"
-                      if maxseen is not None else "no seen_count column"))
+    # 2b — max re-emit PER EPISODE (stateful-detector layer, 2026-07-17):
+    # detectors still re-fire per-cycle, but the canonical writer now absorbs a
+    # re-observation into the OPEN episode (last_seen + episode_seen_count only);
+    # seen_count/episode_count move once per episode (reopen-after-resolve).
+    # Headline = max re-emits absorbed by one CURRENT episode — resets when the
+    # episode resolves, so it's bounded by episode lifetime, not all-time (the
+    # old accumulator hit 1463). Runaway quarantine still trips at 200
+    # consecutive sightings (now fed episode_seen_count — its real semantics).
+    maxep = _scalar(c, "SELECT COALESCE(MAX(episode_seen_count),0) FROM brain_findings "
+                       "WHERE last_seen >= now() - interval '7 days'")
+    # PASS = episode integrity on fresh rows: a finding born after the layer
+    # shipped keeps seen_count == its episode count. Pre-fix per-cycle inflation
+    # ran ~45/day (would blow past 100 in <3 days); 100+ episodes in 7d = real
+    # flap pathology worth a red. Born-before-ship rows carry frozen legacy
+    # inflation, so clamp the window to post-ship births (clamp is inert after
+    # 2026-07-25 when the rolling 7d window passes it).
+    newmax = _scalar(c, "SELECT MAX(seen_count) FROM brain_findings "
+                        "WHERE first_seen >= GREATEST(now() - interval '7 days', "
+                        "TIMESTAMPTZ '2026-07-18')")
+    out.append(_check("bl_reemit_per_episode", "max re-emit per episode (stateful detectors live)",
+                      (int(newmax or 0) < 100) if maxep is not None else None,
+                      f"max re-emits absorbed by one open episode = {maxep} · "
+                      f"max seen_count on post-ship-born rows = {newmax or 0} "
+                      f"(counts episodes now, not scan cycles; <100 = healthy)"
+                      if maxep is not None else "episode columns not live yet"))
 
     # 2c — backlog DRAINING (r-probe-fix 2026-07-07): measure real THROUGHPUT —
     # rows actually drained (discovered_facilities.merged_at stamped) in the last
