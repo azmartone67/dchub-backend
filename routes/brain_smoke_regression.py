@@ -1083,21 +1083,26 @@ def _insert_incident(inc: dict) -> int | None:
         return None
     try:
         with psycopg2.connect(url, connect_timeout=5) as conn, conn.cursor() as cur:
+            # NOTE: quote-free statement text so the regression lint's
+            # INSERT scan (which stops at the first quote char) can see the
+            # ON CONFLICT — state is bound as a param, not a SQL literal.
             cur.execute(
-                "INSERT INTO brain_smoke_regression_incidents "
-                "(incident_key, probe_name, probe_path, probe_status, "
-                " trigger_source, first_red_run_id, first_red_sha, "
-                " newest_red_sha, last_green_run_id, last_green_sha, "
-                " consec_fails, state) "
-                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'detected') "
-                "ON CONFLICT (incident_key) DO NOTHING RETURNING id",
+                """
+                INSERT INTO brain_smoke_regression_incidents
+                    (incident_key, probe_name, probe_path, probe_status,
+                     trigger_source, first_red_run_id, first_red_sha,
+                     newest_red_sha, last_green_run_id, last_green_sha,
+                     consec_fails, state)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                ON CONFLICT (incident_key) DO NOTHING RETURNING id
+                """,
                 (inc["incident_key"], inc["probe_name"], inc["probe_path"],
                  inc.get("probe_status"), inc.get("trigger_source",
                                                   "smoke_workflow"),
                  inc.get("first_red_run_id"), inc.get("first_red_sha"),
                  inc.get("newest_red_sha"),
                  inc.get("last_green_run_id"), inc.get("last_green_sha"),
-                 inc.get("consec_fails")))
+                 inc.get("consec_fails"), "detected"))
             row = cur.fetchone()
             conn.commit()
         return row[0] if row else None
