@@ -6,8 +6,11 @@ a new edition each day, in the voice of a different audience (4-day rotation),
 tier-gated (full for paid, teaser for anon/agents).
 
 Serving model (chosen 2026-07-16): dynamic, like /research. The frontend
-_routes.json forwards /radar* to Railway; this blueprint renders on the fly and
-caches the data core for the day. NO static files, always fresh.
+_routes.json forwards /radar* to Railway; this blueprint renders on the fly.
+The data core is cached ~15 min, DB-shared across workers/replicas via
+brain_meta, stale-while-revalidate (r-radarfast 2026-07-17) — so page views
+render warm (<1s) instead of rebuilding the ~10-call core inline (5-6s).
+NO static files.
 
 Routes:
   GET /radar                     -> today's edition (tier-gated HTML)
@@ -25,7 +28,7 @@ Registration (add near the other register_blueprint calls in main.py):
     register_radar(app)
 """
 from __future__ import annotations
-import os, json, datetime as dt
+import os, json, time, threading, datetime as dt
 from flask import Blueprint, request, Response, jsonify
 
 from routes import radar_templates as T          # normalize + render + tier gating
@@ -50,7 +53,18 @@ _BY_SLUG = {e["slug"]: e for e in EDITIONS}
 PAID = {"DEVELOPER", "PRO", "ENTERPRISE"}         # everyone else -> teaser
 
 # ── data core: fetched from THIS backend over loopback, shaped for normalize ──
-_CORE_CACHE = {"date": None, "core": None}        # 1 pull/day, shared across requests
+# r-radarfast (2026-07-17): the old {"date": core} cache was per-process, and
+# gunicorn --max-requests recycles workers ~every 35 min — so most requests hit
+# a COLD cache and rebuilt the core inline (~10 sequential loopback GETs ≈ 5-6s
+# per page view; measured 5.6s at the edge). Same failure class as the deadlink
+# sweep pre-r78. Now: 15-min TTL, DB-shared via brain_meta (spans workers AND
+# both replicas), stale-while-revalidate (a stale core serves instantly while
+# ONE background thread rebuilds). Only the first request ever builds inline.
+_CORE_TTL_S = 900
+_CORE_DB_KEY = "radar_core_v1"
+_CORE_CACHE = {"ts": 0.0, "core": None}
+_CORE_REFRESH_LOCK = threading.Lock()
+_CORE_REFRESHING = False
 
 # Last-known-good per-ISO DCPI (2026-07-16 live scoreboard). Used as the fallback
 # for queue/wait/curtail/renewable, which /api/v1/grid/intelligence does NOT carry
@@ -146,16 +160,16 @@ def _iso_ttp() -> dict:
         return {}
 
 
-def _pull_core() -> dict:
+def _build_core() -> dict:
     """Assemble the `core` dict radar_templates.normalize() expects.
+    EXPENSIVE (~10 sequential loopback GETs + a DB read) — only call via
+    _pull_core(), which caches/SWRs it. No cache reads or writes in here.
 
     MAPPING SEAM — verify these field names against the live JSON of
     /api/v1/grid/intelligence/<ISO> on first run (the .get() fallbacks make it
     fail soft, not crash). Everything else in the pipeline is already verified.
     """
     today = dt.datetime.now(dt.timezone.utc)
-    if _CORE_CACHE["date"] == today.date() and _CORE_CACHE["core"]:
-        return _CORE_CACHE["core"]
 
     # Per-ISO: baseline for queue/wait/curtail (not on grid/intelligence); live
     # renewable share where the endpoint returns it. Always a complete row.
@@ -202,8 +216,77 @@ def _pull_core() -> dict:
                     "lmp_congestion_usd_mwh": ash.get("lmp_congestion_usd_mwh")},
         "markets": {"results": mkt_rows or _BASELINE_MARKETS},
     }
-    _CORE_CACHE.update(date=today.date(), core=core)
     return core
+
+
+def _load_core_db() -> tuple[float, dict | None]:
+    """(ts, core) from brain_meta, or (0, None). Never raises."""
+    try:
+        from routes.brain_v2_store import get_meta
+        row = get_meta(_CORE_DB_KEY)
+        if row and row.get("value"):
+            p = json.loads(row["value"])
+            if isinstance(p.get("core"), dict):
+                return float(p.get("ts") or 0), p["core"]
+    except Exception:
+        pass
+    return 0.0, None
+
+
+def _save_core_db(ts: float, core: dict) -> None:
+    try:
+        from routes.brain_v2_store import set_meta
+        set_meta(_CORE_DB_KEY, json.dumps({"ts": ts, "core": core}))
+    except Exception:
+        pass
+
+
+def _refresh_core_sync() -> dict:
+    core = _build_core()
+    now = time.time()
+    _CORE_CACHE.update(ts=now, core=core)
+    _save_core_db(now, core)
+    return core
+
+
+def _refresh_core_async() -> None:
+    """Rebuild the core in ONE background thread (single-flight)."""
+    global _CORE_REFRESHING
+    with _CORE_REFRESH_LOCK:
+        if _CORE_REFRESHING:
+            return
+        _CORE_REFRESHING = True
+
+    def _work():
+        global _CORE_REFRESHING
+        try:
+            _refresh_core_sync()
+        except Exception:
+            pass
+        finally:
+            _CORE_REFRESHING = False
+
+    threading.Thread(target=_work, name="radar-core-refresh", daemon=True).start()
+
+
+def _pull_core() -> dict:
+    """Serve the data core from cache; never build inline except first-ever.
+    Order: fresh in-process → fresh brain_meta (another worker/replica built
+    it) → STALE copy served now + single-flight background rebuild → inline
+    build only when no copy exists anywhere (first request after the key is
+    introduced)."""
+    now = time.time()
+    if _CORE_CACHE["core"] and (now - _CORE_CACHE["ts"]) < _CORE_TTL_S:
+        return _CORE_CACHE["core"]
+    ts, core = _load_core_db()
+    if core and (now - ts) < _CORE_TTL_S:
+        _CORE_CACHE.update(ts=ts, core=core)
+        return core
+    stale = core or _CORE_CACHE["core"]
+    if stale:
+        _refresh_core_async()
+        return stale
+    return _refresh_core_sync()
 
 # ── tier + rendering ─────────────────────────────────────────────────────────
 def _tier() -> str:
@@ -236,7 +319,7 @@ _PROV = (
     'font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;line-height:1.75;'
     'color:#6B747D;border-top:1px solid #242A30">'
     '<b style="color:#93A8FF">PROVENANCE</b><br>'
-    '<b style="color:#22B7A6">Live this request:</b> U.S. interconnection-queue total &middot; '
+    '<b style="color:#22B7A6">Live (refreshed within ~15 min):</b> U.S. interconnection-queue total &middot; '
     'Ashburn zone load &amp; real-time LMP &middot; per-ISO time-to-power (DCPI).<br>'
     '<b style="color:#E0982E">Calibrated reference:</b> per-ISO curtailment (no live per-ISO '
     'curtailment feed yet) &middot; per-ISO queue depth (moves on the ISO queue ingest, not per request).<br>'
