@@ -74,6 +74,6 @@ jobs:
         # requests / yaml / psycopg2. Installing these light, no-DB deps lets the
         # brain auto-merge/draft/gate tests actually RUN (a real gate, not a skip).
         # Verified green: 210 passed, 8 skipped (DB tests skip w/o DATABASE_URL).
-        run: python3 -m pip install pytest requests flask pyyaml psycopg2-binary
+        run: python3 -m pip install pytest requests flask pyyaml psycopg2-binary "psycopg[binary]"
       - name: Run pure-function tests
         run: python3 -m pytest tests/ -v --tb=short
