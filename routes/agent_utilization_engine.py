@@ -152,21 +152,35 @@ def _compute():
     }
 
     # ── TRACK 2: INCENT (activate → RETURN → convert) — the binding constraint ──
-    s_ret = 100.0 * returning / 10.0
-    s_reuse = 100.0 * reuse / 25.0
+    # 2026-07-16 metric-truth fix (mirrors mcp_leadership_engine._dim_retention,
+    # corrected the same day — the two engines must read ONE signal). s_ret scored
+    # the COUNT of mature returners (returned_next_week_mature=24) against a target
+    # of 10 → 240. At weight 0.45 that single term contributed 108 and saturated
+    # the clamp on its own, pinning this track at 100.0 "leading" while its own
+    # label read 5.2% return and its own note called it "THE leak". It was inert:
+    # 24, 100 or 500 returners all scored 100. A count scales with inflow (more
+    # arrivals → more returners), so it rises when the FUNNEL widens even as the
+    # rate falls — the opposite of retention. The 2026-06-19 fix picked the right
+    # SIGNAL (mature cross-session cohort) but scored its count instead of its
+    # rate; this finishes that fix. Score pct_returned_next_week_mature against
+    # the same 25% target the Leadership engine uses. The count stays visible as
+    # a secondary detail — it is cohort size, not performance.
+    s_ret = 100.0 * reuse / 25.0  # reuse == pct_returned_next_week_mature (RATE)
     s_conv = 100.0 * converts / 30.0
-    incent_score = _clamp(0.45 * s_ret + 0.30 * s_reuse + 0.25 * s_conv)
+    incent_score = _clamp(0.70 * s_ret + 0.30 * s_conv)
     incent = {
         "track": "incent", "weight": 0.45, "score": round(incent_score, 1),
         "stage": "activate → RETURN → convert",
-        "current": f"{returning} cross-session returners (mature 30d cohort) · {reuse:.1f}% return rate · {converts} conversions/30d",
+        "current": (f"{reuse:.1f}% mature cross-session return rate (scored) · "
+                    f"{converts} conversions/30d · "
+                    f"secondary: {returning} returners in the 8-30d cohort (size, not rate)"),
         "status": _status(incent_score),
         "lever": "reasons to come back: r-return hook (get_changes), progressive unlocks ('earn more by returning'), durable identity / OAuth, usage-billing at the value moment",
         "actuator": "r-return (shipped) + depth-tease/unlock_more_data (server.mjs) + durable-identity build",
         "armable_now": False, "kind": "engineering+mcp-server",
         "return_signal": "key_reuse.returned_next_week_mature (durable api_key, cross-session) — NOT the ip_cohort artifact",
         "ip_artifact_for_contrast": returning_ip_artifact,
-        "note": "THE leak — agents activate but few return cross-session. Now scored on the durable-key signal (was the rotating-IP artifact that read a false ~1/wk cliff).",
+        "note": "THE leak — agents activate but few return cross-session. Scored on the durable-key cross-session RETURN RATE vs a 25% target (was the returner COUNT vs 10, which saturated the clamp and read 100 'leading' against a 5.2% reality).",
     }
 
     # ── TRACK 3: TRAIN (use well — breadth + recipes) ──
