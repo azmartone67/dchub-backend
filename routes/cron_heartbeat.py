@@ -184,11 +184,17 @@ def _hit(url, method="POST", timeout=30):
 # should fire on THIS invocation. Keep cheap → grid every call;
 # expensive → only once/hour or once/day.
 _DISPATCH = [
-    # Grid warmer — every invocation (assumes cron fires every 5 min)
+    # Grid warmer — r-healdiet2 (2026-07-17): every invocation → ~every 15
+    # min. TWO heartbeat crons dispatch this list (cron-heartbeat every 5
+    # min + heartbeat-auto every 15), so "every invocation" warmed 18 edge
+    # URLs every ~2-3 min — CF showed DCHub-Warmer at ~17k req/day, and the
+    # /grid pages it warms are edge-cached well past 15 min anyway. The
+    # minute-window predicate keeps roughly 1 dispatch in 3 (minutes 0-4,
+    # 15-19, 30-34, 45-49 of each hour) regardless of which cron fires.
     ("grid_warmer",
      f"{BASE}/api/v1/grid-warmer/warm",
      "POST",
-     lambda now: True),
+     lambda now: now.minute % 15 < 5),
 
     # MCP SSE event refresh — every invocation (cheap DB query)
     ("mcp_sse_refresh",

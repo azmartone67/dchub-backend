@@ -37352,7 +37352,16 @@ def _heal_master_cycle():
 _HEAL_FINDINGS_CACHE = {"payload": None, "ts": 0.0}
 _HEAL_FINDINGS_LOCK = threading.Lock()
 _HEAL_FINDINGS_REFRESHING = {"running": False}
-_HEAL_FINDINGS_TTL = int(os.environ.get("DCHUB_HEAL_CACHE_TTL", "300"))  # 5 min
+# r-healdiet2 (2026-07-17): 300s → 3h. CF UA decomposition showed the
+# DCHubHealer at ~31k req/day again (the r72/r78 diet regressed): the
+# heal_findings_cache table logged 248 refreshes in 24h (~one per 5.8 min),
+# and every refresh re-runs ALL detectors — including linked_asset_scan,
+# which fetches 14 HTML pages PLUS every same-origin script/stylesheet
+# (~420 edge requests per refresh). heal_cycle itself is 6h (r72); the
+# findings feed the brain's triage, where 3h latency is plenty. 8 refreshes
+# a day instead of 248 = ~97% of the healer's edge traffic gone. Override:
+# DCHUB_HEAL_CACHE_TTL (seconds).
+_HEAL_FINDINGS_TTL = int(os.environ.get("DCHUB_HEAL_CACHE_TTL", "10800"))  # 3 h
 
 
 # ── Phase AAA: persistent DB-backed cache helpers ────────────────────
