@@ -337,10 +337,18 @@ class AutonomousBrain:
                         if value_match:
                             val = float(value_match.group(1))
                             unit = value_match.group(2).lower()
+                            # r-deals-unit-gate (2026-07-17): `deals.value` is USD
+                            # MILLIONS by convention. This writer stored RAW USD
+                            # (billion -> *1e9), so a $300M deal landed as
+                            # 300000000 in a millions column and rendered $300T.
+                            # Store millions. Reject absurd parses (> $2T) as
+                            # almost-certainly a mis-scaled headline number.
                             if unit in ['billion', 'b']:
-                                deal_value = val * 1000000000
+                                deal_value = val * 1000
                             else:
-                                deal_value = val * 1000000
+                                deal_value = val
+                            if deal_value is not None and deal_value > 2_000_000:
+                                deal_value = None
 
                         buyer, target = self._extract_deal_parties(text)
 
