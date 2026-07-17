@@ -26,6 +26,7 @@ Run:  python3 -m pytest tests/test_carrier_facility_link.py -v
 """
 from __future__ import annotations
 
+import ast
 import hashlib
 import os
 import pathlib
@@ -114,6 +115,42 @@ def test_map_query_joins_both_id_spaces():
         "the map's carrier join no longer matches both id-spaces: joining only "
         "facilities.id shows carriers for 109 facilities instead of 13,870, and "
         "still returns 200 — a silent regression")
+
+
+def _sql_fstrings(fn: str):
+    """Every f-string SQL literal inside a top-level function, via AST."""
+    tree = ast.parse(_MAIN.read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == fn:
+            for sub in ast.walk(node):
+                if isinstance(sub, ast.JoinedStr):
+                    yield "".join(v.value for v in sub.values
+                                  if isinstance(v, ast.Constant))
+
+
+@pytest.mark.parametrize("fn", ["api_v1_map"])
+def test_sql_fstrings_have_no_bare_percent(fn):
+    """A literal percent-sign in an f-string SQL 500s the endpoint.
+
+    psycopg2 applies Python percent-formatting to the query, so a stray
+    percent-sign — even inside a `--` SQL COMMENT — is parsed as a conversion
+    spec, consumes a bound arg and raises "tuple index out of range" /
+    "unsupported format character". This cost a live 500 on /api/v1/map on
+    2026-07-17: the offending character was in a comment, not in code.
+    """
+    for sql in _sql_fstrings(fn):
+        if "carrier_facility_presence" not in sql:
+            continue
+        bare = re.findall(r"%(?!s)", sql)
+        assert not bare, (
+            f"{fn}'s SQL f-string contains {len(bare)} bare percent-sign(s) "
+            "(not %s). psycopg2 will read them as format specs and 500 the "
+            "endpoint. Spell the word out in prose.")
+        try:
+            sql % (5, 0)  # emulate psycopg2 binding (limit, offset)
+        except Exception as e:  # pragma: no cover - the assert is the point
+            pytest.fail(f"{fn}'s SQL does not bind with (limit, offset): "
+                        f"{type(e).__name__}: {e}")
 
 
 # ─── live-data guards (skip without a DB) ─────────────────────────────────

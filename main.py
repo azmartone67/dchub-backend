@@ -5098,12 +5098,20 @@ def api_v1_map():
                        -- integer-as-text discovered_facilities.id (the legacy bulk)
                        -- and 4,471 are hex facilities.id (newer ingestion). Joining
                        -- only `= f.id` fixed the text=integer 500 but silently
-                       -- dropped 99.2% of the links: 109 map-visible facilities got
-                       -- carriers where the union yields 13,870 (verified on the
-                       -- replica). The integer space is the TRUE link, not a
-                       -- collision — all 13,865 matched pairs agree on coordinates
-                       -- exactly (max 0.0000 deg; a decoy df.id+1 join scatters
-                       -- ~60 deg). Cast the OTHER side so idx_cfp_dchub stays usable.
+                       -- dropped all but 1/127th of the links: 109 map-visible
+                       -- facilities got carriers where the union yields 13,870
+                       -- (verified on the replica). The integer space is the TRUE
+                       -- link, not a collision — all 13,865 matched pairs agree on
+                       -- coordinates exactly (max 0.0000 deg; a decoy df.id+1 join
+                       -- scatters ~60 deg apart). Cast the OTHER side so the text
+                       -- index idx_cfp_dchub stays usable.
+                       -- ★NEVER write a bare percent-sign anywhere in this string.
+                       -- It is an f-string handed to psycopg2, which applies
+                       -- Python percent-formatting: a literal percent-sign is read
+                       -- as a conversion spec, eats one bound arg and 500s the
+                       -- endpoint ("tuple index out of range" / "unsupported format
+                       -- character"). Spell the word out; do not rely on doubling.
+                       -- (Cost one prod 500 on 2026-07-17 — in a comment, not code.)
                        WHERE cfp.dchub_facility_id IN (df.id::text, f.id)
                          AND cfp.carrier_name IS NOT NULL
                        LIMIT 8
