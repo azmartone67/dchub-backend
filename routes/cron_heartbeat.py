@@ -196,6 +196,17 @@ _DISPATCH = [
      "POST",
      lambda now: True),
 
+    # r-founder-note (2026-07-17): founding-member founder-voice welcome
+    # sweep — every invocation (cheap: two indexed queries, normally zero
+    # candidates). The Stripe webhook schedules an in-process 5-15 min timer
+    # as the fast path; this lane is the restart-proof backstop. Idempotent
+    # (welcome_email_log reservation row per email). confirm=1 arms the send
+    # (_hit attaches X-Admin-Key); FOUNDER_NOTE_DISABLE=1 is the kill switch.
+    ("founder_note_sweep",
+     f"{BASE}/api/v1/admin/founder-note/run?confirm=1",
+     "POST",
+     lambda now: True),
+
     # 2026-07-16: optimization-engine pre-warm — EVERY invocation. A COLD
     # leadership/utilization tick costs ~13.7s (6 internal prefetches), which
     # exceeds the CF worker's per-attempt timeout → failover → the stale

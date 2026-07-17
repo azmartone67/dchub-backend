@@ -399,6 +399,20 @@ Real thanks for the bet.
         with urllib.request.urlopen(req, timeout=15) as resp:
             body = resp.read().decode("utf-8", errors="replace")
         logger.info(f"[founding-customers] welcome sent to {email}")
+        # r-delivery-truth (2026-07-17): stamp the send + Resend message id
+        # into welcome_email_log so the /webhooks/resend event stream can
+        # confirm delivery. Distinct plan label keeps it out of the key-email
+        # audits and the _welcome_recently_sent guard scans only 24h anyway.
+        try:
+            _mid = (json.loads(body) or {}).get("id")
+        except Exception:
+            _mid = None
+        try:
+            from main import _log_welcome_email
+            _log_welcome_email(email, 'founding:cohort_welcome', 'sent',
+                               resend_message_id=_mid)
+        except Exception:
+            pass
         # Mark in DB
         c = None
         try:

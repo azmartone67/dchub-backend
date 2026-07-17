@@ -10716,6 +10716,23 @@ try:
 except Exception as e:
     logger.warning(f"⚠️ Activation-nudge route failed: {e}")
 
+# Founder-voice founding welcome (5-15 min delayed, plain text, from
+# jonathan@dchub.cloud). Kill switch: FOUNDER_NOTE_DISABLE=1.
+try:
+    from founder_note import setup_founder_note_routes
+    setup_founder_note_routes(app)
+    logger.info("✅ Founder-note route registered (/api/v1/admin/founder-note/run)")
+except Exception as e:
+    logger.warning(f"⚠️ Founder-note route failed: {e}")
+
+# Resend delivery-truth webhook (email_events ingest).
+try:
+    from routes.resend_webhook import resend_webhook_bp
+    app.register_blueprint(resend_webhook_bp)
+    logger.info("✅ Resend webhook registered (POST /api/v1/webhooks/resend)")
+except Exception as e:
+    logger.warning(f"⚠️ Resend webhook blueprint failed: {e}")
+
 # =============================================================================
 # CRAWLER TRACKING SYSTEM
 # =============================================================================
@@ -13702,10 +13719,13 @@ def stripe_webhook_test():
 # The canonical version lives in routes/public_endpoints.py via public_bp
 # and is registered in the blueprint init block — same data, cleaner pattern.
 
-def _log_welcome_email(to_email, plan_name, status):
+def _log_welcome_email(to_email, plan_name, status, resend_message_id=None):
     """r43-H: record a welcome-email send attempt + outcome so the daily
     paid-account audit can reconcile (catch customers whose welcome email
-    never sent). Best-effort: never raises, auto-creates the table."""
+    never sent). Best-effort: never raises, auto-creates the table.
+    r-delivery-truth (2026-07-17): also stores the Resend message id so the
+    /api/v1/webhooks/resend event stream (email_events) can be joined back to
+    the send attempt — the log used to record attempts only."""
     try:
         _pg_execute("""
             CREATE TABLE IF NOT EXISTS welcome_email_log (
@@ -13716,9 +13736,12 @@ def _log_welcome_email(to_email, plan_name, status):
                 attempted_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             )
         """)
+        _pg_execute("ALTER TABLE welcome_email_log "
+                    "ADD COLUMN IF NOT EXISTS resend_message_id TEXT")
         _pg_execute(
-            "INSERT INTO welcome_email_log (email, plan, status) VALUES (%s, %s, %s)",
-            (to_email, plan_name, status))
+            "INSERT INTO welcome_email_log (email, plan, status, resend_message_id) "
+            "VALUES (%s, %s, %s, %s)",
+            (to_email, plan_name, status, resend_message_id))
     except Exception as _e:
         print(f"⚠️ _log_welcome_email failed (non-fatal): {_e}")
 
@@ -13726,7 +13749,11 @@ def _log_welcome_email(to_email, plan_name, status):
 def _welcome_email_resend_fallback(to_email, raw_api_key, plan_name='pro'):
     """Resend fallback when SendGrid fails (r-resend-fallback 2026-06-16 — SendGrid
     hit 'Maximum credits exceeded' 401 on the first $5 pack sale, stranding paying
-    customers' API keys). Light (urllib, no SDK). Returns True on a 2xx send."""
+    customers' API keys). Light (urllib, no SDK).
+    r-delivery-truth (2026-07-17): on a 2xx send returns the Resend message id
+    (a truthy str; '' -> 'sent-no-id') so callers can stamp it into
+    welcome_email_log; still returns False on failure — boolean callers keep
+    working unchanged."""
     import os as _os, json as _json, urllib.request as _u
     rk = _os.environ.get('DCHUB_RESEND_API_KEY', '') or _os.environ.get('RESEND_API_KEY', '')
     if not rk or not to_email:
@@ -13775,7 +13802,13 @@ def _welcome_email_resend_fallback(to_email, raw_api_key, plan_name='pro'):
         ok = 200 <= getattr(r, 'status', 0) < 300
         if ok:
             print(f"📧 Welcome email sent to {to_email} via Resend fallback")
-        return ok
+            try:
+                _mid = (_json.loads(r.read().decode('utf-8', errors='replace'))
+                        or {}).get('id')
+            except Exception:
+                _mid = None
+            return _mid or 'sent-no-id'
+        return False
     except Exception as _e:
         print(f"⚠️ Resend fallback also failed for {to_email}: {str(_e)[:120]}")
         return False
@@ -14148,9 +14181,12 @@ p {{ font-size: 16px; color: #4a4a5a; margin-bottom: 16px; line-height: 1.6; }}
             print(f"📧 Welcome email sent to {to_email} CC jonathan@dchub.cloud (status: {response.status_code})")
             # r43-H: record outcome so the daily audit can reconcile.
             _ok = 200 <= int(getattr(response, 'status_code', 0) or 0) < 300
-            if not _ok and _welcome_email_resend_fallback(to_email, raw_api_key, plan_name):
-                _log_welcome_email(to_email, plan_name, status='sent_via_resend')
-                return
+            if not _ok:
+                _rmid = _welcome_email_resend_fallback(to_email, raw_api_key, plan_name)
+                if _rmid:
+                    _log_welcome_email(to_email, plan_name, status='sent_via_resend',
+                                       resend_message_id=(None if _rmid == 'sent-no-id' else _rmid))
+                    return
             _log_welcome_email(to_email, plan_name,
                                status=('sent' if _ok else f'sendgrid_{response.status_code}'))
         except Exception as e:
@@ -14158,8 +14194,10 @@ p {{ font-size: 16px; color: #4a4a5a; margin-bottom: 16px; line-height: 1.6; }}
             # r-resend-fallback (2026-06-16): SendGrid out of credits ("Maximum
             # credits exceeded" 401) → try Resend before alerting so paying
             # customers still get their key.
-            if _welcome_email_resend_fallback(to_email, raw_api_key, plan_name):
-                _log_welcome_email(to_email, plan_name, status='sent_via_resend')
+            _rmid = _welcome_email_resend_fallback(to_email, raw_api_key, plan_name)
+            if _rmid:
+                _log_welcome_email(to_email, plan_name, status='sent_via_resend',
+                                   resend_message_id=(None if _rmid == 'sent-no-id' else _rmid))
                 return
             # r43-H: a hard send failure means a paying customer may not
             # have their credentials. Record it + alert so we can recover.
@@ -14858,6 +14896,18 @@ def handle_checkout_completed(session):
             else:
                 print(f"⚠️ Could not find user_id for email {customer_email} -- skipping api_keys update")
 
+        # r-founder-note (2026-07-17): founding-tier conversion → schedule the
+        # personal founder-voice welcome at a random 5-15 min delay so it never
+        # reads machine-fired. The cron-heartbeat lane re-sweeps as the backstop
+        # (deploy restarts kill in-process timers); dedupe lives in
+        # founder_note._reserve, kill switch FOUNDER_NOTE_DISABLE=1. Fail-soft.
+        if plan_name == 'founding' and customer_email:
+            try:
+                from founder_note import schedule_founder_note_after_conversion
+                schedule_founder_note_after_conversion(customer_email)
+            except Exception as _fn_err:
+                print(f"⚠️ founder-note schedule failed (non-fatal): {_fn_err}")
+
         print(f"✅ User upgraded to {plan_name} (API tier: {api_tier}): {customer_email or user_id}")
     except Exception as e:
         print(f"❌ WEBHOOK ERROR in handle_checkout_completed: {e}")
@@ -15089,6 +15139,133 @@ def handle_subscription_created(subscription):
             try: conn.close()
             except Exception: pass
 
+# r-upgrade-welcome (2026-07-17): tier ranks for upgrade detection on
+# customer.subscription.updated. 'founding' bills $99 but grants pro access,
+# so it ranks with pro; 'paid' is the MCP-path label for developer-class.
+_PLAN_RANK = {'free': 0, 'starter': 1, 'developer': 2, 'paid': 2,
+              'founding': 3, 'pro': 3, 'enterprise': 4}
+
+
+def _resolve_plan_from_subscription(subscription):
+    """(plan_name, api_tier, amount_dollars) from the subscription's first
+    price — explicit founding price id first, then the same amount bands
+    handle_checkout_completed uses. (None, None, amt) when unrecognized, so
+    an odd amount can never mint a tier (mirrors the 2026-06-25 checkout
+    hardening)."""
+    try:
+        _item = ((subscription.get('items') or {}).get('data') or [{}])[0] or {}
+        _price = _item.get('price') or _item.get('plan') or {}
+        _price_id = _price.get('id') or ''
+        _unit = _price.get('unit_amount')
+        if _unit is None:
+            _unit = _price.get('amount')  # legacy 'plan' object shape
+        amt = (_unit or 0) / 100.0
+    except Exception:
+        return None, None, 0
+    _founding_price = os.environ.get('STRIPE_PRICE_FOUNDING',
+                                     'price_1Tml5XJ9ey2ATcQl0pbU4htM')
+    if _price_id and _price_id in (_founding_price,
+                                   'price_1Tml5XJ9ey2ATcQl0pbU4htM'):
+        return 'founding', 'pro', amt
+    if 8 <= amt <= 11:
+        return 'starter', 'starter', amt
+    if 45 <= amt <= 55:
+        return 'developer', 'developer', amt
+    if 95 <= amt <= 105:
+        return 'founding', 'pro', amt
+    if (195 <= amt <= 205) or (295 <= amt <= 305):
+        return 'pro', 'pro', amt
+    if 695 <= amt <= 705:
+        return 'enterprise', 'enterprise', amt
+    return None, None, amt
+
+
+def _handle_subscription_plan_change(subscription, customer_id):
+    """r-upgrade-welcome (2026-07-17): Youssef (motifs-buckles0j@icloud.com)
+    bought Starter then upgraded to Founding 8 minutes later — the
+    customer.subscription.updated event carried the new $99 price but this
+    webhook only synced subscription_status, so the upgrade produced NO key
+    re-provisioning check and NO founding welcome (welcome_email_log showed
+    only the starter welcome). Detect a tier UPGRADE from the subscription's
+    price and route it through the SAME flow as a new checkout:
+    handle_checkout_completed on a synthesized session (users.plan/role,
+    api_keys promotion — or mint + key email if they have none —
+    mcp_dev_keys tier, and founder-note scheduling for founding), plus the
+    founding cohort welcome. Existing dedupe applies (_welcome_recently_sent,
+    founding contact_status, founder-note reservation). Downgrades stay with
+    the canceled/deleted handlers — this only ever raises a tier."""
+    new_plan, new_tier, amt = _resolve_plan_from_subscription(subscription)
+    if not new_plan or not customer_id:
+        return
+    _, _urows = _pg_execute(
+        "SELECT email, plan, name FROM users WHERE stripe_customer_id = %s LIMIT 1",
+        (customer_id,), fetch=True)
+    if not _urows or not (_urows[0][0] or '').strip():
+        # No account yet → this event raced ahead of checkout.session.completed;
+        # the checkout handler owns first-time provisioning.
+        return
+    email = _urows[0][0].strip().lower()
+    cur_plan = (_urows[0][1] or 'free').strip().lower()
+    name = (_urows[0][2] or '').strip()
+    if _PLAN_RANK.get(new_plan, 0) <= _PLAN_RANK.get(cur_plan, 0):
+        return  # renewal / same tier / downgrade — nothing to provision
+    print(f"⬆️ Tier upgrade via subscription.updated: {email} "
+          f"{cur_plan} → {new_plan} (${amt:g})")
+    _meta_plan = {'founding': 'founding', 'developer': 'developer_monthly',
+                  'pro': 'pro_monthly', 'enterprise': 'enterprise_monthly'}.get(new_plan, '')
+    synth_session = {
+        'customer_email': email,
+        'customer_details': {'email': email, 'name': name},
+        'metadata': ({'plan': _meta_plan} if _meta_plan else {}),
+        'amount_total': int(round(amt * 100)),
+        'mode': 'subscription',
+        'customer': customer_id,
+        'payment_link': '',
+        'id': f"subupg_{subscription.get('id') or 'unknown'}",
+        'client_reference_id': None,
+    }
+    handle_checkout_completed(synth_session)
+    # Marker row: makes the upgrade visible to the paid-account audits and to
+    # the founder-note sweep even when no customer email was due (existing
+    # active key → admin-alert only). Status deliberately NOT 'sent*' so it
+    # never trips the _welcome_recently_sent duplicate guard.
+    _log_welcome_email(email, new_plan, status='upgrade_provisioned')
+    if new_plan == 'founding':
+        try:
+            from routes.founding_customers import (
+                auto_tag_if_under_cap,
+                notify_admin_of_founding,
+                send_founding_welcome_email,
+            )
+            _tag = auto_tag_if_under_cap(
+                email=email, plan='founding', stripe_customer_id=customer_id,
+                first_payment_at=datetime.utcnow().isoformat() + 'Z',
+                notes=(f"tier upgrade via customer.subscription.updated · "
+                       f"sub={subscription.get('id') or 'unknown'}"))
+            if _tag.get('tagged'):
+                notify_admin_of_founding(
+                    email=email, position=_tag['position'], plan='founding',
+                    stripe_customer_id=customer_id)
+            _, _crows = _pg_execute(
+                "SELECT contact_status FROM founding_customers WHERE email = %s",
+                (email,), fetch=True)
+            if not (_crows and (_crows[0][0] or '') == 'welcomed'):
+                _, _prow = _pg_execute(
+                    "SELECT COUNT(*) FROM founding_customers WHERE tagged_at <= "
+                    "(SELECT tagged_at FROM founding_customers WHERE email = %s)",
+                    (email,), fetch=True)
+                _pos = max(1, int(_prow[0][0]) if _prow and _prow[0] else 1)
+                send_founding_welcome_email(email=email, position=_pos,
+                                            plan='founding')
+        except Exception as _fw_err:
+            print(f"⚠️ founding upgrade welcome failed (non-fatal): {_fw_err}")
+    elif new_plan in ('pro', 'enterprise'):
+        try:
+            send_pro_welcome_email_sendgrid(email, name or email.split('@')[0])
+        except Exception as _pw_err:
+            print(f"⚠️ upgrade welcome email failed (non-fatal): {_pw_err}")
+
+
 def handle_subscription_updated(subscription):
     """Handle subscription changes - writes to PostgreSQL first, then SQLite"""
     customer_id = subscription.get('customer', '')
@@ -15125,6 +15302,16 @@ def handle_subscription_updated(subscription):
     finally:
         try: conn.close()
         except Exception: pass
+
+    # r-upgrade-welcome (2026-07-17): a plan change on an ACTIVE subscription
+    # (portal upgrade / price swap) must re-provision like a checkout would.
+    # Fail-soft — a welcome/provisioning error can never break the status sync
+    # above or the webhook ack.
+    try:
+        if status in ('active', 'trialing'):
+            _handle_subscription_plan_change(subscription, customer_id)
+    except Exception as _upg_err:
+        print(f"⚠️ subscription plan-change routing failed (non-fatal): {_upg_err}")
 
 def handle_subscription_deleted(subscription):
     """Handle subscription cancellation - writes to PostgreSQL first, then SQLite"""

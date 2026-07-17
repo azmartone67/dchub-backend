@@ -53,6 +53,11 @@ WHITELIST_TABLES = {
     # conversion_loop_snapshots: append-only conversion-loop health log (one
     # row per master-tick, BIGSERIAL PK). History, not state — no natural key.
     'conversion_loop_snapshots',
+    # welcome_email_log: append-only send-attempt log (SERIAL PK, one row per
+    # attempt — 'skipped_duplicate' rows are part of the record). The
+    # founder-note reservation INSERT dedupes via WHERE NOT EXISTS, which is
+    # the intended semantics (no natural key to conflict on).
+    'welcome_email_log',
 }
 
 # ── HARD rules (r-fixpack 2026-07-02) ────────────────────────────────
