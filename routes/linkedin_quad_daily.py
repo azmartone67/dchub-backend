@@ -154,6 +154,10 @@ def _ensure_table():
                 # heartbeat ticks in the same slot window can't both publish
                 # (the Rural-SPP / AWS pairs 12-14s apart). See _claim_slot.
                 ("claimed_at", "ALTER TABLE linkedin_quad_posts ADD COLUMN IF NOT EXISTS claimed_at TIMESTAMPTZ"),
+                # 2026-07-17 cards-never-seen audit: did the card image ACTUALLY
+                # attach? linkedin_poster falls back to text/article on any
+                # image failure and still reports success — invisible until now.
+                ("image_attached", "ALTER TABLE linkedin_quad_posts ADD COLUMN IF NOT EXISTS image_attached BOOLEAN"),
             ):
                 try:
                     cur.execute(_ddl)
@@ -422,6 +426,51 @@ def _format_post_base(slot, payload):
     )
 
 
+def _looks_like_image(data) -> bool:
+    """Magic-byte validation (PNG/JPEG/GIF/WEBP). Reuses content_publisher's
+    tested checker; local fallback keeps this module importable standalone.
+    2026-07-17: the quad path NEVER validated bytes — a CF-failover mojibake
+    PNG or a bot-shell HTML page (>1000B, so the size check passed) uploaded
+    fine, then died ASYNC in LinkedIn's processor → the post silently shipped
+    WITHOUT its card. This is why the branded data-cards were never seen on
+    the feed even though the posts recorded og=data_card and success=TRUE."""
+    try:
+        from content_publisher import _looks_like_image_bytes
+        return bool(_looks_like_image_bytes(data))
+    except Exception:
+        if not data or len(data) < 12:
+            return False
+        return (data[:8] == b"\x89PNG\r\n\x1a\n"
+                or data[:3] == b"\xff\xd8\xff"
+                or data[:6] in (b"GIF87a", b"GIF89a")
+                or (data[:4] == b"RIFF" and data[8:12] == b"WEBP"))
+
+
+def _og_fetch_candidates(og_image_url: str) -> list:
+    """Fetch order for an OG card URL. Own-origin cards (api.dchub.cloud /
+    dchub.cloud) render IN-PROCESS on this same app, so try LOOPBACK first —
+    that bypasses the entire CF edge (worker failover mojibake, bot-shell WAF
+    pages, cache poisoning) that has repeatedly corrupted image bytes. The
+    public URL stays as the fallback so a loopback miss never loses the card.
+    Pure helper (list of URLs) so tests can pin the rewrite."""
+    if not og_image_url:
+        return []
+    try:
+        from urllib.parse import urlsplit
+        s = urlsplit(og_image_url)
+        if s.hostname in ("api.dchub.cloud", "dchub.cloud", "www.dchub.cloud"):
+            # localhost + $PORT mirrors media_editorial._internal(), the
+            # loopback pattern already proven from inside this app.
+            port = os.environ.get("PORT", "8080")
+            loop = f"http://localhost:{port}{s.path}"
+            if s.query:
+                loop += f"?{s.query}"
+            return [loop, og_image_url]
+    except Exception:
+        pass
+    return [og_image_url]
+
+
 def _fetch_image_bytes(og_image_url: str) -> bytes | None:
     """r48 (2026-05-25): pull the OG image bytes for upload to LinkedIn.
 
@@ -429,28 +478,41 @@ def _fetch_image_bytes(og_image_url: str) -> bytes | None:
     so post_to_linkedin can do the LinkedIn asset upload + attach.
     Without this, the quad publisher knew which image to use but
     never passed image_bytes, so every post went text-only.
+
+    2026-07-17 (cards-never-seen audit): loopback-first for own-origin cards
+    + magic-byte validation. Corrupt bytes are now REJECTED here (loudly)
+    instead of uploaded to die silently in LinkedIn's async processor.
     """
     if not og_image_url:
         return None
-    try:
-        import urllib.request
-        req = urllib.request.Request(
-            og_image_url,
-            headers={"User-Agent": "DCHub-LinkedInQuad/1.1"},
-        )
-        # 45s (was 15s): ai_hero cards generate an SDXL image on first fetch
-        # (~15-30s) before the card is composited+cached. 15s timed out → the
-        # post fell back to text-only. Posts are 4/day so a longer wait is fine;
-        # subsequent fetches of the same slug+day hit the cache and return fast.
-        with urllib.request.urlopen(req, timeout=45) as resp:
-            if resp.status == 200:
+    import urllib.request
+    for _url in _og_fetch_candidates(og_image_url):
+        try:
+            req = urllib.request.Request(
+                _url,
+                headers={"User-Agent": "DCHub-LinkedInQuad/1.1",
+                         "X-Internal-Request": "1"},
+            )
+            # 45s (was 15s): ai_hero cards generate an SDXL image on first fetch
+            # (~15-30s) before the card is composited+cached. 15s timed out → the
+            # post fell back to text-only. Posts are 4/day so a longer wait is
+            # fine; subsequent fetches of the same slug+day hit the cache.
+            with urllib.request.urlopen(req, timeout=45) as resp:
+                if resp.status != 200:
+                    continue
                 data = resp.read()
                 # LinkedIn caps image uploads at ~5MB; OG images are
                 # typically <500KB so this is defensive.
-                if 1000 < len(data) < 5_000_000:
-                    return data
-    except Exception:
-        pass
+                if not (1000 < len(data) < 5_000_000):
+                    continue
+                if not _looks_like_image(data):
+                    print(f"[quad-daily] OG bytes from {_url[:80]} are NOT an "
+                          f"image (first bytes {data[:8]!r}) — refusing to "
+                          f"upload corrupt card")
+                    continue
+                return data
+        except Exception:
+            continue
     return None
 
 
@@ -488,6 +550,9 @@ def _post_to_linkedin(text, landing_url, og_image_url):
                 "post_urn": meta.get("post_urn"),
                 "status":   meta.get("status"),
                 "error":    meta.get("error", ""),
+                # 2026-07-17: surface whether the card image really attached
+                # (False = the post silently degraded to text/article).
+                "image_attached": bool(meta.get("image_attached")),
             }
         # Already a dict (or unexpected shape)
         if isinstance(raw, dict):
@@ -584,8 +649,9 @@ def _record(slot_date, slot_hour, topic, style, text, landing, og_url, result,
             cur.execute("""
                 INSERT INTO linkedin_quad_posts
                   (slot_date, slot_hour, topic, style, post_text, landing_url, og_image_url,
-                   linkedin_urn, success, error_msg, story_type, lead_kind, lead_entity)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                   linkedin_urn, success, error_msg, story_type, lead_kind, lead_entity,
+                   image_attached)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (slot_date, slot_hour) DO UPDATE SET
                   success=EXCLUDED.success, error_msg=EXCLUDED.error_msg,
                   linkedin_urn=COALESCE(EXCLUDED.linkedin_urn, linkedin_quad_posts.linkedin_urn),
@@ -600,12 +666,14 @@ def _record(slot_date, slot_hour, topic, style, text, landing, og_url, result,
                   post_text=COALESCE(EXCLUDED.post_text, linkedin_quad_posts.post_text),
                   landing_url=COALESCE(EXCLUDED.landing_url, linkedin_quad_posts.landing_url),
                   og_image_url=COALESCE(EXCLUDED.og_image_url, linkedin_quad_posts.og_image_url),
+                  image_attached=EXCLUDED.image_attached,
                   posted_at=NOW()
             """, (slot_date, slot_hour, topic, style, text[:5000], landing, og_url,
                    (result or {}).get("urn") or (result or {}).get("id"),
                    bool((result or {}).get("ok")),
                    (result or {}).get("error", "")[:500],
-                   story_type, _lead_kind, (_lead_entity or None)))
+                   story_type, _lead_kind, (_lead_entity or None),
+                   bool((result or {}).get("image_attached"))))
             c.commit()
     except Exception:
         note_swallowed_write("linkedin_quad_posts", where="linkedin_quad_daily._record")
@@ -962,7 +1030,8 @@ def status():
                 # question was unanswerable from the outside.
                 cur.execute("""
                     SELECT slot_date, slot_hour, topic, style, success, error_msg, posted_at,
-                           story_type, lead_kind, lead_entity, og_image_url
+                           story_type, lead_kind, lead_entity, og_image_url,
+                           image_attached, linkedin_urn
                     FROM linkedin_quad_posts
                     WHERE slot_date >= CURRENT_DATE - INTERVAL '7 days'
                     ORDER BY posted_at DESC LIMIT 30
