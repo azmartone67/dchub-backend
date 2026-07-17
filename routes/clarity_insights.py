@@ -114,13 +114,19 @@ def _worth_filing(s):
 
 
 def _file_findings(spots):
-    """Upsert-style: refresh an open same-URL finding seen in the last 7d
-    instead of re-emitting (the stateless-detector re-emission trap)."""
+    """File via the canonical writer (episode semantics): an open same-URL
+    finding absorbs the re-observation without moving seen_count; a resolved
+    one reopens as a new episode. The old hand-rolled UPDATE's guards are
+    gone on purpose — its resolved_at IS NULL check is superseded by the
+    writer's reopen logic, and its created_at > 7d window made every sweep
+    file a DUPLICATE row for any hotspot older than a week (no
+    UNIQUE(issue,url) exists to stop it)."""
     filed = refreshed = 0
     try:
         # psycopg2 direct (water_aqueduct_ingest._conn pattern) — the pooled
         # helper lives in main.py, which route modules must never import.
         import psycopg2 as _pg
+        from routes.brain_findings_writer import upsert_brain_finding
         url = os.environ.get("DATABASE_URL") or os.environ.get("NEON_DATABASE_URL")
         if not url:
             return 0, 0
@@ -142,32 +148,14 @@ def _file_findings(spots):
                                  " — check pointer-affordance without a handler,"
                                  " slow INP, or a gate that swallows the click"),
                     })
-                    cur.execute("SAVEPOINT cl_sp")
-                    try:
-                        cur.execute(
-                            "UPDATE brain_findings SET count = %s, detail = %s,"
-                            " last_seen = NOW(), seen_count = COALESCE(seen_count,1) + 1"
-                            " WHERE issue = 'ux_dead_clicks' AND url = %s"
-                            " AND resolved_at IS NULL"
-                            " AND created_at > NOW() - INTERVAL '7 days'",
-                            (s["dead_sessions"], detail, s["url"]))
-                        if cur.rowcount:
-                            refreshed += 1
-                        else:
-                            # dedup = the UPDATE-first path above; the only
-                            # unique index is the pkey, so the arbiter-less
-                            # ON CONFLICT form never masks real rows
-                            cur.execute(
-                                "INSERT INTO brain_findings"
-                                " (issue, url, count, detail, detector)"
-                                " VALUES ('ux_dead_clicks', %s, %s, %s,"
-                                " 'clarity_dead_clicks')"
-                                " ON CONFLICT DO NOTHING",
-                                (s["url"], s["dead_sessions"], detail))
-                            filed += 1
-                        cur.execute("RELEASE SAVEPOINT cl_sp")
-                    except Exception:
-                        cur.execute("ROLLBACK TO SAVEPOINT cl_sp")
+                    outcome = upsert_brain_finding(
+                        cur, issue="ux_dead_clicks", url=s["url"],
+                        count=s["dead_sessions"], detail=detail,
+                        detector="clarity_insights")
+                    if outcome == "inserted":
+                        filed += 1
+                    elif outcome == "updated":
+                        refreshed += 1
             conn.commit()
         finally:
             try:
