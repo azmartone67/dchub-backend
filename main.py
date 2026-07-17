@@ -5093,7 +5093,16 @@ def api_v1_map():
                      FROM (
                        SELECT DISTINCT cfp.carrier_name
                        FROM carrier_facility_presence cfp
-                       WHERE cfp.dchub_facility_id = df.id
+                       -- r-carrierlink (2026-07-17): cfp.dchub_facility_id holds
+                       -- FACILITIES ids (text), not discovered_facilities ids —
+                       -- the old `= df.id` join was wrong id-space and, once the
+                       -- column went text, 500'd every /api/v1/map call with
+                       -- `operator does not exist: text = integer` (same class
+                       -- 2fbce20d removed from facility_by_slug). This query
+                       -- already joins facilities f via df.merged_facility_id,
+                       -- so the TRUE link is available here: 4,474 cfp rows carry
+                       -- a facilities id, 330 are map-visible (verified live).
+                       WHERE cfp.dchub_facility_id = f.id
                          AND cfp.carrier_name IS NOT NULL
                        LIMIT 8
                      ) sub
