@@ -30304,6 +30304,23 @@ try:
 except Exception as e:
     print(f"🔀 Brain Auto-Merge (Phase 3): ⚠️ Failed to load: {e}")
 
+# PR JANITOR endpoints (Phase 3.5 + spec-lifecycle 2026-07-17). The module
+# shipped 06-19 but register() was never CALLED from main.py, so the
+# /pr-janitor/* endpoints 404'd everywhere and the only invoker was the
+# automerge /run tick (which nothing crons — last log 06-25): the janitor was
+# fully dormant despite BRAIN_PR_JANITOR_ENABLED=1. The sweeps themselves run
+# on the daily draft-prs/expire cron (brain_backlog_admin); these endpoints
+# are the operator's status/preview + manual-act surface.
+try:
+    from routes.brain_pr_janitor import register as _register_brain_pr_janitor
+    _jan_ok = _register_brain_pr_janitor(app)
+    _jan_on = os.environ.get("BRAIN_PR_JANITOR_ENABLED", "0") == "1"
+    print("🧹 Brain PR Janitor (Phase 3.5 + spec): ✅ Registered "
+          f"(POST /api/v1/brain/pr-janitor/sweep · GET /status · "
+          f"enabled={_jan_on}) registered={_jan_ok}")
+except Exception as e:
+    print(f"🧹 Brain PR Janitor: ⚠️ Failed to load: {e}")
+
 # THE AUTONOMY LOOP (2026-06-18) — wires the self-fix pieces into ONE
 # scheduled orchestrator: REACTIVE (captured runtime/DB errors → tracked
 # findings) + PROACTIVE (sweep the deployed Python tree for known bug-classes
