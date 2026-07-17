@@ -879,6 +879,63 @@ _INTL_MARKETS = [m for m in _MARKETS_HARDCODED
                   )]
 
 
+def _load_scored_orphans(known_slugs):
+    """r-dcpi-orphan (2026-07-17): re-adopt markets that were ALREADY scored but
+    have fallen out of the recompute universe.
+
+    THE BUG THIS CLOSES (measured 2026-07-17): market_power_scores held 316 rows
+    while MARKETS covered 277 -> 41 ORPHANS frozen at 2026-07-03, still served
+    publicly by /dcpi and /dcpi/history for 14 days. They were INVISIBLE: every
+    dcpi-daily.yml chunk reported errors:0 and every run was green, because an
+    orphan is not FAILING -- it is simply never visited. The only signal was
+    SUM(markets_scored)=277 != 316 rows (and /api/v1/dcpi/freshness stale_7d=41).
+    LESSON: errors:0 on a chunked job proves nothing about COVERAGE.
+
+    The universe can shrink for several independent reasons: _load_markets_dynamic
+    caps at LIMIT 200 ORDER BY facility_count DESC, so a market that slips past
+    rank 200 drops out (the is_duplicate fleet filter reshuffling facility counts
+    is the likely 07-03 trigger); the HAVING COUNT(*) >= 3 threshold can drop one;
+    a canonical-slug change or a removal from _MARKETS_HARDCODED does the same.
+    Rather than chase each trigger, make orphaning STRUCTURALLY IMPOSSIBLE: once a
+    market has been scored it stays in the universe and keeps refreshing.
+
+    Fail-soft: returns [] on any error, so a DB blip can never shrink MARKETS.
+    Shape matches _MARKETS_HARDCODED: (slug, name, state, iso, lat, lon).
+    """
+    import os, psycopg2
+    try:
+        url = os.environ.get("DATABASE_URL")
+        if not url:
+            return []
+        conn = psycopg2.connect(url, connect_timeout=8)
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT market_slug, market_name, state, iso, latitude, longitude
+                      FROM market_power_scores
+                     WHERE market_slug IS NOT NULL AND market_slug <> ''
+                """)
+                rows = cur.fetchall() or []
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        out = []
+        for r in rows:
+            slug = r[0]
+            if not slug or slug in known_slugs:
+                continue
+            out.append((slug, r[1] or slug, r[2], r[3], r[4], r[5]))
+        if out:
+            print(f"[dcpi] r-dcpi-orphan: re-adopted {len(out)} already-scored "
+                  f"market(s) missing from MARKETS", flush=True)
+        return out
+    except Exception as e:
+        print(f"[dcpi] r-dcpi-orphan: orphan scan failed (non-fatal): {e}", flush=True)
+        return []
+
+
 def _build_markets_list():
     """r57: always-includes-intl market list builder. Tries the dynamic
     US loader, then unions on the international set. Falls back to
@@ -903,6 +960,11 @@ def _build_markets_list():
                                 if isinstance(m, tuple)
                                 and len(m) >= 4
                                 and m[0] not in dyn_slugs]
+        # r-dcpi-orphan (2026-07-17): a market that was EVER scored must never
+        # silently drop out of the recompute universe. See _load_scored_orphans.
+        _merged_slugs = {m[0] if isinstance(m, tuple) else m.get("slug")
+                         for m in merged}
+        merged += _load_scored_orphans(_merged_slugs)
         return merged
     return _MARKETS_HARDCODED
 
