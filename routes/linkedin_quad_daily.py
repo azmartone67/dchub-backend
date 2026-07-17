@@ -956,8 +956,13 @@ def status():
     if _pg and _dsn():
         try:
             with _conn() as c, c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                # 2026-07-17 card-starvation audit: expose WHICH editorial lead
+                # (kind/entity), story type and card each slot actually used —
+                # without these the "why did no capability card ever publish?"
+                # question was unanswerable from the outside.
                 cur.execute("""
-                    SELECT slot_date, slot_hour, topic, style, success, error_msg, posted_at
+                    SELECT slot_date, slot_hour, topic, style, success, error_msg, posted_at,
+                           story_type, lead_kind, lead_entity, og_image_url
                     FROM linkedin_quad_posts
                     WHERE slot_date >= CURRENT_DATE - INTERVAL '7 days'
                     ORDER BY posted_at DESC LIMIT 30
@@ -971,6 +976,16 @@ def status():
                 out["successful_7d"] = cur.fetchone()["count"]
                 cur.execute("SELECT COUNT(*) FROM linkedin_quad_posts WHERE success=TRUE AND posted_at > NOW() - INTERVAL '24 hours'")
                 out["successful_24h"] = cur.fetchone()["count"]
+                # Which lead kinds actually won slots — the rotation's ground
+                # truth (a '(none)' bucket means the desk lead never reached
+                # _record, i.e. the anti-repeat ledger is blind for that post).
+                cur.execute("""
+                    SELECT COALESCE(lead_kind, '(none)') AS lead_kind, COUNT(*) AS n
+                    FROM linkedin_quad_posts
+                    WHERE success=TRUE AND posted_at > NOW() - INTERVAL '14 days'
+                    GROUP BY 1 ORDER BY 2 DESC
+                """)
+                out["lead_kinds_14d"] = {r["lead_kind"]: int(r["n"]) for r in cur.fetchall()}
         except Exception as e:
             out["error"] = f"{type(e).__name__}: {str(e)[:140]}"
     return jsonify(out), 200
