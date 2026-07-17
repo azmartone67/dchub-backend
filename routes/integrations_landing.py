@@ -158,6 +158,9 @@ MCP_LANDING_HTML = """<!DOCTYPE html>
     <a href="https://github.com/azmartone67/dchub-mcp-server/tree/main/integrations/openrouter">OpenRouter</a> ·
     <a href="https://github.com/azmartone67/dchub-mcp-server/tree/main/integrations/poe">Poe</a> ·
     <a href="https://github.com/azmartone67/dchub-mcp-server/tree/main/integrations/youcom">You.com</a> ·
+    <a href="https://dchub.cloud/integrations/grok">Grok / xAI</a> ·
+    <a href="https://dchub.cloud/integrations/mistral">Mistral Le Chat</a> ·
+    <a href="https://dchub.cloud/integrations/perplexity">Perplexity</a> ·
     <a href="https://github.com/azmartone67/dchub-mcp-server/tree/main/integrations/copilot">GitHub Copilot</a> ·
     <a href="https://github.com/azmartone67/dchub-mcp-server/tree/main/integrations/langchain">LangChain</a> ·
     <a href="https://github.com/azmartone67/dchub-mcp-server/tree/main/integrations/llamaindex">LlamaIndex</a>
@@ -356,6 +359,269 @@ function copyUrl(){
 }
 </script>
 </body></html>"""
+
+
+# ── Per-platform connect recipes: Grok/xAI, Mistral Le Chat, Perplexity ──
+# 2026-07-17. Self-serve "connect DC Hub" one-pagers for the three
+# onboarding-roster platforms whose next_action asked for a recipe
+# (routes/agent_onboarding_master_shell.py PLATFORMS). Same self-contained
+# pattern as the pages above: inline CSS, SoftwareApplication JSON-LD,
+# canonical + og meta, dchub-brand.css — platform named in title/description
+# for SEO/GEO discovery. Facts kept conservative: where a platform's exact
+# menu label is uncertain the copy says "Settings → Connectors /
+# Integrations" instead of inventing UI strings.
+# Placeholder-substitution template (not str.format — the CSS/JSON-LD braces
+# would need escaping). Pages are built once at import time.
+
+_RECIPE_PAGE_TEMPLATE = """<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>__TITLE__</title>
+<meta name="description" content="__DESCRIPTION__">
+<meta property="og:title" content="__OG_TITLE__">
+<meta property="og:description" content="__OG_DESC__">
+<meta property="og:image" content="https://api.dchub.cloud/static/og/landing-integrations-mcp.png">
+<meta property="og:url" content="https://dchub.cloud/integrations/__SLUG__">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="canonical" href="https://dchub.cloud/integrations/__SLUG__">
+<link rel="stylesheet" href="https://dchub.cloud/static/dchub-brand.css">
+<style>
+ body{max-width:860px;margin:0 auto;padding:32px 24px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;line-height:1.6;color:#0f172a}
+ header{margin:40px 0 28px}
+ .eyebrow{color:#6366f1;font-size:.78rem;letter-spacing:.16em;text-transform:uppercase;margin-bottom:10px;font-weight:600}
+ h1{font-size:2.3rem;margin:0 0 14px;letter-spacing:-.02em}
+ .lead{color:#64748b;font-size:1.05rem;max-width:660px}
+ .urlbox{background:rgba(99,102,241,.08);border:1px solid rgba(99,102,241,.3);border-radius:12px;padding:18px 22px;margin:24px 0}
+ .urlbox-label{font-weight:600;color:#6366f1;margin-bottom:10px}
+ .url-row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+ code.url{background:#0f172a;color:#e2e8f0;padding:10px 16px;border-radius:8px;font-size:1.05rem;flex:1;min-width:280px;font-family:ui-monospace,monospace}
+ .btn{padding:11px 22px;border-radius:8px;text-decoration:none;font-weight:600;font-size:.92rem;display:inline-block;cursor:pointer;border:none;font-family:inherit}
+ .btn-primary{background:linear-gradient(135deg,#6366f1,#8b5cf6);color:#fff}
+ .pane{background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;padding:22px;margin:20px 0}
+ .pane h2{margin:0 0 12px;font-size:1.15rem}
+ .pane h3{margin:18px 0 6px;font-size:1rem}
+ pre{background:#0f172a;color:#e2e8f0;border-radius:8px;padding:14px 16px;overflow-x:auto;font-family:ui-monospace,monospace;font-size:.85rem}
+ ol{padding-left:22px;margin:16px 0}
+ ol li{margin-bottom:10px}
+ .tools{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px;margin:14px 0}
+ .tool{background:#fff;border:1px solid #e2e8f0;border-radius:8px;padding:10px 14px;font-size:.85rem}
+ .tool b{display:block;color:#0f172a;font-family:ui-monospace,monospace;font-size:.78rem;margin-bottom:4px}
+ footer{margin-top:36px;padding-top:18px;border-top:1px solid #e2e8f0;color:#64748b;font-size:.85rem}
+ footer a,.pane a{color:#6366f1;text-decoration:none}
+</style>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "DC Hub MCP Server",
+  "alternateName": "__JSONLD_ALTNAME__",
+  "applicationCategory": "DeveloperApplication",
+  "operatingSystem": "Any (remote streamable-HTTP MCP server)",
+  "url": "https://dchub.cloud/integrations/__SLUG__",
+  "description": "__JSONLD_DESC__",
+  "offers": {
+    "@type": "Offer",
+    "price": "0",
+    "priceCurrency": "USD",
+    "description": "Free tier — 10 calls/day, no signup"
+  },
+  "provider": {
+    "@type": "Organization",
+    "name": "DC Hub",
+    "url": "https://dchub.cloud"
+  }
+}
+</script>
+</head><body>
+<header>
+  <div class="eyebrow">__EYEBROW__</div>
+  <h1>__H1__</h1>
+  <p class="lead">__LEAD__</p>
+</header>
+
+<div class="urlbox">
+  <div class="urlbox-label">The MCP endpoint:</div>
+  <div class="url-row">
+    <code class="url">https://dchub.cloud/mcp</code>
+    <button class="btn btn-primary" onclick="copyUrl()">copy URL</button>
+  </div>
+</div>
+
+<div class="pane">
+  <h2>__STEPS_HEADING__</h2>
+  __STEPS_HTML__
+</div>
+
+__AUTH_HTML__
+
+<div class="pane">
+  <h2>Free tier — works with no key at all</h2>
+  <p>The endpoint is <b>keyless</b> out of the box: 10 calls/day free, no signup. Need more headroom?
+  In your first connected session, ask the assistant to call the <code>claim_free_key</code> tool — it mints a
+  durable free key (no email required) with higher limits that every future session reuses.</p>
+</div>
+
+<div class="pane">
+  <h2>Flagship tools</h2>
+  <div class="tools">
+    <div class="tool"><b>get_grid_scoreboard</b>Live ranked scoreboard — US + international grids</div>
+    <div class="tool"><b>search_facilities</b>21,000+ facilities by city/MW/operator</div>
+    <div class="tool"><b>get_market_intel</b>Supply/demand, vacancy, pricing per market</div>
+    <div class="tool"><b>rank_markets</b>Top-N markets by your criteria</div>
+    <div class="tool"><b>hyperscaler_deals</b>Hyperscaler lease + build deal flow</div>
+    <div class="tool"><b>get_interconnection_queue</b>ISO interconnection queue detail</div>
+    <div class="tool"><b>get_fiber_intel</b>Carrier networks + dark fiber</div>
+    <div class="tool"><b>analyze_site</b>7-dimension site suitability score</div>
+  </div>
+  <p style="color:#64748b;font-size:.85rem;margin:10px 0 0">…plus 30+ more — facilities, deals, water risk,
+  tax incentives. Full list on the <a href="https://dchub.cloud/integrations/mcp">main connect page</a>.</p>
+</div>
+
+__EXTRA_HTML__
+
+<footer>
+  <a href="https://dchub.cloud/integrations/mcp">All platforms</a> ·
+  <a href="https://dchub.cloud/pricing">Pricing</a> ·
+  <a href="https://dchub.cloud/api-docs">REST API</a> ·
+  <a href="https://api.dchub.cloud/.well-known/mcp.json">MCP manifest</a>
+</footer>
+<script>
+function copyUrl(){
+  navigator.clipboard.writeText('https://dchub.cloud/mcp').then(()=>{
+    const b=document.querySelector('.btn-primary');const p=b.textContent;b.textContent='✓ copied';
+    setTimeout(()=>{b.textContent=p},2500);
+  });
+}
+</script>
+</body></html>"""
+
+
+def _recipe_page(**slots: str) -> str:
+    html = _RECIPE_PAGE_TEMPLATE
+    for key, val in slots.items():
+        html = html.replace("__" + key.upper() + "__", val)
+    return html
+
+
+GROK_RECIPE_HTML = _recipe_page(
+    slug="grok",
+    title="Add DC Hub to Grok — xAI MCP connector for live data-center &amp; grid intelligence",
+    description="Connect DC Hub to Grok (xAI) as a custom MCP connector: paste https://dchub.cloud/mcp, auth blank or Authorization: Bearer. Live grid scoreboards, 21,000+ data-center facilities, interconnection queues and hyperscaler deals inside Grok. Free tier: 10 calls/day, no signup.",
+    og_title="Add DC Hub to Grok (xAI) — MCP connector in 4 steps",
+    og_desc="Live grid + data-center intelligence in Grok · paste one URL · Bearer or keyless · free tier no signup",
+    jsonld_altname="DC Hub for Grok (xAI)",
+    jsonld_desc="Model Context Protocol server that connects to Grok (xAI) as a consumer custom connector or an API Remote MCP tool — live grid scoreboards, 21,000+ data-center facilities, interconnection queues, fiber intelligence and hyperscaler deals, with per-response citations. Free tier: 10 calls/day, no signup.",
+    eyebrow="Grok · xAI · Model Context Protocol",
+    h1="Add DC Hub to Grok.",
+    lead="Give Grok live, citable data-center and power-grid intelligence — real-time grid scoreboards, 21,000+ facilities, interconnection queues, hyperscaler deal flow. One URL. Bearer or keyless.",
+    steps_heading="Connect in Grok (consumer)",
+    steps_html="""<ol>
+    <li>Copy the endpoint above: <code>https://dchub.cloud/mcp</code>.</li>
+    <li>In Grok, open <b>Settings → Connectors / Integrations</b> and choose the option to add a <b>custom connector</b> (remote MCP server).</li>
+    <li>Paste the URL. For auth, leave it blank (keyless free tier) or supply <code>Authorization: Bearer &lt;your-dchub-key&gt;</code>.</li>
+    <li>Save, then ask Grok: <i>"Use DC Hub — which US grid has the most headroom right now?"</i> and confirm a <code>get_grid_scoreboard</code> tool call fires.</li>
+  </ol>
+  <h3>Via the xAI API (Remote MCP)</h3>
+  <p>The xAI API can attach remote MCP servers to a request. Point the Remote MCP tool block at the same
+  endpoint with a Bearer header (exact field names per the current xAI docs):</p>
+  <pre>{
+  "type": "mcp",
+  "server_url": "https://dchub.cloud/mcp",
+  "authorization": "Bearer &lt;your-dchub-key&gt;"
+}</pre>""",
+    auth_html="""<div class="pane">
+  <h2>Authentication</h2>
+  <p>Optional. DC Hub accepts <code>Authorization: Bearer &lt;your-dchub-key&gt;</code> — and Bearer is what both
+  Grok surfaces send: the consumer custom-connector auth field and the API's Remote MCP block. No key?
+  Leave auth blank and use the keyless free tier.</p>
+</div>""",
+    extra_html="",
+)
+
+MISTRAL_RECIPE_HTML = _recipe_page(
+    slug="mistral",
+    title="Connect DC Hub to Mistral Le Chat — MCP connector for live data-center &amp; grid intelligence",
+    description="Add DC Hub to Mistral's Le Chat as a custom MCP connector: paste https://dchub.cloud/mcp and authenticate with Authorization: Bearer (Le Chat ignores X-API-Key). Live grid scoreboards, 21,000+ data-center facilities, interconnection queues and hyperscaler deals. Free tier: 10 calls/day, no signup.",
+    og_title="Connect DC Hub to Mistral Le Chat — MCP connector in 5 steps",
+    og_desc="Live grid + data-center intelligence in Le Chat · paste one URL · Authorization: Bearer · free tier no signup",
+    jsonld_altname="DC Hub for Mistral Le Chat",
+    jsonld_desc="Model Context Protocol server that connects to Mistral's Le Chat as a custom MCP connector (Authorization: Bearer) — live grid scoreboards, 21,000+ data-center facilities, interconnection queues, fiber intelligence and hyperscaler deals, with per-response citations. Free tier: 10 calls/day, no signup.",
+    eyebrow="Mistral · Le Chat · Model Context Protocol",
+    h1="Connect DC Hub to Le Chat.",
+    lead="Give Le Chat live, citable data-center and power-grid intelligence — real-time grid scoreboards, 21,000+ facilities, interconnection queues, hyperscaler deal flow. One URL. Bearer auth (or keyless).",
+    steps_heading="Connect in Le Chat",
+    steps_html="""<ol>
+    <li>Copy the endpoint above: <code>https://dchub.cloud/mcp</code>.</li>
+    <li>In Le Chat, open <b>Settings → Connectors / Integrations</b> and add a <b>custom MCP connector</b>.</li>
+    <li>Paste the URL (transport: streamable HTTP).</li>
+    <li>Auth: leave blank for the keyless free tier, or enter your key as <code>Authorization: Bearer &lt;your-dchub-key&gt;</code> — <b>not</b> X-API-Key (see below).</li>
+    <li>Save, then ask Le Chat: <i>"Use DC Hub — rank the top 5 US data-center markets by grid headroom."</i></li>
+  </ol>""",
+    auth_html="""<div class="pane">
+  <h2>Authentication — use Bearer, not X-API-Key</h2>
+  <p>DC Hub accepts both header styles, but <b>Le Chat ignores the <code>X-API-Key</code> header</b> — a key
+  entered there is silently dropped and you stay on the anonymous 10-calls/day tier. Always put your key in
+  <code>Authorization: Bearer &lt;your-dchub-key&gt;</code>. Keyless also works (free tier).</p>
+</div>""",
+    extra_html="",
+)
+
+PERPLEXITY_RECIPE_HTML = _recipe_page(
+    slug="perplexity",
+    title="Add DC Hub as a custom connector in Perplexity — MCP server for live data-center &amp; grid intelligence",
+    description="Add DC Hub as a custom connector in Perplexity: Settings → Connectors → Add connector, paste the MCP server URL https://dchub.cloud/mcp. Live grid scoreboards, 21,000+ data-center facilities, interconnection queues and hyperscaler deals. Plus Sonar/Search API grounding via llms.txt. Free tier: 10 calls/day, no signup.",
+    og_title="Add DC Hub as a custom connector in Perplexity — MCP in 5 steps",
+    og_desc="Live grid + data-center intelligence in Perplexity · paste one MCP server URL · free tier no signup",
+    jsonld_altname="DC Hub for Perplexity",
+    jsonld_desc="Model Context Protocol server that connects to Perplexity as a custom connector (Settings → Connectors → Add connector → MCP server URL) — live grid scoreboards, 21,000+ data-center facilities, interconnection queues, fiber intelligence and hyperscaler deals, with per-response citations. Also groundable via the Perplexity Sonar/Search API using https://dchub.cloud/llms.txt. Free tier: 10 calls/day, no signup.",
+    eyebrow="Perplexity · Model Context Protocol",
+    h1="Add DC Hub as a custom connector in Perplexity.",
+    lead="Give Perplexity live, citable data-center and power-grid intelligence — real-time grid scoreboards, 21,000+ facilities, interconnection queues, hyperscaler deal flow. One MCP server URL.",
+    steps_heading="Connect in Perplexity",
+    steps_html="""<ol>
+    <li>Copy the endpoint above: <code>https://dchub.cloud/mcp</code>.</li>
+    <li>In Perplexity, open <b>Settings → Connectors</b> and choose <b>Add connector</b>.</li>
+    <li>Paste the URL into the <b>MCP server URL</b> field and name it <code>DC Hub</code>.</li>
+    <li>Auth: leave blank (keyless free tier), or supply <code>Authorization: Bearer &lt;your-dchub-key&gt;</code> if the connector form offers an auth/header field.</li>
+    <li>Save, then ask Perplexity: <i>"Using DC Hub, which US grid has the most headroom right now?"</i></li>
+  </ol>""",
+    auth_html="""<div class="pane">
+  <h2>Authentication</h2>
+  <p>Optional. If the connector form offers an auth or header field, use
+  <code>Authorization: Bearer &lt;your-dchub-key&gt;</code>. Leave it blank for the keyless free tier.</p>
+</div>""",
+    extra_html="""<div class="pane">
+  <h2>DC Hub via Perplexity Sonar / Search API</h2>
+  <p>Building on Perplexity's Sonar or Search API instead of the app? Ground your answers in DC Hub without MCP:
+  point your system prompt or retrieval layer at <a href="https://dchub.cloud/llms.txt">https://dchub.cloud/llms.txt</a> —
+  a machine-readable index of DC Hub's live data endpoints (markets, facilities, grid, deals) that an LLM can fetch
+  and cite. Ask the model to cite <code>dchub.cloud</code> as the source.</p>
+</div>""",
+)
+
+
+@integrations_landing_bp.route("/integrations/grok", strict_slashes=False, methods=["GET"])
+def integrations_grok():
+    return GROK_RECIPE_HTML, 200, {
+        "Content-Type": "text/html; charset=utf-8",
+        "Cache-Control": "public, max-age=600, s-maxage=1800",
+    }
+
+
+@integrations_landing_bp.route("/integrations/mistral", strict_slashes=False, methods=["GET"])
+def integrations_mistral():
+    return MISTRAL_RECIPE_HTML, 200, {
+        "Content-Type": "text/html; charset=utf-8",
+        "Cache-Control": "public, max-age=600, s-maxage=1800",
+    }
+
+
+@integrations_landing_bp.route("/integrations/perplexity", strict_slashes=False, methods=["GET"])
+def integrations_perplexity():
+    return PERPLEXITY_RECIPE_HTML, 200, {
+        "Content-Type": "text/html; charset=utf-8",
+        "Cache-Control": "public, max-age=600, s-maxage=1800",
+    }
 
 
 @integrations_landing_bp.route("/integrations/mcp/data-center-mcp-server", strict_slashes=False, methods=["GET"])

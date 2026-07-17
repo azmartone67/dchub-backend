@@ -155,8 +155,10 @@ PLATFORMS: list[dict] = [
         "bots": ["PerplexityBot", "Perplexity-User"],
         "required_auth": "bearer", "required_transport": "both",
         "directory": "Perplexity curated App Connectors (400+)", "directory_listed": False,
-        "connect_path": "partnership", "recipe_published": False,
-        "next_action": "Publish a self-serve 'Add DC Hub as a custom connector in Perplexity' one-pager (works today), then BD for the curated list. Also a 'DC Hub via Perplexity Sonar/Search API' recipe.",
+        # recipe published 2026-07-17: /integrations/perplexity one-pager
+        # (custom connector steps + Sonar/Search-API llms.txt grounding section).
+        "connect_path": "partnership", "recipe_published": True,
+        "next_action": "Recipe live at /integrations/perplexity (custom connector + Sonar/llms.txt grounding). Verify a live Perplexity connector session end-to-end, then BD for the curated App Connectors list.",
         "owner_gated": False, "effort": "low (doc) + BD",
     },
     {
@@ -175,8 +177,10 @@ PLATFORMS: list[dict] = [
         "bots": [],
         "required_auth": "bearer", "required_transport": "both",
         "directory": "(no public directory)", "directory_listed": None,
-        "connect_path": "self_serve", "recipe_published": False,
-        "next_action": "Publish a one-click 'Add DC Hub to Grok' recipe (consumer Custom connector + API Remote MCP block, Bearer). Verify SSE works. Unblock X — Grok uniquely cites the X firehose.",
+        # recipe published 2026-07-17: /integrations/grok one-pager
+        # (consumer Custom connector + API Remote MCP block, both Bearer).
+        "connect_path": "self_serve", "recipe_published": True,
+        "next_action": "Recipe live at /integrations/grok (consumer Custom connector + API Remote MCP block, Bearer). Verify SSE works end-to-end, then unblock X — Grok uniquely cites the X firehose.",
         "owner_gated": False, "effort": "dev + X unblock (owner)",
     },
     {
@@ -197,8 +201,10 @@ PLATFORMS: list[dict] = [
         "bots": [],
         "required_auth": "bearer", "required_transport": "streamable",
         "directory": "Le Chat Connectors (60+)", "directory_listed": False,
-        "connect_path": "partnership", "recipe_published": False,
-        "next_action": "Verify /mcp connects as a Le Chat Custom MCP Connector via Authorization: Bearer (Le Chat ignores X-API-Key), publish a 3-step doc, keep the tool list static. Then BD for the directory.",
+        # recipe published 2026-07-17: /integrations/mistral one-pager
+        # (Bearer-only — page states explicitly that Le Chat ignores X-API-Key).
+        "connect_path": "partnership", "recipe_published": True,
+        "next_action": "Recipe live at /integrations/mistral (Bearer-only; Le Chat ignores X-API-Key). Verify a live Le Chat Custom MCP Connector session via Authorization: Bearer, keep the tool list static, then BD for the directory.",
         "owner_gated": False, "effort": "low (verify + doc)",
     },
     {
