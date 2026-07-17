@@ -45,6 +45,34 @@ _get_ai_wars_key_info = None
 _real_require_plan_ref = None
 
 
+# r-deals-unit-gate (2026-07-17): the largest millions-convention deal on record
+# is Microsoft at 625000 (=$625B). A row at-or-above 1e6 would be a $1T-plus deal
+# and does not exist — it is a raw-USD value sitting in a millions column, and
+# rendering it divides by 1000 into absurdity ($750000000.0B). Fail closed: drop
+# the value rather than publish a wrong dollar figure to a paying customer.
+_DEALS_MILLIONS_CEILING = 1_000_000
+
+
+def _val_m(raw, deal_id=None):
+    """Coerce a `deals.value` to USD millions, or 0.0 if it cannot be trusted.
+
+    Returns 0.0 (not None) so callers keep treating value_confirmed as val_m > 0
+    and the row still serves — minus its dollar figure.
+    """
+    try:
+        v = float(raw or 0)
+    except (TypeError, ValueError):
+        return 0.0
+    if v < 0 or v >= _DEALS_MILLIONS_CEILING:
+        logger.warning(
+            "deals unit gate: suppressed untrusted value %r on deal id=%r "
+            "(at-or-above the millions ceiling; likely raw USD or a bad extraction)",
+            raw, deal_id,
+        )
+        return 0.0
+    return v
+
+
 # Region normalization (MCP fix Mar 22)
 REGION_ALIASES = {
     'north_america': 'North America', 'na': 'North America',
@@ -493,6 +521,9 @@ def get_deals():
             'count': len(limited),
             'total_count': len(cached_data),
             'total_value': (sum((d.get('value') or 0) for d in cached_data) if _deals_paid else None),
+            # r-deals-unit-gate (2026-07-17): total_value shipped unitless, so a
+            # consumer could not tell millions from raw USD. State the unit.
+            'total_value_unit': ('usd_millions' if _deals_paid else None),
             'data_source': 'cached',
             'cached': True,
             'provenance': _deals_provenance('cached'),
@@ -521,11 +552,26 @@ def get_deals():
                 # ORDER BY COALESCE(date,'1970-01-01') DESC — so only ~57 of 2,802
                 # deals ever reached agents (2%). Filtering in SQL + a 2000 cap
                 # returns the full valid set.
+                # r-deals-unit-gate (2026-07-17): `deals.value` carries TWO writer
+                # conventions. The curated/AUTO ingest writes USD MILLIONS; the
+                # news extractor (extracted_via IN ('claude','regex')) writes RAW
+                # USD. Verified against live: extractor rows NEVER land below 1e6,
+                # curated rows never at-or-above it. Rows this path serves are
+                # millions-convention, so anything at-or-above 1e6 is legacy
+                # regex garbage ("Should You"/"These 3" headline fragments) whose
+                # value_display rendered as $750000000.0B to PAYING callers and
+                # supplied 99.7 percent of the published total_value. Such rows are
+                # quarantined in data_flag; this excludes them, and _val_m below
+                # fails closed on anything that slips through.
+                # NOTE: LEFT() not LIKE 'quarantine_x' on purpose — a literal
+                # percent-sign in a psycopg2 query string is a live 500 hazard
+                # (see reference_psycopg2_empty_tuple_percent_trap).
                 pg_cur.execute("""
                     SELECT id, date, year, buyer, seller, value, mw, type, region, market
                     FROM deals
                     WHERE COALESCE(LOWER(TRIM(buyer)),'')  NOT IN ('tbd','unknown','n/a','')
                       AND COALESCE(LOWER(TRIM(seller)),'') NOT IN ('tbd','unknown','n/a','')
+                      AND (data_flag IS NULL OR LEFT(data_flag, 11) <> 'quarantine_')
                     ORDER BY COALESCE(date, '1970-01-01') DESC
                     LIMIT 2000
                 """)
@@ -535,7 +581,7 @@ def get_deals():
                     seller = row[4] or ''
                     if buyer.lower() in ['tbd', 'unknown', 'n/a', ''] or seller.lower() in ['tbd', 'unknown', 'n/a', '']:
                         continue
-                    val_m = float(row[5] or 0)
+                    val_m = _val_m(row[5], row[0])
                     val_display = f"${val_m/1000:.1f}B" if val_m >= 1000 else (f"${val_m:.0f}M" if val_m > 0 else None)
                     db_deals.append({
                         'id': row[0], 'date': row[1], 'year': row[2],
@@ -543,6 +589,7 @@ def get_deals():
                         'value': val_m,
                         'value_display': val_display,
                         'value_confirmed': val_m > 0,
+                        'value_unit': 'usd_millions',
                         'mw': row[6], 'type': row[7], 'region': row[8], 'market': row[9]
                     })
             if db_deals:
@@ -642,6 +689,9 @@ def get_deals():
         'count': len(limited_deals),
         'total_count': len(deals),
         'total_value': (sum((d.get('value') or 0) for d in deals) if _deals_paid else None),
+        # r-deals-unit-gate (2026-07-17): see the cached path above — unitless
+        # dollar aggregates are not citable.
+        'total_value_unit': ('usd_millions' if _deals_paid else None),
         'data_source': data_source,
         'provenance': _deals_provenance(data_source),
         'stats_by_type': (stats_by_type if _deals_paid else {k: {'count': v['count'], 'value': None} for k, v in stats_by_type.items()}),
@@ -747,14 +797,25 @@ def _get_transactions_free():
                     pg_cur.execute(
                         "SELECT COUNT(*) FROM deals "
                         "WHERE COALESCE(LOWER(buyer),'')  NOT IN ('tbd','unknown','n/a','') "
-                        "  AND COALESCE(LOWER(seller),'') NOT IN ('tbd','unknown','n/a','')"
+                        "  AND COALESCE(LOWER(seller),'') NOT IN ('tbd','unknown','n/a','') "
+                        "  AND (data_flag IS NULL OR LEFT(data_flag, 11) <> 'quarantine_')"
                     )
                     true_total = pg_cur.fetchone()[0]
                     # Raw total incl. single-party capex/AI-contract announcements
                     # (legitimately have no "seller"). This is the honest
                     # "transactions tracked" number the State-of-Market report
                     # cites, and matches the platform health deal_count.
-                    pg_cur.execute("SELECT COUNT(*) FROM deals")
+                    # r-deals-unit-gate (2026-07-17): exclude quarantined rows
+                    # (fabricated example.com seeds + misparsed headline
+                    # fragments) — they must not inflate a published count.
+                    # NOTE: this count still contains same-deal duplicates; the
+                    # AUTO id embeds the ingest date, so re-ingest never conflicts
+                    # and one deal accumulates a row per day. Dedup is tracked
+                    # separately — until then treat this as an upper bound.
+                    pg_cur.execute(
+                        "SELECT COUNT(*) FROM deals "
+                        "WHERE (data_flag IS NULL OR LEFT(data_flag, 11) <> 'quarantine_')"
+                    )
                     total_tracked = pg_cur.fetchone()[0]
                 except Exception as _ce:
                     logger.warning(f"deals COUNT(*) failed, falling back to page len: {_ce}")
