@@ -98,6 +98,38 @@ jobs:
               print(f'::warning::automerge run parse failed: {e}')
           "
 
+      - name: "Smoke-regression recipe — tick (kill switch SMOKE_REGRESSION_DISABLE=1)"
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "$ADMIN_KEY" ]; then
+            echo "::warning::DCHUB_ADMIN_KEY not set — skipping smoke-regression tick"
+            exit 0
+          fi
+          response=$(curl -sS --max-time 150 -X POST \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            -H "Content-Type: application/json" \
+            "$RAILWAY_BASE/api/v1/brain/smoke-regression/tick" \
+            || echo '{"ok":false,"error":"curl_fail"}')
+          echo "$response" | head -c 4000
+          echo
+          echo "$response" | python3 -c "
+          import json, sys
+          try:
+              d = json.load(sys.stdin)
+              r = d.get('result') or {}
+              if r.get('disabled'):
+                  print('::notice::smoke-regression tick: DISABLED (kill switch)')
+              else:
+                  det = r.get('detection') or {}
+                  adv = r.get('advanced') or []
+                  print(f'::notice::smoke-regression tick: detected={det.get(\"detected\")} '
+                        f'advanced={[a.get(\"action\") for a in adv]}')
+          except Exception as e:
+              print(f'::warning::smoke-regression tick parse failed: {e}')
+          "
+
       - name: Auto-merge — canary (no-op unless BRAIN_AUTOMERGE_ENABLED=1)
         env:
           ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}

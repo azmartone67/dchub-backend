@@ -1120,12 +1120,16 @@ def auto_code_list():
         dry_run_default=_DRY_RUN,
         max_diff_lines=_MAX_DIFF_LINES,
         recipes=["route_alias_404", "cron_if_mismatched", "missing_route", "high_5xx",
-                 "gone_410_alias", "stale_media_image"],
-        real_pr_whitelist=["route_alias_404", "cron_if_mismatched"],  # these write a branch+PR
+                 "gone_410_alias", "stale_media_image", "smoke_regression"],
+        real_pr_whitelist=["route_alias_404", "cron_if_mismatched",
+                           "smoke_regression"],  # these write a branch+PR
         draft_only=["missing_route", "high_5xx", "gone_410_alias", "stale_media_image"],
         recent_actions=actions,
         note=("L22 recipe library (r85h 2026-06-13): route_alias_404 + cron_if_mismatched "
               "are whitelisted for REAL fork PRs (branch + file change, human-merge). "
+              "smoke_regression (2026-07-17) lives in routes/brain_smoke_regression.py — "
+              "its own trigger (post-deploy-smoke streak / L14 hard_burn), real fix PR, "
+              "gauntlet-gated merge + post-merge LANDING verification. "
               "cron_if_mismatched staggers a colliding GitHub Actions cron, FENCED: never "
               "edits evolve-cron.yml or any `if: github.event.schedule` guarded workflow, "
               "DR jobs stay put, plain-int-minute crons only, yaml-validated, DRAFT PR. The "

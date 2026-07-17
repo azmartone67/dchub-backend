@@ -30341,6 +30341,23 @@ try:
 except Exception as e:
     print(f"🤖 Brain Autonomy Loop: ⚠️ Failed to load: {e}")
 
+# Smoke-regression autofix recipe (2026-07-17) — the missing L22 trigger for
+# the 07-16 class (map/facility 500-storm: detection fired for 5h, no repair
+# PR). Detect (post-deploy-smoke streak / L14 hard_burn) → context (deploy
+# window diff + error class) → LLM fix → REAL PR → gauntlet-gated merge →
+# LANDING verification (post-merge smoke re-dispatch after the Railway drain
+# window) → escalate + STOP after the attempt cap. Kill switch:
+# SMOKE_REGRESSION_DISABLE=1. Real PRs need DCHUB_L22_REAL_PR=1; merging
+# additionally needs the shared BRAIN_AUTOMERGE_* arm flags.
+try:
+    from routes.brain_smoke_regression import register as _register_smokereg
+    _sr_ok = _register_smokereg(app)
+    print("🚑 Smoke-Regression Recipe: ✅ Registered "
+          f"(POST /api/v1/brain/smoke-regression/tick · GET /status) "
+          f"registered={_sr_ok}")
+except Exception as e:
+    print(f"🚑 Smoke-Regression Recipe: ⚠️ Failed to load: {e}")
+
 # Onboarding recovery + welcome-email audit (2026-06-18) — resend a customer's
 # welcome email + make welcome_email_log readable (it was write-only).
 try:
