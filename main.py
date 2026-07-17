@@ -1444,6 +1444,14 @@ _WORKER_PROXY_POST_PATHS = frozenset({
     '/api/jobs/carrier-sync',
     '/api/jobs/subsea-sync',
     '/api/jobs/fiber-full-sync',
+    # r-netixreg (2026-07-17): network_ix_ingestion sync triggers. PeeringDB
+    # paginates at 250/page with a 3s anonymous rate-limit delay, so a full
+    # net/netfac pull runs many minutes — same 202-relay treatment as the
+    # fiber jobs above.
+    '/api/jobs/network-sync',
+    '/api/jobs/ix-sync',
+    '/api/jobs/campus-sync',
+    '/api/jobs/peeringdb-full-sync',
     '/api/jobs/permit-scraper',      # subprocess scraper
     '/api/jobs/sec-parser',          # subprocess EDGAR parser
     # routes/jobs_routes.py cron endpoints
@@ -34480,6 +34488,20 @@ try:
     print("[main] fiber_intelligence registered: /api/v1/carriers*, /api/v1/subsea/*, /api/jobs/carrier-sync", flush=True)
 except Exception as _fi_e:
     print(f"[main] fiber_intelligence register failed: {_fi_e}", file=sys.stderr)
+
+# r-netixreg (2026-07-17): PeeringDB network + internet-exchange layer. Same
+# orphan as fiber_integration above — network_ix_ingestion.py was written in
+# March 2026, ingested 34,261 networks / 59,728 network-facility links / 1,300
+# IXs on 2026-03-27, and was then never registered, so /api/v1/connectivity/*
+# 404'd and the data sat unreadable for ~4 months. Registers the four reads;
+# the /api/jobs/*-sync triggers are internal-key-gated inside the module and
+# worker-delegated via _WORKER_PROXY_POST_PATHS.
+try:
+    from network_ix_ingestion import register_network_ix_routes
+    register_network_ix_routes(app, get_db)
+    print("[main] network_ix registered: /api/v1/networks/*, /api/v1/ix/summary, /api/v1/connectivity/<id>", flush=True)
+except Exception as _nix_e:
+    print(f"[main] network_ix register failed: {_nix_e}", file=sys.stderr)
 
 # Durable MCP full-answer cap counter (/api/v1/mcp/full-cap/*) — persists the
 # per-identity per-tool daily full-answer count in Postgres so the MCP server's

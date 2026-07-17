@@ -31,10 +31,29 @@ import hashlib
 import os
 import pathlib
 import re
+import sys
 
 import pytest
 
 _MAIN = pathlib.Path(__file__).resolve().parents[1] / "main.py"
+_NETIX = pathlib.Path(__file__).resolve().parents[1] / "network_ix_ingestion.py"
+
+
+def _netix_func_src(name: str) -> str:
+    """Slice a possibly-nested `def name(` out of network_ix_ingestion.py.
+
+    Same never-import-the-app rule as _func_src, but bounded by ast (parsed, not
+    imported) rather than by a "stop at the next def" regex. The read routes are
+    nested inside register_network_ix_routes(), and facility_connectivity is the
+    LAST one — a regex slice overruns it into module-level code and silently
+    changes what these guards assert. It did: the blanket-except guard below
+    tripped on the phase-92 heartbeat block, ~150 lines past the function.
+    """
+    src = _NETIX.read_text(encoding="utf-8")
+    for node in ast.walk(ast.parse(src)):
+        if isinstance(node, ast.FunctionDef) and node.name == name:
+            return "\n".join(src.splitlines()[node.lineno - 1: node.end_lineno])
+    raise AssertionError(f"{name}() not found in network_ix_ingestion.py")
 
 
 def _func_src(name: str) -> str:
@@ -153,6 +172,122 @@ def test_sql_fstrings_have_no_bare_percent(fn):
                         f"{type(e).__name__}: {e}")
 
 
+# ─── network_ix_ingestion's /api/v1/connectivity/<id> (r-netixreg) ────────
+#
+# The same carrier link, reached from a second module. This endpoint straddles
+# THREE id-spaces, so it broke in a fourth way on top of (1)-(3) above:
+#   (4) ORPHANED — the module was never registered, so the route 404'd from
+#       March to July 2026 and none of the bugs below could even be observed.
+# It also carried mode (1) and (2) at once: `int(fac_id)` against the TEXT
+# facilities.id raised text=integer, or ValueError on a hex slug, and a blanket
+# `except Exception: pass` swallowed both into carriers=[] — which then silently
+# understated connectivity_score, whose carrier term is worth 3 points each.
+
+
+def test_network_ix_routes_are_registered():
+    """The orphan guard: a module nothing calls cannot serve anything.
+
+    network_ix_ingestion.py sat fully written and never registered for ~4
+    months while its own docstring described how to wire it up — a reference
+    that looks like integration but executes nothing. Assert the real call.
+    """
+    src = _MAIN.read_text(encoding="utf-8")
+    assert "register_network_ix_routes(app, get_db)" in src, (
+        "main.py no longer calls register_network_ix_routes — network_ix_ingestion "
+        "is orphaned again and /api/v1/connectivity/<id> will 404 silently "
+        "(it did exactly this from 2026-03-27 to 2026-07-17)")
+
+
+def test_connectivity_carrier_join_matches_both_id_spaces():
+    """Both cfp id-spaces, same as facility_by_slug/api_v1_map."""
+    src = _code_only(_netix_func_src("facility_connectivity"))
+    assert "carrier_facility_presence" in src, (
+        "facility_connectivity no longer queries carrier_facility_presence")
+    assert "df.id::text" in src, (
+        "the integer id-space join (discovered_facilities.id::text) is gone — "
+        "that space holds 604,332 of the 608,804 links")
+    assert "merged_facility_id" in src, (
+        "the hex id-space join (merged_facility_id -> facilities.id) is gone")
+
+
+def test_connectivity_does_not_int_cast_the_facility_id():
+    """`int(fac_id)` is the original bug, broken in both directions.
+
+    facilities.id is TEXT (hex16) live: int(fac_id) either raises ValueError on
+    a hex slug or produces `operator does not exist: text = integer`.
+    """
+    src = _code_only(_netix_func_src("facility_connectivity"))
+    assert "int(fac_id)" not in src, (
+        "int(fac_id) is back in facility_connectivity: facilities.id is TEXT, so "
+        "this raises ValueError on a hex slug or text=integer on the compare — "
+        "and either way the carrier list silently empties")
+
+
+def test_connectivity_never_casts_indexed_column():
+    """Cast the OTHER side — casting dchub_facility_id kills idx_cfp_dchub."""
+    src = _code_only(_netix_func_src("facility_connectivity"))
+    assert not re.search(r"dchub_facility_id\s*::", src), (
+        "facility_connectivity casts the indexed column dchub_facility_id, which "
+        "makes idx_cfp_dchub(dchub_facility_id) unusable — cast the other side")
+
+
+def test_connectivity_carrier_query_does_not_swallow_errors():
+    """The carrier query's handler must re-raise what it does not expect.
+
+    `except Exception: pass` around this query is exactly how the endpoint
+    served carriers=[] behind a 200 for four months. Scoped to the innermost
+    try wrapping the carrier SQL: the route's conn.close() cleanup uses the
+    same swallow-everything pattern legitimately (house style throughout this
+    file), so a whole-function ban would fail on unrelated code.
+    """
+    src = _NETIX.read_text(encoding="utf-8")
+    fn = next((n for n in ast.walk(ast.parse(src))
+               if isinstance(n, ast.FunctionDef)
+               and n.name == "facility_connectivity"), None)
+    assert fn, "facility_connectivity() not found"
+    tries = [t for t in ast.walk(fn) if isinstance(t, ast.Try)
+             and "carrier_facility_presence" in (ast.get_source_segment(src, t) or "")]
+    assert tries, "no try block wraps the carrier query any more"
+    inner = min(tries, key=lambda t: t.end_lineno - t.lineno)
+    for h in inner.handlers:
+        body = ast.get_source_segment(src, h) or ""
+        assert "raise" in body, (
+            "the carrier query's exception handler swallows everything instead "
+            "of re-raising the unexpected: that turns a real SQL error into a "
+            "silent carriers=[] and an understated connectivity_score")
+
+
+def test_connectivity_bridges_the_pdb_id_space():
+    """pdb_* rows are keyed by PeeringDB's fac_id, never by facilities.id.
+
+    The two spaces overlap in 0 of 59,728 rows, so without the source_id bridge
+    a caller passing the platform's own hex id gets 0 networks and 0 IX while
+    still getting a 200 and a confident-looking connectivity_score.
+    """
+    src = _code_only(_netix_func_src("facility_connectivity"))
+    assert "_resolve_facility_ids" in src, (
+        "facility_connectivity no longer resolves the PeeringDB/dchub id-spaces "
+        "— it is passing one caller id to both, which cannot match both")
+    resolver = _code_only(_netix_func_src("_resolve_facility_ids"))
+    assert "source_id" in resolver and "PeeringDB" in resolver, (
+        "the facilities.source_id -> PeeringDB fac_id bridge is gone from "
+        "_resolve_facility_ids; it is the only link between the two id-spaces")
+
+
+@pytest.mark.parametrize("job", ["network_sync_job", "ix_sync_job",
+                                 "campus_sync_job", "peeringdb_full_sync_job"])
+def test_sync_jobs_are_key_gated(job):
+    """The sync triggers each start a multi-minute PeeringDB crawl.
+
+    While the module was orphaned these were unauthenticated and unreachable;
+    registering it made them reachable, so the gate has to hold.
+    """
+    src = _NETIX.read_text(encoding="utf-8")
+    assert re.search(rf"@require_internal_key\s*\n\s*def {job}\(", src), (
+        f"{job} is not decorated with @require_internal_key — that exposes an "
+        "unauthenticated POST which kicks off a bulk PeeringDB crawl")
+
+
 # ─── live-data guards (skip without a DB) ─────────────────────────────────
 
 _DB = (os.environ.get("NEON_REPLICA_URL") or os.environ.get("DATABASE_URL")
@@ -214,6 +349,90 @@ def test_carrier_link_coverage_has_not_collapsed():
     assert n >= 5000, (
         f"only {n} facilities have on-site carriers (was 13,870 at fix time) — "
         "the join has likely lost an id-space")
+
+
+@_live
+def test_resolver_rejects_ids_that_exist_in_neither_space():
+    """An id that resolves nowhere must resolve to nothing — not to itself.
+
+    _resolve_facility_ids used to accept any digit string as a PeeringDB
+    fac_id on faith, so /api/v1/connectivity/99999999 answered 200 with
+    score=0 / "Limited": an unknown id dressed up as a real but badly-connected
+    facility. Imported here (not in main) and only under a live DB.
+    """
+    pytest.importorskip("psycopg2")
+    import psycopg2
+    sys.path.insert(0, str(_NETIX.parent))
+    from network_ix_ingestion import _resolve_facility_ids
+
+    conn = psycopg2.connect(_DB)
+    try:
+        with conn.cursor() as c:
+            assert _resolve_facility_ids(c, "99999999") == (None, None), (
+                "a non-existent numeric id resolved — it will report zero "
+                "networks rather than 404, which reads as a real verdict")
+            assert _resolve_facility_ids(c, "notafacility") == (None, None)
+            # and a real one still resolves, both directions
+            pdb_id, dchub_id = _resolve_facility_ids(c, "4024")
+            assert pdb_id == "4024" and dchub_id, (
+                "the raw-PeeringDB-id contract broke")
+    finally:
+        conn.close()
+
+
+@_live
+def test_pdb_fac_id_is_a_separate_space_from_facilities_id():
+    """The invariant that forces the source_id bridge to exist.
+
+    If these two ever DID overlap, keying the pdb_* reads straight off a dchub
+    facilities.id would be correct and the bridge would be dead weight. They do
+    not: 0 of 59,728 rows match. This test states that out loud so nobody
+    "simplifies" _resolve_facility_ids away.
+    """
+    (overlap,), = _q("""
+        SELECT COUNT(*) FROM pdb_network_facilities nf
+        JOIN facilities f ON f.id = nf.fac_id
+    """)
+    assert overlap == 0, (
+        f"{overlap} pdb_network_facilities.fac_id values now match facilities.id "
+        "— the id-spaces have converged; re-check whether _resolve_facility_ids "
+        "is still needed rather than assuming this test is broken")
+
+
+@_live
+def test_source_id_bridge_resolves_networks_for_a_known_facility():
+    """A PeeringDB-sourced facility must resolve >0 networks through the bridge.
+
+    Anchored on the hex facilities.id -> source_id hop the endpoint actually
+    uses, so it fails if that bridge collapses (which returned 0 networks for
+    every caller passing a platform id, with a 200 and a score of 0).
+    """
+    rows = _q("""
+        SELECT f.id, f.source_id, COUNT(nf.id) AS nets
+        FROM facilities f
+        JOIN pdb_network_facilities nf ON nf.fac_id = f.source_id
+        WHERE f.source = 'PeeringDB'
+        GROUP BY 1, 2 ORDER BY nets DESC LIMIT 1
+    """)
+    assert rows, (
+        "no facility bridges to pdb_network_facilities via source_id — the "
+        "PeeringDB network layer is unreachable from a dchub facility id")
+    assert rows[0][2] > 0
+
+
+@_live
+def test_pdb_snapshot_is_not_silently_ancient():
+    """The reads serve a snapshot; a frozen one must be visible, not implied.
+
+    pdb_* froze on 2026-03-27 for ~4 months because no scheduler existed. The
+    weekly peeringdb_network_sync now refreshes it. This asserts the freshness
+    stamp the endpoints publish is actually derivable — not that it is recent,
+    since a fresh checkout against a stale replica is legitimate.
+    """
+    (stamp,), = _q("SELECT MAX(synced_at) FROM pdb_networks")
+    assert stamp is not None, (
+        "pdb_networks.synced_at is entirely NULL — /api/v1/connectivity's "
+        "data_as_of would read as null and the snapshot's true age is unknowable")
 
 
 @_live

@@ -755,6 +755,13 @@ SCHEDULE = [
     # off-peak (Saturday night US) and shares the hour only with the quick
     # gas_pricing_refresh + brain_self_perception runs.
     ( 4,  4, "carrier_facility_sync", "_run_carrier_facility_sync"),
+    # r-netixreg (2026-07-17): weekly PeeringDB network + IX sync. Same story
+    # as carrier_facility_sync above — network_ix_ingestion.py was never
+    # registered, so the pdb_* tables froze at their 2026-03-27 seed. Also
+    # Sunday-gated internally. 05:00 UTC deliberately, NOT the 04:00 slot the
+    # carrier sync holds: both pull PeeringDB in bulk and anonymous callers
+    # share one rate-limit budget, so overlapping them would 429 both.
+    ( 5,  5, "peeringdb_network_sync", "_run_peeringdb_network_sync"),
 ]
 
 # ---------------------------------------------------------------------------
@@ -3545,6 +3552,57 @@ def _run_carrier_facility_sync():
         logger.error("🔌 carrier_facility_sync: error — %s", e)
 
 
+def _run_peeringdb_network_sync():
+    """Weekly PeeringDB network + internet-exchange sync (r-netixreg
+    2026-07-17). Refreshes pdb_networks, pdb_network_facilities, pdb_ix,
+    pdb_ix_facilities and pdb_campus — the tables behind
+    /api/v1/networks/*, /api/v1/ix/summary and /api/v1/connectivity/<id>.
+    Those tables were seeded once on 2026-03-27 and never refreshed, because
+    the module went unregistered; this is the schedule entry that never
+    existed. Self-gates to Sundays (weekday()==6) — the SCHEDULE harness is
+    hour-based, not weekly (carrier_facility_sync pattern). Loopback POST so
+    the same internal-key gate serves cron and manual triggers. PeeringDB
+    rate-limits anonymous bulk pulls hard — set PEERINGDB_API_KEY on Railway
+    for reliable weekly runs (_pdb_fetch_paginated sends it when present).
+    Never raises."""
+    import requests as _rq
+    now = datetime.now(timezone.utc)
+    if now.weekday() != 6:  # 6 == Sunday
+        logger.info(
+            "🔗 peeringdb_network_sync: skipped — weekly gate "
+            "(today=%s, runs Sundays only)",
+            now.strftime("%A"),
+        )
+        return
+    key = (os.environ.get("DCHUB_INTERNAL_KEY")
+           or os.environ.get("DCHUB_SYNC_KEY")
+           or os.environ.get("DCHUB_ADMIN_KEY") or "")
+    if not key:
+        logger.warning("🔗 peeringdb_network_sync: skipped — no internal key env set")
+        return
+    base = (os.environ.get("DCHUB_INTERNAL_API", "http://127.0.0.1:8080") or "").strip()  # strip(): trailing \n in env → %0a in URL → NameResolutionError
+    try:
+        r = _rq.post(
+            f"{base}/api/jobs/peeringdb-full-sync",
+            headers={"X-Internal-Key": key,
+                     "User-Agent": "dchub-cron-peeringdb-network-sync/1.0"},
+            timeout=1500,  # paginated bulk pulls run minutes; < HARD_TIMEOUT_SECONDS
+        )
+        d = (r.json() if r.headers.get("content-type", "").startswith("application/json") else {}) or {}
+        logger.info(
+            "🔗 peeringdb_network_sync: status=%s success=%s total_records=%s "
+            "networks=%s netfac=%s ix=%s ixfac=%s campus=%s",
+            r.status_code, d.get("success"), d.get("total_records"),
+            (d.get("networks") or {}).get("upserted"),
+            (d.get("network_facilities") or {}).get("upserted"),
+            (d.get("internet_exchanges") or {}).get("upserted"),
+            (d.get("ix_facilities") or {}).get("upserted"),
+            (d.get("campus") or {}).get("upserted"),
+        )
+    except Exception as e:
+        logger.error("🔗 peeringdb_network_sync: error — %s", e)
+
+
 _RUNNERS = {
     "market_refresh":      _run_market_refresh,
     "news":                _run_news_crawler,
@@ -3581,6 +3639,7 @@ _RUNNERS = {
     "brain_feature_proposer": _run_brain_feature_proposer,
     "sales_outreach_detect":  _run_sales_outreach_detect,
     "carrier_facility_sync":  _run_carrier_facility_sync,
+    "peeringdb_network_sync": _run_peeringdb_network_sync,
     "expired_onetime_demote": _run_expired_onetime_demote,
     "verdict_shift_post":  _run_verdict_shift_post,
     "weekly_newsletter":   _run_weekly_newsletter,

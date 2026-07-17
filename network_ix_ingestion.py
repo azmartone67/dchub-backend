@@ -843,45 +843,145 @@ def run_peeringdb_full_sync(get_db) -> Dict[str, Any]:
 # ─────────────────────────────────────────────────────────────
 # API ENDPOINTS (register with Flask app)
 # ─────────────────────────────────────────────────────────────
+def _resolve_facility_ids(c, fac_id):
+    """Map a caller-supplied facility id onto the two id-spaces the
+    connectivity reads straddle.
+
+    r-netixreg (2026-07-17): every pdb_* row is keyed by PeeringDB's own
+    integer fac_id, but the rest of the platform addresses facilities by the
+    hex16 facilities.id. The two spaces overlap in exactly ZERO of 59,728
+    pdb_network_facilities rows (verified on the replica) — so keying these
+    reads off a caller's hex id returned an empty result for every facility,
+    forever. facilities.source_id carries the PeeringDB fac_id for the rows
+    ingested from PeeringDB (source='PeeringDB', 5,953 of 16,330) and is the
+    only bridge between them. A bare integer is still accepted as a raw
+    PeeringDB fac_id — the module's original contract.
+
+    Returns (pdb_fac_id, dchub_fac_id); either may be None when unmappable.
+    """
+    c.execute("SELECT id, source, source_id FROM facilities WHERE id = %s",
+              (fac_id,))
+    row = c.fetchone()
+    if row:
+        dchub_id, source, source_id = row
+        return (source_id if (source == 'PeeringDB' and source_id) else None), dchub_id
+
+    if str(fac_id).isdigit():
+        c.execute(
+            "SELECT id FROM facilities "
+            "WHERE source = 'PeeringDB' AND source_id = %s LIMIT 1",
+            (fac_id,),
+        )
+        row = c.fetchone()
+        if row:
+            return fac_id, row[0]
+
+        # No dchub facility maps to it. Only accept the number as a PeeringDB
+        # fac_id if PeeringDB actually knows that facility — otherwise any
+        # integer would "resolve" and then report zero networks, which reads as
+        # a real facility with no connectivity instead of a bad id. Both fac_id
+        # columns are indexed, so this stays an index probe.
+        c.execute("""
+            SELECT 1 FROM pdb_network_facilities WHERE fac_id = %s
+            UNION ALL
+            SELECT 1 FROM pdb_ix_facilities WHERE fac_id = %s
+            LIMIT 1
+        """, (fac_id, fac_id))
+        if c.fetchone():
+            return fac_id, None
+
+    return None, None
+
+
+def _pdb_data_as_of(c):
+    """Freshness stamp for the PeeringDB snapshot these reads serve.
+
+    The pdb_* tables are refreshed by the weekly carrier/PeeringDB sync; when
+    that has not run they can be months stale. Callers get the real age rather
+    than a bare number that reads as live.
+    """
+    try:
+        c.execute("SELECT MAX(synced_at) FROM pdb_networks")
+        row = c.fetchone()
+        return row[0].isoformat() + 'Z' if row and row[0] else None
+    except Exception:
+        return None
+
+
 def register_network_ix_routes(app, get_db):
     """Register network, IX, and campus routes with the Flask app."""
+    import functools
+
     from flask import jsonify, request
 
+    def require_internal_key(f):
+        """Gate the sync triggers. These POSTs each kick off a multi-minute
+        PeeringDB crawl, so they are not open to the world — same gate and
+        env keys as fiber_integration's job endpoints (r-fiberreg)."""
+        @functools.wraps(f)
+        def decorated(*args, **kwargs):
+            key = (request.headers.get('X-Internal-Key', '') or
+                   request.args.get('key', ''))
+            valid_keys = [
+                k for k in [
+                    os.environ.get('DCHUB_INTERNAL_KEY', ''),
+                    os.environ.get('DCHUB_SYNC_KEY', ''),
+                    os.environ.get('DCHUB_ADMIN_KEY', ''),
+                ] if k
+            ]
+            if not key or key not in valid_keys:
+                return jsonify({'error': 'Unauthorized'}), 401
+            return f(*args, **kwargs)
+        return decorated
+
+    def _job_db():
+        """Direct connection for the minutes-long syncs. The app pool
+        force-reclaims any connection held longer than 60s, which severs a
+        bulk upsert mid-loop — same reason fiber_integration's jobs bypass
+        the pool. The lightweight read routes below keep the pooled get_db."""
+        import psycopg2
+        return psycopg2.connect(os.environ.get('DATABASE_URL', ''),
+                                connect_timeout=10)
+
     @app.route('/api/jobs/network-sync', methods=['POST'])
+    @require_internal_key
     def network_sync_job():
         """Trigger network + network-facility sync."""
         try:
-            result = run_network_sync(get_db)
+            result = run_network_sync(_job_db)
             return jsonify(result), 200 if result.get('success') else 500
         except Exception as e:
             logger.error(f"Network sync job failed: {e}")
             return jsonify({'success': False, 'error': str(e)}), 500
 
     @app.route('/api/jobs/ix-sync', methods=['POST'])
+    @require_internal_key
     def ix_sync_job():
         """Trigger IX + IX-facility sync."""
         try:
-            result = run_ix_sync(get_db)
+            result = run_ix_sync(_job_db)
             return jsonify(result), 200 if result.get('success') else 500
         except Exception as e:
             logger.error(f"IX sync job failed: {e}")
             return jsonify({'success': False, 'error': str(e)}), 500
 
     @app.route('/api/jobs/campus-sync', methods=['POST'])
+    @require_internal_key
     def campus_sync_job():
         """Trigger campus sync."""
         try:
-            result = run_campus_sync(get_db)
+            result = run_campus_sync(_job_db)
             return jsonify(result), 200 if result.get('success') else 500
         except Exception as e:
             logger.error(f"Campus sync job failed: {e}")
             return jsonify({'success': False, 'error': str(e)}), 500
 
     @app.route('/api/jobs/peeringdb-full-sync', methods=['POST'])
+    @require_internal_key
     def peeringdb_full_sync_job():
         """Trigger full PeeringDB sync (networks + IX + campus)."""
         try:
-            result = run_peeringdb_full_sync(get_db)
+            result = run_peeringdb_full_sync(_job_db)
             return jsonify(result), 200 if result.get('success') else 500
         except Exception as e:
             logger.error(f"Full PeeringDB sync job failed: {e}")
@@ -942,11 +1042,41 @@ def register_network_ix_routes(app, get_db):
 
     @app.route('/api/v1/networks/facility/<fac_id>', methods=['GET'])
     def networks_at_facility(fac_id):
-        """Get all networks present at a specific facility."""
+        """Get all networks present at a specific facility.
+
+        Accepts either a dchub facilities.id or a raw PeeringDB fac_id — see
+        _resolve_facility_ids for why the distinction matters.
+        """
         conn = None
         try:
             conn = get_db()
             c = conn.cursor()
+
+            pdb_fac_id, dchub_fac_id = _resolve_facility_ids(c, fac_id)
+            if not pdb_fac_id and not dchub_fac_id:
+                return jsonify({
+                    'success': False,
+                    'error': 'facility_not_found',
+                    'facility_id': fac_id,
+                    'detail': ('No facility matches this id in either id-space '
+                               '(dchub facilities.id or PeeringDB fac_id).'),
+                }), 404
+            if not pdb_fac_id:
+                # Known facility, but not one PeeringDB covers. Say so rather
+                # than letting an empty list read as "no networks here".
+                return jsonify({
+                    'success': True,
+                    'facility_id': fac_id,
+                    'dchub_facility_id': dchub_fac_id,
+                    'networks': [],
+                    'network_count': 0,
+                    'coverage': 'unmapped',
+                    'note': ('No PeeringDB facility is mapped to this id, so '
+                             'network presence is unknown rather than absent. '
+                             'Only PeeringDB-sourced facilities carry it.'),
+                    'data_as_of': _pdb_data_as_of(c),
+                    'source': 'PeeringDB via DC Hub Intelligence',
+                })
 
             c.execute("""
                 SELECT nf.net_id, n.asn, n.name, n.name_long, nf.city, nf.country,
@@ -955,7 +1085,7 @@ def register_network_ix_routes(app, get_db):
                 LEFT JOIN pdb_networks n ON nf.net_id = n.id
                 WHERE nf.fac_id = %s
                 ORDER BY n.asn
-            """, (fac_id,))
+            """, (pdb_fac_id,))
 
             networks = []
             for row in c.fetchall():
@@ -968,8 +1098,11 @@ def register_network_ix_routes(app, get_db):
             return jsonify({
                 'success': True,
                 'facility_id': fac_id,
+                'dchub_facility_id': dchub_fac_id,
+                'pdb_facility_id': pdb_fac_id,
                 'networks': networks,
                 'network_count': len(networks),
+                'data_as_of': _pdb_data_as_of(c),
                 'source': 'PeeringDB via DC Hub Intelligence',
             })
         except Exception as e:
@@ -1047,63 +1180,111 @@ def register_network_ix_routes(app, get_db):
             conn = get_db()
             c = conn.cursor()
 
-            # Networks at this facility
-            c.execute("""
-                SELECT nf.net_id, n.asn, n.name, n.status, COUNT(*) OVER() as net_count
-                FROM pdb_network_facilities nf
-                LEFT JOIN pdb_networks n ON nf.net_id = n.id
-                WHERE nf.fac_id = %s
-                ORDER BY n.asn
-            """, (fac_id,))
+            # This endpoint straddles two id-spaces: pdb_* rows are keyed by
+            # PeeringDB's fac_id, carrier_facility_presence by dchub ids.
+            # Resolve both up front rather than passing one id to both.
+            pdb_fac_id, dchub_fac_id = _resolve_facility_ids(c, fac_id)
 
+            # An id that resolves in NEITHER space is an unknown facility, not a
+            # badly-connected one. Returning 200 with score=0 / "Limited" would
+            # dress a typo up as a real verdict — the same confident-zero this
+            # whole route just stopped doing.
+            if not pdb_fac_id and not dchub_fac_id:
+                return jsonify({
+                    'success': False,
+                    'error': 'facility_not_found',
+                    'facility_id': fac_id,
+                    'detail': ('No facility matches this id in either id-space '
+                               '(dchub facilities.id or PeeringDB fac_id).'),
+                }), 404
+
+            # Networks at this facility
             networks = []
             net_count = 0
-            for row in c.fetchall():
-                networks.append({
-                    'net_id': row[0], 'asn': row[1], 'name': row[2], 'status': row[3],
-                })
-                net_count = row[4]
+            if pdb_fac_id:
+                c.execute("""
+                    SELECT nf.net_id, n.asn, n.name, n.status, COUNT(*) OVER() as net_count
+                    FROM pdb_network_facilities nf
+                    LEFT JOIN pdb_networks n ON nf.net_id = n.id
+                    WHERE nf.fac_id = %s
+                    ORDER BY n.asn
+                """, (pdb_fac_id,))
+
+                for row in c.fetchall():
+                    networks.append({
+                        'net_id': row[0], 'asn': row[1], 'name': row[2], 'status': row[3],
+                    })
+                    net_count = row[4]
 
             # Internet exchanges at this facility
-            c.execute("""
-                SELECT if.ix_id, i.name, i.name_long, i.city, i.country, i.proto_unicast, COUNT(*) OVER() as ix_count
-                FROM pdb_ix_facilities if
-                LEFT JOIN pdb_ix i ON if.ix_id = i.id
-                WHERE if.fac_id = %s
-                ORDER BY i.name
-            """, (fac_id,))
-
             exchanges = []
             ix_count = 0
-            for row in c.fetchall():
-                exchanges.append({
-                    'ix_id': row[0], 'name': row[1], 'name_long': row[2],
-                    'city': row[3], 'country': row[4], 'proto_unicast': row[5],
-                })
-                ix_count = row[6]
+            if pdb_fac_id:
+                c.execute("""
+                    SELECT ixf.ix_id, i.name, i.name_long, i.city, i.country,
+                           i.proto_unicast, COUNT(*) OVER() as ix_count
+                    FROM pdb_ix_facilities ixf
+                    LEFT JOIN pdb_ix i ON ixf.ix_id = i.id
+                    WHERE ixf.fac_id = %s
+                    ORDER BY i.name
+                """, (pdb_fac_id,))
 
-            # Carriers at this facility (from fiber integration, if available)
+                for row in c.fetchall():
+                    exchanges.append({
+                        'ix_id': row[0], 'name': row[1], 'name_long': row[2],
+                        'city': row[3], 'country': row[4], 'proto_unicast': row[5],
+                    })
+                    ix_count = row[6]
+
+            # Carriers at this facility (carrier_facility_presence).
+            #
+            # r-carrierlink (2026-07-17): cfp.dchub_facility_id is TEXT and holds
+            # TWO id-spaces at once — 604,332 rows are integer-as-text
+            # discovered_facilities.id (the legacy bulk) and 4,471 are hex
+            # facilities.id (newer ingestion). Match BOTH or silently lose all
+            # but a fraction of the links. Cast the OTHER side, never
+            # dchub_facility_id, so the text index idx_cfp_dchub stays usable
+            # (verified: Bitmap Index Scan on idx_cfp_dchub).
+            #
+            # The previous version passed int(fac_id) into a facilities.id
+            # lookup, where id is TEXT: that raised either "operator does not
+            # exist: text = integer" or ValueError on a hex slug, and a blanket
+            # `except Exception: pass` swallowed both — so carriers was [] for
+            # every input and silently understated connectivity_score. Only a
+            # missing table is tolerated now; anything else surfaces.
             carriers = []
             carrier_count = 0
-            try:
-                c.execute("""
-                    SELECT carrier_pdb_id, carrier_name, COUNT(*) OVER() as car_count
-                    FROM carrier_facility_presence
-                    WHERE dchub_facility_id = (
-                        SELECT id FROM facilities WHERE id = %s LIMIT 1
-                    )
-                    ORDER BY carrier_name
-                """, (int(fac_id),))
+            if dchub_fac_id:
+                try:
+                    c.execute("""
+                        SELECT DISTINCT cfp.carrier_pdb_id, cfp.carrier_name
+                        FROM carrier_facility_presence cfp
+                        WHERE cfp.dchub_facility_id IN (
+                                SELECT df.id::text FROM discovered_facilities df
+                                WHERE df.merged_facility_id = %s
+                                UNION ALL
+                                SELECT %s
+                              )
+                          AND cfp.carrier_name IS NOT NULL
+                        ORDER BY cfp.carrier_name
+                    """, (dchub_fac_id, dchub_fac_id))
 
-                carrier_count = 0
-                for row in c.fetchall():
-                    carriers.append({
-                        'carrier_id': row[0], 'carrier_name': row[1],
-                    })
-                    carrier_count = row[2]
-            except Exception:
-                # Table may not exist or facility ID format mismatch
-                pass
+                    for row in c.fetchall():
+                        carriers.append({
+                            'carrier_id': row[0], 'carrier_name': row[1],
+                        })
+                    carrier_count = len(carriers)
+                except Exception as e:
+                    # 42P01 = undefined_table: tolerated so a dev DB without the
+                    # fiber tables still serves networks/IX. Anything else is a
+                    # real bug and must not be swallowed into carriers=[] again.
+                    # pgcode rather than psycopg2.errors: works on psycopg2 and
+                    # psycopg3 alike (CI installs v3), and this module has no
+                    # driver import of its own.
+                    if getattr(e, 'pgcode', None) != '42P01':
+                        raise
+                    conn.rollback()
+                    logger.warning("carrier_facility_presence missing — carriers omitted")
 
             # Connectivity score (0-100)
             connectivity_score = min(100, (
@@ -1115,6 +1296,8 @@ def register_network_ix_routes(app, get_db):
             return jsonify({
                 'success': True,
                 'facility_id': fac_id,
+                'dchub_facility_id': dchub_fac_id,
+                'pdb_facility_id': pdb_fac_id,
                 'connectivity': {
                     'networks': {
                         'count': net_count,
@@ -1137,6 +1320,11 @@ def register_network_ix_routes(app, get_db):
                     'Limited'
                 ),
                 'total_connections': net_count + ix_count + carrier_count,
+                # Networks and IX are only known for PeeringDB-mapped
+                # facilities; without that mapping the score reflects carriers
+                # alone and must not read as a low-connectivity verdict.
+                'coverage': ('full' if pdb_fac_id else 'carriers_only'),
+                'data_as_of': _pdb_data_as_of(c),
                 'source': 'PeeringDB + Carriers via DC Hub Intelligence',
             })
         except Exception as e:
@@ -1158,68 +1346,21 @@ def register_network_ix_routes(app, get_db):
 
 
 # ─────────────────────────────────────────────────────────────
-# INTEGRATION HELPER FOR fiber_integration.py
+# WIRING (r-netixreg, 2026-07-17)
 # ─────────────────────────────────────────────────────────────
-def register_with_fiber_integration():
-    """
-    Integration guide for wiring network_ix_ingestion.py into your
-    fiber_integration.py or main Flask app.
-
-    Example:
-    --------
-    In your main app initialization (e.g., app.py or fiber_integration.py):
-
-        from network_ix_ingestion import (
-            register_network_ix_routes, run_peeringdb_full_sync
-        )
-
-        # Register routes
-        register_network_ix_routes(app, get_db)
-
-        # Optional: schedule full sync on app startup or via scheduler
-        # run_peeringdb_full_sync(get_db)
-
-    Endpoints available after registration:
-        POST /api/jobs/network-sync          — sync networks + netfac
-        POST /api/jobs/ix-sync               — sync IX + ixfac
-        POST /api/jobs/campus-sync           — sync campus
-        POST /api/jobs/peeringdb-full-sync   — all of above
-
-        GET /api/v1/networks/summary         — network stats + samples
-        GET /api/v1/networks/facility/<id>   — networks at facility
-        GET /api/v1/ix/summary               — IX stats + samples
-        GET /api/v1/connectivity/<id>        — full connectivity view (networks + IX + carriers)
-
-    Rate limiting:
-        - 3 sec delay between paginated requests (anonymous, 20 req/min)
-        - 1 sec delay with PEERINGDB_API_KEY env var
-        - Automatic retry with exponential backoff on HTTP 429
-
-    Database:
-        All PeeringDB ID columns are TEXT to handle hex strings and integers.
-        Tables created automatically via init_network_ix_tables(get_db).
-    """
-    return """
-    To integrate:
-
-    1. Import in your app:
-       from network_ix_ingestion import register_network_ix_routes
-
-    2. Register routes:
-       register_network_ix_routes(app, get_db)
-
-    3. (Optional) Schedule full sync:
-       from apscheduler.schedulers.background import BackgroundScheduler
-       scheduler = BackgroundScheduler()
-       scheduler.add_job(
-           lambda: run_peeringdb_full_sync(get_db),
-           'cron',
-           day_of_week='0',  # Weekly on Sunday
-           hour=2,
-           minute=0,
-       )
-       scheduler.start()
-    """
+# This module used to end in a register_with_fiber_integration() "integration
+# guide" that returned setup instructions as a string. Nothing ever called it,
+# and it was the module's only reference to its own registration — which is how
+# the file sat orphaned from March 2026 to July 2026 while looking wired up.
+#
+# It is now registered for real:
+#   - routes:   main.py  (register_network_ix_routes(app, get_db))
+#   - refresh:  crawler_scheduler.py SCHEDULE -> peeringdb_network_sync,
+#               Sundays 05:00 UTC via the internal-key-gated job endpoint
+#
+# Rate limiting: 3s between paginated PeeringDB requests anonymously (20/min),
+# 1s with PEERINGDB_API_KEY set. Anonymous bulk pulls are throttled hard — set
+# that env var on Railway for reliable weekly runs.
 
 # === phase 92: source-registry heartbeat (auto-fires on clean module exit) ===
 # Non-invasive: never crashes the script if the registry is unreachable.
