@@ -254,12 +254,22 @@ def whats_new():
                 # Deals: count by DB-insertion time (created_at = when WE added the
                 # row), not the text `date` column (that's the deal's announcement
                 # date, 2018→today, and is text so date math errors).
+                # r-wn-dealcanon (2026-07-17): exclude quarantined rows (the
+                # 07-17 deals-integrity pass flagged ~2,823 duplicate/garbage
+                # rows via data_flag='quarantine_*'; bare COUNT(*) republished
+                # the ~2.9x over-claim here as total=4,304 while /api/v1/stats
+                # already reports the deduped ~1,42x). Same predicate as the
+                # served /api/deals query. LEFT() not LIKE — a literal % in a
+                # psycopg2 query string is a live 500.
+                _live = "(data_flag IS NULL OR LEFT(data_flag, 11) <> 'quarantine_')"
                 try:
-                    cur.execute("SELECT COUNT(*) FROM deals WHERE created_at::timestamptz >= NOW() - INTERVAL '7 days'")
+                    cur.execute("SELECT COUNT(*) FROM deals WHERE " + _live +
+                                " AND created_at::timestamptz >= NOW() - INTERVAL '7 days'")
                     d7 = int(cur.fetchone()[0])
-                    cur.execute("SELECT COUNT(*) FROM deals WHERE created_at::timestamptz >= NOW() - INTERVAL '1 day'")
+                    cur.execute("SELECT COUNT(*) FROM deals WHERE " + _live +
+                                " AND created_at::timestamptz >= NOW() - INTERVAL '1 day'")
                     d1 = int(cur.fetchone()[0])
-                    cur.execute("SELECT COUNT(*) FROM deals")
+                    cur.execute("SELECT COUNT(*) FROM deals WHERE " + _live)
                     dtot = int(cur.fetchone()[0])
                     deals = (d7, d1, dtot)
                 except Exception:
