@@ -1894,8 +1894,8 @@ _CANONICAL_FALLBACK = {
     "tools":        33,         # live tool count (matches /mcp/tools.json)
     "facilities":   21433,      # discovered_facilities US+global
     "markets":      300,        # DCPI live market count
-    "deals":        2032,       # M&A deals canonical
-    "deals_phrase": "4,000+ tracked deals",
+    "deals":        1420,       # DISTINCT tracked deals (deduped; see canonical_stats.deals_phrase)
+    "deals_phrase": "1,400+ tracked deals",
     "countries":    178,
     "countries_phrase": "170+ countries",
 }
@@ -1939,7 +1939,7 @@ def _build_canonical_description(registry_name: str) -> str:
     tools     = n.get("tools", 33)
     facs      = n.get("facilities", 21433)
     mkts      = n.get("markets", 311)
-    deals_p   = n.get("deals_phrase", "4,000+ tracked deals")
+    deals_p   = n.get("deals_phrase", "1,400+ tracked deals")
     cap = _DESCRIPTION_CHAR_CAPS.get(registry_name,
                                      _DESCRIPTION_CHAR_CAPS["_default"])
 

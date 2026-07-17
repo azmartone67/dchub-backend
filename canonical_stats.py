@@ -34,14 +34,17 @@ _FALLBACK = {
     "countries": 170,
     "countries_verified": 30,       # deduped/active distinct floor (live ~33; country field dirty -> conservative)
     "markets": 300,          # 2026-06-08: Neon-verified COUNT(DISTINCT market_name) minus 3 aggregates = 300 (grew from 232 via intl expansion). Live query below; this is the fallback.
-    # Curated M&A deal count — the buyer+seller-present subset (~4,255 live
-    # 2026-07-16). This is DELIBERATELY NOT the raw `deals` table COUNT(*)
-    # (~11.5K), which is a broader pile incl. capex/undisclosed/junk rows: the
-    # live /api/v1/stats `deals` field returns that broad count, and publishing
-    # it as "M&A deals" is a ~2.5x over-claim (the 2026-07-16 double-count trap).
-    # Live-queried below with the same curated filter as /api/transactions;
-    # deals_phrase() floors DOWN to "4,000+" so we never over-claim.
-    "deals": 4000,
+    # DISTINCT tracked deals — deduplicated, quarantined rows excluded.
+    # ★2026-07-17: the previous "4,000+" was itself an over-claim. It floored a
+    # count of ROWS, and the `deals` table carries ~2.9x duplication: the AUTO id
+    # embeds the ingest DATE (AUTO-<yyyymmdd>-<contenthash>), so a re-ingest of
+    # the same deal never conflicts and accrues one row per day — one Google/
+    # Dallas deal held 46 rows, one atNorth deal 945. 4,275 raw rows collapse to
+    # ~1,420 distinct real deals. The live query below dedups (AUTO by content
+    # hash, everything else by content tuple) and drops data_flag quarantine rows
+    # (fabricated example.com seeds + misparsed headline fragments).
+    # deals_phrase() floors DOWN to "1,400+" so we never over-claim.
+    "deals": 1400,
     "isos": 7,               # 7 live US ISOs (ERCOT, CAISO, NYISO, MISO, PJM, SPP, ISO-NE)
     "grid_operators": 10,    # 10 North-American grid operators w/ live data (7 US ISOs + TVA + BPA + IESO)
     "utility_bas": 43,       # 43 US utility balancing authorities (live EIA-930)
@@ -157,20 +160,31 @@ def _query_live() -> dict:
                 out["markets"] = n
         except Exception:
             pass
-        # Curated M&A deal count. ★DO NOT use COUNT(*) FROM deals here: that is
-        # the RAW ~11.5K pile (capex/undisclosed/junk rows) that the live
-        # /api/v1/stats `deals` field returns — publishing it as "M&A deals" is a
-        # ~2.5x over-claim (2026-07-16 double-count trap). The honest curated
-        # count is the buyer+seller-present subset (matches the live
-        # /api/transactions total ~4,255 and deals_public_api.is_quality_deal).
-        # deals_phrase() floors this DOWN to "4,000+".
+        # DISTINCT tracked deals. ★DO NOT use a bare COUNT(*) FROM deals here:
+        # rows are NOT deals. The AUTO id embeds the ingest date, so the same
+        # deal re-ingests under a new id every day and ON CONFLICT never fires —
+        # the raw count over-states reality ~2.9x (4,275 rows -> ~1,420 deals).
+        # Dedup AUTO rows by their content hash (the id suffix, which is stable
+        # across ingest days) and everything else by content tuple, and drop
+        # data_flag quarantine rows. deals_phrase() floors this DOWN.
+        # NOTE: LEFT() not LIKE 'AUTO-x' on purpose — a literal percent-sign in a
+        # psycopg2 query string is a live 500 hazard.
+        # ★The previous filter here demanded buyer AND seller, which returns 633
+        # live; floored to the nearest 1,000 that produced the string "0+" —
+        # ai_surface_canon.resolve_canon() publishes deals_phrase() straight to
+        # the public surfaces, so the canon was emitting "0+ tracked deals".
         try:
             cur.execute(
-                "SELECT COUNT(*) FROM deals "
-                "WHERE buyer IS NOT NULL AND buyer <> '' "
-                "AND lower(buyer) NOT IN ('tbd','unknown','n/a','na','none','undisclosed') "
-                "AND seller IS NOT NULL AND seller <> '' "
-                "AND lower(seller) NOT IN ('tbd','unknown','n/a','na','none','undisclosed')")
+                "SELECT COUNT(*) FROM ("
+                "  SELECT DISTINCT CASE"
+                "    WHEN LEFT(id, 5) = 'AUTO-' THEN RIGHT(id, 6)"
+                "    ELSE COALESCE(buyer,'')||'|'||COALESCE(seller,'')||'|'||"
+                "         COALESCE(value::text,'')||'|'||COALESCE(mw::text,'')||'|'||"
+                "         COALESCE(date,'')"
+                "  END AS k"
+                "  FROM deals"
+                "  WHERE (data_flag IS NULL OR LEFT(data_flag, 11) <> 'quarantine_')"
+                ") t")
             n = int((cur.fetchone() or [0])[0] or 0)
             if n > 0:
                 out["deals"] = n
@@ -248,15 +262,19 @@ def markets_phrase() -> str:
 
 
 def deals_phrase() -> str:
-    """Curated M&A deal-count floor, e.g. '4,000+'. Floors DOWN to the nearest
-    1,000 so we never over-claim as the curated set grows (4,009 on 2026-07-10
-    -> ~4,255 on 2026-07-16). ★This floors the CURATED count (buyer+seller
-    present) — NOT the raw `deals` COUNT(*) (~11.5K broad pile), which the live
-    /api/v1/stats `deals` field returns and which would be a ~2.5x over-claim if
-    published as 'M&A deals'. Matches markets_phrase()/countries_phrase()
-    citation-safe rounding. See _query_live() deals block."""
+    """DISTINCT tracked-deal floor, e.g. '1,400+'.
+
+    ★2026-07-17 — this floors DEDUPLICATED deals, not rows. `deals` rows
+    over-state reality ~2.9x (the AUTO id embeds the ingest date, so one deal
+    accrues a row per day); _query_live() dedups and excludes quarantined rows.
+
+    ★Floors to the nearest 100, NOT 1,000. At 1,000-granularity the live count
+    (~1,420) would publish as "1,000+" — a 30 percent under-claim — and the
+    previous buyer+seller filter (633 live) floored all the way to the string
+    "0+", which resolve_canon() was feeding to the public surfaces. Matches
+    markets_phrase() rounding: citation-safe, never above reality."""
     n = int(get_canonical_stats().get("deals", _FALLBACK["deals"]))
-    return f"{(n // 1000) * 1000:,}+"
+    return f"{(n // 100) * 100:,}+"
 
 
 def grid_coverage_phrase(style: str = "full") -> str:

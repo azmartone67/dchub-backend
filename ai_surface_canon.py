@@ -41,7 +41,7 @@ PINNED = {
     "public": {                                    # public-facing rounded strings
         "facilities": "21,000+",
         "markets": "300+",
-        "deals": "4,000+",   # curated M&A floor (== canonical_stats.deals_phrase). ★NOT the raw ~11.5K `deals` COUNT(*) that /api/v1/stats returns — that's a ~2.5x over-claim as "M&A deals" (2026-07-16 double-count trap). resolve_canon() overrides this live.
+        "deals": "1,400+",   # DISTINCT tracked deals (== canonical_stats.deals_phrase). ★2026-07-17: was "4,000+", itself an over-claim — it floored ROWS, and the AUTO id embeds the ingest date so one deal accrues a row per day (4,275 rows -> ~1,420 distinct). ★NOT the raw `deals` COUNT(*) that /api/v1/stats returns. resolve_canon() overrides this live.
         "countries": "170+",
     },
     # Values known to be STALE/WRONG on some surface — the sentinel flags these.
@@ -50,10 +50,14 @@ PINNED = {
     # listing them isn't "wrong"; the blunt denylist caused false positives on
     # /ai + llms.txt. "platforms" (the verified-active 7) stays the canon for
     # the ACTIVE roll-call; availability is a broader, valid claim.
+    # ★2026-07-17: the "4,000+" deal claims are stale AND an over-claim — they
+    # counted duplicate rows (see canonical_stats.deals_phrase). Scrub them.
     "stale_markers": ["10,706", "10706", "50,000+", "50000", "317 ", "332 ",
                       "232 ", "100 calls/day", "3,000+ M&A",
                       "2,000+ M&A", "2,000+ tracked deals", "2,000+ deals",
                       "2,000+ tracked M&A", "2,000+ tracked transactions",
+                      "4,000+ M&A", "4,000+ tracked deals", "4,000+ deals",
+                      "4,000+ tracked M&A", "4,000+ tracked transactions",
                       "24 tools", "48 tools", "49 tools", "51 tools", "53 tools",
                       "58 tools", "72 tools",
                       "2.1.22", "2.3.3", "2.1.0", "2.4.3"],

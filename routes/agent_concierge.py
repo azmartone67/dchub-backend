@@ -571,7 +571,7 @@ _COOKBOOK = [
         "tools": [
             {"tool": "list_transactions",
              "args": {"year": 2026, "min_value_usd": 1_000_000_000},
-             "why":  "Filter 4,000+ tracked M&A / capital deals "
+             "why":  "Filter 1,400+ tracked M&A / capital deals "
                      "(2019-present) by year, buyer, target, region, or "
                      "minimum value for the comp set."},
             {"tool": "deal_autopsy",
