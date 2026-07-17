@@ -266,6 +266,84 @@ def mcp_retention():
                     round(100.0 * dr / dm, 1) if dm else None)
             except Exception:
                 pass
+
+            # ── r-oauth-funnel (2026-07-16): the CHALLENGE side of the funnel ──
+            # The engines can see WHO returns but not how many agents were ever
+            # ASKED to sign in. The MCP gateway tallies 401 challenges in-process
+            # and flushes additive deltas every 60s; this publishes them.
+            #
+            # ★ These are EVENTS, not people. An unconverted caller is
+            # re-challenged on every initialize and every tools/call, so this can
+            # NEVER be divided by identities to get a conversion rate — numerator
+            # (deduped identities) and denominator (recurring events) are
+            # different populations. The ratio ships as an INDEX named
+            # ..._challenges_per_new_identity_30d (lower = better) so it cannot
+            # be quoted as a percentage. NO key here ends in _pct, deliberately.
+            #
+            # Self-isolated: additive only, its own try/except, so a failure here
+            # can never touch the headline retention numbers the engines score.
+            # NO SAVEPOINT — this conn is autocommit=True (see the connect call
+            # above), which already isolates statement failures; SAVEPOINT would
+            # raise on every call and yield zeros forever.
+            try:
+                cur.execute("""
+                    SELECT
+                      COALESCE(SUM(n) FILTER (WHERE kind = 'claude_connector'
+                                                AND method = 'initialize'), 0) AS connector_init,
+                      COALESCE(SUM(n) FILTER (WHERE kind = 'claude_connector'), 0) AS connector_all,
+                      COALESCE(SUM(n) FILTER (WHERE kind = 'invalid_bearer'), 0)   AS bearer_all,
+                      COALESCE(SUM(n) FILTER (WHERE kind = '_beat'), 0)            AS beats,
+                      MAX(last_at) FILTER (WHERE kind = '_beat')                   AS last_flush_at
+                    FROM mcp_oauth_challenges
+                    WHERE day >= ((NOW() AT TIME ZONE 'UTC')::date - 30)
+                """)
+                ch = cur.fetchone() or {}
+                ci = int(ch.get("connector_init") or 0)
+                beats = int(ch.get("beats") or 0)
+                # Numerator queried HERE, in THIS try — never read back out of
+                # ib["oauth_durable"], whose own except can leave it absent and
+                # would silently fabricate a 0.
+                # No params arg => no %-substitution => the literal % is safe.
+                cur.execute("""
+                    SELECT COUNT(*) AS new_ids FROM mcp_dev_keys
+                    WHERE api_key LIKE 'dch_oauth_%'
+                      AND created_at >= NOW() - interval '30 days'
+                """)
+                new_ids = int((cur.fetchone() or {}).get("new_ids") or 0)
+
+                out["summary"]["oauth_challenges_connector_init_30d"] = ci
+                out["summary"]["oauth_challenges_all_30d"] = (
+                    int(ch.get("connector_all") or 0) + int(ch.get("bearer_all") or 0))
+                out["summary"]["oauth_new_identities_30d"] = new_ids
+                # Lower = better. None when there is nothing to divide, or when
+                # the gateway has never checked in (beats == 0 => DORMANT, which
+                # is NOT the same as "zero challenges").
+                out["summary"]["oauth_connector_init_challenges_per_new_identity_30d"] = (
+                    round(float(ci) / new_ids, 1) if (new_ids and ci and beats) else None)
+                out["summary"]["oauth_funnel_gateway_reporting"] = bool(beats)
+                _lf = ch.get("last_flush_at")
+                out["summary"]["oauth_funnel_last_flush_at"] = (
+                    _lf.isoformat() if hasattr(_lf, "isoformat") else None)
+                ib["challenge_side"] = {
+                    "connector_init_30d": ci,
+                    "connector_all_30d": int(ch.get("connector_all") or 0),
+                    "invalid_bearer_30d": int(ch.get("bearer_all") or 0),
+                    "new_identities_30d": new_ids,
+                    "gateway_reporting": bool(beats),
+                    "note": (
+                        "Challenge EVENTS issued, not distinct people: an unconverted caller is "
+                        "re-challenged on every initialize and every tools/call. NOT divisible by "
+                        "identities to get a conversion rate (events vs deduped subs = different "
+                        "populations). connector_init is the cleanest series (~one per connect "
+                        "attempt); invalid_bearer is scanner-poisonable. Only the TREND is "
+                        "decision-grade. gateway_reporting=false means DORMANT, not zero."
+                    ),
+                }
+            except Exception:
+                # Table absent until the gateway first flushes => dormant, not broken.
+                ib["challenge_side_error"] = True
+                out["summary"]["oauth_funnel_gateway_reporting"] = False
+
             out["identity_breakdown"] = ib
     except Exception as e:
         return jsonify(error="query_failed", detail=str(e)[:200]), 500

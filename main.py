@@ -32633,6 +32633,16 @@ try:
     from routes.mcp_oauth_2025_06_18 import mcp_oauth_2025_bp
     app.register_blueprint(mcp_oauth_2025_bp)
     print("[main] mcp_oauth_2025_bp registered: MCP 2025-06-18 OAuth spec", flush=True)
+
+    # r-oauth-funnel (2026-07-16): the CHALLENGE side of the OAuth funnel.
+    # Inert on arrival — nothing calls /emit until the gateway ships + is armed,
+    # and the table is created lazily on the FIRST WRITE (never at boot).
+    try:
+        from routes.oauth_challenge_ledger import oauth_challenge_bp
+        app.register_blueprint(oauth_challenge_bp)
+        print("[main] oauth_challenge_bp registered: OAuth challenge ledger", flush=True)
+    except Exception as _oc_e:
+        print(f"[main] oauth_challenge_bp register failed: {_oc_e}", flush=True)
 except Exception as _mo_e:
     print(f"[main] mcp_oauth_2025_bp register failed: {_mo_e}", flush=True)
 
