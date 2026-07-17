@@ -75,6 +75,10 @@ LANDING_BY_TYPE = {
     "shipped_this_week":      "https://dchub.cloud/transparency",
     "hyperscaler_drama":      "https://dchub.cloud/hyperscaler-deals",
     "market_anomaly":         "https://dchub.cloud/dcpi",
+    # r-agent-demand (2026-07-17): what AI agents actually asked the live layer
+    # for — aggregate demand telemetry, the one dataset that moves while DCPI
+    # is flat. /ai is the adoption surface the numbers come from.
+    "agent_demand":           "https://dchub.cloud/ai",
 }
 
 # Each story type maps to ONE of the 4 OG images we already serve.
@@ -85,6 +89,7 @@ OG_IMAGE_BY_TYPE = {
     "shipped_this_week":     "https://api.dchub.cloud/static/og/landing-agents.png",
     "hyperscaler_drama":     "https://api.dchub.cloud/static/og/landing-hyperscaler-deals.png",
     "market_anomaly":        "https://api.dchub.cloud/static/og/landing-ai-capacity.png",
+    "agent_demand":          "https://api.dchub.cloud/static/og/landing-agents.png",
 }
 
 # 2026-06-07: bridge from the content-engine's `story_type` (6 values, used
@@ -101,6 +106,10 @@ _STORY_TYPE_TO_TOPIC = {
     "hyperscaler_drama":    "hyperscaler_deal",
     "capability_spotlight": "ai_citation",
     "shipped_this_week":    "industry_pulse",
+    # r-agent-demand (2026-07-17): same topic the editorial desk maps the
+    # agent_demand KIND to (media_editorial._KIND_TO_TOPIC) so the style/topic
+    # learners aggregate both vocabularies onto one unit.
+    "agent_demand":         "industry_pulse",
 }
 
 # Known MCP tool catalog — used by capability_spotlight to pick a
@@ -360,6 +369,39 @@ def _pull_market_anomaly() -> dict:
         return {"type": "market_anomaly"}
 
 
+def _pull_agent_demand() -> dict:
+    """r-agent-demand (2026-07-17): what AI agents actually ASKED the live
+    layer for — per-tool distinct-caller counts (30d), honest distinct-agent
+    reach (7d), and the weekly first-time-agent trend. The ONE material whose
+    numbers move (and move UP) while DCPI sits flat, and an angle only DC Hub
+    can publish. Aggregates only: the shared parser
+    (media_editorial._agent_demand_metrics) enforces the k>=5 anonymity floor
+    and requires genuine upward movement. demand=None on ANY gap — the
+    composer then SKIPs honestly (all _static_fallback paths are dead by
+    design; no fallback template)."""
+    try:
+        from routes.media_editorial import _agent_demand_metrics
+    except Exception:
+        return {"type": "agent_demand", "demand": None}
+
+    def _get(path: str) -> dict:
+        try:
+            import urllib.request as _u, json as _j
+            base = os.environ.get("DCHUB_INTERNAL_API", "http://localhost:8080")
+            req = _u.Request(base + path, headers={
+                "User-Agent": "dchub-internal-media/1.0",
+                "X-Internal-Request": "1"})
+            with _u.urlopen(req, timeout=8) as r:
+                return _j.loads(r.read().decode("utf-8")) or {}
+        except Exception:
+            return {}
+
+    demand = _agent_demand_metrics(_get("/api/v1/mcp/funnel"),
+                                   _get("/api/v1/ai/reach"),
+                                   _get("/api/v1/mcp/retention"))
+    return {"type": "agent_demand", "demand": demand}
+
+
 _PULLERS = {
     "capability_spotlight": _pull_capability_spotlight,
     "energy_narrative":     _pull_energy_narrative,
@@ -369,6 +411,10 @@ _PULLERS = {
     # commentary/contrarian takes on third-party news. The feed reports
     # DC Hub results, additions and capability — not reactions to others.
     "market_anomaly":       _pull_market_anomaly,
+    # r-agent-demand (2026-07-17): the agent-demand story — registered here so
+    # the rotation can reach it (a kind registered in the desk but not in the
+    # composer is the known partially-registered failure mode).
+    "agent_demand":         _pull_agent_demand,
 }
 
 
@@ -392,11 +438,16 @@ def _pick_story_type(slot_topic: str | None = None) -> str:
     # (dcpi_scoop / market_anomaly / energy_narrative) are actually reachable in
     # the rotation rather than pinned to fallback. The 14-day dedup below then
     # forces movement across types.
+    # r-agent-demand (2026-07-17): agent_demand joins the rotation — at the
+    # HEAD for industry_pulse (it IS the pulse, read off real demand) and its
+    # own dedicated slot-topic, high for hyperscaler_deal/ai_capex_index. The
+    # reachability append below still exposes it to every other slot.
     preferred = {
         "dcpi_mover":         ["shipped_this_week", "capability_spotlight", "dcpi_scoop", "market_anomaly", "energy_narrative"],
-        "hyperscaler_deal":   ["capability_spotlight", "shipped_this_week", "dcpi_scoop", "market_anomaly", "energy_narrative"],
-        "ai_capex_index":     ["shipped_this_week", "capability_spotlight", "market_anomaly", "dcpi_scoop", "energy_narrative"],
-        "industry_pulse":     ["capability_spotlight", "shipped_this_week", "energy_narrative", "dcpi_scoop", "market_anomaly"],
+        "hyperscaler_deal":   ["capability_spotlight", "agent_demand", "shipped_this_week", "dcpi_scoop", "market_anomaly", "energy_narrative"],
+        "ai_capex_index":     ["shipped_this_week", "agent_demand", "capability_spotlight", "market_anomaly", "dcpi_scoop", "energy_narrative"],
+        "industry_pulse":     ["agent_demand", "capability_spotlight", "shipped_this_week", "energy_narrative", "dcpi_scoop", "market_anomaly"],
+        "agent_demand":       ["agent_demand", "shipped_this_week", "capability_spotlight", "energy_narrative", "dcpi_scoop", "market_anomaly"],
     }
     _all = list(_PULLERS.keys())
     candidates = preferred.get(slot_topic or "", _all)
@@ -678,6 +729,33 @@ Open with the news angle. Then pivot to where DC Hub Power Index
 shows the actual build is happening. End with both URLs:
 news in body, {landing} in CTA. Hashtags include #DCPI."""
 
+    if story_type == "agent_demand":
+        d = data.get("demand") or {}
+        if not d:
+            return ""
+        return f"""Compose a LinkedIn post about what AI AGENTS are actually
+asking the live infrastructure layer for — DC Hub's own aggregate demand
+telemetry, an angle no analyst PDF can publish.
+
+REAL AGGREGATE DATA (the ONLY numbers you may use):
+- Distinct AI agents that queried DC Hub in the last 7 days: {d.get('agents_7d')}
+- Weekly FIRST-TIME agents: up from {d.get('new_ips_prior')} to {d.get('new_ips_latest')} (complete weeks, {d.get('weeks_apart')} week(s) apart)
+- Most-requested intelligence (DISTINCT callers per tool, 30 days):
+{json.dumps(d.get('top_tools') or [], default=str)[:400]}
+
+RULES:
+- OPEN with the distinct-agent count and how it MOVED ("up from X to Y") in the
+  first sentence — number first, before LinkedIn's "...more" fold.
+- The SO-WHAT: agent demand is the forward book of AI-infrastructure questions.
+  What agents request most (e.g. interconnection headroom) is where siting and
+  capex decisions are being made right now — before the press release.
+- PRIVACY (non-negotiable): aggregates only. NEVER name or imply a specific
+  customer, company, platform or query behind these counts; NEVER invent tool
+  parameters, sites, or markets from this data. Only the counts above.
+- HONESTY: do not invent any figure not present above. Distinct callers, not
+  request volume — say so if you cite the tool counts.
+End with the source line + CTA: {landing}. Hashtags: #AIInfrastructure #DataCenter #MCP."""
+
     if story_type == "market_anomaly":
         a = data.get("anomaly") or {}
         return f"""Compose a LinkedIn post about a DCPI anomaly: the
@@ -887,6 +965,21 @@ def _card_url_for(story_type: str, data: dict, text: str) -> str | None:
             sub = f"Live via DC Hub MCP · {tool.get('tool', '')} · 38 agent-native tools"
             style = "ai_hero"
 
+        elif story_type == "agent_demand":
+            dm = d.get("demand") or {}
+            _a = dm.get("agents_7d")
+            title = (f"{_a} AI agents queried DC Hub this week" if _a
+                     else "What AI agents asked for this week")
+            _tt = (dm.get("top_tools") or [{}])[0]
+            if dm.get("new_ips_prior") and dm.get("new_ips_latest"):
+                sub = (f"First-time agents up {dm['new_ips_prior']} → "
+                       f"{dm['new_ips_latest']}/wk")
+                if _tt.get("label"):
+                    sub += f" · top ask: {_tt['label']}"
+            else:
+                sub = "Live agent-demand telemetry · aggregate counts only"
+            style = "ai_hero"
+
         elif story_type == "shipped_this_week":
             st = d.get("stats") or {}
             title = "What DC Hub shipped this week"
@@ -999,10 +1092,31 @@ def compose_story_post(slot_topic: str | None = None, lead: dict | None = None) 
       story_type, text, landing_url, og_image_url, source ('claude' or 'fallback')
     """
     story_type = _pick_story_type(slot_topic)
+    # r-agent-demand (2026-07-17): when the editorial desk chose the
+    # agent-demand LEAD, compose from the agent-demand material — any other
+    # story type would open with the lead's numbers and then write about
+    # unrelated data (the half-wired failure mode).
+    if isinstance(lead, dict) and lead.get("kind") == "agent_demand":
+        story_type = "agent_demand"
     pull = _PULLERS.get(story_type, _PULLERS["capability_spotlight"])
     data = pull()
     landing = LANDING_BY_TYPE[story_type]
     og_url = OG_IMAGE_BY_TYPE[story_type]
+
+    # r-agent-demand: demand data unavailable (endpoint gap, thin counts, or
+    # no upward movement) → SKIP honestly. Never a fallback template — all
+    # _static_fallback paths are dead by design.
+    if story_type == "agent_demand" and not (data or {}).get("demand"):
+        return {
+            "story_type":   story_type,
+            "text":         None,
+            "skip":         True,
+            "skip_reason":  ("agent_demand data unavailable "
+                            "(funnel/reach/retention gap or no upward trend)"),
+            "landing_url":  landing,
+            "og_image_url": og_url,
+            "source":       "skip_no_data",
+        }
 
     text = _compose_with_claude(story_type, data, landing, lead=lead)
     source = "claude"

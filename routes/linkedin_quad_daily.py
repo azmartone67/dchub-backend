@@ -94,6 +94,10 @@ OG_IMAGE_MAP = {
     "hyperscaler_deal":   "https://api.dchub.cloud/static/og/landing-hyperscaler-deals.png",
     "ai_capex_index":     "https://api.dchub.cloud/static/og/landing-ai-capacity.png",
     "industry_pulse":     "https://api.dchub.cloud/static/og/landing-agents.png",
+    # r-agent-demand (2026-07-17): slot-less weekly topic (see run()); mapped
+    # here so a forced ?topic=agent_demand can never KeyError on the fallback
+    # landing/OG lookups.
+    "agent_demand":       "https://api.dchub.cloud/static/og/landing-agents.png",
 }
 
 LANDING_URL_MAP = {
@@ -101,6 +105,7 @@ LANDING_URL_MAP = {
     "hyperscaler_deal":   "https://dchub.cloud/hyperscaler-deals",
     "ai_capex_index":     "https://dchub.cloud/ai-capacity-index",
     "industry_pulse":     "https://dchub.cloud/dc-hub-media",
+    "agent_demand":       "https://dchub.cloud/ai",
 }
 
 
@@ -598,7 +603,18 @@ def run():
     if not target_slot and (_ignore_slot or _p("force")):
         _topic = _p("topic")
         target_slot = next(
-            (s for s in SLOTS if s["topic"] == _topic), SLOTS[0])
+            (s for s in SLOTS if s["topic"] == _topic), None)
+        # r-agent-demand (2026-07-17): agent_demand is a slot-LESS weekly topic
+        # (its data refreshes weekly, so it earns no fixed daily hour).
+        # Synthesize a slot for the explicit ?topic=agent_demand override so
+        # operators/crons can fire it directly; on scheduled slots it still
+        # arrives via the editorial desk's agent_demand LEAD, which forces the
+        # composer's story type.
+        if target_slot is None and _topic == "agent_demand":
+            target_slot = {"hour": now.hour, "topic": "agent_demand",
+                           "style": "data", "title": "Agent Demand · weekly"}
+        if target_slot is None:
+            target_slot = SLOTS[0]
     # 2026-06-20: CATCH-UP. The heartbeat that drives this is GitHub-throttled
     # (~26 runs/day, stateless, no replay) so a slot's exact hour-window is
     # frequently missed entirely — which is why whole days had ZERO posts. On

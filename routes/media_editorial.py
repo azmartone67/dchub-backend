@@ -112,7 +112,12 @@ _HAS_METRIC = re.compile(
     r"\d[\d,\.]*\s*(?:%|pts?|GW|MW|kW|bps|x|×|"
     r"billion|million|B\b|M\b|markets?|facilit|deals?|MGD|gal|"
     r"months?|weeks?|days?|points?|"
-    r"agents?|tools?|countries|country|platforms?|"
+    # r-agent-demand: allow the honest qualifiers between the number and the
+    # unit ("273 distinct AI agents", "202 distinct callers") — without them
+    # the gate only accepted the bare "273 agents" adjacency and the truthful
+    # phrasing bounced.
+    r"(?:distinct\s+)?(?:AI\s+)?agents?|(?:distinct\s+)?callers?|"
+    r"tools?|countries|country|platforms?|"
     r"\$)|"
     r"\$\s*\d|\d[\d,\.]*\s*(?:per|/)",
     re.IGNORECASE,
@@ -277,6 +282,108 @@ def _num(x):
         return None
 
 
+# ── Agent-demand lead (r-agent-demand, 2026-07-17) ───────────────────
+# What AI agents actually ASKED the live infrastructure layer for — the ONE
+# angle whose data satisfies the analyst-voice contract (a specific metric that
+# MOVED, and moved UP) while DCPI is flat (one distinct value across 41 daily
+# snapshots), and a dataset nobody else can publish. Sources (all aggregate,
+# already privacy-safe):
+#   funnel     /api/v1/mcp/funnel     -> paid_tool_demand_30d (per-tool DISTINCT callers)
+#   reach      /api/v1/ai/reach       -> distinct_agents_7d (honest distinct public IPs)
+#   retention  /api/v1/mcp/retention  -> ip_cohort weekly new_ips trend (complete weeks)
+# ★ PRIVACY (enforced HERE, never left to prose): aggregate distinct-caller
+# counts ONLY. k-anonymity floor of 5 — a tool with fewer distinct callers
+# could identify one customer and is suppressed. NEVER tool params, NEVER
+# free-text queries, NEVER a named platform's numbers.
+_AGENT_DEMAND_K_MIN = 5        # k-anonymity: suppress tools with < 5 distinct callers
+_AGENT_DEMAND_MIN_AGENTS = 20  # never lead with a noisy/embarrassing small count
+
+# Analyst-friendly label per flagship tool, so the post says what the market is
+# ASKING (interconnection headroom), not an API symbol. Unlisted tools fall
+# back to the tool name.
+_AGENT_DEMAND_TOOL_LABELS = {
+    "get_grid_intelligence":    "interconnection headroom",
+    "get_fiber_intel":          "fiber routes",
+    "analyze_site":             "site analysis",
+    "compare_sites":            "site comparisons",
+    "get_dchub_recommendation": "build recommendations",
+}
+
+
+def _agent_demand_metrics(funnel: dict, reach: dict, retention: dict) -> dict | None:
+    """Parse + validate the three AGGREGATE payloads into the agent-demand
+    metrics dict, or None when any leg is missing/thin/not-moving-up — the
+    composer then SKIPs honestly (no fallback template, by design).
+    Pure + stdlib-only so tests exercise it without Flask/DB (AST-extracted,
+    same pattern as tests/test_media_editorial_classify.py)."""
+    try:
+        tools = []
+        for t in (funnel or {}).get("paid_tool_demand_30d") or []:
+            try:
+                users = int((t or {}).get("users") or 0)
+                name = str((t or {}).get("tool") or "").strip()
+            except Exception:
+                continue
+            if name and users >= _AGENT_DEMAND_K_MIN:
+                tools.append({"tool": name, "users": users,
+                              "label": _AGENT_DEMAND_TOOL_LABELS.get(name, name)})
+        tools.sort(key=lambda t: t["users"], reverse=True)
+        agents = int((reach or {}).get("distinct_agents_7d") or 0)
+        cohort = [r for r in ((retention or {}).get("ip_cohort") or [])
+                  if isinstance(r, dict) and r.get("new_ips") is not None]
+        if not tools or agents < _AGENT_DEMAND_MIN_AGENTS or len(cohort) < 2:
+            return None
+        latest = int(cohort[-1].get("new_ips") or 0)
+        prior_row = cohort[-3] if len(cohort) >= 3 else cohort[0]
+        prior = int(prior_row.get("new_ips") or 0)
+        weeks_apart = min(len(cohort) - 1, 2)
+        # Analyst contract: the first line states a metric AND how it MOVED.
+        # POSITIVE-RESULTS MANDATE: never lead with a decline — if new-agent
+        # arrivals aren't growing, there is no agent-demand lead this week.
+        if prior <= 0 or latest <= prior:
+            return None
+        return {"agents_7d": agents, "top_tools": tools[:3],
+                "new_ips_latest": latest, "new_ips_prior": prior,
+                "weeks_apart": weeks_apart}
+    except Exception:
+        return None
+
+
+def _agent_demand_lead(funnel: dict, reach: dict, retention: dict) -> dict | None:
+    """The ranked-slate lead for the agent_demand kind. None => no lead (honest
+    skip). The headline leads with the distinct-agent count and states the move
+    UP ('up from X to Y'), so it clears leads_with_number AND the
+    never-lead-with-a-downgrade mandate by construction."""
+    m = _agent_demand_metrics(funnel, reach, retention)
+    if not m:
+        return None
+    top = m["top_tools"][0]
+    runners = ", ".join(f"{t['users']} on {t['tool']}" for t in m["top_tools"][1:])
+    _wk = _dt.datetime.utcnow().isocalendar()
+    headline = (
+        f"{m['agents_7d']} distinct AI agents queried DC Hub's live "
+        f"infrastructure layer this week, and weekly first-time agents are up "
+        f"from {m['new_ips_prior']} to {m['new_ips_latest']}")
+    trend = (
+        f"top ask: {top['label']} — {top['users']} distinct callers on "
+        f"{top['tool']} in 30 days"
+        + (f" (then {runners})" if runners else ""))
+    return {
+        "kind": "agent_demand",
+        "headline_number": headline,
+        "trend": trend,
+        "so_what": ("agent demand is the forward book of AI-infrastructure "
+                    "questions: the tools agents call most are where siting "
+                    "and capex decisions are being made right now."),
+        "source_url": "https://dchub.cloud/ai",
+        # Week-stamped entity so the 14-day ENTITY window can't block next
+        # week's refreshed numbers; the per-kind cooldown paces intra-week.
+        "dedup_key": f"agent_demand:wk{_wk[0]}{_wk[1]:02d}",
+        "score": round(m["agents_7d"]
+                       * _KIND_SCORE_SEED.get("agent_demand", 0.60), 2),
+    }
+
+
 def rank_data_events() -> list[dict]:
     """Gather today's real data events and rank by newsworthiness. Each lead:
        {kind, headline_number, trend, so_what, source_url, dedup_key, score}.
@@ -334,7 +441,9 @@ def rank_data_events() -> list[dict]:
             # matched the whitespace tokens in _recently_posted_keys, so
             # mover-lead dedup was silently a no-op (see media variety audit).
             "dedup_key": f"dcpi_mover:{str(mk).split(',')[0].lower().strip()}",
-            "score": abs(d) * 1.2,
+            # r-agent-demand (2026-07-17): 1.2 -> seeded 1.0 — DCPI is flat, so
+            # while it stays flat the demand/deal kinds should own the rotation.
+            "score": abs(d) * _KIND_SCORE_SEED.get("dcpi_mover", 1.0),
         })
 
     # 1b) Top DCPI build market — reliable lead even when WoW deltas are null
@@ -374,7 +483,12 @@ def rank_data_events() -> list[dict]:
             # market scores ~21 (still > _NEWSWORTHY_MIN=8, so it never leaves the board on
             # a genuinely quiet day) but loses to the evergreen moat/pillar leads (score 62-64)
             # — the DCPI-Cheyenne repeat was this lead out-ranking a starved capability pool.
-            "score": (ex or 0) * 0.30 * (1.0 - 0.04 * _rank),
+            # r-agent-demand (2026-07-17): 0.30 -> seeded 0.25 (one more notch down while
+            # DCPI stays flat) so agent_demand + hyperscaler_deal dominate the rotation
+            # until the index has real movement. Still ~17.5 for a 70/100 market — on the
+            # board (> _NEWSWORTHY_MIN=8), just no longer winning by default.
+            "score": (ex or 0) * _KIND_SCORE_SEED.get("dcpi_build", 0.25)
+                     * (1.0 - 0.04 * _rank),
         })
 
     # 2) M&A deal of the week — largest disclosed transaction value.
@@ -437,6 +551,22 @@ def rank_data_events() -> list[dict]:
             })
     except Exception as _te:
         logger.warning("[editorial] tenant lead failed: %s", str(_te)[:160])
+
+    # 2c) AGENT DEMAND (r-agent-demand, 2026-07-17) — what AI agents actually
+    # asked the live layer for. The ONE dataset whose numbers MOVE (and move
+    # UP) while DCPI is flat, and an angle only DC Hub can publish. Aggregates
+    # only — see the privacy notes on _agent_demand_metrics. Fully defensive:
+    # any endpoint failure → no lead, never a fabricated one.
+    try:
+        _ad = _agent_demand_lead(
+            _internal("/api/v1/mcp/funnel", timeout=8),
+            _internal("/api/v1/ai/reach", timeout=8),
+            _internal("/api/v1/mcp/retention", timeout=8),
+        )
+        if _ad:
+            leads.append(_ad)
+    except Exception as _ae:
+        logger.warning("[editorial] agent-demand lead failed: %s", str(_ae)[:160])
 
     # 3) Interconnection queue — the clearest 'time-to-power' trend (ungated).
     snap = _internal("/api/v1/interconnection-queue/snapshot")
@@ -779,6 +909,38 @@ try:
 except Exception:
     _KIND_COOLDOWN_DAYS = 2
 
+# r-agent-demand (2026-07-17): per-kind SCORE SEEDS — the hand-set magnitude
+# coefficients the lead builders apply BEFORE the learned (engagement /
+# topic-mix) weights kick in. This is the anti-starvation lever, not a gate:
+# agent_demand is seeded HIGH (0.60 per distinct agent → ~273 agents scores
+# ~164, out-ranking every DCPI lead) because it is the one dataset that MOVES
+# and moves UP while DCPI is flat; the dcpi kinds are nudged DOWN one more
+# notch (build 0.30→0.25, mover 1.2→1.0) so agent_demand + hyperscaler_deal
+# own the rotation until the index shows real movement. Revisit when DCPI's
+# computed_at history shows genuine WoW deltas again.
+_KIND_SCORE_SEED = {
+    "agent_demand": 0.60,
+    "dcpi_build":   0.25,
+    "dcpi_mover":   1.0,
+}
+
+# r-agent-demand (2026-07-17): per-kind COOLDOWN overrides on top of the global
+# _KIND_COOLDOWN_DAYS. agent_demand's source data refreshes WEEKLY (retention
+# ip_cohort completes on ISO-week boundaries), so a 4-day cooldown means at
+# most ~2 agent-demand leads per week — the high seed above never turns into
+# the same numbers posted daily.
+_KIND_COOLDOWN_OVERRIDES = {
+    "agent_demand": 4,
+}
+
+
+def _kind_cooldown_days(kind: str) -> int:
+    """Cooldown window for a lead kind (per-kind override, else the global)."""
+    try:
+        return int(_KIND_COOLDOWN_OVERRIDES.get(kind, _KIND_COOLDOWN_DAYS))
+    except Exception:
+        return _KIND_COOLDOWN_DAYS
+
 
 # Bridge from the desk's lead KINDS to the topic-tuner's engagement-weighted
 # topic library (media_topic_mix). This is what finally WIRES the dormant tuner
@@ -861,11 +1023,16 @@ def editorial_decision(slot: str | None = None) -> dict:
     # now (the old whitespace-token blob is kept as a secondary net). Build:
     #   entity_window  — entities that led a post within MARKET_WINDOW days.
     #   kind_cooldown  — kinds that led a post within KIND_COOLDOWN days.
-    ledger = recent_lead_ledger(days=max(_MARKET_WINDOW_DAYS, _KIND_COOLDOWN_DAYS))
+    # r-agent-demand: the ledger window must cover the LONGEST per-kind
+    # cooldown, or an override longer than the global would silently truncate.
+    _max_cooldown = max([_KIND_COOLDOWN_DAYS]
+                        + list(_KIND_COOLDOWN_OVERRIDES.values()))
+    ledger = recent_lead_ledger(days=max(_MARKET_WINDOW_DAYS, _max_cooldown))
     entity_window = {row["entity"] for row in ledger
                      if row["entity"] and row["days_ago"] <= _MARKET_WINDOW_DAYS}
     kind_cooldown = {row["kind"] for row in ledger
-                     if row["kind"] and row["days_ago"] <= _KIND_COOLDOWN_DAYS}
+                     if row["kind"]
+                     and row["days_ago"] <= _kind_cooldown_days(row["kind"])}
     # topic-tuner engagement weights (finally wired) — reorder ranked so a
     # kind the learner favors leads first among the still-eligible candidates.
     mix_w = _topic_mix_weights()

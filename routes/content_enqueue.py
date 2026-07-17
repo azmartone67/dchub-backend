@@ -304,7 +304,19 @@ def _compose_linkedin_analytical(mover: dict, arc: dict | None):
     drumbeat never goes fully dark — but that is the exception, not the default."""
     try:
         from routes.linkedin_content_engine import compose_story_post
-        composed = compose_story_post(slot_topic="dcpi_mover") or {}
+        # r-agent-demand (2026-07-17): rotate the drumbeat's angle. Two days a
+        # week (Tue/Fri — pacing that respects the weekly refresh of the
+        # retention cohort + the desk's 4-day agent_demand cooldown) the
+        # composer leads with AGENT DEMAND — distinct agents + per-tool
+        # distinct callers, the one dataset that MOVES (and moves up) while
+        # DCPI is flat. If the demand data is unavailable that day, fall back
+        # to the dcpi_mover angle rather than going dark.
+        _drum_topic = ("agent_demand"
+                       if datetime.datetime.utcnow().weekday() in (1, 4)
+                       else "dcpi_mover")
+        composed = compose_story_post(slot_topic=_drum_topic) or {}
+        if composed.get("skip") and _drum_topic == "agent_demand":
+            composed = compose_story_post(slot_topic="dcpi_mover") or {}
         if composed.get("skip"):
             return None
         text = composed.get("text")
