@@ -18707,18 +18707,89 @@ def facility_by_slug(slug):
         # covers 13,870 facilities; matching only the hex space covers 109.
         # The cast is on the OTHER side (df.id::text) so the text index
         # idx_cfp_dchub(dchub_facility_id) stays usable (verified: Bitmap Index Scan).
+        # r-slugdup (2026-07-17): a slug identifies a BUILDING, not a ROW.
+        # The slug hash is MD5(provider|name), and 6,904 slugs match MORE THAN ONE
+        # discovered_facilities row (duplicate ingests of one building). The bare
+        # `LIMIT 1` below had no ORDER BY, so Postgres returned an ARBITRARY twin
+        # and every served field came from whichever row won: 1,784 slugs disagree
+        # on carrier count and 74 could render on_net=false while a twin had
+        # carriers. Measured on the replica, e.g. slug 7ffa852b (EXA Edge DC
+        # Frankfurt2): id=7164 has 1 carrier, id=16975 has 685 -- same building,
+        # same coordinates to 5dp. It also always affected power_mw (5,953 slugs
+        # disagree) / address (766) / status (6,764).
+        #
+        # Fix, in three parts:
+        #  * sib    - EVERY row sharing the hash. hash8 <-> provider|name is a
+        #             BIJECTION live (14,310 distinct pairs, 14,310 distinct
+        #             hashes, ZERO 32-bit collisions), so same hash = same
+        #             provider AND name = the same building by the slug's own
+        #             definition. Reuses the bound hash8 param against the
+        #             expression index idx_df_md5slug -- one Index Scan, NOT a
+        #             seq scan (never re-correlate on the computed hash).
+        #  * anchor - the single-valued fields (power_mw/address/status/id) come
+        #             from ONE deterministic "most complete" row, so the record
+        #             stays internally consistent rather than a merge of twins.
+        #             NOT `is_duplicate ASC`: it does not correlate with data
+        #             quality -- for 7ffa852b BOTH rows are is_duplicate=1, and
+        #             preferring the non-duplicate picks the best row for only
+        #             62 of 1,784 (3.5 percent). It survives as a last tiebreak only.
+        #  * kin    - carriers are a SET of facts about the building, so they are
+        #             UNIONed across twins. Scoped to rows CO-LOCATED with the
+        #             anchor: 116 slugs are generic placeholders where name equals
+        #             provider (e.g. "Amazon Web Services|Amazon Web Services",
+        #             169 rows across 24 cities; Microsoft 82; NTT 44), which are
+        #             genuinely DIFFERENT buildings sharing one frozen slug. An
+        #             unscoped union would report Frankfurt carriers as on-site in
+        #             Ashburn for the 61 of those that have carriers on >1 row.
+        #             Coords absent (596 slugs) -> cannot disprove sameness -> include.
+        # Verified: 7ffa852b now 685 carriers (was 1); AWS slug stays at 4 co-located
+        # kin, not 169. Server-side median 0.16 -> 0.23 ms, worst case 2.34 ms.
         c.execute("""
-            SELECT id, name, provider, city, state, country, market AS region,
-                   latitude, longitude, power_mw, status, address,
-                   COALESCE(is_duplicate, 0) AS is_duplicate,
+            WITH sib AS (
+                SELECT id, name, provider, city, state, country, market,
+                       latitude, longitude, power_mw, status, address,
+                       merged_facility_id, COALESCE(is_duplicate, 0) AS is_duplicate
+                FROM discovered_facilities
+                WHERE """ + hash_sql('') + """ = %s
+            ),
+            anchor AS (
+                SELECT * FROM sib
+                ORDER BY ((CASE WHEN COALESCE(power_mw, 0) > 0 THEN 1 ELSE 0 END)
+                        + (CASE WHEN COALESCE(TRIM(address), '') <> '' THEN 1 ELSE 0 END)
+                        + (CASE WHEN latitude IS NOT NULL AND longitude IS NOT NULL
+                                THEN 1 ELSE 0 END)
+                        + (CASE WHEN COALESCE(TRIM(city), '') <> '' THEN 1 ELSE 0 END)
+                        + (CASE WHEN COALESCE(TRIM(status), '') <> '' THEN 1 ELSE 0 END)
+                        + (CASE WHEN COALESCE(TRIM(country), '') <> '' THEN 1 ELSE 0 END)
+                         ) DESC,
+                         (CASE WHEN COALESCE(power_mw, 0) > 0 THEN 1 ELSE 0 END) DESC,
+                         is_duplicate ASC, id ASC
+                LIMIT 1
+            ),
+            kin AS (
+                SELECT sib.id, sib.merged_facility_id
+                FROM sib CROSS JOIN anchor
+                WHERE anchor.latitude IS NULL OR anchor.longitude IS NULL
+                   OR sib.latitude IS NULL OR sib.longitude IS NULL
+                   OR (abs(sib.latitude - anchor.latitude) < 0.01
+                       AND abs(sib.longitude - anchor.longitude) < 0.01)
+            ),
+            kin_ids AS (
+                SELECT kin.id::text AS fid FROM kin
+                UNION
+                SELECT kin.merged_facility_id FROM kin
+                WHERE kin.merged_facility_id IS NOT NULL
+            )
+            SELECT anchor.id, anchor.name, anchor.provider, anchor.city, anchor.state,
+                   anchor.country, anchor.market AS region,
+                   anchor.latitude, anchor.longitude, anchor.power_mw, anchor.status,
+                   anchor.address, anchor.is_duplicate,
                    (
                      SELECT array_agg(carrier_name ORDER BY carrier_name)
                      FROM (
                        SELECT DISTINCT cfp.carrier_name
                        FROM carrier_facility_presence cfp
-                       WHERE cfp.dchub_facility_id IN (
-                               discovered_facilities.id::text,
-                               discovered_facilities.merged_facility_id)
+                       WHERE cfp.dchub_facility_id IN (SELECT fid FROM kin_ids)
                          AND cfp.carrier_name IS NOT NULL AND cfp.carrier_name <> ''
                        ORDER BY 1
                        LIMIT 25
@@ -18727,14 +18798,10 @@ def facility_by_slug(slug):
                    (
                      SELECT COUNT(DISTINCT cfp.carrier_name)
                      FROM carrier_facility_presence cfp
-                     WHERE cfp.dchub_facility_id IN (
-                             discovered_facilities.id::text,
-                             discovered_facilities.merged_facility_id)
+                     WHERE cfp.dchub_facility_id IN (SELECT fid FROM kin_ids)
                        AND cfp.carrier_name IS NOT NULL AND cfp.carrier_name <> ''
                    ) AS fiber_carrier_count
-            FROM discovered_facilities
-            WHERE """ + hash_sql('') + """ = %s
-            LIMIT 1
+            FROM anchor
         """, (hash8,))
         row = c.fetchone()
         if not row:
@@ -18750,15 +18817,53 @@ def facility_by_slug(slug):
             # Verified on the replica: 1,793 of 1,794 matched pairs agree on
             # coordinates. Previously hard-coded NULL/0, which under-reported
             # on_net=false for facilities that genuinely have carriers.
+            # r-slugdup (2026-07-17): this branch had the SAME arbitrary-twin bug
+            # as the discovered_facilities branch above -- `facilities` holds 1,752
+            # slugs that match more than one row (16,330 rows / 14,526 distinct
+            # provider|name, likewise with ZERO hash collisions). Same three-part
+            # shape: every sibling row, one deterministic anchor for the
+            # single-valued fields, carriers UNIONed across co-located kin.
+            # `facilities.id` is already the hex text space cfp.dchub_facility_id
+            # holds, so kin ids join directly with no cast on either side.
             c.execute("""
-                SELECT id, name, provider, city, state, country, market AS region,
-                       latitude, longitude, power_mw, status, address,
+                WITH sib AS (
+                    SELECT id, name, provider, city, state, country, market,
+                           latitude, longitude, power_mw, status, address
+                    FROM facilities
+                    WHERE """ + hash_sql('') + """ = %s
+                ),
+                anchor AS (
+                    SELECT * FROM sib
+                    ORDER BY ((CASE WHEN COALESCE(power_mw, 0) > 0 THEN 1 ELSE 0 END)
+                            + (CASE WHEN COALESCE(TRIM(address), '') <> '' THEN 1 ELSE 0 END)
+                            + (CASE WHEN latitude IS NOT NULL AND longitude IS NOT NULL
+                                    THEN 1 ELSE 0 END)
+                            + (CASE WHEN COALESCE(TRIM(city), '') <> '' THEN 1 ELSE 0 END)
+                            + (CASE WHEN COALESCE(TRIM(status), '') <> '' THEN 1 ELSE 0 END)
+                            + (CASE WHEN COALESCE(TRIM(country), '') <> '' THEN 1 ELSE 0 END)
+                             ) DESC,
+                             (CASE WHEN COALESCE(power_mw, 0) > 0 THEN 1 ELSE 0 END) DESC,
+                             id ASC
+                    LIMIT 1
+                ),
+                kin AS (
+                    SELECT sib.id
+                    FROM sib CROSS JOIN anchor
+                    WHERE anchor.latitude IS NULL OR anchor.longitude IS NULL
+                       OR sib.latitude IS NULL OR sib.longitude IS NULL
+                       OR (abs(sib.latitude - anchor.latitude) < 0.01
+                           AND abs(sib.longitude - anchor.longitude) < 0.01)
+                )
+                SELECT anchor.id, anchor.name, anchor.provider, anchor.city, anchor.state,
+                       anchor.country, anchor.market AS region,
+                       anchor.latitude, anchor.longitude, anchor.power_mw, anchor.status,
+                       anchor.address,
                        (
                          SELECT array_agg(carrier_name ORDER BY carrier_name)
                          FROM (
                            SELECT DISTINCT cfp.carrier_name
                            FROM carrier_facility_presence cfp
-                           WHERE cfp.dchub_facility_id = facilities.id
+                           WHERE cfp.dchub_facility_id IN (SELECT kin.id FROM kin)
                              AND cfp.carrier_name IS NOT NULL AND cfp.carrier_name <> ''
                            ORDER BY 1
                            LIMIT 25
@@ -18767,12 +18872,10 @@ def facility_by_slug(slug):
                        (
                          SELECT COUNT(DISTINCT cfp.carrier_name)
                          FROM carrier_facility_presence cfp
-                         WHERE cfp.dchub_facility_id = facilities.id
+                         WHERE cfp.dchub_facility_id IN (SELECT kin.id FROM kin)
                            AND cfp.carrier_name IS NOT NULL AND cfp.carrier_name <> ''
                        ) AS fiber_carrier_count
-                FROM facilities
-                WHERE """ + hash_sql('') + """ = %s
-                LIMIT 1
+                FROM anchor
             """, (hash8,))
             row = c.fetchone()
         if not row:

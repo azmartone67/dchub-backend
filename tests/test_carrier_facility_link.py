@@ -76,6 +76,59 @@ def _code_only(src: str) -> str:
                      if not l.lstrip().startswith(("#", "--")))
 
 
+# The SQL expression hash_sql('') splices in (routes/facility_slug.py). Kept
+# byte-identical here so the reconstructed blocks below are the real query.
+_HASH_SQL = "LEFT(MD5(COALESCE(provider,'')||'|'||COALESCE(name,'')),8)"
+
+
+def _sql_blocks(fn: str) -> list[str]:
+    """Every c.execute() SQL string in `fn`, with hash_sql() resolved.
+
+    The queries are assembled as `\"...\" + hash_sql('') + \"...\"`, so walking
+    string literals alone would silently test half a query. This resolves the
+    concatenation via AST (still never importing main) and returns the SQL as
+    the database actually receives it — which is what the guards below assert on,
+    rather than on incidental prose in the surrounding function.
+    """
+    def flatten(node, parts):
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            return flatten(node.left, parts) and flatten(node.right, parts)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            parts.append(node.value)
+            return True
+        if isinstance(node, ast.Call) and getattr(node.func, "id", "") == "hash_sql":
+            parts.append(_HASH_SQL)
+            return True
+        return False
+
+    tree = ast.parse(_MAIN.read_text(encoding="utf-8"))
+    out = []
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.FunctionDef) and node.name == fn):
+            continue
+        for sub in ast.walk(node):
+            if (isinstance(sub, ast.Call) and isinstance(sub.func, ast.Attribute)
+                    and sub.func.attr == "execute" and sub.args):
+                parts = []
+                if flatten(sub.args[0], parts):
+                    out.append("".join(parts))
+    assert out, f"no c.execute() SQL recovered from {fn}()"
+    return out
+
+
+def _carrier_blocks(fn: str = "facility_by_slug") -> list[str]:
+    """The SQL blocks that serve fiber carriers, in source order.
+
+    [0] = the discovered_facilities branch, [1] = the legacy `facilities` fallback.
+    """
+    blocks = [s for s in _sql_blocks(fn) if "carrier_facility_presence" in s]
+    assert len(blocks) == 2, (
+        f"expected 2 carrier-bearing queries in {fn}() (the discovered_facilities "
+        f"branch and the `facilities` fallback), found {len(blocks)} — if a branch "
+        "was removed, its carriers are no longer served (failure mode 3)")
+    return blocks
+
+
 # ─── (1)+(2) SQL shape: both id-spaces joined, indexed column never cast ───
 
 def test_facility_by_slug_joins_both_id_spaces():
@@ -88,12 +141,13 @@ def test_facility_by_slug_joins_both_id_spaces():
     assert "carrier_facility_presence" in src, (
         "facility_by_slug no longer queries carrier_facility_presence — the "
         "fiber-carrier link has been stubbed out again (failure mode 3)")
+    df_sql = _carrier_blocks()[0]
     # integer space, cast on the df side (not the indexed column)
-    assert "discovered_facilities.id::text" in src, (
-        "the integer id-space join (discovered_facilities.id::text) is gone — "
-        "that space holds 604,332 of the 608,804 links")
+    assert re.search(r"\bid::text\b", df_sql), (
+        "the integer id-space join (discovered_facilities.id cast to text) is "
+        "gone — that space holds 604,332 of the 608,804 links")
     # hex space, via merged_facility_id -> facilities.id
-    assert "discovered_facilities.merged_facility_id" in src, (
+    assert "merged_facility_id" in df_sql, (
         "the hex id-space join (merged_facility_id -> facilities.id) is gone")
 
 
@@ -108,12 +162,19 @@ def test_facility_by_slug_has_no_untyped_integer_join():
 
 
 def test_facilities_fallback_branch_links_carriers():
-    """The legacy-`facilities` branch must use the direct text=text join."""
+    """The legacy-`facilities` branch must link carriers via the text=text join.
+
+    It serves rows whose id IS the hex space, so it joins that id directly with
+    no cast on either side — rather than hard-coding NULL/0 (failure mode 3).
+    """
+    fac_sql = _carrier_blocks()[1]
+    assert "FROM facilities" in fac_sql, (
+        "the second carrier query no longer reads the `facilities` table — the "
+        "slug-namespace fallback (r-slug-namespace) is gone")
+    assert re.search(r"dchub_facility_id\s*(=|IN)", fac_sql), (
+        "the `facilities` fallback branch is not linking carriers on "
+        "dchub_facility_id — it must join that id rather than hard-coding NULL/0")
     src = _code_only(_func_src("facility_by_slug"))
-    assert "cfp.dchub_facility_id = facilities.id" in src, (
-        "the `facilities` fallback branch is not linking carriers — it serves "
-        "rows whose id IS the hex space, so it must join cfp.dchub_facility_id "
-        "= facilities.id rather than hard-coding NULL/0")
     assert "NULL AS fiber_providers" not in src, (
         "a hard-coded `NULL AS fiber_providers` stub is back in facility_by_slug")
 
@@ -134,6 +195,67 @@ def test_map_query_joins_both_id_spaces():
         "the map's carrier join no longer matches both id-spaces: joining only "
         "facilities.id shows carriers for 109 facilities instead of 13,870, and "
         "still returns 200 — a silent regression")
+
+
+# ─── (4) the slug resolves a BUILDING, not an arbitrary duplicate ROW ─────
+
+@pytest.mark.parametrize("branch,label", [(0, "discovered_facilities"),
+                                          (1, "facilities")])
+def test_slug_row_is_not_picked_arbitrarily(branch, label):
+    """Selecting the served row with a bare `LIMIT 1` returns an ARBITRARY twin.
+
+    The slug hash is MD5(provider|name) and 6,904 slugs (plus 1,752 in
+    `facilities`) match more than one row — duplicate ingests of ONE building.
+    With no ORDER BY, Postgres is free to return any of them, and every served
+    field came from whichever won: 1,784 slugs disagreed on carrier count, 74
+    could render on_net=false while a twin had carriers, and 5,953 disagreed on
+    power_mw. Regression shape (the exact pre-fix source):
+
+        FROM discovered_facilities
+        WHERE LEFT(MD5(...),8) = %s
+        LIMIT 1
+    """
+    sql = _carrier_blocks()[branch]
+    assert not re.search(r"=\s*%s\s*\)?\s*LIMIT\s+1", sql), (
+        f"the {label} branch picks its row with an ORDER BY-less `LIMIT 1` "
+        "straight off the slug-hash match — that serves an ARBITRARY duplicate "
+        "row. Rank the twins deterministically (most-complete) instead")
+
+
+@pytest.mark.parametrize("branch,label", [(0, "discovered_facilities"),
+                                          (1, "facilities")])
+def test_carriers_are_unioned_across_duplicate_rows(branch, label):
+    """Carriers must come from ALL twins of the building, not just the one served.
+
+    Carriers are a SET of facts about a building, so they survive the choice of
+    which duplicate row supplies power_mw/address. Correlating them to the single
+    served row is the bug: slug 7ffa852b (EXA Edge DC Frankfurt2) has id=7164 with
+    1 carrier and id=16975 with 685 — same building, coordinates identical to 5dp
+    — and prod served 1.
+    """
+    sql = _carrier_blocks()[branch]
+    assert re.search(r"dchub_facility_id\s+IN\s*\(\s*SELECT", sql), (
+        f"the {label} branch matches carriers against a single row's id rather "
+        "than against the set of rows sharing the slug — a duplicate-row "
+        "facility will under-report its carriers (7ffa852b would serve 1 of 685)")
+
+
+def test_carrier_union_is_scoped_to_colocated_rows():
+    """The union must not merge buildings that merely share a generic slug.
+
+    116 slugs are placeholders where name == provider — "Amazon Web Services|
+    Amazon Web Services" is 169 rows across 24 cities, Microsoft 82, NTT 44.
+    Those are genuinely DIFFERENT buildings wearing one frozen slug, and 61 of
+    them carry carriers on more than one row. An unscoped union over the hash
+    would report Frankfurt carriers as on-site in Ashburn, so the row set is
+    narrowed to rows co-located with the served row.
+    """
+    for branch, label in ((0, "discovered_facilities"), (1, "facilities")):
+        sql = _carrier_blocks()[branch]
+        assert "latitude" in sql and "longitude" in sql and "abs(" in sql, (
+            f"the {label} branch no longer compares coordinates when choosing "
+            "which rows contribute carriers — an unscoped union merges the 116 "
+            "generic-name slugs (AWS: 169 rows / 24 cities) into one building")
 
 
 def _sql_fstrings(fn: str):
@@ -313,6 +435,19 @@ def _q(sql, args=None):
         conn.close()
 
 
+def _q_dicts(sql, args=None):
+    """Like _q, but returns dicts — for running main.py's own SELECT by name."""
+    psycopg2 = pytest.importorskip("psycopg2")
+    conn = psycopg2.connect(_DB)
+    try:
+        with conn.cursor() as c:
+            c.execute(sql, args or ())
+            cols = [d[0] for d in c.description]
+            return [dict(zip(cols, r)) for r in c.fetchall()]
+    finally:
+        conn.close()
+
+
 @_live
 def test_known_linked_facility_returns_carriers():
     """A facility known to have carriers must resolve >0 through the real join.
@@ -349,6 +484,121 @@ def test_carrier_link_coverage_has_not_collapsed():
     assert n >= 5000, (
         f"only {n} facilities have on-site carriers (was 13,870 at fix time) — "
         "the join has likely lost an id-space")
+
+
+_SLUG_HASH = "LEFT(MD5(COALESCE(df.provider,'')||'|'||COALESCE(df.name,'')),8)"
+
+# The union the endpoint serves: carriers of every row sharing the slug that sits
+# at the same coordinates as the row being served.
+_UNION_OVER_SLUG = f"""
+    SELECT COUNT(DISTINCT cfp.carrier_name)
+    FROM discovered_facilities df
+    JOIN carrier_facility_presence cfp
+      ON cfp.dchub_facility_id IN (df.id::text, df.merged_facility_id)
+    WHERE {_SLUG_HASH} = %s
+      AND cfp.carrier_name IS NOT NULL AND cfp.carrier_name <> ''
+"""
+
+
+@_live
+def test_duplicate_slug_resolves_the_full_carrier_set():
+    """A slug whose twins disagree must resolve the UNION, not one twin's share.
+
+    Anchored on 7ffa852b (EXA Infrastructure|EXA Edge DC Frankfurt2): two rows,
+    identical coordinates, one with 1 carrier and one with 685. Prod served 1.
+
+    This runs main.py's OWN query — sliced from source, never imported — so it
+    fails if the endpoint regresses to an arbitrary pick, which a test that
+    re-implemented the union here could not detect.
+    """
+    per_row = _q(f"""
+        SELECT df.id, ({_BOTH_SPACES}) AS cc
+        FROM discovered_facilities df
+        WHERE {_SLUG_HASH} = %s ORDER BY df.id
+    """, ("7ffa852b",))
+    assert len(per_row) > 1, (
+        "slug 7ffa852b no longer has duplicate rows — it was the anchor for the "
+        "arbitrary-twin bug. Pick another multi-row slug, do NOT delete this test")
+    best = max(r[1] for r in per_row)
+    assert best > 1, (
+        f"7ffa852b's twins now top out at {best} carriers — the carrier link "
+        "itself has regressed (it had 685 on id=16975)")
+
+    served = _q_dicts(_carrier_blocks()[0], ("7ffa852b",))
+    assert served, "facility_by_slug's own query resolves NO row for 7ffa852b"
+    got = served[0]["fiber_carrier_count"]
+    assert got >= best, (
+        f"facility_by_slug serves {got} carriers for 7ffa852b but one of that "
+        f"slug's own rows has {best} — carriers are coming from a single "
+        "arbitrary twin instead of the rows sharing the slug")
+    assert got > 1, (
+        f"7ffa852b resolves {got} carrier(s): this is the exact live bug — the "
+        "1-carrier twin (id=7164) is served for a building whose other row "
+        "(id=16975) has 685, rendering on_net false for a carrier hotel")
+
+
+@_live
+def test_no_slug_hash_collides_across_different_buildings():
+    """The union is only safe because hash8 <-> provider|name is a BIJECTION.
+
+    The slug is 32 bits over a growing table, so a birthday collision would put
+    two genuinely different provider|name pairs under one slug and the union
+    would merge unrelated buildings' carriers. Live: 14,310 distinct pairs ->
+    14,310 distinct hashes, zero collisions. If this ever fires, scope the union
+    by (provider, name) rather than by the hash before doing anything else.
+    """
+    for table in ("discovered_facilities", "facilities"):
+        (pairs, hashes), = _q(f"""
+            SELECT COUNT(DISTINCT (COALESCE(provider,'')||'|'||COALESCE(name,''))),
+                   COUNT(DISTINCT LEFT(MD5(COALESCE(provider,'')||'|'
+                                           ||COALESCE(name,'')),8))
+            FROM {table}
+        """)
+        assert pairs == hashes, (
+            f"{table}: {pairs} distinct provider|name pairs collapse to {hashes} "
+            f"slug hashes — {pairs - hashes} MD5 collision(s) now put different "
+            "buildings under one slug, so unioning carriers by hash merges them")
+
+
+@_live
+def test_generic_placeholder_slug_does_not_merge_distinct_buildings():
+    """Co-location scoping must hold for slugs that name a COMPANY, not a building.
+
+    "Amazon Web Services|Amazon Web Services" is one frozen slug over 169 rows in
+    24 cities. These are real distinct buildings, so the carrier union is scoped
+    to co-located rows; without that scope this slug would report every AWS
+    carrier on earth as on-site at whichever row is served.
+    """
+    rows = _q(f"""
+        SELECT COUNT(*), COUNT(DISTINCT city),
+               ROUND((MAX(df.longitude) - MIN(df.longitude))::numeric, 1)
+        FROM discovered_facilities df
+        WHERE {_SLUG_HASH} = %s AND df.latitude IS NOT NULL
+    """, ("7e958426",))
+    n, cities, spread = rows[0]
+    if n <= 1:
+        pytest.skip("the AWS placeholder slug 7e958426 has been de-duplicated")
+    assert cities > 1 and spread > 1, (
+        "7e958426 is no longer the scattered generic-name case this guards")
+
+    (unscoped,), = _q(_UNION_OVER_SLUG, ("7e958426",))
+    (scoped,), = _q(f"""
+        WITH sib AS (
+          SELECT id, merged_facility_id, latitude, longitude,
+                 (CASE WHEN COALESCE(power_mw,0) > 0 THEN 1 ELSE 0 END) AS has_power
+          FROM discovered_facilities df WHERE {_SLUG_HASH} = %s
+        ), anchor AS (SELECT * FROM sib ORDER BY has_power DESC, id ASC LIMIT 1)
+        SELECT COUNT(DISTINCT cfp.carrier_name)
+        FROM sib CROSS JOIN anchor
+        JOIN carrier_facility_presence cfp
+          ON cfp.dchub_facility_id IN (sib.id::text, sib.merged_facility_id)
+        WHERE abs(sib.latitude - anchor.latitude) < 0.01
+          AND abs(sib.longitude - anchor.longitude) < 0.01
+          AND cfp.carrier_name IS NOT NULL AND cfp.carrier_name <> ''
+    """, ("7e958426",))
+    assert scoped < unscoped, (
+        f"scoping bought nothing on the AWS slug ({scoped} vs {unscoped}) — this "
+        "test can no longer detect an unscoped union merging {cities} cities")
 
 
 @_live
