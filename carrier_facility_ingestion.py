@@ -751,12 +751,19 @@ def register_carrier_routes(app, get_db):
             conn = get_db()
             c = conn.cursor()
 
+            # r-carrierlink2 (2026-07-17): dchub_facility_id is TEXT live, but this
+            # route is <int:facility_id> so psycopg2 bound a real int -> `operator
+            # does not exist: text = integer` 500'd every call (same class as the
+            # facility_by_slug/map joins). The route's int id is a
+            # discovered_facilities.id, which is the integer-as-text space this
+            # column's legacy bulk (604,332 rows) holds — so stringify the param.
+            # Cast the PARAM, never the column, so idx_cfp_dchub stays usable.
             c.execute("""
                 SELECT carrier_pdb_id, carrier_name
                 FROM carrier_facility_presence
                 WHERE dchub_facility_id = %s
                 ORDER BY carrier_name
-            """, (facility_id,))
+            """, (str(facility_id),))
 
             carriers = []
             for row in c.fetchall():

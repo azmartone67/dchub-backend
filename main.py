@@ -5093,16 +5093,18 @@ def api_v1_map():
                      FROM (
                        SELECT DISTINCT cfp.carrier_name
                        FROM carrier_facility_presence cfp
-                       -- r-carrierlink (2026-07-17): cfp.dchub_facility_id holds
-                       -- FACILITIES ids (text), not discovered_facilities ids —
-                       -- the old `= df.id` join was wrong id-space and, once the
-                       -- column went text, 500'd every /api/v1/map call with
-                       -- `operator does not exist: text = integer` (same class
-                       -- 2fbce20d removed from facility_by_slug). This query
-                       -- already joins facilities f via df.merged_facility_id,
-                       -- so the TRUE link is available here: 4,474 cfp rows carry
-                       -- a facilities id, 330 are map-visible (verified live).
-                       WHERE cfp.dchub_facility_id = f.id
+                       -- r-carrierlink2 (2026-07-17): cfp.dchub_facility_id (TEXT)
+                       -- holds TWO id-spaces, not one: 604,332 rows are
+                       -- integer-as-text discovered_facilities.id (the legacy bulk)
+                       -- and 4,471 are hex facilities.id (newer ingestion). Joining
+                       -- only `= f.id` fixed the text=integer 500 but silently
+                       -- dropped 99.2% of the links: 109 map-visible facilities got
+                       -- carriers where the union yields 13,870 (verified on the
+                       -- replica). The integer space is the TRUE link, not a
+                       -- collision — all 13,865 matched pairs agree on coordinates
+                       -- exactly (max 0.0000 deg; a decoy df.id+1 join scatters
+                       -- ~60 deg). Cast the OTHER side so idx_cfp_dchub stays usable.
+                       WHERE cfp.dchub_facility_id IN (df.id::text, f.id)
                          AND cfp.carrier_name IS NOT NULL
                        LIMIT 8
                      ) sub
@@ -18486,31 +18488,47 @@ def facility_by_slug(slug):
         conn = get_read_db()
         c = conn.cursor()
         from routes.facility_slug import hash_sql
-        # r-carrierlink (2026-07-16): the on-site fiber-carrier subqueries are
-        # REMOVED here because their join was WRONG in two ways and was 500ing
-        # this endpoint (brain L14 hard_burn, n5xx~247):
-        #   `cfp.dchub_facility_id = discovered_facilities.id`
-        # (a) WRONG ID SPACE — carrier_facility_ingestion builds its lookup from
-        #     `SELECT id FROM facilities`, so cfp.dchub_facility_id holds a
-        #     FACILITIES id, never a discovered_facilities id. It could only ever
-        #     match by coincidence.
-        # (b) WRONG TYPE since 2026-07-16 — the fiber_integration registration
-        #     ALTERed cfp.dchub_facility_id INTEGER->TEXT (ids are hex/slug text),
-        #     turning (a)'s silently-wrong join into `operator does not exist:
-        #     text = integer` -> every /facility/<slug> + /facilities/by-slug/<slug>
-        #     request 500'd. (/facilities/<slug> survived only because a single
-        #     path segment routes to get_facility_by_id, which has no such join.)
-        # Serving NULL/0 matches the legacy-`facilities` fallback below, and the
-        # response builder turns it into on_net=false + "connectivity not yet
-        # linked" — HONEST, since the link genuinely is broken. Re-deriving the
-        # real link (likely via discovered_facilities.merged_facility_id ->
-        # facilities.id) needs live-schema verification; tracked separately.
-        # Do NOT re-add a discovered_facilities.id join.
+        # r-carrierlink2 (2026-07-17): on-site fiber carriers RESTORED after
+        # verifying the link against live data (2fbce20d removed them to stop a
+        # 500 storm; its premise (a) turned out to be wrong).
+        # cfp.dchub_facility_id is TEXT and holds TWO id-spaces at once:
+        #   * 604,332 rows / 13,866 ids — integer-as-text = discovered_facilities.id
+        #     (the legacy bulk; the ORIGINAL `= df.id` join had the RIGHT id-space
+        #      and was only broken by TYPE once the column went text)
+        #   * 4,471 rows / 1,793 ids — hex16 = facilities.id (written by the newer
+        #     ingestion, which matches against `SELECT id FROM facilities`)
+        # Verified on the replica: for the integer space, all 13,865 matched pairs
+        # agree on coordinates EXACTLY (max distance 0.0000 deg); a decoy `df.id+1`
+        # join scatters to ~60 deg avg — so this is the true link, not a collision.
+        # Matching BOTH spaces (df.id::text, df.merged_facility_id -> facilities.id)
+        # covers 13,870 facilities; matching only the hex space covers 109.
+        # The cast is on the OTHER side (df.id::text) so the text index
+        # idx_cfp_dchub(dchub_facility_id) stays usable (verified: Bitmap Index Scan).
         c.execute("""
             SELECT id, name, provider, city, state, country, market AS region,
                    latitude, longitude, power_mw, status, address,
                    COALESCE(is_duplicate, 0) AS is_duplicate,
-                   NULL AS fiber_providers, 0 AS fiber_carrier_count
+                   (
+                     SELECT array_agg(carrier_name ORDER BY carrier_name)
+                     FROM (
+                       SELECT DISTINCT cfp.carrier_name
+                       FROM carrier_facility_presence cfp
+                       WHERE cfp.dchub_facility_id IN (
+                               discovered_facilities.id::text,
+                               discovered_facilities.merged_facility_id)
+                         AND cfp.carrier_name IS NOT NULL AND cfp.carrier_name <> ''
+                       ORDER BY 1
+                       LIMIT 25
+                     ) s
+                   ) AS fiber_providers,
+                   (
+                     SELECT COUNT(DISTINCT cfp.carrier_name)
+                     FROM carrier_facility_presence cfp
+                     WHERE cfp.dchub_facility_id IN (
+                             discovered_facilities.id::text,
+                             discovered_facilities.merged_facility_id)
+                       AND cfp.carrier_name IS NOT NULL AND cfp.carrier_name <> ''
+                   ) AS fiber_carrier_count
             FROM discovered_facilities
             WHERE """ + hash_sql('') + """ = %s
             LIMIT 1
@@ -18523,10 +18541,32 @@ def facility_by_slug(slug):
             # MD5(provider|name) hash it emits can NEVER match above. Same
             # building, two hash namespaces; every keyed search→get_facility
             # chain 404'd. Fall back to the same hash over `facilities`.
+            # r-carrierlink2 (2026-07-17): this branch serves rows from `facilities`,
+            # whose id IS the hex space cfp.dchub_facility_id's newer population
+            # holds — so the carrier link is a direct text=text join here (no cast).
+            # Verified on the replica: 1,793 of 1,794 matched pairs agree on
+            # coordinates. Previously hard-coded NULL/0, which under-reported
+            # on_net=false for facilities that genuinely have carriers.
             c.execute("""
                 SELECT id, name, provider, city, state, country, market AS region,
                        latitude, longitude, power_mw, status, address,
-                       NULL AS fiber_providers, 0 AS fiber_carrier_count
+                       (
+                         SELECT array_agg(carrier_name ORDER BY carrier_name)
+                         FROM (
+                           SELECT DISTINCT cfp.carrier_name
+                           FROM carrier_facility_presence cfp
+                           WHERE cfp.dchub_facility_id = facilities.id
+                             AND cfp.carrier_name IS NOT NULL AND cfp.carrier_name <> ''
+                           ORDER BY 1
+                           LIMIT 25
+                         ) s
+                       ) AS fiber_providers,
+                       (
+                         SELECT COUNT(DISTINCT cfp.carrier_name)
+                         FROM carrier_facility_presence cfp
+                         WHERE cfp.dchub_facility_id = facilities.id
+                           AND cfp.carrier_name IS NOT NULL AND cfp.carrier_name <> ''
+                       ) AS fiber_carrier_count
                 FROM facilities
                 WHERE """ + hash_sql('') + """ = %s
                 LIMIT 1
