@@ -49,6 +49,7 @@ def _depth_meta(cur) -> dict:
             "latest": str(r.get("hi")) if r.get("hi") else None}
 
 
+# AUTO-REPAIR: duplicate route '/api/v1/dcpi/history' also in routes/dcpi.py:5642 — review and remove one
 @dcpi_temporal_bp.route("/api/v1/dcpi/history", methods=["GET"])
 def dcpi_history():
     """Per-market DCPI time-series — excess/constraint/verdict over time."""
