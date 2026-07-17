@@ -47,6 +47,14 @@ GATED_PREFIXES = [
     '/api/risk',
     '/api/v1/site-planner',
     '/api/v1/competitor',
+    # 2026-07-17: bulk PeeringDB extract. /api/v1/networks/facility/<fac_id>
+    # enumerates EVERY network at a facility (687 rows / ~113KB for fac 4024)
+    # unauthenticated. Its sibling /api/v1/connectivity/<fac_id> stays open on
+    # purpose: that one is a count + [:5] sample + score (~1.5KB), the
+    # adoption-first teaser this is the paid depth behind. Prefix is
+    # deliberately '/networks/facility' and not '/networks' — /networks/summary
+    # is aggregate-only and advertised in ai.json, so it must stay open.
+    '/api/v1/networks/facility',
 ]
 
 # ── 2026-07-10: server-side map SESSION cap ─────────────────────────────────
@@ -647,9 +655,15 @@ def init_free_tier_gate(app, get_db_conn):
                     # map page may load it like substations/transmission.
                     '/api/v1/fiber/providers',
                     '/api/v1/fiber/footprint',
-                    '/api/v1/connectivity/ixps',
-                    '/api/v1/connectivity/facilities',
-                    '/api/v1/connectivity/score',
+                    # 2026-07-17: removed /api/v1/connectivity/{ixps,facilities,score}
+                    # here and in api_tier_gating._MAP_BYPASS_PATHS (kept in sync).
+                    # NOTHING serves those paths — not main.py, not any blueprint
+                    # (routes/connectivity_score.py serves /api/infrastructure/
+                    # connectivity/score, a different path). Verified 404 in prod.
+                    # They were no-ops regardless: no '/api/v1/connectivity'
+                    # GATED_PREFIX -> is_gated()=False -> already allowed. Their
+                    # frontend callers (js/energy-enhancement-v3.js) have been
+                    # silently 404ing; fixing that is a frontend change, not this.
                     '/api/v1/grid/overview',
                     '/api/v1/grid/status',
                     # 2026-06-25: removed markets/compare + pipeline/summary here to SYNC with

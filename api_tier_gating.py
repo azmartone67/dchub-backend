@@ -666,9 +666,10 @@ def require_plan(min_plan='pro'):
                     '/api/v1/energy/gas-storage',
                     '/api/v1/fiber/routes',
                     '/api/v1/fiber/sources',
-                    '/api/v1/connectivity/ixps',
-                    '/api/v1/connectivity/facilities',
-                    '/api/v1/connectivity/score',
+                    # 2026-07-17: removed /api/v1/connectivity/{ixps,facilities,score}
+                    # here and in free_tier_gate._MAP_BYPASS_PATHS (kept in sync).
+                    # No route serves those paths in either main.py or a blueprint;
+                    # verified 404 in prod. See the fuller note in free_tier_gate.
                     '/api/v1/grid/overview',
                     '/api/v1/grid/status',
                     # 2026-07-15: legacy CAISO map proxies
