@@ -384,6 +384,66 @@ def _agent_demand_lead(funnel: dict, reach: dict, retention: dict) -> dict | Non
     }
 
 
+def _queue_lead_from_snapshot(snap: dict) -> dict | None:
+    """Build the interconnection-queue lead from the snapshot payload,
+    SCOPE-AWARE (2026-07-17, post 100292). Pure + stdlib-only so tests
+    exercise it without Flask/DB.
+
+    Rules:
+      · top operator = max queued_load_total_gw across ALL rows (unchanged);
+      · US operator  → share computed over the US rows ONLY, rendered via
+        media_claim_verify.queue_share_clause (which drops the clause unless
+        the rounded pct recomputes within ±5%);
+      · non-US operator → honest region label in the headline, NO share
+        clause (a single-operator region share is 100% — not a story);
+      · structured queue_gw / queue_scope / queue_scope_total_gw fields ride
+        on the lead for downstream verification."""
+    try:
+        from routes.media_claim_verify import (
+            OPERATOR_SCOPE, SCOPE_REGION_LABEL, queue_share_clause)
+        by_iso = (snap or {}).get("by_iso") or []
+        top_iso = None
+        for row in by_iso:
+            g = _num(row.get("queued_load_total_gw"))
+            if g and (top_iso is None
+                      or g > _num(top_iso.get("queued_load_total_gw") or 0)):
+                top_iso = row
+        if not top_iso:
+            return None
+        g = _num(top_iso.get("queued_load_total_gw")) or 0
+        iso = top_iso.get("iso") or "an ISO"
+        scope = OPERATOR_SCOPE.get(str(iso).strip().lower(), "US")
+        # Denominator over SAME-SCOPE rows only — never the mixed all-ISO
+        # totals (that mix is exactly how 609 GW became "35% of all US").
+        scope_total = 0.0
+        for row in by_iso:
+            _g = _num(row.get("queued_load_total_gw"))
+            _s = OPERATOR_SCOPE.get(str(row.get("iso") or "").strip().lower(), "US")
+            if _g and _s == scope:
+                scope_total += _g
+        share = queue_share_clause(g, scope_total, scope) if scope == "US" else ""
+        region = SCOPE_REGION_LABEL.get(scope, scope)
+        _headline_op = (f"{iso}'s" if scope == "US"
+                        else f"{region}'s {iso}")
+        return {
+            "kind": "interconnection",
+            "headline_number": (f"{_headline_op} interconnection queue holds "
+                                f"{g:.0f} GW of requested load{share}"),
+            "trend": f"queue depth signals multi-year time-to-power in {iso}",
+            "so_what": ("new large loads in this grid face a long energization "
+                        "wait — price the delay into the site decision."),
+            "source_url": top_iso.get("source_url") or "https://dchub.cloud/grid-intelligence",
+            "dedup_key": f"queue:{str(iso).lower()}",
+            "score": min(50.0, g / 12.0),
+            "queue_gw": g,
+            "queue_scope": scope,
+            "queue_scope_total_gw": round(scope_total, 1),
+        }
+    except Exception as e:
+        logger.warning("[editorial] queue lead failed: %s", str(e)[:160])
+        return None
+
+
 def rank_data_events() -> list[dict]:
     """Gather today's real data events and rank by newsworthiness. Each lead:
        {kind, headline_number, trend, so_what, source_url, dedup_key, score}.
@@ -569,27 +629,18 @@ def rank_data_events() -> list[dict]:
         logger.warning("[editorial] agent-demand lead failed: %s", str(_ae)[:160])
 
     # 3) Interconnection queue — the clearest 'time-to-power' trend (ungated).
+    # 2026-07-17 (post 100292): the snapshot now mixes US ISOs with
+    # international operators (NESO=GB, IESO/AESO=CA) and its totals sum ALL
+    # rows — so the old code paired a GB operator's GW with a GB+US
+    # denominator and hardcoded 'US' into the sentence ("609 GW ... NESO's
+    # interconnection queue, 35% of all US queued load"). _queue_lead_from_
+    # snapshot is scope-aware: the share clause is US-only over a US-only
+    # denominator, non-US operators get an honest region label and NO share,
+    # and the rendered percentage must recompute within ±5% or it is dropped.
     snap = _internal("/api/v1/interconnection-queue/snapshot")
-    by_iso = snap.get("by_iso") or []
-    top_iso = None
-    for row in by_iso:
-        g = _num(row.get("queued_load_total_gw"))
-        if g and (top_iso is None or g > _num(top_iso.get("queued_load_total_gw") or 0)):
-            top_iso = row
-    if top_iso:
-        g = _num(top_iso.get("queued_load_total_gw")) or 0
-        iso = top_iso.get("iso") or "an ISO"
-        tot = _num((snap.get("totals") or {}).get("queued_load_gw"))
-        share = f", {100*g/tot:.0f}% of all US queued load" if tot and tot > 0 else ""
-        leads.append({
-            "kind": "interconnection",
-            "headline_number": f"{iso}'s interconnection queue holds {g:.0f} GW of requested load{share}",
-            "trend": f"queue depth signals multi-year time-to-power in {iso}",
-            "so_what": "new large loads in this ISO face a long energization wait — price the delay into the site decision.",
-            "source_url": top_iso.get("source_url") or "https://dchub.cloud/grid-intelligence",
-            "dedup_key": f"queue:{str(iso).lower()}",
-            "score": min(50.0, g / 12.0),
-        })
+    _q_lead = _queue_lead_from_snapshot(snap)
+    if _q_lead:
+        leads.append(_q_lead)
 
     # 4) Largest new facility surfaced in the last 24h.
     nf = sig.get("new_facilities_24h") or []

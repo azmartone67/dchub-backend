@@ -93,6 +93,86 @@ _BANNED = [
 ]
 
 
+# ── operator ↔ geography scope (2026-07-17, post 100292) ─────────────────────
+# The interconnection-queue snapshot mixes US ISOs with international operators
+# (iso_queue_ingest.INGESTORS), but the snapshot rows carry NO country field —
+# which is how "609 GW ... NESO's interconnection queue, 35% of all US queued
+# load" shipped (NESO is the GB operator; the denominator summed GB+US). This
+# map is the single place operator→scope lives for media prose; keep it in
+# lock-step with iso_queue_ingest.INGESTORS.
+OPERATOR_SCOPE = {
+    "ercot": "US", "pjm": "US", "miso": "US", "spp": "US",
+    "caiso": "US", "nyiso": "US", "iso-ne": "US", "isone": "US",
+    "neso": "GB",
+    "ieso": "CA", "aeso": "CA",
+}
+
+# Human-readable region label per non-US scope, for lead prose ("the Great
+# Britain transmission queue"), so a non-US operator gets an honest label
+# instead of a fabricated US share.
+SCOPE_REGION_LABEL = {
+    "US": "US",
+    "GB": "Great Britain",
+    "CA": "Canada",
+}
+
+# "<Operator>'s interconnection queue" / "<Operator> interconnection queue"
+# possessive-subject pattern — the operator the queue claim is ABOUT.
+_QUEUE_SUBJECT_RE = re.compile(
+    r"\b([A-Za-z][A-Za-z-]{2,})(?:'s|’s)?\s+(?:interconnection|transmission)\s+queue",
+    re.IGNORECASE)
+
+# A US-scope share claim ("35% of all US queued load/capacity").
+_US_SHARE_CLAIM_RE = re.compile(
+    r"of\s+all\s+(?:the\s+)?(?:US|U\.S\.|American)\s+queued", re.IGNORECASE)
+
+
+def check_entity_scope(text: str) -> list[str]:
+    """Entity-consistency check: the operator a queue sentence is about must
+    match the geography the sentence claims. Returns a list of violation
+    strings ([] = consistent). Pure + defensive — never raises.
+
+    Catches the post-100292 class: a non-US operator (NESO → GB) named as the
+    subject of an interconnection-queue claim while the sentence scopes the
+    number to 'all US queued load'."""
+    out: list[str] = []
+    try:
+        t = text or ""
+        if not _US_SHARE_CLAIM_RE.search(t):
+            return out
+        for m in _QUEUE_SUBJECT_RE.finditer(t):
+            op = (m.group(1) or "").strip().lower()
+            scope = OPERATOR_SCOPE.get(op)
+            if scope and scope != "US":
+                out.append(
+                    f"operator {m.group(1)} is the {scope} grid operator but "
+                    "the sentence claims a share of all US queued load")
+    except Exception as e:
+        logger.warning("[claim_verify] check_entity_scope failed: %s", str(e)[:160])
+    return out
+
+
+def queue_share_clause(numerator_gw, denominator_gw, scope: str,
+                       tol_frac: float = 0.05) -> str:
+    """Render the '<pct>% of all US queued load' clause ONLY when it is
+    provably consistent: US scope, sane numerator/denominator, and the
+    rounded percentage recomputes within ±tol_frac of the exact ratio.
+    Returns '' (claim dropped from the prose) on any inconsistency —
+    per the 2026-07-17 wrong-stat directive. Pure; never raises."""
+    try:
+        g = float(numerator_gw)
+        tot = float(denominator_gw)
+        if scope != "US" or tot <= 0 or g <= 0 or g > tot:
+            return ""
+        pct = 100.0 * g / tot
+        shown = round(pct)
+        if shown <= 0 or abs(shown - pct) > max(1e-9, pct * tol_frac):
+            return ""
+        return f", {shown:.0f}% of all US queued load"
+    except Exception:
+        return ""
+
+
 # ── numeric extraction ───────────────────────────────────────────────────────
 def _to_float(num_str: str) -> float | None:
     try:
@@ -212,6 +292,14 @@ def verify_claims(text: str, lead: dict | None = None) -> dict:
         for rx, why in _BANNED:
             if rx.search(text):
                 blocks.append(f"banned over-claim: {why}")
+
+        # (1b) ENTITY-SCOPE consistency (2026-07-17): an operator paired with
+        # the wrong geography ("NESO ... of all US queued load") is a wrong
+        # public number — block-class, same family as the banned over-claims.
+        # (content_publisher also enforces this one always-on, independent of
+        # the MEDIA_CLAIM_VERIFY mode.)
+        for _v in check_entity_scope(text):
+            blocks.append(f"entity-scope mismatch: {_v}")
 
         claims = extract_claims(text)
         canon = _canon()

@@ -150,6 +150,10 @@ def _ensure_table():
                 ("story_type", "ALTER TABLE linkedin_quad_posts ADD COLUMN IF NOT EXISTS story_type TEXT"),
                 ("lead_kind",  "ALTER TABLE linkedin_quad_posts ADD COLUMN IF NOT EXISTS lead_kind TEXT"),
                 ("lead_entity","ALTER TABLE linkedin_quad_posts ADD COLUMN IF NOT EXISTS lead_entity TEXT"),
+                # 2026-07-17 double-post fix: in-flight claim stamp so two
+                # heartbeat ticks in the same slot window can't both publish
+                # (the Rural-SPP / AWS pairs 12-14s apart). See _claim_slot.
+                ("claimed_at", "ALTER TABLE linkedin_quad_posts ADD COLUMN IF NOT EXISTS claimed_at TIMESTAMPTZ"),
             ):
                 try:
                     cur.execute(_ddl)
@@ -514,6 +518,50 @@ def _already_posted(slot_date, slot_hour):
         return False
 
 
+def _claim_slot(slot_date, slot_hour, topic, style):
+    """ATOMIC slot claim — the publish-time guard against the two-replica /
+    double-tick race (2026-07-17: two heartbeat ticks 14s apart both passed
+    _already_posted because the first run's _record lands only AFTER the
+    ~30-60s compose+publish, so linkedin_posts got near-identical pairs while
+    ON CONFLICT collapsed the audit trail to one linkedin_quad_posts row).
+
+    One INSERT ... ON CONFLICT ... RETURNING statement: the winner gets the
+    row back and proceeds; the loser gets nothing and skips. A claim expires
+    after LINKEDIN_QUAD_CLAIM_MINUTES (default 10) so a crashed run never
+    locks the slot away from the hourly catch-up retry; a success=TRUE row
+    never re-claims (the slot is done for the day).
+
+    Fail-OPEN on any DB error (returns True) — the guard exists to stop
+    duplicates, and a DB blip must never dark-hold the feed; worst case we
+    are exactly as exposed as before the guard existed.
+    """
+    if not (_pg and _dsn()):
+        return True
+    try:
+        _mins = max(1, int(os.environ.get("LINKEDIN_QUAD_CLAIM_MINUTES", "10")))
+    except Exception:
+        _mins = 10
+    try:
+        with _conn() as c, c.cursor() as cur:
+            cur.execute("""
+                INSERT INTO linkedin_quad_posts
+                  (slot_date, slot_hour, topic, style, success, error_msg, claimed_at)
+                VALUES (%s, %s, %s, %s, FALSE, 'claimed_in_flight', NOW())
+                ON CONFLICT (slot_date, slot_hour) DO UPDATE
+                   SET claimed_at = NOW()
+                 WHERE linkedin_quad_posts.success IS NOT TRUE
+                   AND (linkedin_quad_posts.claimed_at IS NULL
+                        OR linkedin_quad_posts.claimed_at
+                             < NOW() - make_interval(mins => %s))
+                RETURNING id
+            """, (slot_date, slot_hour, topic, style, _mins))
+            won = cur.fetchone() is not None
+            c.commit()
+            return won
+    except Exception:
+        return True
+
+
 def _lead_entity_from(lead) -> str:
     """Normalized ENTITY token for the durable dedup ledger — the city/iso/deal
     party the lead is about, alnum-squashed so it matches regardless of which
@@ -543,7 +591,16 @@ def _record(slot_date, slot_hour, topic, style, text, landing, og_url, result,
                   linkedin_urn=COALESCE(EXCLUDED.linkedin_urn, linkedin_quad_posts.linkedin_urn),
                   story_type=COALESCE(EXCLUDED.story_type, linkedin_quad_posts.story_type),
                   lead_kind=COALESCE(EXCLUDED.lead_kind, linkedin_quad_posts.lead_kind),
-                  lead_entity=COALESCE(EXCLUDED.lead_entity, linkedin_quad_posts.lead_entity)
+                  lead_entity=COALESCE(EXCLUDED.lead_entity, linkedin_quad_posts.lead_entity),
+                  -- 2026-07-17 claim fix: _claim_slot pre-inserts a bare
+                  -- (slot_date, slot_hour) row before compose+publish, so this
+                  -- ON CONFLICT path is now the NORMAL path for the winner's own
+                  -- record — it must fill the content fields the claim left NULL
+                  -- (and refresh posted_at, which the desk ledger keys on).
+                  post_text=COALESCE(EXCLUDED.post_text, linkedin_quad_posts.post_text),
+                  landing_url=COALESCE(EXCLUDED.landing_url, linkedin_quad_posts.landing_url),
+                  og_image_url=COALESCE(EXCLUDED.og_image_url, linkedin_quad_posts.og_image_url),
+                  posted_at=NOW()
             """, (slot_date, slot_hour, topic, style, text[:5000], landing, og_url,
                    (result or {}).get("urn") or (result or {}).get("id"),
                    bool((result or {}).get("ok")),
@@ -655,6 +712,22 @@ def run():
     if not bypass and _already_posted(slot_date, target_slot["hour"]):
         return jsonify({"skipped": True, "reason": "already_posted_this_slot",
                          "slot": target_slot}), 200
+
+    # 2026-07-17 double-post fix: ATOMICALLY claim the slot before the
+    # ~30-60s compose+publish window. _already_posted above is check-then-act
+    # (the success row lands only after publishing), so two heartbeat ticks
+    # seconds apart both passed it and published near-identical pairs
+    # (Rural SPP 08:08:41 + 08:08:55). The claim's single
+    # INSERT ... ON CONFLICT ... RETURNING has exactly one winner. force /
+    # ignore_slot is an explicit operator override and bypasses enforcement
+    # (the claim row is still stamped so peers back off).
+    _slot_claimed = _claim_slot(slot_date, target_slot["hour"],
+                                target_slot["topic"], target_slot["style"])
+    if not bypass and not _slot_claimed:
+        return jsonify({"skipped": True, "reason": "slot_claimed_by_peer",
+                        "detail": ("another replica/tick claimed this slot "
+                                   "within the in-flight window"),
+                        "slot": target_slot}), 200
 
     # r86c EVENT-DRIVEN CADENCE: ask the brain's editorial desk whether there's
     # a genuinely novel data event worth posting this slot. If not, SUPPRESS the

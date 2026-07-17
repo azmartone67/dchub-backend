@@ -239,57 +239,42 @@ def _shape_linkedin(mover: dict, arc: dict | None) -> str:
     )
 
 
-def _shape_twitter(mover: dict, arc: dict | None) -> str:
-    """≤280-char X post in DC Hub analyst voice.
-
-    r-x-analyst (2026-06-22): the prior shape was a bare status line
-    ("Cheyenne, WY · DCPI BUILD · ExcessPower 70/100") that the publish gate
-    correctly rejected as cryptic/no-value (quality_score < 0.70 — missing the
-    freshness signal — AND the editor LLM: "Cryptic rating system unexplained;
-    no value proposition or context"). Result: X published ZERO posts while
-    LinkedIn/Bluesky ran fine. This mirrors _shape_linkedin's analyst framing
-    (verdict so-what + freshness cue + the stat + link), compressed for X, so it
-    clears BOTH gates and actually tells the story. The DCPI link is always kept
-    intact (only the prose is trimmed to fit) so the post never loses its
-    link-credit or ships a broken URL."""
-    name    = mover.get('name', '?')
-    iso     = mover.get('iso', '?')
-    excess  = mover.get('excess') or 0
-    slug    = mover.get('slug', '')
-
-    # Positive-results policy (2026-07-02): mover is always BUILD. Freshness
-    # cue ("this week") + explained 0-100 gloss kept so the post clears both
-    # the quality gate and the editor LLM.
-    hook = (f"{name} ({iso}) rates BUILD on the DC Hub Power Index this "
-            f"week — Excess-Power score {excess:.0f}/100 on our public "
-            f"0-100 grid-headroom index. Real headroom, shorter "
-            f"interconnection timelines: a green light for AI siting.")
-
-    # "methodology + sources" cue makes the number verifiable (the link is the
-    # proof), mirroring why _shape_linkedin clears the editor.
-    tail = f"\n\nDaily score + methodology: {build_public_url('dcpi', slug)}"
-    tag  = f" #datacenter #{iso.lower().replace('-','')}"
-    if len(hook) + len(tag) + len(tail) <= 280:
-        return hook + tag + tail
-    if len(hook) + len(tail) <= 280:
-        return hook + tail
-    # Overflow (long name/slug): trim the PROSE only, on a word boundary, never
-    # the URL — so the post never ships a broken link or a mid-word cut.
-    budget = 280 - len(tail) - 1
-    trimmed = hook[:max(0, budget)]
-    if " " in trimmed:
-        trimmed = trimmed[:trimmed.rstrip().rfind(" ")]
-    return trimmed.rstrip(" —-·,:") + "…" + tail
+# 2026-07-17 X-editorial fix: _shape_twitter and _shape_bluesky DELETED. They
+# were the last copies of the retired '<City> (<ISO>) rates BUILD on the DC Hub
+# Power Index' template — dead code since the 2026-07-15 composer rewrite, but
+# the byte-identical template they minted was still draining to X from queued
+# legacy rows (all 7 X posts in the 14d audit, incl. a Cheyenne repeat AFTER
+# the 07-14 LinkedIn-only diversity fix). content_publisher's retired-template
+# gate now terminal-rejects those queued rows at publish time; the short
+# platforms speak ONLY via _shorten_analytical over the desk-led composed post.
 
 
-def _shape_bluesky(mover: dict, arc: dict | None) -> str:
-    """≤300 char Bluesky post. Positive-results policy: mover is always BUILD."""
-    return (
-        f"{mover['name']} ({mover['iso']}) rates BUILD on the DC Hub Power "
-        f"Index — excess power {mover['excess']:.0f}/100, one of the "
-        f"strongest headroom readings we track this week.\n\n"
-        f"Daily-refreshing scorecard: {build_public_url('dcpi', mover['slug'])}"
-    )[:300]
+# Editorial-desk lead kind -> composer slot topic. The drumbeat rides the SAME
+# desk selection the LinkedIn quad uses (kinds + per-kind cooldowns + the
+# 14-day (kind, entity) ledger), so X/Bluesky inherit the full anti-repeat
+# machinery instead of a static DCPI template.
+_LEAD_KIND_TO_SLOT_TOPIC = {
+    "dcpi_mover":       "dcpi_mover",
+    "dcpi_build":       "dcpi_mover",
+    "deal":             "hyperscaler_deal",
+    "tenant":           "hyperscaler_deal",
+    "agent_demand":     "agent_demand",
+    "interconnection":  "industry_pulse",
+    "new_facility":     "industry_pulse",
+    "capability_launch": "industry_pulse",
+    "data_milestone":   "industry_pulse",
+}
+
+
+def _lead_entity_token(lead) -> str:
+    """Normalized entity token from a lead's dedup_key ('kind:entity[:x]') —
+    mirrors media_editorial._entity_tail / linkedin_quad_daily._lead_entity_from
+    so all three ledgers key identically. '' when unknown."""
+    import re as _re
+    if not isinstance(lead, dict):
+        return ""
+    tail = (lead.get("dedup_key") or "").split(":", 1)[-1]
+    return _re.sub(r"[^a-z0-9]+", "", tail.lower())
 
 
 def _compose_linkedin_analytical(mover: dict, arc: dict | None):
@@ -304,26 +289,36 @@ def _compose_linkedin_analytical(mover: dict, arc: dict | None):
     drumbeat never goes fully dark — but that is the exception, not the default."""
     try:
         from routes.linkedin_content_engine import compose_story_post
-        # r-agent-demand (2026-07-17): rotate the drumbeat's angle. Two days a
-        # week (Tue/Fri — pacing that respects the weekly refresh of the
-        # retention cohort + the desk's 4-day agent_demand cooldown) the
-        # composer leads with AGENT DEMAND — distinct agents + per-tool
-        # distinct callers, the one dataset that MOVES (and moves up) while
-        # DCPI is flat. If the demand data is unavailable that day, fall back
-        # to the dcpi_mover angle rather than going dark.
-        _drum_topic = ("agent_demand"
-                       if datetime.datetime.utcnow().weekday() in (1, 4)
-                       else "dcpi_mover")
-        composed = compose_story_post(slot_topic=_drum_topic) or {}
-        if composed.get("skip") and _drum_topic == "agent_demand":
-            composed = compose_story_post(slot_topic="dcpi_mover") or {}
+        # 2026-07-17 X-editorial fix: the drumbeat now asks the EDITORIAL DESK
+        # what to lead with — the same selection the quad uses (kinds, per-kind
+        # cooldowns, the durable 14-day (kind, entity) ledger, agent_demand
+        # included) — replacing the hardcoded Tue/Fri agent_demand/dcpi_mover
+        # rotation that ignored the anti-repeat machinery entirely. Desk says
+        # SUPPRESS → the whole drumbeat slot (LinkedIn + the X/Bluesky posts
+        # derived from it) stays silent; silence beats a repeat.
+        _lead = None
+        try:
+            from routes.media_editorial import editorial_decision
+            _ed = editorial_decision("content_drumbeat") or {}
+            if not _ed.get("post"):
+                return None
+            _lead = _ed.get("lead")
+        except Exception:
+            _lead = None  # desk hiccup → composer picks its own angle
+        _drum_topic = _LEAD_KIND_TO_SLOT_TOPIC.get(
+            (_lead or {}).get("kind") or "", "dcpi_mover")
+        composed = compose_story_post(slot_topic=_drum_topic, lead=_lead) or {}
         if composed.get("skip"):
             return None
         text = composed.get("text")
         if text and len(text.strip()) >= 200:
             # 2026-07-16: return the composer's INTENDED card too so the drain
             # attaches the same good branded card the quad uses.
-            return {"text": text.strip(), "og_image_url": composed.get("og_image_url")}
+            # 2026-07-17: + the desk lead, so enqueue() stamps (kind, entity)
+            # onto the queue rows — that stamp IS the X anti-repeat ledger.
+            return {"text": text.strip(),
+                    "og_image_url": composed.get("og_image_url"),
+                    "lead": _lead}
     except Exception as e:
         try:
             note_swallowed_write("content_enqueue",
@@ -618,8 +613,14 @@ def _enqueued_within_days(platform: str, marker: str, days: int) -> bool:
 _QUEUE_CAP = 50  # per-platform approved backlog beyond which enqueue refuses
 
 
-def _enqueue_post(content: str, platform: str, og_image: str | None = None) -> int | None:
+def _enqueue_post(content: str, platform: str, og_image: str | None = None,
+                  lead_kind: str | None = None,
+                  lead_entity: str | None = None) -> int | None:
     """Insert a single approved row. Returns new id or None.
+
+    2026-07-17: `lead_kind`/`lead_entity` stamp WHICH editorial-desk lead the
+    row was composed from — the durable (kind, entity) anti-repeat ledger for
+    the non-quad platforms (X reads it via _x_lead_recently_used).
 
     2026-07-16: `og_image` carries the composer's intended branded card so the
     drain attaches it directly. NULL is fine (drain falls back as before).
@@ -651,16 +652,50 @@ def _enqueue_post(content: str, platform: str, og_image: str | None = None) -> i
                 return None
             cur.execute("""
                 INSERT INTO social_media_posts
-                       (content, platform, status, created_at, og_image)
-                VALUES (%s, %s, 'approved', NOW(), %s)
+                       (content, platform, status, created_at, og_image,
+                        lead_kind, lead_entity)
+                VALUES (%s, %s, 'approved', NOW(), %s, %s, %s)
                 RETURNING id
-            """, (content, platform, og_image))
+            """, (content, platform, og_image,
+                   (lead_kind or None), (lead_entity or None)))
             new_id = (cur.fetchone() or [None])[0]
             c.commit()
             return new_id
     except Exception as e:
         note_swallowed_write("social_media_posts", where="content_enqueue._enqueue_post")
         return None
+    finally:
+        try: c.close()
+        except Exception: pass
+
+
+def _x_lead_recently_used(lead_kind: str, lead_entity: str,
+                          days: int = 14) -> bool:
+    """The X anti-repeat ledger (2026-07-17): has this (kind, entity) lead
+    already fed an X row inside the window? Queued AND published rows both
+    count — a queued repeat is a repeat the moment the drain fires. Mirrors
+    the desk's 14-day entity window (MEDIA_ENTITY_WINDOW_DAYS semantics) so a
+    city/deal that led an X post can't lead another for two weeks — the rule
+    the retired template violated (Cheyenne on repeat). Fail-OPEN: no DB /
+    no stamp → False (never dark-holds the slot)."""
+    if not (lead_kind and lead_entity):
+        return False
+    c = _db_conn()
+    if not c:
+        return False
+    try:
+        with c.cursor() as cur:
+            cur.execute("""
+                SELECT 1 FROM social_media_posts
+                 WHERE platform = 'twitter'
+                   AND status IN ('approved', 'published')
+                   AND lead_kind = %s AND lead_entity = %s
+                   AND created_at > NOW() - make_interval(days => %s)
+                 LIMIT 1
+            """, (lead_kind, lead_entity, int(days)))
+            return cur.fetchone() is not None
+    except Exception:
+        return False
     finally:
         try: c.close()
         except Exception: pass
@@ -798,11 +833,17 @@ def enqueue():
     _li = _compose_linkedin_analytical(mover, arc)
     _li_content = (_li or {}).get("text")
     _li_og = (_li or {}).get("og_image_url")
+    # 2026-07-17 X-editorial fix: the desk lead this slot composed from —
+    # stamped onto every enqueued row so (kind, entity) is a queryable ledger.
+    _lead = (_li or {}).get("lead")
+    _lead_kind = (_lead or {}).get("kind") if isinstance(_lead, dict) else None
+    _lead_entity = _lead_entity_token(_lead)
     if not _li_content:
         results["skipped"].append({"platform": "linkedin",
                                      "reason": "composer_skip_nothing_new"})
     elif not _already_enqueued_recently("linkedin", _li_content):
-        new_id = _enqueue_post(_li_content, "linkedin", og_image=_li_og)
+        new_id = _enqueue_post(_li_content, "linkedin", og_image=_li_og,
+                               lead_kind=_lead_kind, lead_entity=_lead_entity)
         if new_id:
             results["enqueued"].append({"platform": "linkedin", "id": new_id})
         else:
@@ -816,12 +857,21 @@ def enqueue():
     # the composed analysis (lead sentence + link), never the 'rates BUILD'
     # template. None when there's no analytical source (LinkedIn skipped or nothing
     # to shorten) → SKIP that platform. Silence beats a template.
+    # 2026-07-17: X additionally enforces the desk's 14-day (kind, entity)
+    # window via its own ledger — the rule the retired template violated
+    # (Cheyenne led X twice in the window while the desk only guarded LinkedIn).
     _tw_content = _shorten_analytical(_li_content, 275)
     if not _tw_content:
         results["skipped"].append({"platform": "twitter",
                                      "reason": "no_analytical_source"})
+    elif _x_lead_recently_used(_lead_kind, _lead_entity):
+        results["skipped"].append({"platform": "twitter",
+                                     "reason": "lead_entity_window_14d",
+                                     "lead_kind": _lead_kind,
+                                     "lead_entity": _lead_entity})
     elif not _already_enqueued_recently("twitter", _tw_content):
-        new_id = _enqueue_post(_tw_content, "twitter")
+        new_id = _enqueue_post(_tw_content, "twitter",
+                               lead_kind=_lead_kind, lead_entity=_lead_entity)
         if new_id:
             results["enqueued"].append({"platform": "twitter", "id": new_id})
         else:
@@ -837,7 +887,8 @@ def enqueue():
         results["skipped"].append({"platform": "bluesky",
                                      "reason": "no_analytical_source"})
     elif not _already_enqueued_recently("bluesky", _bs_content):
-        new_id = _enqueue_post(_bs_content, "bluesky")
+        new_id = _enqueue_post(_bs_content, "bluesky",
+                               lead_kind=_lead_kind, lead_entity=_lead_entity)
         if new_id:
             results["enqueued"].append({"platform": "bluesky", "id": new_id})
         else:

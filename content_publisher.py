@@ -147,6 +147,12 @@ def init_content_tables():
                 # attaches it directly as the LinkedIn image so drumbeat posts
                 # carry the same good card as the quad. NULL -> prior behaviour.
                 "og_image TEXT",
+                # 2026-07-17 X-editorial fix: which editorial-desk lead this row
+                # was composed from. This IS the X anti-repeat ledger — the desk's
+                # linkedin_quad_posts ledger only sees quad posts, so X had no
+                # (kind, entity) memory and shipped the same city on repeat.
+                "lead_kind TEXT",
+                "lead_entity TEXT",
             ]:
                 col = col_def.split()[0]
                 try:
@@ -1401,11 +1407,14 @@ def _persist_linkedin_urn(cur, post_id, urn, content_text, slug=None, article_ur
     # We use the SAME conn/cur (already committed by the caller's UPDATE wrapper)
     # to keep this atomic with the row state transition to 'published'.
     try:
+        # 2026-07-17: store the FULL text (was [:500]) — the column is TEXT and
+        # the truncation broke verbatim output audits (post 100292's 500-char
+        # cut); LinkedIn caps commentary ~3,000 chars so this stays bounded.
         cur.execute(
             """INSERT INTO linkedin_posts (post_urn, content, post_type, status,
                                             slug, posted_at)
                VALUES (%s, %s, %s, %s, %s, NOW())""",
-            (urn, (content_text or '')[:500], post_type, 'success', slug),
+            (urn, (content_text or ''), post_type, 'success', slug),
         )
     except Exception as e:
         # Table may not exist in some dev DBs; linkedin_poster._ensure_tables
@@ -2343,6 +2352,13 @@ _DISPARAGE_NEG_RE = _re_legacy.compile(
     _re_legacy.IGNORECASE)
 
 
+# 2026-07-17: the retired DCPI status template (killed at the composer
+# 2026-07-15; this regex kills the QUEUED backlog + any reintroduction at
+# publish time). Matches the invariant clause every shaped variant carried.
+_RETIRED_TEMPLATE_RE = _re_legacy.compile(
+    r"rates\s+BUILD\s+on\s+the\s+DC\s+Hub\s+Power\s+Index", _re_legacy.IGNORECASE)
+
+
 def _disparages_partner(text: str, window: int = 70):
     """Return an offending snippet if a peer AI platform sits within `window`
     chars of a disparaging term (either order); else None. Used to hard-block
@@ -2399,6 +2415,34 @@ def _should_skip_publish(cur, content_text: str, platform: str):
     if _disp:
         return True, ("partner-disparagement — refusing to publish copy that "
                       f"knocks a peer AI platform: …{_disp[:120]}…")
+
+    # (d2b) RETIRED-TEMPLATE GATE (2026-07-17): the '<City> (<ISO>) rates BUILD
+    # on the DC Hub Power Index' template was retired 2026-07-15 (composer-first,
+    # silence-beats-template), but rows shaped by it were still QUEUED as
+    # status='approved' and kept draining to X for days after the retirement —
+    # all 7 X posts in the 14d audit were this exact template. Content-intrinsic
+    # hard block on every platform: the drain's skip path terminal-rejects the
+    # row, so the legacy backlog burns off instead of publishing.
+    if _RETIRED_TEMPLATE_RE.search(_text):
+        return True, ("retired-template — the 'rates BUILD on the DC Hub Power "
+                      "Index' template was retired 2026-07-15; composed analyst "
+                      "posts only (legacy queued row, reject to advance queue)")
+
+    # (d2c) ENTITY-SCOPE GATE (2026-07-17): a queue stat paired with the wrong
+    # geography is a WRONG PUBLIC NUMBER (post 100292: '609 GW ... NESO's
+    # interconnection queue, 35% of all US queued load' — NESO is the GB
+    # operator and the denominator mixed GB+US). Always-on hard block, all
+    # platforms, independent of the MEDIA_CLAIM_VERIFY warn/block mode —
+    # same class as the agent-count honesty gate. Fail-OPEN on import error.
+    try:
+        from routes.media_claim_verify import check_entity_scope
+        _es = check_entity_scope(_text)
+        if _es:
+            return True, (f"entity-scope mismatch: {'; '.join(_es)[:220]} "
+                          "— operator geography must match the scope the "
+                          "sentence claims")
+    except Exception as _ese:
+        logger.warning("entity-scope gate unavailable (%s) — failing OPEN", _ese)
 
     # (d2) DOWNGRADE-LEAD GATE (2026-07-02, operator directive): the media
     # feed messages positive results and enhancements. A post that LEADS

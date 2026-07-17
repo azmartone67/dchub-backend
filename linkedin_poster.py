@@ -142,6 +142,17 @@ def _ensure_tables():
                 CONSTRAINT single_row CHECK (id = 1)
             )
         """)
+        # 2026-07-17 double-post fix: publish-time CLAIM ledger. The existing
+        # duplicate gate SELECTs linkedin_posts before posting — check-then-act,
+        # so two replicas publishing the same content seconds apart both pass
+        # (neither has inserted its row yet). A claim on the content fingerprint
+        # is atomic: exactly one INSERT wins (see _claim_publish_fp).
+        _execute("""
+            CREATE TABLE IF NOT EXISTS linkedin_publish_claims (
+                fp TEXT PRIMARY KEY,
+                claimed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
         from linkedin_posts_schema import reconcile_schema
         reconcile_schema()
         logger.info("[LinkedIn] ✅ Tables verified/created")
@@ -237,6 +248,66 @@ def _get_valid_token():
 
 # ── Posting ──────────────────────────────────────────────────
 
+def _publish_fp(text) -> str:
+    """Content fingerprint for the publish-time claim: the digit-stripped,
+    whitespace-collapsed opening (~200 chars) hashed. Digit-stripping (the
+    brain_proposal_dedup.norm_condition pattern) makes two compositions of the
+    same lead hash identically even when a live count or the appended
+    '(DC Hub data · Jul 17, 2026)' stamp drifts between the pair."""
+    import hashlib
+    try:
+        from routes.brain_proposal_dedup import norm_condition
+        base = norm_condition(text)[:200]
+    except Exception:
+        base = ' '.join(str(text or '').lower().split())[:200]
+    return hashlib.sha256(base.encode('utf-8', 'replace')).hexdigest()[:32]
+
+
+def _claim_publish_fp(text):
+    """ATOMICALLY claim this content for publishing. Returns True when this
+    caller holds the claim (publish may proceed), False when another publish
+    of the same content claimed it within DCHUB_LINKEDIN_DUP_DAYS (default 7 —
+    the same window as the duplicate gate this backs up).
+
+    One INSERT ... ON CONFLICT ... RETURNING: exactly one concurrent caller
+    wins. On a lost publish (API failure) the caller releases the claim via
+    _release_publish_fp so a retry isn't locked out.
+
+    Fail-OPEN on DB errors (_execute raises → return True): the claim guard
+    must never dark-hold the feed; a blip only degrades us to the old
+    check-then-act behavior. Kill switch: DCHUB_LINKEDIN_PUBLISH_CLAIM=0."""
+    if os.environ.get('DCHUB_LINKEDIN_PUBLISH_CLAIM', '1').strip().lower() in (
+            '0', 'false', 'off', 'no'):
+        return True
+    try:
+        _days = max(1, int(os.environ.get('DCHUB_LINKEDIN_DUP_DAYS', '7') or '7'))
+    except Exception:
+        _days = 7
+    try:
+        row = _execute("""
+            INSERT INTO linkedin_publish_claims (fp, claimed_at)
+            VALUES (%s, NOW())
+            ON CONFLICT (fp) DO UPDATE SET claimed_at = NOW()
+             WHERE linkedin_publish_claims.claimed_at
+                     < NOW() - make_interval(days => %s)
+            RETURNING fp
+        """, (_publish_fp(text), _days), fetch=True)
+        return row is not None
+    except Exception as e:
+        logger.warning("[LinkedIn] publish-claim failed (fail-open): %s", e)
+        return True
+
+
+def _release_publish_fp(text):
+    """Release a held publish claim after a FAILED publish so the content can
+    retry. Best-effort; never raises."""
+    try:
+        _execute("DELETE FROM linkedin_publish_claims WHERE fp = %s",
+                 (_publish_fp(text),))
+    except Exception:
+        pass
+
+
 def post_to_linkedin(text, link_url=None, link_title=None, link_desc=None, image_bytes=None):
     # ── Content-quality gate (2026-06-30) ─────────────────────────────────
     # NEVER ship an incomplete/amateur post (a publish path once posted just
@@ -273,6 +344,21 @@ def post_to_linkedin(text, link_url=None, link_title=None, link_desc=None, image
                                'reason': f'already posted within {_dd} days'}
     except Exception as _e:
         logger.warning("[LinkedIn] dup-check failed (fail-open): %s", _e)
+
+    # 2026-07-17 double-post fix: ATOMIC publish claim. The duplicate gate
+    # above is check-then-act (SELECT linkedin_posts, then post) — two
+    # replicas publishing the same content 12-14s apart both passed it
+    # because neither had inserted its linkedin_posts row yet. The claim's
+    # INSERT ... ON CONFLICT ... RETURNING has exactly one winner; the loser
+    # gets the same duplicate_gate refusal callers already handle. A FAILED
+    # publish releases the claim below so retries aren't locked out.
+    if not _claim_publish_fp(text):
+        logger.warning("[LinkedIn] PUBLISH CLAIM lost — same content "
+                       "claimed/published concurrently or within the dup "
+                       "window: %r", _ct[:80])
+        return False, {'error': 'duplicate_gate',
+                       'reason': 'publish claim lost — same content already '
+                                 'claimed or published within the dup window'}
 
     # r50 (2026-05-25): MODERN /rest/images?action=initializeUpload flow.
     # The old /v2/assets?action=registerUpload returns a urn:li:digitalmedia
@@ -449,10 +535,13 @@ def post_to_linkedin(text, link_url=None, link_title=None, link_desc=None, image
         if resp.status_code in (200, 201):
             post_urn = resp.headers.get('x-restli-id', resp.headers.get('X-LinkedIn-Id', ''))
             # Log success
+            # 2026-07-17: store the FULL text (was text[:500]) — the column is
+            # TEXT and the truncation broke verbatim output audits; LinkedIn
+            # itself caps commentary ~3,000 chars so this stays bounded.
             _execute("""
                 INSERT INTO linkedin_posts (post_urn, content, post_type, status)
                 VALUES (%s, %s, %s, 'success')
-            """, (post_urn, text[:500], 'manual'))
+            """, (post_urn, text, 'manual'))
             # Render-drift probe (off unless LINKEDIN_RENDER_DRIFT_PROBE=1) —
             # fetch this share back by URN and compare LinkedIn's rendered
             # commentary vs the FULL `text` we sent, to catch a recurrence of the
@@ -477,20 +566,23 @@ def post_to_linkedin(text, link_url=None, link_title=None, link_desc=None, image
                           'image_attached': bool(_image_urn)}
         else:
             error_msg = resp.text[:500]
-            # Log failure
+            # Failed publish: release the claim so a retry isn't locked out.
+            _release_publish_fp(text)
+            # Log failure (full text — see the success-branch note)
             _execute("""
                 INSERT INTO linkedin_posts (content, post_type, status, error)
                 VALUES (%s, %s, 'failed', %s)
-            """, (text[:500], 'manual', error_msg))
+            """, (text, 'manual', error_msg))
             return False, {'error': error_msg, 'status_code': resp.status_code,
                            'image_attached': bool(_image_urn)}
 
     except Exception as e:
         error_msg = str(e)
+        _release_publish_fp(text)
         _execute("""
             INSERT INTO linkedin_posts (content, post_type, status, error)
             VALUES (%s, 'manual', 'failed', %s)
-        """, (text[:500], error_msg))
+        """, (text, error_msg))
         return False, {'error': error_msg}
 
 
