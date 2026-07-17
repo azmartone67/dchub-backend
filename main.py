@@ -18477,28 +18477,31 @@ def facility_by_slug(slug):
         conn = get_read_db()
         c = conn.cursor()
         from routes.facility_slug import hash_sql
-        # On-site fiber carriers via the indexed carrier_facility_presence(dchub_facility_id)
-        # link (same source as the map popup) — fulfils get_facility's "fiber providers" promise.
+        # r-carrierlink (2026-07-16): the on-site fiber-carrier subqueries are
+        # REMOVED here because their join was WRONG in two ways and was 500ing
+        # this endpoint (brain L14 hard_burn, n5xx~247):
+        #   `cfp.dchub_facility_id = discovered_facilities.id`
+        # (a) WRONG ID SPACE — carrier_facility_ingestion builds its lookup from
+        #     `SELECT id FROM facilities`, so cfp.dchub_facility_id holds a
+        #     FACILITIES id, never a discovered_facilities id. It could only ever
+        #     match by coincidence.
+        # (b) WRONG TYPE since 2026-07-16 — the fiber_integration registration
+        #     ALTERed cfp.dchub_facility_id INTEGER->TEXT (ids are hex/slug text),
+        #     turning (a)'s silently-wrong join into `operator does not exist:
+        #     text = integer` -> every /facility/<slug> + /facilities/by-slug/<slug>
+        #     request 500'd. (/facilities/<slug> survived only because a single
+        #     path segment routes to get_facility_by_id, which has no such join.)
+        # Serving NULL/0 matches the legacy-`facilities` fallback below, and the
+        # response builder turns it into on_net=false + "connectivity not yet
+        # linked" — HONEST, since the link genuinely is broken. Re-deriving the
+        # real link (likely via discovered_facilities.merged_facility_id ->
+        # facilities.id) needs live-schema verification; tracked separately.
+        # Do NOT re-add a discovered_facilities.id join.
         c.execute("""
             SELECT id, name, provider, city, state, country, market AS region,
                    latitude, longitude, power_mw, status, address,
                    COALESCE(is_duplicate, 0) AS is_duplicate,
-                   (
-                     SELECT array_agg(carrier_name ORDER BY carrier_name)
-                     FROM (
-                       SELECT DISTINCT cfp.carrier_name
-                       FROM carrier_facility_presence cfp
-                       WHERE cfp.dchub_facility_id = discovered_facilities.id
-                         AND cfp.carrier_name IS NOT NULL AND cfp.carrier_name <> ''
-                       LIMIT 25
-                     ) s
-                   ) AS fiber_providers,
-                   (
-                     SELECT COUNT(DISTINCT cfp.carrier_name)
-                     FROM carrier_facility_presence cfp
-                     WHERE cfp.dchub_facility_id = discovered_facilities.id
-                       AND cfp.carrier_name IS NOT NULL AND cfp.carrier_name <> ''
-                   ) AS fiber_carrier_count
+                   NULL AS fiber_providers, 0 AS fiber_carrier_count
             FROM discovered_facilities
             WHERE """ + hash_sql('') + """ = %s
             LIMIT 1
