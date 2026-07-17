@@ -325,18 +325,23 @@ def run_fast_sweep() -> dict:
                     persisted += 1
                 except Exception as e:
                     logger.warning("fast_qa: upsert failed for %s: %s", issue, e)
-            # 2. resolve-on-absence: any open fast_qa finding not failing now
+            # 2. resolve-on-absence: any open fast_qa finding not failing now.
+            # The writer's UPDATE matches on (issue, url), so the resolve
+            # must target the row's stored url — omitting it falls through
+            # to INSERT and mints a phantom (issue, '') resolved row.
             try:
                 cur.execute(
-                    "SELECT issue FROM brain_findings "
+                    "SELECT issue, url FROM brain_findings "
                     "WHERE detector = 'fast_qa' AND status = 'open'")
-                open_issues = {r[0] for r in cur.fetchall()}
+                open_rows = {(r[0], r[1] or "") for r in cur.fetchall()}
             except Exception:
-                open_issues = set()
-            for stale in (open_issues - set(current)):
+                open_rows = set()
+            for stale, stale_url in open_rows:
+                if stale in current:
+                    continue
                 try:
                     upsert_brain_finding(
-                        cur, stale, status="resolved",
+                        cur, stale, url=stale_url, status="resolved",
                         detail="[RESOLVED] fast-QA: recovered on a later sweep",
                         detector="fast_qa")
                     resolved += 1
