@@ -123,7 +123,7 @@ def _record_click():
         cur.execute("""
             INSERT INTO mcp_conversion_clicks
                 (tool_name, prior_calls, tier_at_click, user_agent, referer)
-            VALUES (%s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
         """, (
             tool, calls_int, tier,
             (request.headers.get('User-Agent') or '')[:300],
