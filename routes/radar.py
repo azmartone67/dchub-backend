@@ -226,6 +226,24 @@ _NAV = (
     '</div>'
 )
 
+# Honest provenance strip. The page says "LIVE", but not every metric refreshes
+# per request: the queue total + Ashburn telemetry + per-ISO time-to-power do;
+# per-ISO curtailment is a calibrated reference (dcpi.py iso_defaults — there is
+# no live per-ISO curtailment feed yet) and queue depth moves on the ISO ingest.
+# Say so plainly rather than let "LIVE" imply more than it should.
+_PROV = (
+    '<div style="max-width:1060px;margin:0 auto;padding:20px clamp(16px,4vw,40px) 44px;'
+    'font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;line-height:1.75;'
+    'color:#6B747D;border-top:1px solid #242A30">'
+    '<b style="color:#93A8FF">PROVENANCE</b><br>'
+    '<b style="color:#22B7A6">Live this request:</b> U.S. interconnection-queue total &middot; '
+    'Ashburn zone load &amp; real-time LMP &middot; per-ISO time-to-power (DCPI).<br>'
+    '<b style="color:#E0982E">Calibrated reference:</b> per-ISO curtailment (no live per-ISO '
+    'curtailment feed yet) &middot; per-ISO queue depth (moves on the ISO queue ingest, not per request).<br>'
+    'Data: DC Hub (dchub.cloud) &middot; CC-BY-4.0 &middot; cite as "DC Hub, dchub.cloud".'
+    '</div>'
+)
+
 def _render_edition(slug: str, tier: str) -> str:
     # TIER GATE: free/anon see the public teaser (thesis + free headline metrics +
     # locked deep sections + upgrade/agent CTA — daily-fresh via live numbers, and
@@ -235,7 +253,8 @@ def _render_edition(slug: str, tier: str) -> str:
     with open(os.path.join(_PAGES_DIR, f"{template}.html"), encoding="utf-8") as f:
         body = T.render(f.read(), T.normalize(_pull_core()), tier)
     # frame the publication with a slim, navigable DC Hub bar (own identity below)
-    return _NAV + body
+    # and close with an honest live-vs-calibrated provenance strip.
+    return _NAV + body + _PROV
 
 def _today_slug() -> str:
     doy = dt.datetime.now(dt.timezone.utc).timetuple().tm_yday
