@@ -529,12 +529,17 @@ def _scan_one(entry: dict) -> dict:
         # 2-replica backend (same class as the brain self-DDoS). Retry
         # transient Timeout/ConnectionError up to 3x before giving up so a
         # momentary blip can't flip a healthy page to RED.
+        # Hoisted from the status gate below so the retry loop can consult it:
+        # statuses the entry EXPECTS (expected_status, default 200) are never
+        # retried — e.g. the precheck API legitimately answers 503/504.
+        _expected = entry.get("expected_status", 200)
+        _allowed = (set(_expected) if isinstance(_expected, (list, tuple, set))
+                    else {_expected})
         r = None
         for _attempt in range(3):
             try:
                 r = requests.get(url, timeout=15, headers=_hdrs,
                                   stream=True, allow_redirects=True)
-                break
             except (requests.exceptions.Timeout,
                     requests.exceptions.ConnectionError):
                 if _attempt < 2:
@@ -542,6 +547,24 @@ def _scan_one(entry: dict) -> dict:
                     t0 = time.time()
                     continue
                 raise
+            # r-spec-lifecycle (2026-07-17): retry an UNEXPECTED transient 5xx
+            # like a connection error. Verified live on /admin/funnel-health:
+            # the first AUTHED hit of a cold heavy render dies at the edge as
+            # 502 after ~10s while the origin finishes computing + caches, and
+            # an immediate retry answers 200 in <1s. That single cold 502 was
+            # logged http_status:502 → site_sentinel_unhealthy finding → agenda
+            # item → spec PR (#1636's false premise). A page that is REALLY
+            # down still fails all 3 attempts and is flagged as before.
+            if (r.status_code in (500, 502, 503, 504)
+                    and r.status_code not in _allowed and _attempt < 2):
+                try:
+                    r.close()
+                except Exception:
+                    pass
+                time.sleep(1.0 * (_attempt + 1))
+                t0 = time.time()
+                continue
+            break
         body = r.raw.read(64 * 1024, decode_content=True) if r.raw else r.content[:64*1024]
         out["elapsed_ms"] = int((time.time() - t0) * 1000)
         out["status_code"] = r.status_code
@@ -566,12 +589,9 @@ def _scan_one(entry: dict) -> dict:
         # 2026-05-24: support per-entry `expected_status` so routes that
         # intentionally return non-200 (e.g. /api/v1/brain/heartbeat's 202
         # stale-while-revalidate path) don't get flagged as unhealthy.
-        # Accepts int or list/tuple of ints; defaults to [200].
-        expected = entry.get("expected_status", 200)
-        if isinstance(expected, (list, tuple, set)):
-            allowed = set(expected)
-        else:
-            allowed = {expected}
+        # Accepts int or list/tuple of ints; defaults to [200]. (Computed as
+        # _allowed above the request loop so the 5xx retry can consult it.)
+        allowed = _allowed
         if out["status_code"] not in allowed:
             # r62-qa: a Cloudflare WAF / anti-bot challenge served to OUR OWN
             # self-probe (403 + challenge page) is NOT a page outage — real

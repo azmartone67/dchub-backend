@@ -136,9 +136,15 @@ def _ci_is_red(ci: dict) -> bool:
 #  GitHub: CLOSE a PR (the ONLY write this module makes). Reuses the
 #  brain_automerge token/repo/header config so there is ONE GitHub client.
 # ════════════════════════════════════════════════════════════════════
-def close_pr(pr_number: int, *, reason: str = "") -> dict:
+_AUTOFIX_CLOSE_HEADER = ("🧹 **brain PR janitor** auto-closing this "
+                         "stale RED autofix PR.")
+
+
+def close_pr(pr_number: int, *, reason: str = "",
+             header: str = _AUTOFIX_CLOSE_HEADER) -> dict:
     """PATCH /repos/{repo}/pulls/{n} state=closed. NEVER merges, NEVER deletes
-    the branch. Optionally posts a closing comment (best-effort). Returns
+    the branch. Optionally posts a closing comment (best-effort); `header` is
+    the comment's first line (the spec-PR sweep passes its own). Returns
     {ok} or {ok:False, error}. Never raises. Tests monkeypatch this."""
     try:
         from routes.brain_automerge import _gh_cfg, _gh_headers
@@ -165,8 +171,7 @@ def close_pr(pr_number: int, *, reason: str = "") -> dict:
                 requests.post(
                     f"https://api.github.com/repos/{repo}/issues/{pr_number}/comments",
                     headers=h, timeout=20,
-                    json={"body": ("🧹 **brain PR janitor** auto-closing this "
-                                   "stale RED autofix PR.\n\n" + str(reason)[:400])},
+                    json={"body": (str(header) + "\n\n" + str(reason)[:900])},
                 )
             except Exception:
                 pass
@@ -481,6 +486,335 @@ def _alert_close(candidate: dict) -> bool:
 
 
 # ════════════════════════════════════════════════════════════════════
+#  SPEC-PR SWEEP (Phase spec-lifecycle, 2026-07-17)
+#
+#  The doc-only [brain-spec] draft PRs (brain_pr_opener.open_spec_pr) had a
+#  filer but no drain: 9 piled up by 07-17 and were closed BY HAND with
+#  evidence (#1623–#1636). This sweep is the drain. It CLOSES an OPEN
+#  [brain-spec] DRAFT PR, with an evidence comment, when:
+#    (a) its source agenda/proposal/investigation row has been GRADED — the
+#        human decision is recorded on the item, the PR is a leftover;
+#    (b) the brain_findings row behind it ('Brain finding: <issue>' in the
+#        title/body) is status='resolved' — the condition no longer exists
+#        (#1636 was filed 4h AFTER its finding resolved); or
+#    (c) it is older than BRAIN_SPEC_PR_MAX_AGE_DAYS (default 14) with no
+#        human activity (still draft, no comments, no extra commits) — then
+#        it is labeled 'stale-spec' before closing, never silently.
+#  Human-merge policy unchanged: only ever CLOSES, never merges; a PR a
+#  human flipped ready is NEVER touched. Same master switch
+#  (BRAIN_PR_JANITOR_ENABLED) + dry-run contract as the autofix sweep.
+# ════════════════════════════════════════════════════════════════════
+import re as _re
+
+SPEC_TITLE_PREFIX = "[brain-spec]"
+SPEC_BRANCH_PREFIX = "brain-spec/"
+SPEC_CLOSE_HEADER = ("🧹 **brain spec-PR janitor** auto-closing this doc-only "
+                     "spec PR — its source condition is settled (evidence "
+                     "below). The brain re-proposes anything still worth "
+                     "doing.")
+
+# "[brain-spec] agenda #100107: …" → (kind, item_id)
+_SPEC_TITLE_RE = _re.compile(
+    r"^\[brain-spec\]\s+(agenda|prop|inv)\s+#(\d+):")
+# "Brain finding: site_sentinel_unhealthy:/admin/funnel-health @ …" — the
+# issue label embeds '/', ':', '.', '-' (brain_merge_reconciler's variant
+# lacks '/' and would truncate path-carrying issues).
+_SPEC_FINDING_RE = _re.compile(r"Brain finding:\s*([A-Za-z0-9_.:/\-]+)")
+
+# kind → source table. Whitelist — table names NEVER come from PR text.
+_SPEC_SOURCES = {
+    "agenda": "brain_self_agenda",
+    "prop": "brain_enhancement_proposals",
+    "inv": "brain_investigations",
+}
+
+
+def _spec_max_age_days() -> int:
+    return max(1, _env_int("BRAIN_SPEC_PR_MAX_AGE_DAYS", 14))
+
+
+def _spec_source_grade(kind: str, item_id) -> str | None:
+    """The source row's grade when the item HAS been graded, else None.
+    None also on missing row / no DB / any error — fail-SAFE (no close).
+    Never raises. Tests monkeypatch this."""
+    table = _SPEC_SOURCES.get(kind or "")
+    if not table:
+        return None
+    try:
+        import psycopg2
+    except Exception:
+        return None
+    url = _db_url()
+    if not url:
+        return None
+    try:
+        with psycopg2.connect(url, connect_timeout=5) as conn, conn.cursor() as cur:
+            cur.execute(f"SELECT grade FROM {table} WHERE id = %s",
+                        (int(item_id),))
+            row = cur.fetchone()
+        g = str(row[0]).strip() if row and row[0] is not None else ""
+        return g or None
+    except Exception:
+        return None
+
+
+def _spec_finding_resolved(issue: str) -> str | None:
+    """resolved_at (ISO string) when brain_findings carries this issue with
+    status='resolved', else None. brain_findings has no fingerprint column —
+    the issue LABEL is the linkage (agenda titles embed
+    'Brain finding: <issue>'). Fail-SAFE None. Tests monkeypatch this."""
+    issue = (issue or "").strip()
+    if not issue:
+        return None
+    try:
+        import psycopg2
+    except Exception:
+        return None
+    url = _db_url()
+    if not url:
+        return None
+    try:
+        with psycopg2.connect(url, connect_timeout=5) as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT resolved_at FROM brain_findings "
+                " WHERE issue = %s AND status = 'resolved' "
+                " ORDER BY resolved_at DESC NULLS LAST LIMIT 1",
+                (issue,))
+            row = cur.fetchone()
+        return str(row[0]) if row and row[0] is not None else None
+    except Exception:
+        return None
+
+
+def list_spec_prs() -> dict:
+    """OPEN [brain-spec] PRs — title prefix AND brain-spec/ head branch must
+    BOTH match (defense-in-depth: never a human PR). Same token/repo config
+    as the autofix sweep. Never raises. Tests monkeypatch this."""
+    try:
+        from routes.brain_automerge import _gh_cfg, _gh_headers
+        import requests
+    except Exception as e:
+        return {"ok": False, "error": f"deps:{type(e).__name__}:{str(e)[:80]}"}
+    try:
+        cfg = _gh_cfg()
+    except Exception as e:
+        return {"ok": False, "error": f"cfg:{type(e).__name__}:{str(e)[:80]}"}
+    token = (cfg or {}).get("token")
+    if not token:
+        return {"ok": False, "error": "no_token"}
+    repo = cfg.get("upstream") or "azmartone67/dchub-backend"
+    try:
+        r = requests.get(f"https://api.github.com/repos/{repo}/pulls",
+                         headers=_gh_headers(token), timeout=20,
+                         params={"state": "open", "per_page": 100})
+        if r.status_code != 200:
+            return {"ok": False, "error": f"http_{r.status_code}"}
+        prs = []
+        for p in (r.json() or []):
+            title = p.get("title") or ""
+            ref = ((p.get("head") or {}).get("ref")) or ""
+            if not title.startswith(SPEC_TITLE_PREFIX):
+                continue
+            if not ref.startswith(SPEC_BRANCH_PREFIX):
+                continue
+            prs.append({
+                "number": p.get("number"), "title": title, "head_ref": ref,
+                "body": p.get("body") or "", "draft": bool(p.get("draft")),
+                "created_at": p.get("created_at"),
+            })
+        return {"ok": True, "prs": prs}
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}:{str(e)[:100]}"}
+
+
+def _spec_pr_detail(pr_number: int) -> dict | None:
+    """{comments, review_comments, commits} — the human-activity signals the
+    stale close requires (the pulls LIST payload doesn't carry them). None on
+    any failure — fail-SAFE: unknown activity ⇒ NOT closed as stale.
+    Tests monkeypatch this."""
+    try:
+        from routes.brain_automerge import _gh_cfg, _gh_headers
+        import requests
+    except Exception:
+        return None
+    try:
+        cfg = _gh_cfg()
+        token = (cfg or {}).get("token")
+        if not token:
+            return None
+        repo = cfg.get("upstream") or "azmartone67/dchub-backend"
+        r = requests.get(f"https://api.github.com/repos/{repo}/pulls/{pr_number}",
+                         headers=_gh_headers(token), timeout=20)
+        if r.status_code != 200:
+            return None
+        j = r.json() or {}
+        return {"comments": int(j.get("comments") or 0),
+                "review_comments": int(j.get("review_comments") or 0),
+                "commits": int(j.get("commits") or 0)}
+    except Exception:
+        return None
+
+
+def _spec_label_stale(pr_number: int) -> bool:
+    """Best-effort 'stale-spec' label (create-if-missing, then attach) so a
+    stale close is never silent. Never raises; never blocks the close."""
+    try:
+        from routes.brain_automerge import _gh_cfg, _gh_headers
+        import requests
+    except Exception:
+        return False
+    try:
+        cfg = _gh_cfg()
+        token = (cfg or {}).get("token")
+        if not token:
+            return False
+        repo = cfg.get("upstream") or "azmartone67/dchub-backend"
+        h = _gh_headers(token)
+        try:  # 422 = already exists — fine.
+            requests.post(f"https://api.github.com/repos/{repo}/labels",
+                          headers=h, timeout=20,
+                          json={"name": "stale-spec", "color": "ededed",
+                                "description": ("spec PR aged out with no "
+                                                "human activity")})
+        except Exception:
+            pass
+        r = requests.post(
+            f"https://api.github.com/repos/{repo}/issues/{pr_number}/labels",
+            headers=h, timeout=20, json={"labels": ["stale-spec"]})
+        return r.status_code in (200, 201)
+    except Exception:
+        return False
+
+
+def spec_janitor_sweep(dry_run: bool = True) -> dict:
+    """One sweep over the OPEN [brain-spec] draft PRs (see section banner for
+    the three close conditions). Same contract as janitor_sweep: dry unless
+    BOTH dry_run=False AND BRAIN_PR_JANITOR_ENABLED=1; per-run cap; never
+    merges; never raises out."""
+    acting = (not dry_run) and _enabled()
+    max_age_d = _spec_max_age_days()
+    cap = _max_per_run()
+    now = time.time()
+
+    out = {
+        "dry_run": (not acting),
+        "enabled": _enabled(),
+        "max_age_days": max_age_d,
+        "cap": cap,
+        "scanned": 0,
+        "closed": [],
+        "would_close": [],
+        "skipped": [],
+    }
+
+    listing = list_spec_prs()
+    if not isinstance(listing, dict) or not listing.get("ok"):
+        out["error"] = "list_failed:" + str((listing or {}).get("error"))
+        return out
+
+    acted = 0
+    for pr in (listing.get("prs") or []):
+        out["scanned"] += 1
+        num = pr.get("number")
+
+        # A human-readied PR is NEVER touched — flipping off draft is the
+        # strongest "I took ownership" signal a spec PR can carry.
+        if not pr.get("draft"):
+            out["skipped"].append({"pr": num, "reason": "not_draft"})
+            continue
+
+        reason_kind = None
+        evidence = ""
+        label_stale = False
+        txt = f"{pr.get('title') or ''}\n{pr.get('body') or ''}"
+
+        # (a) source item graded.
+        m = _SPEC_TITLE_RE.match(pr.get("title") or "")
+        if m:
+            kind, item_id = m.group(1), int(m.group(2))
+            grade = _spec_source_grade(kind, item_id)
+            if grade:
+                reason_kind = "source_graded"
+                evidence = (
+                    f"Source {kind} #{item_id} has been graded "
+                    f"(`{_SPEC_SOURCES[kind]}.grade = '{grade}'`) — the human "
+                    f"decision is recorded on the item itself; this doc-only "
+                    f"spec PR is its leftover artifact. Policy unchanged: the "
+                    f"janitor only ever CLOSES scaffolds, never merges.")
+
+        # (b) underlying brain finding resolved.
+        if reason_kind is None:
+            fm = _SPEC_FINDING_RE.search(txt)
+            if fm:
+                resolved_at = _spec_finding_resolved(fm.group(1))
+                if resolved_at:
+                    reason_kind = "finding_resolved"
+                    evidence = (
+                        f"The underlying brain finding `{fm.group(1)}` is "
+                        f"status='resolved' (resolved_at {resolved_at}) — the "
+                        f"condition this spec addresses no longer reproduces. "
+                        f"Policy unchanged: the janitor only ever CLOSES "
+                        f"scaffolds, never merges.")
+
+        # (c) aged out with zero human activity → 'stale-spec' label + close.
+        if reason_kind is None:
+            age_s = _pr_age_seconds(pr, now)
+            if age_s is not None and age_s > max_age_d * 86400:
+                detail = _spec_pr_detail(num)
+                untouched = (detail is not None
+                             and not detail.get("comments")
+                             and not detail.get("review_comments")
+                             and (detail.get("commits") or 1) <= 1)
+                if untouched:
+                    reason_kind = "stale_spec"
+                    label_stale = True
+                    evidence = (
+                        f"No human activity in {round(age_s / 86400, 1)} days "
+                        f"(> {max_age_d}d limit: still draft, no comments, no "
+                        f"extra commits). Labeled 'stale-spec'. The brain "
+                        f"re-proposes anything still worth doing.")
+                else:
+                    out["skipped"].append(
+                        {"pr": num, "reason": "aged_but_active_or_unknown"})
+                    continue
+
+        if reason_kind is None:
+            out["skipped"].append({"pr": num, "reason": "no_close_condition"})
+            continue
+
+        candidate = {"pr": num, "title": (pr.get("title") or "")[:110],
+                     "close_reason": reason_kind, "evidence": evidence}
+
+        # DRY: record and move on (ZERO writes — no label, no comment, no close).
+        if not acting:
+            out["would_close"].append(candidate)
+            continue
+
+        if acted >= cap:
+            out["skipped"].append({"pr": num,
+                                   "reason": f"rate_cap_reached ({cap})"})
+            continue
+
+        if label_stale:
+            try:
+                _spec_label_stale(num)
+            except Exception:
+                pass
+        try:
+            closed = close_pr(num, reason=evidence, header=SPEC_CLOSE_HEADER)
+        except Exception as e:
+            closed = {"ok": False, "error": f"close_exception:{str(e)[:80]}"}
+        if not closed.get("ok"):
+            out["skipped"].append(
+                {"pr": num, "reason": "close_failed:" + str(closed.get("error"))})
+            continue
+        acted += 1
+        out["closed"].append(candidate)
+
+    return out
+
+
+# ════════════════════════════════════════════════════════════════════
 #  ENDPOINT (admin-gated; honors the OFF gate — defaults to dry-run)
 # ════════════════════════════════════════════════════════════════════
 def _make_blueprint():
@@ -501,7 +835,12 @@ def _make_blueprint():
         want_act = bool(body.get("act") or request.args.get("act") == "1")
         dry = not (want_act and _enabled())
         result = janitor_sweep(dry_run=dry)
-        return jsonify(ok=True, enabled=_enabled(), result=result), 200
+        try:
+            spec = spec_janitor_sweep(dry_run=dry)
+        except Exception as _se:
+            spec = {"error": f"{type(_se).__name__}:{str(_se)[:120]}"}
+        return jsonify(ok=True, enabled=_enabled(), result=result,
+                       spec=spec), 200
 
     @bp.get("/api/v1/brain/pr-janitor/status")
     def _status():
@@ -509,6 +848,10 @@ def _make_blueprint():
             return jsonify(ok=False, error="admin only"), 403
         # Status is always a DRY preview — never acts.
         preview = janitor_sweep(dry_run=True)
+        try:
+            spec_preview = spec_janitor_sweep(dry_run=True)
+        except Exception as _se:
+            spec_preview = {"error": f"{type(_se).__name__}:{str(_se)[:120]}"}
         return jsonify(
             ok=True,
             enabled=_enabled(),
@@ -516,8 +859,13 @@ def _make_blueprint():
             max_per_run=_max_per_run(),
             would_close_count=len(preview.get("would_close", [])),
             preview=preview,
+            spec_max_age_days=_spec_max_age_days(),
+            spec_would_close_count=len(spec_preview.get("would_close", [])
+                                       if isinstance(spec_preview, dict) else []),
+            spec_preview=spec_preview,
             note=("Dormant unless BRAIN_PR_JANITOR_ENABLED=1. Closes only "
-                  "stale RED brain/autofix-* draft PRs; quarantines the recipe; "
+                  "stale RED brain/autofix-* draft PRs (quarantines the recipe) "
+                  "and settled/stale [brain-spec] draft PRs (evidence comment); "
                   "NEVER merges."),
         ), 200
 

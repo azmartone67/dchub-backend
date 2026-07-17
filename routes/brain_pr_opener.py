@@ -387,6 +387,56 @@ def _open_pr(title: str, head: str, body: str) -> dict | None:
     return r.json()
 
 
+# ── Spec-PR condition fingerprint (Phase spec-lifecycle, 2026-07-17) ────
+# The exact-title dedup above can't catch the SAME condition arriving as two
+# different items: #1632 (agenda #100107) and #1634 (prop #100040) were the
+# same "[data_coverage] 311 DCPI markets…" condition filed twice in ONE
+# MINUTE, because the titles embed kind + item_id. Reading the source rows'
+# STAMPED fingerprints doesn't help either — the agenda pipeline hashes its
+# title while the enhancer hashes its signal, so those two rows carry
+# DIFFERENT stamps for the same condition. So the filer computes its OWN
+# fingerprint from its own inputs (heading/directive), stamps it into the PR
+# body as an HTML comment, and skips filing when an OPEN spec PR already
+# carries the same stamp. REUSES routes.brain_proposal_dedup (2026-07-16) —
+# never reimplement the fingerprint.
+_SPEC_TITLE_PREFIX = "[brain-spec]"
+_SPEC_FP_RE = re.compile(r"<!--\s*fingerprint:([0-9a-f]{8,64})\s*-->")
+
+
+def spec_condition_fingerprint(heading: str, directive: str = ""):
+    """Condition fingerprint for a spec PR, from the FILER's inputs. Number-
+    stripped (via brain_proposal_dedup.norm_condition inside), so live-count
+    drift hashes identically. None on any failure — dedup fails OPEN so a
+    hiccup can only ever cost a duplicate PR, never block filing."""
+    try:
+        from routes.brain_proposal_dedup import condition_fingerprint
+        return condition_fingerprint("brain-spec", heading or directive,
+                                     directive)
+    except Exception:
+        return None
+
+
+def open_spec_pr_with_fingerprint(fp):
+    """Number of an OPEN [brain-spec] PR whose body carries
+    <!-- fingerprint:fp -->, else None. One GitHub list call (the pulls list
+    payload includes each PR's body). Fail-open: None on any error."""
+    if not fp:
+        return None
+    try:
+        r = _gh("GET", f"/repos/{_GITHUB_REPO}/pulls?state=open&per_page=100")
+        if r.status_code != 200:
+            return None
+        for p in r.json():
+            if not (p.get("title") or "").startswith(_SPEC_TITLE_PREFIX):
+                continue
+            m = _SPEC_FP_RE.search(p.get("body") or "")
+            if m and m.group(1) == fp:
+                return p.get("number")
+    except Exception:
+        pass
+    return None
+
+
 def open_spec_pr(directive: str, heading: str = "", kind: str = "item",
                  item_id=0, label: str = "") -> dict:
     """r-brain-loop (2026-06-30): the actuator FALLBACK that turns an approval
@@ -417,13 +467,25 @@ def open_spec_pr(directive: str, heading: str = "", kind: str = "item",
             return {"ok": True, "acted": False, "note": "spec PR already open (dedup)"}
     except Exception:
         pass
+    # Phase spec-lifecycle (2026-07-17): condition-fingerprint dedup — the
+    # same condition arriving as a DIFFERENT item (agenda vs prop) must not
+    # file twice. Fail-open: fp=None / lookup error ⇒ file as before.
+    fp = spec_condition_fingerprint(heading, directive)
+    dup = open_spec_pr_with_fingerprint(fp)
+    if dup:
+        return {"ok": True, "acted": False, "dup_pr": dup, "fingerprint": fp,
+                "note": f"same-condition spec PR #{dup} already open "
+                        f"(fingerprint dedup)"}
     base = _get_default_branch_sha()
     if not base:
         return {"ok": False, "acted": False, "error": "no base sha"}
     branch = f"brain-spec/{kind}-{item_id}-{_slug}"[:90]
     path = f"docs/brain-proposals/{kind}-{item_id}-{_slug}.md"
     content = (
-        f"# Brain proposal — {(heading or directive[:80])}\n\n"
+        # First line so the stamp survives the body[:4000] truncation — the
+        # filer dedup + spec-PR janitor both grep open-PR bodies for it.
+        (f"<!-- fingerprint:{fp} -->\n" if fp else "")
+        + f"# Brain proposal — {(heading or directive[:80])}\n\n"
         f"> Auto-captured from an **approved** brain {kind} item (#{item_id}). The brain's\n"
         f"> recommendation couldn't be expressed as a single-file edit, so it's filed here\n"
         f"> as a spec for a human to implement (or close). **Draft PR — a human merges.**\n\n"

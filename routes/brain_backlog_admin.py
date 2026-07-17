@@ -464,11 +464,26 @@ def draft_prs_expire():
         days = max(1, min(120, int(request.args.get("days", 14))))
     except (TypeError, ValueError):
         days = 14
+    # Spec-PR lifecycle sweep (Phase spec-lifecycle, 2026-07-17): piggyback
+    # on this DAILY cron (the automerge tick that also hosts the janitor has
+    # not fired since 06-25) so settled [brain-spec] PRs — source graded /
+    # finding resolved / aged-out untouched — drain with an evidence comment
+    # instead of piling up (#1623–#1636). Honors BRAIN_PR_JANITOR_ENABLED
+    # (dry preview when off). Best-effort: never blocks the expiry result.
+    spec = None
+    try:
+        from routes.brain_pr_janitor import spec_janitor_sweep
+        spec = spec_janitor_sweep(dry_run=False)
+    except Exception as _se:
+        spec = {"error": f"{type(_se).__name__}:{str(_se)[:120]}"}
     try:
         from routes.brain_pr_opener import expire_stale_draft_prs
-        return jsonify(expire_stale_draft_prs(days=days)), 200
+        out = expire_stale_draft_prs(days=days)
+        out["spec_janitor"] = spec
+        return jsonify(out), 200
     except Exception as e:
-        return jsonify(ok=False, error=f"{type(e).__name__}: {str(e)[:120]}"), 200
+        return jsonify(ok=False, spec_janitor=spec,
+                       error=f"{type(e).__name__}: {str(e)[:120]}"), 200
 
 
 @brain_backlog_admin_bp.route("/api/v1/admin/brain/draft-prs/run",

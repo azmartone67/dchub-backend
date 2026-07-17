@@ -1044,10 +1044,21 @@ def _make_blueprint():
             _jan = janitor_sweep(dry_run=False)
         except Exception as _e:
             _jan = {"error": f"{type(_e).__name__}:{str(_e)[:120]}"}
+        # Spec-PR sweep (Phase spec-lifecycle, 2026-07-17): drain settled /
+        # stale [brain-spec] doc PRs on the same tick + same janitor flag —
+        # the filer had no drain and 9 piled up by 07-17 (#1623–#1636).
+        _spec_jan = None
+        try:
+            from routes.brain_pr_janitor import spec_janitor_sweep
+            _spec_jan = spec_janitor_sweep(dry_run=False)
+        except Exception as _e:
+            _spec_jan = {"error": f"{type(_e).__name__}:{str(_e)[:120]}"}
         if not _enabled():
             return jsonify(ok=True, enabled=False, disabled=True, janitor=_jan,
+                           spec_janitor=_spec_jan,
                            note="BRAIN_AUTOMERGE_ENABLED != 1 — dormant, no GitHub writes"), 200
-        return jsonify(ok=True, enabled=True, janitor=_jan, result=run_automerge()), 200
+        return jsonify(ok=True, enabled=True, janitor=_jan,
+                       spec_janitor=_spec_jan, result=run_automerge()), 200
 
     @bp.post("/api/v1/brain/automerge/canary")
     def _canary():
