@@ -479,9 +479,17 @@ def article_to_deal(article: Dict) -> Optional[Dict]:
     if deal_type == 'CapEx':
         return None
     
-    # Generate deterministic ID from key fields
+    # Generate deterministic ID from key fields.
+    # ★r-deals-dedup (2026-07-17): the id must NOT contain the ingest date. It used
+    # to be AUTO-<utcnow>-<hash>, so the same deal re-scraped on a later day got a
+    # NEW id and `ON CONFLICT (id) DO NOTHING` could never fire — one Google/Dallas
+    # deal accrued 46 rows (one per day), and the table ran ~2.9x hot on dupes.
+    # id_seed is already content-only (buyer:seller:value:article-published-date, NOT
+    # the ingest date), so hashing it alone yields a stable id that re-scrapes
+    # collapse onto. RIGHT(id,6) still equals the content hash, so the read-side
+    # dedup in canonical_stats._query_live keeps working across old+new id formats.
     id_seed = f"{buyer}:{seller}:{value}:{article.get('published', '')[:10]}"
-    deal_id = f"AUTO-{datetime.utcnow().strftime('%Y%m%d')}-{hashlib.md5(id_seed.encode()).hexdigest()[:6]}"
+    deal_id = f"AUTO-{hashlib.md5(id_seed.encode()).hexdigest()[:6]}"
     
     return {
         'id': deal_id,

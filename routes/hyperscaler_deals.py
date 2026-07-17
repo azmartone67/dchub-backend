@@ -152,6 +152,16 @@ def _fetch_deals(limit=20):
         full = (r.get("title") or "") + " " + (r.get("summary") or "")
         actors = _classify_actor(full)
         if not actors: continue
+        dollars = _extract_dollars(full)
+        capacity = _extract_mw(full)
+        # r-hd-dealgate (2026-07-17): this is a $1B+ DEAL tracker, but the keyword
+        # filter matched any headline naming a hyperscaler — so bare news like
+        # "OpenAI admits GPT-5.6 occasionally deletes files" surfaced as a "deal"
+        # with value_usd=null and capacity=null. A row with neither a $-figure nor
+        # a capacity is not a trackable deal; drop it. The query over-fetches
+        # (limit*3), so filtering still fills the page with real capex/deal rows.
+        if not dollars and not capacity:
+            continue
         pub = r.get("published_date")
         out.append({
             "id":         r.get("id"),
@@ -160,8 +170,8 @@ def _fetch_deals(limit=20):
             "url":        r.get("url"),
             "published":  pub.isoformat() if pub else None,
             "actors":     actors,
-            "value_usd":  _extract_dollars(full),
-            "capacity":   _extract_mw(full),
+            "value_usd":  dollars,
+            "capacity":   capacity,
             "summary":    (r.get("summary") or "")[:280],
         })
         if len(out) >= limit: break
@@ -183,7 +193,7 @@ def api_hyperscaler_deals():
     try:
         from routes.provenance import provenance_block
         _prov = provenance_block(
-            source="dc_news industry feed (40+ sources: Bloomberg, DCD, Reuters, Google News)",
+            source="news industry feed (40+ sources: Bloomberg, DCD, Reuters, Google News)",
             method=("keyword filter over published articles; $-figures + MW "
                     "regex-extracted, actors name-matched — verify against the "
                     "per-deal source url before citing figures"),
@@ -201,7 +211,8 @@ def api_hyperscaler_deals():
         "result_count": len(deals),
         "deals":       deals,
         "error":       err,
-        "methodology": ("Filters dc_news for 30+ hyperscaler/AI-capex keywords. "
+        "methodology": ("Filters the news feed for 30+ hyperscaler/AI-capex keywords, "
+                        "keeping only rows with a $-figure or capacity. "
                         "Extracts $-figures + MW via regex. Actors detected by name match."),
         "provenance":  _prov,
         "live_feed":   "https://api.dchub.cloud/api/v1/hyperscaler-deals",
@@ -258,7 +269,7 @@ $-figures and MW extracted automatically. Refreshed every 10 minutes.</p>
   <h2>How to use this</h2>
   <p><b>API:</b> <span class="api">GET https://api.dchub.cloud/api/v1/hyperscaler-deals?limit=20</span></p>
   <p><b>MCP tool:</b> <span class="api">hyperscaler_deals({"limit": 20})</span> on <a href="/mcp">/mcp</a></p>
-  <p>Underlying source: dc_news table (40+ industry feeds — Bloomberg, DCD, Reuters, Google News).
+  <p>Underlying source: news table (40+ industry feeds — Bloomberg, DCD, Reuters, Google News).
   Actor detection by name match; $/MW extracted via regex from title + summary.</p>
 </div>
 

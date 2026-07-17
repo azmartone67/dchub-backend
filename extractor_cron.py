@@ -190,6 +190,15 @@ def insert_capacity(conn, signals, announcement_id):
 
 def insert_deal(conn, signals, announcement_id):
     deal_id = "ext_" + hashlib.md5(announcement_id.encode()).hexdigest()[:20]
+    # r-deals-unit-gate (2026-07-17): `deals.value` is USD MILLIONS by convention
+    # (the curated deal_scraper + admin API both write millions). BOTH extraction
+    # paths that feed here — the regex path (deal_value_usd = v*1e9/v*1e6) and the
+    # Claude path (schema "deal_value_usd": raw USD) — produced RAW USD, so this
+    # writer was silently poisoning the column with a second unit convention: a $5B
+    # extraction landed as 5000000000 in a millions column and rendered as
+    # $5000000.0B downstream. Convert to millions at the single storage choke point.
+    _raw_usd = signals.get("deal_value_usd")
+    _value_m = (float(_raw_usd) / 1_000_000.0) if _raw_usd not in (None, "") else None
     sql = """INSERT INTO deals (id, buyer, type, value, market,
         source_announcement_id, extraction_confidence, extracted_via, extracted_at, created_at)
         VALUES (%s,%s,%s,%s,%s,%s,%s,%s,NOW(),NOW())
@@ -197,7 +206,7 @@ def insert_deal(conn, signals, announcement_id):
         RETURNING id"""
     with conn.cursor() as cur:
         cur.execute(sql, (deal_id, signals.get("operator"), signals.get("deal_type"),
-            signals.get("deal_value_usd"), signals.get("market"), announcement_id,
+            _value_m, signals.get("market"), announcement_id,
             float(signals.get("confidence", 0.0)), signals.get("source", "regex")))
         return cur.fetchone() is not None
 

@@ -18342,9 +18342,21 @@ def get_stats():
         # (live COUNT(DISTINCT market_slug) FROM market_power_scores, cached; 232 floor).
         try:
             from canonical_stats import get_canonical_stats as _gcs
-            _canon_markets = int(_gcs().get('markets', 311)) or 232
+            _canon = _gcs()
+            _canon_markets = int(_canon.get('markets', 311)) or 232
         except Exception:
+            _canon = {}
             _canon_markets = 232
+        # r-deals-count-fix (2026-07-17): the public 'deals' field was
+        # `stats['total_announcements']` — the ~11,500-row `announcements` (news)
+        # table, published as "M&A deals". That is a ~8x over-claim (a wrong
+        # variable: total_deals is computed correctly just above but never used
+        # here). Source the honest DISTINCT deduped deal count from the canon
+        # (same governance as markets); fall back to the raw deals COUNT(*).
+        try:
+            _canon_deals = int(_canon.get('deals', 0)) or int(stats.get('total_deals', 0))
+        except Exception:
+            _canon_deals = int(stats.get('total_deals', 0) or 0)
         result = {
             'success': True,
             'data': stats,
@@ -18353,7 +18365,7 @@ def get_stats():
             'build': '93',
             'facilities': stats.get('total_facilities', 0),
             'markets': _canon_markets,
-            'deals': stats.get('total_announcements', 0),
+            'deals': _canon_deals,
             'substations': stats.get('total_substations', 0),
             'fiber_routes': stats.get('total_fiber_routes', 0),
             'metro_dark_fiber': stats.get('total_metro_dark_fiber', 0),
