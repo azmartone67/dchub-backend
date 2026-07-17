@@ -44,7 +44,10 @@ def test_never_publishes():
 
 
 def test_registry_shape_and_budget():
-    assert set(_PLATFORMS) == {"openai", "mistral", "meta", "perplexity", "xai"}
+    # gemini added 2026-07-17: the "malformed key" blocker was a paste
+    # artifact, sanitized by routes._google_key.gemini_api_key.
+    assert set(_PLATFORMS) == {"openai", "mistral", "meta", "perplexity",
+                               "xai", "gemini"}
     assert MAX_MODEL_CALLS == 8
     for cfg in _PLATFORMS.values():
         assert "pick" in cfg or "fixed" in cfg

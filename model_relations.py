@@ -64,8 +64,18 @@ _PLATFORMS = {
     "xai":        {"base": "https://api.x.ai/v1", "llm_key_env": "XAI_API_KEY",
                    "partner_key_env": "MODELREL_KEY_XAI",
                    "pick": ["grok-4", "grok-3"], "avoid": ["mini", "fast", "image"]},
-    # gemini: GEMINI_API_KEY on Railway is malformed (known 07-10) — enable
-    # once a valid key lands; Gemini runs its own validation cycles meanwhile.
+    # gemini (enabled 2026-07-17): the "malformed" GEMINI_API_KEY was a paste
+    # artifact — the var name appended to a valid key. routes._google_key
+    # sanitizes it (verified working against the OpenAI-compat surface, which
+    # serves /models + /chat/completions with Bearer like every other lane).
+    # Lane stays fail-soft (status=no_partner_key) until MODELREL_KEY_GEMINI
+    # is set on Railway like the other five partner keys.
+    "gemini":     {"base": "https://generativelanguage.googleapis.com/v1beta/openai",
+                   "llm_key_env": "GEMINI_API_KEY", "resolve_key": True,
+                   "partner_key_env": "MODELREL_KEY_GEMINI",
+                   "pick": ["gemini-2.5-pro", "gemini-2.5", "gemini-2.0"],
+                   "avoid": ["flash", "lite", "embedding", "image", "tts",
+                             "audio", "live", "exp", "thinking"]},
 }
 
 _SYSTEM = (
@@ -173,7 +183,13 @@ def _run_platform(platform, cfg):
     """One neutral protocol run. Returns the row dict for model_relations_runs."""
     row = {"platform": platform, "model_id": None, "status": "error", "calls_made": 0,
            "http_5xx": 0, "verdict": None, "transcript": [], "notes": ""}
-    llm_key = os.environ.get(cfg["llm_key_env"], "").strip()
+    if cfg.get("resolve_key"):
+        # Sanitizing resolver (gemini): strips the known paste artifact and
+        # walks the GOOGLE_* fallback chain instead of trusting the raw var.
+        from routes._google_key import gemini_api_key
+        llm_key = gemini_api_key()
+    else:
+        llm_key = os.environ.get(cfg["llm_key_env"], "").strip()
     partner = os.environ.get(cfg["partner_key_env"], "").strip()
     if not llm_key:
         row.update(status="error", notes=f"missing {cfg['llm_key_env']}")

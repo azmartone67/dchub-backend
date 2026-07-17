@@ -399,9 +399,10 @@ except Exception:
 
 # Engine endpoints — real adapters will be wired when keys are added.
 def _engine_env_present() -> dict[str, bool]:
+    from routes._google_key import gemini_api_key
     return {
         "chatgpt":    bool(os.environ.get("OPENAI_API_KEY")),
-        "gemini":     bool(os.environ.get("GEMINI_API_KEY")),
+        "gemini":     bool(gemini_api_key()),
         "perplexity": bool(os.environ.get("PERPLEXITY_API_KEY")),
         "claude":     bool(os.environ.get("ANTHROPIC_API_KEY")),
         "grok":       bool(os.environ.get("XAI_API_KEY")),
@@ -1018,28 +1019,12 @@ def _ask_grok(prompt_text: str):
 
 
 def _ask_gemini(prompt_text: str):
-    try:
-        import requests as _req
-    except Exception:
-        return "", "requests_not_available"
-    api_key = os.environ.get("GEMINI_API_KEY", "").strip()
-    if not api_key:
-        return "", "no_key"
-    try:
-        r = _req.post(
-            f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={api_key}",
-            headers={"content-type": "application/json", "User-Agent": "dchub-brain/1.0"},
-            json={"contents": [{"parts": [{"text": prompt_text}]}]},
-            timeout=30)
-        if r.status_code != 200:
-            return "", f"http_{r.status_code}"
-        text = ""
-        for cand in (r.json().get("candidates") or []):
-            for part in ((cand.get("content") or {}).get("parts") or []):
-                text += " " + part.get("text", "")
-        return text, None
-    except Exception as e:
-        return "", f"exc:{str(e)[:60]}"
+    # Canonical helper: sanitizes the pasted-suffix GEMINI_API_KEY (the
+    # 2026-07-10 artifact that 400'd every probe) AND walks the model
+    # fallback chain (three separate model retirements/quota gates have
+    # flatlined this lane before). See routes/_google_key.py.
+    from routes._google_key import gemini_generate
+    return gemini_generate(prompt_text, timeout=30)
 
 
 def _run_engine_citation_pass(engine: str, ask_fn, source: str, key_env: str):

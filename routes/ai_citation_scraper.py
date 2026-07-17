@@ -333,28 +333,13 @@ def _probe_perplexity(question: str) -> tuple[str, str | None]:
 
 
 def _probe_gemini(question: str) -> tuple[str, str | None]:
-    key = os.environ.get("GEMINI_API_KEY", "").strip()
-    if not key:
-        return "", "no_key"
-    try:
-        import requests
-        r = requests.post(
-            f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={key}",
-            headers={"Content-Type": "application/json"},
-            json={
-                "contents": [{"parts": [{"text": question}]}],
-            },
-            timeout=30,
-        )
-        if r.status_code != 200:
-            return "", f"http_{r.status_code}"
-        data = r.json()
-        cands = data.get("candidates") or []
-        if not cands: return "", "no_candidates"
-        parts = ((cands[0].get("content") or {}).get("parts") or [])
-        return (parts[0].get("text") if parts else ""), None
-    except Exception as e:
-        return "", f"{type(e).__name__}"
+    # Canonical helper: sanitizes the pasted-suffix GEMINI_API_KEY (the
+    # 2026-07-10 artifact) and walks the model fallback chain — the
+    # gemini-1.5-flash hardcode here had been retired upstream (404) on
+    # top of the key drift, so this probe was doubly dead. See
+    # routes/_google_key.py.
+    from routes._google_key import gemini_generate
+    return gemini_generate(question, timeout=30)
 
 
 _PROVIDERS = [
