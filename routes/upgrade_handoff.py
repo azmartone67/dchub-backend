@@ -98,6 +98,17 @@ _VIEW_RL_PER_IP_HOUR = 60
 
 _BASE_URL = os.environ.get("DCHUB_PUBLIC_BASE_URL", "https://dchub.cloud").rstrip("/")
 
+# Edge-routing reality (verified live 2026-07-18): the Cloudflare edge worker
+# forwards /unlock/*, /claim/*, /redeem/* and bare /upgrade to the Railway
+# backend, but serves /upgrade/<anything-deeper> from the static frontend —
+# so /upgrade/k/<token> 404s at the edge without ever reaching Flask. The
+# handlers below are therefore mounted at BOTH /upgrade/k/… (canonical; goes
+# live the moment the edge worker allowlists it) AND /unlock/k/… (works
+# TODAY). Emitted URLs use the edge-safe prefix until the operator flips
+# DCHUB_UPGRADE_PATH_PREFIX to /upgrade/k after updating the worker.
+_PATH_PREFIX = (os.environ.get("DCHUB_UPGRADE_PATH_PREFIX", "/unlock/k")
+                .strip().rstrip("/") or "/unlock/k")
+
 # Key shapes we mint URLs for. JWTs (eyJ…) share a common prefix across ALL
 # tokens and rotate per-session — never build a "stable" URL for those.
 _KEY_RE = re.compile(r"^(dch_trial_|dch_live_|dchub_)[A-Za-z0-9_-]{8,}$")
@@ -135,9 +146,10 @@ def sign_key_token(api_key: str) -> str | None:
 
 def build_upgrade_url(api_key: str) -> str | None:
     """Public helper for main.py / mcp_high_intent_claim.py. Pure compute
-    (HMAC only, no DB, no I/O) — safe on the hot gated-response path."""
+    (HMAC only, no DB, no I/O) — safe on the hot gated-response path.
+    Uses the edge-safe path prefix (see _PATH_PREFIX note above)."""
     tok = sign_key_token(api_key)
-    return f"{_BASE_URL}/upgrade/k/{tok}" if tok else None
+    return f"{_BASE_URL}{_PATH_PREFIX}/{tok}" if tok else None
 
 
 def verify_key_token_against(token: str, api_key: str) -> bool:
@@ -454,7 +466,8 @@ def _fmt_tool(t: str) -> str:
     return (t or "").replace("_", " ").strip() or "premium data"
 
 
-def _render_page(api_key: str, stats: dict, token: str) -> str:
+def _render_page(api_key: str, stats: dict, token: str,
+                 base_path: str | None = None) -> str:
     calls = int(stats.get("calls_30d") or 0)
     days = int(stats.get("days_30d") or 0)
     tools = int(stats.get("tools_30d") or 0)
@@ -496,7 +509,9 @@ def _render_page(api_key: str, stats: dict, token: str) -> str:
         locked_html = ('<div class="locked"><strong>Still locked for your agent:</strong>'
                        f'<ul>{"".join(items)}</ul></div>')
 
-    base = f"{_BASE_URL}/upgrade/k/{token}"
+    # Keep the checkout links on WHICHEVER mount served this page (both
+    # /upgrade/k/… and /unlock/k/… are registered; only some pass the edge).
+    base = f"{_BASE_URL}{(base_path or _PATH_PREFIX + '/' + token).rstrip('/')}"
     return (_PAGE_HTML
             .replace("__HEADLINE__", _esc(headline))
             .replace("__SUBLINE__", _esc(subline))
@@ -511,9 +526,12 @@ def _render_page(api_key: str, stats: dict, token: str) -> str:
 # ── Routes ────────────────────────────────────────────────────────────
 
 @upgrade_handoff_bp.route("/upgrade/k/<token>", methods=["GET"])
+@upgrade_handoff_bp.route("/unlock/k/<token>", methods=["GET"])
 def upgrade_page(token: str):
     """The stable per-key human upgrade page. Signed token, no auth, no
-    expiry. Renders usage-so-far + what's locked + one-click checkout."""
+    expiry. Renders usage-so-far + what's locked + one-click checkout.
+    Dual-mounted: /unlock/k/… passes the Cloudflare edge today; /upgrade/k/…
+    is the canonical path once the edge worker allowlists it."""
     parts = _split_token(token)
     if not parts:
         return Response(_INVALID_HTML, status=404, mimetype="text/html")
@@ -521,12 +539,16 @@ def upgrade_page(token: str):
         return Response("Too many requests — try again shortly.", status=429,
                         mimetype="text/plain")
     prefix, sig = parts
+    try:
+        _base_path = request.path
+    except Exception:
+        _base_path = None
     c = _conn()
     if c is None:
         # DB down → still show the page with generic copy + working checkout
         # (the /go redirect only needs the token, not the DB).
         return Response(
-            _render_page(prefix + "x" * 8, {}, f"{prefix}~{sig}"),
+            _render_page(prefix + "x" * 8, {}, f"{prefix}~{sig}", _base_path),
             status=200, mimetype="text/html")
     try:
         api_key = _resolve_key(prefix, sig, c)
@@ -537,11 +559,12 @@ def upgrade_page(token: str):
         try: c.close()
         except Exception: pass
     _log_event("view", prefix)
-    return Response(_render_page(api_key, stats, f"{prefix}~{sig}"),
+    return Response(_render_page(api_key, stats, f"{prefix}~{sig}", _base_path),
                     status=200, mimetype="text/html")
 
 
 @upgrade_handoff_bp.route("/upgrade/k/<token>/go/<tier>", methods=["GET"])
+@upgrade_handoff_bp.route("/unlock/k/<token>/go/<tier>", methods=["GET"])
 def upgrade_go(token: str, tier: str):
     """Click-through: log the click, 302 to Stripe with the key-bound
     client_reference_id so payment auto-provisions THIS key:
