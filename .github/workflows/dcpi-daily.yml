@@ -27,16 +27,59 @@ jobs:
         # aborted long requests, returned success conclusion, and the
         # underlying DB update never happened.
         run: |
+          # r-dcpi-chunkfail (2026-07-17): the old step piped curl into
+          # `python3 -m json.tool || echo "::warning::…"`. That swallowed a dead
+          # chunk THREE ways: (1) curl -sS exits 0 on an HTTP 500, so a server
+          # error still "succeeded"; (2) a valid JSON error body parses fine, so
+          # `|| echo` never fired; (3) even when it did fire, `echo` exits 0, so
+          # the JOB STAYED GREEN. That is exactly how 41 markets sat frozen for
+          # 14 days with every run reporting success. Now a transport error, an
+          # HTTP>=400, a body-level error, or a zero-scored chunk fails the job
+          # RED, and a coverage backstop catches a whole silently-dead chunk.
+          set -uo pipefail
           if [ -z "${{ secrets.DCHUB_ADMIN_KEY }}" ]; then
             echo "::warning::DCHUB_ADMIN_KEY secret missing — skipping"
             exit 0
           fi
           BASE="https://dchub-backend-production.up.railway.app/api/v1/dcpi/recompute"
+          FAILED=0
+          TOTAL_SCORED=0
           for OFFSET in 0 100 200 300; do
             echo "─── Chunk offset=${OFFSET} limit=100 ──────────────────"
-            curl -sS -X POST --max-time 150 \
+            # -w appends the HTTP code on its own line: curl -sS does NOT fail on
+            # HTTP errors without --fail, so we read the status explicitly.
+            RESP=$(curl -sS -X POST --max-time 150 -w $'\n%{http_code}' \
               "${BASE}?offset=${OFFSET}&limit=100" \
-              -H "X-Admin-Key: ${{ secrets.DCHUB_ADMIN_KEY }}" \
-              | python3 -m json.tool || echo "::warning::chunk offset=${OFFSET} failed"
+              -H "X-Admin-Key: ${{ secrets.DCHUB_ADMIN_KEY }}") || {
+                echo "::error::chunk offset=${OFFSET}: curl transport error"
+                FAILED=1; sleep 2; continue; }
+            CODE=$(printf '%s' "$RESP" | tail -n1)
+            BODY=$(printf '%s' "$RESP" | sed '$d')
+            printf '%s\n' "$BODY" | python3 -m json.tool || printf '%s\n' "$BODY"
+            # Healthy only if HTTP<400 AND no body-level error AND scored>0.
+            # jq is preinstalled on ubuntu-latest.
+            SCORED=$(printf '%s' "$BODY" | jq -r \
+              'if (.error != null) then -1 else (.markets_scored // 0) end' \
+              2>/dev/null || echo -1)
+            if [ "${CODE:-0}" -ge 400 ] || [ "${SCORED:-0}" -lt 1 ]; then
+              echo "::error::chunk offset=${OFFSET} FAILED (http=${CODE}, scored=${SCORED})"
+              FAILED=1
+            else
+              TOTAL_SCORED=$((TOTAL_SCORED + SCORED))
+            fi
             sleep 2
           done
+          echo "─── Total markets scored across all chunks: ${TOTAL_SCORED} ───"
+          if [ "$FAILED" -ne 0 ]; then
+            echo "::error::One or more DCPI recompute chunks failed — job is RED so a silent freeze cannot recur"
+            exit 1
+          fi
+          # Coverage backstop. The live universe is ~316; a whole dead chunk
+          # drops ~100 (=> <=~218), and the 41-orphan freeze dropped to 277. A
+          # <280 floor catches BOTH while tolerating a few transient per-market
+          # blips on a healthy ~316 total.
+          if [ "$TOTAL_SCORED" -lt 280 ]; then
+            echo "::error::DCPI coverage regression: only ${TOTAL_SCORED} markets scored (<280) — a chunk likely died silently, or markets are orphaned again"
+            exit 1
+          fi
+          echo "✓ DCPI recompute healthy: ${TOTAL_SCORED} markets scored across 4 chunks"
