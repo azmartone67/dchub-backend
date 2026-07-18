@@ -16,6 +16,53 @@ from flask import Blueprint, jsonify
 engine_trends_bp = Blueprint("engine_trends", __name__)
 _ENSURED = False
 
+# Known score discontinuities — DELIBERATE rebaselines (metric-honesty fixes /
+# scoring-formula changes), NOT regressions. Surfaced on the trend so a legit
+# step-down doesn't read as the engine "cratering" (the owner has been alarmed by
+# an honest step three times now: 06-19, 07-16, …). A delta window that straddles
+# one of these is flagged (delta_Nd_rebaselined + baseline_note); the flag clears
+# automatically once the window ages past the date. APPEND future rebaselines here.
+_ANNOTATIONS = [
+    {
+        "engine": "leadership",
+        "at": "2026-07-16",
+        "kind": "rebaseline",
+        "label": "Metric-honesty rescore (07-16): retention now scored on the true "
+                 "mature cross-session return RATE — it was a rotating-IP artifact "
+                 "pinned at 100 'leading'. The step-down is the fix landing, not a "
+                 "regression. Its own code comment: 'the score dropping from 100 is the point.'",
+    },
+    {
+        "engine": "utilization",
+        "at": "2026-07-16",
+        "kind": "rebaseline",
+        "label": "Metric-honesty rescore (07-16): the incent track now scores the "
+                 "return RATE, not the returner COUNT (a count saturated the clamp at "
+                 "100, so the track was inert). The step-down is the fix landing, not a "
+                 "regression.",
+    },
+]
+
+
+def _annotations_for(engine: str) -> list:
+    return [a for a in _ANNOTATIONS if a.get("engine") == engine]
+
+
+def _rebaseline_note(engine: str, days: int, today: "datetime.date | None" = None):
+    """Return a rebaseline label if a known annotation for `engine` falls within the
+    last `days` days, so a delta window straddling it can be flagged as a deliberate
+    step (not a regression). None otherwise. Pure/date-only → unit-testable."""
+    today = today or datetime.datetime.now(datetime.timezone.utc).date()
+    cutoff = today - datetime.timedelta(days=days)
+    for a in _annotations_for(engine):
+        try:
+            ad = datetime.date.fromisoformat(a["at"])
+        except Exception:
+            continue
+        if cutoff <= ad <= today:
+            return a["label"]
+    return None
+
 
 def _conn():
     try:
@@ -105,13 +152,25 @@ def _trend(engine: str) -> dict:
         cnt = cur.fetchone()
         cur.close()
         c.commit()
-        return {
+        out = {
             "now": now,
             "delta_1d": round(now - d1, 1) if (now is not None and d1 is not None) else None,
             "delta_7d": round(now - d7, 1) if (now is not None and d7 is not None) else None,
             "points": int(cnt[0] or 0),
             "since": cnt[1].isoformat() if cnt and cnt[1] else None,
+            "annotations": _annotations_for(engine),
         }
+        # flag a delta window that straddles a known rebaseline so a deliberate
+        # metric-honesty step-down doesn't render as a live regression
+        note7 = _rebaseline_note(engine, 7)
+        note1 = _rebaseline_note(engine, 1)
+        if note7:
+            out["delta_7d_rebaselined"] = True
+            out["baseline_note"] = note7
+        if note1:
+            out["delta_1d_rebaselined"] = True
+            out["baseline_note"] = note1  # more recent window wins the shared note
+        return out
     except Exception:
         return {}
     finally:

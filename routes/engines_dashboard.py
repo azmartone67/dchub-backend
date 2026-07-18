@@ -69,12 +69,21 @@ function bar(name,score,status){return '<div class="row"><div class="rname">'+na
 function actLine(label,armable,fire){return '<div class="act"><span class="arm'+(armable?'':' no')+'">'+(armable?'⚡ ARMABLE':'·')+'</span><span>'+label+' → <code>'+fire+'</code></span></div>'}
 function arrow(x){return x>0?'▲':x<0?'▼':'▬'}
 function dcol(x){return x>0?'#4ade80':x<0?'#f87171':'#8B92A8'}
+function esc(s){return (''+(s||'')).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;');}
+function dchip(v,per,reb,note){
+  if(v==null)return '';
+  // a rebaselined window is a deliberate metric-honesty step, not a regression:
+  // render it muted (not red) with an inline, hover-explained marker.
+  var c=reb?'var(--dim)':dcol(v);
+  var mk=reb?' <span title="'+esc(note||'Rebaselined — a deliberate metric-honesty fix, not a regression.')+'" style="cursor:help;color:var(--dim);font-size:10px;font-weight:500">ⓘ rebaselined</span>':'';
+  return '<span style="color:'+c+'">'+arrow(v)+' '+(v>0?'+':'')+v+'<span style="color:var(--dim);font-size:10px;font-weight:500"> /'+per+'</span>'+mk+'</span>';
+}
 function fillDelta(id,t){
   var el=document.getElementById(id);if(!el)return;
   if(!t||(t.delta_1d==null&&t.delta_7d==null)){el.innerHTML='<span style="color:var(--dim);font-size:11px;font-weight:500">· building trend ('+((t&&t.points)||0)+'pt)</span>';return;}
   var p=[];
-  if(t.delta_1d!=null)p.push('<span style="color:'+dcol(t.delta_1d)+'">'+arrow(t.delta_1d)+' '+(t.delta_1d>0?'+':'')+t.delta_1d+'<span style="color:var(--dim);font-size:10px;font-weight:500"> /1d</span></span>');
-  if(t.delta_7d!=null)p.push('<span style="color:'+dcol(t.delta_7d)+'">'+arrow(t.delta_7d)+' '+(t.delta_7d>0?'+':'')+t.delta_7d+'<span style="color:var(--dim);font-size:10px;font-weight:500"> /7d</span></span>');
+  var c1=dchip(t.delta_1d,'1d',t.delta_1d_rebaselined,t.baseline_note);if(c1)p.push(c1);
+  var c7=dchip(t.delta_7d,'7d',t.delta_7d_rebaselined,t.baseline_note);if(c7)p.push(c7);
   el.innerHTML=p.join('<span style="color:var(--dim)"> · </span>');
 }
 function renderLead(d){
