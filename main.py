@@ -7771,6 +7771,17 @@ MCP_PLATFORM_MAP = {
     # entry covers any MCP client/UA/referer that self-identifies as webmcp.
     # Additive — nothing pre-existing carries this substring.
     'webmcp': 'WebMCP',
+    # 2026-07-18: the 2026 agent wave + the two big MCP gateways. Kimi et al.
+    # had NO mapping anywhere, so their clientInfo/UA fell through to
+    # 'unknown'/verbatim and never surfaced on the site. Smithery's gateway
+    # self-identifies as 'Smithery Connect'/'smitheryconnect'; Glama's real
+    # client sends 'glama' (its probes — glama-health, glama-mcp-inspector —
+    # carry noise markers and are screened before this map is consulted).
+    'kimi': 'Kimi', 'moonshot': 'Kimi',
+    'qwen': 'Qwen', 'tongyi': 'Qwen',
+    'zhipu': 'Z.ai', 'chatglm': 'Z.ai', 'z-ai': 'Z.ai',
+    'minimax': 'MiniMax',
+    'glama': 'Glama', 'smithery': 'Smithery',
 }
 
 # Session-to-platform cache: maps MCP session IDs to detected platforms
@@ -7814,8 +7825,15 @@ def _resolve_mcp_platform(client_name, ua_str=''):
     cn = (client_name or '').strip()
     cn_l = cn.lower()
     if cn_l and cn_l not in ('unknown', 'anonymous') and not _looks_like_uuid(cn):
+        # 2026-07-18: probe/crawler names must not brand-attribute via
+        # substring — 'glama-health' was one 'glama' map key away from
+        # counting Glama's health pinger as Glama usage (same for
+        # 'smithery-probe', 'claude-probe'). Names carrying a noise marker
+        # skip the map and pass to normalize_write_platform, whose verbatim
+        # output the read-time junk filters already screen.
+        _noisy = any(m in cn_l for m in _INTEGRATIONS_NOISE_MARKERS)
         for key_str, plat in MCP_PLATFORM_MAP.items():
-            if key_str in cn_l:
+            if not _noisy and key_str in cn_l:
                 return plat
         # r-junk-platform (2026-07-04): an unmatched name used to be echoed
         # back VERBATIM, so ad-hoc QA tags ('clawith', 1-char curl tags) became
@@ -17072,6 +17090,10 @@ _INTEGRATIONS_REAL_PLATFORMS = {
     'perplexity', 'cursor', 'copilot', 'windsurf', 'groq', 'deepseek', 'poe',
     'you.com', 'mistral', 'cohere', 'huggingface', 'meta ai', 'meta', 'codeium',
     'continue', 'cline', 'zed', 'dialtoneapp', 'fastmcp client',
+    # 2026-07-18: 2026 agent wave + the MCP gateways whose users reach us
+    # through their infrastructure (kept in sync with MCP_PLATFORM_MAP).
+    'kimi', 'moonshot', 'qwen', 'tongyi', 'zhipu', 'chatglm', 'z.ai',
+    'minimax', 'glama', 'smithery',
 }
 _INTEGRATIONS_NOISE_MARKERS = (
     'probe', 'prober', 'scanner', 'scraper', 'crawler', 'inspector', 'health',
@@ -17090,10 +17112,13 @@ def _classify_mcp_platform(name):
     n = (name or '').strip().lower()
     if not n or n == 'unknown':
         return 'noise'
-    if any(n == r or n.startswith(r) for r in _INTEGRATIONS_REAL_PLATFORMS):
-        return 'platform'
+    # 2026-07-18: noise markers win over brand prefixes — 'smithery-probe' /
+    # 'glama-health' start with a real-platform token but are pingers, not
+    # platform usage; prefix-first classified them 'platform'.
     if any(m in n for m in _INTEGRATIONS_NOISE_MARKERS):
         return 'noise'
+    if any(n == r or n.startswith(r) for r in _INTEGRATIONS_REAL_PLATFORMS):
+        return 'platform'
     return 'other'
 
 
@@ -17122,6 +17147,11 @@ _PLATFORM_LOGO_DOMAINS = {
     'router': 'openrouter.ai', 'continuum': 'continue.dev',
     'pulsemcp': 'pulsemcp.com', 'librechat': 'librechat.ai',
     'goose': 'block.github.io', 'roo': 'roocode.com', 'kilo': 'kilocode.ai',
+    # 2026-07-18: 2026 agent wave (kept in sync with MCP_PLATFORM_MAP).
+    'kimi': 'kimi.com', 'moonshot': 'moonshot.ai',
+    'qwen': 'qwen.ai', 'tongyi': 'qwen.ai',
+    'zhipu': 'z.ai', 'chatglm': 'z.ai',
+    'minimax': 'minimax.io',
 }
 
 

@@ -110,6 +110,15 @@ AI_PLATFORMS = {
     # if a client self-identifies in its UA; it exists so the /ai dashboard
     # has canonical name/color/company metadata for the bucket.
     "webmcp":      {"name": "WebMCP",       "color": "#f4b400", "company": "In-page agents (Chrome origin trial)", "agents": ["webmcp"]},
+    # 2026-07-18: the 2026 agent wave — none of these were classifiable, so
+    # their traffic fell to mcp_generic/direct and the /ai roster never showed
+    # them (reported: "I don't see new AI agents on the site, like Kimi").
+    # Bare 'z.ai' is deliberately NOT a marker — every '*z.ai' domain in a UA
+    # URL would substring-match it.
+    "kimi":    {"name": "Kimi",    "color": "#1e6fff", "company": "Moonshot AI", "agents": ["Kimi", "kimi", "Moonshot", "moonshot"]},
+    "qwen":    {"name": "Qwen",    "color": "#615ced", "company": "Alibaba",    "agents": ["Qwen", "qwen", "Tongyi", "tongyi"]},
+    "zai":     {"name": "Z.ai",    "color": "#5f6dff", "company": "Zhipu AI",   "agents": ["Zhipu", "zhipu", "ChatGLM", "chatglm", "glm-", "z-ai"]},
+    "minimax": {"name": "MiniMax", "color": "#e9455e", "company": "MiniMax",    "agents": ["MiniMax", "minimax"]},
 }
 
 # Endpoints that indicate AI platform activity
@@ -873,12 +882,19 @@ def get_cumulative_totals():
         # so the PUBLIC platform list isn't padded with probes/scanners pinged once.
         # Keeps anything genuinely active (requests_7d>0) or seen in the last 30 days.
         # Honest social-proof for the page journalists land on.
+        # 2026-07-18: ai_cumulative.last_seen is TEXT (schema drift), so the
+        # bare `last_seen > now() - interval` comparison threw "operator does
+        # not exist: text > timestamptz" on EVERY call — the except below
+        # swallowed it and the public /ai platform roster rendered EMPTY
+        # (total_platforms: 0) since r71 shipped. Guard-then-cast via CASE
+        # (CASE guarantees the regex check runs before the cast can throw).
         return _execute(
             "SELECT platform, total_requests, first_seen, last_seen, requests_7d, name, color, company "
             "FROM ai_cumulative "
             "WHERE total_requests > 0 "
             "AND platform NOT IN ('internal','mcp','mcp_generic') "
-            "AND (requests_7d > 0 OR last_seen > now() - interval '30 days') "
+            "AND (requests_7d > 0 OR CASE WHEN last_seen ~ '^\\d{4}-\\d{2}-\\d{2}' "
+            "THEN last_seen::timestamptz > now() - interval '30 days' ELSE false END) "
             "ORDER BY total_requests DESC",
             fetchall=True
         ) or []
@@ -1351,10 +1367,21 @@ def init_ai_tracking(app: Flask):
         mcp_methods = get_mcp_method_breakdown(7)
 
         # Build platform list (exclude direct/seo_bot)
+        # 2026-07-18: also drop probe/QA/internal rows ('v', 'zx', 'gate-test',
+        # 'dchub-*') via the canonical junk predicate — with the last_seen
+        # date filter working again, recently-active dev tags would otherwise
+        # resurface on the public roster. Lazy import (main imports us first);
+        # fail-open to the static excludes.
+        try:
+            from main import _is_junk_platform as _junk
+        except Exception:
+            _junk = lambda k: False
         platforms = []
         for row in cumulative:
             p = row.get("platform", "")
             if p in ("direct", "seo_bot", "media_crawler", "unknown_ai"):
+                continue
+            if _junk(p):
                 continue
             platforms.append({
                 "platform": p,
