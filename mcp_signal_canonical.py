@@ -190,7 +190,7 @@ def mark_signals_converted(*, email=None, stripe_customer_id=None,
                     cur.execute("""SELECT LOWER(u.email) FROM api_keys ak
                                      JOIN users u ON ak.user_id = u.id
                                     WHERE ak.key_hash = %s
-                                      AND COALESCE(ak.is_active, 1) = 1 LIMIT 1""", (kh,))
+                                      AND ak.is_active IS TRUE LIMIT 1""", (kh,))
                     r = cur.fetchone()
                     if r and r[0] and r[0] != e:
                         cur.execute("""UPDATE mcp_upgrade_signals
