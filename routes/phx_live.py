@@ -25,6 +25,12 @@ Edge note: "/phx" must be in dchub-frontend/_routes.json's include list so
 Cloudflare Pages forwards it to Railway (added in the same commit as this
 file — without it the edge 404s before the backend is ever consulted).
 
+UTM A/B tracking (2026-07-18): Meta AI runs a live phx-a/b/c campaign split
+(50/25/25, utm_source=meta-ai) against this URL. Tagged hits are counted in
+the phx_utm_hits table (fail-soft; utm-tagged responses are no-store so the
+edge can't absorb hits) and read back via GET /api/v1/phx/ab-stats (also
+/phx/ab-stats) with X-Admin-Key — use the Railway-direct domain for reads.
+
 Registration (fail-safe, in main.py near the radar registration):
     from routes.phx_live import phx_bp
     app.register_blueprint(phx_bp)
@@ -34,9 +40,12 @@ from __future__ import annotations
 import datetime as dt
 import html as _html
 import logging
+import os
 import time
 
-from flask import Blueprint
+from flask import Blueprint, jsonify, request
+
+from routes._swallowed_writes import note_swallowed_write
 
 phx_bp = Blueprint("phx_live", __name__)
 log = logging.getLogger("phx_live")
@@ -306,9 +315,154 @@ def _render(d: dict) -> str:
     return page
 
 
+# ---------------------------------------------------------------------------
+# UTM variant tracking — Meta AI is running a live phx-a/b/c A/B (50/25/25)
+# against this URL (utm_source=meta-ai). Count every tagged hit so the split
+# can be read in a week. Same table idiom as routes/redeem_tracking.py; every
+# failure is swallowed (page must always render) but visibly, via
+# routes/_swallowed_writes.note_swallowed_write.
+# ---------------------------------------------------------------------------
+
+_UTM_MIGRATION_SQL = """
+CREATE TABLE IF NOT EXISTS phx_utm_hits (
+    id            BIGSERIAL PRIMARY KEY,
+    hit_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    utm_source    TEXT,
+    utm_campaign  TEXT,
+    utm_medium    TEXT,
+    user_agent    TEXT,
+    referer       TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_phx_utm_hits_campaign_at
+    ON phx_utm_hits (utm_campaign, hit_at DESC);
+"""
+
+
+def _utm_conn():
+    import psycopg2
+    dsn = os.environ.get("DATABASE_URL") or os.environ.get("NEON_DATABASE_URL") or ""
+    return psycopg2.connect(dsn, connect_timeout=3)
+
+
+def _ensure_utm_table() -> None:
+    if getattr(_ensure_utm_table, "_done", False):
+        return
+    conn = _utm_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(_UTM_MIGRATION_SQL)
+        conn.commit()
+    finally:
+        conn.close()
+    _ensure_utm_table._done = True
+
+
+def _clip(v, n: int):
+    v = (v or "").strip()
+    return v[:n] if v else None
+
+
+def _record_utm_hit() -> None:
+    """Insert one row for a utm-tagged /phx hit. Never raises."""
+    try:
+        source = _clip(request.args.get("utm_source"), 100)
+        campaign = _clip(request.args.get("utm_campaign"), 100)
+        if not (source or campaign):
+            return
+        _ensure_utm_table()
+        conn = _utm_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO phx_utm_hits
+                        (utm_source, utm_campaign, utm_medium, user_agent, referer)
+                    VALUES (%s, %s, %s, %s, %s)
+                    """,
+                    (source, campaign,
+                     _clip(request.args.get("utm_medium"), 100),
+                     _clip(request.headers.get("User-Agent"), 300),
+                     _clip(request.headers.get("Referer"), 300)),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        note_swallowed_write("phx_utm_hits", where="phx_live._record_utm_hit")
+
+
+def _admin_ok() -> bool:
+    expected = os.environ.get("DCHUB_ADMIN_KEY") or os.environ.get("DCHUB_INTERNAL_KEY")
+    got = (request.headers.get("X-Admin-Key") or request.headers.get("X-Internal-Key")
+           or request.args.get("admin_key") or "")
+    return bool(expected) and got == expected
+
+
+@phx_bp.route("/api/v1/phx/ab-stats", strict_slashes=False, methods=["GET"])
+@phx_bp.route("/phx/ab-stats", strict_slashes=False, methods=["GET"])
+def phx_ab_stats():
+    """Admin read of the /phx UTM A/B counts (expected split 50/25/25)."""
+    if not _admin_ok():
+        return jsonify({"error": "admin key required"}), 403
+    try:
+        _ensure_utm_table()
+        conn = _utm_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT COALESCE(utm_source,'(none)'),
+                           COALESCE(utm_campaign,'(none)'),
+                           COUNT(*), MIN(hit_at), MAX(hit_at)
+                    FROM phx_utm_hits
+                    GROUP BY 1, 2
+                    ORDER BY 3 DESC
+                    """
+                )
+                variants = [
+                    {"utm_source": s, "utm_campaign": c, "hits": n,
+                     "first_hit": (f.isoformat() if f else None),
+                     "last_hit": (l.isoformat() if l else None)}
+                    for (s, c, n, f, l) in cur.fetchall()
+                ]
+                cur.execute(
+                    """
+                    SELECT hit_at::date, COALESCE(utm_campaign,'(none)'), COUNT(*)
+                    FROM phx_utm_hits
+                    WHERE hit_at >= NOW() - INTERVAL '14 days'
+                    GROUP BY 1, 2
+                    ORDER BY 1 DESC, 3 DESC
+                    """
+                )
+                daily = [
+                    {"date": d.isoformat(), "utm_campaign": c, "hits": n}
+                    for (d, c, n) in cur.fetchall()
+                ]
+        finally:
+            conn.close()
+        total = sum(v["hits"] for v in variants)
+        for v in variants:
+            v["share_pct"] = round(100.0 * v["hits"] / total, 1) if total else 0.0
+        return jsonify({
+            "total_tagged_hits": total,
+            "variants": variants,
+            "daily_last_14d": daily,
+            "expected_split": {"phx-a": 50, "phx-b": 25, "phx-c": 25},
+        })
+    except Exception as e:
+        log.warning("[phx] ab-stats read failed: %s: %s", type(e).__name__, e)
+        return jsonify({"error": "stats read failed"}), 500
+
+
 @phx_bp.route("/phx", strict_slashes=False, methods=["GET"])
 def phx_live():
+    tagged = bool(request.args.get("utm_source") or request.args.get("utm_campaign"))
+    if tagged:
+        _record_utm_hit()
     return _render(_get_data()), 200, {
         "Content-Type": "text/html; charset=utf-8",
-        "Cache-Control": "public, max-age=300, s-maxage=900",
+        # Tagged hits must reach the backend to be counted — never let the
+        # edge cache a utm-tagged URL variant.
+        "Cache-Control": ("no-store" if tagged
+                          else "public, max-age=300, s-maxage=900"),
     }
