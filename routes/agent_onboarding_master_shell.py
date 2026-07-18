@@ -248,6 +248,18 @@ PLATFORMS: list[dict] = [
         "owner_gated": False, "effort": "low (verify)",
     },
     {
+        # 2026-07-17: added at user request — Moonshot API key shared;
+        # model_relations "moonshot" eval lane shipped the same day.
+        "key": "moonshot", "name": "Moonshot / Kimi", "reach_weight": 0.5,
+        "paths": ["mcp"], "reach_token": "kimi", "reach_aliases": ["moonshot", "moonshotai"],
+        "bots": [],
+        "required_auth": "bearer", "required_transport": "streamable",
+        "directory": "(no public connector directory yet)", "directory_listed": None,
+        "connect_path": "self_serve", "recipe_published": False,
+        "next_action": "Set MOONSHOT_API_KEY on Railway → model-relations lane goes live. Verify Kimi K2 tool-calls /mcp (OpenAI-compatible, Bearer), then publish an /integrations/kimi recipe; K2's agentic long-context push makes it a natural MCP consumer.",
+        "owner_gated": False, "effort": "low (key + verify + doc)",
+    },
+    {
         "key": "bedrock", "name": "Amazon Bedrock AgentCore", "reach_weight": 0.3,
         "paths": ["mcp"], "reach_token": "bedrock",
         "bots": [],

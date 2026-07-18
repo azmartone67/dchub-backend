@@ -143,6 +143,12 @@ TUNED_PLATFORMS = [
      "Mistral Le Chat / Agents API · connector tools surface with minimal "
      "chrome; one compact sentence with explicit data scope wins tool "
      "selection."),
+    # 2026-07-17: Moonshot/Kimi added (user-requested — partner key shared;
+    # model-relations lane live the same day).
+    ("kimi",       ["kimi", "moonshot", "kimi-k2", "moonshotai"],
+     "Moonshot Kimi · OpenAI-compatible tool calling with long-context "
+     "agentic use; literal spec-style descriptions with explicit counts "
+     "and units — Kimi K2 selects tools on concrete capability claims."),
 ]
 
 # Back-compat alias — the seed shipped 2026-06-07 as literally the top-5;

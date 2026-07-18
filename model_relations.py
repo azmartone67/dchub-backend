@@ -76,6 +76,16 @@ _PLATFORMS = {
                    "pick": ["gemini-2.5-pro", "gemini-2.5", "gemini-2.0"],
                    "avoid": ["flash", "lite", "embedding", "image", "tts",
                              "audio", "live", "exp", "thinking"]},
+    # moonshot (2026-07-17, user-requested): Kimi via the international
+    # OpenAI-compatible surface (api.moonshot.ai — NOT the .cn domain).
+    # /models + /chat/completions with Bearer, same shape as every lane.
+    # Needs MOONSHOT_API_KEY on Railway (user holds the key).
+    "moonshot":   {"base": "https://api.moonshot.ai/v1",
+                   "llm_key_env": "MOONSHOT_API_KEY",
+                   "partner_key_env": "MODELREL_KEY_MOONSHOT",
+                   "pick": ["kimi-k2", "kimi-latest", "moonshot-v1-auto",
+                            "moonshot-v1"],
+                   "avoid": ["vision", "audio", "8k"]},
 }
 
 _SYSTEM = (
