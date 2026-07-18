@@ -17,6 +17,7 @@ Dependencies injected via init_deals_routes():
 """
 
 import os
+import json
 import time
 import threading
 import logging
@@ -93,6 +94,29 @@ def init_deals_routes(require_plan, protect_data, get_db, pg_connection, get_ai_
     _pg_connection = pg_connection
     _get_ai_wars_key_info = get_ai_wars_key_info
     _real_require_plan_ref = real_require_plan
+
+
+def _release_db(conn):
+    """issue #1649 (brain-l15): release a checked-out DB conn on ALL paths.
+
+    Every _get_db() checkout in this file MUST be paired with a
+    `finally: _release_db(conn)` — the pre-fix code only closed on the
+    success path, so any exception mid-query leaked a pooled Neon
+    connection (one site runs in the daemon SWR-refresh thread), and the
+    pool exhausted until Railway went dark. Safe for both the pool
+    wrapper (close() is idempotent, routes through return_pg_connection)
+    and raw psycopg2 fallback conns (explicit rollback first so aborted
+    transactions never linger)."""
+    if conn is None:
+        return
+    try:
+        conn.rollback()
+    except Exception:
+        pass
+    try:
+        conn.close()
+    except Exception:
+        pass
 
 
 def _lazy_protect_data(f):
@@ -910,6 +934,7 @@ def get_pipeline():
     pipeline = PIPELINE_DATA.copy()
     data_source = 'fallback_seed'
 
+    conn = None
     try:
         conn = _get_db()
         c = conn.cursor()
@@ -946,11 +971,6 @@ def get_pipeline():
                 'preleased': False,
                 'type': 'wholesale'
             })
-        try:
-            conn.rollback()
-        except Exception:
-            pass
-        conn.close()
         if db_pipeline:
             pipeline = db_pipeline
             data_source = 'live'
@@ -959,6 +979,8 @@ def get_pipeline():
                            "serving labelled seed fallback")
     except Exception as e:
         logger.debug(f"capacity_pipeline query failed — seed fallback: {e}")
+    finally:
+        _release_db(conn)  # issue #1649: release on ALL paths, not just success
     
     # Apply filters
     if status_filter and status_filter != 'all':
@@ -1304,6 +1326,7 @@ def get_markets():
     if region and region != 'All':
         region = REGION_ALIASES.get(region.strip(), region.strip())
         markets = [m for m in markets if m['region'] == region]
+    conn = None
     try:
         conn = _get_db()
         c = conn.cursor()
@@ -1314,13 +1337,10 @@ def get_markets():
             live_count = c.fetchone()[0]
             if live_count > 0:
                 m['facilities_live'] = live_count
-        try:
-            conn.rollback()
-        except Exception:
-            pass
-        conn.close()
     except:
         pass
+    finally:
+        _release_db(conn)  # issue #1649: release on ALL paths, not just success
     # Phase GG (2026-05-14): the seed metros carry a live `facilities_live`
     # overlay from discovered_facilities, but the rest of each row is
     # still seed — labelled honestly. Phase 4: real market aggregation.
@@ -1378,6 +1398,7 @@ def _compute_public_pipeline():
 
     db_projects = []
     data_source = 'fallback_seed'
+    conn = None
     try:
         conn = _get_db()
         c = conn.cursor()
@@ -1418,13 +1439,12 @@ def _compute_public_pipeline():
                 'type': 'wholesale',
                 'preleased': False,
             })
-        try:
-            conn.rollback()
-        except Exception:
-            pass
-        conn.close()
     except Exception as e:
         logger.debug(f"Pipeline facilities query failed — seed fallback: {e}")
+    finally:
+        # issue #1649: this runs in the daemon SWR-refresh thread — a leak
+        # here bled the pool invisibly on every failed background refresh.
+        _release_db(conn)
 
     if db_projects:
         projects = db_projects
@@ -1553,6 +1573,7 @@ def get_pipeline_summary():
 
     db_mw = db_pc = db_con = db_ann = 0
     seen_keys = set()
+    conn = None
     try:
         conn = _get_db()
         c = conn.cursor()
@@ -1574,14 +1595,12 @@ def get_pipeline_summary():
                 db_con += 1
             else:
                 db_ann += 1
-        try:
-            conn.rollback()
-        except Exception:
-            pass
-        conn.close()
     except Exception as e:
         logger.debug(f"Pipeline summary capacity_pipeline query: {e}")
+    finally:
+        _release_db(conn)  # issue #1649: release on ALL paths, not just success
 
+    conn2 = None
     try:
         conn2 = _get_db()
         c2 = conn2.cursor()
@@ -1608,9 +1627,10 @@ def get_pipeline_summary():
                 db_con += 1
             else:
                 db_ann += 1
-        conn2.close()
     except Exception as e:
         logger.debug(f"Pipeline summary facilities query: {e}")
+    finally:
+        _release_db(conn2)  # issue #1649: release on ALL paths, not just success
 
     if db_pc > 0:
         total_mw, project_count, construction, announced = db_mw, db_pc, db_con, db_ann
@@ -1843,6 +1863,7 @@ def get_v1_news():
 @deals_bp.route('/api/v1/announcements', methods=['GET'])
 def get_announcements():
     """Get pipeline facilities - under construction, planning, announced, or approved"""
+    conn = None
     try:
         conn = _get_db()
         c = conn.cursor()
@@ -1895,7 +1916,6 @@ def get_announcements():
             del item['raw_data']
             announcements.append(item)
 
-        conn.close()
         return jsonify({
             'success': True,
             'data': announcements,
@@ -1908,6 +1928,8 @@ def get_announcements():
             'data': [],
             'count': 0
         })
+    finally:
+        _release_db(conn)  # issue #1649: release on ALL paths, not just success
 
 
 @deals_bp.route('/api/v1/gas-pipelines-test', methods=['GET'])
@@ -1923,6 +1945,7 @@ def get_gas_pipelines_test():
         radius = int(float(radius)) if radius else 50
     except:
         lat = lng = None
+    conn = None
     try:
         conn = psycopg2.connect(os.environ['DATABASE_URL'])
         c = conn.cursor()
@@ -1940,7 +1963,8 @@ def get_gas_pipelines_test():
         db_info = c2.fetchone()
         c2.execute("SELECT count(*) FROM gas_pipelines WHERE lat IS NOT NULL")
         has_lat = c2.fetchone()[0]
-        conn.close()
         return jsonify({'count': len(rows), 'db': db_info[0], 'total_rows': db_info[1], 'rows_with_lat': has_lat, 'rows': [{'id':r[0],'name':r[1],'lat':float(r[3]),'lng':float(r[4]),'state':r[5]} for r in rows]})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+    finally:
+        _release_db(conn)  # issue #1649: direct psycopg2 conn — close on ALL paths
