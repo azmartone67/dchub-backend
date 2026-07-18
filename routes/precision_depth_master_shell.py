@@ -427,12 +427,11 @@ _LOADER_LANES = {
     "transmission_proximity": (
         "transmission_lines",
         "precision_transmission_line_proximity",
-        "SHIPPED state-level: GET /api/v1/grid/transmission-lines?state= (line count, "
-        "345kV+/500kV+ counts, avg kV, line-miles, top operators) off the 94k transmission_lines "
-        "table. UPGRADE: that table has NO lat/lng (geometry lives in infrastructure_layers.coordinates "
-        "JSONB) — for true point-level distance-to-nearest-line, parse those LINESTRINGs into a "
-        "coords/segment layer. Point-level SUBSTATION proximity is already served by depth's "
-        "/api/v1/grid/hosting-capacity."),
+        "SHIPPED point-level: GET /api/v1/grid/transmission-proximity?lat=&lon= — nearest HV lines "
+        "(voltage/operator/endpoints/distance). transmission_lines has NO geometry AND state is NULL "
+        "for all 94k rows in prod, so each line is geolocated via its from_sub substation "
+        "(~76% match substations.name, which has coords; voltage_kv populated on 80k). UPGRADE: parse "
+        "infrastructure_layers.coordinates for the ~24% unmatched + true line paths."),
     "gas_pipeline_proximity": (
         "gas_pipelines",
         "precision_gas_pipeline_proximity",
@@ -443,10 +442,11 @@ _LOADER_LANES = {
     "peering_density": (
         "peeringdb_ix",
         "precision_peering_density_live",
-        "SHIPPED: GET /api/v1/fiber/peering?lat=&lon=|market= — IX count + total participant "
-        "(net_count) density + top exchanges within radius, off the 1.3k peeringdb_ix table "
-        "(bbox+haversine). Turns the static analyze_site IX score into a live participant-density read. "
-        "UPGRADE: refresh peeringdb_ix from the free PeeringDB API on a cron; add Equinix/Megaport fabrics."),
+        "SHIPPED metro-level: GET /api/v1/grid/peering?city= (public namespace — /api/v1/fiber is "
+        "paywalled behind the L&P map). IX count + total participants + top exchanges by metro, off "
+        "the 1.3k peeringdb_ix table. peeringdb coords are 100% NULL in prod (both peeringdb_ix and "
+        "peeringdb_ix_facilities) so this is city/ILIKE-scoped, not lat/lon. UPGRADE: backfill IX "
+        "coordinates from the free PeeringDB API for true point-radius density + Equinix/Megaport fabrics."),
     "cloud_onramp": (
         "cloud_onramps",
         "precision_cloud_onramp_proximity",
@@ -876,32 +876,89 @@ def gas_pipeline_proximity():
                    note="Nearest active gas pipelines (HIFLD/EIA). DC Hub (dchub.cloud), CC-BY-4.0."), 200
 
 
-@precision_depth_master_shell_bp.route("/api/v1/fiber/peering", methods=["GET"])
-def fiber_peering():
-    """Public: internet-exchange (IX) density near a point/market — participant (net_count)
-    density + top exchanges. ?lat=&lon=[&radius_km=]  OR  ?market=<slug>. PeeringDB layer."""
+@precision_depth_master_shell_bp.route("/api/v1/grid/peering", methods=["GET"])
+def grid_peering():
+    """Public: internet-exchange (IX) depth for a metro — IX count + total peering
+    participants + top exchanges. ?city=<name>[&country=<cc>]. NOTE peeringdb carries
+    city + participant counts but its coordinates are unpopulated, so this is
+    metro/city-scoped (ILIKE), not lat/lon proximity. Public namespace (/api/v1/fiber
+    is paywalled behind the Land & Power map)."""
+    city = (request.args.get("city") or request.args.get("market") or "").strip()
+    country = (request.args.get("country") or "").strip().upper()
+    if not city and not country:
+        return jsonify(available=False, reason="need ?city=<metro> (optional &country=<cc>)"), 200
+    c = _conn()
+    if c is None:
+        return jsonify(available=False, reason="db_unavailable"), 200
+    try:
+        with c.cursor() as cur:
+            q = "SELECT name, city, country, participants FROM peeringdb_ix WHERE 1=1"
+            args = []
+            if city:
+                q += " AND city ILIKE %s"; args.append("%" + city + "%")
+            if country:
+                q += " AND UPPER(country) = %s"; args.append(country)
+            q += " ORDER BY participants DESC NULLS LAST LIMIT 200"
+            cur.execute(q, tuple(args))
+            rows = cur.fetchall()
+    except Exception as e:
+        return jsonify(available=False, error=str(e)[:160]), 200
+    finally:
+        try: c.close()
+        except Exception: pass
+    ixes = [{"ix": n, "city": ct, "country": co, "participants": _num(p)} for n, ct, co, p in rows]
+    if not ixes:
+        return jsonify(available=True, ix_count=0, total_participants=0,
+                       query={"city": city, "country": country}, verdict="no_ix",
+                       note="No matching internet exchange (PeeringDB). DC Hub (dchub.cloud)."), 200
+    total = int(sum((x["participants"] or 0) for x in ixes))
+    score = min(100, int(min(60, len(ixes) * 10) + min(40, total / 20.0)))
+    verdict = ("dense" if score >= 70 else "moderate" if score >= 40
+               else "sparse" if score >= 15 else "thin")
+    return jsonify(available=True, ix_count=len(ixes), total_participants=total,
+                   peering_score=score, verdict=verdict, top_ix=ixes[:10],
+                   query={"city": city, "country": country},
+                   note="Internet-exchange depth by metro (PeeringDB). DC Hub (dchub.cloud), CC-BY-4.0."), 200
+
+
+@precision_depth_master_shell_bp.route("/api/v1/grid/transmission-proximity", methods=["GET"])
+def grid_transmission_proximity():
+    """Public: nearest HV transmission LINES to a point — voltage, operator, endpoints,
+    distance. ?lat=&lon=[&radius_km=][&min_kv=]. transmission_lines has no geometry of its
+    own, so each line is geolocated via its from_sub substation (substations layer, which
+    HAS coords; ~76% of lines match). Complements depth's substation hosting-capacity with
+    LINE voltage + operator."""
     lat = _num(request.args.get("lat")); lon = _num(request.args.get("lon") or request.args.get("lng"))
-    market = request.args.get("market")
-    radius = _num(request.args.get("radius_km")) or 50.0
+    radius = _num(request.args.get("radius_km")) or 40.0
     radius = max(5.0, min(200.0, radius))
-    if (lat is None or lon is None) and market:
-        mlat, mlon = _market_latlng(market)
-        lat, lon = _num(mlat), _num(mlon)
+    min_kv = _num(request.args.get("min_kv")) or 0.0
     if lat is None or lon is None:
-        return jsonify(available=False, reason="need lat & lon or a known market slug"), 200
+        return jsonify(available=False, reason="need lat & lon"), 200
     la0, la1, lo0, lo1 = _bbox(lat, lon, radius)
     c = _conn()
     if c is None:
         return jsonify(available=False, reason="db_unavailable"), 200
     try:
         with c.cursor() as cur:
+            # 1) substations in the bbox → name→coords (bounded, indexed lat/lng)
             cur.execute("""
-                SELECT name, city, net_count, fac_count, latitude, longitude
-                  FROM peeringdb_ix
-                 WHERE latitude BETWEEN %s AND %s AND longitude BETWEEN %s AND %s
-                   AND latitude IS NOT NULL AND longitude IS NOT NULL
-                 LIMIT 4000
+                SELECT name, lat, lng FROM substations
+                 WHERE lat BETWEEN %s AND %s AND lng BETWEEN %s AND %s
+                   AND name IS NOT NULL AND name <> '' AND lat IS NOT NULL AND lng IS NOT NULL
+                 LIMIT 1500
             """, (la0, la1, lo0, lo1))
+            subs = {}
+            for nm, sla, slo in cur.fetchall():
+                subs.setdefault(nm, (_num(sla), _num(slo)))
+            if not subs:
+                return jsonify(available=True, line_count=0, nearest_km=None, verdict="no_line_nearby",
+                               note="No substation-anchored transmission line within radius. DC Hub (dchub.cloud)."), 200
+            # 2) lines anchored at those substations (single scan via from_sub = ANY)
+            cur.execute("""
+                SELECT name, operator, voltage_kv, from_sub, to_sub FROM transmission_lines
+                 WHERE from_sub = ANY(%s) AND COALESCE(voltage_kv, 0) >= %s
+                 LIMIT 8000
+            """, (list(subs.keys()), min_kv))
             rows = cur.fetchall()
     except Exception as e:
         return jsonify(available=False, error=str(e)[:160]), 200
@@ -909,67 +966,23 @@ def fiber_peering():
         try: c.close()
         except Exception: pass
     near = []
-    for name, city, net, fac, ila, ilo in rows:
-        if ila is None or ilo is None:
+    for name, op, kv, fsub, tsub in rows:
+        sla, slo = subs.get(fsub, (None, None))
+        if sla is None or slo is None:
             continue
-        d = _haversine_km(lat, lon, _num(ila), _num(ilo))
+        d = _haversine_km(lat, lon, sla, slo)
         if d > radius:
             continue
-        near.append({"ix": name, "city": city, "participants": _num(net),
-                     "facilities": _num(fac), "distance_km": round(d, 1)})
+        near.append({"line": name, "operator": op, "voltage_kv": _num(kv),
+                     "from_sub": fsub, "to_sub": tsub, "distance_km": round(d, 1)})
+    near.sort(key=lambda x: x["distance_km"])
     if not near:
-        return jsonify(available=True, ix_count=0, total_participants=0,
-                       verdict="no_ix_nearby", market=market), 200
-    total_net = int(sum((n["participants"] or 0) for n in near))
-    top = sorted(near, key=lambda x: -(x["participants"] or 0))[:8]
-    nearest_km = min(n["distance_km"] for n in near)
-    score = min(100, int(min(60, len(near) * 8) + min(40, total_net / 10.0)))
-    verdict = ("dense" if score >= 70 else "moderate" if score >= 40
-               else "sparse" if score >= 15 else "thin")
-    return jsonify(available=True, ix_count=len(near), total_participants=total_net,
-                   nearest_km=nearest_km, peering_score=score, verdict=verdict,
-                   top_ix=top, market=market,
-                   note="Internet exchanges within radius (PeeringDB). DC Hub (dchub.cloud), CC-BY-4.0."), 200
-
-
-@precision_depth_master_shell_bp.route("/api/v1/grid/transmission-lines", methods=["GET"])
-def grid_transmission_lines():
-    """Public: transmission-LINE inventory by state (line count, EHV counts, avg kV, line-miles,
-    top operators). ?state=<2-letter>. NOTE transmission_lines is attributes-only (no geometry);
-    for point-level proximity use /api/v1/grid/hosting-capacity (substation points)."""
-    state = (request.args.get("state") or "").upper().strip()
-    if not state:
-        return jsonify(available=False,
-                       reason="need ?state=<2-letter> (transmission_lines has no coords; "
-                              "use /api/v1/grid/hosting-capacity for point-level substation proximity)"), 200
-    c = _conn()
-    if c is None:
-        return jsonify(available=False, reason="db_unavailable"), 200
-    try:
-        with c.cursor() as cur:
-            cur.execute("""
-                SELECT COUNT(*),
-                       COUNT(*) FILTER (WHERE voltage_kv >= 345),
-                       COUNT(*) FILTER (WHERE voltage_kv >= 500),
-                       ROUND(AVG(NULLIF(voltage_kv, 0))::numeric, 0),
-                       ROUND(SUM(length_miles)::numeric, 0)
-                  FROM transmission_lines WHERE state = %s
-            """, (state,))
-            n, n345, n500, avgv, miles = cur.fetchone()
-            cur.execute("""
-                SELECT operator, COUNT(*) AS c FROM transmission_lines
-                 WHERE state = %s AND operator IS NOT NULL AND operator <> ''
-                 GROUP BY operator ORDER BY c DESC LIMIT 8
-            """, (state,))
-            ops = [{"operator": o, "lines": int(cc)} for o, cc in cur.fetchall()]
-    except Exception as e:
-        return jsonify(available=False, error=str(e)[:160]), 200
-    finally:
-        try: c.close()
-        except Exception: pass
-    return jsonify(available=bool(n), state=state, line_count=int(n or 0),
-                   ehv_345kv_plus=int(n345 or 0), ehv_500kv_plus=int(n500 or 0),
-                   avg_voltage_kv=_num(avgv), total_line_miles=_num(miles),
-                   top_operators=ops,
-                   note="Transmission-line inventory by state (HIFLD; attributes only, no geometry). "
-                        "Point-proximity: /api/v1/grid/hosting-capacity. DC Hub (dchub.cloud), CC-BY-4.0."), 200
+        return jsonify(available=True, line_count=0, nearest_km=None, verdict="no_line_nearby",
+                       note="No transmission line (via substation match) within radius. DC Hub (dchub.cloud)."), 200
+    ehv = [n for n in near if (n["voltage_kv"] or 0) >= 230]
+    maxkv = max((n["voltage_kv"] or 0) for n in near)
+    return jsonify(available=True, line_count=len(near), ehv_230kv_plus=len(ehv),
+                   max_voltage_kv=maxkv, nearest_km=near[0]["distance_km"], nearest=near[0],
+                   top=near[:8],
+                   note="Nearest HV transmission lines, geolocated via from_sub substation "
+                        "(HIFLD; ~76% coverage). DC Hub (dchub.cloud), CC-BY-4.0."), 200
