@@ -172,19 +172,40 @@ _SQL_MTTR_BY_DETECTOR = """
     LIMIT 10
 """
 
-_SQL_CHRONIC_LEADERBOARD = """
-    SELECT issue, url, detector,
-           EXTRACT(EPOCH FROM
-               (NOW() - COALESCE(episode_started_at, first_seen))) / 3600.0
-               AS hours_open,
-           COALESCE(episode_seen_count, 1) AS re_observations,
-           COALESCE(episode_count, 1)      AS episode_count
-    FROM brain_findings
-    WHERE status = 'open'
-      AND COALESCE(episode_started_at, first_seen) IS NOT NULL
-    ORDER BY (EXTRACT(EPOCH FROM
-               (NOW() - COALESCE(episode_started_at, first_seen))) / 3600.0)
-             * COALESCE(episode_seen_count, 1) DESC NULLS LAST
+# chronic_score = hours_open × re-observations PER DAY (r-episode-rate
+# 2026-07-18). The original hours_open × episode_seen_count degenerated
+# live: the 07-17 backfill stamped episode_started_at=first_seen (34d ago)
+# but every counter began at 1 that day, so all always-refiring findings
+# carried the identical count (86 = scans since the DDL) and the product
+# collapsed to age-ranking with a 4-way tie at the top. Counting reobs
+# over the window the counter ACTUALLY ran (episode start, floored at the
+# DDL date) yields a rate that separates a finding screaming every scan
+# from one seen twice a week — and stops double-counting elapsed time
+# (count ∝ rate × time made the old score ∝ hours²).
+_EPISODE_COUNTER_EPOCH = "2026-07-17"  # episode DDL ship date (commit 81360b0b)
+
+_SQL_CHRONIC_LEADERBOARD = f"""
+    WITH open_rows AS (
+        SELECT issue, url, detector,
+               EXTRACT(EPOCH FROM
+                   (NOW() - COALESCE(episode_started_at, first_seen))) / 3600.0
+                   AS hours_open,
+               COALESCE(episode_seen_count, 1) AS re_observations,
+               COALESCE(episode_count, 1)      AS episode_count,
+               GREATEST(EXTRACT(EPOCH FROM (NOW() -
+                   GREATEST(COALESCE(episode_started_at, first_seen),
+                            TIMESTAMPTZ '{_EPISODE_COUNTER_EPOCH}'))) / 3600.0,
+                        1.0) AS hours_counting
+        FROM brain_findings
+        WHERE status = 'open'
+          AND COALESCE(episode_started_at, first_seen) IS NOT NULL
+    )
+    SELECT issue, url, detector, hours_open, re_observations, episode_count,
+           re_observations / hours_counting * 24.0 AS reobs_per_day,
+           hours_open * (re_observations / hours_counting * 24.0)
+               AS chronic_score
+    FROM open_rows
+    ORDER BY 8 DESC NULLS LAST, 4 DESC
     LIMIT 15
 """
 
@@ -226,8 +247,9 @@ def episodes_analytics():
         "flappiest": [],
         "note": ("Episode ledger analytics (brain_findings, semantics "
                  "2026-07-17). chronic_score = hours_open of the CURRENT "
-                 "episode × episode_seen_count — work the top of "
-                 "chronic_leaderboard, not the inbox."),
+                 "episode × reobs_per_day (re-observation rate over the "
+                 "window the episode counter actually ran) — work the top "
+                 "of chronic_leaderboard, not the inbox."),
     }
 
     with _read_db() as conn:
@@ -252,16 +274,15 @@ def episodes_analytics():
             })
 
         for r in (_rows(conn, _SQL_CHRONIC_LEADERBOARD) or []):
-            hours_open = _r1(r[3]) or 0.0
-            reobs = int(r[4] or 1)
             out["chronic_leaderboard"].append({
                 "issue": r[0],
                 "url": r[1],
                 "detector": r[2],
-                "hours_open": hours_open,
-                "re_observations": reobs,
+                "hours_open": _r1(r[3]) or 0.0,
+                "re_observations": int(r[4] or 1),
                 "episode_count": int(r[5] or 1),
-                "chronic_score": _r1(hours_open * reobs),
+                "reobs_per_day": _r1(r[6]),
+                "chronic_score": _r1(r[7]),
             })
 
         for r in (_rows(conn, _SQL_FLAPPIEST) or []):
