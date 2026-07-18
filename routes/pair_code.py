@@ -136,6 +136,52 @@ def _new_code() -> str:
     return "DCM-" + "".join(_secrets.choice(alphabet) for _ in range(4))
 
 
+# ── issue #1657 (brain-l15): web signal identity ─────────────────────────
+# The two ad-hoc mcp_upgrade_signals INSERTs in this file wrote ONLY
+# (signal_type, tool_requested, mcp_client, message_shown) — no session_id,
+# no ip_address, no user_agent, no caller_id. Because _detect_agent_from_
+# request() falls back to the raw browser UA, every human redeem-page view
+# landed as a UA-shaped mcp_client row with sessions=0 / unique_ips=0 —
+# the 'web-unattributed' bucket (970 rows/30d, "structurally impossible
+# for organic traffic") AND a NULL caller_id that starved the
+# signal→conversion attribution join. mcp_signal_canonical.record_signal
+# was documented as replacing these inserts but was never wired in here.
+# These helpers supply the missing identity; the writes below now go
+# through the canonical writer.
+
+def _web_session_fingerprint() -> str | None:
+    """Stable, non-credential session identity for browser signal writes.
+    Prefer the MCP session header (agent-relayed opens), else a sha256
+    fingerprint of the auth/session cookie — NEVER the raw JWT, signals
+    is an analytics table. None when the visitor is truly anonymous."""
+    try:
+        sid = (request.headers.get("Mcp-Session-Id")
+               or request.headers.get("mcp-session-id")
+               or request.headers.get("X-Mcp-Session-Id"))
+        if sid:
+            return str(sid)[:200]
+        raw = (request.cookies.get("dchub_token")
+               or request.cookies.get("auth_token")
+               or request.cookies.get("token")
+               or request.cookies.get("session") or "")
+        if raw:
+            import hashlib as _h
+            return "web-" + _h.sha256(raw.encode()).hexdigest()[:32]
+    except Exception:
+        pass
+    return None
+
+
+def _client_ip() -> str | None:
+    """Real client IP: CF header first, then XFF first hop, then peer."""
+    try:
+        return ((request.headers.get("CF-Connecting-IP")
+                 or (request.headers.get("X-Forwarded-For") or "").split(",")[0].strip()
+                 or request.remote_addr or "")[:64] or None)
+    except Exception:
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Core: create / fetch / redeem
 # ---------------------------------------------------------------------------
@@ -547,20 +593,22 @@ def redeem_landing(code):
         # cross-funnel queries trivial. Only writes on first view to
         # avoid amplifying every page refresh.
         if was_first_view:
+            # issue #1657: route through the canonical writer so the row
+            # carries session/ip/UA/caller_id — the ad-hoc INSERT here wrote
+            # them all NULL, creating the web-unattributed bucket.
             try:
-                with c.cursor() as cur:
-                    cur.execute("""
-                        INSERT INTO mcp_upgrade_signals
-                            (signal_type, tool_requested, mcp_client,
-                             message_shown, created_at)
-                        VALUES ('redeem_url_viewed', %s, %s, %s, NOW())
-                    """, (tool_name or 'session_cta',
-                          (referring_agent or 'unknown')[:200],
-                          f"redeem_viewed: code={code}"))
-                c.commit()
+                from mcp_signal_canonical import record_signal
+                record_signal(
+                    signal_type='redeem_url_viewed',
+                    tool_requested=tool_name or 'session_cta',
+                    mcp_client=(referring_agent or 'unknown')[:200],
+                    message_shown=f"redeem_viewed: code={code}",
+                    session_id=_web_session_fingerprint(),
+                    ip_address=_client_ip(),
+                    user_agent=(request.headers.get('User-Agent') or '')[:300] or None,
+                )
             except Exception:
-                try: c.rollback()
-                except Exception: pass
+                pass
         return Response(_redeem_page(code, tool_name, market, target_tier,
                                        referring_agent),
                         mimetype="text/html"), 200
@@ -903,23 +951,23 @@ def paywall_response():
     # row here, the only signals come from the MCP server side, which
     # may not be writing them. Writing from the paywall-response
     # endpoint guarantees per-tool signal counters stay accurate.
-    c = _conn()
-    if c is not None:
-        try:
-            with c.cursor() as cur:
-                cur.execute("""
-                    INSERT INTO mcp_upgrade_signals
-                        (signal_type, tool_requested, mcp_client,
-                         message_shown, created_at)
-                    VALUES ('paywall_hit', %s, %s, %s, NOW())
-                """, (tool, (agent or "unknown")[:200],
-                      f"paywall_hit: code={code}"[:300]))
-            c.commit()
-        except Exception:
-            try: c.rollback()
-            except Exception: pass
-        try: c.close()
-        except Exception: pass
+    # issue #1657: route through the canonical writer so the row carries
+    # session/ip/UA/caller_id — the ad-hoc INSERT here wrote them all NULL,
+    # creating the web-unattributed bucket + starving the attribution join.
+    try:
+        from mcp_signal_canonical import record_signal
+        record_signal(
+            signal_type='paywall_hit',
+            tool_requested=tool,
+            mcp_client=(agent or "unknown")[:200],
+            message_shown=f"paywall_hit: code={code}"[:300],
+            session_id=_web_session_fingerprint(),
+            ip_address=_client_ip(),
+            user_agent=(request.headers.get('User-Agent') or '')[:300] or None,
+            api_key=api_key or None,
+        )
+    except Exception:
+        pass
 
     upgrade_url = (f"https://dchub.cloud/upgrade?key={api_key}"
                    f"&tool={tool}")
