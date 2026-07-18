@@ -46,23 +46,38 @@ jobs:
           TOTAL_SCORED=0
           for OFFSET in 0 100 200 300; do
             echo "─── Chunk offset=${OFFSET} limit=100 ──────────────────"
-            # -w appends the HTTP code on its own line: curl -sS does NOT fail on
-            # HTTP errors without --fail, so we read the status explicitly.
-            RESP=$(curl -sS -X POST --max-time 150 -w $'\n%{http_code}' \
-              "${BASE}?offset=${OFFSET}&limit=100" \
-              -H "X-Admin-Key: ${{ secrets.DCHUB_ADMIN_KEY }}") || {
-                echo "::error::chunk offset=${OFFSET}: curl transport error"
-                FAILED=1; sleep 2; continue; }
-            CODE=$(printf '%s' "$RESP" | tail -n1)
-            BODY=$(printf '%s' "$RESP" | sed '$d')
-            printf '%s\n' "$BODY" | python3 -m json.tool || printf '%s\n' "$BODY"
-            # Healthy only if HTTP<400 AND no body-level error AND scored>0.
-            # jq is preinstalled on ubuntu-latest.
-            SCORED=$(printf '%s' "$BODY" | jq -r \
-              'if (.error != null) then -1 else (.markets_scored // 0) end' \
-              2>/dev/null || echo -1)
+            # RETRY ONCE (r-dcpi-chunkretry 2026-07-18): a single POST that
+            # recomputes 100 markets can trip Railway's 120s gateway (observed:
+            # a live run got HTTP 502 on offset=100 while the other 3 chunks
+            # scored fine, and the same chunk succeeded on the prior run). That
+            # is a TRANSIENT timeout — the very reason the work was chunked. So
+            # only a chunk that fails TWICE is a real freeze worth going RED for;
+            # a single blip self-heals here instead of reddening the whole cron.
+            CODE=0; SCORED=-1
+            for ATTEMPT in 1 2; do
+              # -w appends the HTTP code on its own line: curl -sS does NOT fail
+              # on HTTP errors without --fail, so read the status explicitly. On
+              # a transport error, synthesize code 000 so the health check below
+              # treats it as a failed attempt (and retries / fails, not aborts).
+              RESP=$(curl -sS -X POST --max-time 150 -w $'\n%{http_code}' \
+                "${BASE}?offset=${OFFSET}&limit=100" \
+                -H "X-Admin-Key: ${{ secrets.DCHUB_ADMIN_KEY }}") || RESP=$'\n000'
+              CODE=$(printf '%s' "$RESP" | tail -n1)
+              BODY=$(printf '%s' "$RESP" | sed '$d')
+              # Healthy only if HTTP<400 AND no body-level error AND scored>=1.
+              # jq is preinstalled on ubuntu-latest.
+              SCORED=$(printf '%s' "$BODY" | jq -r \
+                'if (.error != null) then -1 else (.markets_scored // 0) end' \
+                2>/dev/null || echo -1)
+              if [ "${CODE:-0}" -lt 400 ] && [ "${SCORED:-0}" -ge 1 ]; then
+                printf '%s\n' "$BODY" | python3 -m json.tool || printf '%s\n' "$BODY"
+                break
+              fi
+              echo "::warning::chunk offset=${OFFSET} attempt ${ATTEMPT} failed (http=${CODE}, scored=${SCORED}) — likely a transient Railway 120s timeout; retrying"
+              sleep 5
+            done
             if [ "${CODE:-0}" -ge 400 ] || [ "${SCORED:-0}" -lt 1 ]; then
-              echo "::error::chunk offset=${OFFSET} FAILED (http=${CODE}, scored=${SCORED})"
+              echo "::error::chunk offset=${OFFSET} FAILED after 2 attempts (http=${CODE}, scored=${SCORED})"
               FAILED=1
             else
               TOTAL_SCORED=$((TOTAL_SCORED + SCORED))
