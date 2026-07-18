@@ -21,13 +21,30 @@ surface working, but not the connector).
 3. Export the session's audit logs (supported plans expose connector usage).
 4. Tag each prompt:
 
-| Prompt | DC Hub citation? | Connector event in logs? | Label |
-|---|---|---|---|
-| 1–6 | y/n | y/n | `connector_called` / `web_only` / `locked_preview` |
+| Prompt | DC Hub citation? | Connector event in logs? | `grounding_evidence_present` | Label |
+|---|---|---|---|---|
+| 1–6 | y/n | y/n | pass/fail | `connector_called` / `web_only` / `locked_preview` |
 
 - citation + event → `connector_called` ✅
 - citation, no event → `web_only` (GEO reach, not the connector)
 - gated/preview response → `locked_preview` (expected on free tier for paid tools)
+
+### `grounding_evidence_present` (pass/fail — Perplexity's field)
+
+Per-prompt check Perplexity asked us to record: does the ANSWER TEXT carry
+specific values that only the connector response could have supplied (a DCPI
+composite score, an MW figure, a queue GW aggregate, a facility count with an
+as-of date) — not just a dchub.cloud citation link?
+
+- **pass** = at least one concrete DC Hub data value from the tool result is
+  reproduced in the answer.
+- **fail** = the answer cites us but carries no connector-supplied value
+  (link-only grounding), or paraphrases so loosely no number survives.
+
+A `connector_called` row with `grounding_evidence_present: fail` means the
+call happened but the model dropped the payload — a tool-description /
+output-shaping problem (structuredContent legibility), not a selection
+problem. Track it separately from `web_only`.
 
 ## What we act on
 
