@@ -437,8 +437,48 @@ def open_spec_pr_with_fingerprint(fp):
     return None
 
 
+def _gate_verdict_md(verdict: dict) -> str:
+    """Markdown 'Escalation gate verdict' section embedded in a gated spec PR
+    body (r-escalation-ladder, docs/brain-pr-escalation-gates.md) — the gate
+    verdict + confidence + evidence summary the reviewer needs to audit WHY
+    this condition auto-escalated. Wording deliberately avoids the substance
+    gate's fix-claim verbs (r-spec-honesty). '' on any malformed verdict."""
+    try:
+        lines = [
+            "## Escalation gate verdict",
+            "",
+            "_Auto-escalated via the evidence-gated ladder "
+            "(docs/brain-pr-escalation-gates.md). The gate governs PR "
+            "creation only — a human still merges or discards._",
+            "",
+            f"- **State:** `{verdict.get('state')}`",
+            f"- **Confidence:** {verdict.get('confidence')} "
+            f"(threshold {verdict.get('threshold')})",
+        ]
+        for name, g in (verdict.get("gates") or {}).items():
+            mark = "PASS" if (g or {}).get("passed") else "FAIL"
+            lines.append(f"- gate `{name}`: **{mark}** — "
+                         f"{(g or {}).get('reason', '')}")
+        hb = verdict.get("hard_blocks") or []
+        lines.append("- hard blocks: "
+                     + ("none" if not hb
+                        else ", ".join(f"`{(b or {}).get('name', '?')}`"
+                                       for b in hb)))
+        ins = verdict.get("inputs") or {}
+        ev = ", ".join(ins.get("evidence") or []) or "none"
+        lines.append(
+            f"- evidence summary: kinds [{ev}] · "
+            f"repeat_count {ins.get('repeat_count')} · "
+            f"distinct_sources {ins.get('distinct_sources')} · "
+            f"expected_improvement {ins.get('expected_improvement')} · "
+            f"recent_5xx_rate {ins.get('recent_5xx_rate')}")
+        return "\n".join(lines) + "\n\n"
+    except Exception:
+        return ""
+
+
 def open_spec_pr(directive: str, heading: str = "", kind: str = "item",
-                 item_id=0, label: str = "") -> dict:
+                 item_id=0, label: str = "", gate_verdict=None) -> dict:
     """r-brain-loop (2026-06-30): the actuator FALLBACK that turns an approval
     into a shippable artifact. When draft_and_open_pr REFUSES a directive (it's a
     'build X / instrument Y / gather Z' PLAN, not a single-file find/replace), this
@@ -447,10 +487,31 @@ def open_spec_pr(directive: str, heading: str = "", kind: str = "item",
     DOC only (zero code execution), opens as a draft, and a human merges — so the
     approval becomes a visible, trackable, human-implementable PR instead of
     'recorded only'. Inherits can_open_pr() (kill switch + daily cap), dedups by
-    title. NEVER raises — always returns a dict."""
+    title. NEVER raises — always returns a dict.
+
+    r-escalation-ladder (2026-07-18): `gate_verdict` — the evaluate_escalation()
+    verdict (routes/brain_fix_gates, spec docs/brain-pr-escalation-gates.md)
+    from an EVIDENCE-GATED caller. When provided it is ENFORCED here too
+    (defense in depth): anything short of state='draft_pr' returns gated=True
+    without touching GitHub, and a passing verdict is EMBEDDED in the PR body
+    (confidence + per-gate reasons + evidence summary) so the reviewer sees why
+    it auto-escalated. Callers without a verdict (human-approved directives)
+    keep the pre-ladder behavior unchanged. The human-merge requirement is
+    untouched either way — this gates PR CREATION only."""
     directive = (directive or "").strip()
     if not directive:
         return {"ok": False, "acted": False, "error": "empty directive"}
+    if gate_verdict is not None and not (
+            isinstance(gate_verdict, dict)
+            and gate_verdict.get("state") == "draft_pr"):
+        _st = (gate_verdict.get("state")
+               if isinstance(gate_verdict, dict) else None)
+        _hb = ([b.get("name") for b in (gate_verdict.get("hard_blocks") or [])]
+               if isinstance(gate_verdict, dict) else [])
+        return {"ok": True, "acted": False, "gated": True,
+                "gate_state": _st, "hard_blocks": _hb,
+                "note": "escalation gate verdict below draft_pr — the "
+                        "condition stays agenda-only"}
     try:
         from routes.brain_guardrails import can_open_pr
         ok_gate, why = can_open_pr()
@@ -499,7 +560,11 @@ def open_spec_pr(directive: str, heading: str = "", kind: str = "item",
         f"> recommendation couldn't be expressed as a single-file edit, so it's filed here\n"
         f"> as a spec for a human to implement (or discard). **Draft PR — a human merges.**\n\n"
         f"_Filed {_dt.datetime.utcnow().isoformat()}Z · {label}_\n\n"
-        f"## The approved recommendation\n\n{directive}\n\n"
+        # r-escalation-ladder (2026-07-18): a gated caller's verdict rides in
+        # the body — confidence, per-gate reasons, evidence summary.
+        + (_gate_verdict_md(gate_verdict) if isinstance(gate_verdict, dict)
+           else "")
+        + f"## The approved recommendation\n\n{directive}\n\n"
         f"## Human checklist\n\n"
         f"- [ ] Confirm this is still worth doing\n"
         f"- [ ] Scope it to a concrete change (file(s) + approach)\n"

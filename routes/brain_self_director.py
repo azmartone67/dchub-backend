@@ -28,9 +28,20 @@ UNPROMPTED, a tick:
 THE HARD SAFETY LINE — this rung gains NO new authority to ACT. It is strictly
 PROPOSE-ONLY and strictly WEAKER than the existing automerge loop (which is the
 ONLY autonomous ACTOR, and only on allowlisted MECHANICAL fixes):
-  · It NEVER merges, sends, opens/applies a PR, triggers the automerge, or
-    writes ANYTHING to prod beyond STORING one agenda row.
+  · It NEVER merges, sends, opens/applies a code PR, triggers the automerge,
+    or writes ANYTHING to prod beyond STORING one agenda row.
   · Self-directing = self-directed ANALYSIS, NOT self-directed ACTION.
+  · r-escalation-ladder (2026-07-18) — the ONE narrow, evidence-gated
+    exception: an eval_finding item whose evidence clears EVERY gate of the
+    escalation ladder (docs/brain-pr-escalation-gates.md, implemented in
+    routes/brain_fix_gates.evaluate_escalation — stability, verdict-diff,
+    deterministic-evidence, contract-locality, zero hard blocks, confidence
+    >= 0.85) may additionally file a DOC-ONLY DRAFT spec PR via
+    brain_pr_opener.open_spec_pr (SPEC-ONLY marker, zero code execution,
+    inherits the can_open_pr kill switch + daily cap). A HUMAN STILL MERGES —
+    the ladder gates PR CREATION only. Anything below the bar stays
+    agenda-only, with the gate verdict stored in the agenda row's result_json
+    so the "why not" is auditable. Kill: BRAIN_ESCALATION_LADDER=0.
 
 COST SAFETY — a self-running loop that calls an LLM must NOT cost-explode, so
 the caps are enforced SERVER-SIDE in the tick handler (never trusting the cron
@@ -359,11 +370,22 @@ def _eval_findings_candidates() -> list[dict]:
     routes the freshest changed/first-run gap per platform in as a PROPOSE-ONLY
     investigation question — closing the notice->start-the-fix half of the loop
     WITHOUT any autonomous shipping (still one human-reviewed agenda row). REUSE-
-    ONLY: reads model_relations_runs; never raises."""
+    ONLY: reads model_relations_runs; never raises.
+
+    r-escalation-ladder (2026-07-18): each candidate is also stamped with
+    `gate_evidence` — the escalation ladder's inputs (spec §Implementation
+    notes: "stability counting: model_relations_runs.verdict->
+    top_structural_gap normalized + counted across platforms/runs"; the
+    active-instability signal is the http_5xx column). repeat_count = runs in
+    the window naming the SAME number-stripped gap; distinct_sources = distinct
+    platforms naming it; recent_5xx_rate = fraction of window runs that
+    observed NEW 5xx. Aggregate failures degrade to the conservative defaults
+    (1 run / 1 source) — which the ladder hard-blocks as weak provenance."""
     out: list[dict] = []
     conn = _conn()
     if conn is None:
         return out
+    all_rows = []
     try:
         with conn.cursor() as cur:
             # latest changed/first-run verdict per platform — the actionable ones
@@ -374,6 +396,16 @@ def _eval_findings_candidates() -> list[dict]:
                 "  AND started_at >= NOW() - INTERVAL '45 days' "
                 "ORDER BY platform, started_at DESC")
             rows = cur.fetchall()
+            # r-escalation-ladder: EVERY window run (not just the freshest per
+            # platform) for the ladder's stability/agreement/instability inputs.
+            try:
+                cur.execute(
+                    "SELECT platform, verdict, http_5xx "
+                    "FROM model_relations_runs "
+                    "WHERE started_at >= NOW() - INTERVAL '45 days'")
+                all_rows = cur.fetchall() or []
+            except Exception:
+                all_rows = []
     except Exception as e:
         logger.warning("brain_self_director: eval-findings scan failed: %s", e)
         return out
@@ -381,11 +413,40 @@ def _eval_findings_candidates() -> list[dict]:
         try: conn.close()
         except Exception: pass
     import json as _json
+
+    def _parse_verdict(raw) -> dict:
+        if isinstance(raw, dict):
+            return raw
+        if isinstance(raw, str):
+            try:
+                parsed = _json.loads(raw)
+                return parsed if isinstance(parsed, dict) else {}
+            except Exception:
+                return {}
+        return {}
+
+    # ── gate-evidence aggregates over the whole window ───────────────
+    gap_stats: dict = {}   # norm-sig -> {"count": n, "platforms": set}
+    runs_total = 0
+    runs_5xx = 0
+    for _plat, _raw_v, _h5 in all_rows:
+        runs_total += 1
+        try:
+            if _h5 and int(_h5) > 0:
+                runs_5xx += 1
+        except Exception:
+            pass
+        _g = (_parse_verdict(_raw_v).get("top_structural_gap") or "").strip()
+        if not _g:
+            continue
+        _sig = _norm_sig(_g)
+        _st = gap_stats.setdefault(_sig, {"count": 0, "platforms": set()})
+        _st["count"] += 1
+        _st["platforms"].add(_plat)
+    recent_5xx_rate = (runs_5xx / float(runs_total)) if runs_total else 0.0
+
     for platform, diff, verdict, http_5xx in rows or []:
-        v = verdict if isinstance(verdict, dict) else {}
-        if isinstance(verdict, str):
-            try: v = _json.loads(verdict)
-            except Exception: v = {}
+        v = _parse_verdict(verdict)
         gap = (v.get("top_structural_gap") or "").strip()
         if not gap:
             continue
@@ -398,6 +459,24 @@ def _eval_findings_candidates() -> list[dict]:
             + f"), named its #1 structural gap: \"{gap[:400]}\". Beyond a one-off "
             "patch, what single change would most address what this external agent flagged?"
         )
+        # r-escalation-ladder: the ladder's inputs for THIS gap, computed from
+        # the window aggregates. Evidence kinds / expected improvement only
+        # count when the evaluator's verdict names them EXPLICITLY (the pure
+        # gate treats prose as no evidence — "feels cleaner" never escalates).
+        _st = gap_stats.get(_norm_sig(gap)) or {}
+        try:
+            from routes.brain_fix_gates import extract_evidence_kinds
+            _ev_kinds = extract_evidence_kinds(v)
+        except Exception:
+            _ev_kinds = []
+        _imp = None
+        for _k in ("expected_improvement", "measured_improvement"):
+            if v.get(_k) is not None:
+                try:
+                    _imp = float(v.get(_k))
+                except Exception:
+                    _imp = None
+                break
         # A NEW 5xx an external model observed on the live rail is a concrete
         # reliability regression -> higher leverage than a prose structural ask.
         out.append({
@@ -407,6 +486,17 @@ def _eval_findings_candidates() -> list[dict]:
             "area": "reliability" if saw_5xx else "developer_ux",
             "leverage": 1.6 if saw_5xx else 1.2,
             "source": "model_relations_runs",
+            "gate_evidence": {
+                "repeat_count": int(_st.get("count") or 1),
+                "distinct_sources": len(_st.get("platforms") or ()) or 1,
+                "evidence": _ev_kinds,
+                "expected_improvement": _imp,
+                "recent_5xx_rate": round(recent_5xx_rate, 4),
+                # No conflicting-recommendation detector yet — the pure gate
+                # takes it as an input; a future detector flips this to True
+                # when two evaluators ask for opposing changes.
+                "conflicting_recs": False,
+            },
         })
     return out
 
@@ -820,6 +910,136 @@ def _grade_agenda(agenda_id: int, grade: str) -> bool:
 
 
 # ════════════════════════════════════════════════════════════════════
+#  r-escalation-ladder (2026-07-18) — evidence-gated escalation
+#  (spec: docs/brain-pr-escalation-gates.md; gate math:
+#   routes/brain_fix_gates.evaluate_escalation)
+# ════════════════════════════════════════════════════════════════════
+def _escalation_enabled() -> bool:
+    """The ladder ships ON (the gate itself is the safety mechanism — with no
+    evidence everything stays agenda-only, exactly the prior behavior). Kill:
+    BRAIN_ESCALATION_LADDER=0."""
+    return os.environ.get("BRAIN_ESCALATION_LADDER", "1").strip().lower() \
+        not in ("0", "false", "off", "no")
+
+
+def _gate_candidate(item: dict, result: dict) -> dict:
+    """Build the pure gate's candidate dict from an eval_finding agenda item
+    (its stamped gate_evidence) + the investigation result. The surfaces a
+    structural ask would touch are not known until a human implements it, so
+    locality is screened on TEXT: the doc-only spec artifact itself
+    (contract-local by construction) plus any business-policy pseudo-surfaces
+    (pricing/auth/quota/ranking/...) the recommendation text mentions — those
+    hard-block as human-only."""
+    ge = dict((item or {}).get("gate_evidence") or {})
+    from routes.brain_fix_gates import text_flags
+    text = " ".join(str(x) for x in ((item or {}).get("title"),
+                                     (item or {}).get("question"),
+                                     (result or {}).get("recommendation"))
+                    if x)
+    flags = text_flags(text)
+    files = (["docs/brain-proposals/spec.md"]
+             + list(flags.get("human_only_surfaces") or []))
+    return {
+        "repeat_count": ge.get("repeat_count", 1),
+        "distinct_sources": ge.get("distinct_sources", 1),
+        "evidence": ge.get("evidence") or [],
+        "files_touched": files,
+        "expected_improvement": ge.get("expected_improvement"),
+        "recent_5xx_rate": ge.get("recent_5xx_rate", 0.0),
+        "conflicting_recs": bool(ge.get("conflicting_recs")),
+        "removes_or_renames_fields": bool(
+            ge.get("removes_or_renames_fields", flags.get("breaking"))),
+    }
+
+
+def _evidence_gated_escalation(item: dict, result: dict) -> Optional[dict]:
+    """PURE half of the ladder wiring: evaluate the escalation gate for an
+    eval_finding item. No DB, no GitHub — just the verdict dict (embedded into
+    the agenda row's result_json so agenda-only outcomes carry their "why").
+    None when the ladder doesn't apply (other kinds / killed). Never raises."""
+    try:
+        if not _escalation_enabled():
+            return None
+        if (item or {}).get("kind") != "eval_finding":
+            return None
+        from routes.brain_fix_gates import evaluate_escalation
+        return evaluate_escalation(_gate_candidate(item, result))
+    except Exception as e:
+        logger.warning("brain_self_director: escalation eval failed: %s", e)
+        return None
+
+
+def _finalize_escalation(item: dict, result: dict, verdict: dict,
+                         agenda_id: int) -> Optional[dict]:
+    """SIDE-EFFECT half, AFTER the agenda row is stored:
+      1. feedback stub — a re-firing condition grades any earlier gated PR for
+         the same fingerprint as 'recurred_after_pr' (spec §Feedback loop;
+         runs BEFORE the new verdict is logged so it never grades itself);
+      2. state == 'draft_pr' → file the DOC-ONLY DRAFT spec PR with the gate
+         verdict EMBEDDED in the body (open_spec_pr re-enforces the verdict —
+         defense in depth — and a human still merges);
+         anything less → agenda-only, log why;
+      3. log the verdict row (brain_gate_verdicts) so the outcome is
+         attributable.
+    Returns {number, url} of the opened PR, or None. Best-effort; never
+    raises."""
+    pr_info = None
+    fp = (item or {}).get("fingerprint")
+    try:
+        from routes.brain_fix_gates import (grade_prior_verdicts,
+                                            record_gate_verdict)
+    except Exception as e:
+        logger.warning("brain_self_director: gate log import failed: %s", e)
+        grade_prior_verdicts = record_gate_verdict = None
+    if grade_prior_verdicts is not None:
+        try:
+            n = grade_prior_verdicts(fp)
+            if n:
+                logger.info("brain_self_director: condition re-fired — graded "
+                            "%d prior gated PR verdict(s) recurred_after_pr "
+                            "(fp=%s)", n, fp)
+        except Exception:
+            pass
+    if (verdict or {}).get("state") == "draft_pr":
+        try:
+            from routes.brain_pr_opener import open_spec_pr
+            directive = ((result or {}).get("recommendation") or "").strip() \
+                or ((item or {}).get("question") or "").strip()
+            res = open_spec_pr(
+                directive,
+                heading=(item or {}).get("title") or "",
+                kind="agenda",
+                item_id=agenda_id,
+                label=(f"escalation-gated · confidence "
+                       f"{(verdict or {}).get('confidence')}"),
+                gate_verdict=verdict,
+            ) or {}
+            if res.get("acted") and res.get("pr"):
+                pr_info = res.get("pr")
+            elif res.get("dup_pr"):
+                pr_info = {"number": res.get("dup_pr"), "dup": True}
+            else:
+                logger.info("brain_self_director: gated spec PR not filed: %s",
+                            res.get("note") or res.get("error") or res)
+        except Exception as e:
+            logger.warning("brain_self_director: gated spec PR failed: %s", e)
+    else:
+        logger.info(
+            "brain_self_director: escalation stayed agenda-only "
+            "(state=%s, confidence=%s, hard_blocks=%s)",
+            (verdict or {}).get("state"), (verdict or {}).get("confidence"),
+            [b.get("name") for b in ((verdict or {}).get("hard_blocks") or [])])
+    if record_gate_verdict is not None:
+        try:
+            record_gate_verdict(fp, verdict,
+                                pr_number=(pr_info or {}).get("number"),
+                                agenda_id=agenda_id)
+        except Exception:
+            pass
+    return pr_info
+
+
+# ════════════════════════════════════════════════════════════════════
 #  Step 2 + 3: the autonomous tick — INVESTIGATE + SURFACE
 # ════════════════════════════════════════════════════════════════════
 def self_direct_tick() -> dict:
@@ -834,9 +1054,12 @@ def self_direct_tick() -> dict:
       5. else        -> investigate() ONCE (the ONLY model work, 1 per tick),
                         STORE one agenda row, return {ran:true, agenda_id}.
 
-    PROPOSE-ONLY: the ONLY write is the agenda row (via _store_agenda). It NEVER
-    merges/sends/opens-a-PR/triggers-the-automerge/writes-to-prod beyond that
-    row. NEVER raises — any LLM/DB error degrades to a skip/no-op."""
+    PROPOSE-ONLY: the primary write is the agenda row (via _store_agenda). It
+    NEVER merges/sends/opens-a-code-PR/triggers-the-automerge. The single
+    evidence-gated exception (r-escalation-ladder, 2026-07-18): an eval_finding
+    whose evidence clears EVERY ladder gate may also file a DOC-ONLY DRAFT spec
+    PR — human-merged, kill-switched, capped (see the module docstring).
+    NEVER raises — any LLM/DB error degrades to a skip/no-op."""
     try:
         # ── Guard 1: flag off → NO model call ────────────────────────
         if not _enabled():
@@ -885,7 +1108,19 @@ def self_direct_tick() -> dict:
                     "detail": (result or {}).get("cannot_investigate")
                     if isinstance(result, dict) else None}
 
-        # ── SURFACE — STORE one agenda row (the ONLY write) ─────────
+        # ── r-escalation-ladder: evaluate the evidence gate BEFORE the
+        # store so the agenda row carries the verdict either way (agenda-only
+        # outcomes are auditable from the row itself). Pure evaluation only —
+        # any side effect happens after the row exists.
+        esc = None
+        try:
+            esc = _evidence_gated_escalation(item, result)
+            if esc:
+                result["escalation"] = esc
+        except Exception as e:
+            logger.warning("brain_self_director: escalation skipped: %s", e)
+
+        # ── SURFACE — STORE one agenda row (the primary write) ──────
         agenda_id = _store_agenda(item, result)
         if agenda_id is None:
             # The investigation ran but we couldn't persist it. Be honest: the
@@ -893,10 +1128,24 @@ def self_direct_tick() -> dict:
             # sense the cap counts. (No row → no double-charge against the cap.)
             return {"ran": False, "skipped_reason": "store_failed",
                     "title": item.get("title")}
-        return {"ran": True, "agenda_id": agenda_id,
-                "kind": item.get("kind"), "title": item.get("title"),
-                "area": item.get("area"),
-                "confidence": result.get("confidence")}
+        out = {"ran": True, "agenda_id": agenda_id,
+               "kind": item.get("kind"), "title": item.get("title"),
+               "area": item.get("area"),
+               "confidence": result.get("confidence")}
+        # ── r-escalation-ladder: side effects AFTER the row exists —
+        # feedback-grade prior verdicts, file the gated DOC-ONLY draft spec
+        # PR when (and only when) the verdict says draft_pr, log the verdict.
+        if esc:
+            out["escalation_state"] = esc.get("state")
+            out["escalation_confidence"] = esc.get("confidence")
+            try:
+                pr_info = _finalize_escalation(item, result, esc, agenda_id)
+                if pr_info:
+                    out["escalation_pr"] = pr_info
+            except Exception as e:
+                logger.warning("brain_self_director: escalation finalize "
+                               "failed: %s", e)
+        return out
     except Exception as e:
         # The whole tick is best-effort — a self-running loop must never raise.
         logger.warning("brain_self_director: tick failed: %s", e)
