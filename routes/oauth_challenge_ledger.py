@@ -46,7 +46,12 @@ oauth_challenge_bp = Blueprint("oauth_challenge_ledger", __name__)
 # NOT relied upon: both challenge sites are unauthenticated and fully
 # client-controlled, so anything attacker-influenced must be rejected here too.
 # This bounds the table at <=6 real rows/day + 1 beat row/day, whatever is POSTed.
-_KINDS = {"claude_connector", "invalid_bearer"}
+# chatgpt_connector_seen (2026-07-17): PASSIVE Phase-0 measurement — the gateway counts
+# anonymous, keyless, sessionless ChatGPT-connector inits/calls that WOULD be challenge-
+# eligible if the OAuth 401 challenge were widened to ChatGPT. It issues NO challenge; it
+# only sizes the cohort denominator so widening is an evidence-based decision (durable
+# identity is NOT a proven retention lever — see reference_dchub_oauth_challenge_funnel).
+_KINDS = {"claude_connector", "invalid_bearer", "chatgpt_connector_seen"}
 _METHODS = {"initialize", "tools/call", "other"}
 _BEAT_METHODS = {"workos_on", "workos_off"}
 
