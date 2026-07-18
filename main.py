@@ -1779,6 +1779,16 @@ try:
     except Exception as _ue:
         import logging
         logging.getLogger(__name__).warning('unlock_page wiring failed: %s', _ue)
+    # r-durable-handoff (2026-07-18): stable per-key human upgrade page
+    # /upgrade/k/<token> + click-through /go/<tier> + funnel stats. The
+    # durable agent→human payment handoff (see routes/upgrade_handoff.py
+    # docstring for the 30d live-data diagnosis it ships against).
+    try:
+        from routes.upgrade_handoff import upgrade_handoff_bp
+        app.register_blueprint(upgrade_handoff_bp)
+    except Exception as _uhe:
+        import logging
+        logging.getLogger(__name__).warning('upgrade_handoff wiring failed: %s', _uhe)
     # Phase TT (2026-05-14): identity-capture Increment 3b — the weekly
     # market digest. The second nurture touch: once a week, every
     # identified key with real activity gets a recap of the markets its
@@ -8315,6 +8325,33 @@ def _mcp_unlock_link(api_key):
         return None
 
 
+def _streak_block_for(api_key, base_limit, streak_days):
+    """r-streak (2026-07-18): machine-readable return-streak block for the
+    daily-limit payloads — current cap, streak days, next unlock. Uses the
+    already-computed streak_days (no second DB hit on the hot path).
+    FAIL-OPEN: any error -> None (payload simply omits the block)."""
+    if not api_key:
+        return None
+    try:
+        from return_streak import (boosted_cap, next_unlock, streak_line,
+                                   STREAK_WINDOW_DAYS)
+        blk = {
+            "streak_days": int(streak_days or 0),
+            "window_days": STREAK_WINDOW_DAYS,
+            "base_cap": base_limit,
+            "cap_today": boosted_cap(base_limit, streak_days),
+            "message": streak_line(streak_days, base_limit),
+        }
+        nxt = next_unlock(streak_days, base_limit)
+        if nxt:
+            blk["next_unlock"] = nxt
+        else:
+            blk["max_boost_active"] = True
+        return blk
+    except Exception:
+        return None
+
+
 def _get_mcp_caller_tier():
     """Determine caller's tier from API key. Returns (tier, key_info)."""
     # ── Internal-key bypass (mcpServers config / internal callers) ──────────
@@ -8400,6 +8437,19 @@ def _gate_mcp_result(result_content, tool_name, tier):
                     or request.args.get('api_key', ''))
         _identified = _mcp_key_is_identified(_api_key)
         _limit = MCP_IDENTIFIED_DAILY_LIMIT if _identified else MCP_FREE_DAILY_LIMIT
+        # r-streak (2026-07-18): progressive return-streak boost — the #1
+        # constraint actuator (mature key-reuse 4.9% vs 8% floor). A keyed
+        # caller's distinct active days in the trailing 14 raise the daily
+        # cap: 2+ days 1.5x, 4+ 2x, 7+ 3x (streak cached ~1h per key).
+        # FAIL-OPEN: any error -> base cap, never block.
+        _base_limit, _streak_days = _limit, 0
+        if _api_key:
+            try:
+                from return_streak import get_streak_days, boosted_cap
+                _streak_days = get_streak_days(_api_key)
+                _limit = boosted_cap(_limit, _streak_days)
+            except Exception:
+                _streak_days, _limit = 0, _base_limit
         allowed, remaining, used = _check_mcp_daily_limit(ip, _limit)
         if not allowed and not _identified:
             # Hit the wall with an anonymous / no-email key. Lead with
@@ -8415,6 +8465,11 @@ def _gate_mcp_result(result_content, tool_name, tier):
                 "calls_used": used,
                 "daily_limit": _limit,
                 "resets": "midnight UTC",
+                # r-streak (2026-07-18): the wall is where the return incentive
+                # lands hardest — show current cap, streak days, and what
+                # returning tomorrow unlocks. Fail-open: block optional.
+                "return_streak": _streak_block_for(_api_key, _base_limit,
+                                                   _streak_days),
                 "identify": {
                     "why": (f"Identify with an email → {MCP_IDENTIFIED_DAILY_LIMIT} calls/day "
                             f"(up from {MCP_FREE_DAILY_LIMIT}), and ties this key to your "
@@ -8477,6 +8532,10 @@ def _gate_mcp_result(result_content, tool_name, tier):
                     "calls_used": used,
                     "daily_limit": _limit,
                     "resets": "midnight UTC",
+                    # r-streak (2026-07-18): identified keys climb the same
+                    # return-streak ladder — surface it at the wall.
+                    "return_streak": _streak_block_for(_api_key, _base_limit,
+                                                       _streak_days),
                     "upgrade": {
                         "url": "https://dchub.cloud/pricing#developer",
                         "checkout": "https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c",
@@ -8612,6 +8671,27 @@ def _inject_agent_claim(blocks):
                 for mk in ("message", "human_message"):
                     if isinstance(d.get(mk), str) and "keys/claim" not in d[mk]:
                         d[mk] = _AGENT_CLAIM_LINE + d[mk]
+            # r-durable-handoff (2026-07-18): the 30d audit showed every URL a
+            # gated agent holds is single-use/expiring/burned — humans NEVER see
+            # a clickable payment page (0 claim-page opens by real humans, 0
+            # checkout clicks, while 12 humans paid via the web pricing page in
+            # the same window). Give every gated response for a KEYED caller
+            # past the high-intent threshold a STABLE, signed, never-expiring
+            # per-key upgrade URL + an explicit relay instruction. Pure-HMAC
+            # build (no DB); fully fail-soft — can never break a tool response.
+            try:
+                if _key:
+                    from routes.upgrade_handoff import (
+                        RELAY_INSTRUCTION as _UPG_RELAY,
+                        build_upgrade_url as _upg_url,
+                        note_gated_and_check as _upg_gate)
+                    if _upg_gate(_key):
+                        _u = _upg_url(_key)
+                        if _u:
+                            d.setdefault("human_upgrade_url", _u)
+                            d.setdefault("human_upgrade_instruction", _UPG_RELAY)
+            except Exception:
+                pass
             out.append({"type": "text", "text": json.dumps(d)})
         else:
             out.append(b)
@@ -8962,6 +9042,13 @@ def _gate_facility_data(data, tool_name):
                 f"Developer plan ($49/mo) unlocks all {total_count} results with "
                 f"coordinates, power capacity, connectivity, and 1,000 calls/day."
             ),
+            # r-streak (2026-07-18): free daily caps grow with the return
+            # streak — surface the mechanism wherever quota state shows.
+            "return_streak_hint": (
+                "Free daily caps grow with your return streak: 2+ active days "
+                "in the trailing 14 = 1.5x, 4+ = 2x, 7+ = 3x calls/day. Keep "
+                "your X-API-Key and return tomorrow to climb."
+            ),
             "url": "https://dchub.cloud/pricing#developer",
             "checkout": "https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c",
             "price": "$49/mo",
@@ -8998,6 +9085,13 @@ def _gate_facility_data(data, tool_name):
                     f"with basic fields ({calls_remaining} free calls left today). "
                     f"Developer plan ($49/mo) unlocks all {total_count} results with "
                     f"coordinates, power capacity, connectivity, and 1,000 calls/day."
+                ),
+                # r-streak (2026-07-18): same return-streak surfacing as the
+                # dict-shaped branch above.
+                "return_streak_hint": (
+                    "Free daily caps grow with your return streak: 2+ active days "
+                    "in the trailing 14 = 1.5x, 4+ = 2x, 7+ = 3x calls/day. Keep "
+                    "your X-API-Key and return tomorrow to climb."
                 ),
                 "url": "https://dchub.cloud/pricing#developer",
                 "checkout": "https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c",

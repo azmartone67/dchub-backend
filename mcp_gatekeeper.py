@@ -475,6 +475,23 @@ class _RateLimiter:
         if is_trial:
             lim = {**lim, "day": 50, "minute": 10, "cooldown": 1.5}
 
+        # r-streak (2026-07-18): progressive return-streak boost — the #1
+        # constraint actuator (mature key-reuse 4.9% vs 8% floor). Free-side
+        # keys (FREE/IDENTIFIED, incl. trial) that return on distinct days
+        # earn a higher DAILY cap: 2+ active days in the trailing 14 = 1.5x,
+        # 4+ = 2x, 7+ = 3x (streak cached ~1h per key in return_streak).
+        # FAIL-OPEN: any error -> base cap, never block. Paid tiers untouched.
+        streak_days = 0
+        day_base = lim["day"]  # pre-boost base, for honest streak messaging
+        if key and isinstance(key, str) and tier <= Tier.IDENTIFIED:
+            try:
+                from return_streak import get_streak_days, boosted_cap
+                streak_days = get_streak_days(key)
+                if streak_days >= 2:
+                    lim = {**lim, "day": boosted_cap(day_base, streak_days)}
+            except Exception:
+                streak_days = 0
+
         # Cooldown
         if lim["cooldown"] > 0:
             gap = now - self._last.get(key, 0)
@@ -498,11 +515,21 @@ class _RateLimiter:
         dc = self._day[key]
         count = dc.get(today, 0)
         if count >= lim["day"]:
+            # r-streak: the wall is the moment to teach the return incentive —
+            # current streak + what returning tomorrow unlocks. Fail-open "".
+            _streak_note = ""
+            if tier <= Tier.IDENTIFIED:
+                try:
+                    from return_streak import streak_line
+                    _streak_note = " 📈 " + streak_line(streak_days, day_base)
+                except Exception:
+                    _streak_note = ""
             return (f"Rate limited: {count}/{lim['day']} calls today. "
                     f"{'Trial' if is_trial else 'Free'} tier. "
                     f"🤖 No daily ceiling — $10 one-time = 1,000 API calls → "
                     f"https://buy.stripe.com/9B69AU08y2FfbSR55UaZi0i "
-                    f"(or $9/mo=200/day → https://buy.stripe.com/14k14og7w7Zz9KJ8i6aZi02).")
+                    f"(or $9/mo=200/day → https://buy.stripe.com/14k14og7w7Zz9KJ8i6aZi02)."
+                    f"{_streak_note}")
 
         # Record
         win.append(now)

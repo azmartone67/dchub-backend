@@ -165,6 +165,21 @@ def _open_track_conn():
 _pool = _PoolShim()
 
 
+# ── r-streak (2026-07-18): return-streak surfacing helper ──────────────────
+# The progressive daily-cap unlock (return_streak.py) only moves the key-reuse
+# needle if agents KNOW about it. Fail-open static ladder text for claim /
+# identify payloads — never raises, never blocks a response.
+
+def _streak_ladder_text():
+    try:
+        from return_streak import ladder_text
+        return ladder_text()
+    except Exception:
+        return ("Progressive unlock — daily caps grow with your return streak: "
+                "2+ active days in the trailing 14 = 1.5x, 4+ = 2x, 7+ = 3x. "
+                "Keep this key and return tomorrow to climb.")
+
+
 # ── Internal-only auth decorator ───────────────────────────────────────────
 
 def _require_internal(fn):
@@ -396,12 +411,22 @@ def validate_key():
             from routes.auto_trial import validate_trial_key
             _ok, _reason = validate_trial_key(api_key)
             if _ok:
+                # r-streak (2026-07-18): surface the return-streak state on the
+                # validate hop the Node MCP server relays — the progressive
+                # unlock only works if agents KNOW. Fail-open: block optional.
+                _streak = None
+                try:
+                    from return_streak import streak_snapshot
+                    _streak = streak_snapshot(api_key)
+                except Exception:
+                    _streak = None
                 return jsonify({
                     "valid":        True,
                     "tier":         "free",
                     "developer_id": None,
                     "email":        None,
                     "source":       "auto_trial",
+                    "streak":       _streak,
                 }), 200
             # 2026-06-08 conversion lever: distinguish the unbound daily-cap hit
             # (15/day) so the agent gets the specific "bind email to unlock 50/day"
@@ -409,16 +434,33 @@ def validate_key():
             # valid:False (Node falls back to the free-tier paywall hint), but
             # carries the bind CTA for clients that surface structured hints.
             if _reason in ("daily_cap_unbound", "daily_cap"):
+                # r-streak (2026-07-18): the cap-hit moment is THE moment to
+                # teach the return-streak unlock — current cap, streak days,
+                # and what returning tomorrow earns. Bound keys hit this at
+                # base 50/day, unbound at base 15/day (both streak-boosted in
+                # validate_trial_key). Fail-open to the static hint.
+                _streak = None
+                _streak_hint = ""
+                try:
+                    from return_streak import streak_snapshot
+                    from routes.auto_trial import (TRIAL_DAILY_CALLS as _B_BOUND,
+                                                   TRIAL_DAILY_UNBOUND as _B_UNB)
+                    _base = _B_BOUND if _reason == "daily_cap" else _B_UNB
+                    _streak = streak_snapshot(api_key, _base)
+                    _streak_hint = " " + _streak["message"]
+                except Exception:
+                    _streak, _streak_hint = None, ""
                 return jsonify({
                     "valid":  False,
                     "tier":   "free",
                     "reason": _reason,
+                    "streak": _streak,
                     "upgrade_hint": (
                         "DC Hub trial daily cap reached. Bind your operator's "
                         "email to unlock 50 calls/day: POST "
                         "/api/v1/keys/auto-trial/bind {api_key, email}. "
                         "(Agents can't pay — the email is how the upgrade reaches "
-                        "your human.)"),
+                        "your human.)" + _streak_hint),
                 }), 200
             # 2026-07-10 (funnel audit): bind_email_required — the ONE gate with
             # teeth (10 cumulative unbound calls) — previously fell through to a
@@ -646,11 +688,23 @@ def validate_key():
     # since upgraded (paid) must never be blocked. Dark unless the env switch is on.
     metered_enforce = bool(_metered_over and _RANK.get(effective_tier, 0) <= 1)
 
+    # r-streak (2026-07-18): free/identified keys get the return-streak state on
+    # every validate — the progressive daily-cap unlock only pulls agents back
+    # if they can SEE the streak. Paid tiers don't need it. Fail-open: None.
+    _streak = None
+    if _RANK.get(effective_tier, 0) <= 1:
+        try:
+            from return_streak import streak_snapshot
+            _streak = streak_snapshot(api_key)
+        except Exception:
+            _streak = None
+
     return jsonify({
         "valid":        True,
         "tier":         effective_tier,
         "developer_id": row[0],
         "email":        row[1],
+        "streak":       _streak,
         "metered_enforce": metered_enforce,
         "tier_source":  "highest_of_3" if effective_tier != mcp_tier else "mcp_dev_keys",
         "tier_detail":  {
@@ -1096,6 +1150,9 @@ def claim_key():
             "daily_calls": 100,
             "daily_caps": {"get_grid_intelligence": 10, "get_fiber_intel": 10},
             "paid_only_tools": ["analyze_site", "compare_sites", "get_dchub_recommendation"],
+            # r-streak (2026-07-18): teach the progressive unlock at claim time
+            # — the cap grows for keys that come back on distinct days.
+            "return_streak": _streak_ladder_text(),
         },
         rate_limit_note=(
             ("Email captured — thanks. " if email else
@@ -1437,6 +1494,10 @@ def identify_key():
             "previous_daily_calls": int(os.environ.get("MCP_FREE_DAILY_LIMIT", "25")),
             "extras": ["key tied to your account — recoverable from the dashboard",
                        "upgrade receipts + billing land on this email"],
+            # r-streak (2026-07-18): identified keys keep climbing too — the
+            # return-streak ladder multiplies the daily cap for keys that
+            # come back on distinct days.
+            "return_streak": _streak_ladder_text(),
         },
         message=("Email already on file — your key is identified."
                  if already else

@@ -86,6 +86,19 @@ TRIAL_DAILY_UNBOUND = int(os.environ.get("TRIAL_DAILY_CALLS_UNBOUND", "15"))
 # (e.g. 99999) to effectively disable the gate and revert to pure soft-nudge.
 TRIAL_FREE_CALLS_UNBOUND = int(os.environ.get("TRIAL_FREE_CALLS_UNBOUND", "10"))
 
+
+def _streak_block(api_key: str, base_cap: int):
+    """r-streak (2026-07-18): machine-readable return-streak state for mint/
+    reuse payloads — the progressive-unlock incentive only works if agents
+    KNOW their cap grows by returning. FAIL-OPEN: any error -> None (caller
+    payload simply carries no streak block; nothing breaks)."""
+    try:
+        from return_streak import streak_snapshot
+        return streak_snapshot(api_key, base_cap)
+    except Exception:
+        return None
+
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS auto_trial_keys (
     api_key          TEXT PRIMARY KEY,
@@ -336,6 +349,12 @@ def mint_trial_for_request(req=None, tool_name: str = "", client_name: str = "",
                         "instructions":(f"Use api_key in X-API-Key header. "
                                          f"{TRIAL_DAILY_UNBOUND} calls/day; bind your "
                                          f"operator email to unlock {TRIAL_DAILY_CALLS}/day."),
+                        # r-streak (2026-07-18): a REUSED key is exactly the
+                        # returner the streak boost rewards — tell the agent
+                        # its cap grew and what tomorrow unlocks (fail-open).
+                        "return_streak": _streak_block(
+                            r[0], TRIAL_DAILY_CALLS if operator_email
+                            else TRIAL_DAILY_UNBOUND),
                     }
             except Exception:
                 note_swallowed_write("auto_trial_keys", where="auto_trial.mint_trial_for_request")
@@ -485,6 +504,9 @@ def mint_trial_for_request(req=None, tool_name: str = "", client_name: str = "",
                          f"/api/v1/keys/auto-trial/bind {{api_key, email}} (or send "
                          f"your human to https://dchub.cloud/redeem to convert to a "
                          f"365-day IDENTIFIED key)."),
+        # r-streak (2026-07-18): teach the mechanism at mint time — daily caps
+        # grow 1.5x/2x/3x with distinct active days in the trailing 14.
+        "return_streak": _streak_block(api_key, TRIAL_DAILY_UNBOUND),
     }
 
 
@@ -525,6 +547,17 @@ def validate_trial_key(api_key: str) -> tuple[bool, str]:
                 if not bound and int(r[5] or 0) >= TRIAL_FREE_CALLS_UNBOUND:
                     return False, "bind_email_required"
                 cap   = TRIAL_DAILY_CALLS if bound else TRIAL_DAILY_UNBOUND
+                # r-streak (2026-07-18): progressive return-streak boost — the
+                # #1-constraint actuator (mature key-reuse 4.9% vs 8% floor).
+                # Distinct active days in the trailing 14 raise the daily cap:
+                # 2+ days 1.5x, 4+ 2x, 7+ 3x (cached ~1h per key). FAIL-OPEN:
+                # any error -> base cap, never block.
+                try:
+                    from return_streak import boosted_cap as _rs_boost, \
+                        get_streak_days as _rs_days
+                    cap = _rs_boost(cap, _rs_days(api_key))
+                except Exception:
+                    pass
                 today = now.date()
                 used_today = r[3] if r[4] == today else 0
                 if used_today >= cap:
