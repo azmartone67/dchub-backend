@@ -2308,6 +2308,17 @@ try:
     except Exception as _dms:
         import logging
         logging.getLogger(__name__).warning('depth_master_shell wiring failed: %s', _dms)
+    # 2026-07-18: Precision & Gas Depth master shell (#24) — the tier past Depth:
+    # point-level proximity + the gas layer + live connectivity. SHIPS SHADOW
+    # (ACT off unless PRECISION_DEPTH_MASTER_ACT_ENABLE=1); endpoints are inert
+    # until called. Croned 13:xx UTC (after the grid family) in cron_heartbeat.
+    try:
+        from routes.precision_depth_master_shell import precision_depth_master_shell_bp
+        app.register_blueprint(precision_depth_master_shell_bp)
+        print("[main] precision_depth_master_shell_bp registered: POST /api/v1/admin/precision-depth/master-tick", flush=True)
+    except Exception as _pdms:
+        import logging
+        logging.getLogger(__name__).warning('precision_depth_master_shell wiring failed: %s', _pdms)
     # NOTE (2026-07-16): the reliability_master_shell_bp registration that used to
     # live here was a DUPLICATE of the one ~100 lines above — it always hit
     # "name 'reliability_master_shell' is already registered" and logged a WARNING

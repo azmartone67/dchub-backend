@@ -652,6 +652,18 @@ _DISPATCH = [
      "POST",
      lambda now: now.hour == 10 and now.minute < 55),
 
+    # 2026-07-18: Precision & Gas Depth master shell (#24) — the tier past Depth:
+    # point-level transmission/pipeline proximity, the gas layer (basis + pipeline),
+    # and live connectivity (PeeringDB / cloud on-ramp). Also closes the scoreboard
+    # dc_share_pct:0 gap. SHIPS SHADOW — ACT off unless PRECISION_DEPTH_MASTER_ACT_ENABLE=1
+    # (measures + files sourced specs to brain until armed). Runs 13:xx UTC, AFTER the
+    # grid family (depth=10/grid-data=11/monetize=12) so dc_load_share reads fresh
+    # dc_load_queue once armed. Kill: PRECISION_DEPTH_MASTER_DISABLED.
+    ("precision_depth_master_tick_daily",
+     f"{BASE}/api/v1/admin/precision-depth/master-tick",
+     "POST",
+     lambda now: now.hour == 13 and now.minute < 55),
+
     # 2026-07-11: MONETIZE & RETAIN master shell — the fourth motion after the
     # three moat pillars. Meters grid/fiber paid-demand usage into leads
     # (NEVER blocks; enforcement = separate MONETIZE_METERED_ENFORCE, default
