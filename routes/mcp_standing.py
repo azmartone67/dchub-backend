@@ -20,12 +20,17 @@ mcp_standing_bp = Blueprint("mcp_standing", __name__)
 BASE = "https://dchub.cloud"
 
 # Marquee registry rankings — the shareable social proof. Each links to its source
-# so it's verifiable (not a self-asserted claim). Smithery search-rank #1 across the
-# queries that define this category; Glama profile-completeness score.
+# so a reader can VERIFY it there (not a self-asserted claim).
+# ★ 2026-07-17: dropped the frozen "Quality score 83%" — that number is not
+# sourced live from Glama in this process, so it silently rots (Glama recomputes
+# it). We keep only claims that are STABLE + verifiable at the linked source: the
+# Smithery #1 rank (actively defended by registry_monitor.py, which pages on a
+# slip) and the A/A letter grades (Glama's coarse rubric, far slower to move than
+# the percentage). No hardcoded numeric score that can drift out from under us.
 _RANK_HIGHLIGHTS = [
     {"registry": "Smithery", "claim": "#1 server for “data centers”, “energy”, “grid”, “power”, “fiber”, “hyperscale”, “interconnection”",
      "source": "https://smithery.ai/servers/azmartone67/dchub"},
-    {"registry": "Glama", "claim": "Quality score 83% (Server Coherence A · Tool Definition A)",
+    {"registry": "Glama", "claim": "Profile quality graded A / A (Server Coherence · Tool Definition)",
      "source": "https://glama.ai/mcp/servers/azmartone67/dchub-mcp-server"},
 ]
 
@@ -51,7 +56,21 @@ CONNECTED_PLATFORMS = [
     "Claude", "ChatGPT", "Gemini", "Perplexity", "Grok", "Copilot", "Meta AI",
     "DeepSeek", "Mistral", "Cohere", "Poe", "HuggingFace", "Groq", "You.com",
 ]
-TOOLS_COUNT = 49  # canonical (server.json _meta toolCount / mcp-server.json); keep in sync
+_TOOLS_FALLBACK = 73  # last-known canonical; _tools_count() derives it from the canon
+
+
+def _tools_count() -> int:
+    """Live tool count, derived from the canon (was a hardcoded 49 that drifted
+    behind the live 73). Pure import — no network — so it's safe on a public
+    page; falls back to the last-known canonical count."""
+    try:
+        from ai_surface_canon import PINNED
+        n = int(PINNED.get("tools_advertised") or 0)
+        if n > 0:
+            return n
+    except Exception:
+        pass
+    return _TOOLS_FALLBACK
 
 
 def _registries_live():
@@ -75,7 +94,7 @@ def _platforms_live():
     top = [{"platform": p, "connections": "active", "status": "connected"}
            for p in CONNECTED_PLATFORMS]
     return {"active_count": len(CONNECTED_PLATFORMS), "tracked_count": tracked,
-            "tools_count": TOOLS_COUNT, "top": top}
+            "tools_count": _tools_count(), "top": top}
 
 
 def _standing():
@@ -90,7 +109,7 @@ def _standing():
         "platforms": plats,
         "summary": (f"Listed on {len(regs)} MCP registries; "
                     f"{plats.get('active_count') or 'many'} AI platforms actively connected; "
-                    f"{plats.get('tools_count') or 31} tools."),
+                    f"{plats.get('tools_count') or _TOOLS_FALLBACK} tools."),
         "endpoints": {"mcp": f"{BASE}/mcp", "onboard": f"{BASE}/api/v1/onboard",
                       "this": f"{BASE}/api/v1/mcp/standing", "page": f"{BASE}/mcp-standing"},
         "cite_as": "Source: dchub.cloud",

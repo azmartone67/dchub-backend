@@ -556,6 +556,24 @@ def _recently_submitted(target_key: str, days: int) -> bool:
         except Exception: pass
 
 
+def _canonical_short_desc() -> str:
+    """Derive the outbound pitch's tool count from the canon so it can never
+    go stale here again (this was a hardcoded "48 tools" while the live
+    tools/list served 73 — the exact drift the honest-numbers guard now
+    watches). Falls back to a count-free phrasing if the canon import fails."""
+    try:
+        from ai_surface_canon import PINNED
+        tools = PINNED.get("tools_advertised")
+        pub = PINNED.get("public") or {}
+        facs = pub.get("facilities") or "21,000+"
+        if tools:
+            return (f"Data center intelligence MCP server. {tools} tools. "
+                    f"{facs} facilities.")
+    except Exception:
+        pass
+    return "Data center intelligence MCP server — live facility, grid, fiber & M&A data."
+
+
 def _submit_target(target: dict, run_state: Optional[dict] = None) -> dict:
     """Submit DC Hub to a single registry. Most registries today
     require manual/PR submission — for those we just LOG the intent
@@ -640,7 +658,7 @@ def _submit_target(target: dict, run_state: Optional[dict] = None) -> dict:
         try:
             payload = json.dumps({
                 "name":        "DC Hub",
-                "description": "Data center intelligence MCP server. 48 tools. 21K+ facilities.",
+                "description": _canonical_short_desc(),
                 "url":         "https://dchub.cloud/mcp",
                 "manifest":    manifest_url,
                 "homepage":    "https://dchub.cloud",

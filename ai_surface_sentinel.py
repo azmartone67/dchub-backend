@@ -37,6 +37,12 @@ _SURFACES = [
     ("llms_txt",             f"{_PUBLIC}/llms.txt",                              "text"),
     ("llms_full",            f"{_PUBLIC}/llms-full.txt",                         "text"),
     ("agents_md",            f"{_PUBLIC}/AGENTS.md",                             "text"),
+    # audited as TEXT, not json: this manifest is proxied by the off-repo zone
+    # worker whose version runs one patch AHEAD of PINNED by design (daily
+    # auto-publish), so the json version-check would false-RED. Text mode still
+    # runs the stale-marker + free-tier scans — which is what we want here (it's
+    # where the owner-gated "3 calls/day" + "4,000+ deals" zone-worker prose live).
+    ("mcp_json",             f"{_PUBLIC}/.well-known/mcp.json",                  "text"),
     ("mcp_server_json",      f"{_PUBLIC}/.well-known/mcp-server.json",           "json"),
     ("server_card",          f"{_PUBLIC}/.well-known/mcp/server-card.json",      "json"),
     ("openapi",              f"{_PUBLIC}/openapi.json",                          "json"),
@@ -121,6 +127,16 @@ def _audit_surface(key, url, kind, canon):
     # 5) free-tier overstatement on human pages
     if key in ("connect", "ai_page") and "100 calls/day" in body:
         add("free_tier", "100 calls/day", "10 calls/day", "medium")
+    # 5b) free-tier UNDERSTATEMENT on any served surface (2026-07-17). The
+    # anonymous keyless limit is the canon's free_tier_calls_per_day (10/day); a
+    # served "3 calls/day" is the old MCP_FREE_DAILY_LIMIT=3 — stale prose that
+    # now survives only in the off-repo zone worker (dchubapiproxy: mcp.json
+    # pricing.anonymous). That surface is owner-gated (CF dashboard paste, no
+    # API) so this is DETECT-only — the honest ceiling — but at least the drift
+    # now shows up on the audit instead of silently understating the free tier.
+    ftc = canon.get("free_tier_calls_per_day", 10)
+    if "3 calls/day" in body:
+        add("free_tier_anon", "3 calls/day", f"{ftc} calls/day", "medium")
 
     if not drifts:
         verdict = "clean"

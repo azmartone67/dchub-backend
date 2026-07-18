@@ -2785,9 +2785,16 @@ def _run_mcp_presence_auto_fix():
             auto_fix_all_drifted as _fix,
         )
         result = _fix(dry_run=False) or {}
+        # r-honestcount (2026-07-17): report the honest buckets. "submitted" is
+        # ONLY a real form/POST 2xx; manifest_upstream = registries that re-crawl
+        # our GitHub manifest/About (no push happened here — the daily heal does
+        # it); human_loop = queued a brain_finding. The old single "submitted"
+        # count folded the no-op upstream path in and looked like automation.
         logger.info(
-            "📡 mcp_presence_auto_fix: checked=%s submitted=%s rate_limited=%s errors=%s",
+            "📡 mcp_presence_auto_fix: checked=%s submitted=%s manifest_upstream=%s "
+            "human_loop=%s rate_limited=%s errors=%s",
             result.get("checked"), result.get("submitted"),
+            result.get("manifest_upstream"), result.get("human_loop"),
             result.get("rate_limited"), result.get("errors"),
         )
     except Exception as e:

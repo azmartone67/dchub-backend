@@ -2401,7 +2401,9 @@ def auto_fix_all_drifted(dry_run: bool = True) -> dict:
     Wired into a SCHEDULE entry (slot 19/19 UTC) named 'mcp_presence_auto_fix'."""
     summary = {
         "checked":       0,
-        "submitted":     0,
+        "submitted":       0,   # a REAL form/POST submitter returned 2xx
+        "manifest_upstream": 0, # honest no-op: registry re-crawls our GitHub manifest/About
+        "human_loop":        0, # queued a brain_finding for a captcha/login-wall registry
         "rate_limited":  0,
         "errors":        0,
         "dry_run":       bool(dry_run),
@@ -2453,6 +2455,16 @@ def auto_fix_all_drifted(dry_run: bool = True) -> dict:
             })
             if r.get("rate_limited"):
                 summary["rate_limited"] += 1
+            # r-honestcount (2026-07-17): after the speculative-webhook removal
+            # (see _submitter_manifest_refresh), the manifest registries return
+            # ok=True but did NOT push anything — the fix is upstream (re-crawl).
+            # Counting those as "submitted" reported phantom automation. Split
+            # the buckets so the daily log tells the truth: only a real form/POST
+            # 2xx is "submitted".
+            elif r.get("requires_manifest_update"):
+                summary["manifest_upstream"] += 1
+            elif r.get("requires_human_loop"):
+                summary["human_loop"] += 1
             elif r.get("ok"):
                 summary["submitted"] += 1
             else:
