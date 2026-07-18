@@ -287,6 +287,12 @@ def drain_now(platform):
                            publish_platform = %s
                      WHERE id = %s
                 """, ('published' if success else 'failed', platform, post_id))
+                # r-xid (2026-07-18): persist the tweet id like the loop path
+                # does — the radar keys x_publisher_dead health on it.
+                if success and platform == 'twitter' and urn:
+                    cur2.execute(
+                        "UPDATE social_media_posts SET twitter_id = %s WHERE id = %s",
+                        (str(urn)[:64], post_id))
             conn.commit()
         except Exception as e:
             logger.warning(f"[drain-now] DB UPDATE failed: {e}")

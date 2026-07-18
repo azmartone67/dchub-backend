@@ -6864,10 +6864,11 @@ def check_media_and_yield_health() -> list[dict]:
     """2026-07-02 — three silent-death modes in the media/discovery loops that
     plain MAX(col) freshness SLAs can't express:
 
-    1. `x_publisher_dead` — social_media_posts has approved rows queued but
-       ZERO rows have ever received a twitter_id (found live: 37 approved,
-       0 posted in the publisher's entire history; the loop fails at the X
-       API with no error column to land in).
+    1. `x_publisher_dead` — approved X rows queued but ZERO published in
+       14d (status='published' + publish_platform, the columns the writers
+       actually stamp — r-xid 2026-07-18: the original twitter_id-keyed
+       predicate was a permanent false positive because no writer stored
+       the tweet id).
     2. `linkedin_engagement_readback_stale` — posts are going out but
        engagement_fetched_at isn't advancing → the media loop is flying
        blind (root cause 2026-07-02: token missing r_organization_social;
@@ -6886,14 +6887,27 @@ def check_media_and_yield_health() -> list[dict]:
         if c is None:
             return []
         with c.cursor() as cur:
-            # 1. X publisher: queued but never once succeeded
+            # 1. X publisher: queued but nothing published recently.
+            # r-xid (2026-07-18): the death predicate keyed on twitter_id,
+            # which NO writer stamped (the loop discarded the tweet id) —
+            # so this fired 397h straight against a publisher that shipped
+            # 35 posts in 14d. Measure what the writers actually record
+            # (status='published' + publish_platform), with the deadman's
+            # cast guard: live posted_at is naive timestamp, published_at
+            # is TEXT with mixed ISO shapes — ::text + ISO-date regex +
+            # ::timestamp survives both and skips junk rows.
             try:
                 cur.execute("SELECT to_regclass('public.social_media_posts')")
                 if (cur.fetchone() or [None])[0]:
                     cur.execute("""
-                        SELECT COUNT(*) FILTER (WHERE status = 'approved'),
-                               COUNT(*) FILTER (WHERE twitter_id IS NOT NULL
-                                    AND created_at > NOW() - INTERVAL '14 days')
+                        SELECT COUNT(*) FILTER (WHERE status = 'approved'
+                                    AND platform = 'twitter'),
+                               COUNT(*) FILTER (WHERE status = 'published'
+                                    AND publish_platform IN ('twitter', 'x')
+                                    AND COALESCE(posted_at::text, published_at::text)
+                                        ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}'
+                                    AND COALESCE(posted_at::text, published_at::text)::timestamp
+                                        > NOW()::timestamp - INTERVAL '14 days')
                           FROM social_media_posts
                     """)
                     queued, posted_14d = cur.fetchone() or (0, 0)
@@ -6902,13 +6916,12 @@ def check_media_and_yield_health() -> list[dict]:
                             "issue":  "x_publisher_dead",
                             "url":    "table:social_media_posts",
                             "count":  int(queued),
-                            "detail": (f"{queued} approved posts queued for X but 0 posted in "
-                                       f"14d (0 twitter_id ever recorded). The _twitter_loop "
-                                       f"runs (TWITTER_PUBLISHER_ENABLED set, creds present) "
-                                       f"but the X API rejects posts — known cause: the X app "
-                                       f"is not attached to a Project in the X developer "
-                                       f"portal (owner action). Errors are only in Railway "
-                                       f"logs; nothing lands in a table."),
+                            "detail": (f"{queued} approved X posts queued but 0 published in "
+                                       f"14d (status='published', publish_platform twitter/x). "
+                                       f"Check /api/v1/dchub-media/publisher-status "
+                                       f"(last_error_class, auth circuit breaker) and Railway "
+                                       f"logs; historical root cause was the X app not being "
+                                       f"attached to a Project in the X developer portal."),
                         })
             except Exception:
                 c.rollback()

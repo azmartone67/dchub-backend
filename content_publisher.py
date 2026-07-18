@@ -3870,7 +3870,12 @@ def start_twitter_publisher():
                     success, result = _post_to_twitter(content_text)
                     now = datetime.utcnow().isoformat() + 'Z'
                     if success:
-                        cur.execute("UPDATE social_media_posts SET status = 'published', posted_at = %s, published_at = %s, publish_platform = 'twitter' WHERE id = %s", (now, now, post_id))
+                        # r-xid (2026-07-18): persist the tweet id. _post_to_twitter
+                        # returns it on success but it was discarded — 35 published
+                        # rows, 0 twitter_id ever — which made the radar's
+                        # twitter_id-keyed x_publisher_dead a permanent false
+                        # positive on a HEALTHY publisher (open 397h).
+                        cur.execute("UPDATE social_media_posts SET status = 'published', posted_at = %s, published_at = %s, publish_platform = 'twitter', twitter_id = %s WHERE id = %s", (now, now, str(result)[:64], post_id))
                         conn.commit()
                         logger.info(f"Auto-published post {post_id} to X")
                         _record_attempt("twitter", "ok")
