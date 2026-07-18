@@ -2340,11 +2340,21 @@ def mcp_funnel():
             # platforms, and point the PRESS headline (below) at THAT. Press copy
             # must never claim "led by Claude and ChatGPT" over a number that is
             # mostly our own self-heal traffic.
+            # 2026-07-18: the denylist above still let transport buckets top the
+            # "external" ranking — 'direct' (~143K) and 'mcp' (~103K) outranked
+            # Claude, so the press headline read "led by Direct and Claude".
+            # 'direct'/'mcp'/'mcp_generic' are how a request arrived, not an
+            # external AI platform; junk rows (glama, unknown_ai, *-health,
+            # scanners) leaked too. Gate on the AI_PLATFORMS allowlist instead —
+            # the same source as _is_real_ai_platform in /api/v1/ai-tracking/stats
+            # (HONEST NUMBERS #61 / r71) — with the hardened denylist as the
+            # fail-open fallback if the import is unavailable.
             _aicum_excl = (
                 "COALESCE(LOWER(platform),'') NOT IN "
                 "('internal','internal-dchub','dchub-selfheal','dchub-regression-test',"
                 "'dchub-mcp-test','mcp-test','mcp-probe','probe','value-harness','node',"
-                "'node-script','python-script','curl','postman','insomnia','verify') "
+                "'node-script','python-script','curl','postman','insomnia','verify',"
+                "'direct','mcp','mcp_generic','unknown_ai') "
                 "AND COALESCE(LOWER(platform),'') NOT LIKE 'dchub-%' "
                 "AND COALESCE(LOWER(platform),'') NOT LIKE '%probe%' "
                 "AND COALESCE(LOWER(platform),'') NOT LIKE '%harness%' "
@@ -2354,6 +2364,16 @@ def mcp_funnel():
                 "AND COALESCE(LOWER(platform),'') NOT LIKE '%selfheal%' "
                 "AND COALESCE(LOWER(platform),'') NOT LIKE '%audit%'"
             )
+            try:
+                from ai_tracking import AI_PLATFORMS as _aicum_allow
+                if _aicum_allow:
+                    _aicum_excl = (
+                        "COALESCE(LOWER(platform),'') IN ("
+                        + ",".join("'%s'" % k for k in sorted(_aicum_allow))
+                        + ")"
+                    )
+            except Exception:
+                pass
             try:
                 cur.execute(
                     f"SELECT COALESCE(SUM(total_requests), 0) FROM ai_cumulative "
