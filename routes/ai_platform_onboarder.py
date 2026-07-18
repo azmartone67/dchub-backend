@@ -91,6 +91,30 @@ def _get_db():
         return None
 
 
+def _release_db(conn):
+    """issue #1655 (brain-l15): release a checked-out pooled conn on ALL paths.
+
+    Same class as #1649 (deals_routes, 478cd361): every handler in this
+    file checked out a pooled Neon conn via main.get_db() and NEVER
+    returned it — not on success, not on error — including the PUBLIC
+    /api/v1/platforms/connected endpoint and the every-6h process cron.
+    Each call leaked one pool slot, so the pool drained until sitewide
+    requests (the /pockets/* uniform ReadTimeouts) hung on DB
+    acquisition. None-safe: rollback first so aborted transactions never
+    linger, then close() — which routes through the pool wrapper back to
+    the pool and is idempotent."""
+    if conn is None:
+        return
+    try:
+        conn.rollback()
+    except Exception:
+        pass
+    try:
+        conn.close()
+    except Exception:
+        pass
+
+
 # ── HTTP helpers ─────────────────────────────────────────────────────
 _UA = "DCHub-PlatformOnboarder/1.0 (+https://dchub.cloud)"
 
@@ -459,24 +483,27 @@ def process_queue():
     c = _get_db()
     if c is None:
         return jsonify(ok=False, error="no_db"), 503
-    started = time.time()
-    pending = _fetch_pending(c, PER_RUN_CAP)
-    results = []
-    for row in pending:
-        try:
-            results.append(_process_one(c, row))
-        except Exception as e:
-            logger.error("process_one(%s) raised: %s", row.get("id"), e)
-            results.append({"id": row.get("id"), "error": repr(e)[:200]})
-    return jsonify(
-        ok=True,
-        processed=len(results),
-        auto_approved=sum(1 for r in results if r.get("status") == "auto_approved"),
-        pending_review=sum(1 for r in results if r.get("status") == "pending_review"),
-        rejected=sum(1 for r in results if r.get("status") == "rejected_low_fit"),
-        elapsed_s=round(time.time() - started, 2),
-        results=results,
-    )
+    try:
+        started = time.time()
+        pending = _fetch_pending(c, PER_RUN_CAP)
+        results = []
+        for row in pending:
+            try:
+                results.append(_process_one(c, row))
+            except Exception as e:
+                logger.error("process_one(%s) raised: %s", row.get("id"), e)
+                results.append({"id": row.get("id"), "error": repr(e)[:200]})
+        return jsonify(
+            ok=True,
+            processed=len(results),
+            auto_approved=sum(1 for r in results if r.get("status") == "auto_approved"),
+            pending_review=sum(1 for r in results if r.get("status") == "pending_review"),
+            rejected=sum(1 for r in results if r.get("status") == "rejected_low_fit"),
+            elapsed_s=round(time.time() - started, 2),
+            results=results,
+        )
+    finally:
+        _release_db(c)  # issue #1655: release on ALL paths, not just success
 
 
 @ai_platform_onboarder_bp.route("/api/v1/admin/platforms/queue", methods=["GET"])
@@ -524,6 +551,8 @@ def queue_view():
         try: c.rollback()
         except Exception: pass
         return jsonify(ok=False, error="db_error", detail=repr(e)[:200]), 500
+    finally:
+        _release_db(c)  # issue #1655: release on ALL paths, not just success
     out["ok"] = True
     out["counts"] = {"pending": len(out["pending"]), "recent": len(out["recent"])}
     return jsonify(out)
@@ -560,6 +589,8 @@ def approve(sub_id: int):
         try: c.rollback()
         except Exception: pass
         return jsonify(ok=False, error="db_error", detail=repr(e)[:200]), 500
+    finally:
+        _release_db(c)  # issue #1655: release on ALL paths, not just success
 
 
 @ai_platform_onboarder_bp.route("/api/v1/admin/platforms/reject/<int:sub_id>",
@@ -594,6 +625,8 @@ def reject(sub_id: int):
         try: c.rollback()
         except Exception: pass
         return jsonify(ok=False, error="db_error", detail=repr(e)[:200]), 500
+    finally:
+        _release_db(c)  # issue #1655: release on ALL paths, not just success
 
 
 @ai_platform_onboarder_bp.route("/api/v1/platforms/connected", methods=["GET"])
@@ -631,6 +664,8 @@ def list_connected():
         try: c.rollback()
         except Exception: pass
         return jsonify(ok=False, error="db_error", detail=repr(e)[:200]), 500
+    finally:
+        _release_db(c)  # issue #1655: PUBLIC endpoint — leaked one conn per hit
     return jsonify(ok=True, count=len(out), platforms=out)
 
 
@@ -669,6 +704,8 @@ def admin_dashboard():
         except Exception: pass
         return (f"<h1>db error</h1><pre>{repr(e)[:300]}</pre>", 500,
                 {"Content-Type": "text/html"})
+    finally:
+        _release_db(c)  # issue #1655: release on ALL paths, not just success
 
     def _row_html(cols):
         from html import escape as _esc

@@ -577,89 +577,91 @@ def seed_variants():
     c = _get_db()
     if c is None:
         return jsonify(ok=False, error="no_db"), 503
-    _ensure_table(c)
-    force = (request.args.get("force") or "").strip() == "1"
-    existing: set = set()
     try:
-        with c.cursor() as cur:
-            cur.execute("SELECT platform, tool_name "
-                        "FROM mcp_tool_descriptions_per_platform")
-            existing = {(p, t) for p, t in cur.fetchall()}
-    except Exception:
-        try: c.rollback()
-        except Exception: pass
+        _ensure_table(c)
+        force = (request.args.get("force") or "").strip() == "1"
+        existing: set = set()
+        try:
+            with c.cursor() as cur:
+                cur.execute("SELECT platform, tool_name "
+                            "FROM mcp_tool_descriptions_per_platform")
+                existing = {(p, t) for p, t in cur.fetchall()}
+        except Exception:
+            try: c.rollback()
+            except Exception: pass
 
-    started = time.time()
-    written: list = []
-    skipped: list = []
-    failed: list = []
-    api_key_present = bool(os.environ.get("ANTHROPIC_API_KEY"))
+        started = time.time()
+        written: list = []
+        skipped: list = []
+        failed: list = []
+        api_key_present = bool(os.environ.get("ANTHROPIC_API_KEY"))
 
-    # r-tuner-loop: pull the per-(platform, tool) adoption signal ONCE, and the
-    # per-tool max across platforms, so each rewrite knows whether its cell is
-    # under-adopted on that platform. Fail-soft (empty → no-signal rewrites).
-    _adopt = _outcome_signal(c)
-    _tool_max: dict = {}
-    for (_p, _t), _n in _adopt.items():
-        if _n > _tool_max.get(_t, 0):
-            _tool_max[_t] = _n
+        # r-tuner-loop: pull the per-(platform, tool) adoption signal ONCE, and the
+        # per-tool max across platforms, so each rewrite knows whether its cell is
+        # under-adopted on that platform. Fail-soft (empty → no-signal rewrites).
+        _adopt = _outcome_signal(c)
+        _tool_max: dict = {}
+        for (_p, _t), _n in _adopt.items():
+            if _n > _tool_max.get(_t, 0):
+                _tool_max[_t] = _n
 
-    # Pull canonical per-tool descriptions from the live tools/list SoT (falls
-    # back to the frozen GENERIC_DESCRIPTIONS) so we never reseed the stale
-    # inflated-count copy again.
-    canonical = _canonical_descriptions()
+        # Pull canonical per-tool descriptions from the live tools/list SoT (falls
+        # back to the frozen GENERIC_DESCRIPTIONS) so we never reseed the stale
+        # inflated-count copy again.
+        canonical = _canonical_descriptions()
 
-    # Build the work list first (skip existing unless force).
-    jobs = []  # (canon, tool_name, generic, voice)
-    for tool_name in TOP_10_TOOLS:
-        generic = canonical.get(tool_name, tool_name)
-        for canon, _aliases, voice in TUNED_PLATFORMS:
-            if (canon, tool_name) in existing and not force:
-                skipped.append({"platform": canon, "tool": tool_name,
-                                "reason": "already_exists"})
-                continue
-            jobs.append((canon, tool_name, generic, voice))
+        # Build the work list first (skip existing unless force).
+        jobs = []  # (canon, tool_name, generic, voice)
+        for tool_name in TOP_10_TOOLS:
+            generic = canonical.get(tool_name, tool_name)
+            for canon, _aliases, voice in TUNED_PLATFORMS:
+                if (canon, tool_name) in existing and not force:
+                    skipped.append({"platform": canon, "tool": tool_name,
+                                    "reason": "already_exists"})
+                    continue
+                jobs.append((canon, tool_name, generic, voice))
 
-    if not api_key_present:
-        # Without Claude, write deterministic light variants so the table is at
-        # least populated. Fast — do inline. Re-run once ANTHROPIC_API_KEY is set.
-        for canon, tool_name, generic, _voice in jobs:
-            deterministic = f"[{canon}] {generic}"[:280]
-            _upsert(c, canon, tool_name, deterministic, "deterministic_no_claude")
-            written.append({"platform": canon, "tool": tool_name,
-                            "via": "deterministic"})
-    elif jobs:
-        # 2026-07-04: the Claude rewrites are the whole cost (~50 sequential
-        # network calls → ~4 min). Run at ~230s the web worker gets recycled
-        # mid-seed (observed: a run completed only 17/50 before a 502) and the
-        # request can't return through Railway's edge. Fan the network-bound
-        # rewrites out over a small pool so the whole seed finishes in ~30-40s —
-        # short enough to return cleanly and never block the worker long enough
-        # to be killed. DB writes stay sequential on this request's connection.
-        from concurrent.futures import ThreadPoolExecutor
+        if not api_key_present:
+            # Without Claude, write deterministic light variants so the table is at
+            # least populated. Fast — do inline. Re-run once ANTHROPIC_API_KEY is set.
+            for canon, tool_name, generic, _voice in jobs:
+                deterministic = f"[{canon}] {generic}"[:280]
+                _upsert(c, canon, tool_name, deterministic, "deterministic_no_claude")
+                written.append({"platform": canon, "tool": tool_name,
+                                "via": "deterministic"})
+        elif jobs:
+            # 2026-07-04: the Claude rewrites are the whole cost (~50 sequential
+            # network calls → ~4 min). Run at ~230s the web worker gets recycled
+            # mid-seed (observed: a run completed only 17/50 before a 502) and the
+            # request can't return through Railway's edge. Fan the network-bound
+            # rewrites out over a small pool so the whole seed finishes in ~30-40s —
+            # short enough to return cleanly and never block the worker long enough
+            # to be killed. DB writes stay sequential on this request's connection.
+            from concurrent.futures import ThreadPoolExecutor
 
-        def _rewrite_one(job):
-            canon, tool_name, generic, voice = job
-            tuned = _claude_rewrite(
-                tool_name, generic, canon, voice,
-                _fmt_adoption(_adopt.get((canon, tool_name), 0),
-                              _tool_max.get(tool_name, 0), canon))
-            return (canon, tool_name, tuned)
+            def _rewrite_one(job):
+                canon, tool_name, generic, voice = job
+                tuned = _claude_rewrite(
+                    tool_name, generic, canon, voice,
+                    _fmt_adoption(_adopt.get((canon, tool_name), 0),
+                                  _tool_max.get(tool_name, 0), canon))
+                return (canon, tool_name, tuned)
 
-        with ThreadPoolExecutor(max_workers=6) as ex:
-            for canon, tool_name, tuned in ex.map(_rewrite_one, jobs):
-                if tuned:
-                    _upsert(c, canon, tool_name, tuned, "claude")
-                    written.append({"platform": canon, "tool": tool_name,
-                                    "via": "claude"})
-                else:
-                    failed.append({"platform": canon, "tool": tool_name})
+            with ThreadPoolExecutor(max_workers=6) as ex:
+                for canon, tool_name, tuned in ex.map(_rewrite_one, jobs):
+                    if tuned:
+                        _upsert(c, canon, tool_name, tuned, "claude")
+                        written.append({"platform": canon, "tool": tool_name,
+                                        "via": "claude"})
+                    else:
+                        failed.append({"platform": canon, "tool": tool_name})
 
-    # Bust cache so the next read endpoint call sees fresh data.
-    _TUNED_CACHE["data"] = {}
-    _TUNED_CACHE["at"] = 0.0
+        # Bust cache so the next read endpoint call sees fresh data.
+        _TUNED_CACHE["data"] = {}
+        _TUNED_CACHE["at"] = 0.0
 
-    _put_db(c)  # release the pooled connection (rare admin path; normal completion)
+    finally:
+        _put_db(c)  # issue #1655: release on ALL paths — an exception mid-seed leaked the conn
 
     n_written, n_skipped, n_failed = len(written), len(skipped), len(failed)
     # 2026-07-04 FIX: this always returned 200 ok:true, even when written==0 and
