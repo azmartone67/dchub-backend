@@ -1,4 +1,4 @@
-<title>Grid Transition Radar &mdash; Free Preview &mdash; DC Hub Intelligence</title>
+<title>Grid Transition Radar N&ordm; {{edition_no}} &mdash; {{edition_title}} &mdash; Free Preview &mdash; DC Hub Intelligence</title>
 <style>
   :root{
     --ground:#EEF1F4;--surface:#FCFCFB;--surface-2:#F4F6F8;--ink:#0E1417;--ink-2:#3A434C;--muted:#6B747D;
@@ -54,6 +54,26 @@
   /* unlocked KPIs */
   .kpis{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:22px}
   @media(max-width:560px){.kpis{grid-template-columns:1fr}}
+  .kpis.quad{grid-template-columns:repeat(4,1fr)}
+  @media(max-width:760px){.kpis.quad{grid-template-columns:1fr 1fr}}
+  .kpis.quad .kpi .val{font-size:clamp(1.4rem,3vw,1.9rem)}
+
+  /* daily pull-quote (r-radartease) */
+  .pullq{background:var(--surface);border:1px solid var(--line);border-left:3px solid var(--accent);border-radius:12px;box-shadow:var(--shadow);padding:clamp(22px,3.5vw,32px);margin-top:22px;position:relative}
+  .pullq blockquote{font-family:var(--serif);font-size:clamp(1.15rem,2.4vw,1.5rem);line-height:1.45;color:var(--ink);margin:0;letter-spacing:-.01em}
+  .pullq blockquote::after{content:" \2026";color:var(--muted)}
+  .pullq .pq-fade{position:absolute;inset:auto 0 0 0;height:54px;border-radius:0 0 12px 12px;background:linear-gradient(180deg,transparent,var(--surface))}
+  .pullq .pq-cite{font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin-top:14px;display:flex;align-items:center;gap:8px}
+
+  /* edition rail (r-radartease) */
+  .rail{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-top:22px}
+  @media(max-width:760px){.rail{grid-template-columns:1fr 1fr}}
+  .rail a{display:block;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:16px;text-decoration:none;box-shadow:var(--shadow);transition:transform .12s}
+  .rail a:hover{transform:translateY(-2px)}
+  .rail .r-no{font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);display:flex;justify-content:space-between;align-items:center}
+  .rail .r-title{font-weight:700;font-size:.98rem;color:var(--ink);margin-top:8px;line-height:1.25}
+  .rail .today-tag{font-size:9.5px;font-weight:700;color:var(--build);background:var(--build-tint);border:1px solid color-mix(in srgb,var(--build) 30%,transparent);padding:2px 7px;border-radius:20px}
+  .rail .tmrw-tag{font-size:9.5px;font-weight:700;color:var(--accent-ink);background:var(--accent-soft);border:1px solid color-mix(in srgb,var(--accent) 28%,transparent);padding:2px 7px;border-radius:20px}
   .kpi{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:18px;box-shadow:var(--shadow);position:relative}
   .kpi.open{border-color:color-mix(in srgb,var(--build) 32%,var(--line))}
   .kpi .lbl{font-family:var(--mono);font-size:11px;letter-spacing:.05em;text-transform:uppercase;color:var(--muted);display:flex;align-items:center;gap:6px;margin-bottom:10px}
@@ -126,7 +146,7 @@
   </div>
 
   <header>
-    <div class="eyebrow">Grid Transition Radar &middot; Edition N&ordm; 002 &middot; Free Read<span class="rule"></span></div>
+    <div class="eyebrow">Grid Transition Radar &middot; Edition N&ordm; {{edition_no}} &middot; {{edition_title}} &middot; Free Read<span class="rule"></span></div>
     <h1 class="head">The queue is a mirage. The next gigawatt lands where the power is <em>already spilling</em>.</h1>
     <p class="standfirst">{{us_queue_gw}} GW sits in U.S. interconnection queues &mdash; more than the entire installed U.S. fleet &mdash; yet the grid AI most wants to build on has the longest wait in the country. This is the free read: the thesis, and two of the numbers. The full brief goes deeper.</p>
     <div class="byline">
@@ -139,7 +159,7 @@
   <!-- OPEN: the free numbers -->
   <section>
     <p class="kicker"><span class="free">&#9679; Free</span> &middot; the hook</p>
-    <h2>Two numbers, no signup</h2>
+    <h2>Four numbers, no signup</h2>
     <div class="kpis">
       <div class="kpi open">
         <span class="open-tag">Open</span>
@@ -153,6 +173,55 @@
         <div class="val">{{pjm_wait_mo}}<span class="u">months</span></div>
         <div class="note">The longest queue of any major U.S. grid &mdash; sitting under the world's #1 market.</div>
       </div>
+      <div class="kpi open">
+        <span class="open-tag">Open</span>
+        <div class="lbl"><span class="live-tag"></span> Ashburn zone load, right now</div>
+        <div class="val">{{ashburn_load_mw}}<span class="u">MW</span></div>
+        <div class="note">Live PJM telemetry under Data Center Alley &mdash; refreshed within ~15 minutes, every visit.</div>
+      </div>
+      <div class="kpi open">
+        <span class="open-tag">Open</span>
+        <div class="lbl"><span class="live-tag"></span> Ashburn real-time power price</div>
+        <div class="val">${{ashburn_lmp}}<span class="u">/MWh</span></div>
+        <div class="note">The live locational price the world's densest data-center cluster is paying this hour.</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- OPEN: featured grid of the day (rotates through all 7 ISOs) -->
+  <section>
+    <p class="kicker"><span class="free">&#9679; Free today</span> &middot; rotates daily</p>
+    <h2>Featured grid: <em style="font-style:normal;color:var(--accent)">{{featured_iso}}</em></h2>
+    <p class="lead">One full scoreboard row, unlocked for everyone &mdash; a different U.S. grid every day. The other six rows, with verdicts, are in the complete brief.</p>
+    <div class="kpis quad">
+      <div class="kpi open">
+        <div class="lbl">Time-to-power</div>
+        <div class="val">{{featured_wait}}<span class="u">mo</span></div>
+      </div>
+      <div class="kpi open">
+        <div class="lbl">Queue depth</div>
+        <div class="val">{{featured_queue}}<span class="u">GW</span></div>
+      </div>
+      <div class="kpi open">
+        <div class="lbl">Renewable share</div>
+        <div class="val">{{featured_ren}}<span class="u">%</span></div>
+      </div>
+      <div class="kpi open">
+        <div class="lbl">Curtailment</div>
+        <div class="val">{{featured_curtail}}<span class="u">%</span></div>
+      </div>
+    </div>
+    <p style="font-family:var(--mono);font-size:11.5px;color:var(--muted);margin-top:12px">Come back tomorrow for the next grid &mdash; or <a class="src" href="https://dchub.cloud/pricing/upgrade">unlock all seven now</a>.</p>
+  </section>
+
+  <!-- TEASE: today's pull-quote from the full brief -->
+  <section>
+    <p class="kicker"><span class="lockword">&#128274; Pro</span> &middot; from today's full brief</p>
+    <h2>The line of the day</h2>
+    <div class="pullq">
+      <blockquote>&ldquo;{{pull_quote}}</blockquote>
+      <div class="pq-fade"></div>
+      <div class="pq-cite"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" style="width:10px;height:10px"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg> N&ordm; {{edition_no}} &middot; {{edition_title}} &middot; the sentence finishes in the full edition</div>
     </div>
   </section>
 
@@ -186,6 +255,18 @@
         <div class="lk-val">Read-through</div>
         <div class="lk-note">Exactly where to build, where to wait, and where to walk &mdash; this week.</div>
       </div>
+      <div class="lk">
+        <span class="lockpill"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg> Pro</span>
+        <div class="lk-lbl">Northern Virginia cluster ledger</div>
+        <div class="lk-val">{{va_mw}} MW</div>
+        <div class="lk-note">Ashburn + Sterling + Manassas: {{va_facilities}} facilities across {{va_operators}} operators &mdash; the full cluster read.</div>
+      </div>
+      <div class="lk">
+        <span class="lockpill"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg> Pro</span>
+        <div class="lk-lbl">Ashburn congestion component</div>
+        <div class="lk-val">${{ashburn_congestion}}</div>
+        <div class="lk-note">How much of the live price is pure congestion &mdash; the stress signal under Data Center Alley.</div>
+      </div>
     </div>
   </section>
 
@@ -207,6 +288,32 @@
     </div>
   </section>
 
+  <!-- OPEN: the rotation — today, tomorrow, and the 4-edition cycle -->
+  <section>
+    <p class="kicker"><span class="free">&#9679; Free</span> &middot; a different brief every day</p>
+    <h2>Tomorrow: N&ordm; {{tomorrow_no}} &mdash; {{tomorrow_title}}</h2>
+    <p class="lead">The Radar rotates through four audiences on a four-day cycle &mdash; same live data core, a different decision lens each morning. Today's numbers refresh within ~15 minutes all day.</p>
+    <div class="rail">
+      <a href="/radar/capital">
+        <div class="r-no">N&ordm; 001</div>
+        <div class="r-title">Capital Allocators</div>
+      </a>
+      <a href="/radar/siteselect">
+        <div class="r-no">N&ordm; 002</div>
+        <div class="r-title">Site Selection &amp; Ops</div>
+      </a>
+      <a href="/radar/agents">
+        <div class="r-no">N&ordm; 003</div>
+        <div class="r-title">Agents &amp; Developers</div>
+      </a>
+      <a href="/radar/press">
+        <div class="r-no">N&ordm; 004</div>
+        <div class="r-title">Infra Press</div>
+      </a>
+    </div>
+    <p style="font-family:var(--mono);font-size:11.5px;color:var(--muted);margin-top:12px">Today is N&ordm; {{edition_no}} &middot; {{edition_title}}. Free readers get the preview of every edition; the full ledgers are pro.</p>
+  </section>
+
   <!-- DUAL CTA: human + agent -->
   <section>
     <p class="kicker">Keep reading</p>
@@ -226,7 +333,7 @@
         <div class="term">
           <div class="term-bar"><span class="tdot"></span><span class="tdot"></span><span class="tdot g"></span><span style="margin-left:6px">grid-radar &middot; teaser.json</span></div>
 <div class="term-body">{
-  <span class="t-key">"edition"</span>: <span class="t-str">"siteselect"</span>, <span class="t-key">"cycle_no"</span>: <span class="t-str">2</span>,
+  <span class="t-key">"edition"</span>: <span class="t-str">"{{edition_slug}}"</span>, <span class="t-key">"cycle_no"</span>: <span class="t-str">{{edition_no}}</span>,
   <span class="t-key">"teaser_metrics"</span>: [ <span class="t-com">/* 2 shown */</span> ],
   <span class="t-key">"locked"</span>: {
     <span class="t-key">"buildability_quadrant"</span>: <span class="t-bool">true</span>,
@@ -253,6 +360,17 @@
 </div></div>
 
 <script>
+(function(){
+  // r-radartease: stamp TODAY / TOMORROW badges onto the edition rail
+  var today="{{edition_slug}}", tmrw="{{tomorrow_slug}}";
+  document.querySelectorAll(".rail a").forEach(function(a){
+    var slug=(a.getAttribute("href")||"").split("/").pop(), tag=null, cls=null;
+    if(slug===today){tag="Today";cls="today-tag";}
+    else if(slug===tmrw){tag="Tomorrow";cls="tmrw-tag";}
+    if(tag){var s=document.createElement("span");s.className=cls;s.textContent=tag;
+      var no=a.querySelector(".r-no");if(no)no.appendChild(s);}
+  });
+})();
 (function(){
   var ISOS=[
     {iso:"SPP",wait:24.0,curtail:11.2,queue:187.2,v:"build",ldx:14,ldy:-16},

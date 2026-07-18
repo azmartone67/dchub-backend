@@ -327,14 +327,59 @@ _PROV = (
     '</div>'
 )
 
+# r-radartease (2026-07-18): one cut-off line "from today's full brief" per
+# edition — rotates daily with the edition cycle. Deliberately ends mid-thought.
+_PULL_QUOTES = {
+    "capital":    "The cost of a stranded gigawatt is now visible in three ISOs' forward positioning — and the market is mispricing the one where",
+    "siteselect": "Two markets clear every screen we run — power, fiber, water, tax — and neither is on a coast. The first is sitting on",
+    "agents":     "One tool call now returns the whole buildability frame, but the highest-signal field is the one most agents never read:",
+    "press":      "The story isn't the queue's size — it's the 14-month spread between the grid everyone names and the one where operators are quietly",
+}
+
+
+def _edition_tokens(slug: str, data: dict) -> dict:
+    """Edition-context + daily-rotation tokens for the templates (r-radartease).
+
+    - edition_*/tomorrow_*: fixes the teaser's hardcoded 'Edition Nº 002' (it
+      showed 002 every day regardless of the actual rotation slot) and powers
+      the tomorrow-hook + edition rail.
+    - featured_*: ONE full ISO row unlocked free, rotating daily through all 7
+      (day-of-year), so the free page genuinely changes every day and gives a
+      taste of the paid scoreboard depth.
+    - pull_quote: the day's cut-off line from the full brief.
+    """
+    ed = _BY_SLUG[slug]
+    idx = ed["no"] - 1
+    nxt = EDITIONS[(idx + 1) % len(EDITIONS)]
+    isos = data.get("isos") or []
+    doy = dt.datetime.now(dt.timezone.utc).timetuple().tm_yday
+    feat = isos[doy % len(isos)] if isos else {}
+    return {
+        "edition_slug":   slug,
+        "edition_no":     f"{ed['no']:03d}",
+        "edition_title":  ed["title"],
+        "tomorrow_slug":  nxt["slug"],
+        "tomorrow_no":    f"{nxt['no']:03d}",
+        "tomorrow_title": nxt["title"],
+        "featured_iso":     feat.get("iso"),
+        "featured_wait":    feat.get("wait_mo"),
+        "featured_queue":   feat.get("queue_gw"),
+        "featured_ren":     feat.get("ren"),
+        "featured_curtail": feat.get("curtail"),
+        "pull_quote":     _PULL_QUOTES.get(slug, _PULL_QUOTES["capital"]),
+    }
+
+
 def _render_edition(slug: str, tier: str) -> str:
     # TIER GATE: free/anon see the public teaser (thesis + free headline metrics +
     # locked deep sections + upgrade/agent CTA — daily-fresh via live numbers, and
     # crawlable for SEO/GEO reach); paid (DEVELOPER/PRO/ENTERPRISE) see the full
     # edition. The tease is the acquisition hook; the decision-grade depth converts.
     template = "teaser" if tier == "tease" else slug
+    data = T.normalize(_pull_core())
+    data.update(_edition_tokens(slug, data))
     with open(os.path.join(_PAGES_DIR, f"{template}.html"), encoding="utf-8") as f:
-        body = T.render(f.read(), T.normalize(_pull_core()), tier)
+        body = T.render(f.read(), data, tier)
     # frame the publication with a slim, navigable DC Hub bar (own identity below)
     # and close with an honest live-vs-calibrated provenance strip.
     return _NAV + body + _PROV
