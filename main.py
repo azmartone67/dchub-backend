@@ -20247,11 +20247,48 @@ def ai_tracking_full():
             if _is_real_ai_platform(key) and req_total > 0:
                 active_count += 1
 
+        # brain-l15 #1656/#1661 (2026-07-18): WoW context for the /ai hero.
+        # The cumulative all-time counter structurally can't show a cliff, so
+        # ship this-week vs prior-week (ai_daily_stats, junk platforms
+        # excluded) alongside it. Fail-soft — hero renders without it.
+        requests_7d_daily = requests_prior_7d_daily = wow_pct = None
+        try:
+            _wcur = conn.cursor()  # main cursor was closed above
+            _wcur.execute("""
+                SELECT platform,
+                       COALESCE(SUM(request_count) FILTER (
+                           WHERE date >= CURRENT_DATE - 7), 0),
+                       COALESCE(SUM(request_count) FILTER (
+                           WHERE date >= CURRENT_DATE - 14
+                             AND date <  CURRENT_DATE - 7), 0)
+                FROM ai_daily_stats
+                WHERE date >= CURRENT_DATE - 14
+                GROUP BY platform
+            """)
+            _wk = _pw = 0
+            for _p, _a, _b in _wcur.fetchall():
+                if _is_junk_platform((_p or '').lower()):
+                    continue
+                _wk += int(_a or 0)
+                _pw += int(_b or 0)
+            _wcur.close()
+            requests_7d_daily, requests_prior_7d_daily = _wk, _pw
+            if _pw:
+                wow_pct = round(100.0 * (_wk - _pw) / _pw, 1)
+        except Exception as _wow_err:
+            try: conn.rollback()
+            except Exception: pass
+            logger.warning(f"ai_tracking_full wow calc skipped: {_wow_err}")
+
         return jsonify({
             "success": True,
             "tracking": "persistent",
             "total_requests_all_time": all_time,
             "total_requests_today": round(total_7d / 7) if total_7d else 0,
+            "requests_7d": total_7d,
+            "requests_7d_daily": requests_7d_daily,
+            "requests_prior_7d_daily": requests_prior_7d_daily,
+            "wow_pct": wow_pct,
             "platforms_active": active_count,
             "platforms": platforms,
             "chart_data": platforms,

@@ -2270,6 +2270,31 @@ def mcp_funnel():
                 out["tool_calls_7d_complete_real"] = None
                 out["tool_calls_7d_complete_real_error"] = str(e)[:120]
 
+            # brain-l15 #1656/#1661 (2026-07-18): WoW context so cumulative
+            # headlines can't mask a cliff. PRIOR complete-7d window (days
+            # -14..-7, same de-loop predicate) + week-over-week % for the
+            # external headline — the trend the lifetime counter structurally
+            # hides (pct_7d_of_lifetime=0.2% only says "spike ended"; this
+            # says whether THIS week is up or down vs last).
+            try:
+                cur.execute(
+                    "SELECT COUNT(*) FROM mcp_tool_calls "
+                    "WHERE created_at >= CURRENT_DATE - INTERVAL '14 days' "
+                    "  AND created_at < CURRENT_DATE - INTERVAL '7 days' "
+                    f"  AND {_deloop_real_calls_predicate()}"
+                )
+                _pd7r = int((cur.fetchone() or [0])[0])
+                out["tool_calls_prior_7d_complete_real"] = _pd7r
+                _cur7 = out.get("tool_calls_7d_complete_real")
+                out["tool_calls_wow_pct"] = (
+                    round(100.0 * (_cur7 - _pd7r) / _pd7r, 1)
+                    if (_cur7 is not None and _pd7r) else None)
+            except Exception:
+                try: conn.rollback()
+                except Exception: pass
+                out["tool_calls_prior_7d_complete_real"] = None
+                out["tool_calls_wow_pct"] = None
+
             # r42x (2026-05-26): lifetime aggregate so press releases can
             # cite "N total tool calls since launch" as a moat metric.
             # Uses pg_class.reltuples for instant approximation (no full
@@ -2390,12 +2415,27 @@ def mcp_funnel():
                 # press line is no longer "led by Claude and ChatGPT" over ~68%
                 # self-heal traffic. Falls back to an unattributed all-sources claim
                 # only if the external figure is unavailable.
+                # brain-l15 #1656/#1661 (2026-07-18): the headline now LEADS
+                # with the current complete-7d external figure + WoW delta —
+                # a number that visibly moves week-over-week — and demotes the
+                # monotonically-growing lifetime counter to a secondary clause.
+                # A cumulative headline structurally cannot show that the
+                # current run-rate collapsed after a one-time spike; this can.
                 _ext = out.get("ai_agent_requests_external")
-                if _ext:
-                    _top = [p.get("name") or p.get("platform")
-                            for p in (out.get("ai_agent_top_platforms_external") or [])
-                            if (p.get("name") or p.get("platform"))][:2]
-                    _lead = f"led by {' and '.join(_top)} " if _top else ""
+                _wk = out.get("tool_calls_7d_complete_real")
+                _wow = out.get("tool_calls_wow_pct")
+                _wow_s = (f"{_wow:+.1f}% WoW" if _wow is not None else "WoW n/a")
+                _top = [p.get("name") or p.get("platform")
+                        for p in (out.get("ai_agent_top_platforms_external") or [])
+                        if (p.get("name") or p.get("platform"))][:2]
+                _lead = f"led by {' and '.join(_top)} " if _top else ""
+                if _wk is not None and _ext:
+                    out["press_headline_metric"] = (
+                        f"DC Hub served {_wk:,} external AI-agent tool calls "
+                        f"this week ({_wow_s}); {_ext:,} external requests "
+                        f"{_lead}since launch."
+                    )
+                elif _ext:
                     out["press_headline_metric"] = (
                         f"DC Hub has served {_ext:,} external AI-agent requests "
                         f"{_lead}since launch."
@@ -2430,6 +2470,25 @@ def mcp_funnel():
                 try: conn.rollback()
                 except Exception: pass
                 out["real_external_7d"] = None
+
+            # brain-l15 #1656/#1661: prior-7d + WoW for the external-signal
+            # figure too, so real_external_7d carries its own trend context.
+            try:
+                cur.execute(
+                    "SELECT COUNT(*) FROM mcp_funnel_real "
+                    "WHERE created_at >= NOW() - INTERVAL '14 days' "
+                    "  AND created_at < NOW() - INTERVAL '7 days'"
+                )
+                out["real_external_prior_7d"] = int((cur.fetchone() or [0])[0])
+                _re7, _rp7 = out.get("real_external_7d"), out["real_external_prior_7d"]
+                out["real_external_wow_pct"] = (
+                    round(100.0 * (_re7 - _rp7) / _rp7, 1)
+                    if (_re7 is not None and _rp7) else None)
+            except Exception:
+                try: conn.rollback()
+                except Exception: pass
+                out["real_external_prior_7d"] = None
+                out["real_external_wow_pct"] = None
 
             cur.execute(
                 "SELECT COUNT(*) FROM mcp_conversions WHERE created_at >= NOW() - INTERVAL '30 days'"

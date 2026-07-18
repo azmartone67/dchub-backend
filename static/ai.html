@@ -768,6 +768,8 @@ a:hover { color: #22d3ee; }
         <div class="hero-stat">
             <div class="hero-stat-value" id="statAllTime">—</div>
             <div class="hero-stat-label">All-Time Requests</div>
+            <!-- #1656/#1661: WoW context so the cumulative headline can't mask a cliff -->
+            <div id="statAllTimeWow" style="font-size:.72rem;color:#8b93a7;margin-top:4px;font-variant-numeric:tabular-nums;"></div>
         </div>
         <div class="hero-stat">
             <div class="hero-stat-value" id="statFacilities">20,000+</div>
@@ -1481,6 +1483,20 @@ dchub_tool = Tool(
         if ($('statPlatforms')) $('statPlatforms').textContent = bestCount;
         if ($('statRequestsToday')) $('statRequestsToday').textContent = today > 0 ? today.toLocaleString() : '—';
         if ($('statAllTime')) $('statAllTime').textContent = allTime > 0 ? allTime.toLocaleString() : '—';
+        // #1656/#1661: honest-metrics WoW line — the cumulative counter above
+        // can't show a decline, so surface this week's volume + WoW delta.
+        const wowEl = $('statAllTimeWow');
+        if (wowEl) {
+            const wk = (data.requests_7d_daily != null) ? data.requests_7d_daily : data.requests_7d;
+            const wow = data.wow_pct;
+            if (wk != null) {
+                let line = 'this week ' + Number(wk).toLocaleString();
+                if (wow != null) line += ' · ' + (wow >= 0 ? '+' : '') + wow + '% WoW';
+                wowEl.textContent = line;
+            } else {
+                wowEl.textContent = '';
+            }
+        }
     }
 
     // ═══════════════════════════════════════════════════════
