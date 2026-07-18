@@ -912,16 +912,31 @@ def claim_form(token: str):
             # bare 410; forward them to signup for their own free key. Keep the 410
             # only for a real human re-use, and fail toward it on any DB error.
             claimed_by_human = True
+            _machine_key = None
             try:
                 with c.cursor() as cur:
                     cur.execute(
-                        "SELECT claim_email FROM mcp_high_intent_sessions "
+                        "SELECT claim_email, minted_api_key FROM mcp_high_intent_sessions "
                         "WHERE mcp_session_id = %s AND tool_name = %s", (sid, tool))
                     _r = cur.fetchone()
                 claimed_by_human = bool(_r and _r[0])
+                _machine_key = (_r[1] if _r and len(_r) > 1 else None)
             except Exception:
                 claimed_by_human = True
             if not claimed_by_human:
+                # r-durable-handoff (2026-07-18): this is the ONE relayed URL a
+                # human ever actually clicks (4 opens/30d, all machine-burned by
+                # then). Land them on the STABLE per-key upgrade page — usage
+                # evidence + one-click key-bound checkout — instead of a generic
+                # signup form that loses all context. Fail-soft to signup.
+                try:
+                    if _machine_key:
+                        from routes.upgrade_handoff import build_upgrade_url
+                        _upg = build_upgrade_url(_machine_key)
+                        if _upg:
+                            return redirect(_upg + "?src=claim_relay", code=302)
+                except Exception as _uhe:
+                    logger.debug("[claim_form] upgrade-handoff redirect skipped: %s", _uhe)
                 return redirect("https://dchub.cloud/signup?src=claim_relay", code=302)
             body = _render_form(tool, count,
                                 err="This claim was already used. "
@@ -1177,6 +1192,26 @@ def _redeem_meta() -> dict:
     }
 
 
+def _handoff_fields(api_key: str | None) -> dict:
+    """r-durable-handoff (2026-07-18): the auto-redeem response is the
+    highest-traffic agent touchpoint this repo owns (1,566 machine redeems
+    in 30d) — attach the STABLE per-key upgrade URL + an explicit relay
+    instruction so the agent always holds a human-clickable, never-expiring
+    link (the burned /claim token was the only URL it had before).
+    Fail-soft: any error → {} so the redeem contract never breaks."""
+    try:
+        if not api_key:
+            return {}
+        from routes.upgrade_handoff import RELAY_INSTRUCTION, build_upgrade_url
+        url = build_upgrade_url(api_key)
+        if not url:
+            return {}
+        return {"human_upgrade_url": url,
+                "relay_instruction": RELAY_INSTRUCTION}
+    except Exception:
+        return {}
+
+
 @mcp_high_intent_claim_bp.route("/api/v1/mcp/high-intent/redeem", methods=["POST"])
 def claim_redeem_agent():
     """Agent-side redemption of a high-intent claim token → binds the 7d/50-call
@@ -1229,7 +1264,8 @@ def claim_redeem_agent():
                             "WHERE mcp_session_id=%s AND tool_name=%s", (sid, tool))
                 r = cur.fetchone() or (None,)
             if r[0]:
-                return jsonify(ok=True, api_key=r[0], already_redeemed=True, **_redeem_meta()), 200
+                return jsonify(ok=True, api_key=r[0], already_redeemed=True,
+                               **_handoff_fields(r[0]), **_redeem_meta()), 200
             return jsonify(ok=False, error="already_used_no_key"), 410
 
         # Mint the trial key — SAME path as the human form.
@@ -1298,7 +1334,8 @@ def claim_redeem_agent():
                 r = cur.fetchone() or (None,)
             if r[0]:
                 logger.info("[redeem-agent] lost mint race; returning winner key tool=%s", tool)
-                return jsonify(ok=True, api_key=r[0], already_redeemed=True, **_redeem_meta()), 200
+                return jsonify(ok=True, api_key=r[0], already_redeemed=True,
+                               **_handoff_fields(r[0]), **_redeem_meta()), 200
 
         # CRM bridge — only when the agent supplied an email (mirrors the form).
         if email:
@@ -1318,7 +1355,8 @@ def claim_redeem_agent():
 
         logger.info("[redeem-agent] minted key=%s tool=%s email=%s mint_error=%s",
                     (api_key or "")[:16] + "...", tool, bool(email), mint_error)
-        return jsonify(ok=True, api_key=api_key, already_redeemed=False, **_redeem_meta()), 200
+        return jsonify(ok=True, api_key=api_key, already_redeemed=False,
+                       **_handoff_fields(api_key), **_redeem_meta()), 200
     finally:
         try: c.close()
         except Exception: pass
