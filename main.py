@@ -13076,6 +13076,25 @@ def stripe_webhook():
                                 (data.get('customer'), data.get('id')))
                         except Exception as _pkce:
                             print(f"⚠️ pk- conversion-record error (non-fatal): {_pkce}")
+                        # r-keybound-attr (2026-07-18, #1660): the row above
+                        # landed with caller_id=NULL and no attribution_signal_id,
+                        # so /unlock/k pack buys counted as 'unattributed' and the
+                        # agent platforms' conv_rate stayed a false 0%. The key
+                        # hash IS the ref — resolve it, flip the key's upgrade
+                        # signals converted, and stamp this row with the driving
+                        # signal. Fail-soft: never breaks provisioning above.
+                        try:
+                            from mcp_signal_canonical import (
+                                attribute_keybound_conversion as _akc)
+                            _pk_attr = _akc(
+                                key_hash=ref[3:].strip(),
+                                buyer_email=((data.get('customer_details') or {}).get('email')
+                                             or data.get('customer_email')),
+                                stripe_ref=data.get('id'),
+                                stripe_customer_id=data.get('customer'))
+                            print(f"🎯 pk- key-bound attribution: {_pk_attr}")
+                        except Exception as _pka:
+                            print(f"⚠️ pk- key-bound attribution error (non-fatal): {_pka}")
             except Exception as _pce:
                 print(f"⚠️ Conversion-play redemption error (non-fatal): {_pce}")
 
@@ -14881,6 +14900,28 @@ def handle_checkout_completed(session):
                         (_paid_mcp_tier, _khash, _paid_mcp_tier))
                     print(f"🔑 k- sub tier '{_paid_mcp_tier}' → durable key "
                           f"(hash={_khash[:12]}…, rows={_kc2})")
+                    # r-keybound-attr (2026-07-18, #1660): same attribution gap
+                    # as the pk- pack rail — the sub's mcp_conversions row
+                    # (written by /stripe/webhook-mcp keyed on the sub id,
+                    # before OR after this event) carried no link to the
+                    # agent's signals, so /unlock/k sub buys counted as
+                    # 'unattributed'. Resolve the key from the ref hash, flip
+                    # its signals converted (backfilling their user_email with
+                    # the buyer's so subscription.created can attribute by
+                    # email whichever event lands first), and stamp the row if
+                    # it already exists. Fail-soft: never breaks the webhook.
+                    try:
+                        from mcp_signal_canonical import (
+                            attribute_keybound_conversion as _akc)
+                        _k_attr = _akc(
+                            key_hash=_khash,
+                            buyer_email=customer_email,
+                            stripe_ref=session.get('subscription'),
+                            stripe_customer_id=(stripe_cust
+                                                or session.get('customer')))
+                        print(f"🎯 k- key-bound attribution: {_k_attr}")
+                    except Exception as _ka:
+                        print(f"⚠️ k- key-bound attribution error (non-fatal): {_ka}")
         except Exception as _ksub_err:
             print(f"⚠️ k- sub tier bind failed (non-fatal): {str(_ksub_err)[:120]}")
 
