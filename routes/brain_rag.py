@@ -84,8 +84,10 @@ CORPORA = {
     #     CONFLICT (id) DO NOTHING (news_engine.py); rows are never updated
     #     in place and no updated/modified-style column is referenced by any
     #     code path, so there is no usable freshness signal.
-    #   deals — NO fresh_col: writers are ON CONFLICT DO NOTHING; the only
-    #     UPDATE path (manual admin edit in main.py) stamps no timestamp.
+    #   deals.updated_at — added 2026-07-18 (r-rag-deals-fresh): the admin
+    #     edit path (main.py admin_update_deal) now stamps it, so edited
+    #     deals re-embed. Bulk one-shot fixers don't stamp (acceptable).
+    #     On DBs without the column the live gate leaves insert-only.
     #   discovered_facilities.last_updated — re-stamped in place by two live
     #     crawlers (routes/discovery_routes.py upsert: SET last_updated=
     #     EXCLUDED.last_updated; routes/osm_crawler.py: SET last_updated=
@@ -112,7 +114,8 @@ CORPORA = {
         "text": ("coalesce(t.buyer,'') || ' → ' || coalesce(t.seller,'') || ' (' || "
                  "coalesce(t.type,'') || ', ' || coalesce(t.market, t.region, '') || ') ' || "
                  "coalesce(t.notes,'')"),
-        "where": "coalesce(t.buyer,'') <> '' OR coalesce(t.seller,'') <> ''"},
+        "where": "coalesce(t.buyer,'') <> '' OR coalesce(t.seller,'') <> ''",
+        "fresh_col": "updated_at"},
     "discovered_facilities": {
         "id": "t.id::text", "kind": "facility",
         "text": ("coalesce(t.name,'') || ' — ' || coalesce(t.provider,'') || ' · ' || "
@@ -719,6 +722,28 @@ def _corpus_total(cur):
 # duplicate, a finding whose issue was blanked) is equally dead: it left the
 # coverage denominator AND shouldn't be retrievable — swept too.
 _ORPHAN_SWEEP_CAP = 1000   # max rows deleted per corpus per run
+
+
+def _count_orphans(cur) -> dict:
+    """Read-only twin of _sweep_orphans for /status: {corpus: orphan_count}
+    for corpora with any. Same fail-soft-per-corpus contract."""
+    out = {}
+    for src, spec in CORPORA.items():
+        try:
+            cur.execute(
+                f"SELECT count(*) FROM brain_corpus_embeddings e"
+                f" WHERE e.source_table = %s"
+                f"   AND NOT EXISTS (SELECT 1 FROM {src} t"
+                f"                   WHERE ({spec['id']}) = e.source_id"
+                f"                     AND ({spec['where']}))",
+                (src,))
+            n = cur.fetchone()[0] or 0
+            if n:
+                out[src] = n
+        except Exception:
+            try: cur.connection.rollback()
+            except Exception: pass
+    return out
 
 
 def _sweep_orphans(c, per_corpus_cap=_ORPHAN_SWEEP_CAP) -> dict:
@@ -1550,9 +1575,14 @@ def status():
                     fresh[src] = f"active ({fc})"
                 else:
                     fresh[src] = f"inactive_missing_or_wrong_type ({fc})"
+            # Orphan drift (r-rag-orphan-gc): embeddings whose source row is
+            # gone/filtered — swept by reindex; shown here so drift is
+            # visible before it pushes coverage_pct past 100 again.
+            orphans = _count_orphans(cur)
         return jsonify(ok=True, embedded=emb, corpus_total=total,
                        coverage_pct=round(100.0 * emb / max(1, total), 1),
                        by_corpus=per, fresh_cols=fresh,
+                       orphans=orphans, orphans_total=sum(orphans.values()),
                        last_indexed=str(last), model=EMBED_MODEL,
                        planner_wired=str(os.environ.get("BRAIN_RAG_ENABLED", "")).lower() in ("1", "true", "yes")), 200
     except Exception as e:

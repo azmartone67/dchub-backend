@@ -24182,6 +24182,15 @@ def admin_update_deal():
                 params.append(deal_id)
                 cursor.execute(f"UPDATE deals SET {', '.join(updates)} WHERE id = %s", params)
                 conn.commit()
+                # r-rag-deals-fresh (2026-07-18): stamp updated_at so the RAG
+                # deals corpus fresh_col re-embeds edited deals. Guarded
+                # separately: branch DBs may lack the column and the edit
+                # itself must never fail on the stamp.
+                try:
+                    cursor.execute("UPDATE deals SET updated_at = NOW() WHERE id = %s", (deal_id,))
+                    conn.commit()
+                except Exception:
+                    conn.rollback()
             delete_ids = data.get('delete_duplicates', [])
             for did in delete_ids:
                 cursor.execute("DELETE FROM deals WHERE id = %s", (did,))
