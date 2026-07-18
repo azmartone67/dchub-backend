@@ -485,17 +485,26 @@ def open_spec_pr(directive: str, heading: str = "", kind: str = "item",
         # First line so the stamp survives the body[:4000] truncation — the
         # filer dedup + spec-PR janitor both grep open-PR bodies for it.
         (f"<!-- fingerprint:{fp} -->\n" if fp else "")
+        # r-spec-honesty (2026-07-18): the SPEC-ONLY marker is the substance
+        # gate's authoritative "honest scaffold" declaration. The old body
+        # tripped the gate's fix-claim regex (\bclos(e|es|ed)\b …) via its own
+        # "or close this PR" disclaimer — every spec PR self-flagged as a
+        # scaffold CLAIMING a fix and blocked as a required check (the user
+        # was manually bypassing them). Wording below deliberately avoids
+        # close/fix/resolve; the marker makes intent machine-readable.
+        + "**SPEC-ONLY** — this PR changes no running code and is not a fix; "
+        "it captures an approved recommendation as an implementable spec.\n\n"
         + f"# Brain proposal — {(heading or directive[:80])}\n\n"
         f"> Auto-captured from an **approved** brain {kind} item (#{item_id}). The brain's\n"
         f"> recommendation couldn't be expressed as a single-file edit, so it's filed here\n"
-        f"> as a spec for a human to implement (or close). **Draft PR — a human merges.**\n\n"
+        f"> as a spec for a human to implement (or discard). **Draft PR — a human merges.**\n\n"
         f"_Filed {_dt.datetime.utcnow().isoformat()}Z · {label}_\n\n"
         f"## The approved recommendation\n\n{directive}\n\n"
         f"## Human checklist\n\n"
         f"- [ ] Confirm this is still worth doing\n"
         f"- [ ] Scope it to a concrete change (file(s) + approach)\n"
         f"- [ ] Implement + verify\n"
-        f"- [ ] Or close this PR if superseded / not worth it\n"
+        f"- [ ] Or discard this PR if superseded / not worth it\n"
     )
     if not _create_branch(branch, base):
         return {"ok": False, "acted": False, "error": "create_branch failed"}

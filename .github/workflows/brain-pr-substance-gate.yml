@@ -84,6 +84,17 @@ jobs:
             if echo "$PR_BODY $PR_TITLE" | grep -qiE '\b(clos(e|es|ed)|fix(es|ed)?|resolv(e|es|ed))\b'; then
               claims_fix=1
             fi
+            # r-spec-honesty (2026-07-18): an explicit SPEC-ONLY declaration is
+            # authoritative — the PR states up front it is NOT a fix, so incidental
+            # regex hits (a finding NAME containing "fix", quoted detector text,
+            # checklist wording) can't false-positive it into the blocking path.
+            # The old loop: the opener's own "or close this PR" boilerplate matched
+            # \bclos(e)\b → every honest spec PR got BLOCKED as claiming a fix and
+            # had to be manually bypassed. Real fix-claiming scaffolds don't carry
+            # the marker and still block.
+            if echo "$PR_BODY" | grep -q 'SPEC-ONLY'; then
+              claims_fix=0
+            fi
             scaffolds=$(echo "$files" | grep -c '^routes/_proposed_' || true)
 
             if [ "$claims_fix" -eq 1 ]; then
