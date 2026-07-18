@@ -18,6 +18,7 @@ Recall: cosine (<=>), optionally scoped to one corpus.
 
 Endpoints (admin, X-Admin-Key):
   POST /api/v1/admin/brain/rag/reindex?cap=500    — embed up to cap new rows (any corpus)
+                                                    + GC orphaned embeddings (sources deleted)
   GET  /api/v1/admin/brain/rag/retrieve?q=&k=8&corpus=news_articles — test
   GET  /api/v1/admin/brain/rag/status             — per-corpus coverage
   POST /api/v1/admin/brain/rag/ingest-fix-history — fix_history corpus ingest
@@ -709,6 +710,46 @@ def _corpus_total(cur):
     return total
 
 
+# ── orphan GC (r-rag-orphan-gc 2026-07-18) ────────────────────────────
+# Embeddings outlive their sources: pruned brain_findings / deleted
+# news_articles rows leave brain_corpus_embeddings rows behind forever, so
+# /status coverage_pct drifts past 100% (observed 102.6% live). Swept from
+# reindex (cron_heartbeat keeps it running). A source row that still exists
+# but no longer satisfies the registry `where` (e.g. a facility later marked
+# duplicate, a finding whose issue was blanked) is equally dead: it left the
+# coverage denominator AND shouldn't be retrievable — swept too.
+_ORPHAN_SWEEP_CAP = 1000   # max rows deleted per corpus per run
+
+
+def _sweep_orphans(c, per_corpus_cap=_ORPHAN_SWEEP_CAP) -> dict:
+    """DELETE embedding rows whose source row is gone (or out of the registry
+    `where`), per flat corpus, batch-capped per run. Fail-soft per corpus like
+    _pending — a corpus whose table/columns don't resolve is rolled back and
+    skipped, and NOTHING is deleted for it. Commits per corpus. Returns
+    {corpus: deleted} for corpora that deleted anything. Never raises."""
+    deleted = {}
+    for src, spec in CORPORA.items():
+        try:
+            with c.cursor() as cur:
+                cur.execute(
+                    f"DELETE FROM brain_corpus_embeddings WHERE id IN ("
+                    f"  SELECT e.id FROM brain_corpus_embeddings e"
+                    f"  WHERE e.source_table = %s"
+                    f"    AND NOT EXISTS (SELECT 1 FROM {src} t"
+                    f"                    WHERE ({spec['id']}) = e.source_id"
+                    f"                      AND ({spec['where']}))"
+                    f"  LIMIT %s)",
+                    (src, int(per_corpus_cap)))
+                n = cur.rowcount or 0
+            c.commit()
+            if n:
+                deleted[src] = n
+        except Exception:
+            try: c.rollback()
+            except Exception: pass
+    return deleted
+
+
 # ── retrieval (importable by any consumer) ────────────────────────────
 def _keyword_fallback(query: str, k: int = 8, corpus=None) -> list:
     """Degraded-mode recall when the embedding provider is unavailable
@@ -1169,6 +1210,9 @@ def reindex():
         doc_cap = max(0, min(60, (cap - len(rows)) // 4)) if len(rows) < cap else 0
         if doc_cap:
             embedded += _reindex_chunk_docs(c, doc_cap)
+        # GC orphaned embeddings BEFORE the coverage count so `remaining`
+        # (and /status coverage_pct next read) reflect the post-sweep store.
+        orphans = _sweep_orphans(c)
         with c.cursor() as cur:
             total = _corpus_total(cur)
             # market_narratives (chunk units) and fix_history (external docs,
@@ -1181,6 +1225,8 @@ def reindex():
         remaining = max(0, total - emb) + chunk_docs_pending
         return jsonify(ok=True, embedded=embedded, remaining=remaining,
                        narrative_docs_pending=chunk_docs_pending,
+                       orphans_deleted=sum(orphans.values()),
+                       orphans_by_corpus=orphans,
                        done=(remaining == 0), model=EMBED_MODEL), 200
     except Exception as e:
         return jsonify(ok=False, error=f"{type(e).__name__}: {str(e)[:160]}", embedded=embedded), 200
