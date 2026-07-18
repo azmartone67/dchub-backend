@@ -32919,6 +32919,15 @@ try:
 except Exception as _il_e:
     print(f"[main] integrations_landing_bp register failed: {_il_e}", flush=True)
 
+try:
+    # r-env-drift (2026-07-18): shared-critical env fingerprints (internal-key
+    # gated) — the radar's check_env_drift compares backend vs worker.
+    from routes.env_drift import env_drift_bp
+    app.register_blueprint(env_drift_bp)
+    print("[main] env_drift_bp registered: /api/v1/internal/env-fingerprint", flush=True)
+except Exception as _ed_e:
+    print(f"[main] env_drift_bp register failed: {_ed_e}", flush=True)
+
 # Phase ZZZZZ-round36 (2026-05-24): openapi.json with dynamic counts
 try:
     from routes.openapi_dynamic import openapi_dynamic_bp

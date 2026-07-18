@@ -370,6 +370,48 @@ _TIER_CACHE = {"ts": 0.0, "findings": None}
 _TIER_TTL_S = 1800
 
 
+def check_env_drift() -> list[dict]:
+    """r-env-drift (2026-07-18): compare this service's shared-critical env
+    fingerprints against the worker's (Railway private network). The eval
+    tick + crawler scheduler run on the WORKER, so a key updated on the
+    backend dashboard alone silently no-ops — three incidents on 2026-07-17
+    (GROQ/XAI/MOONSHOT each landed on one service). Only the allowlist in
+    routes.env_drift.SHARED_CRITICAL_VARS is compared (many vars
+    legitimately differ per service); only var NAMES appear in findings."""
+    try:
+        if (os.environ.get("DCHUB_ROLE") or "").strip() == "worker":
+            return []          # the web replica owns this comparison
+        base = (os.environ.get("DCHUB_WORKER_INTERNAL_URL") or "").strip()
+        key = (os.environ.get("DCHUB_INTERNAL_KEY") or "").strip()
+        if not base or not key:
+            return []
+        from routes.env_drift import env_fingerprints
+        mine = env_fingerprints()
+        req = urllib.request.Request(
+            base.rstrip("/") + "/api/v1/internal/env-fingerprint",
+            headers={"X-Internal-Key": key})
+        with urllib.request.urlopen(req, timeout=6) as r:
+            theirs = (json.loads(r.read().decode("utf-8", "replace"))
+                      .get("fingerprints") or {})
+        if not theirs:
+            return []          # worker predates the endpoint — no signal yet
+        drifted = sorted(v for v in mine if mine.get(v) != theirs.get(v))
+        if not drifted:
+            return []
+        return [{
+            "issue": "env_drift_backend_vs_worker",
+            "url": "/api/v1/internal/env-fingerprint",
+            "count": len(drifted),
+            "detail": ("shared-critical env vars differ between dchub-backend "
+                       f"and dchub-worker: {', '.join(drifted[:12])}. Evals + "
+                       "crons run on the WORKER — a key saved on one service's "
+                       "dashboard silently no-ops on the other. Mirror the "
+                       "values on both services."),
+        }]
+    except Exception:
+        return []              # fail-soft: absence of signal, never noise
+
+
 def check_tier_consistency() -> list[dict]:
     """For each known MCP tool with a web API counterpart, fetch the
     web endpoint as an anonymous caller and check the response shape.
@@ -8862,6 +8904,10 @@ def scan_all() -> list[dict]:
                check_canonical_floor_exceeds_live,
                check_cross_surface_value_drift,
                check_worker_version_drift,
+               # r-env-drift (2026-07-18): shared-critical env vars silently
+               # drifting between the backend and worker services (dashboard
+               # saves per-service; 3 incidents on 2026-07-17 alone).
+               check_env_drift,
                check_tier_consistency,
                # 2026-06-20 incident alarm — fires if a PAID key ever resolves
                # below developer (capacity redacted for payers), if a paid tier
