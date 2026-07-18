@@ -1,0 +1,732 @@
+"""
+routes/white_glove_propagation.py — canonical-facts propagation (2026-07-18).
+=============================================================================
+
+r-white-glove BUILD 1: convert the white-glove registry watch from
+WATCH-ONLY to a FIRING service for the "refresh data" leg.
+
+The registry-freshness shell + presence crawler already DETECT stale
+listing copy ("58 tools", "3,000+ deals" on a directory page while the
+canon says 74 / "1,400+"), but nothing propagated the canonical numbers
+outward on a schedule. This module is the daily propagation job:
+
+  (a) reads the pinned canon (ai_surface_canon.PINNED, live tool count
+      overlaid fail-soft via the presence crawler's resolver);
+  (b) probes every listing in mcp_presence_crawler.SEED_REGISTRIES for
+      OLD numbers in the listing HTML — any digit-pattern near "tools"
+      that ≠ canon, plus stale deal/facility claims and the curated
+      textual stale-markers from the canon;
+  (c) registries WITH an automated refresh path (smithery / lobehub /
+      glama / pulsemcp manifest re-crawl, official-registry republish
+      via the existing mcp-registry-weekly-sync.yml workflow, the real
+      POST submitters for mcphive / cursor.directory) — trigger them
+      through the existing auto_resubmit_listing dispatcher + one
+      workflow_dispatch, and record the outcome;
+  (d) human-gated registries (mcp.so dashboard, cursor forum, login/
+      captcha walls) — file ONE consolidated brain finding (canonical
+      writer, dedupes on issue+url) + ONE GitHub issue titled
+      "[white-glove] listing copy drift" containing PASTE-READY
+      corrected copy per listing (the canonical per-registry description
+      block). The SAME issue is updated on subsequent runs (fingerprint
+      dedupe — same drift set = no touch; changed drift set = body
+      PATCH), never a new issue per day.
+
+DRIFT DETECTOR — ZERO-FALSE-POSITIVE BY DESIGN
+----------------------------------------------
+detect_number_drift() is a pure function (unit-tested in
+tests/test_white_glove_drift_detector.py). Canon numbers present on a
+page NEVER flag. To keep that guarantee it deliberately under-reaches:
+
+  · tool counts: only integers 12-500 adjacent to the word "tools"
+    (excluding "tool calls"/"tools.json") and ≠ the canon/live count.
+    The free-tier "~10 tools" mention is allowlisted.
+  · deals: integers adjacent to "deals"/"transactions" outside the
+    canon band [floor, floor+599] (canon "1,400+" → 1400-1999 OK; the
+    old over-claims 2,000+/3,000+/4,000+ all flag).
+  · facilities: integers adjacent to "facilities" outside
+    [floor, 2×floor] (canon "21,000+" → 21000-42000 OK; the stale
+    10,706 and the inflated 50,000+ both flag).
+  · stale markers: only the LETTERED subset of PINNED["stale_markers"]
+    ("58 tools", "4,000+ M&A", "100 calls/day", …) — the bare-number
+    markers ("317 ", "2.1.22") are skipped here because on arbitrary
+    third-party listing HTML they collide with unrelated numerics.
+
+Wiring:
+  · crawler_scheduler SCHEDULE slot (20, 20) — daily, one hour after the
+    19:00 mcp_presence_auto_fix sweep so this run can VERIFY it.
+  · Kill switch: WHITE_GLOVE_PROPAGATE_DISABLE=1 (checked in the runner
+    AND here).
+  · Admin endpoint: POST /api/v1/admin/white-glove/propagate
+    (?dry_run=1 default for manual pokes; the cron fires live).
+    GET /api/v1/admin/white-glove/status — recent run snapshots.
+
+All brain_findings writes go through
+routes.brain_findings_writer.upsert_brain_finding (canonical writer —
+the live table has no UNIQUE(issue,url), hand-rolled ON CONFLICT fails
+silently).
+"""
+from __future__ import annotations
+
+import hashlib
+import html as _html
+import json
+import logging
+import os
+import re
+from datetime import datetime, timezone
+
+from flask import Blueprint, jsonify, request
+
+logger = logging.getLogger(__name__)
+
+white_glove_propagation_bp = Blueprint("white_glove_propagation", __name__)
+
+# ── Config ────────────────────────────────────────────────────────────
+KILL_SWITCH_ENV = "WHITE_GLOVE_PROPAGATE_DISABLE"
+ISSUE_TITLE = "[white-glove] listing copy drift"
+ISSUE_LABEL = "white-glove"
+_GITHUB_REPO = (os.environ.get("GITHUB_REPO") or "azmartone67/dchub-backend").strip()
+_SYNC_WORKFLOW = "mcp-registry-weekly-sync.yml"   # official republish + smithery rescan
+MAX_LISTING_FETCHES = 20    # SEED_REGISTRIES is ~16; hard ceiling regardless
+
+# Registries whose refresh path is AUTOMATED (see mcp_presence_crawler
+# SUBMITTERS): real form POST, or upstream manifest/README re-crawl that the
+# daily-manifest-sync + mcp-registry-weekly-sync workflows keep fresh.
+AUTO_PATH_REGISTRIES = {
+    "mcphive",              # real POST submitter
+    "cursor_directory",     # real POST submitter
+    "smithery",             # manifest re-crawl + weekly-sync rescan
+    "lobehub",              # manifest/badge re-crawl
+    "glama",                # manifest re-crawl (glama refresh on their cadence)
+    "pulsemcp",             # manifest re-crawl
+    "mcp_official_registry",  # mcp-registry-publish / weekly-sync republish
+}
+# Everything else in SEED_REGISTRIES (mcp.so + secondary, smith_land, dxt_so,
+# yellowmcp, klavis_ai, cline, continue_dev, awesome_mcp_servers) is
+# HUMAN-GATED: dashboard edit, forum post, or PR someone must review.
+
+
+def _disabled() -> bool:
+    return (os.environ.get(KILL_SWITCH_ENV) or "").strip().lower() in (
+        "1", "true", "yes")
+
+
+def _admin_ok() -> bool:
+    sent = (request.headers.get("X-Admin-Key")
+            or request.args.get("admin_key") or "").strip()
+    expected = ((os.environ.get("DCHUB_ADMIN_KEY")
+                 or os.environ.get("DCHUB_INTERNAL_KEY") or "").strip())
+    return bool(sent) and sent == expected
+
+
+# ── Canon ─────────────────────────────────────────────────────────────
+def _parse_floor(public_str) -> int | None:
+    """'1,400+' → 1400 · '21,000+' → 21000 · '300+' → 300."""
+    try:
+        digits = re.sub(r"[^\d]", "", str(public_str or ""))
+        return int(digits) if digits else None
+    except Exception:
+        return None
+
+
+def load_canon() -> dict:
+    """Pinned canon + fail-soft live tool-count overlay.
+
+    Returns {tools, tools_live, deals_floor, facilities_floor,
+    markets_floor, version, endpoint, stale_markers}. Pure-import
+    fallback values keep this usable even fully offline."""
+    out = {
+        "tools": None, "tools_live": None,
+        "deals_floor": None, "facilities_floor": None, "markets_floor": None,
+        "version": None, "endpoint": "https://dchub.cloud/mcp",
+        "stale_markers": [],
+    }
+    try:
+        from ai_surface_canon import PINNED
+        out["tools"] = PINNED.get("tools_advertised")
+        out["version"] = PINNED.get("version")
+        out["endpoint"] = PINNED.get("mcp_endpoint") or out["endpoint"]
+        pub = PINNED.get("public") or {}
+        out["deals_floor"] = _parse_floor(pub.get("deals"))
+        out["facilities_floor"] = _parse_floor(pub.get("facilities"))
+        out["markets_floor"] = _parse_floor(pub.get("markets"))
+        out["stale_markers"] = list(PINNED.get("stale_markers") or [])
+    except Exception as e:
+        logger.warning("[white-glove] PINNED import failed: %s", e)
+    # Live tool count (the crawler's resolver hits /api/v1/mcp/tools.json
+    # with a tier_registry fallback). Fail-soft — pinned stays the floor.
+    try:
+        from routes.mcp_presence_crawler import _our_actual_tool_count
+        live = _our_actual_tool_count()
+        if isinstance(live, int) and live > 0:
+            out["tools_live"] = live
+    except Exception as e:
+        logger.info("[white-glove] live tool count unavailable: %s", e)
+    return out
+
+
+# ── Pure drift detector ──────────────────────────────────────────────
+# Numbers must not be a fragment of a bigger numeric ("2.4.4", "1,400").
+_NUM = r"(?<![\d.,])(\d{1,3}(?:,\d{3})+|\d+)"
+# "58 tools", "58+ tools", "58 live MCP tools" (≤2 CURATED modifier
+# words — a generic \w+ here matched "300 markets and tools") — but NOT
+# "979 lifetime tool calls" and NOT "tools.json".
+_TOOLS_FWD_RE = re.compile(
+    _NUM + r"\s*\+?\s*(?:(?:live|mcp|full|total|new|different|available|"
+           r"distinct|specialized|powerful|data|api)\s+){0,2}tools?\b"
+           r"(?!\s*(?:calls?\b|\.json))",
+    re.IGNORECASE)
+# "tools: 58" / "tools = 58" / JSON '"tools": 58'
+_TOOLS_REV_RE = re.compile(
+    r"\btools?\s*[\"']?\s*[:=]\s*[\"']?(\d{1,3}(?:,\d{3})+|\d+)",
+    re.IGNORECASE)
+_DEALS_RE = re.compile(
+    _NUM + r"\s*\+?\s*(?:tracked\s+)?(?:M&A\s+)?(?:deals?|transactions)\b",
+    re.IGNORECASE)
+_FACILITIES_RE = re.compile(
+    _NUM + r"\s*\+?\s*(?:data[\s-]?center\s+|global\s+|discovered\s+)?"
+    r"facilit(?:y|ies)\b",
+    re.IGNORECASE)
+
+TOOL_COUNT_MIN_PLAUSIBLE = 12   # "~10 tools" free-tier mention is legit copy
+TOOL_COUNT_MAX_PLAUSIBLE = 500
+DEALS_BAND_WIDTH = 600          # canon floor .. floor+599 is honest live range
+FACILITIES_BAND_MULT = 2        # canon floor .. 2×floor is honest live range
+
+# Directory pages list MANY servers' tool counts. Only judge copy within
+# this many chars of a DC Hub mention — other servers' numbers are not
+# our drift.
+_DCHUB_MENTION_RE = re.compile(r"dc[\s\-_]?hub|dchub", re.IGNORECASE)
+DCHUB_WINDOW_CHARS = 1200
+
+
+def _to_int(s: str) -> int | None:
+    try:
+        return int(s.replace(",", ""))
+    except Exception:
+        return None
+
+
+def _snippet(text: str, start: int, end: int, pad: int = 60) -> str:
+    return re.sub(r"\s+", " ", text[max(0, start - pad):end + pad]).strip()[:200]
+
+
+def _dchub_windows(text: str) -> str:
+    """Concatenated ±DCHUB_WINDOW_CHARS slices around DC Hub mentions
+    (merged when overlapping). Empty string when we're not mentioned —
+    a page that isn't about us has no copy of ours to drift."""
+    spans: list[list[int]] = []
+    for m in _DCHUB_MENTION_RE.finditer(text):
+        lo = max(0, m.start() - DCHUB_WINDOW_CHARS)
+        hi = min(len(text), m.end() + DCHUB_WINDOW_CHARS)
+        if spans and lo <= spans[-1][1]:
+            spans[-1][1] = max(spans[-1][1], hi)
+        else:
+            spans.append([lo, hi])
+    return "\n".join(text[lo:hi] for lo, hi in spans)
+
+
+def detect_number_drift(page_text: str, canon: dict,
+                        scope_to_dchub: bool = True) -> list[dict]:
+    """Pure detector. Returns [{kind, found, expected, context}, …].
+
+    ZERO-FALSE-POSITIVE CONTRACT: any page whose DC Hub copy matches the
+    canon (or the live overlay) produces []. See module docstring for
+    the deliberate under-reach rules that guarantee it. With
+    scope_to_dchub (default), only text near a DC Hub mention is judged
+    — directory pages listing OTHER servers' counts never flag."""
+    if not page_text:
+        return []
+    text = _html.unescape(page_text)
+    if scope_to_dchub:
+        text = _dchub_windows(text)
+        if not text:
+            return []
+    findings: list[dict] = []
+    seen: set[tuple] = set()
+
+    def _add(kind, found, expected, m):
+        key = (kind, found)
+        if key in seen:
+            return
+        seen.add(key)
+        findings.append({
+            "kind": kind,
+            "found": found,
+            "expected": expected,
+            "context": _snippet(text, m.start(), m.end()),
+        })
+
+    # tools ------------------------------------------------------------
+    tools_ok = {n for n in (canon.get("tools"), canon.get("tools_live"))
+                if isinstance(n, int)}
+    if tools_ok:
+        expected_str = "/".join(str(n) for n in sorted(tools_ok))
+        for m in list(_TOOLS_FWD_RE.finditer(text)) + list(_TOOLS_REV_RE.finditer(text)):
+            n = _to_int(m.group(1))
+            if n is None or n in tools_ok:
+                continue
+            if n < TOOL_COUNT_MIN_PLAUSIBLE or n > TOOL_COUNT_MAX_PLAUSIBLE:
+                continue
+            _add("tools", n, expected_str, m)
+
+    # deals ------------------------------------------------------------
+    deals_floor = canon.get("deals_floor")
+    if isinstance(deals_floor, int) and deals_floor > 0:
+        for m in _DEALS_RE.finditer(text):
+            n = _to_int(m.group(1))
+            if n is None:
+                continue
+            if deals_floor <= n < deals_floor + DEALS_BAND_WIDTH:
+                continue
+            if n < 100:   # "3 deals this week"-style editorial, not our claim
+                continue
+            _add("deals", n, f"{deals_floor:,}+", m)
+
+    # facilities -------------------------------------------------------
+    fac_floor = canon.get("facilities_floor")
+    if isinstance(fac_floor, int) and fac_floor > 0:
+        for m in _FACILITIES_RE.finditer(text):
+            n = _to_int(m.group(1))
+            if n is None:
+                continue
+            if fac_floor <= n <= fac_floor * FACILITIES_BAND_MULT:
+                continue
+            if n < 1000:  # "12 facilities in Ashburn" — not the global claim
+                continue
+            _add("facilities", n, f"{fac_floor:,}+", m)
+
+    # curated stale markers (LETTERED subset only — see module docstring)
+    low = text.lower()
+    for marker in canon.get("stale_markers") or []:
+        if not re.search(r"[A-Za-z]", marker):
+            continue   # bare numbers / version strings collide on 3p HTML
+        if marker.lower() in low:
+            idx = low.find(marker.lower())
+            findings.append({
+                "kind": "stale_marker",
+                "found": marker,
+                "expected": "(scrub — known-stale claim)",
+                "context": _snippet(text, idx, idx + len(marker)),
+            })
+    return findings
+
+
+# ── DB helpers ────────────────────────────────────────────────────────
+def _db_conn():
+    try:
+        from routes.mcp_presence_crawler import _db_conn as _c
+        return _c()
+    except Exception:
+        return None
+
+
+def _ensure_runs_table(cur) -> None:
+    cur.execute(
+        "CREATE TABLE IF NOT EXISTS white_glove_runs ("
+        " id BIGSERIAL PRIMARY KEY,"
+        " created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),"
+        " dry_run BOOLEAN,"
+        " checked INT, drifted INT, auto_path INT, human_gated INT,"
+        " issue_url TEXT, payload JSONB)")
+
+
+# ── GitHub: one consolidated, fingerprint-deduped issue ──────────────
+def _gh_token() -> str:
+    return (os.environ.get("PR_SUBMIT_TOKEN")
+            or os.environ.get("GITHUB_TOKEN") or "").strip()
+
+
+def _gh_headers(token: str) -> dict:
+    return {"Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28"}
+
+
+def _fingerprint(drifts_by_registry: dict) -> str:
+    """Stable hash of the drift SET (registry, kind, found) — same set on
+    the next run means the open issue is already accurate → no touch."""
+    flat = sorted(
+        (reg, d["kind"], str(d["found"]))
+        for reg, dl in drifts_by_registry.items() for d in dl)
+    return hashlib.sha256(json.dumps(flat).encode()).hexdigest()[:16]
+
+
+def _paste_ready_block(registry_name: str, listing: dict, canon: dict,
+                       drifts: list[dict]) -> str:
+    """Per-listing markdown section with copy an operator can paste."""
+    try:
+        from routes.mcp_presence_crawler import _build_canonical_description
+        desc = _build_canonical_description(registry_name)
+    except Exception:
+        t = canon.get("tools_live") or canon.get("tools") or "74"
+        desc = (f"DC Hub MCP: {t} live tools for data-center infrastructure — "
+                f"facilities, DCPI markets, tracked deals, ISO grid, fiber, gas.")
+    wrong = "; ".join(
+        f"shows **{d['found']}** for {d['kind']} (canon: {d['expected']})"
+        for d in drifts[:6])
+    lines = [
+        f"### {registry_name}",
+        f"- Listing: {listing.get('listing_url')}",
+    ]
+    if listing.get("submit_url"):
+        lines.append(f"- Edit / submit: {listing.get('submit_url')}")
+    lines += [
+        f"- Drift: {wrong}",
+        "",
+        "**Paste-ready corrected description:**",
+        "```",
+        desc,
+        "```",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def _issue_body(drifts_by_registry: dict, listings_by_name: dict,
+                canon: dict, fp: str) -> str:
+    tools = canon.get("tools_live") or canon.get("tools")
+    head = [
+        f"<!-- wg-fp:{fp} -->",
+        "## White-glove: listing copy drift (human-gated registries)",
+        "",
+        "Daily canonical-facts propagation found stale numbers on listings "
+        "that have **no automated refresh path** (dashboard/forum/PR-gated). "
+        "Paste the corrected copy below into each listing's edit surface.",
+        "",
+        "**Canonical numbers (ai_surface_canon):** "
+        f"`{tools} tools` · `{(canon.get('deals_floor') or 0):,}+ tracked deals` · "
+        f"`{(canon.get('facilities_floor') or 0):,}+ facilities` · "
+        f"`{(canon.get('markets_floor') or 0):,}+ markets` · "
+        f"endpoint `{canon.get('endpoint')}`",
+        "",
+        "**Canonical MCP config block (universal copy-paste):**",
+        "```json",
+        json.dumps({"dchub": {"transport": "streamable-http",
+                              "url": canon.get("endpoint")}}, indent=2),
+        "```",
+        "",
+    ]
+    sections = [
+        _paste_ready_block(reg, listings_by_name.get(reg, {}), canon, dl)
+        for reg, dl in sorted(drifts_by_registry.items())
+    ]
+    tail = [
+        "---",
+        "*Auto-maintained by `routes/white_glove_propagation.py` (daily "
+        "cron `white_glove_propagate`). This SAME issue is updated in place "
+        "when the drift set changes; it is not re-filed. Close it once every "
+        "listing above is corrected — it will reopen only on NEW drift.*",
+    ]
+    return "\n".join(head + sections + tail)
+
+
+def upsert_drift_issue(drifts_by_registry: dict, listings_by_name: dict,
+                       canon: dict, dry_run: bool) -> dict:
+    """Create-or-update THE consolidated GitHub issue. Never raises."""
+    token = _gh_token()
+    if not token:
+        return {"ok": False, "action": "skipped", "error": "no_github_token"}
+    fp = _fingerprint(drifts_by_registry)
+    if dry_run:
+        return {"ok": True, "action": "dry_run", "fingerprint": fp}
+    try:
+        import requests
+        # Find the existing open issue by exact title (first 100 open).
+        r = requests.get(
+            f"https://api.github.com/repos/{_GITHUB_REPO}/issues",
+            headers=_gh_headers(token),
+            params={"state": "open", "per_page": 100},
+            timeout=15)
+        existing = None
+        if r.status_code == 200:
+            for it in (r.json() or []):
+                if "pull_request" in it:
+                    continue
+                if (it.get("title") or "").strip() == ISSUE_TITLE:
+                    existing = it
+                    break
+        body = _issue_body(drifts_by_registry, listings_by_name, canon, fp)
+        if existing:
+            if f"wg-fp:{fp}" in (existing.get("body") or ""):
+                return {"ok": True, "action": "unchanged",
+                        "number": existing.get("number"),
+                        "url": existing.get("html_url"), "fingerprint": fp}
+            r2 = requests.patch(
+                f"https://api.github.com/repos/{_GITHUB_REPO}/issues/"
+                f"{existing.get('number')}",
+                headers=_gh_headers(token),
+                json={"body": body}, timeout=15)
+            if r2.status_code == 200:
+                return {"ok": True, "action": "updated",
+                        "number": existing.get("number"),
+                        "url": existing.get("html_url"), "fingerprint": fp}
+            return {"ok": False, "action": "update_failed",
+                    "error": f"github_{r2.status_code}"}
+        r3 = requests.post(
+            f"https://api.github.com/repos/{_GITHUB_REPO}/issues",
+            headers=_gh_headers(token),
+            json={"title": ISSUE_TITLE, "body": body,
+                  "labels": [ISSUE_LABEL, "registry-drift"]},
+            timeout=15)
+        if r3.status_code in (200, 201):
+            d = r3.json() or {}
+            return {"ok": True, "action": "created",
+                    "number": d.get("number"), "url": d.get("html_url"),
+                    "fingerprint": fp}
+        return {"ok": False, "action": "create_failed",
+                "error": f"github_{r3.status_code}: {r3.text[:150]}"}
+    except Exception as e:
+        return {"ok": False, "action": "error",
+                "error": f"{type(e).__name__}: {str(e)[:150]}"}
+
+
+def _trigger_registry_sync_workflow(dry_run: bool) -> dict:
+    """workflow_dispatch the existing daily registry sync (official-registry
+    republish + Smithery re-scan + coverage report) so the automated-path
+    registries re-pull the canonical numbers TODAY, not on their own
+    cadence. Never raises."""
+    token = _gh_token()
+    if not token:
+        return {"ok": False, "error": "no_github_token"}
+    if dry_run:
+        return {"ok": True, "dry_run": True,
+                "would_dispatch": _SYNC_WORKFLOW}
+    try:
+        import requests
+        r = requests.post(
+            f"https://api.github.com/repos/{_GITHUB_REPO}/actions/workflows/"
+            f"{_SYNC_WORKFLOW}/dispatches",
+            headers=_gh_headers(token),
+            json={"ref": "main"}, timeout=15)
+        return {"ok": r.status_code == 204,
+                "http_status": r.status_code, "workflow": _SYNC_WORKFLOW}
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {str(e)[:150]}"}
+
+
+# ── The daily job ─────────────────────────────────────────────────────
+def run_white_glove_propagation(dry_run: bool = False) -> dict:
+    """One propagation pass. Defensive — never raises."""
+    if _disabled():
+        return {"ok": True, "skipped": True,
+                "reason": f"{KILL_SWITCH_ENV}=1"}
+    started = datetime.now(timezone.utc)
+    canon = load_canon()
+    summary: dict = {
+        "ok": True,
+        "dry_run": bool(dry_run),
+        "canon": {k: canon.get(k) for k in
+                  ("tools", "tools_live", "deals_floor",
+                   "facilities_floor", "version")},
+        "checked": 0, "fetch_failed": 0,
+        "drifted": [], "clean": [],
+        "auto_path_fired": [], "human_gated": [],
+    }
+    try:
+        from routes.mcp_presence_crawler import SEED_REGISTRIES, _polite_get
+    except Exception as e:
+        summary["ok"] = False
+        summary["error"] = f"crawler_import: {str(e)[:150]}"
+        return summary
+
+    listings_by_name = {r["registry_name"]: r for r in SEED_REGISTRIES}
+    drifts_by_registry: dict[str, list] = {}
+
+    for reg in SEED_REGISTRIES[:MAX_LISTING_FETCHES]:
+        name = reg["registry_name"]
+        url = reg.get("listing_url")
+        if not url:
+            continue
+        summary["checked"] += 1
+        try:
+            body, status = _polite_get(url)
+        except Exception as e:
+            body, status = None, None
+            logger.info("[white-glove] fetch %s failed: %s", name, e)
+        if not body:
+            summary["fetch_failed"] += 1
+            continue
+        drifts = detect_number_drift(body, canon)
+        if drifts:
+            drifts_by_registry[name] = drifts
+            summary["drifted"].append(
+                {"registry": name,
+                 "drifts": [{k: d[k] for k in ("kind", "found", "expected")}
+                            for d in drifts[:6]]})
+        else:
+            summary["clean"].append(name)
+
+    # ── (c) automated refresh paths ──────────────────────────────────
+    auto_drifted = [n for n in drifts_by_registry if n in AUTO_PATH_REGISTRIES]
+    if auto_drifted:
+        try:
+            from routes.mcp_presence_crawler import auto_resubmit_listing
+            for name in auto_drifted:
+                try:
+                    r = auto_resubmit_listing(name, dry_run=dry_run)
+                except Exception as e:
+                    r = {"ok": False, "error": str(e)[:150]}
+                summary["auto_path_fired"].append({
+                    "registry": name,
+                    "ok": bool(r.get("ok")),
+                    "submitter": r.get("submitter"),
+                    "manifest_upstream": bool(r.get("requires_manifest_update")),
+                    "rate_limited": bool(r.get("rate_limited")),
+                })
+        except Exception as e:
+            summary["auto_path_error"] = str(e)[:150]
+        summary["workflow_dispatch"] = _trigger_registry_sync_workflow(dry_run)
+
+    # ── (d) human-gated: ONE finding + ONE issue ─────────────────────
+    human_drifted = {n: d for n, d in drifts_by_registry.items()
+                     if n not in AUTO_PATH_REGISTRIES}
+    summary["human_gated"] = sorted(human_drifted.keys())
+    issue_result = {}
+    if human_drifted:
+        issue_result = upsert_drift_issue(
+            human_drifted, listings_by_name, canon, dry_run)
+        summary["github_issue"] = issue_result
+
+    # brain finding (consolidated; canonical writer; auto-resolve on clean).
+    # Skipped on dry-run so a manual ?dry_run=1 poke stays side-effect-free.
+    conn = _db_conn()
+    if conn is not None:
+        if dry_run:
+            summary["finding_written"] = "skipped_dry_run"
+        else:
+            _write_consolidated_finding(conn, summary, human_drifted,
+                                        issue_result)
+        # run snapshot (fail-soft; written on dry-run too, flagged as such)
+        try:
+            with conn.cursor() as cur:
+                _ensure_runs_table(cur)
+                cur.execute(
+                    "INSERT INTO white_glove_runs "
+                    "(dry_run, checked, drifted, auto_path, human_gated, "
+                    " issue_url, payload) VALUES (%s,%s,%s,%s,%s,%s,%s)",
+                    (bool(dry_run), summary["checked"],
+                     len(drifts_by_registry), len(auto_drifted),
+                     len(human_drifted),
+                     (issue_result or {}).get("url"),
+                     json.dumps(summary, default=str)[:60000]))
+            conn.commit()
+        except Exception as e:
+            logger.info("[white-glove] snapshot insert failed: %s", e)
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+    summary["elapsed_s"] = round(
+        (datetime.now(timezone.utc) - started).total_seconds(), 1)
+    return summary
+
+
+def _write_consolidated_finding(conn, summary: dict, human_drifted: dict,
+                                issue_result: dict) -> None:
+    """ONE consolidated brain finding via the canonical writer; resolves
+    by absence when everything is clean. Never raises."""
+    try:
+        from routes.brain_findings_writer import upsert_brain_finding
+        with conn.cursor() as cur:
+            if human_drifted:
+                detail = (
+                    "White-glove propagation: stale listing copy on "
+                    f"{len(human_drifted)} human-gated registr"
+                    f"{'y' if len(human_drifted) == 1 else 'ies'} "
+                    f"({', '.join(sorted(human_drifted))}). "
+                    "Paste-ready corrected copy per listing lives in the "
+                    f"consolidated GitHub issue '{ISSUE_TITLE}'"
+                    + (f" — {issue_result.get('url')}"
+                       if issue_result.get("url") else "")
+                    + ". Automated-path registries are refreshed by the "
+                    "same cron via auto_resubmit_listing + the "
+                    "mcp-registry-weekly-sync workflow.")
+                upsert_brain_finding(
+                    cur,
+                    issue="white_glove_listing_copy_drift",
+                    url="https://dchub.cloud/admin/registry-freshness",
+                    count=len(human_drifted),
+                    detail=detail[:1900],
+                    detector="white_glove_propagation",
+                    status="open")
+            else:
+                upsert_brain_finding(
+                    cur,
+                    issue="white_glove_listing_copy_drift",
+                    url="https://dchub.cloud/admin/registry-freshness",
+                    count=1,
+                    detail="All probed human-gated listings match the "
+                           "canonical numbers — resolved by absence.",
+                    detector="white_glove_propagation",
+                    status="resolved")
+        conn.commit()
+        summary["finding_written"] = True
+    except Exception as e:
+        summary["finding_written"] = False
+        summary["finding_error"] = str(e)[:150]
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+
+
+# ── Endpoints ─────────────────────────────────────────────────────────
+@white_glove_propagation_bp.route("/api/v1/admin/white-glove/propagate",
+                                  methods=["POST"])
+def propagate_endpoint():
+    if not _admin_ok():
+        return jsonify(ok=False, error="admin_key_required"), 401
+    if _disabled():
+        return jsonify(ok=True, skipped=True,
+                       reason=f"{KILL_SWITCH_ENV}=1"), 200
+    raw = (request.args.get("dry_run") or "1").strip().lower()
+    dry_run = raw not in ("0", "false", "no", "off")
+    return jsonify(run_white_glove_propagation(dry_run=dry_run)), 200
+
+
+@white_glove_propagation_bp.route("/api/v1/admin/white-glove/status",
+                                  methods=["GET"])
+def status_endpoint():
+    if not _admin_ok():
+        return jsonify(ok=False, error="admin_key_required"), 401
+    out = {"ok": True, "disabled": _disabled(), "runs": []}
+    conn = _db_conn()
+    if conn is None:
+        out["error"] = "db_unavailable"
+        return jsonify(out), 200
+    try:
+        with conn.cursor() as cur:
+            _ensure_runs_table(cur)
+            cur.execute(
+                "SELECT created_at, dry_run, checked, drifted, auto_path, "
+                "human_gated, issue_url FROM white_glove_runs "
+                "ORDER BY created_at DESC LIMIT 14")
+            for row in cur.fetchall():
+                out["runs"].append({
+                    "created_at": row[0].isoformat() if row[0] else None,
+                    "dry_run": row[1], "checked": row[2], "drifted": row[3],
+                    "auto_path": row[4], "human_gated": row[5],
+                    "issue_url": row[6],
+                })
+        conn.commit()
+    except Exception as e:
+        out["error"] = str(e)[:150]
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+    return jsonify(out), 200
+
+
+def register_white_glove_propagation(app) -> None:
+    app.register_blueprint(white_glove_propagation_bp)
+    logger.info("white_glove_propagation registered: "
+                "POST /api/v1/admin/white-glove/propagate, "
+                "GET /api/v1/admin/white-glove/status")

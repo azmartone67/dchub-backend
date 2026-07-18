@@ -296,6 +296,21 @@ SCHEDULE = [
     # inside the runner — the dispatcher's per-registry 1/hour rate-
     # limit token + the human-loop fallback are the safety net.
     (19, 19, "mcp_presence_auto_fix", "_run_mcp_presence_auto_fix"),
+    # White-glove canonical-facts propagation (r-white-glove BUILD 1,
+    # 2026-07-18): daily sweep of every SEED_REGISTRIES listing for OLD
+    # numbers in the listing COPY ("58 tools", "3,000+ deals" vs the
+    # ai_surface_canon PINNED/live values). Automated-path registries
+    # (manifest re-crawl / real POST / official-registry republish) get
+    # auto_resubmit_listing + a workflow_dispatch of
+    # mcp-registry-weekly-sync.yml; human-gated ones get ONE consolidated
+    # brain finding + ONE fingerprint-deduped GitHub issue
+    # ("[white-glove] listing copy drift") with paste-ready corrected
+    # copy per listing. Slot 20/20 (same-hour pair → once/day), one hour
+    # AFTER the 19:00 presence auto-fix so this run verifies it; shares
+    # the hour with deals/feedback_triage but each runner has its own
+    # per-name last_run guard (prior art: verdict_shift_post 16/16).
+    # Kill switch: WHITE_GLOVE_PROPAGATE_DISABLE=1.
+    (20, 20, "white_glove_propagate", "_run_white_glove_propagate"),
     # Customer Feedback Forum triage (2026-06-06): twice-daily brain
     # triage of new /feedback submissions. Classifies LOW/MEDIUM/HIGH/
     # SPAM, writes brain_recommendation back, and (LOW-class only +
@@ -3510,6 +3525,39 @@ def _run_ai_surface_sentinel():
         logger.error("🛰️ ai_surface_sentinel: error — %s", e)
 
 
+def _run_white_glove_propagate():
+    """White-glove canonical-facts propagation (r-white-glove BUILD 1,
+    2026-07-18): read the pinned canon, probe every SEED_REGISTRIES
+    listing for stale numbers in the listing copy, fire the automated
+    refresh paths (auto_resubmit_listing + the mcp-registry-weekly-sync
+    workflow_dispatch), and consolidate human-gated drift into ONE brain
+    finding + ONE fingerprint-deduped GitHub issue with paste-ready
+    corrected copy. Direct module call (no HTTP loopback — the run is
+    bounded at ~16 polite 1s-spaced fetches). Defensive — never raises.
+    Kill switch: WHITE_GLOVE_PROPAGATE_DISABLE=1 (checked here AND
+    inside the module)."""
+    if (os.environ.get("WHITE_GLOVE_PROPAGATE_DISABLE") or "").strip().lower() \
+            in ("1", "true", "yes"):
+        logger.info("🧤 white_glove_propagate: disabled "
+                    "(WHITE_GLOVE_PROPAGATE_DISABLE=1)")
+        return
+    try:
+        from routes.white_glove_propagation import run_white_glove_propagation
+        result = run_white_glove_propagation(dry_run=False) or {}
+        logger.info(
+            "🧤 white_glove_propagate: checked=%s drifted=%s auto_fired=%s "
+            "human_gated=%s issue=%s finding=%s elapsed=%ss",
+            result.get("checked"), len(result.get("drifted") or []),
+            len(result.get("auto_path_fired") or []),
+            len(result.get("human_gated") or []),
+            (result.get("github_issue") or {}).get("action") or "n/a",
+            result.get("finding_written"),
+            result.get("elapsed_s"),
+        )
+    except Exception as e:
+        logger.error("🧤 white_glove_propagate error: %s", e, exc_info=True)
+
+
 def _run_carrier_facility_sync():
     """Weekly PeeringDB carrier↔facility sync (r-fiberreg 2026-07-16).
     Refreshes carrier_profiles, the carrier_facility_presence link table
@@ -3639,6 +3687,8 @@ _RUNNERS = {
     "mcp_presence_crawl":  _run_mcp_presence_crawl,
     "mcp_registry_discover": _run_mcp_registry_discover,
     "mcp_presence_auto_fix": _run_mcp_presence_auto_fix,
+    # r-white-glove BUILD 1 (2026-07-18): canonical-facts propagation.
+    "white_glove_propagate": _run_white_glove_propagate,
     "market_brief_warm":   _run_market_brief_warm,
     "state_brief_warm":    _run_state_brief_warm,
     "operator_brief_warm": _run_operator_brief_warm,

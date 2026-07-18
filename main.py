@@ -31076,6 +31076,28 @@ try:
               "GET /api/v1/platforms/register/docs")
     except Exception as _e_asr:
         print(f"⚠️ [agent_self_register] blueprint failed to register: {_e_asr}")
+    # r-white-glove BUILD 2 (2026-07-18): validated auto-approve lane —
+    # serves the generated /integrations/<slug> partner stub pages
+    # (unknown slugs 308 to the legacy /integrations/<slug>/ package
+    # route, so existing behavior is unchanged) + the lane-posture
+    # endpoint. Kill switch: ONBOARD_AUTO_APPROVE_DISABLE=1.
+    try:
+        from routes.onboard_auto_approve import onboard_auto_approve_bp
+        app.register_blueprint(onboard_auto_approve_bp)
+        print("🤖 [onboard_auto_approve] ready · GET /integrations/<slug> (stubs) · "
+              "GET /api/v1/onboard/auto-approve/config")
+    except Exception as _e_oaa:
+        print(f"⚠️ [onboard_auto_approve] blueprint failed to register: {_e_oaa}")
+    # r-white-glove BUILD 1 (2026-07-18): canonical-facts propagation —
+    # admin trigger + run-history for the daily white_glove_propagate cron.
+    # Kill switch: WHITE_GLOVE_PROPAGATE_DISABLE=1.
+    try:
+        from routes.white_glove_propagation import white_glove_propagation_bp
+        app.register_blueprint(white_glove_propagation_bp)
+        print("🧤 [white_glove_propagation] ready · POST /api/v1/admin/white-glove/propagate · "
+              "GET /api/v1/admin/white-glove/status")
+    except Exception as _e_wgp:
+        print(f"⚠️ [white_glove_propagation] blueprint failed to register: {_e_wgp}")
     # 2026-06-07 — Session-bound 3-strike one-click claim. Closes the
     # 0% MCP-conversion gap on get_grid_intelligence / get_fiber_intel
     # by minting an HMAC-signed claim_token after a session crosses 3

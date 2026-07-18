@@ -389,10 +389,31 @@ def _process_one(c, row: dict) -> dict:
     if fit_score >= ENRICH_MIN:
         card = _claude_write_card(submission, meta, fit_score) or ""
 
+    approved_via = "auto_onboarder"
+    lane: dict = {}
     if fit_score >= AUTO_APPROVE_MIN:
         status = "auto_approved"
     elif fit_score >= ENRICH_MIN:
         status = "pending_review"
+        # r-white-glove BUILD 2 (2026-07-18): VALIDATED auto-approve lane.
+        # Rows headed for the human queue that pass HARD deterministic
+        # checks (reachable https URL, non-spam name, real contact email,
+        # not a duplicate platform) auto-approve with the full package
+        # (live key, /integrations/<slug> stub page, tool-tuner seed row;
+        # the existing Resend confirmation below doubles as the welcome
+        # email). Kill switch ONBOARD_AUTO_APPROVE_DISABLE=1; capped at
+        # 3/day; anything failing validation stays 'pending_review'
+        # exactly as before. Fail-closed: a lane crash keeps the row in
+        # the human queue.
+        try:
+            from routes.onboard_auto_approve import try_auto_approve_lane
+            lane = try_auto_approve_lane(c, submission, meta, reachable) or {}
+        except Exception as _lane_e:
+            lane = {"approved": False,
+                    "reasons": [f"lane_import_error:{_lane_e!r}"[:150]]}
+        if lane.get("approved"):
+            status = "auto_approved"
+            approved_via = "auto_validated"
     else:
         status = "rejected_low_fit"
 
@@ -409,12 +430,13 @@ def _process_one(c, row: dict) -> dict:
                        approved_at = CASE WHEN %s = 'auto_approved'
                                           THEN NOW() ELSE approved_at END,
                        approved_by = CASE WHEN %s = 'auto_approved'
-                                          THEN 'auto_onboarder' ELSE approved_by END
+                                          THEN %s ELSE approved_by END
                  WHERE id = %s
             """, (fit_score, status, card,
                   json.dumps({"reachable": reachable, "http_code": code,
-                              "meta": meta, "reasons": reasons})[:4000],
-                  status, status, sub_id))
+                              "meta": meta, "reasons": reasons,
+                              "auto_approve_lane": lane})[:4000],
+                  status, status, approved_via, sub_id))
         try: c.commit()
         except Exception: pass
     except Exception as e:
@@ -446,7 +468,9 @@ def _process_one(c, row: dict) -> dict:
 
     return {"id": sub_id, "name": row.get("name"), "fit_score": fit_score,
             "status": status, "reachable": reachable, "card_written": bool(card),
-            "confirmation_sent": sent, "reasons": reasons}
+            "confirmation_sent": sent, "reasons": reasons,
+            "approved_via": (approved_via if status == "auto_approved" else None),
+            "auto_approve_lane": (lane or None)}
 
 
 def _fetch_pending(c, limit: int) -> list[dict]:
