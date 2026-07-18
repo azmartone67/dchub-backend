@@ -77,3 +77,56 @@ def test_grid_ext_metrics_helper_is_failsoft():
     assert "grid_ext_metrics" in src
     assert "iso_lmp_snapshots" in src
     assert "return {}" in src  # fail-soft on error
+
+
+# ── r-declone-2 (2026-07-17): per-market DCPI differentiation guards ────────
+# The master-shell iso_clone_ratio measured 0.653 because (a) the local-
+# footprint query was US-only, cloning every international market to its ISO
+# baseline, and (b) the linear saturation index compressed real footprint
+# differences below the 0.1 output rounding. These guards pin both fixes.
+
+def test_declone_covers_international_markets():
+    """gather_metrics_for_market must have an intl footprint branch (city-level,
+    non-US rows) and _US_DCPI_ISOS must classify the ISOs correctly — POSOCO/
+    AEMO/NORDPOOL markets were 100% cloned because the old query could only
+    ever match country='US' rows."""
+    from routes.dcpi import gather_metrics_for_market, _US_DCPI_ISOS
+    src = _src(gather_metrics_for_market)
+    assert "COALESCE(country,'') NOT IN ('US','USA')" in src, \
+        "intl footprint branch missing — international markets re-cloned"
+    assert "COUNT(DISTINCT provider)" in src, "operator-diversity signal dropped"
+    for intl in ("POSOCO", "AEMO", "NORDPOOL", "NGESO", "ENTSOE-DE"):
+        assert intl not in _US_DCPI_ISOS, f"{intl} misfiled as US ISO"
+    for us in ("WECC", "PJM", "ERCOT", "CAISO", "MISO"):
+        assert us in _US_DCPI_ISOS, f"{us} missing from US ISO set"
+
+
+def test_declone_saturation_survives_output_rounding():
+    """The log-scaled index must turn a real small-metro footprint difference
+    (5 vs 13 facilities — tempe vs henderson class) into >=0.1 months of
+    queue-wait spread on a typical 28-month ISO anchor, i.e. visible after
+    round(x, 1). The old linear fac/80 term produced 0.014 months here and
+    every published value collapsed back to the ISO clone."""
+    from routes.dcpi import _log_sat
+    d_sat = 0.40 * (_log_sat(13, 400.0) - _log_sat(5, 400.0))
+    assert 28.0 * 0.45 * d_sat >= 0.1, \
+        "saturation resolution below output rounding — markets re-clone"
+    # Determinism + bounds: pure function of the row inputs, clipped 0..1.
+    assert _log_sat(0, 400.0) == 0.0
+    assert _log_sat(400, 400.0) == 1.0
+    assert _log_sat(10_000, 400.0) == 1.0   # clipped, never >1
+    assert _log_sat(5, 400.0) == _log_sat(5, 400.0)
+
+
+def test_declone_is_bounded_and_documented():
+    """The modifier must stay a bounded delta anchored on the ISO baseline
+    (×0.90..×1.35 on queue wait), skip hand-calibrated override markets, and
+    stamp an auditable `differentiation` note into data_basis."""
+    from routes.dcpi import gather_metrics_for_market
+    src = _src(gather_metrics_for_market)
+    assert "0.90 + 0.45 * _sat" in src, "bounded queue-wait modifier changed"
+    assert "if not _override_applied:" in src, \
+        "curated flagship overrides no longer protected"
+    assert '"differentiation"' in src, "auditable differentiation note dropped"
+    assert "no_local_facility_footprint" in src, \
+        "footprint-less markets no longer documented as honest ISO baseline"

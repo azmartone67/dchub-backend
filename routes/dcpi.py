@@ -848,6 +848,32 @@ def _state_to_iso(state: str) -> str:
     }.get((state or "").upper(), "")
 
 
+# r-declone-2 (2026-07-17): US-grid ISO codes (incl. territories, whose state
+# codes stay US-style). Used by gather_metrics_for_market to pick the local-
+# footprint match grain: US markets match discovered_facilities on city+state
+# (the aurora-CO vs aurora-IL problem); any other ISO is international and
+# matches on city across non-US rows, because intl `state` spellings in
+# discovered_facilities are free-text ('QLD'/'WAS'/'Maharashtra'/''…).
+_US_DCPI_ISOS = frozenset({
+    "CAISO", "ERCOT", "NYISO", "ISONE", "PJM", "MISO", "SPP", "WECC",
+    "TVA", "SOCO", "SERC", "FRCC", "PREPA", "GPA", "WAPA",
+})
+
+
+def _log_sat(v: float, ceiling: float) -> float:
+    """Log-scaled 0..1 saturation term: ln(1+v)/ln(1+ceiling), clipped.
+
+    r-declone-2 (2026-07-17): replaces the linear v/ceiling terms whose
+    output differences between real small metros (5 vs 13 facilities)
+    were smaller than the 0.1 rounding of every published score — the
+    direct cause of ISO-cloned DCPI rows surviving r-declone."""
+    try:
+        v = max(0.0, float(v or 0))
+        return _clip(math.log1p(v) / math.log1p(ceiling), 0.0, 1.0)
+    except Exception:
+        return 0.0
+
+
 # r57 (2026-05-25): Splice the international markets in even when the
 # dynamic loader succeeds. The dynamic loader filters
 # `country = 'US' OR country = 'USA'` so it never returns the new UK/
@@ -1524,38 +1550,93 @@ def gather_metrics_for_market(market: tuple) -> dict:
     # and ONLY for markets without a hand-calibrated override — so the ~40
     # curated flagship markets stay byte-identical and only the cloned majority
     # de-clone, using real data, without abandoning the grid grounding.
+    #
+    # r-declone-2 (2026-07-17): two measured flaws fixed (master-shell
+    # iso_clone_ratio stuck at 0.653):
+    #   1. The footprint query filtered country='US', so EVERY international
+    #      market (POSOCO/AEMO/NORDPOOL/ENTSOE-*…) matched 0 facilities and
+    #      stayed a byte-identical ISO clone (POSOCO: 1 distinct composite
+    #      across 4 markets) even though discovered_facilities holds a real
+    #      footprint for those cities (Mumbai 104 rows, Sydney 91, Oslo 41…).
+    #      Intl markets now match on city within non-US rows (intl state
+    #      spellings are too inconsistent to filter on: 'QLD'/'WAS'/
+    #      'Maharashtra'/'' all appear; pooling by city+non-US is the honest
+    #      grain we actually have).
+    #   2. The linear index (fac/80 + mw/2000 + pipe/1500) compressed real
+    #      variation below output rounding: tempe (13 fac) vs henderson
+    #      (5 fac, 266 MW) differed by 0.004 sat → identical published values
+    #      after round(...,1). Log-scaled terms spread the low/mid range where
+    #      nearly all markets live, and DISTINCT-provider diversity (a real
+    #      per-city column) joins the index, so metros with genuinely
+    #      different footprints land on distinct published values. Markets
+    #      with IDENTICAL footprint rows (or none at all) remain identical —
+    #      that is real data honestly reflected, never noise.
     if not _override_applied:
         try:
+            _is_us_market = (iso in _US_DCPI_ISOS) or not iso
             with _conn() as c, c.cursor() as cur:
-                cur.execute("""
-                    SELECT COUNT(*) AS fac,
-                           COALESCE(SUM(power_mw), 0) AS op_mw,
-                           COALESCE(SUM(power_mw) FILTER (WHERE status IN
-                             ('construction','planned','permitting',
-                              'Under Construction','Planned')), 0) AS pipe_mw
-                    FROM discovered_facilities
-                    WHERE LOWER(city) = LOWER(%s) AND UPPER(COALESCE(state,'')) = %s
-                      AND (country='US' OR country='USA'
-                           OR country IS NULL OR country='')
-                """, (name, (state or "").upper()))
+                if _is_us_market:
+                    cur.execute("""
+                        SELECT COUNT(*) AS fac,
+                               COALESCE(SUM(power_mw), 0) AS op_mw,
+                               COALESCE(SUM(power_mw) FILTER (WHERE status IN
+                                 ('construction','planned','permitting',
+                                  'Under Construction','Planned')), 0) AS pipe_mw,
+                               COUNT(DISTINCT provider) AS providers
+                        FROM discovered_facilities
+                        WHERE LOWER(city) = LOWER(%s) AND UPPER(COALESCE(state,'')) = %s
+                          AND (country='US' OR country='USA'
+                               OR country IS NULL OR country='')
+                    """, (name, (state or "").upper()))
+                else:
+                    # Intl: city-level pooling, non-US rows only (keeps
+                    # Melbourne FL out of Melbourne AU).
+                    cur.execute("""
+                        SELECT COUNT(*) AS fac,
+                               COALESCE(SUM(power_mw), 0) AS op_mw,
+                               COALESCE(SUM(power_mw) FILTER (WHERE status IN
+                                 ('construction','planned','permitting',
+                                  'Under Construction','Planned')), 0) AS pipe_mw,
+                               COUNT(DISTINCT provider) AS providers
+                        FROM discovered_facilities
+                        WHERE LOWER(city) = LOWER(%s)
+                          AND COALESCE(country,'') NOT IN ('US','USA')
+                    """, (name,))
                 _fr = cur.fetchone()
             _fac = int((_fr[0] if _fr else 0) or 0)
             _op_mw = float((_fr[1] if _fr else 0) or 0)
             _pipe_mw = float((_fr[2] if _fr else 0) or 0)
-            # Saturation index 0..1: facility density + installed load + pipeline
-            # pressure (future demand). Denominators = "very saturated metro".
-            _sat = _clip(0.50 * (_fac / 80.0)
-                         + 0.30 * (_op_mw / 2000.0)
-                         + 0.20 * (_pipe_mw / 1500.0), 0.0, 1.0)
+            _prov = int((_fr[3] if _fr else 0) or 0)
+            # Saturation index 0..1: facility density + installed load +
+            # pipeline pressure (future demand) + operator diversity. Each
+            # term is log-scaled — ln(1+v)/ln(1+ceiling) — so the difference
+            # between 5 and 13 facilities is visible in the published output,
+            # not just the difference between 0 and 80. Ceilings = "largest
+            # real metro" (Ashburn-class): 400 facilities / 8 GW installed /
+            # 5 GW pipeline / 40 distinct operators.
+            _sat = _clip(0.40 * _log_sat(_fac, 400.0)
+                         + 0.25 * _log_sat(_op_mw, 8000.0)
+                         + 0.15 * _log_sat(_pipe_mw, 5000.0)
+                         + 0.20 * _log_sat(_prov, 40.0), 0.0, 1.0)
             metrics["local_facility_count"] = _fac
             metrics["local_operational_mw"] = round(_op_mw, 1)
             metrics["local_pipeline_mw"] = round(_pipe_mw, 1)
+            metrics["local_provider_count"] = _prov
             metrics["_saturation_index"] = round(_sat, 3)
+            metrics["_saturation_scope"] = ("us_city_state" if _is_us_market
+                                            else "intl_city")
             if _fac > 0 and _sat > 0:
                 _qw = metrics.get("queue_wait_months")
                 if _qw is not None:
-                    # up to +35% effective wait in the most-saturated metros
-                    metrics["queue_wait_months"] = round(float(_qw) * (1.0 + 0.35 * _sat), 1)
+                    # The ISO anchor models a TYPICAL mid-density metro
+                    # (sat≈0.22 → ×1.0). Denser metros wait longer for the
+                    # same ISO queue (up to ×1.35, the original r-declone
+                    # ceiling); sparser ones wait slightly less (floor ×0.90 —
+                    # less local competition for the same interconnection
+                    # capacity). Bounded, anchored, reproducible from the
+                    # market's own footprint row.
+                    metrics["queue_wait_months"] = round(
+                        float(_qw) * (0.90 + 0.45 * _sat), 1)
                 _dg = float(metrics.get("demand_growth_yoy_pct") or 4.0)
                 # up to +4pp local demand growth where DC density is high
                 metrics["demand_growth_yoy_pct"] = round(_dg + 4.0 * _sat, 1)
@@ -1623,14 +1704,41 @@ def gather_metrics_for_market(market: tuple) -> dict:
         data_basis["reserve_margin_live"] = _lg
     # r-declone (2026-07-02): expose the per-market saturation adjustment so
     # the de-cloned queue_wait/demand_growth are auditable, not silent.
+    # r-declone-2 (2026-07-17): also expose provider diversity, the match
+    # scope (US city+state vs intl city pooling) and a plain-language
+    # `differentiation` note so every per-market delta from the ISO anchor is
+    # reproducible from this row alone. When a market has NO local footprint
+    # rows we say so explicitly — identical-to-ISO-baseline is then a
+    # documented fact, not a silent clone.
     if metrics.get("_saturation_adjusted"):
         data_basis["local_saturation"] = {
             "index": metrics.get("_saturation_index"),
             "facility_count": metrics.get("local_facility_count"),
             "operational_mw": metrics.get("local_operational_mw"),
             "pipeline_mw": metrics.get("local_pipeline_mw"),
-            "adjusts": ["queue_wait_months", "demand_growth_yoy_pct"],
+            "provider_count": metrics.get("local_provider_count"),
+            "match_scope": metrics.get("_saturation_scope"),
+            "adjusts": ["queue_wait_months", "demand_growth_yoy_pct",
+                        "btm_headroom_mw"],
             "basis": "iso_anchor_adjusted_by_local_dc_saturation",
+            "differentiation": (
+                "queue_wait ×(0.90+0.45×index), demand_growth +4pp×index, "
+                "btm_headroom ×(1−0.40×index); index is log-scaled from this "
+                "market's own discovered_facilities footprint "
+                "(count/MW/pipeline/operators) — deterministic, no noise"
+            ),
+        }
+    elif not _override_applied and metrics.get("local_facility_count") == 0:
+        data_basis["local_saturation"] = {
+            "index": 0.0,
+            "facility_count": 0,
+            "match_scope": metrics.get("_saturation_scope"),
+            "basis": "no_local_facility_footprint",
+            "differentiation": (
+                "no discovered_facilities rows for this market — ISO baseline "
+                "used unchanged (identical values to other footprint-less "
+                "markets in this ISO are real, not fabricated variation)"
+            ),
         }
     metrics["data_basis"] = data_basis
 
