@@ -161,6 +161,15 @@ SEED_REGISTRIES: list[dict] = [
         "submit_url":    "https://mcp.so/submit",
     },
     {
+        # r-mcpso-secondary (2026-07-18): mcp.so ALSO indexed the backend repo
+        # as a listing. Kept deliberately (extra directory shelf space, same
+        # endpoint) — watched so the brain files a finding if it ever drifts
+        # stale-wrong (it indexes from a repo README not written for MCP).
+        "registry_name": "mcp_so_secondary",
+        "listing_url":   "https://mcp.so/servers/dchub-backend",
+        "submit_url":    "https://mcp.so/submit",
+    },
+    {
         "registry_name": "pulsemcp",
         "listing_url":   "https://pulsemcp.com/servers/dchub",
         "submit_url":    "https://pulsemcp.com/submit",
