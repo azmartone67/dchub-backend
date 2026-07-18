@@ -235,16 +235,28 @@ def _lane_brain_backlog(c) -> list[dict]:
     # auto-approve, ~482/7d; pending queue = 0). This now reflects it.
     drained = _scalar(c, "SELECT COUNT(*) FROM discovered_facilities "
                          "WHERE merged_at::timestamptz >= now() - interval '7 days'")
-    out.append(_check("bl_backlog_draining", "facilities DRAINED >=100/7d (real throughput)",
-                       (int(drained) >= 100) if drained is not None else None,
-                       f"{drained} drained/7d (merged_at stamped)" if drained is not None else "query failed"))
+    # r-drain-floor (2026-07-18): the 100/7d floor assumed a standing backlog.
+    # The queue now drains to EMPTY (pending=0), so throughput follows DISCOVERY
+    # inflow — 43 drained/7d with nothing left waiting is a healthy pipeline,
+    # not a stall (same stale-floor class as the mna 24h SLA false-breach).
+    # Pass when the floor is met OR the queue is effectively empty (<25 pending
+    # — a partial discovery burst mid-drain shouldn't flip the lane). A real
+    # stall now looks like: pending piling up AND low drain — which still fails.
+    pending = _scalar(c, "SELECT COUNT(*) FROM discovered_facilities WHERE status='pending'")
+    drain_ok = None
+    if drained is not None:
+        drain_ok = (int(drained) >= 100) or (pending is not None and int(pending) < 25)
+    out.append(_check("bl_backlog_draining", "facilities draining (>=100/7d or queue empty)",
+                       drain_ok,
+                       f"{drained} drained/7d · {pending if pending is not None else '?'} pending "
+                       f"(empty queue = inflow-limited, healthy)" if drained is not None else "query failed"))
 
     # 2d — GAUGE (r-probe-fix 2026-07-07): the REAL drainable queue = pending rows
     # awaiting auto-approve (status='pending'). The old gauge counted
     # `NOT (merged_at IS NULL AND is_duplicate=0)` = rows ALREADY PROCESSED
     # (merged OR marked duplicate) and mislabeled ~21,904 DONE rows as "unverified
     # backlog". Show pending + processed honestly.
-    pending = _scalar(c, "SELECT COUNT(*) FROM discovered_facilities WHERE status='pending'")
+    # (pending computed above for the drain check — reused here)
     processed = _scalar(c, "SELECT COUNT(*) FROM discovered_facilities "
                            "WHERE NOT (merged_at IS NULL AND is_duplicate = 0)")
     out.append(_check("bl_backlog_size", "drainable queue (pending) + processed",
