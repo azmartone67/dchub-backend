@@ -20,6 +20,8 @@ Endpoints (admin, X-Admin-Key):
   POST /api/v1/admin/brain/rag/reindex?cap=500    — embed up to cap new rows (any corpus)
   GET  /api/v1/admin/brain/rag/retrieve?q=&k=8&corpus=news_articles — test
   GET  /api/v1/admin/brain/rag/status             — per-corpus coverage
+  POST /api/v1/admin/brain/rag/ingest-fix-history — fix_history corpus ingest
+       (pushed gh-issue/commit docs + server-side resolved brain_findings)
 Kill: BRAIN_RAG_DISABLED=1 (endpoints) / BRAIN_RAG_ENABLED unset (planner wiring).
 Kept fresh by cron_heartbeat (brain_rag_reindex).
 """
@@ -858,6 +860,214 @@ def retrieve_lessons(query: str, k: int = 5) -> list:
     return out
 
 
+# ── fix-history corpus (r-rag-fix-history 2026-07-18) ─────────────────
+# Memory of the brain's OWN FIXES, so investigations start at "have I solved
+# this class before?" instead of from scratch. Three sub-sources, one corpus
+# (source_table='fix_history' in the SAME brain_corpus_embeddings store):
+#   gh_issue          — closed GitHub issues (title/labels/body/close date).
+#                       Harvested LOCALLY via gh CLI (the server has no gh and
+#                       no GH token scope guarantee) and PUSHED to the ingest
+#                       endpoint as docs.
+#   commit            — fix/feat git commit subjects+bodies (rich postmortems).
+#                       Same push path: the deployed image has no .git history.
+#   resolved_finding  — resolved brain_findings episodes, pulled SERVER-SIDE
+#                       (read-only SELECT; writes go through this module's own
+#                       upsert, never the findings writer). Stable id
+#                       finding#<row id>#<resolved date> — a reopened row that
+#                       re-resolves gets a new resolved_at → a NEW episode doc.
+# Dedupe = the store's UNIQUE(source_table, source_id); re-runs skip
+# already-present ids (cheap idempotency) unless force. Brain-internal —
+# deliberately NOT in PUBLIC_CORPORA. Recall via retrieve_prior_fixes().
+FIX_HISTORY_TABLE = "fix_history"
+_FIX_HISTORY_KINDS = ("gh_issue", "commit", "resolved_finding")
+_FIX_DOC_MAX_CHARS = 1600   # matches the left(text,1600) cap of the flat corpora
+_FIX_INGEST_DEFAULT_CAP = 200   # docs per run — cron-safe batch size
+
+
+def normalize_fix_docs(raw) -> tuple:
+    """Validate + normalize pushed fix-history docs into the canonical shape
+    {id, kind, title, text, date, ref}. Rejects rows missing a stable id/text
+    or with an unknown kind; collapses in-batch duplicates on id (first wins —
+    idempotent, not an error). Returns (docs, rejected_count). Never raises."""
+    docs, seen, rejected = [], set(), 0
+    for d in (raw or []):
+        if not isinstance(d, dict):
+            rejected += 1
+            continue
+        sid = str(d.get("id") or "").strip()[:200]
+        text = str(d.get("text") or "").strip()
+        kind = str(d.get("kind") or "").strip()
+        if not sid or not text or kind not in _FIX_HISTORY_KINDS:
+            rejected += 1
+            continue
+        if sid in seen:
+            continue
+        seen.add(sid)
+        docs.append({
+            "id": sid, "kind": kind,
+            "text": text[:_FIX_DOC_MAX_CHARS],
+            "title": str(d.get("title") or "").strip()[:300],
+            "date": str(d.get("date") or "").strip()[:32],
+            "ref": str(d.get("ref") or "").strip()[:400],
+        })
+    return docs, rejected
+
+
+def _pending_resolved_finding_docs(cur, limit) -> list:
+    """Resolved brain_findings episodes not yet in the fix_history corpus,
+    newest resolutions first. Read-only over brain_findings (canonical-writer
+    rule untouched — the only write is this module's own embeddings upsert).
+    The anti-join keys on the SAME stable id the doc carries, so re-runs are
+    naturally incremental. [] on any error (corpus skipped, never fatal)."""
+    if limit <= 0:
+        return []
+    try:
+        cur.execute("""
+            SELECT t.id, t.issue, t.detector, t.detail, t.resolved_at
+              FROM brain_findings t
+              LEFT JOIN brain_corpus_embeddings e
+                ON e.source_table = %s
+               AND e.source_id = 'finding#' || t.id::text || '#'
+                                 || to_char(t.resolved_at, 'YYYY-MM-DD')
+             WHERE t.resolved_at IS NOT NULL
+               AND coalesce(t.issue, '') <> ''
+               AND e.id IS NULL
+             ORDER BY t.resolved_at DESC
+             LIMIT %s
+        """, (FIX_HISTORY_TABLE, int(limit)))
+        rows = cur.fetchall()
+    except Exception:
+        try: cur.connection.rollback()
+        except Exception: pass
+        return []
+    docs = []
+    for fid, issue, detector, detail, resolved_at in rows:
+        try:
+            date_s = resolved_at.date().isoformat()
+        except Exception:
+            date_s = str(resolved_at)[:10]
+        docs.append({
+            "id": f"finding#{fid}#{date_s}",
+            "kind": "resolved_finding",
+            "title": (issue or "")[:300],
+            "date": date_s,
+            "ref": f"brain_findings/{fid}",
+            "text": (f"Resolved finding [{detector or 'unknown'}] ({date_s}): "
+                     f"{issue or ''} — {detail or ''}")[:_FIX_DOC_MAX_CHARS],
+        })
+    return docs
+
+
+def _upsert_fix_docs(c, docs, force=False) -> tuple:
+    """Embed + upsert normalized fix-history docs through the store's standard
+    ON CONFLICT (source_table, source_id) upsert. Unless force, docs whose id
+    is already present are skipped BEFORE embedding (idempotent re-runs cost
+    ~0 embed calls). Commits per embed-batch so a mid-run failure keeps
+    completed batches. Returns (embedded, skipped_existing)."""
+    if not docs:
+        return 0, 0
+    skipped = 0
+    if not force:
+        try:
+            with c.cursor() as cur:
+                cur.execute(
+                    "SELECT source_id FROM brain_corpus_embeddings "
+                    "WHERE source_table = %s AND source_id = ANY(%s)",
+                    (FIX_HISTORY_TABLE, [d["id"] for d in docs]))
+                have = {r[0] for r in cur.fetchall()}
+        except Exception:
+            try: c.rollback()
+            except Exception: pass
+            have = set()
+        if have:
+            skipped = sum(1 for d in docs if d["id"] in have)
+            docs = [d for d in docs if d["id"] not in have]
+    embedded = 0
+    for i in range(0, len(docs), _COHERE_BATCH):
+        batch = docs[i:i + _COHERE_BATCH]
+        vecs = _embed([d["text"] for d in batch], input_type="search_document")
+        if not vecs or len(vecs) != len(batch):
+            continue
+        try:
+            with c.cursor() as cur:
+                for d, vec in zip(batch, vecs):
+                    meta = json.dumps({"title": d.get("title") or "",
+                                       "date": d.get("date") or "",
+                                       "ref": d.get("ref") or "",
+                                       "src": d.get("kind") or ""})
+                    cur.execute("""
+                        INSERT INTO brain_corpus_embeddings
+                          (source_table, source_id, kind, text, embedding, meta)
+                        VALUES (%s, %s, %s, %s, %s::vector, %s::jsonb)
+                        ON CONFLICT (source_table, source_id) DO UPDATE
+                          SET embedding=EXCLUDED.embedding, text=EXCLUDED.text,
+                              kind=EXCLUDED.kind, meta=EXCLUDED.meta,
+                              updated_at=NOW()
+                    """, (FIX_HISTORY_TABLE, d["id"], d["kind"],
+                          d["text"][:_FIX_DOC_MAX_CHARS], _vec(vec), meta))
+            c.commit()
+            embedded += len(batch)
+        except Exception:
+            try: c.rollback()
+            except Exception: pass
+    return embedded, skipped
+
+
+def retrieve_prior_fixes(query: str, k: int = 3) -> list:
+    """'Have I solved this class before?' — semantic recall over the
+    fix_history corpus (closed GitHub issues + fix/feat commits + resolved
+    brain_findings episodes). Returns compact best-first
+    [{title, date, ref, kind, score, cosine, text}] ready to attach to an
+    investigation context as prior_fixes.
+
+    HARD FAIL-SOFT: [] on ANY error — prior-fix recall must never block an
+    investigation (same contract as retrieve_lessons)."""
+    try:
+        hits = retrieve_context(query, k=k, corpus=FIX_HISTORY_TABLE) or []
+    except Exception:
+        return []
+    if not hits:
+        return []
+    # Hydrate title/date/ref from the embedding rows' own meta (written at
+    # ingest time) — same pattern as market_narratives hydration.
+    metas = {}
+    c = _db()
+    if c is not None:
+        try:
+            with c.cursor() as cur:
+                cur.execute(
+                    "SELECT source_id, meta FROM brain_corpus_embeddings "
+                    "WHERE source_table = %s AND source_id = ANY(%s)",
+                    (FIX_HISTORY_TABLE,
+                     [h.get("source_id") for h in hits if h.get("source_id")]))
+                metas = {r[0]: (r[1] or {}) for r in cur.fetchall()}
+        except Exception:
+            pass
+        finally:
+            try: c.close()
+            except Exception: pass
+    out = []
+    for h in hits:
+        m = metas.get(h.get("source_id")) or {}
+        if isinstance(m, str):
+            try:
+                m = json.loads(m)
+            except Exception:
+                m = {}
+        text = (h.get("text") or "").strip()
+        out.append({
+            "title": ((m.get("title") or "").strip()
+                      or text.split("\n", 1)[0])[:200],
+            "date": m.get("date") or "",
+            "ref": m.get("ref") or h.get("source_id") or "",
+            "kind": h.get("kind") or m.get("src") or "",
+            "score": h.get("score"),
+            "cosine": h.get("cosine"),
+            "text": text[:400],
+        })
+    return out
+
+
 # ── hydration for agent-facing search (attach citable source fields) ───
 _HYDRATE = {
     "news_articles": (
@@ -961,7 +1171,11 @@ def reindex():
             embedded += _reindex_chunk_docs(c, doc_cap)
         with c.cursor() as cur:
             total = _corpus_total(cur)
-            cur.execute("SELECT count(*) FROM brain_corpus_embeddings WHERE source_table <> 'market_narratives'")
+            # market_narratives (chunk units) and fix_history (external docs,
+            # not a CORPORA table) are excluded — both would skew row-vs-row
+            # coverage math against _corpus_total.
+            cur.execute("SELECT count(*) FROM brain_corpus_embeddings "
+                        "WHERE source_table NOT IN ('market_narratives', 'fix_history')")
             emb = cur.fetchone()[0] or 0
             chunk_docs_pending = _pending_chunk_count(cur)
         remaining = max(0, total - emb) + chunk_docs_pending
@@ -988,6 +1202,82 @@ def retrieve():
         k = 8
     corpus = (request.args.get("corpus") or "").strip() or None
     return jsonify(ok=True, query=q, corpus=corpus, results=retrieve_context(q, k, corpus)), 200
+
+
+@brain_rag_bp.route("/api/v1/admin/brain/rag/ingest-fix-history", methods=["POST"])
+def ingest_fix_history():
+    """Ingest the brain's FIX HISTORY into the RAG store (corpus 'fix_history').
+
+    JSON body (all optional):
+      docs:          [{id, kind: gh_issue|commit|resolved_finding, title,
+                       text, date, ref}] — pushed by the local harvester
+                      (gh CLI + git log run on a dev machine; the deployed
+                      image has neither gh nor the git history).
+      cap:           max docs embedded this run (default 200 — cron-safe).
+      skip_findings: don't pull resolved brain_findings server-side.
+      force:         re-embed docs that already exist (default: skip them,
+                     so re-runs are cheap and idempotent).
+
+    Pushed docs spend the cap first; resolved brain_findings episodes ride
+    the leftover budget (so a body-less cron call ingests up to cap freshly
+    resolved findings). Reports counts per source."""
+    if not _admin_ok():
+        return jsonify(error="unauthorized"), 401
+    if _disabled():
+        return jsonify(skipped="BRAIN_RAG_DISABLED"), 200
+    if not _ensure():
+        return jsonify(ok=False, error="ensure_failed (pgvector/table)"), 200
+    body = request.get_json(silent=True) or {}
+    try:
+        cap = max(1, min(500, int(body.get("cap", _FIX_INGEST_DEFAULT_CAP))))
+    except Exception:
+        cap = _FIX_INGEST_DEFAULT_CAP
+    force = str(body.get("force", "")).lower() in ("1", "true", "yes")
+    skip_findings = str(body.get("skip_findings", "")).lower() in ("1", "true", "yes")
+    raw = body.get("docs") or []
+    pushed, rejected = normalize_fix_docs(raw)
+    pushed = pushed[:cap]
+    c = _db()
+    if c is None:
+        return jsonify(ok=False, error="db_unavailable"), 200
+    try:
+        emb_pushed, skip_pushed = _upsert_fix_docs(c, pushed, force=force)
+        findings_docs = []
+        emb_findings = skip_findings_n = 0
+        budget = cap - len(pushed)
+        if not skip_findings and budget > 0:
+            with c.cursor() as cur:
+                findings_docs = _pending_resolved_finding_docs(cur, budget)
+            emb_findings, skip_findings_n = _upsert_fix_docs(
+                c, findings_docs, force=force)
+        by_kind = {}
+        total = 0
+        with c.cursor() as cur:
+            try:
+                cur.execute(
+                    "SELECT kind, count(*) FROM brain_corpus_embeddings "
+                    "WHERE source_table = %s GROUP BY kind",
+                    (FIX_HISTORY_TABLE,))
+                by_kind = {str(k): int(v) for k, v in cur.fetchall()}
+                total = sum(by_kind.values())
+            except Exception:
+                try: c.rollback()
+                except Exception: pass
+        return jsonify(
+            ok=True, corpus=FIX_HISTORY_TABLE, cap=cap,
+            received=len(raw), rejected=rejected,
+            pushed_embedded=emb_pushed, pushed_skipped_existing=skip_pushed,
+            findings_selected=len(findings_docs),
+            findings_embedded=emb_findings,
+            findings_skipped_existing=skip_findings_n,
+            corpus_total=total, corpus_by_kind=by_kind,
+            provider=_embed_provider()), 200
+    except Exception as e:
+        return jsonify(ok=False,
+                       error=f"{type(e).__name__}: {str(e)[:160]}"), 200
+    finally:
+        try: c.close()
+        except Exception: pass
 
 
 # ── keyed-caller check for the public search gate ─────────────────────
@@ -1170,8 +1460,10 @@ def status():
             except Exception:
                 c.rollback(); by = {}; last = None
             # coverage_pct compares flat corpora only — market_narratives is
-            # chunk-rows vs docs (different units), reported in its own line.
-            emb = sum(v for s, v in by.items() if s != "market_narratives")
+            # chunk-rows vs docs (different units) and fix_history is external
+            # docs (no CORPORA total to compare against); both get own lines.
+            emb = sum(v for s, v in by.items()
+                      if s not in ("market_narratives", FIX_HISTORY_TABLE))
             total = 0
             per = {}
             for src, spec in CORPORA.items():
@@ -1195,6 +1487,10 @@ def status():
                 _docs = 0
             per["market_narratives"] = (f"{by.get('market_narratives', 0)} chunks / "
                                         f"{_docs} docs ({_pending_chunk_count(cur)} pending)")
+            per[FIX_HISTORY_TABLE] = (
+                f"{by.get(FIX_HISTORY_TABLE, 0)} docs "
+                f"(gh issues + fix/feat commits + resolved findings; "
+                f"POST ingest-fix-history)")
             # fresh_col activation per corpus, checked against the LIVE
             # schema — the deploy-visible answer to "did freshness actually
             # engage?" (a declared column that's missing or non-timestamp

@@ -697,6 +697,52 @@ def _recall_prior_work(question: str, k: int = 6) -> list[dict]:
         return []
 
 
+def _recall_prior_fixes(question: str, k: int = 3) -> list[dict]:
+    """FIX-HISTORY recall (r-rag-fix-history 2026-07-18): "have I solved this
+    class before?" — semantic recall over the fix_history corpus (closed
+    GitHub issues, fix/feat commit postmortems, resolved brain_findings
+    episodes) via routes.brain_rag.retrieve_prior_fixes. For a finding-driven
+    investigation the caller's question carries the finding's issue+detail, so
+    the top hits are the fixes previously shipped for this problem class.
+
+    HARD FAIL-SOFT CONTRACT (same as _recall_prior_work): any failure —
+    missing module, empty corpus, embed API down, DB down — degrades to []
+    and the investigation proceeds exactly as before. Recall NEVER blocks."""
+    q = (question or "").strip()
+    if not q:
+        return []
+    try:
+        from routes.brain_rag import retrieve_prior_fixes
+        hits = retrieve_prior_fixes(q, k=k)
+        return hits if isinstance(hits, list) else []
+    except Exception as e:
+        logger.warning("brain_investigator: prior-fix recall failed: %s", e)
+        return []
+
+
+def _prior_fixes_block(fixes: list[dict]) -> str:
+    """Render recalled prior fixes (title, date, ref) for the REASON prompt.
+    Empty/failed recall renders an explicit 'none' marker."""
+    if not fixes:
+        return "(no prior fixes recalled for this class of problem)"
+    lines = []
+    for h in fixes:
+        title = (h.get("title") or "").strip()
+        if not title:
+            continue
+        date = (h.get("date") or "").strip()
+        ref = (h.get("ref") or "").strip()
+        bits = [title]
+        if date:
+            bits.append(date)
+        if ref:
+            bits.append(ref)
+        lines.append("- " + " · ".join(bits))
+    if not lines:
+        return "(no prior fixes recalled for this class of problem)"
+    return "\n".join(lines)
+
+
 def _prior_work_block(prior: list[dict]) -> str:
     """Render recalled prior findings/recommendations for the REASON prompt.
     Empty/failed recall renders an explicit 'none' marker so the model isn't
@@ -981,6 +1027,15 @@ def investigate(question: str, *, depth: str = "default") -> dict:
     base["prior_work"] = prior_work
     prior_work_block = _prior_work_block(prior_work)
 
+    # Fix-history recall: BEFORE reasoning, ask "have I solved this class
+    # before?" against the fix_history corpus (closed issues + fix commits +
+    # resolved finding episodes) and attach the top hits as prior_fixes so
+    # the investigation starts from known solutions instead of from scratch.
+    # Fail-soft: recall errors degrade to [] and never block investigation.
+    prior_fixes = _recall_prior_fixes(question, k=3)
+    base["prior_fixes"] = prior_fixes
+    prior_fixes_block = _prior_fixes_block(prior_fixes)
+
     # ── Step 1: DECOMPOSE ────────────────────────────────────────────
     # 2026-07-01: caps raised 700/1500 → 2000/4000. On fable-5 (reasoning tier
     # since the r85j auto-promote) thinking tokens count toward max_tokens, so
@@ -1022,6 +1077,9 @@ def investigate(question: str, *, depth: str = "default") -> dict:
         f"  sub-questions: {json.dumps(base['decomposition']['sub_questions'])}\n"
         f"  data needed: {json.dumps(base['decomposition']['data_needed'])}\n\n"
         f"PRIOR WORK (do not repeat; build on or supersede):\n{prior_work_block}\n\n"
+        f"PRIOR FIXES (fixes already shipped for this class of problem — check "
+        f"whether one already covers this before recommending new work):\n"
+        f"{prior_fixes_block}\n\n"
         f"EVIDENCE (ground-truth — cite ONLY these numbers):\n{evidence_block}\n\n"
         f"Reason from the evidence to a draft recommendation."
     )
