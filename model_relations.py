@@ -32,6 +32,7 @@ from __future__ import annotations
 import os
 import json
 import logging
+import time as _time
 import urllib.request
 import urllib.error
 from datetime import datetime, timezone
@@ -164,14 +165,24 @@ def _pick_model(cfg, llm_key):
     return None, []
 
 
-def _chat(cfg, llm_key, model, messages, use_temp=True):
+def _chat(cfg, llm_key, model, messages, use_temp=True, _retries_429=2):
     body = {"model": model, "messages": messages, "max_tokens": MAX_TOKENS}
     if use_temp:
         body["temperature"] = 0.3
     code, txt = _http_json(cfg["base"] + "/chat/completions", method="POST",
                            headers={"Authorization": f"Bearer {llm_key}"}, body=body, timeout=120)
     if code == 400 and use_temp and "temperature" in txt:
-        return _chat(cfg, llm_key, model, messages, use_temp=False)
+        return _chat(cfg, llm_key, model, messages, use_temp=use_temp and False,
+                     _retries_429=_retries_429)
+    # r-429-backoff (2026-07-18): free-tier lanes die mid-eval on transient
+    # per-minute 429s (observed: groq TPM cut the meta run at 5/8 calls).
+    # Two 30s backoffs clear minute-window limits; hard quota/billing 429s
+    # (gemini daily, moonshot balance, xai credits) just burn the two
+    # retries and surface as blocked_billing exactly as before.
+    if code == 429 and _retries_429 > 0:
+        _time.sleep(30)
+        return _chat(cfg, llm_key, model, messages, use_temp=use_temp,
+                     _retries_429=_retries_429 - 1)
     return code, txt
 
 
