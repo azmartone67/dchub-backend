@@ -1451,16 +1451,26 @@ def public_search():
     results = _hydrate(retrieve_context(q, k, corpus=cs))
     # Agentic demand capture (2026-07-18): pgvector always returns nearest
     # neighbors, so a search that "answered" with only WEAK matches is still
-    # unmet demand — capture on empty OR best-cosine below the miss floor
-    # (keyword-fallback rows carry cosine 0.0 → captured). Lazy import,
-    # fail-soft; the shell's demand lane clusters these into brain findings.
+    # unmet demand. Absolute cosine CANNOT gate this on the live provider —
+    # mistral-embed is symmetric and scores ~0.75+ even for nonsense (an
+    # absurd probe out-scored a plausible one live) — so relevance is judged
+    # by TERM OVERLAP: how many significant query terms actually appear in
+    # the top result texts (provider-independent, deterministic). Queries
+    # with >=3 terms need 2 hits; shorter need 1. Keyword-fallback/empty
+    # results are misses too. Lazy import, fail-soft; the shell's demand
+    # lane clusters captures into unmet_demand findings.
     try:
+        _terms = [t for t in re.findall(r"[a-z0-9]{3,}", q.lower())
+                  if t not in ("the", "and", "for", "with", "near", "data")][:10]
+        _hay = " ".join((r.get("text") or "") for r in results[:3]).lower()
+        _hits = sum(1 for t in set(_terms) if t in _hay)
+        _need = 1 if len(set(_terms)) <= 2 else 2
         _best = max((r.get("cosine") or 0.0) for r in results) if results else 0.0
-        _floor = float(os.environ.get("AGENTIC_MISS_COSINE", "0.55"))
-        if _best < _floor:
+        if not results or _hits < _need:
             from routes.agentic_master_shell import capture_query_miss
             capture_query_miss("rag_public_search", q,
-                               {"corpus": cs, "top_cosine": round(_best, 3)})
+                               {"corpus": cs, "top_cosine": round(_best, 3),
+                                "term_hits": _hits, "terms": len(set(_terms))})
     except Exception:
         pass
     out = dict(ok=True, query=q, corpus=cs, count=len(results), results=results,
