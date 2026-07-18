@@ -1449,15 +1449,20 @@ def public_search():
     if not cs:
         return jsonify(error="corpus must be one or more of " + ",".join(PUBLIC_CORPORA)), 400
     results = _hydrate(retrieve_context(q, k, corpus=cs))
-    if not results:
-        # Agentic demand capture (2026-07-18): a zero-result agent search is
-        # a data-acquisition signal — record it so the shell's demand lane
-        # clusters unmet demand into brain findings. Lazy import, fail-soft.
-        try:
+    # Agentic demand capture (2026-07-18): pgvector always returns nearest
+    # neighbors, so a search that "answered" with only WEAK matches is still
+    # unmet demand — capture on empty OR best-cosine below the miss floor
+    # (keyword-fallback rows carry cosine 0.0 → captured). Lazy import,
+    # fail-soft; the shell's demand lane clusters these into brain findings.
+    try:
+        _best = max((r.get("cosine") or 0.0) for r in results) if results else 0.0
+        _floor = float(os.environ.get("AGENTIC_MISS_COSINE", "0.55"))
+        if _best < _floor:
             from routes.agentic_master_shell import capture_query_miss
-            capture_query_miss("rag_public_search", q, {"corpus": cs})
-        except Exception:
-            pass
+            capture_query_miss("rag_public_search", q,
+                               {"corpus": cs, "top_cosine": round(_best, 3)})
+    except Exception:
+        pass
     out = dict(ok=True, query=q, corpus=cs, count=len(results), results=results,
                _cite="Data: DC Hub (dchub.cloud), CC-BY-4.0 — cite as \"DC Hub, dchub.cloud\"")
     if capped:
