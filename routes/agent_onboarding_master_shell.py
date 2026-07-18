@@ -270,14 +270,23 @@ PLATFORMS: list[dict] = [
         "owner_gated": True, "effort": "low (docs), defer BD",
     },
     {
+        # 2026-07-18 (webmcp-proto): prototype SHIPPED — /radar, /phx and
+        # /integrations/mcp now serve the origin-trial meta tag + register
+        # 3 per-page tools each (routes/_webmcp.py) thin-wrapping the same
+        # public REST those pages render; the frontend's js/dchub-webmcp.js
+        # already covers /markets|/facilities|/dcpi|/grid + static pages.
         "key": "webmcp", "name": "WebMCP (browser agents)", "reach_weight": 0.5,
         "paths": [], "reach_token": None,
         "bots": [],
         "required_auth": "none", "required_transport": "webmcp",
         "directory": "(emerging W3C standard — no directory yet)", "directory_listed": None,
-        "connect_path": "standard", "recipe_published": False,
-        "next_action": "Prototype WebMCP tool tags on key pages (search/rank/scoreboard) during the open Chrome origin trial — Google favors WebMCP over llms.txt. Largely a re-bind of existing tool defs. Early-mover window.",
-        "owner_gated": False, "effort": "medium (timing-sensitive)",
+        "connect_path": "standard",
+        # 2026-07-18: flipped — with no WebMCP directory, the in-page tools
+        # ARE the connect surface (registered via document.modelContext,
+        # Chrome 149-156 origin trial).
+        "recipe_published": True,
+        "next_action": "Prototype LIVE (2026-07-18): /radar, /phx, /integrations/mcp register page tools via routes/_webmcp.py; frontend families via js/dchub-webmcp.js. Next: verify tools surface in Chrome 149+ (Gemini-in-Chrome / model-context inspector) against dchub.cloud, watch platform 'webmcp' attribution + /admin/webmcp lanes, widen to /research + market pages if traffic appears.",
+        "owner_gated": False, "effort": "low (verify + widen)",
     },
 ]
 

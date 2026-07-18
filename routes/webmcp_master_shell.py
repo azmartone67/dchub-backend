@@ -28,7 +28,7 @@ Read-only DIAGNOSTIC: names an actuator per lane, fires nothing. Findings
 via routes/brain_findings_writer.upsert_brain_finding on BREAKAGE ONLY
 (token <30d, header decidedly missing, bound path decidedly non-200) —
 probe errors are unknowns, not findings; zero webmcp traffic is not
-breakage. Outbound HTTP is bounded: ≤3 edge HEADs + ≤10 loopback GETs per
+breakage. Outbound HTTP is bounded: ≤3 edge HEADs + ≤12 loopback GETs per
 tick, 30s tick cache, daily dispatch (20:xx UTC quiet hour) — NOT the
 public-edge self-request loop pattern (the 07-06 flywheel outage class).
 
@@ -77,8 +77,10 @@ HEADER_PROBES = [
 ]
 
 # Every API path js/dchub-webmcp.js binds (base tools + all PAGE_TOOLS
-# entries). MUST be updated when the frontend adds/renames a binding — this
-# list IS the drift check. Probed keyless via loopback.
+# entries) PLUS the backend page-tool bindings (routes/_webmcp.py, 2026-07-18:
+# /radar, /phx, /integrations/mcp). MUST be updated when either side
+# adds/renames a binding — this list IS the drift check. Probed keyless via
+# loopback.
 BOUND_API_PATHS = [
     "/api/v1/search?q=ashburn&limit=1",              # search + facility filter
     "/api/v1/mcp/tools/rank_markets?limit=1",        # rank markets
@@ -90,6 +92,9 @@ BOUND_API_PATHS = [
     "/api/market-intelligence",                      # market intel list (/markets)
     "/api/market-intelligence/Northern%20Virginia",  # market intel detail (/markets)
     "/api/v1/dcpi/scores/northern-virginia",         # market DCPI score (/markets)
+    # webmcp-proto (2026-07-18) — backend page tools (routes/_webmcp.py):
+    "/api/v1/markets/phoenix",                       # /phx market stats
+    "/api/v1/dcpi/scores/phoenix",                   # /phx DCPI scorecard
 ]
 
 # Loopback base for the drift probes (cron_heartbeat BASE pattern — never
@@ -399,7 +404,7 @@ def _run_tick() -> dict:
         "lanes_pass": sum(1 for l in lanes if l["pass"]),
         "lanes_total": len(lanes),
         "lanes": lanes,
-        "note": "read-only DIAGNOSTIC (≤3 edge HEADs + ≤10 loopback GETs, "
+        "note": "read-only DIAGNOSTIC (≤3 edge HEADs + ≤12 loopback GETs, "
                 "30s tick cache, daily dispatch); names an actuator per lane "
                 "but fires nothing; findings on breakage only; see "
                 "routes/webmcp_master_shell.py",

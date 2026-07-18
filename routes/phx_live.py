@@ -47,6 +47,14 @@ from flask import Blueprint, jsonify, request
 
 from routes._swallowed_writes import note_swallowed_write
 
+# webmcp-proto (2026-07-18): per-page WebMCP tools (Chrome origin trial) —
+# fail-soft so /phx can never break on the helper.
+try:
+    from routes._webmcp import webmcp_inject as _webmcp_inject
+except Exception:  # pragma: no cover - defensive
+    def _webmcp_inject(page_html, tools):
+        return page_html
+
 phx_bp = Blueprint("phx_live", __name__)
 log = logging.getLogger("phx_live")
 
@@ -454,12 +462,51 @@ def phx_ab_stats():
         return jsonify({"error": "stats read failed"}), 500
 
 
+# ── WebMCP page tools (webmcp-proto, 2026-07-18) ────────────────────────────
+# Thin wraps of the SAME public endpoints this page renders (both linked in
+# its Dataset JSON-LD) + the keyless facility search. Absent unless env
+# WEBMCP_ORIGIN_TRIAL_TOKEN is set; feature-detected no-op off-trial.
+_WEBMCP_TOOLS = [
+    {
+        "name": "get-phoenix-market-stats",
+        "description": ("Live Phoenix, AZ data-center market headline stats "
+                        "behind this page: tracked facilities, total MW, "
+                        "operators, operational vs under construction. "
+                        "No parameters."),
+        "schema": {"type": "object", "properties": {}},
+        "js_body": "return api('/api/v1/markets/phoenix');",
+    },
+    {
+        "name": "get-phoenix-dcpi-score",
+        "description": ("Phoenix DC Hub Power Index (DCPI) scorecard: "
+                        "BUILD/CAUTION/AVOID verdict, composite score and "
+                        "time-to-power months, refreshed daily. No parameters."),
+        "schema": {"type": "object", "properties": {}},
+        "js_body": "return api('/api/v1/dcpi/scores/phoenix');",
+    },
+    {
+        "name": "search-phoenix-facilities",
+        "description": ("Search DC Hub's live facility database — defaults to "
+                        "the Phoenix metro; pass a query to filter by operator "
+                        "or city (e.g. \"mesa\", \"microsoft\")."),
+        "schema": {"type": "object", "properties": {
+            "query": {"type": "string",
+                      "description": "Operator, city or keyword (default \"phoenix\")"},
+            "limit": {"type": "number",
+                      "description": "Max results (1-25, default 10)"}}},
+        "js_body": ("var q=(input&&input.query)?String(input.query):'phoenix';"
+                    "var lim=Math.max(1,Math.min(25,Number(input&&input.limit)||10));"
+                    "return api('/api/v1/search?q='+encodeURIComponent(q)+'&limit='+lim);"),
+    },
+]
+
+
 @phx_bp.route("/phx", strict_slashes=False, methods=["GET"])
 def phx_live():
     tagged = bool(request.args.get("utm_source") or request.args.get("utm_campaign"))
     if tagged:
         _record_utm_hit()
-    return _render(_get_data()), 200, {
+    return _webmcp_inject(_render(_get_data()), _WEBMCP_TOOLS), 200, {
         "Content-Type": "text/html; charset=utf-8",
         # Tagged hits must reach the backend to be counted — never let the
         # edge cache a utm-tagged URL variant.

@@ -39,6 +39,14 @@ except Exception:                                 # pragma: no cover - defensive
     def _resolve_caller_tier():
         return ("FREE", {})
 
+# webmcp-proto (2026-07-18): per-page WebMCP tools (Chrome origin trial) —
+# fail-soft so /radar can never break on the helper.
+try:
+    from routes._webmcp import webmcp_inject as _webmcp_inject
+except Exception:                                 # pragma: no cover - defensive
+    def _webmcp_inject(page_html, tools):
+        return page_html
+
 radar_bp = Blueprint("radar", __name__)
 _PAGES_DIR = os.path.join(os.path.dirname(__file__), "radar_pages")
 
@@ -409,10 +417,54 @@ def _teaser_json(slug: str) -> dict:
                    "playground": "https://dchub.cloud/playground"},
     }
 
+# ── WebMCP page tools (webmcp-proto, 2026-07-18) ─────────────────────────────
+# Registered by routes/_webmcp.webmcp_inject at the route seam (Chrome origin
+# trial; feature-detected no-op elsewhere; whole block absent unless env
+# WEBMCP_ORIGIN_TRIAL_TOKEN is set). Thin wraps of the SAME public endpoints
+# this page renders: its own /radar/<slug>.json teaser feed plus two keyless
+# APIs already in webmcp_master_shell.BOUND_API_PATHS.
+def _webmcp_tools(slug: str) -> list[dict]:
+    return [
+        {
+            "name": "get-grid-radar-brief",
+            "description": ("Machine-readable brief of this Grid Transition "
+                            "Radar edition: headline US interconnection-queue "
+                            "GW, Ashburn time-to-power, citation. Use for a "
+                            "cited summary of today's grid-transition picture."),
+            "schema": {"type": "object", "properties": {
+                "edition": {"type": "string",
+                            "enum": [e["slug"] for e in EDITIONS],
+                            "description": "Audience edition (default: this page's)"}}},
+            "js_body": ("var ed=(input&&input.edition)||%s;"
+                        "return api('/radar/'+encodeURIComponent(ed)+'.json');"
+                        % json.dumps(slug)),
+        },
+        {
+            "name": "get-live-grid-scoreboard",
+            "description": ("Live ranked scoreboard of the US ISO grids behind "
+                            "this Radar: demand, fuel mix, renewable share — "
+                            "right now. No parameters."),
+            "schema": {"type": "object", "properties": {}},
+            "js_body": "return api('/api/v1/iso/comparison');",
+        },
+        {
+            "name": "get-dcpi-trending-markets",
+            "description": ("DC Hub Power Index (DCPI) trending movers — which "
+                            "data-center markets are gaining or losing "
+                            "buildability right now. No parameters."),
+            "schema": {"type": "object", "properties": {}},
+            "js_body": "return api('/api/v1/dcpi/trending');",
+        },
+    ]
+
+
 # ── routes ───────────────────────────────────────────────────────────────────
 @radar_bp.route("/radar")
 def radar_today():
-    return Response(_render_edition(_today_slug(), _tier()), mimetype="text/html")
+    slug = _today_slug()
+    return Response(_webmcp_inject(_render_edition(slug, _tier()),
+                                   _webmcp_tools(slug)),
+                    mimetype="text/html")
 
 @radar_bp.route("/radar/<slug>")
 def radar_edition(slug: str):
@@ -423,7 +475,9 @@ def radar_edition(slug: str):
         return jsonify(_teaser_json(base))
     if slug not in _BY_SLUG:
         return jsonify({"error": "unknown edition", "editions": list(_BY_SLUG)}), 404
-    return Response(_render_edition(slug, _tier()), mimetype="text/html")
+    return Response(_webmcp_inject(_render_edition(slug, _tier()),
+                                   _webmcp_tools(slug)),
+                    mimetype="text/html")
 
 
 def register_radar(app):

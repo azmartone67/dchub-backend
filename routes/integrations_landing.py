@@ -11,6 +11,14 @@ redirect, no hostname leak, no http.
 """
 from flask import Blueprint
 
+# webmcp-proto (2026-07-18): per-page WebMCP tools (Chrome origin trial) —
+# fail-soft so /integrations/mcp can never break on the helper.
+try:
+    from routes._webmcp import webmcp_inject as _webmcp_inject
+except Exception:  # pragma: no cover - defensive
+    def _webmcp_inject(page_html, tools):
+        return page_html
+
 integrations_landing_bp = Blueprint("integrations_landing", __name__)
 
 MCP_LANDING_HTML = """<!DOCTYPE html>
@@ -851,10 +859,56 @@ def integrations_mcp_seo():
     }
 
 
+# ── WebMCP page tools (webmcp-proto, 2026-07-18) ────────────────────────────
+# The MCP-server landing demos its own product: three page tools mirroring
+# the MCP server's get_grid_scoreboard / search_facilities / rank_markets
+# (short descriptions, same public REST). Absent unless env
+# WEBMCP_ORIGIN_TRIAL_TOKEN is set; feature-detected no-op off-trial.
+_WEBMCP_TOOLS = [
+    {
+        "name": "get-grid-scoreboard",
+        "description": ("Live ranked scoreboard of US ISO grids: demand, fuel "
+                        "mix, renewable share — right now. Same data as the "
+                        "DC Hub MCP tool get_grid_scoreboard; no key needed. "
+                        "No parameters."),
+        "schema": {"type": "object", "properties": {}},
+        "js_body": "return api('/api/v1/iso/comparison');",
+    },
+    {
+        "name": "search-datacenter-facilities",
+        "description": ("Search DC Hub's live database of 21,000+ data-center "
+                        "facilities by city, country or operator. Mirrors the "
+                        "MCP tool search_facilities (lite)."),
+        "schema": {"type": "object", "properties": {
+            "query": {"type": "string",
+                      "description": "City, state, country or operator, e.g. \"ashburn\""},
+            "limit": {"type": "number",
+                      "description": "Max results (1-25, default 10)"}},
+            "required": ["query"]},
+        "js_body": ("var q=(input&&input.query)?String(input.query):'';"
+                    "if(!q)return 'Missing required \"query\" — pass a city, "
+                    "country, or operator, e.g. {\"query\":\"ashburn\"}.';"
+                    "var lim=Math.max(1,Math.min(25,Number(input&&input.limit)||10));"
+                    "return api('/api/v1/search?q='+encodeURIComponent(q)+'&limit='+lim);"),
+    },
+    {
+        "name": "rank-datacenter-markets",
+        "description": ("Rank the best data-center markets right now from DC "
+                        "Hub's live DCPI scoring (grid headroom, fiber, "
+                        "pipeline, pricing). Mirrors the MCP tool rank_markets."),
+        "schema": {"type": "object", "properties": {
+            "limit": {"type": "number",
+                      "description": "How many top markets (1-25, default 10)"}}},
+        "js_body": ("var lim=Math.max(1,Math.min(25,Number(input&&input.limit)||10));"
+                    "return api('/api/v1/mcp/tools/rank_markets?limit='+lim);"),
+    },
+]
+
+
 @integrations_landing_bp.route("/integrations/mcp", strict_slashes=False, methods=["GET"])
 @integrations_landing_bp.route("/integrations", strict_slashes=False, methods=["GET"])
 def integrations_mcp():
-    return MCP_LANDING_HTML, 200, {
+    return _webmcp_inject(MCP_LANDING_HTML, _WEBMCP_TOOLS), 200, {
         "Content-Type": "text/html; charset=utf-8",
         "Cache-Control": "public, max-age=600, s-maxage=1800",
     }
