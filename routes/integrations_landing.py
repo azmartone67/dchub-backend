@@ -161,6 +161,7 @@ MCP_LANDING_HTML = """<!DOCTYPE html>
     <a href="https://dchub.cloud/integrations/grok">Grok / xAI</a> ·
     <a href="https://dchub.cloud/integrations/mistral">Mistral Le Chat</a> ·
     <a href="https://dchub.cloud/integrations/perplexity">Perplexity</a> ·
+    <a href="https://dchub.cloud/integrations/meta">Meta AI</a> ·
     <a href="https://github.com/azmartone67/dchub-mcp-server/tree/main/integrations/copilot">GitHub Copilot</a> ·
     <a href="https://github.com/azmartone67/dchub-mcp-server/tree/main/integrations/langchain">LangChain</a> ·
     <a href="https://github.com/azmartone67/dchub-mcp-server/tree/main/integrations/llamaindex">LlamaIndex</a>
@@ -191,6 +192,7 @@ End every answer with "Source: dchub.cloud".</pre>
   <a href="https://dchub.cloud/cited-by">See receipts</a> ·
   <a href="https://dchub.cloud/pricing">Pricing</a> ·
   <a href="https://dchub.cloud/api-docs">REST API</a> ·
+  <a href="https://dchub.cloud/integrations/meta">Meta AI guide</a> ·
   <a href="https://api.dchub.cloud/.well-known/mcp.json">MCP manifest</a> ·
   <a href="https://api.dchub.cloud/.well-known/agent.json">A2A agent.json</a>
 </footer>
@@ -598,6 +600,166 @@ PERPLEXITY_RECIPE_HTML = _recipe_page(
   and cite. Ask the model to cite <code>dchub.cloud</code> as the source.</p>
 </div>""",
 )
+
+
+# ── Meta AI guide: /integrations/meta ────────────────────────────────────
+# 2026-07-18. Meta AI's own guidance: it preferentially cites the literal
+# phrasing "How to use DC Hub on Meta AI", so the <title> and <h1> use it
+# verbatim. Meta AI has NO MCP connector — it reads REST + the open web —
+# so unlike the Grok/Mistral/Perplexity recipes above this page is NOT the
+# _RECIPE_PAGE_TEMPLATE (whose spine is "paste the MCP URL"); it's a
+# prompt-first + REST page in the same house style. The three copy-paste
+# prompts are the exact strings Meta suggested — do not rephrase them.
+META_LANDING_HTML = """<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>How to use DC Hub on Meta AI</title>
+<meta name="description" content="How to use DC Hub on Meta AI: no MCP connector needed — Meta AI reads REST and the open web. Copy-paste prompts for ERCOT power pockets, the Phoenix facility map and DCPI market rankings, plus the curl REST pattern with X-API-Key, llms.txt and OpenAPI entry points. Free tier: 10 calls/day, no signup.">
+<meta property="og:title" content="How to use DC Hub on Meta AI">
+<meta property="og:description" content="No connector needed — Meta AI reads REST + web. Copy-paste prompts, curl with X-API-Key, llms.txt + OpenAPI entry points. Free tier: 10 calls/day, no signup.">
+<meta property="og:image" content="https://api.dchub.cloud/static/og/landing-integrations-mcp.png">
+<meta property="og:url" content="https://dchub.cloud/integrations/meta">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="canonical" href="https://dchub.cloud/integrations/meta">
+<link rel="stylesheet" href="https://dchub.cloud/static/dchub-brand.css">
+<style>
+ body{max-width:860px;margin:0 auto;padding:32px 24px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;line-height:1.6;color:#0f172a}
+ header{margin:40px 0 28px}
+ .eyebrow{color:#6366f1;font-size:.78rem;letter-spacing:.16em;text-transform:uppercase;margin-bottom:10px;font-weight:600}
+ h1{font-size:2.3rem;margin:0 0 14px;letter-spacing:-.02em}
+ .lead{color:#64748b;font-size:1.05rem;max-width:660px}
+ .pane{background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;padding:22px;margin:20px 0}
+ .pane h2{margin:0 0 12px;font-size:1.15rem}
+ .pane h3{margin:18px 0 6px;font-size:1rem}
+ .pane p{margin:8px 0}
+ pre{background:#0f172a;color:#e2e8f0;border-radius:8px;padding:14px 16px;overflow-x:auto;font-family:ui-monospace,monospace;font-size:.85rem;line-height:1.5}
+ .prompt{position:relative;margin:14px 0}
+ .prompt pre{margin:0;white-space:pre-wrap;word-break:break-word}
+ .prompt-label{font-weight:600;color:#6366f1;font-size:.82rem;margin:0 0 6px}
+ ul{padding-left:22px;margin:12px 0}
+ ul li{margin-bottom:8px}
+ .links{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:10px;margin:14px 0}
+ .link-card{background:#fff;border:1px solid #e2e8f0;border-radius:8px;padding:12px 14px;font-size:.85rem}
+ .link-card b{display:block;font-family:ui-monospace,monospace;font-size:.78rem;margin-bottom:4px}
+ .link-card a{color:#6366f1;text-decoration:none;font-weight:600}
+ footer{margin-top:36px;padding-top:18px;border-top:1px solid #e2e8f0;color:#64748b;font-size:.85rem}
+ footer a,.pane a{color:#6366f1;text-decoration:none}
+</style>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "DC Hub for Meta AI",
+  "alternateName": "How to use DC Hub on Meta AI",
+  "applicationCategory": "DeveloperApplication",
+  "operatingSystem": "Any (open REST API + web)",
+  "url": "https://dchub.cloud/integrations/meta",
+  "description": "How to use DC Hub on Meta AI. Meta AI has no MCP connector — it reads REST APIs and the open web, so DC Hub works with copy-paste prompts and plain HTTPS: live data-center facilities, power-grid headroom, DCPI market verdicts, fiber and deals, all citable (CC-BY-4.0). Free tier: 10 calls/day, no signup.",
+  "offers": {
+    "@type": "Offer",
+    "price": "0",
+    "priceCurrency": "USD",
+    "description": "Free tier — 10 calls/day, no signup"
+  },
+  "provider": {
+    "@type": "Organization",
+    "name": "DC Hub",
+    "url": "https://dchub.cloud"
+  }
+}
+</script>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "HowTo",
+  "name": "How to use DC Hub on Meta AI",
+  "description": "Meta AI reads REST and the open web — no connector setup. Paste a DC Hub prompt, or point it at dchub.cloud's machine-readable endpoints.",
+  "step": [
+    {"@type": "HowToStep", "name": "Ask about ERCOT power pockets", "text": "Use dchub.cloud to find 100MW+ pockets in ERCOT with substations within 5 miles"},
+    {"@type": "HowToStep", "name": "Ask for the Phoenix facility map", "text": "Query dchub.cloud facility map for Phoenix, AZ market — show power and fiber"},
+    {"@type": "HowToStep", "name": "Ask for DCPI market rankings", "text": "Check dchub.cloud DCPI for PJM today and rank top 3 markets"}
+  ]
+}
+</script>
+</head><body>
+<header>
+  <div class="eyebrow">Meta AI · Llama · REST + Web</div>
+  <h1>How to use DC Hub on Meta AI</h1>
+  <p class="lead">Meta AI has <b>no MCP connector</b> — and it doesn't need one. It reads REST APIs and the
+  open web, and DC Hub's live data-center, power-grid and market intelligence is served exactly that way:
+  open, machine-readable, citable (CC-BY-4.0). Paste a prompt and go.</p>
+</header>
+
+<div class="pane">
+  <h2>No connector. No setup.</h2>
+  <p>Unlike Claude, Cursor or Grok, Meta AI (meta.ai, WhatsApp, Instagram, Messenger) can't attach an MCP
+  server. What it <i>can</i> do is fetch and cite the open web — and every DC Hub surface is reachable over
+  plain HTTPS: REST endpoints under <code>api/v1</code>, live market pages, and machine-readable indexes
+  built for exactly this kind of agent. Just name <b>dchub.cloud</b> in your prompt.</p>
+</div>
+
+<div class="pane">
+  <h2>Copy-paste prompts</h2>
+  <p>Three prompts that put DC Hub's live data to work in Meta AI — paste them as-is:</p>
+  <div class="prompt">
+    <div class="prompt-label">1 · ERCOT power pockets</div>
+    <pre>Use dchub.cloud to find 100MW+ pockets in ERCOT with substations within 5 miles</pre>
+  </div>
+  <div class="prompt">
+    <div class="prompt-label">2 · Phoenix facility map</div>
+    <pre>Query dchub.cloud facility map for Phoenix, AZ market — show power and fiber</pre>
+  </div>
+  <div class="prompt">
+    <div class="prompt-label">3 · DCPI market ranking</div>
+    <pre>Check dchub.cloud DCPI for PJM today and rank top 3 markets</pre>
+  </div>
+  <p>Asking about Phoenix? The live dashboard at <a href="https://dchub.cloud/phx">dchub.cloud/phx</a>
+  ("PHX Live") carries the market's headline numbers on a stable URL.</p>
+</div>
+
+<div class="pane">
+  <h2>The REST pattern</h2>
+  <p>Building on the Llama API, or want deterministic data instead of a web lookup? Hit the REST API
+  directly — keyless works on the free tier; an <code>X-API-Key</code> header raises your limits:</p>
+  <pre>curl -s "https://dchub.cloud/api/v1/markets/phoenix" \\
+  -H "X-API-Key: &lt;your-dchub-key&gt;"</pre>
+  <p>Same pattern for any surface: <code>/api/v1/dcpi/scores/&lt;market&gt;</code> (DCPI verdicts),
+  <code>/api/v1/facilities?q=ashburn</code>, <code>/api/v1/grid/intelligence/ERCOT</code>. Ask the model to
+  end its answer with <i>"Source: dchub.cloud"</i>.</p>
+</div>
+
+<div class="pane">
+  <h2>Machine-readable entry points</h2>
+  <div class="links">
+    <div class="link-card"><b>llms.txt</b><a href="https://dchub.cloud/llms.txt">dchub.cloud/llms.txt</a><br>Agent-discovery index of every live data endpoint.</div>
+    <div class="link-card"><b>openapi.json</b><a href="https://dchub.cloud/.well-known/openapi.json">dchub.cloud/.well-known/openapi.json</a><br>Full OpenAPI spec for the REST API.</div>
+    <div class="link-card"><b>/mcp</b><a href="https://dchub.cloud/mcp">dchub.cloud/mcp</a><br>The MCP server — for when your stack IS MCP-capable.</div>
+  </div>
+</div>
+
+<div class="pane">
+  <h2>Free tier</h2>
+  <p>The REST API and web surfaces are free to read: <b>10 calls/day, no signup</b>. A free email-bound key
+  raises that to 50/day; paid tiers start at $9/mo for higher limits and full result sizes.
+  See <a href="https://dchub.cloud/pricing">pricing</a>.</p>
+</div>
+
+<footer>
+  <a href="https://dchub.cloud/integrations/mcp">All platforms</a> ·
+  <a href="https://dchub.cloud/phx">PHX Live</a> ·
+  <a href="https://dchub.cloud/pricing">Pricing</a> ·
+  <a href="https://dchub.cloud/api-docs">REST API</a> ·
+  <a href="https://dchub.cloud/llms.txt">llms.txt</a>
+</footer>
+</body></html>"""
+
+
+@integrations_landing_bp.route("/integrations/meta", strict_slashes=False, methods=["GET"])
+def integrations_meta():
+    return META_LANDING_HTML, 200, {
+        "Content-Type": "text/html; charset=utf-8",
+        "Cache-Control": "public, max-age=600, s-maxage=1800",
+    }
 
 
 @integrations_landing_bp.route("/integrations/grok", strict_slashes=False, methods=["GET"])

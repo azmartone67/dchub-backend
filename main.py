@@ -32919,6 +32919,16 @@ try:
 except Exception as _il_e:
     print(f"[main] integrations_landing_bp register failed: {_il_e}", flush=True)
 
+# 2026-07-18: PHX Live — stable-URL Phoenix market dashboard at /phx (Meta AI
+# surfaces it for Phoenix queries). See routes/phx_live.py. Edge note: "/phx"
+# is forwarded to Railway via dchub-frontend/_routes.json.
+try:
+    from routes.phx_live import phx_bp
+    app.register_blueprint(phx_bp)
+    print("[main] phx_bp registered: /phx (PHX Live dashboard)", flush=True)
+except Exception as _phx_e:
+    print(f"[main] phx_bp register failed: {_phx_e}", flush=True)
+
 try:
     # r-env-drift (2026-07-18): shared-critical env fingerprints (internal-key
     # gated) — the radar's check_env_drift compares backend vs worker.
