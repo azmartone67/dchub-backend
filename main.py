@@ -34236,6 +34236,17 @@ try:
     print("[main] brain_action_queue_bp registered: GET /api/v1/brain/action-queue", flush=True)
 except Exception as _baq_e:
     print(f"[main] brain_action_queue_bp register failed: {_baq_e}", flush=True)
+# 2026-07-18 — episode analytics: the brain WORKS its chronic-episode
+# leaderboard instead of its inbox. Read-only surface over the
+# brain_findings episode ledger (2026-07-17 semantics): MTTR vitals,
+# per-detector MTTR, chronic leaderboard (hours_open × episode_seen_count),
+# flappiest (episode_count). Admin-gated via X-Admin-Key (DCHUB_ADMIN_KEY).
+try:
+    from routes.episode_analytics import episode_analytics_bp
+    app.register_blueprint(episode_analytics_bp)
+    print("[main] episode_analytics_bp registered: GET /api/v1/admin/brain/episodes/analytics (X-Admin-Key)", flush=True)
+except Exception as _epa_e:
+    print(f"[main] episode_analytics_bp register failed: {_epa_e}", flush=True)
 try:
     # #6 LLM-reasoning lane: first consumer of the action-queue/leverage_score.
     # Dark behind BRAIN_REASONING_LANE_ENABLED; registration is import-safe +
