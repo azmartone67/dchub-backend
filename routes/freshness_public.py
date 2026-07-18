@@ -164,7 +164,14 @@ DOMAIN_SLA_HOURS = {
                          # split out of the 6h news domain so a quiet press week
                          # isn't a breach (matches the press_releases table SLA in
                          # brain_consistency_radar). See also _DOMAIN_SOURCE below.
-    "mna":       24,     # /api/v1/deals
+    # r-sweep-green (2026-07-18): 24h → 168h. M&A deal flow is ORGANIC — the
+    # extractor only writes when the news cycle produces a deal, and the live
+    # ai_deals cadence shows 1-2 deals with gaps up to 5 days (7/09→7/14
+    # observed). A 24h SLA false-breached every quiet stretch (sweep RED on
+    # real_age=56h with a healthy extractor). 168h tolerates a quiet week;
+    # a genuinely dead extractor still breaches within the window the radar's
+    # hyperscaler_deals-empty drift check would also catch it.
+    "mna":       168,    # /api/v1/deals — event-driven organic deal flow
     # r71-stabilize (2026-06-04): the 3 SLOW/STATIC infra domains below were on
     # a 24h SLA, but their real upstream cadence is weeks/months (gas+pipeline =
     # HIFLD static imports; facilities = bursty discovery). With no real-age
@@ -285,6 +292,17 @@ _DOMAIN_SOURCE: dict = {
     "news":       ("news_articles",  "published_at"),   # live RSS table served by /api/news/live (news_items is a phantom/variant — caused a permanent false SLA breach)
     "press":      ("press_releases", "published_at"),   # event-driven
     "mna":        ("ai_deals",       "created_at"),     # deal extractor
+    # r-sweep-green (2026-07-18): power + facilities joined the real-age map.
+    # The r36 objection above ("do NOT map slow domains") dated from when their
+    # domain SLAs were a tight 24h; the SLAs were later right-sized (power 168h,
+    # facilities 336h), but the mapping never followed — so both domains kept
+    # judging on drifting surface stamps and the surveillance sweep sat
+    # permanently RED on junk: facilities "breached" on a 48-day-old
+    # /sitemap-facilities.xml STAMP while facilities.last_updated was 159h
+    # (within 336h); power "breached" on a dormant powered-shell surface while
+    # the EIA feed was 17.5h fresh (within 168h). Verified live 2026-07-18.
+    "power":      ("eia_electricity_rates", "retrieved_at"),  # EIA ingest, ~daily-weekly
+    "facilities": ("facilities",     "last_updated"),   # bursty discovery, 336h SLA
 }
 _DOMAIN_AGE_CACHE: dict = {"data": {}, "t": 0.0}
 _DOMAIN_AGE_TTL = 300  # 5 min
