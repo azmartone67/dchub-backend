@@ -599,6 +599,46 @@ def pillars_dashboard():
     return Response(html, mimetype="text/html")
 
 
+@pillars_master_shell_bp.route("/api/v1/admin/pillars/stage-drafts", methods=["POST"])
+def pillars_stage_drafts():
+    """Persist the honesty-checked announcement drafts into the publish QUEUE as
+    status='draft' so they become shippable — WITHOUT auto-posting. The owner reviews
+    them (GET /api/admin/content-queue?status=draft) and approves; only then does the
+    existing auto-publisher ship approved rows. Idempotent via content_hash. Admin-gated.
+    Only linkedin + x(->twitter) are staged (the channels the social publisher ships);
+    email/blog run on separate delivery paths."""
+    if _disabled():
+        return jsonify(ok=False, error="disabled"), 503
+    if not _admin_ok():
+        return jsonify(ok=False, error="forbidden — X-Admin-Key or ?admin_key="), 403
+    payload = _tick_cached()
+    drafts = payload.get("drafts", {})
+    # never persist copy that fails the shell's own honesty/messaging checks
+    violations = _messaging_violations(drafts)
+    if violations:
+        return jsonify(ok=False, error="messaging_violations", violations=violations), 409
+    try:
+        from content_publisher import stage_draft
+    except Exception as e:
+        return jsonify(ok=False, error=f"publisher unavailable: {str(e)[:160]}"), 503
+    results = {}
+    for draft_key, platform in (("linkedin", "linkedin"), ("x", "twitter")):
+        content = drafts.get(draft_key, "")
+        try:
+            results[platform] = stage_draft(content, platform)
+        except Exception as e:
+            results[platform] = {"action": "error", "error": str(e)[:200], "post_id": None}
+    staged = sum(1 for r in results.values() if r.get("action") == "inserted")
+    dupes = sum(1 for r in results.values() if r.get("action") == "dupe")
+    return jsonify(
+        ok=True, staged=staged, dupes=dupes, results=results,
+        generated_at=payload.get("generated_at"),
+        review_at="/api/admin/content-queue?status=draft&type=social",
+        note="drafts persisted as status='draft'. Nothing is posted until you approve "
+             "them; the auto-publisher only drains status='approved'.",
+    )
+
+
 def register_pillars_master_shell(app):
     try:
         app.register_blueprint(pillars_master_shell_bp)

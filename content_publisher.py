@@ -90,6 +90,41 @@ def _check_admin(req):
     valid_keys = [k for k in [os.environ.get('DCHUB_ADMIN_KEY', '')] if k]
     return admin_key in valid_keys
 
+
+def stage_draft(content, platform='linkedin', priority=0):
+    """Persist a REVIEW-FIRST announcement draft into social_media_posts as status='draft'.
+
+    Deduped by content_hash so re-staging identical copy is a no-op. Does NOT publish:
+    the auto-publisher only drains status='approved', so an operator must review the row
+    (e.g. GET /api/admin/content-queue?status=draft) and approve it before anything ships.
+    This is the persistence the pillars/announcement shells were missing — they generated
+    drafts in-memory only, so nothing could ever ship them.
+    Returns {'action': 'inserted'|'dupe'|'skipped', 'post_id': int|None, ...}.
+    """
+    import hashlib
+    content = (content or '').strip()
+    if len(content) < 20:
+        return {'action': 'skipped', 'reason': 'content too short (<20 chars)', 'post_id': None}
+    platform = (platform or 'linkedin').strip().lower()
+    chash = hashlib.sha256(content.encode('utf-8')).hexdigest()
+    with _db_conn() as conn:
+        cur = conn.cursor()
+        # content_hash dedup — never enqueue the same body twice (in any status)
+        cur.execute("SELECT id FROM social_media_posts WHERE content_hash = %s LIMIT 1", (chash,))
+        row = cur.fetchone()
+        if row:
+            existing = row['id'] if hasattr(row, 'get') else row[0]
+            return {'action': 'dupe', 'post_id': existing}
+        cur.execute(
+            "INSERT INTO social_media_posts (content, platform, status, content_hash, priority, created_at) "
+            "VALUES (%s, %s, 'draft', %s, %s, NOW()) RETURNING id",
+            (content, platform, chash, priority),
+        )
+        r = cur.fetchone()
+        new_id = r['id'] if hasattr(r, 'get') else (r[0] if r else None)
+        conn.commit()
+        return {'action': 'inserted', 'post_id': new_id}
+
 def init_content_tables():
     """Phase RRR-content-publisher-neon (2026-05-18) — Neon-compatible
     table bootstrap. Creates social_media_posts if missing, then adds
