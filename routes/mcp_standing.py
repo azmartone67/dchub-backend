@@ -56,7 +56,7 @@ CONNECTED_PLATFORMS = [
     "Claude", "ChatGPT", "Gemini", "Perplexity", "Grok", "Copilot", "Meta AI",
     "DeepSeek", "Mistral", "Cohere", "Poe", "HuggingFace", "Groq", "You.com",
 ]
-_TOOLS_FALLBACK = 73  # last-known canonical; _tools_count() derives it from the canon
+_TOOLS_FALLBACK = 74  # last-known canonical; _tools_count() derives it from the canon
 
 
 def _tools_count() -> int:

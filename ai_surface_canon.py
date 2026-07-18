@@ -24,7 +24,7 @@ _BASE = os.environ.get("DCHUB_BACKEND_BASE",
 # ── Pinned structural canon (changes rarely; edit HERE, nowhere else) ──
 PINNED = {
     "version": "2.4.4",                       # == repo canonical (server.mjs/server.json); registry mirror auto-bumps to latest+1
-    "tools_advertised": 73,                   # canonical advertised count == live tools/list (73 as of 2026-07-12). This is the PINNED fallback; resolve_canon() overrides it with the live tools/list count so consumers using resolve_canon() never go stale. /AGENTS.md reads PINNED directly, so keep this current.
+    "tools_advertised": 74,                   # canonical advertised count == live tools/list (74 as of 2026-07-18: plan_query). This is the PINNED fallback; resolve_canon() overrides it with the live tools/list count so consumers using resolve_canon() never go stale. /AGENTS.md reads PINNED directly, so keep this current.
     "mcp_endpoint": "https://dchub.cloud/mcp",
     "registry_id": "cloud.dchub/mcp-server",
     "rest_base": "https://dchub.cloud/api/v1",     # canonical host (NOT api.dchub.cloud)

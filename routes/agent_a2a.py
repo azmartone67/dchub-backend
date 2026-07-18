@@ -53,7 +53,7 @@ AGENT_CARD = {
     # Live MCP tool total (source of truth = mcp_manifest above). The `skills`
     # array intentionally lists a flagship subset for readability, not all tools.
     "mcp_tools": {
-        "total":          73,
+        "total":          74,
         "manifest":       "https://dchub.cloud/.well-known/mcp.json",
         "skills_are_subset": True,
     },

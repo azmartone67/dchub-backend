@@ -62,7 +62,7 @@ def test_agent_card_free_tier_auth_intact():
 def test_agent_card_marketplace_marker_and_tool_total():
     assert agent_a2a.AGENT_CARD["a2a_marketplace_ready"] is True
     # Honest tool total (live manifest = source of truth), skills are a subset.
-    assert agent_a2a.AGENT_CARD["mcp_tools"]["total"] == 73
+    assert agent_a2a.AGENT_CARD["mcp_tools"]["total"] == 74
     assert agent_a2a.AGENT_CARD["mcp_tools"]["skills_are_subset"] is True
     assert agent_a2a.AGENT_CARD["endpoints"]["mcp_manifest"] == \
         "https://dchub.cloud/.well-known/mcp.json"
