@@ -88,8 +88,12 @@ def _dispatch_rows(conn, sql, args=None):
     if "GROUP BY 1" in sql:
         return [("consistency_radar", 300, 8.4), ("fast_qa", 60, 2.1)]
     if "status = 'open'" in sql and "LIMIT 15" in sql:
+        # 8 cols, mirroring _SQL_CHRONIC_LEADERBOARD: issue, url, detector,
+        # hours_open, re_observations, episode_count, reobs_per_day,
+        # chronic_score (= hours_open × reobs_per_day; 700 reobs over the
+        # 33.6h the counter ran → 500/day)
         return [("brand_surface_dormant", "https://dchub.cloud/translate",
-                 "brand_surface", 828.4, 700, 1)]
+                 "brand_surface", 828.4, 700, 1, 500.0, 828.4 * 500.0)]
     if "LIMIT 5" in sql:
         return [("radar_flap", "https://dchub.cloud/x", "consistency_radar",
                  9, "open", 3)]
@@ -139,8 +143,32 @@ def test_endpoint_200_with_key(monkeypatch):
     assert top["issue"] == "brand_surface_dormant"
     assert top["hours_open"] == 828.4
     assert top["re_observations"] == 700
-    assert top["chronic_score"] == pytest.approx(828.4 * 700, abs=0.5)
+    assert top["reobs_per_day"] == 500.0
+    assert top["chronic_score"] == pytest.approx(828.4 * 500.0, abs=0.5)
     assert d["flappiest"][0]["episode_count"] == 9
+
+
+def test_endpoint_200_fail_soft_on_short_rows(monkeypatch):
+    """A row narrower than the SQL promises (column drift) skips its
+    entry — it must never 500 the endpoint. Regression: the 07-18
+    rate-based leaderboard rework widened the SQL to 8 columns and
+    6-tuple rows made r[6] raise IndexError."""
+    monkeypatch.setenv("DCHUB_ADMIN_KEY", "sekrit")
+
+    def _short_rows(conn, sql, args=None):
+        if "status = 'open'" in sql and "LIMIT 15" in sql:
+            return [("stale_shape", "https://dchub.cloud/x",
+                     "brand_surface", 828.4, 700, 1),          # 6 cols: skip
+                    ("full_shape", "https://dchub.cloud/y",
+                     "fast_qa", 10.0, 5, 2, 12.0, 120.0)]      # 8 cols: keep
+        return None
+
+    client = _mk_client(monkeypatch, fake_rows=_short_rows)
+    r = client.get("/api/v1/admin/brain/episodes/analytics",
+                   headers={"X-Admin-Key": "sekrit"})
+    assert r.status_code == 200
+    d = r.get_json()
+    assert [e["issue"] for e in d["chronic_leaderboard"]] == ["full_shape"]
 
 
 def test_endpoint_200_fail_soft_when_queries_break(monkeypatch):

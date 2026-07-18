@@ -25,8 +25,9 @@ Design rules (repo patterns, deliberately mirrored):
   · DB access mirrors roadmap_master_shell._read_db: pooled,
     replica-preferred (main.get_read_connection), rollback+return in
     finally, db_utils.get_db fallback. Never a raw psycopg2 connection.
-  · Fail-soft everywhere: a broken query nulls its section (schema
-    drift must degrade the payload, not 500 it). Episode columns are
+  · Fail-soft everywhere: a broken query nulls its section, and a
+    short/malformed row skips its entry (schema drift must degrade
+    the payload, not 500 it). Episode columns are
     COALESCE'd (episode_started_at→first_seen, counts→1) because
     pre-2026-07-17 rows may predate the episode DDL.
 
@@ -258,42 +259,54 @@ def episodes_analytics():
 
         vit = _rows(conn, _SQL_VITALS)
         if vit:
-            out["open_now"] = int(vit[0][0] or 0)
-            out["resolved_24h"] = int(vit[0][1] or 0)
-            out["resolved_7d"] = int(vit[0][2] or 0)
+            try:
+                out["open_now"] = int(vit[0][0] or 0)
+                out["resolved_24h"] = int(vit[0][1] or 0)
+                out["resolved_7d"] = int(vit[0][2] or 0)
+            except Exception as e:
+                logger.debug("[episodes] malformed vitals row: %s", e)
 
         mttr = _rows(conn, _SQL_AVG_MTTR_7D)
         if mttr and mttr[0]:
             out["avg_mttr_h"] = _r1(mttr[0][0])
 
         for r in (_rows(conn, _SQL_MTTR_BY_DETECTOR) or []):
-            out["mttr_by_detector"].append({
-                "detector": r[0],
-                "resolved_7d": int(r[1] or 0),
-                "avg_mttr_h": _r1(r[2]),
-            })
+            try:
+                out["mttr_by_detector"].append({
+                    "detector": r[0],
+                    "resolved_7d": int(r[1] or 0),
+                    "avg_mttr_h": _r1(r[2]),
+                })
+            except Exception as e:
+                logger.debug("[episodes] malformed detector row skipped: %s", e)
 
         for r in (_rows(conn, _SQL_CHRONIC_LEADERBOARD) or []):
-            out["chronic_leaderboard"].append({
-                "issue": r[0],
-                "url": r[1],
-                "detector": r[2],
-                "hours_open": _r1(r[3]) or 0.0,
-                "re_observations": int(r[4] or 1),
-                "episode_count": int(r[5] or 1),
-                "reobs_per_day": _r1(r[6]),
-                "chronic_score": _r1(r[7]),
-            })
+            try:
+                out["chronic_leaderboard"].append({
+                    "issue": r[0],
+                    "url": r[1],
+                    "detector": r[2],
+                    "hours_open": _r1(r[3]) or 0.0,
+                    "re_observations": int(r[4] or 1),
+                    "episode_count": int(r[5] or 1),
+                    "reobs_per_day": _r1(r[6]),
+                    "chronic_score": _r1(r[7]),
+                })
+            except Exception as e:
+                logger.debug("[episodes] malformed leaderboard row skipped: %s", e)
 
         for r in (_rows(conn, _SQL_FLAPPIEST) or []):
-            out["flappiest"].append({
-                "issue": r[0],
-                "url": r[1],
-                "detector": r[2],
-                "episode_count": int(r[3] or 1),
-                "status": r[4],
-                "re_observations": int(r[5] or 1),
-            })
+            try:
+                out["flappiest"].append({
+                    "issue": r[0],
+                    "url": r[1],
+                    "detector": r[2],
+                    "episode_count": int(r[3] or 1),
+                    "status": r[4],
+                    "re_observations": int(r[5] or 1),
+                })
+            except Exception as e:
+                logger.debug("[episodes] malformed flappiest row skipped: %s", e)
 
     return jsonify(out), 200, {"Cache-Control": "no-store, max-age=0",
                                "X-DC-Hub-Surface": "brain-episode-analytics"}
