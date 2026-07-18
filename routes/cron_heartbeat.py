@@ -684,6 +684,15 @@ _DISPATCH = [
      "POST",
      lambda now: now.hour % 4 == 0 and now.minute >= 20 and now.minute < 25),
 
+    # 2026-07-18: Agentic Master Shell — demand-miss clustering, research-queue
+    # drain, golden-check sentinels (answer + deploy, SHADOW), permitting news
+    # scan, standing-intent webhook evals. Every 2h odd hours at :15.
+    # Kill: AGENTIC_MASTER_DISABLED (per-cap: AGENTIC_<CAP>_DISABLED).
+    ("agentic_master_tick_2h",
+     f"{BASE}/api/v1/admin/agentic/master-tick",
+     "POST",
+     lambda now: now.hour % 2 == 1 and now.minute >= 15 and now.minute < 20),
+
     # 2026-07-04: Gap Master Shell — the five assessed gaps (demand/conversion/
     # citations/search/retention) measured + one bounded action on the worst,
     # every 6h at 02/08/14/20 UTC. Kill: GAPS_MASTER_DISABLED.
@@ -1061,6 +1070,7 @@ _HEAVY_LABELS = frozenset({
     "agent_pay_master_tick_daily",
     "brain_detectors_daily", "brain_issue_janitor_daily",
     "brain_lane_driver_6h", "brain_rag_reindex_4h", "brain_warmer_hourly",
+    "agentic_master_tick_2h",
     "iso_queue_ingest_daily", "gas_feeds_ingest_daily",
     "dedup_drain",
     "reach_rollup_daily", "market_deep_dive_rotate_daily",

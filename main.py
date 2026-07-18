@@ -34293,6 +34293,15 @@ try:
     print("[main] episode_analytics_bp registered: GET /api/v1/admin/brain/episodes/analytics (X-Admin-Key)", flush=True)
 except Exception as _epa_e:
     print(f"[main] episode_analytics_bp register failed: {_epa_e}", flush=True)
+# Agentic Master Shell (2026-07-18): 7 agent-native capabilities behind one
+# registry/tick — demand capture, research tasks, scenario engine, answer/
+# deploy sentinels, permitting intel, standing intents. Cron: agentic tick 2h.
+try:
+    from routes.agentic_master_shell import agentic_bp
+    app.register_blueprint(agentic_bp)
+    print("[main] agentic_bp registered: /api/v1/agentic/* + /api/v1/permitting/intel + admin master-tick", flush=True)
+except Exception as _ags_e:
+    print(f"[main] agentic_bp register failed: {_ags_e}", flush=True)
 try:
     # #6 LLM-reasoning lane: first consumer of the action-queue/leverage_score.
     # Dark behind BRAIN_REASONING_LANE_ENABLED; registration is import-safe +
