@@ -85,7 +85,9 @@ _PLATFORMS = {
                    "partner_key_env": "MODELREL_KEY_MOONSHOT",
                    "pick": ["kimi-k2", "kimi-latest", "moonshot-v1-auto",
                             "moonshot-v1"],
-                   "avoid": ["vision", "audio", "8k"]},
+                   # live /models (2026-07-17): kimi-k2.7-code + kimi-k2.6 —
+                   # avoid the code specialist so the GENERAL flagship evals.
+                   "avoid": ["code", "vision", "audio", "8k"]},
 }
 
 _SYSTEM = (
