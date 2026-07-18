@@ -113,9 +113,11 @@ def record_signal(*, signal_type, tool_requested=None, tier_current='free',
 
 
 def mark_signals_converted(*, email=None, stripe_customer_id=None,
-                            session_id=None, mcp_session=None, conv_id=None):
+                            session_id=None, mcp_session=None, conv_id=None,
+                            api_key=None):
     """THE only path that flips signals.converted_at after Stripe fires.
-    Updates by ANY matching key: email OR session_id OR resolved-from-customer.
+    Updates by ANY matching key: email OR session_id OR resolved-from-customer
+    OR api_key (the pk-/k- key-bound Stripe rails identify the buyer by KEY).
     Replaces the divergent UPDATE in main.py:29363 (email-only) and the
     missing UPDATE in flask_mcp_endpoints.py:1500 (didn't write back at all).
 
@@ -124,7 +126,8 @@ def mark_signals_converted(*, email=None, stripe_customer_id=None,
     """
     if psycopg2 is None or not DSN:
         return {'total': 0, 'reason': 'no_db'}
-    matched = {'by_email': 0, 'by_session': 0, 'by_stripe_customer': 0, 'by_caller_id': 0}
+    matched = {'by_email': 0, 'by_session': 0, 'by_stripe_customer': 0,
+               'by_caller_id': 0, 'by_api_key': 0}
     e = email.strip().lower() if email else None
     try:
         with _conn() as c, c.cursor() as cur:
@@ -162,8 +165,150 @@ def mark_signals_converted(*, email=None, stripe_customer_id=None,
                                     WHERE LOWER(TRIM(user_email)) = %s
                                       AND COALESCE(converted, false) = false""", (r[0],))
                     matched['by_stripe_customer'] = cur.rowcount or 0
+            # Path 5 (r-keybound-attr 2026-07-18, #1660): by API KEY — the
+            # pk-/k- key-bound rails (routes/upgrade_handoff.py) name the buyer
+            # by KEY, so none of the paths above can reach the driving signals.
+            # Keyed-but-anonymous callers' signals embed 'key=<prefix24>' in
+            # user_agent (r33-identity convention, mcp_upgrade_gate.py ~190);
+            # dchub_ keys resolve to an email via api_keys→users. Flip those
+            # signals AND backfill user_email with the buyer's email so the
+            # subscription.created handler's email-keyed attribution works
+            # regardless of Stripe event order. POSITION() not LIKE: key
+            # prefixes contain '_' (a LIKE single-char wildcard).
+            if api_key:
+                k = api_key.strip()
+                if k.startswith(('dch_live_', 'dch_trial_')):
+                    _tag = 'key=' + k[:24]
+                    cur.execute("""UPDATE mcp_upgrade_signals
+                                      SET converted = TRUE, converted_at = COALESCE(converted_at, NOW()),
+                                          user_email = COALESCE(user_email, %s)
+                                    WHERE POSITION(%s IN COALESCE(user_agent, '')) > 0
+                                      AND COALESCE(converted, false) = false""", (e, _tag))
+                    matched['by_api_key'] = cur.rowcount or 0
+                elif k.startswith('dchub_'):
+                    kh = hashlib.sha256(k.encode()).hexdigest()
+                    cur.execute("""SELECT LOWER(u.email) FROM api_keys ak
+                                     JOIN users u ON ak.user_id = u.id
+                                    WHERE ak.key_hash = %s
+                                      AND COALESCE(ak.is_active, 1) = 1 LIMIT 1""", (kh,))
+                    r = cur.fetchone()
+                    if r and r[0] and r[0] != e:
+                        cur.execute("""UPDATE mcp_upgrade_signals
+                                          SET converted = TRUE, converted_at = COALESCE(converted_at, NOW())
+                                        WHERE (LOWER(TRIM(user_email)) = %s OR caller_id = %s)
+                                          AND COALESCE(converted, false) = false""", (r[0], r[0]))
+                        matched['by_api_key'] = cur.rowcount or 0
             c.commit()
     except Exception as ex:
         return {'total': 0, 'error': str(ex)[:200]}
     matched['total'] = sum(v for k,v in matched.items() if k != 'total')
     return matched
+
+
+def attribute_keybound_conversion(*, key_hash, buyer_email=None,
+                                  stripe_ref=None, stripe_customer_id=None):
+    """Attribution for the KEY-BOUND Stripe rails (#1660): client_reference_id
+    'pk-<sha256(key)[:32]>' (credit pack) / 'k-<sha256hex(key)>' (subscription)
+    minted by routes/upgrade_handoff.py. The main webhook provisions the key
+    correctly but recorded the mcp_conversions row with caller_id=NULL and no
+    attribution_signal_id — so every /unlock/k conversion counted as
+    'unattributed' in conversions_by_platform_30d and agent conv_rate stayed
+    a false 0%.
+
+    Given the hash from the ref: resolve the raw key (mcp_dev_keys /
+    auto_trial_keys store it raw; dchub_ web keys live hash-only in api_keys
+    → email only), flip the key's signals converted via the by-api-key path
+    above, then stamp caller_id / attribution_signal_id / user_email from the
+    best-matching signal onto the conversion row keyed by stripe_ref (the
+    stripe_subscription_id column: cs_… for packs, sub_… for subs). If the
+    row doesn't exist yet (subscription.created hasn't fired), the signals'
+    backfilled user_email lets that handler attribute at INSERT time instead.
+
+    Fail-soft: runs inside the LIVE payment webhook — never raises; returns a
+    summary dict for the webhook log."""
+    out = {'ok': False, 'key_resolved': False, 'signals': None,
+           'signal_id': None, 'stamped': 0}
+    try:
+        if psycopg2 is None or not DSN:
+            out['reason'] = 'no_db'
+            return out
+        h = (key_hash or '').strip().lower()
+        if len(h) not in (32, 64) or any(c not in '0123456789abcdef' for c in h):
+            out['reason'] = 'bad_hash'
+            return out
+        e = (buyer_email or '').strip().lower() or None
+        raw_key, key_email = None, None
+        # pk- carries sha256[:32], k- the full 64 — LIKE 'h%' covers both
+        # (128 bits of prefix: collision-free in practice). Recomputing
+        # sha256 per row is a scan, but these tables hold thousands of rows
+        # and this runs once per paid checkout.
+        with _conn() as c, c.cursor() as cur:
+            for sql in (
+                """SELECT api_key, LOWER(email) FROM mcp_dev_keys
+                    WHERE encode(sha256(api_key::bytea), 'hex') LIKE %s LIMIT 1""",
+                """SELECT api_key, LOWER(COALESCE(signed_up_email, operator_email))
+                     FROM auto_trial_keys
+                    WHERE encode(sha256(api_key::bytea), 'hex') LIKE %s LIMIT 1""",
+            ):
+                try:
+                    cur.execute(sql, (h + '%',))
+                    r = cur.fetchone()
+                    if r and r[0]:
+                        raw_key, key_email = r[0], (r[1] or None)
+                        break
+                except Exception:
+                    try: c.rollback()
+                    except Exception: pass
+            if raw_key is None and len(h) == 64:
+                try:
+                    cur.execute("""SELECT LOWER(u.email) FROM api_keys ak
+                                     JOIN users u ON ak.user_id = u.id
+                                    WHERE ak.key_hash = %s LIMIT 1""", (h,))
+                    r = cur.fetchone()
+                    if r and r[0]:
+                        key_email = r[0]
+                except Exception:
+                    try: c.rollback()
+                    except Exception: pass
+        out['key_resolved'] = bool(raw_key or key_email)
+        e = e or key_email
+        # (a) flip the key's signals converted (+ user_email backfill).
+        out['signals'] = mark_signals_converted(
+            email=e, stripe_customer_id=stripe_customer_id, api_key=raw_key)
+        # (b) best-matching signal → stamp the conversion row. A key-tag match
+        # (the agent's own key) outranks an email match; most recent wins.
+        _tag = ('key=' + raw_key[:24]) if (raw_key or '').startswith(
+            ('dch_live_', 'dch_trial_')) else None
+        if _tag is None and e is None:
+            out['ok'] = True
+            out['reason'] = 'no_signal_matcher'
+            return out
+        with _conn() as c, c.cursor() as cur:
+            cur.execute(
+                """SELECT id, caller_id FROM mcp_upgrade_signals
+                    WHERE (%s::text IS NOT NULL
+                           AND POSITION(%s IN COALESCE(user_agent, '')) > 0)
+                       OR (%s::text IS NOT NULL
+                           AND (LOWER(TRIM(user_email)) = %s OR caller_id = %s))
+                    ORDER BY (%s::text IS NOT NULL
+                              AND POSITION(%s IN COALESCE(user_agent, '')) > 0) DESC,
+                             created_at DESC
+                    LIMIT 1""",
+                (_tag, _tag, e, e, e, _tag, _tag))
+            r = cur.fetchone()
+            if r:
+                out['signal_id'] = r[0]
+                if stripe_ref:
+                    cur.execute(
+                        """UPDATE mcp_conversions
+                              SET attribution_signal_id = COALESCE(attribution_signal_id, %s),
+                                  caller_id  = COALESCE(caller_id, %s),
+                                  user_email = COALESCE(user_email, %s)
+                            WHERE stripe_subscription_id = %s""",
+                        (r[0], r[1], e, stripe_ref))
+                    out['stamped'] = cur.rowcount or 0
+            c.commit()
+        out['ok'] = True
+    except Exception as ex:
+        out['error'] = str(ex)[:200]
+    return out
