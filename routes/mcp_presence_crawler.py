@@ -2071,44 +2071,14 @@ def _submitter_manifest_refresh(registry_name: str) -> dict:
     The 'submission' is upstream — bump the manifest and let the
     registry re-crawl. Returns a structured 'requires_manifest_update'
     so the brain knows the path is upstream, not a form POST."""
-    # Some registries do expose a re-index webhook. We probe for a
-    # couple of well-known shapes; if any 200s, fire it.
-    webhooks = {
-        "smithery":  "https://smithery.ai/api/refresh?slug=dchub/dchub-mcp-server",
-        "glama":     "https://glama.ai/mcp/servers/dchub/reindex",
-        "lobehub":   None,    # no public refresh webhook
-        "pulsemcp":  "https://pulsemcp.com/api/servers/dchub/refresh",
-    }
-    hook = webhooks.get(registry_name)
-    if hook:
-        try:
-            r = requests.post(
-                hook,
-                headers={"User-Agent": AUTOSUBMIT_USER_AGENT,
-                         "Accept": "application/json"},
-                timeout=AUTOSUBMIT_TIMEOUT_S,
-            )
-            return {
-                "ok":          200 <= r.status_code < 300,
-                "submitter":   f"{registry_name}_manifest_refresh",
-                "target":      hook,
-                "http_status": r.status_code,
-                "response":    (r.text or "")[:300],
-                "requires_manifest_update": True,
-                "next_action": (
-                    f"{registry_name} auto-discovers from GitHub README + "
-                    "manifest. Refresh webhook fired; verify next crawl."
-                ),
-            }
-        except Exception as e:
-            return {
-                "ok": False,
-                "submitter": f"{registry_name}_manifest_refresh",
-                "target": hook,
-                "error": str(e)[:200],
-                "requires_manifest_update": True,
-            }
-    # No webhook — pure upstream
+    # r-nofakepush (2026-07-17): the per-registry "refresh webhook" URLs here
+    # (smithery.ai/api/refresh, glama.ai/.../reindex, pulsemcp.com/.../refresh)
+    # were SPECULATIVE — none are real endpoints, so every POST 404'd and this
+    # "auto-fix push" was a silent NO-OP that only LOOKED automated (worse than
+    # honest "escalate to owner"). Removed. The HONEST path for these
+    # README/manifest-crawled registries is upstream: bump the GitHub manifest +
+    # About (the daily-manifest-sync heal does this — it now heals the deal count
+    # too) and let the registry re-crawl on its own cadence.
     return {
         "ok": True,
         "submitter": f"{registry_name}_manifest_refresh",

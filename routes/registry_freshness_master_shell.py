@@ -279,6 +279,50 @@ def _ensure_snapshots(c) -> None:
         logger.debug("[regfresh] snapshot ddl skipped: %s", e)
 
 
+def _escalate_red(c, lanes) -> None:
+    """r-actuate (2026-07-17): the shell was pure-DETECT — it snapshotted and filed
+    NOTHING, so registry drift died in a table nobody reads. On a RED lane it now
+    ESCALATES: upserts ONE brain_finding the operator/brain actually sees. NO
+    outbound HTTP (preserves the pure-DB, no-self-request invariant that exists
+    because inline pushes caused the 07-06 flywheel outage) — the actual push stays
+    owner-gated (REGISTRY_SUBMIT_ENABLED + the daily crawler auto-fix). This closes
+    the DETECT->ESCALATE half only. Plain UPDATE-or-INSERT (NOT the savepoint-wrapped
+    canonical writer, which no-ops under an autocommit conn); auto-resolves on green
+    so the finding list stays honest. Fail-soft; never raises."""
+    if c is None:
+        return
+    red = [l for l in lanes if not l["pass"]]
+    try:
+        with c.cursor() as cur:
+            if not red:
+                cur.execute("UPDATE brain_findings SET status='resolved', resolved_at=now() "
+                            "WHERE issue=%s AND status='open'", ("registry_freshness_red",))
+            else:
+                bits = []
+                for l in red:
+                    for ch in [x for x in l["checks"] if x["pass"] is False][:4]:
+                        bits.append(f"[{l['lane']}] {ch['name']}: {ch['detail']}")
+                detail = (f"Registry freshness RED — {len(red)}/{len(lanes)} lane(s) failing. "
+                          + " || ".join(bits))[:740] + " | See /admin/registry-freshness."
+                cur.execute("UPDATE brain_findings SET detail=%s, last_seen=now(), "
+                            "count=COALESCE(count,1)+1, status='open' "
+                            "WHERE issue=%s AND status='open'",
+                            (detail, "registry_freshness_red"))
+                if cur.rowcount == 0:
+                    cur.execute(
+                        "INSERT INTO brain_findings (issue, url, count, detail, detector, status) "
+                        "VALUES (%s,%s,%s,%s,%s,'open')",
+                        ("registry_freshness_red",
+                         "https://dchub.cloud/admin/registry-freshness",
+                         1, detail, "registry_freshness_master"))
+        try:
+            c.commit()
+        except Exception:
+            pass
+    except Exception as e:
+        logger.debug("[regfresh] escalate skipped: %s", e)
+
+
 def _run_tick() -> dict:
     c = _conn()
     lanes = []
@@ -298,9 +342,9 @@ def _run_tick() -> dict:
         "lanes_pass": sum(1 for l in lanes if l["pass"]),
         "lanes_total": len(lanes),
         "lanes": lanes,
-        "note": "read-only DIAGNOSTIC (pure-DB, no self-requests); names an "
-                "actuator per lane but fires nothing; see "
-                "routes/registry_freshness_master_shell.py",
+        "note": "pure-DB diagnostic (no self-requests); a RED lane now ESCALATES "
+                "one brain_finding (registry_freshness_red) — the actual push stays "
+                "owner-gated (REGISTRY_SUBMIT_ENABLED + daily crawler auto-fix).",
     }
     if c is not None:
         try:
@@ -311,6 +355,7 @@ def _run_tick() -> dict:
                             (payload["lanes_pass"], payload["lanes_total"], json.dumps(payload)))
         except Exception as e:
             logger.debug("[regfresh] snapshot insert failed: %s", e)
+        _escalate_red(c, lanes)   # DETECT -> ESCALATE (r-actuate 2026-07-17)
         try:
             c.close()
         except Exception:

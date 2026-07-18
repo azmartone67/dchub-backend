@@ -373,18 +373,33 @@ def _discover_candidate_registries(timeout: int = 20) -> List[dict]:
                   key=lambda c: c["stars"], reverse=True)[:15]
 
 
+# r-mingate (2026-07-17): discovery had NO stars gate — it took the top-15 by
+# stars, so a 0-star name-matching repo became a "candidate" and filed a finding,
+# burying real registries in junk. Gate on stars so onboarding proposals are
+# quality-filtered. Tunable; 0 disables the gate.
+_MIN_CANDIDATE_STARS = int(os.environ.get("MCP_REGISTRY_MIN_STARS", "25") or "25")
+
+
 def _findings_for_candidates(candidates: List[dict]) -> List[dict]:
     out = []
     for c in candidates:
+        stars = int(c.get("stars", 0) or 0)
+        if stars < _MIN_CANDIDATE_STARS:
+            continue  # skip 0-star name-match junk — not worth an onboarding proposal
         out.append({
             "kind":     "mcp_registry_candidate",
             "subject":  c["key"],
             "url":      c.get("candidate_url") or c.get("repo_url"),
-            "evidence": (f"Possible NEW MCP registry: {c['key']} "
-                          f"(repo {c.get('repo')}, ⭐{c.get('stars', 0)}). "
+            # onboard-READY: the finding now carries the exact next step so a human
+            # (or the L22 auto-code Issue path, behind AUTO_CODE_DRY_RUN=0) can act
+            # without re-investigating. Auto-PR-to-_REGISTRIES stays owner-gated.
+            "evidence": (f"NEW MCP registry candidate: {c['key']} "
+                          f"(repo {c.get('repo')}, ⭐{stars}). "
                           f"{c.get('description', '')} "
-                          f"Vet, then add to _REGISTRIES if it accepts submissions."),
-            "severity": "low",
+                          f"ONBOARD: if it accepts submissions, add a _REGISTRIES entry "
+                          f"in routes/mcp_registry_watch.py (method=github_pr|form|refresh_only) "
+                          f"+ the submit list. Propose-only until vetted."),
+            "severity": "medium" if stars >= 100 else "low",
         })
     return out
 
