@@ -154,7 +154,10 @@ SEED_REGISTRIES: list[dict] = [
     },
     {
         "registry_name": "mcp_so",
-        "listing_url":   "https://mcp.so/server/dchub-mcp-server",
+        # r-mcpso-url (2026-07-18): plural /servers/ — the singular form 404s;
+        # the live listing is /servers/dchub-mcp-server (a second one exists at
+        # /servers/dchub-backend). Wrong path = weeks of false "missing".
+        "listing_url":   "https://mcp.so/servers/dchub-mcp-server",
         "submit_url":    "https://mcp.so/submit",
     },
     {

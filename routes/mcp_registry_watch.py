@@ -120,7 +120,12 @@ _REGISTRIES = [
     {
         "id":           "mcp_so",
         "name":         "mcp.so directory",
-        "url":          "https://mcp.so/server/dchub",
+        # r-mcpso-url (2026-07-18): we probed /server/dchub — a slug that never
+        # existed — and reported "missing" for weeks while TWO real listings
+        # were live at /servers/dchub-mcp-server (primary, indexed from the
+        # mcp-server repo) and /servers/dchub-backend (secondary). Watch the
+        # primary; its copy refreshes from the repo README on their re-crawl.
+        "url":          "https://mcp.so/servers/dchub-mcp-server",
         "submission_url": "https://github.com/chatmcp/mcp-directory",
     },
     {
