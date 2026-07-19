@@ -1682,6 +1682,24 @@ def _write_release(rel: dict, signals: dict, topic: str) -> tuple[int | None, st
         print(f"[marketing_engine] media gate dropped release "
               f"{rel.get('slug')}: {'; '.join(_greasons)[:400]}", file=sys.stderr)
         return None, "media_gate_denied"
+    # hybrid-newsroom (2026-07-19): brain editorial review before anything
+    # auto-publishes. The fact-check lane proves numbers TRUE; this proves the
+    # story NEW (kills the "same market, same score, re-worded" repeats).
+    # Verdict draft → the row is still written but published=FALSE, so it
+    # surfaces in the pending-drafts digest instead of the public feed.
+    # Fail-closed inside the gate; kill via MEDIA_EDITORIAL_GATE_DISABLED=1.
+    try:
+        from routes.media_editorial_gate import editorial_gate
+        _ed = editorial_gate(rel.get("title") or "", rel.get("body") or "",
+                             "press_release", market_slug=rel.get("market_slug"),
+                             press_slug=rel.get("slug"))
+    except Exception as _ed_e:
+        _ed = {"action": "draft", "reasons": [f"gate import failed: {str(_ed_e)[:80]}"]}
+    _publish = _ed.get("action") == "publish"
+    if not _publish:
+        print(f"[marketing_engine] editorial gate held release "
+              f"{rel.get('slug')} as draft: {'; '.join(_ed.get('reasons') or [])[:300]}",
+              file=sys.stderr)
     c = _conn()
     if c is None: return None, "no_database"
     today = date.today().isoformat()
@@ -1700,7 +1718,7 @@ def _write_release(rel: dict, signals: dict, topic: str) -> tuple[int | None, st
                     (title, summary, subheadline, body, meta_description,
                      slug, source, category, published_date, date, published,
                      published_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, true, NOW())
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (slug) DO UPDATE SET
                     title            = EXCLUDED.title,
                     summary          = EXCLUDED.summary,
@@ -1708,8 +1726,8 @@ def _write_release(rel: dict, signals: dict, topic: str) -> tuple[int | None, st
                     body             = EXCLUDED.body,
                     meta_description = EXCLUDED.meta_description,
                     published_date   = EXCLUDED.published_date,
-                    published        = true,
-                    published_at     = NOW()
+                    published        = EXCLUDED.published,
+                    published_at     = EXCLUDED.published_at
                 RETURNING id;
             """, (
                 rel["title"][:300],
@@ -1721,6 +1739,8 @@ def _write_release(rel: dict, signals: dict, topic: str) -> tuple[int | None, st
                 "DC Hub Auto",       # source
                 "press_release",     # category
                 today, today,
+                _publish,                                       # published
+                datetime.utcnow() if _publish else None,        # published_at
             ))
             press_id = cur.fetchone()[0]
         # 2. auto_press_releases — audit trail of autonomous output.
@@ -2986,7 +3006,12 @@ def publish_now():
                     FROM press_releases pr
                     LEFT JOIN auto_press_releases apr
                            ON apr.press_release_id = pr.id
-                    WHERE NOT EXISTS (
+                    -- hybrid-newsroom (2026-07-19): NEVER fan an unpublished
+                    -- draft to social. The draft lanes are alive again, so
+                    -- without this filter the 3h drain would LinkedIn-post
+                    -- human-gated drafts before anyone proofed them.
+                    WHERE pr.published = TRUE
+                      AND NOT EXISTS (
                             SELECT 1 FROM social_media_posts smp
                              WHERE smp.press_release_id = pr.id
                                AND smp.platform = 'linkedin'

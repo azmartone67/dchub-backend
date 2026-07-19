@@ -116,6 +116,22 @@ def _collect_pending(cur) -> dict:
         WHERE published = FALSE
         ORDER BY created_at DESC LIMIT 40
     """)
+    # Enrich with the brain's editorial review (why was this held?). Own
+    # try so a missing media_editorial_reviews table can't hurt the digest.
+    try:
+        cur.execute("""
+            SELECT DISTINCT ON (press_slug) press_slug, score, reasons
+            FROM media_editorial_reviews
+            ORDER BY press_slug, created_at DESC
+        """)
+        reviews = {r[0]: {"score": r[1], "reasons": r[2]} for r in cur.fetchall()}
+        for row in out.get("press_releases_unpublished") or []:
+            rv = reviews.get(row.get("slug"))
+            if rv:
+                row["editorial_score"] = rv["score"]
+                row["editorial_reasons"] = (rv["reasons"] or [])[:3]
+    except Exception:
+        pass
     _q("press_releases_queue_drafts", """
         SELECT id, slug, title, trigger_type, created_at
         FROM press_releases_queue
@@ -165,7 +181,10 @@ def _render_email_html(pending: dict) -> str:
         trs = "".join(
             f'<tr><td style="padding:6px 10px;border-bottom:1px solid #e2e8f0">'
             f'<a href="{_preview_url(r["id"])}" style="color:#1d4ed8">{esc(r["title"])[:110]}</a>'
-            f'<br><span style="color:#64748b;font-size:12px">{esc(r["category"])} · {_age_days(r["created_at"])} old</span></td>'
+            f'<br><span style="color:#64748b;font-size:12px">{esc(r["category"])} · {_age_days(r["created_at"])} old'
+            + (f' · <span style="color:#b45309">brain: {r["editorial_score"]}/10 — {esc((r.get("editorial_reasons") or [""])[0])[:90]}</span>'
+               if r.get("editorial_score") is not None else "")
+            + '</span></td>'
             f'<td style="padding:6px 10px;border-bottom:1px solid #e2e8f0;white-space:nowrap">'
             f'<a href="{_approve_url(r["id"])}" style="color:#fff;background:#16a34a;padding:5px 12px;'
             f'border-radius:5px;text-decoration:none;font-size:13px">Fact-check &amp; publish</a></td></tr>'

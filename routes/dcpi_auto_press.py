@@ -277,6 +277,20 @@ def scan_and_draft():
             skipped.append({"slug": shift["slug"], "reason": "dedup_7d"})
             continue
         release = _draft_press_release(shift)
+        # hybrid-newsroom (2026-07-19): brain editorial review before
+        # auto-publish. Shift stories usually carry a real delta so most
+        # pass, but the gate kills re-worded repeats of a recently-covered
+        # market. Verdict draft → row lands published=FALSE and surfaces in
+        # the pending-drafts digest. Fail-closed inside the gate.
+        try:
+            from routes.media_editorial_gate import editorial_gate
+            _ed = editorial_gate(release["title"], release["body"],
+                                 release["category"],
+                                 market_slug=shift["slug"],
+                                 press_slug=release["slug"])
+        except Exception:
+            _ed = {"action": "draft", "reasons": ["gate import failed"]}
+        release["published"] = _ed.get("action") == "publish"
         new_id = _insert_release(release)
         if new_id:
             drafted.append({
@@ -286,6 +300,9 @@ def scan_and_draft():
                 "market":      shift["name"],
                 "delta":       shift["delta"],
                 "verdict_flip": shift["is_verdict_flip"],
+                "published":   release["published"],
+                "editorial":   {"score": _ed.get("score"),
+                                "reasons": (_ed.get("reasons") or [])[:3]},
                 "url":         f"https://dchub.cloud/news/{release['slug']}",
             })
         else:

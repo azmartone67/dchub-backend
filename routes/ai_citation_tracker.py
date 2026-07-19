@@ -753,12 +753,11 @@ def draft_press_from_citations():
         now = now_utc.isoformat() + "Z"
         today = now_utc.strftime("%Y-%m-%d")
 
-        verify_media_text = None
-        if auto_approve:
-            try:
-                from routes.media_fact_check_guard import verify_media_text
-            except Exception:
-                verify_media_text = None  # guard unavailable → fail closed to draft
+        # hybrid-newsroom (2026-07-19): operator decision — citation releases
+        # are brand voice and NEVER auto-publish, organic or not. Every row
+        # lands as an unpublished draft; the pending-drafts digest surfaces
+        # it with a fact-check-gated one-click approve. auto_approve is kept
+        # for API compat but no longer publishes.
 
         try:
             c.rollback()  # close the candidate-SELECT txn so autocommit can be set
@@ -782,23 +781,7 @@ def draft_press_from_citations():
                         skipped += 1
                         continue
 
-                    # press-fix (2026-07-18): self-solicited rows (our own
-                    # probes) NEVER auto-publish — a model answering OUR
-                    # question can hallucinate confidently without tripping
-                    # the disclaimer gate (observed: ChatGPT inventing a
-                    # "Data Center Performance Index"). Those land as drafts
-                    # for human review via the pending-drafts digest. Only
-                    # organic citations may auto-publish, and only when the
-                    # fact-check guard corroborates the text.
-                    publish = False
-                    if (auto_approve and not cand.get("self_solicited")
-                            and verify_media_text is not None):
-                        try:
-                            report = verify_media_text(
-                                f"{cand['title']}\n{cand['body_html']}") or {}
-                            publish = bool(report.get("ok"))
-                        except Exception:
-                            publish = False  # guard blip → stay a draft
+                    publish = False  # hybrid-newsroom: citations are always drafts
 
                     cur.execute("""
                         INSERT INTO press_releases
