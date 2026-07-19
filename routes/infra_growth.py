@@ -38,6 +38,12 @@ _LAYERS = [
     ("transmission_lines",      "infrastructure_layers",    "static",   None),
     ("power_plants_eia",        "power_plants_eia",          "static",   None),
     ("power_plants_discovered", "discovered_power_plants",   "static",   None),
+    # GEM worldwide inventory — gated quarterly refresh (owner re-downloads); "periodic"
+    # with generous thresholds so a stale flag = "GEM is overdue for a refresh", not noise.
+    ("gem_global_power",        "gem_power",                "periodic", 150),
+    ("gem_lng_terminals",       "gem_gas",                  "periodic", 220),
+    ("gem_pipelines",           "gem_gas_pipelines",        "periodic", 220),
+    ("gem_coal_mines",          "gem_coal_mines",           "periodic", 220),
 ]
 _CAT = {l[0]: l[2] for l in _LAYERS}
 _STALE = {l[0]: l[3] for l in _LAYERS}
