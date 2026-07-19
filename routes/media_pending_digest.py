@@ -85,6 +85,16 @@ def _approve_url(row_id: int) -> str:
             f"?id={row_id}&t={_approve_token(row_id)}")
 
 
+def _preview_url(row_id: int) -> str:
+    # press-fix-2 (2026-07-19): the edge only renders PUBLISHED rows at
+    # /news/<slug> (unknown slugs fall through to the digest viewer), so a
+    # draft's natural URL 404s on dchub.cloud. The edge DOES proxy
+    # /api/v1/media/* to the backend, so drafts are previewed through this
+    # token-gated endpoint instead.
+    return (f"{SITE}/api/v1/media/pending-drafts/preview"
+            f"?id={row_id}&t={_approve_token(row_id)}")
+
+
 # ── inventory ────────────────────────────────────────────────────────────
 def _collect_pending(cur) -> dict:
     """Every human-gated draft lane, one dict. Each query fails soft so a
@@ -154,7 +164,7 @@ def _render_email_html(pending: dict) -> str:
     if rows:
         trs = "".join(
             f'<tr><td style="padding:6px 10px;border-bottom:1px solid #e2e8f0">'
-            f'<a href="{SITE}/news/{esc(r["slug"])}" style="color:#1d4ed8">{esc(r["title"])[:110]}</a>'
+            f'<a href="{_preview_url(r["id"])}" style="color:#1d4ed8">{esc(r["title"])[:110]}</a>'
             f'<br><span style="color:#64748b;font-size:12px">{esc(r["category"])} · {_age_days(r["created_at"])} old</span></td>'
             f'<td style="padding:6px 10px;border-bottom:1px solid #e2e8f0;white-space:nowrap">'
             f'<a href="{_approve_url(r["id"])}" style="color:#fff;background:#16a34a;padding:5px 12px;'
@@ -217,7 +227,7 @@ def pending_drafts():
             pending = _collect_pending(cur)
         for r in pending.get("press_releases_unpublished") or []:
             r["approve_url"] = _approve_url(r["id"])
-            r["view_url"] = f"{SITE}/news/{r['slug']}"
+            r["view_url"] = _preview_url(r["id"])
         return jsonify(ok=True, pending=pending), 200
     finally:
         try: c.close()
@@ -283,6 +293,58 @@ def pending_drafts_digest():
         return jsonify(ok=False, error=str(e)[:160], sent=sent, failed=failed), 500
     return jsonify(ok=True, sent=sent, failed=failed,
                    total_pending=pending["total"]), 200
+
+
+@media_pending_digest_bp.route("/api/v1/media/pending-drafts/preview",
+                               methods=["GET"])
+def preview_pending_draft():
+    """Token-gated draft preview. The public edge only renders published
+    rows at /news/<slug>, so this is the ONLY dchub.cloud URL that shows a
+    draft before approval. Published rows redirect to their live page."""
+    from flask import redirect, Response
+    try:
+        row_id = int(request.args.get("id", ""))
+    except Exception:
+        return jsonify(error="bad_id"), 400
+    token = (request.args.get("t") or "").strip()
+    if not (_admin_ok() or (token and hmac.compare_digest(token, _approve_token(row_id)))):
+        return jsonify(error="unauthorized"), 401
+
+    c = _conn()
+    if c is None:
+        return jsonify(error="no_database"), 503
+    try:
+        with c.cursor() as cur:
+            cur.execute("""SELECT slug, title, subheadline, body, category,
+                                  published, created_at
+                           FROM press_releases WHERE id = %s""", (row_id,))
+            row = cur.fetchone()
+    finally:
+        try: c.close()
+        except Exception: pass
+    if not row:
+        return jsonify(error="not_found", id=row_id), 404
+    slug, title, subheadline, body, category, published, created_at = row
+    if published:
+        return redirect(f"{SITE}/news/{slug}", code=302)
+
+    page = f"""<!doctype html><html><head><meta charset="utf-8">
+<meta name="robots" content="noindex,nofollow">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>DRAFT — {html.escape(title or slug)}</title></head>
+<body style="font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
+background:#f1f5f9;margin:0;padding:24px">
+<div style="max-width:720px;margin:0 auto">
+<div style="background:#b45309;color:#fff;padding:10px 18px;border-radius:8px 8px 0 0;
+font-size:14px"><strong>DRAFT PREVIEW</strong> — not published.
+{html.escape(category or '')} · created {html.escape(str(created_at)[:16])}
+&nbsp;·&nbsp;<a href="{_approve_url(row_id)}" style="color:#fde68a">Fact-check &amp; publish</a></div>
+<div style="background:#fff;padding:26px 30px;border:1px solid #e2e8f0;border-top:0;
+border-radius:0 0 8px 8px;line-height:1.6;color:#0f172a">
+{f'<p style="color:#475569;font-style:italic">{html.escape(subheadline)}</p>' if subheadline else ''}
+{body or '<p>(empty body)</p>'}
+</div></div></body></html>"""
+    return Response(page, mimetype="text/html")
 
 
 @media_pending_digest_bp.route("/api/v1/media/pending-drafts/approve",
