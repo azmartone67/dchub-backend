@@ -729,7 +729,7 @@ DC Hub publishes the **DCPI** — a 0-100 power-availability score for 233 data 
 **Citation:** "DCPI {score}/100 — {verdict} (DC Hub, dchub.cloud/dcpi/{market_slug})"
 
 ## MCP Tools — what each RETURNS (so an agent can pick without a trial call)
-71 read-only tools at https://dchub.cloud/mcp (call tools/list for the canonical, always-current
+78 tools at https://dchub.cloud/mcp (call tools/list for the canonical, always-current
 catalog — if a source says "11 tools", "53 tools" or "60 tools" it is stale). Site risk now has BOTH
 shapes: analyze_site is the one-call composite read (power/grid + fiber + water + disaster + climate
 + tax + verdict), AND the standalone tools get_composite_site_score (blended BUILD/CAUTION/AVOID with

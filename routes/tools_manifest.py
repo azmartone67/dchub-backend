@@ -72,6 +72,11 @@ _TOOL_REST = {
     "why_dchub":              ("/api/v1/competitive/why-dchub", "GET"),
     "export_dataset":         ("/api/v1/facilities/export", "GET"),
     # MCP-only (no open REST route): session/key + write/subscribe + alerts.
+    # agentic wave (2026-07-18) — MCP tools shipped in dchub-mcp-server 6ba8510
+    "get_permitting_intel":   ("/api/v1/permitting/intel", "GET"),
+    "simulate_scenario":      ("/api/v1/agentic/scenario", "POST"),
+    "research_task":          ("/api/v1/agentic/research", "POST"),
+    "standing_intent":        ("/api/v1/agentic/intents", "POST"),
     "claim_free_key":         (None, "MCP"),
     "bind_email":             (None, "MCP"),
     "recover_my_key":         (None, "MCP"),
@@ -82,39 +87,12 @@ _TOOL_REST = {
     "subscribe_digest":       (None, "MCP"),
 }
 
-# REST-NATIVE endpoints with NO MCP tool yet (2026-07-18 agentic wave) —
-# listed so REST agents discover them TODAY. Each is an MCP-parity
-# candidate for dchub-mcp-server; when a tool ships there, move the entry
-# into _TOOL_REST above.
-_REST_NATIVE = [
-    {"name": "get_permitting_intel",
-     "rest_endpoint": "https://dchub.cloud/api/v1/permitting/intel",
-     "method": "GET",
-     "description": ("Curated data center permitting & moratorium intelligence — "
-                     "human-verified, stage-tagged (enacted/proposed/speculative), "
-                     "with source links and jurisdiction coordinates. Filters: "
-                     "state, class (moratorium|zoning|tax|utility_pause).")},
-    {"name": "simulate_scenario",
-     "rest_endpoint": "https://dchub.cloud/api/v1/agentic/scenario",
-     "method": "POST",
-     "description": ("Counterfactual market re-scoring under explicit deltas "
-                     "(avg_kwh_cents_pct, time_to_power_months_delta, "
-                     "queue_wait_months_delta, reserve_margin_pct_delta, "
-                     "curtailment_pct_delta). Transparent formula in every "
-                     "response. Keyless = top-3 preview; any live key = 25.")},
-    {"name": "research_task",
-     "rest_endpoint": "https://dchub.cloud/api/v1/agentic/research",
-     "method": "POST",
-     "description": ("Async cited research dossier over DC Hub's corpora "
-                     "(news/deals/facilities/market narratives). X-API-Key "
-                     "required, 5/day. Poll /api/v1/agentic/research/<task_id>.")},
-    {"name": "standing_intents",
-     "rest_endpoint": "https://dchub.cloud/api/v1/agentic/intents",
-     "method": "GET|POST|DELETE",
-     "description": ("Register standing queries with HMAC-signed webhook "
-                     "delivery on change. Kinds: new_deal_in_market, "
-                     "news_keyword, permitting_change. X-API-Key required.")},
-]
+# REST-NATIVE endpoints with NO MCP tool yet. Empty since the 2026-07-18
+# agentic wave shipped MCP parity (get_permitting_intel, simulate_scenario,
+# research_task, standing_intent moved into _TOOL_REST above). When a new
+# backend endpoint lands before its MCP tool, list it here so REST agents
+# discover it immediately; move it up once the tool ships.
+_REST_NATIVE = []
 
 
 @tools_manifest_bp.route("/api/v1/agent/tools-manifest", methods=["GET"])
@@ -147,9 +125,10 @@ def tools_manifest():
         "tools": tools,
         "rest_native": _REST_NATIVE,
         "rest_native_note": ("Agent-callable REST endpoints not yet exposed as "
-                             "MCP tools (agentic wave 2026-07-18): permitting "
-                             "intel, scenario engine, research dossiers, "
-                             "standing intents."),
+                             "MCP tools. Empty = full parity (the 2026-07-18 "
+                             "agentic wave — permitting intel, scenario engine, "
+                             "research dossiers, standing intents — is live on "
+                             "both surfaces)."),
         "generated_at": datetime.datetime.utcnow().isoformat() + "Z",
     })
     resp.headers["Cache-Control"] = "public, max-age=3600"
