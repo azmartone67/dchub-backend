@@ -1,9 +1,28 @@
 # DC Hub — Anthropic MCP Connector Directory Submission Packet
 
-**Status**: Ready to submit via Anthropic sales/partnerships channel.
-**Numbers refreshed**: 2026-06-21 (growth audit — live `/api/v1/stats` + `tools/list`). All figures below are canonical; the prior packet's `$324B` / `96+ platforms` / `29 tools` / `286 markets` / `Pro $199` were stale or unverified and have been removed.
-**Submit to**: https://www.anthropic.com/contact-sales (subject: "MCP Connector Directory Submission — DC Hub")
-**Best alternate path**: DM Mike Krieger (CPO) or Adam Wesolowski (Head of MCP) on LinkedIn / X.
+**Status**: 3 contact-sales submissions + 1 GitHub issue
+(modelcontextprotocol/mcpb#296, 2026-07-19) got no response — because
+NEITHER is the intake. The real channel (verified 2026-07-19 against
+Anthropic's docs) is the **submission portal inside Claude.ai admin
+settings**, which requires a **Team or Enterprise Claude org** (owner or
+directory-management role). Docs:
+https://claude.com/docs/connectors/building/submission · FAQ:
+https://support.claude.com/en/articles/11596036 · Escalation:
+mcp-review@anthropic.com. Review gates that decide most submissions:
+(1) every tool has a title + read-only/destructive safety annotations,
+(2) public privacy policy (https://dchub.cloud/privacy — live 200 ✓),
+(3) reviewer test-account access instructions, (4) confirmation every
+tool was run end-to-end. Track status in the portal's submissions
+dashboard after filing.
+**Numbers refreshed**: 2026-06-21 (growth audit — live `/api/v1/stats` +
+`tools/list`). STALE AGAIN as of 2026-07-18 canon: tools 47→74, deals
+"3,000+"→"1,400+" honest floor, registry v2.3.3→v2.4.5 — re-pull from
+ai_surface_canon.PINNED before any resubmission (the white-glove drift
+detector flags "3,000+ M&A" and "58 tools"-era strings as stale markers).
+**Submit to**: Claude.ai → admin settings → submission portal (Team/
+Enterprise org required — an individual plan cannot file).
+**Best alternate path**: mcp-review@anthropic.com (their published
+escalation address), not cold exec DMs.
 
 ---
 
