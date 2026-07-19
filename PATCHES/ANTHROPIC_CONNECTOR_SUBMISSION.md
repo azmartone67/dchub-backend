@@ -1,8 +1,10 @@
 # DC Hub — Anthropic MCP Connector Directory Submission Packet
 
-**Status**: 3 contact-sales submissions + 1 GitHub issue
-(modelcontextprotocol/mcpb#296, 2026-07-19) got no response — because
-NEITHER is the intake. The real channel (verified 2026-07-19 against
+**Status**: 6 attempts, all into dead or wrong channels — 3×
+contact-sales (not an intake), 2× the Google submission form (verified
+2026-07-19: the public "MCP Directory Submission Form" is now titled
+"[deprecated]" and closed to responses — do NOT fill it again), 1×
+GitHub issue modelcontextprotocol/mcpb#296 (wrong tracker, closed). The real channel (verified 2026-07-19 against
 Anthropic's docs) is the **submission portal inside Claude.ai admin
 settings**, which requires a **Team or Enterprise Claude org** (owner or
 directory-management role). Docs:
