@@ -601,6 +601,30 @@ DISABLED_JOBS = {
         'minute': 10,
         'timeout': 60,
     },
+    # agent-iteration suite (2026-07-19): Sunday panel — every keyed partner
+    # model grades the canonical plan_query run on the fixed 100-pt rubric;
+    # critiques file as brain findings. Runs the day AFTER the Saturday
+    # 23:00 model-relations tick so verdicts and grades land the same weekend.
+    'planner_grading_panel': {
+        'name': 'Agent Iteration — Planner Grading Panel',
+        'endpoint': '/api/jobs/planner-grading',
+        'method': 'POST',
+        'hours': [12],
+        'minute': 30,
+        'day_of_week': 6,                  # Sunday
+        'timeout': 60,
+    },
+    # Monday operator email: one paste-ready iteration block per partner
+    # thread (shipped-this-week + their last verdict + suggested test).
+    'agent_iteration_packet': {
+        'name': 'Agent Iteration — Weekly Packet (operator email)',
+        'endpoint': '/api/v1/admin/agent-iteration-packet/send',
+        'method': 'POST',
+        'hours': [13],
+        'minute': 15,
+        'day_of_week': 0,                  # Monday
+        'timeout': 60,
+    },
     # Phase FF+7-mttr5 (2026-05-19): Brain L22 — Auto-Code LIVE.
     # User flipped to live mode. Hourly. Reads L21 ring buffer + radar
     # for 404 spikes >=2/hour, opens GitHub issues with the proposed

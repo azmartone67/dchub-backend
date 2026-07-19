@@ -163,6 +163,14 @@ def _collect_pending(cur) -> dict:
         WHERE status = 'pending'
         ORDER BY created_at DESC LIMIT 40
     """)
+    # agent-iteration suite (2026-07-19): fresh unpublished partner verdicts
+    # ride the same daily digest — one-click consent-gated publication to
+    # /agent-verdicts. Own try; suite absence can't hurt the digest.
+    try:
+        from routes.agent_iteration_suite import pending_verdicts_for_digest
+        out["agent_verdicts_pending"] = pending_verdicts_for_digest()
+    except Exception:
+        out["agent_verdicts_pending"] = []
     out["total"] = sum(len(v) for v in out.values() if isinstance(v, list))
     return out
 
@@ -220,6 +228,18 @@ def _render_email_html(pending: dict) -> str:
                 f'<td style="padding:6px 10px;border-bottom:1px solid #e2e8f0;color:#64748b;font-size:12px">review in admin</td></tr>'
                 for r in rows)
             sections.append((label, trs))
+
+    rows = pending.get("agent_verdicts_pending") or []
+    if rows:
+        trs = "".join(
+            f'<tr><td style="padding:6px 10px;border-bottom:1px solid #e2e8f0">'
+            f'<b>{esc(r["platform"])}</b> ({esc(r.get("model") or "")}): '
+            f'&ldquo;{esc(r["snippet"])}&hellip;&rdquo;</td>'
+            f'<td style="padding:6px 10px;border-bottom:1px solid #e2e8f0;white-space:nowrap">'
+            f'<a href="{esc(r["publish_url"])}" style="color:#fff;background:#7c3aed;padding:5px 12px;'
+            f'border-radius:5px;text-decoration:none;font-size:13px">Publish verdict</a></td></tr>'
+            for r in rows)
+        sections.append(("Partner verdicts awaiting showcase approval (→ /agent-verdicts)", trs))
 
     body_sections = "".join(
         f'<h3 style="margin:22px 0 8px;font-size:15px;color:#0f172a">{html.escape(label)}</h3>'

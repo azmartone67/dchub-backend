@@ -36319,6 +36319,16 @@ for _mmod, _mbp in [
     except Exception as _media_reg_e:
         print(f"[main] {_mmod} register skipped: {_media_reg_e}", file=sys.stderr)
 
+# agent-iteration suite (2026-07-19): planner grading panel + consent-gated
+# /agent-verdicts showcase + weekly iteration packet. Partner models grade
+# plan_query on a fixed rubric; verdicts publish only via per-run approval.
+try:
+    from routes.agent_iteration_suite import agent_iteration_suite_bp
+    app.register_blueprint(agent_iteration_suite_bp)
+    print("[main] agent_iteration_suite_bp registered: /agent-verdicts, /api/jobs/planner-grading, iteration packet", flush=True)
+except Exception as _ais_e:
+    print(f"[main] agent_iteration_suite register skipped: {_ais_e}", file=sys.stderr)
+
 # press-fix (2026-07-18): pending-drafts digest — surfaces the human-gated
 # draft lanes (unpublished press_releases, pitch drafts, queue drafts) in a
 # daily operator email with a fact-check-gated one-click approve. Publishing
