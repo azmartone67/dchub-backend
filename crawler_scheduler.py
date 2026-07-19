@@ -2814,6 +2814,25 @@ def _run_mcp_presence_auto_fix():
         )
     except Exception as e:
         logger.error("📡 mcp_presence_auto_fix error: %s", e, exc_info=True)
+    # r-url-rediscovery (2026-07-18): same daily slot also sweeps listings
+    # whose URL went dead (403/404/410) and self-heals moved ones from the
+    # registry's own sitemap/homepage — the mcp.so /server→/servers
+    # restructure sat unnoticed for 15 days because drift-sweep only sees
+    # copy drift. Kill switch: MCP_URL_REDISCOVERY_DISABLE=1.
+    try:
+        from routes.mcp_presence_crawler import (
+            rediscover_moved_listings as _rediscover,
+        )
+        r = _rediscover(dry_run=False) or {}
+        logger.info(
+            "📡 mcp_presence_url_rediscovery: checked=%s healed=%s "
+            "confirmed=%s gone=%s skipped=%s errors=%s",
+            r.get("checked"), r.get("healed"), r.get("confirmed"),
+            r.get("gone"), r.get("skipped"), r.get("errors"),
+        )
+    except Exception as e:
+        logger.error("📡 mcp_presence_url_rediscovery error: %s", e,
+                     exc_info=True)
 
 
 def _run_expired_onetime_demote():

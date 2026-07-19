@@ -120,10 +120,13 @@ SEED_REGISTRIES: list[dict] = [
         "submit_url":    "https://glama.ai/mcp/servers/new",
     },
     {
-        # 2026-06-06: yellowmcp.com 404s on /servers/<slug>; the live
-        # listing pattern is /mcp/<slug> (verified via site search).
+        # r-url-rediscovery (2026-07-18): third URL shape in two months —
+        # /servers/dchub (dead 06-06) → /mcp/dchub (dead by 07-18) →
+        # /servers/cloud-dchub-mcp-server (verified 200 + our copy, linked
+        # from their homepage). No sitemap on this site; the rediscovery
+        # leg finds it via the homepage-href scan.
         "registry_name": "yellowmcp",
-        "listing_url":   "https://yellowmcp.com/mcp/dchub",
+        "listing_url":   "https://yellowmcp.com/servers/cloud-dchub-mcp-server",
         "submit_url":    "https://yellowmcp.com/submit-mcp",
     },
     {
@@ -1422,10 +1425,23 @@ RESEED_BROKEN_REGISTRIES: list[dict] = [
     },
     {
         "registry_name": "yellowmcp",
-        "listing_url":   "https://yellowmcp.com/mcp/dchub",
+        "listing_url":   "https://yellowmcp.com/servers/cloud-dchub-mcp-server",
         "submit_url":    "https://yellowmcp.com/submit-mcp",
-        "notes_patch":   {"reseed_reason": "old /servers/<slug> path 404'd; "
-                                            "live pattern is /mcp/<slug>"},
+        "notes_patch":   {"reseed_reason": "2026-07-18: /mcp/dchub 404'd in turn "
+                                            "(the 06-06 fix never reached the live "
+                                            "row — reseed was never invoked); live "
+                                            "URL verified via homepage href scan"},
+    },
+    {
+        "registry_name": "mcp_so",
+        "listing_url":   "https://mcp.so/servers/dchub-mcp-server",
+        "submit_url":    "https://mcp.so/submit",
+        "notes_patch":   {"reseed_reason": "2026-07-18: mcp.so restructured "
+                                            "/server/<name> → /servers/<slug>; "
+                                            "canonical listing verified via "
+                                            "sitemap sweep (the /servers/"
+                                            "dchub-backend row is the scraped "
+                                            "duplicate, tracked separately)"},
     },
     {
         "registry_name": "mcp_official_registry",
@@ -1529,6 +1545,372 @@ def reseed_broken_endpoint():
             conn.close()
         except Exception:
             pass
+
+
+# ── URL-drift rediscovery (r-url-rediscovery, 2026-07-18) ─────────────
+# mcp.so restructured /server/<name> → /servers/<slug> and the mcp_so row
+# sat on a dead URL for 15 days with nothing owning the fix:
+# crawl_mcp_presence records notes.last_http and moves on,
+# auto_fix_all_drifted only sweeps drift_detected=TRUE (copy drift), and
+# white_glove_propagation probes listing COPY — a moved URL is invisible
+# to all three. Hand-authored fixes rot too: the standard seed is
+# INSERT-only, and reseed-broken was never invoked after its 2026-06-06
+# entries landed (yellowmcp's live row still held the URL that entry was
+# written to replace). This leg closes the loop on the daily auto-fix
+# slot:
+#   1. pick listings whose last crawl hit 403/404/410;
+#   2. sweep the registry's OWN surfaces for our slug — sitemap.xml
+#      (robots.txt-aware, sitemapindex-aware, server-ish children first)
+#      then homepage hrefs (yellowmcp has no sitemap);
+#   3. verify each candidate actually serves OUR listing (200 + presence
+#      signal), rank, and self-heal listing_url in the DB — the DB row
+#      is what crawl_mcp_presence reads, so no deploy is needed;
+#   4. file the canonical brain finding either way: url_moved (so the
+#      brain can PR the hardcoded seeds/targets) or listing_gone
+#      (owner-step resubmission via submit_url).
+# Kill switch: MCP_URL_REDISCOVERY_DISABLE=1. Politeness: ≤3 listings
+# per run, ≤30 sitemap fetches + ≤4 candidate verifies per listing, all
+# through the rate-limited _polite_get.
+REDISCOVER_KILL_ENV = "MCP_URL_REDISCOVERY_DISABLE"
+_REDISCOVER_STATUSES = (403, 404, 410)
+_REDISCOVER_MAX_ROWS = 3
+_REDISCOVER_MAX_SITEMAP_FETCHES = 30
+_REDISCOVER_MAX_VERIFY = 4
+_REDISCOVER_GONE_COOLDOWN_DAYS = 7
+# Substrings that mark a URL as plausibly OUR listing.
+_REDISCOVER_SLUG_SIGNALS = ("dchub", "dc-hub", "dc_hub")
+# Substrings that confirm a fetched page actually serves our listing.
+_REDISCOVER_PAGE_SIGNALS = ("dchub", "dc hub", "data center intelligence")
+# Domains where a 404 means something else entirely (moved repo, API
+# search endpoint) — never sitemap-sweep these.
+_REDISCOVER_SKIP_HOSTS = ("github.com", "registry.modelcontextprotocol.io")
+
+
+def _rediscover_disabled() -> bool:
+    return (os.environ.get(REDISCOVER_KILL_ENV) or "").strip().lower() in (
+        "1", "true", "yes")
+
+
+def _extract_locs(xml_text: str) -> list[str]:
+    """Pure: every <loc> value from a sitemap / sitemapindex document.
+    hreflang alternates live in xhtml:link attributes, not <loc>, so
+    this naturally returns only canonical URLs.
+
+    XML entities are unescaped — mcp.so's sitemapindex children look like
+    `sitemap.xml?section=servers&amp;page=5`, and fetching the raw form
+    mangles the query (`amp;page=5`), silently serving page 1 for every
+    child. The first live dry-run declared our mcp.so listing GONE
+    because of exactly this."""
+    if not xml_text:
+        return []
+    import html as _html_mod
+    return [_html_mod.unescape(m.strip())
+            for m in re.findall(r"<loc>\s*([^<]+?)\s*</loc>", xml_text)]
+
+
+def _looks_like_sitemap(url: str) -> bool:
+    """Pure: child-sitemap heuristic for sitemapindex <loc> entries."""
+    u = url.lower()
+    return u.endswith(".xml") or "sitemap" in u
+
+
+def _slug_candidates(urls: list[str]) -> list[str]:
+    """Pure: URLs that plausibly point at OUR listing, deduped in order."""
+    out: list[str] = []
+    for u in urls:
+        lu = u.lower()
+        if any(s in lu for s in _REDISCOVER_SLUG_SIGNALS) and u not in out:
+            out.append(u)
+    return out
+
+
+def _sitemap_page_urls(host: str) -> list[str]:
+    """All page URLs advertised by <host>'s sitemap(s), robots.txt-aware.
+    Child sitemaps whose URL hints at 'server' are fetched first so the
+    fetch budget lands on the section our listing lives in."""
+    fetches = 0
+    roots: list[str] = []
+    txt, _ = _polite_get(f"https://{host}/robots.txt")
+    fetches += 1
+    if txt:
+        for ln in txt.splitlines():
+            if ln.lower().startswith("sitemap:"):
+                roots.append(ln.split(":", 1)[1].strip())
+    if not roots:
+        roots = [f"https://{host}/sitemap.xml"]
+    pages: list[str] = []
+    queue = list(roots)
+    seen: set[str] = set()
+    while queue and fetches < _REDISCOVER_MAX_SITEMAP_FETCHES:
+        sm_url = queue.pop(0)
+        if sm_url in seen:
+            continue
+        seen.add(sm_url)
+        xml, _st = _polite_get(sm_url)
+        fetches += 1
+        children: list[str] = []
+        for loc in _extract_locs(xml or ""):
+            if _looks_like_sitemap(loc):
+                children.append(loc)
+            else:
+                pages.append(loc)
+        children.sort(key=lambda u: 0 if "server" in u.lower() else 1)
+        queue.extend(children)
+    return pages
+
+
+def _homepage_link_urls(host: str) -> list[str]:
+    """Fallback for sitemap-less directories (yellowmcp): every href on
+    the homepage, resolved absolute."""
+    from urllib.parse import urljoin
+    html, st = _polite_get(f"https://{host}/")
+    if not html or st != 200:
+        return []
+    base = f"https://{host}/"
+    return [urljoin(base, h)
+            for h in re.findall(r'href="([^"#]+)"', html)]
+
+
+def _candidate_rank_key(score: int, url: str) -> tuple:
+    """Pure: sort key for verified candidates. Slug beats page-text
+    score — our published server name is dchub-mcp-server /
+    cloud.dchub/mcp-server on every registry, while scraped duplicates
+    (mcp.so's /servers/dchub-backend, indexed from the repo README)
+    out-SCORE the canonical page because the README is full of the
+    literal string "dchub" (420 vs 298 measured 2026-07-18)."""
+    return (0 if re.search(r"mcp[-_]server", url.lower()) else 1,
+            -score, len(url))
+
+
+def _verify_listing_candidate(url: str) -> int | None:
+    """Fetch a candidate; return a rank score if it serves OUR listing
+    (200 + presence signal), else None. Higher score = stronger page."""
+    html, st = _polite_get(url)
+    if not html or st != 200:
+        return None
+    t = html.lower()
+    if not any(s in t for s in _REDISCOVER_PAGE_SIGNALS):
+        return None
+    return t.count("data center intelligence") * 10 + t.count("dchub")
+
+
+def rediscover_moved_listings(dry_run: bool = True,
+                              max_rows: int = _REDISCOVER_MAX_ROWS) -> dict:
+    """Sweep 403/404/410 listings and self-heal moved URLs. Defensive —
+    never raises. Wired into the daily mcp_presence_auto_fix slot."""
+    summary = {"checked": 0, "healed": 0, "confirmed": 0, "gone": 0,
+               "skipped": 0, "errors": 0, "dry_run": bool(dry_run),
+               "results": []}
+    if _rediscover_disabled():
+        summary["disabled"] = True
+        return summary
+    conn = _db_conn()
+    if not conn:
+        summary["error"] = "db_unavailable"
+        return summary
+    try:
+        with conn.cursor() as cur:
+            _ensure_schema(cur)
+            cur.execute(
+                """
+                SELECT id, registry_name, listing_url, submit_url, notes
+                  FROM mcp_presence_listings
+                 WHERE COALESCE(notes->>'last_http', '') ~ '^[0-9]+$'
+                   AND (notes->>'last_http')::int = ANY(%s)
+                 ORDER BY last_crawled_at ASC NULLS FIRST
+                """,
+                (list(_REDISCOVER_STATUSES),),
+            )
+            rows = cur.fetchall()
+    except Exception as e:
+        summary["error"] = str(e)[:200]
+        try:
+            conn.close()
+        except Exception:
+            pass
+        return summary
+
+    now = _dt.datetime.now(_dt.timezone.utc)
+    for row_id, registry, listing_url, submit_url, notes in rows:
+        if summary["checked"] >= max_rows:
+            break
+        notes = notes or {}
+        host = (urlparse(listing_url).hostname or "").lower()
+        if not host or any(host.endswith(h) for h in _REDISCOVER_SKIP_HOSTS):
+            summary["skipped"] += 1
+            continue
+        # Cooldown: a listing already declared gone gets re-checked
+        # weekly, not daily.
+        gone_at = notes.get("rediscover_gone_at")
+        if gone_at:
+            try:
+                parsed = _dt.datetime.fromisoformat(str(gone_at))
+                if (now - parsed).days < _REDISCOVER_GONE_COOLDOWN_DAYS:
+                    summary["skipped"] += 1
+                    continue
+            except Exception:
+                pass
+        summary["checked"] += 1
+        result = {"registry": registry, "old_url": listing_url}
+        try:
+            pages = _sitemap_page_urls(host)
+            candidates = _slug_candidates(pages)
+            via = "sitemap"
+            if not candidates:
+                candidates = _slug_candidates(_homepage_link_urls(host))
+                via = "homepage"
+            scored: list[tuple[int, str]] = []
+            for cand in candidates[:_REDISCOVER_MAX_VERIFY]:
+                score = _verify_listing_candidate(cand)
+                if score is not None:
+                    scored.append((score, cand))
+            result["candidates_seen"] = len(candidates)
+            result["via"] = via
+            if scored:
+                scored.sort(key=lambda t: _candidate_rank_key(t[0], t[1]))
+                best = scored[0][1]
+                if best.rstrip("/") == listing_url.rstrip("/"):
+                    # Same URL verifies fine now — the recorded 403/404
+                    # was transient or a bot-block. Clear the marker so
+                    # we don't re-sweep daily; the crawler re-records it
+                    # if the URL fails again.
+                    result["outcome"] = "url_confirmed"
+                    summary["confirmed"] += 1
+                    if not dry_run:
+                        with conn.cursor() as cur:
+                            cur.execute(
+                                """
+                                UPDATE mcp_presence_listings
+                                   SET notes = COALESCE(notes,'{}'::jsonb)
+                                               || %s::jsonb
+                                 WHERE id = %s
+                                """,
+                                (json.dumps({
+                                    "last_http": None,
+                                    "rediscover_confirmed_at":
+                                        now.isoformat()}),
+                                 row_id),
+                            )
+                        conn.commit()
+                else:
+                    result["outcome"] = "healed"
+                    result["new_url"] = best
+                    summary["healed"] += 1
+                    if not dry_run:
+                        with conn.cursor() as cur:
+                            cur.execute(
+                                """
+                                UPDATE mcp_presence_listings
+                                   SET listing_url = %s,
+                                       last_crawled_at = NULL,
+                                       notes = COALESCE(notes,'{}'::jsonb)
+                                               || %s::jsonb
+                                 WHERE id = %s
+                                """,
+                                (best,
+                                 json.dumps({
+                                     "last_http": None,
+                                     "url_move": {"from": listing_url,
+                                                  "to": best,
+                                                  "at": now.isoformat()}}),
+                                 row_id),
+                            )
+                            _write_brain_finding(
+                                cur,
+                                issue=f"mcp_registry_url_moved:{registry}",
+                                url=best,
+                                detail=(
+                                    f"{registry} listing moved: "
+                                    f"{listing_url} → {best} (found via "
+                                    f"{via}, verified 200 + our copy). DB "
+                                    "row self-healed; grep the repo for "
+                                    "the OLD URL and update any hardcoded "
+                                    "copies (mcp_presence_crawler "
+                                    "SEED/RESEED lists, agent_broadcast_"
+                                    "loop._TARGETS, mcp_standing, "
+                                    "brain_ecosystem_watch, "
+                                    "mcp_registry_outreach)."),
+                            )
+                        conn.commit()
+            elif _verify_listing_candidate(listing_url) is not None:
+                # No sweep candidate, but the CURRENT URL serves our
+                # listing fine right now — the recorded failure (or the
+                # sweep itself) was transient. Never file "gone" over a
+                # flake; clear the marker and move on.
+                result["outcome"] = "url_confirmed"
+                summary["confirmed"] += 1
+                if not dry_run:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            """
+                            UPDATE mcp_presence_listings
+                               SET notes = COALESCE(notes,'{}'::jsonb)
+                                           || %s::jsonb
+                             WHERE id = %s
+                            """,
+                            (json.dumps({
+                                "last_http": None,
+                                "rediscover_confirmed_at":
+                                    now.isoformat()}),
+                             row_id),
+                        )
+                    conn.commit()
+            else:
+                result["outcome"] = "gone"
+                summary["gone"] += 1
+                if not dry_run:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            """
+                            UPDATE mcp_presence_listings
+                               SET notes = COALESCE(notes,'{}'::jsonb)
+                                           || %s::jsonb
+                             WHERE id = %s
+                            """,
+                            (json.dumps({"rediscover_gone_at":
+                                         now.isoformat()}),
+                             row_id),
+                        )
+                        _write_brain_finding(
+                            cur,
+                            issue=f"mcp_registry_listing_gone:{registry}",
+                            url=listing_url,
+                            detail=(
+                                f"{registry} listing {listing_url} is "
+                                f"dead and rediscovery found no candidate "
+                                f"(swept {len(pages)} sitemap URLs + "
+                                "homepage hrefs for our slug). Likely "
+                                "delisted — resubmission needed via "
+                                f"{submit_url or 'unknown submit URL'} "
+                                "(owner step)."),
+                        )
+                    conn.commit()
+        except Exception as e:
+            summary["errors"] += 1
+            result["error"] = str(e)[:160]
+            logger.warning("mcp_presence rediscovery: %s failed: %s",
+                           registry, e)
+        summary["results"].append(result)
+    try:
+        conn.close()
+    except Exception:
+        pass
+    return summary
+
+
+@mcp_presence_crawler_bp.route(
+    "/api/v1/admin/mcp-presence/rediscover", methods=["POST"])
+def rediscover_endpoint():
+    """Sweep dead-URL listings and self-heal moved ones. ?dry_run=0 to
+    actually write (default dry_run=1 for manual pokes; the daily
+    auto-fix slot runs live)."""
+    if not _admin_or_cron_authorized():
+        return jsonify({"ok": False, "error": "admin_key_required"}), 401
+    raw = (request.args.get("dry_run")
+           or request.args.get("dryRun") or "1").strip().lower()
+    dry_run = raw not in ("0", "false", "no", "off")
+    result = rediscover_moved_listings(dry_run=dry_run)
+    return jsonify({"ok": True, **result}), 200
 
 
 @mcp_presence_crawler_bp.route(
