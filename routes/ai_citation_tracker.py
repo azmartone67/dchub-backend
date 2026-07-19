@@ -711,6 +711,7 @@ def draft_press_from_citations():
                 "slug": slug,
                 "title": title,
                 "engine": engine,
+                "self_solicited": _self_solicited,
                 "series_like": f"{series_prefix}-%{series_suffix}",
                 "observed_at": observed_at.isoformat() if observed_at else None,
                 "body_preview": (response_text[:200] + "...") if len(response_text) > 200 else response_text,
@@ -781,8 +782,17 @@ def draft_press_from_citations():
                         skipped += 1
                         continue
 
+                    # press-fix (2026-07-18): self-solicited rows (our own
+                    # probes) NEVER auto-publish — a model answering OUR
+                    # question can hallucinate confidently without tripping
+                    # the disclaimer gate (observed: ChatGPT inventing a
+                    # "Data Center Performance Index"). Those land as drafts
+                    # for human review via the pending-drafts digest. Only
+                    # organic citations may auto-publish, and only when the
+                    # fact-check guard corroborates the text.
                     publish = False
-                    if auto_approve and verify_media_text is not None:
+                    if (auto_approve and not cand.get("self_solicited")
+                            and verify_media_text is not None):
                         try:
                             report = verify_media_text(
                                 f"{cand['title']}\n{cand['body_html']}") or {}
