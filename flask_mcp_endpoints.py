@@ -2722,7 +2722,17 @@ def mcp_funnel():
                                   ORDER BY (s.id = c.attribution_signal_id) DESC NULLS LAST,
                                            s.created_at DESC
                                   LIMIT 1
-                                ), CASE  -- no signal link: use the conversion's own channel
+                                ),
+                                -- #1660 residual (r-keybound-platform 2026-07-18):
+                                -- key-bound buys (pk-/k- refs) often have NO
+                                -- signal to join — the webhook now stamps the
+                                -- key's dominant call-history platform onto the
+                                -- row itself (mcp_signal_canonical.
+                                -- resolve_key_platform); read it before falling
+                                -- back to the channel buckets so agent-driven
+                                -- revenue buckets under its real platform.
+                                NULLIF(LOWER(TRIM(c.platform)), ''),
+                                CASE  -- no signal link: use the conversion's own channel
                                      WHEN c.source LIKE 'web:%'
                                           OR COALESCE(c.web_source,'') <> '' THEN 'web-direct'
                                      WHEN c.source LIKE 'organic%' THEN 'organic-direct'
@@ -3578,6 +3588,24 @@ def stripe_webhook_mcp():
         )
     except Exception as _e:
         signal_attribution = {'error': str(_e)[:120]}
+
+    # r-keybound-platform (2026-07-18, #1660 residual): stamp the buyer's
+    # dominant agent PLATFORM (per-key call history: email → their key →
+    # mcp_call_log platform tags) onto the conversion row when it carries no
+    # already-set platform. Additive, POST-credit (the conversion, key
+    # provisioning, and signal flips above are already committed) and
+    # COALESCE-only — and fully fail-soft: attribution can NEVER fail the
+    # payment webhook.
+    _kp_platform = None
+    try:
+        from mcp_signal_canonical import (resolve_key_platform as _rkp,
+                                          stamp_conversion_platform as _scp)
+        _kp = _rkp(email=email)
+        _kp_platform = _kp.get('platform')
+        if _kp_platform:
+            _scp(stripe_ref=sub_id, platform=_kp_platform)
+    except Exception as _kpe:
+        print(f"⚠️ keybound platform stamp failed (non-fatal): {_kpe}")
 
     return jsonify({
         "ok":                    True,

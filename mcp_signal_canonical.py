@@ -205,6 +205,140 @@ def mark_signals_converted(*, email=None, stripe_customer_id=None,
     return matched
 
 
+def resolve_key_platform(*, raw_key=None, key_hash=None, email=None):
+    """#1660 residual (r-keybound-platform, 2026-07-18): resolve a buyer's
+    dominant agent PLATFORM from their per-key call history — mcp_call_log
+    (api_key + the write-time `platform` tag) — so a key-bound Stripe
+    conversion can be attributed to the PLATFORM that drove it even when no
+    upgrade signal ever matched (agents often buy without a recorded paywall
+    signal, which left caller_id=NULL and the conversion 'unattributed').
+
+    Raw-key recovery order:
+      1. raw_key as given (mcp_dev_keys / auto_trial_keys store it raw);
+      2. key_hash prefix-matched against the DISTINCT api_key set in
+         mcp_call_log (~1.7k keys live; pk- refs carry sha256[:32], k- the
+         full 64 — the raw key never reaches Stripe but IS in the call log,
+         which also recovers 'hash-only' dchub_ web keys);
+      3. email → the buyer's most recent key in mcp_dev_keys/auto_trial_keys.
+
+    Dominant platform = the key's most frequent non-internal write-time
+    platform tag (mcp_calls_deloop.internal_tag_regex_predicate — the regex
+    twin of the canonical de-loop verdict, bound-params-safe, so QA/probe
+    tags never become a BD "platform"). Ties break to most recent call.
+    last_session = the key's most recent MCP session id — the canonical
+    caller_id fallback for a keyed buyer with no email (mirrors
+    _compute_caller_id's email → session preference order).
+
+    Fail-soft: returns a dict with None fields on ANY failure — this runs
+    inside the live payment webhook and must never raise."""
+    out = {'raw_key': (raw_key or '').strip() or None, 'platform': None,
+           'platform_calls': 0, 'last_session': None}
+    try:
+        if psycopg2 is None or not DSN:
+            return out
+        try:
+            from mcp_calls_deloop import internal_tag_regex_predicate as _itrp
+            _pred = _itrp('l.platform')
+        except Exception:  # deloop module unavailable → conservative fallback
+            _pred = ("(COALESCE(LOWER(l.platform), '') !~* "
+                     "'(dchub|verify|probe|audit|harness|test|check|diag|sweep)' "
+                     "AND COALESCE(LOWER(l.platform), '') !~ '^.{1,2}$')")
+        h = (key_hash or '').strip().lower()
+        if len(h) not in (32, 64) or any(c not in '0123456789abcdef' for c in h):
+            h = None
+        e = (email or '').strip().lower() or None
+        with _conn() as c, c.cursor() as cur:
+            k = out['raw_key']
+            if k is None and h:
+                # Recover the raw key from the call log's DISTINCT key set —
+                # cheap (idx_mcp_log_apikey; ~1.7k distinct keys live).
+                try:
+                    cur.execute(
+                        """SELECT t.api_key FROM (
+                               SELECT DISTINCT api_key FROM mcp_call_log
+                                WHERE api_key IS NOT NULL) t
+                            WHERE encode(sha256(t.api_key::bytea), 'hex') LIKE %s
+                            LIMIT 1""", (h + '%',))
+                    r = cur.fetchone()
+                    if r and r[0]:
+                        k = r[0]
+                except Exception:
+                    try: c.rollback()
+                    except Exception: pass
+            if k is None and e:
+                for sql in (
+                    """SELECT api_key FROM mcp_dev_keys
+                        WHERE LOWER(email) = %s AND status = 'active'
+                        ORDER BY created_at DESC LIMIT 1""",
+                    """SELECT api_key FROM auto_trial_keys
+                        WHERE LOWER(COALESCE(signed_up_email, operator_email)) = %s
+                        ORDER BY minted_at DESC LIMIT 1""",
+                ):
+                    try:
+                        cur.execute(sql, (e,))
+                        r = cur.fetchone()
+                        if r and r[0]:
+                            k = r[0]
+                            break
+                    except Exception:
+                        try: c.rollback()
+                        except Exception: pass
+            out['raw_key'] = k
+            if k is None:
+                return out
+            cur.execute(
+                """SELECT LOWER(TRIM(l.platform)) AS p, COUNT(*) AS n,
+                          MAX(l."timestamp") AS last_at
+                     FROM mcp_call_log l
+                    WHERE l.api_key = %s
+                      AND COALESCE(TRIM(l.platform), '') <> ''
+                      AND """ + _pred + """
+                    GROUP BY 1 ORDER BY n DESC, last_at DESC LIMIT 1""", (k,))
+            r = cur.fetchone()
+            if r and r[0]:
+                out['platform'] = r[0]
+                out['platform_calls'] = int(r[1] or 0)
+            cur.execute(
+                """SELECT session_id FROM mcp_call_log
+                    WHERE api_key = %s AND COALESCE(session_id, '') <> ''
+                    ORDER BY "timestamp" DESC LIMIT 1""", (k,))
+            r = cur.fetchone()
+            if r and r[0]:
+                out['last_session'] = r[0]
+    except Exception as ex:
+        out['error'] = str(ex)[:200]
+    return out
+
+
+def stamp_conversion_platform(*, stripe_ref, platform):
+    """Guarded, COALESCE/NULLIF-only platform stamp on mcp_conversions
+    (#1660 residual). SEPARATE from the caller/signal stamp because
+    mcp_conversions.platform ships via routes/schema_repair.py and a webhook
+    deploy can precede the migration — a missing-column error here must never
+    cost the caller_id stamp (or the webhook). Never relabels an
+    already-platformed row. Fail-soft; returns rows stamped (0 on any
+    failure)."""
+    try:
+        if psycopg2 is None or not DSN or not stripe_ref or not platform:
+            return 0
+        with _conn() as c, c.cursor() as cur:
+            try:
+                cur.execute(
+                    """UPDATE mcp_conversions
+                          SET platform = COALESCE(NULLIF(platform, ''), %s)
+                        WHERE stripe_subscription_id = %s""",
+                    (platform, stripe_ref))
+                n = cur.rowcount or 0
+                c.commit()
+                return n
+            except Exception:
+                try: c.rollback()
+                except Exception: pass
+                return 0
+    except Exception:
+        return 0
+
+
 def attribute_keybound_conversion(*, key_hash, buyer_email=None,
                                   stripe_ref=None, stripe_customer_id=None):
     """Attribution for the KEY-BOUND Stripe rails (#1660): client_reference_id
@@ -224,10 +358,22 @@ def attribute_keybound_conversion(*, key_hash, buyer_email=None,
     row doesn't exist yet (subscription.created hasn't fired), the signals'
     backfilled user_email lets that handler attribute at INSERT time instead.
 
+    r-keybound-platform (2026-07-18, #1660 residual): when NO signal matches
+    (agents often buy without ever tripping a recorded paywall signal), the
+    row previously stayed caller_id=NULL → 'unattributed', so paid
+    conversions could not be tied to the agent PLATFORM that drove them. Now
+    the key's dominant platform is resolved from per-key call history
+    (resolve_key_platform → mcp_call_log) and stamped onto
+    mcp_conversions.platform, with caller_id falling back signal-caller →
+    buyer/key email → the key's most recent MCP session. The platform stamp
+    is its own guarded statement (stamp_conversion_platform) so a pending
+    schema migration can never cost the caller stamp.
+
     Fail-soft: runs inside the LIVE payment webhook — never raises; returns a
     summary dict for the webhook log."""
     out = {'ok': False, 'key_resolved': False, 'signals': None,
-           'signal_id': None, 'stamped': 0}
+           'signal_id': None, 'stamped': 0, 'platform': None,
+           'platform_stamped': 0}
     try:
         if psycopg2 is None or not DSN:
             out['reason'] = 'no_db'
@@ -272,6 +418,16 @@ def attribute_keybound_conversion(*, key_hash, buyer_email=None,
                     except Exception: pass
         out['key_resolved'] = bool(raw_key or key_email)
         e = e or key_email
+        # r-keybound-platform (#1660 residual): per-key call history → the
+        # PLATFORM that drove this buyer + caller fallbacks. May also recover
+        # the raw key when the hash tables missed it (the call log stores it
+        # raw — including 'hash-only' dchub_ web keys). Fail-soft internally.
+        kp = resolve_key_platform(raw_key=raw_key, key_hash=h, email=e)
+        raw_key = raw_key or kp.get('raw_key')
+        plat = kp.get('platform')
+        last_session = kp.get('last_session')
+        out['platform'] = plat
+        out['key_resolved'] = bool(out['key_resolved'] or raw_key)
         # (a) flip the key's signals converted (+ user_email backfill).
         out['signals'] = mark_signals_converted(
             email=e, stripe_customer_id=stripe_customer_id, api_key=raw_key)
@@ -279,35 +435,44 @@ def attribute_keybound_conversion(*, key_hash, buyer_email=None,
         # (the agent's own key) outranks an email match; most recent wins.
         _tag = ('key=' + raw_key[:24]) if (raw_key or '').startswith(
             ('dch_live_', 'dch_trial_')) else None
-        if _tag is None and e is None:
+        if _tag is None and e is None and plat is None and last_session is None:
             out['ok'] = True
             out['reason'] = 'no_signal_matcher'
             return out
         with _conn() as c, c.cursor() as cur:
-            cur.execute(
-                """SELECT id, caller_id FROM mcp_upgrade_signals
-                    WHERE (%s::text IS NOT NULL
-                           AND POSITION(%s IN COALESCE(user_agent, '')) > 0)
-                       OR (%s::text IS NOT NULL
-                           AND (LOWER(TRIM(user_email)) = %s OR caller_id = %s))
-                    ORDER BY (%s::text IS NOT NULL
-                              AND POSITION(%s IN COALESCE(user_agent, '')) > 0) DESC,
-                             created_at DESC
-                    LIMIT 1""",
-                (_tag, _tag, e, e, e, _tag, _tag))
-            r = cur.fetchone()
+            r = None
+            if _tag is not None or e is not None:
+                cur.execute(
+                    """SELECT id, caller_id FROM mcp_upgrade_signals
+                        WHERE (%s::text IS NOT NULL
+                               AND POSITION(%s IN COALESCE(user_agent, '')) > 0)
+                           OR (%s::text IS NOT NULL
+                               AND (LOWER(TRIM(user_email)) = %s OR caller_id = %s))
+                        ORDER BY (%s::text IS NOT NULL
+                                  AND POSITION(%s IN COALESCE(user_agent, '')) > 0) DESC,
+                                 created_at DESC
+                        LIMIT 1""",
+                    (_tag, _tag, e, e, e, _tag, _tag))
+                r = cur.fetchone()
             if r:
                 out['signal_id'] = r[0]
-                if stripe_ref:
-                    cur.execute(
-                        """UPDATE mcp_conversions
-                              SET attribution_signal_id = COALESCE(attribution_signal_id, %s),
-                                  caller_id  = COALESCE(caller_id, %s),
-                                  user_email = COALESCE(user_email, %s)
-                            WHERE stripe_subscription_id = %s""",
-                        (r[0], r[1], e, stripe_ref))
-                    out['stamped'] = cur.rowcount or 0
+            # caller_id preference mirrors _compute_caller_id: the driving
+            # signal's caller → buyer/key email → the key's latest MCP session.
+            _caller = (r[1] if r else None) or e or last_session
+            if stripe_ref and (r or _caller):
+                cur.execute(
+                    """UPDATE mcp_conversions
+                          SET attribution_signal_id = COALESCE(attribution_signal_id, %s),
+                              caller_id  = COALESCE(caller_id, %s),
+                              user_email = COALESCE(user_email, %s)
+                        WHERE stripe_subscription_id = %s""",
+                    ((r[0] if r else None), _caller, e, stripe_ref))
+                out['stamped'] = cur.rowcount or 0
             c.commit()
+        # Platform stamp — separate guarded statement (see docstrings above).
+        if stripe_ref and plat:
+            out['platform_stamped'] = stamp_conversion_platform(
+                stripe_ref=stripe_ref, platform=plat)
         out['ok'] = True
     except Exception as ex:
         out['error'] = str(ex)[:200]

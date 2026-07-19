@@ -7,6 +7,13 @@ Locks the contract of mcp_signal_canonical.attribute_keybound_conversion:
 never raises out of the live payment webhook, resolves the key from the ref
 hash, flips the key's signals converted (by the r33-identity 'key=<prefix24>'
 user_agent tag), and stamps the conversion row with the driving signal.
+
+r-keybound-platform (2026-07-18, #1660 residual): also locks the per-key
+call-history PLATFORM resolution (resolve_key_platform over mcp_call_log) —
+when no signal matches, the conversion still gets caller_id (email → the
+key's latest MCP session) and mcp_conversions.platform (the key's dominant
+non-internal platform tag), each stamp COALESCE-only and independently
+fail-soft so attribution can never fail the payment webhook.
 """
 import os
 import sys
@@ -51,12 +58,16 @@ class _FakeDB:
     """Answers the helper's queries; records every statement it runs."""
 
     def __init__(self, key_row=None, trial_row=None, signal_row=None,
-                 api_keys_email=None):
+                 api_keys_email=None, call_log_key_row=None,
+                 call_log_platform_row=None, call_log_session_row=None):
         self.executed = []
         self.key_row = key_row              # mcp_dev_keys (api_key, email)
         self.trial_row = trial_row          # auto_trial_keys (api_key, email)
         self.signal_row = signal_row        # best signal (id, caller_id)
         self.api_keys_email = api_keys_email
+        self.call_log_key_row = call_log_key_row          # (api_key,)
+        self.call_log_platform_row = call_log_platform_row  # (platform, n, last_at)
+        self.call_log_session_row = call_log_session_row    # (session_id,)
 
     def dispatch(self, sql, params):
         s = " ".join(sql.split()).lower()
@@ -68,6 +79,12 @@ class _FakeDB:
             return [(self.api_keys_email,)] if self.api_keys_email else []
         if "select id, caller_id from mcp_upgrade_signals" in s:
             return [self.signal_row] if self.signal_row else []
+        if "distinct api_key from mcp_call_log" in s:
+            return [self.call_log_key_row] if self.call_log_key_row else []
+        if "from mcp_call_log l" in s and "group by" in s:
+            return [self.call_log_platform_row] if self.call_log_platform_row else []
+        if "select session_id from mcp_call_log" in s:
+            return [self.call_log_session_row] if self.call_log_session_row else []
         return []
 
     # connection surface
@@ -208,6 +225,106 @@ def test_stamp_only_coalesces_never_overwrites(monkeypatch):
     assert "user_email = coalesce(user_email" in low
 
 
+# ── #1660 residual: platform from per-key call history ──────────────────
+
+def test_platform_from_call_history_stamps_without_signal(monkeypatch):
+    """No signal at all → caller_id falls back to the key's latest MCP session
+    and the dominant call-history platform is stamped (both COALESCE-only)."""
+    db = _arm(monkeypatch, _FakeDB(
+        key_row=(KEY, None),
+        call_log_platform_row=("claude", 57, None),
+        call_log_session_row=("sess-abc123",)))
+    out = msc.attribute_keybound_conversion(key_hash="ab" * 16,
+                                            stripe_ref="cs_plat_1")
+    assert out["ok"] is True
+    assert out["signal_id"] is None
+    assert out["platform"] == "claude"
+    assert out["stamped"] == 1 and out["platform_stamped"] == 1
+    stamps = [(s, p) for s, p in db.executed
+              if "update mcp_conversions" in s.lower()]
+    assert len(stamps) == 2
+    (s1, p1), (s2, p2) = stamps
+    assert "caller_id" in s1
+    assert p1 == (None, "sess-abc123", None, "cs_plat_1")
+    assert "set platform = coalesce(nullif(platform, '')" in s2.lower()
+    assert p2 == ("claude", "cs_plat_1")
+
+
+def test_raw_key_recovered_from_call_log_when_hash_tables_miss(monkeypatch):
+    """dchub_ web keys are hash-only in api_keys — but mcp_call_log stores the
+    raw key, so the platform still resolves from the ref hash alone."""
+    db = _arm(monkeypatch, _FakeDB(
+        call_log_key_row=("dchub_live_0deadbeef",),
+        call_log_platform_row=("mcp", 9, None),
+        call_log_session_row=("sess-x",)))
+    out = msc.attribute_keybound_conversion(key_hash="cd" * 32,
+                                            stripe_ref="sub_plat_2")
+    assert out["ok"] is True and out["key_resolved"] is True
+    assert out["platform"] == "mcp"
+    assert out["stamped"] == 1 and out["platform_stamped"] == 1
+    stamp = [p for s, p in db.executed
+             if "update mcp_conversions" in s.lower() and "caller_id" in s]
+    assert stamp == [(None, "sess-x", None, "sub_plat_2")]
+
+
+def test_call_history_failure_never_breaks_signal_attribution(monkeypatch):
+    """mcp_call_log queries blowing up must not cost the signal stamp — the
+    webhook-never-fails guarantee extends to the new resolution path."""
+    class _Boom(_FakeDB):
+        def dispatch(self, sql, params):
+            if "mcp_call_log" in sql.lower():
+                raise RuntimeError("call log unavailable")
+            return super().dispatch(sql, params)
+
+    _arm(monkeypatch, _Boom(key_row=(KEY, None), signal_row=(42, "anon:x")))
+    out = msc.attribute_keybound_conversion(
+        key_hash="ab" * 16, buyer_email="b@x.com", stripe_ref="cs_b1")
+    assert out["ok"] is True
+    assert out["signal_id"] == 42 and out["stamped"] == 1
+    assert out["platform"] is None and out["platform_stamped"] == 0
+
+
+def test_platform_stamp_failure_never_breaks_caller_stamp(monkeypatch):
+    """Missing mcp_conversions.platform (schema migration pending on a fresh
+    env) must not cost the caller/signal stamp — the platform arm is its own
+    guarded statement."""
+    class _NoCol(_FakeDB):
+        def dispatch(self, sql, params):
+            if "set platform" in " ".join(sql.split()).lower():
+                raise RuntimeError('column "platform" does not exist')
+            return super().dispatch(sql, params)
+
+    _arm(monkeypatch, _NoCol(
+        key_row=(KEY, None), signal_row=(9, "anon:y"),
+        call_log_platform_row=("claude", 3, None)))
+    out = msc.attribute_keybound_conversion(key_hash="ab" * 16,
+                                            stripe_ref="cs_c1")
+    assert out["ok"] is True
+    assert out["stamped"] == 1
+    assert out["platform"] == "claude" and out["platform_stamped"] == 0
+
+
+def test_resolve_key_platform_no_db(monkeypatch):
+    monkeypatch.setattr(msc, "DSN", "")
+    out = msc.resolve_key_platform(key_hash="a" * 64)
+    assert out == {"raw_key": None, "platform": None, "platform_calls": 0,
+                   "last_session": None}
+
+
+def test_resolve_key_platform_excludes_internal_tags(monkeypatch):
+    """The dominant-platform SQL must carry the canonical internal-tag
+    exclusion (the regex twin — bound-params-safe) and drop empty tags, so
+    QA/probe traffic can never become a BD 'platform'."""
+    db = _arm(monkeypatch, _FakeDB(call_log_platform_row=("claude", 5, None)))
+    out = msc.resolve_key_platform(raw_key=KEY)
+    assert out["platform"] == "claude" and out["platform_calls"] == 5
+    q = next(s for s, _ in db.executed
+             if "group by" in s.lower() and "mcp_call_log" in s.lower())
+    assert "COALESCE(TRIM(l.platform), '') <> ''" in q
+    assert "!~" in q  # regex predicate, never LIKE (the literal-% trap)
+    assert "%" not in q.replace("%s", "")
+
+
 # ── Webhook wiring: both branches must call the helper ──────────────────
 
 def _main_src():
@@ -229,3 +346,37 @@ def test_k_sub_branch_calls_attribution():
     assert j != -1, "k- sub tier branch missing"
     assert "attribute_keybound_conversion" in src[max(0, j - 4000):j], (
         "k- sub branch no longer stamps key-bound attribution (#1660)")
+
+
+def _fme_src():
+    with open(os.path.join(ROOT, "flask_mcp_endpoints.py"),
+              encoding="utf-8") as f:
+        return f.read()
+
+
+def test_webhook_mcp_sibling_stamps_platform():
+    """flask_mcp_endpoints.stripe_webhook_mcp (the disjoint sub-ledger writer)
+    must stamp the call-history platform POST-credit, in its own try, so a
+    resolution error can never fail the payment webhook (#1660 residual)."""
+    src = _fme_src()
+    i = src.find("def stripe_webhook_mcp")
+    assert i != -1
+    j = src.find("def dev_signup_form")
+    body = src[i:j] if j != -1 else src[i:i + 40000]
+    k = body.find("resolve_key_platform")
+    assert k != -1, "sibling webhook no longer stamps key platform (#1660)"
+    assert "stamp_conversion_platform" in body
+    # post-credit: after the conversion INSERT and the signal write-back
+    assert k > body.find("INSERT INTO mcp_conversions")
+    assert k > body.find("mark_signals_converted")
+
+
+def test_conversions_by_platform_reads_platform_column():
+    """The BD read layer must consult mcp_conversions.platform between the
+    signal join and the web/organic channel fallback (#1660 residual)."""
+    src = _fme_src()
+    i = src.find("no signal link: use the conversion's own channel")
+    assert i != -1
+    assert "NULLIF(LOWER(TRIM(c.platform)), '')" in src[max(0, i - 2000):i], (
+        "conversions_by_platform_30d no longer falls back to the key-bound "
+        "platform stamp (#1660)")

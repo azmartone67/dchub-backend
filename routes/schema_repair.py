@@ -290,6 +290,12 @@ SCHEMA_STATEMENTS = [
         """UPDATE mcp_conversions SET caller_id = LOWER(TRIM(user_email))
             WHERE caller_id IS NULL AND user_email IS NOT NULL""",
         "CREATE INDEX IF NOT EXISTS idx_mcp_conv_caller_id ON mcp_conversions(caller_id)",
+        # r-keybound-platform (2026-07-18, #1660 residual): the agent PLATFORM
+        # that drove a key-bound (pk-/k-) conversion, resolved from per-key
+        # call history (mcp_signal_canonical.resolve_key_platform over
+        # mcp_call_log). Read by conversions_by_platform_30d as the fallback
+        # between the signal join and the web/organic channel buckets.
+        "ALTER TABLE mcp_conversions ADD COLUMN IF NOT EXISTS platform TEXT",
         # The CANONICAL view: every reader queries this, not the raw table.
         "DROP VIEW IF EXISTS mcp_funnel_callers CASCADE",
         "DROP VIEW IF EXISTS mcp_funnel_real CASCADE",
