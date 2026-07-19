@@ -230,7 +230,9 @@ MCP_LANDING_HTML = """<!DOCTYPE html>
     <a href="https://github.com/azmartone67/dchub-mcp-server/tree/main/integrations/copilot">GitHub Copilot</a> ·
     <a href="https://github.com/azmartone67/dchub-mcp-server/tree/main/integrations/langchain">LangChain</a> ·
     <a href="https://github.com/azmartone67/dchub-mcp-server/tree/main/integrations/llamaindex">LlamaIndex</a> ·
-    <a href="https://huggingface.co/spaces/dchubcloud/dchub">Hugging Face (live MCP Space)</a>
+    <a href="https://huggingface.co/spaces/dchubcloud/dchub">Hugging Face (live MCP Space)</a> ·
+    <a href="https://dchub.cloud/integrations/bedrock">Amazon Bedrock AgentCore</a> ·
+    <a href="https://dchub.cloud/integrations/copilot-studio">Copilot Studio</a>
   </p>
   <p><b>SDKs:</b> <code>pip install dchub</code> &nbsp;·&nbsp; <code>npm i dchub</code></p>
   <h3 style="margin-top:18px;font-size:1rem">Paste this into any AI chat</h3>
@@ -823,6 +825,80 @@ META_LANDING_HTML = """<!DOCTYPE html>
 @integrations_landing_bp.route("/integrations/meta", strict_slashes=False, methods=["GET"])
 def integrations_meta():
     return META_LANDING_HTML, 200, {
+        "Content-Type": "text/html; charset=utf-8",
+        "Cache-Control": "public, max-age=600, s-maxage=1800",
+    }
+
+
+BEDROCK_RECIPE_HTML = _recipe_page(
+    slug="bedrock",
+    title="Add DC Hub to Amazon Bedrock AgentCore — Gateway target for live data-center &amp; grid intelligence",
+    description="Register https://dchub.cloud/mcp as an Amazon Bedrock AgentCore Gateway target: live grid scoreboards, 21,900+ data-center facilities, interconnection queues and hyperscaler deals for any Bedrock agent. Bearer or keyless free tier.",
+    og_title="DC Hub on Amazon Bedrock AgentCore — register one Gateway target",
+    og_desc="Live grid + data-center intelligence for Bedrock agents · one MCP URL · Bearer or keyless",
+    jsonld_altname="DC Hub for Amazon Bedrock AgentCore",
+    jsonld_desc="Model Context Protocol server registerable as an Amazon Bedrock AgentCore Gateway target — live grid scoreboards, 21,900+ data-center facilities, interconnection queues, fiber intelligence and hyperscaler deals, with per-response citations. Free tier: 10 calls/day, no signup.",
+    eyebrow="Amazon Bedrock · AgentCore Gateway · Model Context Protocol",
+    h1="Add DC Hub to Bedrock AgentCore.",
+    lead="Give any Bedrock agent live, citable data-center and power-grid intelligence — register one MCP Gateway target. Bearer or keyless.",
+    steps_heading="Register as a Gateway target",
+    steps_html="""<ol>
+    <li>In the AgentCore console, open <b>Gateways</b> and create (or pick) a gateway for your agent.</li>
+    <li>Add a target of type <b>MCP server</b> with the endpoint <code>https://dchub.cloud/mcp</code> (Streamable HTTP).</li>
+    <li>For outbound auth, choose <b>API key / Bearer</b> and supply <code>Bearer &lt;your-dchub-key&gt;</code> — or leave it unauthenticated for the keyless free tier (10 calls/day).</li>
+    <li>Sync the gateway's tool list, then ask your agent: <i>"Which US grid has the most headroom right now?"</i> and confirm a <code>get_grid_scoreboard</code> call fires.</li>
+  </ol>
+  <p>All 74 tools come through the one target — facility search, DCPI market verdicts, interconnection
+  queues, fiber, gas, water risk, and the hyperscaler deal tracker.</p>""",
+    auth_html="""<div class="pane">
+  <h2>Authentication</h2>
+  <p>Optional. DC Hub accepts <code>Authorization: Bearer &lt;your-dchub-key&gt;</code> (what AgentCore's
+  API-key credential provider sends) or <code>X-API-Key</code>. No key? The keyless free tier works for
+  evaluation. Mint a free durable key by calling the server's <code>claim_free_key</code> tool.</p>
+</div>""",
+    extra_html="",
+)
+
+
+COPILOT_RECIPE_HTML = _recipe_page(
+    slug="copilot-studio",
+    title="Add DC Hub to Microsoft Copilot Studio — custom MCP server for live data-center &amp; grid intelligence",
+    description="Wire https://dchub.cloud/mcp into Microsoft Copilot Studio as a custom MCP server (GA): live grid scoreboards, 21,900+ data-center facilities, interconnection queues and hyperscaler deals inside your copilots.",
+    og_title="DC Hub in Copilot Studio — one custom MCP server",
+    og_desc="Live grid + data-center intelligence for Copilot Studio agents · one MCP URL · Bearer or keyless",
+    jsonld_altname="DC Hub for Microsoft Copilot Studio",
+    jsonld_desc="Model Context Protocol server connectable to Microsoft Copilot Studio as a custom MCP tool — live grid scoreboards, 21,900+ data-center facilities, interconnection queues, fiber intelligence and hyperscaler deals, with per-response citations. Free tier: 10 calls/day, no signup.",
+    eyebrow="Microsoft Copilot Studio · Custom MCP · Model Context Protocol",
+    h1="Add DC Hub to Copilot Studio.",
+    lead="Give your copilots live, citable data-center and power-grid intelligence — one custom MCP server, Streamable HTTP, Bearer or keyless.",
+    steps_heading="Connect in Copilot Studio",
+    steps_html="""<ol>
+    <li>In your agent, open <b>Tools → Add a tool → New tool → Model Context Protocol</b>.</li>
+    <li>Server URL: <code>https://dchub.cloud/mcp</code> · transport <b>Streamable HTTP</b>.</li>
+    <li>Authentication: <b>API key</b> → header <code>Authorization</code>, value <code>Bearer &lt;your-dchub-key&gt;</code> — or <b>None</b> for the keyless free tier.</li>
+    <li>Save and publish, then test: <i>"Use DC Hub — rank US data-center markets by available power."</i></li>
+  </ol>""",
+    auth_html="""<div class="pane">
+  <h2>Authentication</h2>
+  <p>Optional. Copilot Studio's API-key auth maps cleanly to DC Hub's <code>Authorization: Bearer</code>.
+  The keyless free tier (10 calls/day) works for evaluation; mint a durable free key via the server's
+  <code>claim_free_key</code> tool.</p>
+</div>""",
+    extra_html="",
+)
+
+
+@integrations_landing_bp.route("/integrations/bedrock", strict_slashes=False, methods=["GET"])
+def integrations_bedrock():
+    return BEDROCK_RECIPE_HTML, 200, {
+        "Content-Type": "text/html; charset=utf-8",
+        "Cache-Control": "public, max-age=600, s-maxage=1800",
+    }
+
+
+@integrations_landing_bp.route("/integrations/copilot-studio", strict_slashes=False, methods=["GET"])
+def integrations_copilot_studio():
+    return COPILOT_RECIPE_HTML, 200, {
         "Content-Type": "text/html; charset=utf-8",
         "Cache-Control": "public, max-age=600, s-maxage=1800",
     }

@@ -104,6 +104,24 @@ _PLATFORMS = {
                             "command-r"],
                    "avoid": ["light", "nightly", "embed", "rerank", "vision",
                              "aya", "translate", "reasoning", "7b"]},
+    # Tier-3 pre-wired lanes (2026-07-19, all-tiers expansion): fail-soft
+    # (missing LLM key → skipped) until the owner adds the partner's API
+    # key — exactly the moonshot pattern. MODELREL_KEY_* comp keys are
+    # already minted + set; only the <X>_API_KEY is the owner step.
+    "deepseek":   {"base": "https://api.deepseek.com/v1",
+                   "llm_key_env": "DEEPSEEK_API_KEY",
+                   "partner_key_env": "MODELREL_KEY_DEEPSEEK",
+                   "pick": ["deepseek-reasoner", "deepseek-chat"],
+                   "avoid": ["coder", "lite"]},
+    "qwen":       {"base": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+                   "llm_key_env": "DASHSCOPE_API_KEY",
+                   "partner_key_env": "MODELREL_KEY_QWEN",
+                   "pick": ["qwen3-max", "qwen-max", "qwen-plus"],
+                   "avoid": ["vl", "audio", "coder", "turbo", "omni", "mt"]},
+    "zai":        {"base": "https://api.z.ai/api/paas/v4",
+                   "llm_key_env": "ZAI_API_KEY",
+                   "partner_key_env": "MODELREL_KEY_ZAI",
+                   "fixed": ["glm-4.7", "glm-4.6", "glm-4.5"]},
 }
 
 _SYSTEM = (
@@ -300,6 +318,20 @@ def _run_platform(platform, cfg):
             messages.append({"role": "user", "content":
                              'Reply with ONLY a JSON object: {"call": {...}} or {"verdict": {...}}.'})
             continue
+        if not row.get("_final_demand"):
+            # r-verdict-final-demand (2026-07-19): search-tuned models
+            # (observed: perplexity sonar-pro) narrate with citations instead
+            # of emitting the protocol JSON even after the first reminder.
+            # One last hard demand converts most of those runs; only then
+            # give up as no_verdict.
+            row["_final_demand"] = True
+            messages.append({"role": "assistant", "content": content or ""})
+            messages.append({"role": "user", "content":
+                             'FINAL STEP: output ONLY the verdict JSON now. No prose, no '
+                             'citations, no markdown fences. Your entire reply must start '
+                             'with {"verdict": and be valid JSON.'})
+            continue
+        row.pop("_final_demand", None)
         row.update(status="no_verdict", notes="model would not follow the JSON protocol")
         return row
     row.update(status="no_verdict", notes="call budget exhausted without a verdict")

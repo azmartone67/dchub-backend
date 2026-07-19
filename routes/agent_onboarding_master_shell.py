@@ -256,8 +256,28 @@ PLATFORMS: list[dict] = [
         "required_auth": "bearer", "required_transport": "streamable",
         "directory": "(no public directory)", "directory_listed": None,
         "connect_path": "self_serve", "recipe_published": False,
-        "next_action": "Low priority. Confirm Bearer path + publish a connect snippet if traffic appears. Classifier already recognizes it.",
+        # 2026-07-19: model-relations eval lane LIVE (command-a-03-2025,
+        # first tick ok) — Cohere's flagship now evaluates DC Hub weekly.
+        "next_action": "Eval lane live (weekly). Publish a connect snippet if inbound traffic appears.",
         "owner_gated": False, "effort": "low",
+    },
+    {
+        # 2026-07-19 (all-tiers expansion): enterprise rails documented —
+        # /integrations/bedrock (AgentCore Gateway target) and
+        # /integrations/copilot-studio (custom MCP, GA) recipe pages live.
+        "key": "deepseek_qwen_zai", "name": "DeepSeek / Qwen / Z.ai (GLM)",
+        "reach_weight": 0.5,
+        "paths": ["mcp"], "reach_token": "deepseek",
+        "reach_aliases": ["qwen", "dashscope", "zai", "glm"],
+        "bots": [],
+        "required_auth": "bearer", "required_transport": "streamable",
+        "directory": "ModelScope (listed via @DCHUBCLOUD/dchub)", "directory_listed": True,
+        "connect_path": "self_serve", "recipe_published": False,
+        "next_action": ("Eval lanes PRE-WIRED (model_relations: deepseek/qwen/"
+                        "zai, fail-soft). Owner: add DEEPSEEK_API_KEY (a few $), "
+                        "DASHSCOPE_API_KEY (free tier), or ZAI_API_KEY on "
+                        "Railway → that lane starts evaluating weekly."),
+        "owner_gated": True, "effort": "keys only",
     },
     {
         "key": "ide_agents", "name": "Cursor / Windsurf / Cline / OpenCode", "reach_weight": 0.6,

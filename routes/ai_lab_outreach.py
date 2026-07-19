@@ -376,7 +376,7 @@ def _draft_pitch(target: dict) -> tuple[str, str]:
 
 I'm Jonathan Martone, founder of DC Hub (dchub.cloud) — the open
 data center intelligence platform tracking 21,400+ global facilities,
-4,000+ M&A deals, 369 GW of construction pipeline, and the only
+4,000+ tracked M&A deals, a live construction-pipeline tracker, and the only
 daily-refreshing public scorecard of data center power availability
 (DCPI — Data Center Power Index, dchub.cloud/dcpi). 484K+ AI-agent
 requests served last 30d led by Claude and Cursor.

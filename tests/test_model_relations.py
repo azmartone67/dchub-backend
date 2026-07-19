@@ -49,8 +49,10 @@ def test_registry_shape_and_budget():
     # moonshot/Kimi added same day (user-requested, api.moonshot.ai);
     # cohere added 2026-07-19 (partner-expansion — OpenAI-compat surface,
     # first live tick verified ok on command-a-03-2025).
+    # deepseek/qwen/zai pre-wired 2026-07-19 (fail-soft until owner keys).
     assert set(_PLATFORMS) == {"openai", "mistral", "meta", "perplexity",
-                               "xai", "gemini", "moonshot", "cohere"}
+                               "xai", "gemini", "moonshot", "cohere",
+                               "deepseek", "qwen", "zai"}
     assert MAX_MODEL_CALLS == 8
     for cfg in _PLATFORMS.values():
         assert "pick" in cfg or "fixed" in cfg
