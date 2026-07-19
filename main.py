@@ -7782,6 +7782,11 @@ MCP_PLATFORM_MAP = {
     'zhipu': 'Z.ai', 'chatglm': 'Z.ai', 'z-ai': 'Z.ai',
     'minimax': 'MiniMax',
     'glama': 'Glama', 'smithery': 'Smithery',
+    # 2026-07-18: DC Hub listed on ModelScope's MCP marketplace (hosted
+    # deploy live same day). Their platform proxies users through per-user
+    # 24h URLs from ModelScope egress, so however their bridge identifies
+    # (UA or clientInfo), attribute it as the ModelScope gateway.
+    'modelscope': 'ModelScope',
 }
 
 # Session-to-platform cache: maps MCP session IDs to detected platforms
@@ -17134,7 +17139,7 @@ _INTEGRATIONS_REAL_PLATFORMS = {
     # 2026-07-18: 2026 agent wave + the MCP gateways whose users reach us
     # through their infrastructure (kept in sync with MCP_PLATFORM_MAP).
     'kimi', 'moonshot', 'qwen', 'tongyi', 'zhipu', 'chatglm', 'z.ai',
-    'minimax', 'glama', 'smithery',
+    'minimax', 'glama', 'smithery', 'modelscope',
 }
 _INTEGRATIONS_NOISE_MARKERS = (
     'probe', 'prober', 'scanner', 'scraper', 'crawler', 'inspector', 'health',
@@ -17193,6 +17198,7 @@ _PLATFORM_LOGO_DOMAINS = {
     'qwen': 'qwen.ai', 'tongyi': 'qwen.ai',
     'zhipu': 'z.ai', 'chatglm': 'z.ai',
     'minimax': 'minimax.io',
+    'modelscope': 'modelscope.cn',
 }
 
 
