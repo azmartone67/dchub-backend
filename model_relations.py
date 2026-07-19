@@ -96,9 +96,14 @@ _PLATFORMS = {
     "cohere":     {"base": "https://api.cohere.ai/compatibility/v1",
                    "llm_key_env": "COHERE_API_KEY",
                    "partner_key_env": "MODELREL_KEY_COHERE",
-                   "pick": ["command-a", "command-r-plus", "command-r"],
+                   # first live tick (2026-07-19) substring-picked
+                   # command-a-TRANSLATE (8,992-token specialist → LLM 400
+                   # size-limit). Prefer the dated general flagship, and
+                   # avoid every specialist variant.
+                   "pick": ["command-a-03", "command-a", "command-r-plus",
+                            "command-r"],
                    "avoid": ["light", "nightly", "embed", "rerank", "vision",
-                             "aya"]},
+                             "aya", "translate", "reasoning", "7b"]},
 }
 
 _SYSTEM = (
