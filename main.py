@@ -31340,6 +31340,12 @@ try:
     except Exception as _pgi_e:
         print(f"🛠️ Planned Generators Ingest: ⚠️ {_pgi_e}")
     try:
+        from routes.gem_ingest import gem_ingest_bp
+        app.register_blueprint(gem_ingest_bp)
+        print("🌍 GEM Global Ingest: ✅ Registered (/api/v1/admin/ingest/gem-power|gem-gas ; /api/v1/global-power|global-gas)")
+    except Exception as _gem_e:
+        print(f"🌍 GEM Global Ingest: ⚠️ {_gem_e}")
+    try:
         from routes.brain_codegen_expose import register_codegen_expose
         register_codegen_expose(app)
         print("🤖 Brain Codegen Expose: ✅ Registered (/api/v1/admin/brain/codegen-expose/run)")
