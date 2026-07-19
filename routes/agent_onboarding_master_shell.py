@@ -228,6 +228,23 @@ PLATFORMS: list[dict] = [
         "owner_gated": False, "effort": "tuning only",
     },
     {
+        # 2026-07-19: added at user request — track You.com as an onboarding
+        # target. Currently only wired as an inbound-attribution label + an
+        # outbound content key (ai_wars); no MCP/data-partner path yet.
+        "key": "you", "name": "You.com", "reach_weight": 0.3,
+        "paths": ["api"], "reach_token": "you.com", "reach_aliases": ["youdotcom", "ydc"],
+        "bots": [],
+        "required_auth": "bearer", "required_transport": "https",
+        "directory": "(no public connector directory)", "directory_listed": None,
+        "connect_path": "bd", "recipe_published": False,
+        "next_action": ("BD: You.com custom assistants can call external APIs — "
+                        "pitch DC Hub as the grounding source for data-center "
+                        "queries (we already hold a YOU_API_KEY for their chat "
+                        "API; the reverse integration needs their team). "
+                        "Meanwhile watch reach_token 'you.com' for organic calls."),
+        "owner_gated": True, "effort": "BD outreach",
+    },
+    {
         "key": "cohere", "name": "Cohere", "reach_weight": 0.3,
         "paths": ["mcp"], "reach_token": "cohere",
         "bots": [],

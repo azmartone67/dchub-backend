@@ -2088,9 +2088,17 @@ def _run_model_relations():
             _c.close()
         except Exception:
             last = None  # table absent pre-first-tick → run
-        if last is not None and (_dt.now(_tz.utc) - last) < _td(days=28):
-            logger.info("🤝 model_relations: skipped — last tick %s (<28d, monthly cadence)",
-                        last.date())
+        # partner-iteration (2026-07-19): 28d → weekly by default. The user
+        # wants an active partner-evolution loop; a monthly pulse meant the
+        # MODELREL keys sat silent for weeks and nobody noticed billing-blocked
+        # lanes. Tune via MODELREL_CADENCE_DAYS (raise back to 28 to go monthly).
+        try:
+            _cadence = int(os.environ.get("MODELREL_CADENCE_DAYS", "7"))
+        except Exception:
+            _cadence = 7
+        if last is not None and (_dt.now(_tz.utc) - last) < _td(days=_cadence):
+            logger.info("🤝 model_relations: skipped — last tick %s (<%dd cadence)",
+                        last.date(), _cadence)
             return
         from model_relations import run_model_relations_tick
         out = run_model_relations_tick()

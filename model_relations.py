@@ -89,6 +89,16 @@ _PLATFORMS = {
                    # live /models (2026-07-17): kimi-k2.7-code + kimi-k2.6 —
                    # avoid the code specialist so the GENERAL flagship evals.
                    "avoid": ["code", "vision", "audio", "8k"]},
+    # cohere (2026-07-19, partner-expansion): Command family via Cohere's
+    # OpenAI-compatibility surface — /models + /chat/completions with Bearer,
+    # same contract as every other lane. COHERE_API_KEY was already on both
+    # Railway services; MODELREL_KEY_COHERE minted via partner_key_issuer.
+    "cohere":     {"base": "https://api.cohere.ai/compatibility/v1",
+                   "llm_key_env": "COHERE_API_KEY",
+                   "partner_key_env": "MODELREL_KEY_COHERE",
+                   "pick": ["command-a", "command-r-plus", "command-r"],
+                   "avoid": ["light", "nightly", "embed", "rerank", "vision",
+                             "aya"]},
 }
 
 _SYSTEM = (

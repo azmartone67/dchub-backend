@@ -16,7 +16,12 @@ jobs:
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           DCHUB_API_KEY: ${{ secrets.DCHUB_API_KEY }}
-          DCHUB_MCP_URL: ${{ secrets.DCHUB_MCP_URL }}
+          # eval-fix (2026-07-19): July's run failed 100% with MCP auth errors
+          # against the stale DCHUB_MCP_URL secret (set 2026-04-19) and no
+          # token. Pin the canonical public endpoint (verified: accepts anon
+          # initialize AND Bearer api-keys) and pass the key as the token.
+          DCHUB_MCP_URL: https://dchub.cloud/mcp
+          DCHUB_MCP_TOKEN: ${{ secrets.DCHUB_API_KEY }}
         run: |
           if [ -f eval_runner.py ] && [ -f dchub-mcp-golden-eval.jsonl ]; then
             python eval_runner.py --golden dchub-mcp-golden-eval.jsonl --report eval-report.md

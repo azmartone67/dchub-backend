@@ -57,7 +57,11 @@ def build_mcp_server_config():
         print("Set DCHUB_MCP_URL (your MCP endpoint) in env.", file=sys.stderr)
         sys.exit(1)
     cfg = {"type": "url", "url": url, "name": "dchub"}
-    token = os.getenv("DCHUB_MCP_TOKEN")
+    # eval-fix (2026-07-19): the workflow only has DCHUB_API_KEY as a secret;
+    # DCHUB_MCP_TOKEN was never set anywhere, so once the server advertised
+    # OAuth every connector call failed auth (July run: 100% ERROR, green).
+    # Fall back to the API key — the MCP endpoint accepts it as Bearer.
+    token = os.getenv("DCHUB_MCP_TOKEN") or os.getenv("DCHUB_API_KEY")
     if token:
         cfg["authorization_token"] = token
     return cfg
@@ -213,6 +217,50 @@ def main():
         print(f"  {tool:<32} {h}/{e}  ({pct(h, e)})")
 
     print(f"\nResults written to {results_path}\n")
+
+    # eval-fix (2026-07-19): the workflow has passed `--report eval-report.md`
+    # since day one, but nothing ever parsed it — eval-report.md never
+    # existed and the artifact upload no-op'd every month. Write it.
+    report_path = None
+    argv = sys.argv[1:]
+    if "--report" in argv:
+        try:
+            report_path = argv[argv.index("--report") + 1]
+        except IndexError:
+            report_path = "eval-report.md"
+    if report_path:
+        lines = [
+            f"# MCP Golden Eval — {stamp}",
+            f"Model: `{MODEL}` · Endpoint: `{mcp_server['url']}`",
+            "",
+            f"| Verdict | Count | % of main set |",
+            f"|---|---|---|",
+            f"| PASS | {n_pass} | {pct(n_pass, len(main_set))} |",
+            f"| PARTIAL | {n_partial} | {pct(n_partial, len(main_set))} |",
+            f"| FAIL | {n_fail} | {pct(n_fail, len(main_set))} |",
+            f"| ERROR | {n_err} | {pct(n_err, len(main_set))} |",
+            "",
+            f"Controls: {len(controls)}, false positives: {n_fp}.",
+            "",
+            "## Per-tool trigger rate",
+        ] + [f"- `{tool}` {s['hit']}/{s['expected']}"
+             for tool, s in sorted(by_tool.items())] + [
+            "",
+            "## Failures / errors",
+        ] + [f"- **{r['id']}** [{r['verdict']}] {r['note'][:160]}"
+             for r in results if r["verdict"] in ("FAIL", "ERROR")][:40]
+        with open(report_path, "w") as f:
+            f.write("\n".join(lines) + "\n")
+        print(f"Report written to {report_path}")
+
+    # eval-fix (2026-07-19): a run where EVERY prompt errored is an
+    # infrastructure failure (auth, endpoint, quota), not an eval result —
+    # exit non-zero so the workflow's failure-notify step actually fires
+    # instead of shipping a green run with zero coverage.
+    if main_set and n_err == len(main_set):
+        print("ALL prompts errored — infrastructure failure, exiting 2.",
+              file=sys.stderr)
+        sys.exit(2)
 
 
 if __name__ == "__main__":

@@ -59,8 +59,41 @@ def model_relations_status():
                  "at": r[8].isoformat() if r[8] else None,
                  "assessment": ((r[9] or {}).get("assessment") if isinstance(r[9], dict) else None)}
                 for r in cur.fetchall()]
+        # partner-iteration (2026-07-19): per-partner call telemetry, last 7d
+        # vs prior 7d, straight off mcp_call_log by MODELREL key. This is the
+        # "how many calls last week to now" view — before this the keys were
+        # only referenced by env name and nobody could see a dead lane.
+        calls_wow = {}
+        try:
+            from model_relations import _PLATFORMS
+            key_map = {p: (os.environ.get(cfg.get("partner_key_env") or "") or "").strip()
+                       for p, cfg in _PLATFORMS.items()}
+            live_keys = {p: k for p, k in key_map.items() if k}
+            if live_keys:
+                cur.execute(
+                    "SELECT api_key, "
+                    " COUNT(*) FILTER (WHERE timestamp > NOW()-INTERVAL '7 days'), "
+                    " COUNT(*) FILTER (WHERE timestamp <= NOW()-INTERVAL '7 days' "
+                    "                    AND timestamp > NOW()-INTERVAL '14 days'), "
+                    " MAX(timestamp) "
+                    "FROM mcp_call_log WHERE api_key = ANY(%s) GROUP BY api_key",
+                    (list(live_keys.values()),))
+                by_key = {r[0]: r[1:] for r in cur.fetchall()}
+                for p, k in live_keys.items():
+                    now7, prev7, last = by_key.get(k, (0, 0, None))
+                    calls_wow[p] = {
+                        "calls_7d": now7, "calls_prior_7d": prev7,
+                        "wow_pct": (round((now7 - prev7) * 100.0 / prev7, 1)
+                                    if prev7 else None),
+                        "last_call_at": last.isoformat() if last else None,
+                    }
+                for p in _PLATFORMS:
+                    if p not in calls_wow:
+                        calls_wow[p] = {"error": "partner key env not set"}
+        except Exception as e:
+            calls_wow = {"error": str(e)[:120]}
         conn.close()
-        return jsonify(ok=True, runs=runs,
+        return jsonify(ok=True, runs=runs, partner_calls_wow=calls_wow,
                        note=("Review queue only — verdicts publish via the manual "
                              "consent flow, never from here.")), 200
     except Exception as e:
