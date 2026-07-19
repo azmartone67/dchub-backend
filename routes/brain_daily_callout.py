@@ -442,20 +442,23 @@ def _claim_today(force: bool = False):
         from db_utils import get_db
         conn = get_db()
         try:
-            with conn.cursor() as cur:
-                cur.execute("""
-                    CREATE TABLE IF NOT EXISTS brain_daily_callout_log (
-                        day      date PRIMARY KEY,
-                        sent_at  timestamptz NOT NULL DEFAULT now(),
-                        to_email text,
-                        subject  text)
-                """)
-                cur.execute("""
-                    INSERT INTO brain_daily_callout_log (day)
-                    VALUES (CURRENT_DATE)
-                    ON CONFLICT (day) DO NOTHING
-                """)
-                claimed = cur.rowcount > 0
+            # NOTE: db_utils' PGCursorWrapper is NOT a context manager —
+            # `with conn.cursor()` throws (live-verified on first prod
+            # send 2026-07-19, claim_note in the response). Plain cursor.
+            cur = conn.cursor()
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS brain_daily_callout_log (
+                    day      date PRIMARY KEY,
+                    sent_at  timestamptz NOT NULL DEFAULT now(),
+                    to_email text,
+                    subject  text)
+            """)
+            cur.execute("""
+                INSERT INTO brain_daily_callout_log (day)
+                VALUES (CURRENT_DATE)
+                ON CONFLICT (day) DO NOTHING
+            """)
+            claimed = cur.rowcount > 0
             conn.commit()
             return (True if force else claimed), None
         finally:
@@ -470,12 +473,11 @@ def _stamp_sent(to_email: str, subject: str) -> None:
         from db_utils import get_db
         conn = get_db()
         try:
-            with conn.cursor() as cur:
-                cur.execute("""
-                    UPDATE brain_daily_callout_log
-                       SET sent_at = now(), to_email = %s, subject = %s
-                     WHERE day = CURRENT_DATE
-                """, (to_email, subject))
+            conn.cursor().execute("""
+                UPDATE brain_daily_callout_log
+                   SET sent_at = now(), to_email = %s, subject = %s
+                 WHERE day = CURRENT_DATE
+            """, (to_email, subject))
             conn.commit()
         finally:
             conn.close()
@@ -489,9 +491,9 @@ def _release_claim() -> None:
         from db_utils import get_db
         conn = get_db()
         try:
-            with conn.cursor() as cur:
-                cur.execute("DELETE FROM brain_daily_callout_log "
-                            "WHERE day = CURRENT_DATE AND to_email IS NULL")
+            conn.cursor().execute(
+                "DELETE FROM brain_daily_callout_log "
+                "WHERE day = CURRENT_DATE AND to_email IS NULL")
             conn.commit()
         finally:
             conn.close()

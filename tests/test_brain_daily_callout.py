@@ -205,6 +205,78 @@ def test_send_failure_releases_claim(monkeypatch):
     assert released == [1]
 
 
+# ── per-day claim vs db_utils' wrapper (live regression 2026-07-19) ──
+# db_utils.PGCursorWrapper is NOT a context manager; the first prod send
+# surfaced `'PGCursorWrapper' object does not support the context manager
+# protocol` and the dedupe silently fail-opened. Pin the claim path
+# against a cursor with NO __enter__/__exit__.
+
+class _PlainCursor:
+    def __init__(self, log):
+        self._log = log
+        self.rowcount = 1
+
+    def execute(self, sql, params=None):
+        self._log.append(" ".join(str(sql).split())[:60])
+
+
+class _PlainConn:
+    def __init__(self, log):
+        self._log = log
+
+    def cursor(self, *a, **k):
+        return _PlainCursor(self._log)
+
+    def commit(self):
+        self._log.append("COMMIT")
+
+    def close(self):
+        pass
+
+
+def test_claim_today_works_without_cursor_context_manager(monkeypatch):
+    import sys
+    import types
+    log = []
+    fake = types.ModuleType("db_utils")
+    fake.get_db = lambda: _PlainConn(log)
+    monkeypatch.setitem(sys.modules, "db_utils", fake)
+    claimed, err = dc._claim_today()
+    assert claimed is True and err is None
+    assert any(s.startswith("CREATE TABLE") for s in log)
+    assert any(s.startswith("INSERT INTO brain_daily_callout_log") for s in log)
+    assert "COMMIT" in log
+    # stamp + release must also survive the plain-cursor wrapper
+    dc._stamp_sent("op@example.com", "subj")
+    dc._release_claim()
+    assert any(s.startswith("UPDATE brain_daily_callout_log") for s in log)
+    assert any(s.startswith("DELETE FROM brain_daily_callout_log") for s in log)
+
+
+def test_claim_today_duplicate_day_skips(monkeypatch):
+    import sys
+    import types
+
+    class _DupCursor(_PlainCursor):
+        def execute(self, sql, params=None):
+            super().execute(sql, params)
+            if "INSERT" in str(sql):
+                self.rowcount = 0  # ON CONFLICT DO NOTHING hit
+
+    class _DupConn(_PlainConn):
+        def cursor(self, *a, **k):
+            return _DupCursor(self._log)
+
+    fake = types.ModuleType("db_utils")
+    fake.get_db = lambda: _DupConn([])
+    monkeypatch.setitem(sys.modules, "db_utils", fake)
+    claimed, err = dc._claim_today()
+    assert claimed is False
+    # force=1 overrides the dedupe but still records
+    claimed_forced, _ = dc._claim_today(force=True)
+    assert claimed_forced is True
+
+
 # ── rendering: every line names its actuator ─────────────────────────
 
 def test_render_text_names_actuators():
