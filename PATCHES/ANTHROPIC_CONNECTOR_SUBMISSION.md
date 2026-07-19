@@ -75,7 +75,7 @@ Use cases Claude users will ask about:
 ### Existing third-party listings (proves we're a real service)
 - registry.modelcontextprotocol.io: `cloud.dchub/mcp-server` v2.3.3 published (DNS-auth)
 - Smithery.ai: https://smithery.ai/server/azmartone67/dchub
-- mcp.so: https://mcp.so/server/dchub
+- mcp.so: https://mcp.so/servers/dchub-mcp-server
 - Glama.ai: https://glama.ai/mcp/servers/dchub
 - PulseMCP: https://pulsemcp.com/servers/dchub
 

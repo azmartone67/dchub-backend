@@ -89,8 +89,12 @@ _TARGETS = [
     # /dc-hub-media broadcast panel (and a daily 24-hit bot pattern against
     # a registry we're already listed on). The mcp_registry_outreach daily
     # audit (registry.smithery.ai API, browser-safe) owns smithery health.
+    # 2026-07-18: mcp.so restructured /server/<name> → /servers/<slug>; the
+    # old /server/dchub URL 404s. Canonical listing (verified via sitemap
+    # sweep) is /servers/dchub-mcp-server; /servers/dchub-backend is a stale
+    # auto-scraped duplicate — don't ping it, it keeps the wrong copy warm.
     ("mcp.so",
-     "https://mcp.so/server/dchub", "GET", "registry"),
+     "https://mcp.so/servers/dchub-mcp-server", "GET", "registry"),
     ("glama.ai",
      "https://glama.ai/mcp/servers/dchub", "GET", "registry"),
     ("pulsemcp",

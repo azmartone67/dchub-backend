@@ -78,16 +78,20 @@ DISCOVERY_TARGETS = [
         "description": "Largest community MCP registry. Already listed as azmartone67/dchub.",
     },
     {
-        # Verified live at mcp.so/server/dc-hub — title "DC Hub MCP Server"
+        # 2026-07-18: mcp.so restructured /server/<name> → /servers/<slug>;
+        # old /server/dc-hub 404s. Canonical listing is
+        # /servers/dchub-mcp-server (title "Dc Hub — Data Center Intelligence");
+        # signal "Data Center Intelligence" appears 22× on that page vs 1× for
+        # the old "DC Hub MCP", so the audit survives page-copy tweaks.
         "key":         "mcpso",
         "name":        "mcp.so",
-        "homepage":    "https://mcp.so/server/dc-hub",
+        "homepage":    "https://mcp.so/servers/dchub-mcp-server",
         "submit_url":  "https://mcp.so/submit",
         "submit_method":"refresh_only",
         "manual_url":  "https://mcp.so/submit",
-        "audit_url":   "https://mcp.so/server/dc-hub",
-        "audit_signal":"DC Hub MCP",
-        "description": "Public MCP server directory. Already listed as /server/dc-hub.",
+        "audit_url":   "https://mcp.so/servers/dchub-mcp-server",
+        "audit_signal":"Data Center Intelligence",
+        "description": "Public MCP server directory. Already listed as /servers/dchub-mcp-server.",
     },
     {
         # Verified live at glama.ai/mcp/connectors/cloud.dchub/mcp-server (200 OK)

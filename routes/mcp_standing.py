@@ -40,7 +40,7 @@ _RANK_HIGHLIGHTS = [
 CONFIRMED_REGISTRIES = [
     {"registry": "Smithery",              "url": "https://smithery.ai/servers/azmartone67/dchub"},
     {"registry": "Glama",                 "url": "https://glama.ai/mcp/servers/azmartone67/dchub-mcp-server"},
-    {"registry": "mcp.so",                "url": "https://mcp.so/server/dchub-mcp-server"},
+    {"registry": "mcp.so",                "url": "https://mcp.so/servers/dchub-mcp-server"},
     {"registry": "PulseMCP",              "url": "https://www.pulsemcp.com/servers/dchub"},
     {"registry": "LobeHub",               "url": "https://lobehub.com/mcp/dchub-mcp-server"},
     {"registry": "Official MCP Registry", "url": "https://github.com/modelcontextprotocol/registry"},

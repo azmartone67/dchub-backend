@@ -67,7 +67,7 @@ _WATCH_TARGETS = [
     {"key": "mcp_so", "name": "mcp.so", "kind": "registry",
      "url": "https://mcp.so/servers", "self_signal": "dc-hub",
      "competition_signal": "data center", "submit_method": "auto-index",
-     "submit_url": "https://mcp.so/server/dchub"},
+     "submit_url": "https://mcp.so/servers/dchub-mcp-server"},
     {"key": "glama", "name": "Glama", "kind": "registry",
      "url": "https://glama.ai/mcp/servers", "self_signal": "dchub",
      "competition_signal": "data-center", "submit_method": "auto-index",
