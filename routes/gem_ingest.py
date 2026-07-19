@@ -476,6 +476,69 @@ def get_global_gas_pipelines():
     return resp
 
 
+@gem_ingest_bp.route("/api/v1/global-coal-mines", methods=["GET"])
+def get_global_coal_mines():
+    """PUBLIC — GEM Coal Mine Boundaries & Methane Sources (mixed Polygon boundaries +
+    Point methane features: degasification / ventilation / gas wells / vents / flares).
+    Viewport-filtered by each feature's stored bounding box (table gem_coal_mines).
+    Returns a GeoJSON FeatureCollection."""
+    dsn = _dsn()
+    if not dsn:
+        return jsonify(ok=False, error="no DATABASE_URL"), 503
+    a = request.args
+    where = ["geom_json IS NOT NULL"]
+    params = []
+    bbox = a.get("bbox")
+    if bbox:
+        try:
+            w, s, e, n = [float(x) for x in bbox.split(",")[:4]]
+            where.append("min_lng <= %s AND max_lng >= %s AND min_lat <= %s AND max_lat >= %s")
+            params += [max(w, e), min(w, e), max(s, n), min(s, n)]
+        except (ValueError, IndexError):
+            return jsonify(ok=False, error="bad bbox"), 400
+    if a.get("category"):
+        where.append("category ILIKE %s"); params.append("%" + a["category"][:40] + "%")
+    if a.get("country"):
+        where.append("country ILIKE %s"); params.append("%" + a["country"][:80] + "%")
+    try:
+        limit = min(int(a.get("limit", 2500)), 6000)
+    except (TypeError, ValueError):
+        limit = 2500
+    # boundaries (polygons) first so they draw under the point features
+    sql = ("SELECT gem_mine_id, mine_name, category, subcategory, coal_grade, owners, "
+           "parent, country, wiki, geom_json "
+           "FROM gem_coal_mines WHERE " + " AND ".join(where) +
+           " ORDER BY (category='mine boundary') DESC LIMIT %s")
+    params.append(limit)
+    try:
+        with psycopg2.connect(dsn, sslmode="require", connect_timeout=8) as c:
+            with c.cursor() as cur:
+                cur.execute(sql, params)
+                rows = cur.fetchall()
+                cur.execute("SELECT COUNT(*), COUNT(DISTINCT gem_mine_id), MAX(ingested_at) FROM gem_coal_mines")
+                total, mines, asof = cur.fetchone()
+    except Exception as e:
+        return jsonify(ok=False, error=str(e)[:160]), 500
+    feats = []
+    for mid, name, cat, sub, grade, owners, parent, country, wiki, geom in rows:
+        try:
+            g = json.loads(geom) if geom else None
+        except Exception:
+            g = None
+        if not g:
+            continue
+        feats.append({"type": "Feature", "geometry": g, "properties": {
+            "mine_id": mid, "mine_name": name, "category": cat, "subcategory": sub,
+            "coal_grade": grade, "owners": owners, "parent": parent,
+            "country": country, "wiki": wiki}})
+    resp = jsonify({"type": "FeatureCollection", "count": len(feats), "total": total,
+                    "distinct_mines": mines, "as_of": str(asof) if asof else None,
+                    "source": "GEM Coal Mine Boundaries & Methane Sources (CC-BY, via DC Hub)",
+                    "features": feats})
+    resp.headers["Cache-Control"] = "public, max-age=3600"
+    return resp
+
+
 def register_gem_ingest(app):
     """Idempotent registration helper (mirrors the other ingest blueprints)."""
     try:
