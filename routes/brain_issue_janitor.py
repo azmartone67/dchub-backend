@@ -26,9 +26,26 @@ This janitor closes the loop:
   L23 PROPOSAL close — brain-l23-lifecycle capability proposals older than
     PROPOSAL_STALE_DAYS (default 30) are closed as not_planned (same rationale).
 
+  L22 STALE close (2026-07-19) — brain-l22-auto-code investigation issues older
+    than L22_STALE_DAYS (default 14) are closed as not_planned. Safe because
+    L22's recipe-class dedup lives in the brain_auto_code_actions DB ledger
+    (window-based), NOT in GitHub open-issue state — closing the issue neither
+    floods nor blinds; the recipe re-drafts after its dedup window if the
+    signature recurs. Before this, l22 issues had NO close-out path at all
+    (#1604 was the live example).
+
+  MIRROR RECOVERY close (2026-07-19) — the brain-mirror workflow maintains ONE
+    rolling issue while honest_score < 3.0 and updates it in place, but never
+    closes it when the score recovers. When the LIVE mirror report shows
+    honest_score >= 3.0, open brain-mirror issues close as state_reason=
+    completed citing the live score (an honest, verified close). While the
+    score is still low the issue is a live alert — it is NEVER stale-closed,
+    and an unreachable/unparseable report closes nothing (fail closed).
+
 SAFETY INVARIANTS:
-  · Only issues carrying the exact `brain-l15-auto` or `brain-l23-lifecycle`
-    label are EVER touched — a human-filed issue can never match.
+  · Only issues carrying the exact `brain-l15-auto`, `brain-l23-lifecycle`,
+    `brain-l22-auto-code`, or `brain-mirror` label are EVER touched — a
+    human-filed issue can never match.
   · RESOLVED closes FAIL CLOSED: if the L14 causal fetch errors OR returns
     zero chains, NO resolution-closes happen that run (an empty chain list
     must never be read as "everything is fixed"). Age-based stale closes
@@ -58,6 +75,9 @@ brain_issue_janitor_bp = Blueprint("brain_issue_janitor", __name__)
 _GITHUB_REPO = (os.environ.get("GITHUB_REPO") or "azmartone67/dchub-backend").strip()
 _L15_LABEL = "brain-l15-auto"
 _L23_LABEL = "brain-l23-lifecycle"
+_L22_LABEL = "brain-l22-auto-code"
+_MIRROR_LABEL = "brain-mirror"
+_MIRROR_SCORE_THRESHOLD = 3.0  # mirrors brain-mirror.yml's file gate
 _L15_TITLE_PREFIX = "[brain-l15] "
 # NOTE (2026-07-03): CI-noise issues ([workflow-failed]/[STATUS], labels
 # workflow-failure/monitoring/auto) are owned by the dedicated GH Action
@@ -95,6 +115,10 @@ def _stale_days() -> int:
 
 def _proposal_stale_days() -> int:
     return max(1, _env_int("BRAIN_ISSUE_JANITOR_PROPOSAL_STALE_DAYS", 30))
+
+
+def _l22_stale_days() -> int:
+    return max(1, _env_int("BRAIN_ISSUE_JANITOR_L22_STALE_DAYS", 14))
 
 
 def _max_per_run() -> int:
@@ -214,6 +238,32 @@ def _open_issues(label: str) -> list[dict]:
             break
         page += 1
     return out
+
+
+def _mirror_recovered():
+    """Live honest_score if it has RECOVERED (>= threshold), else None.
+
+    Reads the same field brain-mirror.yml gates on
+    (.honest_grade.honest_score). FAIL CLOSED: unreachable report, missing
+    key, or unparseable score all return None — a broken probe must never
+    close a live alert. Loopback first (janitor runs in-app), public edge
+    as fallback."""
+    import json as _json
+    import urllib.request as _rq
+    port = os.environ.get("PORT", "8080")
+    for url in (f"http://127.0.0.1:{port}/api/v1/brain/mirror/report",
+                "https://dchub.cloud/api/v1/brain/mirror/report"):
+        try:
+            with _rq.urlopen(_rq.Request(
+                    url, headers={"User-Agent": "dchub-issue-janitor/1.0"}),
+                    timeout=15) as resp:
+                body = _json.loads(resp.read(262144))
+            score = (body.get("honest_grade") or {}).get("honest_score")
+            score = float(score)
+            return score if score >= _MIRROR_SCORE_THRESHOLD else None
+        except Exception:
+            continue
+    return None
 
 
 def _age_days(issue: dict) -> float:
@@ -365,6 +415,47 @@ def janitor_sweep(dry_run: bool = True) -> dict:
                             "scores as valuable."),
             })
 
+    # 2026-07-19: l22 investigation issues previously had NO close-out path.
+    # Stale-close only — L22's recipe-class dedup is a DB-ledger window
+    # (brain_auto_code_actions), so closing here can't flood and the recipe
+    # re-drafts if the drift signature recurs.
+    for issue in _open_issues(_L22_LABEL):
+        num, title = issue.get("number"), (issue.get("title") or "")
+        age = _age_days(issue)
+        if age >= _l22_stale_days():
+            candidates.append({
+                "number": num, "title": title,
+                "reason": f"l22_stale_{_l22_stale_days()}d",
+                "state_reason": "not_planned",
+                "comment": (f"🤖 **Auto-closed by the brain issue janitor** — this "
+                            f"L22 investigation prompt sat unactioned for "
+                            f"{int(age)}d. **Not a verified fix** — if the drift "
+                            f"signature recurs, the L22 recipe re-drafts a fresh "
+                            f"issue after its dedup window."),
+            })
+
+    # 2026-07-19: the brain-mirror workflow maintains ONE rolling issue while
+    # honest_score < 3.0 but never closes it on recovery. Close as COMPLETED
+    # only against the LIVE score (fail closed on any probe error); while the
+    # score is low the issue is a live alert and is never stale-closed.
+    mirror_open = _open_issues(_MIRROR_LABEL)
+    if mirror_open:
+        recovered_score = _mirror_recovered()
+        if recovered_score is not None:
+            for issue in mirror_open:
+                candidates.append({
+                    "number": issue.get("number"),
+                    "title": issue.get("title") or "",
+                    "reason": "mirror_score_recovered",
+                    "state_reason": "completed",
+                    "comment": (f"🤖 **Auto-closed by the brain issue janitor — "
+                                f"RECOVERED.** The live mirror report now grades "
+                                f"honest_score {recovered_score:.2f}/4 (threshold "
+                                f"{_MIRROR_SCORE_THRESHOLD}). The brain-mirror "
+                                f"workflow re-files automatically if the score "
+                                f"drops below threshold again."),
+                })
+
     candidates = candidates[:cap]
     if dry_run:
         return {"ok": True, "dry_run": True, "disabled": _disabled(),
@@ -393,6 +484,7 @@ def issue_janitor_status():
         grace_days=_grace_days(),
         stale_days=_stale_days(),
         proposal_stale_days=_proposal_stale_days(),
+        l22_stale_days=_l22_stale_days(),
         max_per_run=_max_per_run(),
         preview=preview,
     )
