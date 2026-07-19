@@ -205,6 +205,10 @@ def _ensure() -> bool:
                     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())""")
             cur.execute("CREATE INDEX IF NOT EXISTS permitting_intel_state_idx "
                         "ON permitting_intel (state, row_status)")
+            # Map support (2026-07-18): jurisdiction centroid so the land-power
+            # map can plot published rows. Set during curation (admin upsert).
+            cur.execute("ALTER TABLE permitting_intel ADD COLUMN IF NOT EXISTS latitude REAL")
+            cur.execute("ALTER TABLE permitting_intel ADD COLUMN IF NOT EXISTS longitude REAL")
         c.commit()
         return True
     except Exception:
@@ -1224,13 +1228,15 @@ def permitting_intel():
             cur.execute(
                 "SELECT id, jurisdiction, state, country, market_slug, class, "
                 "title, detail, source_url, effective_date, verified, "
-                "row_status, updated_at::text FROM permitting_intel WHERE "
+                "row_status, updated_at::text, latitude, longitude "
+                "FROM permitting_intel WHERE "
                 + " AND ".join(cond) + " ORDER BY updated_at DESC LIMIT 100",
                 tuple(args))
             rows = [dict(zip(("id", "jurisdiction", "state", "country",
                               "market_slug", "class", "title", "detail",
                               "source_url", "effective_date", "verified",
-                              "row_status", "updated_at"), r))
+                              "row_status", "updated_at", "latitude",
+                              "longitude"), r))
                     for r in cur.fetchall()]
         return jsonify(ok=True, count=len(rows), records=rows,
                        classes=list(_PERMIT_CLASSES),
@@ -1266,6 +1272,12 @@ def permitting_upsert():
         return jsonify(error="row_status must be candidate|published|rejected"), 400
     if "verified" in body:
         fields["verified"] = bool(body["verified"])
+    for coord in ("latitude", "longitude"):
+        if coord in body:
+            try:
+                fields[coord] = float(body[coord]) if body[coord] is not None else None
+            except Exception:
+                return jsonify(error=f"{coord} must be numeric"), 400
     c = _db()
     if c is None:
         return jsonify(ok=False, error="db_unavailable"), 200

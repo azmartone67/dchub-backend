@@ -1016,7 +1016,29 @@ window.DCHUB_PAGE_GATE = 'registered';
                         </div>
                     </div>
                 </div>
-                
+
+                <div class="accordion" data-group="permitting">
+                    <div class="accordion-header" onclick="toggleAccordion(this)">
+                        <div class="accordion-title">
+                            <div class="accordion-icon data">⚖️</div>
+                            <span class="accordion-name">Permitting &amp; Zoning</span>
+                        </div>
+                        <div style="display: flex; align-items: center; gap: 8px;">
+                            <span class="accordion-count">1 layer</span>
+                            <span class="accordion-chevron">▼</span>
+                        </div>
+                    </div>
+                    <div class="accordion-content">
+                        <div class="layer-item active" data-layer="permitting" onclick="toggleLayer(this)">
+                            <div class="layer-info">
+                                <div class="layer-dot" style="background: #ef4444;"></div>
+                                <span class="layer-name">Moratoriums &amp; Zoning Risk</span>
+                            </div>
+                            <div class="toggle-mini"></div>
+                        </div>
+                    </div>
+                </div>
+
                 <div style="margin-top: 20px;">
                     <div class="section-label">Markets</div>
                     <div class="tier-tabs">
@@ -1177,6 +1199,7 @@ function initMap() {
     layers.gasProcessing = L.layerGroup();
     layers.nglFractionators = L.layerGroup();
     layers.utilityTerritories = L.layerGroup();
+    layers.permitting = L.layerGroup();
     
     transmissionRoutes.forEach(r => layers.transmission.addLayer(
         L.polyline(r.coords, { color: '#f59e0b', weight: 3, opacity: 0.8 })
@@ -1213,9 +1236,47 @@ function initMap() {
     map.addLayer(layers.transmission);
     map.addLayer(layers.substations);
     map.addLayer(layers.markets);
+    map.addLayer(layers.permitting);
     renderList();
-    
+    loadPermittingLayer();
+
     map.on('moveend', loadDynamicLayers);
+}
+
+// Permitting & Zoning intel (2026-07-18): curated moratorium/zoning rows
+// from /api/v1/permitting/intel (human-verified, stage-prefixed detail).
+// Color = stage: enacted red, proposed orange, speculative yellow.
+async function loadPermittingLayer() {
+    try {
+        const r = await fetch('/api/v1/permitting/intel');
+        const d = await r.json();
+        (d.records || []).forEach(p => {
+            if (p.latitude == null || p.longitude == null) return;
+            const detail = p.detail || '';
+            const stage = detail.startsWith('Enacted') ? 'Enacted'
+                        : detail.startsWith('Proposed') ? 'Proposed'
+                        : detail.startsWith('Speculative') ? 'Speculative' : 'Reported';
+            const color = stage === 'Enacted' ? '#ef4444'
+                        : stage === 'Proposed' ? '#f59e0b'
+                        : '#eab308';
+            const mk = L.circleMarker([p.latitude, p.longitude], {
+                radius: 9, fillColor: color, color: '#fff',
+                weight: 2, dashArray: '3,3', fillOpacity: 0.85
+            });
+            mk.bindTooltip(`⚖️ ${p.jurisdiction || p.title}`, { direction: 'top', offset: [0, -8] });
+            mk.bindPopup(
+                `<div style="min-width:220px">` +
+                `<div style="font-weight:700;margin-bottom:4px">⚖️ ${p.jurisdiction || ''} — ${p.class}</div>` +
+                `<div style="font-size:11px;margin-bottom:4px"><span style="color:${color};font-weight:600">${stage}</span></div>` +
+                `<div style="font-size:12px;margin-bottom:6px">${p.title || ''}</div>` +
+                `<div style="font-size:11px;opacity:.8;margin-bottom:6px">${detail}</div>` +
+                (p.source_url ? `<a href="${p.source_url}" target="_blank" rel="noopener" style="font-size:11px">Source →</a>` : '')
+            );
+            layers.permitting.addLayer(mk);
+        });
+    } catch (e) {
+        console.warn('Permitting layer failed to load:', e.message);
+    }
 }
 
 async function loadDynamicLayers() {
