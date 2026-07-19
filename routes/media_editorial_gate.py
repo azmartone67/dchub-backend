@@ -125,7 +125,7 @@ def _recent_published() -> list[dict]:
                 SELECT title, slug, category, created_at::date::text
                 FROM press_releases
                 WHERE published = TRUE
-                  AND created_at > NOW() - INTERVAL '%s days'
+                  AND created_at > NOW() - %s * INTERVAL '1 day'
                 ORDER BY created_at DESC
                 LIMIT %s
             """ % (_COOLDOWN_DAYS, _RECENT_HEADLINES))
