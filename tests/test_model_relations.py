@@ -46,9 +46,11 @@ def test_never_publishes():
 def test_registry_shape_and_budget():
     # gemini added 2026-07-17 (the "malformed key" blocker was a paste
     # artifact, sanitized by routes._google_key.gemini_api_key);
-    # moonshot/Kimi added same day (user-requested, api.moonshot.ai).
+    # moonshot/Kimi added same day (user-requested, api.moonshot.ai);
+    # cohere added 2026-07-19 (partner-expansion — OpenAI-compat surface,
+    # first live tick verified ok on command-a-03-2025).
     assert set(_PLATFORMS) == {"openai", "mistral", "meta", "perplexity",
-                               "xai", "gemini", "moonshot"}
+                               "xai", "gemini", "moonshot", "cohere"}
     assert MAX_MODEL_CALLS == 8
     for cfg in _PLATFORMS.values():
         assert "pick" in cfg or "fixed" in cfg
