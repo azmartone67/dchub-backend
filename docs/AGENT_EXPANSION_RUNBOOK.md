@@ -11,11 +11,22 @@ _As of 2026-07-19. Owner steps are marked **YOU**; everything else runs automati
 - Why it stalled before: reviewers hit paywalled tools. That key removes the blocker. Revoke it after approval via `/api/v1/admin/partner-key/revoke/dchub_pro_IscxtvSn`.
 - **Done looks like**: DC Hub listed in claude.ai's connector directory; `Claude-User` traffic climbs in `partner_calls_wow` / reach reports.
 
-### 2. ChatGPT / OpenAI App Directory (Apps SDK)
-- **YOU** (both in platform.openai.com, org settings):
-  1. Complete **Business verification** for the org.
-  2. Create or designate a **global-residency project**.
-- **Auto/me**: CSP on `/mcp` is already live (Apps-SDK review requirement). When your two steps are done, say so — I build and stage the Apps-SDK app manifest for submission. Custom GPT is already live meanwhile.
+### 2. ChatGPT / OpenAI App Directory (Apps SDK) — prereqs DONE 2026-07-19, submission package ready
+Business verification ✅ · global-residency project ✅ · CSP on /mcp ✅. Submit with this paste-ready package (developer/apps section of the OpenAI platform → create app → submit for review):
+
+| Field | Value |
+|---|---|
+| App name | DC Hub — Data-Center & Grid Intelligence |
+| MCP server URL | `https://dchub.cloud/mcp` (Streamable HTTP) |
+| Auth | Keyless free tier works out of the box (10 calls/day); Bearer/`X-API-Key` for full tier; OAuth (WorkOS) advertised via `/.well-known/oauth-protected-resource` |
+| Short description | Live, cited ground truth on the physical infrastructure behind AI: 21,900+ data-center facilities (4,900+ verified), 300+ power-scored markets (DCPI), real-time grid telemetry across five continents, interconnection queues, fiber, and 1,400+ tracked deals. |
+| Category | Research / Data & Analytics |
+| Privacy policy | `https://dchub.cloud/privacy` |
+| Terms | `https://dchub.cloud/terms` |
+| Support contact | `api@dchub.cloud` |
+| Reviewer notes | Full-tier reviewer key (all 74 tools return complete data): `dchub_pro_nviYrCV2M03fdFlrvHwW2Bf8bEfaAiFh` — send as `Authorization: Bearer`. Try: "Which US grid has the most renewable headroom right now?" → `get_grid_scoreboard`. |
+
+Revoke the reviewer key after approval: `/api/v1/admin/partner-key/revoke/dchub_pro_nviYrCV2`.
 - **Done looks like**: DC Hub app in the ChatGPT App Directory; `ChatGPT-User`/`OAI-SearchBot` traffic rises.
 
 ---
@@ -26,9 +37,12 @@ _As of 2026-07-19. Owner steps are marked **YOU**; everything else runs automati
 - **YOU**: In Google AI Studio, enable billing on the project behind `GEMINI_API_KEY` (it 429s on quota) — or mint a fresh key in a billed project and update `GEMINI_API_KEY` on both Railway services (dchub-backend + dchub-worker), or just paste it to me.
 - **Auto**: eval lane self-heals next tick. A2A `agent-card.json` is already modern v0.3 for Gemini Enterprise; once the key works I'll verify /mcp as a Custom MCP data store.
 
-### 4. Grok / xAI
-- **YOU**: console.x.ai → check billing/credits on the API key (models endpoint is unreachable, billing-shaped). Optional 2-min win: add DC Hub as a Grok custom connector per [dchub.cloud/integrations/grok](https://dchub.cloud/integrations/grok) and confirm one tool call.
-- **Auto**: lane self-heals next tick.
+### 4. Grok / xAI — still blocked after first billing pass (verified 2026-07-19)
+Raw API error: `permission-denied — Your team b372911e-c564-44f8-af2b-0c4efcc93898 has either used all available credits or reached its monthly spending limit.`
+- **YOU**, in console.x.ai — one of:
+  1. Open **that specific team** (`b372911e…`) → Billing → buy credits **and/or raise the monthly spending limit** (a $0/low cap produces exactly this error even with credits); or
+  2. If you funded a *different* team: create an API key under the funded team and update `XAI_API_KEY` on both Railway services (or paste it to me).
+- **Auto**: lane self-heals next tick. Optional 2-min win: Grok custom connector per [dchub.cloud/integrations/grok](https://dchub.cloud/integrations/grok).
 
 ### 5. OpenAI (API lane) — ✅ ACTIVE
 GPT-5.6 completed a full 8-call eval. Nothing to do; verdicts land weekly in the review queue.
