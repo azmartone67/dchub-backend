@@ -192,6 +192,38 @@ def _insert_press_release(release, auto_publish=False):
                 return {"ok": True, "id": existing[0], "slug": release["slug"],
                         "existed": True, "published": bool(existing[1])}
 
+            # dedup-jam fix (2026-07-18): the slug embeds the ISO week, so the
+            # slug check above only dedupes WITHIN a week — the same
+            # Switzerland release re-minted every week the track rotated back
+            # (w23/w25/w28/w29 all pending at once). Draft identity is the
+            # FINGERPRINT (category + normalized title, digit-runs collapsed):
+            # if an UNPUBLISHED draft with this fingerprint exists at ANY age,
+            # refresh ITS numbers + slug to this week instead of inserting a
+            # second pending copy.
+            try:
+                from routes.media_draft_dedup import find_unpublished_press_duplicate
+                dup = find_unpublished_press_duplicate(
+                    cur, release["category"], release["title"],
+                    exclude_slug=release["slug"])
+            except Exception:
+                dup = None
+            if dup:
+                cur.execute("""
+                    UPDATE press_releases
+                       SET title = %s, subheadline = %s, summary = %s,
+                           body = %s, slug = %s, source_url = %s,
+                           date = CURRENT_DATE, published_date = CURRENT_DATE,
+                           created_at = NOW()
+                     WHERE id = %s AND published = FALSE
+                     RETURNING id
+                """, (release["title"], release["subheadline"],
+                      release["summary"], release["body"], release["slug"],
+                      release["source_url"], dup["id"]))
+                if cur.fetchone():
+                    return {"ok": True, "id": dup["id"], "slug": release["slug"],
+                            "existed": True, "refreshed": True,
+                            "published": False}
+
             cur.execute("""
                 INSERT INTO press_releases
                   (title, subheadline, summary, body, slug, source, source_url,

@@ -22037,51 +22037,22 @@ def get_press_releases_list():
 # proper slug handler at line ~14518, causing 'bad date' errors.
 # Date-based access still works via the digest- prefix above.
 def get_press_release_digest(date_slug=None):
-    from datetime import datetime, timedelta, date as dc
-    import re
+    # press-jam fix (2026-07-18): this loader must NEVER dead-end. A malformed
+    # digest id (worker renders any non-OK response as the hard "Digest Not
+    # Found" page) or an expired-retention date now falls back to the latest
+    # digest that actually has articles. Logic lives in
+    # routes/press_digest_fallback.py (testable without the app).
+    from datetime import date as dc
+    from routes.press_digest_fallback import resolve_digest
     ds = date_slug or request.args.get('date', dc.today().strftime('%Y-%m-%d'))
     d = ds[7:] if ds.startswith('digest-') else ds
-    if not re.match(r'^\d{4}-\d{2}-\d{2}$', d):
-        return jsonify({'success': False, 'error': 'bad date'}), 400
-    dt = datetime.strptime(d, '%Y-%m-%d').date()
-    articles = []; bu = 'empty'
     try:
         with pg_connection() as pg:
-            cur = pg.cursor()
-            # Try announcements (12k+ articles) then news table
-            for tbl, q in [
-                ('announcements', f"SELECT id,title,summary,source_url,source,category,published_date::text,image_url,'' FROM announcements WHERE LEFT(published_date,10) = '{d}' ORDER BY published_date DESC LIMIT 200"),
-                ('news', "SELECT id,title,description,url,source,category,published_date::text,image_url,author FROM news ORDER BY published_date DESC LIMIT 200"),
-            ]:
-                try:
-                    cur.execute(q)
-                    rows = cur.fetchall()
-                    if rows:
-                        articles = [{'id':r[0],'title':r[1],'summary':r[2] or '','url':r[3] or '',
-                                     'source':r[4] or '','category':r[5] or 'General',
-                                     'published_at':str(r[6] or ''),'image_url':r[7] or '','author':r[8] or ''}
-                                    for r in rows]
-                        bu = f'neon/{tbl}'; break
-                except Exception as te:
-                    logger.warning(f'[digest] {tbl}: {te}')
-            articles_placeholder = [{'id':r[0],'title':r[1],'summary':r[2] or '','url':r[3] or '',
-                         'source':r[4] or '','category':r[5] or 'General',
-                         'published_at':str(r[6] or ''),'image_url':r[7] or '','author':r[8] or ''}
-                        for r in cur.fetchall()]
-            bu = 'neon/news'
+            payload = resolve_digest(pg.cursor(), d)
     except Exception as e:
         logger.warning(f'[press-release digest] {e}')
-    cats={}; srcs={}
-    for a in articles:
-        cats[a['category']] = cats.get(a['category'],0)+1
-        srcs[a['source']] = srcs.get(a['source'],0)+1
-    p=(dt-timedelta(days=1)).strftime('%Y-%m-%d')
-    n=(dt+timedelta(days=1)).strftime('%Y-%m-%d')
-    return jsonify({'success':True,'slug':f'digest-{d}','date':d,
-        'display_date':dt.strftime('%B %d, %Y'),'total':len(articles),
-        'articles':articles,'categories':cats,'sources':srcs,
-        'nav':{'prev':f'/news/digest-{p}','next':f'/news/digest-{n}'},
-        'backend':bu})
+        payload = resolve_digest(None, d)
+    return jsonify(payload)
 
 @app.route('/api/agent/chat', methods=['POST'])
 def api_agent_chat():
@@ -31476,8 +31447,23 @@ def get_press_release(slug):
         cur = conn.cursor()
         cur.execute("SELECT id,title,slug,category,date,subheadline,body,meta_description FROM press_releases WHERE slug=%s AND published=TRUE", (slug,))
         r = cur.fetchone()
+        if not r:
+            # press-jam fix (2026-07-18): a 404 here becomes the edge worker's
+            # hard "Digest Not Found" dead end — which is exactly where the
+            # first-generation digest emails (draft links at /news/<slug>,
+            # e.g. partnership-partners-2026-w23) sent the operator. Fall back
+            # to the latest news digest payload (200) with a note; draft
+            # CONTENT is never leaked (drafts stay token-gated preview only).
+            from routes.press_digest_fallback import slug_fallback_payload
+            payload = slug_fallback_payload(cur, slug)
+            cur.close(); conn.close()
+            from flask import make_response
+            resp = make_response(jsonify(payload))
+            resp.headers['Access-Control-Allow-Origin'] = '*'
+            resp.headers['Access-Control-Allow-Methods'] = 'GET, OPTIONS'
+            resp.headers['Cache-Control'] = 'no-store'
+            return resp
         cur.close(); conn.close()
-        if not r: return jsonify({"error":"Not found"}), 404
         resp_data = {"id":r[0],"title":r[1],"slug":r[2],"category":r[3],"date":str(r[4]) if r[4] else None,"subheadline":r[5],"body":r[6],"meta_description":r[7]}
         from flask import make_response
         resp = make_response(jsonify(resp_data))
@@ -36337,6 +36323,22 @@ try:
     print("[main] media_pending_digest_bp registered: /api/v1/media/pending-drafts{,/digest,/approve} (admin/HMAC-gated)", flush=True)
 except Exception as _mpd_e:
     print(f"[main] media_pending_digest register skipped: {_mpd_e}", file=sys.stderr)
+
+# press-jam fix (2026-07-18): pending-draft fingerprint dedup (one-time
+# duplicate collapse, admin-gated) + guard-blocked draft auto-repair (HMAC
+# one-click from the digest's blocked page; the fact-check guard stays final).
+try:
+    from routes.media_draft_dedup import media_draft_dedup_bp
+    app.register_blueprint(media_draft_dedup_bp)
+    print("[main] media_draft_dedup_bp registered: /api/v1/media/pending-drafts/dedup-cleanup (admin)", flush=True)
+except Exception as _mdd_e:
+    print(f"[main] media_draft_dedup register skipped: {_mdd_e}", file=sys.stderr)
+try:
+    from routes.media_draft_repair import media_draft_repair_bp
+    app.register_blueprint(media_draft_repair_bp)
+    print("[main] media_draft_repair_bp registered: /api/v1/media/pending-drafts/repair (HMAC/admin)", flush=True)
+except Exception as _mdr_e:
+    print(f"[main] media_draft_repair register skipped: {_mdr_e}", file=sys.stderr)
 
 # r-sarender (2026-06-24): Phase-4 render-path probe (admin-gated). Renders the real
 # A1 "Site Analysis" CSS via weasyprint to learn if the premium form needs Chrome-on-

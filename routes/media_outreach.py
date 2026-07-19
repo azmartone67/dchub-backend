@@ -351,8 +351,20 @@ def stage_weekly():
             try:
                 cur.execute("SELECT 1 FROM media_outreach_log WHERE recipient_email=%s AND sent_at >= NOW() - INTERVAL '7 days' LIMIT 1", (email,))
                 if cur.fetchone(): skipped.append({"email": email, "reason": "sent_within_7d"}); continue
-                cur.execute("SELECT 1 FROM media_pitch_drafts WHERE recipient_email=%s AND status='pending' AND created_at >= NOW() - INTERVAL '7 days' LIMIT 1", (email,))
-                if cur.fetchone(): skipped.append({"email": email, "reason": "pending_draft_exists"}); continue
+                # dedup-jam fix (2026-07-18): the pending check was TIME-boxed
+                # (7d) — a pending draft older than the window did not block an
+                # identical re-mint, so the same (recipient, topic) pitch piled
+                # up in the digest (3 generations at 3/19/44d). A PENDING draft
+                # for this fingerprint at ANY age is refreshed in place instead.
+                cur.execute("SELECT id FROM media_pitch_drafts WHERE recipient_email=%s AND topic=%s AND status='pending' ORDER BY created_at DESC LIMIT 1",
+                            (email, "industry_pulse"))
+                pending_row = cur.fetchone()
+                if pending_row:
+                    subject, txt = _compose_pitch("industry_pulse", story, j)
+                    cur.execute("UPDATE media_pitch_drafts SET subject=%s, body=%s, created_at=NOW() WHERE id=%s AND status='pending'",
+                                (subject, txt, pending_row[0]))
+                    skipped.append({"email": email, "reason": "pending_draft_refreshed", "id": pending_row[0]})
+                    continue
             except Exception: pass
             subject, txt = _compose_pitch("industry_pulse", story, j)
             try:

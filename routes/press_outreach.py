@@ -605,7 +605,38 @@ def generate_drafts():
                 contacts = [dict(r) for r in cur.fetchall()]
 
                 for contact in contacts:
-                    # Dedupe per (contact, angle_key)
+                    # dedup-jam fix (2026-07-18): the old dedupe was TIME-boxed
+                    # only — a pending draft older than dedupe_days did not
+                    # block an identical re-mint, so the same (contact, angle)
+                    # pitch piled up in the digest (3 generations at 2/23/52d).
+                    # A PENDING draft for this fingerprint at ANY age is
+                    # refreshed in place — never a second pending copy.
+                    cur.execute("""
+                        SELECT id FROM press_pitch_drafts
+                         WHERE contact_id = %s
+                           AND angle_key  = %s
+                           AND status     = 'pending'
+                         ORDER BY created_at DESC
+                         LIMIT 1
+                    """, (contact["id"], angle.get("key")))
+                    pending_row = cur.fetchone()
+                    if pending_row:
+                        pitch = _generate_pitch(contact, angle)
+                        score = float(angle.get("newsworthiness", 5)) * \
+                                (1 + (contact.get("priority", 5) / 10.0))
+                        cur.execute("""
+                            UPDATE press_pitch_drafts
+                               SET subject = %s, body = %s, score = %s,
+                                   angle_data = %s::jsonb, created_at = NOW()
+                             WHERE id = %s AND status = 'pending'
+                        """, (pitch["subject"], pitch["body"], score,
+                              json.dumps(angle.get("data") or {}),
+                              pending_row["id"]))
+                        skipped_dupe += 1
+                        continue
+
+                    # Recency dedupe for ACTIONED drafts (sent/rejected): don't
+                    # re-pitch the same angle to a contact who just got it.
                     cur.execute("""
                         SELECT 1 FROM press_pitch_drafts
                          WHERE contact_id = %s

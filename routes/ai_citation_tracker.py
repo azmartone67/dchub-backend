@@ -747,6 +747,7 @@ def draft_press_from_citations():
         # pending-drafts digest surfaces those); without auto_approve the row
         # is always an unpublished draft. Honesty gates above are unchanged.
         drafted = []
+        refreshed = []
         skipped = 0
         errors = []
         now_utc = datetime.datetime.utcnow()
@@ -759,14 +760,52 @@ def draft_press_from_citations():
         # it with a fact-check-gated one-click approve. auto_approve is kept
         # for API compat but no longer publishes.
 
+        # dedup-jam fix (2026-07-18): the slug is keyed on (engine, DATE,
+        # prompt_id) but the self-solicited TITLE is identical across all
+        # canonical prompts — one run minted 7-8 identical "Perplexity Named
+        # DC Hub a Primary Reference" pending drafts. Draft identity is the
+        # FINGERPRINT (kind + normalized title + engine): one pending draft
+        # per fingerprint; a re-observation UPDATEs its freshness in place.
+        from routes.media_draft_dedup import (draft_fingerprint,
+                                              find_unpublished_press_duplicate)
+
         try:
             c.rollback()  # close the candidate-SELECT txn so autocommit can be set
         except Exception:
             pass
         c.autocommit = True  # per-row writes; one failure must not poison the rest
+        _batch_fps: set = set()
         with c.cursor() as cur:
             for cand in candidates:
                 try:
+                    # In-batch dedup: two candidates with the same fingerprint in
+                    # ONE run (e.g. 8 prompts, one identical title) collapse to
+                    # the first — the rest are the same story.
+                    fp = draft_fingerprint("ai-citation", cand["title"],
+                                           cand.get("engine") or "")
+                    if fp in _batch_fps:
+                        skipped += 1
+                        continue
+                    _batch_fps.add(fp)
+
+                    # Pending-dedup: an UNPUBLISHED draft with this fingerprint
+                    # (any age) is refreshed, never duplicated.
+                    dup = find_unpublished_press_duplicate(
+                        cur, "ai-citation", cand["title"],
+                        cand.get("engine") or "")
+                    if dup:
+                        cur.execute("""
+                            UPDATE press_releases
+                               SET body = %s, date = %s, created_at = %s,
+                                   meta_description = %s
+                             WHERE id = %s AND published = FALSE
+                        """, (cand["body_html"], today, now_utc,
+                              f"{cand['engine'].title()} cited DC Hub as a primary source."[:200],
+                              dup["id"]))
+                        refreshed.append({"id": dup["id"], "slug": dup["slug"],
+                                          "title": cand["title"]})
+                        continue
+
                     # Per-(engine,prompt) 7-day cooldown: the daily probe re-asks
                     # the same canonical prompts, and slugs are date-keyed, so
                     # ON CONFLICT alone can't stop a same-story-every-day mint.
@@ -808,10 +847,12 @@ def draft_press_from_citations():
         return jsonify(
             ok=True, mode="write",
             drafted_count=len(drafted),
+            refreshed_count=len(refreshed),
             published_count=sum(1 for d in drafted if d.get("published")),
             skipped_existing=skipped,
             errors=errors[:5],
             drafted=drafted[:10],
+            refreshed=refreshed[:10],
             ran_at=now,
         ), 201
 

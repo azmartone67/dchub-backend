@@ -95,6 +95,13 @@ def _preview_url(row_id: int) -> str:
             f"?id={row_id}&t={_approve_token(row_id)}")
 
 
+def _repair_url(row_id: int) -> str:
+    # guard-repair (2026-07-18): one-click "auto-repair & retry" for drafts the
+    # fact-check guard blocks. Same per-row HMAC token as the approve link.
+    return (f"{SITE}/api/v1/media/pending-drafts/repair"
+            f"?id={row_id}&t={_approve_token(row_id)}")
+
+
 # ── inventory ────────────────────────────────────────────────────────────
 def _collect_pending(cur) -> dict:
     """Every human-gated draft lane, one dict. Each query fails soft so a
@@ -184,6 +191,10 @@ def _render_email_html(pending: dict) -> str:
             f'<br><span style="color:#64748b;font-size:12px">{esc(r["category"])} · {_age_days(r["created_at"])} old'
             + (f' · <span style="color:#b45309">brain: {r["editorial_score"]}/10 — {esc((r.get("editorial_reasons") or [""])[0])[:90]}</span>'
                if r.get("editorial_score") is not None else "")
+            + (f' · <span style="color:#b91c1c">fact-check blocked: {esc(", ".join(r.get("fact_check_claims") or []))[:90]} — <a href="{_repair_url(r["id"])}" style="color:#b91c1c">auto-repair</a></span>'
+               if r.get("fact_check") == "blocked" else "")
+            + (' · <span style="color:#b45309">auto-repaired to pass fact-check</span>'
+               if r.get("fact_check") == "auto_repaired" else "")
             + '</span></td>'
             f'<td style="padding:6px 10px;border-bottom:1px solid #e2e8f0;white-space:nowrap">'
             f'<a href="{_approve_url(r["id"])}" style="color:#fff;background:#16a34a;padding:5px 12px;'
@@ -266,6 +277,19 @@ def pending_drafts_digest():
     try:
         with c.cursor() as cur:
             pending = _collect_pending(cur)
+        # guard-repair (2026-07-18): close the automation loop — before the
+        # digest goes out, auto-repair guard-blocked press drafts per the
+        # guard's own hints (drafts stay UNPUBLISHED; they re-surface here as
+        # passing). Dry-run annotates without mutating. Fail-soft: a repair
+        # blip must never block the digest.
+        try:
+            from routes.media_draft_repair import annotate_pending_rows
+            c.autocommit = True
+            annotate_pending_rows(
+                c, pending.get("press_releases_unpublished") or [], repair=send)
+        except Exception as _rep_e:
+            logger.warning("[pending_digest] repair annotate skipped: %s",
+                           str(_rep_e)[:120])
     finally:
         try: c.close()
         except Exception: pass
@@ -408,12 +432,61 @@ def approve_pending_draft():
                                detail=str(e)[:120],
                                note="fail-closed: draft NOT published"), 503
             if not report.get("ok"):
+                # guard-repair (2026-07-18): the raw-JSON 409 dead-ended the
+                # human (no repair path). Browser click-throughs now get a
+                # readable page listing the claims + a one-click HMAC-gated
+                # "auto-repair & retry" (the repairer edits the draft per the
+                # guard's own hints and publishes ONLY if the guard passes the
+                # repaired text — the guard itself is never weakened).
+                unverified = report.get("unverified", [])[:10]
+                wants_html = (request.method == "GET" and
+                              "text/html" in (request.headers.get("Accept") or ""))
+                if wants_html:
+                    from flask import Response
+                    claim_rows = "".join(
+                        '<tr>'
+                        f'<td style="padding:6px 10px;border-bottom:1px solid #e2e8f0">'
+                        f'<code>{html.escape(str(u.get("claim") or ""))}</code></td>'
+                        f'<td style="padding:6px 10px;border-bottom:1px solid #e2e8f0;'
+                        f'color:#475569;font-size:13px">{html.escape(str(u.get("expected") or ""))}</td>'
+                        '</tr>'
+                        for u in unverified) or '<tr><td>(none listed)</td><td></td></tr>'
+                    page = f"""<!doctype html><html><head><meta charset="utf-8">
+<meta name="robots" content="noindex,nofollow">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Fact-check blocked — {html.escape(title or slug)}</title></head>
+<body style="font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
+background:#f1f5f9;margin:0;padding:24px">
+<div style="max-width:720px;margin:0 auto">
+<div style="background:#b91c1c;color:#fff;padding:12px 18px;border-radius:8px 8px 0 0">
+<strong>Blocked by the fact-check guard</strong> — the draft stays unpublished.</div>
+<div style="background:#fff;padding:24px 28px;border:1px solid #e2e8f0;border-top:0;
+border-radius:0 0 8px 8px;line-height:1.6;color:#0f172a">
+<h2 style="margin-top:0;font-size:18px">{html.escape(title or slug)}</h2>
+<p>These claims could not be corroborated against live data
+({report.get("checked") or 0} checked):</p>
+<table cellpadding="0" cellspacing="0" width="100%"
+style="border-collapse:collapse;border:1px solid #e2e8f0;border-radius:6px">
+<tr><th style="text-align:left;padding:6px 10px;border-bottom:2px solid #e2e8f0">Claim</th>
+<th style="text-align:left;padding:6px 10px;border-bottom:2px solid #e2e8f0">Guard's hint</th></tr>
+{claim_rows}</table>
+<p style="margin-top:20px">
+<a href="{_repair_url(row_id)}" style="color:#fff;background:#b45309;padding:9px 16px;
+border-radius:6px;text-decoration:none;font-weight:600">Auto-repair &amp; retry</a>
+&nbsp;&nbsp;<a href="{_preview_url(row_id)}" style="color:#1d4ed8">Preview the draft</a></p>
+<p style="color:#64748b;font-size:13px">Auto-repair removes or corrects each
+uncorroborated figure per the guard's own hints, re-runs the guard, and
+publishes only if the repaired text passes. The guard is never bypassed.</p>
+</div></div></body></html>"""
+                    return Response(page, status=409, mimetype="text/html")
                 return jsonify(ok=False, blocked_by="fact_check_guard",
-                               unverified=report.get("unverified", [])[:10],
+                               unverified=unverified,
                                checked=report.get("checked"),
+                               repair_url=_repair_url(row_id),
                                note=("Uncorroborated claims — fix the draft "
-                                     "body, then retry. The guard cannot be "
-                                     "bypassed from this endpoint.")), 409
+                                     "body or follow repair_url, then retry. "
+                                     "The guard cannot be bypassed from this "
+                                     "endpoint.")), 409
 
             cur.execute("""
                 UPDATE press_releases
