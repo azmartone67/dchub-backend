@@ -82,6 +82,40 @@ _TOOL_REST = {
     "subscribe_digest":       (None, "MCP"),
 }
 
+# REST-NATIVE endpoints with NO MCP tool yet (2026-07-18 agentic wave) —
+# listed so REST agents discover them TODAY. Each is an MCP-parity
+# candidate for dchub-mcp-server; when a tool ships there, move the entry
+# into _TOOL_REST above.
+_REST_NATIVE = [
+    {"name": "get_permitting_intel",
+     "rest_endpoint": "https://dchub.cloud/api/v1/permitting/intel",
+     "method": "GET",
+     "description": ("Curated data center permitting & moratorium intelligence — "
+                     "human-verified, stage-tagged (enacted/proposed/speculative), "
+                     "with source links and jurisdiction coordinates. Filters: "
+                     "state, class (moratorium|zoning|tax|utility_pause).")},
+    {"name": "simulate_scenario",
+     "rest_endpoint": "https://dchub.cloud/api/v1/agentic/scenario",
+     "method": "POST",
+     "description": ("Counterfactual market re-scoring under explicit deltas "
+                     "(avg_kwh_cents_pct, time_to_power_months_delta, "
+                     "queue_wait_months_delta, reserve_margin_pct_delta, "
+                     "curtailment_pct_delta). Transparent formula in every "
+                     "response. Keyless = top-3 preview; any live key = 25.")},
+    {"name": "research_task",
+     "rest_endpoint": "https://dchub.cloud/api/v1/agentic/research",
+     "method": "POST",
+     "description": ("Async cited research dossier over DC Hub's corpora "
+                     "(news/deals/facilities/market narratives). X-API-Key "
+                     "required, 5/day. Poll /api/v1/agentic/research/<task_id>.")},
+    {"name": "standing_intents",
+     "rest_endpoint": "https://dchub.cloud/api/v1/agentic/intents",
+     "method": "GET|POST|DELETE",
+     "description": ("Register standing queries with HMAC-signed webhook "
+                     "delivery on change. Kinds: new_deal_in_market, "
+                     "news_keyword, permitting_change. X-API-Key required.")},
+]
+
 
 @tools_manifest_bp.route("/api/v1/agent/tools-manifest", methods=["GET"])
 def tools_manifest():
@@ -111,6 +145,11 @@ def tools_manifest():
         "rest_available_count": rest_n,
         "mcp_only_count": len(tools) - rest_n,
         "tools": tools,
+        "rest_native": _REST_NATIVE,
+        "rest_native_note": ("Agent-callable REST endpoints not yet exposed as "
+                             "MCP tools (agentic wave 2026-07-18): permitting "
+                             "intel, scenario engine, research dossiers, "
+                             "standing intents."),
         "generated_at": datetime.datetime.utcnow().isoformat() + "Z",
     })
     resp.headers["Cache-Control"] = "public, max-age=3600"

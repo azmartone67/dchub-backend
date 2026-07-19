@@ -12,14 +12,25 @@
     "pushNotifications": false,
     "stateTransitionHistory": false
   },
-  "defaultInputModes": ["text/plain", "application/json"],
-  "defaultOutputModes": ["application/json", "text/plain"],
+  "defaultInputModes": [
+    "text/plain",
+    "application/json"
+  ],
+  "defaultOutputModes": [
+    "application/json",
+    "text/plain"
+  ],
   "skills": [
     {
       "id": "search-facilities",
       "name": "Search Data Center Facilities",
       "description": "Search 21,000+ data center facilities by location, operator, market, or country.",
-      "tags": ["data-center", "colocation", "infrastructure", "facilities"],
+      "tags": [
+        "data-center",
+        "colocation",
+        "infrastructure",
+        "facilities"
+      ],
       "examples": [
         "Find data centers in Virginia",
         "List Equinix facilities in Europe",
@@ -30,7 +41,12 @@
       "id": "market-intelligence",
       "name": "Data Center Market Intelligence",
       "description": "Get M&A deals, capacity pipeline, and market analytics. Tracks 700+ transactions totaling $51B+.",
-      "tags": ["mergers", "acquisitions", "market-data", "deals"],
+      "tags": [
+        "mergers",
+        "acquisitions",
+        "market-data",
+        "deals"
+      ],
       "examples": [
         "Show recent data center acquisitions",
         "What is the total capacity pipeline?",
@@ -41,7 +57,11 @@
       "id": "industry-news",
       "name": "Data Center Industry News",
       "description": "Real-time news aggregation from 40+ industry sources.",
-      "tags": ["news", "industry", "data-center"],
+      "tags": [
+        "news",
+        "industry",
+        "data-center"
+      ],
       "examples": [
         "Latest data center news",
         "Any recent hyperscaler announcements?"
@@ -51,10 +71,48 @@
       "id": "site-analysis",
       "name": "Site Suitability Analysis",
       "description": "Evaluate locations for data center suitability including power, fiber, water, and natural disaster risk.",
-      "tags": ["site-selection", "power", "energy", "location"],
+      "tags": [
+        "site-selection",
+        "power",
+        "energy",
+        "location"
+      ],
       "examples": [
         "Analyze Phoenix AZ for data center suitability",
         "Compare power costs in Texas vs Virginia"
+      ]
+    },
+    {
+      "id": "permitting-intel",
+      "name": "Permitting & Moratorium Intelligence",
+      "description": "Curated, human-verified data center permitting intelligence: moratoriums, zoning restrictions, and utility pauses per jurisdiction, stage-tagged (enacted/proposed/speculative) with source links and coordinates. GET /api/v1/permitting/intel.",
+      "tags": [
+        "permitting",
+        "moratorium",
+        "zoning",
+        "site-selection",
+        "risk"
+      ],
+      "examples": [
+        "Which states have data center moratoriums?",
+        "Is there permitting risk in Minnesota?",
+        "Show enacted moratoriums with sources"
+      ]
+    },
+    {
+      "id": "scenario-analysis",
+      "name": "Counterfactual Market Scenarios",
+      "description": "Re-score 316 power markets under explicit what-if deltas (power price, time-to-power, queue wait, reserve margin, curtailment) with a transparent formula. POST /api/v1/agentic/scenario.",
+      "tags": [
+        "scenario",
+        "what-if",
+        "power-markets",
+        "dcpi",
+        "site-selection"
+      ],
+      "examples": [
+        "What if gas prices rise 30% \u2014 which markets suffer most?",
+        "Re-rank markets assuming 12 extra months time-to-power in ERCOT"
       ]
     }
   ],
