@@ -229,7 +229,8 @@ MCP_LANDING_HTML = """<!DOCTYPE html>
     <a href="https://dchub.cloud/integrations/meta">Meta AI</a> ·
     <a href="https://github.com/azmartone67/dchub-mcp-server/tree/main/integrations/copilot">GitHub Copilot</a> ·
     <a href="https://github.com/azmartone67/dchub-mcp-server/tree/main/integrations/langchain">LangChain</a> ·
-    <a href="https://github.com/azmartone67/dchub-mcp-server/tree/main/integrations/llamaindex">LlamaIndex</a>
+    <a href="https://github.com/azmartone67/dchub-mcp-server/tree/main/integrations/llamaindex">LlamaIndex</a> ·
+    <a href="https://huggingface.co/spaces/dchubcloud/dchub">Hugging Face (live MCP Space)</a>
   </p>
   <p><b>SDKs:</b> <code>pip install dchub</code> &nbsp;·&nbsp; <code>npm i dchub</code></p>
   <h3 style="margin-top:18px;font-size:1rem">Paste this into any AI chat</h3>
