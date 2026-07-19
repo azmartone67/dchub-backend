@@ -95,6 +95,14 @@ _TARGETS = [
      "https://glama.ai/mcp/servers/dchub", "GET", "registry"),
     ("pulsemcp",
      "https://pulsemcp.com/servers/dchub", "GET", "registry"),
+    # 2026-07-18 (kimi-interconnect): ModelScope MCP marketplace
+    # (modelscope.cn/mcp) — the registry the Kimi/Qwen/GLM agent ecosystem
+    # actually browses. DC Hub is NOT listed there yet (submission needs a
+    # ModelScope account — manual owner step); the search URL 200s for our
+    # broadcast UA (probed 2026-07-18), so this ping keeps the target on the
+    # health panel and the listing gap visible until the submission lands.
+    ("modelscope",
+     "https://www.modelscope.cn/mcp?search=dchub", "GET", "registry"),
 
     # Our own discovery surfaces — GETting them warms CF cache + bumps
     # the audit log on our side so we can see the agents are reachable.

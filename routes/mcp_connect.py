@@ -276,6 +276,40 @@ Header (optional, unlocks 50/day):  X-API-Key: {{TRIAL_KEY}}""",
             "Score a 200MW Northern Virginia parcel for DCPI BUILD readiness.",
         ],
     },
+    # 2026-07-18 (kimi-interconnect): Moonshot's Kimi Code CLI speaks MCP
+    # natively — config verified against moonshotai.github.io/kimi-cli
+    # (customization/mcp + reference/kimi-mcp): store is ~/.kimi/mcp.json in
+    # the standard mcpServers shape; `kimi mcp add --transport http` is the
+    # one-liner (header format "KEY: VALUE", space after colon); /mcp-config
+    # and /mcp manage it from inside the TUI.
+    "kimi": {
+        "name":           "Kimi",
+        "tagline":        "Moonshot's Kimi Code CLI — add DC Hub MCP in one line",
+        "install_path":   "~/.kimi/mcp.json",
+        "install_path_win": "%USERPROFILE%\\.kimi\\mcp.json",
+        "snippet_lang":   "text",
+        "snippet":        """# One line, from your shell:
+kimi mcp add --transport http dchub https://dchub.cloud/mcp --header "X-API-Key: {{TRIAL_KEY}}"
+
+# Or edit ~/.kimi/mcp.json (standard mcpServers map):
+{
+  "mcpServers": {
+    "dchub": {
+      "url": "https://dchub.cloud/mcp",
+      "headers": { "X-API-Key": "{{TRIAL_KEY}}" }
+    }
+  }
+}
+
+# Inside the Kimi TUI: /mcp-config adds it interactively, /mcp shows status.""",
+        "deep_link":      "",
+        "deep_link_label": "",
+        "examples": [
+            "get_grid_scoreboard — which grid has the most renewable headroom right now?",
+            "Rank the top 10 markets by DCPI for a 100MW build with short time-to-power.",
+            "Compare interconnection-queue depth for ERCOT vs PJM this quarter.",
+        ],
+    },
 }
 
 
@@ -738,6 +772,11 @@ def connect_opencode():
 @mcp_connect_bp.route("/connect/vscode", methods=["GET"])
 def connect_vscode():
     return _serve("vscode")
+
+
+@mcp_connect_bp.route("/connect/kimi", methods=["GET"])
+def connect_kimi():
+    return _serve("kimi")
 
 
 # Best-effort "this view's key" hook the JS calls after a successful mint.
