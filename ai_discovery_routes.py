@@ -752,6 +752,13 @@ get_facility_risk_delta (temporal market-risk change from daily DCPI snapshots) 
 - score_facility -> facility composite score + component breakdown
 - get_news -> cited news items {title, source, date, relevance}
 
+## Agentic Endpoints (agent-native workflows, added 2026-07-18)
+- [Permitting & Moratorium Intel](https://dchub.cloud/api/v1/permitting/intel): Curated, human-verified data center permitting intelligence — moratoriums, zoning, utility pauses per jurisdiction, stage-tagged (enacted/proposed/speculative) with source links + coordinates. Filters: ?state=NY&class=moratorium. Also a live layer on https://dchub.cloud/land-power-map
+- Scenario Engine (POST https://dchub.cloud/api/v1/agentic/scenario): Counterfactual re-scoring of 316 power markets under explicit deltas (avg_kwh_cents_pct, time_to_power_months_delta, queue_wait_months_delta, reserve_margin_pct_delta, curtailment_pct_delta). Transparent formula in every response. Keyless = top-3 preview.
+- Research Dossiers (POST https://dchub.cloud/api/v1/agentic/research): Async cited analyst dossiers over DC Hub's corpora. X-API-Key required (free key via claim_free_key), 5/day. Poll /api/v1/agentic/research/{task_id}.
+- Standing Intents (POST https://dchub.cloud/api/v1/agentic/intents): Register standing queries with HMAC-signed webhook pushes on change. Kinds: new_deal_in_market, news_keyword, permitting_change.
+- [REST/MCP parity map](https://dchub.cloud/api/v1/agent/tools-manifest): every MCP tool's REST equivalent + the rest_native endpoints above
+
 ## Pro API (Key Required — $49/mo)
 - [Facility Detail](https://dchub.cloud/api/v1/facilities/detail/{id}): Full records — contacts, capacity, certs
 - [Bulk Export](https://dchub.cloud/api/v1/facilities/export?format=csv): CSV/JSON export up to 5,000 records
@@ -886,6 +893,43 @@ GET /api/ai/query?type=stats
 
 IMPORTANT: All of the above endpoints work WITHOUT any API key or headers.
 Just make a GET request. CORS is enabled for all origins.
+
+================================================================================
+## AGENTIC ENDPOINTS (agent-native workflows, added 2026-07-18)
+================================================================================
+
+GET /api/v1/permitting/intel?state={ST}&class={class}
+  Returns: Curated, human-verified data center permitting intelligence —
+           moratoriums, zoning restrictions, utility pauses per jurisdiction.
+           Stage-tagged (enacted / proposed / speculative), each record with a
+           source article link and jurisdiction coordinates.
+  Parameters: state (e.g. NY), class (moratorium|zoning|tax|utility_pause)
+  Example: https://dchub.cloud/api/v1/permitting/intel?class=moratorium
+  Use when: "Which jurisdictions have data center moratoriums?" or scoring
+            permitting risk for a site. Also a layer on /land-power-map.
+
+POST /api/v1/agentic/scenario
+  Returns: Counterfactual re-scoring of 316 power markets under YOUR deltas,
+           baseline vs scenario composite per market, formula included.
+  Body: {"avg_kwh_cents_pct": 30, "time_to_power_months_delta": 12,
+         "queue_wait_months_delta": 6, "reserve_margin_pct_delta": -5,
+         "curtailment_pct_delta": 2, "market": "abilene", "top_n": 10}
+  Use when: "What if gas prices rise 30% — which markets suffer most?"
+  Note: keyless callers get a top-3 preview; any live key unlocks 25.
+
+POST /api/v1/agentic/research   (X-API-Key required, 5/day)
+  Returns: {task_id, poll} — an async cited analyst dossier over DC Hub's
+           corpora (news, deals, facilities, market narratives).
+  Body: {"question": "..."}   Poll: GET /api/v1/agentic/research/{task_id}
+  Use when: You need a decision-ready, citation-backed brief, not a lookup.
+
+POST /api/v1/agentic/intents    (X-API-Key required)
+  Returns: {intent_id, secret} — registers a standing query; DC Hub POSTs
+           HMAC-signed webhooks (X-DCHub-Signature) to your HTTPS URL when
+           matches grow. Kinds: new_deal_in_market, news_keyword,
+           permitting_change. GET lists yours; DELETE /{intent_id} removes.
+  Use when: You want push, not poll — e.g. "notify my orchestrator on any
+            new deal in Columbus".
 
 ================================================================================
 ## AUTHENTICATED ENDPOINTS (API Key Required)
