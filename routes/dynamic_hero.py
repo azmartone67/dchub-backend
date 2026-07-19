@@ -216,6 +216,7 @@ def infra_ticker():
     """
     out = {
         "facilities":           None,
+        "global_power":         None,
         "transmission_lines":   None,
         "substations":          None,
         "gas_pipelines":        None,
@@ -235,6 +236,7 @@ def infra_ticker():
     # table doesn't burn the others.
     _probes = [
         ("facilities",         "SELECT COUNT(*) FROM discovered_facilities"),
+        ("global_power",       "SELECT COUNT(*) FROM gem_power"),
         ("transmission_lines", "SELECT COUNT(*) FROM transmission_lines"),
         ("substations",        "SELECT COUNT(*) FROM substations"),
         ("gas_pipelines",      "SELECT COUNT(*) FROM gas_pipelines"),
