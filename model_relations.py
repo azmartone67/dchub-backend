@@ -334,6 +334,20 @@ def _run_platform(platform, cfg):
         row.pop("_final_demand", None)
         row.update(status="no_verdict", notes="model would not follow the JSON protocol")
         return row
+    # r-budget-verdict-demand (2026-07-19): explorative models (observed:
+    # grok-4.20 with fresh credits) happily spend the whole call budget on
+    # API calls and never stop to conclude. Give ONE extra protocol turn —
+    # no tool execution, pure verdict demand — before writing off the run.
+    messages.append({"role": "user", "content":
+                     'Your call budget is exhausted. Based on everything above, output '
+                     'ONLY the verdict JSON now. No further calls, no prose, no markdown '
+                     'fences. Your entire reply must start with {"verdict": and be valid JSON.'})
+    code, txt = _chat(cfg, llm_key, model, messages)
+    if code == 200:
+        obj, _content = _parse_model_json(txt)
+        if obj and "verdict" in obj:
+            row.update(status="ok", verdict=obj["verdict"])
+            return row
     row.update(status="no_verdict", notes="call budget exhausted without a verdict")
     return row
 
