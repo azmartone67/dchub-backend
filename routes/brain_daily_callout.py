@@ -434,17 +434,31 @@ def render_html(d: dict) -> str:
 
 
 # ── per-day claim (idempotent under heartbeat re-fires) ──────────────
+# DIRECT psycopg2 to the primary, NOT db_utils: live-verified 2026-07-19
+# that db_utils' PGCursorWrapper (a) is not a context manager and
+# (b) SILENTLY DROPS DDL (`if _is_ddl(sql): return self`), so the
+# CREATE TABLE never ran and the dedupe fail-opened. Mirrors
+# cadence_sentinel's separate-write-connection doctrine.
+
+def _write_conn():
+    import psycopg2
+    url = (os.environ.get("DATABASE_URL")
+           or os.environ.get("NEON_DATABASE_URL") or "")
+    if not url:
+        return None
+    c = psycopg2.connect(url, connect_timeout=8)
+    c.autocommit = True
+    return c
+
 
 def _claim_today(force: bool = False):
     """INSERT today's claim row; False = already sent today. Returns
     (claimed, err). force skips the dedupe but still records the send."""
     try:
-        from db_utils import get_db
-        conn = get_db()
+        conn = _write_conn()
+        if conn is None:
+            return True, "no_database_url"
         try:
-            # NOTE: db_utils' PGCursorWrapper is NOT a context manager —
-            # `with conn.cursor()` throws (live-verified on first prod
-            # send 2026-07-19, claim_note in the response). Plain cursor.
             cur = conn.cursor()
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS brain_daily_callout_log (
@@ -459,7 +473,6 @@ def _claim_today(force: bool = False):
                 ON CONFLICT (day) DO NOTHING
             """)
             claimed = cur.rowcount > 0
-            conn.commit()
             return (True if force else claimed), None
         finally:
             conn.close()
@@ -470,15 +483,15 @@ def _claim_today(force: bool = False):
 
 def _stamp_sent(to_email: str, subject: str) -> None:
     try:
-        from db_utils import get_db
-        conn = get_db()
+        conn = _write_conn()
+        if conn is None:
+            return
         try:
             conn.cursor().execute("""
                 UPDATE brain_daily_callout_log
                    SET sent_at = now(), to_email = %s, subject = %s
                  WHERE day = CURRENT_DATE
             """, (to_email, subject))
-            conn.commit()
         finally:
             conn.close()
     except Exception:
@@ -488,13 +501,13 @@ def _stamp_sent(to_email: str, subject: str) -> None:
 def _release_claim() -> None:
     """Send failed → drop today's claim so a later heartbeat retries."""
     try:
-        from db_utils import get_db
-        conn = get_db()
+        conn = _write_conn()
+        if conn is None:
+            return
         try:
             conn.cursor().execute(
                 "DELETE FROM brain_daily_callout_log "
                 "WHERE day = CURRENT_DATE AND to_email IS NULL")
-            conn.commit()
         finally:
             conn.close()
     except Exception:

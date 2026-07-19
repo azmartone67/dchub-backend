@@ -205,11 +205,12 @@ def test_send_failure_releases_claim(monkeypatch):
     assert released == [1]
 
 
-# ── per-day claim vs db_utils' wrapper (live regression 2026-07-19) ──
-# db_utils.PGCursorWrapper is NOT a context manager; the first prod send
-# surfaced `'PGCursorWrapper' object does not support the context manager
-# protocol` and the dedupe silently fail-opened. Pin the claim path
-# against a cursor with NO __enter__/__exit__.
+# ── per-day claim path (live regressions 2026-07-19) ─────────────────
+# Two prod bites in one morning: db_utils.PGCursorWrapper is NOT a
+# context manager, AND its execute() SILENTLY DROPS DDL — the claim
+# table never got created and the dedupe fail-opened (3 emails). The
+# claim path now uses a direct psycopg2 write connection (_write_conn);
+# these tests pin the SQL it issues and the duplicate-day skip.
 
 class _PlainCursor:
     def __init__(self, log):
@@ -227,26 +228,17 @@ class _PlainConn:
     def cursor(self, *a, **k):
         return _PlainCursor(self._log)
 
-    def commit(self):
-        self._log.append("COMMIT")
-
     def close(self):
         pass
 
 
-def test_claim_today_works_without_cursor_context_manager(monkeypatch):
-    import sys
-    import types
+def test_claim_today_creates_table_and_inserts(monkeypatch):
     log = []
-    fake = types.ModuleType("db_utils")
-    fake.get_db = lambda: _PlainConn(log)
-    monkeypatch.setitem(sys.modules, "db_utils", fake)
+    monkeypatch.setattr(dc, "_write_conn", lambda: _PlainConn(log))
     claimed, err = dc._claim_today()
     assert claimed is True and err is None
     assert any(s.startswith("CREATE TABLE") for s in log)
     assert any(s.startswith("INSERT INTO brain_daily_callout_log") for s in log)
-    assert "COMMIT" in log
-    # stamp + release must also survive the plain-cursor wrapper
     dc._stamp_sent("op@example.com", "subj")
     dc._release_claim()
     assert any(s.startswith("UPDATE brain_daily_callout_log") for s in log)
@@ -254,9 +246,6 @@ def test_claim_today_works_without_cursor_context_manager(monkeypatch):
 
 
 def test_claim_today_duplicate_day_skips(monkeypatch):
-    import sys
-    import types
-
     class _DupCursor(_PlainCursor):
         def execute(self, sql, params=None):
             super().execute(sql, params)
@@ -267,14 +256,19 @@ def test_claim_today_duplicate_day_skips(monkeypatch):
         def cursor(self, *a, **k):
             return _DupCursor(self._log)
 
-    fake = types.ModuleType("db_utils")
-    fake.get_db = lambda: _DupConn([])
-    monkeypatch.setitem(sys.modules, "db_utils", fake)
+    monkeypatch.setattr(dc, "_write_conn", lambda: _DupConn([]))
     claimed, err = dc._claim_today()
     assert claimed is False
     # force=1 overrides the dedupe but still records
     claimed_forced, _ = dc._claim_today(force=True)
     assert claimed_forced is True
+
+
+def test_claim_today_no_db_fails_open(monkeypatch):
+    """A lost dedupe must beat a lost callout."""
+    monkeypatch.setattr(dc, "_write_conn", lambda: None)
+    claimed, err = dc._claim_today()
+    assert claimed is True and err == "no_database_url"
 
 
 # ── rendering: every line names its actuator ─────────────────────────
