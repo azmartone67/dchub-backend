@@ -19,10 +19,13 @@ dashboard after filing.
 "3,000+"→"1,400+" honest floor, registry v2.3.3→v2.4.5 — re-pull from
 ai_surface_canon.PINNED before any resubmission (the white-glove drift
 detector flags "3,000+ M&A" and "58 tools"-era strings as stale markers).
-**Submit to**: Claude.ai → admin settings → submission portal (Team/
-Enterprise org required — an individual plan cannot file).
-**Best alternate path**: mcp-review@anthropic.com (their published
-escalation address), not cold exec DMs.
+**Submit to**: mcp-review@anthropic.com (see email template below) —
+the portal path is blocked for now: owner is on a Max personal plan and
+Team/Enterprise usage caps don't fit the workload, so there is no org
+with admin settings to file from. mcpb#296 was closed 2026-07-19
+(wrong tracker). Plan B: minimal 5-seat Team org (~$150/mo) purely as
+the submission vehicle.
+**Best alternate path**: n/a — email first; cold exec DMs retired.
 
 ---
 
@@ -121,20 +124,49 @@ Use cases Claude users will ask about:
 
 ---
 
-## Cold-email template (Plan B, if the form goes nowhere)
+## Email to mcp-review@ (PRIMARY channel while we have no Team/Enterprise org)
 
-**To**: partnerships@anthropic.com (or via Anthropic sales)
-**Subject**: MCP Connector Directory — DC Hub (cloud.dchub/mcp-server) — 1M+ agent requests served
+2026-07-19: owner is on a Max personal plan (Team/Enterprise usage caps
+don't fit our Claude Code load), so the admin-settings submission portal
+is unreachable. mcp-review@anthropic.com is Anthropic's published
+escalation address for directory submissions — use it as the primary
+channel and ask what the path is for a developer without a Team org.
+Numbers below are canon (ai_surface_canon.PINNED, 2026-07-19). Plan B if
+this stalls: a minimal 5-seat Team org (~$150/mo) purely as the
+submission vehicle, keeping the Max plan for daily work.
 
-Hi Anthropic team,
+**To**: mcp-review@anthropic.com
+**Subject**: Connector Directory submission — DC Hub (cloud.dchub/mcp-server) — no Team org, what's the path?
 
-We run DC Hub — the live, agent-native data layer for data-center & energy infrastructure at `https://dchub.cloud/mcp`. 40+ tools, 21K+ facilities, 300+ power markets scored daily (DCPI), 3,000+ M&A deals tracked, live grid telemetry, CC-BY-4.0.
+Hi MCP review team,
 
-Already listed on registry.modelcontextprotocol.io as `cloud.dchub/mcp-server` (v2.3.3, DNS-auth). Smithery, mcp.so, Glama, PulseMCP all carry us. We've served 1M+ AI-agent requests; Claude and Cursor are active MCP clients.
+We run DC Hub — the live, agent-native data layer for data-center &
+energy infrastructure at `https://dchub.cloud/mcp` (streamable-http).
+74 tools, 21,000+ facilities across 170+ countries, 300+ power markets
+scored daily (DCPI), 1,400+ tracked M&A deals, live grid telemetry
+across US ISOs + international grids. Everything CC-BY-4.0 with stable
+URLs, so Claude can cite it inline.
 
-Would love to be listed in Claude.ai's official Connector Directory. Submission packet (form fields, descriptions, screenshots, compliance details) available on request.
+We'd like to submit to the Connectors Directory, but the submission
+portal lives in Team/Enterprise admin settings and we're a solo-founder
+shop on a personal plan. What's the recommended path in that situation?
+Happy to file through whatever channel you point us at.
 
-15-min demo any time. Or just hit the server — we're up now, free tier, no signup.
+Review-readiness, up front:
+- Public privacy policy: https://dchub.cloud/privacy (and /security)
+- Published + DNS-authed on the official registry as
+  `cloud.dchub/mcp-server`; also listed on Smithery, mcp.so, Glama,
+  PulseMCP
+- Docs for reviewers: https://dchub.cloud/AGENTS.md and
+  https://dchub.cloud/api/v1/ai-agents.json
+- Test access: free tier needs no signup (10 calls/day) and the
+  `claim_free_key` tool mints a key in one call — a reviewer can
+  exercise every tool from Claude.ai in minutes; we'll provision a
+  reviewer key with full limits on request
+- 1M+ AI-agent requests served; Claude and Cursor are active MCP
+  clients today
+
+15-min demo any time.
 
 — Jonathan Martone, Founder, DC Hub
 jm@dchub.cloud · linkedin.com/in/jonathanmartone
