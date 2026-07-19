@@ -1,0 +1,353 @@
+"""media_pending_digest.py — surface human-gated media drafts daily (2026-07-18).
+
+WHY THIS EXISTS
+===============
+The press pipeline is draft-first by design: brain_press_loop (ship-wins),
+ai-citations/draft-press, and partnership_press_template all land rows in
+press_releases with published=FALSE, and the pitch lanes park rows in
+press_pitch_drafts / media_pitch_drafts with status='pending'. That human
+gate is deliberate — but NOTHING surfaced the pending set, so drafts rotted
+invisibly (observed 2026-07-18: 5 unpublished releases back to week 23,
+8 pending press pitches, 9 pending media pitches, 1 press_releases_queue row
+stuck since 2026-06-04).
+
+This module closes the surfacing gap without weakening any gate:
+
+  GET  /api/v1/media/pending-drafts            admin JSON inventory
+  POST /api/v1/media/pending-drafts/digest     ?send=true emails the digest
+                                               (default = dry-run preview)
+  GET  /api/v1/media/pending-drafts/approve    ?id=N&t=<hmac> one-click
+                                               publish of ONE press_releases
+                                               draft — fact-check-guard
+                                               gated, fail-closed
+
+HARD RULES
+==========
+  * The approve flip runs routes.media_fact_check_guard.verify_media_text()
+    first and REFUSES (409, with the unverified claims listed) when the text
+    cannot be corroborated. The guard is never bypassed; there is no force
+    parameter on purpose.
+  * The digest emails only the operator inbox(es) from DCHUB_BRIEFING_EMAIL /
+    BRAIN_DIGEST_EMAIL — never subscribers.
+  * Digest sends nothing when the pending set is empty (no daily noise).
+"""
+from __future__ import annotations
+
+import os
+import hmac
+import html
+import hashlib
+import datetime
+import logging
+
+from flask import Blueprint, jsonify, request
+
+logger = logging.getLogger(__name__)
+media_pending_digest_bp = Blueprint("media_pending_digest", __name__)
+
+SITE = "https://dchub.cloud"
+
+
+def _conn():
+    import psycopg2
+    db = os.environ.get("DATABASE_URL") or os.environ.get("NEON_DATABASE_URL")
+    if not db:
+        return None
+    try:
+        return psycopg2.connect(db, sslmode="require", connect_timeout=8)
+    except Exception:
+        return None
+
+
+def _admin_ok() -> bool:
+    expected = (os.environ.get("DCHUB_ADMIN_KEY") or
+                os.environ.get("DCHUB_INTERNAL_KEY") or "").strip()
+    provided = (request.headers.get("X-Admin-Key")
+                or request.args.get("admin_key")
+                or (request.headers.get("Authorization", "")
+                    .replace("Bearer ", "").strip()))
+    return bool(expected) and provided == expected
+
+
+# ── one-click approve token (unforgeable, no DB column needed) ───────────
+def _approve_secret() -> bytes:
+    return (os.environ.get("DCHUB_ADMIN_KEY") or os.environ.get("DCHUB_INTERNAL_KEY")
+            or os.environ.get("DCHUB_SESSION_SECRET") or "dchub-pending-v1").encode()
+
+
+def _approve_token(row_id: int) -> str:
+    return hmac.new(_approve_secret(), f"approve-press:{row_id}".encode(),
+                    hashlib.sha256).hexdigest()[:20]
+
+
+def _approve_url(row_id: int) -> str:
+    return (f"{SITE}/api/v1/media/pending-drafts/approve"
+            f"?id={row_id}&t={_approve_token(row_id)}")
+
+
+# ── inventory ────────────────────────────────────────────────────────────
+def _collect_pending(cur) -> dict:
+    """Every human-gated draft lane, one dict. Each query fails soft so a
+    missing table can never take down the whole digest."""
+    out = {}
+
+    def _q(key, sql):
+        try:
+            cur.execute(sql)
+            cols = [d[0] for d in cur.description]
+            out[key] = [dict(zip(cols, r)) for r in cur.fetchall()]
+        except Exception as e:
+            logger.warning("[pending_digest] %s query failed: %s", key, str(e)[:120])
+            out[key] = []
+
+    _q("press_releases_unpublished", """
+        SELECT id, slug, title, category, source, created_at
+        FROM press_releases
+        WHERE published = FALSE
+        ORDER BY created_at DESC LIMIT 40
+    """)
+    _q("press_releases_queue_drafts", """
+        SELECT id, slug, title, trigger_type, created_at
+        FROM press_releases_queue
+        WHERE status = 'draft'
+        ORDER BY created_at DESC LIMIT 40
+    """)
+    _q("press_pitch_drafts_pending", """
+        SELECT id, subject, angle_key, created_at
+        FROM press_pitch_drafts
+        WHERE status = 'pending'
+        ORDER BY created_at DESC LIMIT 40
+    """)
+    _q("media_pitch_drafts_pending", """
+        SELECT id, subject, publication, created_at
+        FROM media_pitch_drafts
+        WHERE status = 'pending'
+        ORDER BY created_at DESC LIMIT 40
+    """)
+    _q("media_story_queue_pending", """
+        SELECT id, market_name, shift_kind, created_at
+        FROM media_story_queue
+        WHERE status = 'pending'
+        ORDER BY created_at DESC LIMIT 40
+    """)
+    out["total"] = sum(len(v) for v in out.values() if isinstance(v, list))
+    return out
+
+
+def _age_days(ts) -> str:
+    try:
+        now = datetime.datetime.now(ts.tzinfo) if getattr(ts, "tzinfo", None) \
+            else datetime.datetime.utcnow()
+        return f"{max(0, (now - ts).days)}d"
+    except Exception:
+        return "?"
+
+
+def _render_email_html(pending: dict) -> str:
+    """Email-client-safe HTML (inline styles + tables only)."""
+    def esc(s):
+        return html.escape(str(s or ""))
+
+    sections = []
+
+    rows = pending.get("press_releases_unpublished") or []
+    if rows:
+        trs = "".join(
+            f'<tr><td style="padding:6px 10px;border-bottom:1px solid #e2e8f0">'
+            f'<a href="{SITE}/news/{esc(r["slug"])}" style="color:#1d4ed8">{esc(r["title"])[:110]}</a>'
+            f'<br><span style="color:#64748b;font-size:12px">{esc(r["category"])} · {_age_days(r["created_at"])} old</span></td>'
+            f'<td style="padding:6px 10px;border-bottom:1px solid #e2e8f0;white-space:nowrap">'
+            f'<a href="{_approve_url(r["id"])}" style="color:#fff;background:#16a34a;padding:5px 12px;'
+            f'border-radius:5px;text-decoration:none;font-size:13px">Fact-check &amp; publish</a></td></tr>'
+            for r in rows)
+        sections.append(("Unpublished press releases (approve = fact-check gate, then live)", trs))
+
+    lane_labels = [
+        ("press_releases_queue_drafts", "Press-queue drafts (data-growth lane)",
+         lambda r: f'{esc(r["title"])[:110]}<br><span style="color:#64748b;font-size:12px">{esc(r.get("trigger_type"))} · {_age_days(r["created_at"])} old</span>'),
+        ("press_pitch_drafts_pending", "Journalist pitch drafts pending",
+         lambda r: f'{esc(r["subject"])[:110]}<br><span style="color:#64748b;font-size:12px">{esc(r.get("angle_key"))} · {_age_days(r["created_at"])} old</span>'),
+        ("media_pitch_drafts_pending", "Media outreach drafts pending",
+         lambda r: f'{esc(r["subject"])[:110]}<br><span style="color:#64748b;font-size:12px">{esc(r.get("publication"))} · {_age_days(r["created_at"])} old</span>'),
+        ("media_story_queue_pending", "Story-queue briefs pending review",
+         lambda r: f'{esc(r.get("market_name"))} — {esc(r.get("shift_kind"))}<br><span style="color:#64748b;font-size:12px">{_age_days(r["created_at"])} old</span>'),
+    ]
+    for key, label, fmt in lane_labels:
+        rows = pending.get(key) or []
+        if rows:
+            trs = "".join(
+                f'<tr><td style="padding:6px 10px;border-bottom:1px solid #e2e8f0">{fmt(r)}</td>'
+                f'<td style="padding:6px 10px;border-bottom:1px solid #e2e8f0;color:#64748b;font-size:12px">review in admin</td></tr>'
+                for r in rows)
+            sections.append((label, trs))
+
+    body_sections = "".join(
+        f'<h3 style="margin:22px 0 8px;font-size:15px;color:#0f172a">{html.escape(label)}</h3>'
+        f'<table cellpadding="0" cellspacing="0" width="100%" '
+        f'style="border-collapse:collapse;background:#fff;border:1px solid #e2e8f0;border-radius:6px">{trs}</table>'
+        for label, trs in sections)
+
+    return f"""<div style="font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
+background:#f1f5f9;padding:24px">
+<div style="max-width:640px;margin:0 auto">
+<div style="background:#0f172a;color:#fff;padding:16px 22px;border-radius:8px 8px 0 0">
+<strong>DC Hub Media — pending drafts digest</strong>
+<div style="color:#94a3b8;font-size:13px">{pending.get("total", 0)} item(s) awaiting a human decision</div>
+</div>
+<div style="background:#f8fafc;padding:6px 22px 22px;border:1px solid #e2e8f0;border-top:0;border-radius:0 0 8px 8px">
+{body_sections}
+<p style="color:#64748b;font-size:12px;margin-top:20px">
+"Fact-check &amp; publish" runs the media fact-check guard first and refuses
+(with the uncorroborated claims listed) if the text can't be verified — the
+honesty gate is never bypassed. Sent daily only when the pending set is
+non-empty.</p>
+</div></div></div>"""
+
+
+# ── endpoints ────────────────────────────────────────────────────────────
+@media_pending_digest_bp.route("/api/v1/media/pending-drafts", methods=["GET"])
+def pending_drafts():
+    if not _admin_ok():
+        return jsonify(error="unauthorized"), 401
+    c = _conn()
+    if c is None:
+        return jsonify(error="no_database"), 503
+    try:
+        with c.cursor() as cur:
+            pending = _collect_pending(cur)
+        for r in pending.get("press_releases_unpublished") or []:
+            r["approve_url"] = _approve_url(r["id"])
+            r["view_url"] = f"{SITE}/news/{r['slug']}"
+        return jsonify(ok=True, pending=pending), 200
+    finally:
+        try: c.close()
+        except Exception: pass
+
+
+@media_pending_digest_bp.route("/api/v1/media/pending-drafts/digest",
+                               methods=["POST", "GET"])
+def pending_drafts_digest():
+    if not _admin_ok():
+        return jsonify(error="unauthorized"), 401
+    send = request.args.get("send", "").lower() in ("1", "true", "yes")
+
+    c = _conn()
+    if c is None:
+        return jsonify(error="no_database"), 503
+    try:
+        with c.cursor() as cur:
+            pending = _collect_pending(cur)
+    finally:
+        try: c.close()
+        except Exception: pass
+
+    recipients = [e.strip() for e in
+                  (os.environ.get("DCHUB_BRIEFING_EMAIL")
+                   or os.environ.get("BRAIN_DIGEST_EMAIL")
+                   or "jonathan@dchub.cloud").split(",") if e.strip()]
+
+    if pending.get("total", 0) == 0:
+        return jsonify(ok=True, sent=0, total_pending=0,
+                       note="pending set empty — nothing to send"), 200
+
+    html_body = _render_email_html(pending)
+    if not send:
+        return jsonify(ok=True, dry_run=True, total_pending=pending["total"],
+                       recipients=recipients, html_bytes=len(html_body),
+                       pending={k: len(v) for k, v in pending.items()
+                                if isinstance(v, list)}), 200
+
+    sent = 0
+    failed = 0
+    try:
+        import requests as _rq
+        subject = f"DC Hub Media: {pending['total']} pending draft(s) awaiting review"
+        for em in recipients:
+            try:
+                r = _rq.post(
+                    "https://api.resend.com/emails",
+                    json={"from": os.environ.get("DCHUB_FROM_EMAIL",
+                                                 "DC Hub <jonathan@dchub.cloud>"),
+                          "to": [em], "subject": subject, "html": html_body},
+                    headers={"Authorization":
+                                 f"Bearer {os.environ.get('RESEND_API_KEY', '').strip()}",
+                             "Content-Type": "application/json"},
+                    timeout=15)
+                if 200 <= r.status_code < 300:
+                    sent += 1
+                else:
+                    failed += 1
+            except Exception:
+                failed += 1
+    except Exception as e:
+        return jsonify(ok=False, error=str(e)[:160], sent=sent, failed=failed), 500
+    return jsonify(ok=True, sent=sent, failed=failed,
+                   total_pending=pending["total"]), 200
+
+
+@media_pending_digest_bp.route("/api/v1/media/pending-drafts/approve",
+                               methods=["GET", "POST"])
+def approve_pending_draft():
+    """One-click publish of a single unpublished press_releases row.
+
+    Auth = HMAC token (from the digest email) OR the admin key. The
+    fact-check guard runs first and REFUSES uncorroborated text — there is
+    deliberately no way to skip it from this endpoint."""
+    try:
+        row_id = int(request.args.get("id", ""))
+    except Exception:
+        return jsonify(error="bad_id"), 400
+    token = (request.args.get("t") or "").strip()
+    if not (_admin_ok() or (token and hmac.compare_digest(token, _approve_token(row_id)))):
+        return jsonify(error="unauthorized"), 401
+
+    c = _conn()
+    if c is None:
+        return jsonify(error="no_database"), 503
+    try:
+        c.autocommit = True
+        with c.cursor() as cur:
+            cur.execute("""SELECT slug, title, body, published
+                           FROM press_releases WHERE id = %s""", (row_id,))
+            row = cur.fetchone()
+            if not row:
+                return jsonify(error="not_found", id=row_id), 404
+            slug, title, body, published = row
+            if published:
+                return jsonify(ok=True, already_published=True, slug=slug,
+                               url=f"{SITE}/news/{slug}"), 200
+
+            # HONESTY GATE — corroborate before anything goes live. Guard
+            # unavailable = fail closed (stay a draft), never publish blind.
+            try:
+                from routes.media_fact_check_guard import verify_media_text
+                report = verify_media_text(f"{title}\n{body or ''}") or {}
+            except Exception as e:
+                return jsonify(ok=False, error="fact_check_guard_unavailable",
+                               detail=str(e)[:120],
+                               note="fail-closed: draft NOT published"), 503
+            if not report.get("ok"):
+                return jsonify(ok=False, blocked_by="fact_check_guard",
+                               unverified=report.get("unverified", [])[:10],
+                               checked=report.get("checked"),
+                               note=("Uncorroborated claims — fix the draft "
+                                     "body, then retry. The guard cannot be "
+                                     "bypassed from this endpoint.")), 409
+
+            cur.execute("""
+                UPDATE press_releases
+                SET published = TRUE,
+                    published_at = NOW(),
+                    published_date = COALESCE(published_date, to_char(NOW(), 'YYYY-MM-DD')),
+                    date = COALESCE(date, to_char(NOW(), 'YYYY-MM-DD'))
+                WHERE id = %s AND published = FALSE
+                RETURNING slug
+            """, (row_id,))
+            updated = cur.fetchone()
+        return jsonify(ok=True, published=bool(updated), slug=slug,
+                       url=f"{SITE}/news/{slug}",
+                       fact_check={"checked": report.get("checked"),
+                                   "ok": True}), 200
+    finally:
+        try: c.close()
+        except Exception: pass

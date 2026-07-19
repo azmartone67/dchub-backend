@@ -305,14 +305,22 @@ def press_loop_endpoint():
 <p><strong>Commit:</strong> <code>{w['commit']}</code></p>
 </article>"""
                 try:
+                    # press-fix (2026-07-18): the live press_releases table has
+                    # no `status` column (schema drift — see marketing_engine
+                    # publish-now). Writing it made every INSERT here raise
+                    # UndefinedColumn since this shipped: errors[] filled up,
+                    # ok=True went out, and no ship-win was ever drafted. Rows
+                    # land as unpublished drafts (published=FALSE) — the
+                    # pending-drafts digest surfaces them for approval.
                     cur.execute("""
                         INSERT INTO press_releases
-                          (title, slug, body, category, published, status,
-                           published_at, created_at, meta_description)
-                        VALUES (%s, %s, %s, 'product-launch', FALSE, %s, NULL, %s, %s)
+                          (title, slug, body, category, source, date,
+                           published, published_at, created_at, meta_description)
+                        VALUES (%s, %s, %s, 'product-launch', 'DC Hub Media', %s,
+                                FALSE, NULL, %s, %s)
                         ON CONFLICT (slug) DO NOTHING
                         RETURNING id
-                    """, (title, slug, body, status_to_set, now,
+                    """, (title, slug, body, now[:10], now,
                           w["positioning"][:200]))
                     rid = cur.fetchone()
                     if rid:

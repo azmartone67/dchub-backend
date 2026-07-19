@@ -587,6 +587,20 @@ DISABLED_JOBS = {
         'minute': 30,
         'timeout': 30,
     },
+    # press-fix (2026-07-18): pending-drafts digest. The press pipeline is
+    # draft-first (ship-wins, citations, partnership all land published=FALSE)
+    # but nothing surfaced the pending set — drafts rotted invisibly for
+    # weeks. Daily 15:10 UTC (after the 14:30 citation drafts land, so
+    # same-day drafts appear in the same evening's email). Emails the
+    # operator inbox only; sends nothing when the pending set is empty.
+    'media_pending_drafts_digest': {
+        'name': 'Media — Pending Drafts Digest (operator email)',
+        'endpoint': '/api/v1/media/pending-drafts/digest?send=true',
+        'method': 'POST',
+        'hours': [15],
+        'minute': 10,
+        'timeout': 60,
+    },
     # Phase FF+7-mttr5 (2026-05-19): Brain L22 — Auto-Code LIVE.
     # User flipped to live mode. Hourly. Reads L21 ring buffer + radar
     # for 404 spikes >=2/hour, opens GitHub issues with the proposed

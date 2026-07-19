@@ -36327,6 +36327,17 @@ for _mmod, _mbp in [
     except Exception as _media_reg_e:
         print(f"[main] {_mmod} register skipped: {_media_reg_e}", file=sys.stderr)
 
+# press-fix (2026-07-18): pending-drafts digest — surfaces the human-gated
+# draft lanes (unpublished press_releases, pitch drafts, queue drafts) in a
+# daily operator email with a fact-check-gated one-click approve. Publishing
+# stays human-gated; this only makes the gate VISIBLE so drafts stop rotting.
+try:
+    from routes.media_pending_digest import media_pending_digest_bp
+    app.register_blueprint(media_pending_digest_bp)
+    print("[main] media_pending_digest_bp registered: /api/v1/media/pending-drafts{,/digest,/approve} (admin/HMAC-gated)", flush=True)
+except Exception as _mpd_e:
+    print(f"[main] media_pending_digest register skipped: {_mpd_e}", file=sys.stderr)
+
 # r-sarender (2026-06-24): Phase-4 render-path probe (admin-gated). Renders the real
 # A1 "Site Analysis" CSS via weasyprint to learn if the premium form needs Chrome-on-
 # Railway BEFORE building the full feature. Defensive — cannot crash boot.

@@ -617,7 +617,10 @@ def draft_press_from_citations():
             r"|i (don'?t|do not) have (specific|current|real[- ]?time|access)"
             r"|as an ai|i'?m not able to|no specific (current )?information",
             _re_qa.I)
-        _SELF_SOLICITED_RE = _re_qa.compile(r"^(auto_cron|user_recorded|seed|baseline|auto cited)", _re_qa.I)
+        # press-fix (2026-07-18): align with wins_poster.py's self-solicited
+        # set — daily_probe/hand_obs are OUR probes too and must never get
+        # the organic "X Cites DC Hub" framing.
+        _SELF_SOLICITED_RE = _re_qa.compile(r"^(auto_cron|user_recorded|seed|baseline|auto cited|daily_probe|hand_obs)", _re_qa.I)
 
         candidates = []
         for r in rows:
@@ -688,11 +691,20 @@ def draft_press_from_citations():
 {f'<p><strong>Source:</strong> <a href="{response_url}" rel="nofollow">{response_url}</a></p>' if response_url else ''}
 </article>"""
 
+            # press-fix (2026-07-18): keep a sanitized series key so the write
+            # loop can enforce a per-(engine,prompt) cooldown — the same
+            # canonical prompt gets re-probed daily and must not mint a
+            # near-identical release every day.
+            series_prefix = "".join(ch if ch.isalnum() or ch == "-" else "-"
+                                    for ch in f"ai-citation-{engine}".lower())
+            series_suffix = "".join(ch if ch.isalnum() or ch == "-" else "-"
+                                    for ch in f"-{prompt_id}".lower())
             candidates.append({
                 "citation_id": cid,
                 "slug": slug,
                 "title": title,
                 "engine": engine,
+                "series_like": f"{series_prefix}-%{series_suffix}",
                 "observed_at": observed_at.isoformat() if observed_at else None,
                 "body_preview": (response_text[:200] + "...") if len(response_text) > 200 else response_text,
                 "body_html": body,
@@ -709,29 +721,84 @@ def draft_press_from_citations():
                 candidates=candidates[:10],
             ), 200
 
-        # Write the drafts
+        # Write the drafts.
+        #
+        # press-fix (2026-07-18): this block was dead since it shipped
+        # (2026-05-19). Two stacked breaks:
+        #   1. `_dt` was never imported in THIS module (the block was lifted
+        #      from brain_press_loop.py which has `import datetime as _dt`) —
+        #      every write call 500'd with NameError before touching the DB.
+        #   2. The INSERT wrote a `status` column the live press_releases
+        #      table does not have (schema drift already documented in
+        #      marketing_engine.py's publish-now) — so even without (1) every
+        #      row raised UndefinedColumn, was swallowed into errors[], and
+        #      the endpoint returned ok=True with drafted_count=0 forever.
+        # The live schema's only publish gate is the `published` boolean, so:
+        # auto_approve now publishes ONLY when the fact-check guard
+        # corroborates the text (fail-closed to an unpublished draft — the
+        # pending-drafts digest surfaces those); without auto_approve the row
+        # is always an unpublished draft. Honesty gates above are unchanged.
         drafted = []
         skipped = 0
         errors = []
-        status_to_set = "approved" if auto_approve else "draft"
-        now = _dt.datetime.utcnow().isoformat() + "Z"
-        with c, c.cursor() as cur:
+        now_utc = datetime.datetime.utcnow()
+        now = now_utc.isoformat() + "Z"
+        today = now_utc.strftime("%Y-%m-%d")
+
+        verify_media_text = None
+        if auto_approve:
+            try:
+                from routes.media_fact_check_guard import verify_media_text
+            except Exception:
+                verify_media_text = None  # guard unavailable → fail closed to draft
+
+        try:
+            c.rollback()  # close the candidate-SELECT txn so autocommit can be set
+        except Exception:
+            pass
+        c.autocommit = True  # per-row writes; one failure must not poison the rest
+        with c.cursor() as cur:
             for cand in candidates:
                 try:
+                    # Per-(engine,prompt) 7-day cooldown: the daily probe re-asks
+                    # the same canonical prompts, and slugs are date-keyed, so
+                    # ON CONFLICT alone can't stop a same-story-every-day mint.
+                    cur.execute("""
+                        SELECT 1 FROM press_releases
+                        WHERE category = 'ai-citation'
+                          AND slug LIKE %s
+                          AND created_at > NOW() - INTERVAL '7 days'
+                        LIMIT 1
+                    """, (cand["series_like"],))
+                    if cur.fetchone():
+                        skipped += 1
+                        continue
+
+                    publish = False
+                    if auto_approve and verify_media_text is not None:
+                        try:
+                            report = verify_media_text(
+                                f"{cand['title']}\n{cand['body_html']}") or {}
+                            publish = bool(report.get("ok"))
+                        except Exception:
+                            publish = False  # guard blip → stay a draft
+
                     cur.execute("""
                         INSERT INTO press_releases
-                          (title, slug, body, category, published, status,
-                           published_at, created_at, meta_description)
-                        VALUES (%s, %s, %s, 'ai-citation', FALSE, %s, NULL, %s, %s)
+                          (title, slug, body, category, source, date,
+                           published, published_at, created_at, meta_description)
+                        VALUES (%s, %s, %s, 'ai-citation', 'DC Hub Media', %s,
+                                %s, %s, %s, %s)
                         ON CONFLICT (slug) DO NOTHING
                         RETURNING id
-                    """, (cand["title"], cand["slug"], cand["body_html"],
-                          status_to_set, now,
-                          f"{cand['engine'].title()} cited DC Hub as a primary source.")[:200])
+                    """, (cand["title"], cand["slug"], cand["body_html"], today,
+                          publish, now_utc if publish else None, now_utc,
+                          f"{cand['engine'].title()} cited DC Hub as a primary source."[:200]))
                     rid = cur.fetchone()
                     if rid:
                         drafted.append({"slug": cand["slug"],
                                          "id": rid[0] if not hasattr(rid, "get") else rid.get("id"),
+                                         "published": publish,
                                          "title": cand["title"]})
                     else:
                         skipped += 1
@@ -741,6 +808,7 @@ def draft_press_from_citations():
         return jsonify(
             ok=True, mode="write",
             drafted_count=len(drafted),
+            published_count=sum(1 for d in drafted if d.get("published")),
             skipped_existing=skipped,
             errors=errors[:5],
             drafted=drafted[:10],
