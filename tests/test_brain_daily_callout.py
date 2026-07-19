@@ -278,7 +278,7 @@ def test_render_text_names_actuators():
     # public-surface line: page + both dates + the actuator sentence
     assert "dchub.cloud/press" in text
     assert "2026-06-22" in text and "26d behind" in text
-    assert "rebuild/deploy the public page" in text
+    assert "gh workflow run press-rss.yml" in text
     # stalled lane line names its actuator
     assert "TWITTER_PUBLISHER_ENABLED" in text
     # chronic line: issue + age + destination
@@ -321,7 +321,7 @@ def test_radar_detector_fires_on_stale_page(monkeypatch):
     assert f["issue"] == "press_public_surface_stale"
     assert f["url"] == "https://dchub.cloud/press"
     assert f["count"] == 26
-    assert "publish-to-edge" in f["detail"]
+    assert "press-rss.yml" in f["detail"]
 
 
 def test_radar_detector_quiet_when_fresh(monkeypatch):

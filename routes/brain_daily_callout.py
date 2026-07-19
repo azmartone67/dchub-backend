@@ -371,9 +371,12 @@ def render_text(d: dict) -> str:
         L.append(f"• public page {p['url']}: newest visible "
                  f"{p.get('newest_visible') or 'NO DATE'}, DB newest "
                  f"{surf.get('db_newest')} "
-                 f"({p.get('lag_days', '?')}d behind) → publish lane: the "
-                 f"generator is fine — rebuild/deploy the public page "
-                 f"(Cloudflare Pages), then re-check {p['url']}")
+                 f"({p.get('lag_days', '?')}d behind) → static press bake: "
+                 f"the generator is fine — in dchub-frontend run "
+                 f"`gh workflow run press-rss.yml` (bakes releases into the "
+                 f"page HTML + pushes → Pages deploy purges the URL); still "
+                 f"stale after a green run → `gh workflow run cf-purge.yml "
+                 f"-f urls={p['url']}`, then re-check {p['url']}")
     for e in stalled:
         why = "; ".join(e.get("reasons") or []) or "stalled"
         L.append(f"• {e['label']}: {why} → {e['actuator']}")

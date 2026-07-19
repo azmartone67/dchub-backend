@@ -5624,12 +5624,19 @@ def check_press_public_surface_stale() -> list[dict]:
             "detail": (f"Public page {page.get('url')} shows newest press "
                        f"date {page.get('newest_visible') or 'NONE'} while "
                        f"the DB's newest press_releases row is "
-                       f"{report.get('db_newest')} — the publish-to-edge "
-                       f"step is stalled ({lag if lag is not None else '?'}d "
-                       f"behind); the generator is fine. Actuator: rebuild/"
-                       f"deploy the public page (Cloudflare Pages publish "
-                       f"lane), then re-check the page. Generation-side "
-                       f"restart (press-publisher/run) will NOT fix this."),
+                       f"{report.get('db_newest')} — the static press bake "
+                       f"is stalled ({lag if lag is not None else '?'}d "
+                       f"behind); the generator is fine. Actuator (dchub-"
+                       f"frontend repo): `gh workflow run press-rss.yml` "
+                       f"(hourly lane that bakes releases into press.html + "
+                       f"dc-hub-media/index.html via scripts/"
+                       f"bake_press_static.py, then pushes → Pages deploy "
+                       f"purges both URLs); if the page is still stale "
+                       f"after a green run, `gh workflow run cf-purge.yml "
+                       f"-f urls=...` — the /* catch-all's stale-while-"
+                       f"revalidate=86400 can pin one day-stale copy per "
+                       f"POP. Generation-side restart (press-publisher/run) "
+                       f"will NOT fix this."),
         })
     return findings
 
