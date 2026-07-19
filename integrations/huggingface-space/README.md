@@ -24,9 +24,41 @@ short_description: Live data-center power index + MCP server for AI agents
 
 The headline today: the three biggest markets — **Northern Virginia, Phoenix, and Columbus all score AVOID** (Northern Virginia is a modeled ~60-month wait for firm power), while build-ready capacity has shifted to the interior — **Cheyenne, Omaha, and Tulsa score BUILD**. Try it above.
 
-## This Space is also an MCP server — 7 tools
+## 🔌 Connect in 30 seconds
 
-It runs with `launch(mcp_server=True)`, so its tools are callable by **Hugging Face Agents, smolagents, and any MCP client** at `…/gradio_api/mcp/sse`.
+This Space **is an MCP server** (7 tools). The full DC Hub MCP has **74 tools** — 10 calls/day free, no key needed.
+
+```bash
+# This Space (7 tools, free)
+claude mcp add --transport sse dchub-power-index https://dchubcloud-dchub.hf.space/gradio_api/mcp/sse
+
+# Full DC Hub MCP (74 tools)
+claude mcp add --transport http dchub https://dchub.cloud/mcp
+```
+
+Any other MCP client (Cursor, Cline, Windsurf, …):
+
+```json
+{
+  "mcpServers": {
+    "dchub-power-index": { "url": "https://dchubcloud-dchub.hf.space/gradio_api/mcp/sse" },
+    "dchub":             { "url": "https://dchub.cloud/mcp" }
+  }
+}
+```
+
+HF Agents / smolagents:
+
+```python
+from smolagents import CodeAgent, InferenceClientModel
+from smolagents.mcp_client import MCPClient
+
+with MCPClient({"url": "https://dchubcloud-dchub.hf.space/gradio_api/mcp/sse"}) as tools:
+    agent = CodeAgent(tools=tools, model=InferenceClientModel())
+    agent.run("Which U.S. market should I build a 100MW data center in?")
+```
+
+## The 7 tools in this Space
 
 | Tool | What it returns |
 |---|---|

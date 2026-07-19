@@ -12,6 +12,11 @@ dataset (10 calls/day free anonymous; free key via its claim_free_key tool).
 
 Optional Space secret DCHUB_API_KEY (a dchub_ key) lifts the bridge tools to
 full-tier responses; without it they ride the anonymous free tier.
+
+UI NOTE: the 7 tool functions below are the MCP contract (names + docstrings
+become the tool schema at /gradio_api/mcp/schema) — keep them stable. UI-only
+events that reuse them (e.g. textbox .submit) pass api_name=False so they
+never mint a duplicate MCP tool.
 """
 import json
 import os
@@ -22,6 +27,7 @@ import gradio as gr
 
 API = "https://dchub.cloud"
 FULL_MCP = "https://dchub.cloud/mcp"
+SPACE_MCP = "https://dchubcloud-dchub.hf.space/gradio_api/mcp/sse"
 TIMEOUT = 20
 API_KEY = (os.environ.get("DCHUB_API_KEY") or "").strip()
 UA = "huggingface-space-dchub-bridge/1.0 (+https://dchub.cloud)"
@@ -209,70 +215,183 @@ def hyperscaler_deals(limit: int = 10) -> str:
     return _call_tool("hyperscaler_deals", {"limit": int(limit) or 10})
 
 
-INTRO = f"""# ⚡ DC Hub — Power Index (live)
-**Can you actually get power to build a data center here?** DC Hub scores 311
-U.S. + global markets on power availability — a 0-100 index with a
-**BUILD / CAUTION / AVOID** verdict, power cost, and modeled time-to-power. Live
-from [dchub.cloud](https://dchub.cloud).
+# ── UI ──────────────────────────────────────────────────────────────────────
+# Everything below is presentation only — no new MCP tools are minted here
+# (UI-only events pass api_name=False).
 
-This Space is **also an MCP server** with 7 tools — point your Hugging Face
-Agent / MCP client at it, or connect the **full DC Hub MCP** (74 tools —
-21,900+ facilities, 4,900+ verified, real-time grid telemetry, fiber, gas,
-1,400+ tracked deals) at **`{FULL_MCP}`** (10 calls/day free, no key needed).
+CSS = """
+.gradio-container { max-width: 1080px !important; margin: 0 auto !important; }
+.dc-hero {
+  border-radius: 14px;
+  padding: 26px 28px 22px;
+  margin-bottom: 4px;
+  background: linear-gradient(120deg, #0b1220 0%, #101c33 55%, #1a2a17 100%);
+  border: 1px solid rgba(250, 204, 21, .25);
+}
+.dc-hero h1 {
+  margin: 0 0 6px;
+  font-size: 1.65rem;
+  line-height: 1.2;
+  color: #f8fafc;
+}
+.dc-hero h1 .amp { color: #facc15; }
+.dc-hero .sub {
+  margin: 0 0 14px;
+  font-size: 1rem;
+  color: #cbd5e1;
+  max-width: 62rem;
+}
+.dc-hero .sub a { color: #facc15; text-decoration: none; }
+.dc-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.dc-chip {
+  font-size: .8rem;
+  padding: 4px 11px;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, .14);
+  border: 1px solid rgba(148, 163, 184, .28);
+  color: #e2e8f0;
+  white-space: nowrap;
+}
+.dc-chip.build   { background: rgba(34, 197, 94, .14);  border-color: rgba(34, 197, 94, .45);  color: #86efac; }
+.dc-chip.caution { background: rgba(234, 179, 8, .14);  border-color: rgba(234, 179, 8, .45);  color: #fde047; }
+.dc-chip.avoid   { background: rgba(239, 68, 68, .14);  border-color: rgba(239, 68, 68, .45);  color: #fca5a5; }
+.dc-foot { text-align: center; font-size: .85rem; opacity: .8; margin-top: 6px; }
+.dc-mcp-note { font-size: .9rem; margin: 2px 0 8px; }
 """
 
-with gr.Blocks(title="DC Hub — Power Index", theme=gr.themes.Soft()) as demo:
-    gr.Markdown(INTRO)
-    with gr.Tab("Score a market"):
-        inp = gr.Textbox(label="U.S. data-center market", value="Northern Virginia")
+HERO = f"""
+<div class="dc-hero">
+  <h1><span class="amp">⚡</span> DC Hub — Power Index</h1>
+  <p class="sub"><strong>Can you actually get power to build a data center here?</strong>
+  Live 0–100 power-availability scores for 311 U.S. + global markets, with a verdict,
+  power cost, and modeled time-to-power — from <a href="https://dchub.cloud">dchub.cloud</a>.</p>
+  <div class="dc-chips">
+    <span class="dc-chip build">🟢 BUILD ≥ 60</span>
+    <span class="dc-chip caution">🟡 CAUTION 30–59</span>
+    <span class="dc-chip avoid">🔴 AVOID &lt; 30</span>
+    <span class="dc-chip">311 markets</span>
+    <span class="dc-chip">21,900+ facilities · 4,900+ verified</span>
+    <span class="dc-chip">live grid telemetry</span>
+    <span class="dc-chip">1,400+ tracked deals</span>
+    <span class="dc-chip">CC-BY-4.0</span>
+  </div>
+</div>
+"""
+
+CLAUDE_CODE_SNIPPET = f"""# This Space (7 tools, free)
+claude mcp add --transport sse dchub-power-index {SPACE_MCP}
+
+# Full DC Hub MCP (74 tools; 10 calls/day free, no key needed)
+claude mcp add --transport http dchub {FULL_MCP}"""
+
+JSON_SNIPPET = f"""{{
+  "mcpServers": {{
+    "dchub-power-index": {{ "url": "{SPACE_MCP}" }},
+    "dchub":             {{ "url": "{FULL_MCP}" }}
+  }}
+}}"""
+
+SMOLAGENTS_SNIPPET = f"""from smolagents import CodeAgent, InferenceClientModel
+from smolagents.mcp_client import MCPClient
+
+with MCPClient({{"url": "{SPACE_MCP}"}}) as tools:
+    agent = CodeAgent(tools=tools, model=InferenceClientModel())
+    agent.run("Which U.S. market should I build a 100MW data center in?")"""
+
+
+with gr.Blocks(title="DC Hub — Power Index",
+               theme=gr.themes.Soft(primary_hue="amber", neutral_hue="slate"),
+               css=CSS) as demo:
+    gr.HTML(HERO)
+
+    with gr.Accordion("🔌 Connect via MCP — Claude Code · Claude Desktop · Cursor · smolagents",
+                      open=False):
+        gr.Markdown(
+            f"<p class='dc-mcp-note'>This Space <strong>is an MCP server</strong> "
+            f"(7 tools) at <code>{SPACE_MCP}</code>. The full DC Hub MCP — "
+            f"<strong>74 tools</strong>, real-time grid telemetry, fiber, gas, "
+            f"water, tax incentives, deal intelligence — is at "
+            f"<code>{FULL_MCP}</code> (10 calls/day free anonymous; mint a free "
+            f"key with its <code>claim_free_key</code> tool, or try it with zero "
+            f"setup at <a href='https://dchub.cloud/playground'>dchub.cloud/playground</a>).</p>")
+        with gr.Tabs():
+            with gr.Tab("Claude Code"):
+                gr.Code(CLAUDE_CODE_SNIPPET, language="shell", label="terminal")
+            with gr.Tab("Desktop · Cursor"):
+                gr.Code(JSON_SNIPPET, language="json", label="mcp config (JSON) — any MCP client")
+            with gr.Tab("smolagents"):
+                gr.Code(SMOLAGENTS_SNIPPET, language="python", label="python — HF Agents / smolagents")
+
+    with gr.Tab("⚡ Score a market"):
+        inp = gr.Textbox(label="U.S. data-center market", value="Northern Virginia",
+                         placeholder="Northern Virginia, Phoenix, Columbus, Cheyenne…",
+                         info="One market name — get the verdict, score, cost, and time-to-power.")
+        btn = gr.Button("Get DCPI score", variant="primary")
         out = gr.Markdown()
-        gr.Button("Get DCPI score", variant="primary").click(dcpi_score, inp, out)
+        btn.click(dcpi_score, inp, out)
+        inp.submit(dcpi_score, inp, out, api_name=False)
         gr.Examples([["Northern Virginia"], ["Phoenix"], ["Columbus"],
                      ["Cheyenne"], ["Dallas"], ["Omaha"]], inp)
-    with gr.Tab("Compare markets"):
+    with gr.Tab("🏆 Compare markets"):
         cinp = gr.Textbox(label="Markets (comma-separated)",
-                          value="Northern Virginia, Phoenix, Cheyenne, Omaha, Dallas")
+                          value="Northern Virginia, Phoenix, Cheyenne, Omaha, Dallas",
+                          info="Up to 8 U.S. markets — ranked best power-availability first.")
+        cbtn = gr.Button("Rank by power availability", variant="primary")
         cout = gr.Markdown()
-        gr.Button("Rank by power availability", variant="primary").click(
-            compare_markets, cinp, cout)
-    with gr.Tab("Grid scoreboard"):
-        gout = gr.Code(language="json")
+        cbtn.click(compare_markets, cinp, cout)
+        cinp.submit(compare_markets, cinp, cout, api_name=False)
+        gr.Examples([["Northern Virginia, Phoenix, Cheyenne, Omaha, Dallas"],
+                     ["Atlanta, Columbus, Tulsa"],
+                     ["Dallas, Austin, San Antonio"]], cinp)
+    with gr.Tab("🌍 Grid scoreboard"):
+        gr.Markdown("Live ranked grids — US ISOs + GB, EU, Taiwan, Japan, South Korea, "
+                    "Brazil: fuel mix, renewable share, and demand **right now**. "
+                    "Greenest first.")
+        gout = gr.Code(language="json", label="live scoreboard")
         gr.Button("Live grid scoreboard (greenest first)", variant="primary").click(
             grid_scoreboard, [], gout)
-    with gr.Tab("Search facilities"):
-        s_q = gr.Textbox(label="query", value="Ashburn")
-        s_c = gr.Textbox(label="country (ISO-2)", value="US")
-        s_s = gr.Textbox(label="state")
-        s_o = gr.Textbox(label="operator")
-        s_m = gr.Number(label="min capacity MW", value=0)
-        s_l = gr.Number(label="limit", value=10)
-        sout = gr.Code(language="json")
+    with gr.Tab("🔎 Search facilities"):
+        with gr.Row():
+            s_q = gr.Textbox(label="Query", value="Ashburn",
+                             placeholder="name / operator / location")
+            s_c = gr.Textbox(label="Country (ISO-2)", value="US", placeholder="US, GB, SG…")
+            s_s = gr.Textbox(label="State", placeholder="VA, TX…")
+        with gr.Row():
+            s_o = gr.Textbox(label="Operator", placeholder="Equinix, Digital Realty…")
+            s_m = gr.Number(label="Min capacity (MW)", value=0)
+            s_l = gr.Number(label="Limit", value=10)
+        sout = gr.Code(language="json", label="facilities")
         gr.Button("Search 21,900+ facilities", variant="primary").click(
             search_facilities, [s_q, s_c, s_s, s_o, s_m, s_l], sout)
-    with gr.Tab("Rank markets"):
-        r_c = gr.Dropdown(["most_capacity", "cheapest_power", "most_operators",
-                           "fastest"], value="most_capacity", label="criteria")
-        r_r = gr.Dropdown(["us", "global", "canada", "eu", "apac", "americas"],
-                          value="us", label="region")
-        r_l = gr.Number(label="limit", value=10)
-        rout = gr.Code(language="json")
+    with gr.Tab("📊 Rank markets"):
+        with gr.Row():
+            r_c = gr.Dropdown(["most_capacity", "cheapest_power", "most_operators",
+                               "fastest"], value="most_capacity", label="Criteria")
+            r_r = gr.Dropdown(["us", "global", "canada", "eu", "apac", "americas"],
+                              value="us", label="Region")
+            r_l = gr.Number(label="Limit", value=10)
+        rout = gr.Code(language="json", label="ranking")
         gr.Button("Rank markets", variant="primary").click(
             rank_markets, [r_c, r_r, r_l], rout)
-    with gr.Tab("Interconnection queue"):
+    with gr.Tab("🔌 Interconnection queue"):
         q_i = gr.Dropdown(["", "ERCOT", "PJM", "MISO", "CAISO", "SPP", "NYISO",
-                           "ISONE"], value="", label="ISO (empty = national)")
-        qout = gr.Code(language="json")
+                           "ISONE"], value="", label="ISO",
+                          info="How much capacity is waiting to connect. Empty = national overview.")
+        qout = gr.Code(language="json", label="queue intelligence")
         gr.Button("Queue intelligence", variant="primary").click(
             interconnection_queue, [q_i], qout)
-    with gr.Tab("Hyperscaler deals"):
-        d_l = gr.Number(label="limit", value=10)
-        dout = gr.Code(language="json")
+    with gr.Tab("💸 Hyperscaler deals"):
+        d_l = gr.Number(label="Limit", value=10,
+                        info="Most recent hyperscaler / AI-capex deals from the 1,400+ tracker.")
+        dout = gr.Code(language="json", label="deals")
         gr.Button("Recent AI-capex deals", variant="primary").click(
             hyperscaler_deals, [d_l], dout)
-    gr.Markdown(
-        f"_Data: DC Hub (dchub.cloud), CC-BY-4.0 · the live infrastructure data "
-        f"layer for AI agents · [connect the full MCP]({FULL_MCP}) · "
-        f"[free key](https://dchub.cloud/signup)_")
+
+    gr.HTML(
+        f"<div class='dc-foot'>Data: <a href='https://dchub.cloud'>DC Hub</a>, CC-BY-4.0 — "
+        f"the live infrastructure data layer for AI agents · "
+        f"<a href='{API}/playground'>playground</a> · "
+        f"<a href='{API}/signup'>free key</a></div>")
 
 if __name__ == "__main__":
     # mcp_server=True exposes all 7 tools as MCP tools at /gradio_api/mcp/sse —
