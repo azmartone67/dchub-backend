@@ -433,6 +433,12 @@ def get_global_gas_pipelines():
             return jsonify(ok=False, error="bad bbox"), 400
     if a.get("status"):
         where.append("status ILIKE %s"); params.append("%" + a["status"][:30] + "%")
+    if a.get("fuel"):
+        # comma-separated ILIKE-any on the fuel column (gas vs oil/ngl split)
+        _ftoks = [t.strip()[:20] for t in a["fuel"].split(",") if t.strip()]
+        if _ftoks:
+            where.append("(" + " OR ".join(["fuel ILIKE %s"] * len(_ftoks)) + ")")
+            params.extend(["%" + t + "%" for t in _ftoks])
     try:
         limit = min(int(a.get("limit", 1500)), 4000)
     except (TypeError, ValueError):
