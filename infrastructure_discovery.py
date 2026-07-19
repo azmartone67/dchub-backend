@@ -1577,15 +1577,30 @@ def register_infrastructure_routes(app, start_scheduler=True):
             # rows have no geometry (IX/facility entries) and just bloat the 4MB payload + a
             # misleading n/total. Filter to geometry-present so count==total==what the map draws.
             _where = "source IS DISTINCT FROM 'news_extraction' AND coordinates IS NOT NULL"
+            _params = []
+            # 2026-07-18: optional viewport filter bbox=minLng,minLat,maxLng,maxLat.
+            # The Metro Links map layer viewport-drives — instead of a fixed 8000-row
+            # slice of the full ~51k set, it loads the interconnects whose START point
+            # is in the current view, so panning surfaces every route. Absent/malformed
+            # bbox → unchanged legacy behavior (first 8000 by created_at).
+            _bbox = request.args.get('bbox')
+            if _bbox:
+                try:
+                    _mnx, _mny, _mxx, _mxy = [float(v) for v in _bbox.split(',')]
+                    _where += " AND start_lng BETWEEN %s AND %s AND start_lat BETWEEN %s AND %s"
+                    _params = [min(_mnx, _mxx), max(_mnx, _mxx), min(_mny, _mxy), max(_mny, _mxy)]
+                except Exception:
+                    _where = "source IS DISTINCT FROM 'news_extraction' AND coordinates IS NOT NULL"
+                    _params = []
             total = 0
             try:
-                cursor.execute("SELECT COUNT(*) AS total FROM fiber_routes WHERE " + _where)
+                cursor.execute("SELECT COUNT(*) AS total FROM fiber_routes WHERE " + _where, _params)
                 _r = cursor.fetchone()
                 total = (_r.get('total') if hasattr(_r, 'get') else _r[0]) if _r else 0
             except Exception:
                 total = 0
             # cap 100 -> 8000 so the Metro Links map layer shows the FULL real set, not a sample.
-            cursor.execute("SELECT * FROM fiber_routes WHERE " + _where + " ORDER BY created_at DESC LIMIT 8000")
+            cursor.execute("SELECT * FROM fiber_routes WHERE " + _where + " ORDER BY created_at DESC LIMIT 8000", _params)
             routes = [dict(row) for row in cursor.fetchall()]
         finally:
             try: conn.close()

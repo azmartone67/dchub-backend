@@ -1030,7 +1030,12 @@ def api_refined_queue():
     max_fiber_km = _num("max_fiber_km", None)
     geocoded_only = str(a.get("geocoded_only", "")).lower() in ("1", "true", "yes")
     try:
-        limit = max(1, min(int(a.get("limit") or 200), 1000))
+        # 2026-07-18: ceiling 1000 -> 5000 so a single per-ISO pull returns the
+        # WHOLE active queue for the largest ISOs (ERCOT ~1,785 active geocoded was
+        # capped at 1,000, silently dropping ~785). Ordered by capacity DESC, so the
+        # old 1,000 kept the biggest; the map now unions the full set. Public ISO
+        # queue data; 5k rows is a bounded seq-scan on the ~5k-row table.
+        limit = max(1, min(int(a.get("limit") or 200), 5000))
     except Exception:
         limit = 200
 
