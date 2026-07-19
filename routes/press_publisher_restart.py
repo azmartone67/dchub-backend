@@ -45,15 +45,23 @@ def _conn():
 
 def _last_press_age_hours():
     if not (_pg and _dsn()): return 999
-    try:
-        with _conn() as c, c.cursor() as cur:
-            cur.execute(
-                "SELECT EXTRACT(EPOCH FROM (NOW() - MAX(created_at)))/3600.0 "
-                "FROM press_releases WHERE status='published'")
-            row = cur.fetchone()
-            return float(row[0]) if row and row[0] is not None else 999
-    except Exception:
-        return 999
+    # 2026-07-18: press_releases has a `published` BOOLEAN, not a `status`
+    # column — the old WHERE status='published' threw on every call and the
+    # except returned the 999 sentinel forever, so /status always lied
+    # "stale" and /run force-triggered on every cron tick. Ladder keeps a
+    # no-filter fallback in case the flag column drifts next.
+    for where in ("WHERE published IS TRUE", ""):
+        try:
+            with _conn() as c, c.cursor() as cur:
+                cur.execute(
+                    "SELECT EXTRACT(EPOCH FROM (NOW() - MAX(created_at)))/3600.0 "
+                    f"FROM press_releases {where}")
+                row = cur.fetchone()
+                if row and row[0] is not None:
+                    return float(row[0])
+        except Exception:
+            continue
+    return 999
 
 
 def _trigger_auto_generate(force_topic=None):

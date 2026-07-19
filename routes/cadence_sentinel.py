@@ -246,6 +246,46 @@ LANES = [
             "FROM ai_citations"),
         "max_gap_hours": 72,
     },
+    # ── r-daily-callout (2026-07-18): the three lanes the July press-stall
+    # post-mortem found NOBODY watching. press_releases gained rows daily
+    # while the public page froze (that half lives in
+    # brain_consistency_radar.check_press_public_surface_stale — this
+    # sentinel is pure-DB by design); these cover the DB half + the two
+    # publish lanes with no dedicated dead-man.
+    {
+        "key": "press_generation",
+        "label": "press release generation (press_releases)",
+        "why": "auto-press targets 18h cadence via press-publisher/run; "
+               "2 silent days = the generator lane is dead, not a lull",
+        "age_sql": (
+            "SELECT EXTRACT(EPOCH FROM (now() - MAX(created_at))) / 3600.0 "
+            "FROM press_releases"),
+        "max_gap_hours": 48,
+    },
+    {
+        "key": "twitter_publish",
+        "label": "X/Twitter publishes (social_media_posts)",
+        "why": "bluesky posts daily into the same table, so the generic "
+               "smp_other_publish lane can NEVER see a twitter-only stall "
+               "(live 07-18: 9 twitter posts in 30d vs 84 bluesky)",
+        "text_ts_sql": (
+            "SELECT published_at FROM social_media_posts "
+            "WHERE status = 'published' "
+            "AND COALESCE(publish_platform, platform) = 'twitter' "
+            "ORDER BY id DESC LIMIT 300"),
+        "max_gap_hours": 120,
+    },
+    {
+        "key": "weekly_digest_send",
+        "label": "weekly brain digest email (brain_digest_log)",
+        "why": "the operator digest is itself a pipeline; a silent digest "
+               "means the visibility loop is dark (weekly cadence, so 10d "
+               "before this fires)",
+        "age_sql": (
+            "SELECT EXTRACT(EPOCH FROM (now() - MAX(sent_at))) / 3600.0 "
+            "FROM brain_digest_log"),
+        "max_gap_hours": 240,
+    },
 ]
 
 

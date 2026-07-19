@@ -131,6 +131,22 @@ def _register_engine_prewarm(state):
         print(f"[cron_heartbeat] engine_prewarm_bp register skipped: {_ep_e}",
               flush=True)
 
+
+# 2026-07-18: DAILY MORNING CALLOUT (routes/brain_daily_callout.py) — the
+# post-mortem of the silent June→July /press edge stall: one honest morning
+# email naming every stuck pipeline + its actuator. Rides on this
+# blueprint's registration for the same frozen-main.py reason as above.
+# Defensive: a broken import never breaks the heartbeat (or boot).
+@cron_heartbeat_bp.record_once
+def _register_daily_callout(state):
+    try:
+        from routes.brain_daily_callout import brain_daily_callout_bp
+        if "brain_daily_callout" not in state.app.blueprints:
+            state.app.register_blueprint(brain_daily_callout_bp)
+    except Exception as _dc_e:
+        print(f"[cron_heartbeat] brain_daily_callout_bp register skipped: {_dc_e}",
+              flush=True)
+
 # r78: the dispatcher runs INSIDE this Flask app — its job POSTs were going
 # out to api.dchub.cloud and back through Cloudflare to reach itself (and
 # api.dchub.cloud's non-/api/* routing 522s, which is what minted the
@@ -311,6 +327,16 @@ _DISPATCH = [
      f"{BASE}/api/v1/press-publisher/run",
      "POST",
      lambda now: now.minute < 10 and now.hour % 2 == 0),
+
+    # 2026-07-18: daily morning callout email — 11-13 UTC (7-9 AM ET), a
+    # THREE-hour window because the throttled heartbeat lands ~hourly at
+    # random minutes; the handler's per-day claim row
+    # (brain_daily_callout_log) makes re-fires within the window no-ops.
+    # Kill: BRAIN_DAILY_CALLOUT_ENABLED=0. _hit() attaches X-Admin-Key.
+    ("brain_daily_callout_morning",
+     f"{BASE}/api/v1/admin/brain/daily-callout/send",
+     "POST",
+     lambda now: now.hour in (11, 12, 13) and now.minute < 55),
 
     # Heavy brain detectors run — once daily at 14:00 UTC
     ("brain_detectors_daily",

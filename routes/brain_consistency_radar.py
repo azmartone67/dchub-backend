@@ -999,7 +999,10 @@ def check_press_stale_vs_citations() -> list[dict]:
         if not body: return findings
         import json as _json
         d = _json.loads(body)
-        obs = d.get("observations") or d.get("recent") or []
+        # 2026-07-18: the endpoint's live response key is `history` —
+        # parsing only observations/recent left this detector permanently
+        # empty-handed (0 findings ever) while the /press surface froze.
+        obs = d.get("observations") or d.get("recent") or d.get("history") or []
         cited = [o for o in obs if o.get("dchub_cited")]
         if not cited: return findings
 
@@ -5593,6 +5596,44 @@ def check_dchub_media_press_silent() -> list[dict]:
     return findings
 
 
+def check_press_public_surface_stale() -> list[dict]:
+    """r-daily-callout (2026-07-18) — the July post-mortem detector.
+
+    The stall the operator caught by hand: press_releases gained 1-2 rows
+    EVERY day while the public dchub.cloud/press page froze at 2026-06-22
+    (~26 days). check_dchub_media_press_silent above reads the DB tables,
+    so it was structurally blind — generation and PUBLICATION are different
+    ends of the pipe. This detector measures the end users (and AI crawlers)
+    actually see: newest ISO date visible in the public HTML vs newest
+    press_releases row. Fires per stale page when the edge trails the DB by
+    more than routes.brain_daily_callout.SURFACE_LAG_DAYS (default 3d)."""
+    findings: list[dict] = []
+    try:
+        from routes.brain_daily_callout import press_surface_report
+        report = press_surface_report()
+    except Exception:
+        return findings
+    for page in report.get("pages") or []:
+        if not page.get("stale"):
+            continue
+        lag = page.get("lag_days")
+        findings.append({
+            "issue": "press_public_surface_stale",
+            "url":   page.get("url") or "https://dchub.cloud/press",
+            "count": int(lag) if lag is not None else 999,
+            "detail": (f"Public page {page.get('url')} shows newest press "
+                       f"date {page.get('newest_visible') or 'NONE'} while "
+                       f"the DB's newest press_releases row is "
+                       f"{report.get('db_newest')} — the publish-to-edge "
+                       f"step is stalled ({lag if lag is not None else '?'}d "
+                       f"behind); the generator is fine. Actuator: rebuild/"
+                       f"deploy the public page (Cloudflare Pages publish "
+                       f"lane), then re-check the page. Generation-side "
+                       f"restart (press-publisher/run) will NOT fix this."),
+        })
+    return findings
+
+
 # ── Phase PPPP (2026-05-16) — dedup-pipeline divergence detector ──
 def check_dedup_backlog_growing() -> list[dict]:
     """Fires when the raw vs verified gap is >5,000 AND verified
@@ -9035,6 +9076,9 @@ def scan_all() -> list[dict]:
                check_dedup_backlog_growing,
                # Phase RRRR DC Hub Media silence
                check_dchub_media_press_silent,
+               # r-daily-callout (2026-07-18): public /press page vs DB —
+               # the June→July 26-day edge stall no DB-side check could see
+               check_press_public_surface_stale,
                # Phase FF+25-followup-r7 monthly trend backstop
                check_monthly_trend_unsent_3d,
                # Phase FF+25-followup-r12 visual drift across the site
