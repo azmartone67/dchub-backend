@@ -411,6 +411,65 @@ def get_global_gas():
     return resp
 
 
+@gem_ingest_bp.route("/api/v1/global-gas-pipelines", methods=["GET"])
+def get_global_gas_pipelines():
+    """PUBLIC — GEM gas-transmission pipeline geometry (LineString/MultiLineString/
+    GeometryCollection). Viewport-filtered by each feature's stored bounding box
+    (table gem_gas_pipelines is loaded directly from the GGIT GeoJSON with a
+    precomputed min/max lng/lat per feature). Returns a GeoJSON FeatureCollection."""
+    dsn = _dsn()
+    if not dsn:
+        return jsonify(ok=False, error="no DATABASE_URL"), 503
+    a = request.args
+    where = ["geom_json IS NOT NULL"]
+    params = []
+    bbox = a.get("bbox")
+    if bbox:
+        try:
+            w, s, e, n = [float(x) for x in bbox.split(",")[:4]]
+            where.append("min_lng <= %s AND max_lng >= %s AND min_lat <= %s AND max_lat >= %s")
+            params += [max(w, e), min(w, e), max(s, n), min(s, n)]
+        except (ValueError, IndexError):
+            return jsonify(ok=False, error="bad bbox"), 400
+    if a.get("status"):
+        where.append("status ILIKE %s"); params.append("%" + a["status"][:30] + "%")
+    try:
+        limit = min(int(a.get("limit", 1500)), 4000)
+    except (TypeError, ValueError):
+        limit = 1500
+    sql = ("SELECT project_id, name, segment, status, fuel, countries, owner, start_year, geom_json "
+           "FROM gem_gas_pipelines WHERE " + " AND ".join(where) +
+           " ORDER BY ((max_lng-min_lng)+(max_lat-min_lat)) DESC LIMIT %s")
+    params.append(limit)
+    try:
+        with psycopg2.connect(dsn, sslmode="require", connect_timeout=8) as c:
+            with c.cursor() as cur:
+                cur.execute(sql, params)
+                rows = cur.fetchall()
+                cur.execute("SELECT COUNT(*), MAX(ingested_at) FROM gem_gas_pipelines")
+                total, asof = cur.fetchone()
+    except Exception as e:
+        return jsonify(ok=False, error=str(e)[:160]), 500
+    feats = []
+    for pid, name, seg, status, fuel, countries, owner, yr, geom in rows:
+        try:
+            g = json.loads(geom) if geom else None
+        except Exception:
+            g = None
+        if not g:
+            continue
+        feats.append({"type": "Feature", "geometry": g, "properties": {
+            "project_id": pid, "name": name, "segment": seg, "status": status,
+            "fuel": fuel, "countries": countries, "owner": owner,
+            "start_year": float(yr) if yr is not None else None}})
+    resp = jsonify({"type": "FeatureCollection", "count": len(feats), "total": total,
+                    "as_of": str(asof) if asof else None,
+                    "source": "GEM Global Gas Infrastructure Tracker — pipelines (CC-BY, via DC Hub)",
+                    "features": feats})
+    resp.headers["Cache-Control"] = "public, max-age=3600"
+    return resp
+
+
 def register_gem_ingest(app):
     """Idempotent registration helper (mirrors the other ingest blueprints)."""
     try:
