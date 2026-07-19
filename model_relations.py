@@ -180,15 +180,25 @@ def _pick_model(cfg, llm_key):
     return None, []
 
 
-def _chat(cfg, llm_key, model, messages, use_temp=True, _retries_429=2):
-    body = {"model": model, "messages": messages, "max_tokens": MAX_TOKENS}
+def _chat(cfg, llm_key, model, messages, use_temp=True, use_legacy_max=True,
+          _retries_429=2):
+    # r-max-completion-tokens (2026-07-19): OpenAI's newer models (observed:
+    # gpt-5.6-terra) reject the legacy `max_tokens` with a 400 naming
+    # `max_completion_tokens`. Same self-heal pattern as the temperature
+    # retry below: try legacy first (every other lane speaks it), fall back
+    # once when the error names the new param.
+    body = {"model": model, "messages": messages,
+            ("max_tokens" if use_legacy_max else "max_completion_tokens"): MAX_TOKENS}
     if use_temp:
         body["temperature"] = 0.3
     code, txt = _http_json(cfg["base"] + "/chat/completions", method="POST",
                            headers={"Authorization": f"Bearer {llm_key}"}, body=body, timeout=120)
+    if code == 400 and use_legacy_max and "max_completion_tokens" in txt:
+        return _chat(cfg, llm_key, model, messages, use_temp=use_temp,
+                     use_legacy_max=False, _retries_429=_retries_429)
     if code == 400 and use_temp and "temperature" in txt:
         return _chat(cfg, llm_key, model, messages, use_temp=use_temp and False,
-                     _retries_429=_retries_429)
+                     use_legacy_max=use_legacy_max, _retries_429=_retries_429)
     # r-429-backoff (2026-07-18): free-tier lanes die mid-eval on transient
     # per-minute 429s (observed: groq TPM cut the meta run at 5/8 calls).
     # Two 30s backoffs clear minute-window limits; hard quota/billing 429s
