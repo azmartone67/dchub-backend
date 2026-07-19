@@ -1,11 +1,12 @@
 """
 routes/flywheel_master_shell.py — Flywheel Master Shell (2026-07-05).
 
-One pane that live-probes the FIVE flywheel priorities named in the 07-05
-health read and scores each PASS/FAIL, so the operator can watch each fix
+One pane that live-probes the flywheel priorities named in the 07-05
+health read (five lanes) plus the 07-18 LANE 6 (the funnel's dominant
+bottleneck) and scores each PASS/FAIL, so the operator can watch each fix
 land and keep the checks as a standing sentinel afterward.
 
-The five lanes (one per priority — the actual back-half-of-the-funnel work):
+The six lanes (one per priority — the actual back-half-of-the-funnel work):
   1. RETENTION / DURABLE-IDENTITY — the binding constraint. A durable key is
      minted+persisted on first call (claim_api), real agents come back on a
      SECOND day, and mature key-reuse % isn't regressing.
@@ -23,6 +24,16 @@ The five lanes (one per priority — the actual back-half-of-the-funnel work):
      _canonical_facility_slug the handler uses) still equals the STORED slug,
      and the sitemap has frozen-slug content to emit — i.e. the ~8k-page
      404/redirect bleed is stopped.
+  6. REACH→USAGE CONVERSION (added 2026-07-18) — the funnel's dominant
+     bottleneck: of the external AI-platform requests that FIND us (reach,
+     ai_daily_stats — includes crawlers indexing for citations, which is WHY
+     the absolute % is structurally low), what share becomes REAL de-looped
+     tool calls (mcp_tool_calls via mcp_calls_deloop.real_calls_predicate).
+     SAME-WINDOW 7d vs 7d — unlike the funnel page's headline 3.2%, which
+     divides 30d usage by CUMULATIVE-since-Feb reach. Growth gauge: a check
+     fails ONLY on a genuine >20% relative WoW regression, never on the
+     absolute level. Both usage series are only meaningful from 2026-07-05
+     (identity/de-loop rails shipped then).
 
 ★ PURE-DB shell: every probe is a Neon query or an in-process computation —
 NO outbound HTTP. (2026-07-06 incident: an earlier revision fetched
@@ -34,7 +45,7 @@ self-request.) Mirrors the house pattern otherwise: admin-gated, killable
 READ-ONLY / DIAGNOSTIC: each lane NAMES an actuator but fires NOTHING.
 
 Endpoints:
-  GET/POST /api/v1/admin/flywheel/master-tick   JSON scoreboard (5 lanes)
+  GET/POST /api/v1/admin/flywheel/master-tick   JSON scoreboard (6 lanes)
   GET      /admin/flywheel                       HTML dashboard (60s refresh)
   GET      /api/v1/admin/flywheel                CF zone-worker bypass alias
 
@@ -433,6 +444,139 @@ def _lane_seo_slug(c) -> list[dict]:
     return out
 
 
+# ── lane 6 · reach→usage conversion (the dominant funnel bottleneck) ──
+
+def _wow_pass(cur, prev, rel_floor: float = 0.20):
+    """WoW regression gate for GROWTH gauges: fail ONLY on a genuine
+    week-over-week RELATIVE drop > rel_floor (default 20%), never on the
+    absolute level — reach includes crawlers indexing us for citations, so
+    a low conversion % is structural, not an incident. Returns None
+    (indeterminate, rendered '?') when either side is missing or the prior
+    week is 0 (no base to regress from)."""
+    if cur is None or prev is None:
+        return None
+    try:
+        cur_f, prev_f = float(cur), float(prev)
+    except (TypeError, ValueError):
+        return None
+    if prev_f <= 0:
+        return None
+    return cur_f >= prev_f * (1.0 - rel_floor)
+
+
+def _wow_str(cur, prev) -> str:
+    """'+17.6% WoW' style delta string; 'n/a WoW' when not computable."""
+    try:
+        if cur is None or prev is None or float(prev) == 0:
+            return "n/a WoW"
+        return f"{100.0 * (float(cur) - float(prev)) / float(prev):+.1f}% WoW"
+    except (TypeError, ValueError):
+        return "n/a WoW"
+
+
+# Fallback mirror of ai_tracking.AI_PLATFORMS keys (the /ai external-AI
+# allowlist) so a broken ai_tracking import degrades the lane, not the tick.
+_EXT_AI_PLATFORMS_FALLBACK = (
+    "chatgpt", "claude", "gemini", "perplexity", "copilot", "grok",
+    "deepseek", "cursor", "windsurf", "meta", "cohere", "you", "smithery",
+    "groq", "huggingface", "mistral", "webmcp", "kimi", "qwen", "zai",
+    "minimax")
+
+
+def _ext_ai_platform_in_list() -> str:
+    """SQL literal IN-list of external-AI platform keys — the SAME allowlist
+    the /ai page and funnel_health's reach card use (ai_tracking.AI_PLATFORMS),
+    so lane 6's reach can never drift from the funnel's reach definition."""
+    try:
+        from ai_tracking import AI_PLATFORMS as _AP
+        keys = sorted(_AP.keys())
+    except Exception as e:
+        logger.debug("[flywheel] ai_tracking import failed, using fallback: %s", e)
+        keys = sorted(_EXT_AI_PLATFORMS_FALLBACK)
+    return ",".join("'" + str(k).replace("'", "''") + "'" for k in keys)
+
+
+def _lane_reach_usage(c) -> list[dict]:
+    out = []
+    if c is None:
+        return [_check("ru_nodb", "reach→usage lane needs db", None, "no db")]
+
+    # REACH = external AI-platform requests (ai_daily_stats, /ai allowlist).
+    # HONEST DENOMINATOR NOTE: this counts EVERY request from an AI-platform
+    # UA — overwhelmingly crawlers indexing us for citations, NOT agents in a
+    # tool-use loop. That is WHY the conversion % is structurally low; the
+    # signal is the TREND, not the level.
+    rrow = _rows(c, "SELECT "
+                    " SUM(request_count) FILTER (WHERE date >= CURRENT_DATE - 7),"
+                    " SUM(request_count) FILTER (WHERE date < CURRENT_DATE - 7) "
+                    "FROM ai_daily_stats "
+                    "WHERE date >= CURRENT_DATE - 14 "
+                    "AND LOWER(platform) IN (" + _ext_ai_platform_in_list() + ")")
+    reach_7d, reach_prev = (rrow[0] if rrow else (None, None))
+
+    # USAGE = real external tool calls — the ONE canonical de-loop
+    # (mcp_calls_deloop.real_calls_predicate over mcp_tool_calls), byte-
+    # identical to the funnel endpoint's tool_calls_7d_real. Series only
+    # meaningful from 2026-07-05. Literal % inside — _rows passes no params.
+    use_7d = use_prev = None
+    try:
+        from mcp_calls_deloop import real_calls_predicate
+        urow = _rows(c, "SELECT "
+                        " COUNT(*) FILTER (WHERE created_at >= now() - interval '7 days'),"
+                        " COUNT(*) FILTER (WHERE created_at < now() - interval '7 days') "
+                        "FROM mcp_tool_calls "
+                        "WHERE created_at >= now() - interval '14 days' "
+                        "AND " + real_calls_predicate())
+        if urow:
+            use_7d, use_prev = urow[0]
+    except Exception as e:
+        logger.debug("[flywheel] lane6 deloop probe failed: %s", e)
+
+    # 6a — the conversion itself: same-window 7d reach vs 7d real tool calls,
+    # WoW-floored. NOT the funnel page's 3.2% (that divides 30d usage by
+    # CUMULATIVE-since-Feb reach); this is the honest weekly rate. Note the
+    # two series overlap but aren't strictly nested (anonymous/'unknown'-UA
+    # real calls aren't in the reach allowlist), so it's a rate, not a share.
+    conv = conv_prev = None
+    if reach_7d and use_7d is not None:
+        conv = round(100.0 * float(use_7d) / float(reach_7d), 1)
+    if reach_prev and use_prev is not None:
+        conv_prev = round(100.0 * float(use_prev) / float(reach_prev), 1)
+    out.append(_check(
+        "ru_conversion", "reach→usage % (7d same-window) — WoW floor -20%",
+        _wow_pass(conv, conv_prev),
+        (f"{conv}% now ({use_7d} real calls / {reach_7d} AI-platform reqs) vs "
+         f"{conv_prev}% prior wk ({_wow_str(conv, conv_prev)}) · denominator is "
+         f"mostly citation-crawlers — low % is structural, watch the trend · "
+         f"funnel page's headline % uses cumulative-since-Feb reach")
+        if conv is not None else "reach or usage series unavailable"))
+
+    # 6b — usage volume WoW: real de-looped tool calls, 7d vs prior 7d.
+    out.append(_check(
+        "ru_usage_wow", "real tool calls 7d — WoW floor -20%",
+        _wow_pass(use_7d, use_prev),
+        (f"{use_7d} real calls/7d vs {use_prev} prior ({_wow_str(use_7d, use_prev)}) "
+         f"· canonical de-loop (real_calls_predicate) · series meaningful from 2026-07-05")
+        if use_7d is not None else "de-loop probe failed"))
+
+    # 6c — distinct real agents WoW (mcp_calls_identity — the north-star
+    # grain, same is_public_ip AND is_real_external filter as lane 3).
+    arow = _rows(c, "SELECT "
+                    " count(DISTINCT agent_id) FILTER (WHERE created_at >= now() - interval '7 days'),"
+                    " count(DISTINCT agent_id) FILTER (WHERE created_at < now() - interval '7 days') "
+                    "FROM mcp_calls_identity "
+                    "WHERE is_public_ip AND is_real_external "
+                    "AND created_at >= now() - interval '14 days'")
+    ag_7d, ag_prev = (arow[0] if arow else (None, None))
+    out.append(_check(
+        "ru_agents_wow", "distinct real agents 7d — WoW floor -20%",
+        _wow_pass(ag_7d, ag_prev),
+        (f"{ag_7d} distinct real agents/7d vs {ag_prev} prior ({_wow_str(ag_7d, ag_prev)}) "
+         f"· mcp_calls_identity, is_public_ip AND is_real_external")
+        if ag_7d is not None else "identity view unavailable"))
+    return out
+
+
 # ── tick orchestration ────────────────────────────────────────────────
 # (key, label, fn, actuator) — actuator is NAMED but never fired (diagnostic).
 
@@ -447,6 +591,9 @@ _LANES = [
      "revive X publisher + monthly-trend send-path"),
     ("seo_slug",      "5 · SEO slug-freeze",                 _lane_seo_slug,
      "serve stored canonical_slug from the /facility 301; stop the bleed"),
+    ("reach_usage",   "6 · Reach→usage conversion",          _lane_reach_usage,
+     "planner/prompts/quickstarts shipped 07-18 — measure their effect here; "
+     "next: WebMCP + directory placements"),
 ]
 
 _cache: dict = {"ts": 0.0, "payload": None}
@@ -582,7 +729,7 @@ def flywheel_dashboard():
         f"<h2 style='margin:0 0 4px'>Flywheel Master Shell "
         f"<span style='color:{'#22c55e' if green else '#eab308'}'>"
         f"{p['lanes_pass']}/{p['lanes_total']} lanes green</span></h2>"
-        f"<div style='color:#64748b;font-size:12px'>07-05 flywheel priorities · read-only "
+        f"<div style='color:#64748b;font-size:12px'>07-05 flywheel priorities + 07-18 lane 6 · read-only "
         f"DIAGNOSTIC (pure-DB, no self-requests; names an actuator per lane, fires nothing) · "
         f"30s tick cache · auto-refresh 60s · generated {_esc(p['generated_at'])} · "
         f"JSON: /api/v1/admin/flywheel/master-tick</div>"

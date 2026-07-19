@@ -333,6 +333,7 @@ def _build_data() -> dict:
                  "tool_calls_7d_real": 0, "tool_calls_30d_real": 0,
                  "tool_calls_30d_total": 0,
                  "reach_total_served": 0, "reach_external_ai": 0,
+                 "reach_external_ai_7d": None,
                  "real_conversions_30d": 0,
                  "dev_keys_by_tier": {}},
         "calls_by_week": [],
@@ -588,6 +589,22 @@ def _build_data() -> dict:
                 if str(r.get("platform") or "").strip().lower() in AI_PLATFORMS)
             out["kpis"]["reach_total_served"] = int(_reach_total)
             out["kpis"]["reach_external_ai"] = int(_reach_external)
+            # SAME-WINDOW 7d external-AI reach (ai_daily_stats) — pairs with
+            # tool_calls_7d_real for an honest reach→usage %: the cumulative
+            # number above divides a 30d numerator by a since-Feb denominator.
+            # Watched weekly as flywheel lane 6. Own try: a daily-stats gap
+            # must not blank the cumulative reach card.
+            try:
+                _r7 = _ai_execute(
+                    "SELECT COALESCE(SUM(request_count),0) AS n "
+                    "FROM ai_daily_stats WHERE date >= CURRENT_DATE - 7 "
+                    "AND platform IN %s",
+                    (tuple(AI_PLATFORMS.keys()),), fetch=True)
+                out["kpis"]["reach_external_ai_7d"] = (
+                    int(_r7["n"]) if _r7 else None)
+            except Exception as e:
+                logger.debug("7d reach probe failed: %s", e)
+                out["kpis"]["reach_external_ai_7d"] = None
         except Exception as e:
             logger.debug("reach probe failed: %s", e)
             out["kpis"]["reach_total_served"] = None
@@ -1514,6 +1531,13 @@ def _render_html(data: dict, admin_key: str) -> str:
                     if (_use_real is not None and _use_tot) else None)
     _r2u = (round(100 * _use_real / _reach_ext, 1)
             if (_use_real and _reach_ext) else None)
+    # Same-window variant: 7d real calls / 7d external-AI reach — the honest
+    # weekly rate (the % above divides 30d usage by cumulative-since-Feb
+    # reach). Watched weekly + WoW-floored as flywheel lane 6.
+    _use7 = k.get("tool_calls_7d_real")
+    _reach7 = k.get("reach_external_ai_7d")
+    _r2u7 = (round(100 * _use7 / _reach7, 1)
+             if (_use7 and _reach7) else None)
     unified_funnel_html = f"""
   <div style="display:flex;align-items:baseline;gap:10px;margin:4px 0 10px;flex-wrap:wrap">
     <span style="font-size:13px;font-weight:600;letter-spacing:0.04em;color:var(--ink)">UNIFIED FUNNEL — reach → usage → conversion</span>
@@ -1538,7 +1562,7 @@ def _render_html(data: dict, admin_key: str) -> str:
     <div class="hero">
       <div class="hero-l">⟂ Bottleneck: reach → usage</div>
       <div class="hero-v">{(str(_r2u) + '%') if _r2u is not None else '—'}</div>
-      <div class="hero-d">of AI platforms that find you actually invoke a tool — the leak is here, not the offer</div>
+      <div class="hero-d">of AI platforms that find you actually invoke a tool — the leak is here, not the offer{(' · same-window 7d: ' + str(_r2u7) + '% (' + _vn(_use7) + '/' + _vn(_reach7) + ' — flywheel lane 6)') if _r2u7 is not None else ''}</div>
     </div>
   </div>"""
 
