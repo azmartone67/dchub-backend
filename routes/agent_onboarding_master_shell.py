@@ -212,10 +212,15 @@ PLATFORMS: list[dict] = [
         "paths": ["mcp"], "reach_token": "huggingface",
         "bots": [],
         "required_auth": "none", "required_transport": "streamable",
-        "directory": "HF Spaces (mcp-server filter)", "directory_listed": False,
-        "connect_path": "self_serve", "recipe_published": False,
-        "next_action": "Ship a Gradio Space tagged 'mcp-server' that thin-wraps 3-5 flagship tools → agent-callable + Dynamic-Spaces discoverable. Dataset already public but is passive data, not a tool.",
-        "owner_gated": False, "effort": "low-medium (~1-2 days)",
+        "directory": "HF Spaces (mcp-server filter)", "directory_listed": True,
+        "connect_path": "self_serve", "recipe_published": True,
+        # 2026-07-19: DONE — hf.co/spaces/dchubcloud/dchub is live with 7 MCP
+        # tools (2 DCPI + 5 bridge → canonical /mcp under the hf-space partner
+        # key). Broadcast loop keeps it warm (free Spaces sleep after ~48h).
+        "next_action": ("COVERED — Space live + mcp-server-tagged + broadcast-"
+                        "warmed. Upside: fill the empty dchubcloud/dchub MODEL "
+                        "repo with a card pointing at the Space + dchub.cloud."),
+        "owner_gated": False, "effort": "tuning only",
     },
     {
         "key": "poe", "name": "Poe / Quora", "reach_weight": 0.4,

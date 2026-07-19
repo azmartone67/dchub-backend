@@ -106,6 +106,15 @@ _TARGETS = [
     # registry targets.
     ("modelscope",
      "https://www.modelscope.cn/mcp/servers/@DCHUBCLOUD/dchub", "GET", "registry"),
+    # 2026-07-19 (hf-space): the Hugging Face Space is an mcp-server-tagged
+    # Gradio app (7 tools: 2 DCPI classics + 5 bridge tools → canonical
+    # /mcp under the hf-space partner key). Probing the Space page keeps it
+    # WARM — free Spaces sleep after ~48h idle, and a sleeping Space is
+    # invisible to agents browsing hf.co/spaces?filter=mcp-server.
+    ("huggingface_space",
+     "https://huggingface.co/spaces/dchubcloud/dchub", "GET", "registry"),
+    ("huggingface_space_mcp",
+     "https://dchubcloud-dchub.hf.space/gradio_api/mcp/schema", "GET", "registry"),
 
     # Our own discovery surfaces — GETting them warms CF cache + bumps
     # the audit log on our side so we can see the agents are reachable.
