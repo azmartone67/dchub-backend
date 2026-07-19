@@ -15,10 +15,14 @@ moment DC Hub Media puts them in a blog / email / LinkedIn / X post:
      snapshot DATE), never generated_at.
 
 This shell (read-only probes, house master-shell pattern):
-  • scores the honesty levers PASS/FAIL against the LIVE feed, and
+  • scores the honesty levers PASS/FAIL against the LIVE feed,
   • GENERATES ready-to-send external messaging drafts (LinkedIn / X / email /
     blog) built from the verified numbers, leading with MOTION (weekly adds,
-    deal velocity, unified + open) — never the raw headline inventory.
+    deal velocity, unified + open) — never the raw headline inventory, and
+  • (lane 6, 2026-07-18) scores VERIFICATION THROUGHPUT: verified total /
+    ratio / 7d delta vs a floor measured from real recent velocity, plus the
+    actuator heartbeat (dchub-jobs.yml discovery+auto-approve). See the lane-6
+    block comment for the full mechanics + why no batch uplift exists.
 
 Drafts are DRAFTS: this never auto-posts (media POSITIVE policy — publishing is
 env-gated elsewhere). It hands Media copy that's already been honesty-checked.
@@ -391,12 +395,213 @@ def _lane_funnel(f: dict) -> list[dict]:
     return out
 
 
+# ── lane 6: verification velocity (2026-07-18) ────────────────────────
+#
+# "Verified" is the moat's foundation number (~4.9K of ~22K tracked) and until
+# now nothing measured or drove its THROUGHPUT. Mechanics, from the pipeline:
+#
+#   verified  :=  discovered_facilities WHERE COALESCE(is_duplicate,0)=0
+#                 (the fleet filter — same query as /api/v1/stats + whats-new)
+#   actuator  :=  crawlers (osm-crawl / datacentermap-crawl / news-NER) feed
+#                 discovered_facilities → .github/workflows/dchub-jobs.yml
+#                 (03/09/15/21 UTC) runs discovery_auto_approve.run_auto_approval,
+#                 which name/geo-dedups each row: duplicates get is_duplicate=1,
+#                 survivors keep is_duplicate=0 and ARE the verified count.
+#
+# So verified growth is DISCOVERY-BOUND: the merge queue (merged_at IS NULL AND
+# is_duplicate=0) is fully drained (0 pending as of 2026-07-18), and there is NO
+# safe batch uplift — the ~17K unverified tracked rows are dedup-confirmed
+# duplicates (flipping them would corrupt the count, not verify anything), and
+# the gated competitor-gap lead promotion (DISCOVERY_PROMOTE_COMPETITOR_GAP)
+# writes to `facilities`, which doesn't move this metric at all. Raising the
+# number honestly means MORE unique discoveries, so this lane watches velocity.
+#
+# Velocity floor: 60% of the MEDIAN weekly verified adds over the last 8
+# complete weeks (median, not mean — one 331-row bulk-import week must not set
+# an impossible bar). Measured 2026-07-18: weekly adds [14,18,20,23,43,48,72,331]
+# → median 33 → floor 20/wk vs current 7d delta +61. The floor is recomputed
+# live every tick, so it tracks real velocity and catches stalls, not ambition.
+#
+# NOTE: snapshot verified_count history before 2026-07-11 is NOT comparable —
+# issue #1539 (fixed 2026-07-10) had the old filter counting the draining merge
+# queue, so June reads 6.9K→400→0. The 7d delta only uses post-fix snapshots.
+
+_VERIFIED_DEF_FIXED_SQL = "DATE '2026-07-11'"   # first snapshot on the corrected definition
+_FLOOR_FRACTION = 0.6
+_FLOOR_WEEKS = 8
+_MIN_WEEKS_FOR_FLOOR = 3   # fewer complete weeks than this → no honest floor
+
+
+def _median(vals):
+    vals = sorted(vals)
+    if not vals:
+        return None
+    n = len(vals)
+    return vals[n // 2] if n % 2 else (vals[n // 2 - 1] + vals[n // 2]) / 2.0
+
+
+def _floor_from_weekly(weekly) -> "int | None":
+    """Stall floor from MEASURED weekly verified adds (complete weeks only).
+    60% of the median, min 1. Returns None when there isn't enough history to
+    floor honestly (< _MIN_WEEKS_FOR_FLOOR weeks) — an unknown, not a fail."""
+    vals = [v for v in (weekly or []) if isinstance(v, (int, float)) and v >= 0]
+    if len(vals) < _MIN_WEEKS_FOR_FLOOR:
+        return None
+    med = _median(vals)
+    return max(1, int(round(_FLOOR_FRACTION * med)))
+
+
+def _verification_stats() -> dict:
+    """Read-only velocity probes against the live DB (the one lane where the
+    public feed can't answer — it has no history). Never raises; every probe
+    degrades to None so the lane reports 'unknown' instead of crashing."""
+    out = {
+        "verified_7d_delta": None,        # from post-fix daily snapshots
+        "verified_snapshot_latest": None,  # ISO date of newest snapshot
+        "verified_weekly_adds": None,      # last 8 COMPLETE weeks, oldest→newest
+        "verified_median_weekly": None,
+        "verified_floor_7d": None,         # 60% of median weekly adds
+        "verified_discoveries_7d": None,   # actuator heartbeat (new rows, any dedup outcome)
+        "verified_last_discovery": None,
+    }
+    dsn = os.environ.get("DATABASE_URL")
+    if not dsn:
+        return out
+    try:
+        import psycopg2
+        with psycopg2.connect(dsn, sslmode="require", connect_timeout=8) as c:
+            with c.cursor() as cur:
+                # 7d verified delta — post-definition-fix snapshots ONLY.
+                try:
+                    cur.execute(f"""
+                        SELECT snapshot_date, verified_count
+                          FROM facility_count_snapshots
+                         WHERE snapshot_date >= {_VERIFIED_DEF_FIXED_SQL}
+                           AND verified_count IS NOT NULL AND verified_count > 0
+                         ORDER BY snapshot_date
+                    """)
+                    rows = cur.fetchall()
+                    if rows:
+                        latest_d, latest_v = rows[-1]
+                        out["verified_snapshot_latest"] = latest_d.isoformat()
+                        base = [r for r in rows if (latest_d - r[0]).days >= 7]
+                        if base:
+                            out["verified_7d_delta"] = int(latest_v) - int(base[-1][1])
+                except Exception:
+                    c.rollback()
+                # Weekly verified adds (floor source) — by discovered_at, complete
+                # weeks only, zero-filled so silent weeks drag the median DOWN
+                # (a stall must lower the bar's source data, not vanish from it).
+                # discovered_at is TEXT → cast; a bad row degrades to None (caught).
+                try:
+                    cur.execute("""
+                        WITH wk AS (
+                          SELECT generate_series(
+                                   date_trunc('week', NOW()) - INTERVAL '%s weeks',
+                                   date_trunc('week', NOW()) - INTERVAL '1 week',
+                                   INTERVAL '1 week')::date AS wk_start
+                        ), adds AS (
+                          SELECT date_trunc('week', discovered_at::timestamptz)::date AS wk_start,
+                                 COUNT(*) FILTER (WHERE COALESCE(is_duplicate,0)=0) AS n
+                            FROM discovered_facilities
+                           WHERE discovered_at IS NOT NULL
+                           GROUP BY 1
+                        )
+                        SELECT wk.wk_start, COALESCE(adds.n, 0)
+                          FROM wk LEFT JOIN adds USING (wk_start)
+                         ORDER BY wk.wk_start
+                    """ % int(_FLOOR_WEEKS))
+                    weekly = [int(r[1] or 0) for r in cur.fetchall()]
+                    if weekly:
+                        out["verified_weekly_adds"] = weekly
+                        med = _median(weekly)
+                        out["verified_median_weekly"] = round(med, 1) if med is not None else None
+                        out["verified_floor_7d"] = _floor_from_weekly(weekly)
+                except Exception:
+                    c.rollback()
+                # Actuator heartbeat — are crawlers still feeding the dedup at all?
+                try:
+                    cur.execute("""
+                        SELECT COUNT(*) FILTER
+                                 (WHERE discovered_at::timestamptz >= NOW() - INTERVAL '7 days'),
+                               MAX(discovered_at::timestamptz)
+                          FROM discovered_facilities
+                         WHERE discovered_at IS NOT NULL
+                    """)
+                    r = cur.fetchone()
+                    if r:
+                        out["verified_discoveries_7d"] = int(r[0] or 0)
+                        out["verified_last_discovery"] = r[1].isoformat() if r[1] else None
+                except Exception:
+                    c.rollback()
+        try:
+            c.close()
+        except Exception:
+            pass
+    except Exception as e:
+        logger.warning("[coverage-shell] verification stats probe failed: %s", e)
+    return out
+
+
+def _verified_ratio(f: dict) -> "float | None":
+    v, t = _num(f.get("dc_verified")), _num(f.get("dc_tracked"))
+    if v and t and t > 0:
+        return round(v / t, 4)
+    return None
+
+
+def _lane_verification(f: dict) -> list[dict]:
+    """Verification as a scored number: total + ratio from the live public
+    feed, 7d velocity vs a floor measured from real recent throughput, and
+    the actuator's heartbeat. See the block comment above for mechanics."""
+    out = []
+    v, t = _num(f.get("dc_verified")), _num(f.get("dc_tracked"))
+    ratio = _verified_ratio(f)
+    out.append(_check(
+        "verified_totals", "verified total + ratio of tracked (live feed)",
+        bool(v) and bool(t),
+        f"verified={_fmt(v)} · tracked={_fmt(t)} · ratio="
+        + (f"{ratio:.1%}" if ratio is not None else "—")))
+    delta, floor = f.get("verified_7d_delta"), f.get("verified_floor_7d")
+    med = f.get("verified_median_weekly")
+    out.append(_check(
+        "verified_velocity_floor",
+        "verified 7d delta ≥ floor (60% of median weekly adds, 8 complete wks)",
+        None if (delta is None or floor is None) else (delta >= floor),
+        (f"+{_fmt(delta)}/7d vs floor {_fmt(floor)} (median weekly {med})"
+         if (delta is not None and floor is not None)
+         else f"insufficient post-2026-07-11 history: delta={delta} floor={floor} "
+              f"(pre-fix snapshots not comparable, issue #1539)")))
+    latest = f.get("verified_snapshot_latest")
+    fresh = None
+    if latest:
+        try:
+            fresh = (datetime.now(timezone.utc).date()
+                     - date.fromisoformat(str(latest)[:10])).days <= 2
+        except Exception:
+            fresh = None
+    out.append(_check(
+        "verified_snapshot_fresh",
+        "facility_count_snapshots ≤2d old (feeder: facility-snapshot-daily.yml 05:19 UTC)",
+        fresh, f"latest snapshot {latest or '—'}"))
+    d7 = f.get("verified_discoveries_7d")
+    out.append(_check(
+        "verified_actuator_alive",
+        "actuator fed within 7d — dchub-jobs.yml discovery+auto-approve (03/09/15/21 UTC)",
+        None if d7 is None else d7 > 0,
+        f"new discovered rows 7d={_fmt(d7)} · last={f.get('verified_last_discovery') or '—'} · "
+        f"verified = is_duplicate=0 survivors of discovery_auto_approve dedup; "
+        f"growth is discovery-bound (merge queue drained — no batch uplift exists)"))
+    return out
+
+
 _LANES = [
     ("facilities_honesty", "1 · Facilities: tracked vs verified", _lane_honesty),
     ("no_future_date",     "2 · Date: as_of, never future",       _lane_date),
     ("provenance",         "3 · Provenance labeled (unify≠discover)", _lane_provenance),
     ("messaging",          "4 · Messaging drafts honesty-safe",    _lane_messaging),
     ("funnel",             "5 · Funnel: reach + anon→free→$10→metered", _lane_funnel),
+    ("verification",       "6 · Verification: velocity vs floor + actuator", _lane_verification),
 ]
 
 # The upgrade ladder, rendered at a glance on the dashboard. Static because
@@ -412,6 +617,9 @@ _LADDER = [
 
 def _run_tick() -> dict:
     f = _facts()
+    # lane 6 needs history the public feed doesn't carry — read-only DB probes
+    f.update(_verification_stats())
+    f["verified_ratio"] = _verified_ratio(f)
     lanes = []
     for key, label, fn in _LANES:
         try:
@@ -514,6 +722,14 @@ def coverage_dashboard():
         f"{_fmt(facts.get('real_calls_7d'))} calls · {_fmt(facts.get('citations_7d'))} citations · "
         f"top {_esc(str(facts.get('top_platform')))} ({_fmt(facts.get('top_platform_agents'))}) · "
         f"{_fmt(facts.get('probe_agents_7d'))} probe agents filtered out")
+    _vr = facts.get("verified_ratio")
+    _med = facts.get("verified_median_weekly")
+    verif_line = (
+        f"verification {_fmt(facts.get('dc_verified'))}/{_fmt(facts.get('dc_tracked'))}"
+        + (f" ({_vr:.1%})" if _vr is not None else "")
+        + f" · +{_fmt(facts.get('verified_7d_delta'))}/7d vs floor {_fmt(facts.get('verified_floor_7d'))}"
+        + f" (median wk {_med if _med is not None else '—'})"
+        + f" · actuator dchub-jobs.yml auto-approve · {_fmt(facts.get('verified_discoveries_7d'))} discovered/7d")
     ladder_html = "".join(
         f"<span style='display:inline-block;background:#0f172a;border:1px solid #334155;"
         f"border-radius:8px;padding:6px 10px;margin:3px 6px 3px 0;font-size:12px'>"
@@ -537,6 +753,7 @@ def coverage_dashboard():
         f"JSON: /api/v1/admin/coverage/master-tick</div>"
         f"<div style='color:#38bdf8;font-size:12px;margin-top:6px'>{facts_line}</div>"
         f"<div style='color:#34d399;font-size:12px;margin-top:4px'>{funnel_line}</div>"
+        f"<div style='color:#f472b6;font-size:12px;margin-top:4px'>{verif_line}</div>"
         f"<div style='margin:12px 0 2px;font-size:12px;color:#64748b'>upgrade ladder</div>"
         f"<div style='margin-bottom:6px'>{ladder_html}</div>"
         + "".join(cards)
