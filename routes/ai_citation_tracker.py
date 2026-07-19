@@ -615,7 +615,14 @@ def draft_press_from_citations():
         _DISCLAIMER_RE = _re_qa.compile(
             r"(don'?t|do not|cannot|can'?t|unable to|no)\s+(have|provide|access|find)"
             r"|i (don'?t|do not) have (specific|current|real[- ]?time|access)"
-            r"|as an ai|i'?m not able to|no specific (current )?information",
+            r"|as an ai|i'?m not able to|no specific (current )?information"
+            # press-fix (2026-07-18): a knowledge-cutoff disclaimer is a
+            # knowledge disclaimer. "As of my last update in October 2023,
+            # dchub.cloud is a cloud IaaS provider…" was passing this gate and
+            # would have been pressed as a citation. Skip anything that leads
+            # with a training-cutoff hedge.
+            r"|as of my (last|latest|most recent) (update|training)"
+            r"|knowledge (cutoff|cut-off)|training (data|cutoff)",
             _re_qa.I)
         # press-fix (2026-07-18): align with wins_poster.py's self-solicited
         # set — daily_probe/hand_obs are OUR probes too and must never get
