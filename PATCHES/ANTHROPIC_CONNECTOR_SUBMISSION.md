@@ -138,40 +138,45 @@ this stalls: a minimal 5-seat Team org (~$150/mo) purely as the
 submission vehicle, keeping the Max plan for daily work.
 
 **To**: mcp-review@anthropic.com
-**Subject**: Connector Directory submission — DC Hub (cloud.dchub/mcp-server) — no Team org, what's the path?
+**Subject**: Connector Directory submission — DC Hub (cloud.dchub/mcp-server) — Claude-built, 445k+ MCP tool calls
 
 Hi MCP review team,
 
-We run DC Hub — the live, agent-native data layer for data-center &
-energy infrastructure at `https://dchub.cloud/mcp` (streamable-http).
-74 tools, 21,000+ facilities across 170+ countries, 300+ power markets
+We run DC Hub — the live data layer for data-center & energy
+infrastructure at `https://dchub.cloud/mcp` (streamable-http). 74
+tools, 21,000+ facilities across 170+ countries, 300+ power markets
 scored daily (DCPI), 1,400+ tracked M&A deals, live grid telemetry
 across US ISOs + international grids. Everything CC-BY-4.0 with stable
 URLs, so Claude can cite it inline.
 
-We'd like to submit to the Connectors Directory, but the submission
-portal lives in Team/Enterprise admin settings and we're a solo-founder
-shop on a personal plan. What's the recommended path in that situation?
-Happy to file through whatever channel you point us at.
+Facts for a quick review:
+- **Claude-built and Claude-operated.** The platform's autonomous ops
+  brain runs on Claude (Fable 5 / Opus 4.8 via the Anthropic API), and
+  the codebase is developed with Claude Code. DC Hub is a Claude
+  showcase as much as a data product.
+- **Real usage.** 445,000+ MCP tool calls logged since April 2026,
+  currently ~8,000/day. Claude and Cursor are active MCP clients.
+- **Review-ready.** Public privacy policy (https://dchub.cloud/privacy,
+  plus /security); published + DNS-authed on the official registry as
+  `cloud.dchub/mcp-server`; listed on Smithery, mcp.so, Glama,
+  PulseMCP. Reviewer test access is one call — the `claim_free_key`
+  tool mints a key with no signup, and we'll provision a full-limit
+  reviewer key on request. Docs: https://dchub.cloud/AGENTS.md and
+  https://dchub.cloud/api/v1/ai-agents.json.
 
-Review-readiness, up front:
-- Public privacy policy: https://dchub.cloud/privacy (and /security)
-- Published + DNS-authed on the official registry as
-  `cloud.dchub/mcp-server`; also listed on Smithery, mcp.so, Glama,
-  PulseMCP
-- Docs for reviewers: https://dchub.cloud/AGENTS.md and
-  https://dchub.cloud/api/v1/ai-agents.json
-- Test access: free tier needs no signup (10 calls/day) and the
-  `claim_free_key` tool mints a key in one call — a reviewer can
-  exercise every tool from Claude.ai in minutes; we'll provision a
-  reviewer key with full limits on request
-- 1M+ AI-agent requests served; Claude and Cursor are active MCP
-  clients today
-
-15-min demo any time.
+The blocker: the submission portal lives in Team/Enterprise admin
+settings, and we're a solo-founder shop on a Max plan. I've submitted
+twice via the Google form and three times via contact-sales without a
+response. What's the right path for a developer in our situation?
+Happy to file through whatever channel you point at — or do a 15-min
+demo any time.
 
 — Jonathan Martone, Founder, DC Hub
-jm@dchub.cloud · linkedin.com/in/jonathanmartone
+jonathan@dchub.cloud · linkedin.com/in/jonathanmartone
+
+(Numbers audit trail: 445,943 rows in the MCP call ledger as of
+2026-07-19 01:23 UTC, span 2026-04-30 → present; ~8,035 calls/24h per
+live /api/v1/stats. Re-verify before sending if it's been a while.)
 
 ---
 
