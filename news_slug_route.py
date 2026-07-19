@@ -490,6 +490,12 @@ def _render_page(title, subheadline, body, category, date_human, slug, meta,
 {sub_html}
 
 <div class="footer">
+  <div style="margin-bottom:10px">
+    Follow DC Hub:
+    <a href="https://www.linkedin.com/company/dchub" rel="noopener">LinkedIn</a> ·
+    <a href="https://x.com/dchubcloud" rel="noopener">X</a> ·
+    <a href="https://bsky.app/profile/dchub.bsky.social" rel="noopener">Bluesky</a>
+  </div>
   Published by <a href="https://dchub.cloud">DC Hub</a> ·
   <a href="/press">Press room</a> ·
   <a href="/dcpi">DCPI</a> ·

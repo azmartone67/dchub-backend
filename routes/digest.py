@@ -327,6 +327,10 @@ def _render_digest_email_html(d, unsub_url=None):
         <tr><td style="padding:22px 0 0 0"><table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr>
           <td style="border-top:1px solid #26262f;padding:16px 0 0 0;font:400 12px/1.6 -apple-system,Segoe UI,Roboto,Arial,sans-serif;color:#71717a;text-align:center">
             DC Hub · agent-native data-center &amp; power intelligence · free for citation (CC BY 4.0)<br>
+            Follow DC Hub:
+            <a href="https://www.linkedin.com/company/dchub" style="color:#71717a;text-decoration:underline">LinkedIn</a> ·
+            <a href="https://x.com/dchubcloud" style="color:#71717a;text-decoration:underline">X</a> ·
+            <a href="https://bsky.app/profile/dchub.bsky.social" style="color:#71717a;text-decoration:underline">Bluesky</a><br>
             {footer_unsub}<a href="{SITE}/dcpi" style="color:#71717a;text-decoration:underline">Open DCPI</a> ·
             <a href="{SITE}/digest/today" style="color:#71717a;text-decoration:underline">View in browser</a>
           </td>

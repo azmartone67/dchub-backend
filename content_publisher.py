@@ -11,6 +11,7 @@ import time
 import requests
 import threading
 from contextlib import contextmanager, ExitStack
+import json
 from datetime import datetime, timedelta
 from flask import Blueprint, request, jsonify
 from utils.anthropic_helper import anthropic_messages_url
@@ -3675,7 +3676,18 @@ def start_auto_publisher():
                                 _record_attempt("linkedin", "error",
                                                  error_class=_classify_publish_error(result))
                                 try:
-                                    cur.execute("UPDATE social_media_posts SET status = 'failed' WHERE id = %s", (post_id,))
+                                    # growth-fix (2026-07-19): persist WHY. 31 failed
+                                    # rows in 14d carried no error — the class lived
+                                    # only in memory and vanished on every deploy, so
+                                    # the lossy-LinkedIn problem was undiagnosable.
+                                    cur.execute(
+                                        "UPDATE social_media_posts SET status = 'failed', "
+                                        "engagement_data = %s WHERE id = %s",
+                                        (json.dumps({
+                                            "error_class": _classify_publish_error(result),
+                                            "error": str(result)[:400],
+                                            "at": datetime.utcnow().isoformat() + "Z",
+                                        }), post_id))
                                     conn.commit()
                                 except Exception:
                                     note_swallowed_write("social_media_posts", where="content_publisher._auto_publish_loop")
@@ -4038,7 +4050,14 @@ def start_bluesky_publisher():
                             _record_attempt("bluesky", "error",
                                              error_class=_classify_publish_error(result))
                             try:
-                                cur.execute("UPDATE social_media_posts SET status = 'failed' WHERE id = %s", (post_id,))
+                                cur.execute(
+                                    "UPDATE social_media_posts SET status = 'failed', "
+                                    "engagement_data = %s WHERE id = %s",
+                                    (json.dumps({
+                                        "error_class": _classify_publish_error(result),
+                                        "error": str(result)[:400],
+                                        "at": datetime.utcnow().isoformat() + "Z",
+                                    }), post_id))
                                 conn.commit()
                             except Exception:
                                 note_swallowed_write("social_media_posts", where="content_publisher._bsky_loop")
