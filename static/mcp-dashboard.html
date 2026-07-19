@@ -50,9 +50,17 @@ async function load() {
     const d = await (await fetch('/api/v1/mcp/funnel?_cb=' + Date.now(), { cache: 'no-store' })).json();
     const kt = d.keys_by_tier || {};
     const k = (kt.free||0) + (kt.paid||0) + (kt.enterprise||0);
+    // r-topcaller: WoW + single-caller concentration on the headline, so one
+    // bot ramping/leaving (or an infra dip) can't masquerade as a trend.
+    const wow = d.tool_calls_wow_pct;
+    const wowTxt = (wow == null) ? '' :
+      ` · WoW <b style="color:${wow >= 0 ? '#3fb950' : '#f85149'}">${wow > 0 ? '+' : ''}${wow}%</b>`;
+    const tcp = d.top_caller_pct_7d_complete;
+    const tcpTxt = (tcp == null) ? '' :
+      ` · top caller <b style="color:${tcp >= 25 ? '#d29922' : '#888'}">${tcp}%</b> of external (${(d.top_caller_calls_7d_complete ?? 0).toLocaleString()} calls, ${(d.external_ips_7d_complete ?? 0)} IPs${tcp >= 25 ? ' — one caller dominates, read the trend with care' : ''})`;
     document.getElementById('kpis').innerHTML = `
       <div class="card"><div class="label">Tool calls (7d · external, full days)</div><div class="value">${(d.tool_calls_7d_complete_real ?? d.tool_calls_7d_complete ?? d.tool_calls_7d ?? 0).toLocaleString()}</div>
-        <div class="sub-value">~${(d.tool_calls_per_day_complete_real ?? d.tool_calls_per_day_complete ?? 0).toLocaleString()}/day · 7 full days, <b>self-heal/probe traffic excluded</b> · <span style="color:#888">incl. internal+today: ${(d.tool_calls_7d ?? 0).toLocaleString()}</span></div></div>
+        <div class="sub-value">~${(d.tool_calls_per_day_complete_real ?? d.tool_calls_per_day_complete ?? 0).toLocaleString()}/day · 7 full days, <b>self-heal/probe traffic excluded</b> · <span style="color:#888">incl. internal+today: ${(d.tool_calls_7d ?? 0).toLocaleString()}</span>${wowTxt}${tcpTxt}</div></div>
       <div class="card"><div class="label">Upgrade signals (7d)</div><div class="value">${d.upgrade_signals_7d ?? 0}</div></div>
       <div class="card"><div class="label">Conversions (30d)</div><div class="value">${d.conversions_30d ?? 0}</div></div>
       <div class="card"><div class="label">Active dev keys</div><div class="value">${k}</div>

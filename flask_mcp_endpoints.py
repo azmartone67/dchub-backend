@@ -2295,6 +2295,37 @@ def mcp_funnel():
                 out["tool_calls_prior_7d_complete_real"] = None
                 out["tool_calls_wow_pct"] = None
 
+            # r-topcaller (2026-07-18): single-caller concentration over the
+            # SAME complete-7d external window as the headline. One anonymous
+            # AWS bot ramped to 45% of a day's external calls (07-12→07-16)
+            # then vanished mid-burst — the rolling headline read it as a
+            # funnel decline. A trend over a number one caller can dominate
+            # must show that concentration next to it.
+            try:
+                cur.execute(
+                    "WITH per_ip AS ("
+                    "  SELECT ip_address, COUNT(*) AS cnt FROM mcp_tool_calls "
+                    "  WHERE created_at >= CURRENT_DATE - INTERVAL '7 days' "
+                    "    AND created_at < CURRENT_DATE "
+                    f"    AND {_deloop_real_calls_predicate()} "
+                    "  GROUP BY ip_address) "
+                    "SELECT COUNT(*), COALESCE(MAX(cnt), 0), "
+                    "       COALESCE(SUM(cnt), 0) FROM per_ip"
+                )
+                _ips, _topc, _totc = (cur.fetchone() or (0, 0, 0))
+                # SUM() comes back Decimal — cast before mixing with floats.
+                _ips, _topc, _totc = int(_ips or 0), int(_topc or 0), int(_totc or 0)
+                out["external_ips_7d_complete"] = _ips
+                out["top_caller_calls_7d_complete"] = _topc
+                out["top_caller_pct_7d_complete"] = (
+                    round(100.0 * _topc / _totc, 1) if _totc else None)
+            except Exception:
+                try: conn.rollback()
+                except Exception: pass
+                out["external_ips_7d_complete"] = None
+                out["top_caller_calls_7d_complete"] = None
+                out["top_caller_pct_7d_complete"] = None
+
             # r42x (2026-05-26): lifetime aggregate so press releases can
             # cite "N total tool calls since launch" as a moat metric.
             # Uses pg_class.reltuples for instant approximation (no full
