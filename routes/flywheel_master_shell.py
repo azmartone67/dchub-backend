@@ -474,6 +474,28 @@ def _wow_str(cur, prev) -> str:
         return "n/a WoW"
 
 
+# Cloudflare's published IPv4 edge ranges (www.cloudflare.com/ips-v4),
+# CIDR-exact. mcp_calls_identity.agent_id = md5(first XFF token), and until
+# zone-worker v4.9.28 (2026-07-10) CF stripped X-Forwarded-For on worker
+# subrequests, so that token was the worker's ROTATING egress IP — every CF
+# POP counted as a fresh "agent" (132 of the 2026-07-05..12 week's 212 were
+# POPs, not agents; diagnosed 2026-07-19). Excluding these ranges from the
+# distinct-agent count compares like with like across the fix: a no-op on
+# post-fix rows (the worker forwards the real caller IP) and a permanent
+# guard if edge IPs ever leak back into XFF. Calls stay counted — only the
+# AGENT grain was wrong, the traffic was real.
+_CF_POP_REGEX = (
+    r"^(104\.(1[6-9]|2[0-7])\.|172\.(6[4-9]|7[01])\.|162\.15[89]\."
+    r"|141\.101\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\."
+    r"|108\.162\.(19[2-9]|2[0-4][0-9]|25[0-5])\."
+    r"|173\.245\.(4[89]|5[0-9]|6[0-3])\."
+    r"|188\.114\.(9[6-9]|10[0-9]|11[01])\."
+    r"|190\.93\.(24[0-9]|25[0-5])\.|197\.234\.24[0-3]\."
+    r"|198\.41\.(12[89]|1[3-9][0-9]|2[0-4][0-9]|25[0-5])\."
+    r"|131\.0\.7[2-5]\.|103\.21\.24[4-7]\.|103\.22\.20[0-3]\.|103\.31\.[4-7]\.)"
+)
+
+
 # Fallback mirror of ai_tracking.AI_PLATFORMS keys (the /ai external-AI
 # allowlist) so a broken ai_tracking import degrades the lane, not the tick.
 _EXT_AI_PLATFORMS_FALLBACK = (
@@ -560,19 +582,26 @@ def _lane_reach_usage(c) -> list[dict]:
         if use_7d is not None else "de-loop probe failed"))
 
     # 6c — distinct real agents WoW (mcp_calls_identity — the north-star
-    # grain, same is_public_ip AND is_real_external filter as lane 3).
+    # grain, same is_public_ip AND is_real_external filter as lane 3), on
+    # the SAME-GRAIN basis: CF-POP client_ips excluded from BOTH windows
+    # (see _CF_POP_REGEX — pre-2026-07-10 rows carry rotating CF egress
+    # IPs as agent_ids, so the raw WoW compares POP breadth to caller
+    # breadth and reads as a fake -33% collapse).
     arow = _rows(c, "SELECT "
                     " count(DISTINCT agent_id) FILTER (WHERE created_at >= now() - interval '7 days'),"
                     " count(DISTINCT agent_id) FILTER (WHERE created_at < now() - interval '7 days') "
                     "FROM mcp_calls_identity "
                     "WHERE is_public_ip AND is_real_external "
+                    "AND client_ip !~ '" + _CF_POP_REGEX + "' "
                     "AND created_at >= now() - interval '14 days'")
     ag_7d, ag_prev = (arow[0] if arow else (None, None))
     out.append(_check(
         "ru_agents_wow", "distinct real agents 7d — WoW floor -20%",
         _wow_pass(ag_7d, ag_prev),
         (f"{ag_7d} distinct real agents/7d vs {ag_prev} prior ({_wow_str(ag_7d, ag_prev)}) "
-         f"· mcp_calls_identity, is_public_ip AND is_real_external")
+         f"· mcp_calls_identity, is_public_ip AND is_real_external, CF-POP IPs excluded "
+         f"(same-grain basis: until worker v4.9.28 on 2026-07-10 the edge stripped XFF, "
+         f"so agent_id counted rotating Cloudflare POPs — pre-fix breadth was inflated)")
         if ag_7d is not None else "identity view unavailable"))
     return out
 
