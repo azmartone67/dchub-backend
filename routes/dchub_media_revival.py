@@ -176,6 +176,7 @@ def _dormant_by_platform(min_prior_calls: int = 30, idle_days: int = 14,
                    WHERE created_at >= NOW() - INTERVAL '{int(look_back_days)} days'
                      AND is_public_ip
                      AND is_real_external
+                     AND agent_id IS NOT NULL  -- CF-POP rows carry NULL agent_id (grain guard 2026-07-19)
                    GROUP BY agent_id
                 )
                 SELECT agent_id, prior_calls, last_call, first_call,

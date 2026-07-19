@@ -474,26 +474,27 @@ def _wow_str(cur, prev) -> str:
         return "n/a WoW"
 
 
-# Cloudflare's published IPv4 edge ranges (www.cloudflare.com/ips-v4),
-# CIDR-exact. mcp_calls_identity.agent_id = md5(first XFF token), and until
-# zone-worker v4.9.28 (2026-07-10) CF stripped X-Forwarded-For on worker
-# subrequests, so that token was the worker's ROTATING egress IP — every CF
-# POP counted as a fresh "agent" (132 of the 2026-07-05..12 week's 212 were
-# POPs, not agents; diagnosed 2026-07-19). Excluding these ranges from the
-# distinct-agent count compares like with like across the fix: a no-op on
-# post-fix rows (the worker forwards the real caller IP) and a permanent
-# guard if edge IPs ever leak back into XFF. Calls stay counted — only the
-# AGENT grain was wrong, the traffic was real.
-_CF_POP_REGEX = (
-    r"^(104\.(1[6-9]|2[0-7])\.|172\.(6[4-9]|7[01])\.|162\.15[89]\."
-    r"|141\.101\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\."
-    r"|108\.162\.(19[2-9]|2[0-4][0-9]|25[0-5])\."
-    r"|173\.245\.(4[89]|5[0-9]|6[0-3])\."
-    r"|188\.114\.(9[6-9]|10[0-9]|11[01])\."
-    r"|190\.93\.(24[0-9]|25[0-5])\.|197\.234\.24[0-3]\."
-    r"|198\.41\.(12[89]|1[3-9][0-9]|2[0-4][0-9]|25[0-5])\."
-    r"|131\.0\.7[2-5]\.|103\.21\.24[4-7]\.|103\.22\.20[0-3]\.|103\.31\.[4-7]\.)"
-)
+# Agent-grain guard: until zone-worker v4.9.28 (2026-07-10) CF stripped XFF
+# on worker subrequests, so agent_id (md5 of the first XFF token) counted the
+# worker's ROTATING Cloudflare egress POPs as agents (132 of the 2026-07-05..12
+# week's 212; diagnosed 2026-07-19). The canonical regex lives in
+# mcp_calls_deloop.CF_POP_IP_REGEX (the view also NULLs agent_id for POP rows);
+# lane 6c keeps an explicit client_ip filter as belt-and-braces so the north-
+# star gauge stays honest even against a stale view. Fallback mirror below —
+# keep byte-identical with mcp_calls_deloop.
+try:
+    from mcp_calls_deloop import CF_POP_IP_REGEX as _CF_POP_REGEX
+except Exception:
+    _CF_POP_REGEX = (
+        r"^(104\.(1[6-9]|2[0-7])\.|172\.(6[4-9]|7[01])\.|162\.15[89]\."
+        r"|141\.101\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\."
+        r"|108\.162\.(19[2-9]|2[0-4][0-9]|25[0-5])\."
+        r"|173\.245\.(4[89]|5[0-9]|6[0-3])\."
+        r"|188\.114\.(9[6-9]|10[0-9]|11[01])\."
+        r"|190\.93\.(24[0-9]|25[0-5])\.|197\.234\.24[0-3]\."
+        r"|198\.41\.(12[89]|1[3-9][0-9]|2[0-4][0-9]|25[0-5])\."
+        r"|131\.0\.7[2-5]\.|103\.21\.24[4-7]\.|103\.22\.20[0-3]\.|103\.31\.[4-7]\.)"
+    )
 
 
 # Fallback mirror of ai_tracking.AI_PLATFORMS keys (the /ai external-AI

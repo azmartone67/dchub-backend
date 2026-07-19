@@ -185,8 +185,14 @@ def _lane_mcp() -> list[dict]:
     out.append(_check("mcp_tools_list_latency", "tools/list latency < 2s",
                       (ms < 2000) if st else None, f"{ms}ms", ms))
 
+    # ANNOUNCED UA (2026-07-19): this tools/call lands in mcp_tool_calls, and
+    # with the default _BROWSER_UA + no clientInfo it classified as a real
+    # external agent — the probe fleet minted ~97 fake "agents"/~860 fake real
+    # calls over 2 weeks (Railway + worker + stale-Render deployments of this
+    # same shell). The stale-session behavior under test does not depend on UA.
     st2, body2, ms2 = _http(f"{_MCP_ORIGIN}/mcp", method="POST",
                             headers={"Accept": "application/json, text/event-stream",
+                                     "User-Agent": "dchub-fixwave-probe/1.0",
                                      "mcp-session-id": f"fixwave-bogus-{int(time.time())}"},
                             body={"jsonrpc": "2.0", "id": 2, "method": "tools/call",
                                   "params": {"name": "get_grid_scoreboard", "arguments": {}}})
@@ -475,7 +481,11 @@ def _lane_worklist(c) -> list[dict]:
         rk = _scalar(c, "SELECT api_key FROM mcp_dev_keys "
                         "WHERE developer_id = 'dir-review-d9f4f02d40fa'")
     if rk:
-        hdrs = {"Accept": "application/json, text/event-stream", "X-API-Key": rk}
+        # Announced UA — same telemetry-hygiene rationale as the stale-session
+        # probe above (clientInfo 'fixwave-probe' already excludes via the
+        # %probe% platform rule; the UA makes it self-describing everywhere).
+        hdrs = {"Accept": "application/json, text/event-stream", "X-API-Key": rk,
+                "User-Agent": "dchub-fixwave-probe/1.0"}
         _st, _b, sid, _ms = _http_with_header(
             f"{_MCP_ORIGIN}/mcp", header="mcp-session-id", method="POST", headers=hdrs,
             body={"jsonrpc": "2.0", "id": 0, "method": "initialize",

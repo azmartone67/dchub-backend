@@ -223,10 +223,23 @@ def external_platform_predicate(col: str = "platform") -> str:
 # USER-AGENT regardless of client_name. Bare 'node' is mcp-remote (a real
 # transport) and is deliberately NOT matched. Mirrors
 # routes/mcp_high_intent_claim._hi_real_sql's UA guard — keep the two aligned.
+# 2026-07-19 additions:
+#   · dchub/ — the hyphen-less self-UAs ('DCHub/1.0 (+https://dchub.cloud)',
+#     'DCHub/3.0 …') slipped the 'dchub-' guard; no external agent carries our
+#     product name in its UA.
+#   · chrome/126\.0 safari — the fixwave/qa/deepdive master shells' browser
+#     disguise. The two-segment version is MALFORMED (real Chrome has been
+#     frozen at MAJOR.0.0.0 — 'Chrome/126.0.0.0 Safari' — for years), so this
+#     matches ONLY the hand-written probe UA, never a real browser. The same
+#     codebase runs on Railway backend+worker AND the stale Render backend, so
+#     the fleet spanned Railway egress + AWS + Alibaba IPs — ~97 fake "agents"
+#     and ~860 fake real-calls over 2026-07-05..19 — which an IP list can't
+#     pin down but this fingerprint kills everywhere, history included.
 _SCRIPT_INTERNAL_UA = (
     "python-httpx|python-urllib|urllib|curl/|wget|libwww|node-fetch|undici|axios|"
     "got/|go-http|okhttp|java/|requests/|aiohttp|scrapy|httpie|restsharp|"
-    "dchub-|dchubhealer|self.?heal|value-harness|regression|brain-radar|brain-v2-headless|render-verify|uptimerobot"
+    "dchub-|dchub/|dchubhealer|self.?heal|value-harness|regression|brain-radar|brain-v2-headless|render-verify|uptimerobot|"
+    "chrome/126\\.0 safari"
 )
 
 
@@ -293,6 +306,38 @@ def normalize_write_platform(platform):
             or _INTERNAL_TAG_FAMILIES_RE.search(pl):
         return 'dchub-internal'
     return platform
+
+
+# ── Agent-grain guard (2026-07-19) ────────────────────────────────────────
+# mcp_calls_identity.agent_id = md5(first X-Forwarded-For token). Until
+# zone-worker v4.9.28 (2026-07-10) CF stripped XFF on worker subrequests, so
+# that token was the worker's ROTATING Cloudflare egress POP — every POP
+# minted a fresh pseudo-agent (132 of the 2026-07-05..12 week's 212 "distinct
+# real agents" were POPs). The view now returns agent_id = NULL for these
+# rows, so COUNT(DISTINCT agent_id) heals at every consumer; the CALLS stay
+# counted (the traffic was real — only the agent grain was unknowable).
+# Cloudflare's published IPv4 edge ranges (www.cloudflare.com/ips-v4),
+# CIDR-exact. Post-fix rows never match (the worker forwards the real caller
+# IP), so this is also a permanent guard if edge IPs leak back into XFF.
+CF_POP_IP_REGEX = (
+    r"^(104\.(1[6-9]|2[0-7])\.|172\.(6[4-9]|7[01])\.|162\.15[89]\."
+    r"|141\.101\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\."
+    r"|108\.162\.(19[2-9]|2[0-4][0-9]|25[0-5])\."
+    r"|173\.245\.(4[89]|5[0-9]|6[0-3])\."
+    r"|188\.114\.(9[6-9]|10[0-9]|11[01])\."
+    r"|190\.93\.(24[0-9]|25[0-5])\.|197\.234\.24[0-3]\."
+    r"|198\.41\.(12[89]|1[3-9][0-9]|2[0-4][0-9]|25[0-5])\."
+    r"|131\.0\.7[2-5]\.|103\.21\.24[4-7]\.|103\.22\.20[0-3]\.|103\.31\.[4-7]\.)"
+)
+
+
+def agent_grain_predicate(col: str = "client_ip") -> str:
+    """TRUE when `col` is a real caller IP (not a Cloudflare edge POP) — i.e.
+    the row's agent_id is trustworthy as an agent identity. Consumers that
+    read the mcp_calls_identity VIEW don't need this (the view already NULLs
+    agent_id for POP rows); it exists for queries over raw mcp_tool_calls
+    and for belt-and-braces filters. Regex form — bound-params-safe."""
+    return f"{col} !~ '{CF_POP_IP_REGEX}'"
 
 
 def real_calls_predicate() -> str:
