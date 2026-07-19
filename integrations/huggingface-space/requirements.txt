@@ -1,0 +1,2 @@
+gradio[mcp]>=5.38.0
+requests>=2.31
