@@ -724,6 +724,50 @@ def _conn():
 
 
 # ─────────────────────────────────────────────────────────────────────
+# DEAD-MAN BEAT — make this crawl VISIBLE on /api/v1/ops/deadman.
+# The gap crawl runs as a fire-and-forget daemon thread off the daily
+# competitor scan (routes/competitor_intel.py), so it never appeared on
+# the loop board — a silent stall was undetectable. We BEAT the shared
+# ingest_runs ledger the same way the other in-worker jobs do
+# (agent_request_writer._beat): POST 127.0.0.1:<PORT>/api/v1/admin/
+# ingest-runs/beat with the X-Admin-Key/UA headers. Fail-OPEN — a beat
+# error is swallowed so it can NEVER break the crawl.
+# ─────────────────────────────────────────────────────────────────────
+
+def _beat_ledger(status: str, rows_inserted: int) -> None:
+    """Best-effort dead-man BEAT for the competitor-gap crawl. NEVER raises."""
+    try:
+        import json
+        import urllib.request
+        body = json.dumps({
+            "feed": "competitor-gap-crawl",
+            "status": status,
+            "rows_inserted": int(rows_inserted or 0),
+            # Piggybacks the DAILY competitor scan cron → 24h cadence, so the
+            # dead-man flags overdue at 2x (48h) instead of the 48h default.
+            "cadence_hours": 24,
+            "last_run": datetime.datetime.utcnow().isoformat() + "Z",
+            "note": "competitor coverage-gap crawler (stages discovered_facilities)",
+        }).encode()
+        port = os.environ.get("PORT", "8080")
+        # Key precedence matches the ledger's own _admin_ok
+        # (DCHUB_ADMIN_KEY → DCHUB_INTERNAL_KEY), with ADMIN_API_KEY as a
+        # last-ditch fallback for parity with the other in-worker beaters.
+        admin_key = (os.environ.get("DCHUB_ADMIN_KEY")
+                     or os.environ.get("DCHUB_INTERNAL_KEY")
+                     or os.environ.get("ADMIN_API_KEY", ""))
+        req = urllib.request.Request(
+            "http://127.0.0.1:%s/api/v1/admin/ingest-runs/beat" % port,
+            data=body, method="POST",
+            headers={"Content-Type": "application/json",
+                     "User-Agent": "dchub-competitor-gap-crawl/1.0",
+                     "X-Admin-Key": admin_key})
+        urllib.request.urlopen(req, timeout=5).read()
+    except Exception as e:  # fail-open: a beat error must not break the crawl
+        logger.debug("competitor_gap: ledger beat failed: %s", e)
+
+
+# ─────────────────────────────────────────────────────────────────────
 # ORCHESTRATOR — fetch → diff → insert → file-finding for all legal sources.
 # ─────────────────────────────────────────────────────────────────────
 
@@ -888,4 +932,13 @@ def run_competitor_gap_scan(limit: int = _DEFAULT_PAGE_LIMIT,
         out["sources"].append(srec)
 
     out["elapsed_s"] = round(time.monotonic() - started, 1)
+
+    # ── Dead-man BEAT (observability only) — record this run on the loop
+    #    board so a silent stall of the fire-and-forget crawl thread is
+    #    detectable. Live runs only: dry-run/offline invocations (tests) must
+    #    not stamp the ledger. rows_inserted = TRUE gaps staged into
+    #    discovered_facilities this run. Fail-open — never breaks the crawl.
+    if not dry_run:
+        _beat_ledger("success" if out.get("ok") else "error",
+                     out.get("total_inserted", 0))
     return out

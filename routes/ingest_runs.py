@@ -108,14 +108,16 @@ def beat():
                    ON CONFLICT (feed) DO UPDATE SET
                        last_run         = COALESCE(EXCLUDED.last_run, ingest_runs.last_run),
                        last_status      = EXCLUDED.last_status,
-                       rows_inserted    = EXCLUDED.rows_inserted,
+                       rows_inserted    = COALESCE(EXCLUDED.rows_inserted, ingest_runs.rows_inserted),
                        max_content_date = COALESCE(EXCLUDED.max_content_date, ingest_runs.max_content_date),
                        cadence_hours    = COALESCE(EXCLUDED.cadence_hours, ingest_runs.cadence_hours),
                        consecutive_zero = CASE WHEN %s = 0
-                                               THEN ingest_runs.consecutive_zero + 1 ELSE 0 END,
+                                               THEN ingest_runs.consecutive_zero + 1
+                                               WHEN %s < 0 THEN ingest_runs.consecutive_zero
+                                               ELSE 0 END,
                        note             = COALESCE(EXCLUDED.note, ingest_runs.note),
                        updated_at       = NOW()""",
-                (feed, lr, status, rows, mcd, cad, rows_sig, note, rows_sig),
+                (feed, lr, status, rows, mcd, cad, rows_sig, note, rows_sig, rows_sig),
             )
             c.commit()
     except Exception as e:  # noqa: BLE001 — fail soft, ledger must never 500 a caller into a retry storm

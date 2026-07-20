@@ -472,21 +472,24 @@ def iteration_packet_send():
                    or "jonathan@dchub.cloud").split(",") if e.strip()]
     sent = failed = 0
     try:
-        import requests as _rq
+        # r-chokepoint: route the operator-only weekly packet through the
+        # sanctioned transactional sender (main._resend_email) instead of a
+        # hand-rolled Resend POST. Lazy import (top-level would be circular).
+        # Transport-only swap: recipients/subject/body/gating all unchanged.
+        from main import _resend_email
         body_html = ("<pre style='font-family:ui-monospace,Menlo,monospace;"
                      "white-space:pre-wrap;font-size:13px'>"
                      + _html.escape(md) + "</pre>")
+        from_hdr = os.environ.get("DCHUB_FROM_EMAIL", "DC Hub <jonathan@dchub.cloud>")
+        if "<" in from_hdr and ">" in from_hdr:
+            from_name = from_hdr.split("<", 1)[0].strip() or "DC Hub"
+            from_email = from_hdr.split("<", 1)[1].split(">", 1)[0].strip()
+        else:
+            from_name, from_email = "DC Hub", from_hdr.strip()
         for em in recipients:
             try:
-                r = _rq.post("https://api.resend.com/emails", timeout=15,
-                             json={"from": os.environ.get("DCHUB_FROM_EMAIL",
-                                                          "DC Hub <jonathan@dchub.cloud>"),
-                                   "to": [em],
-                                   "subject": "DC Hub — weekly agent iteration packet",
-                                   "html": body_html},
-                             headers={"Authorization":
-                                      f"Bearer {os.environ.get('RESEND_API_KEY','').strip()}"})
-                if 200 <= r.status_code < 300:
+                if _resend_email(em, "DC Hub — weekly agent iteration packet",
+                                 body_html, from_email=from_email, from_name=from_name):
                     sent += 1
                 else:
                     failed += 1

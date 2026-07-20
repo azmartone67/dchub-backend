@@ -1,0 +1,44 @@
+name: White-glove conductor tick (daily backstop)
+
+# Off-worker backstop for the customer white-glove conductor tick. The tick
+# normally fires from the single in-worker APScheduler loop; this GitHub-cron
+# POSTs the same admin endpoint so the tick STILL runs (roster measured,
+# users.engagement_stage persisted, lifecycle transitions logged, cron
+# heartbeat stamped) even if the internal scheduler thread is dead. Modeled on
+# activation-nudge-daily.yml. See routes/customer_white_glove.py.
+#
+# DRY-RUN-SAFE: the tick is MEASURE / CLASSIFY only — it does NOT send customer
+# email. Any outbound motion routes to the already-gated senders
+# (CUSTOMER_WHITE_GLOVE_ACT=1 on Railway would fan stranded → activation nudge,
+# which itself still needs ACTIVATION_NUDGE_ARM=1). Hitting this endpoint sends
+# NOTHING to a customer and toggles NO arm flag.
+
+on:
+  schedule:
+    - cron: '17 14 * * *'   # 14:17 UTC daily, staggered off the herd
+  workflow_dispatch: {}       # manual runs (still measure/classify only)
+
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: White-glove conductor tick (measure/classify only — no customer email)
+        # Hits the Railway origin directly to avoid the CF Worker 15s timeout.
+        run: |
+          if [ -z "${{ secrets.DCHUB_ADMIN_KEY }}" ]; then
+            echo "::warning::DCHUB_ADMIN_KEY secret missing — skipping white-glove tick"
+            exit 0
+          fi
+          echo "─── White-glove conductor tick (measure/classify; no sends) ───"
+          RESPONSE=$(curl -sS -X POST --max-time 120 \
+            "https://dchub-backend-production.up.railway.app/api/v1/admin/customer-white-glove/tick" \
+            -H "X-Admin-Key: ${{ secrets.DCHUB_ADMIN_KEY }}")
+          echo "${RESPONSE}" | python3 -m json.tool || { echo "::warning::Non-JSON response"; echo "${RESPONSE}"; exit 0; }
+          TOTAL=$(echo "${RESPONSE}" | python3 -c "import sys,json; print((json.load(sys.stdin) or {}).get('total',0))" 2>/dev/null || echo "0")
+          PERSISTED=$(echo "${RESPONSE}" | python3 -c "import sys,json; print((json.load(sys.stdin) or {}).get('stages_persisted',0))" 2>/dev/null || echo "0")
+          LOGGED=$(echo "${RESPONSE}" | python3 -c "import sys,json; print((json.load(sys.stdin) or {}).get('transitions_logged',0))" 2>/dev/null || echo "0")
+          echo "═══════════════════════════════════════════════"
+          echo "Roster: ${TOTAL}   Stages persisted: ${PERSISTED}   Transitions logged: ${LOGGED}"
+          echo "::notice::White-glove tick ran — measure/classify only, no customer email sent."
+          echo "═══════════════════════════════════════════════"
