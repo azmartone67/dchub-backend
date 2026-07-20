@@ -1,25 +1,29 @@
-# GitHub Actions weekly failover canary for dchub.cloud
+# GitHub Actions failover canary for dchub.cloud
 #
-# Place at: .github/workflows/failover-canary.yml  in your repo
+# Runs the current-contract failover check (dchub-failover-check.sh v3.0):
+#   - dchub.cloud serves 200 through the failover-aware edge worker
+#     (x-dc-hub-served-by present; primary = railway-primary)
 #
-# Prerequisites:
-#   1. dchub-failover-check.sh committed to the repo (path below assumes root).
-#   2. Repo Actions Secret named CANARY_SECRET — same value bound on:
-#      - mcp-proxy Worker (Cloudflare → Settings → Variables and Secrets)
-#      - dchubapiproxy Worker (same place, same value)
+# The dead-man watcher tracks this workflow's last SUCCESS as the `failover-canary`
+# feed on /api/v1/ops/deadman. A failing/absent run => the feed goes overdue.
 #
-# Behavior:
-#   - Runs every Monday at 09:00 UTC.
-#   - Runs on manual dispatch (Actions tab → Run workflow).
-#   - On drill failure: workflow fails, GitHub emails repo watchers/admins by
-#     default (including azmartone@gmail.com if you're a repo admin).
+# Runs every 6 hours (was weekly — a weekly canary let a real break hide for 92 days)
+# and on manual dispatch. On failure it opens a workflow-failure issue.
+#
+# NOTE: the DEEP forced-origin-failover-to-Render drill is a follow-up — it needs the
+# current force mechanism + Render's x-dc-hub-served-by value confirmed. CANARY_SECRET
+# is now OPTIONAL (used only for an informational, non-fatal forced probe).
 
 name: Failover canary
 
 on:
   schedule:
-    - cron: '1 9 * * 1'  # Mondays 09:00 UTC
-  workflow_dispatch:     # manual "Run workflow" button
+    - cron: '7 */6 * * *'   # every 6 hours
+  workflow_dispatch:        # manual "Run workflow" button
+
+permissions:
+  contents: read
+  issues: write             # the notify step opens an issue on failure (previously failed: no issues:write)
 
 jobs:
   drill:
@@ -33,7 +37,7 @@ jobs:
       - name: Make script executable
         run: chmod +x ./dchub-failover-check.sh
 
-      - name: Run failover drill
+      - name: Run failover canary
         env:
           CANARY_SECRET: ${{ secrets.CANARY_SECRET }}
         run: ./dchub-failover-check.sh drill
