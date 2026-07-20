@@ -31358,6 +31358,12 @@ try:
     except Exception as _igr_e:
         print(f"📈 Infra Growth Tracker: ⚠️ {_igr_e}")
     try:
+        from routes.ingest_runs import register_ingest_runs
+        register_ingest_runs(app)
+        print("🕒 Dead-man ledger: ✅ Registered (/api/v1/ops/deadman, /api/v1/admin/ingest-runs/beat)")
+    except Exception as _dm_e:
+        print(f"🕒 Dead-man ledger: ⚠️ {_dm_e}")
+    try:
         from routes.submarine_cables import subsea_bp
         app.register_blueprint(subsea_bp)
         print("🌊 Submarine Cables proxy: ✅ Registered (/api/v1/infrastructure/submarine-cables)")

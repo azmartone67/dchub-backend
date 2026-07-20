@@ -1,0 +1,50 @@
+name: deadman-watch — alarm when a loop stops SUCCEEDING
+
+# The independent, off-worker dead-man sentinel (loop audit 2026-07-19 linchpin).
+# Runs on GitHub Actions, NOT the Railway APScheduler thread — so it still fires if
+# the worker or Railway is wedged. Watches last-SUCCESS of every critical loop.
+
+on:
+  schedule:
+    - cron: '43 */6 * * *'   # every 6h, offset from the ingestion watchdog (:10)
+  workflow_dispatch: {}
+
+permissions:
+  actions: read      # read other workflows' run history via the Actions API
+  issues: write      # open/update the dedup'd 'deadman' issue
+  contents: read
+
+concurrency:
+  group: deadman-watch
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v5
+      - name: Ensure 'deadman' label exists
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh label create deadman -R ${{ github.repository }} \
+            --color b60205 --description "off-worker dead-man: a loop stopped succeeding" \
+            2>/dev/null || echo "label exists"
+      - name: Run dead-man watcher
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          DCHUB_ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+          API_BASE: https://dchub.cloud
+        run: python3 tools/deadman/watch.py
+
+      - name: Notify on watcher failure (watch the watcher)
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh issue create -R ${{ github.repository }} \
+            --title "[workflow-failed] deadman-watch on $(date -u +%Y-%m-%d_%H:%M)" \
+            --body "The dead-man watcher itself failed — the sentinel is blind until fixed. Run ${{ github.run_id }}: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            --label workflow-failure || true
