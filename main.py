@@ -36484,6 +36484,18 @@ try:
 except Exception as _ais_e:
     print(f"[main] agent_iteration_suite register skipped: {_ais_e}", file=sys.stderr)
 
+# customer white-glove master shell (2026-07-20): the human-customer analog of
+# the agent-side white glove — one conductor that measures every paying
+# customer's lifecycle stage, writes it to users.lifecycle_stage, and surfaces
+# a daily operator health digest. Customer emails route to the gated senders;
+# nothing auto-contacts a customer from here.
+try:
+    from routes.customer_white_glove import customer_white_glove_bp
+    app.register_blueprint(customer_white_glove_bp)
+    print("[main] customer_white_glove_bp registered: /api/v1/admin/customer-white-glove/{state,tick,digest}", flush=True)
+except Exception as _cwg_e:
+    print(f"[main] customer_white_glove register skipped: {_cwg_e}", file=sys.stderr)
+
 # press-fix (2026-07-18): pending-drafts digest — surfaces the human-gated
 # draft lanes (unpublished press_releases, pitch drafts, queue drafts) in a
 # daily operator email with a fact-check-gated one-click approve. Publishing

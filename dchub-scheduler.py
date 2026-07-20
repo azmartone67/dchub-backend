@@ -640,6 +640,27 @@ DISABLED_JOBS = {
         'minute': 0,
         'timeout': 90,
     },
+    # r-customer-white-glove (2026-07-20): the conductor over the customer
+    # lifecycle. Tick at 15:50 (just before the activation nudge at 16:00)
+    # measures every paying customer, writes users.lifecycle_stage, and — if
+    # CUSTOMER_WHITE_GLOVE_ACT=1 — fans stranded customers into the (arm-gated)
+    # activation nudge. Digest at 16:05 emails the operator the health board.
+    'customer_white_glove_tick': {
+        'name': 'Customer White-Glove — lifecycle tick',
+        'endpoint': '/api/v1/admin/customer-white-glove/tick',
+        'method': 'POST',
+        'hours': [15],
+        'minute': 50,
+        'timeout': 90,
+    },
+    'customer_white_glove_digest': {
+        'name': 'Customer White-Glove — operator health digest',
+        'endpoint': '/api/v1/admin/customer-white-glove/digest?send=true',
+        'method': 'POST',
+        'hours': [16],
+        'minute': 5,
+        'timeout': 60,
+    },
     # Phase FF+7-mttr5 (2026-05-19): Brain L22 — Auto-Code LIVE.
     # User flipped to live mode. Hourly. Reads L21 ring buffer + radar
     # for 404 spikes >=2/hour, opens GitHub issues with the proposed
