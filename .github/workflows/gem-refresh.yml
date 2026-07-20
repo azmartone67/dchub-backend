@@ -1,0 +1,38 @@
+name: GEM refresh — re-ingest Global Energy Monitor bundle from R2
+# GEM's site is gated (410 direct) so a runner can't fetch it — but it CAN reach R2.
+# Owner drops a fresh gem-data.zip at r2://dchub-backups/gem/gem-data.zip each release;
+# this job reloads it (idempotent). Runs monthly to catch new quarterly releases within
+# ~4 weeks, plus on-demand. The infra_growth stale flag says when a refresh is due.
+on:
+  schedule:
+    - cron: '17 9 1 * *'   # 1st of each month, 09:17 UTC (off-peak)
+  workflow_dispatch: {}
+concurrency:
+  group: gem-refresh
+  cancel-in-progress: false
+jobs:
+  reload:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install deps
+        run: pip install --quiet openpyxl psycopg2-binary boto3
+      - name: Re-ingest GEM from R2 (idempotent full-replace by source)
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          R2_ENDPOINT_URL: ${{ secrets.R2_ENDPOINT_URL }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          GEM_R2_BUCKET: dchub-backups
+          GEM_R2_KEY: gem/gem-data.zip
+        run: python tools/gem/reload_gem.py
+      - name: Baseline the fresh counts in infra_growth (clears the stale flag)
+        env:
+          ADMIN: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          curl -s -X POST "https://dchub.cloud/api/v1/admin/infra-growth/snapshot" \
+            -H "X-Admin-Key: $ADMIN" | head -c 400 || true
