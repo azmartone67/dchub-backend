@@ -528,6 +528,28 @@ def _self_health(roster):
     }
 
 
+def stranded_candidates(limit=200):
+    """Authoritative 'who needs the activation nudge': real payers the loop
+    classified 'stranded' (cross-surface zero calls, past grace, Stripe-verified,
+    owner/seed excluded) who have NOT already been nudged.
+
+    activation_nudge's own legacy query diverged three ways and must not be
+    trusted to pick recipients: it measured the WEB api_keys store only (so it
+    would nudge an MCP-active customer — eren, 1085 calls — telling him he never
+    made a first query), it skipped the Stripe/invoice filter (so it could reach
+    BD-outreach seeds like partnerships@… / press@…), and it capped at a 45-day
+    window (so it MISSED real stranded payers older than that). Sourcing the
+    recipient list from here keeps the send in lockstep with the health board."""
+    out = []
+    for r in _roster():
+        if r.get("stage") == "stranded" and not r.get("nudged"):
+            out.append({"email": r["email"], "name": r.get("name") or "",
+                        "plan": r.get("plan"), "created_at": None})
+            if len(out) >= limit:
+                break
+    return out
+
+
 def _counts(roster):
     out = {}
     for r in roster:

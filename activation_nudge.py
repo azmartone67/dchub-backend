@@ -147,15 +147,31 @@ def run_activation_nudge(armed=False, limit=25, min_age_hours=48, max_age_days=4
         def is_internal_email(e):
             return (not e) or '@dchub.cloud' in (e or '').lower()
 
+    # RECIPIENTS COME FROM THE WHITE-GLOVE BOARD, not this module's legacy query.
+    # The legacy _find_candidates diverged from the vetted 'stranded' cohort in
+    # three dangerous ways (web-store-only usage -> would nudge MCP-active users;
+    # no Stripe/invoice filter -> could reach BD seeds; 45-day cap -> missed real
+    # stranded payers). customer_white_glove.stranded_candidates is the single
+    # source of truth: real payers, cross-surface zero-calls, past grace,
+    # owner/seed excluded, not-already-nudged. Legacy path is fallback only.
+    source = 'white_glove'
     try:
-        cands = _find_candidates(min_age_hours, max_age_days, limit * 2)
+        from customer_white_glove import stranded_candidates
+        cands = stranded_candidates(limit * 2)
     except Exception as e:
-        logger.warning("activation_nudge: candidate query failed: %s", e)
-        return {'ok': False, 'error': str(e)[:200]}
+        logger.warning("activation_nudge: white-glove cohort unavailable (%s); "
+                       "falling back to legacy query", str(e)[:140])
+        source = 'legacy_fallback'
+        try:
+            cands = _find_candidates(min_age_hours, max_age_days, limit * 2)
+        except Exception as e2:
+            logger.warning("activation_nudge: candidate query failed: %s", e2)
+            return {'ok': False, 'error': str(e2)[:200]}
 
     cands = [c for c in cands if not is_internal_email(c.get('email'))][:limit]
     armed = bool(armed) or os.environ.get('ACTIVATION_NUDGE_ARM') == '1'
-    result = {'ok': True, 'armed': armed, 'window': f'{min_age_hours}h..{max_age_days}d',
+    result = {'ok': True, 'armed': armed, 'source': source,
+              'window': f'{min_age_hours}h..{max_age_days}d',
               'candidates': len(cands), 'sent': 0, 'errors': 0, 'preview': cands}
 
     if not armed:
