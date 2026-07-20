@@ -91,7 +91,14 @@ def _live_agent_rows():
     """
     import re as _re
     _uuid = _re.compile(_UUID_RE_STR)
-    url = os.environ.get("NEON_DATABASE_URL") or os.environ.get("DATABASE_URL")
+    # PR2b #3: this is a pure 30-day read on the request path (/agent_registry) that
+    # currently opens a fresh connection to the PRIMARY per call. Prefer the read
+    # replica so it stops adding primary connections; fall back to primary if the
+    # replica is unset or the kill switch MCP_ANALYTICS_REPLICA_DISABLE=1 is set.
+    url = None
+    if os.environ.get("MCP_ANALYTICS_REPLICA_DISABLE", "0").strip().lower() not in ("1", "true", "yes", "on"):
+        url = os.environ.get("NEON_REPLICA_URL")
+    url = url or os.environ.get("NEON_DATABASE_URL") or os.environ.get("DATABASE_URL")
     if not url:
         return [], False
     try:
