@@ -23611,13 +23611,20 @@ def data_freshness():
                 c.execute(query)
                 row = c.fetchone()
                 return row[0] if row else default
-            except:
+            except Exception:
+                # A failed query aborts the shared transaction; roll back so the
+                # NEXT query isn't hit with "current transaction is aborted" and
+                # every remaining feed cascades to 0/stale (the #1683 regression).
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
                 return default
 
         now = datetime.utcnow()
 
         news_count = safe_query("SELECT COUNT(*) FROM announcements", 0)
-        news_newest = safe_query("SELECT MAX(published_date) FROM announcements WHERE published_date <= NOW()")
+        news_newest = safe_query("SELECT MAX(published_date) FROM announcements")  # revert #1683: published_date is TEXT, so `<= NOW()` errors + cascades
         news_oldest = safe_query("SELECT MIN(published_date) FROM announcements")
         feeds['news'] = {
             'record_count': news_count,
