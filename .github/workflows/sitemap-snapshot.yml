@@ -1,0 +1,30 @@
+# Rebuilds the sitemap_snapshot shared cache every 4h so /sitemap*.xml serves a
+# cheap point-SELECT instead of the ~20k-row union that pins the Neon primary pool.
+# External single-fire trigger (not a self-poll) -> no self-traffic flood.
+name: sitemap-snapshot-rebuild
+
+on:
+  schedule:
+    - cron: '19 */4 * * *'   # every 4 hours at :19
+  workflow_dispatch: {}
+
+concurrency:
+  group: sitemap-snapshot
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  rebuild:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Rebuild sitemap snapshot
+        run: |
+          code=$(curl -sS -o /tmp/out.json -w '%{http_code}' -X POST \
+            -H "X-Admin-Key: ${{ secrets.DCHUB_ADMIN_KEY }}" \
+            -H "User-Agent: DCHub-SitemapSnapshot/1.0" \
+            https://dchub.cloud/api/v1/admin/sitemap/rebuild-snapshot)
+          cat /tmp/out.json; echo
+          test "$code" = "200"

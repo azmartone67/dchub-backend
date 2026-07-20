@@ -26377,11 +26377,117 @@ def _sitemap_xml_response(xml, cache_hit):
     return resp
 
 
+# --- Sitemap snapshot: SHARED cross-process cache (table sitemap_snapshot) -------
+# _SITEMAP_XML_CACHE is per-worker and dies on every gunicorn max-requests recycle,
+# so under crawler load the ~20k-row union rebuilds constantly (main.py:25796) and
+# pins the Neon primary pool. sitemap_snapshot is a cron-built shared cache: serve
+# each shard as a cheap indexed point-SELECT of pre-rendered XML. On miss / empty
+# table / kill switch we fall back to the live _sitemap_sections() build below, so
+# an unpopulated table is a no-op (no regression). Kill: SITEMAP_SNAPSHOT_DISABLE=1.
+def _snapshot_get(shard_key):
+    import os as _os
+    if _os.environ.get('SITEMAP_SNAPSHOT_DISABLE', '').strip().lower() in ('1', 'true', 'yes', 'on'):
+        return None
+    conn = None
+    try:
+        conn = get_read_db()          # replica pool; PK point-SELECT, not the union
+        cur = conn.cursor()
+        cur.execute("SELECT xml FROM sitemap_snapshot WHERE shard_key = %s", (shard_key,))
+        row = cur.fetchone()
+        cur.close()
+        return row[0] if (row and row[0]) else None
+    except Exception as _e:
+        logger.warning(f"sitemap snapshot read miss ({shard_key}): {_e}")
+        return None
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def _render_shard_xml(entries):
+    return ('<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
+            + '\n'.join(entries) + '\n</urlset>')
+
+
+def _render_index_xml(shard_files, today):
+    entries = [
+        f'  <sitemap><loc>https://dchub.cloud/{fn}</loc><lastmod>{today}</lastmod></sitemap>'
+        for fn in shard_files
+    ]
+    return ('<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
+            + '\n'.join(entries) + '\n</sitemapindex>')
+
+
+def _rebuild_sitemap_snapshot():
+    """Build every shard's XML ONCE and persist to sitemap_snapshot in one primary
+    transaction. Runs from the 4-hourly cron / admin endpoint, NOT per request."""
+    import math
+    from datetime import datetime as _dt
+    from psycopg2.extras import execute_values
+    sections = _build_sitemap_sections()
+    today = _dt.now().strftime('%Y-%m-%d')
+    shard_files = _sitemap_shard_files(sections)
+    rows = []
+    for name in _SITEMAP_FIXED_SECTIONS:
+        ents = sections.get(name) or []
+        rows.append((name, _render_shard_xml(ents), len(ents)))
+    fac = sections.get('facilities') or []
+    n_fac = max(1, math.ceil(len(fac) / _SITEMAP_FACILITIES_PER_SHARD))
+    for i in range(1, n_fac + 1):
+        lo = (i - 1) * _SITEMAP_FACILITIES_PER_SHARD
+        chunk = fac[lo:lo + _SITEMAP_FACILITIES_PER_SHARD]
+        rows.append((f'facilities-{i}', _render_shard_xml(chunk), len(chunk)))
+    rows.append(('index', _render_index_xml(shard_files, today), len(shard_files)))
+    conn = None
+    err = False
+    try:
+        conn = get_pg_connection()
+        conn.autocommit = False       # ONE tx, no SAVEPOINT
+        cur = conn.cursor()
+        cur.execute("SELECT COALESCE(MAX(generation), 0) + 1 FROM sitemap_snapshot")
+        gen = cur.fetchone()[0]
+        cur.execute("DELETE FROM sitemap_snapshot")   # purge orphan facilities-N if shard count shrank
+        execute_values(
+            cur,
+            "INSERT INTO sitemap_snapshot (shard_key, xml, url_count, generation) VALUES %s",
+            [(k, x, n, gen) for (k, x, n) in rows], page_size=50)
+        conn.commit()
+        cur.close()
+        logger.info(f"sitemap snapshot gen={gen}: {len(rows)} shards, "
+                    f"total_urls={sum(n for _, _, n in rows)}")
+        return {'generation': gen, 'shards': len(rows), 'facilities_shards': n_fac,
+                'total_urls': sum(n for _, _, n in rows)}
+    except Exception:
+        err = True
+        if conn is not None:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+        raise
+    finally:
+        if conn is not None:
+            try:
+                return_pg_connection(conn, error=err)
+            except Exception:
+                pass
+
+
 @app.route('/sitemap.xml')
 def serve_sitemap_xml():
     """Sitemap INDEX — fans out to the per-section shard files. Served at the
     long-submitted /sitemap.xml URL so GSC/Bing/robots.txt need no change
     (both engines accept a urlset→sitemapindex swap at a submitted URL)."""
+    _snap = _snapshot_get('index')
+    if _snap is not None:
+        _r = _sitemap_xml_response(_snap, True)
+        _r.headers['X-Sitemap-Source'] = 'snapshot'
+        return _r
     from datetime import datetime as _dt
     sections, hit = _sitemap_sections()
     today = _dt.now().strftime('%Y-%m-%d')
@@ -26404,6 +26510,11 @@ def serve_sitemap_shard(section):
     Pages worker forwards '/sitemap-' prefixed paths to this backend — added
     to PHASE_282_PREFIXES the same day, since only the two literal paths
     /sitemap.xml + /sitemap-markets.xml were routed before."""
+    _snap = _snapshot_get(section)
+    if _snap is not None:
+        _r = _sitemap_xml_response(_snap, True)
+        _r.headers['X-Sitemap-Source'] = 'snapshot'
+        return _r
     import re as _re
     sections, hit = _sitemap_sections()
     if section in _SITEMAP_FIXED_SECTIONS:
@@ -26422,6 +26533,27 @@ def serve_sitemap_shard(section):
            '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
            + '\n'.join(entries) + '\n</urlset>')
     return _sitemap_xml_response(xml, hit)
+
+
+@app.route('/api/v1/admin/sitemap/rebuild-snapshot', methods=['POST'])
+def admin_sitemap_rebuild_snapshot():
+    """Rebuild the sitemap_snapshot shared cache (call from the 4-hourly cron).
+    Fail-closed X-Admin-Key. On failure the last good generation keeps serving."""
+    import os as _os
+    admin_key = (_os.environ.get('DCHUB_ADMIN_KEY') or _os.environ.get('DCHUB_INTERNAL_KEY') or '').strip()
+    provided = (request.headers.get('X-Admin-Key') or '').strip()
+    if not admin_key:
+        return jsonify(ok=False, error='admin_endpoint_unconfigured'), 503
+    if provided != admin_key:
+        return jsonify(ok=False, error='admin key required'), 401
+    try:
+        out = _rebuild_sitemap_snapshot()
+        global _SITEMAP_XML_CACHE
+        _SITEMAP_XML_CACHE = {'sections': None, 'ts': 0.0}   # refresh the in-proc fallback too
+        return jsonify(ok=True, **out)
+    except Exception as _e:
+        logger.error(f"sitemap snapshot rebuild failed: {_e}")
+        return jsonify(ok=False, error=str(_e)[:300]), 500
 
 
 # 2026-06-05 (Phase HJ-2) — Admin sitemap cache bust.
