@@ -66,19 +66,34 @@ NOW = datetime.datetime.now(datetime.timezone.utc)
 ISSUE_LABEL = "deadman"
 
 
-def gh_json(args):
-    try:
-        out = subprocess.run(["gh"] + args, capture_output=True, text=True, timeout=60)
-    except Exception as e:  # noqa: BLE001
-        print(f"gh error {args}: {e}")
-        return None
-    if out.returncode != 0:
-        print(f"gh nonzero {args}: {out.stderr.strip()[:200]}")
-        return None
-    try:
-        return json.loads(out.stdout or "null")
-    except Exception:  # noqa: BLE001
-        return None
+def gh_json(args, retries=3):
+    """Run a `gh` command returning JSON, retrying transient failures (GitHub 5xx).
+
+    Returns the parsed JSON, or None if it genuinely could not be fetched — callers
+    MUST treat None as "unknown / watcher blind", never as "the loop is dead".
+    """
+    last = ""
+    for attempt in range(retries):
+        try:
+            out = subprocess.run(["gh"] + args, capture_output=True, text=True, timeout=60)
+        except Exception as e:  # noqa: BLE001
+            last = str(e)
+        else:
+            if out.returncode == 0:
+                try:
+                    return json.loads(out.stdout or "null")
+                except Exception:  # noqa: BLE001
+                    return None
+            last = out.stderr.strip()[:160]
+        # transient GitHub outage (503/timeout) — brief backoff then retry
+        if attempt < retries - 1:
+            try:
+                import time
+                time.sleep(3 * (attempt + 1))
+            except Exception:  # noqa: BLE001
+                pass
+    print(f"gh failed after {retries}x {args[:3]}: {last}")
+    return None
 
 
 def last_success(workflow):
@@ -129,7 +144,8 @@ def age_hours(iso_ts):
 
 
 def main():
-    overdue = []          # (feed, reason, cadence)
+    overdue = []          # (feed, reason, cadence) — a loop genuinely stopped succeeding
+    blind = []            # feeds the Actions API could not report on (watcher blind)
     seen_feeds = set()
 
     # 1-3: workflow crons via the Actions API (self-sufficient — no backend needed)
@@ -137,6 +153,12 @@ def main():
         feed = wf[:-4] if wf.endswith(".yml") else wf
         seen_feeds.add(feed)
         ts, status = last_success(wf)
+        # An API error is watcher-blindness, NOT a dead loop — never alarm on it, and
+        # do not poison the ledger with a false "down" beat.
+        if status == "actions-api-error":
+            blind.append(feed)
+            print(f"blind    {feed}: actions-api unavailable")
+            continue
         beat(feed, ts, status, cad)
         if ts is None:
             overdue.append((feed, status, cad))
@@ -150,6 +172,13 @@ def main():
             print(f"OVERDUE  {feed}: {ah:.0f}h > {2*cad}h")
         else:
             print(f"ok       {feed}: {ah:.0f}h (<= {2*cad}h)")
+
+    # If the Actions API was down for MOST feeds it is a GitHub outage, not a fleet of
+    # dead loops — stay quiet (the next run re-checks) rather than fire a phantom alarm.
+    if blind and len(blind) > len(WORKFLOWS) / 2:
+        print(f"\nDEADMAN: GitHub Actions API degraded ({len(blind)}/{len(WORKFLOWS)} "
+              f"unreadable) — skipping this cycle to avoid a false alarm")
+        return
 
     # 4: backend-scheduler feeds that beat the ledger directly (not GitHub workflows)
     try:
@@ -166,8 +195,14 @@ def main():
         print(f"ledger read failed (non-fatal): {e}")
 
     # 5: alarm — one dedup'd issue
+    blind_note = f" ({len(blind)} unreadable this cycle: {', '.join(blind)})" if blind else ""
     if not overdue:
-        print(f"\nDEADMAN ✓ all {len(seen_feeds)} watched loops within cadence")
+        print(f"\nDEADMAN ✓ all {len(seen_feeds) - len(blind)} readable loops within "
+              f"cadence{blind_note}")
+        return
+
+    if os.environ.get("DEADMAN_DRY_RUN"):
+        print(f"\nDRY_RUN: would alarm on {len(overdue)} loop(s); no issue opened")
         return
 
     title = f"[deadman] {len(overdue)} loop(s) not succeeding within cadence"
@@ -182,7 +217,9 @@ def main():
         lines.append(f"| `{feed}` | {reason} |")
     lines += [
         "",
-        f"_Checked {len(seen_feeds)} GitHub-cron loops + the backend ingest_runs ledger._",
+        f"_Checked {len(seen_feeds)} GitHub-cron loops + the backend ingest_runs ledger."
+        + (f" {len(blind)} were unreadable this cycle (Actions API): "
+           f"{', '.join(blind)}._" if blind else "_"),
         f"_Generated {NOW.isoformat()} by deadman-watch.yml — {API}/api/v1/ops/deadman_",
     ]
     body = "\n".join(lines)

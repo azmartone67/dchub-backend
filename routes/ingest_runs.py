@@ -124,6 +124,34 @@ def beat():
     return jsonify(ok=True, feed=feed)
 
 
+@ingest_runs_bp.route("/api/v1/admin/ingest-runs/purge", methods=["POST"])
+def purge():
+    """Remove feed(s) from the ledger — use when retiring a loop from the registry.
+
+    Body: {feed} or {feeds:[...]}. Admin-gated.
+    """
+    if not _admin_ok():
+        return jsonify(ok=False, error="admin key required"), 401
+    dsn = _dsn()
+    if not dsn:
+        return jsonify(ok=False, error="no DATABASE_URL"), 503
+    j = request.get_json(silent=True) or {}
+    feeds = j.get("feeds") or ([j["feed"]] if j.get("feed") else [])
+    feeds = [str(f).strip()[:80] for f in feeds if str(f).strip()]
+    if not feeds:
+        return jsonify(ok=False, error="feed or feeds[] required"), 400
+    try:
+        with psycopg2.connect(dsn, sslmode="require", connect_timeout=8) as c, c.cursor() as cur:
+            _ensure(cur)
+            cur.execute("DELETE FROM ingest_runs WHERE feed = ANY(%s)", (feeds,))
+            deleted = cur.rowcount
+            c.commit()
+    except Exception as e:  # noqa: BLE001
+        log.warning("ingest_runs purge failed: %s", e)
+        return jsonify(ok=False, error=str(e)[:200]), 500
+    return jsonify(ok=True, deleted=deleted, feeds=feeds)
+
+
 @ingest_runs_bp.route("/api/v1/ops/deadman", methods=["GET"])
 def deadman():
     """PUBLIC read — the overdue view. `any_overdue=true` ⇒ a loop stopped succeeding.
