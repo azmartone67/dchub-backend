@@ -62,6 +62,17 @@ WORKFLOWS = {
     "seo-sitemap-and-warm.yml": 30,    # daily 07:40 — sitemap re-crawl + narrative warm
     "restore-test.yml": 190,           # weekly Mon — prove the Neon backup restores
     "failover-canary.yml": 190,        # weekly Mon — Railway->Render->KV failover path
+    # off-board growth/conversion/media loops (2026-07-20 loop-coverage additions).
+    # OBSERVABILITY ONLY: this watches each workflow's last SUCCESS — it does not arm
+    # any send. Those loops stay dry-run/gated by their own Railway env flags.
+    # (Only scheduled workflows are registered — manual/workflow_dispatch-only ones
+    #  like audit-conversions.yml and the datacentermap-* runners are deliberately
+    #  omitted: with no cron they would recede past cadence and false-alarm forever.)
+    "activation-nudge-daily.yml": 30,   # daily 15:43 UTC — activation / first-query nudge
+    "funnel-autotune.yml": 30,          # daily 16:00 UTC — trial unbound-cap auto-tune
+    "churn-watcher.yml": 190,           # weekly Mon 14:27 UTC — at-risk churn sweep
+    "facility-snapshot-daily.yml": 30,  # daily 05:19 UTC — competitor-gap facility snapshot
+    "media-organism-tick.yml": 3,       # hourly :22 — media organism heartbeat
 }
 
 NOW = datetime.datetime.now(datetime.timezone.utc)

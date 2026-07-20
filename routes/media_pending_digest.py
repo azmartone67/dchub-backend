@@ -333,20 +333,21 @@ def pending_drafts_digest():
     sent = 0
     failed = 0
     try:
-        import requests as _rq
+        # r-chokepoint: route the operator-only pending-drafts digest through the
+        # sanctioned transactional sender (main._resend_email) instead of a raw
+        # Resend POST. Lazy import (top-level would be circular). Transport-only swap.
+        from main import _resend_email
         subject = f"DC Hub Media: {pending['total']} pending draft(s) awaiting review"
+        from_hdr = os.environ.get("DCHUB_FROM_EMAIL", "DC Hub <jonathan@dchub.cloud>")
+        if "<" in from_hdr and ">" in from_hdr:
+            from_name = from_hdr.split("<", 1)[0].strip() or "DC Hub"
+            from_email = from_hdr.split("<", 1)[1].split(">", 1)[0].strip()
+        else:
+            from_name, from_email = "DC Hub", from_hdr.strip()
         for em in recipients:
             try:
-                r = _rq.post(
-                    "https://api.resend.com/emails",
-                    json={"from": os.environ.get("DCHUB_FROM_EMAIL",
-                                                 "DC Hub <jonathan@dchub.cloud>"),
-                          "to": [em], "subject": subject, "html": html_body},
-                    headers={"Authorization":
-                                 f"Bearer {os.environ.get('RESEND_API_KEY', '').strip()}",
-                             "Content-Type": "application/json"},
-                    timeout=15)
-                if 200 <= r.status_code < 300:
+                if _resend_email(em, subject, html_body,
+                                 from_email=from_email, from_name=from_name):
                     sent += 1
                 else:
                     failed += 1

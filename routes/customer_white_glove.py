@@ -710,19 +710,34 @@ def cwg_digest():
                        html_bytes=len(html_body)), 200
     sent = failed = 0
     try:
-        import requests as _rq
+        # Route the OPERATOR digest through the repo's sanctioned transactional
+        # sender (main._resend_email) instead of a hand-rolled Resend POST. This
+        # is the same operator-mail choke-point auth_routes / brain_automerge
+        # (_alert_operator) use. It keeps this file off the marketing-bypass
+        # ratchet (tests/test_marketing_chokepoint.py::test_no_new_resend_bypass)
+        # while changing ONLY the transport: recipients, the send gate, the
+        # subject and the body are untouched, so whether/when this digest sends
+        # is unchanged. Lazy import — main imports routes, so a top-level import
+        # would be circular. _resend_email reads DCHUB_RESEND_API_KEY or
+        # RESEND_API_KEY and returns True on a 2xx.
+        from main import _resend_email
         subj = (f"DC Hub customer health: {_counts(roster).get('stranded',0)} stranded, "
                 f"{_counts(roster).get('at_risk',0)} at-risk")
+        # Preserve the existing sender: DCHUB_FROM_EMAIL is a combined
+        # "Name <email>" string here (default "DC Hub <jonathan@dchub.cloud>");
+        # split it for _resend_email's (from_email, from_name) signature.
+        from_hdr = os.environ.get("DCHUB_FROM_EMAIL", "DC Hub <jonathan@dchub.cloud>")
+        if "<" in from_hdr and ">" in from_hdr:
+            from_name = from_hdr.split("<", 1)[0].strip() or "DC Hub"
+            from_email = from_hdr.split("<", 1)[1].split(">", 1)[0].strip()
+        else:
+            from_name, from_email = "DC Hub", from_hdr.strip()
         for em in recipients:
             try:
-                r = _rq.post("https://api.resend.com/emails", timeout=15,
-                             json={"from": os.environ.get("DCHUB_FROM_EMAIL",
-                                                          "DC Hub <jonathan@dchub.cloud>"),
-                                   "to": [em], "subject": subj, "html": html_body},
-                             headers={"Authorization":
-                                      f"Bearer {os.environ.get('RESEND_API_KEY','').strip()}"})
-                sent += 1 if 200 <= r.status_code < 300 else 0
-                failed += 0 if 200 <= r.status_code < 300 else 1
+                ok_send = _resend_email(em, subj, html_body,
+                                        from_email=from_email, from_name=from_name)
+                sent += 1 if ok_send else 0
+                failed += 0 if ok_send else 1
             except Exception:
                 failed += 1
     except Exception as e:
