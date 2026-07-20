@@ -139,8 +139,12 @@ def _nudge_html(first, plan):
 </body></html>"""
 
 
-def run_activation_nudge(armed=False, limit=25, min_age_hours=48, max_age_days=45):
-    """Find and (if armed) nudge paid + zero-call customers. Returns a report."""
+def run_activation_nudge(armed=False, limit=25, min_age_hours=48, max_age_days=45,
+                         force_dry=False):
+    """Find and (if armed) nudge paid + zero-call customers. Returns a report.
+    force_dry=True guarantees NO send even when ACTIVATION_NUDGE_ARM=1 is set —
+    used to verify which cohort the DEPLOYED endpoint resolves (source=…) before
+    committing to a real send."""
     try:
         from dchub_outreach import is_internal_email
     except Exception:
@@ -156,7 +160,15 @@ def run_activation_nudge(armed=False, limit=25, min_age_hours=48, max_age_days=4
     # owner/seed excluded, not-already-nudged. Legacy path is fallback only.
     source = 'white_glove'
     try:
-        from customer_white_glove import stranded_candidates
+        # On the deployed backend this module lives at repo root but
+        # customer_white_glove is under routes/ (main.py imports it as
+        # routes.customer_white_glove). The bare import works only with
+        # routes/ on sys.path (local shell), so try the package path FIRST —
+        # a silent fallback to the legacy query here already mis-sent 5 nudges.
+        try:
+            from routes.customer_white_glove import stranded_candidates
+        except Exception:
+            from customer_white_glove import stranded_candidates
         cands = stranded_candidates(limit * 2)
     except Exception as e:
         logger.warning("activation_nudge: white-glove cohort unavailable (%s); "
@@ -169,7 +181,7 @@ def run_activation_nudge(armed=False, limit=25, min_age_hours=48, max_age_days=4
             return {'ok': False, 'error': str(e2)[:200]}
 
     cands = [c for c in cands if not is_internal_email(c.get('email'))][:limit]
-    armed = bool(armed) or os.environ.get('ACTIVATION_NUDGE_ARM') == '1'
+    armed = (bool(armed) or os.environ.get('ACTIVATION_NUDGE_ARM') == '1') and not force_dry
     result = {'ok': True, 'armed': armed, 'source': source,
               'window': f'{min_age_hours}h..{max_age_days}d',
               'candidates': len(cands), 'sent': 0, 'errors': 0, 'preview': cands}
@@ -210,6 +222,9 @@ def setup_activation_nudge_routes(app):
         if provided != os.environ.get('DCHUB_ADMIN_KEY', ''):
             return jsonify({'error': 'unauthorized', 'hint': 'X-Admin-Key required'}), 401
         armed = request.args.get('confirm') == '1'
+        # dryrun=1 forces a no-send preview even when ACTIVATION_NUDGE_ARM=1,
+        # so the deployed cohort (source=…) can be verified without emailing.
+        force_dry = request.args.get('dryrun') == '1'
         try:
             limit = max(1, min(int(request.args.get('limit', 25)), 200))
         except Exception:
@@ -223,5 +238,5 @@ def setup_activation_nudge_routes(app):
         except Exception:
             max_age_days = 21
         return jsonify(run_activation_nudge(
-            armed=armed, limit=limit,
+            armed=armed, limit=limit, force_dry=force_dry,
             min_age_hours=min_age_hours, max_age_days=max_age_days))
