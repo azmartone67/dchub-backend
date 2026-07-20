@@ -27,6 +27,8 @@ import urllib.request
 REPO = os.environ.get("GH_REPO", "azmartone67/dchub-backend")
 API = (os.environ.get("API_BASE", "https://dchub.cloud")).rstrip("/")
 ADMIN = os.environ.get("DCHUB_ADMIN_KEY", "")
+# Cloudflare bot-blocks the default Python-urllib UA (403) — identify ourselves.
+UA = "dchub-deadman-watch/1.0 (+https://dchub.cloud/api/v1/ops/deadman)"
 
 # The registry: workflow file -> max hours expected between SUCCESSFUL runs.
 # Alarm fires at 2x this. Keep in rough sync with each workflow's own cron; generous
@@ -127,7 +129,7 @@ def beat(feed, last_run_iso, status, cadence_h):
     }).encode()
     req = urllib.request.Request(
         f"{API}/api/v1/admin/ingest-runs/beat", data=body, method="POST",
-        headers={"Content-Type": "application/json", "X-Admin-Key": ADMIN},
+        headers={"Content-Type": "application/json", "X-Admin-Key": ADMIN, "User-Agent": UA},
     )
     try:
         urllib.request.urlopen(req, timeout=20).read()
@@ -182,7 +184,9 @@ def main():
 
     # 4: backend-scheduler feeds that beat the ledger directly (not GitHub workflows)
     try:
-        with urllib.request.urlopen(f"{API}/api/v1/ops/deadman", timeout=20) as r:
+        greq = urllib.request.Request(
+            f"{API}/api/v1/ops/deadman", headers={"User-Agent": UA})
+        with urllib.request.urlopen(greq, timeout=20) as r:
             d = json.loads(r.read())
         for rec in d.get("overdue", []):
             feed = rec.get("feed")
