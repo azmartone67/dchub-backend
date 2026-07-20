@@ -507,6 +507,20 @@ class GatewayDB:
                     tools: str = "", session_id: str = ""):
         if _IS_FAILOVER:
             return
+        # PR2b pool-floor: when the batched writer is ENABLED (off by default),
+        # buffer this row in-process and let a background flusher batch the DB
+        # writes off the hot request path. Disabled -> the exact synchronous path
+        # below runs unchanged (this whole method is best-effort try/except-wrapped
+        # by the caller, so a writer fault degrades logging, never the request).
+        try:
+            import agent_request_writer as _arw
+            if _arw.enabled():
+                _arw.enqueue(platform_id, user_agent, ip, method, path, query,
+                             (body[:2000] if body else ""), response_code, response_time,
+                             tools, session_id)
+                return
+        except Exception:
+            pass  # fall through to the synchronous path on any writer error
         conn = None
         try:
             conn = try_get_db()
