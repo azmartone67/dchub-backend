@@ -36496,6 +36496,15 @@ try:
 except Exception as _cwg_e:
     print(f"[main] customer_white_glove register skipped: {_cwg_e}", file=sys.stderr)
 
+# operator one-off email (admin-keyed, logged, idempotent) — controlled single
+# sends the templated cohorts don't cover (e.g. a mis-target correction).
+try:
+    from routes.admin_oneoff_email import admin_oneoff_email_bp
+    app.register_blueprint(admin_oneoff_email_bp)
+    print("[main] admin_oneoff_email_bp registered: /api/v1/admin/send-oneoff", flush=True)
+except Exception as _ooe_e:
+    print(f"[main] admin_oneoff_email register skipped: {_ooe_e}", file=sys.stderr)
+
 # press-fix (2026-07-18): pending-drafts digest — surfaces the human-gated
 # draft lanes (unpublished press_releases, pitch drafts, queue drafts) in a
 # daily operator email with a fact-check-gated one-click approve. Publishing
