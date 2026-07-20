@@ -82,6 +82,15 @@ def run_backup():
     if not check_env():
         return {"status": "error", "error": "Missing required environment variables"}
     dump_path, size = dump_and_compress_to_file(DATABASE_URL)
+    # LC2 DR-proof: a pg_dump can "succeed" but produce a near-empty/corrupt dump
+    # (empty DB, schema-only, permission fault). A tiny "backup" is worse than none —
+    # it gives false DR confidence. Reject below a floor so the workflow fails loud.
+    min_bytes = int(os.environ.get("MIN_BACKUP_BYTES", "1000000"))  # 1 MB floor (env-tunable)
+    if size < min_bytes:
+        try: os.remove(dump_path)
+        except Exception: pass
+        return {"status": "error",
+                "error": "backup too small: %d bytes < %d floor — dump likely incomplete/empty" % (size, min_bytes)}
     timestamp = start.strftime("%Y%m%d_%H%M%S")
     key = BACKUP_PREFIX + timestamp + ".sql.gz"
     try:
@@ -94,4 +103,11 @@ def run_backup():
     log.info("Backup complete in %.1fs", elapsed)
     return {"status": "success", "key": key, "size_mb": round(size / (1024*1024), 2), "elapsed_seconds": round(elapsed, 1)}
 if __name__ == "__main__":
-    print(run_backup())
+    import sys as _sys
+    _result = run_backup()
+    print(_result)
+    # LC2 DR-proof: a failed/incomplete backup must FAIL the workflow (non-zero exit),
+    # not print-an-error-dict-and-exit-0. The dead-man watcher tracks this workflow's
+    # last SUCCESS as the backup-neon-r2 feed; a green run on a bad backup = silent DR loss.
+    if not isinstance(_result, dict) or _result.get("status") != "success":
+        _sys.exit(1)
