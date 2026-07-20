@@ -23617,7 +23617,7 @@ def data_freshness():
         now = datetime.utcnow()
 
         news_count = safe_query("SELECT COUNT(*) FROM announcements", 0)
-        news_newest = safe_query("SELECT MAX(published_date) FROM announcements")
+        news_newest = safe_query("SELECT MAX(published_date) FROM announcements WHERE published_date <= NOW()")
         news_oldest = safe_query("SELECT MIN(published_date) FROM announcements")
         feeds['news'] = {
             'record_count': news_count,

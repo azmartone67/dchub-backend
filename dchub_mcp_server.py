@@ -3275,7 +3275,7 @@ async def get_backup_status() -> str:
         freshness_queries = [
             ('newest_facility', "SELECT MAX(created_at) FROM discovered_facilities"),
             ('newest_deal', "SELECT MAX(date) FROM deals"),
-            ('newest_news', "SELECT MAX(published_at) FROM news_articles"),
+            ('newest_news', "SELECT MAX(published_at) FROM news_articles WHERE published_at <= NOW()"),
             ('newest_user', "SELECT MAX(created_at) FROM users"),
         ]
         for name, query in freshness_queries:
