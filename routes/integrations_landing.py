@@ -71,7 +71,7 @@ MCP_LANDING_HTML = """<!DOCTYPE html>
   "applicationCategory": "DeveloperApplication",
   "operatingSystem": "Any (remote streamable-HTTP MCP server)",
   "url": "https://dchub.cloud/integrations/mcp",
-  "description": "Model Context Protocol server giving AI agents live, citable data-center, power-grid, fiber and market intelligence — 74 tools over 21,000+ facilities, 232 power markets, real-time ISO grid data, interconnection queues and 4,000+ tracked M&A deals. Works with Claude, Cursor, Cline and Continue.",
+  "description": "Model Context Protocol server giving AI agents live, citable data-center, power-grid, fiber and market intelligence — 74 tools over 21,000+ facilities, 311 power markets, real-time ISO grid data, interconnection queues and 4,000+ tracked M&A deals. Works with Claude, Cursor, Cline and Continue.",
   "featureList": "74 MCP tools, 6 guided prompts, streamable-HTTP transport, CC-BY-4.0 citable data, zero-install free tier",
   "softwareVersion": "2.3",
   "offers": {
@@ -281,7 +281,7 @@ function copyUrl(){
 # was absent from 0/4). Article + SoftwareApplication + FAQPage JSON-LD,
 # comparison table, FAQ. Conversion CTA points at the /integrations/mcp connect
 # page. Numbers re-verified live 2026-07-18: 74 tools, /api/v1/tiers (anon 10/day,
-# email key 50/day), honest-numbers canonical (facilities 21k+, markets 232).
+# email key 50/day), honest-numbers canonical (facilities 21k+, markets 311).
 MCP_SEO_PAGE_HTML = """<!DOCTYPE html>
 <html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
@@ -354,7 +354,7 @@ MCP_SEO_PAGE_HTML = """<!DOCTYPE html>
   <div class="stat"><b>21,000+</b><span>facilities · 170+ countries</span></div>
   <div class="stat"><b>10</b><span>live ISO grids</span></div>
   <div class="stat"><b>4,000+</b><span>tracked M&amp;A deals</span></div>
-  <div class="stat"><b>232</b><span>DCPI markets</span></div>
+  <div class="stat"><b>311</b><span>DCPI markets</span></div>
 </div>
 
 <div class="urlbox">

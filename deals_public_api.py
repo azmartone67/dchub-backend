@@ -412,7 +412,7 @@ def get_public_deals():
             out["tier_required"] = "starter"
             out["message"] = (
                 "Preview: 3 newest deals with $ value and MW masked. The full "
-                "M&A tracker (2,200+ deals with values + capacity) is Starter "
+                "M&A tracker (1,400+ deals with values + capacity) is Starter "
                 "($9/mo); a free dev key unlocks the basics — "
                 "https://dchub.cloud/pricing")
             out["upgrade_url"] = "https://dchub.cloud/pricing?utm_source=deals_public"

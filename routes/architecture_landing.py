@@ -65,7 +65,7 @@ AI agents query all of it directly. Here's how it fits together.</p>
 <div class="stat-grid" id="live-stats">
   <div class="stat"><div class="stat-num" id="s-facilities">21,000+</div><div class="stat-label">Facilities</div></div>
   <div class="stat"><div class="stat-num" id="s-countries">170+</div><div class="stat-label">Countries</div></div>
-  <div class="stat"><div class="stat-num" id="s-markets">232</div><div class="stat-label">DCPI markets</div></div>
+  <div class="stat"><div class="stat-num" id="s-markets">311</div><div class="stat-label">DCPI markets</div></div>
   <div class="stat"><div class="stat-num" id="s-tools">23+</div><div class="stat-label">MCP tools</div></div>
   <div class="stat"><div class="stat-num" id="s-gw">369 GW</div><div class="stat-label">Pipeline tracked</div></div>
 </div>
