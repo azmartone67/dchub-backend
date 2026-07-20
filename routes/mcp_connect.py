@@ -478,7 +478,7 @@ _PAGE_TEMPLATE = """<!DOCTYPE html>
 <div class="badges">
   <a href="/api/v1/mcp/quality" title="Live DC Hub operational quality score (transparent breakdown)" style="text-decoration:none"><img src="/api/v1/mcp/quality/badge.svg" alt="DC Hub quality score" style="height:22px;vertical-align:middle"></a>
   <span class="badge"><b>21,000+</b> facilities</span>
-  <span class="badge"><b>232</b> DCPI markets</span>
+  <span class="badge"><b>311</b> DCPI markets</span>
   <span class="badge"><b>43</b> US ISO/BA grids live</span>
   <span class="badge"><b>4,000+</b> M&amp;A deals</span>
   <span class="badge"><b>Free tier</b> &middot; no credit card</span>
