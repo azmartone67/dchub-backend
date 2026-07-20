@@ -21,10 +21,17 @@ import urllib.request
 _BASE = os.environ.get("DCHUB_BACKEND_BASE",
                        "https://dchub-backend-production.up.railway.app")
 
+# The tools/list count MUST be probed from the PUBLIC MCP gate agents actually
+# connect to — the Node server.mjs at dchub.cloud/mcp (79 tools) — NOT the Flask
+# backend's own /mcp (a different/legacy surface that returns 0 to an external
+# tools/list, so the "live" override below silently failed and resolve_canon
+# fell back to the hand-maintained PINNED count, which lagged 74 vs live 79).
+_MCP_BASE = os.environ.get("DCHUB_MCP_PUBLIC_BASE", "https://dchub.cloud")
+
 # ── Pinned structural canon (changes rarely; edit HERE, nowhere else) ──
 PINNED = {
     "version": "2.4.4",                       # == repo canonical (server.mjs/server.json); registry mirror auto-bumps to latest+1
-    "tools_advertised": 74,                   # canonical advertised count == live tools/list (74 as of 2026-07-18: plan_query). This is the PINNED fallback; resolve_canon() overrides it with the live tools/list count so consumers using resolve_canon() never go stale. /AGENTS.md reads PINNED directly, so keep this current.
+    "tools_advertised": 79,                   # canonical advertised count == live tools/list (79 as of 2026-07-20: +get_global_power/get_permitting_intel/plan_query/research_task/simulate_scenario/standing_intent). PINNED fallback; resolve_canon() overrides it with the live count probed from _MCP_BASE (the public gate) so consumers never go stale. /AGENTS.md reads PINNED directly, so keep current.
     "mcp_endpoint": "https://dchub.cloud/mcp",
     "registry_id": "cloud.dchub/mcp-server",
     "rest_base": "https://dchub.cloud/api/v1",     # canonical host (NOT api.dchub.cloud)
@@ -105,14 +112,14 @@ def _mcp_tool_count(timeout=20):
                                   # in mcp_connections analytics). The dchub- prefix +
                                   # PROBE_PLATFORMS entry keep it out of agent counts.
                                   "clientInfo": {"name": "dchub-canon-probe", "version": "1"}}}).encode()
-    req = urllib.request.Request(_BASE.rstrip("/") + "/mcp", data=init, headers=hdr)
+    req = urllib.request.Request(_MCP_BASE.rstrip("/") + "/mcp", data=init, headers=hdr)
     with urllib.request.urlopen(req, timeout=timeout) as r:
         sid = r.headers.get("mcp-session-id")
     hdr2 = dict(hdr)
     if sid:
         hdr2["mcp-session-id"] = sid
     body = json.dumps({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}).encode()
-    req2 = urllib.request.Request(_BASE.rstrip("/") + "/mcp", data=body, headers=hdr2)
+    req2 = urllib.request.Request(_MCP_BASE.rstrip("/") + "/mcp", data=body, headers=hdr2)
     with urllib.request.urlopen(req2, timeout=timeout) as r:
         out = r.read().decode("utf-8", "replace")
     for ln in out.splitlines():
