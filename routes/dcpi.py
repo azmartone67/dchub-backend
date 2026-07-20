@@ -125,6 +125,18 @@ DCPI_METRO_ALIASES = {
     'bay-area':          'santa-clara',
     'sf-bay-area':       'santa-clara',
     'south-bay':         'santa-clara',
+    # r-twin-dedup (2026-07-19): the same market got defined under two slugs —
+    # a legacy state-suffixed form + the canonical bare-city form. The exact-
+    # slug universe merge kept both and the orphan re-adopter perpetuated them,
+    # so rank_markets/ai_ready and the /dcpi list showed duplicate rows. Map the
+    # redundant slug → canonical so any direct link still resolves after the
+    # redundant row is unpublished. Canonical picks are reference-informed:
+    # 'dc' (68 press refs, the intentional 'Washington, DC' market) beats the
+    # bare 'washington' dynamic dupe; the others canonicalize to bare-city.
+    'cheyenne-wy':       'cheyenne',
+    'columbus-oh':       'columbus',
+    'the-dalles-or':     'the-dalles',
+    'washington':        'dc',
 }
 
 # ---------------------------------------------------------------------------
@@ -962,6 +974,42 @@ def _load_scored_orphans(known_slugs):
         return []
 
 
+def _dedup_market_twins(markets):
+    """r-twin-dedup (2026-07-19): collapse the same market defined under two
+    slugs (e.g. 'cheyenne' + 'cheyenne-wy', 'washington' + 'dc') so the recompute
+    scores ONE canonical row per market. Without this, the exact-slug merge kept
+    both and the orphan re-adopter re-published the twin forever, duplicating it
+    in every ranked list. Any redundant slug that is a key of DCPI_METRO_ALIASES
+    (canonical picks reference-informed there) is dropped from the scoring
+    universe; its already-scored row is unpublished separately, and the alias +
+    the no-published-filter single-market lookup keep direct links resolving.
+    Order-preserving; only drops entries whose slug is a known alias-key AND
+    whose canonical target is also present in the list (never orphans a market).
+    NEVER raises."""
+    try:
+        canon_present = set()
+        for m in markets:
+            s = m[0] if isinstance(m, tuple) else (m.get("slug") if hasattr(m, "get") else None)
+            if s:
+                canon_present.add(s)
+        out = []
+        dropped = []
+        for m in markets:
+            s = m[0] if isinstance(m, tuple) else (m.get("slug") if hasattr(m, "get") else None)
+            target = DCPI_METRO_ALIASES.get((s or "").lower())
+            if s and target and target in canon_present:
+                dropped.append(s)          # a twin whose canonical is present
+                continue
+            out.append(m)
+        if dropped:
+            print(f"[dcpi] r-twin-dedup: dropped {len(dropped)} alias-twin slugs "
+                  f"from the scoring universe: {dropped}", flush=True)
+        return out
+    except Exception as e:
+        print(f"[dcpi] r-twin-dedup: skipped (non-fatal): {e}", flush=True)
+        return markets
+
+
 def _build_markets_list():
     """r57: always-includes-intl market list builder. Tries the dynamic
     US loader, then unions on the international set. Falls back to
@@ -991,8 +1039,11 @@ def _build_markets_list():
         _merged_slugs = {m[0] if isinstance(m, tuple) else m.get("slug")
                          for m in merged}
         merged += _load_scored_orphans(_merged_slugs)
+        # r-twin-dedup (2026-07-19): applied AFTER orphans so the orphan
+        # re-adopter can't smuggle a redundant twin back into the universe.
+        merged = _dedup_market_twins(merged)
         return merged
-    return _MARKETS_HARDCODED
+    return _dedup_market_twins(_MARKETS_HARDCODED)
 
 
 MARKETS = _build_markets_list()
