@@ -2460,6 +2460,16 @@ try:
     except Exception as _ass:
         import logging
         logging.getLogger(__name__).warning('ai_surface_sentinel wiring failed: %s', _ass)
+    # 2026-07-20: single canonical PHRASE source (/api/v1/canon/phrases) so the
+    # /for pages + llms.txt + registry heals all DERIVE the headline numbers live
+    # instead of hardcoding — nothing static, no cross-surface disagreement.
+    try:
+        from routes.canon_phrases import canon_phrases_bp
+        app.register_blueprint(canon_phrases_bp)
+        print("[main] canon_phrases_bp registered: /api/v1/canon/phrases", flush=True)
+    except Exception as _cp:
+        import logging
+        logging.getLogger(__name__).warning('canon_phrases wiring failed: %s', _cp)
     try:
         from routes.brain_narrative import brain_narrative_bp
         app.register_blueprint(brain_narrative_bp)
