@@ -25,7 +25,12 @@ import logging
 
 logger = logging.getLogger("activation_nudge")
 
-PAID_PLANS = ('developer', 'pro', 'paid', 'enterprise', 'founding')
+# r-starter-included (2026-07-20): 'starter' ($9/mo) was MISSING here, so every
+# Starter customer was invisible to the activation nudge regardless of window —
+# a paying customer (marvinvitcu@gmail.com, subscribed 2026-06-18, 0 calls in a
+# month+) sat stranded because their users.plan label 'starter' wasn't a "paid"
+# plan to this job. Include it and its variants.
+PAID_PLANS = ('starter', 'developer', 'pro', 'paid', 'enterprise', 'founding')
 EMAIL_KEY = 'activation_nudge'
 
 
@@ -40,7 +45,7 @@ def _get_conn():
     return conn
 
 
-def _find_candidates(min_age_hours=48, max_age_days=21, limit=25):
+def _find_candidates(min_age_hours=48, max_age_days=45, limit=25):
     """Paid + zero-call accounts in the activation window that we haven't nudged.
 
     'Zero calls' sums calls_total + usage_count across ALL of the user's keys, so
@@ -134,7 +139,7 @@ def _nudge_html(first, plan):
 </body></html>"""
 
 
-def run_activation_nudge(armed=False, limit=25, min_age_hours=48, max_age_days=21):
+def run_activation_nudge(armed=False, limit=25, min_age_hours=48, max_age_days=45):
     """Find and (if armed) nudge paid + zero-call customers. Returns a report."""
     try:
         from dchub_outreach import is_internal_email
@@ -198,7 +203,7 @@ def setup_activation_nudge_routes(app):
         except Exception:
             min_age_hours = 48
         try:
-            max_age_days = max(1, min(int(request.args.get('max_age_days', 21)), 120))
+            max_age_days = max(1, min(int(request.args.get('max_age_days', 45)), 120))
         except Exception:
             max_age_days = 21
         return jsonify(run_activation_nudge(

@@ -625,6 +625,21 @@ DISABLED_JOBS = {
         'day_of_week': 0,                  # Monday
         'timeout': 60,
     },
+    # r-activation-loop (2026-07-20): the activation nudge existed (2026-07-16)
+    # but was NEVER scheduled — the classic "close the automation loop" gap:
+    # the tool sat idle while paying customers (marvinvitcu + 5 founding
+    # members) stayed dormant at 0 calls. Daily 16:00 UTC. DRY-RUN by default
+    # (logs who WOULD be nudged); sends real emails ONLY when the owner sets
+    # ACTIVATION_NUDGE_ARM=1 (the endpoint honors it) — no customer inbox is
+    # touched until the owner arms it, and each customer is nudged at most once.
+    'activation_nudge': {
+        'name': 'Activation Nudge — dormant paid customers',
+        'endpoint': '/api/v1/admin/activation-nudge/run',
+        'method': 'POST',
+        'hours': [16],
+        'minute': 0,
+        'timeout': 90,
+    },
     # Phase FF+7-mttr5 (2026-05-19): Brain L22 — Auto-Code LIVE.
     # User flipped to live mode. Hourly. Reads L21 ring buffer + radar
     # for 404 spikes >=2/hour, opens GitHub issues with the proposed
