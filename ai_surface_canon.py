@@ -46,7 +46,7 @@ PINNED = {
     "fake_tool_denylist": ["get_market_data", "search_deals", "get_transactions"],
     "crawlers_required": ["GrokBot", "xAI-Grok", "Grok-DeepSearch"],
     "public": {                                    # public-facing rounded strings
-        "facilities": "21,000+",
+        "facilities": "22,000+",
         "markets": "300+",
         "deals": "1,400+",   # DISTINCT tracked deals (== canonical_stats.deals_phrase). ★2026-07-17: was "4,000+", itself an over-claim — it floored ROWS, and the AUTO id embeds the ingest date so one deal accrues a row per day (4,275 rows -> ~1,420 distinct). ★NOT the raw `deals` COUNT(*) that /api/v1/stats returns. resolve_canon() overrides this live.
         "countries": "170+",

@@ -26,13 +26,13 @@ The headline today: the three biggest markets — **Northern Virginia, Phoenix, 
 
 ## 🔌 Connect in 30 seconds
 
-This Space **is an MCP server** (7 tools). The full DC Hub MCP has **74 tools** — 10 calls/day free, no key needed.
+This Space **is an MCP server** (7 tools). The full DC Hub MCP has **79 tools** — 10 calls/day free, no key needed.
 
 ```bash
 # This Space (7 tools, free)
 claude mcp add --transport sse dchub-power-index https://dchubcloud-dchub.hf.space/gradio_api/mcp/sse
 
-# Full DC Hub MCP (74 tools)
+# Full DC Hub MCP (79 tools)
 claude mcp add --transport http dchub https://dchub.cloud/mcp
 ```
 
@@ -70,6 +70,6 @@ with MCPClient({"url": "https://dchubcloud-dchub.hf.space/gradio_api/mcp/sse"}) 
 | `interconnection_queue` | US interconnection-queue capacity, per ISO |
 | `hyperscaler_deals` | Recent hyperscaler / AI-capex deals (1,400+ tracked) |
 
-## Want all 74 tools?
+## Want all 79 tools?
 
-Connect the full server — **`https://dchub.cloud/mcp`** — 74 tools over 21,900+ facilities in 170+ countries, real-time grid telemetry (US ISOs + EU + GB + Taiwan + Japan + South Korea + Brazil), fiber, gas, water, tax incentives, and deal intelligence. 10 calls/day free anonymous; mint a free key with its `claim_free_key` tool. Or explore with zero setup at [dchub.cloud/playground](https://dchub.cloud/playground). Data is CC-BY-4.0 for citation.
+Connect the full server — **`https://dchub.cloud/mcp`** — 79 tools over 21,900+ facilities in 170+ countries, real-time grid telemetry (US ISOs + EU + GB + Taiwan + Japan + South Korea + Brazil), fiber, gas, water, tax incentives, and deal intelligence. 10 calls/day free anonymous; mint a free key with its `claim_free_key` tool. Or explore with zero setup at [dchub.cloud/playground](https://dchub.cloud/playground). Data is CC-BY-4.0 for citation.
