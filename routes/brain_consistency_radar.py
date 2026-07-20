@@ -7233,6 +7233,104 @@ def check_cron_freshness() -> list[dict]:
     return findings
 
 
+def check_customer_activation_health() -> list[dict]:
+    """r-customer-loop (2026-07-20) — cross-platform course-correction leg
+    for the customer white-glove loop.
+
+    Reads the stages the loop PERSISTS (users.engagement_stage where
+    last_touch_by='customer_white_glove') and flags SYSTEMIC activation
+    failure: acquisition works but paying customers never make a first call.
+    This is decoupled from the loop on purpose — if the loop itself stops,
+    check_cron_freshness catches that separately (the tick self-stamps
+    cron_last_run under job_name 'customer_white_glove_tick'). Here we watch
+    the loop's OUTPUT, so a healthy-but-wrong outcome (everyone stranded)
+    still reaches the brain agenda. FAIL-SOFT.
+
+    Thresholds mirror customer_white_glove._self_health so the operator
+    digest and the brain agenda show the same number.
+    """
+    findings: list[dict] = []
+    STRANDED_SYSTEMIC_RATIO = 0.40
+    ESCALATE_MIN = 3  # nudged-but-still-stranded customers that need a human
+    c = _db()
+    if c is None:
+        return findings
+    try:
+        with c.cursor() as cur:
+            cur.execute("SELECT to_regclass('public.users')")
+            if not cur.fetchone()[0]:
+                return findings
+            # engagement_stage is created lazily by the loop's first tick;
+            # tolerate its absence on a fresh deploy.
+            cur.execute("SELECT column_name FROM information_schema.columns "
+                        "WHERE table_name='users' AND column_name='engagement_stage'")
+            if not cur.fetchone():
+                return findings
+            cur.execute("""
+                SELECT engagement_stage, COUNT(*)
+                  FROM users
+                 WHERE last_touch_by = 'customer_white_glove'
+                   AND engagement_stage IS NOT NULL
+                 GROUP BY engagement_stage
+            """)
+            counts = {s: n for s, n in cur.fetchall()}
+            total = sum(counts.values())
+            stranded = counts.get("stranded", 0)
+            # Guard: needs a populated cohort. total==0 means the tick has not
+            # persisted yet (fresh deploy) — not a finding; the cron dead-man
+            # owns "the loop never ran".
+            if total >= 5 and stranded / total >= STRANDED_SYSTEMIC_RATIO:
+                pct = 100.0 * stranded / total
+                findings.append({
+                    "issue":  "customer_activation_systemic_failure",
+                    "url":    "/api/v1/admin/customer-white-glove/state",
+                    "count":  int(stranded),
+                    "detail": (f"{stranded}/{total} paying customers ({pct:.0f}%) are "
+                               f"STRANDED — paid, zero calls past grace. Acquisition "
+                               f"works, activation doesn't. Course-correct: arm "
+                               f"ACTIVATION_NUDGE_ARM=1 to recover them, escalate the "
+                               f"already-nudged to a human touch, and add first-call "
+                               f"onboarding to the checkout flow. Board: "
+                               f"/api/v1/admin/customer-white-glove/state."),
+                })
+            # Escalation backlog: nudged customers who stayed stranded — the
+            # automated motion failed and a human needs to step in.
+            cur.execute("""
+                SELECT COUNT(*) FROM users u
+                 WHERE u.last_touch_by = 'customer_white_glove'
+                   AND u.lifecycle_stage = 'stranded'
+                   AND EXISTS (SELECT 1 FROM email_drip_log d
+                                WHERE lower(d.user_email) = lower(u.email)
+                                  AND d.email_key = 'activation_nudge'
+                                  AND d.sent_at < NOW() - INTERVAL '7 days')
+            """)
+            escalate = cur.fetchone()[0] or 0
+            if escalate >= ESCALATE_MIN:
+                findings.append({
+                    "issue":  "customer_nudge_failed_needs_human",
+                    "url":    "/api/v1/admin/customer-white-glove/state",
+                    "count":  int(escalate),
+                    "detail": (f"{escalate} paying customers were sent the automated "
+                               f"activation nudge 7+ days ago and are STILL at zero "
+                               f"calls — the automated motion failed. The loop escalated "
+                               f"them; they need a human touch (call / personal note), "
+                               f"not another email."),
+                })
+    except Exception as e:
+        findings.append({
+            "issue":  "consistency_radar_detector_crashed:check_customer_activation_health",
+            "url":    "check_customer_activation_health",
+            "count":  1,
+            "detail": f"{type(e).__name__}: {str(e)[:200]}",
+        })
+    finally:
+        try:
+            c.close()
+        except Exception:
+            pass
+    return findings
+
+
 def check_required_env_vars() -> list[dict]:
     """Phase QQQ (2026-05-17) — flag missing env vars that cause silent
     skips elsewhere in the codebase.
@@ -9202,6 +9300,11 @@ def scan_all() -> list[dict]:
                # Phase QQQ (2026-05-17) — Stability Guardrails: 4 detectors
                # closing the 3 systemic blind spots inventory revealed
                check_cron_freshness,
+               # r-customer-loop (2026-07-20) — systemic activation-failure +
+               # nudge-escalation backlog, the course-correction leg of the
+               # customer white-glove loop (its cron freshness is covered by
+               # check_cron_freshness via the tick's self-stamp).
+               check_customer_activation_health,
                check_required_env_vars,
                check_csp_violation_reports,
                check_backend_pool_health,

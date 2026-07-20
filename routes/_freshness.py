@@ -32,6 +32,12 @@ QUERIES = {
     "news_age_seconds":         "SELECT MAX(published_date) FROM news",
     "testimonials_age_seconds": "SELECT MAX(created_at) FROM ai_testimonials",
     "stats_snapshot_age_seconds":"SELECT MAX(snapshot_at) FROM db_health_snapshots",
+    # customer white-glove loop heartbeat — last time the tick touched a
+    # paying customer's lifecycle_stage. Goes stale iff the loop stops; the
+    # authoritative alarm is brain check_cron_freshness (cron_last_run), this
+    # is the data-layer mirror on the freshness board.
+    "customer_lifecycle_age_seconds":
+        "SELECT MAX(last_touched_at) FROM users WHERE last_touch_by='customer_white_glove'",
 }
 
 def freshness_dict(conn):

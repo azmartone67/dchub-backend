@@ -3,7 +3,7 @@
 The human-customer analog of the agent-side white glove (agent_onboarding_master_
 shell / model_relations): ONE conductor that MEASURES every paying customer's
 lifecycle, CLASSIFIES it into a stage, computes the next-best-action, writes the
-stage back to users.lifecycle_stage, and surfaces a daily operator health digest
+stage back to users.engagement_stage, and surfaces a daily operator health digest
 plus one-click actions — instead of the scattered, mostly-unscheduled pieces
 (activation_nudge, winback_outreach, usage_limit_emails, paid_account_health).
 
@@ -12,7 +12,8 @@ for a month+ with ZERO API calls, invisible to every existing nudge (Starter
 wasn't a "paid" plan; the nudge wasn't scheduled). The lesson: no single surface
 told anyone he was stranded. This is that surface.
 
-LIFECYCLE STAGES (written to users.lifecycle_stage):
+ENGAGEMENT STAGES (written to users.engagement_stage — NOT lifecycle_stage,
+which is the CRM funnel's constrained column):
   new         paid, < GRACE_HOURS old — welcome grace, no action yet
   stranded    paid, active sub, 0 calls ever, past grace — ACTIVATION motion
   activating  made first calls, active within ACTIVE_DAYS — healthy, watch
@@ -24,7 +25,7 @@ LIFECYCLE STAGES (written to users.lifecycle_stage):
 
 SAFETY (touches real paying customers):
   * MEASURE + CLASSIFY + PERSIST the stage always run (read + a users UPDATE of
-    lifecycle_stage/last_touched_at only — no customer contact).
+    engagement_stage/last_touched_at only — no customer contact).
   * Customer EMAILS are never sent from here. Stage motions are ROUTED to the
     existing gated senders (activation_nudge, winback) and each of THOSE stays
     dry-run until its own arm flag is set. The primary output is the OPERATOR
@@ -55,6 +56,23 @@ ACTIVE_DAYS = 14
 COOLING_DAYS = 14
 AT_RISK_DAYS = 30
 POWER_CALLS_30D = 2000     # heuristic "power user" floor over 30d
+
+# ── self-healing loop wiring ───────────────────────────────────────────
+# The tick runs at /api/v1/admin/customer-white-glove/tick — NOT under
+# /api/jobs/*, so jobs_routes' auto-stamp into cron_last_run never covers
+# it. We self-stamp here so the platform's EXTERNAL dead-man
+# (brain_consistency_radar.check_cron_freshness) watches this loop and
+# fires `cron_silently_dead` if the scheduler dies or the endpoint 500s —
+# i.e. the loop is watched even when the loop itself is dead.
+LOOP_JOB_NAME = "customer_white_glove_tick"
+LOOP_INTERVAL_S = 86400          # daily; the dead-man flags at 2× (48h late)
+NUDGE_STALE_DAYS = 7             # nudged this long ago + still stranded = escalate
+STRANDED_SYSTEMIC_RATIO = 0.40   # > this share stranded = systemic activation failure
+
+# Stage severity (low = worse) — used to classify a transition as a
+# recovery (up) vs a regression (down) for the momentum banner.
+_STAGE_RANK = {"churned": 0, "at_risk": 1, "stranded": 2, "cooling": 3,
+               "new": 4, "activating": 5, "healthy": 6, "power": 7}
 
 
 def _conn():
@@ -117,6 +135,9 @@ def _measure():
                        EXISTS(SELECT 1 FROM email_drip_log d
                               WHERE lower(d.user_email)=lower(u.email)
                                 AND d.email_key='activation_nudge') AS nudged,
+                       (SELECT MAX(d.sent_at) FROM email_drip_log d
+                        WHERE lower(d.user_email)=lower(u.email)
+                          AND d.email_key='activation_nudge') AS nudged_at,
                        EXISTS(SELECT 1 FROM welcome_email_log w
                               WHERE lower(w.email)=lower(u.email)) AS welcomed
                 FROM users u
@@ -171,9 +192,20 @@ def _classify(r, now):
     if joined_age is not None and joined_age < (GRACE_HOURS / 24.0):
         return "new", "Grace period — welcome sent; watch for first call.", 0
     if calls == 0:
-        act = ("Activation nudge — paid, zero calls past grace."
-               + (" ALREADY nudged; needs a human touch." if r.get("nudged") else ""))
-        return "stranded", act, 3
+        # Close the action loop: if we already fired the automated nudge and
+        # they're STILL at zero calls, the automated motion FAILED — escalate
+        # to a human touch instead of re-firing the same email into the void.
+        nudge_age = _age_days(r.get("nudged_at"), now)
+        if r.get("nudged") and (nudge_age is None or nudge_age >= NUDGE_STALE_DAYS):
+            since = f" {int(nudge_age)}d ago" if nudge_age is not None else ""
+            return ("stranded",
+                    f"ESCALATE: nudged{since}, still zero calls — automated nudge "
+                    f"FAILED. Human touch (call / personal note), not another email.",
+                    3)
+        if r.get("nudged"):
+            return ("stranded",
+                    "Nudged recently — watch for first call before escalating.", 3)
+        return "stranded", "Activation nudge — paid, zero calls past grace.", 3
     if last_used_age is None:
         return "activating", "Made calls but recency unknown — watch.", 1
     if last_used_age <= ACTIVE_DAYS:
@@ -193,6 +225,7 @@ def _roster(now=None):
     out = []
     for r in _measure():
         stage, action, prio = _classify(r, now)
+        nudge_days = _age_days(r.get("nudged_at"), now)
         out.append({
             "email": r["email"], "name": r.get("name") or "", "plan": r.get("plan"),
             "stage": stage, "action": action, "priority": prio,
@@ -203,6 +236,9 @@ def _roster(now=None):
             "idle_days": (round(_age_days(r.get("last_used_at"), now), 1)
                           if r.get("last_used_at") else None),
             "welcomed": bool(r.get("welcomed")), "nudged": bool(r.get("nudged")),
+            "nudge_days": (round(nudge_days, 1) if nudge_days is not None else None),
+            # escalate = the automated motion already ran and did NOT work
+            "escalate": bool(action.startswith("ESCALATE")),
             "subscription_status": r.get("subscription_status"),
         })
     order = {"stranded": 0, "at_risk": 1, "cooling": 2, "churned": 3,
@@ -211,9 +247,31 @@ def _roster(now=None):
     return out
 
 
+def _ensure_columns():
+    """users.lifecycle_stage is OWNED by the CRM funnel subsystem — it carries
+    a CHECK constraint (new/engaged/nurturing/opportunity/converted/churned/
+    inactive) and writing our engagement vocabulary there both fails the
+    constraint AND would corrupt the funnel. We keep our engagement stage in a
+    dedicated, unconstrained column. Idempotent, fail-soft."""
+    c = _conn()
+    if c is None:
+        return
+    try:
+        with c.cursor() as cur:
+            cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS "
+                        "engagement_stage TEXT")
+    except Exception as e:
+        logger.warning("[cwg] ensure columns failed: %s", str(e)[:120])
+    finally:
+        try: c.close()
+        except Exception: pass
+
+
 def _persist_stages(roster):
-    """Write the computed stage back to users.lifecycle_stage (+ last_touched_at).
-    Read+CLASSIFY drives the column that was previously unpopulated. Fail-soft."""
+    """Write the computed engagement stage to users.engagement_stage (+ the
+    last_touched_at heartbeat). NOT users.lifecycle_stage — that column is the
+    CRM funnel's, with an incompatible CHECK constraint. Fail-soft."""
+    _ensure_columns()
     c = _conn()
     if c is None:
         return 0
@@ -222,12 +280,15 @@ def _persist_stages(roster):
         with c.cursor() as cur:
             for r in roster:
                 try:
+                    # last_touched_at is the loop's freshness HEARTBEAT — bump
+                    # it every tick (not only on stage change), otherwise a
+                    # customer parked in one stage makes the freshness signal
+                    # look stale while the loop is actually healthy.
                     cur.execute("""
-                        UPDATE users SET lifecycle_stage=%s, last_touched_at=NOW(),
+                        UPDATE users SET engagement_stage=%s, last_touched_at=NOW(),
                                last_touch_by='customer_white_glove'
                         WHERE lower(email)=lower(%s)
-                          AND (lifecycle_stage IS DISTINCT FROM %s OR last_touched_at IS NULL)
-                    """, (r["stage"], r["email"], r["stage"]))
+                    """, (r["stage"], r["email"]))
                     n += cur.rowcount
                 except Exception:
                     pass
@@ -235,6 +296,236 @@ def _persist_stages(roster):
         try: c.close()
         except Exception: pass
     return n
+
+
+def _stamp_cron_run():
+    """Self-register into cron_last_run so the platform's EXTERNAL dead-man
+    (brain_consistency_radar.check_cron_freshness) watches this loop. The
+    tick lives at /api/v1/admin/... not /api/jobs/*, so jobs_routes' auto-
+    stamp never covers it — without this stamp nothing notices when the loop
+    silently stops. cron_last_run.job_name is the PK, hence ON CONFLICT."""
+    c = _conn()
+    if c is None:
+        return
+    try:
+        with c.cursor() as cur:
+            cur.execute("""
+                INSERT INTO cron_last_run
+                    (job_name, last_started_at, expected_interval_s, run_count)
+                VALUES (%s, NOW(), %s, 1)
+                ON CONFLICT (job_name) DO UPDATE SET
+                    last_started_at = EXCLUDED.last_started_at,
+                    expected_interval_s = COALESCE(EXCLUDED.expected_interval_s,
+                                                   cron_last_run.expected_interval_s),
+                    run_count = cron_last_run.run_count + 1
+            """, (LOOP_JOB_NAME, LOOP_INTERVAL_S))
+    except Exception as e:
+        logger.warning("[cwg] cron stamp failed: %s", str(e)[:120])
+    finally:
+        try: c.close()
+        except Exception: pass
+
+
+def _ensure_events_table():
+    c = _conn()
+    if c is None:
+        return
+    try:
+        with c.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS customer_lifecycle_events (
+                    id BIGSERIAL PRIMARY KEY,
+                    email       TEXT NOT NULL,
+                    from_stage  TEXT,
+                    to_stage    TEXT NOT NULL,
+                    total_calls INTEGER DEFAULT 0,
+                    note        TEXT,
+                    at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+            """)
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_cle_at "
+                        "ON customer_lifecycle_events(at)")
+    except Exception as e:
+        logger.warning("[cwg] events table ensure failed: %s", str(e)[:120])
+    finally:
+        try: c.close()
+        except Exception: pass
+
+
+def _prior_stages(emails):
+    """Currently-persisted engagement_stage per email — read BEFORE the tick
+    overwrites it, so a diff vs the freshly-computed stage is a real move."""
+    if not emails:
+        return {}
+    c = _conn()
+    if c is None:
+        return {}
+    out = {}
+    try:
+        with c.cursor() as cur:
+            # Tolerate the very first run before the column exists.
+            cur.execute("SELECT column_name FROM information_schema.columns "
+                        "WHERE table_name='users' AND column_name='engagement_stage'")
+            if not cur.fetchone():
+                return {}
+            cur.execute("SELECT lower(email), engagement_stage FROM users "
+                        "WHERE lower(email) = ANY(%s)",
+                        ([e.lower() for e in emails],))
+            for em, st in cur.fetchall():
+                out[em] = st
+    except Exception:
+        pass
+    finally:
+        try: c.close()
+        except Exception: pass
+    return out
+
+
+def _classify_move(old, new):
+    """Category for the momentum banner. None old = first observation."""
+    if old is None or old == new:
+        return None
+    up = {"activating", "healthy", "power"}
+    if new in up and old in ("stranded", "new"):
+        return "activated"
+    if new in up and old in ("cooling", "at_risk"):
+        return "recovered"
+    if new == "stranded" and old != "stranded":
+        return "newly_stranded"
+    if new == "churned":
+        return "churned"
+    if _STAGE_RANK.get(new, 9) < _STAGE_RANK.get(old, 9):
+        return "regressed"
+    return "improved"
+
+
+def _track_transitions(roster):
+    """CLOSE THE ACTION LOOP. Compare each customer's freshly-computed stage
+    to the previously-persisted one and log real transitions to
+    customer_lifecycle_events. This is how the loop VERIFIES its own actions:
+    a stranded→activating move proves a nudge worked; a stranded customer who
+    was nudged and stayed stranded is a failure the escalation path catches.
+    Call ONCE per day, from the tick, BEFORE _persist_stages overwrites the
+    prior value. Writes history only — never contacts anyone. Fail-soft."""
+    _ensure_events_table()
+    emails = [r["email"] for r in roster]
+    prior = _prior_stages(emails)
+    logged = 0
+    c = _conn()
+    if c is None:
+        return {"logged": 0}
+    try:
+        with c.cursor() as cur:
+            for r in roster:
+                em = r["email"].lower()
+                new = r["stage"]
+                old = prior.get(em)
+                if old == new:
+                    continue
+                note = ("first_observation" if old is None
+                        else (r.get("action") or "")[:200])
+                try:
+                    cur.execute(
+                        "INSERT INTO customer_lifecycle_events"
+                        "(email, from_stage, to_stage, total_calls, note) "
+                        "VALUES (%s,%s,%s,%s,%s)",
+                        (r["email"], old, new, r["total_calls"], note))
+                    logged += 1
+                except Exception:
+                    pass
+    except Exception as e:
+        logger.warning("[cwg] track transitions failed: %s", str(e)[:120])
+    finally:
+        try: c.close()
+        except Exception: pass
+    return {"logged": logged}
+
+
+def _recent_momentum(hours=20):
+    """Read the transitions the tick recorded (last ~day) → the digest's
+    momentum banner. Decoupled from _track_transitions so any surface can
+    show momentum without re-running (or double-logging) the diff."""
+    out = {"activated": [], "recovered": [], "newly_stranded": [],
+           "churned": [], "regressed": [], "improved": [],
+           "first_seen": 0, "transitions": 0}
+    c = _conn()
+    if c is None:
+        return out
+    try:
+        with c.cursor() as cur:
+            cur.execute("SELECT to_regclass('public.customer_lifecycle_events')")
+            if not cur.fetchone()[0]:
+                return out
+            cur.execute(
+                "SELECT email, from_stage, to_stage FROM customer_lifecycle_events "
+                "WHERE at > NOW() - (%s || ' hours')::interval ORDER BY at",
+                (str(int(hours)),))
+            for em, old, new in cur.fetchall():
+                if old is None:
+                    out["first_seen"] += 1
+                    continue
+                cat = _classify_move(old, new)
+                if cat:
+                    out["transitions"] += 1
+                    out.setdefault(cat, []).append(em)
+    except Exception:
+        pass
+    finally:
+        try: c.close()
+        except Exception: pass
+    return out
+
+
+def _loop_freshness():
+    """The loop's own heartbeat age (from cron_last_run). loop_stale=True is
+    the never-stale alarm — the same signal check_cron_freshness fires on."""
+    c = _conn()
+    out = {"last_run_at": None, "age_hours": None, "loop_stale": None,
+           "run_count": None}
+    if c is None:
+        return out
+    try:
+        with c.cursor() as cur:
+            cur.execute("SELECT to_regclass('public.cron_last_run')")
+            if not cur.fetchone()[0]:
+                return out
+            cur.execute(
+                "SELECT last_started_at, run_count, "
+                "EXTRACT(EPOCH FROM (NOW()-last_started_at)) "
+                "FROM cron_last_run WHERE job_name=%s", (LOOP_JOB_NAME,))
+            row = cur.fetchone()
+            if row and row[0] is not None:
+                out["last_run_at"] = row[0].isoformat()
+                out["run_count"] = row[1]
+                age_h = float(row[2]) / 3600.0
+                out["age_hours"] = round(age_h, 1)
+                out["loop_stale"] = age_h > (LOOP_INTERVAL_S * 2 / 3600.0)
+    except Exception:
+        pass
+    finally:
+        try: c.close()
+        except Exception: pass
+    return out
+
+
+def _self_health(roster):
+    """The loop reporting on itself: systemic activation signal + heartbeat.
+    systemic_activation_failure mirrors the radar detector's threshold so the
+    operator sees the same course-correction signal the brain agenda gets."""
+    total = len(roster)
+    stranded = sum(1 for r in roster if r["stage"] == "stranded")
+    escalate = sum(1 for r in roster if r.get("escalate"))
+    engaged = sum(1 for r in roster if r["total_calls"] > 0)
+    ratio = round(stranded / total, 3) if total else 0.0
+    fresh = _loop_freshness()
+    return {
+        "loop": "customer_white_glove",
+        "payers": total, "engaged": engaged,
+        "stranded": stranded, "escalate": escalate,
+        "stranded_ratio": ratio,
+        "systemic_activation_failure": total >= 5 and ratio >= STRANDED_SYSTEMIC_RATIO,
+        **fresh,
+    }
 
 
 def _counts(roster):
@@ -250,6 +541,7 @@ def cwg_state():
         return jsonify(ok=False, error="unauthorized"), 401
     roster = _roster()
     return jsonify(ok=True, total=len(roster), counts=_counts(roster),
+                   health=_self_health(roster), momentum=_recent_momentum(),
                    customers=roster), 200
 
 
@@ -258,7 +550,13 @@ def cwg_state():
 def cwg_tick():
     if not _admin_ok():
         return jsonify(ok=False, error="unauthorized"), 401
+    # Heartbeat first so the external dead-man sees THIS run even if the work
+    # below throws — a stamp on a crashing tick is better than no stamp.
+    _stamp_cron_run()
     roster = _roster()
+    # Track transitions BEFORE persisting: _track reads the prior persisted
+    # stage; _persist then overwrites it with today's.
+    tracked = _track_transitions(roster)
     persisted = _persist_stages(roster)
     counts = _counts(roster)
     acted = {"stranded_routed_to_activation": 0}
@@ -272,14 +570,63 @@ def cwg_tick():
         except Exception as e:
             acted["activation_error"] = str(e)[:120]
     return jsonify(ok=True, total=len(roster), counts=counts,
-                   stages_persisted=persisted, acted=acted,
-                   note=("Stages written to users.lifecycle_stage. Customer emails "
-                         "are NOT sent from here — motions route to the gated "
-                         "senders; the operator digest is the human surface.")), 200
+                   stages_persisted=persisted, transitions_logged=tracked.get("logged", 0),
+                   health=_self_health(roster), momentum=_recent_momentum(), acted=acted,
+                   note=("Stages written to users.engagement_stage; transitions logged to "
+                         "customer_lifecycle_events; heartbeat stamped to cron_last_run "
+                         "(watched by brain check_cron_freshness). Customer emails are NOT "
+                         "sent from here — motions route to the gated senders.")), 200
 
 
-def _digest_html(roster):
+def _momentum_banner(mom, health):
+    """A one-strip 'what moved since yesterday + is the loop itself healthy'
+    header — the closed-loop feedback the operator reads first."""
+    def esc(s): return _html.escape(str(s or ""))
+    chips = []
+    for key, label, color in (
+        ("activated", "✅ activated", "#16a34a"),
+        ("recovered", "↩︎ recovered", "#16a34a"),
+        ("newly_stranded", "🔴 newly stranded", "#dc2626"),
+        ("regressed", "↓ regressed", "#d97706"),
+        ("churned", "⚫ churned", "#475569")):
+        n = len(mom.get(key) or [])
+        if n:
+            chips.append(f'<span style="display:inline-block;margin:0 8px 4px 0;'
+                         f'padding:2px 9px;border-radius:12px;background:{color};'
+                         f'color:#fff;font-size:12px">{label} {n}</span>')
+    if mom.get("first_seen"):
+        chips.append(f'<span style="display:inline-block;margin:0 8px 4px 0;'
+                     f'padding:2px 9px;border-radius:12px;background:#64748b;'
+                     f'color:#fff;font-size:12px">👋 first seen {mom["first_seen"]}</span>')
+    movement = "".join(chips) or '<span style="color:#64748b;font-size:13px">No stage changes in the last day.</span>'
+    # loop self-health line
+    if health.get("loop_stale"):
+        hb = (f'<span style="color:#dc2626;font-weight:600">⚠ LOOP STALE — last ran '
+              f'{health.get("age_hours","?")}h ago (expected daily). The brain will '
+              f'also flag this as cron_silently_dead.</span>')
+    elif health.get("age_hours") is not None:
+        hb = (f'<span style="color:#16a34a">● loop healthy — last ran '
+              f'{health.get("age_hours")}h ago, {health.get("run_count","?")} runs.</span>')
+    else:
+        hb = '<span style="color:#64748b">loop heartbeat not yet recorded.</span>'
+    sysfail = ""
+    if health.get("systemic_activation_failure"):
+        sysfail = (f'<div style="margin-top:8px;padding:8px 10px;background:#fef2f2;'
+                   f'border-left:3px solid #dc2626;font-size:13px;color:#991b1b">'
+                   f'Systemic activation failure: {health.get("stranded")}/{health.get("payers")} '
+                   f'paying customers stranded ({int(health.get("stranded_ratio",0)*100)}%). '
+                   f'This same signal is on the brain agenda (course-correction).</div>')
+    return (f'<div style="background:#fff;border:1px solid #e2e8f0;border-radius:6px;'
+            f'padding:12px 14px;margin:14px 0">'
+            f'<div style="font-size:11px;text-transform:uppercase;letter-spacing:.05em;'
+            f'color:#64748b;margin-bottom:6px">Movement since yesterday</div>{movement}'
+            f'<div style="margin-top:8px;font-size:12px">{hb}</div>{sysfail}</div>')
+
+
+def _digest_html(roster, mom=None, health=None):
     counts = _counts(roster)
+    mom = mom if mom is not None else _recent_momentum()
+    health = health if health is not None else _self_health(roster)
     def esc(s): return _html.escape(str(s or ""))
     order = ["stranded", "at_risk", "cooling", "churned", "power", "activating"]
     labels = {"stranded": "🔴 Stranded — paid, never activated",
@@ -295,9 +642,11 @@ def _digest_html(roster):
             continue
         trs = "".join(
             f'<tr><td style="padding:5px 10px;border-bottom:1px solid #eee">'
+            f'{"<span style=\"background:#dc2626;color:#fff;font-size:10px;padding:1px 5px;border-radius:3px;margin-right:5px\">ESCALATE</span>" if r.get("escalate") else ""}'
             f'<b>{esc(r["email"])}</b> <span style="color:#888;font-size:12px">'
             f'({esc(r["plan"])} · {r["total_calls"]} calls · joined {r["joined_days"]:.0f}d'
-            f'{" · idle "+str(int(r["idle_days"]))+"d" if r.get("idle_days") is not None else ""})</span>'
+            f'{" · idle "+str(int(r["idle_days"]))+"d" if r.get("idle_days") is not None else ""}'
+            f'{" · nudged "+str(int(r["nudge_days"]))+"d ago" if r.get("nudge_days") is not None else ""})</span>'
             f'<br><span style="color:#555;font-size:13px">{esc(r["action"])}</span></td></tr>'
             for r in rows)
         blocks.append(
@@ -313,8 +662,9 @@ def _digest_html(roster):
 {counts.get('stranded',0)} stranded · {counts.get('at_risk',0)} at-risk · {counts.get('cooling',0)} cooling</div>
 </div>
 <div style="background:#f8fafc;padding:8px 22px 22px;border:1px solid #e2e8f0;border-top:0;border-radius:0 0 8px 8px">
+{_momentum_banner(mom, health)}
 {''.join(blocks) or '<p style="color:#16a34a">All paying customers healthy — nobody needs a touch today.</p>'}
-<p style="color:#64748b;font-size:12px;margin-top:18px">Stages written to users.lifecycle_stage. Arm the
+<p style="color:#64748b;font-size:12px;margin-top:18px">Stages written to users.engagement_stage. Arm the
 activation sends with ACTIVATION_NUDGE_ARM=1; nothing emails a customer from this digest.</p>
 </div></div></div>"""
 
