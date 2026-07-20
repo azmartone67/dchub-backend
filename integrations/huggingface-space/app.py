@@ -5,7 +5,7 @@ A live demo of the DC Hub Power Index (DCPI) that ALSO runs as an MCP server
 can query it. Seven tools: the two DCPI classics (dcpi_score, compare_markets)
 plus five bridge tools (grid scoreboard, facility search, market ranking,
 interconnection queue, hyperscaler deals) forwarded to DC Hub's canonical MCP
-server. The complete DC Hub MCP — 74 tools across 21,900+ data-center
+server. The complete DC Hub MCP — 79 tools across 21,900+ data-center
 facilities (4,900+ verified), real-time grid telemetry, fiber, gas, and 1,400+
 tracked deals — lives at https://dchub.cloud/mcp. Connect that for the full
 dataset (10 calls/day free anonymous; free key via its claim_free_key tool).
@@ -78,7 +78,7 @@ def dcpi_score(market: str) -> str:
             f"- Excess-power headroom: {d.get('excess_power_score', '?')}/100  ·  "
             f"grid constraint: {d.get('constraint_score', '?')}/100\n\n"
             f"_Modeled estimate from public ISO/EIA/queue data · DC Hub (dchub.cloud) · CC-BY-4.0._\n\n"
-            f"_Full grid headroom, interconnection queue, fiber + 74 tools: connect the DC Hub MCP → **{FULL_MCP}**._"
+            f"_Full grid headroom, interconnection queue, fiber + 79 tools: connect the DC Hub MCP → **{FULL_MCP}**._"
         )
     except Exception as e:
         return f"DC Hub lookup failed ({e}). Query the full live MCP at {FULL_MCP}."
@@ -281,7 +281,7 @@ HERO = f"""
 CLAUDE_CODE_SNIPPET = f"""# This Space (7 tools, free)
 claude mcp add --transport sse dchub-power-index {SPACE_MCP}
 
-# Full DC Hub MCP (74 tools; 10 calls/day free, no key needed)
+# Full DC Hub MCP (79 tools; 10 calls/day free, no key needed)
 claude mcp add --transport http dchub {FULL_MCP}"""
 
 JSON_SNIPPET = f"""{{
@@ -309,7 +309,7 @@ with gr.Blocks(title="DC Hub — Power Index",
         gr.Markdown(
             f"<p class='dc-mcp-note'>This Space <strong>is an MCP server</strong> "
             f"(7 tools) at <code>{SPACE_MCP}</code>. The full DC Hub MCP — "
-            f"<strong>74 tools</strong>, real-time grid telemetry, fiber, gas, "
+            f"<strong>79 tools</strong>, real-time grid telemetry, fiber, gas, "
             f"water, tax incentives, deal intelligence — is at "
             f"<code>{FULL_MCP}</code> (10 calls/day free anonymous; mint a free "
             f"key with its <code>claim_free_key</code> tool, or try it with zero "

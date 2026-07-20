@@ -4,7 +4,7 @@
 
 > 🔍 **Looking for the MCP server?** This repo is the Flask backend. The standalone MCP server is at [azmartone67/dchub-mcp-server](https://github.com/azmartone67/dchub-mcp-server) (live at `https://dchub.cloud/mcp`).
 
-[![Tools](https://img.shields.io/badge/MCP%20tools-33-blue)](https://dchub.cloud/.well-known/mcp.json) [![Markets](https://img.shields.io/badge/DCPI%20markets-232-purple)](https://dchub.cloud/dcpi) [![Facilities](https://img.shields.io/badge/facilities-21%2C000%2B-green)](https://dchub.cloud) [![Countries](https://img.shields.io/badge/countries-170%2B-orange)](https://dchub.cloud) [![License](https://img.shields.io/badge/data-CC--BY--4.0-lightgrey)](https://dchub.cloud/cited-by)
+[![Tools](https://img.shields.io/badge/MCP%20tools-79-blue)](https://dchub.cloud/.well-known/mcp.json) [![Markets](https://img.shields.io/badge/DCPI%20markets-311-purple)](https://dchub.cloud/dcpi) [![Facilities](https://img.shields.io/badge/facilities-22%2C000%2B-green)](https://dchub.cloud) [![Countries](https://img.shields.io/badge/countries-170%2B-orange)](https://dchub.cloud) [![License](https://img.shields.io/badge/data-CC--BY--4.0-lightgrey)](https://dchub.cloud/cited-by)
 
 ---
 
@@ -12,11 +12,11 @@
 
 DC Hub is the live data layer for data-center infrastructure — every API, MCP tool call, market brief, and AI integration on `dchub.cloud` runs through this Flask backend.
 
-- **21,000+ data center facilities** across 170+ countries (search, profile, score, alternatives)
+- **22,000+ data center facilities** across 170+ countries (search, profile, score, alternatives)
 - **300+ markets** scored daily by the DC Hub Power Index (DCPI — BUILD / CAUTION / AVOID)
 - **DC Hub Gas Index (DCGI)** — per-state natural-gas suitability for siting
 - **Live ISO grid telemetry** — PJM, ERCOT, CAISO, MISO, SPP, NYISO, ISO-NE (fuel mix, carbon intensity, demand, prices, queue depth)
-- **4,000+ tracked M&A transactions** + hyperscaler capex tracker
+- **1,400+ tracked M&A transactions** + hyperscaler capex tracker
 - **Site factors** — fiber routes, water-stress, tax incentives, transmission & substations
 - **126,427 substations** with voltage class + capacity estimates
 - **NEPA filings** for upcoming federal energy + data center projects
@@ -50,7 +50,7 @@ DC Hub is the live data layer for data-center infrastructure — every API, MCP 
 
 ## MCP integration
 
-The MCP server at `https://dchub.cloud/mcp` exposes **38 tools** for AI agents. See the standalone repo: [azmartone67/dchub-mcp-server](https://github.com/azmartone67/dchub-mcp-server).
+The MCP server at `https://dchub.cloud/mcp` exposes **79 tools** for AI agents. See the standalone repo: [azmartone67/dchub-mcp-server](https://github.com/azmartone67/dchub-mcp-server).
 
 **MCP catalog listings:**
 - [Glama](https://glama.ai/mcp/connectors/cloud.dchub/dc-hub-data-center-intelligence-mcp-server) — ownership verified
@@ -73,7 +73,7 @@ The MCP server at `https://dchub.cloud/mcp` exposes **38 tools** for AI agents. 
 
 - **Public API**: <https://dchub.cloud/api/v1/> — free tier with no signup
 - **Free dev key**: <https://dchub.cloud/signup> for higher rate limits
-- **Paid tiers**: <https://dchub.cloud/pricing> ($9 Starter, $49 Developer, $199 Pro, Enterprise)
+- **Paid tiers**: <https://dchub.cloud/pricing> ($9 Starter, $49 Developer, $299 Pro, Enterprise)
 - **OpenAPI spec**: <https://dchub.cloud/openapi.json>
 
 ## Used by

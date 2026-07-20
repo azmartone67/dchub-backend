@@ -105,8 +105,11 @@ const GATED_TOOLS = new Set([
 // ============================================================
 // MCP TIER DEFINITIONS (v4.4.0)
 // ============================================================
+// TODO(owner grandfather): registry mcp_daily = developer 500 / pro 2000 / founding 2000; lowering these from the current 1000/10000 CUTS existing paying customers — decide grandfathering before changing.
 const MCP_TIERS = {
   free:       { name: 'Free',       daily_limit: 10,     results_limit: 5,     fields_truncated: true,  export_allowed: false },
+  identified: { name: 'Identified', daily_limit: 50,     results_limit: 25,    fields_truncated: true,  export_allowed: false },
+  starter:    { name: 'Starter',    daily_limit: 200,    results_limit: 50,    fields_truncated: false, export_allowed: true  },
   developer:  { name: 'Developer',  daily_limit: 1000,   results_limit: 100,   fields_truncated: false, export_allowed: true  },
   pro:        { name: 'Pro',        daily_limit: 10000,  results_limit: 500,   fields_truncated: false, export_allowed: true  },
   founding:   { name: 'Founding',   daily_limit: 10000,  results_limit: 500,   fields_truncated: false, export_allowed: true  },  // r43-H: founding==pro
@@ -1225,7 +1228,7 @@ function wellKnownResponse(pathname) {
       "vs_competitors":   "https://dchub.cloud/vs",
       "tools": mcpTools,
       "authentication": { "type": "api_key", "header": "X-API-Key" },
-      "pricing": { "free_tier": "10 requests/day, 20 tools available", "developer": "$49/mo — 1,000 requests/day, all 24 tools", "pro": "$199/mo — 10,000 requests/day", "enterprise": "Custom" },
+      "pricing": { "free_tier": "10 requests/day, 79 tools available", "developer": "$49/mo — 1,000 requests/day, all 79 tools", "pro": "$299/mo — 10,000 requests/day", "enterprise": "Custom" },
       "gated_tools": ["get_intelligence_index", "compare_sites", "analyze_site", "get_infrastructure"],
       "contact": "api@dchub.cloud"
     }, null, 2), { status: 200, headers: { ...headers, 'Content-Type': 'application/json; charset=utf-8' } });
@@ -1244,9 +1247,9 @@ function wellKnownResponse(pathname) {
       tools,
       gated_tools: ['get_intelligence_index', 'compare_sites', 'analyze_site', 'get_infrastructure'],
       pricing: {
-        free: '10 calls/day — 5 results per call, 20 tools',
-        developer: '$49/mo — 1,000 calls/day, all 24 tools',
-        pro: '$199/mo — 10,000 calls/day',
+        free: '10 calls/day — 5 results per call, 79 tools',
+        developer: '$49/mo — 1,000 calls/day, all 79 tools',
+        pro: '$299/mo — 10,000 calls/day',
         enterprise: 'Custom — 100,000 calls/day',
       },
       documentation: 'https://dchub.cloud/api-docs',
