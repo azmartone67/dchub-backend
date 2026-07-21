@@ -592,6 +592,13 @@ def log_ai_request(platform, endpoint, user_agent="", ip_address="",
         """, (platform, now, now, info["name"], info["color"], info["company"]))
 
     except Exception as e:
+        # 25006 = read_only_sql_transaction. A read-only instance (the Render
+        # GET-failover) can NEVER write to Neon, so the SQLite buffer can never
+        # drain from there — buffering just fills ephemeral disk and the sync
+        # thread's replay fails too. Drop it (telemetry only) instead of
+        # accumulating an un-drainable buffer. Mirrors the 23505 drop below.
+        if getattr(e, "pgcode", None) == "25006":
+            return
         logger.warning(f"Neon write failed, buffering locally: {e}")
         try:
             buf = _get_buffer_db()
@@ -678,6 +685,9 @@ def log_mcp_connection(
             # so buffering it would replay the failure every sync cycle and
             # head-of-line-block all telemetry behind it. Drop it loudly.
             logger.error(f"MCP connection log dropped (unique violation, not buffering): {e}")
+            return
+        if getattr(e, "pgcode", None) == "25006":
+            # read-only instance (Render failover) — can never drain the buffer.
             return
         logger.warning(f"MCP connection log failed, buffering locally: {e}")
         try:

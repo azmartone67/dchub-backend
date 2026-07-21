@@ -114,15 +114,26 @@ def get_version():
     try:
         conn = get_read_db()
         cursor = conn.cursor()
-        # facilities count via planner statistic (instant)
+        # facilities count — DISTINCT sites after cross-source de-dup, to match
+        # the honest /api/v1/stats headline (12,650), not the raw 22k. The
+        # duplicate_of_id index (idx_disc_dupof) keeps this fast, and the 60s
+        # memo + 5min CF cache mean it runs at most once a minute. Falls back to
+        # the planner statistic if the deduped count fails.
         try:
             cursor.execute(
-                "SELECT reltuples::bigint FROM pg_class WHERE relname = 'discovered_facilities'")
+                "SELECT COUNT(*) FROM discovered_facilities WHERE duplicate_of_id IS NULL")
             row = cursor.fetchone()
             if row and row[0]:
                 result['facilities'] = int(row[0])
         except Exception:
-            pass
+            try:
+                cursor.execute(
+                    "SELECT reltuples::bigint FROM pg_class WHERE relname = 'discovered_facilities'")
+                row = cursor.fetchone()
+                if row and row[0]:
+                    result['facilities'] = int(row[0])
+            except Exception:
+                pass
         # markets — r73: this used COUNT(DISTINCT country) FROM facilities, which
         # is a COUNTRY count (~179) mislabeled as "markets", AND read the legacy
         # facilities table. Use the canonical DCPI market count (232) instead.
