@@ -217,8 +217,11 @@ def stats_canonical():
             # Placed LAST in the tx block (a failed statement aborts the tx for
             # any query after it); falls back to cached canonical_stats.
             try:
+                # canonical fleet = distinct sites after cross-source dedup
+                # (duplicate_of_id IS NULL, r-facility-dedup 2026-07-20), which
+                # supersedes the older is_duplicate flag.
                 cur.execute("SELECT COUNT(*) FROM discovered_facilities "
-                            "WHERE COALESCE(is_duplicate,0)=0")
+                            "WHERE duplicate_of_id IS NULL")
                 stats["facilities_verified"] = int(cur.fetchone()[0] or 0)
                 cur.execute("SELECT COUNT(*) FROM discovered_facilities")
                 stats["facilities_tracked"] = int(cur.fetchone()[0] or 0)

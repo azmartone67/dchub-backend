@@ -18280,6 +18280,7 @@ def get_stats():
 
         discovered_total = 0
         discovered_verified = 0
+        discovered_deduped = 0
         try:
             c.execute("SELECT COUNT(*) FROM discovered_facilities")
             discovered_total = c.fetchone()[0] or 0
@@ -18293,22 +18294,36 @@ def get_stats():
             discovered_verified = c.fetchone()[0] or 0
         except:
             pass
+        try:
+            # r-facility-dedup: the DISTINCT-site count after cross-source
+            # de-duplication (duplicate_of_id IS NULL). This is the honest
+            # "how many facilities do we track" number — the raw count double-
+            # counts the same site ingested from multiple sources.
+            c.execute("""
+                SELECT COUNT(*) FROM discovered_facilities
+                 WHERE duplicate_of_id IS NULL
+            """)
+            discovered_deduped = c.fetchone()[0] or 0
+        except:
+            pass
 
-        # NEW headline number — the BIGGEST honest count we have.
-        # Falls back to legacy facilities table if discovered is empty.
-        stats['total_facilities']           = discovered_total or main_count
+        # HEADLINE = the deduped distinct-site count (falls back to raw, then
+        # the legacy facilities table, if dedup hasn't been applied).
+        stats['total_facilities']           = discovered_deduped or discovered_total or main_count
         # Preserve legacy fields so existing consumers don't break:
         stats['main_facilities']            = main_count                # legacy facilities table
-        stats['discovered_facilities']      = discovered_verified       # deduped (was the old "discovered" semantic)
-        stats['discovered_facilities_raw']  = discovered_total          # NEW — raw count, no dedup
+        stats['discovered_facilities']      = discovered_deduped or discovered_verified
+        stats['discovered_facilities_raw']  = discovered_total          # raw count, no dedup (transparency)
+        stats['discovered_facilities_deduped'] = discovered_deduped     # distinct sites after cross-source dedup
         stats['published_facilities_legacy']= main_count                # alias of main_facilities
         # Transparency: surface the three-count divergence so anyone
         # consuming /api/v1/stats sees the full picture.
         stats['_facility_count_notes'] = {
-            "primary": "discovered_facilities raw count — what we actually track",
+            "primary": "distinct sites after cross-source de-duplication (duplicate_of_id IS NULL)",
             "legacy_facilities_table": main_count,
             "discovered_total":        discovered_total,
             "discovered_verified":     discovered_verified,
+            "discovered_deduped":      discovered_deduped,
         }
 
         c.execute("SELECT COALESCE(SUM(power_mw), 0) FROM facilities")

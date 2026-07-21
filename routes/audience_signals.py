@@ -261,7 +261,7 @@ def _facility_count():
                 _bound(cur)
                 cur.execute(
                     "SELECT COUNT(*) FROM discovered_facilities "
-                    "WHERE COALESCE(is_duplicate, 0) = 0"
+                    "WHERE duplicate_of_id IS NULL"
                 )
                 return int(cur.fetchone()[0] or 0)
         finally:
