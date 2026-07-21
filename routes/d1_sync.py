@@ -244,6 +244,7 @@ def _run_sync() -> dict:
         WHERE df.latitude IS NOT NULL
           AND df.longitude IS NOT NULL
           AND COALESCE(df.is_duplicate, 0) = 0
+          AND df.duplicate_of_id IS NULL
         ORDER BY COALESCE(df.power_mw, f.power_mw) DESC NULLS LAST, df.id ASC
         LIMIT 50000
     """)

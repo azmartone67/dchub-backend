@@ -19449,8 +19449,10 @@ def _list_facilities_free():
     country = request.args.get('country')
     provider = request.args.get('provider') or request.args.get('operator')
 
-    sql = "SELECT * FROM discovered_facilities WHERE 1=1"
-    count_sql = "SELECT COUNT(*) FROM discovered_facilities WHERE 1=1"
+    # Same cross-source de-dup filter as the authed path — the free/anon listing
+    # reads discovered_facilities, which is what the public website pages show.
+    sql = "SELECT * FROM discovered_facilities WHERE duplicate_of_id IS NULL"
+    count_sql = "SELECT COUNT(*) FROM discovered_facilities WHERE duplicate_of_id IS NULL"
     params = []
 
     # Multi-word aware search (r-search-multiword 2026-07-12) — mirror of the

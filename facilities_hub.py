@@ -74,6 +74,9 @@ def _e(s) -> str:
 
 
 def _shell(title, desc, canonical, breadcrumb_html, body_html):
+    # Dark DC Hub brand — matches the facility profile pages
+    # (routes/facility_profile_page.py): Instrument Sans + JetBrains Mono,
+    # #0a0a0f background, indigo→violet gradient wordmark.
     return f"""<!doctype html>
 <html lang="en"><head>
 <meta charset="utf-8">
@@ -85,22 +88,45 @@ def _shell(title, desc, canonical, breadcrumb_html, body_html):
 <meta property="og:title" content="{_e(title)}">
 <meta property="og:description" content="{_e(desc)}">
 <meta property="og:url" content="{canonical}">
-<style>body{{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;max-width:1100px;margin:0 auto;padding:24px;line-height:1.5;color:#0f172a}}
-a{{color:#1d4ed8;text-decoration:none}}a:hover{{text-decoration:underline}}
-nav.bc{{font-size:14px;color:#64748b;margin-bottom:16px}}
-h1{{font-size:26px;margin:.2em 0}}h2{{font-size:18px;margin:1.2em 0 .4em;border-bottom:1px solid #e2e8f0;padding-bottom:4px}}
-ul.grid{{list-style:none;padding:0;display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:6px 24px}}
-.muted{{color:#64748b;font-size:13px}}
-footer{{margin-top:40px;padding-top:16px;border-top:1px solid #e2e8f0;font-size:14px;color:#64748b}}</style>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{{--bg:#0a0a0f;--surf:#131319;--surf2:#1a1a22;--b:rgba(255,255,255,0.08);--tx:#fafafa;--mut:#a1a1aa;--dim:#71717a;--ind:#818cf8;--indd:#6366f1;--vio:#a855f7;--grad:linear-gradient(135deg,#6366f1,#a855f7)}}
+*{{box-sizing:border-box}}
+body{{font-family:'Instrument Sans',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:var(--bg);color:var(--tx);line-height:1.6;-webkit-font-smoothing:antialiased;margin:0}}
+.header{{border-bottom:1px solid var(--b);padding:14px 0;position:sticky;top:0;background:rgba(10,10,15,.85);backdrop-filter:blur(10px);z-index:10}}
+.wrap{{max-width:1100px;margin:0 auto;padding:0 24px}}
+.logo{{font-weight:700;font-size:18px;letter-spacing:-.01em;text-decoration:none;color:var(--tx)}}
+.logo span{{background:var(--grad);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}}
+.header nav a{{color:var(--mut);text-decoration:none;font-size:14px;margin-left:18px}}
+.header nav a:hover{{color:var(--tx)}}
+main{{max-width:1100px;margin:0 auto;padding:24px}}
+a{{color:var(--ind);text-decoration:none}}a:hover{{text-decoration:underline}}
+nav.bc{{font-size:12px;color:var(--dim);margin-bottom:18px;font-family:'JetBrains Mono',monospace}}
+nav.bc a{{color:var(--dim)}}nav.bc a:hover{{color:var(--mut)}}
+h1{{font-size:30px;font-weight:700;letter-spacing:-.02em;margin:.1em 0 .3em}}
+h2{{font-size:16px;font-weight:600;margin:1.6em 0 .5em;color:var(--tx);border-bottom:1px solid var(--b);padding-bottom:6px}}
+ul.grid{{list-style:none;padding:0;display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:8px 28px}}
+ul.grid li{{padding:2px 0}}
+.muted{{color:var(--mut);font-size:14px}}
+footer{{max-width:1100px;margin:48px auto 0;padding:20px 24px 40px;border-top:1px solid var(--b);font-size:14px;color:var(--dim)}}
+footer a{{color:var(--mut)}}
+</style>
 </head><body>
+<header class="header"><div class="wrap" style="display:flex;align-items:center;justify-content:space-between">
+<a class="logo" href="{SITE}/">DC<span>Hub</span></a>
+<nav><a href="{SITE}/facilities">Facilities</a><a href="{SITE}/dcpi">Power Index</a><a href="{SITE}/markets">Markets</a><a href="{SITE}/grid">Grid</a></nav>
+</div></header>
+<main>
 <nav class="bc">{breadcrumb_html}</nav>
 {body_html}
+</main>
 <footer>
 <a href="{SITE}/">DC Hub</a> · <a href="{SITE}/facilities">All facilities</a> ·
 <a href="{SITE}/facilities/directory">Facility Directory</a> ·
 <a href="{SITE}/dcpi">DC Hub Power Index</a> · <a href="{SITE}/markets">Markets</a> ·
 <a href="{SITE}/grid">Grid</a>
-<div class="muted" style="margin-top:8px">DC Hub — live data-center infrastructure intelligence across 170+ countries.</div>
+<div class="muted" style="margin-top:8px;color:var(--dim)">DC Hub — live data-center infrastructure intelligence across 170+ countries.</div>
 </footer>
 </body></html>"""
 
@@ -143,6 +169,7 @@ def facilities_index():
               FROM discovered_facilities
              WHERE name IS NOT NULL AND name <> '' AND char_length(name) >= 3
                AND country IS NOT NULL AND btrim(country) <> ''
+               AND duplicate_of_id IS NULL
              GROUP BY country
              ORDER BY n DESC, country
         """)
@@ -199,6 +226,7 @@ def facilities_in_country(country, page=1):
               FROM discovered_facilities
              WHERE LOWER(btrim(country)) = %s
                AND name IS NOT NULL AND name <> ''
+               AND duplicate_of_id IS NULL
              ORDER BY grp, name
         """, (country,))
         rows = cur.fetchall() or []
