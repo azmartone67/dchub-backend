@@ -2119,6 +2119,13 @@ try:
     except Exception as _gods:
         import logging
         logging.getLogger(__name__).warning('growth_ops_digest wiring failed: %s', _gods)
+    try:
+        from routes.growth_memo import growth_memo_bp
+        app.register_blueprint(growth_memo_bp)
+        print("[main] growth_memo_bp registered: /api/v1/admin/growth-memo", flush=True)
+    except Exception as _gmemo:
+        import logging
+        logging.getLogger(__name__).warning('growth_memo wiring failed: %s', _gmemo)
     # 2026-07-06: Registry Freshness master shell — the sentinel that was missing
     # when Glama sat at "33 tools" while live was 58. Read-only DIAGNOSTIC:
     # flags external MCP-registry listings drifting from canonical, + honest
