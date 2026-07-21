@@ -31,6 +31,7 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Trigger EIA pricing ingest on Railway
+        id: ingest
         env:
           ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
         run: |
@@ -57,6 +58,11 @@ jobs:
               print(f\"::error::EIA ingest failed — {d.get('error','unknown')}\")
               sys.exit(1)
           total = d.get('total_records', 0)
+          import os
+          _gh = os.environ.get('GITHUB_OUTPUT')
+          if _gh:
+              with open(_gh, 'a') as _f:
+                  _f.write('rows_inserted=%d\n' % int(total or 0))
           elec = d.get('electricity_rates')
           gas  = d.get('natural_gas_prices')
           stor = d.get('gas_storage')
@@ -66,3 +72,17 @@ jobs:
           for e in errs:
               print(f'::warning::partial source failure — {e}')
           "
+
+      - name: Beat deadman board
+        continue-on-error: true
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+          ROWS_INSERTED: ${{ steps.ingest.outputs.rows_inserted }}
+        run: |
+          # Fail-open: a failed beat must NEVER fail the ingest job.
+          COUNT="${ROWS_INSERTED:-0}"
+          curl -s -X POST "https://dchub.cloud/api/v1/admin/ingest-runs/beat" \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            -H "Content-Type: application/json" \
+            -H "User-Agent: dchub-ingest-beat/1.0" \
+            -d "{\"feed\":\"eia-pricing-ingest\",\"status\":\"success\",\"rows_inserted\":$COUNT}" || true

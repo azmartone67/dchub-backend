@@ -48,12 +48,16 @@ jobs:
           # fails on Railway egress is re-fetched on THIS runner (open egress, no DB)
           # via load_interconnect_queue_live.py --emit-json and POSTed back for upsert.
           fail=""
+          inserted=0
           for iso in NYISO CAISO MISO PJM SPP ERCOT ISO-NE; do
             resp=$(curl -sS --max-time 200 -X POST "$RAILWAY_BASE/api/v1/iso-queue/ingest-projects/$iso" || echo '{}')
             status=$(echo "$resp" | python3 -c "import sys,json;print((json.load(sys.stdin).get('by_iso') or {}).get('$iso',{}).get('status','no_status'))" 2>/dev/null || echo parse_fail)
             rows=$(echo "$resp" | python3 -c "import sys,json;print((json.load(sys.stdin).get('by_iso') or {}).get('$iso',{}).get('rows',''))" 2>/dev/null || echo '')
             echo "$iso -> $status rows=$rows"
             [ "$status" = "ok" ] || fail="$fail $iso"
+            # accumulate the per-ISO upserted-row count (blank/non-numeric -> skip) so
+            # the deadman beat below can report a real per-run rows_inserted, not null.
+            case "$rows" in ''|*[!0-9]*) : ;; *) inserted=$((inserted + rows)) ;; esac
           done
           if [ -n "$fail" ]; then
             echo "Railway egress failed for:$fail — runner fetch+POST fallback"
@@ -67,3 +71,19 @@ jobs:
           fi
           echo "=== final interconnect_queue count ==="
           curl -sS --max-time 30 -X POST "$RAILWAY_BASE/api/v1/iso-queue/ingest-projects/ISO-NE" | python3 -c "import sys,json;d=json.load(sys.stdin);print('total =',d.get('interconnect_queue_total'),'| by_iso =',d.get('interconnect_queue_by_iso'))" 2>/dev/null || true
+          # hand the real per-run inserted-row count to the deadman-beat step below
+          echo "INSERTED_ROWS=$inserted" >> "$GITHUB_ENV"
+          echo "captured INSERTED_ROWS=$inserted for deadman beat"
+      - name: beat deadman board (fail-open — report real rows_inserted)
+        continue-on-error: true
+        run: |
+          # Fail-open heartbeat: POST the real per-run inserted-row count to the deadman
+          # board so this feed stops showing rows_inserted=null. A beat failure must NEVER
+          # fail the ingestion job (continue-on-error + trailing '|| true'). feed name must
+          # match the board exactly. No cadence_hours/max_content_date — watch.py stays the
+          # cadence authority and the endpoint COALESCEs those fields.
+          curl -s -X POST "https://dchub.cloud/api/v1/admin/ingest-runs/beat" \
+            -H "X-Admin-Key: ${{ secrets.DCHUB_ADMIN_KEY }}" \
+            -H "Content-Type: application/json" \
+            -H "User-Agent: dchub-ingest-beat/1.0" \
+            -d "{\"feed\":\"iso-queue-ingest\",\"status\":\"success\",\"rows_inserted\":${INSERTED_ROWS:-0}}" || true
