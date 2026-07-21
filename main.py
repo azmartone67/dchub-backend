@@ -19237,8 +19237,13 @@ def _list_facilities_full():
         max_power = request.args.get('max_mw', type=float)
     source = request.args.get('source')
 
-    sql = "SELECT * FROM facilities WHERE 1=1"
-    count_sql = "SELECT COUNT(*) FROM facilities WHERE 1=1"
+    # De-duplication (r-facility-dedup 2026-07-20): hide cross-source duplicate
+    # rows (same physical site ingested from PeeringDB/OSM/directories under
+    # variant names) so the paid listing shows one canonical record per site.
+    # duplicate_of_id is NULL for canonicals and set for dupes by routes/
+    # facility_dedup.py; the column is ensured at startup so this is always safe.
+    sql = "SELECT * FROM facilities WHERE duplicate_of_id IS NULL"
+    count_sql = "SELECT COUNT(*) FROM facilities WHERE duplicate_of_id IS NULL"
     params = []
 
     # Multi-word aware search (r-search-multiword 2026-07-12). This is the
@@ -36504,6 +36509,17 @@ try:
     print("[main] admin_oneoff_email_bp registered: /api/v1/admin/send-oneoff", flush=True)
 except Exception as _ooe_e:
     print(f"[main] admin_oneoff_email register skipped: {_ooe_e}", file=sys.stderr)
+
+# cross-source facility de-duplication (r-facility-dedup 2026-07-20). Ensures
+# the duplicate_of_id column exists at startup so the /api/v1/facilities read
+# filter is always safe, then exposes analyze/apply/undo/export admin endpoints.
+try:
+    from routes.facility_dedup import facility_dedup_bp, _ensure_columns as _fd_ensure
+    _fd_ensure()
+    app.register_blueprint(facility_dedup_bp)
+    print("[main] facility_dedup_bp registered: /api/v1/admin/facility-dedup/{analyze,apply,undo,export}", flush=True)
+except Exception as _fd_e:
+    print(f"[main] facility_dedup register skipped: {_fd_e}", file=sys.stderr)
 
 # press-fix (2026-07-18): pending-drafts digest — surfaces the human-gated
 # draft lanes (unpublished press_releases, pitch drafts, queue drafts) in a

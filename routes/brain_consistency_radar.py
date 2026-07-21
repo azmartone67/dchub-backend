@@ -7331,6 +7331,64 @@ def check_customer_activation_health() -> list[dict]:
     return findings
 
 
+def check_facility_duplicate_clusters() -> list[dict]:
+    """r-facility-dedup (2026-07-20) — regrowth detector for cross-source
+    facility duplicates. A paying customer (Landry) flagged that the same
+    physical site appears many times in the paid /api/v1/facilities listing
+    (source variants under different names). routes/facility_dedup.py collapses
+    them (duplicate_of_id). This watches the deduped markets and fires when NEW
+    duplicate rows have been ingested but not yet collapsed — so the fix stays
+    closed-loop instead of silently rotting as fresh data lands. FAIL-SOFT."""
+    findings: list[dict] = []
+    try:
+        try:
+            from routes import facility_dedup as fd
+        except Exception:
+            import facility_dedup as fd
+    except Exception:
+        return findings
+    c = _db()
+    if c is None:
+        return findings
+    MARKETS = ["SG", "AU", "TH", "NZ"]  # markets actively kept deduped
+    try:
+        for code in MARKETS:
+            plan = fd._plan(code)
+            if not plan:
+                continue
+            dup_ids = [d["id"] for cl in plan["plan"] for d in cl["duplicates"]]
+            if not dup_ids:
+                continue
+            with c.cursor() as cur:
+                cur.execute("SELECT COUNT(*) FROM facilities WHERE id = ANY(%s) "
+                            "AND duplicate_of_id IS NULL", (dup_ids,))
+                unmarked = cur.fetchone()[0] or 0
+            if unmarked >= 5:
+                findings.append({
+                    "issue":  "facility_duplicates_unmarked",
+                    "url":    f"/api/v1/admin/facility-dedup/analyze?country={code}",
+                    "count":  int(unmarked),
+                    "detail": (f"{unmarked} cross-source duplicate facility rows in "
+                               f"{code} are not yet collapsed (new arrivals since the "
+                               f"last dedup pass). The paid /api/v1/facilities listing "
+                               f"is showing them as separate sites. Re-run POST "
+                               f"/api/v1/admin/facility-dedup/apply?country={code}&confirm=1."),
+                })
+    except Exception as e:
+        findings.append({
+            "issue":  "consistency_radar_detector_crashed:check_facility_duplicate_clusters",
+            "url":    "check_facility_duplicate_clusters",
+            "count":  1,
+            "detail": f"{type(e).__name__}: {str(e)[:200]}",
+        })
+    finally:
+        try:
+            c.close()
+        except Exception:
+            pass
+    return findings
+
+
 def check_required_env_vars() -> list[dict]:
     """Phase QQQ (2026-05-17) — flag missing env vars that cause silent
     skips elsewhere in the codebase.
@@ -9305,6 +9363,9 @@ def scan_all() -> list[dict]:
                # customer white-glove loop (its cron freshness is covered by
                # check_cron_freshness via the tick's self-stamp).
                check_customer_activation_health,
+               # r-facility-dedup (2026-07-20) — regrowth watch for cross-source
+               # facility duplicates (customer-flagged data-quality issue).
+               check_facility_duplicate_clusters,
                check_required_env_vars,
                check_csp_violation_reports,
                check_backend_pool_health,

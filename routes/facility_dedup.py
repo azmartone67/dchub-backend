@@ -1,0 +1,492 @@
+"""facility_dedup.py — cross-source facility de-duplication (2026-07-20).
+
+WHY: `facilities` aggregates many sources (PeeringDB, OpenStreetMap, operator
+directories, permits, curated seeds) for breadth, but nothing collapses the
+source variants of the SAME physical site into one record. So one facility
+appears many times — "Equinix SG1", "Equinix SG1 - Singapore", "Equinix SG1
+Singapore", "Equinix Data Center SG1" are all one building. A paying customer
+(Landry, landry2@) auditing APAC markets flagged it: ~15-58% redundancy.
+
+DESIGN — conservative, NON-DESTRUCTIVE, reversible:
+  * Signal is OPERATOR + SITE-TOKEN from the NAME, never coordinates: many rows
+    use a country-centroid placeholder (SG -> 1.352,103.820) and true duplicates
+    are geocoded km apart by different sources, so a coord-based merge would both
+    false-merge (centroid collisions) and miss (geocode drift). Names are the
+    reliable key here.
+  * HIGH PRECISION over recall: only merge when brand AND site discriminator
+    clearly match. Equinix SG1 vs SG2, STT Defu 1 vs 2, Keppel 1 vs 2 must stay
+    separate. A missed duplicate is safe; a false merge hides a real distinct
+    site and is not. When ambiguous, DON'T merge.
+  * Non-destructive: never deletes. Marks duplicates via facilities.duplicate_of_id
+    -> the canonical row's id (canonical rows keep it NULL). Fully reversible via
+    /undo. Customer-facing read paths filter `duplicate_of_id IS NULL`.
+
+Endpoints (admin-keyed):
+  GET  /api/v1/admin/facility-dedup/analyze?country=SG   dry-run: proposed clusters
+  POST /api/v1/admin/facility-dedup/apply?country=SG&confirm=1   mark duplicates
+  POST /api/v1/admin/facility-dedup/undo?country=SG      clear the marks
+  GET  /api/v1/admin/facility-dedup/export?country=SG    canonical-only list (CSV/JSON)
+"""
+from __future__ import annotations
+
+import os
+import re
+import csv
+import io
+import logging
+
+from flask import Blueprint, request, jsonify, Response
+
+logger = logging.getLogger("facility_dedup")
+facility_dedup_bp = Blueprint("facility_dedup", __name__)
+
+
+def _conn():
+    import psycopg2
+    db = os.environ.get("DATABASE_URL") or os.environ.get("NEON_DATABASE_URL")
+    if not db:
+        return None
+    try:
+        c = psycopg2.connect(db, sslmode="require", connect_timeout=8)
+        c.autocommit = True
+        return c
+    except Exception:
+        return None
+
+
+def _admin_ok():
+    expected = (os.environ.get("DCHUB_ADMIN_KEY") or "").strip()
+    provided = (request.headers.get("X-Admin-Key")
+                or request.args.get("admin_key") or "").strip()
+    return bool(expected) and provided == expected
+
+
+# ── entity-resolution primitives ──────────────────────────────────────────
+
+_CORP = re.compile(r'\b(pte|ltd|limited|inc|llc|gmbh|holdings?|group|'
+                   r'corporation|corp|co|company|services|technologies|'
+                   r'technology|solutions|division|operating|pty|sdn|bhd|'
+                   r'international|communications?|telecom|telecommunications?)\b')
+_GENERIC = {'', 'unknown', 'data center', 'data centre', 'datacenter',
+            'n/a', 'none', 'null', 'data'}
+
+# Curated brand aliases for the operators that dominate the duplication — the
+# name/provider strings that mean the SAME company. Maps a normalized token to
+# a canonical brand key. High-value because hyperscalers + majors are listed
+# under many names (AWS = Amazon Web Services = Amazon; STT = ST Telemedia).
+_BRAND_ALIASES = {
+    "aws": "aws", "amazon": "aws", "amazonwebservices": "aws",
+    "microsoft": "microsoft", "azure": "microsoft", "msft": "microsoft",
+    "google": "google", "gcp": "google", "googlecloud": "google",
+    "meta": "meta", "facebook": "meta",
+    "oracle": "oracle", "oraclecloud": "oracle", "oci": "oracle",
+    "alibaba": "alibaba", "alibabacloud": "alibaba", "aliyun": "alibaba",
+    "tencent": "tencent", "tencentcloud": "tencent",
+    "huawei": "huawei", "huaweicloud": "huawei",
+    "stt": "stt", "sttgdc": "stt", "sttelemedia": "stt",
+    "sttelemediaglobaldatacentres": "stt", "sttelemediaglobal": "stt",
+    "digitalrealty": "digitalrealty",
+    "equinix": "equinix",
+    "keppel": "keppel", "keppeldc": "keppel", "keppeldatacentres": "keppel",
+    "globalswitch": "globalswitch",
+    "ntt": "ntt", "nttcommunications": "ntt", "nttdata": "ntt", "nttglobal": "ntt",
+    "colt": "colt", "coltdcs": "colt",
+    "cyxtera": "cyxtera",
+    "ironmountain": "ironmountain",
+    "airtrunk": "airtrunk",
+    "princetondigital": "pdg", "pdg": "pdg", "princetondg": "pdg",
+    "gds": "gds",
+    "telin": "telin", "telinsingapore": "telin",
+    "telehouse": "telehouse",
+    "1net": "1net", "onenet": "1net",
+    "ascenix": "ascenix",
+    "epsilon": "epsilon",
+    "iseek": "iseek", "nextdc": "nextdc", "airtrunkoperating": "airtrunk",
+    "vocus": "vocus", "megaport": "megaport", "canberra": "canberradc",
+    "leaseweb": "leaseweb", "ovhcloud": "ovh", "ovh": "ovh",
+    "spacedc": "spacedc", "hetzner": "hetzner", "phoenixnap": "phoenixnap",
+    "singtel": "singtel", "starhub": "starhub", "m1": "m1",
+    "chinamobile": "chinamobile", "chinaunicom": "chinaunicom",
+}
+
+# Distinctive site-locality tokens (Singapore/APAC) that discriminate sites of
+# the same operator when there's no site number.
+_LOCALITY = ("defu", "taiseng", "loyang", "jurong", "onenorth", "serangoon",
+             "woodlands", "bedok", "katong", "tuas", "changi", "sciencepark",
+             "kimchuan", "paya", "ulu", "mediahub", "eqix")
+
+
+def _norm(s):
+    return re.sub(r'[^a-z0-9]+', ' ', (s or '').lower()).strip()
+
+
+def _brand_key(provider, name):
+    """Canonical operator key. Prefer provider; fall back to name. Resolve
+    through the curated alias map; else first 1-2 significant tokens."""
+    for raw in (provider, name):
+        base = _norm(raw)
+        if not base or base in _GENERIC:
+            continue
+        base = _CORP.sub(' ', base)
+        base = re.sub(r'\s+', ' ', base).strip()
+        toks = [t for t in base.split() if t and t not in _GENERIC]
+        if not toks:
+            continue
+        # try alias on collapsed first token, first-two, and de-spaced whole
+        cand = [toks[0], ''.join(toks[:2]), ''.join(toks)]
+        for k in cand:
+            if k in _BRAND_ALIASES:
+                return _BRAND_ALIASES[k]
+        # not a known brand: use first token unless it's too generic/short
+        t0 = toks[0]
+        # a 2-word brand (digital realty, global switch, iron mountain) collapses
+        two = ''.join(toks[:2])
+        if two in _BRAND_ALIASES:
+            return _BRAND_ALIASES[two]
+        return t0
+    return ''
+
+
+_GEO_STOP = re.compile(
+    r'\b(data ?cent(er|re)s?|dc|campus|colocation|colo|the|'
+    r'singapore|singaporean|australia|australian|thailand|thai|'
+    r'new zealand|zealand|aotearoa|nz|sg|au|th)\b')
+_DIRECTION = ("north", "south", "east", "west", "central")
+
+
+def _site_token(name, provider, brand):
+    """The site discriminator that MUST match for a merge. Empty => no reliable
+    discriminator (the caller then requires an identical name-core, which keeps
+    "1-Net East" vs "1-Net North" and "North East Valley" vs "Palmerston North"
+    apart on their own).
+
+    Conservative by construction:
+      * digit-glued brand tokens (5GN, 2degrees, 365main) are removed first so a
+        BRAND digit is never read as a site number;
+      * site codes accept a SINGLE leading letter (NEXTDC S1/M1/D1/A1/B1 are
+        distinct cities) — the earlier 2-letter floor collapsed them to "1";
+      * localities count only WITH an adjacent number (Tai Seng 1 vs 2 stay
+        apart); bare directionals/localities are NOT tokens (too coarse — they
+        wrongly merged Palmerston North with North East Valley)."""
+    w = _norm(name) + " " + _norm(provider)
+    w = _GEO_STOP.sub(' ', w)
+    w = re.sub(r'\b\d{1,2}[a-z]{2,}\b', ' ', w)   # drop 5gn / 2degrees / 365main
+    w = re.sub(r'\s+', ' ', w).strip()
+    # provider site codes: s1, m1, sg1, sin2, syd1 (1 letter ok). Ignore a code
+    # equal to the brand itself (operator "M1" is not a site code).
+    codes = [x for x in re.findall(r'\b([a-z]{1,4}\d{1,2})\b', w) if x != brand]
+    if codes:
+        return codes[-1]
+    wns = w.replace(' ', '')
+    # locality ONLY when it carries a number (defu1, taiseng2)
+    for loc in _LOCALITY:
+        mnum = re.search(loc + r'(\d{1,2})', wns)
+        if mnum:
+            return loc + mnum.group(1)
+    # bare number — strip the brand first so a brand digit doesn't leak, and
+    # match WHOLE numbers only so an address ("100 Wickham") isn't truncated to
+    # a spurious "0" that collides with a different address.
+    rem = wns.replace(brand, '', 1) if brand else wns
+    nums = [x for x in re.findall(r'\d+', rem) if len(x) <= 2]
+    if nums:
+        return nums[-1]
+    return ""
+
+
+def _name_core(name):
+    n = _norm(name)
+    n = _GEO_STOP.sub(' ', n)
+    return re.sub(r'\s+', '', n)
+
+
+def _signature(country, name, provider):
+    """(country, brand, site_token) — rows with identical signature AND a
+    non-empty site_token are the same facility. When site_token is empty we
+    fall back to identical name-core, but ONLY if the core carries a distinctive
+    remainder beyond the brand (>=4 chars) — otherwise a generic "Keppel
+    Singapore" placeholder would wrongly absorb distinct sites."""
+    brand = _brand_key(provider, name)
+    if not brand:
+        return None  # unclusterable → never auto-merged
+    # Ambiguous multi-hall listings ("Equinix ME1/ME2") carry two distinct site
+    # codes — keep them standalone rather than fold into one of the halls.
+    _w = _GEO_STOP.sub(' ', _norm(name) + ' ' + _norm(provider))
+    _codes = set(x for x in re.findall(r'\b([a-z]{1,4}\d{1,2})\b', _w) if x != brand)
+    if len(_codes) >= 2:
+        return None
+    tok = _site_token(name, provider, brand)
+    if tok:
+        return (country, brand, tok)
+    core = _name_core(name)
+    remainder = core.replace(brand, "", 1)
+    if len(remainder) < 4:
+        return None
+    return (country, brand, "core:" + core)
+
+
+# Source trust for canonical selection (higher = preferred as the survivor).
+_SOURCE_RANK = {
+    "provider_directory": 9, "curated_hyperscaler": 9, "curated_global": 8,
+    "manual_seed": 8, "global_directory": 7, "peeringdb": 7, "PeeringDB": 7,
+    "dchub_pipeline": 5, "seed": 4, "datacentermap": 6,
+    "OpenStreetMap": 3, "openstreetmap": 3,
+    "discovered_facilities_drain": 2,
+}
+_SG_CENTROIDS = {(1.352, 103.82), (1.35, 103.82)}
+
+
+def _canon_score(r):
+    """Higher = better survivor. Prefer real provider, real (non-centroid)
+    coords, capacity, trusted source, and an informative (not junk) name."""
+    name, provider, source, la, lo, power = (
+        r["name"], r["provider"], r["source"], r["lat"], r["lon"], r["power_mw"])
+    s = 0.0
+    s += _SOURCE_RANK.get(source or "", 1)
+    if provider and _norm(provider) not in _GENERIC:
+        s += 3
+    if power not in (None, 0):
+        s += 3
+    if la is not None and lo is not None:
+        s += 1
+        if (round(float(la), 2), round(float(lo), 2)) not in _SG_CENTROIDS:
+            s += 2  # real coords, not the placeholder centroid
+    nm = (name or "")
+    # penalise junk names like "Singapore Singapore" / "SG6" / provider==name
+    if provider and _norm(provider) == _norm(name):
+        s -= 2
+    if len(nm) >= 10:
+        s += 1
+    return s
+
+
+def _load(country):
+    c = _conn()
+    if c is None:
+        return None
+    import psycopg2.extras
+    try:
+        with c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("""
+                SELECT id, name, provider, city, source, source_url, status,
+                       power_mw, COALESCE(latitude, lat) AS lat,
+                       COALESCE(longitude, lon) AS lon, slug, canonical_slug
+                FROM facilities WHERE country = %s
+            """, (country,))
+            return [dict(r) for r in cur.fetchall()]
+    finally:
+        try: c.close()
+        except Exception: pass
+
+
+# City extraction — the last-line safety net. If two rows in a signature group
+# name DIFFERENT cities, they are different facilities (e.g. NTT Sydney DC1 vs
+# NTT Melbourne DC1 both carry the generic code "dc1"), so the group is dropped.
+_CITY_NORM = {"sidney": "sydney", "melbicton": "melbourne"}
+_CITIES = (
+    "sydney", "sidney", "melbourne", "brisbane", "perth", "adelaide", "darwin",
+    "canberra", "hobart", "newcastle", "geelong", "townsville", "cairns",
+    "auckland", "wellington", "christchurch", "dunedin", "hamilton",
+    "palmerston", "tauranga", "bangkok", "chonburi", "singapore",
+    "london", "frankfurt", "amsterdam", "paris", "dublin", "tokyo", "osaka",
+    "mumbai", "chennai", "sao paulo", "hong kong",
+)
+
+
+def _cities(name):
+    n = _norm(name)
+    out = set()
+    for cn in _CITIES:
+        if re.search(r'\b' + cn.replace(' ', r'\s') + r'\b', n):
+            out.add(_CITY_NORM.get(cn, cn))
+    return out
+
+
+def _cluster(rows):
+    """Group by signature; return {signature: [rows]} for groups with >1 row.
+    Singletons and unclusterable rows are left out (they stay canonical). A
+    group whose members name two or more DIFFERENT cities is dropped — a
+    generic site code shared across cities is not the same facility."""
+    groups = {}
+    for r in rows:
+        sig = _signature("_", r["name"], r["provider"])
+        if sig is None:
+            continue
+        groups.setdefault(sig, []).append(r)
+    out = {}
+    for k, v in groups.items():
+        if len(v) < 2:
+            continue
+        cityset = set()
+        for m in v:
+            cityset |= _cities(m["name"])
+        if len(cityset) > 1:
+            continue  # cross-city → refuse to merge (safety over recall)
+        out[k] = v
+    return out
+
+
+def _plan(country):
+    """Return the merge plan: list of clusters, each with a chosen canonical and
+    the duplicate ids that would point to it. Pure/no-write."""
+    rows = _load(country)
+    if rows is None:
+        return None
+    clusters = _cluster(rows)
+    plan = []
+    dup_total = 0
+    for sig, members in clusters.items():
+        members_sorted = sorted(members, key=_canon_score, reverse=True)
+        canon = members_sorted[0]
+        dups = members_sorted[1:]
+        dup_total += len(dups)
+        plan.append({
+            "brand": sig[1], "site_token": sig[2],
+            "canonical": {"id": canon["id"], "name": canon["name"],
+                          "provider": canon["provider"], "source": canon["source"]},
+            "duplicates": [{"id": d["id"], "name": d["name"],
+                            "provider": d["provider"], "source": d["source"]}
+                           for d in dups],
+        })
+    plan.sort(key=lambda p: len(p["duplicates"]), reverse=True)
+    return {"country": country, "total_rows": len(rows),
+            "clusters": len(plan), "duplicate_rows": dup_total,
+            "canonical_rows": len(rows) - dup_total, "plan": plan}
+
+
+def _ensure_columns():
+    c = _conn()
+    if c is None:
+        return
+    try:
+        with c.cursor() as cur:
+            cur.execute("ALTER TABLE facilities ADD COLUMN IF NOT EXISTS duplicate_of_id TEXT")
+            cur.execute("ALTER TABLE facilities ADD COLUMN IF NOT EXISTS dedup_method TEXT")
+            cur.execute("ALTER TABLE facilities ADD COLUMN IF NOT EXISTS dedup_at TIMESTAMPTZ")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_facilities_dupof "
+                        "ON facilities(duplicate_of_id)")
+    except Exception as e:
+        logger.warning("[dedup] ensure columns failed: %s", str(e)[:140])
+    finally:
+        try: c.close()
+        except Exception: pass
+
+
+# ── endpoints ──────────────────────────────────────────────────────────────
+
+@facility_dedup_bp.route("/api/v1/admin/facility-dedup/analyze")
+def dedup_analyze():
+    if not _admin_ok():
+        return jsonify(ok=False, error="unauthorized"), 401
+    country = (request.args.get("country") or "").strip()
+    if not country:
+        return jsonify(ok=False, error="country required (ISO-2, e.g. SG)"), 400
+    res = _plan(country)
+    if res is None:
+        return jsonify(ok=False, error="db_unavailable"), 500
+    verbose = request.args.get("verbose") == "1"
+    if not verbose:
+        res = {**res, "plan": res["plan"][:40]}
+    return jsonify(ok=True, dry_run=True, **res), 200
+
+
+@facility_dedup_bp.route("/api/v1/admin/facility-dedup/apply", methods=["POST"])
+def dedup_apply():
+    if not _admin_ok():
+        return jsonify(ok=False, error="unauthorized"), 401
+    country = (request.args.get("country") or "").strip()
+    if not country:
+        return jsonify(ok=False, error="country required"), 400
+    res = _plan(country)
+    if res is None:
+        return jsonify(ok=False, error="db_unavailable"), 500
+    if request.args.get("confirm") != "1":
+        return jsonify(ok=True, dry_run=True, note="add ?confirm=1 to apply",
+                       country=country, would_mark=res["duplicate_rows"],
+                       clusters=res["clusters"]), 200
+    _ensure_columns()
+    c = _conn()
+    if c is None:
+        return jsonify(ok=False, error="db_unavailable"), 500
+    marked = 0
+    try:
+        with c.cursor() as cur:
+            for cl in res["plan"]:
+                cid = cl["canonical"]["id"]
+                for d in cl["duplicates"]:
+                    try:
+                        cur.execute(
+                            "UPDATE facilities SET duplicate_of_id=%s, "
+                            "dedup_method='brand+site_token/v1', dedup_at=NOW() "
+                            "WHERE id=%s AND (duplicate_of_id IS NULL OR duplicate_of_id<>%s)",
+                            (cid, d["id"], cid))
+                        marked += cur.rowcount
+                    except Exception:
+                        pass
+    finally:
+        try: c.close()
+        except Exception: pass
+    return jsonify(ok=True, country=country, marked_duplicates=marked,
+                   clusters=res["clusters"], canonical_rows=res["canonical_rows"]), 200
+
+
+@facility_dedup_bp.route("/api/v1/admin/facility-dedup/undo", methods=["POST"])
+def dedup_undo():
+    if not _admin_ok():
+        return jsonify(ok=False, error="unauthorized"), 401
+    country = (request.args.get("country") or "").strip()
+    c = _conn()
+    if c is None:
+        return jsonify(ok=False, error="db_unavailable"), 500
+    n = 0
+    try:
+        with c.cursor() as cur:
+            if country:
+                cur.execute("UPDATE facilities SET duplicate_of_id=NULL, dedup_method=NULL, "
+                            "dedup_at=NULL WHERE country=%s AND duplicate_of_id IS NOT NULL",
+                            (country,))
+            else:
+                cur.execute("UPDATE facilities SET duplicate_of_id=NULL, dedup_method=NULL, "
+                            "dedup_at=NULL WHERE duplicate_of_id IS NOT NULL")
+            n = cur.rowcount
+    finally:
+        try: c.close()
+        except Exception: pass
+    return jsonify(ok=True, cleared=n, country=country or "ALL"), 200
+
+
+@facility_dedup_bp.route("/api/v1/admin/facility-dedup/export")
+def dedup_export():
+    if not _admin_ok():
+        return jsonify(ok=False, error="unauthorized"), 401
+    country = (request.args.get("country") or "").strip()
+    if not country:
+        return jsonify(ok=False, error="country required"), 400
+    c = _conn()
+    if c is None:
+        return jsonify(ok=False, error="db_unavailable"), 500
+    import psycopg2.extras
+    try:
+        with c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("""
+                SELECT name, provider, city, status, power_mw,
+                       COALESCE(latitude, lat) AS lat, COALESCE(longitude, lon) AS lon,
+                       source, source_url
+                FROM facilities
+                WHERE country=%s AND duplicate_of_id IS NULL
+                ORDER BY provider NULLS LAST, name
+            """, (country,))
+            rows = [dict(r) for r in cur.fetchall()]
+    finally:
+        try: c.close()
+        except Exception: pass
+    if request.args.get("format") == "json":
+        return jsonify(ok=True, country=country, canonical=len(rows), facilities=rows), 200
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["name", "provider", "city", "status", "power_mw", "lat", "lon", "source"])
+    for r in rows:
+        w.writerow([r["name"], r["provider"], r["city"], r["status"],
+                    r["power_mw"], r["lat"], r["lon"], r["source"]])
+    return Response(buf.getvalue(), mimetype="text/csv",
+                    headers={"Content-Disposition":
+                             f"attachment; filename=dchub_{country}_canonical.csv"})
