@@ -234,11 +234,17 @@ def _build_memo(c, platform: str | None = None) -> dict:
         },
         "grounding": {
             "instrumented": False,
-            "pass_rate_pct": None,
+            "definition": ("PRIMARY (Perplexity 2026-07-20): grounding pass rate = answers carrying "
+                           "connector-supplied evidence / total answers. SECONDARY: citation presence = "
+                           "answers with >=1 citation / total. Evidence-carrying is the pass signal; "
+                           "citation-only is a separate lower-signal category."),
+            "answer_side_pass_rate_pct": None,     # PARTNER-reported — we don't see the agent's answer
+            "tool_result_provenance_pct": None,    # DC-Hub-side proxy — pending instrumentation of the envelope
             "success_rate_proxy_pct": success_rate,
-            "note": ("grounding pass rate is NOT yet instrumented (no grounding_evidence_present field). "
-                     "Definition pending Perplexity: (a) share of tool RESULTS carrying grounding evidence, "
-                     "or (b) share of ANSWERS that cited a returned result. success_rate is a floor proxy only."),
+            "note": ("SCOPING: DC Hub sees tool calls + tool RESULTS, not the agent's final ANSWER — so the "
+                     "primary answer-side pass rate is PARTNER-reported (Perplexity measures it). DC Hub can "
+                     "report the tool-RESULT provenance-coverage proxy (share of results carrying the "
+                     "evidence/provenance envelope) once instrumented; success_rate is a floor only, not grounding."),
         },
         "reach_by_platform_7d": [{"platform": r[0], "reach": int(r[1] or 0)} for r in reach_by],
         "real_tooluse_by_platform_7d": [
@@ -292,7 +298,10 @@ def _to_md(m: dict) -> str:
           f"- _{m['funnel']['note']}_", ""]
     g = m["grounding"]
     L += ["## Grounding pass rate",
-          f"- **Not yet instrumented.** success-rate proxy: {g['success_rate_proxy_pct']}%",
+          f"- _{g['definition']}_",
+          f"- Answer-side pass rate (partner-reported): {g['answer_side_pass_rate_pct']}",
+          f"- Tool-result provenance coverage (DC-Hub-side, pending instrumentation): {g['tool_result_provenance_pct']}",
+          f"- success-rate floor proxy: {g['success_rate_proxy_pct']}%",
           f"- _{g['note']}_", ""]
     L += ["## Reach by platform (7d)", "", "| platform | reach |", "|---|---|"]
     L += [f"| {r['platform']} | {r['reach']} |" for r in m["reach_by_platform_7d"]]
