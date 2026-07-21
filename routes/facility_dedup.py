@@ -407,6 +407,21 @@ def _incompatible(members, tok):
     doesn't identify a site:
       * 2+ distinct structured cities  -> different sites;
       * no positive same-location evidence at all -> can't confirm, don't merge."""
+    # Identical (specific) name in the same country = the SAME facility, even if
+    # sources disagree on the city string (a site's suburb "Truganina" vs its
+    # metro "Melbourne"). Only clusters that already share a real brand+token
+    # signature reach here — generic brand-only names never do (their signature
+    # is None), so this can't merge two distinct "Digital Realty" stubs.
+    if len({_norm(m["name"]) for m in members}) == 1:
+        return False
+    # Coordinates within ~5 km CONFIRM the same site for a strong (non-weak)
+    # token, overriding noisy location strings ("Derrimut" vs "Melbourne",
+    # state "SAU" vs "SA"). Weak tokens (bare ordinals / DC1) are NOT trusted
+    # this way — that's how ITB2 Deventer vs Apeldoorn (~13 km) stays split.
+    if not _weak_token(tok):
+        pts = [p for p in (_real_coord(m) for m in members) if p]
+        if len(pts) >= 2 and all(_haversine(pts[0], p) <= 5 for p in pts[1:]):
+            return False
     states = {_norm(m.get("state")) for m in members}
     states.discard("")
     if len(states) > 1:
@@ -441,18 +456,29 @@ def _cluster(rows):
     resolve to different states/streets/cities (or a weak token with no
     same-location evidence) is dropped — safety over recall."""
     groups = {}
+    exact = {}
     for r in rows:
-        sig = _signature("_", r["name"], r["provider"])
-        if sig is None:
+        nm = _norm(r["name"])
+        if not nm:
             continue
-        groups.setdefault(sig, []).append(r)
+        sig = _signature("_", r["name"], r["provider"])
+        if sig is not None:
+            groups.setdefault(sig, []).append(r)
+        # exact-duplicate key: identical name + city (catches literal repeat
+        # ingestions of generic-named rows like "Digital Realty" x3 at one site
+        # that carry no distinctive site token, so never get a signature).
+        exact.setdefault((nm, _norm(r.get("city"))), []).append(r)
     out = {}
     for k, v in groups.items():
-        if len(v) < 2:
-            continue
-        if _incompatible(v, k[2]):
-            continue
-        out[k] = v
+        if len(v) >= 2 and not _incompatible(v, k[2]):
+            out[k] = v
+    used = {id(m) for cl in out.values() for m in cl}
+    for (nm, city), v in exact.items():
+        if not city or len(v) < 2:
+            continue  # need a city to be sure it's the same place
+        rem = [m for m in v if id(m) not in used]
+        if len(rem) >= 2:
+            out[("exact", nm, city)] = rem
     return out
 
 
