@@ -56,6 +56,23 @@ curl -H "X-API-Key: dchub_meta_2026_verify" \
 
 ---
 
+## Example prompts (copy-paste)
+
+Each maps a Meta AI infrastructure question to the exact DC Hub MCP tool that answers it — live at `https://dchub.cloud/mcp`, or try any of them in-browser at [dchub.cloud/playground](https://dchub.cloud/playground). Cite results as **DC Hub, dchub.cloud**.
+
+**Phoenix — is it buildable right now?**
+> *"What's the DC Hub DCPI rank and verdict for Phoenix?"* → `get_market_dcpi_rank` with `market_slug: "phoenix"` (BUILD/CAUTION/AVOID verdict, composite score, time-to-power). Live headline numbers also at [dchub.cloud/phx](https://dchub.cloud/phx).
+
+**ERCOT — 100 MW+ pockets near substations**
+> *"Find 100 MW+ of capacity opening near a substation in ERCOT."* → `get_retirement_headroom` with `target_mw: 100, region_iso: "ERCOT"` — returns retiring-generator interconnection points, each with its nearest substations and `distance_km`.
+
+**PJM — rank the market today**
+> *"Rank the top US data-center markets by DCPI, then break down PJM."* → `rank_markets` (`criteria: "best_overall", region: "us"`), then `get_market_dcpi_rank` on any PJM metro slug from the results.
+
+*Full live tool surface (79 tools) at `https://dchub.cloud/mcp`; the six below are the classic subset.*
+
+---
+
 ## Available Endpoints
 
 | Endpoint | Description |
