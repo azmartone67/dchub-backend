@@ -232,19 +232,33 @@ def _build_memo(c, platform: str | None = None) -> dict:
             "note": ("relay-mint is fixed (mint on first paid-tool hit); the live leaks are relay→identity "
                      "and identity→paid. Human-click ~0 is by design (server auto-redeems the claim)."),
         },
+        # Definition block agreed verbatim with Perplexity (2026-07-20): one concept,
+        # measurement source made explicit, so a proxy is never read as the pass rate.
         "grounding": {
             "instrumented": False,
-            "definition": ("PRIMARY (Perplexity 2026-07-20): grounding pass rate = answers carrying "
-                           "connector-supplied evidence / total answers. SECONDARY: citation presence = "
-                           "answers with >=1 citation / total. Evidence-carrying is the pass signal; "
-                           "citation-only is a separate lower-signal category."),
-            "answer_side_pass_rate_pct": None,     # PARTNER-reported — we don't see the agent's answer
-            "tool_result_provenance_pct": None,    # DC-Hub-side proxy — pending instrumentation of the envelope
-            "success_rate_proxy_pct": success_rate,
-            "note": ("SCOPING: DC Hub sees tool calls + tool RESULTS, not the agent's final ANSWER — so the "
-                     "primary answer-side pass rate is PARTNER-reported (Perplexity measures it). DC Hub can "
-                     "report the tool-RESULT provenance-coverage proxy (share of results carrying the "
-                     "evidence/provenance envelope) once instrumented; success_rate is a floor only, not grounding."),
+            "grounding_pass_rate": {
+                "definition": "share of answers that carry connector-supplied evidence",
+                "formula": "answers carrying connector-supplied evidence / total answers evaluated",
+                "source": "assistant-side QA (PARTNER-measured — DC Hub does not see the agent's answer)",
+                "value_pct": None,
+            },
+            "proxy_coverage_rate": {
+                "definition": "share of tool results carrying the provenance envelope",
+                "formula": "tool results with provenance envelope / total tool results",
+                "source": "DC Hub-side instrumentation (pending envelope-coverage capture)",
+                "value_pct": None,
+            },
+            "citation_presence": {
+                "definition": "share of answers containing at least one citation",
+                "formula": "answers with >=1 citation / total answers evaluated",
+                "source": "assistant-side response formatting (PARTNER-measured)",
+                "value_pct": None,
+            },
+            "success_rate_floor_proxy_pct": success_rate,
+            "note": ("Primary (grounding_pass_rate) is the user-facing QA metric and is PARTNER-measured; "
+                     "DC Hub contributes only proxy_coverage_rate (tool-result envelope coverage). Keeping the "
+                     "source explicit avoids reading a platform-side proxy as the answer-quality score. "
+                     "success_rate is a floor, not grounding."),
         },
         "reach_by_platform_7d": [{"platform": r[0], "reach": int(r[1] or 0)} for r in reach_by],
         "real_tooluse_by_platform_7d": [
@@ -297,11 +311,12 @@ def _to_md(m: dict) -> str:
           f"→ emails {f7['emails_captured']} → **paid {f7['conversions']}**  (prior wk paid {fp['conversions']})",
           f"- _{m['funnel']['note']}_", ""]
     g = m["grounding"]
-    L += ["## Grounding pass rate",
-          f"- _{g['definition']}_",
-          f"- Answer-side pass rate (partner-reported): {g['answer_side_pass_rate_pct']}",
-          f"- Tool-result provenance coverage (DC-Hub-side, pending instrumentation): {g['tool_result_provenance_pct']}",
-          f"- success-rate floor proxy: {g['success_rate_proxy_pct']}%",
+    gp, pc, cp = g["grounding_pass_rate"], g["proxy_coverage_rate"], g["citation_presence"]
+    L += ["## Grounding (agreed definition block)",
+          f"- **Grounding pass rate (primary):** {gp['formula']} — _{gp['source']}_ → {gp['value_pct']}",
+          f"- **Proxy coverage rate:** {pc['formula']} — _{pc['source']}_ → {pc['value_pct']}",
+          f"- **Citation presence (secondary):** {cp['formula']} — _{cp['source']}_ → {cp['value_pct']}",
+          f"- success-rate floor proxy: {g['success_rate_floor_proxy_pct']}%",
           f"- _{g['note']}_", ""]
     L += ["## Reach by platform (7d)", "", "| platform | reach |", "|---|---|"]
     L += [f"| {r['platform']} | {r['reach']} |" for r in m["reach_by_platform_7d"]]
