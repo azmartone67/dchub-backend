@@ -195,6 +195,27 @@ def _build_memo(c, platform: str | None = None) -> dict:
                           "AND created_at >= now() - interval '7 days' "
                           "GROUP BY 1 ORDER BY 3 DESC LIMIT 12")
 
+    # 6b ── PLANNER ADOPTION (ChatGPT's front-door KPIs, 2026-07-21): does a
+    # workflow START with plan_query, and does the planner shorten workflows?
+    # A "workflow" = one session_id. Front door shipped 2026-07-20, so early
+    # cuts are the BEFORE baseline to watch climb.
+    prow = _one(c, "WITH sess AS ("
+                   " SELECT session_id,"
+                   " (array_agg(tool_name ORDER BY created_at))[1] AS first_tool,"
+                   " count(*) AS n, bool_or(tool_name='plan_query') AS used_planner"
+                   " FROM mcp_calls_identity"
+                   " WHERE is_public_ip AND is_real_external"
+                   " AND created_at >= now() - interval '7 days'"
+                   " AND session_id IS NOT NULL AND btrim(session_id) <> ''"
+                   " GROUP BY session_id) "
+                   "SELECT count(*), count(*) FILTER (WHERE first_tool='plan_query'),"
+                   " count(*) FILTER (WHERE used_planner),"
+                   " round(avg(n)::numeric,2),"
+                   " round((avg(n) FILTER (WHERE first_tool='plan_query'))::numeric,2),"
+                   " round((avg(n) FILTER (WHERE first_tool<>'plan_query'))::numeric,2) "
+                   "FROM sess")
+    p_sess, p_first, p_any, p_avg, p_avg_planner, p_avg_direct = (prow if prow else (0, 0, 0, None, None, None))
+
     # 7 ── WHAT CHANGED — the single biggest WoW mover, phrased.
     movers = []
     for label, cur, prev in (("distinct real agents", agents_7d, agents_prev),
@@ -260,6 +281,19 @@ def _build_memo(c, platform: str | None = None) -> dict:
                      "source explicit avoids reading a platform-side proxy as the answer-quality score. "
                      "success_rate is a floor, not grounding."),
         },
+        "planner_adoption": {
+            "tool_using_sessions_7d": int(p_sess or 0),
+            "planner_first_sessions_7d": int(p_first or 0),
+            "planner_first_rate_pct": (round(100.0 * (p_first or 0) / p_sess, 1) if p_sess else None),
+            "sessions_using_planner_anywhere_7d": int(p_any or 0),
+            "avg_tools_per_workflow": float(p_avg) if p_avg is not None else None,
+            "avg_tools_planner_first": float(p_avg_planner) if p_avg_planner is not None else None,
+            "avg_tools_direct": float(p_avg_direct) if p_avg_direct is not None else None,
+            "note": ("front door shipped 2026-07-20 — plan_query is now the recommended first call in the "
+                     "server instructions, its tool description, and llms.txt. KPI (ChatGPT): planner_first_rate "
+                     "should climb, and avg_tools_planner_first should fall BELOW avg_tools_direct as the planner "
+                     "picks shorter paths. Early cuts are the BEFORE baseline. A workflow = one session_id."),
+        },
         "reach_by_platform_7d": [{"platform": r[0], "reach": int(r[1] or 0)} for r in reach_by],
         "real_tooluse_by_platform_7d": [
             {"platform": r[0], "agents": int(r[1] or 0), "calls": int(r[2] or 0)} for r in tooluse_by],
@@ -318,6 +352,14 @@ def _to_md(m: dict) -> str:
           f"- **Citation presence (secondary):** {cp['formula']} — _{cp['source']}_ → {cp['value_pct']}",
           f"- success-rate floor proxy: {g['success_rate_floor_proxy_pct']}%",
           f"- _{g['note']}_", ""]
+    pa = m["planner_adoption"]
+    L += ["## Planner adoption (front-door KPI)",
+          f"- **planner-first rate:** {pa['planner_first_rate_pct']}% ({pa['planner_first_sessions_7d']} of "
+          f"{pa['tool_using_sessions_7d']} tool-using sessions started with plan_query)",
+          f"- sessions using plan_query anywhere: {pa['sessions_using_planner_anywhere_7d']}",
+          f"- avg tools / workflow: {pa['avg_tools_per_workflow']} "
+          f"(planner-first {pa['avg_tools_planner_first']} vs direct {pa['avg_tools_direct']})",
+          f"- _{pa['note']}_", ""]
     L += ["## Reach by platform (7d)", "", "| platform | reach |", "|---|---|"]
     L += [f"| {r['platform']} | {r['reach']} |" for r in m["reach_by_platform_7d"]]
     L += ["", "## Real tool-use by platform (7d)", "", "| platform | agents | calls |", "|---|---|---|"]
