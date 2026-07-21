@@ -63,6 +63,13 @@ not just delete the assertion.
   the live /mcp `initialize` instructions blob, which is emitted by the deployed
   MCP server, not from this repo, so it cannot be pinned from here.)
 
+  AGENT_CODE_SURFACES extends the fence to the server-side SOURCE that EMITS
+  agent-facing strings (MCP tool catalogs, the /mcp connect page, the A2A card,
+  interconnection blurbs). Because those are .py (not served data bodies), they
+  get a high-signal scan — tool-count + BANNED_STALE only, NOT the full
+  stale_markers denylist, whose bare-number/version markers would collide with
+  incidental code. See test_agent_code_surfaces_free_of_stale_counts.
+
 Run locally:
     python -m pytest tests/test_canonical_counts_drift.py -v
 """
@@ -110,6 +117,24 @@ SURFACES = (
     os.path.join(".well-known", "mcp.json"),
 )
 
+# ── AGENT_CODE_SURFACES: server-side SOURCE that EMITS agent-facing strings
+#    (MCP tool catalogs, the /mcp connect page, the A2A card, interconnection
+#    status blurbs). Unlike SURFACES these are .py, not served data bodies, so
+#    they are scanned with the high-signal tool-count + BANNED_STALE patterns
+#    ONLY — never the ai_surface_canon stale_markers denylist, whose bare-number
+#    / version markers ("232 ", "2.4.3", "2.1.0", "50000") would collide with
+#    incidental code. worker.js is deliberately NOT here: its ~290KB body carries
+#    a changelog header of past counts, so it gets a surgical guard
+#    (test_worker_mcp_card_is_canonical) instead of a whole-file line-scan. ──────
+AGENT_CODE_SURFACES = (
+    "chatgpt_mcp_compat.py",
+    "ai_interconnection.py",
+    "mcp_gatekeeper.py",
+    os.path.join("routes", "mcp_connect.py"),
+    os.path.join("routes", "mcp_tool_catalog.py"),
+    os.path.join("routes", "agent_a2a.py"),
+)
+
 # ── Allow-list: lines that are explicitly historical/retrospective are exempt.
 #    Keyword-driven on purpose (a bare date is NOT enough — many current lines
 #    carry a "Last Updated" date), so a genuinely NEW stale claim is still
@@ -117,7 +142,7 @@ SURFACES = (
 _HISTORICAL_RE = re.compile(
     r"\bwas\b|\bformerly\b|\bpreviously\b|\bno longer\b|\bdeprecated\b"
     r"|\bhistorical\b|\bchangelog\b|\bused to\b|\brenamed from\b|\bprior to\b"
-    r"|\bsuperseded\b|\bretired\b",
+    r"|\bsuperseded\b|\bretired\b|\bwere live\b",
     re.I,
 )
 
@@ -168,21 +193,26 @@ BANNED_STALE = [
 ]
 
 
-def _surface_lines():
-    """Yield (surface_path, line_no, line_text) for every SURFACE, skipping
+def _iter_surface_lines(paths):
+    """Yield (path, line_no, line_text) for every file in `paths`, skipping
     lines flagged as historical/changelog context."""
-    for rel in SURFACES:
+    for rel in paths:
         p = REPO_ROOT / rel
         assert p.is_file(), (
             f"{rel}: agent-facing surface missing — this drift-fence anchors to "
-            f"it ({FIXWAVE}). If the file moved/renamed, update SURFACES to "
-            f"follow it (do not just drop the surface)."
+            f"it ({FIXWAVE}). If the file moved/renamed, update the surface list "
+            f"to follow it (do not just drop the surface)."
         )
         text = p.read_text(encoding="utf-8", errors="ignore")
         for i, line in enumerate(text.splitlines(), 1):
             if _HISTORICAL_RE.search(line):
                 continue  # allow-listed retrospective/changelog mention
             yield rel, i, line
+
+
+def _surface_lines():
+    """Yield lines for the served data SURFACES (llms.txt, README, mcp.json, …)."""
+    yield from _iter_surface_lines(SURFACES)
 
 
 def test_fence_baseline_matches_canon_sot():
@@ -359,4 +389,54 @@ def test_worker_mcp_card_is_canonical():
         "Stale count token(s) in the served /mcp server card "
         f"(worker.js MCP_SERVER_INFO.description) ({FIXWAVE}):\n"
         + "\n".join(banned_hits)
+    )
+
+
+def test_agent_code_surfaces_free_of_stale_counts():
+    """Server-side code that EMITS agent-facing strings must not hard-code a
+    non-canonical tool count or a banned deal/market/gas/ISO token.
+
+    Covers the MCP tool catalogs (mcp_gatekeeper, routes/mcp_tool_catalog), the
+    /mcp connect page (routes/mcp_connect), the A2A card (routes/agent_a2a), the
+    ChatGPT MCP-compat surface, and the interconnection status blurbs
+    (ai_interconnection) — all of which shipped "73 tools" / "4,000+ deals" /
+    "10 ISOs" while canon said 79 / 1,400+ / 7 US ISOs.
+
+    High-signal scan by design: only the tool-count regex and BANNED_STALE
+    patterns, reused from the data-SURFACE tests, plus the shared historical
+    allow-list. It deliberately does NOT apply the ai_surface_canon stale_markers
+    denylist here — those bare-number/version markers ("232 ", "2.4.3", ...)
+    would collide with incidental code (line numbers, protocol versions, limits).
+    """
+    tool_count_re = re.compile(r"(?<![\d,])(\d{1,3})\s+(?:live\s+|MCP\s+)?tools\b")
+    failures = []
+    canonical_tool_count_seen = False
+    for rel, i, line in _iter_surface_lines(AGENT_CODE_SURFACES):
+        low = line.lower()
+        for m in tool_count_re.finditer(line):
+            n = int(m.group(1))
+            if n == CANONICAL["tools"]:
+                canonical_tool_count_seen = True
+            else:
+                failures.append(
+                    f"  {rel}:{i}: advertises {n} tools (canonical "
+                    f"{CANONICAL['tools']}) -> {line.strip()[:90]!r}"
+                )
+        for tok_id, pat, canonical_phrase, requires, why in BANNED_STALE:
+            if requires and requires.lower() not in low:
+                continue
+            hit = pat.search(line)
+            if hit:
+                failures.append(
+                    f"  [{tok_id}] {rel}:{i}: {hit.group(0)!r} contradicts "
+                    f"canonical '{canonical_phrase}' -> {line.strip()[:90]!r}"
+                )
+    assert not failures, (
+        "Stale count(s) hard-coded in agent-facing server code — fix to canon "
+        f"({FIXWAVE}):\n" + "\n".join(failures)
+    )
+    assert canonical_tool_count_seen, (
+        f"No AGENT_CODE_SURFACE advertises the canonical '{CANONICAL['tools']} "
+        f"tools' — the guard would pass vacuously; a surface should state the "
+        f"count so this has something to protect ({FIXWAVE})."
     )

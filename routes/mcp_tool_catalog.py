@@ -89,7 +89,7 @@ TOOLS = [
      "Use when a user asks 'what is being built / announced / permitted' in a market or by an operator — the forward-looking construction pipeline (540+ projects, 369 GW). Example: 'What data centers are under construction in Northern Virginia and when do they come online?'. Params: status one of announced|permitted|construction|operational; operator (e.g. Equinix, Digital Realty, AWS); country (ISO-2 like US, DE); min_capacity_mw (e.g. 50 for hyperscale); expected_completion_before (ISO date). Returns: {projects:[{name, operator, capacity_mw, status, expected_commissioning, market_slug, country, lat, lon}], total}. Do NOT use for operational facilities (use search_facilities) or M&A flow (use list_transactions).",
      'get_pipeline(market="northern-virginia", status="construction")'),
     ("list_transactions",     "intelligence",   "identified",
-     "M&A and capital transactions in the data center sector — 4,000+ tracked deals (2019-present). Returns deal name, buyer, seller, value, date, market, target operator, and deal type.",
+     "M&A and capital transactions in the data center sector — 1,400+ tracked deals (2019-present). Returns deal name, buyer, seller, value, date, market, target operator, and deal type.",
      'list_transactions(year=2026, min_value_usd=1000000000)'),
     ("hyperscaler_deals",     "intelligence",   "identified",
      "Hyperscaler AI Deal Tracker — live feed of Stargate, OpenAI, Anthropic, Microsoft, Oracle, CoreWeave, NVIDIA, sovereign-AI deals. Extracts $-figures + MW and classifies by actor. ~$1B+/week typical.",
@@ -99,7 +99,7 @@ TOOLS = [
      'get_agent_registry()'),
     # ── INFRASTRUCTURE ── (the physical-layer signals)
     ("get_grid_data",         "infrastructure", "identified",
-     "Real-time electricity grid data across 10 ISOs: 7 US (PJM, ERCOT, CAISO, MISO, SPP, NYISO, ISO-NE) + Hydro-Quebec (Canada), AESO (Alberta), Nord Pool (15 European zones). Fuel mix, demand, prices.",
+     "Real-time electricity grid data across 7 US ISOs (PJM, ERCOT, CAISO, MISO, SPP, NYISO, ISO-NE) + Hydro-Quebec (Canada), AESO (Alberta), Nord Pool (15 European zones). Fuel mix, demand, prices.",
      'get_grid_data(iso="PJM")'),
     ("get_grid_intelligence", "infrastructure", "pro",
      "Use when a user asks 'can I get N MW of power in <ISO> and how long will it take?' — the flagship grid-headroom + interconnection-queue brief for one ISO. Example: 'How much excess power does PJM have right now and what is the time-to-power for a 200MW load?'. Params: region_id (aliases iso/region) one of PJM|ERCOT|CAISO|MISO|SPP|NYISO|ISO-NE|HYDROQUEBEC|AESO|NORDPOOL. Returns: {iso, excess_power_mw, constraint_score (0-100), queue_depth_mw, queue_depth_count, avg_time_to_power_months, top_constraints[], data_center_share_pct, generation_mix_pct, last_updated}. Do NOT use to compare 2+ ISOs (use compare_isos) or for the global greenest-first ranking (use get_grid_scoreboard).",
