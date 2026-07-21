@@ -455,30 +455,33 @@ def _cluster(rows):
     Singletons and unclusterable rows stay canonical. A group whose members
     resolve to different states/streets/cities (or a weak token with no
     same-location evidence) is dropped — safety over recall."""
-    groups = {}
+    out = {}
+    # Pass 1 — collapse exact (name, city) duplicates FIRST. Highest confidence
+    # (identical name AND city = the same site), and it must run before the
+    # signature pass: a provider string's trailing digits ("42 - 24 Pty Ltd")
+    # can shift the site-token so identical rows would otherwise land in
+    # different signatures and never merge.
     exact = {}
     for r in rows:
         nm = _norm(r["name"])
-        if not nm:
-            continue
+        if nm:
+            exact.setdefault((nm, _norm(r.get("city"))), []).append(r)
+    reps = []  # one representative per collapsed group → feeds the signature pass
+    for (nm, city), v in exact.items():
+        if city and len(v) >= 2:
+            out[("exact", nm, city)] = v
+            reps.append(max(v, key=_canon_score))
+        else:
+            reps.extend(v)
+    # Pass 2 — signature-cluster the survivors (brand + site token, guarded).
+    groups = {}
+    for r in reps:
         sig = _signature("_", r["name"], r["provider"])
         if sig is not None:
             groups.setdefault(sig, []).append(r)
-        # exact-duplicate key: identical name + city (catches literal repeat
-        # ingestions of generic-named rows like "Digital Realty" x3 at one site
-        # that carry no distinctive site token, so never get a signature).
-        exact.setdefault((nm, _norm(r.get("city"))), []).append(r)
-    out = {}
     for k, v in groups.items():
         if len(v) >= 2 and not _incompatible(v, k[2]):
             out[k] = v
-    used = {id(m) for cl in out.values() for m in cl}
-    for (nm, city), v in exact.items():
-        if not city or len(v) < 2:
-            continue  # need a city to be sure it's the same place
-        rem = [m for m in v if id(m) not in used]
-        if len(rem) >= 2:
-            out[("exact", nm, city)] = rem
     return out
 
 
