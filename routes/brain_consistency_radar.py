@@ -7350,7 +7350,9 @@ def check_facility_duplicate_clusters() -> list[dict]:
     c = _db()
     if c is None:
         return findings
-    MARKETS = ["SG", "AU", "TH", "NZ"]  # markets actively kept deduped
+    # Top markets by facility volume — where cross-source dupes concentrate.
+    MARKETS = ["US", "SG", "DE", "AU", "CA", "GB", "NL", "JP", "BR", "FR",
+               "TH", "NZ", "IN", "ID", "HK"]
     try:
         for code in MARKETS:
             plan = fd._plan(code)

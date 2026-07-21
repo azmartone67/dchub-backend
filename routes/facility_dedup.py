@@ -33,6 +33,7 @@ import os
 import re
 import csv
 import io
+import math
 import logging
 
 from flask import Blueprint, request, jsonify, Response
@@ -68,7 +69,7 @@ _CORP = re.compile(r'\b(pte|ltd|limited|inc|llc|gmbh|holdings?|group|'
                    r'technology|solutions|division|operating|pty|sdn|bhd|'
                    r'international|communications?|telecom|telecommunications?)\b')
 _GENERIC = {'', 'unknown', 'data center', 'data centre', 'datacenter',
-            'n/a', 'none', 'null', 'data'}
+            'n/a', 'none', 'null', 'data', 'pt', 'the', 'co'}
 
 # Curated brand aliases for the operators that dominate the duplication — the
 # name/provider strings that mean the SAME company. Maps a normalized token to
@@ -171,25 +172,37 @@ def _site_token(name, provider, brand):
     w = _norm(name) + " " + _norm(provider)
     w = _GEO_STOP.sub(' ', w)
     w = re.sub(r'\b\d{1,2}[a-z]{2,}\b', ' ', w)   # drop 5gn / 2degrees / 365main
-    w = re.sub(r'\s+', ' ', w).strip()
-    # provider site codes: s1, m1, sg1, sin2, syd1 (1 letter ok). Ignore a code
-    # equal to the brand itself (operator "M1" is not a site code).
-    codes = [x for x in re.findall(r'\b([a-z]{1,4}\d{1,2})\b', w) if x != brand]
+    toks = [t for t in w.split() if t]
+    codes = []        # glued letter+digit site codes (+ any hall suffix)
+    prefixed = []     # "<short-alpha><number>" — city/hall abbrev + number
+    bares = []        # a lone 1-2 digit number
+    for i, t in enumerate(toks):
+        if re.fullmatch(r'[a-z]{1,4}\d{1,2}', t) and t != brand:
+            # bind a following hall number: DC6 2 -> dc62, FR2 6 -> fr26 (keeps
+            # DC6-2 vs DC6-5 apart); a 3+ digit street number is NOT bound.
+            if i + 1 < len(toks) and re.fullmatch(r'\d{1,2}', toks[i + 1]):
+                codes.append(t + toks[i + 1])
+            else:
+                codes.append(t)
+        elif re.fullmatch(r'\d{1,2}', t):
+            # bind a preceding short non-brand token: "Col 1" -> col1, "Dal 1" ->
+            # dal1, "SE 2" -> se2 (keeps different cities/regions apart even when
+            # only the abbreviation, not the full city, is present).
+            prec = toks[i - 1] if (i > 0 and re.fullmatch(r'[a-z]{1,4}', toks[i - 1])
+                                   and toks[i - 1] != brand) else ""
+            (prefixed if prec else bares).append(prec + t)
     if codes:
         return codes[-1]
-    wns = w.replace(' ', '')
+    wns = "".join(toks)
     # locality ONLY when it carries a number (defu1, taiseng2)
     for loc in _LOCALITY:
         mnum = re.search(loc + r'(\d{1,2})', wns)
         if mnum:
             return loc + mnum.group(1)
-    # bare number — strip the brand first so a brand digit doesn't leak, and
-    # match WHOLE numbers only so an address ("100 Wickham") isn't truncated to
-    # a spurious "0" that collides with a different address.
-    rem = wns.replace(brand, '', 1) if brand else wns
-    nums = [x for x in re.findall(r'\d+', rem) if len(x) <= 2]
-    if nums:
-        return nums[-1]
+    if prefixed:
+        return prefixed[-1]
+    if bares:
+        return bares[-1]
     return ""
 
 
@@ -267,8 +280,9 @@ def _load(country):
     try:
         with c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute("""
-                SELECT id, name, provider, city, source, source_url, status,
-                       power_mw, COALESCE(latitude, lat) AS lat,
+                SELECT id, name, provider, city, state, address, region,
+                       source, source_url, status, power_mw,
+                       COALESCE(latitude, lat) AS lat,
                        COALESCE(longitude, lon) AS lon, slug, canonical_slug
                 FROM facilities WHERE country = %s
             """, (country,))
@@ -281,14 +295,29 @@ def _load(country):
 # City extraction — the last-line safety net. If two rows in a signature group
 # name DIFFERENT cities, they are different facilities (e.g. NTT Sydney DC1 vs
 # NTT Melbourne DC1 both carry the generic code "dc1"), so the group is dropped.
-_CITY_NORM = {"sidney": "sydney", "melbicton": "melbourne"}
+_CITY_NORM = {"sidney": "sydney"}
 _CITIES = (
+    # APAC
     "sydney", "sidney", "melbourne", "brisbane", "perth", "adelaide", "darwin",
     "canberra", "hobart", "newcastle", "geelong", "townsville", "cairns",
     "auckland", "wellington", "christchurch", "dunedin", "hamilton",
     "palmerston", "tauranga", "bangkok", "chonburi", "singapore",
-    "london", "frankfurt", "amsterdam", "paris", "dublin", "tokyo", "osaka",
-    "mumbai", "chennai", "sao paulo", "hong kong",
+    "tokyo", "osaka", "seoul", "mumbai", "chennai", "bangalore", "hyderabad",
+    "delhi", "noida", "jakarta", "hong kong", "taipei", "kuala lumpur", "manila",
+    # North America metros
+    "ashburn", "sterling", "manassas", "reston", "richmond", "dallas", "fort worth",
+    "houston", "san antonio", "austin", "chicago", "elk grove", "phoenix", "mesa",
+    "chandler", "atlanta", "santa clara", "san jose", "san francisco", "sunnyvale",
+    "fremont", "los angeles", "el segundo", "portland", "hillsboro", "seattle",
+    "quincy", "council bluffs", "omaha", "new albany", "columbus", "denver",
+    "reno", "las vegas", "salt lake city", "new york", "newark", "secaucus",
+    "piscataway", "boston", "miami", "toronto", "montreal", "vancouver",
+    "boydton", "the dalles", "prineville", "cheyenne", "kansas city",
+    # Europe metros
+    "london", "slough", "frankfurt", "amsterdam", "paris", "marseille", "dublin",
+    "madrid", "milan", "zurich", "geneva", "vienna", "warsaw", "oslo", "stockholm",
+    "copenhagen", "helsinki", "brussels", "munich", "berlin", "hamburg",
+    "sao paulo", "rio de janeiro", "santiago", "queretaro",
 )
 
 
@@ -301,11 +330,113 @@ def _cities(name):
     return out
 
 
+def _street_num(addr):
+    """Leading street number of an address (a strong identity signal — two
+    rows with different street numbers are different buildings)."""
+    m = re.match(r'\s*(\d{1,6})\b', addr or "")
+    return m.group(1) if m else None
+
+
+def _real_coord(m):
+    """(lat,lon) if the row has usable coordinates, else None (null / 0,0)."""
+    la, lo = m.get("lat"), m.get("lon")
+    if la is None or lo is None:
+        return None
+    try:
+        la, lo = float(la), float(lo)
+    except Exception:
+        return None
+    if la == 0 and lo == 0:
+        return None
+    return (la, lo)
+
+
+def _haversine(a, b):
+    (la1, lo1), (la2, lo2) = a, b
+    p1, p2 = math.radians(la1), math.radians(la2)
+    dp, dl = math.radians(la2 - la1), math.radians(lo2 - lo1)
+    h = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    return 2 * 6371.0 * math.asin(min(1.0, math.sqrt(h)))
+
+
+def _weak_token(tok):
+    """A token that carries NO location identity on its own: a bare ordinal
+    ("1","2"), a generic per-site code an operator reuses in every city
+    ("dc1","pop2","az1"), or a brand-only core match. Merging on a weak token
+    across cities is the false-merge class the adversarial review found
+    (NorthC 1 = Munich+Hamburg+Dusseldorf; STT DC2 = Bengaluru+Mumbai)."""
+    return bool(re.fullmatch(r'\d{1,2}', tok)
+                or tok.startswith("core:")
+                or re.fullmatch(r'(dc|pop|poi|pa|mmr|mdf|idf|ix|az|dr)\d{1,2}', tok))
+
+
+def _location_confirmed(members):
+    """Positive evidence that EVERY member is in the same place — required
+    before a weak token may merge. A single located member is NOT enough: that
+    is exactly how "Meta Clonee 6" (Ireland, has a city) absorbed "Meta Hyperion
+    Building 6" (Louisiana, no city / no coords) on the bare ordinal "6". So all
+    members must independently confirm the SAME location, by one shared channel:
+      * every member names the same structured city, OR
+      * every member has real coordinates and they cluster within 25 km, OR
+      * every member's NAME resolves to the same single city.
+    If any member is unlocatable in the chosen channel, we cannot confirm — and
+    do not merge."""
+    cities = [_norm(m.get("city")) for m in members]
+    if all(cities) and len(set(cities)) == 1:
+        return True
+    pts = [_real_coord(m) for m in members]
+    if all(pts) and all(_haversine(pts[0], p) <= 25 for p in pts[1:]):
+        return True
+    ncities = [_cities(m["name"]) for m in members]
+    if all(len(nc) == 1 for nc in ncities) and len({frozenset(nc) for nc in ncities}) == 1:
+        return True
+    return False
+
+
+def _incompatible(members, tok):
+    """True if members clearly belong to DIFFERENT physical sites. HARD blocks
+    apply to every cluster (a unique operator site code like DFW18 is trusted
+    across city-string variants such as Richardson vs Dallas):
+      * 2+ distinct non-empty STATE codes;
+      * 2+ distinct street numbers;
+      * 2+ distinct name-parsed cities.
+    WEAK tokens additionally require location agreement, because the token alone
+    doesn't identify a site:
+      * 2+ distinct structured cities  -> different sites;
+      * no positive same-location evidence at all -> can't confirm, don't merge."""
+    states = {_norm(m.get("state")) for m in members}
+    states.discard("")
+    if len(states) > 1:
+        return True
+    nums = {_street_num(m.get("address")) for m in members}
+    nums.discard(None)
+    if len(nums) > 1:
+        return True
+    ncities = set()
+    for m in members:
+        ncities |= _cities(m["name"])
+    if len(ncities) > 1:
+        return True
+    # Structured-city conflict blocks EVERY token, not just weak ones: a code
+    # like "ITB2" is an operator ordinal reused per city (Deventer vs Apeldoorn),
+    # indistinguishable from a metro code without this. We accept losing the odd
+    # metro/suburb merge (DFW18 Richardson vs Dallas stays two rows) to never
+    # hide a real distinct site.
+    cities = {_norm(m.get("city")) for m in members}
+    cities.discard("")
+    if len(cities) > 1:
+        return True
+    # Weak tokens carry no site identity — require positive same-location evidence.
+    if _weak_token(tok) and not _location_confirmed(members):
+        return True
+    return False
+
+
 def _cluster(rows):
     """Group by signature; return {signature: [rows]} for groups with >1 row.
-    Singletons and unclusterable rows are left out (they stay canonical). A
-    group whose members name two or more DIFFERENT cities is dropped — a
-    generic site code shared across cities is not the same facility."""
+    Singletons and unclusterable rows stay canonical. A group whose members
+    resolve to different states/streets/cities (or a weak token with no
+    same-location evidence) is dropped — safety over recall."""
     groups = {}
     for r in rows:
         sig = _signature("_", r["name"], r["provider"])
@@ -316,11 +447,8 @@ def _cluster(rows):
     for k, v in groups.items():
         if len(v) < 2:
             continue
-        cityset = set()
-        for m in v:
-            cityset |= _cities(m["name"])
-        if len(cityset) > 1:
-            continue  # cross-city → refuse to merge (safety over recall)
+        if _incompatible(v, k[2]):
+            continue
         out[k] = v
     return out
 
