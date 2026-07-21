@@ -119,6 +119,49 @@ def _north_star() -> dict:
     return out
 
 
+def _planner_adoption() -> dict:
+    """plan_query FRONT-DOOR adoption (2026-07-21). Front door shipped 2026-07-20
+    at a 0% baseline; the digest ALERT fires when planner-first sessions cross a
+    real threshold (not a single stray call) — the signal to build Phase 2 (the
+    event-driven successful-workflow funnel). See reach-vs-tooluse memory + the
+    growth-memo planner_adoption block for the full definition."""
+    out = {"sessions": None, "planner_first": None, "rate_pct": None,
+           "avg_planner": None, "avg_direct": None}
+    try:
+        import psycopg2
+        url = os.environ.get("NEON_REPLICA_URL") or os.environ.get("DATABASE_URL") or os.environ.get("NEON_DATABASE_URL")
+        if not url:
+            return out
+        c = psycopg2.connect(url, connect_timeout=8); c.autocommit = True
+        cur = c.cursor()
+        cur.execute(
+            "WITH sess AS ("
+            " SELECT session_id, (array_agg(tool_name ORDER BY created_at))[1] AS first_tool, count(*) AS n"
+            " FROM mcp_calls_identity WHERE is_public_ip AND is_real_external"
+            " AND created_at >= now() - interval '7 days'"
+            " AND session_id IS NOT NULL AND btrim(session_id) <> '' GROUP BY session_id) "
+            "SELECT count(*), count(*) FILTER (WHERE first_tool='plan_query'),"
+            " round((avg(n) FILTER (WHERE first_tool='plan_query'))::numeric,1),"
+            " round((avg(n) FILTER (WHERE first_tool<>'plan_query'))::numeric,1) FROM sess")
+        r = cur.fetchone()
+        if r:
+            s, pf = int(r[0] or 0), int(r[1] or 0)
+            out.update(sessions=s, planner_first=pf,
+                       rate_pct=(round(100.0 * pf / s, 1) if s else None),
+                       avg_planner=(float(r[2]) if r[2] is not None else None),
+                       avg_direct=(float(r[3]) if r[3] is not None else None))
+        try: c.close()
+        except Exception: pass
+    except Exception as e:
+        logger.debug("[growth_digest] planner_adoption failed: %s", e)
+    return out
+
+
+# >= N distinct planner-first sessions in 7d = real adoption, not a stray call —
+# the trigger to build Phase 2 (see _planner_adoption / reach-vs-tooluse memory).
+_PLANNER_PHASE2_THRESHOLD = 3
+
+
 # ── build ─────────────────────────────────────────────────────────────
 
 def _chip(v):
@@ -144,6 +187,21 @@ def _build_digest() -> dict:
     add(f"NORTH STAR · distinct real agents this week: {aw}{delta}  (prev full wk {apw})")
     add(f"Real conversions 30d: {ns.get('conv_30d')}")
     add("")
+
+    # plan_query FRONT DOOR adoption — the Phase-2 build trigger (2026-07-21).
+    # Shows the trajectory every day (baseline 0%); a loud ALERT fires only when
+    # planner-first crosses the real-adoption threshold, so Phase 2 gets built at
+    # the right moment instead of slipping.
+    pa = _planner_adoption()
+    pf, ps = pa.get("planner_first"), pa.get("sessions")
+    if pf is not None:
+        add(f"PLANNER FRONT DOOR · planner-first {pf}/{ps} sessions ({pa.get('rate_pct')}%) · "
+            f"avg tools planner-first {pa.get('avg_planner')} vs direct {pa.get('avg_direct')}")
+        if pf >= _PLANNER_PHASE2_THRESHOLD:
+            add(f"  🚀 ALERT — plan_query adoption crossed {_PLANNER_PHASE2_THRESHOLD}+ sessions/7d. "
+                f"BUILD PHASE 2: the event-driven successful-workflow funnel (define 'completed' first, "
+                f"'instrument once/derive forever'). Trigger + spec in the reach-vs-tooluse memory.")
+        add("")
 
     # back-of-funnel watch-metrics (the 07-06/07 fix-wave)
     add(f"BACK-OF-FUNNEL ({bf.get('_lanes_pass')}/{bf.get('_lanes_total')} lanes green)")
