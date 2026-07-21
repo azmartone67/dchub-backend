@@ -772,14 +772,17 @@ META_LANDING_HTML = """<!DOCTYPE html>
   <div class="prompt">
     <div class="prompt-label">1 · ERCOT power pockets</div>
     <pre>Use dchub.cloud to find 100MW+ pockets in ERCOT with substations within 5 miles</pre>
+    <p style="margin:6px 0 0;font-size:.85rem;color:#64748b">Runs live via <code>get_retirement_headroom</code> (<code>target_mw=100</code>, <code>region_iso=ERCOT</code>) — retiring-generator interconnection points, each with its nearest substations and <code>distance_km</code>.</p>
   </div>
   <div class="prompt">
     <div class="prompt-label">2 · Phoenix facility map</div>
     <pre>Query dchub.cloud facility map for Phoenix, AZ market — show power and fiber</pre>
+    <p style="margin:6px 0 0;font-size:.85rem;color:#64748b">Runs live via <code>search_facilities</code> (<code>market=phoenix</code>) and <code>get_market_dcpi_rank</code> (<code>market_slug=phoenix</code>) for the power verdict.</p>
   </div>
   <div class="prompt">
     <div class="prompt-label">3 · DCPI market ranking</div>
     <pre>Check dchub.cloud DCPI for PJM today and rank top 3 markets</pre>
+    <p style="margin:6px 0 0;font-size:.85rem;color:#64748b">Runs live via <code>rank_markets</code> (<code>criteria=best_overall, region=us</code>), then <code>get_market_dcpi_rank</code> on any PJM metro slug from the results.</p>
   </div>
   <p>Asking about Phoenix? The live dashboard at <a href="https://dchub.cloud/phx">dchub.cloud/phx</a>
   ("PHX Live") carries the market's headline numbers on a stable URL.</p>
