@@ -7391,6 +7391,49 @@ def check_facility_duplicate_clusters() -> list[dict]:
     return findings
 
 
+def check_facility_geo_mismatch() -> list[dict]:
+    """r-facility-geo (2026-07-20) — regrowth detector for country-mislabeled
+    facilities. A bulk ingestion stamped country='US' on non-US sites; we
+    relabel from coordinates. This fires when NEW high-confidence mislabels
+    appear (coords land unambiguously in a different country than the label),
+    so the fix stays closed-loop. FAIL-SOFT."""
+    findings: list[dict] = []
+    try:
+        try:
+            from routes import facility_geo_quality as gq
+        except Exception:
+            import facility_geo_quality as gq
+    except Exception:
+        return findings
+    try:
+        s = gq._scan()
+        if not s:
+            return findings
+        n = len(s["fixes"])
+        if n >= 25:
+            from collections import Counter
+            top = Counter((r["from"], r["to"]) for r in s["fixes"]).most_common(5)
+            flows = ", ".join(f"{a}->{b}:{c}" for (a, b), c in top)
+            findings.append({
+                "issue":  "facility_country_mislabeled",
+                "url":    "/api/v1/admin/facility-geo/analyze",
+                "count":  int(n),
+                "detail": (f"{n} facilities have coordinates that land unambiguously "
+                           f"in a different country than their `country` label "
+                           f"(top flows: {flows}). Customer country filters are "
+                           f"wrong for these. Fix: POST /api/v1/admin/facility-geo/"
+                           f"apply?confirm=1 (reversible via /undo)."),
+            })
+    except Exception as e:
+        findings.append({
+            "issue":  "consistency_radar_detector_crashed:check_facility_geo_mismatch",
+            "url":    "check_facility_geo_mismatch",
+            "count":  1,
+            "detail": f"{type(e).__name__}: {str(e)[:200]}",
+        })
+    return findings
+
+
 def check_required_env_vars() -> list[dict]:
     """Phase QQQ (2026-05-17) — flag missing env vars that cause silent
     skips elsewhere in the codebase.
@@ -9368,6 +9411,8 @@ def scan_all() -> list[dict]:
                # r-facility-dedup (2026-07-20) — regrowth watch for cross-source
                # facility duplicates (customer-flagged data-quality issue).
                check_facility_duplicate_clusters,
+               # r-facility-geo (2026-07-20) — country-mislabel regrowth watch.
+               check_facility_geo_mismatch,
                check_required_env_vars,
                check_csp_violation_reports,
                check_backend_pool_health,

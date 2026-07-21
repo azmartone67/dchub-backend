@@ -279,12 +279,15 @@ def _load(country):
     import psycopg2.extras
     try:
         with c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            # Cluster only canonical-eligible rows — rows already marked as a
+            # duplicate (e.g. by the geo cross-country pass) are resolved and must
+            # not be re-clustered or overwritten.
             cur.execute("""
                 SELECT id, name, provider, city, state, address, region,
                        source, source_url, status, power_mw,
                        COALESCE(latitude, lat) AS lat,
                        COALESCE(longitude, lon) AS lon, slug, canonical_slug
-                FROM facilities WHERE country = %s
+                FROM facilities WHERE country = %s AND duplicate_of_id IS NULL
             """, (country,))
             return [dict(r) for r in cur.fetchall()]
     finally:

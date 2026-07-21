@@ -36521,6 +36521,15 @@ try:
 except Exception as _fd_e:
     print(f"[main] facility_dedup register skipped: {_fd_e}", file=sys.stderr)
 
+# facility geo-quality: correct country labels from coordinates (bulk US-mislabel).
+try:
+    from routes.facility_geo_quality import facility_geo_quality_bp, _ensure_columns as _gq_ensure
+    _gq_ensure()
+    app.register_blueprint(facility_geo_quality_bp)
+    print("[main] facility_geo_quality_bp registered: /api/v1/admin/facility-geo/{analyze,apply,undo}", flush=True)
+except Exception as _gq_e:
+    print(f"[main] facility_geo_quality register skipped: {_gq_e}", file=sys.stderr)
+
 # press-fix (2026-07-18): pending-drafts digest — surfaces the human-gated
 # draft lanes (unpublished press_releases, pitch drafts, queue drafts) in a
 # daily operator email with a fact-check-gated one-click approve. Publishing
