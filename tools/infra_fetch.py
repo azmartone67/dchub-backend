@@ -463,6 +463,59 @@ LAYERS = {
 }
 
 
+# ─────────────────────────────────────────────────────────────────────
+# DEAD-MAN BOARD BEAT — carry the REAL inserted count onto /api/v1/ops/deadman.
+# The off-worker watcher (tools/deadman/watch.py) beats these same feeds with
+# LIVENESS ONLY (last-success ts, no rows_inserted), so every board feed reads
+# rows_inserted=NULL and the "0 rows landed" alarm can NEVER trip — #1691's
+# COALESCE preserves a real count IF a job posts one, but no board-feed job did.
+# This posts the count the ingest endpoint just returned, keyed to the SAME feed
+# name the board/watcher use (the GitHub workflow filename, .yml stripped), so a
+# "green" feed finally means "rows actually landed", not just "workflow exited 0".
+# Fail-OPEN: a beat error is swallowed and NEVER changes this job's exit code. We
+# deliberately DON'T send cadence_hours — tools/deadman/watch.py is the
+# authoritative cadence registry, and the beat endpoint COALESCEs a missing
+# cadence, so its value is left untouched.
+# ─────────────────────────────────────────────────────────────────────
+
+# layer key (this script) -> board feed name. The board feed name is the GitHub
+# workflow filename that runs `infra_fetch.py <layer>`, .yml stripped — i.e. the
+# exact key tools/deadman/watch.py registers. Only layers whose board workflow
+# actually invokes THIS script are mapped; any other layer skips the beat (no
+# double-reporting, fail-open).
+_BOARD_FEED = {
+    "gas-pipelines":      "gas-pipeline-ingest",       # gas-pipeline-ingest.yml
+    "transmission-lines": "transmission-ingest",       # transmission-ingest.yml
+    "power-plants":       "power-plants-ingest",        # power-plants-ingest.yml
+    "planned-generators": "planned-generators-ingest",  # planned-generators-ingest.yml
+}
+
+
+def beat_board(layer, rows_inserted, status="success"):
+    """Best-effort dead-man BEAT carrying the REAL inserted count. NEVER raises."""
+    feed = _BOARD_FEED.get(layer)
+    if not feed or not ADMIN:
+        return
+    try:
+        body = json.dumps({
+            "feed": feed,
+            "status": status,
+            "rows_inserted": int(rows_inserted or 0),
+            "note": "real inserted count from infra_fetch.py (%s)" % layer,
+        }).encode()
+        # Runs on the GitHub Actions runner, NOT the worker — beat the backend
+        # ORIGIN directly (same origin + admin key the ingest POST already uses).
+        req = urllib.request.Request(
+            f"{ORIGIN}/api/v1/admin/ingest-runs/beat", data=body, method="POST",
+            headers={"Content-Type": "application/json",
+                     "User-Agent": "dchub-infra-fetch/1.0",
+                     "X-Admin-Key": ADMIN})
+        urllib.request.urlopen(req, timeout=20).read()
+        print(f"  board beat: {feed} rows_inserted={int(rows_inserted or 0)}", flush=True)
+    except Exception as e:  # fail-open: a beat error must never fail the ingest
+        print(f"  board beat failed (non-fatal): {str(e)[:120]}", flush=True)
+
+
 def main():
     if not ADMIN:
         print("::error::missing DCHUB_ADMIN_KEY"); return 1
@@ -484,6 +537,8 @@ def main():
     if st != 200 or not j.get("ok"):
         print(f"::error::ingest failed (HTTP {st})"); return 1
     print(f"== {layer} done: {j.get('inserted')} rows inserted ==")
+    # Additive, fail-open: publish the REAL inserted count to the dead-man board.
+    beat_board(layer, j.get("inserted"))
     return 0
 
 

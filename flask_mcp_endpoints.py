@@ -2756,6 +2756,84 @@ def mcp_funnel():
                 except Exception: pass
                 out["conversions_by_platform_30d_error"] = str(e)[:120]
 
+            # instrument-before-spend (2026-07-20): per-SIGNAL -> paid BRIDGE audit.
+            # conversions_by_platform_30d above buckets paid rows by PLATFORM and
+            # treats web/organic-sourced sales as "attributed" to a channel. This
+            # field asks the harder, honest question the growth read needs before
+            # any spend: of the *honest* paid conversions (same filter as
+            # conversions_30d_real — stripe_customer_id present, seed/comp/NLR
+            # excluded, i.e. the real "11 paid"), how many can be BRIDGED end-to-end
+            # to an upstream mcp_upgrade_signal, and how many genuinely CANNOT?
+            #   bridge = attribution_signal_id points at a real signal, OR a shared
+            #            caller_id (email / session_id / anon-hash — the canonical
+            #            handoff key) whose signal PRECEDED the sale.
+            #   unattributable = neither exists. We report it HONESTLY rather than
+            #            fabricating a link: agent-channel buys land here because the
+            #            Stripe webhook has no MCP signal to join, which is exactly
+            #            why the 3,591-signals -> 11-paid path is unmeasurable
+            #            end-to-end today. No bound params / no LIKE (empty-tuple %
+            #            trap); own try/except with rollback — additive, fail-open.
+            try:
+                cur.execute(
+                    """WITH paid AS (
+                         SELECT c.id AS conv_id,
+                                c.created_at AS conv_at,
+                                c.attribution_signal_id AS sig_id,
+                                NULLIF(LOWER(TRIM(c.caller_id)), '') AS caller_id
+                         FROM mcp_conversions c
+                         WHERE c.created_at >= NOW() - INTERVAL '30 days'
+                           AND c.stripe_customer_id IS NOT NULL
+                           AND LOWER(COALESCE(c.plan_to,'')) NOT IN
+                               ('comp','complimentary','research_seed_nlr','seed')
+                           AND LOWER(COALESCE(c.source,'')) <> 'seed'
+                       ),
+                       labeled AS (
+                         SELECT p.conv_id,
+                                CASE
+                                  WHEN p.sig_id IS NOT NULL AND EXISTS (
+                                         SELECT 1 FROM mcp_upgrade_signals s
+                                         WHERE s.id = p.sig_id)
+                                    THEN 'signal_id'
+                                  WHEN p.caller_id IS NOT NULL AND EXISTS (
+                                         SELECT 1 FROM mcp_upgrade_signals s
+                                         WHERE NULLIF(LOWER(TRIM(s.caller_id)),'') = p.caller_id
+                                           AND s.created_at <= p.conv_at)
+                                    THEN 'caller_bridge'
+                                  ELSE 'unattributable'
+                                END AS bridge
+                         FROM paid p
+                       )
+                       SELECT bridge, COUNT(*) FROM labeled GROUP BY bridge"""
+                )
+                _bridge = {r[0]: int(r[1] or 0) for r in (cur.fetchall() or [])}
+                _sig = _bridge.get("signal_id", 0)
+                _cal = _bridge.get("caller_bridge", 0)
+                _un  = _bridge.get("unattributable", 0)
+                _paid_total = _sig + _cal + _un
+                out["paid_signal_attribution_30d"] = {
+                    "paid_total":                          _paid_total,
+                    "bridged_to_signal":                   _sig + _cal,
+                    "bridged_via_attribution_signal_id":   _sig,
+                    "bridged_via_caller_key":              _cal,
+                    "unattributable":                      _un,
+                    "attribution_rate_pct": (
+                        round(100.0 * (_sig + _cal) / _paid_total, 1)
+                        if _paid_total else None),
+                    "definition": (
+                        "honest paid = stripe_customer_id NOT NULL, seed/comp/NLR "
+                        "excluded (identical filter to conversions_30d_real). "
+                        "'bridged' = the paid row links to an upstream "
+                        "mcp_upgrade_signal via attribution_signal_id OR a shared "
+                        "caller_id (email/session/anon-hash) whose signal preceded "
+                        "the sale. 'unattributable' = no such bridge exists — "
+                        "reported honestly, NOT fabricated. This is the true "
+                        "end-to-end measurability of the signal -> paid path."),
+                }
+            except Exception as e:
+                try: conn.rollback()
+                except Exception: pass
+                out["paid_signal_attribution_30d_error"] = str(e)[:120]
+
             # Per-platform tool-call totals — pairs with signals_by_platform
             # so we can compute "signal rate" (% of calls that hit a paywall)
             # per platform. Shows whether some platforms are pinging paid
@@ -4111,6 +4189,13 @@ def _reach_build_data():
         "wow": {"real_agents_pct": None, "real_calls_pct": None},
         "platforms_7d": [],              # real (de-looped) traffic only
         "top_tools_7d": [],              # real traffic only
+        # instrument-before-spend (2026-07-20): calls-per-agent DEPTH distribution
+        # over the canonical identity view (7d, real+public agents). Answers "is the
+        # growth lever depth-per-visit or 2nd-day return?" — sits next to
+        # retention_30d.day2_return_rate_pct so the two levers are directly
+        # comparable. Additive; never replaces an existing field.
+        "depth_per_agent_7d": {"agents": 0, "median_calls": None, "p90_calls": None,
+                               "mean_calls": None, "max_calls": 0},
         "retention_30d": {"agents": 0, "returned_2nd_day": 0, "day2_return_rate_pct": None},
         "citations_7d": 0, "citation_engines_7d": 0,
         "flags": {"calls_available": False, "retention_available": False,
@@ -4119,6 +4204,7 @@ def _reach_build_data():
             "real_agents_7d": "COUNT(DISTINCT agent_id) mcp_calls_identity (7d) WHERE is_public_ip AND is_real_external — the canonical identity view (agent_id = md5(first X-Forwarded-For token))",
             "real_calls_7d":  "COUNT(*) mcp_calls_identity (7d) WHERE is_real_external",
             "probe_calls_7d": "COUNT(*) mcp_calls_identity (7d) WHERE NOT is_real_external (internal/probe/self-heal/scripted-UA)",
+            "depth_per_agent_7d": "PERCENTILE_CONT median + p90 of calls-per-agent over mcp_calls_identity (7d) WHERE is_real_external AND is_public_ip, grouped by agent_id — depth-per-visit lever vs the day2_return retention lever",
             "retention_30d":  "mcp_agent_retention_30d — per-agent active_days over 30d (canonical retention view)",
             "citations_7d":   "COUNT(*) ai_citations (7d) WHERE dchub_cited = true",
         },
@@ -4172,6 +4258,32 @@ def _reach_build_data():
             out["top_tools_7d"] = [
                 {"tool": t, "calls": int(calls or 0), "agents": int(agents or 0)}
                 for (t, calls, agents) in (rows or [])]
+            # instrument-before-spend (2026-07-20): DEPTH-per-agent distribution.
+            # The 2026-07 growth read named the floor as day-2 return (~6%), but
+            # agent tasks are frequently one-shot — so 2nd-day return may be the
+            # WRONG lever. Median + p90 calls per distinct agent_id (real+public,
+            # canonical identity view) exposes whether agents go DEEP in a single
+            # visit; if p90 is high the lever is depth-per-visit, not return.
+            # Own bounded tx (same _reach_bounded envelope); additive field only.
+            try:
+                r = _reach_bounded(cur,
+                    "SELECT PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY c), "
+                    "       PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY c), "
+                    "       AVG(c), MAX(c), COUNT(*) "
+                    "FROM (SELECT agent_id, COUNT(*) AS c FROM " + _from(_7d) +
+                    "      WHERE (" + _real + ") AND " + _pub +
+                    "        AND agent_id IS NOT NULL "
+                    "      GROUP BY agent_id) pa", fetch="one") or (None, None, None, None, 0)
+                _med, _p90, _mean, _mx, _n = r
+                out["depth_per_agent_7d"] = {
+                    "agents":       int(_n or 0),
+                    "median_calls": round(float(_med), 2) if _med is not None else None,
+                    "p90_calls":    round(float(_p90), 2) if _p90 is not None else None,
+                    "mean_calls":   round(float(_mean), 2) if _mean is not None else None,
+                    "max_calls":    int(_mx or 0),
+                }
+            except Exception as e:
+                out["flags"]["depth_per_agent_error"] = str(e)[:160]
         out["flags"]["calls_available"] = True
         out["data_available"] = True
     except Exception as e:
