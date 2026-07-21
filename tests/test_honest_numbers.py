@@ -15,23 +15,23 @@ VERIFIED CANONICAL NUMBERS — REFRESHED 2026-06-21 (growth-audit live pull from
 /api/v1/stats + tools/list on dchub.cloud/mcp). The 2026-06-03 values below several
 metrics had DRIFTED UP; the enforced regexes still only ban GROSS over/under-claims,
 so they remain green, but treat THESE as the say-numbers going forward:
-  deals        = ~4,255 -> say "4,000+"   (was 2,032/"2,000+", 3,079/"3,000+"; CURATED
-                                           buyer+seller subset == live /api/transactions total.
-                                           ★NOT raw COUNT(*) FROM deals (~11.5K = /api/v1/stats
-                                           `deals`, a broad capex/junk pile) — publishing that as
-                                           "M&A deals" is a ~2.5x over-claim (2026-07-16 double-count
-                                           trap). Source of truth = canonical_stats.deals_phrase().
+  deals        = ~1,420 -> say "1,400+"   (was 2,032/"2,000+", 3,079/"3,000+", ~4,255/"4,000+";
+                                           the "4,000+" curated buyer+seller subset was ITSELF an
+                                           over-claim: the AUTO id embeds the ingest date, so the
+                                           4,275 rows collapse to ~1,420 DISTINCT deals (2026-07-17).
+                                           Source of truth = canonical_stats.deals_phrase(), which
+                                           floors the ~1,420 distinct count DOWN to "1,400+".
                                            STILL never "$324B": uncomputable, value_usd sparse)
   countries    = 178    -> say "170+"      (unchanged)
   facilities   = 21,808 -> say "21,000+"   (was 21,432; floor phrase unchanged)
   DCPI markets = ~311    -> say "300+"      (was 232→300; live /api/v1/stats markets=311,
                                            capabilities.json=317; still NEVER 340+)
-  MCP tools    = 47      (live tools/list on dchub.cloud/mcp, 2026-06-21; →48 once why_dchub
-                         deploys. The old "38" AUTHORITATIVE is now STALE. A full surface
-                         sweep of 38/42/46→47 across ~12 backend files + the /mcp landing +
-                         the frontend repo + the OUT-OF-REPO zone worker (42) + .well-known/
-                         mcp.json (25) is PENDING — do it completely or not at all to avoid
-                         increasing drift. The enforced ban (30|31|33|40 "tools") is unchanged.)
+  MCP tools    = SoT     (live tools/list on dchub.cloud/mcp == ai_surface_canon.PINNED
+                         ["tools_advertised"] (79 as of 2026-07-20). Tool-count drift is now
+                         OWNED by tests/test_canonical_counts_drift.py, derived from the SoT;
+                         THIS fence no longer enforces or hard-codes a tool count (the old
+                         "38"/"47" AUTHORITATIVE literals were exactly the hand-maintained
+                         rot the SoT-derived drift-fence replaced).)
   active MCP clients = Claude + Cursor     (NEVER "96+ AI platforms" / long "cited by ChatGPT,
                                            Claude, Gemini, Perplexity, Groq" lists)
 """
@@ -120,8 +120,8 @@ def test_no_324b_inflation():
     pats = [re.compile(r"\$324B"), re.compile(r"324B\+"), re.compile(r"\$324\s*billion", re.I)]
     hits = _scan(pats)
     assert not hits, ("Re-introduced the unverified $324B M&A aggregate — replace with "
-                      "'4,000+ tracked deals' (curated buyer+seller subset ~4,255 == "
-                      "/api/transactions; NOT raw COUNT(*)~11.5K, 2026-07-16):\n" + _fmt(hits))
+                      "'1,400+ tracked deals' (DISTINCT deduped floor ~1,420; NOT the raw "
+                      "COUNT(*)~11.5K nor the stale '4,000+' row count):\n" + _fmt(hits))
 
 
 def test_no_inflated_platform_counts():
@@ -213,21 +213,13 @@ def test_no_overstated_facility_count():
     assert not hits, ("Re-introduced inflated '50,000+ facilities' — say '21,000+':\n" + _fmt(hits))
 
 
-def test_no_stale_tool_count():
-    """MCP tool count = 38 (AUTHORITATIVE: live tools/list on https://dchub.cloud/mcp,
-    verified 2026-06-07; server.mjs registers ~39 trackedTool, one not exposed).
-    History: surfaces drifted across 11/19/20/24/30/31/33/40 — Devin's QA flagged the
-    inconsistency as a credibility problem. 2026-06-07 swept 33/31/30/40 'tools' → 38
-    across backend+frontend (132 replacements). Ban every stale TOTAL so a single honest
-    number stays consistent. NOTE: subset counts ('11 free tools', 'X/24 tools' internal
-    splits) are legitimate and intentionally NOT banned — only the bare total claims."""
-    pats = [re.compile(r"\b19\s+tools\b", re.I),
-            re.compile(r"\b24\s+free\b[^.\n]{0,24}tools", re.I),
-            re.compile(r"\b(30|31|33|40|42|46)\s+(MCP\s+)?tools\b", re.I)]
-    hits = _scan(pats)
-    assert not hits, ("Re-introduced a stale MCP tool count — the verified count is 38 "
-                      "(live tools/list on dchub.cloud/mcp). Use 38 for the TOTAL; keep "
-                      "subset counts (e.g. '11 free tools') as-is:\n" + _fmt(hits))
+# test_no_stale_tool_count REMOVED (2026-07-20): the MCP tool count is now OWNED by
+# tests/test_canonical_counts_drift.py, which DERIVES it from the source of truth
+# (ai_surface_canon.PINNED["tools_advertised"] == live tools/list, currently 79) rather
+# than a hand-maintained literal. This fence banned a hardcoded (30|31|33|40|42|46) list
+# that had ITSELF gone stale — it never caught the 72/73→79 drift — the exact
+# hardcoded-count rot the SoT-derived drift-fence exists to end. Do NOT re-add a literal
+# tool-count ban here; extend the drift-fence (AGENT_CODE_SURFACES / SURFACES) instead.
 
 
 def test_no_realtime_ma_claim():
@@ -359,16 +351,17 @@ def test_canonical_stats_is_dedup_aware():
 
 def test_no_field_form_or_iso_fabrication_drift():
     """JSON-FIELD-FORM drift the phrase patterns above miss — served metadata as
-    "key": value (e.g. "countries": 140, "tools_count": 38). Same blind spot that
-    hid stale values in static/ai.txt + the backend's served dicts (handle_well_known,
-    the ai-agents.json route). Also bans the "7 US + Hydro-Quebec, AESO, Nord Pool"
-    framing: HQ/AESO/Nord Pool are MODELED baselines, not live ISOs. (2026-06-25.)"""
+    "key": value (e.g. "countries": 140). Same blind spot that hid stale values in
+    static/ai.txt + the backend's served dicts (handle_well_known, the ai-agents.json
+    route). Also bans the "7 US + Hydro-Quebec, AESO, Nord Pool" framing: HQ/AESO/Nord
+    Pool are MODELED baselines, not live ISOs. (2026-06-25; the "tools_count" field-form
+    check was ceded to tests/test_canonical_counts_drift.py on 2026-07-20 — that
+    SoT-derived guard owns the tool count now.)"""
     pats = [
         re.compile(r'"countries"\s*:\s*"?1[0-6][0-9]\b'),                   # understated countries <170
-        re.compile(r'"tools_count"\s*:\s*(19|20|24|30|31|33|38|40|42)\b'),  # stale total tool count (46 ok)
         re.compile(r'7 US \+ Hydro-?Qu', re.I),                             # HQ/AESO/Nord-Pool framed as live ISOs
     ]
     hits = _scan(pats)
     assert not hits, ("Field-form drift or HQ/AESO/Nord-Pool 'live ISO' fabrication — "
-                      "canonical: countries 170+, tools 46; HQ/AESO/Nord Pool are modeled "
+                      "canonical: countries 170+; HQ/AESO/Nord Pool are modeled "
                       "baselines, not live ISOs:\n" + _fmt(hits))
