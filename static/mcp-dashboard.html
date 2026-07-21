@@ -50,6 +50,16 @@ async function load() {
     const d = await (await fetch('/api/v1/mcp/funnel?_cb=' + Date.now(), { cache: 'no-store' })).json();
     const kt = d.keys_by_tier || {};
     const k = (kt.free||0) + (kt.paid||0) + (kt.enterprise||0);
+    // r-reframe (2026-07-21): the durable KPIs are distinct AGENTS + PAID, not raw
+    // call volume — one heavy caller's taper can swing volume -18% WoW while the
+    // agent base grows +38%. Pull the canonical agents WoW from /api/v1/reach (the
+    // funnel payload lacks it); fail-open so the agents count still renders if reach is down.
+    let agentsWowTxt = '';
+    try {
+      const _rd = await (await fetch('/api/v1/reach?_cb=' + Date.now(), { cache: 'no-store' })).json();
+      const _aw = (_rd && _rd.wow) ? _rd.wow.real_agents_pct : null;
+      if (_aw != null) agentsWowTxt = ` · WoW <b style="color:${_aw >= 0 ? '#3fb950' : '#f85149'}">${_aw > 0 ? '+' : ''}${_aw}%</b>`;
+    } catch (_) { /* reach optional — agents count still shows */ }
     // r-topcaller: WoW + single-caller concentration on the headline, so one
     // bot ramping/leaving (or an infra dip) can't masquerade as a trend.
     const wow = d.tool_calls_wow_pct;
@@ -59,10 +69,13 @@ async function load() {
     const tcpTxt = (tcp == null) ? '' :
       ` · top caller <b style="color:${tcp >= 25 ? '#d29922' : '#888'}">${tcp}%</b> of external (${(d.top_caller_calls_7d_complete ?? 0).toLocaleString()} calls, ${(d.external_ips_7d_complete ?? 0)} IPs${tcp >= 25 ? ' — one caller dominates, read the trend with care' : ''})`;
     document.getElementById('kpis').innerHTML = `
-      <div class="card"><div class="label">Tool calls (7d · external, full days)</div><div class="value">${(d.tool_calls_7d_complete_real ?? d.tool_calls_7d_complete ?? d.tool_calls_7d ?? 0).toLocaleString()}</div>
-        <div class="sub-value">~${(d.tool_calls_per_day_complete_real ?? d.tool_calls_per_day_complete ?? 0).toLocaleString()}/day · 7 full days, <b>self-heal/probe traffic excluded</b> · <span style="color:#888">incl. internal+today: ${(d.tool_calls_7d ?? 0).toLocaleString()}</span>${wowTxt}${tcpTxt}</div></div>
+      <div class="card" style="border-color:#3fb950"><div class="label">Agents (7d · distinct external)</div><div class="value">${(d.external_ips_7d_complete ?? d.unique_ips_7d_real ?? 0).toLocaleString()}</div>
+        <div class="sub-value">the number that compounds — distinct AI agents, self/probe excluded${agentsWowTxt}</div></div>
+      <div class="card" style="border-color:#3fb950"><div class="label">Paid conversions (30d)</div><div class="value">${d.conversions_30d ?? 0}</div>
+        <div class="sub-value">real paid customers via web/organic handoff — the revenue KPI</div></div>
+      <div class="card"><div class="label">Tool calls (7d · volume — context)</div><div class="value" style="color:#8b949e">${(d.tool_calls_7d_complete_real ?? d.tool_calls_7d_complete ?? d.tool_calls_7d ?? 0).toLocaleString()}</div>
+        <div class="sub-value">~${(d.tool_calls_per_day_complete_real ?? d.tool_calls_per_day_complete ?? 0).toLocaleString()}/day · <b>concentration-sensitive</b> — one heavy caller's taper swings this; read agents + retention for the real trend · <span style="color:#888">incl. internal+today: ${(d.tool_calls_7d ?? 0).toLocaleString()}</span>${wowTxt}${tcpTxt}</div></div>
       <div class="card"><div class="label">Upgrade signals (7d)</div><div class="value">${d.upgrade_signals_7d ?? 0}</div></div>
-      <div class="card"><div class="label">Conversions (30d)</div><div class="value">${d.conversions_30d ?? 0}</div></div>
       <div class="card"><div class="label">Active dev keys</div><div class="value">${k}</div>
         <div class="sub-value">free ${kt.free||0} · paid ${kt.paid||0} · ent ${kt.enterprise||0}</div></div>
     `;
