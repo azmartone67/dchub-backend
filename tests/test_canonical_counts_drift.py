@@ -54,6 +54,15 @@ not just delete the assertion.
   straight from PINNED, whose counts test_fence_baseline_matches_canon_sot
   already pins — so there is deliberately no AGENTS.md entry in SURFACES.
 
+  worker.js (the Cloudflare edge worker serving dchub.cloud/mcp) is likewise NOT
+  in SURFACES: its ~290KB body carries a /* */ changelog header that RECORDS past
+  counts ("53 -> 72 tools", "3,000+ -> 4,000+") as version history, which a naive
+  line-scan would false-positive on. Its one machine-readable agent-facing claim,
+  the /mcp server-card MCP_SERVER_INFO.description, is guarded surgically by
+  test_worker_mcp_card_is_canonical instead. (That card is the in-repo analog of
+  the live /mcp `initialize` instructions blob, which is emitted by the deployed
+  MCP server, not from this repo, so it cannot be pinned from here.)
+
 Run locally:
     python -m pytest tests/test_canonical_counts_drift.py -v
 """
@@ -288,4 +297,66 @@ def test_surfaces_clean_of_ai_surface_canon_stale_markers(marker):
     assert not hits, (
         f"ai_surface_canon stale marker {marker!r} present on an agent-facing "
         f"surface — update it from canon ({FIXWAVE}):\n" + "\n".join(hits)
+    )
+
+
+def test_worker_mcp_card_is_canonical():
+    """The edge worker's served /mcp server card must state the canonical tool
+    count and carry no banned deal/market/gas/ISO tokens.
+
+    worker.js is the Cloudflare edge worker for dchub.cloud/mcp. It is NOT a
+    line-scanned SURFACE (see the module docstring) because its ~290KB body has a
+    changelog header that legitimately records past counts. Instead we guard the
+    one machine-readable thing an agent reads from it: MCP_SERVER_INFO.description
+    — the server-card description string. This is the in-repo analog of the live
+    /mcp `initialize` instructions blob (served by the deployed MCP server, so it
+    cannot be pinned from this repo).
+
+    Regression guarded: the card once advertised "73 tools ... 10 ISOs ... 4,000+
+    tracked M&A deals" while the worker's OWN comments said "72 tools" and canon
+    said 79 — exactly the self-contradicting count sprawl the canon layer exists
+    to kill.
+    """
+    worker = REPO_ROOT / "worker.js"
+    assert worker.is_file(), (
+        f"worker.js (edge worker serving /mcp) missing — this guard anchors to "
+        f"its MCP_SERVER_INFO.description ({FIXWAVE})."
+    )
+    text = worker.read_text(encoding="utf-8", errors="ignore")
+    m = re.search(r"MCP_SERVER_INFO\s*=\s*\{.*?\bdescription:\s*'([^']*)'", text, re.S)
+    assert m, (
+        "could not locate MCP_SERVER_INFO.description in worker.js — if the "
+        f"server-card shape changed, update this guard to follow it ({FIXWAVE})."
+    )
+    desc = m.group(1)
+
+    # (a) every tool count stated in the card must be the canonical count.
+    tool_counts = re.findall(r"(?<![\d,])(\d{1,3})\s+(?:live\s+|MCP\s+)?tools\b", desc)
+    assert tool_counts, (
+        f"worker.js MCP card states no tool count — the guard would pass "
+        f"vacuously ({FIXWAVE}): {desc[:120]!r}"
+    )
+    bad_counts = sorted({int(c) for c in tool_counts if int(c) != CANONICAL["tools"]})
+    assert not bad_counts, (
+        f"worker.js MCP_SERVER_INFO.description advertises {bad_counts} tools; "
+        f"canonical is {CANONICAL['tools']} (live tools/list). Update the literal "
+        f"AND the neighbouring NOTE comment ({FIXWAVE})."
+    )
+
+    # (b) no BANNED_STALE deal/market/gas/ISO token may appear in the card.
+    low = desc.lower()
+    banned_hits = []
+    for tok_id, pat, canonical_phrase, requires, why in BANNED_STALE:
+        if requires and requires.lower() not in low:
+            continue
+        hit = pat.search(desc)
+        if hit:
+            banned_hits.append(
+                f"  [{tok_id}] {hit.group(0)!r} contradicts canonical "
+                f"'{canonical_phrase}'\n        why: {why}"
+            )
+    assert not banned_hits, (
+        "Stale count token(s) in the served /mcp server card "
+        f"(worker.js MCP_SERVER_INFO.description) ({FIXWAVE}):\n"
+        + "\n".join(banned_hits)
     )
