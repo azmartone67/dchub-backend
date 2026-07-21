@@ -20313,6 +20313,42 @@ def ai_tracking_stats():
             return_pg_connection(conn)
 
 
+_REAL_TOOLUSE_CACHE = {"ts": 0.0, "val": None}
+
+
+def _real_tool_use_7d(conn):
+    """Companion 'honest number' for the /ai reach chart: distinct agents that
+    ACTUALLY invoked MCP tools in the last 7d, and their call count
+    (mcp_calls_identity — the CF-POP-corrected, real+public view). This is a
+    DIFFERENT funnel from the reach bars (crawler/citation UA hits) and must
+    never be summed with them. Query is byte-identical to routes/growth_memo.py
+    so the two surfaces can't drift. Cached 5 min; fully fail-soft."""
+    import time as _t
+    now = _t.time()
+    cached = _REAL_TOOLUSE_CACHE.get("val")
+    if cached is not None and (now - _REAL_TOOLUSE_CACHE.get("ts", 0.0)) < 300:
+        return cached
+    try:
+        _rc = conn.cursor()
+        _rc.execute(
+            "SELECT count(DISTINCT agent_id), count(*) "
+            "FROM mcp_calls_identity "
+            "WHERE is_public_ip AND is_real_external "
+            "AND created_at >= now() - interval '7 days'")
+        row = _rc.fetchone()
+        _rc.close()
+        val = {"agents_7d": int(row[0] or 0), "calls_7d": int(row[1] or 0)}
+        _REAL_TOOLUSE_CACHE.update(ts=now, val=val)
+        return val
+    except Exception as _rtu_err:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        logger.warning(f"ai_tracking_full real_tool_use skipped: {_rtu_err}")
+        return None
+
+
 @app.route('/api/ai/tracking', methods=['GET'])
 def ai_tracking_full():
     """Full AI tracking dashboard data — matches old Neon-direct Worker format."""
@@ -20343,7 +20379,11 @@ def ai_tracking_full():
             # bars + all_time/7d totals with it so the chart shows real external
             # AI platforms only. (cumulative + /api/v1/ai-tracking/stats already
             # filtered; this was the straggler.)
-            if _is_junk_platform(key):
+            # r?? (2026-07-21): unify to the AI_PLATFORMS ALLOWLIST (matches
+            # /api/v1/ai-tracking/stats + routes/growth_memo.py). The denylist
+            # let tail rows (e.g. cohere) outside the curated registry through,
+            # so this chart could disagree with the growth memo's reach numbers.
+            if not _is_real_ai_platform(key):
                 continue
             req_total = int(r[3] or 0)
             req_7d = int(r[4] or 0)
@@ -20383,7 +20423,7 @@ def ai_tracking_full():
             """)
             _wk = _pw = 0
             for _p, _a, _b in _wcur.fetchall():
-                if _is_junk_platform((_p or '').lower()):
+                if not _is_real_ai_platform((_p or '').lower()):
                     continue
                 _wk += int(_a or 0)
                 _pw += int(_b or 0)
@@ -20395,6 +20435,34 @@ def ai_tracking_full():
             try: conn.rollback()
             except Exception: pass
             logger.warning(f"ai_tracking_full wow calc skipped: {_wow_err}")
+
+        # 2026-07-21: REAL 30-day reach per platform (live from ai_daily_stats),
+        # to replace the frontend's fabricated `requests_7d * 4` estimate. Only
+        # injected for platforms already in `platforms` (allowlist-filtered
+        # above), so the 30d bars match the 7d/all-time bars. Fail-soft.
+        try:
+            _c30 = conn.cursor()
+            _c30.execute("""
+                SELECT platform, COALESCE(SUM(request_count), 0)
+                FROM ai_daily_stats
+                WHERE date >= CURRENT_DATE - 30
+                GROUP BY platform
+            """)
+            for _p30, _s30 in _c30.fetchall():
+                _k30 = (_p30 or '').lower()
+                if _k30 in platforms:
+                    platforms[_k30]["requests_30d"] = int(_s30 or 0)
+            _c30.close()
+        except Exception as _d30_err:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            logger.warning(f"ai_tracking_full 30d calc skipped: {_d30_err}")
+
+        # 2026-07-21: honest companion to the reach bars — agents ACTUALLY
+        # calling MCP tools (a different funnel; never sum with reach).
+        real_tool_use = _real_tool_use_7d(conn)
 
         return jsonify({
             "success": True,
@@ -20408,6 +20476,8 @@ def ai_tracking_full():
             "platforms_active": active_count,
             "platforms": platforms,
             "chart_data": platforms,
+            "reach_definition": "crawler & citation requests by AI-platform user-agent (NOT agent tool calls)",
+            "real_tool_use_7d": real_tool_use,
             "source": "railway",
         })
     except Exception as e:
