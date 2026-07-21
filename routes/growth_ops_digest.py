@@ -209,7 +209,8 @@ def _build_digest() -> dict:
         ("reachability", "reach_emails",        "reachability"),
         ("reachability", "reach_optin_audience","opted-in leads"),
         ("attribution",  "attr_claim_to_paid",  "relay claim→paid"),
-        ("retention",    "ret_mature_reuse",    "key-reuse"),
+        ("retention",    "ret_mature_reuse",    "key-reuse (raw)"),
+        ("retention",    "ret_claim_carry",     "post-claim key-carry (activation leak)"),
         ("demand",       "dem_relay_converts",  "relay conversions"),
     ]
     for lane, cid, label in _bf_watch:

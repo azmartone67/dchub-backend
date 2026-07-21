@@ -177,7 +177,58 @@ def _lane_retention(c) -> list[dict]:
     else:
         pct = _num(r[0])
         out.append(_check("ret_mature_reuse", "mature key-reuse % >= 8 (BOTH cohorts, 30d)",
-                          pct >= 8.0, f"{r[0]}% combined ({r[1]} cohort) — UNION auto_trial ∪ dch_live_"))
+                          pct >= 8.0, f"{r[0]}% combined ({r[1]} cohort) — RAW: this denominator is "
+                          f"CONTAMINATED by web-map (web-UI) mints + ~90 one-shot QA/probe keys that can "
+                          f"never reuse. See ret_claim_carry for the real activation-wiring leak."))
+
+    # 1d — THE ACTIVATION WIRING GAP (2026-07-21). Decomposing the 4% showed it is
+    # mostly measurement noise + this bug: claim_free_key mints a durable key, but
+    # if the agent's session keeps calling WITHOUT switching to the new key,
+    # last_used_at never advances and no reuse history ever builds. Live confirm:
+    # of agent claims whose session kept calling after mint, only ~18% (9/50)
+    # carried the new key — 82% kept the pre-claim anon identity. THAT is the leak.
+    # Actuator (SHIPPED behind DCHUB_CLAIM_SESSION_BIND): bind session→minted key so
+    # post-claim same-session calls carry it. PASS >= 70%.
+    r = _row(c,
+        "WITH claims AS ("
+        " SELECT api_key, created_at, metadata->>'session_id' AS sid FROM mcp_dev_keys "
+        " WHERE api_key LIKE 'dch_live_%' AND metadata->>'source'='claim_api' "
+        " AND metadata->>'session_id' IS NOT NULL AND metadata->>'session_id' NOT IN ('None','') "
+        " AND created_at >= now()-interval '30 days') "
+        "SELECT "
+        " COUNT(*) FILTER (WHERE EXISTS(SELECT 1 FROM mcp_call_log l WHERE l.session_id=c.sid AND l.timestamp>c.created_at)),"
+        " COUNT(*) FILTER (WHERE EXISTS(SELECT 1 FROM mcp_call_log l WHERE l.session_id=c.sid AND l.timestamp>c.created_at AND l.api_key=c.api_key)) "
+        "FROM claims c")
+    if r is None or not r[0]:
+        out.append(_check("ret_claim_carry", "post-claim sessions carry the new key (30d)",
+                          None, "no agent claims with a continuing session yet"))
+    else:
+        kept, carried = int(r[0]), int(r[1] or 0)
+        pct = round(100.0*carried/kept, 1) if kept else 0.0
+        out.append(_check("ret_claim_carry", "post-claim sessions carry the new key (30d)",
+                          pct >= 70.0, f"{carried}/{kept} = {pct}% carried the claimed key "
+                          f"({kept-carried} kept the pre-claim identity) — the activation wiring leak"))
+
+    # 1e — ACTIVATION: of explicitly-claimed MATURE keys, how many were ever USED
+    # (any call >1min after mint)? The upstream leak — a claimed key that never
+    # makes a call can never reuse. Live baseline ~6% (10/158). PASS >= 40%.
+    r = _row(c,
+        "WITH claimed AS ("
+        " SELECT api_key, created_at FROM mcp_dev_keys "
+        " WHERE api_key LIKE 'dch_live_%' AND metadata->>'source'='claim_api' "
+        " AND created_at>=now()-interval '30 days' AND created_at<now()-interval '7 days') "
+        "SELECT COUNT(*), COUNT(*) FILTER (WHERE EXISTS(SELECT 1 FROM mcp_call_log l "
+        " WHERE l.api_key=c.api_key AND l.timestamp>c.created_at+interval '1 minute')) "
+        "FROM claimed c")
+    if r is None or not r[0]:
+        out.append(_check("ret_claim_activation", "claimed keys used after mint (mature, 30d)",
+                          None, "no mature claimed keys yet"))
+    else:
+        total, used = int(r[0]), int(r[1] or 0)
+        pct = round(100.0*used/total, 1) if total else 0.0
+        out.append(_check("ret_claim_activation", "claimed keys used after mint (mature, 30d)",
+                          pct >= 40.0, f"{used}/{total} = {pct}% of claimed keys made a call after mint "
+                          f"(rest minted-then-abandoned)"))
 
     # 1c — the retention TRUTH via identity: real external agents on >=2 days/7d.
     n = _row(c,
