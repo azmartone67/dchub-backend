@@ -31,6 +31,7 @@ jobs:
     timeout-minutes: 6
     steps:
       - name: Trigger generator-inventory ingest on Railway
+        id: ingest
         env:
           ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
         run: |
@@ -44,12 +45,33 @@ jobs:
             || echo '{"ok":false,"error":"curl_fail"}')
           echo "$response" | python3 -m json.tool || echo "$response"
           echo "$response" | python3 -c "
-          import json, sys
+          import json, os, sys
           try:
               d = json.load(sys.stdin)
           except Exception:
               print('::error::endpoint returned non-JSON'); sys.exit(1)
           if not d.get('ok'):
               print(f\"::error::generator-inventory ingest failed — {d.get('error','unknown')}\"); sys.exit(1)
-          print(f\"::notice::generator-inventory OK — {d.get('inserted')} generators (source={d.get('source')})\")
+          inserted = d.get('inserted')
+          gh_out = os.environ.get('GITHUB_OUTPUT')
+          if gh_out and inserted is not None:
+              with open(gh_out, 'a') as fh:
+                  fh.write(f'inserted={int(inserted)}\n')
+          print(f\"::notice::generator-inventory OK — {inserted} generators (source={d.get('source')})\")
           "
+
+      - name: beat deadman board
+        continue-on-error: true
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+          ROWS: ${{ steps.ingest.outputs.inserted }}
+        run: |
+          # Fail-open heartbeat to the deadman board with the REAL inserted count.
+          # Never fails the ingestion job (continue-on-error + trailing || true).
+          # feed matches the board; no cadence_hours/max_content_date — watch.py
+          # stays the cadence authority and the endpoint COALESCEs.
+          curl -s -X POST "https://dchub.cloud/api/v1/admin/ingest-runs/beat" \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            -H "Content-Type: application/json" \
+            -H "User-Agent: dchub-ingest-beat/1.0" \
+            -d "{\"feed\":\"generator-inventory-ingest\",\"status\":\"success\",\"rows_inserted\":${ROWS:-0}}" || true

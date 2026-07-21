@@ -30,15 +30,38 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Run LMP ingest (all ISOs)
+        id: ingest
         run: |
           set -euo pipefail
           resp=$(curl -sS --max-time 240 -X POST "$RAILWAY_BASE/api/v1/iso-lmp/ingest" || echo '{"error":"curl_fail"}')
           echo "$resp" | python3 -c "
-          import sys, json
+          import sys, json, os
           d = json.load(sys.stdin)
           ok, total = d.get('isos_ok'), d.get('isos_total')
           print(f'isos_ok {ok}/{total} | failed {d.get(\"isos_failed\")} | {d.get(\"elapsed_ms\")}ms')
+          rows_total = 0
           for r in d.get('results', []):
+              rr = r.get('rows')
+              if isinstance(rr, int):
+                  rows_total += rr
               print(' ', r.get('iso'), 'rows=' + str(r.get('rows')), r.get('debug', '')[:80])
+          gh = os.environ.get('GITHUB_OUTPUT')
+          if gh:
+              with open(gh, 'a') as f:
+                  print('rows=%d' % rows_total, file=f)
           sys.exit(0 if ok and ok >= 4 else 1)  # tolerate <=2 flaky sources, fail on worse
           " || { echo "$resp" | head -c 800; exit 1; }
+
+      # Fail-open heartbeat to the deadman board with the REAL inserted-row count
+      # (summed across ISOs above). Only runs when the ingest step succeeded, so a
+      # 'success' beat is truthful. || true + continue-on-error => a beat failure
+      # can never fail the ingest job. No cadence_hours/max_content_date sent —
+      # watch.py stays the cadence authority; the endpoint COALESCEs those.
+      - name: beat deadman board
+        continue-on-error: true
+        run: |
+          curl -s -X POST "https://dchub.cloud/api/v1/admin/ingest-runs/beat" \
+            -H "X-Admin-Key: ${{ secrets.DCHUB_ADMIN_KEY }}" \
+            -H "Content-Type: application/json" \
+            -H "User-Agent: dchub-ingest-beat/1.0" \
+            -d "{\"feed\":\"iso-lmp-ingest\",\"status\":\"success\",\"rows_inserted\":${{ steps.ingest.outputs.rows }}}" || true

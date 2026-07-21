@@ -29,6 +29,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Trigger OSM crawl
+        id: crawl
         run: |
           set -eo pipefail
           ADMIN_KEY="${{ secrets.DCHUB_ADMIN_KEY }}"
@@ -63,3 +64,18 @@ jobs:
           for ex in (d.get('examples') or [])[:15]:
               print(f'- {ex.get(\"name\", \"\")} ({ex.get(\"country\", \"\")})')
           " >> "$GITHUB_STEP_SUMMARY"
+          # Capture the real inserted-row count (pois_new) for the deadman beat.
+          # Fail-open: any parse hiccup falls back to 0 rather than failing the job.
+          POIS_NEW=$(echo "$RESP" | python3 -c "import sys, json; d = json.load(sys.stdin); print(d.get('pois_new') or 0)" 2>/dev/null || echo 0)
+          echo "rows_inserted=$POIS_NEW" >> "$GITHUB_OUTPUT"
+
+      - name: beat deadman board
+        continue-on-error: true
+        run: |
+          RI="${{ steps.crawl.outputs.rows_inserted }}"
+          RI="${RI:-0}"
+          curl -s -X POST "https://dchub.cloud/api/v1/admin/ingest-runs/beat" \
+            -H "X-Admin-Key: ${{ secrets.DCHUB_ADMIN_KEY }}" \
+            -H "Content-Type: application/json" \
+            -H "User-Agent: dchub-ingest-beat/1.0" \
+            -d "{\"feed\":\"osm-crawl\",\"status\":\"success\",\"rows_inserted\":$RI}" || true
