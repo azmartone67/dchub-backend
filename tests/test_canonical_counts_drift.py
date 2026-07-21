@@ -19,7 +19,7 @@ style as tests/test_canon_constraint_guard.py):
   CANONICAL   tools=79 · markets>=300 · deals>=1400 · gas=52 states · isos=7
   SURFACES    llms.txt · llms-full.txt · README.md · .well-known/mcp.json
               (a TIGHT, reliable, currently-canon-clean set — see the note on
-               AGENTS.md below for why it is deliberately NOT in the set)
+               AGENTS.md below for why there is no static AGENTS.md surface here)
   BANNED      the specific stale tokens that shipped this session, matched
               boundary-safely (so "2,000+ deals" can't hide inside "22,000+
               facilities" and "10 North-American grid operators" is NOT
@@ -43,13 +43,16 @@ If you intentionally change a canonical count, move the protection with it —
 update CANONICAL here AND the surfaces AND ai_surface_canon/canonical_stats — do
 not just delete the assertion.
 
-  AGENTS.md is intentionally excluded. The repo's static /AGENTS.md is a stale
-  legacy artifact ("14 total" tools, fake tool names, "4,000+ deals",
-  "3,800+ providers"), but it is NOT the served surface: routes/
+  AGENTS.md has no static surface to guard. A stale static /AGENTS.md USED TO
+  sit at the repo root ("14 total" tools, fake tool names, "4,000+ deals",
+  "3,800+ providers"), but it was never the served surface: routes/
   agents_md_fallback.py renders the LIVE /AGENTS.md from ai_surface_canon.PINNED
-  (self-fresh). Because the static file is shadowed by the canon-rendered route,
-  its staleness never reaches an agent — it is a repo-hygiene follow-up, not a
-  live count-drift, so it stays out of this fence's SURFACES.
+  (self-fresh), and the only route that would have read the static file
+  (ai_agent_discovery.py's load_file('AGENTS.md')) is an unregistered blueprint
+  (dead). Rather than carry a shadowed drift landmine, that static file was
+  DELETED (2026-07-20, repo-hygiene). The live surface cannot drift — it renders
+  straight from PINNED, whose counts test_fence_baseline_matches_canon_sot
+  already pins — so there is deliberately no AGENTS.md entry in SURFACES.
 
 Run locally:
     python -m pytest tests/test_canonical_counts_drift.py -v
