@@ -4771,15 +4771,24 @@ def check_inspector_brief_unprocessed_recipes() -> list[dict]:
                     # L22 handoff for this specific brief_id in the
                     # last 7 days, don't re-fire — L22's own
                     # _already_drafted() check provides the real safety.
+                    # r-l22-throttle (2026-07-22): the cooldown only checked the
+                    # `_fired` marker, which autopilot writes AFTER a successful
+                    # POST. But the handoff POST rate-limits (0/15 land), so the
+                    # marker never gets written and the finding re-emitted every
+                    # detector cycle — ~38x/day, eating 265 rate-limits into a
+                    # broken path. Also skip if the EMITTED finding itself was
+                    # raised for this brief in the last day, so a handoff that
+                    # can't land backs off to ~1/day instead of thrashing.
                     cur.execute("""
                         SELECT 1 FROM brain_findings
-                         WHERE issue = 'inspector_l22_handoff_fired'
+                         WHERE issue IN ('inspector_l22_handoff_fired',
+                                         'inspector_l22_handoff')
                            AND url LIKE %s
-                           AND created_at > NOW() - INTERVAL '7 days'
+                           AND created_at > NOW() - INTERVAL '1 day'
                          LIMIT 1
                     """, (f"%/brief/{brief_id}/%",))
                     if cur.fetchone():
-                        return findings  # already fired
+                        return findings  # fired OR emitted recently — don't thrash
                 except Exception:
                     try: c.rollback()
                     except Exception: pass
@@ -7159,6 +7168,13 @@ _REQUIRED_ENV_VARS = [
 ]
 
 
+# Jobs deliberately retired or run ad-hoc — add the job_name here (with a
+# one-line reason) to silence check_cron_freshness, mirroring
+# _INTENTIONAL_DISPATCH_ONLY. Empty by default: a silently-dead job SHOULD
+# surface once so a human decides revive-vs-retire, then gets listed here.
+_INTENTIONAL_STALE_CRONS: set[str] = set()
+
+
 def check_cron_freshness() -> list[dict]:
     """Phase QQQ (2026-05-17) — flag crons that haven't run when they
     were supposed to.
@@ -7193,30 +7209,43 @@ def check_cron_freshness() -> list[dict]:
                        EXTRACT(EPOCH FROM (NOW() - last_started_at))::INTEGER
                            AS seconds_since_last_run
                   FROM cron_last_run
-                 WHERE expected_interval_s IS NOT NULL
-                   AND expected_interval_s > 0
+                 WHERE last_started_at IS NOT NULL
                 ORDER BY job_name
             """)
+            # r-cron-deadman-fix (2026-07-22): the query used to filter
+            # `WHERE expected_interval_s IS NOT NULL`, but almost nothing
+            # populates that column (20/21 jobs NULL), so this watcher only ever
+            # saw ONE job — gas-refresh (52d), ai-wars (16d) and site-baseline
+            # (11d) all died silently. Now watch EVERY job: threshold = 2× its
+            # declared interval, or a 30h default when the interval is unknown
+            # (a daily-ish job silent >30h is presumed dead). Retired jobs are
+            # allowlisted in _INTENTIONAL_STALE_CRONS.
+            _DEFAULT_STALE_S = 30 * 3600
             for row in cur.fetchall():
                 job_name, last_start, expected_s, run_count, seconds_since = row
-                if seconds_since is None:
+                if seconds_since is None or job_name in _INTENTIONAL_STALE_CRONS:
                     continue
-                # Flag when cron is > 2× its expected interval late.
-                # The 2× buffer prevents flapping on natural jitter.
-                if seconds_since > (expected_s * 2):
-                    hours_late = (seconds_since - expected_s) / 3600.0
+                threshold = (expected_s * 2) if (expected_s and expected_s > 0) else _DEFAULT_STALE_S
+                # Flag when the job is past its stale threshold. The 2× buffer
+                # (or generous default) prevents flapping on natural jitter.
+                if seconds_since > threshold:
+                    hours_late = (seconds_since - threshold) / 3600.0
+                    exp_txt = (f"expected every {expected_s}s"
+                               if expected_s else "no declared interval")
                     findings.append({
                         "issue":  "cron_silently_dead",
                         "url":    f"/api/jobs/{job_name}",
                         "count":  int(seconds_since),
                         "detail": (f"Cron `{job_name}` has not run in "
-                                   f"{seconds_since}s (expected every "
-                                   f"{expected_s}s, {hours_late:.1f}h late). "
-                                   f"Total runs since deploy: {run_count}. "
+                                   f"{int(seconds_since)}s ({seconds_since / 3600.0:.1f}h; "
+                                   f"{exp_txt}, {hours_late:.1f}h past the stale "
+                                   f"threshold). Total runs since deploy: {run_count}. "
                                    f"Likely causes: Railway crash mid-run, "
                                    f"env-var gate returned early, or scheduler "
-                                   f"container died. Check the cron endpoint "
-                                   f"and the scheduler service logs."),
+                                   f"container died. Revive it (re-enable its "
+                                   f"scheduler/cron entry, confirm the endpoint "
+                                   f"200s), or if retired add `{job_name}` to "
+                                   f"_INTENTIONAL_STALE_CRONS."),
                     })
     except Exception as e:
         findings.append({

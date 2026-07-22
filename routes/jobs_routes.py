@@ -204,6 +204,29 @@ def _require_admin_key():
     return None
 
 
+@jobs_bp.after_request
+def _stamp_cron_completion(response):
+    """Companion to the _record_cron_run start-stamp in _require_admin_key:
+    stamp last_completed_at / last_status when an /api/jobs/* handler returns.
+    Pre-fix _record_cron_complete existed but nothing called it, so
+    last_completed_at was NULL for every job and the staleness detector had only
+    start-time to work with. One place, all jobs, fail-soft (never breaks the
+    response). A non-2xx/3xx response records the HTTP status so a job that
+    starts, errors, and 500s is distinguishable from one that silently died."""
+    try:
+        path = request.path or ""
+        if path.startswith('/api/jobs/'):
+            job_name = path[len('/api/jobs/'):].split('/', 1)[0].strip()
+            if job_name and job_name not in ('status', 'keep-alive'):
+                ok = 200 <= response.status_code < 400
+                _record_cron_complete(
+                    job_name,
+                    status='ok' if ok else f'http_{response.status_code}')
+    except Exception:
+        pass
+    return response
+
+
 def _get_pg():
     """Get a direct psycopg2 connection to Neon."""
     return psycopg2.connect(os.environ.get('DATABASE_URL', ''))
