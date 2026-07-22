@@ -701,6 +701,34 @@ _DISPATCH = [
      "POST",
      lambda now: now.hour == 12 and now.minute < 55),
 
+    # 2026-07-22: wire the FOUR read-only master-shell scoreboards that were
+    # built but never scheduled — each ships /<slug>/master-tick + an
+    # /admin/<slug> dashboard, but no driver (cron_heartbeat / dchub-scheduler /
+    # GH-Action) ever hit them, so the snapshot only refreshed when a human
+    # opened the pane. Same "built but never scheduled" gap as the 07-03 rewire
+    # above and the crawler_scheduler _RUNNERS gaps. All four are READ-ONLY by
+    # construction (aggregate / probe / draft only — never mutate, publish, or
+    # email), admin-gated (_hit sends X-Admin-Key), fail-soft + timeout-bounded,
+    # and individually killable. Daily, spread across the quiet 20-23 UTC block
+    # so the aggregators read fresh state from the daily shells (5-14 UTC) they
+    # summarize. Marked heavy in _HEAVY_LABELS (3-wide throttle).
+    ("deepdive_master_tick_daily",              # kill: DEEPDIVE_DISABLED
+     f"{BASE}/api/v1/admin/deepdive/master-tick",
+     "POST",
+     lambda now: now.hour == 20 and now.minute < 55),
+    ("pillars_master_tick_daily",               # kill: PILLARS_SHELL_DISABLED
+     f"{BASE}/api/v1/admin/pillars/master-tick",
+     "POST",
+     lambda now: now.hour == 21 and now.minute < 55),
+    ("qa_fixwave_master_tick_daily",            # kill: QA_FIXWAVE_DISABLED
+     f"{BASE}/api/v1/admin/qa-fixwave/master-tick",
+     "POST",
+     lambda now: now.hour == 22 and now.minute < 55),
+    ("roadmap_master_tick_daily",               # kill: ROADMAP_SHELL_DISABLED
+     f"{BASE}/api/v1/admin/roadmap/master-tick",
+     "POST",
+     lambda now: now.hour == 23 and now.minute < 55),
+
     # 2026-07-03: brain RAG reindex — embed new findings/recs/news/deals into
     # brain_corpus_embeddings so the L6 planner's semantic recall stays fresh.
     # Every 4h at :20, cap 500/run (incremental backfill; catches up over runs).
@@ -1104,6 +1132,9 @@ _HEAVY_LABELS = frozenset({
     "analyst_note_weekly", "metric_truth_check_weekly",
     "dark_zones_rebuild_daily",
     "slug_freeze_backfill_daily",
+    # 2026-07-22: the 4 read-only master-shell scoreboards wired into _DISPATCH.
+    "deepdive_master_tick_daily", "pillars_master_tick_daily",
+    "qa_fixwave_master_tick_daily", "roadmap_master_tick_daily",
 })
 
 
