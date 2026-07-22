@@ -2583,6 +2583,19 @@ def _run_ai_platform_onboarder():
     confirmation. Loopback POST so the same admin-key gate applies to
     cron and to manual triggers. Never raises."""
     import requests as _rq
+    # Cron-specific kill switch (2026-07-21): AI_PLATFORM_ONBOARDER_CRON_DISABLE=1.
+    # Deliberately NOT the family-wide AI_AGENT_EXPANSION_DISABLE master switch —
+    # that flag ALSO 503s the LIVE public self-register endpoint
+    # (routes/agent_self_register.py, POST /api/v1/platforms/register) and
+    # disables ai_platform_tool_tuner. This narrow flag keeps ONLY the
+    # auto-approve/publish/email cron dormant while self-register + tuner stay
+    # live. Mirrors the per-cron switches on model_relations
+    # (MODEL_RELATIONS_CRON_DISABLE) and founding_welcome
+    # (DCHUB_FOUNDING_WELCOME_DISABLE).
+    if os.environ.get("AI_PLATFORM_ONBOARDER_CRON_DISABLE", "").strip() in ("1", "true", "yes"):
+        logger.info("ai_platform_onboarder: cron kill switch active "
+                    "(AI_PLATFORM_ONBOARDER_CRON_DISABLE) - skipping")
+        return
     key = (os.environ.get("DCHUB_ADMIN_KEY")
            or os.environ.get("DCHUB_INTERNAL_KEY")
            or os.environ.get("DCHUB_ADMIN_API_KEY") or "")
@@ -3768,6 +3781,44 @@ _RUNNERS = {
     # publishes (verdicts → model_relations_runs for human review), and never
     # raises. Kill: MODEL_RELATIONS_CRON_DISABLE=1.
     "model_relations": _run_model_relations,
+    # BUGFIX (2026-07-21): same registration-gap class as model_relations /
+    # growth_ops_digest above — both of these are in SCHEDULE (lines ~150 and
+    # ~187, daily 01:00 UTC) with a defined _run_* function, but the NAME was
+    # never a key here, so the dispatch guard `name in _RUNNERS` skipped them
+    # every slot → silent no-op (NOT a KeyError). Both are internal, idempotent
+    # data/cache jobs with no outward-facing side effect:
+    #   • eia_gas_prices — loads state delivered gas tariffs (EIA PIN/PEU), the
+    #     UPSTREAM for the DCGI gas_cost_score factor + powered_land_gas
+    #     delivered tariffs. Dead = ~40% of DCGI was a dead constant. Idempotent
+    #     (UNIQUE state,sector,period); never raises (SystemExit + Exception
+    #     both caught); no-ops without EIA_API_KEY (the natural kill switch).
+    #   • daily_r2_refresh — POSTs /refresh on the daily FastAPI so today's PNGs
+    #     land in R2. This is the SECOND, redundant trigger (extractor_cron.py's
+    #     daily_refresh_if_needed on the other worker is the primary); dead = the
+    #     SPOF-free backstop was gone. Idempotent (re-renders today); never
+    #     raises; no-ops without REFRESH_SECRET (the natural kill switch).
+    "eia_gas_prices":      _run_eia_gas_prices,
+    "daily_r2_refresh":    _run_daily_r2_refresh,
+    # BUGFIX (2026-07-21): same registration-gap class, but these two are
+    # OUTWARD-FACING, so each is gated by its own cron-specific kill switch
+    # (NOT the family-wide AI_AGENT_EXPANSION_DISABLE master, which would also
+    # 503 the live public self-register endpoint):
+    #   • founding_customer_welcome (09:00 UTC) — RE-ENABLED LIVE (owner OK,
+    #     2026-07-21). Idempotent: only emails founding_customers rows with
+    #     contact_status IN ('new','auto-tagged'); stamps 'welcomed' so re-runs
+    #     no-op. At enable time all 12 rows were already 'welcomed' → 0 sends;
+    #     arms the intended activation backstop for FUTURE founding customers.
+    #     Kill: DCHUB_FOUNDING_WELCOME_DISABLE=1; dry-run
+    #     DCHUB_FOUNDING_WELCOME_DRY_RUN=1.
+    #   • ai_platform_onboarder + _b (00:00 / 06:00 UTC) — RE-ENABLED but
+    #     FLAG-GATED OFF (owner decision, 2026-07-21): registered here to fix
+    #     the structural no-op, held dormant at runtime via the runner's own
+    #     AI_PLATFORM_ONBOARDER_CRON_DISABLE=1 (set on dchub-worker). Both
+    #     SCHEDULE names map to the single _run_ai_platform_onboarder runner.
+    #     Flip the flag off to arm the autonomous approve→publish→email lane.
+    "founding_customer_welcome": _run_founding_customer_welcome,
+    "ai_platform_onboarder":     _run_ai_platform_onboarder,
+    "ai_platform_onboarder_b":   _run_ai_platform_onboarder,
     "market_brief_warm":   _run_market_brief_warm,
     "state_brief_warm":    _run_state_brief_warm,
     "operator_brief_warm": _run_operator_brief_warm,
