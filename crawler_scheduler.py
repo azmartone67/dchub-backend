@@ -3758,6 +3758,16 @@ _RUNNERS = {
     # backfunnel retention checks) never fired via the scheduler, and no GH Action
     # fires it either. Register the (already-defined) runner. Operator-inbox only.
     "growth_ops_digest": _run_growth_ops_digest,
+    # BUGFIX (2026-07-21): same class as growth_ops_digest above — model_relations
+    # is in SCHEDULE (line ~248, daily 23:00 UTC) and _run_model_relations is
+    # defined (~line 2102), but the name was NEVER registered here, so the dispatch
+    # guard `name in _RUNNERS` skipped it every night → the weekly partner-eval tick
+    # never fired via the scheduler (no GH Action fires it either). The Sunday
+    # planner_grading_panel in dchub-scheduler.py depends on this tick. Runner is
+    # cadence-self-gated (MODELREL_CADENCE_DAYS, default 7d, DB-based), NEVER
+    # publishes (verdicts → model_relations_runs for human review), and never
+    # raises. Kill: MODEL_RELATIONS_CRON_DISABLE=1.
+    "model_relations": _run_model_relations,
     "market_brief_warm":   _run_market_brief_warm,
     "state_brief_warm":    _run_state_brief_warm,
     "operator_brief_warm": _run_operator_brief_warm,
