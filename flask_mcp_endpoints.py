@@ -165,6 +165,47 @@ def _open_track_conn():
 _pool = _PoolShim()
 
 
+# r-claim-session-bind (2026-07-21): per-session claimed-key resolver for the
+# /track ACTIVATION fix (track_tool_call below). claim_free_key stamps the MCP
+# session_id onto the key it mints; this resolves "which key does THIS session
+# own" so a post-claim call that carries no api_key still attributes to the key.
+# Positive cache 5min, negative 30s (a key claimed mid-session is picked up fast
+# without hammering the busiest endpoint). Recency-bounded (24h) so the lookup
+# stays a cheap index hit.
+_SESSION_CLAIMED_KEY_CACHE: dict = {}   # sid -> (api_key_or_None, ts)
+
+
+def _resolve_session_claimed_key(conn, sid):
+    if not sid or conn is None:
+        return None
+    import time as _t
+    now = _t.time()
+    _hit = _SESSION_CLAIMED_KEY_CACHE.get(sid)
+    if _hit is not None:
+        _val, _ts = _hit
+        if now - _ts < (300 if _val else 30):
+            return _val
+    _val = None
+    try:
+        with conn.cursor() as _kc:
+            _kc.execute(
+                "SELECT api_key FROM mcp_dev_keys "
+                "WHERE metadata->>'session_id' = %s AND status='active' "
+                "AND created_at > NOW() - INTERVAL '24 hours' "
+                "ORDER BY created_at DESC LIMIT 1",
+                (str(sid)[:200],),
+            )
+            _row = _kc.fetchone()
+            if _row and _row[0]:
+                _val = str(_row[0])
+    except Exception:
+        _val = None
+    if len(_SESSION_CLAIMED_KEY_CACHE) > 20000:
+        _SESSION_CLAIMED_KEY_CACHE.clear()
+    _SESSION_CLAIMED_KEY_CACHE[sid] = (_val, now)
+    return _val
+
+
 # ── r-streak (2026-07-18): return-streak surfacing helper ──────────────────
 # The progressive daily-cap unlock (return_streak.py) only moves the key-reuse
 # needle if agents KNOW about it. Fail-open static ladder text for claim /
@@ -1751,6 +1792,35 @@ def track_tool_call():
         except Exception:
             pass  # telemetry side-channel — never block the track callback
 
+    # r-claim-session-bind (2026-07-21, flag DCHUB_CLAIM_SESSION_BIND, default on):
+    # ACTIVATION FIX for the claim_free_key retention leak. An agent claims a key
+    # mid-session but its subsequent calls don't carry it — server.mjs binds only
+    # on paid-GATED tools AND only when the session is already in that replica's
+    # in-memory sessionMeta, so free-tool calls (and any call on a cold/other
+    # replica) stay anon. The claimed key then looks unused (last_used_at never
+    # advances) and no reuse history builds — the confirmed bulk of the "4%
+    # retention" (live: only ~18% of post-claim sessions carried the key). Resolve
+    # it server-side HERE: when a tracked call has NO api_key but its session owns a
+    # recently-claimed key, attribute the call to that key AND advance
+    # last_used_at. Cross-replica-safe (one backend DB), no mcp-server change, no
+    # added agent latency (track is fire-and-forget). Honest: same session_id = the
+    # same agent that owns the key. Telemetry layer only — does NOT alter live
+    # gating/tier (that stays the mcp-server's job).
+    _eff_api_key = (body.get("api_key") or "").strip() or None
+    if (not _eff_api_key and _r_session
+            and os.environ.get("DCHUB_CLAIM_SESSION_BIND", "1") != "0"):
+        _bk = _resolve_session_claimed_key(_tc_conn, str(_r_session)[:200])
+        if _bk:
+            _eff_api_key = _bk
+            try:
+                with _tc_conn.cursor() as _uc:
+                    _uc.execute(
+                        "UPDATE mcp_dev_keys SET last_used_at = NOW() WHERE api_key = %s",
+                        (_bk,),
+                    )
+            except Exception:
+                pass  # activation advance is best-effort — never block tracking
+
     try:
         if _tc_conn is None:
             _tc_conn = _open_track_conn()
@@ -1763,7 +1833,7 @@ def track_tool_call():
                 (
                     ts_dt, tool, params,
                     (_r_platform or body.get("platform")),
-                    body.get("api_key"),
+                    _eff_api_key,
                     body.get("tier"),
                     body.get("session_id"),
                     body.get("status"),
