@@ -2158,6 +2158,95 @@ def admin_reconcile_keys():
         return jsonify(ok=False, error=str(e)[:200]), 500
 
 
+# ── POST /api/v1/admin/track/reconcile-session-keys ──────────────────────────
+# r-track-reconcile (2026-07-21): the RETENTION actuator, auto-fired daily — the
+# ONE loop we close on the constraint the flywheel keeps naming. The request-time
+# /track resolver (DCHUB_CLAIM_SESSION_BIND) attributes a post-claim call to its
+# session's claimed key at WRITE time, but only for NEW calls that resolve inside
+# the 24h window with a cache hit. Calls that already wrote NULL (cold/other
+# replica, cache miss, flag-off window, or pre-2026-07-21) stay unattributed →
+# mcp_call_log.api_key NULL + mcp_dev_keys.last_used_at stale → the "only ~18%
+# carried the key" UNDER-measurement. This batch sweeps them: attribute NULL-key
+# call rows to the session's claimed key (the SAME join the resolver uses) +
+# advance last_used_at.
+#   SAFE — pure in-DB UPDATEs, NO outbound HTTP (not a self-request → cannot
+#     reproduce the master-shell pool-saturation incident); telemetry layer only
+#     (never touches tier/plan/gating, same boundary as the request-time resolver).
+#   IDEMPOTENT — only fills NULLs (filled rows drop out of the filter); last_used_at
+#     uses GREATEST so re-runs never regress or double-advance.
+#   REVERSIBLE — flag DCHUB_TRACK_RECONCILE (off = no-op) + `apply` param
+#     (default 0 = safe dry-run report). Admin-gated. Bounded lookback (≤30d).
+@mcp_bp.get("/api/v1/admin/track/reconcile-session-keys")
+@mcp_bp.post("/api/v1/admin/track/reconcile-session-keys")
+def admin_reconcile_session_keys():
+    try:
+        from routes.funnel_health import _admin_ok
+        if not _admin_ok(request):
+            return jsonify(ok=False, error="unauthorized"), 401
+    except Exception:
+        return jsonify(ok=False, error="auth_unavailable"), 503
+    if (os.environ.get("DCHUB_TRACK_RECONCILE", "1") or "").strip() == "0":
+        return jsonify(ok=True, disabled=True, note="DCHUB_TRACK_RECONCILE=0")
+    apply = (request.args.get("apply") in ("1", "true", "yes"))
+    try:
+        days = max(1, min(30, int(request.args.get("days", "14"))))
+    except Exception:
+        days = 14
+    out = {"ok": True, "apply": apply, "lookback_days": days,
+           "candidates": 0, "attributed": 0, "keys_touched": 0, "sample": []}
+    # a NULL-key call row whose session owns a recent active claim key minted
+    # at/before the call — the same identity the request-time resolver uses.
+    _match = (" k.metadata->>'session_id' = %(sidcol)s "
+              " AND k.status='active' AND k.created_at >= now() - interval '30 days' "
+              " AND (k.api_key LIKE 'dch_live_%%' OR k.api_key LIKE 'dch_trial_%%') ")
+    try:
+        with _pool.connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT count(*) FROM mcp_call_log l "
+                " WHERE l.api_key IS NULL AND l.session_id IS NOT NULL AND l.session_id <> '' "
+                "   AND l.timestamp >= now() - make_interval(days => %(d)s) "
+                "   AND EXISTS (SELECT 1 FROM mcp_dev_keys k WHERE "
+                + _match.replace("%(sidcol)s", "l.session_id")
+                + " AND k.created_at <= l.timestamp)", {"d": days})
+            out["candidates"] = int((cur.fetchone() or [0])[0] or 0)
+            cur.execute(
+                "SELECT DISTINCT ON (l.id) l.session_id, l.tool, k.api_key "
+                "  FROM mcp_call_log l JOIN mcp_dev_keys k ON "
+                + _match.replace("%(sidcol)s", "l.session_id")
+                + " AND k.created_at <= l.timestamp "
+                " WHERE l.api_key IS NULL AND l.session_id IS NOT NULL AND l.session_id <> '' "
+                "   AND l.timestamp >= now() - make_interval(days => %(d)s) "
+                " ORDER BY l.id, k.created_at DESC LIMIT 8", {"d": days})
+            out["sample"] = [{"session": (s or "")[:12], "tool": t, "key": "…" + (kk or "")[-6:]}
+                             for s, t, kk in cur.fetchall()]
+            if apply and out["candidates"] > 0:
+                cur.execute(
+                    "UPDATE mcp_call_log l SET api_key = sub.api_key "
+                    "  FROM (SELECT DISTINCT ON (l2.id) l2.id, k.api_key "
+                    "          FROM mcp_call_log l2 JOIN mcp_dev_keys k ON "
+                    + _match.replace("%(sidcol)s", "l2.session_id")
+                    + " AND k.created_at <= l2.timestamp "
+                    "        WHERE l2.api_key IS NULL AND l2.session_id IS NOT NULL AND l2.session_id <> '' "
+                    "          AND l2.timestamp >= now() - make_interval(days => %(d)s) "
+                    "        ORDER BY l2.id, k.created_at DESC) sub "
+                    " WHERE l.id = sub.id", {"d": days})
+                out["attributed"] = int(cur.rowcount or 0)
+                cur.execute(
+                    "UPDATE mcp_dev_keys k "
+                    "   SET last_used_at = GREATEST(COALESCE(k.last_used_at, to_timestamp(0)), sub.mx) "
+                    "  FROM (SELECT api_key, MAX(timestamp) mx FROM mcp_call_log "
+                    "         WHERE api_key IS NOT NULL AND timestamp >= now() - make_interval(days => %(d)s) "
+                    "         GROUP BY api_key) sub "
+                    " WHERE k.api_key = sub.api_key "
+                    "   AND (k.api_key LIKE 'dch_live_%%' OR k.api_key LIKE 'dch_trial_%%') "
+                    "   AND (k.last_used_at IS NULL OR k.last_used_at < sub.mx)", {"d": days})
+                out["keys_touched"] = int(cur.rowcount or 0)
+                conn.commit()
+        return jsonify(out)
+    except Exception as e:
+        return jsonify(ok=False, error=str(e)[:200]), 500
+
+
 # ── GET /api/v1/mcp/funnel — Public aggregate stats for the dashboard ─────
 
 @mcp_bp.get("/api/v1/mcp/funnel")

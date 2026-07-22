@@ -121,6 +121,9 @@ SCHEDULE = [
     # back-of-funnel + flywheel master shells (passive validation of the funnel
     # fix-wave). Same-hour pairing = once/day. Kill: GROWTH_DIGEST_DISABLE=1.
     (13, 13, "growth_ops_digest",   "_run_growth_ops_digest"),
+    # r-track-reconcile (2026-07-21): daily durable-identity retention actuator
+    # (once/day via same-hour pair). Kill: DCHUB_TRACK_RECONCILE=0.
+    (18, 18, "retention_reconcile", "_run_retention_reconcile"),
     # r-auto-interconnect (2026-06-04): scan novel UAs + pending buckets
     # once daily, write findings + email digest. Endpoint is admin-gated
     # AND idempotent (UNIQUE index on user_agent for pending/approved
@@ -1610,6 +1613,37 @@ def _run_growth_ops_digest():
         logger.info("📧 growth_ops_digest: status=%s sent_to=%s", r.status_code, d.get("sent_to"))
     except Exception as e:
         logger.warning("📧 growth_ops_digest error: %s", e)
+
+
+def _run_retention_reconcile():
+    """r-track-reconcile (2026-07-21): the daily durable-identity RETENTION
+    actuator — the one loop we auto-close on the constraint the flywheel keeps
+    naming. Loopback POST to /api/v1/admin/track/reconcile-session-keys?apply=1:
+    sweeps post-claim calls that wrote NULL api_key (cold/other replica, cache
+    miss, flag-off window, pre-fix) and attributes them to the session's claimed
+    key + advances last_used_at. In-DB only, idempotent, telemetry-layer (never
+    touches tier/gating). Kill: DCHUB_TRACK_RECONCILE=0."""
+    if (os.environ.get("DCHUB_TRACK_RECONCILE", "1") or "").strip() == "0":
+        return
+    import requests as _rq
+    key = (os.environ.get("DCHUB_ADMIN_KEY")
+           or os.environ.get("DCHUB_INTERNAL_KEY")
+           or os.environ.get("DCHUB_ADMIN_API_KEY") or "")
+    if not key:
+        logger.warning("🔁 retention_reconcile: skipped — DCHUB_ADMIN_KEY not set")
+        return
+    base = (os.environ.get("DCHUB_INTERNAL_API", "http://127.0.0.1:8080") or "").strip()
+    try:
+        r = _rq.post(
+            f"{base}/api/v1/admin/track/reconcile-session-keys?apply=1",
+            headers={"X-Internal-Key": key, "X-Admin-Key": key,
+                     "User-Agent": "dchub-cron-retention-reconcile/1.0"},
+            timeout=120)
+        d = (r.json() if r.headers.get("content-type", "").startswith("application/json") else {}) or {}
+        logger.info("🔁 retention_reconcile: status=%s attributed=%s keys_touched=%s",
+                    r.status_code, d.get("attributed"), d.get("keys_touched"))
+    except Exception as e:
+        logger.warning("🔁 retention_reconcile error: %s", e)
 
 
 def _run_lost_conversion_outreach():
@@ -3716,6 +3750,14 @@ _RUNNERS = {
     "mcp_presence_auto_fix": _run_mcp_presence_auto_fix,
     # r-white-glove BUILD 1 (2026-07-18): canonical-facts propagation.
     "white_glove_propagate": _run_white_glove_propagate,
+    # r-track-reconcile (2026-07-21): daily durable-identity retention actuator.
+    "retention_reconcile": _run_retention_reconcile,
+    # BUGFIX (2026-07-21): growth_ops_digest was in SCHEDULE (line ~123) but
+    # MISSING from _RUNNERS, so the dispatch `_RUNNERS[name]` KeyError'd every day
+    # at 13:00 UTC — the daily operator digest (incl. the Phase-2 planner alert +
+    # backfunnel retention checks) never fired via the scheduler, and no GH Action
+    # fires it either. Register the (already-defined) runner. Operator-inbox only.
+    "growth_ops_digest": _run_growth_ops_digest,
     "market_brief_warm":   _run_market_brief_warm,
     "state_brief_warm":    _run_state_brief_warm,
     "operator_brief_warm": _run_operator_brief_warm,
