@@ -7262,6 +7262,77 @@ def check_cron_freshness() -> list[dict]:
     return findings
 
 
+def check_mcp_presence_stale() -> list[dict]:
+    """The MCP-registry presence flywheel keeps our listings across ~16 registries
+    fresh + drift-corrected via the SEPARATE crawler_scheduler (lanes
+    mcp_presence_crawl @6/18 UTC + mcp_presence_auto_fix @19). Those lanes are NOT
+    /api/jobs, so cron_last_run + check_cron_freshness can't see them — when that
+    scheduler stalls, listings rot silently (glama/smithery went ~20d stale; the
+    official GitHub registry drifted to 30 of 79 tools). This is the data-side
+    watch: fire when BOTH sweeps have gone quiet, or when drift persists."""
+    findings: list[dict] = []
+    c = _db()
+    if c is None:
+        return findings
+    try:
+        with c.cursor() as cur:
+            cur.execute("SELECT to_regclass('public.mcp_presence_listings')")
+            if not cur.fetchone()[0]:
+                return findings
+            cur.execute("""
+                SELECT EXTRACT(EPOCH FROM (NOW() - MAX(last_crawled_at)))/3600,
+                       EXTRACT(EPOCH FROM (NOW() - MAX(last_auto_fix_at)))/3600,
+                       COUNT(*) FILTER (WHERE drift_detected),
+                       COUNT(*)
+                  FROM mcp_presence_listings
+            """)
+            crawl_h, fix_h, drift_n, total = cur.fetchone()
+            crawl_h = float(crawl_h) if crawl_h is not None else 1e9
+            fix_h = float(fix_h) if fix_h is not None else 1e9
+            drift_n = int(drift_n or 0)
+            STALE_H = 40   # both lanes run daily; 40h = a full day missed
+            if crawl_h > STALE_H and fix_h > STALE_H:
+                findings.append({
+                    "issue": "mcp_presence_flywheel_stalled",
+                    "url":   "mcp_presence_listings",
+                    "count": int(max(crawl_h, fix_h)),
+                    "detail": (
+                        f"MCP-registry presence sweeps are stale — last discovery "
+                        f"crawl {crawl_h:.0f}h ago, last auto-fix {fix_h:.0f}h ago "
+                        f"(both should run daily via crawler_scheduler "
+                        f"mcp_presence_crawl @6/18 + mcp_presence_auto_fix @19). "
+                        f"Listings across {total} registries drift silently when this "
+                        f"stalls. Check the crawler_scheduler service is up; catch up "
+                        f"with POST /api/v1/admin/mcp-presence/crawl + "
+                        f"/api/v1/admin/outreach/mcp-registry/submit-all."),
+                })
+            if drift_n > 0:
+                findings.append({
+                    "issue": "mcp_presence_drift_uncorrected",
+                    "url":   "mcp_presence_listings",
+                    "count": drift_n,
+                    "detail": (
+                        f"{drift_n} registry listing(s) show a STALE tool count vs our "
+                        f"live server (drift_detected) — e.g. the official GitHub "
+                        f"registry showed 30 of 79 tools. Owner-gated ones (DNS-TXT "
+                        f"verify) surface as brain_findings 'mcp_presence_human_loop:*'; "
+                        f"the auto-fixer flags them but can't clear them alone."),
+                })
+    except Exception as e:
+        findings.append({
+            "issue":  "consistency_radar_detector_crashed:check_mcp_presence_stale",
+            "url":    "check_mcp_presence_stale",
+            "count":  1,
+            "detail": f"{type(e).__name__}: {str(e)[:200]}",
+        })
+    finally:
+        try:
+            c.close()
+        except Exception:
+            pass
+    return findings
+
+
 def check_customer_activation_health() -> list[dict]:
     """r-customer-loop (2026-07-20) — cross-platform course-correction leg
     for the customer white-glove loop.
@@ -9432,6 +9503,10 @@ def scan_all() -> list[dict]:
                # Phase QQQ (2026-05-17) — Stability Guardrails: 4 detectors
                # closing the 3 systemic blind spots inventory revealed
                check_cron_freshness,
+               # 2026-07-22: watches the MCP-registry presence flywheel, which
+               # runs on crawler_scheduler (not /api/jobs) so check_cron_freshness
+               # is blind to it — caught the ~51/61h stall + the GitHub drift.
+               check_mcp_presence_stale,
                # r-customer-loop (2026-07-20) — systemic activation-failure +
                # nudge-escalation backlog, the course-correction leg of the
                # customer white-glove loop (its cron freshness is covered by
