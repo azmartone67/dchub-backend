@@ -99,9 +99,21 @@ def _build_state() -> dict:
     if c is None:
         return out
 
-    # NORTH STAR — real external agents/wk, last 8 weeks
+    # NORTH STAR — real external agents/wk, last 8 weeks. The most recent bucket is
+    # the IN-PROGRESS calendar week (only a few days elapsed) — flag it `partial` so
+    # the UI can dim it and never read "33 vs 84" as a WoW drop (2026-07-23).
+    from datetime import timedelta as _td
+    _cur_wk_monday = (datetime.now(timezone.utc).date()
+                      - _td(days=datetime.now(timezone.utc).weekday()))
+    def _is_partial(v):
+        try:
+            d = v if hasattr(v, "year") else datetime.fromisoformat(str(v)[:10]).date()
+            return d >= _cur_wk_monday
+        except Exception:
+            return False
     out["north_star"] = [
-        {"week": str(r[0]), "agents": int(r[1] or 0), "calls": int(r[2] or 0)}
+        {"week": str(r[0]), "agents": int(r[1] or 0), "calls": int(r[2] or 0),
+         "partial": _is_partial(r[0])}
         for r in _rows(c, """
             SELECT date_trunc('week', created_at)::date,
                    count(DISTINCT agent_id) FILTER (WHERE is_real_external),
@@ -230,9 +242,11 @@ def agents_portal():
     peak = max((w["agents"] for w in ns), default=1) or 1
     bars = "".join(
         f"<div style='display:inline-block;width:44px;margin-right:6px;text-align:center'>"
-        f"<div style='background:#38bdf8;height:{max(4, int(60 * w['agents'] / peak))}px;"
-        f"border-radius:3px 3px 0 0'></div>"
-        f"<div style='font-size:11px;color:#e2e8f0'>{w['agents']}</div>"
+        f"<div title='{'in-progress week — partial, not comparable' if w.get('partial') else ''}' "
+        f"style='background:{'#334155' if w.get('partial') else '#38bdf8'};"
+        f"height:{max(4, int(60 * w['agents'] / peak))}px;border-radius:3px 3px 0 0'></div>"
+        f"<div style='font-size:11px;color:{'#64748b' if w.get('partial') else '#e2e8f0'}'>"
+        f"{w['agents']}{'*' if w.get('partial') else ''}</div>"
         f"<div style='font-size:10px;color:#64748b'>{w['week'][5:]}</div></div>"
         for w in ns)
     ns_html = card("🌟 North star — distinct real external agents / week",

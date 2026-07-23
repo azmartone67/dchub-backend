@@ -148,10 +148,15 @@ def _reach_two_weeks() -> list:
     try:
         import psycopg2.extras
         with c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            # Exclude the in-progress calendar week — comparing a partial current
+            # week against a full prior week manufactured a fake "-57 WoW" drop
+            # (2026-07-23). Only ever WoW two COMPLETE weeks.
             cur.execute("""
                 SELECT week_start, distinct_external_ips, distinct_platforms,
                        new_external_ips, requests, per_platform
-                FROM reach_weekly ORDER BY week_start DESC LIMIT 2
+                FROM reach_weekly
+                WHERE week_start < date_trunc('week', now())::date
+                ORDER BY week_start DESC LIMIT 2
             """)
             rows = cur.fetchall() or []
         return [dict(r) for r in rows]

@@ -164,10 +164,19 @@ def _trend(engine: str) -> dict:
         # metric-honesty step-down doesn't render as a live regression
         note7 = _rebaseline_note(engine, 7)
         note1 = _rebaseline_note(engine, 1)
+        # A delta measured ACROSS a deliberate rescore is apples-to-oranges — don't
+        # render the number at all. Keep it as *_raw for debugging, null the live
+        # value (consumers already render null as "—"/"not enough history"), and let
+        # baseline_note carry the explanation. The owner has been alarmed by this exact
+        # "-19.9 /7d" figure three times; a rebaselined window must not read as a drop.
         if note7:
+            out["delta_7d_raw"] = out["delta_7d"]
+            out["delta_7d"] = None
             out["delta_7d_rebaselined"] = True
             out["baseline_note"] = note7
         if note1:
+            out["delta_1d_raw"] = out["delta_1d"]
+            out["delta_1d"] = None
             out["delta_1d_rebaselined"] = True
             out["baseline_note"] = note1  # more recent window wins the shared note
         return out
