@@ -194,7 +194,7 @@ def _call_claude(prompt: str) -> tuple[Optional[str], Optional[str]]:
         from routes.brain_models import resolve_chain
         models = resolve_chain(BRAIN_MODEL)
     except Exception:
-        models = [BRAIN_MODEL, "claude-sonnet-4-20250514"]
+        models = [BRAIN_MODEL, "claude-sonnet-5"]
     last_err = None
     for i, model in enumerate(models):
         body = json.dumps({

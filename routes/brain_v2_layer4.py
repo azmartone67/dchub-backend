@@ -339,7 +339,7 @@ def _call_claude(prompt: str, system: str) -> tuple[str | None, str | None]:
                                          one_m_beta_header)
         _models = resolve_chain(BRAIN_MODEL)
     except Exception:
-        _models = [BRAIN_MODEL, "claude-sonnet-4-20250514"]
+        _models = [BRAIN_MODEL, "claude-sonnet-5"]
         supports_1m_context = lambda m: False  # noqa: E731
         one_m_beta_header = lambda: ""          # noqa: E731
     last_err = None

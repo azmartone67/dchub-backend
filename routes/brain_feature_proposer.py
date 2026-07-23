@@ -623,7 +623,7 @@ def _call_claude(prompt: str) -> tuple[Optional[str], Optional[str]]:
     pins the spec JSON to _PROPOSE_SCHEMA. FAIL-SOFT: a 400 on a structured
     attempt retries the SAME model on the legacy free-text body before the
     existing 404/400 chain-walk. Note the static fallback rung
-    claude-sonnet-4-20250514 (Sonnet 4.0) does NOT support structured
+    claude-sonnet-5 (Sonnet 4.0) does NOT support structured
     outputs — the helper's model gate keeps it on the legacy path.
     BRAIN_STRUCTURED_OUTPUTS=0 forces legacy everywhere."""
     if not ANTHROPIC_API_KEY:
@@ -635,7 +635,7 @@ def _call_claude(prompt: str) -> tuple[Optional[str], Optional[str]]:
         from routes.brain_models import brain_model_for, resolve_chain
         models = resolve_chain(brain_model_for("reasoning"))
     except Exception:
-        models = [BRAIN_MODEL, "claude-sonnet-4-20250514"]
+        models = [BRAIN_MODEL, "claude-sonnet-5"]
     try:
         from routes import brain_llm_structured as _so
     except Exception:

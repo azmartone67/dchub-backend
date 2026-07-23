@@ -16922,7 +16922,7 @@ def _ai_demo_ask():
         r = requests.post(
             anthropic_messages_url(),
             json={
-                'model': 'claude-sonnet-4-20250514',
+                'model': 'claude-sonnet-5',
                 'max_tokens': 600,
                 'system': system_prompt,
                 'messages': [{'role': 'user', 'content': question}],

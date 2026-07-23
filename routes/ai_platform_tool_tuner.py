@@ -388,7 +388,7 @@ def _claude_rewrite(tool_name: str, generic_desc: str, platform: str,
     except Exception:
         url = "https://api.anthropic.com/v1/messages"
     # 2026-07-04 FIX: this used to seed resolve_chain() with the RETIRED,
-    # hard-coded "claude-sonnet-4-20250514" (DCHUB_BRAIN_MODEL_ROUTINE /
+    # hard-coded "claude-sonnet-5" (DCHUB_BRAIN_MODEL_ROUTINE /
     # DCHUB_BRAIN_MODEL are unset on the web service). That tag isn't a key in
     # brain_models._FALLBACK_CHAIN, so resolve_chain returned a DEAD single-
     # element list → every Anthropic call 404'd → the tuner failed 100% (and

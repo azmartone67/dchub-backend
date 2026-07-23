@@ -219,9 +219,9 @@ def _claude_write_card(submission: dict, meta: dict, fit_score: int) -> str | No
         from routes.brain_models import resolve_chain
         models = resolve_chain(os.environ.get("DCHUB_BRAIN_MODEL_ROUTINE") or
                                os.environ.get("DCHUB_BRAIN_MODEL") or
-                               "claude-sonnet-4-20250514")
+                               "claude-sonnet-5")
     except Exception:
-        models = ["claude-sonnet-4-20250514"]
+        models = ["claude-sonnet-5"]
     prompt = (
         "Write a 200-word integration card for an AI platform that "
         "wants to use DC Hub (the data-center intelligence platform) as "

@@ -17,7 +17,7 @@ investigator REASON/REFUTE/DECOMPOSE, feature proposer) we assert:
      consumer source) is a property of the schema — a schema that drops a
      consumed field would be silent data loss.
 
-Plus: the per-model support gate (Sonnet 4.0 = claude-sonnet-4-20250514 does
+Plus: the per-model support gate (Sonnet 4.0 = claude-sonnet-5 does
 NOT support structured outputs → always legacy) and schema hygiene against
 the documented structured-outputs limitations (additionalProperties: false
 everywhere; no numeric/string bound keywords; minItems ∉ {0,1} never used).
@@ -116,8 +116,8 @@ def test_model_gate_matches_verified_docs():
         assert so.model_supports_structured(m), m
     # NOT supported: Sonnet 4.0 (the proposer's static fallback rung),
     # Opus 4.1/4.0, retired 3.x
-    for m in ("claude-sonnet-4-20250514", "claude-opus-4-1",
-              "claude-opus-4-20250514", "claude-3-5-haiku-20241022", ""):
+    for m in ("claude-sonnet-5", "claude-opus-4-1",
+              "claude-opus-4-8", "claude-3-5-haiku-20241022", ""):
         assert not so.model_supports_structured(m), m
 
 
@@ -461,12 +461,12 @@ def test_proposer_kill_switch_forces_legacy(monkeypatch):
 
 
 def test_proposer_unsupported_fallback_model_stays_legacy(monkeypatch):
-    """The static fallback rung claude-sonnet-4-20250514 (Sonnet 4.0) does NOT
+    """The static fallback rung claude-sonnet-5 (Sonnet 4.0) does NOT
     support structured outputs — the per-model gate must keep it legacy even
     with structured mode globally ON."""
     monkeypatch.setattr(fp, "ANTHROPIC_API_KEY", "test-key")
     monkeypatch.setattr(bm, "brain_model_for",
-                        lambda tier="routine": "claude-sonnet-4-20250514")
+                        lambda tier="routine": "claude-sonnet-5")
     raw = json.dumps(_anthropic_ok_body(_SPEC_JSON)).encode()
     reqs = _patch_urlopen(monkeypatch, [raw])
 

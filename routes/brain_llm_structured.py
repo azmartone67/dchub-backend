@@ -18,8 +18,8 @@ VERIFIED API FACTS (live docs, platform.claude.com, checked 2026-07-04)
                claude-opus-4-8 / -4-7 / -4-6 / -4-5,
                claude-sonnet-5 / -4-6 / -4-5, claude-haiku-4-5.
                NOT supported: claude-opus-4-1, claude-opus-4-0
-               (claude-opus-4-20250514), claude-sonnet-4-0
-               (claude-sonnet-4-20250514), retired haiku-3.x / 3.x models.
+               (claude-opus-4-8), claude-sonnet-4-0
+               (claude-sonnet-5), retired haiku-3.x / 3.x models.
 · Thinking:    compatible with extended/adaptive thinking. On fable-5
                thinking is ALWAYS ON and thinking tokens are billed against
                max_tokens — a long think can still starve the JSON answer
@@ -62,7 +62,7 @@ logger = logging.getLogger(__name__)
 # ── Model support (verified against live docs 2026-07-04) ───────────
 # Prefix match so dated snapshots of a supported alias (e.g. a future
 # claude-haiku-4-5-2025xxxx) stay supported. NOTE: "claude-sonnet-4-5"
-# does NOT prefix-match "claude-sonnet-4-20250514" (Sonnet 4.0, which is
+# does NOT prefix-match "claude-sonnet-5" (Sonnet 4.0, which is
 # unsupported), because the 6th char differs ("5" vs "2").
 STRUCTURED_OUTPUT_MODEL_PREFIXES = (
     "claude-fable-5",

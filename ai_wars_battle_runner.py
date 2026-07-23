@@ -13,7 +13,7 @@ PLATFORM_CONFIGS = {
     "claude": {
         "env_key": "ANTHROPIC_API_KEY",
         "url": "https://gateway.ai.cloudflare.com/v1/4bb33ec40ef02f9f4b41dc97668d5a52/dchub/anthropic/v1/messages",
-        "model": "claude-sonnet-4-20250514",
+        "model": "claude-sonnet-5",
         "adapter": "anthropic",
     },
     "chatgpt": {
