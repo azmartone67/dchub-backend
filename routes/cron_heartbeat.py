@@ -418,6 +418,26 @@ _DISPATCH = [
      "POST",
      lambda now: now.hour == 21 and now.minute >= 30 and now.minute < 35),
 
+    # 2026-07-23: PROACTIVE LinkedIn token refresh — makes the posting token
+    # DURABLE so the media feed can't silently go dark. LinkedIn access tokens
+    # expire in ~60d; there was NO proactive refresh, so when the token lapsed
+    # _get_valid_token() returned None and the WHOLE feed went dark. This fires
+    # daily 04:xx UTC (WIDE minute window — the heartbeat is sporadic ~hourly):
+    # if the token is within ~10d of expiry AND a usable refresh_token + client
+    # creds exist, it calls LinkedIn's refresh endpoint (via the single shared
+    # linkedin_poster.refresh_access_token) and stores the new access + rotated
+    # refresh_token; if it's within ~7d with NO usable refresh_token it emails a
+    # LOUD alert so the owner re-seeds via OAuth. Leader-gated by a pg advisory
+    # xact-lock (no double-rotate across the 2 replicas / in-hour re-fires) and
+    # idempotent (post-refresh the expiry jumps ~60d out → later fires 'skip').
+    # _hit() attaches X-Admin-Key. Kill: LINKEDIN_TOKEN_REFRESH_CRON_DISABLE=1
+    # (checked BOTH here and in the endpoint).
+    ("linkedin_token_refresh_daily",
+     f"{BASE}/api/v1/linkedin/token/refresh-cron",
+     "POST",
+     lambda now: now.hour == 4 and now.minute < 55
+                 and os.environ.get("LINKEDIN_TOKEN_REFRESH_CRON_DISABLE") != "1"),
+
     # r47.14 (2026-05-25): weekly partnership LinkedIn post. Cycles
     # through 7 anchors (one per ISO week) targeting /partners and
     # the per-partner anchors (#dchawk, #cbre, #dcd, etc.). Wed 14:00 UTC

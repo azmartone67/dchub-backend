@@ -194,12 +194,65 @@ def _save_token(access_token, refresh_token=None, expires_in=5184000, member_urn
     logger.info(f"[LinkedIn] Token saved, expires {expires_at.isoformat()}")
 
 
+def refresh_access_token(refresh_token):
+    """Exchange a LinkedIn refresh_token for a fresh access_token (+ rotated
+    refresh_token) and persist both to linkedin_tokens id=1.
+
+    LinkedIn programmatic refresh-token flow:
+      POST https://www.linkedin.com/oauth/v2/accessToken
+        grant_type=refresh_token, refresh_token=<rt>,
+        client_id=<id>, client_secret=<secret>
+    Docs: https://learn.microsoft.com/linkedin/shared/authentication/programmatic-refresh-tokens
+
+    This is the SINGLE HTTP refresh path — both _get_valid_token() (reactive,
+    on-read) and the proactive daily refresh cron call it, so the request is
+    defined exactly once. Fail-soft: never raises; returns a dict with 'ok'.
+    """
+    import requests as req
+    if not refresh_token:
+        return {'ok': False, 'error': 'no_refresh_token'}
+    if not (LINKEDIN_CLIENT_ID and LINKEDIN_CLIENT_SECRET):
+        return {'ok': False, 'error': 'client_credentials_not_configured'}
+    try:
+        resp = req.post(TOKEN_URL, data={
+            'grant_type': 'refresh_token',
+            'refresh_token': refresh_token,
+            'client_id': LINKEDIN_CLIENT_ID,
+            'client_secret': LINKEDIN_CLIENT_SECRET,
+        }, timeout=20)
+    except Exception as e:
+        logger.error(f"[LinkedIn] Token refresh error: {e}")
+        return {'ok': False, 'error': f'{type(e).__name__}: {str(e)[:160]}'}
+    if resp.status_code != 200:
+        logger.error(f"[LinkedIn] Token refresh failed: {resp.status_code} {resp.text[:200]}")
+        return {'ok': False, 'error': f'http_{resp.status_code}', 'body': resp.text[:200]}
+    try:
+        data = resp.json()
+    except Exception as e:
+        return {'ok': False, 'error': f'bad_json: {e}'}
+    new_access = data.get('access_token')
+    if not new_access:
+        return {'ok': False, 'error': 'no_access_token_in_response'}
+    new_refresh = data.get('refresh_token', refresh_token)
+    expires_in = data.get('expires_in', 5184000)
+    try:
+        _save_token(access_token=new_access, refresh_token=new_refresh,
+                    expires_in=expires_in)
+    except Exception as e:
+        logger.error(f"[LinkedIn] refresh: token obtained but DB save failed: {e}")
+        return {'ok': False, 'error': f'db_save_failed: {str(e)[:120]}',
+                'access_token': new_access}
+    logger.info(f"[LinkedIn] Access token refreshed (expires_in={expires_in}s, "
+                f"refresh_token rotated={new_refresh != refresh_token})")
+    return {'ok': True, 'access_token': new_access,
+            'refresh_token_rotated': (new_refresh != refresh_token),
+            'expires_in': expires_in}
+
+
 def _get_valid_token():
     """Get a valid access token, refreshing if needed.
     Falls back to LINKEDIN_ACCESS_TOKEN env var if DB has no token yet.
     """
-    import requests as req
-
     token = _get_token()
     if not token or not token.get('access_token'):
         # Fallback: use token from Railway env var (seed it into DB for next time)
@@ -215,30 +268,15 @@ def _get_valid_token():
     # Check expiry (refresh if within 24h of expiring)
     expires_at = token.get('expires_at')
     if expires_at and expires_at < datetime.now(timezone.utc) + timedelta(hours=24):
-        # Try refresh
+        # Try refresh via the single shared HTTP path (also used by the
+        # proactive daily refresh cron — see routes/linkedin_token_reset.py).
         refresh = token.get('refresh_token')
         if refresh:
-            try:
-                resp = req.post(TOKEN_URL, data={
-                    'grant_type': 'refresh_token',
-                    'refresh_token': refresh,
-                    'client_id': LINKEDIN_CLIENT_ID,
-                    'client_secret': LINKEDIN_CLIENT_SECRET,
-                })
-                if resp.status_code == 200:
-                    data = resp.json()
-                    _save_token(
-                        access_token=data['access_token'],
-                        refresh_token=data.get('refresh_token', refresh),
-                        expires_in=data.get('expires_in', 5184000),
-                    )
-                    return data['access_token']
-                else:
-                    logger.error(f"[LinkedIn] Token refresh failed: {resp.text}")
-                    return None
-            except Exception as e:
-                logger.error(f"[LinkedIn] Token refresh error: {e}")
-                return None
+            result = refresh_access_token(refresh)
+            if result.get('ok'):
+                return result['access_token']
+            logger.error(f"[LinkedIn] Token refresh failed: {result.get('error')}")
+            return None
         else:
             logger.error("[LinkedIn] Token expired and no refresh token available")
             return None
