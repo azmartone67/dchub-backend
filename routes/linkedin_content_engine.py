@@ -30,6 +30,7 @@ API is unavailable, so the slot never goes silent.
 """
 from __future__ import annotations
 
+from utils.anthropic_helper import cached_system
 import datetime
 import html as _html
 import json
@@ -616,7 +617,7 @@ def _compose_with_claude(story_type: str, data: dict, landing: str,
             # finish; thinking stays OFF so all of it is output, not reasoning.
             "model": model,
             "max_tokens": 1800,
-            "system": _VOICE_SYSTEM,
+            "system": cached_system(_VOICE_SYSTEM),
             "messages": [{"role": "user", "content": user_prompt}],
         }).encode("utf-8")
         req = urllib.request.Request(

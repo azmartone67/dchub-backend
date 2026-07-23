@@ -44,51 +44,41 @@ broadly.
    `cache_creation_input_tokens` is `0` too, the prefix was under the model's
    minimum or the breakpoint sat on changing content.
 
-## Converted in this PR (central chokepoints + highest traffic)
+## Converted in this PR — FULL safe sweep of static system prompts
 
-| Site | What | Coverage |
-|---|---|---|
-| `utils/anthropic_helper.py` | added `cached_system()` | the helper |
-| `routes/brain_llm_structured.py` `build_messages_body()` | caches `system` (opt-out `cache_system=False`) | **6 brain callers**: brain_answer_cache, brain_lane_driver, brain_feature_proposer, brain_strategic_planner, brain_investigator, analyst_note |
-| `agent_hub.py` `call_claude()` | caches `system_prompt` | all `call_claude` callers |
-| `ai_agent.py` | caches `CHAT_PROMPT` (public chat endpoint) | 1 |
+**Central chokepoints (cover many callers each):**
+- `utils/anthropic_helper.py` — added `cached_system()`.
+- `routes/brain_llm_structured.py` `build_messages_body()` — caches `system` by
+  default (`cache_system=False` opt-out). Covers **6 brain callers**:
+  brain_answer_cache, brain_lane_driver, brain_feature_proposer,
+  brain_strategic_planner, brain_investigator, analyst_note.
+- `agent_hub.py` `call_claude()` — covers all `call_claude` callers.
+
+**Individual static-prompt call sites (all wrapped with `cached_system(...)`):**
+`ai_agent.py` (CHAT_PROMPT) · `ai_wars_automation.py` (SYSTEM_PROMPT,
+MCP_SYSTEM_PROMPT) · `routes/dcpi_ask.py` · `routes/demo.py` ·
+`routes/feedback_triage.py` · `routes/geo_autopublish.py` ·
+`routes/linkedin_content_engine.py` · `routes/media_citation_gap.py` ·
+`routes/media_journalist_lane.py` · `routes/media_recurring_formats.py` ·
+`routes/wins_poster.py` · `extractor_cron.py` ·
+`routes/media_comment_engagement.py` · `routes/media_dm_follow_up.py` ·
+`routes/media_spike_responder.py` · `routes/sales_outreach_automator.py` ·
+`routes/ai_platform_onboarder.py` (sysmsg — verified pure-literal) ·
+`routes/news_entity_extraction.py` (system — verified pure-literal).
 
 `brain_lane_driver` already wrapped its own system in `cache_control`; because
 `cached_system()` no-ops on a non-`str`, there's no double-wrap.
 
-## Remaining STATIC sites — apply the same one-liner (verified static constants)
+## Deliberately NOT converted (would raise cost or unverifiable)
 
-Each is `"system": <CONST>` in a raw body **or** `system=<CONST>` in an SDK call,
-where `<CONST>` is a module-level constant. Convert to `cached_system(<CONST>)`
-and add `from utils.anthropic_helper import cached_system`:
-
-- `ai_wars_automation.py:571` `SYSTEM_PROMPT`, `:800` `MCP_SYSTEM_PROMPT`
-- `routes/dcpi_ask.py:79` `SYSTEM_PROMPT`  (public "ask" endpoint — do this next)
-- `routes/demo.py:294` `DEMO_SYSTEM_PROMPT`
-- `routes/feedback_triage.py:203` `_TRIAGE_SYSTEM`
-- `routes/geo_autopublish.py:153` `_SYSTEM`
-- `routes/linkedin_content_engine.py:619` `_VOICE_SYSTEM`
-- `routes/media_citation_gap.py:335` `_DRAFT_SYSTEM`
-- `routes/media_journalist_lane.py:402` `_VOICE_SYSTEM`
-- `routes/media_recurring_formats.py:510` `_VOICE_SYSTEM`
-- `routes/wins_poster.py:388` `ANALYST_VOICE`
-- SDK: `extractor_cron.py:131` `_SYSTEM_PROMPT`,
-  `routes/media_comment_engagement.py:614` `_PROMPT_SYSTEM`,
-  `routes/media_dm_follow_up.py:729` `_DM_PROMPT_SYSTEM`,
-  `routes/media_spike_responder.py:558` `_PROMPT_SYSTEM`,
-  `routes/sales_outreach_automator.py:930` `_OUTREACH_SYSTEM_PROMPT`
-
-## Needs a human check before converting (local `system` var — trace the source)
-
-These pass a local `system` variable to their own raw body. Most route through
-`build_messages_body` (already cached) — confirm, and only wrap the ones whose
-`system` is a **stable** value: `content_publisher.py:2315`, `main.py:16927`,
-`routes/agentic_master_shell.py:272`, `routes/ai_platform_onboarder.py:253`,
-`routes/brain_inspector.py:788`, `routes/brain_v2_layer4.py:355`,
-`routes/media_*` (`_data_story_factory`, `_reactive_news`, `_thread_generator`),
-`routes/news_entity_extraction.py:283`.
-
-## Do NOT convert (dynamic prefix — would cost more)
-
-- `routes/brain_lane_driver.py:422` `_CHARTER.format(kpi_table=…)` — per-request.
-  (It already handles its own caching decision.)
+- **Dynamic prefix (per-request bytes → wasted cache writes):**
+  - `main.py:16912` `system_prompt = f"{role} …"` — f-string keyed on `role`.
+  - `routes/brain_lane_driver.py:422` `_CHARTER.format(kpi_table=…)` — already
+    makes its own caching decision.
+- **`system` is a function PARAM (can't prove static from the call site alone) —
+  trace the callers, then wrap if stable:** `routes/agentic_master_shell.py:272`,
+  `routes/brain_inspector.py:788`, `routes/brain_v2_layer4.py:355`,
+  `routes/media_data_story_factory.py`, `routes/media_reactive_news.py`,
+  `routes/media_thread_generator.py`.
+- **`content_publisher.py:2284`** `sys_prompt = "…" + _canon + "…"` where `_canon`
+  is a *function-local* var — confirm `_canon` is pure-static, then wrap.

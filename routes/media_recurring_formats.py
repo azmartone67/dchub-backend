@@ -75,6 +75,7 @@ Table: media_recurring_queue
 """
 from __future__ import annotations
 
+from utils.anthropic_helper import cached_system
 import os
 import sys
 import json
@@ -507,7 +508,7 @@ def _llm_polish(facts_block: str, instruction: str) -> str | None:
         body = json.dumps({
             "model": MODEL_NAME,
             "max_tokens": MAX_TOKENS,
-            "system": _VOICE_SYSTEM,
+            "system": cached_system(_VOICE_SYSTEM),
             "messages": [{"role": "user", "content": user_prompt}],
         }).encode("utf-8")
         req = urllib.request.Request(

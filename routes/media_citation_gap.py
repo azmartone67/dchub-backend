@@ -52,6 +52,7 @@ Kill-switch: MEDIA_CITATION_GAP_ENABLED  (unset / 0 / false = OFF = dark)
 """
 from __future__ import annotations
 
+from utils.anthropic_helper import cached_system
 import os
 import json
 import logging
@@ -332,7 +333,7 @@ def _draft_answer(query: str, facts: dict) -> tuple[str | None, str | None]:
     body = json.dumps({
         "model": "claude-sonnet-4-5",
         "max_tokens": 700,
-        "system": _DRAFT_SYSTEM,
+        "system": cached_system(_DRAFT_SYSTEM),
         "messages": [{"role": "user", "content": user_prompt}],
     }).encode("utf-8")
     try:

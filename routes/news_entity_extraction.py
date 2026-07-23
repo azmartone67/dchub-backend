@@ -45,6 +45,7 @@ ENDPOINTS
                                               (admin-only; might be PII)
   GET  /api/v1/admin/news-ner/status        last-run summary
 """
+from utils.anthropic_helper import cached_system
 import os
 from internal_auth import accepted_internal_keys
 import re
@@ -280,7 +281,7 @@ def _extract_names_llm(headline: str, body: str) -> list[str]:
     payload = json.dumps({
         "model": model,
         "max_tokens": 300,
-        "system": system,
+        "system": cached_system(system),
         "messages": [{"role": "user", "content": sample}],
     }).encode()
     req = urllib.request.Request(

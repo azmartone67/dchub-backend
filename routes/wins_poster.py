@@ -28,6 +28,7 @@ poster code. Endpoints are admin-gated and dry-by-default.
 """
 from __future__ import annotations
 
+from utils.anthropic_helper import cached_system
 import os
 import re
 import datetime
@@ -385,7 +386,7 @@ def _draft_ship_post_llm(title: str, metric: str) -> str | None:
     body = _json.dumps({
         "model": brain_model_for("voice"),
         "max_tokens": 900,
-        "system": ANALYST_VOICE,
+        "system": cached_system(ANALYST_VOICE),
         "messages": [{"role": "user", "content": prompt}],
     }).encode("utf-8")
     try:

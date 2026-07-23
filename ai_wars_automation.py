@@ -29,6 +29,7 @@ CHANGELOG (v2 — March 2026):
   - Speed scoring based on actual response time
 """
 
+from utils.anthropic_helper import cached_system
 import uuid
 import json
 import time
@@ -568,7 +569,7 @@ def _call_anthropic(prompt, max_tokens=1000):
         json={
             'model': 'claude-haiku-4-5-20251001',
             'max_tokens': max_tokens,
-            'system': SYSTEM_PROMPT,
+            'system': cached_system(SYSTEM_PROMPT),
             'messages': [{'role': 'user', 'content': prompt}],
         },
         timeout=30,
@@ -797,7 +798,7 @@ def _call_mcp_native(platform_key, prompt, max_tokens=1000):
         json={
             'model': 'claude-haiku-4-5-20251001',
             'max_tokens': max_tokens,
-            'system': MCP_SYSTEM_PROMPT,
+            'system': cached_system(MCP_SYSTEM_PROMPT),
             'messages': [{'role': 'user', 'content': prompt}],
         },
         timeout=45,  # MCP calls take longer

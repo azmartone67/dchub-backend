@@ -68,6 +68,7 @@ Cron entries (crawler_scheduler.py):
 """
 from __future__ import annotations
 
+from utils.anthropic_helper import cached_system
 import os
 import re
 import sys
@@ -726,7 +727,7 @@ def generate_dm(commenter: dict, brief: dict,
     for attempt in range(int(max_retries) + 1):
         raw = _call_claude(
             messages=[{"role": "user", "content": user_msg}],
-            system=_DM_PROMPT_SYSTEM,
+            system=cached_system(_DM_PROMPT_SYSTEM),
         )
         if not raw:
             last_reason = "claude_no_response"

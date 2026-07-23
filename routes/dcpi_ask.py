@@ -4,6 +4,7 @@ GET/POST /api/v1/dcpi/ask?q=<question>
   Returns:
     {answer: "...", citations: [{slug, name, score}], q: "..."}
 """
+from utils.anthropic_helper import cached_system
 import os, json, re
 from flask import Blueprint, request, jsonify
 import psycopg2, psycopg2.extras
@@ -76,7 +77,7 @@ def _call_anthropic(question: str, context: str) -> tuple[str, list]:
             json={
                 "model": "claude-haiku-4-5-20251001",
                 "max_tokens": 600,
-                "system": SYSTEM_PROMPT,
+                "system": cached_system(SYSTEM_PROMPT),
                 "messages": [
                     {"role": "user",
                      "content": f"DCPI snapshot:\n\n{context}\n\nQuestion: {question}"}

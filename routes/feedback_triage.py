@@ -35,6 +35,7 @@ opens the actual PR via gh. We do NOT shell out to git from this file.
 """
 from __future__ import annotations
 
+from utils.anthropic_helper import cached_system
 import hashlib
 import hmac
 import json
@@ -200,7 +201,7 @@ def _call_claude(prompt: str) -> tuple[Optional[str], Optional[str]]:
         body = json.dumps({
             "model": model,
             "max_tokens": 800,
-            "system": _TRIAGE_SYSTEM,
+            "system": cached_system(_TRIAGE_SYSTEM),
             "messages": [{"role": "user", "content": prompt}],
         }).encode("utf-8")
         req = urllib.request.Request(
