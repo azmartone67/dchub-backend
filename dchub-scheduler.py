@@ -127,6 +127,19 @@ JOBS = {
         'minute': 0,
         'timeout': 300,
     },
+    'db_health_snapshot': {
+        # Rebuilt 2026-07-21: the brain's whole-DB observability baseline
+        # (db_health_snapshots) — core-table counts + DB size, 6-hourly. The old
+        # writer was lost and the table went silently stale for 9.7d. Now a
+        # tracked /api/jobs endpoint so check_cron_freshness watches it (6h
+        # interval declared in jobs_routes._JOB_INTERVALS). :05 avoids the news :00.
+        'name': 'DB Health Snapshot (observability baseline)',
+        'endpoint': '/api/jobs/db-health-snapshot',
+        'method': 'POST',
+        'hours': [0, 6, 12, 18],
+        'minute': 5,
+        'timeout': 60,
+    },
     'reactive_news': {
         # Phase-1 of the reactive-news lane: scan recent analyst-firm news,
         # draft DCPI reframes, drop them in the review queue (status=queued).

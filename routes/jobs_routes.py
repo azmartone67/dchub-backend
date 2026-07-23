@@ -152,6 +152,14 @@ def _record_cron_complete(job_name, status='ok', duration_ms=None, error=None):
         logger.warning(f"_record_cron_complete({job_name}): {type(e).__name__}: {e}")
 
 
+# Declared cadence per job (seconds) so check_cron_freshness gets a TIGHT stale
+# threshold (2x interval) instead of the generic 30h default. The start-stamp
+# passes this through; add a row when a job's silence should be caught fast.
+_JOB_INTERVALS = {
+    "db-health-snapshot": 6 * 3600,   # 6-hourly whole-DB baseline
+}
+
+
 def _require_admin_key():
     """Validate admin key from header or query param. Returns error tuple or None."""
     # Keep-alive is a low-security liveness ping — allow anonymous.
@@ -197,7 +205,7 @@ def _require_admin_key():
         if path.startswith('/api/jobs/'):
             job_name = path[len('/api/jobs/'):].split('/', 1)[0].strip()
             if job_name and job_name not in ('status', 'keep-alive'):
-                _record_cron_run(job_name)
+                _record_cron_run(job_name, _JOB_INTERVALS.get(job_name))
     except Exception:
         pass
 
@@ -242,6 +250,67 @@ def _reg_update(key):
 # =============================================================================
 # EXTERNAL CRON JOB ENDPOINTS -- /api/jobs/*
 # =============================================================================
+
+
+@jobs_bp.route('/api/jobs/db-health-snapshot', methods=['POST'])
+def job_db_health_snapshot():
+    """Cron (6-hourly): capture a whole-DB health snapshot into
+    db_health_snapshots — core-table row counts + DB size. This is the brain's
+    own observability baseline (routes/_freshness.py reads MAX(snapshot_at)); the
+    original writer was lost (not in code or git history — likely an external SQL
+    step) and the table went silently stale for 9.7d until the 2026-07 health
+    audit. Rebuilt as a tracked /api/jobs endpoint so the cron dead-man switch
+    (check_cron_freshness) now watches it too — 6h interval declared in
+    _JOB_INTERVALS, so a miss surfaces within ~12h.
+
+    Column sources are stable-forward. Two columns whose original writer was
+    unrecoverable are mapped to the nearest sensible metric (capacity_count =
+    facilities with a known power_mw; ecosystem_count = ai_cumulative)."""
+    auth_err = _require_admin_key()
+    if auth_err:
+        return auth_err
+    conn = None
+    try:
+        conn = _get_pg()
+        conn.autocommit = True   # each count independent; a failed one won't abort
+        with conn.cursor() as cur:
+            def _c(sql):
+                try:
+                    cur.execute(sql)
+                    return int(cur.fetchone()[0] or 0)
+                except Exception:
+                    return None
+            snap = {
+                'facility_count':  _c("SELECT COUNT(*) FROM facilities"),
+                'deal_count':      _c("SELECT COUNT(*) FROM deals"),
+                'news_count':      _c("SELECT COUNT(*) FROM news"),
+                'capacity_count':  _c("SELECT COUNT(*) FROM facilities "
+                                      "WHERE power_mw IS NOT NULL AND power_mw > 0"),
+                'user_count':      _c("SELECT COUNT(*) FROM users"),
+                'ecosystem_count': _c("SELECT COUNT(*) FROM ai_cumulative"),
+            }
+            cur.execute("SELECT ROUND(pg_database_size(current_database()) "
+                        "/ 1048576.0, 2)")
+            db_size_mb = float(cur.fetchone()[0] or 0)
+            cur.execute("""
+                INSERT INTO db_health_snapshots
+                    (snapshot_at, facility_count, deal_count, news_count,
+                     capacity_count, user_count, ecosystem_count, db_size_mb)
+                VALUES (NOW(), %s, %s, %s, %s, %s, %s, %s)
+            """, (snap['facility_count'], snap['deal_count'], snap['news_count'],
+                  snap['capacity_count'], snap['user_count'],
+                  snap['ecosystem_count'], db_size_mb))
+        return jsonify({'success': True,
+                        'snapshot': {**snap, 'db_size_mb': db_size_mb}}), 200
+    except Exception as e:
+        return jsonify({'success': False,
+                        'error': f'{type(e).__name__}: {str(e)[:200]}'}), 500
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 @jobs_bp.route('/api/jobs/news-refresh', methods=['POST'])
