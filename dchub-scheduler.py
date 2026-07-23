@@ -698,6 +698,25 @@ DISABLED_JOBS = {
         'minute': 5,
         'timeout': 60,
     },
+    'agent_adoption_tick': {
+        # 2026-07-23: honest AI-agent adoption funnel (reach vs real tool-use vs
+        # planner-first vs conversion, per platform). Persists a trend snapshot so
+        # we can tell whether iterations actually move real usage off 0.
+        'name': 'Agent Adoption — funnel master-tick',
+        'endpoint': '/api/v1/admin/agent-adoption/master-tick',
+        'method': 'POST',
+        'hours': [16],
+        'minute': 20,
+        'timeout': 60,
+    },
+    'agent_adoption_digest': {
+        'name': 'Agent Adoption — operator funnel digest',
+        'endpoint': '/api/v1/admin/agent-adoption/digest?send=true',
+        'method': 'POST',
+        'hours': [16],
+        'minute': 25,
+        'timeout': 60,
+    },
     # Phase FF+7-mttr5 (2026-05-19): Brain L22 — Auto-Code LIVE.
     # User flipped to live mode. Hourly. Reads L21 ring buffer + radar
     # for 404 spikes >=2/hour, opens GitHub issues with the proposed

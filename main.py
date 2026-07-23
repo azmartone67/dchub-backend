@@ -36595,6 +36595,16 @@ try:
 except Exception as _cwg_e:
     print(f"[main] customer_white_glove register skipped: {_cwg_e}", file=sys.stderr)
 
+# Agent-adoption funnel conductor — the honest reach→real-tool-use→planner-first→
+# conversion measurement per platform (mcp_calls_identity de-looped vs ai_cumulative
+# reach). Diagnostic/read-only; names the distribution actuator per lane.
+try:
+    from routes.agent_adoption_master_shell import agent_adoption_master_shell_bp
+    app.register_blueprint(agent_adoption_master_shell_bp)
+    print("[main] agent_adoption_master_shell_bp registered: /api/v1/admin/agent-adoption/{state,master-tick,digest}", flush=True)
+except Exception as _aa_e:
+    print(f"[main] agent_adoption_master_shell register skipped: {_aa_e}", file=sys.stderr)
+
 # operator one-off email (admin-keyed, logged, idempotent) — controlled single
 # sends the templated cohorts don't cover (e.g. a mis-target correction).
 try:
