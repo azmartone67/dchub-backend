@@ -867,7 +867,19 @@ def crawl_mcp_presence() -> dict:
                 """
                 SELECT id, registry_name, listing_url
                   FROM mcp_presence_listings
+                 -- r-listed-refresh (2026-07-22): crawl not only UNDISCOVERED
+                 -- registries (discovery) but also any LISTED one gone stale
+                 -- (>3d since last crawl). Pre-fix the filter was
+                 -- `discovered = FALSE` only, so once we were listed a registry
+                 -- was NEVER re-scraped — its tool-count drift / staleness
+                 -- (glama & smithery went ~20d stale; the official registry sat
+                 -- at 30 vs 79 tools) could never self-heal. The loop writes
+                 -- metrics/drift + last_crawled_at but never flips `discovered`,
+                 -- so re-scraping a listed row is safe; oldest-first + LIMIT keeps
+                 -- each run bounded (full coverage over a few daily runs).
                  WHERE COALESCE(discovered, FALSE) = FALSE
+                    OR last_crawled_at IS NULL
+                    OR last_crawled_at < NOW() - INTERVAL '3 days'
                  ORDER BY COALESCE(last_crawled_at, '1970-01-01'::timestamptz) ASC
                  LIMIT %s
                 """,
