@@ -140,6 +140,30 @@ JOBS = {
         'minute': 5,
         'timeout': 60,
     },
+    'mcp_presence_crawl': {
+        # r-presence-backstop (2026-07-21): the registry-presence flywheel runs on
+        # the SEPARATE crawler_scheduler (mcp_presence_crawl @6/18, auto_fix @19),
+        # which tracks slots in-memory and loses them on every worker restart
+        # (Railway deploys) — it had silently stalled 51-61h while listings rotted.
+        # This is a RELIABLE daily backstop via the proven job scheduler. The crawl
+        # + submit endpoints are idempotent and self-capped (submit-all: max 2 live
+        # posts/run, 7-day cooldown), so double-running with crawler_scheduler is
+        # harmless. Staleness is now also watched by check_mcp_presence_stale.
+        'name': 'MCP registry presence crawl (daily backstop)',
+        'endpoint': '/api/v1/admin/mcp-presence/crawl',
+        'method': 'POST',
+        'hours': [7],
+        'minute': 30,
+        'timeout': 120,
+    },
+    'mcp_presence_submit': {
+        'name': 'MCP registry submit-all + drift audit (daily backstop)',
+        'endpoint': '/api/v1/admin/outreach/mcp-registry/submit-all',
+        'method': 'POST',
+        'hours': [20],
+        'minute': 30,
+        'timeout': 120,
+    },
     'reactive_news': {
         # Phase-1 of the reactive-news lane: scan recent analyst-firm news,
         # draft DCPI reframes, drop them in the review queue (status=queued).
