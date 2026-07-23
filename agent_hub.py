@@ -653,12 +653,16 @@ def call_claude(system_prompt: str, user_message: str, max_tokens: int = 500):
     client = get_claude_client()
     if not client:
         return None
-    
+    # Prompt caching: cache the (static) system prompt so its prefix is not
+    # reprocessed at full input price every call. No-op on a non-str / empty
+    # prompt. NOTE: this call uses Haiku 4.5, whose cache MINIMUM is 4096 tokens,
+    # so short system prompts here are a silent server-side no-op (harmless).
+    from utils.anthropic_helper import cached_system
     try:
         response = client.messages.create(
             model="claude-haiku-4-5-20251001",
             max_tokens=max_tokens,
-            system=system_prompt,
+            system=cached_system(system_prompt),
             messages=[{"role": "user", "content": user_message}]
         )
         return response.content[0].text

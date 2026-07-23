@@ -101,6 +101,38 @@ def aig_metadata_headers(component: str, *, cache_ttl: int | None = None) -> dic
     return headers
 
 
+def cached_system(system, *, ttl: str | None = None):
+    """Wrap a STATIC system prompt in an Anthropic prompt-caching block so its
+    prefix is cached (0.1x input price on reads) instead of reprocessed at full
+    price on every call. Returns the block-list form the Messages API accepts for
+    `system`, which works for BOTH the SDK (`messages.create(system=...)`) and raw
+    /v1/messages bodies (`{"system": ...}`):
+
+        [{"type": "text", "text": <prompt>,
+          "cache_control": {"type": "ephemeral"[, "ttl": ttl]}}]
+
+    Safe / idempotent:
+      - Only a non-empty `str` is wrapped. None / "" / an already-structured list
+        is returned unchanged, so double-wrapping or passing a pre-built block
+        list is a no-op.
+      - ONLY pass STATIC prompts (identical bytes across requests). A per-request
+        f-string / .format() prefix must NOT be wrapped — the changing bytes make
+        the prefix hash differ every call, so you'd pay a cache WRITE every time
+        and never read (a net COST INCREASE). See CACHING.md.
+      - Sub-threshold prompts (Opus/Sonnet 5/4.6/4.5 <1024 tok; Haiku 4.5 <4096
+        tok) are a silent server-side no-op — harmless, just no savings there.
+
+    `ttl="1h"` opts into the 1-hour cache (2x write price) for prompts reused less
+    than every 5 min; omit for the default 5-min cache (refreshed free on hits).
+    """
+    if not isinstance(system, str) or not system:
+        return system
+    cc = {"type": "ephemeral"}
+    if ttl:
+        cc["ttl"] = ttl
+    return [{"type": "text", "text": system, "cache_control": cc}]
+
+
 def get_anthropic_client(api_key: str | None = None, **overrides):
     """Return an anthropic.Anthropic client wired to AI Gateway if configured.
 
