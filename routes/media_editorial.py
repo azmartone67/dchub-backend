@@ -1049,12 +1049,42 @@ def _topic_mix_weights() -> dict:
 _NEWSWORTHY_MIN = float(os.environ.get("MEDIA_EDITORIAL_MIN_SCORE", "8") or 8)
 
 
+# r-capability-slot (rebuild 2026-07-18): slot topics that are RESERVED for the
+# evergreen capability data-cards. editorial_decision() ranks GLOBALLY, so the
+# capability leads (score 62-64) lost every daily slot to agent_demand (~164) and
+# live M&A deals (~98) and never posted. For a reserved slot we restrict the
+# ranked slate to capability leads only — the cards win the slot without having to
+# out-score the news. Kept as a set so more reserved topics can be added later.
+_CAPABILITY_SLOT_TOPICS = {"capability"}
+
+
+def _is_capability_lead(lead: dict) -> bool:
+    """True for a brain_capability_radar lead: an evergreen moat/pillar card
+    (kind=='cap_<key>') or a launch/milestone announcement. This is the ONLY
+    predicate the reserved-slot restriction uses — it must match exactly the
+    kinds capability_radar_leads() emits."""
+    kind = (lead or {}).get("kind") or ""
+    return kind.startswith("cap_") or kind in ("capability_launch", "data_milestone")
+
+
 def editorial_decision(slot: str | None = None) -> dict:
     """The brain's desk-editor verdict for this slot.
     Returns {post: bool, lead: {...}|None, reason, ranked: [...] }.
     post=False means SUPPRESS — nothing today clears the newsworthiness bar
     or everything newsworthy was already covered this week."""
     ranked = rank_data_events()
+    # r-capability-slot (rebuild 2026-07-18): the reserved capability slot restricts
+    # the ranked slate to capability leads ONLY, so a moat/pillar card wins the slot
+    # instead of being buried under the higher-scoring news leads. Applied to ONLY
+    # the reserved slot(s) — every other slot keeps the full board (do NOT add an
+    # `elif slot:` that EXCLUDES caps elsewhere; that would starve the X drumbeat of
+    # the capability angle). FALL-THROUGH GUARD: if a bad-data day yields zero
+    # capability leads, keep the full board rather than suppress the slot into
+    # silence (the reserved slot must never go dark just because the radar was empty).
+    if slot in _CAPABILITY_SLOT_TOPICS:
+        _caps = [l for l in ranked if _is_capability_lead(l)]
+        if _caps:
+            ranked = _caps
     # r86e (2026-06-17): the novelty filter DEADLOCKED the entire LinkedIn feed
     # — 0 quad posts for 7 days (last success 2026-06-10). Two compounding bugs:
     #   (1) greedy SUBSTRING novelty against EVERY whitespace token of the last

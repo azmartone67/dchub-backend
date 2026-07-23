@@ -79,6 +79,11 @@ LANDING_BY_TYPE = {
     # for — aggregate demand telemetry, the one dataset that moves while DCPI
     # is flat. /ai is the adoption surface the numbers come from.
     "agent_demand":           "https://dchub.cloud/ai",
+    # r-capability-slot (rebuild 2026-07-18): a platform capability / milestone
+    # announcement composed ONLY from the editorial cap_* lead's own figures.
+    # This default landing is overridden per-post to the lead's own source_url in
+    # compose_story_post (each capability card points at its own surface).
+    "capability_update":      "https://dchub.cloud/whats-new",
 }
 
 # Each story type maps to ONE of the 4 OG images we already serve.
@@ -90,6 +95,9 @@ OG_IMAGE_BY_TYPE = {
     "hyperscaler_drama":     "https://api.dchub.cloud/static/og/landing-hyperscaler-deals.png",
     "market_anomaly":        "https://api.dchub.cloud/static/og/landing-ai-capacity.png",
     "agent_demand":          "https://api.dchub.cloud/static/og/landing-agents.png",
+    # r-capability-slot (rebuild): default OG; overridden by the lead's branded
+    # data-card (lead['card'] → _data_card_url) in compose_story_post.
+    "capability_update":     "https://api.dchub.cloud/static/og/landing-agents.png",
 }
 
 # 2026-06-07: bridge from the content-engine's `story_type` (6 values, used
@@ -110,6 +118,10 @@ _STORY_TYPE_TO_TOPIC = {
     # agent_demand KIND to (media_editorial._KIND_TO_TOPIC) so the style/topic
     # learners aggregate both vocabularies onto one unit.
     "agent_demand":         "industry_pulse",
+    # r-capability-slot (rebuild): capability/milestone announcements aggregate
+    # onto the same tuner unit as capability_spotlight (both are "what DC Hub can
+    # do / just shipped" first-party angles).
+    "capability_update":    "ai_citation",
 }
 
 # Known MCP tool catalog — used by capability_spotlight to pick a
@@ -756,6 +768,32 @@ RULES:
   request volume — say so if you cite the tool counts.
 End with the source line + CTA: {landing}. Hashtags: #AIInfrastructure #DataCenter #MCP."""
 
+    if story_type == "capability_update":
+        # r-capability-slot (rebuild): compose ONLY from the editorial cap_* lead's
+        # own figures (built into data['lead'] by compose_story_post — no puller ran,
+        # so there is no unrelated pulled data to leak in). The lead's number+trend+
+        # so-what is ALSO prepended by _compose_with_claude via lead_prompt_block, so
+        # the post already opens with it; this block frames the honesty fence.
+        ld = data.get("lead") or {}
+        return f"""Compose a LinkedIn post announcing a DC Hub PLATFORM CAPABILITY /
+data milestone — a "what we shipped" update from a position of strength.
+
+THE CAPABILITY (the ONLY numbers you may use):
+- Headline: {ld.get('headline_number','')}
+- Detail:   {ld.get('trend','')}
+- So-what:  {ld.get('so_what','')}
+
+RULES:
+- OPEN with the headline number in the FIRST sentence, before LinkedIn's
+  "...more" fold (~12 words). No brand-pillar preamble.
+- HONESTY (non-negotiable): cite ONLY the figures above. Do NOT invent or pull in
+  any OTHER market, facility, deal, ISO, or metric number — this post is about this
+  one capability, nothing else. If you need context, name the CATEGORY, never a
+  fabricated value.
+- Say plainly WHAT shipped / what the milestone is and why it matters to teams
+  making AI-infrastructure siting and capex decisions — concrete, dry, no hype.
+End with the source line + CTA: {landing}. Hashtags: #DataCenter #AIInfrastructure #DCPI."""
+
     if story_type == "market_anomaly":
         a = data.get("anomaly") or {}
         return f"""Compose a LinkedIn post about a DCPI anomaly: the
@@ -1098,10 +1136,34 @@ def compose_story_post(slot_topic: str | None = None, lead: dict | None = None) 
     # unrelated data (the half-wired failure mode).
     if isinstance(lead, dict) and lead.get("kind") == "agent_demand":
         story_type = "agent_demand"
-    pull = _PULLERS.get(story_type, _PULLERS["capability_spotlight"])
-    data = pull()
+    # r-capability-slot (rebuild 2026-07-18): when the desk chose a CAPABILITY lead
+    # (the reserved 16:00 slot restricts to these), force the capability_update
+    # story type and build `data` FROM the lead — skip the puller entirely. The
+    # prompt is honesty-fenced to use ONLY the lead's own figures, so the post can
+    # never open with the capability number and then wander into unrelated pulled
+    # data (the same half-wired failure the agent_demand fix closed). Mirrors the
+    # agent_demand force-type pattern above.
+    _is_capability_lead = False
+    if isinstance(lead, dict):
+        _lk = lead.get("kind") or ""
+        if _lk.startswith("cap_") or _lk in ("capability_launch", "data_milestone"):
+            story_type = "capability_update"
+            _is_capability_lead = True
+
+    if _is_capability_lead:
+        data = {"type": "capability_update", "lead": lead}
+    else:
+        pull = _PULLERS.get(story_type, _PULLERS["capability_spotlight"])
+        data = pull()
     landing = LANDING_BY_TYPE[story_type]
     og_url = OG_IMAGE_BY_TYPE[story_type]
+    # Landing override: point at the capability lead's OWN surface (each cap_* lead
+    # carries a source_url for the feature it announces) rather than the generic
+    # /whats-new default.
+    if _is_capability_lead:
+        _su = (lead.get("source_url") or "").strip()
+        if _su:
+            landing = _su
 
     # r-agent-demand: demand data unavailable (endpoint gap, thin counts, or
     # no upward movement) → SKIP honestly. Never a fallback template — all

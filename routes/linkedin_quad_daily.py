@@ -79,7 +79,14 @@ def _arc_reference() -> str:
 SLOTS = [
     {"hour":  8, "topic": "dcpi_mover",         "style": "data",       "title": "DCPI Mover · 24h"},
     {"hour": 12, "topic": "hyperscaler_deal",   "style": "narrative",  "title": "Hyperscaler AI Deal"},
-    {"hour": 16, "topic": "ai_capex_index",     "style": "listicle",   "title": "AI Capacity Index"},
+    # r-capability-slot (rebuild 2026-07-18): the 16:00 slot is RESERVED for the
+    # evergreen capability data-cards (brain_capability_radar cap_* leads). They
+    # score 62-64 and lost EVERY slot to agent_demand (~164) and live deals (~98)
+    # when editorial ranked globally — so the 6 "what we shipped" cards never
+    # posted. This slot no longer competes on score: editorial_decision("capability")
+    # restricts to capability leads (and falls through to the full board only if a
+    # bad-data day yields none). Was topic "ai_capex_index"/listicle.
+    {"hour": 16, "topic": "capability",         "style": "data",       "title": "What We Shipped"},
     {"hour": 20, "topic": "industry_pulse",     "style": "contrarian", "title": "Industry Counter-Take"},
 ]
 
@@ -98,6 +105,10 @@ OG_IMAGE_MAP = {
     # here so a forced ?topic=agent_demand can never KeyError on the fallback
     # landing/OG lookups.
     "agent_demand":       "https://api.dchub.cloud/static/og/landing-agents.png",
+    # r-capability-slot: the reserved 16:00 slot. Default OG/landing here so the
+    # run() lookups (landing = LANDING_URL_MAP[topic]) never KeyError; the engine
+    # then overrides both from the capability lead's own card + source_url.
+    "capability":         "https://api.dchub.cloud/static/og/landing-agents.png",
 }
 
 LANDING_URL_MAP = {
@@ -106,6 +117,7 @@ LANDING_URL_MAP = {
     "ai_capex_index":     "https://dchub.cloud/ai-capacity-index",
     "industry_pulse":     "https://dchub.cloud/dc-hub-media",
     "agent_demand":       "https://dchub.cloud/ai",
+    "capability":         "https://dchub.cloud/whats-new",
 }
 
 
@@ -998,11 +1010,35 @@ def run():
     # Capability radar: retire a capability/milestone lead ONLY after it actually
     # posted (success), so a new capability stays visible until announced and a
     # failed post leaves it to retry. (The radar is read-only; this is the writer.)
+    # RETIRE-BUG fix (r-capability-slot rebuild): the guard matched only the
+    # launch/milestone kinds, but the 6 EVERGREEN moat/pillar leads are
+    # kind=="cap_<key>" (see brain_capability_radar.capability_radar_leads). Their
+    # baseline (data_milestone_snapshots) therefore never advanced, so repost
+    # rotation was dead — the same card could never age past repost_days. Widen the
+    # guard to also match the cap_ prefix. dedup_key is "cap:<key>" for these, which
+    # mark_capability_announced already resolves (split on first ":").
     try:
+        _lk = (_ed_lead.get("kind") or "") if isinstance(_ed_lead, dict) else ""
         if (result or {}).get("ok") and isinstance(_ed_lead, dict) \
-                and _ed_lead.get("kind") in ("capability_launch", "data_milestone"):
+                and (_lk in ("capability_launch", "data_milestone")
+                     or _lk.startswith("cap_")):
             from routes.brain_capability_radar import mark_capability_announced
             mark_capability_announced(_ed_lead.get("dedup_key", ""))
+    except Exception:
+        pass
+
+    # r-capability-slot amplify (rebuild): after a SUCCESSFUL reserved-capability
+    # publish, amplify the same copy to X inline. The quad is LinkedIn-only and the
+    # standalone X auto-sweep is UNREGISTERED, so without this the capability cards
+    # never reach X at all. Best-effort: amplify_to_all honors its own
+    # DRY_RUN / kill-switch / daily-cap internally, and any failure here is
+    # swallowed so it can NEVER block or unwind the LinkedIn publish that just
+    # succeeded.
+    try:
+        if (result or {}).get("ok") and target_slot.get("topic") == "capability":
+            from routes.multiplatform_amplifier import amplify_to_all
+            amplify_to_all(source_post_id=0, source_text=text,
+                           source_link=landing, platforms=["twitter"])
     except Exception:
         pass
 
