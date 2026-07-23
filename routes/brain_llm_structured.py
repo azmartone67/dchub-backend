@@ -57,6 +57,8 @@ import logging
 import os
 from typing import Optional
 
+from utils.anthropic_helper import cached_system
+
 logger = logging.getLogger(__name__)
 
 # ── Model support (verified against live docs 2026-07-04) ───────────
@@ -111,20 +113,31 @@ def output_config_for(schema: dict) -> dict:
 
 def build_messages_body(model: str, system: str, messages: list,
                         max_tokens: int,
-                        schema: Optional[dict] = None) -> tuple:
+                        schema: Optional[dict] = None,
+                        cache_system: bool = True) -> tuple:
     """Build the /v1/messages JSON body for one raw-HTTP call.
 
     Returns (body_dict, structured_applied). When structured mode is active
     for this (model, schema), the body carries output_config.format and the
     system prompt has the now-redundant "reply ONLY with JSON" boilerplate
-    stripped. Otherwise the body is byte-identical to the legacy one —
-    same keys, same untouched system prompt.
+    stripped.
+
+    Prompt caching (2026-07-23): the (static) brain system prompt is wrapped in
+    a `cache_control: ephemeral` block via cached_system() so its prefix is cached
+    (0.1x input price on reads) instead of reprocessed at full price on every
+    call. The brain layers hit the same charter/critique prompts repeatedly, so
+    this is a large share of the low-cache-hit-rate spend. Pass
+    cache_system=False for a caller whose system prompt genuinely changes every
+    request (a changing prefix pays a wasted cache WRITE each call — see
+    CACHING.md). cached_system() is a no-op on non-str / already-cached input, so
+    callers that pre-wrap their own system (e.g. brain_lane_driver) are unaffected.
     """
     applied = structured_active(model, schema)
+    sys_val = strip_json_only_boilerplate(system) if applied else system
     body = {
         "model": model,
         "max_tokens": max_tokens,
-        "system": strip_json_only_boilerplate(system) if applied else system,
+        "system": cached_system(sys_val) if cache_system else sys_val,
         "messages": messages,
     }
     if applied:

@@ -55,6 +55,7 @@ Cron entry: twice daily at 10/22 UTC via crawler_scheduler:
 """
 from __future__ import annotations
 
+from utils.anthropic_helper import cached_system
 import os
 import re
 import sys
@@ -555,7 +556,7 @@ def generate_response_thread(post: dict, max_retries: int = 2) -> list[dict]:
     for attempt in range(int(max_retries) + 1):
         raw = _call_claude(
             messages=[{"role": "user", "content": user_msg}],
-            system=_PROMPT_SYSTEM,
+            system=cached_system(_PROMPT_SYSTEM),
         )
         if not raw:
             break

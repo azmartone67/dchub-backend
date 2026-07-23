@@ -25,6 +25,7 @@ Safety:
   - System prompt constrains scope strictly to DC/grid/market topics
   - Response cached for 1h on (question_hash) so repeat queries are free
 """
+from utils.anthropic_helper import cached_system
 import hashlib
 import json
 import os
@@ -291,7 +292,7 @@ def _call_claude_with_tools(question):
                 json={
                     "model": DEMO_MODEL,
                     "max_tokens": MAX_OUTPUT_TOKENS,
-                    "system": DEMO_SYSTEM_PROMPT,
+                    "system": cached_system(DEMO_SYSTEM_PROMPT),
                     "tools": tools_for_api,
                     "messages": messages,
                 },

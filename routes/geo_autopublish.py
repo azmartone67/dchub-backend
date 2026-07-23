@@ -20,6 +20,7 @@ Endpoint:
   POST /api/v1/admin/geo/autopublish        acts (admin-gated); ?dry=1 previews
 """
 
+from utils.anthropic_helper import cached_system
 import os
 import json
 import logging
@@ -150,7 +151,7 @@ def _llm_draft(item: dict, rows: list) -> dict | None:
         "No prose outside the JSON. No fabricated numbers."
     )
     body = json.dumps({
-        "model": "claude-sonnet-4-5", "max_tokens": 1100, "system": _SYSTEM,
+        "model": "claude-sonnet-4-5", "max_tokens": 1100, "system": cached_system(_SYSTEM),
         "messages": [{"role": "user", "content": user}],
     }).encode("utf-8")
     try:

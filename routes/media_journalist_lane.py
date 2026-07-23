@@ -67,6 +67,7 @@ ACTIVATION
 """
 from __future__ import annotations
 
+from utils.anthropic_helper import cached_system
 import os
 import json
 import logging
@@ -399,7 +400,7 @@ def _llm_draft(prompt: str) -> dict | None:
         body = json.dumps({
             "model": "claude-sonnet-4-5",
             "max_tokens": 700,
-            "system": _VOICE_SYSTEM,
+            "system": cached_system(_VOICE_SYSTEM),
             "messages": [{"role": "user", "content": prompt}],
         }).encode("utf-8")
         req = urllib.request.Request(

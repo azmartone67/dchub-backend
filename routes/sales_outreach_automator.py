@@ -93,6 +93,7 @@ Cron entry (crawler_scheduler.py):
 """
 from __future__ import annotations
 
+from utils.anthropic_helper import cached_system
 import os
 import re
 import sys
@@ -927,7 +928,7 @@ def generate_outreach(candidate: dict, contact: dict,
     for attempt in range(int(max_retries) + 1):
         raw = _call_claude(
             messages=[{"role": "user", "content": user_msg}],
-            system=_OUTREACH_SYSTEM_PROMPT,
+            system=cached_system(_OUTREACH_SYSTEM_PROMPT),
         )
         if not raw:
             last_reason = "claude_no_response"

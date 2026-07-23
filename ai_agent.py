@@ -384,10 +384,11 @@ def chat():
         if not client:
             return jsonify({"response": "AI chat requires API key. Contact info@dchub.cloud for help.", "model": "fallback"})
         
+        from utils.anthropic_helper import cached_system  # cache the static CHAT_PROMPT prefix
         response = client.messages.create(
             model="claude-haiku-4-5-20251001",
             max_tokens=300,
-            system=CHAT_PROMPT,
+            system=cached_system(CHAT_PROMPT),
             messages=[{"role": "user", "content": message}]
         )
         return jsonify({"response": response.content[0].text, "model": "claude-sonnet-4"})

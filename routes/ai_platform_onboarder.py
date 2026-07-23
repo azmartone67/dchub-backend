@@ -37,6 +37,7 @@ Safety:
 """
 from __future__ import annotations
 
+from utils.anthropic_helper import cached_system
 import json
 import logging
 import os
@@ -250,7 +251,7 @@ def _claude_write_card(submission: dict, meta: dict, fit_score: int) -> str | No
             body = json.dumps({
                 "model": model,
                 "max_tokens": 700,
-                "system": sysmsg,
+                "system": cached_system(sysmsg),
                 "messages": [{"role": "user", "content": prompt}],
             }).encode("utf-8")
             req = urllib.request.Request(url, data=body, headers={

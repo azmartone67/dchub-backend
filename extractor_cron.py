@@ -2,6 +2,7 @@
 """extractor_cron.py — Standalone announcement-to-signal extractor."""
 
 from __future__ import annotations
+from utils.anthropic_helper import cached_system
 import argparse, hashlib, json, logging, os, sys, time
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -128,7 +129,7 @@ def _call_claude(title, text):
     try:
         client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
         resp = client.messages.create(
-            model=CLAUDE_MODEL, max_tokens=400, system=_SYSTEM_PROMPT,
+            model=CLAUDE_MODEL, max_tokens=400, system=cached_system(_SYSTEM_PROMPT),
             messages=[{"role": "user", "content": user_msg}])
         raw = "".join(b.text for b in resp.content if getattr(b,"type","")=="text").strip()
         if raw.startswith("```"):
