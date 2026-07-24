@@ -31703,6 +31703,17 @@ def serve_plan_sync():
     js = open('static/js/dchub-plan-sync.js', 'r').read()
     return Response(js, mimetype='application/javascript', headers={'Cache-Control': 'public, max-age=3600'})
 
+# r-404-routegap (2026-07-24): /pricing hard-404'd on the API host 237x/24h.
+# The page itself is frontend-only (dchub.cloud/pricing, 200) — the backend
+# has /pricing/upgrade and /pricing/checkout/* but no bare /pricing, so agents
+# and clients that resolve pricing against the API origin hit a wall right at
+# the moment of purchase intent. Redirect instead of 404ing.
+@app.route("/pricing", methods=["GET"])
+def _pricing_redirect_to_frontend():
+    from flask import redirect as _redirect
+    return _redirect("https://dchub.cloud/pricing", code=302)
+
+
 # r-404-routegap (2026-07-24): callers hit /api/v1/press-releases 73x/24h and
 # got a hard 404 — every other public read lives under /api/v1/, so agents
 # guess the versioned path. Serve it from the same handler rather than making
