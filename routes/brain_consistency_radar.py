@@ -911,16 +911,28 @@ def _make_route_prober():
     path — a real gap worth fixing). Stored patterns carry placeholders like
     `/api/v1/facility/<slug>`, so substitute a probe token before matching.
 
-    Fails OPEN (returns False = "no route") only if the url_map is
-    unavailable, so a broken import degrades to the old louder behaviour
-    rather than silently suppressing every finding.
+    Returns None when no url_map is reachable. The caller must then emit a
+    single `route_prober_unavailable` finding and skip the volume checks —
+    NOT fall back to raw counts. Falling back would report every legitimate
+    missing-record 404 as a route gap (the /api/v1/facility/<slug> case,
+    ~288/day), which is a worse failure than staying quiet: it trains the
+    operator to ignore this detector. One honest "I am degraded" finding
+    beats a page of false ones.
     """
     import re as _re
+    adapter = None
+    # Prefer the live app context — the radar normally runs inside a request,
+    # where current_app is the actual serving app. `import main` is the
+    # fallback and is NOT reliable outside the server process.
     try:
-        from main import app as _app
-        adapter = _app.url_map.bind("dchub.cloud")
+        from flask import current_app as _ca
+        adapter = _ca.url_map.bind("dchub.cloud")
     except Exception:
-        return lambda _pattern: False
+        try:
+            from main import app as _app
+            adapter = _app.url_map.bind("dchub.cloud")
+        except Exception:
+            return None
 
     def _exists(pattern: str) -> bool:
         try:
@@ -1008,6 +1020,21 @@ def check_repeated_404_patterns() -> list[dict]:
                         # class is narrower: a path with NO registered route at all.
                         # Ask Werkzeug's url_map directly instead of guessing.
                         _rule_exists = _make_route_prober()
+                        if _rule_exists is None:
+                            findings.append({
+                                "issue": "route_prober_unavailable",
+                                "url":   "routes/brain_consistency_radar.py:_make_route_prober",
+                                "count": 1,
+                                "detail": (
+                                    "check_repeated_404_patterns could not reach the "
+                                    "Flask url_map, so it cannot tell a missing ROUTE "
+                                    "(actionable) from a missing RECORD (normal). "
+                                    "Volume checks were SKIPPED this scan rather than "
+                                    "emitting false route gaps. This detector is "
+                                    "degraded until the app context is reachable."
+                                ),
+                            })
+                            break
                         for r in cur.fetchall():
                             pattern = r[0] if not hasattr(r, "get") else r.get("pattern") or r.get("path")
                             n = r[1] if not hasattr(r, "get") else r.get("n")

@@ -31703,6 +31703,11 @@ def serve_plan_sync():
     js = open('static/js/dchub-plan-sync.js', 'r').read()
     return Response(js, mimetype='application/javascript', headers={'Cache-Control': 'public, max-age=3600'})
 
+# r-404-routegap (2026-07-24): callers hit /api/v1/press-releases 73x/24h and
+# got a hard 404 — every other public read lives under /api/v1/, so agents
+# guess the versioned path. Serve it from the same handler rather than making
+# them learn the exception.
+@app.route("/api/v1/press-releases", methods=["GET"])
 @app.route("/api/press-releases", methods=["GET"])
 def list_press_releases():
     try:
