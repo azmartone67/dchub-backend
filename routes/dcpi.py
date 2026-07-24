@@ -410,6 +410,87 @@ def _state_queue_depth(state: str):
     return result
 
 
+# Per-STATE near-term generation-additions cache. Same rationale as the queue
+# cache above: a recompute scores 300+ markets sharing ~48 states, so cache the
+# per-state aggregate (planned_generators, 2,311 rows) 60s to protect the
+# 1-replica pool. Keyed by upper-cased state, misses cached (None) too. See
+# _state_gen_additions.
+_GEN_ADD_STATE_CACHE: dict = {}
+_GEN_ADD_STATE_CACHE_TTL_S = 60
+
+
+def _state_gen_additions(state: str):
+    """Real near-term (<=12mo) generation additions for a US state, in MW, or None.
+
+    Sums capacity_mw over planned_generators (EIA-860M planned + under-
+    construction fleet) whose planned online date falls within the next 12
+    months AND whose status is a GENUINE near-term addition -- under
+    construction or approvals-received / construction-complete-not-yet-in-
+    service: EIA status codes (U), (V), (T), (TS). Regulatory-pending rows
+    ((P), (L)) are excluded: their online dates are aspirational, not committed.
+    Returns None when the state is missing/unmatched or the read fails -- the
+    caller then keeps gen_additions at its default (0), never a fabricated value.
+
+    ★ 2026-07-24: replaces a block that queried `capacity_pipeline WHERE iso=%s`.
+    That table has NO `iso` column and NO completion_date -- it tracks DATA-
+    CENTER capacity by region/market (operators: Meta, Google, Equinix ...), i.e.
+    DEMAND, not generation SUPPLY -- so the query threw on every call inside a
+    swallow-all try and gen_additions_12mo_mw was 0 for every market, starving
+    s_additions (20% of the excess-power score). This is the excess-side sibling
+    of the interconnect_queue constraint fix (f6e8984f). planned_generators is
+    the correct generation-SUPPLY source (real planned_year/planned_month online
+    dates, per-state coverage across 47 states). The scoring FORMULA is unchanged
+    -- only the input it reads.
+    """
+    if not state:
+        return None
+    key = state.strip().upper()
+    if not key:
+        return None
+    import time as _t
+    now = _t.time()
+    hit = _GEN_ADD_STATE_CACHE.get(key)
+    if hit is not None and (now - hit[0]) < _GEN_ADD_STATE_CACHE_TTL_S:
+        return hit[1]
+    result = None
+    _c = None
+    try:
+        _c = _conn()
+        with _c.cursor() as cur:
+            # planned_month/planned_year are numeric; (year*12 + month) is a
+            # sortable month index. Window = [now, now+12] months. The status
+            # test uses a regex (~), NOT LIKE, to avoid the psycopg2
+            # '%'-as-placeholder trap and to pin only the genuine near-term
+            # EIA codes. NULL year/month/status rows drop out of the filters.
+            cur.execute(
+                """
+                SELECT COALESCE(SUM(capacity_mw), 0) AS add_mw
+                  FROM planned_generators
+                 WHERE UPPER(state) = %s
+                   AND status ~ '^\\((U|V|T|TS)\\)'
+                   AND (planned_year * 12 + planned_month) BETWEEN
+                         (EXTRACT(YEAR  FROM NOW())::int * 12
+                          + EXTRACT(MONTH FROM NOW())::int)
+                     AND (EXTRACT(YEAR  FROM NOW())::int * 12
+                          + EXTRACT(MONTH FROM NOW())::int + 12)
+                """,
+                (key,),
+            )
+            row = cur.fetchone()
+        if row and (row[0] or 0) > 0:
+            result = float(row[0])
+    except Exception:
+        result = None  # keep the default; never fabricate
+    finally:
+        if _c is not None:
+            try:
+                _c.close()
+            except Exception:
+                pass
+    _GEN_ADD_STATE_CACHE[key] = (now, result)
+    return result
+
+
 def _latest_grid_telemetry(iso: str) -> Optional[dict]:
     """Return the most-recent live grid_telemetry row for an ISO as a dict, or
     None when there is no fresh row. Read-only, fail-safe (never raises into
@@ -1376,26 +1457,19 @@ def gather_metrics_for_market(market: tuple) -> dict:
         _live_fields.add("queue_wait_months")
         _live_fields.add("queue_capacity_mw")
 
-    # Generation additions in the next 12 months from the capacity pipeline.
-    # In its OWN try so a failure here can't also suppress the queue
-    # enrichment above — the original single shared try/except (with the
-    # broken queue query first) is exactly why this never populated either.
-    try:
-        with _conn() as c, c.cursor() as cur:
-            cur.execute("""
-                SELECT COALESCE(SUM(capacity_mw), 0)
-                FROM capacity_pipeline
-                WHERE iso = %s AND expected_cod < NOW() + INTERVAL '12 months'
-                  AND status IN ('approved','construction','testing')
-            """, (iso,))
-            r = cur.fetchone()
-            if r and (r[0] or 0) > 0:
-                metrics["gen_additions_12mo_mw"] = float(r[0] or 0)
-                _live_fields.add("gen_additions_12mo_mw")
-    except Exception:
-        # capacity_pipeline schema/rows may not match — fall through to
-        # defaults (gen_additions defaults to 0, unchanged behaviour).
-        pass
+    # Near-term (<=12mo) generation additions from the REAL generation-SUPPLY
+    # source: planned_generators (EIA-860M), aggregated per state and cached.
+    # (2026-07-24 rewrite — see _state_gen_additions for the root-cause note.)
+    # The old query hit `capacity_pipeline WHERE iso=%s AND expected_cod<...`,
+    # but that table has NO `iso` and NO completion_date column (it tracks DATA-
+    # CENTER capacity, not generation), so it threw on every call inside its
+    # swallow-all try and gen_additions was 0 for every market — the excess-side
+    # twin of the interconnect_queue constraint bug. This changes only the INPUT
+    # the scorer reads; the excess formula (s_additions, 20% weight) is unchanged.
+    ga = _state_gen_additions(state)
+    if ga is not None:
+        metrics["gen_additions_12mo_mw"] = round(ga, 1)
+        _live_fields.add("gen_additions_12mo_mw")
 
     # Heuristic defaults by ISO (calibrated from public 2025 data)
     iso_defaults = {
