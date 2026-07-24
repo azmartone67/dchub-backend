@@ -150,12 +150,27 @@ def _lane_verdict(checks: list[dict]) -> str:
     return "PASS"
 
 
+def _as_dt(ts):
+    """Coerce a DB timestamp into an aware datetime. Some house tables store
+    timestamps as TEXT (coverage_gaps.created_at — it 500'd this shell's very
+    first live tick), so strings are parsed, not assumed. None on failure."""
+    if ts is None:
+        return None
+    if isinstance(ts, str):
+        try:
+            ts = datetime.datetime.fromisoformat(ts.replace("Z", "+00:00").strip())
+        except Exception:
+            return None
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=datetime.timezone.utc)
+    return ts
+
+
 def _age_days(ts) -> float | None:
+    ts = _as_dt(ts)
     if ts is None:
         return None
     now = datetime.datetime.now(datetime.timezone.utc)
-    if ts.tzinfo is None:
-        ts = ts.replace(tzinfo=datetime.timezone.utc)
     return (now - ts).total_seconds() / 86400.0
 
 
@@ -243,20 +258,18 @@ def _lane_ingest_board(c) -> list[dict]:
         cad_h = float(cad) if cad is not None else _DEFAULT_CADENCE_H
         stl = (st or "").lower()
         why = []
-        if lr is None:
+        lrz = _as_dt(lr)
+        if lrz is None:
             why.append("never ran")
-        else:
-            lrz = lr if lr.tzinfo else lr.replace(tzinfo=datetime.timezone.utc)
-            if (now - lrz).total_seconds() / 3600.0 > 2 * cad_h:
-                why.append("stale")
+        elif (now - lrz).total_seconds() / 3600.0 > 2 * cad_h:
+            why.append("stale")
         if stl not in _OK_STATUS:
             why.append("status=" + stl)
         if cz and cz >= 3 and stl not in _NO_NEW_DATA:
             why.append(str(cz) + " zero-row runs")
-        if mcd is not None:
-            mz = mcd if mcd.tzinfo else mcd.replace(tzinfo=datetime.timezone.utc)
-            if mz > now + datetime.timedelta(hours=6):
-                why.append("future content date")
+        mz = _as_dt(mcd)
+        if mz is not None and mz > now + datetime.timedelta(hours=6):
+            why.append("future content date")
         if why:
             reds.append(feed + "(" + ",".join(why) + ")")
     return [_check("board", "all board feeds within cadence",
@@ -276,7 +289,8 @@ def _lane_linkedin_token(c) -> list[dict]:
         return [_check("li_expiry", "token not near expiry", None,
                        "linkedin_tokens unreadable", critical=True)]
     exp, has_refresh = row
-    days = -( _age_days(exp) or 0.0) if exp is not None else None
+    _a = _age_days(exp)
+    days = (-_a) if _a is not None else None
     checks.append(_check(
         "li_expiry", "token not near expiry",
         (days is not None and days > 5.0) if exp is not None else None,
@@ -347,20 +361,32 @@ def _beat_ledger(note: str) -> None:
 
 # ── tick ──────────────────────────────────────────────────────────────
 
+def _safe_lane(fn, *a) -> list[dict]:
+    """A lane that CRASHES must render '?' (indeterminate), never 500 the
+    tick — the very first live tick died on coverage_gaps.created_at being
+    TEXT, taking all five lanes down with it."""
+    try:
+        return fn(*a)
+    except Exception as e:  # noqa: BLE001
+        return [_check("lane_crash", "lane ran to completion", None,
+                       f"lane crashed: {type(e).__name__}: {str(e)[:120]}",
+                       critical=True)]
+
+
 def _run_tick() -> dict:
     c = _conn()
     try:
         lanes = [
             {"id": "media_card", "name": "1 · media capability card",
-             "checks": _lane_media_card(c)},
+             "checks": _safe_lane(_lane_media_card, c)},
             {"id": "competitor_gap", "name": "2 · competitor gap crawl",
-             "checks": _lane_competitor_gap(c)},
+             "checks": _safe_lane(_lane_competitor_gap, c)},
             {"id": "ingest_board", "name": "3 · ingest dead-man board",
-             "checks": _lane_ingest_board(c)},
+             "checks": _safe_lane(_lane_ingest_board, c)},
             {"id": "linkedin_token", "name": "4 · linkedin token durability",
-             "checks": _lane_linkedin_token(c)},
+             "checks": _safe_lane(_lane_linkedin_token, c)},
             {"id": "governance", "name": "5 · governance / arm posture",
-             "checks": _lane_governance()},
+             "checks": _safe_lane(_lane_governance)},
         ]
     finally:
         if c is not None:

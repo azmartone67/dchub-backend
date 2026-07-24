@@ -157,3 +157,25 @@ def test_shell_sql_avoids_percent_trap():
             if "SELECT" in node.value.upper():
                 assert "%" not in node.value, \
                     f"percent inside literal SQL: {node.value[:60]!r}"
+
+
+def test_shell_age_days_accepts_text_timestamps():
+    """★ house trap: coverage_gaps.created_at is TEXT — the shell's first
+    live tick 500'd on '.tzinfo' of a str. _age_days must parse strings."""
+    pytest.importorskip("flask")
+    from routes.growthfix_master_shell import _age_days, _as_dt
+    assert _age_days("2026-07-11 06:04:18.230977+00") is not None
+    assert _age_days("2026-07-11T06:04:18Z") is not None
+    assert _age_days("not a timestamp") is None
+    assert _as_dt(None) is None
+
+
+def test_shell_lane_crash_renders_indeterminate():
+    pytest.importorskip("flask")
+    from routes.growthfix_master_shell import _lane_verdict, _safe_lane
+
+    def _boom(_c):
+        raise AttributeError("'str' object has no attribute 'tzinfo'")
+    checks = _safe_lane(_boom, None)
+    assert _lane_verdict(checks) == "?"
+    assert "lane crashed" in checks[0]["detail"]
