@@ -9194,6 +9194,58 @@ def check_canonical_floor_exceeds_live() -> list[dict]:
                 })
         except (TypeError, ValueError):
             continue
+
+    # ── the OTHER canon: ai_surface_canon.PINNED["public"] (2026-07-24) ──────
+    # This detector historically watched ONLY canonical_stats._FALLBACK. But the
+    # canon that feeds PUBLIC copy, registry submitters and the white-glove
+    # propagation job is ai_surface_canon.PINNED["public"] — and nothing watched
+    # it. After entity-resolution shipped it kept claiming "22,000+" facilities
+    # against a live 12,687 distinct sites (~1.7x over-claim), and a PARTNER
+    # (Grok) caught it on our own pages before any detector did. Watch it now:
+    # a floor above live reality here gets pasted into every downstream listing.
+    try:
+        from routes.mcp_honest_numbers import as_dict as _canon_public
+        pinned = _canon_public() or {}
+    except Exception:
+        pinned = {}
+    if pinned:
+        live_pub: dict = {}
+        try:
+            import os as _o, psycopg2 as _pg
+            cx = _pg.connect(_o.environ.get("DATABASE_URL", ""), connect_timeout=5)
+            try:
+                with cx.cursor() as cur:
+                    # the facilities floor must round DOWN to DISTINCT sites (post-dedup),
+                    # never to raw rows — that distinction IS the over-claim class.
+                    cur.execute("SELECT COUNT(*) FROM discovered_facilities "
+                                "WHERE duplicate_of_id IS NULL")
+                    live_pub["facilities"] = int(cur.fetchone()[0] or 0)
+                    cur.execute("SELECT COUNT(*) FROM market_power_scores")
+                    live_pub["markets"] = int(cur.fetchone()[0] or 0)
+            finally:
+                cx.close()
+        except Exception:
+            live_pub = {}
+        for key, real in live_pub.items():
+            floor = pinned.get(key)
+            if not floor or not real:
+                continue
+            try:
+                if int(floor) > int(real):
+                    findings.append({
+                        "issue": "canonical_floor_above_live_reality",
+                        "url": "ai_surface_canon.PINNED.public",
+                        "count": int(floor) - int(real),
+                        "detail": (
+                            f"ai_surface_canon PINNED public floor `{key}`={floor} EXCEEDS "
+                            f"live {real}. This canon feeds public copy, registry "
+                            f"submitters and white-glove propagation, so a stale floor is "
+                            f"pasted into every downstream listing. Lower "
+                            f"PINNED['public']['{key}'] to <= {real} AND add the old string "
+                            f"to PINNED['stale_markers'] so the scrubber catches reprints."),
+                    })
+            except (TypeError, ValueError):
+                continue
     return findings
 
 

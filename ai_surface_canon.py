@@ -46,9 +46,17 @@ PINNED = {
     "fake_tool_denylist": ["get_market_data", "search_deals", "get_transactions"],
     "crawlers_required": ["GrokBot", "xAI-Grok", "Grok-DeepSearch"],
     "public": {                                    # public-facing rounded strings
-        "facilities": "22,000+",
-        "markets": "300+",
-        "deals": "1,400+",   # DISTINCT tracked deals (== canonical_stats.deals_phrase). ★2026-07-17: was "4,000+", itself an over-claim — it floored ROWS, and the AUTO id embeds the ingest date so one deal accrues a row per day (4,275 rows -> ~1,420 distinct). ★NOT the raw `deals` COUNT(*) that /api/v1/stats returns. resolve_canon() overrides this live.
+        # ★2026-07-24 DEDUP REBASE: was "22,000+", which floored RAW discovered_facilities
+        # ROWS. A customer audit (Landry, 07-23) found cross-source duplicates — the same
+        # physical site listed by multiple providers — so we shipped conservative entity
+        # resolution and now publish DISTINCT SITES (live 12,687; AU 616 -> 322). The old
+        # floor silently became a ~1.7x over-claim the moment dedup landed, and every
+        # downstream consumer (registry submitters, description builders, white-glove
+        # propagation) kept pasting it. Meta, Microsoft and Grok have all standardised on
+        # this deduped basis — keep them in sync.
+        "facilities": "12,650+",
+        "markets": "311",
+        "deals": "1,500+",   # ★2026-07-24: live distinct = 1,553, floor raised 1,400 -> 1,500. DISTINCT tracked deals (== canonical_stats.deals_phrase). ★2026-07-17: was "4,000+", itself an over-claim — it floored ROWS, and the AUTO id embeds the ingest date so one deal accrues a row per day (4,275 rows -> ~1,420 distinct). ★NOT the raw `deals` COUNT(*) that /api/v1/stats returns. resolve_canon() overrides this live.
         "countries": "170+",
     },
     # Values known to be STALE/WRONG on some surface — the sentinel flags these.
@@ -59,7 +67,13 @@ PINNED = {
     # the ACTIVE roll-call; availability is a broader, valid claim.
     # ★2026-07-17: the "4,000+" deal claims are stale AND an over-claim — they
     # counted duplicate rows (see canonical_stats.deals_phrase). Scrub them.
-    "stale_markers": ["10,706", "10706", "50,000+", "50000", "317 ", "332 ",
+    "stale_markers": [
+                      # ★2026-07-24: the PRE-DEDUP facility floors. These were TRUE
+                      # until entity-resolution shipped, then instantly became a
+                      # ~1.7x over-claim (raw rows vs distinct sites). Grok caught
+                      # them on our own pages before any detector did — scrub on sight.
+                      "21,000+", "21,900+", "22,000+", "21k+",
+                      "10,706", "10706", "50,000+", "50000", "317 ", "332 ",
                       "232 ", "100 calls/day", "3,000+ M&A",
                       "2,000+ M&A", "2,000+ tracked deals", "2,000+ deals",
                       "2,000+ tracked M&A", "2,000+ tracked transactions",
