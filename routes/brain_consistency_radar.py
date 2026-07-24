@@ -901,6 +901,40 @@ def check_unsafe_db_conn_pattern() -> list[dict]:
     return findings
 
 
+def _make_route_prober():
+    """Return `fn(pattern) -> bool` — True when the app has a registered
+    route that would match `pattern`.
+
+    Used by check_repeated_404_patterns to separate the two very different
+    causes of a 404: a missing RECORD (route exists, slug doesn't — normal,
+    high-volume, not actionable) from a missing ROUTE (nothing serves that
+    path — a real gap worth fixing). Stored patterns carry placeholders like
+    `/api/v1/facility/<slug>`, so substitute a probe token before matching.
+
+    Fails OPEN (returns False = "no route") only if the url_map is
+    unavailable, so a broken import degrades to the old louder behaviour
+    rather than silently suppressing every finding.
+    """
+    import re as _re
+    try:
+        from main import app as _app
+        adapter = _app.url_map.bind("dchub.cloud")
+    except Exception:
+        return lambda _pattern: False
+
+    def _exists(pattern: str) -> bool:
+        try:
+            probe = _re.sub(r"<[^>]*>", "probe", pattern or "")
+            if not probe.startswith("/"):
+                probe = "/" + probe
+            adapter.match(probe, method="GET")
+            return True
+        except Exception as exc:  # NotFound → gap; MethodNotAllowed → route exists
+            return type(exc).__name__ == "MethodNotAllowed"
+
+    return _exists
+
+
 def check_repeated_404_patterns() -> list[dict]:
     """Phase FF+7-meta (2026-05-19) — fires when the same URL PATTERN
     has 404'd repeatedly. The gap the user spotted: the map's facility
@@ -925,13 +959,27 @@ def check_repeated_404_patterns() -> list[dict]:
         try:
             cur = conn.cursor()
             # Probe for a 404-log table; if missing, fall back gracefully
-            for table_candidate in ("request_telemetry", "http_request_log",
+            # r-404-table (2026-07-24 coverage audit): none of the original candidates
+            # carry the real 404 stream, so this returned [] on every scan since it was
+            # written. brain_http_errors(pattern, status, occurred_at) is where 404s
+            # actually land (~19.5k rows) — probe it FIRST.
+            for table_candidate in ("brain_http_errors", "request_telemetry",
+                                     "http_request_log",
                                      "api_404_log", "site_sentinel_results"):
                 try:
                     cur.execute("SELECT to_regclass(%s)", (f"public.{table_candidate}",))
                     if (cur.fetchone() or [None])[0]:
                         # Found a candidate — query 404s in last hour
-                        if table_candidate == "site_sentinel_results":
+                        if table_candidate == "brain_http_errors":
+                            cur.execute("""
+                                SELECT pattern, COUNT(*) AS n
+                                FROM brain_http_errors
+                                WHERE occurred_at > NOW() - INTERVAL '24 hours'
+                                  AND status = 404
+                                GROUP BY pattern HAVING COUNT(*) >= 10
+                                ORDER BY n DESC LIMIT 5
+                            """)
+                        elif table_candidate == "site_sentinel_results":
                             cur.execute("""
                                 SELECT path, COUNT(*) AS n
                                 FROM site_sentinel_results
@@ -951,9 +999,20 @@ def check_repeated_404_patterns() -> list[dict]:
                                 GROUP BY pattern HAVING COUNT(*) >= 10
                                 ORDER BY n DESC LIMIT 5
                             """)
+                        # r-404-routegap (2026-07-24 coverage audit): most high-count
+                        # 404 patterns are LEGITIMATE resource misses — e.g.
+                        # /api/v1/facility/<slug> 404s 288x/day purely because agents
+                        # probe slugs that don't exist, and that route is registered
+                        # (main.py, singular+plural on one handler). Firing on those
+                        # would make this detector permanent noise. The actionable
+                        # class is narrower: a path with NO registered route at all.
+                        # Ask Werkzeug's url_map directly instead of guessing.
+                        _rule_exists = _make_route_prober()
                         for r in cur.fetchall():
                             pattern = r[0] if not hasattr(r, "get") else r.get("pattern") or r.get("path")
                             n = r[1] if not hasattr(r, "get") else r.get("n")
+                            if pattern and _rule_exists(pattern):
+                                continue  # route exists → 404 is a missing record, not a gap
                             if pattern and n:
                                 findings.append({
                                     "issue": "repeated_404_pattern",
@@ -1974,17 +2033,33 @@ def check_discovery_stalled() -> list[dict]:
                 return findings
             # Try a few likely timestamp columns
             n_7d = None
-            for col in ("created_at", "discovered_at", "first_seen_at", "inserted_at"):
+            # r-col-probe (2026-07-24 coverage audit): every candidate here failed on the
+            # live table — created_at does not exist, and discovered_at is TEXT so the
+            # `>= NOW()` compare raised "operator does not exist: text >= timestamptz".
+            # The loop swallowed both and the silent `return findings` below produced a
+            # permanent false all-clear on discovery. `first_seen` is the real column.
+            for col in ("first_seen", "discovered_at", "created_at", "inserted_at"):
                 try:
                     cur.execute(f"""
                         SELECT COUNT(*) FROM discovered_facilities
-                         WHERE {col} >= NOW() - INTERVAL '7 days'
+                         WHERE {col}::timestamptz >= NOW() - INTERVAL '7 days'
                     """)
                     n_7d = int((cur.fetchone() or [0])[0] or 0)
                     break
                 except Exception:
                     continue
-        if n_7d is None: return findings
+        if n_7d is None:
+            # Never a silent all-clear: if no timestamp column resolves, the detector is
+            # blind and must say so rather than implying discovery is healthy.
+            return [{
+                "issue":  "discovery_probe_unresolvable",
+                "url":    "discovered_facilities",
+                "count":  1,
+                "detail": ("check_discovery_stalled could not resolve a usable timestamp "
+                           "column on discovered_facilities (tried first_seen, "
+                           "discovered_at, created_at, inserted_at) — discovery freshness "
+                           "is UNWATCHED. Fix the column probe; do not treat as healthy."),
+            }]
         if n_7d == 0:
             findings.append({
                 "issue":  "discovery_stalled_7d",
@@ -4271,7 +4346,11 @@ def check_stripe_webhook_lag() -> list[dict]:
     findings: list[dict] = []
     c = _db()
     if c is None: return findings
+    # r-webhook-table (2026-07-24 coverage audit): NONE of the original three tables
+    # exist — this detector returned [] on every scan since it was written, a permanent
+    # false all-clear on the REVENUE pipeline. The real table is stripe_webhook_events.
     candidates = [
+        ("stripe_webhook_events", "processed_at"),
         ("stripe_webhooks",     "received_at"),
         ("stripe_webhook_log",  "received_at"),
         ("stripe_events",       "created_at"),
@@ -4285,7 +4364,16 @@ def check_stripe_webhook_lag() -> list[dict]:
                     tbl, ts_col = t, col
                     break
             if not tbl:
-                return findings
+                # Never a silent all-clear on revenue: say we're blind.
+                return [{
+                    "issue":  "stripe_webhook_table_missing",
+                    "url":    "stripe webhook telemetry",
+                    "count":  1,
+                    "detail": ("check_stripe_webhook_lag found none of its candidate "
+                               "tables — Stripe webhook freshness is UNWATCHED (this "
+                               "silently returned healthy for its entire life). Add the "
+                               "real table to `candidates`."),
+                }]
             cur.execute(f"SELECT MAX({ts_col}) FROM {tbl}")
             last = (cur.fetchone() or [None])[0]
     except Exception:
@@ -4304,14 +4392,21 @@ def check_stripe_webhook_lag() -> list[dict]:
     if last.tzinfo is None:
         last = last.replace(tzinfo=_dt.timezone.utc)
     age_h = (now - last).total_seconds() / 3600.0
-    if age_h > 2.0:
+    # r-stripe-threshold (2026-07-24 coverage audit): the original 2h threshold
+    # was written for a high-volume assumption. Measured over 180 days of real
+    # `stripe_webhook_events`: avg gap 5.2h, p90 20.2h, max 49.6h — so 2h would
+    # fire during entirely normal operation and train the eye to ignore it.
+    # 72h sits above the observed maximum, so it only fires on a genuine stall.
+    _LAG_THRESHOLD_H = 72.0
+    if age_h > _LAG_THRESHOLD_H:
         findings.append({
             "issue":  "stripe_webhook_lag",
             "url":    f"table:{tbl}",
             "count":  int(age_h),
             "detail": (
                 f"Last Stripe webhook landed {age_h:.1f}h ago "
-                f"(table: `{tbl}`, threshold: 2h). Customer state is "
+                f"(table: `{tbl}`, threshold: {_LAG_THRESHOLD_H:.0f}h — above the "
+                f"49.6h worst gap seen in 180 days). Customer state is "
                 f"drifting — recent subscription changes, payment "
                 f"failures, and cancellations are not reflected. "
                 f"Check Stripe dashboard → Developers → Webhooks for "
