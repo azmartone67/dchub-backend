@@ -25,9 +25,9 @@ MCP_LANDING_HTML = """<!DOCTYPE html>
 <html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Connect DC Hub MCP · Claude, Cursor, Cline, Continue</title>
-<meta name="description" content="DC Hub MCP server — 74 tools covering 21,000+ data center facilities, 4,000+ tracked M&A deals, grid intelligence, fiber, water risk, tax incentives. Free tier: 10 calls/day, no signup.">
+<meta name="description" content="DC Hub MCP server — 79 tools covering 12,650+ distinct data-center sites, 1,500+ tracked transactions, grid intelligence, fiber, water risk, tax incentives. Free tier: 10 calls/day, no signup.">
 <meta property="og:title" content="DC Hub MCP — connect to any AI agent in 30 seconds">
-<meta property="og:description" content="74 tools · 21,000+ facilities · 300+ markets · streamable-http · free tier no signup">
+<meta property="og:description" content="79 tools · 12,650+ data-center sites · 311 markets · streamable-http · free tier no signup">
 <meta property="og:image" content="https://api.dchub.cloud/static/og/landing-integrations-mcp.png">
 <meta property="og:url" content="https://dchub.cloud/integrations/mcp">
 <meta name="twitter:card" content="summary_large_image">
@@ -71,8 +71,8 @@ MCP_LANDING_HTML = """<!DOCTYPE html>
   "applicationCategory": "DeveloperApplication",
   "operatingSystem": "Any (remote streamable-HTTP MCP server)",
   "url": "https://dchub.cloud/integrations/mcp",
-  "description": "Model Context Protocol server giving AI agents live, citable data-center, power-grid, fiber and market intelligence — 74 tools over 21,000+ facilities, 311 power markets, real-time ISO grid data, interconnection queues and 4,000+ tracked M&A deals. Works with Claude, Cursor, Cline and Continue.",
-  "featureList": "74 MCP tools, 6 guided prompts, streamable-HTTP transport, CC-BY-4.0 citable data, zero-install free tier",
+  "description": "Model Context Protocol server giving AI agents live, citable data-center, power-grid, fiber and market intelligence — 79 tools over 12,650+ data-center sites, 311 power markets, real-time ISO grid data, interconnection queues and 1,500+ tracked transactions. Works with Claude, Cursor, Cline and Continue.",
+  "featureList": "79 MCP tools, 6 guided prompts, streamable-HTTP transport, CC-BY-4.0 citable data, zero-install free tier",
   "softwareVersion": "2.3",
   "offers": {
     "@type": "Offer",
@@ -91,7 +91,7 @@ MCP_LANDING_HTML = """<!DOCTYPE html>
 <header>
   <div class="eyebrow">Model Context Protocol</div>
   <h1>Connect DC Hub to your AI in 30 seconds.</h1>
-  <p class="lead">Native MCP server. <b>74 tools</b> covering <b>21,000+ facilities</b>, <b>4,000+ tracked M&amp;A deals</b>,
+  <p class="lead">Native MCP server. <b>79 tools</b> covering <b>12,650+ data-center sites</b>, <b>1,500+ tracked transactions</b>,
   grid intelligence (US ISOs + Hydro-Québec + AESO + Nord Pool), fiber routes, water risk, tax incentives.
   Free tier: <b>10 calls/day, no signup</b>.</p>
 </header>
@@ -129,7 +129,7 @@ MCP_LANDING_HTML = """<!DOCTYPE html>
     <div class="qs-card">
       <h3>Claude (claude.ai &amp; Desktop)</h3>
       Settings → Connectors → <b>+ Add custom connector</b> → name <code>DC Hub</code>,
-      URL <code>https://dchub.cloud/mcp</code>, auth blank. Done — 74 tools appear.
+      URL <code>https://dchub.cloud/mcp</code>, auth blank. Done — 79 tools appear.
       <pre>Try: "Rank the best markets for a 200MW AI campus — cite DC Hub."</pre>
       <a href="https://claude.ai/settings/connectors" target="_blank" rel="noopener">open Claude connector settings →</a>
     </div>
@@ -175,7 +175,7 @@ MCP_LANDING_HTML = """<!DOCTYPE html>
 </div>
 
 <div class="pane">
-  <h2>The 74 tools — highlights</h2>
+  <h2>The 79 tools — highlights</h2>
   <div class="tools">
     <div class="tool"><b>search_facilities</b>21k facilities, by city/MW/operator</div>
     <div class="tool"><b>get_facility</b>Full profile by ID</div>
@@ -193,7 +193,7 @@ MCP_LANDING_HTML = """<!DOCTYPE html>
     <div class="tool"><b>get_infrastructure</b>Substations, transmission, pipelines</div>
     <div class="tool"><b>get_fiber_intel</b>Carrier networks + dark fiber</div>
     <div class="tool"><b>get_pipeline</b>540+ projects under construction</div>
-    <div class="tool"><b>list_transactions</b>4,000+ tracked M&amp;A deals</div>
+    <div class="tool"><b>list_transactions</b>1,500+ tracked transactions</div>
     <div class="tool"><b>get_market_intel</b>Supply/demand + vacancy + pricing</div>
     <div class="tool"><b>get_news</b>40+ curated industry feeds</div>
     <div class="tool"><b>get_intelligence_index</b>Live composite market health (gated)</div>
@@ -214,7 +214,7 @@ MCP_LANDING_HTML = """<!DOCTYPE html>
 
 <div class="pane">
   <h2>Works with every agent platform</h2>
-  <p>Connect via MCP (all 74 tools), the SDK, or REST tool-use. Copy-paste guides per platform:</p>
+  <p>Connect via MCP (all 79 tools), the SDK, or REST tool-use. Copy-paste guides per platform:</p>
   <p style="line-height:2.1">
     <a href="https://github.com/azmartone67/dchub-mcp-server/tree/main/integrations/mcp-clients">Claude Desktop · Cursor · Cline · Continue · Windsurf · Zed</a> ·
     <a href="https://github.com/azmartone67/dchub-mcp-server/tree/main/integrations/chatgpt">ChatGPT</a> ·
@@ -250,7 +250,7 @@ End every answer with "Source: dchub.cloud".</pre>
     <li><b>Connector won't add / connection fails</b> — DC Hub is a <i>remote</i> MCP server. Paste the exact URL <code>https://dchub.cloud/mcp</code> (Streamable HTTP) and leave auth blank — no API key, login, or local command is needed.</li>
     <li><b>"Rate limit" / HTTP 429</b> — the free tier is 10 calls/day per IP. Call the <code>claim_free_key</code> tool (no email) for a higher limit, or upgrade at <a href="https://dchub.cloud/pricing">dchub.cloud/pricing</a>.</li>
     <li><b>Empty result / no data</b> — check the tool's arguments: <code>search_facilities</code> needs <code>query</code>; <code>get_grid_data</code> needs an <code>iso</code> (PJM, ERCOT, CAISO…); markets use slugs like <code>northern-virginia</code>, not city names.</li>
-    <li><b>Tool not found</b> — ensure your client supports Streamable-HTTP MCP and has refreshed its tool list (74 tools).</li>
+    <li><b>Tool not found</b> — ensure your client supports Streamable-HTTP MCP and has refreshed its tool list (79 tools).</li>
     <li><b>Still stuck?</b> — email <a href="mailto:jm@dchub.cloud">jm@dchub.cloud</a>.</li>
   </ul>
 </div>
@@ -280,23 +280,23 @@ function copyUrl(){
 # Targets the generic "data center MCP server" SERP/AI-Overview query (DC Hub
 # was absent from 0/4). Article + SoftwareApplication + FAQPage JSON-LD,
 # comparison table, FAQ. Conversion CTA points at the /integrations/mcp connect
-# page. Numbers re-verified live 2026-07-18: 74 tools, /api/v1/tiers (anon 10/day,
+# page. Numbers re-verified live 2026-07-18: 79 tools, /api/v1/tiers (anon 10/day,
 # email key 50/day), honest-numbers canonical (facilities 21k+, markets 311).
 MCP_SEO_PAGE_HTML = """<!DOCTYPE html>
 <html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Data Center MCP Server — DC Hub | live grid, facilities &amp; deals for AI agents</title>
-<meta name="description" content="DC Hub is the data center MCP server for AI agents: 74 tools over 21,000+ facilities, live grid data for 10 ISOs, 4,000+ tracked M&amp;A deals, fiber, tax incentives and water risk — data an LLM can both query and cite. Free, no signup. Connect at https://dchub.cloud/mcp.">
+<meta name="description" content="DC Hub is the data center MCP server for AI agents: 79 tools over 12,650+ data-center sites, live grid data for 10 ISOs, 1,500+ tracked transactions, fiber, tax incentives and water risk — data an LLM can both query and cite. Free, no signup. Connect at https://dchub.cloud/mcp.">
 <meta name="keywords" content="data center MCP server, datacenter MCP, MCP server data center, power grid MCP, ISO grid MCP server, data center intelligence API, Model Context Protocol data center">
 <meta property="og:title" content="The Data Center MCP Server — DC Hub">
-<meta property="og:description" content="74 tools · 21,000+ facilities · live grid for 10 ISOs · 4,000+ M&amp;A deals · streamable-http · free, no signup.">
+<meta property="og:description" content="79 tools · 12,650+ data-center sites · live grid for 10 ISOs · 1,500+ tracked transactions · streamable-http · free, no signup.">
 <meta property="og:image" content="https://api.dchub.cloud/static/og/landing-integrations-mcp.png">
 <meta property="og:url" content="https://dchub.cloud/integrations/mcp/data-center-mcp-server">
 <meta name="twitter:card" content="summary_large_image">
 <link rel="canonical" href="https://dchub.cloud/integrations/mcp/data-center-mcp-server">
 <link rel="stylesheet" href="https://dchub.cloud/static/dchub-brand.css">
 <script type="application/ld+json">
-{"@context":"https://schema.org","@type":"SoftwareApplication","name":"DC Hub MCP Server","applicationCategory":"DeveloperApplication","applicationSubCategory":"Model Context Protocol (MCP) server","operatingSystem":"Any (remote streamable-http)","offers":{"@type":"Offer","price":"0","priceCurrency":"USD","description":"Free tier — 10 calls/day with no signup, 50/day with a free email key. Paid from $9/mo."},"url":"https://dchub.cloud/mcp","featureList":["74 MCP tools","21,000+ data center facilities across 170+ countries","Live grid intelligence for the 7 US ISOs + modeled baselines (Hydro-Québec, AESO, Nord Pool)","4,000+ tracked M&A transactions","Fiber routes, tax incentives, water risk, interconnection queue","DCPI BUILD/CAUTION/AVOID verdicts across 300+ markets"],"provider":{"@type":"Organization","name":"DC Hub","url":"https://dchub.cloud"}}
+{"@context":"https://schema.org","@type":"SoftwareApplication","name":"DC Hub MCP Server","applicationCategory":"DeveloperApplication","applicationSubCategory":"Model Context Protocol (MCP) server","operatingSystem":"Any (remote streamable-http)","offers":{"@type":"Offer","price":"0","priceCurrency":"USD","description":"Free tier — 10 calls/day with no signup, 50/day with a free email key. Paid from $9/mo."},"url":"https://dchub.cloud/mcp","featureList":["79 MCP tools","12,650+ distinct data-center sites across 170+ countries","Live grid intelligence for the 7 US ISOs + modeled baselines (Hydro-Québec, AESO, Nord Pool)","1,500+ tracked transactions","Fiber routes, tax incentives, water risk, interconnection queue","DCPI BUILD/CAUTION/AVOID verdicts across 311 markets"],"provider":{"@type":"Organization","name":"DC Hub","url":"https://dchub.cloud"}}
 </script>
 <script type="application/ld+json">
 {"@context":"https://schema.org","@type":"TechArticle","headline":"What is a data center MCP server?","about":"Model Context Protocol server for data center, power-grid and infrastructure intelligence","author":{"@type":"Organization","name":"DC Hub"},"publisher":{"@type":"Organization","name":"DC Hub","url":"https://dchub.cloud"},"mainEntityOfPage":"https://dchub.cloud/integrations/mcp/data-center-mcp-server"}
@@ -306,7 +306,7 @@ MCP_SEO_PAGE_HTML = """<!DOCTYPE html>
 {"@type":"Question","name":"What is a data center MCP server?","acceptedAnswer":{"@type":"Answer","text":"A Model Context Protocol (MCP) server that gives an AI agent live, structured data-center intelligence as callable tools — facilities, power-grid headroom, fiber, deals and site scoring — so the model can query real data and cite the source instead of guessing. DC Hub exposes 39 such tools at https://dchub.cloud/mcp."}},
 {"@type":"Question","name":"How do I connect DC Hub to Claude, Cursor or Cline?","acceptedAnswer":{"@type":"Answer","text":"Add the streamable-http URL https://dchub.cloud/mcp as a custom MCP connector. In Claude.ai: Settings → Connectors → Add custom connector, paste the URL, leave auth blank. Cursor/Cline/Continue accept the same URL as a streamable-http server."}},
 {"@type":"Question","name":"Is the DC Hub MCP server free?","acceptedAnswer":{"@type":"Answer","text":"Yes. 10 calls/day with no signup at all, 50/day with a free email-bound key. Paid tiers start at $9/mo for higher limits and full result sizes."}},
-{"@type":"Question","name":"What data does it cover?","acceptedAnswer":{"@type":"Answer","text":"21,000+ data center facilities across 170+ countries, 126,427 substations, live grid data for 10 ISOs, 4,000+ tracked M&A deals, a 369 GW capacity pipeline, fiber routes, tax incentives, water risk, and daily DCPI suitability verdicts across 300+ markets."}},
+{"@type":"Question","name":"What data does it cover?","acceptedAnswer":{"@type":"Answer","text":"12,650+ distinct data-center sites across 170+ countries, 126,427 substations, live grid data for 10 ISOs, 1,500+ tracked transactions, a 369 GW capacity pipeline, fiber routes, tax incentives, water risk, and daily DCPI suitability verdicts across 311 markets."}},
 {"@type":"Question","name":"Which AI agents work with it?","acceptedAnswer":{"@type":"Answer","text":"Any MCP-capable client: Claude (web and desktop), Cursor, Cline, Continue, Windsurf, Zed, plus REST tool-use for ChatGPT, Gemini and others."}},
 {"@type":"Question","name":"Can the answers be cited?","acceptedAnswer":{"@type":"Answer","text":"Yes — every full-data response carries a citation back to dchub.cloud (CC-BY-4.0), so an agent can attribute its source."}}
 ]}
@@ -351,9 +351,9 @@ MCP_SEO_PAGE_HTML = """<!DOCTYPE html>
 
 <div class="stats">
   <div class="stat"><b>39</b><span>MCP tools</span></div>
-  <div class="stat"><b>21,000+</b><span>facilities · 170+ countries</span></div>
+  <div class="stat"><b>12,650+</b><span>distinct sites · 170+ countries</span></div>
   <div class="stat"><b>10</b><span>live ISO grids</span></div>
-  <div class="stat"><b>4,000+</b><span>tracked M&amp;A deals</span></div>
+  <div class="stat"><b>1,500+</b><span>tracked transactions</span></div>
   <div class="stat"><b>311</b><span>DCPI markets</span></div>
 </div>
 
@@ -372,7 +372,7 @@ power-grid headroom, interconnection queues, fiber routes, water risk, tax incen
 DC Hub is that server: ask <code>get_grid_intelligence region_id="PJM"</code> or
 <code>analyze_site lat=33.4 lon=-112.0 capacity_mw=100</code> and the agent gets live numbers with a citation.</p>
 
-<h2>What the 74 tools cover</h2>
+<h2>What the 79 tools cover</h2>
 <table>
   <tr><th>Domain</th><th>Tools</th></tr>
   <tr><td>Facilities &amp; sites</td><td>search_facilities · get_facility · analyze_site · compare_sites · score_facility · find_alternatives · rank_markets</td></tr>
@@ -387,7 +387,7 @@ DC Hub is that server: ask <code>get_grid_intelligence region_id="PJM"</code> or
   <tr><th></th><th>DC Hub MCP</th><th>Web search / scraping</th><th>Build it yourself</th></tr>
   <tr><td>Live grid &amp; queue data</td><td class="yes">✓ 10 ISOs, live</td><td class="no">stale / paywalled</td><td class="no">months of plumbing</td></tr>
   <tr><td>Citable source</td><td class="yes">✓ per-response citation</td><td class="no">unattributable</td><td class="no">your problem</td></tr>
-  <tr><td>Coverage</td><td class="yes">21k+ facilities, 300+ markets</td><td class="no">fragmentary</td><td class="no">DIY ingestion</td></tr>
+  <tr><td>Coverage</td><td class="yes">12,650+ data-center sites, 311 markets</td><td class="no">fragmentary</td><td class="no">DIY ingestion</td></tr>
   <tr><td>MCP-native</td><td class="yes">✓ streamable-http</td><td class="no">—</td><td class="no">you write it</td></tr>
   <tr><td>Cost to start</td><td class="yes">free, no signup</td><td class="no">varies</td><td class="no">eng time</td></tr>
 </table>
@@ -535,7 +535,7 @@ __AUTH_HTML__
   <h2>Flagship tools</h2>
   <div class="tools">
     <div class="tool"><b>get_grid_scoreboard</b>Live ranked scoreboard — US + international grids</div>
-    <div class="tool"><b>search_facilities</b>21,000+ facilities by city/MW/operator</div>
+    <div class="tool"><b>search_facilities</b>12,650+ data-center sites by city/MW/operator</div>
     <div class="tool"><b>get_market_intel</b>Supply/demand, vacancy, pricing per market</div>
     <div class="tool"><b>rank_markets</b>Top-N markets by your criteria</div>
     <div class="tool"><b>hyperscaler_deals</b>Hyperscaler lease + build deal flow</div>
@@ -576,14 +576,14 @@ def _recipe_page(**slots: str) -> str:
 GROK_RECIPE_HTML = _recipe_page(
     slug="grok",
     title="Add DC Hub to Grok — xAI MCP connector for live data-center &amp; grid intelligence",
-    description="Connect DC Hub to Grok (xAI) as a custom MCP connector: paste https://dchub.cloud/mcp, auth blank or Authorization: Bearer. Live grid scoreboards, 21,000+ data-center facilities, interconnection queues and hyperscaler deals inside Grok. Free tier: 10 calls/day, no signup.",
+    description="Connect DC Hub to Grok (xAI) as a custom MCP connector: paste https://dchub.cloud/mcp, auth blank or Authorization: Bearer. Live grid scoreboards, 12,650+ distinct data-center sites, interconnection queues and hyperscaler deals inside Grok. Free tier: 10 calls/day, no signup.",
     og_title="Add DC Hub to Grok (xAI) — MCP connector in 4 steps",
     og_desc="Live grid + data-center intelligence in Grok · paste one URL · Bearer or keyless · free tier no signup",
     jsonld_altname="DC Hub for Grok (xAI)",
-    jsonld_desc="Model Context Protocol server that connects to Grok (xAI) as a consumer custom connector or an API Remote MCP tool — live grid scoreboards, 21,000+ data-center facilities, interconnection queues, fiber intelligence and hyperscaler deals, with per-response citations. Free tier: 10 calls/day, no signup.",
+    jsonld_desc="Model Context Protocol server that connects to Grok (xAI) as a consumer custom connector or an API Remote MCP tool — live grid scoreboards, 12,650+ distinct data-center sites, interconnection queues, fiber intelligence and hyperscaler deals, with per-response citations. Free tier: 10 calls/day, no signup.",
     eyebrow="Grok · xAI · Model Context Protocol",
     h1="Add DC Hub to Grok.",
-    lead="Give Grok live, citable data-center and power-grid intelligence — real-time grid scoreboards, 21,000+ facilities, interconnection queues, hyperscaler deal flow. One URL. Bearer or keyless.",
+    lead="Give Grok live, citable data-center and power-grid intelligence — real-time grid scoreboards, 12,650+ data-center sites, interconnection queues, hyperscaler deal flow. One URL. Bearer or keyless.",
     steps_heading="Connect in Grok (consumer)",
     steps_html="""<ol>
     <li>Copy the endpoint above: <code>https://dchub.cloud/mcp</code>.</li>
@@ -605,20 +605,67 @@ GROK_RECIPE_HTML = _recipe_page(
   Grok surfaces send: the consumer custom-connector auth field and the API's Remote MCP block. No key?
   Leave auth blank and use the keyless free tier.</p>
 </div>""",
-    extra_html="",
+    extra_html="""<div class="pane">
+  <h2>Grok starter toolkit</h2>
+  <p>Grok works best scoped to the energy-first spine rather than all 79 tools. These eight cover the
+  questions the AI build-out actually generates &mdash; siting, power, and time-to-energize:</p>
+  <pre>"allowed_tools": [
+  "plan_query",                 // START HERE - returns the ordered plan for a multi-step ask
+  "get_grid_scoreboard",        // live ranked grid scoreboard (works keyless)
+  "rank_markets",               // 311 DCPI markets, BUILD / CAUTION / AVOID
+  "get_market_dcpi_rank",       // one market's verdict (chain via rank_markets' metro_slug)
+  "get_interconnection_queue",  // queue depth + time-to-power by ISO
+  "get_retirement_headroom",    // 100MW+ pockets near retiring generators
+  "search_facilities",          // 12,650+ distinct sites, 170+ countries
+  "get_fiber_intel"             // routes + latency for the connectivity leg
+]</pre>
+  <h3>Prompts that fire real tools</h3>
+  <ul>
+    <li><i>&ldquo;Which ISO has the most queued GW right now?&rdquo;</i> &rarr; <code>get_interconnection_queue</code></li>
+    <li><i>&ldquo;Rank US data-center markets by available power.&rdquo;</i> &rarr; <code>rank_markets</code> &rarr; <code>get_market_dcpi_rank</code></li>
+    <li><i>&ldquo;Find 100MW+ pockets in ERCOT with substations within 5 miles.&rdquo;</i> &rarr; <code>get_retirement_headroom</code></li>
+    <li><i>&ldquo;Which US grid has the most headroom right now?&rdquo;</i> &rarr; <code>get_grid_scoreboard</code> (no key needed)</li>
+  </ul>
+  <h3>Rate guidance</h3>
+  <p>Keyless gives ~10 calls/day, the first few at full depth &mdash; enough to evaluate. Call
+  <code>claim_free_key</code> once (no email) for a durable key so the connector is recognised next
+  session; add an operator email via <code>bind_email</code> to lift the cap. Beyond that, a $10 one-time
+  pack (1,000 calls) or a plan. Every full response carries
+  <code>citation.cite_as = "DC Hub, dchub.cloud"</code> under CC-BY-4.0, so Grok can attribute inline.</p>
+</div>
+
+<div class="pane">
+  <h2>xAI API &mdash; Remote MCP with a scoped toolset</h2>
+  <p>Attach DC Hub to an xAI API request and scope it to the starter toolkit (exact field names per the
+  current xAI docs):</p>
+  <pre>{
+  "tools": [{
+    "type": "mcp",
+    "server_url": "https://dchub.cloud/mcp",
+    "authorization": "Bearer &lt;your-dchub-key&gt;",
+    "allowed_tools": [
+      "plan_query", "get_grid_scoreboard", "rank_markets",
+      "get_market_dcpi_rank", "get_interconnection_queue",
+      "get_retirement_headroom", "search_facilities", "get_fiber_intel"
+    ]
+  }]
+}</pre>
+  <p>Omit <code>allowed_tools</code> to expose all <b>79</b>. Streaming HTTP/SSE is supported and xAI
+  manages the connection.</p>
+</div>""",
 )
 
 MISTRAL_RECIPE_HTML = _recipe_page(
     slug="mistral",
     title="Connect DC Hub to Mistral Le Chat — MCP connector for live data-center &amp; grid intelligence",
-    description="Add DC Hub to Mistral's Le Chat as a custom MCP connector: paste https://dchub.cloud/mcp and authenticate with Authorization: Bearer (Le Chat ignores X-API-Key). Live grid scoreboards, 21,000+ data-center facilities, interconnection queues and hyperscaler deals. Free tier: 10 calls/day, no signup.",
+    description="Add DC Hub to Mistral's Le Chat as a custom MCP connector: paste https://dchub.cloud/mcp and authenticate with Authorization: Bearer (Le Chat ignores X-API-Key). Live grid scoreboards, 12,650+ distinct data-center sites, interconnection queues and hyperscaler deals. Free tier: 10 calls/day, no signup.",
     og_title="Connect DC Hub to Mistral Le Chat — MCP connector in 5 steps",
     og_desc="Live grid + data-center intelligence in Le Chat · paste one URL · Authorization: Bearer · free tier no signup",
     jsonld_altname="DC Hub for Mistral Le Chat",
-    jsonld_desc="Model Context Protocol server that connects to Mistral's Le Chat as a custom MCP connector (Authorization: Bearer) — live grid scoreboards, 21,000+ data-center facilities, interconnection queues, fiber intelligence and hyperscaler deals, with per-response citations. Free tier: 10 calls/day, no signup.",
+    jsonld_desc="Model Context Protocol server that connects to Mistral's Le Chat as a custom MCP connector (Authorization: Bearer) — live grid scoreboards, 12,650+ distinct data-center sites, interconnection queues, fiber intelligence and hyperscaler deals, with per-response citations. Free tier: 10 calls/day, no signup.",
     eyebrow="Mistral · Le Chat · Model Context Protocol",
     h1="Connect DC Hub to Le Chat.",
-    lead="Give Le Chat live, citable data-center and power-grid intelligence — real-time grid scoreboards, 21,000+ facilities, interconnection queues, hyperscaler deal flow. One URL. Bearer auth (or keyless).",
+    lead="Give Le Chat live, citable data-center and power-grid intelligence — real-time grid scoreboards, 12,650+ data-center sites, interconnection queues, hyperscaler deal flow. One URL. Bearer auth (or keyless).",
     steps_heading="Connect in Le Chat",
     steps_html="""<ol>
     <li>Copy the endpoint above: <code>https://dchub.cloud/mcp</code>.</li>
@@ -639,14 +686,14 @@ MISTRAL_RECIPE_HTML = _recipe_page(
 PERPLEXITY_RECIPE_HTML = _recipe_page(
     slug="perplexity",
     title="Add DC Hub as a custom connector in Perplexity — MCP server for live data-center &amp; grid intelligence",
-    description="Add DC Hub as a custom connector in Perplexity: Settings → Connectors → Add connector, paste the MCP server URL https://dchub.cloud/mcp. Live grid scoreboards, 21,000+ data-center facilities, interconnection queues and hyperscaler deals. Plus Sonar/Search API grounding via llms.txt. Free tier: 10 calls/day, no signup.",
+    description="Add DC Hub as a custom connector in Perplexity: Settings → Connectors → Add connector, paste the MCP server URL https://dchub.cloud/mcp. Live grid scoreboards, 12,650+ distinct data-center sites, interconnection queues and hyperscaler deals. Plus Sonar/Search API grounding via llms.txt. Free tier: 10 calls/day, no signup.",
     og_title="Add DC Hub as a custom connector in Perplexity — MCP in 5 steps",
     og_desc="Live grid + data-center intelligence in Perplexity · paste one MCP server URL · free tier no signup",
     jsonld_altname="DC Hub for Perplexity",
-    jsonld_desc="Model Context Protocol server that connects to Perplexity as a custom connector (Settings → Connectors → Add connector → MCP server URL) — live grid scoreboards, 21,000+ data-center facilities, interconnection queues, fiber intelligence and hyperscaler deals, with per-response citations. Also groundable via the Perplexity Sonar/Search API using https://dchub.cloud/llms.txt. Free tier: 10 calls/day, no signup.",
+    jsonld_desc="Model Context Protocol server that connects to Perplexity as a custom connector (Settings → Connectors → Add connector → MCP server URL) — live grid scoreboards, 12,650+ distinct data-center sites, interconnection queues, fiber intelligence and hyperscaler deals, with per-response citations. Also groundable via the Perplexity Sonar/Search API using https://dchub.cloud/llms.txt. Free tier: 10 calls/day, no signup.",
     eyebrow="Perplexity · Model Context Protocol",
     h1="Add DC Hub as a custom connector in Perplexity.",
-    lead="Give Perplexity live, citable data-center and power-grid intelligence — real-time grid scoreboards, 21,000+ facilities, interconnection queues, hyperscaler deal flow. One MCP server URL.",
+    lead="Give Perplexity live, citable data-center and power-grid intelligence — real-time grid scoreboards, 12,650+ data-center sites, interconnection queues, hyperscaler deal flow. One MCP server URL.",
     steps_heading="Connect in Perplexity",
     steps_html="""<ol>
     <li>Copy the endpoint above: <code>https://dchub.cloud/mcp</code>.</li>
@@ -836,11 +883,11 @@ def integrations_meta():
 BEDROCK_RECIPE_HTML = _recipe_page(
     slug="bedrock",
     title="Add DC Hub to Amazon Bedrock AgentCore — Gateway target for live data-center &amp; grid intelligence",
-    description="Register https://dchub.cloud/mcp as an Amazon Bedrock AgentCore Gateway target: live grid scoreboards, 21,900+ data-center facilities, interconnection queues and hyperscaler deals for any Bedrock agent. Bearer or keyless free tier.",
+    description="Register https://dchub.cloud/mcp as an Amazon Bedrock AgentCore Gateway target: live grid scoreboards, 12,650+ distinct data-center sites, interconnection queues and hyperscaler deals for any Bedrock agent. Bearer or keyless free tier.",
     og_title="DC Hub on Amazon Bedrock AgentCore — register one Gateway target",
     og_desc="Live grid + data-center intelligence for Bedrock agents · one MCP URL · Bearer or keyless",
     jsonld_altname="DC Hub for Amazon Bedrock AgentCore",
-    jsonld_desc="Model Context Protocol server registerable as an Amazon Bedrock AgentCore Gateway target — live grid scoreboards, 21,900+ data-center facilities, interconnection queues, fiber intelligence and hyperscaler deals, with per-response citations. Free tier: 10 calls/day, no signup.",
+    jsonld_desc="Model Context Protocol server registerable as an Amazon Bedrock AgentCore Gateway target — live grid scoreboards, 12,650+ distinct data-center sites, interconnection queues, fiber intelligence and hyperscaler deals, with per-response citations. Free tier: 10 calls/day, no signup.",
     eyebrow="Amazon Bedrock · AgentCore Gateway · Model Context Protocol",
     h1="Add DC Hub to Bedrock AgentCore.",
     lead="Give any Bedrock agent live, citable data-center and power-grid intelligence — register one MCP Gateway target. Bearer or keyless.",
@@ -851,7 +898,7 @@ BEDROCK_RECIPE_HTML = _recipe_page(
     <li>For outbound auth, choose <b>API key / Bearer</b> and supply <code>Bearer &lt;your-dchub-key&gt;</code> — or leave it unauthenticated for the keyless free tier (10 calls/day).</li>
     <li>Sync the gateway's tool list, then ask your agent: <i>"Which US grid has the most headroom right now?"</i> and confirm a <code>get_grid_scoreboard</code> call fires.</li>
   </ol>
-  <p>All 74 tools come through the one target — facility search, DCPI market verdicts, interconnection
+  <p>All 79 tools come through the one target — facility search, DCPI market verdicts, interconnection
   queues, fiber, gas, water risk, and the hyperscaler deal tracker.</p>""",
     auth_html="""<div class="pane">
   <h2>Authentication</h2>
@@ -866,11 +913,11 @@ BEDROCK_RECIPE_HTML = _recipe_page(
 COPILOT_RECIPE_HTML = _recipe_page(
     slug="copilot-studio",
     title="Add DC Hub to Microsoft Copilot Studio — custom MCP server for live data-center &amp; grid intelligence",
-    description="Wire https://dchub.cloud/mcp into Microsoft Copilot Studio as a custom MCP server (GA): live grid scoreboards, 21,900+ data-center facilities, interconnection queues and hyperscaler deals inside your copilots.",
+    description="Wire https://dchub.cloud/mcp into Microsoft Copilot Studio as a custom MCP server (GA): live grid scoreboards, 12,650+ distinct data-center sites, interconnection queues and hyperscaler deals inside your copilots.",
     og_title="DC Hub in Copilot Studio — one custom MCP server",
     og_desc="Live grid + data-center intelligence for Copilot Studio agents · one MCP URL · Bearer or keyless",
     jsonld_altname="DC Hub for Microsoft Copilot Studio",
-    jsonld_desc="Model Context Protocol server connectable to Microsoft Copilot Studio as a custom MCP tool — live grid scoreboards, 21,900+ data-center facilities, interconnection queues, fiber intelligence and hyperscaler deals, with per-response citations. Free tier: 10 calls/day, no signup.",
+    jsonld_desc="Model Context Protocol server connectable to Microsoft Copilot Studio as a custom MCP tool — live grid scoreboards, 12,650+ distinct data-center sites, interconnection queues, fiber intelligence and hyperscaler deals, with per-response citations. Free tier: 10 calls/day, no signup.",
     eyebrow="Microsoft Copilot Studio · Custom MCP · Model Context Protocol",
     h1="Add DC Hub to Copilot Studio.",
     lead="Give your copilots live, citable data-center and power-grid intelligence — one custom MCP server, Streamable HTTP, Bearer or keyless.",
@@ -956,7 +1003,7 @@ _WEBMCP_TOOLS = [
     },
     {
         "name": "search-datacenter-facilities",
-        "description": ("Search DC Hub's live database of 21,000+ data-center "
+        "description": ("Search DC Hub's live database of 12,650+ distinct data-center "
                         "facilities by city, country or operator. Mirrors the "
                         "MCP tool search_facilities (lite)."),
         "schema": {"type": "object", "properties": {
