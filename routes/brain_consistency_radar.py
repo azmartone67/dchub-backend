@@ -9687,6 +9687,12 @@ def scan_all() -> list[dict]:
                # below 25% — the dashboard showed it at 13.7%, every
                # uncached hit is a Railway origin call.
                check_cf_account_health,
+               # 2026-07-24 coverage audit: this was DEFINED but never registered —
+               # 75 lines of KV-pressure detection that had never once run. Read-only
+               # and self-disabling without CF_API_TOKEN/CF_ACCOUNT_ID, so wiring it
+               # in is zero-risk. (A detector nobody registered is the purest form of
+               # the "exists but watches nothing" class this audit is hunting.)
+               check_cf_kv_namespace_pressure,
                # Phase ZZZZ-trial (2026-05-18) — trial-to-paid stagnation.
                # Fires when paywall signals are high but conversions are
                # near-zero — the leak the user spotted this session
