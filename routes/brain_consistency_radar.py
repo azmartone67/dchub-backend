@@ -8266,6 +8266,37 @@ def check_dead_internal_links() -> list[dict]:
             _retry = {r[0]: r for r in ex2.map(_probe_one, _suspects)}
         results = [_retry.get(r[0], r) for r in results]
 
+    # r-linkprobe-sweepfail (2026-07-24 coverage audit): when essentially
+    # EVERY probe fails, the site is not 230-pages-down — the prober is.
+    # Observed live: 230/230 findings, all ReadTimeout to dchub.cloud, while
+    # all 20 sampled paths returned 200 from outside. The probe list has
+    # grown ~60 -> ~230 and 12 workers hammering the frontend now trips
+    # timeouts/throttling on our own sweep. Emitting 230 findings buried the
+    # 37 real ones (86% of the whole radar was this one detector) — which is
+    # the same "detector you learn to ignore" failure as reporting green.
+    # Report the sweep failure ONCE and suppress the per-path noise.
+    _total = len(results)
+    _failed = sum(1 for _r in results if _r[3] is not None)
+    if _total >= 10 and _failed >= int(_total * 0.8):
+        _sample = ", ".join(_r[0] for _r in results[:3] if _r[3] is not None)
+        return findings + [{
+            "issue":  "link_prober_sweep_failed",
+            "url":    "routes/brain_consistency_radar.py:check_internal_links",
+            "count":  _failed,
+            "detail": (
+                f"Internal-link sweep failed on {_failed}/{_total} probes "
+                f"(e.g. {_sample}) — suppressed the per-path findings because "
+                f"a ~100% failure rate means the PROBER is blocked, not that "
+                f"every page is down (spot-checked paths return 200 from "
+                f"outside). Likely causes: the probe list grew to ~{_total} "
+                f"paths and 12 concurrent workers now trip Cloudflare "
+                f"throttling on our own origin, or egress from the backend to "
+                f"dchub.cloud is blocked. Fix the sweep (lower concurrency / "
+                f"raise the read timeout / probe the origin directly) before "
+                f"trusting this detector again."
+            ),
+        }]
+
     for path, status, body_snip, err in results:
         if err is not None:
             findings.append({
