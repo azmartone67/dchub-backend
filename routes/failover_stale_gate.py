@@ -197,6 +197,24 @@ def _probe_age_seconds(force: bool = False):
     return age
 
 
+def _commit() -> str | None:
+    """The git SHA this container is actually running.
+
+    ★ 2026-07-24: /api/v1/version reports a hand-maintained `build: 91`
+    that is byte-identical on both origins, so it can never reveal code
+    drift — which is why check_render_pipeline_blocked could not work even
+    in principle. Both platforms inject the real SHA; expose it.
+      Render  → RENDER_GIT_COMMIT (also SOURCE_VERSION)
+      Railway → RAILWAY_GIT_COMMIT_SHA
+    """
+    for var in ("RENDER_GIT_COMMIT", "RAILWAY_GIT_COMMIT_SHA",
+                "SOURCE_VERSION", "GIT_COMMIT"):
+        v = (os.environ.get(var) or "").strip()
+        if v:
+            return v[:7]
+    return None
+
+
 def origin_state(force: bool = False) -> dict:
     """Public snapshot used by the freshness endpoint, the Integrity shell
     and the admin-HTML banner."""
@@ -208,6 +226,7 @@ def origin_state(force: bool = False) -> dict:
         "ok": True,
         "role": "failover" if failover else "primary",
         "is_failover": failover,
+        "commit": _commit(),
         "data_age_hours": round(age / 3600.0, 2) if age is not None else None,
         "threshold_hours": round(max_age / 3600.0, 2),
         "stale": stale,

@@ -1158,6 +1158,32 @@ def check_deploy_queue_churn() -> list[dict]:
             })
     except Exception:
         pass
+    # (d) 2026-07-13: a paid key must NOT be 401/402/403'd on the metered MAP
+    # endpoints. This is the class the Land & Power map 402-flood fell into —
+    # free_tier_gate's session cap authenticates "paid" only via key/JWT and had
+    # no canary asserting a paying caller stays served. (a)-(c) only cover the
+    # /me/tier gating vocabulary, not the metered data endpoints themselves.
+    try:
+        for _ep in ("/api/v1/fiber/routes?limit=3",
+                    "/api/v1/power-plants?lat=40.41&lng=-80.58&radius=4&limit=3",
+                    "/api/v1/grid/intelligence/PJM"):
+            _sep = "&" if "?" in _ep else "?"
+            _u = "https://dchub.cloud" + _ep + _sep + "__cb=" + str(_rnd.randint(1, 10 ** 9))
+            _r = _req.get(_u, headers={"X-API-Key": canary, "Cache-Control": "no-cache"}, timeout=8)
+            if _r.status_code in (401, 402, 403):
+                findings.append({
+                    "issue": "paid_key_walled_on_map",
+                    "url": _ep.split("?")[0],
+                    "count": 1,
+                    "severity": "critical",
+                    "detail": (f"A known PAID canary key got HTTP {_r.status_code} on a "
+                               f"metered map endpoint — a paying user is being walled on the "
+                               f"flagship (the 2026-07-13 session-cap regression class). Check "
+                               f"free_tier_gate._resolve_caller / _metered_session_gate and any "
+                               f"require_plan on the route."),
+                })
+    except Exception:
+        pass
     return findings
 
 
@@ -3821,44 +3847,67 @@ def check_render_pipeline_blocked() -> list[dict]:
         now = _dt.datetime.now(_dt.timezone.utc)
         latest_age_hrs = (now - latest_dt).total_seconds() / 3600
 
-        # If latest commit is fresh (<6h), check Render's running
-        # version. Render exposes its version via /api/v1/version.
+        # ★ 2026-07-24 — this detector was dead in BOTH directions and had
+        # never fired, while Render silently drifted 4+ days behind:
+        #
+        #   1. It gated on `2 < latest_age_hrs < 24`, where latest_age_hrs is
+        #      the age of main's NEWEST COMMIT — not how far behind Render is.
+        #      The brain pushes to main every ~45min (5 commits inside 0.78h
+        #      when this was found), so that window is essentially never open.
+        #      False negative in the normal case; and had main ever gone quiet
+        #      for 2h it would have fired regardless of Render's actual state.
+        #   2. It read `build` from /api/v1/version, which is a HAND-MAINTAINED
+        #      CONSTANT returning 91 on BOTH origins. It never compared that
+        #      value to anything — it only interpolated it into the message.
+        #      Comparing a static build number to a git SHA cannot work.
+        #
+        # Now: compare real commit SHAs, and gate on the DRIFT, not on how
+        # recently someone happened to push. Render exposes the running SHA
+        # via /api/v1/ops/origin-freshness (routes/failover_stale_gate.py).
         if latest_age_hrs < 0.5:
-            return findings  # too fresh — deploy still in flight, no signal yet
-        if latest_age_hrs > 168:
-            return findings  # too old to be useful — must've been deployed
+            return findings  # deploy still plausibly in flight — no signal yet
 
-        # Probe Render direct
-        req2 = _ur.Request(
-            "https://dchub-backend-render.onrender.com/api/v1/version",
-            headers={"User-Agent": "DCHub-RenderDeployCheck/1.0"},
-        )
+        render_build = ""
+        render_commit = ""
+        render_data_age = None
         try:
+            req2 = _ur.Request(
+                "https://dchub-backend-render.onrender.com/api/v1/ops/origin-freshness",
+                headers={"User-Agent": "DCHub-RenderDeployCheck/1.0"},
+            )
             with _ur.urlopen(req2, timeout=8) as resp:
-                vbody = resp.read().decode("utf-8", errors="replace")[:500]
-                # Parse JSON or HTML response
-                try:
-                    vjson = _json.loads(vbody)
-                    render_build = vjson.get("build") or vjson.get("version") or ""
-                except Exception:
-                    return findings  # Render returned HTML — likely restart cycle, separate issue
+                fj = _json.loads(resp.read().decode("utf-8", errors="replace")[:2000])
+            render_commit = (fj.get("commit") or "")
+            render_data_age = fj.get("data_age_hours")
         except Exception:
-            return findings  # Render unreachable — different detector handles that
+            # Mirror has not deployed the freshness probe yet (it 404s until
+            # it picks up 8cac23ca) — which is ITSELF the drift we are hunting.
+            render_commit = ""
 
-        # Fire if Render's build number is older AND latest commit hits between 2h-24h old
-        if 2 < latest_age_hrs < 24:
+        drifted = bool(render_commit) and render_commit[:7] != latest_sha[:7]
+        no_probe = not render_commit
+
+        if drifted or no_probe:
+            render_build = render_commit or "unknown (freshness probe absent)"
             findings.append({
                 "issue":  "render_pipeline_blocked",
                 "url":    "https://dashboard.render.com/",
                 "count":  1,
                 "detail": (
-                    f"Render is on build `{render_build}` but the latest "
-                    f"dchub-backend commit ({latest_sha}: {latest_msg}) "
-                    f"was {latest_age_hrs:.1f}h ago. Likely Render workspace "
-                    f"ran out of pipeline minutes — auto-deploy blocked. "
-                    f"Check Render dashboard → Events tab for 'Build blocked' "
-                    f"messages. Fix: upgrade pipeline minutes OR manually "
-                    f"trigger deploy from Render dashboard."
+                    f"Failover MIRROR is behind: Render runs `{render_build}`, "
+                    f"main is at {latest_sha} ({latest_msg}). Render auto-deploy "
+                    f"is OFF by design (pipeline minutes), so the mirror only "
+                    f"moves when the deploy hook fires — POST "
+                    f"RENDER_DEPLOY_HOOK_URL, or check Render dashboard → Events "
+                    f"for 'Build blocked'. "
+                    + (f"Mirror DATA is {render_data_age}h old — a redeploy "
+                       f"will NOT fix that; its DATABASE_URL points at a "
+                       f"different database. "
+                       if isinstance(render_data_age, (int, float))
+                       and render_data_age > 6 else "")
+                    + "A behind-mirror serves stale reads during failover; "
+                    "since 8cac23ca the stale-gate 503s its metrics surfaces "
+                    "once it is deployed."
                 ),
             })
     except Exception:

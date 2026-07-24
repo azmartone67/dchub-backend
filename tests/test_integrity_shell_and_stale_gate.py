@@ -264,6 +264,27 @@ def test_critical_check_that_decides_still_governs_normally():
     assert ims._lane_verdict(bad) is False
 
 
+def test_commit_is_read_from_either_platform(monkeypatch):
+    """Render injects RENDER_GIT_COMMIT, Railway RAILWAY_GIT_COMMIT_SHA.
+    /api/v1/version's `build` is a hand-maintained constant reading 91 on
+    BOTH origins, so it can never reveal drift — this can."""
+    for var in ("RENDER_GIT_COMMIT", "RAILWAY_GIT_COMMIT_SHA",
+                "SOURCE_VERSION", "GIT_COMMIT"):
+        monkeypatch.delenv(var, raising=False)
+    assert gate._commit() is None
+    monkeypatch.setenv("RAILWAY_GIT_COMMIT_SHA", "8cac23ca1234567890")
+    assert gate._commit() == "8cac23c"
+    monkeypatch.setenv("RENDER_GIT_COMMIT", "deadbeef999")
+    assert gate._commit() == "deadbee"   # Render wins on the mirror
+
+
+def test_commit_is_published_in_the_freshness_probe(monkeypatch):
+    monkeypatch.setenv("RAILWAY_GIT_COMMIT_SHA", "abc1234def")
+    app = _app(monkeypatch, FRESH)
+    with app.test_client() as cl:
+        assert cl.get("/api/v1/ops/origin-freshness").get_json()["commit"] == "abc1234"
+
+
 def test_undetermined_lane_is_not_counted_green(monkeypatch):
     """A '?' lane must not inflate lanes_pass — that number is the headline."""
     def _lane(c):

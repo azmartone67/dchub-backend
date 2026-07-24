@@ -276,6 +276,38 @@ def _lane_failover(c) -> list[dict]:
          if mage is not None else f"{host} reports unknown age"),
         critical=True))
 
+    # 1b(ii) — CODE drift, measured without a second network call by
+    # comparing the mirror's commit to our own. Railway auto-deploys from
+    # main, so the primary's SHA is effectively main's tip; a mirror on a
+    # different SHA is behind.
+    #
+    # ★ This exists because the detector that was supposed to catch it
+    # (brain_consistency_radar.check_render_pipeline_blocked) cannot work:
+    # it compares /api/v1/version's `build`, which is a hand-maintained
+    # constant reading 91 on BOTH origins, and it only fires when main's
+    # newest commit is 2-24h old — on a repo where the brain pushes every
+    # ~45min that window is essentially never open.
+    try:
+        from routes.failover_stale_gate import _commit as _self_commit
+        mine = _self_commit()
+    except Exception:
+        mine = None
+    theirs = payload.get("commit")
+    if not mine or not theirs:
+        out.append(_check(
+            "fo_mirror_code", "mirror runs the same code as this origin",
+            None,
+            f"commit unavailable (self={mine or '?'} mirror={theirs or '?'}) — "
+            "platform git env var not injected"))
+    else:
+        out.append(_check(
+            "fo_mirror_code", "mirror runs the same code as this origin",
+            mine == theirs,
+            f"self={mine} mirror={theirs}"
+            + ("" if mine == theirs else
+               " — mirror is behind; Render auto-deploy is OFF by design "
+               "(pipeline minutes), so it only moves when the deploy hook fires")))
+
     # 1c — if the mirror IS stale, the gate must be turning that into a 503
     # rather than a 200 full of zeros. A stale-but-gated mirror is SAFE; a
     # stale-and-serving mirror is the original bug.
