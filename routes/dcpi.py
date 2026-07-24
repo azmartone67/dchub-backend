@@ -344,6 +344,71 @@ _TELEMETRY_ISO_CODES = frozenset({"ERCOT", "CAISO", "PJM", "MISO",
 _TELEMETRY_CACHE: dict = {}
 _TELEMETRY_CACHE_TTL_S = 60
 
+# Per-STATE interconnection-queue depth cache. Same rationale as the telemetry
+# cache above: a recompute scores 300+ markets and many share a state, so
+# without this each one re-runs the same aggregate against interconnect_queue
+# (5,441 rows) and hammers the 1-replica pool. Keyed by upper-cased state, 60s
+# TTL, misses cached (None) too. See _state_queue_depth.
+_QUEUE_STATE_CACHE: dict = {}
+_QUEUE_STATE_CACHE_TTL_S = 60
+
+
+def _state_queue_depth(state: str):
+    """Real active interconnection-queue depth for a US/CA state, or None.
+
+    Returns {'active_n', 'active_mw'} aggregated over non-terminal projects in
+    interconnect_queue (the LIVE table, refreshed daily), or None when the
+    state is missing/unmatched or the read fails. Never fabricates — a miss
+    falls the caller through to the per-ISO modeled anchor.
+
+    ★ 2026-07-24: replaces a block that queried a MISSPELLED table
+    (`interconnection_queue`) with malformed SQL inside a swallow-all
+    try/except, so it threw on every call and every market silently fell to
+    its ISO anchor — the root cause of the 145/317 identical-score collapse
+    the integrity shell (#25) flags in lane 3.
+    """
+    if not state:
+        return None
+    key = state.strip().upper()
+    if not key:
+        return None
+    import time as _t
+    now = _t.time()
+    hit = _QUEUE_STATE_CACHE.get(key)
+    if hit is not None and (now - hit[0]) < _QUEUE_STATE_CACHE_TTL_S:
+        return hit[1]
+    result = None
+    _c = None
+    try:
+        _c = _conn()
+        with _c.cursor() as cur:
+            # Non-terminal projects only — exclude completed/dead rows so the
+            # depth reflects genuine pending contention for grid capacity.
+            cur.execute(
+                """
+                SELECT COUNT(*) AS active_n,
+                       COALESCE(SUM(capacity_mw), 0) AS active_mw
+                  FROM interconnect_queue
+                 WHERE UPPER(state) = %s
+                   AND COALESCE(queue_status,'') !~*
+                       'commercial operation|withdrawn|suspended|terminated|cancel'
+                """,
+                (key,),
+            )
+            row = cur.fetchone()
+        if row and (row[0] or 0) > 0:
+            result = {"active_n": int(row[0]), "active_mw": float(row[1] or 0)}
+    except Exception:
+        result = None  # fall through to the modeled anchor; never fabricate
+    finally:
+        if _c is not None:
+            try:
+                _c.close()
+            except Exception:
+                pass
+    _QUEUE_STATE_CACHE[key] = (now, result)
+    return result
+
 
 def _latest_grid_telemetry(iso: str) -> Optional[dict]:
     """Return the most-recent live grid_telemetry row for an ISO as a dict, or
@@ -1288,27 +1353,35 @@ def gather_metrics_for_market(market: tuple) -> dict:
     # formulas (compute_* read specific numeric keys; they ignore "data_basis").
     _live_fields: set[str] = set()
 
-    # Best-effort enrichment from existing grid_intelligence + queue tables
+    # ── Live enrichment from the REAL interconnection-queue table ──────
+    # (2026-07-24 rewrite — see _state_queue_depth for the root-cause note.)
+    # Drive the constraint input off REAL per-state active-queue DEPTH. We
+    # deliberately do NOT use queue_date as a wait signal: it stores a
+    # projected COD in several ISOs and goes negative (TX ≈ -16mo), so it is
+    # not a submission-to-energization wait. Queue DEPTH is the canonical
+    # interconnection-congestion proxy — a deeper active queue means longer
+    # real waits and less deliverable headroom (LBNL queue studies). This
+    # changes only the INPUT the scorer reads; the formula is unchanged.
+    q = _state_queue_depth(state)
+    if q:
+        active_gw = q["active_mw"] / 1000.0
+        # Depth → effective interconnection-wait proxy (months), clipped to a
+        # sane 12–66mo band. 0.6 mo/GW is calibrated so the live per-state
+        # spread (~3–465 GW) lands across the band without one mega-queue
+        # (ERCOT/TX) swamping the scale (it saturates at the 66mo cap, which
+        # is correct — TX is the most-contended queue in the country).
+        metrics["queue_wait_months"] = round(
+            _clip(12.0 + active_gw * 0.6, 12.0, 66.0), 1)
+        metrics["queue_capacity_mw"] = round(q["active_mw"], 1)
+        _live_fields.add("queue_wait_months")
+        _live_fields.add("queue_capacity_mw")
+
+    # Generation additions in the next 12 months from the capacity pipeline.
+    # In its OWN try so a failure here can't also suppress the queue
+    # enrichment above — the original single shared try/except (with the
+    # broken queue query first) is exactly why this never populated either.
     try:
         with _conn() as c, c.cursor() as cur:
-            # Try interconnection queue
-            cur.execute("""
-                SELECT
-                  COALESCE(AVG(EXTRACT(EPOCH FROM (NOW(), 0) - submitted_at)) / 2628000.0) AS avg_wait_months,
-                  COUNT(*) AS queue_count,
-                  COALESCE(SUM(capacity_mw), 0) AS queue_total_mw
-                FROM interconnection_queue
-                WHERE iso = %s AND status IN ('active','pending','study')
-            """, (iso,))
-            row = cur.fetchone()
-            if row and row[0] is not None:
-                metrics["queue_wait_months"] = float(row[0])
-                metrics["queue_capacity_mw"] = float(row[2] or 0)
-                _live_fields.add("queue_wait_months")
-                _live_fields.add("queue_capacity_mw")
-
-            # Generation additions in last 12 months from sec_filings_v2
-            # or pipeline data
             cur.execute("""
                 SELECT COALESCE(SUM(capacity_mw), 0)
                 FROM capacity_pipeline
@@ -1316,11 +1389,12 @@ def gather_metrics_for_market(market: tuple) -> dict:
                   AND status IN ('approved','construction','testing')
             """, (iso,))
             r = cur.fetchone()
-            if r:
+            if r and (r[0] or 0) > 0:
                 metrics["gen_additions_12mo_mw"] = float(r[0] or 0)
                 _live_fields.add("gen_additions_12mo_mw")
     except Exception:
-        # Tables may not exist yet — that's fine, we use defaults below
+        # capacity_pipeline schema/rows may not match — fall through to
+        # defaults (gen_additions defaults to 0, unchanged behaviour).
         pass
 
     # Heuristic defaults by ISO (calibrated from public 2025 data)
