@@ -331,3 +331,47 @@ def test_mark_capability_announced_rejects_bad_key():
     # a dedup_key with no ':' is rejected (defensive contract)
     assert _radar.mark_capability_announced("nokey") is False
     assert _radar.mark_capability_announced("") is False
+
+
+@_needs_routes
+def test_reserved_slot_bypasses_novelty_gates(monkeypatch):
+    """(g) 2026-07-24 unstarve: in prod the novelty/semantic gates judged the
+    evergreen cards "not novel" every day, so the reserved slot claimed then
+    SUPPRESSED (claimed_in_flight 2/2 days; the card never fired). With every
+    novelty gate tripping, the reserved slot must STILL post a cap — rotation
+    is owned by the radar's announced/repost ledger, not the desk's gates."""
+    _neutralize_db(monkeypatch, _MIXED)
+    monkeypatch.setattr(_me, "_semantic_repeat_predicate",
+                        lambda leads: (lambda l: True))
+    out = _me.editorial_decision("capability")
+    assert out["post"] is True, "reserved slot suppressed into silence again"
+    assert out.get("reserved_slot_bypass") is True
+    assert _me._is_capability_lead(out["lead"])
+
+
+@_needs_routes
+def test_non_reserved_slot_still_suppresses(monkeypatch):
+    """(h) the bypass is SCOPED to the reserved slate: a normal slot whose
+    whole board is semantically repeated still suppresses (silent beats
+    repetitive stays the desk's motto everywhere else)."""
+    _neutralize_db(monkeypatch, _MIXED)
+    monkeypatch.setattr(_me, "_semantic_repeat_predicate",
+                        lambda leads: (lambda l: True))
+    out = _me.editorial_decision("hyperscaler_deal")
+    assert out["post"] is False
+    assert out.get("reserved_slot_bypass") is None
+
+
+@_needs_routes
+def test_reserved_bypass_honors_kind_cooldown(monkeypatch):
+    """(i) defense-in-depth: a card whose kind actually LED a post recently
+    steps aside for the next due card even inside the bypass."""
+    _neutralize_db(monkeypatch, _MIXED)
+    monkeypatch.setattr(_me, "_semantic_repeat_predicate",
+                        lambda leads: (lambda l: True))
+    monkeypatch.setattr(_me, "recent_lead_ledger", lambda days=14: [
+        {"kind": "cap_tool_catalog", "entity": "toolcatalog", "days_ago": 1}])
+    out = _me.editorial_decision("capability")
+    assert out["post"] is True
+    assert out["lead"]["kind"] != "cap_tool_catalog", \
+        "bypass re-posted the card that just led a post"

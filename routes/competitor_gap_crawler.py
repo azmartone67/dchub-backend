@@ -327,7 +327,8 @@ def _parse_cloudscene_dc(loc: str) -> dict | None:
 
 def parse_competitor_sitemap(slug: str, url: str,
                              limit: int = _DEFAULT_PAGE_LIMIT,
-                             _prefetched_text: str = None) -> dict:
+                             _prefetched_text: str = None,
+                             offset: int = 0) -> dict:
     """Fetch + parse one competitor sitemap/RSS into candidate rows.
 
     Returns {slug, url, method, status, parsed (list of candidate dicts),
@@ -364,6 +365,18 @@ def parse_competitor_sitemap(slug: str, url: str,
 
     locs = _extract_locs(text)
     out["locs_seen"] = len(locs)
+    # 2026-07-24 (growthfix wave): ROTATING window. The page cap used to read
+    # the SAME first `limit` <loc> entries every run — once those were all
+    # known, the diff was 0 forever while the sitemap tail (DCHawk ~1MB,
+    # Cloudscene ~3MB — thousands of URLs) was NEVER reached. That is exactly
+    # how the feed sat at 15 consecutive zero-row runs "saturated". A caller-
+    # supplied offset rotates the window (wrapping), so successive days sweep
+    # different slices and the whole sitemap is eventually covered.
+    if offset and len(locs) > (limit or 0) > 0:
+        _off = int(offset) % len(locs)
+        if _off:
+            locs = locs[_off:] + locs[:_off]
+        out["window_offset"] = _off
     if limit and limit > 0:
         locs = locs[:limit]
 
@@ -734,7 +747,7 @@ def _conn():
 # error is swallowed so it can NEVER break the crawl.
 # ─────────────────────────────────────────────────────────────────────
 
-def _beat_ledger(status: str, rows_inserted: int) -> None:
+def _beat_ledger(status: str, rows_inserted: int, note: str = None) -> None:
     """Best-effort dead-man BEAT for the competitor-gap crawl. NEVER raises."""
     try:
         import json
@@ -747,7 +760,8 @@ def _beat_ledger(status: str, rows_inserted: int) -> None:
             # dead-man flags overdue at 2x (48h) instead of the 48h default.
             "cadence_hours": 24,
             "last_run": datetime.datetime.utcnow().isoformat() + "Z",
-            "note": "competitor coverage-gap crawler (stages discovered_facilities)",
+            "note": (note or "competitor coverage-gap crawler "
+                             "(stages discovered_facilities)")[:280],
         }).encode()
         port = os.environ.get("PORT", "8080")
         # Key precedence matches the ledger's own _admin_ok
@@ -840,7 +854,13 @@ def run_competitor_gap_scan(limit: int = _DEFAULT_PAGE_LIMIT,
         conn = None
         try:
             # ── network fetch — NO DB connection held ──
-            p = parse_competitor_sitemap(src["slug"], src["url"], limit=limit)
+            # Deterministic daily offset: day-of-year * limit walks the window
+            # forward one full page per day, wrapping per-source in the parser
+            # (mod locs count) — so a 5,000-URL sitemap is fully swept in ~10
+            # daily runs instead of re-diffing the same first page forever.
+            _off = datetime.datetime.utcnow().timetuple().tm_yday * max(limit or 0, 0)
+            p = parse_competitor_sitemap(src["slug"], src["url"], limit=limit,
+                                         offset=_off)
             srec["status"] = p["status"]
             srec["locs_seen"] = p.get("locs_seen", 0)
             if p.get("error"):
@@ -939,6 +959,20 @@ def run_competitor_gap_scan(limit: int = _DEFAULT_PAGE_LIMIT,
     #    not stamp the ledger. rows_inserted = TRUE gaps staged into
     #    discovered_facilities this run. Fail-open — never breaks the crawl.
     if not dry_run:
-        _beat_ledger("success" if out.get("ok") else "error",
-                     out.get("total_inserted", 0))
+        _ins = int(out.get("total_inserted") or 0)
+        _parsed = int(out.get("total_parsed") or 0)
+        if not out.get("ok") or (_parsed == 0 and out.get("errors")):
+            _status = "error"          # nothing fetched/parsed AND errors → broken
+        elif _ins == 0:
+            # Crawl + diff ran end-to-end; this window held nothing we lack.
+            # An affirmative healthy-idle — the ledger must not count it
+            # toward the >=3-zero-row alarm (it did, for 15 straight runs).
+            _status = "no_new_data"
+        else:
+            _status = "success"
+        _beat_ledger(_status, _ins,
+                     note=(f"competitor gap crawl: parsed={_parsed} "
+                           f"true_gaps={out.get('total_true_gaps', 0)} "
+                           f"staged={_ins} dup={out.get('total_dup', 0)} "
+                           f"errors={len(out.get('errors') or [])}"))
     return out

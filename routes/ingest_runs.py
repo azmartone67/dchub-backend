@@ -24,7 +24,18 @@ ingest_runs_bp = Blueprint("ingest_runs", __name__)
 # that forgets cadence_hours still gets a sane overdue threshold.
 _DEFAULT_CADENCE_H = 48.0
 # Statuses that are NOT themselves an alarm (the loop ran and was fine / intentionally idle).
-_OK_STATUS = {"success", "ok", "idle", "no-op", "noop", "skipped", ""}
+_OK_STATUS = {"success", "ok", "idle", "no-op", "noop", "skipped", "",
+              # 2026-07-24 (growthfix wave): an AFFIRMATIVE "the loop ran fine,
+              # upstream simply had nothing new" — distinct from a broken loop
+              # inserting 0. eia-pricing (monthly EIA data), osm-crawl (no new
+              # tagged POIs) and competitor-gap (diff window saturated) burned
+              # red for days on the >=3-zero-row rule while perfectly healthy.
+              "no_new_data", "no-new-data"}
+
+# Statuses that assert "zero rows is EXPECTED this run" — they reset the
+# consecutive_zero counter instead of climbing it (trusting the producer,
+# exactly as we already trust `status` itself).
+_NO_NEW_DATA = {"no_new_data", "no-new-data"}
 
 
 def _dsn():
@@ -96,6 +107,11 @@ def beat():
     note = (str(j.get("note")).strip()[:280] or None) if j.get("note") else None
     # Sentinel so ON CONFLICT can tell "rows==0" (bump) from "rows unknown" (leave counter).
     rows_sig = rows if rows is not None else -1
+    # no_new_data asserts zero rows is EXPECTED → feed the counter a positive
+    # sentinel so it RESETS (clears any red built up before the producer
+    # learned to report no_new_data) instead of climbing toward the alarm.
+    if status.lower() in _NO_NEW_DATA and rows_sig == 0:
+        rows_sig = 1
     try:
         with psycopg2.connect(dsn, sslmode="require", connect_timeout=8) as c, c.cursor() as cur:
             _ensure(cur)
@@ -193,7 +209,9 @@ def deadman():
                 reasons.append(f"last success {age_h:.0f}h ago (>2x cadence {cad_h:.0f}h)")
         if st and st.lower() not in _OK_STATUS:
             reasons.append(f"status={st}")
-        if cz and cz >= 3:
+        # A feed whose LATEST beat affirms no_new_data is healthy even if the
+        # counter climbed before the producer learned to report it.
+        if cz and cz >= 3 and (st or "").lower() not in _NO_NEW_DATA:
             reasons.append(f"{cz} consecutive zero-row runs")
         if mcd and mcd > now + datetime.timedelta(hours=6):
             reasons.append(f"content date in the FUTURE ({mcd.date().isoformat()})")

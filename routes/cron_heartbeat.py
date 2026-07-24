@@ -438,6 +438,16 @@ _DISPATCH = [
      lambda now: now.hour == 4 and now.minute < 55
                  and os.environ.get("LINKEDIN_TOKEN_REFRESH_CRON_DISABLE") != "1"),
 
+    # 2026-07-24 growthfix wave: daily tick of the Growth-Loop Fix Master
+    # Shell (#26) — read-only probe of the five fix-wave lanes; on completion
+    # it beats the dead-man ledger (feed growthfix-shell-daily) itself.
+    # _hit() attaches X-Admin-Key. Kill: GROWTHFIX_SHELL_DISABLE=1.
+    ("growthfix_shell_daily",
+     f"{BASE}/api/v1/admin/growthfix/master-tick",
+     "POST",
+     lambda now: now.hour == 5 and now.minute < 55
+                 and os.environ.get("GROWTHFIX_SHELL_DISABLE") != "1"),
+
     # r47.14 (2026-05-25): weekly partnership LinkedIn post. Cycles
     # through 7 anchors (one per ISO week) targeting /partners and
     # the per-partner anchors (#dchawk, #cbre, #dcd, etc.). Wed 14:00 UTC

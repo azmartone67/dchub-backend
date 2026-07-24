@@ -81,8 +81,13 @@ jobs:
         run: |
           # Fail-open: a failed beat must NEVER fail the ingest job.
           COUNT="${ROWS_INSERTED:-0}"
+          # EIA retail pricing is MONTHLY data — most daily runs legitimately
+          # insert 0. Report the affirmative no_new_data status so the board's
+          # >=3-zero-row alarm only fires on a loop that is actually broken.
+          STATUS="success"
+          [ "$COUNT" = "0" ] && STATUS="no_new_data"
           curl -s -X POST "https://dchub.cloud/api/v1/admin/ingest-runs/beat" \
             -H "X-Admin-Key: $ADMIN_KEY" \
             -H "Content-Type: application/json" \
             -H "User-Agent: dchub-ingest-beat/1.0" \
-            -d "{\"feed\":\"eia-pricing-ingest\",\"status\":\"success\",\"rows_inserted\":$COUNT}" || true
+            -d "{\"feed\":\"eia-pricing-ingest\",\"status\":\"$STATUS\",\"rows_inserted\":$COUNT}" || true

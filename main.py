@@ -2056,6 +2056,17 @@ try:
     except Exception as _ddms:
         import logging
         logging.getLogger(__name__).warning('deepdive_master_shell wiring failed: %s', _ddms)
+    # 2026-07-24: Growth-Loop Fix Master Shell (#26) — watches the five fix-wave
+    # lanes (capability card, competitor gap, ingest board, LinkedIn token,
+    # governance arm-posture). Read-only; surfaces owner levers, flips nothing.
+    # GET /admin/growthfix · /api/v1/admin/growthfix/master-tick · kill GROWTHFIX_SHELL_DISABLE=1
+    try:
+        from routes.growthfix_master_shell import growthfix_master_shell_bp
+        app.register_blueprint(growthfix_master_shell_bp)
+        print("[main] growthfix_master_shell_bp registered: GET /admin/growthfix", flush=True)
+    except Exception as _gfms:
+        import logging
+        logging.getLogger(__name__).warning('growthfix_master_shell wiring failed: %s', _gfms)
     # 2026-07-08: WRI Aqueduct water-stress ingest — replaces the paused inverted
     # proxy. Honest by construction (writes ONLY verified-source rows; no-op without
     # WRI_AQUEDUCT_URL). rank_sites water objectives auto-enable once real rows land.

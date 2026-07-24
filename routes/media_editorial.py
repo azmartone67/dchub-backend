@@ -1081,10 +1081,12 @@ def editorial_decision(slot: str | None = None) -> dict:
     # the capability angle). FALL-THROUGH GUARD: if a bad-data day yields zero
     # capability leads, keep the full board rather than suppress the slot into
     # silence (the reserved slot must never go dark just because the radar was empty).
+    _reserved_slate = False
     if slot in _CAPABILITY_SLOT_TOPICS:
         _caps = [l for l in ranked if _is_capability_lead(l)]
         if _caps:
             ranked = _caps
+            _reserved_slate = True
     # r86e (2026-06-17): the novelty filter DEADLOCKED the entire LinkedIn feed
     # — 0 quad posts for 7 days (last success 2026-06-10). Two compounding bugs:
     #   (1) greedy SUBSTRING novelty against EVERY whitespace token of the last
@@ -1224,6 +1226,36 @@ def editorial_decision(slot: str | None = None) -> dict:
             "ranked": ranked[:6],
             "generated_at": _dt.datetime.utcnow().isoformat() + "Z",
         }
+    # r-capability-slot-unstarve (2026-07-24): the reserved slot exists because
+    # evergreen capability cards are BY DESIGN not news — yet the gates above
+    # (entity-window / recent-blob / semantic-repeat) judge them "not novel"
+    # every day, so the 16:00 slot claimed then suppressed and "What We Shipped"
+    # never fired (0 posts since the 07-23 deploy; both days died as
+    # claimed_in_flight). Rotation for cap leads is owned by the RADAR's
+    # announced/repost_days ledger (brain_capability_radar only emits a card
+    # when it is due, and the baseline advances only on a real publish), so the
+    # desk's novelty gates are the wrong filter for the reserved slate — take
+    # the top-ranked due card instead of going dark. Applies ONLY when the
+    # slate was restricted to capability leads; every other slot keeps the full
+    # gate chain. kind_cooldown is honored as defense-in-depth (a card that
+    # actually LED a post recently steps aside for the next due card).
+    if _reserved_slate:
+        _elig = ([c for c in ranked if _is_capability_lead(c)
+                  and (c.get("kind") or "") not in kind_cooldown]
+                 or [c for c in ranked if _is_capability_lead(c)])
+        if _elig and _elig[0].get("raw_score", _elig[0].get("score", 0)) >= _NEWSWORTHY_MIN:
+            _t = _elig[0]
+            return {
+                "post": True,
+                "slot": slot,
+                "lead": _t,
+                "reason": (f"reserved capability slot: {_t['kind']} taken past the "
+                           f"novelty gates (score {_t.get('score', 0):.0f}; rotation "
+                           "owned by the radar announced/repost ledger)"),
+                "reserved_slot_bypass": True,
+                "ranked": ranked[:6],
+                "generated_at": _dt.datetime.utcnow().isoformat() + "Z",
+            }
     return {
         "post": False,
         "slot": slot,

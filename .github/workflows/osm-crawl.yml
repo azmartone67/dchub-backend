@@ -74,8 +74,13 @@ jobs:
         run: |
           RI="${{ steps.crawl.outputs.rows_inserted }}"
           RI="${RI:-0}"
+          # Zero new tagged POIs is the NORMAL state for a mature OSM crawl —
+          # report the affirmative no_new_data status so the board's
+          # >=3-zero-row alarm only fires on a loop that is actually broken.
+          STATUS="success"
+          [ "$RI" = "0" ] && STATUS="no_new_data"
           curl -s -X POST "https://dchub.cloud/api/v1/admin/ingest-runs/beat" \
             -H "X-Admin-Key: ${{ secrets.DCHUB_ADMIN_KEY }}" \
             -H "Content-Type: application/json" \
             -H "User-Agent: dchub-ingest-beat/1.0" \
-            -d "{\"feed\":\"osm-crawl\",\"status\":\"success\",\"rows_inserted\":$RI}" || true
+            -d "{\"feed\":\"osm-crawl\",\"status\":\"$STATUS\",\"rows_inserted\":$RI}" || true
