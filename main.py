@@ -2126,6 +2126,21 @@ try:
     except Exception as _ims:
         import logging
         logging.getLogger(__name__).warning('integrity_master_shell wiring failed: %s', _ims)
+    # 2026-07-24: DCPI Excess-Data master shell (#26) — SHADOW/read-only. Measures
+    # the excess-side data project that would break the 94%-AVOID verdict
+    # monoculture (planned_generators + generator_retirements proximity wiring),
+    # enforces the double-count/centroid/pool/honesty guards the adversarial
+    # scoping surfaced, projects the verdict distribution in SHADOW (persists
+    # NOTHING), and names the actuator per lane but fires nothing.
+    # GET /admin/dcpi-excess · /api/v1/admin/dcpi-excess/master-tick
+    # Kill: DCPI_EXCESS_SHELL_DISABLE=1
+    try:
+        from routes.dcpi_excess_master_shell import dcpi_excess_master_shell_bp
+        app.register_blueprint(dcpi_excess_master_shell_bp)
+        print("[main] dcpi_excess_master_shell_bp registered: GET /admin/dcpi-excess", flush=True)
+    except Exception as _dxs:
+        import logging
+        logging.getLogger(__name__).warning('dcpi_excess_master_shell wiring failed: %s', _dxs)
     # 2026-07-06: Back-of-Funnel Truth master shell — ONE pane for the 07-06
     # funnel fix-wave (retention durable-keys, claim→paid attribution, conversion
     # demand) measured with CORRECTED metrics the older panes were blind to.
