@@ -236,16 +236,44 @@ def test_empty_admin_key_does_not_open_the_door(monkeypatch):
 # ── 7. lane aggregation ───────────────────────────────────────────────
 
 def test_gauges_do_not_fail_a_lane():
-    checks = [ims._check("a", "a", True, ""), ims._check("b", "b", None, "")]
-    decided = [c for c in checks if c["pass"] is not None]
-    assert bool(decided) and all(c["pass"] for c in decided)
+    assert ims._lane_verdict(
+        [ims._check("a", "a", True, ""), ims._check("b", "b", None, "")]) is True
 
 
 def test_all_gauges_is_not_a_pass():
     """A lane that decided nothing has proven nothing."""
-    checks = [ims._check("a", "a", None, "")]
-    decided = [c for c in checks if c["pass"] is not None]
-    assert not (bool(decided) and all(c["pass"] for c in decided))
+    assert ims._lane_verdict([ims._check("a", "a", None, "")]) is None
+
+
+def test_undetermined_critical_check_blocks_a_green_lane():
+    """★ The shell must not commit the sin it was built to catch. Lane 1
+    initially rendered PASS while its own detail said the mirror was
+    unreachable — green on the strength of the checks that happened to
+    succeed. An undetermined CRITICAL check now yields '?', not True."""
+    checks = [
+        ims._check("self", "self fresh", True, "fine"),
+        ims._check("mirror", "mirror fresh", None, "unreachable", critical=True),
+    ]
+    assert ims._lane_verdict(checks) is None
+
+
+def test_critical_check_that_decides_still_governs_normally():
+    ok = [ims._check("m", "mirror", True, "", critical=True)]
+    bad = [ims._check("m", "mirror", False, "", critical=True)]
+    assert ims._lane_verdict(ok) is True
+    assert ims._lane_verdict(bad) is False
+
+
+def test_undetermined_lane_is_not_counted_green(monkeypatch):
+    """A '?' lane must not inflate lanes_pass — that number is the headline."""
+    def _lane(c):
+        return [ims._check("m", "mirror", None, "unreachable", critical=True)]
+
+    monkeypatch.setattr(ims, "_LANES", [("x", "x", _lane, "act")])
+    monkeypatch.setattr(ims, "_conn", lambda: None)
+    payload = ims._run_tick()
+    assert payload["lanes"][0]["pass"] is None
+    assert payload["lanes_pass"] == 0
 
 
 def test_lane_crash_never_sinks_the_tick(monkeypatch):

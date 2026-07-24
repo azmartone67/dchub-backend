@@ -138,10 +138,32 @@ def _row(c, sql: str):
         return None
 
 
-def _check(cid: str, name: str, passed, detail: str, ms: int = 0) -> dict:
-    # passed: True / False / None (None = indeterminate/gauge, shown as "?")
+def _check(cid: str, name: str, passed, detail: str, ms: int = 0,
+           critical: bool = False) -> dict:
+    """passed: True / False / None (None = indeterminate/gauge, shown as "?").
+
+    critical=True means this check is the REASON the lane exists. If a
+    critical check comes back undetermined, the lane must NOT render green —
+    see _lane_verdict. Shipping a lane that reads PASS while admitting it
+    could not reach the thing it audits would reproduce, inside this very
+    shell, the failure it was built to catch."""
     return {"id": cid, "name": name, "pass": passed,
-            "detail": (detail or "")[:300], "ms": ms}
+            "detail": (detail or "")[:300], "ms": ms, "critical": critical}
+
+
+def _lane_verdict(checks: list[dict]):
+    """True / False / None for a lane.
+
+    None ("?") when the lane could not establish its load-bearing fact —
+    distinct from False ("something is broken") and from True. A dead mirror
+    cannot serve confident zeros, so an unreachable probe is not a failure;
+    but it is emphatically not a pass either."""
+    if any(ch["pass"] is None and ch.get("critical") for ch in checks):
+        return None
+    decided = [ch for ch in checks if ch["pass"] is not None]
+    if not decided:
+        return None
+    return all(ch["pass"] for ch in decided)
 
 
 # ── lane 1 · failover-origin integrity ────────────────────────────────
@@ -221,7 +243,8 @@ def _lane_failover(c) -> list[dict]:
     target = _probe_target()
     if not target:
         out.append(_check("fo_mirror_fresh", "failover mirror data is fresh",
-                          None, "no safe probe target (self or edge) — skipped"))
+                          None, "no safe probe target (self or edge) — skipped",
+                          critical=True))
         out.append(_check("fo_mirror_gated", "stale mirror fails CLOSED (503)",
                           None, "mirror unreachable — cannot confirm"))
         return out
@@ -229,10 +252,17 @@ def _lane_failover(c) -> list[dict]:
     host = urlparse(target).hostname or target
     payload, err = _fetch_mirror(target)
     if payload is None:
-        # A mirror that does not answer is not a failure of THIS check: a
-        # dead mirror cannot serve confident zeros. Report, do not fail.
+        # A mirror that does not answer is not a FAILURE — a dead mirror
+        # cannot serve confident zeros. But it is not a pass either: we have
+        # learned nothing about the thing this lane exists to watch, so the
+        # check is critical and the lane renders "?" rather than green.
+        # A 404 here specifically means the mirror has not yet deployed the
+        # stale-gate, i.e. it is still capable of the 07-24 behaviour.
+        hint = (" — mirror has not deployed the stale-gate yet, so it can "
+                "still answer 200 with stale data") if "404" in err else ""
         out.append(_check("fo_mirror_fresh", "failover mirror data is fresh",
-                          None, f"{host} unreachable: {err}"))
+                          None, f"{host} unreachable: {err}{hint}",
+                          critical=True))
         out.append(_check("fo_mirror_gated", "stale mirror fails CLOSED (503)",
                           None, "mirror unreachable — cannot confirm"))
         return out
@@ -243,7 +273,8 @@ def _lane_failover(c) -> list[dict]:
         "fo_mirror_fresh", "failover mirror data is fresh",
         (not mstale) if mage is not None else None,
         (f"{host} data_age={mage}h (threshold {payload.get('threshold_hours')}h)"
-         if mage is not None else f"{host} reports unknown age")))
+         if mage is not None else f"{host} reports unknown age"),
+        critical=True))
 
     # 1c — if the mirror IS stale, the gate must be turning that into a 503
     # rather than a 200 full of zeros. A stale-but-gated mirror is SAFE; a
@@ -291,17 +322,37 @@ def _lane_slug_freeze(c) -> list[dict]:
     # the last 24h that arrived without a slug. Sustained non-zero here means
     # the scheduled freeze is missing or broken, which is precisely how 61
     # rows accumulated silently before 2026-07-24.
-    recent = _scalar(c, "SELECT COUNT(*) FROM discovered_facilities "
-                        "WHERE canonical_slug IS NULL AND name IS NOT NULL "
-                        "AND name <> '' AND created_at >= now() - interval '24 hours'")
+    # The live schema does NOT match the repo DDL here (routes/discovery_routes.py
+    # declares created_at, production disagrees — the same live-vs-repo drift
+    # already burned us on power_plants). Resolve the timestamp column from
+    # information_schema instead of assuming one, and say so plainly if none
+    # of the candidates exist rather than reporting a bare "query failed".
+    tscol = _scalar(c, "SELECT column_name FROM information_schema.columns "
+                       "WHERE table_name = 'discovered_facilities' "
+                       "AND column_name IN "
+                       "('created_at','discovered_at','first_seen','updated_at') "
+                       "ORDER BY array_position("
+                       "ARRAY['created_at','discovered_at','first_seen','updated_at'],"
+                       " column_name) LIMIT 1")
+    recent = None
+    if tscol:
+        # Some of these columns are TEXT in production, so cast defensively;
+        # a bad row must not take the whole check down.
+        recent = _scalar(
+            c, "SELECT COUNT(*) FROM discovered_facilities "
+               "WHERE canonical_slug IS NULL AND name IS NOT NULL AND name <> '' "
+               f"AND NULLIF({tscol}::text,'') ~ '^[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}' "
+               f"AND NULLIF({tscol}::text,'')::timestamptz >= now() - interval '24 hours'")
     if recent is None:
-        out.append(_check("sf_inflow", "24h slug inflow is being drained",
-                          None, "query failed (created_at may not exist)"))
+        out.append(_check("sf_inflow", "24h slug inflow is being drained", None,
+                          f"no usable timestamp column on discovered_facilities "
+                          f"(tried created_at/discovered_at/first_seen; found "
+                          f"{tscol or 'none'}) — 2a is the binding check"))
     else:
         out.append(_check("sf_inflow", "24h slug inflow is being drained",
                           int(recent) == 0,
                           f"{recent} facilities ingested in 24h still unfrozen "
-                          "· drained by slug-freeze-daily.yml"))
+                          f"(by {tscol}) · drained by slug-freeze-daily.yml"))
 
     # 2d — old MD5(id) URLs must still 301 somewhere, or freezing the slug
     # just moves the 404 bleed rather than stopping it.
@@ -421,7 +472,7 @@ def _run_tick() -> dict:
             checks = [_check(f"{key}_error", "lane crashed", None, str(e)[:200])]
         ms = int((time.time() - t0) * 1000)
         decided = [ch for ch in checks if ch["pass"] is not None]
-        lane_pass = bool(decided) and all(ch["pass"] for ch in decided)
+        lane_pass = _lane_verdict(checks)
         lanes.append({"lane": key, "label": label, "pass": lane_pass,
                       "actuator": actuator, "checks": checks, "ms": ms,
                       "progress": f"{sum(1 for ch in decided if ch['pass'])}/{len(checks)}"})
