@@ -8275,11 +8275,19 @@ def check_dead_internal_links() -> list[dict]:
     # 37 real ones (86% of the whole radar was this one detector) — which is
     # the same "detector you learn to ignore" failure as reporting green.
     # Report the sweep failure ONCE and suppress the per-path noise.
+    #
+    # NOTE: this must NOT return early — the cache write lives at the bottom
+    # of this function, and skipping it would make every subsequent radar
+    # call re-run the whole ~230-probe sweep. Per the r78 note above, this
+    # sweep is already the single largest source of self-traffic (~47.8k
+    # probes/day at CF), so an uncached sweep-per-scan would be far worse
+    # than the noise being fixed. Collapse into `findings` and fall through.
     _total = len(results)
     _failed = sum(1 for _r in results if _r[3] is not None)
-    if _total >= 10 and _failed >= int(_total * 0.8):
+    _sweep_failed = _total >= 10 and _failed >= int(_total * 0.8)
+    if _sweep_failed:
         _sample = ", ".join(_r[0] for _r in results[:3] if _r[3] is not None)
-        return findings + [{
+        findings = [{
             "issue":  "link_prober_sweep_failed",
             "url":    "routes/brain_consistency_radar.py:check_internal_links",
             "count":  _failed,
@@ -8297,7 +8305,7 @@ def check_dead_internal_links() -> list[dict]:
             ),
         }]
 
-    for path, status, body_snip, err in results:
+    for path, status, body_snip, err in (() if _sweep_failed else results):
         if err is not None:
             findings.append({
                 "issue":  "internal_link_unreachable",
