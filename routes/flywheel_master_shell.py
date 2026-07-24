@@ -794,6 +794,19 @@ def flywheel_dashboard():
             f"<div style='margin-top:8px;font-size:12px;color:#64748b'>⚡ actuator (not fired): "
             f"{_esc(lane.get('actuator',''))}</div></div>")
 
+    # ★ 2026-07-24: this page was read as a 4-lane collapse (0 agents, 0 real
+    # calls, X publisher dead 11d) while the real flywheel was 4/6 with 75
+    # agents. It had been served by the RENDER failover origin off a database
+    # frozen at 07-13, at HTTP 200. The CF header x-dc-hub-served-by carried
+    # the truth but is invisible in a browser. The origin now states its own
+    # identity in the page body. Empty string on a healthy primary.
+    try:
+        from routes.failover_stale_gate import banner_html
+        banner = banner_html()
+    except Exception as _bexc:
+        logger.debug("[flywheel] origin banner unavailable: %s", _bexc)
+        banner = ""
+
     green = p["lanes_pass"] == p["lanes_total"]
     html = (
         "<!doctype html><meta charset='utf-8'>"
@@ -808,5 +821,5 @@ def flywheel_dashboard():
         f"DIAGNOSTIC (pure-DB, no self-requests; names an actuator per lane, fires nothing) · "
         f"30s tick cache · auto-refresh 60s · generated {_esc(p['generated_at'])} · "
         f"JSON: /api/v1/admin/flywheel/master-tick</div>"
-        + "".join(cards) + "</body>")
+        + banner + "".join(cards) + "</body>")
     return Response(html, mimetype="text/html")

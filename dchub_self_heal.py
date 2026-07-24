@@ -643,7 +643,34 @@ def fix_backfill_testimonials():
 
 
 def fix_relax_verdict_thresholds():
-    """If too few BUILD/AVOID verdicts, recompute with more sensitive thresholds."""
+    """Detect DEGENERATE verdict spread on market_power_scores.
+
+    ★ 2026-07-24: this guard was structurally dead. It read
+        if (builds or 0) + (avoids or 0) >= 5: return "verdicts adequate"
+    i.e. it measured the TOTAL number of decisive verdicts, not their
+    SPREAD. The live distribution is AVOID=295 · CAUTION=17 · BUILD=5 over
+    317 markets, so builds+avoids = 300 >= 5 and the function short-circuited
+    to "verdicts adequate" on every single run — it had never once reached
+    its own remedy. Downstream that is why DC Hub Media reads like a stuck
+    record: the dcpi_leader and afternoon_pulse slots can only ever choose
+    among FIVE BUILD markets, and 4 of the last 20 press releases were
+    Cheyenne. The media writer was never the problem; its input had
+    collapsed to a near-constant.
+
+    ★ The remedy is deliberately NOT armed. Rewriting stored verdicts until
+    the histogram looks healthier does not discover a single new BUILD
+    market — it manufactures analytical output to hit a cosmetic target,
+    and those verdicts are published, cited by agents, and drive the media
+    arm. The honest failure here is upstream: many markets carry ISO-level
+    fallback scores rather than market-level ones (Coeur d'Alene and
+    Sheridan both 42.2/43.9; Honolulu and Lakeland both 42.7/43.8; Akron
+    and Bethlehem both 56.9/17.5), so identical inputs yield identical
+    verdicts. Fix the inputs, not the labels. The rewrite stays behind
+    DCPI_RELAX_VERDICTS_ARM=1 for a human who has decided the thresholds
+    themselves are genuinely miscalibrated.
+
+    Returns (ok, message). ok=False marks a real, actionable finding.
+    """
     if not DATABASE_URL: return False, "no DATABASE_URL"
     try:
         with _conn() as c, c.cursor() as cur:
@@ -651,17 +678,40 @@ def fix_relax_verdict_thresholds():
                 SELECT
                   COUNT(*) FILTER (WHERE verdict='BUILD') AS builds,
                   COUNT(*) FILTER (WHERE verdict='AVOID') AS avoids,
-                  COUNT(*) FILTER (WHERE constraint_score >= 80) AS hi_c,
-                  COUNT(*) FILTER (WHERE excess_power_score >= 80) AS hi_e
+                  COUNT(*) FILTER (WHERE verdict='CAUTION') AS cautions,
+                  COUNT(*) AS total
                 FROM market_power_scores
                 WHERE computed_at > NOW() - INTERVAL '7 days';
             """)
             r = cur.fetchone()
-            builds, avoids, hi_c, hi_e = r
-            if (builds or 0) + (avoids or 0) >= 5:
-                return True, f"verdicts adequate: {builds} BUILD, {avoids} AVOID"
+            builds, avoids, cautions, total = (x or 0 for x in r)
 
-            # Recompute verdicts in place with more sensitive thresholds
+            if not total:
+                return False, "no market_power_scores rows in the last 7d"
+
+            # SPREAD, not volume: what share sits in the single dominant
+            # bucket? A healthy index disagrees with itself.
+            dominant = max(builds, avoids, cautions)
+            dominant_share = dominant / float(total)
+            spread_ok = dominant_share <= 0.85 and builds >= 10
+
+            summary = (f"BUILD={builds} CAUTION={cautions} AVOID={avoids} "
+                       f"(n={total}, dominant={round(dominant_share*100,1)}%)")
+            if spread_ok:
+                return True, f"verdict spread healthy: {summary}"
+
+            if (os.environ.get("DCPI_RELAX_VERDICTS_ARM") or "").strip() != "1":
+                # Report, do not rewrite. This is the path that now fires.
+                return False, (
+                    f"DEGENERATE verdict spread: {summary}. Root cause is "
+                    "market-level DCPI inputs (ISO-level fallback scores "
+                    "shared across unrelated markets), not the thresholds. "
+                    "Relabelling is gated behind DCPI_RELAX_VERDICTS_ARM=1 "
+                    "because rewriting published verdicts manufactures "
+                    "signal instead of finding it."
+                )
+
+            # Armed by a human: recompute verdicts with relaxed thresholds.
             cur.execute("""
                 UPDATE market_power_scores SET verdict =
                     CASE

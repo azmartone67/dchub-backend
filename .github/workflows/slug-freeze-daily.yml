@@ -1,0 +1,62 @@
+name: Slug Freeze Daily (stop the unfrozen-slug bleed)
+
+# ★ 2026-07-24. canonical_slug is frozen SET-ONCE (WHERE canonical_slug IS
+# NULL), which makes the backfill idempotent and safe — but nothing in the
+# repo ever ran it. A grep for /api/v1/admin/slug/freeze across every
+# workflow and module returned only the route definition itself. So every
+# newly ingested facility landed with canonical_slug NULL and simply stayed
+# that way: 61 rows (29 facilities + 32 discovered_facilities) had piled up
+# by the time the flywheel's lane-5 check caught it, each one a page whose
+# legacy /facility/<id> URL had no frozen 301 target.
+#
+# The check existed. The LOOP did not. This is the loop.
+#
+# Safe to run daily: set-once semantics mean a no-op when pending=0, and the
+# endpoint is bounded by max_batches so it cannot outrun the request timeout.
+# The sitemap purge afterwards is what actually publishes the new slugs.
+#
+# Kill switch: delete this schedule, or set SLUG_FREEZE_DISABLE=1 on Railway.
+# Verify: GET /api/v1/admin/integrity/master-tick -> lane 2.
+
+on:
+  schedule:
+    - cron: '17 5 * * *'   # 05:17 UTC daily — off-peak, distinct minute
+  workflow_dispatch: {}
+
+jobs:
+  freeze:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Freeze pending canonical slugs
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          if [ -z "$ADMIN_KEY" ]; then
+            echo "::warning ::DCHUB_ADMIN_KEY secret not set — skipping (fail-safe)"
+            echo "NEWLY=0" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          # Railway origin directly, never dchub.cloud: the CF zone can cache
+          # or shadow a 404 on POST admin paths, and — more importantly since
+          # 07-24 — the edge may fail a request over to the STALE Render
+          # mirror, which must never be handed a write.
+          BASE="${DCHUB_BACKEND_BASE:-https://dchub-backend-production.up.railway.app}"
+          body=$(curl -sS --max-time 120 -X POST "$BASE/api/v1/admin/slug/freeze?cb=${GITHUB_RUN_ID}" -H "X-Admin-Key: $ADMIN_KEY" || echo '{"ok":false,"error":"curl_fail"}')
+          echo "$body" | python3 -c "import json,sys; d=json.load(sys.stdin); fr=d.get('freeze') or {}; print('ok:', d.get('ok')); [print('  %s: newly_frozen=%s pending=%s' % (t, v.get('newly_frozen'), v.get('pending'))) for t, v in fr.items()]; sys.exit(0 if d.get('ok') else 1)" || { echo "$body"; exit 1; }
+          # Non-zero pending just means max_batches truncated the run; the
+          # next daily tick picks it up. Only a hard error fails the job.
+          newly=$(echo "$body" | python3 -c "import json,sys; d=json.load(sys.stdin); fr=d.get('freeze') or {}; print(sum(int(v.get('newly_frozen') or 0) for v in fr.values()))")
+          echo "TOTAL newly_frozen: $newly"
+          echo "NEWLY=$newly" >> "$GITHUB_ENV"
+
+      - name: Purge sitemap cache when slugs changed
+        if: success()
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          if [ -z "$ADMIN_KEY" ] || [ "${NEWLY:-0}" = "0" ]; then
+            echo "no new slugs (or no key) — skipping sitemap purge"
+            exit 0
+          fi
+          BASE="${DCHUB_BACKEND_BASE:-https://dchub-backend-production.up.railway.app}"
+          curl -sS --max-time 120 -X POST "$BASE/api/v1/admin/sitemap/purge?cb=${GITHUB_RUN_ID}" -H "X-Admin-Key: $ADMIN_KEY" | python3 -c "import json,sys; d=json.load(sys.stdin); print('purged:', d.get('purged'), '· urls:', d.get('new_url_count'))" || echo "::warning ::sitemap purge failed — slugs are frozen, the sitemap refreshes on its next rebuild"

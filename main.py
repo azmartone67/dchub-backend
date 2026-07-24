@@ -2087,6 +2087,34 @@ try:
     except Exception as _flms:
         import logging
         logging.getLogger(__name__).warning('flywheel_master_shell wiring failed: %s', _flms)
+    # 2026-07-24: FAIL-CLOSED gate for the failover origin. On Render only
+    # (RENDER/RENDER_SERVICE_ID/DCHUB_FAILOVER — none of which exist on
+    # Railway, so the primary can never gate itself), a >6h-stale ingest
+    # heartbeat turns metrics/ops/admin reads into 503 instead of HTTP 200
+    # full of zeros. On 07-24 the mirror served "0 agents · 0 real calls ·
+    # 262h stale" at 200 and cost a morning of phantom-regression triage.
+    # Also exposes public GET /api/v1/ops/origin-freshness.
+    # Kill: STALE_GATE_DISABLE=1
+    try:
+        from routes.failover_stale_gate import init_app as _stale_gate_init
+        _stale_gate_init(app)
+        print("[main] failover_stale_gate wired: GET /api/v1/ops/origin-freshness", flush=True)
+    except Exception as _sgt:
+        import logging
+        logging.getLogger(__name__).warning('failover_stale_gate wiring failed: %s', _sgt)
+    # 2026-07-24: Integrity master shell (#25) — the three places a
+    # MEASUREMENT lied to us rather than the thing measured: failover-origin
+    # freshness (cross-origin probe), slug-freeze loop closure, DCPI verdict
+    # spread. Read-only DIAGNOSTIC.
+    # GET /admin/integrity · /api/v1/admin/integrity/master-tick
+    # Kill: INTEGRITY_SHELL_DISABLE=1
+    try:
+        from routes.integrity_master_shell import integrity_master_shell_bp
+        app.register_blueprint(integrity_master_shell_bp)
+        print("[main] integrity_master_shell_bp registered: GET /admin/integrity", flush=True)
+    except Exception as _ims:
+        import logging
+        logging.getLogger(__name__).warning('integrity_master_shell wiring failed: %s', _ims)
     # 2026-07-06: Back-of-Funnel Truth master shell — ONE pane for the 07-06
     # funnel fix-wave (retention durable-keys, claim→paid attribution, conversion
     # demand) measured with CORRECTED metrics the older panes were blind to.
