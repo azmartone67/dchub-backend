@@ -7355,6 +7355,38 @@ def check_mcp_presence_stale() -> list[dict]:
                         f"with POST /api/v1/admin/mcp-presence/crawl + "
                         f"/api/v1/admin/outreach/mcp-registry/submit-all."),
                 })
+            # r-perrow-staleness (2026-07-24 coverage audit): the MAX() aggregate above
+            # goes green the moment ANY single registry is touched — so the 6 recently
+            # added rows masked all 10 LISTED registries rotting for ~20 days. Aggregate
+            # freshness is not per-row freshness. Check each row against the crawler's
+            # own 3-day re-scrape SLA (mcp_presence_crawler: last_crawled_at > 3 days).
+            try:
+                cur.execute("""
+                    SELECT registry_name,
+                           COALESCE(EXTRACT(EPOCH FROM (NOW() - last_crawled_at))/3600, 1e9)
+                      FROM mcp_presence_listings
+                     WHERE last_crawled_at IS NULL
+                        OR last_crawled_at < NOW() - INTERVAL '72 hours'
+                     ORDER BY last_crawled_at ASC NULLS FIRST
+                """)
+                stale_rows = cur.fetchall() or []
+            except Exception:
+                stale_rows = []
+            if stale_rows:
+                names = ", ".join(f"{r[0]}({float(r[1]):.0f}h)" for r in stale_rows[:6])
+                findings.append({
+                    "issue": "mcp_presence_listing_stale",
+                    "url":   "mcp_presence_listings",
+                    "count": len(stale_rows),
+                    "detail": (
+                        f"{len(stale_rows)} of {total} registry listings have not been "
+                        f"re-scraped in >72h (crawler SLA is 3 days): {names}"
+                        f"{' …' if len(stale_rows) > 6 else ''}. Per-row staleness is "
+                        f"invisible to the MAX()-based flywheel check — a single fresh "
+                        f"row makes the aggregate look healthy while listed registries "
+                        f"rot (glama/smithery went ~20d unverified this way). Kick "
+                        f"POST /api/v1/admin/mcp-presence/crawl."),
+                })
             if drift_n > 0:
                 findings.append({
                     "issue": "mcp_presence_drift_uncorrected",
@@ -7447,7 +7479,14 @@ def check_customer_activation_health() -> list[dict]:
             cur.execute("""
                 SELECT COUNT(*) FROM users u
                  WHERE u.last_touch_by = 'customer_white_glove'
-                   AND u.lifecycle_stage = 'stranded'
+                   -- r-escalation-column-fix (2026-07-24 coverage audit): this read
+                   -- `lifecycle_stage`, which is OWNED by the CRM funnel subsystem and
+                   -- whose vocabulary has no 'stranded' value at all (live: {new:142,
+                   -- converted:12}) — so the human-escalation branch could NEVER fire
+                   -- while 15 of 17 paying customers sat stranded. The white-glove loop
+                   -- writes `engagement_stage` (customer_white_glove._persist), which is
+                   -- exactly what leg (a) of this same function already reads.
+                   AND u.engagement_stage = 'stranded'
                    AND EXISTS (SELECT 1 FROM email_drip_log d
                                 WHERE lower(d.user_email) = lower(u.email)
                                   AND d.email_key = 'activation_nudge'
@@ -9318,13 +9357,28 @@ def check_cross_surface_value_drift() -> list[dict]:
         return []
     metrics = {"markets": live.get("markets"), "countries": live.get("countries")}
     ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    SURFACES = ["routes/state_of_power.py", "competitive_seo.py", "agent_hub.py",
-                "quarterly_report.py", "mcp_presence_crawler.py"]
+    # r-surface-paths (2026-07-24 coverage audit): three of these were rooted at the
+    # repo root but have only ever lived under routes/ — open() raised FileNotFoundError
+    # and the bare `continue` below swallowed it, so 3 of 5 allow-listed surfaces (and
+    # EVERY count literal the detector could act on) were unreadable since the file was
+    # created. A typo'd allow-list entry was indistinguishable from a clean file.
+    SURFACES = ["routes/state_of_power.py", "routes/competitive_seo.py", "agent_hub.py",
+                "routes/quarterly_report.py", "routes/mcp_presence_crawler.py"]
     findings: list[dict] = []
     for rel in SURFACES:
         try:
             txt = open(os.path.join(ROOT, rel), encoding="utf-8", errors="replace").read()
         except Exception:
+            # Never silently skip: a missing allow-list path means this detector is
+            # blind to that surface, which is the failure mode above.
+            findings.append({
+                "issue": "surface_allowlist_path_missing",
+                "url":   rel,
+                "count": 1,
+                "detail": (f"check_cross_surface_value_drift cannot open allow-listed "
+                           f"surface `{rel}` — it is blind to that file's hardcoded "
+                           f"metrics. Fix the path or drop it from SURFACES."),
+            })
             continue
         for mkey, live_val in metrics.items():
             if not live_val:
