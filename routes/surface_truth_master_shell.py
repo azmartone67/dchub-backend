@@ -1,0 +1,402 @@
+"""routes/surface_truth_master_shell.py — Surface Truth Master Shell (#29, 2026-07-25).
+
+WHY THIS EXISTS
+===============
+On 2026-07-25 the canonical-counts fence went GREEN while every live
+agent-facing surface still published the retired pre-dedup facility floor.
+
+The fence (tests/test_canonical_counts_drift.py) scans four REPO-ROOT files:
+llms.txt, llms-full.txt, README.md, .well-known/mcp.json. But `/llms.txt` is
+served inline from ai_discovery_routes.py (main.py:20177 records the old file
+routes being removed), and further copies live in static/ and dchub-frontend/.
+The repo-root files the fence reads are served by NOTHING. Editing them turned
+the check green and changed nothing a model can see — four different numbers
+were live at once (20,000+, 21,000+, 22,000+) against a canon of 12,650+.
+
+That is the session's recurring failure in its purest form: a check that
+verifies an artifact instead of reality stops being a check. The dead-man board
+had the same shape (a beat that proved a job ran, not that it ingested), and so
+did no_new_data (a status asserting zero was expected, on top of a counter that
+was structurally always zero).
+
+So this shell verifies the ONLY thing that matters: the bytes an agent actually
+receives. It fetches the live URLs through the public edge — the same path a
+crawler takes — and compares them to ai_surface_canon.PINNED. It reads no repo
+file to decide whether a surface is honest, except in the one lane whose job is
+to catch repo-vs-served divergence.
+
+LANES
+  1 · served agent text      /llms.txt, /llms-full.txt carry canon, not a floor
+  2 · served manifests       /.well-known/mcp.json, /mcp.json likewise
+  3 · repo vs served         the files the FENCE reads agree with what is SERVED
+                             (this lane is the one that would have caught today)
+  4 · emitter sources        the python that BUILDS the served bytes is clean,
+                             so a regression is visible before it deploys
+
+HOUSE RULES
+  · A lane never reads PASS when it could not check. An unreachable surface is
+    '?', never green-by-silence — the whole point is that silence lied before.
+  · Read-only. Fetches and greps. Flips nothing, writes nothing but its own
+    dead-man beat into the ingest_runs ledger (L8: never auto-execute).
+  · Fail-soft everywhere: a crashed lane renders '?' and never 500s the tick.
+
+Surface:  GET /admin/surface-truth            (HTML)
+          GET /api/v1/admin/surface-truth     (HTML)
+          GET|POST /api/v1/admin/surface-truth/master-tick   (JSON)
+Beat:     surface-truth-shell-daily
+Kill:     SURFACE_TRUTH_SHELL_DISABLE=1
+"""
+
+from __future__ import annotations
+
+import datetime
+import json
+import logging
+import os
+import re
+import urllib.request
+
+from flask import Blueprint, jsonify, request
+
+logger = logging.getLogger(__name__)
+
+surface_truth_master_shell_bp = Blueprint("surface_truth_master_shell", __name__)
+
+# Public origin — deliberately the EDGE, not loopback. An agent reaches the
+# surface through Cloudflare, so that is the path we must verify; a loopback
+# check would pass while a cached/edge-served body stayed stale.
+ORIGIN = (os.environ.get("SURFACE_TRUTH_ORIGIN") or "https://dchub.cloud").rstrip("/")
+
+# ★ urllib without a UA gets CF-403'd on this zone. Always send one.
+_UA = "dchub-surface-truth/1.0 (+https://dchub.cloud; internal-audit)"
+
+# Any retired facility floor. Deliberately a RANGE, not one value: the point is
+# that four different numbers were live simultaneously, so pinning a single old
+# value would have missed three of them.
+_STALE_FLOOR = re.compile(r"\b(?:19|20|21|22|23),\d{3}\+")
+
+# Live agent-facing surfaces, by lane.
+_TEXT_SURFACES = ("/llms.txt", "/llms-full.txt")
+_MANIFEST_SURFACES = ("/.well-known/mcp.json", "/mcp.json")
+
+# Lane 3: the files the canonical-counts FENCE scans -> the URL that actually
+# serves that surface. A disagreement means the fence is guarding a file nobody
+# reads, which is exactly how 2026-07-25 happened.
+_FENCE_FILE_TO_URL = {
+    "llms.txt": "/llms.txt",
+    "llms-full.txt": "/llms-full.txt",
+    os.path.join(".well-known", "mcp.json"): "/.well-known/mcp.json",
+}
+
+# Lane 4: server-side python that EMITS the served bytes inline.
+_EMITTER_SOURCES = ("ai_discovery_routes.py",)
+
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+# ── auth / kill ───────────────────────────────────────────────────────
+
+def _admin_ok() -> bool:
+    sent = (request.headers.get("X-Admin-Key")
+            or request.args.get("admin_key") or "").strip()
+    expected = ((os.environ.get("DCHUB_ADMIN_KEY")
+                 or os.environ.get("DCHUB_INTERNAL_KEY") or "").strip())
+    return bool(sent) and sent == expected
+
+
+def _disabled() -> bool:
+    return (os.environ.get("SURFACE_TRUTH_SHELL_DISABLE") or "").strip() == "1"
+
+
+# ── helpers ───────────────────────────────────────────────────────────
+
+def _check(cid: str, name: str, passed, detail: str,
+           critical: bool = False) -> dict:
+    """passed: True / False / None (None = indeterminate, renders '?')."""
+    return {"id": cid, "name": name, "pass": passed,
+            "detail": detail, "critical": critical}
+
+
+def _lane_verdict(checks: list[dict]) -> str:
+    """PASS only when every critical check affirmatively passed. An
+    indeterminate critical check yields '?' — never green-by-silence."""
+    crits = [k for k in checks if k.get("critical")]
+    if any(k["pass"] is False for k in checks):
+        return "FAIL"
+    if any(k["pass"] is None for k in crits):
+        return "?"
+    return "PASS"
+
+
+def _canon_floor() -> str | None:
+    """The published facility floor, from the single source of truth."""
+    try:
+        from ai_surface_canon import PINNED
+        return (PINNED.get("public") or {}).get("facilities")
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[surface-truth] canon import failed: %s", e)
+        return None
+
+
+def _fetch(path: str):
+    """GET a live surface. Returns (body, error). Never raises."""
+    try:
+        req = urllib.request.Request(ORIGIN + path,
+                                     headers={"User-Agent": _UA})
+        with urllib.request.urlopen(req, timeout=12) as r:
+            return r.read().decode("utf-8", "replace"), None
+    except Exception as e:  # noqa: BLE001
+        return None, "%s: %s" % (type(e).__name__, str(e)[:110])
+
+
+def _read_repo(rel: str):
+    try:
+        with open(os.path.join(_REPO_ROOT, rel), encoding="utf-8",
+                  errors="ignore") as fh:
+            return fh.read()
+    except Exception:
+        return None
+
+
+def _floors_in(text: str) -> list[str]:
+    return sorted(set(_STALE_FLOOR.findall(text or "")))
+
+
+def _audit_body(cid: str, label: str, body, err, canon: str) -> list[dict]:
+    """Two checks per surface: canon present, and no retired floor."""
+    if body is None:
+        # Unreachable is INDETERMINATE, not healthy. This is the distinction
+        # the whole shell exists to preserve.
+        return [_check(cid + "_reachable", label + " reachable", None,
+                       "fetch failed: %s" % err, critical=True)]
+    stale = _floors_in(body)
+    return [
+        _check(cid + "_canon", label + " carries canon floor",
+               canon in body,
+               ("found %s" % canon) if canon in body
+               else "canon floor %s ABSENT from the served body" % canon,
+               critical=True),
+        _check(cid + "_stale", label + " free of retired floors",
+               not stale,
+               "clean" if not stale else "serves retired floor(s): %s"
+               % ", ".join(stale),
+               critical=True),
+    ]
+
+
+# ── lanes ─────────────────────────────────────────────────────────────
+
+def _lane_served_text(canon: str) -> list[dict]:
+    out: list[dict] = []
+    for path in _TEXT_SURFACES:
+        body, err = _fetch(path)
+        out.extend(_audit_body(path.strip("/").replace(".", "_").replace("-", "_"),
+                               path, body, err, canon))
+    return out
+
+
+def _lane_served_manifests(canon: str) -> list[dict]:
+    out: list[dict] = []
+    for path in _MANIFEST_SURFACES:
+        body, err = _fetch(path)
+        cid = path.strip("/").replace("/", "_").replace(".", "_").replace("-", "_")
+        checks = _audit_body(cid, path, body, err, canon)
+        if body is not None:
+            try:
+                json.loads(body)
+                checks.append(_check(cid + "_json", path + " is valid JSON",
+                                     True, "parses", critical=False))
+            except Exception as e:  # noqa: BLE001
+                checks.append(_check(cid + "_json", path + " is valid JSON",
+                                     False, "parse failed: %s" % str(e)[:90],
+                                     critical=False))
+        out.extend(checks)
+    return out
+
+
+def _lane_repo_vs_served(canon: str) -> list[dict]:
+    """THE lane that would have caught 2026-07-25.
+
+    The canonical-counts fence scans repo files. If a fence file disagrees with
+    the body actually served at its URL, the fence is guarding an artifact and
+    its green means nothing.
+    """
+    out: list[dict] = []
+    for rel, url in _FENCE_FILE_TO_URL.items():
+        cid = "parity_" + rel.replace(os.sep, "_").replace(".", "_").replace("-", "_")
+        repo = _read_repo(rel)
+        body, err = _fetch(url)
+        if repo is None:
+            out.append(_check(cid, "%s vs %s" % (rel, url), None,
+                              "fence file unreadable in repo", critical=True))
+            continue
+        if body is None:
+            out.append(_check(cid, "%s vs %s" % (rel, url), None,
+                              "served body unreachable: %s" % err, critical=True))
+            continue
+        repo_ok = canon in repo and not _floors_in(repo)
+        served_ok = canon in body and not _floors_in(body)
+        if repo_ok and not served_ok:
+            detail = ("FENCE GREEN, LIVE STALE — repo %s is canon-clean while %s "
+                      "serves %s. The fence is guarding a file nobody serves."
+                      % (rel, url, ", ".join(_floors_in(body)) or "no canon floor"))
+            out.append(_check(cid, "%s vs %s" % (rel, url), False, detail,
+                              critical=True))
+        elif served_ok and not repo_ok:
+            out.append(_check(cid, "%s vs %s" % (rel, url), False,
+                              "live is canon-clean but repo %s is not — the fence "
+                              "will fail on a surface that is actually fine" % rel,
+                              critical=True))
+        else:
+            out.append(_check(cid, "%s vs %s" % (rel, url), bool(served_ok),
+                              "agree (%s)" % ("both clean" if served_ok
+                                              else "BOTH carry a retired floor"),
+                              critical=True))
+    return out
+
+
+def _lane_emitter_sources(canon: str) -> list[dict]:
+    """The python that builds the served bytes. Catches a regression at review
+    time instead of after it deploys."""
+    out: list[dict] = []
+    for rel in _EMITTER_SOURCES:
+        src = _read_repo(rel)
+        cid = "emitter_" + rel.replace(".", "_")
+        if src is None:
+            out.append(_check(cid, rel + " readable", None,
+                              "source unreadable", critical=True))
+            continue
+        stale = _floors_in(src)
+        out.append(_check(cid, rel + " free of retired floors", not stale,
+                          "clean" if not stale
+                          else "emits retired floor(s): %s" % ", ".join(stale),
+                          critical=True))
+    return out
+
+
+# ── dead-man beat ─────────────────────────────────────────────────────
+
+def _beat_ledger(note: str) -> None:
+    """Best-effort beat into the SHIPPED ingest_runs ledger. NEVER raises."""
+    try:
+        body = json.dumps({
+            "feed": "surface-truth-shell-daily",
+            "status": "success",
+            "rows_inserted": 1,  # liveness sentinel — health lives in `note`
+            "cadence_hours": 24,
+            "last_run": datetime.datetime.utcnow().isoformat() + "Z",
+            "note": note[:280],
+        }).encode()
+        port = os.environ.get("PORT", "8080")
+        admin_key = (os.environ.get("DCHUB_ADMIN_KEY")
+                     or os.environ.get("DCHUB_INTERNAL_KEY")
+                     or os.environ.get("ADMIN_API_KEY", ""))
+        req = urllib.request.Request(
+            "http://127.0.0.1:" + str(port) + "/api/v1/admin/ingest-runs/beat",
+            data=body, method="POST",
+            headers={"Content-Type": "application/json",
+                     "User-Agent": "dchub-surface-truth-shell/1.0",
+                     "X-Admin-Key": admin_key})
+        urllib.request.urlopen(req, timeout=5).read()
+    except Exception as e:  # noqa: BLE001 — a beat error must never break the tick
+        logger.debug("[surface-truth] ledger beat failed: %s", e)
+
+
+# ── tick ──────────────────────────────────────────────────────────────
+
+def _safe_lane(fn, *a) -> list[dict]:
+    try:
+        return fn(*a)
+    except Exception as e:  # noqa: BLE001
+        return [_check("lane_crash", "lane ran to completion", None,
+                       "lane crashed: %s: %s" % (type(e).__name__, str(e)[:120]),
+                       critical=True)]
+
+
+def _run_tick() -> dict:
+    canon = _canon_floor()
+    if not canon:
+        # No canon = nothing to compare against. Every lane is indeterminate;
+        # say so loudly rather than rendering a green board.
+        lanes = [{"id": "canon", "name": "0 · canon available",
+                  "checks": [_check("canon_missing", "ai_surface_canon PINNED "
+                                    "public.facilities", None,
+                                    "canon unavailable — no lane can be judged",
+                                    critical=True)]}]
+    else:
+        lanes = [
+            {"id": "served_text", "name": "1 · served agent text",
+             "checks": _safe_lane(_lane_served_text, canon)},
+            {"id": "served_manifests", "name": "2 · served manifests",
+             "checks": _safe_lane(_lane_served_manifests, canon)},
+            {"id": "repo_vs_served", "name": "3 · repo vs served (fence honesty)",
+             "checks": _safe_lane(_lane_repo_vs_served, canon)},
+            {"id": "emitter_sources", "name": "4 · emitter sources",
+             "checks": _safe_lane(_lane_emitter_sources, canon)},
+        ]
+    for ln in lanes:
+        ln["verdict"] = _lane_verdict(ln["checks"])
+    summary = " ".join("%s=%s" % (ln["id"], ln["verdict"]) for ln in lanes)
+    out = {
+        "ok": True,
+        "shell": "surface-truth-29",
+        "origin": ORIGIN,
+        "canon_floor": canon,
+        "generated_at": datetime.datetime.utcnow().isoformat() + "Z",
+        "lanes": lanes,
+        "summary": summary,
+        "any_fail": any(ln["verdict"] == "FAIL" for ln in lanes),
+    }
+    _beat_ledger("lanes: " + summary)
+    return out
+
+
+@surface_truth_master_shell_bp.route("/api/v1/admin/surface-truth/master-tick",
+                                     methods=["GET", "POST"])
+def master_tick():
+    if _disabled():
+        return jsonify(ok=False, error="SURFACE_TRUTH_SHELL_DISABLE=1"), 503
+    if not _admin_ok():
+        return jsonify(ok=False, error="admin key required"), 401
+    return jsonify(_run_tick())
+
+
+def _esc(s) -> str:
+    return (str(s).replace("&", "&amp;").replace("<", "&lt;")
+            .replace(">", "&gt;").replace('"', "&quot;"))
+
+
+@surface_truth_master_shell_bp.route("/admin/surface-truth", methods=["GET"])
+@surface_truth_master_shell_bp.route("/api/v1/admin/surface-truth", methods=["GET"])
+def dashboard():
+    if _disabled():
+        return "<h1>Surface Truth</h1><p>SURFACE_TRUTH_SHELL_DISABLE=1</p>", 503
+    if not _admin_ok():
+        return "<h1>401</h1><p>admin key required</p>", 401
+    t = _run_tick()
+    color = {"PASS": "#22c55e", "FAIL": "#ef4444", "?": "#eab308"}
+    rows = []
+    for ln in t["lanes"]:
+        rows.append("<tr><td><b>%s</b></td><td style='color:%s'><b>%s</b></td>"
+                    "<td>%s</td></tr>"
+                    % (_esc(ln["name"]), color.get(ln["verdict"], "#eab308"),
+                       _esc(ln["verdict"]),
+                       "<br>".join(
+                           "%s <i>%s</i> — %s"
+                           % ({True: "✓", False: "✗"}.get(k["pass"], "?"),
+                              _esc(k["name"]), _esc(k["detail"]))
+                           for k in ln["checks"])))
+    return ("<html><head><title>Surface Truth #29</title>"
+            "<meta http-equiv='refresh' content='60'></head>"
+            "<body style='font-family:system-ui;max-width:1100px;margin:24px auto'>"
+            "<h1>Surface Truth <small>#29</small></h1>"
+            "<p>Canon floor <b>%s</b> · origin <code>%s</code> · %s</p>"
+            "<p><small>Checks the bytes an agent actually receives, not the repo. "
+            "A lane never reads PASS when it could not check.</small></p>"
+            "<table cellpadding='8' style='border-collapse:collapse;width:100%%'>"
+            "<tr><th align='left'>lane</th><th align='left'>verdict</th>"
+            "<th align='left'>checks</th></tr>%s</table>"
+            "<p><small>refreshes 60s · kill SURFACE_TRUTH_SHELL_DISABLE=1</small></p>"
+            "</body></html>"
+            % (_esc(t.get("canon_floor")), _esc(t["origin"]),
+               _esc(t["generated_at"]), "".join(rows))), 200

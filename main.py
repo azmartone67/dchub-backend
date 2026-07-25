@@ -2067,6 +2067,20 @@ try:
     except Exception as _gfms:
         import logging
         logging.getLogger(__name__).warning('growthfix_master_shell wiring failed: %s', _gfms)
+    # 2026-07-25: Surface Truth Master Shell (#29) — fetches the LIVE agent-facing
+    # surfaces through the edge and compares them to ai_surface_canon. Built after
+    # the canonical-counts fence went green while every served surface still
+    # published the retired pre-dedup facility floor: the fence scans repo-root
+    # files that nothing serves. Read-only; a lane never reads PASS when it could
+    # not check. GET /admin/surface-truth · /api/v1/admin/surface-truth/master-tick
+    # · kill SURFACE_TRUTH_SHELL_DISABLE=1
+    try:
+        from routes.surface_truth_master_shell import surface_truth_master_shell_bp
+        app.register_blueprint(surface_truth_master_shell_bp)
+        print("[main] surface_truth_master_shell_bp registered: GET /admin/surface-truth", flush=True)
+    except Exception as _stms:
+        import logging
+        logging.getLogger(__name__).warning('surface_truth_master_shell wiring failed: %s', _stms)
     # 2026-07-25: Brain Ascension Master Shell (#28) — watches the five-audit
     # fix-wave lanes (brain deadman coverage, cross-model roster, competitor→
     # product wiring, RAG truth, merged-PR metric harness, growth/MRR truth).
