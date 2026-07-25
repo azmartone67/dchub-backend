@@ -4,12 +4,25 @@
 # Tests API, auth, plan display, and key validation against PRODUCTION
 
 PROD="https://dchub.cloud"
-# 2026-07-25 security sweep: a real customer key + two customer email
-# addresses were hardcoded here in a PUBLIC repo. All three are env-only now
-# (the sweep skips the checks that need them rather than ship customer PII).
+# 2026-07-25 security sweep: a real customer key, two customer email
+# addresses AND a shared account password were hardcoded here in a PUBLIC
+# repo. All four are env-only now. NOTE: the emails + password remain in git
+# HISTORY, so that shared password must be ROTATED on both accounts — removing
+# it from HEAD alone is not a mitigation.
 EJ_KEY="${DCHUB_API_KEY}"
 SCOTT_EMAIL="${QA_SCOTT_EMAIL}"
 EJ_EMAIL="${QA_EJ_EMAIL}"
+QA_TEST_PASSWORD="${QA_TEST_PASSWORD}"
+
+# Fail FAST rather than run with empty credentials. Without this the sweep
+# POSTs {"email":"","password":""} to production and reports fabricated
+# FAILures ("Scott login FAILED"), which trains operators to ignore it.
+if [ -z "$EJ_KEY" ] || [ -z "$SCOTT_EMAIL" ] || [ -z "$EJ_EMAIL" ] || [ -z "$QA_TEST_PASSWORD" ]; then
+  echo "SKIP: qa-sweep needs DCHUB_API_KEY, QA_SCOTT_EMAIL, QA_EJ_EMAIL and"
+  echo "      QA_TEST_PASSWORD in the environment. These are customer"
+  echo "      credentials and are deliberately NOT stored in this public repo."
+  exit 0
+fi
 
 PASS=0
 FAIL=0
@@ -92,7 +105,7 @@ echo "── 3. AUTH / LOGIN ──"
 # Scott's login
 SCOTT_LOGIN=$(curl -s --max-time 15 -X POST "$PROD/api/auth/login" \
     -H "Content-Type: application/json" \
-    -d "{\"email\":\"$SCOTT_EMAIL\",\"password\":\"DCHub2026!\"}")
+    -d "{\"email\":\"$SCOTT_EMAIL\",\"password\":\"$QA_TEST_PASSWORD\"}")
 SCOTT_PLAN=$(echo "$SCOTT_LOGIN" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('user',d).get('plan','MISSING'))" 2>/dev/null)
 SCOTT_TOKEN=$(echo "$SCOTT_LOGIN" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('token',''))" 2>/dev/null)
 
@@ -120,7 +133,7 @@ fi
 # EJ's login
 EJ_LOGIN=$(curl -s --max-time 15 -X POST "$PROD/api/auth/login" \
     -H "Content-Type: application/json" \
-    -d "{\"email\":\"$EJ_EMAIL\",\"password\":\"DCHub2026!\"}")
+    -d "{\"email\":\"$EJ_EMAIL\",\"password\":\"$QA_TEST_PASSWORD\"}")
 EJ_PLAN=$(echo "$EJ_LOGIN" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('user',d).get('plan','MISSING'))" 2>/dev/null)
 
 if [ "$EJ_PLAN" = "pro" ] || [ "$EJ_PLAN" = "founding" ]; then

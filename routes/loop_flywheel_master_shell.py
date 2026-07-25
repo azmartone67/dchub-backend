@@ -129,10 +129,21 @@ def _check(cid: str, name: str, passed, detail: str,
 
 
 def _lane_verdict(checks: list[dict]) -> str:
-    crits = [k for k in checks if k.get("critical")]
+    """green ONLY when something was actually decided and nothing failed.
+
+    2026-07-25 (adversarial review): this originally escalated to "?" only for
+    checks marked critical, so a lane whose checks were ALL
+    indeterminate-and-non-critical rendered a confident PASS — the exact
+    green-by-silence the module header forbids. Observed live: with the DB
+    unreachable, lane 7 returned [door_usage=None] and read PASS, and lane 3
+    read PASS while "failover mirror answers" was never determined. Matches
+    routes/integrity_master_shell.py:161 (#25), the reference implementation."""
     if any(k["pass"] is False for k in checks):
         return "FAIL"
-    if any(k["pass"] is None for k in crits):
+    if any(k["pass"] is None for k in checks if k.get("critical")):
+        return "?"
+    # nothing decided at all ⇒ nothing proven ⇒ never green
+    if not [k for k in checks if k["pass"] is not None]:
         return "?"
     return "PASS"
 

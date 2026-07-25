@@ -262,3 +262,46 @@ def test_shell29_lanes_have_no_missing_helpers():
         assert not crashes, f"{fn.__name__} crashed: {crashes[0]['detail']}"
     assert m._age_days(None) is None
     assert m._age_days("2026-07-24T00:00:00Z") > 0
+
+
+def test_lane_verdict_never_green_when_nothing_decided():
+    """A lane whose checks are ALL indeterminate must render '?', not PASS —
+    green-by-silence is the failure mode both shells exist to prevent."""
+    for mod in ("routes.loop_flywheel_master_shell",
+                "routes.brain_ascension_master_shell"):
+        import importlib
+        m = importlib.import_module(mod)
+        assert m._lane_verdict([m._check("a", "a", None, "")]) == "?", mod
+        assert m._lane_verdict([m._check("a", "a", None, ""),
+                                m._check("b", "b", None, "")]) == "?", mod
+        assert m._lane_verdict([m._check("a", "a", True, "")]) == "PASS", mod
+        assert m._lane_verdict([m._check("a", "a", None, ""),
+                                m._check("b", "b", True, "")]) == "PASS", mod
+        assert m._lane_verdict([m._check("a", "a", False, "")]) == "FAIL", mod
+
+
+def test_public_rag_corpora_are_gated():
+    """Wave-3 corpora join PUBLIC_CORPORA, so unvetted rows would be served
+    on the unauthenticated /api/v1/rag/search. Publish/promotion gates must
+    stay in the corpus WHERE."""
+    from routes.brain_rag import CORPORA
+    assert "coalesce(t.published, FALSE) IS TRUE" in CORPORA["press_releases"]["where"]
+    assert "t.row_status = 'published'" in CORPORA["permitting_intel"]["where"]
+
+
+def test_claim_restamp_records_bind_time():
+    """The reconcile sweep's temporal guard keys off session_bound_at; without
+    it the re-stamp would back-fill pre-claim anonymous calls onto the key and
+    inflate the carry metric the fix is measured by."""
+    src = open(os.path.join(ROOT, "flask_mcp_endpoints.py"), encoding="utf-8").read()
+    assert "session_bound_at" in src
+    assert "_bound_at" in src
+    assert "AND k.created_at <= l.timestamp" not in src   # old unguarded form
+    assert "AND k.created_at <= l2.timestamp" not in src
+
+
+def test_qa_sweep_ships_no_credentials():
+    src = open(os.path.join(ROOT, "qa-sweep.sh"), encoding="utf-8").read()
+    assert "DCHub2026" not in src            # shared account password
+    assert "theterrills@gmail.com" not in src
+    assert "SKIP: qa-sweep needs" in src     # fail-fast guard, not fabricated FAILs

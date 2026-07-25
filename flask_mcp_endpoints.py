@@ -909,11 +909,22 @@ def _restamp_claim_session(api_key: str) -> None:
         # independent of any surrounding aborted transaction.
         conn = _open_track_conn()
         with conn.cursor() as cur:
+            # Stamp session_id AND session_bound_at together. The bind time is
+            # load-bearing: the /track reconcile sweep's only temporal guard
+            # was `k.created_at <= l.timestamp`, which bounded the back-fill
+            # correctly ONLY while session_id was write-once at mint. Re-stamping
+            # decouples the two by up to the 30d reuse window, so without a bind
+            # timestamp the sweep would attribute this session's PRE-claim
+            # anonymous calls to the key — inflating the very carry/activation
+            # metric this fix exists to move. Never let a fix fake its own proof.
             cur.execute(
                 """UPDATE mcp_dev_keys
                       SET metadata = jsonb_set(
-                            COALESCE(metadata, '{}'::jsonb),
-                            '{session_id}', to_jsonb(%s::text), true)
+                            jsonb_set(COALESCE(metadata, '{}'::jsonb),
+                                      '{session_id}', to_jsonb(%s::text), true),
+                            '{session_bound_at}',
+                            to_jsonb(to_char(NOW() AT TIME ZONE 'UTC',
+                                     'YYYY-MM-DD"T"HH24:MI:SS"Z"')), true)
                     WHERE api_key = %s
                       AND COALESCE(metadata->>'session_id', '') <> %s""",
                 (sid, api_key, sid))
@@ -2257,6 +2268,16 @@ def admin_reconcile_session_keys():
     _match = (" k.metadata->>'session_id' = %(sidcol)s "
               " AND k.status='active' AND k.created_at >= now() - interval '30 days' "
               " AND (k.api_key LIKE 'dch_live_%%' OR k.api_key LIKE 'dch_trial_%%') ")
+    # The temporal guard. Was `k.created_at <= <call>.timestamp`, which bounded
+    # the back-fill only while metadata.session_id was write-once at mint.
+    # _restamp_claim_session (2026-07-25) re-points a REUSED key at the session
+    # claiming it now, decoupling created_at from bind time by up to the 30d
+    # reuse window — so created_at alone would let this sweep attribute a
+    # session's PRE-claim anonymous calls to the key and inflate the carry /
+    # activation metrics. Prefer the recorded bind time; fall back to
+    # created_at for keys minted before that field existed.
+    _bound_at = ("COALESCE(NULLIF(k.metadata->>'session_bound_at','')::timestamptz,"
+                 " k.created_at)")
     try:
         with _pool.connection() as conn, conn.cursor() as cur:
             cur.execute(
@@ -2265,13 +2286,13 @@ def admin_reconcile_session_keys():
                 "   AND l.timestamp >= now() - make_interval(days => %(d)s) "
                 "   AND EXISTS (SELECT 1 FROM mcp_dev_keys k WHERE "
                 + _match.replace("%(sidcol)s", "l.session_id")
-                + " AND k.created_at <= l.timestamp)", {"d": days})
+                + " AND " + _bound_at + " <= l.timestamp)", {"d": days})
             out["candidates"] = int((cur.fetchone() or [0])[0] or 0)
             cur.execute(
                 "SELECT DISTINCT ON (l.id) l.session_id, l.tool, k.api_key "
                 "  FROM mcp_call_log l JOIN mcp_dev_keys k ON "
                 + _match.replace("%(sidcol)s", "l.session_id")
-                + " AND k.created_at <= l.timestamp "
+                + " AND " + _bound_at + " <= l.timestamp "
                 " WHERE l.api_key IS NULL AND l.session_id IS NOT NULL AND l.session_id <> '' "
                 "   AND l.timestamp >= now() - make_interval(days => %(d)s) "
                 " ORDER BY l.id, k.created_at DESC LIMIT 8", {"d": days})
@@ -2283,7 +2304,7 @@ def admin_reconcile_session_keys():
                     "  FROM (SELECT DISTINCT ON (l2.id) l2.id, k.api_key "
                     "          FROM mcp_call_log l2 JOIN mcp_dev_keys k ON "
                     + _match.replace("%(sidcol)s", "l2.session_id")
-                    + " AND k.created_at <= l2.timestamp "
+                    + " AND " + _bound_at + " <= l2.timestamp "
                     "        WHERE l2.api_key IS NULL AND l2.session_id IS NOT NULL AND l2.session_id <> '' "
                     "          AND l2.timestamp >= now() - make_interval(days => %(d)s) "
                     "        ORDER BY l2.id, k.created_at DESC) sub "

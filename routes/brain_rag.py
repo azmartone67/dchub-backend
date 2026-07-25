@@ -128,23 +128,40 @@ CORPORA = {
     # asked questions they could answer. Schemas LIVE-VERIFIED against Neon
     # (repo DDL drifts — power_plants trap): fresh_col only where the live
     # column is a real timestamp; TEXT-timestamp tables stay insert-only.
-    "press_releases": {                       # 147 rows — DC Hub's own PRs
+    # ★ PUBLISH GATE (2026-07-25, adversarial review): press_releases is in
+    # PUBLIC_CORPORA and the text expr carries the FULL body, so without this
+    # filter the 11 unpublished drafts (136 published of 147 live) would be
+    # semantically searchable — with a CC-BY-4.0 citation stamp — on the
+    # unauthenticated /api/v1/rag/search. Draft writers (brain_press_loop,
+    # ai_citation_tracker) insert published=FALSE precisely because that copy
+    # is fact-check-gated. Every other public reader gates on published=TRUE;
+    # this must too. NOTE: the live draft marker is the `published` BOOLEAN —
+    # this table has NO status column.
+    "press_releases": {                       # 147 rows, 136 published
         "id": "t.id::text", "kind": "press",
         "text": ("coalesce(t.title,'') || ' — ' || coalesce(t.summary, t.subheadline, '') "
                  "|| ' ' || coalesce(t.body,'')"),
-        "where": "coalesce(t.title,'') <> ''",
+        "where": "coalesce(t.title,'') <> '' AND coalesce(t.published, FALSE) IS TRUE",
         "fresh_col": "published_at"},
     "announcements": {                        # 12.4k rows — industry announcements
         "id": "t.id::text", "kind": "announcement",
         "text": ("coalesce(t.title,'') || ' — ' || coalesce(t.summary, t.content, '') "
                  "|| ' · ' || coalesce(t.companies,'') || ' ' || coalesce(t.locations,'')"),
         "where": "coalesce(t.title,'') <> ''"},
-    "permitting_intel": {                     # 245 rows — jurisdiction rules
+    # ★ PROMOTION GATE (2026-07-25, adversarial review): rows land as
+    # row_status='candidate' from machine scrapes and only become
+    # 'published' when a human promotes them (agentic_master_shell). Live
+    # split is 9 published / 235 candidate / 1 REJECTED — so without this
+    # filter 236 of 245 unvetted rows (including one a human explicitly
+    # rejected) would be served to agents as authoritative, cited DC Hub
+    # permitting guidance. Every other reader filters row_status='published'.
+    "permitting_intel": {                     # 245 rows, 9 published
         "id": "t.id::text", "kind": "permitting",
         "text": ("concat_ws(', ', t.jurisdiction, t.state, t.country) || ' [' || "
                  "coalesce(t.class,'') || '] ' || coalesce(t.title,'') || ' — ' || "
                  "coalesce(t.detail,'')"),
-        "where": "coalesce(t.title, t.detail, '') <> ''",
+        "where": ("coalesce(t.title, t.detail, '') <> '' "
+                  "AND t.row_status = 'published'"),
         "fresh_col": "updated_at"},
     "construction_permits": {                 # 708 rows — filed DC permits
         "id": "t.id::text", "kind": "permit",
@@ -161,7 +178,13 @@ CORPORA = {
                  "coalesce(t.qualifying_jobs,'') || '. Max benefit: ' || "
                  "coalesce(t.max_benefit,'') || '. ' || coalesce(t.notes,'')"),
         "where": "coalesce(t.incentive_details,'') <> ''",
-        "fresh_col": "created_at"},
+        # No fresh_col: _pending's staleness predicate is
+        # `t.<fresh_col> > e.updated_at`, and created_at (set once at INSERT)
+        # can never be later than an embedding written after it — declaring it
+        # was a guaranteed no-op that merely LOOKED like freshness tracking.
+        # The real mtime column here (last_updated) is TEXT, which the live
+        # type gate rejects, so this corpus is honestly insert-only.
+        },
     "capacity_pipeline": {                    # 1.9k rows — build pipeline
         "id": "t.id::text", "kind": "pipeline",
         "text": ("coalesce(t.operator,'') || ' — ' || concat_ws(', ', t.market, "
@@ -1261,10 +1284,14 @@ _HYDRATE = {
                    "generated_at": (r[1] or {}).get("generated_at"),
                    "url": (r[1] or {}).get("url")}),
     # ── wave-3 corpora (2026-07-25): citable source fields per new kind ──
+    # No url: /press/<slug> is served from a DIFFERENT table
+    # (press_releases_queue) and only for status='published', so minting a
+    # dchub.cloud/press/<slug> link from THIS table's slug hands agents
+    # citation URLs that can 404. Omit rather than fabricate — the corpus is
+    # publish-gated above, but the canonical URL still isn't ours to guess.
     "press_releases": (
         "SELECT id, title, slug, published_at FROM press_releases WHERE id::text = ANY(%s)",
-        lambda r: {"title": r[1],
-                   "url": ("https://dchub.cloud/press/" + r[2]) if r[2] else None,
+        lambda r: {"title": r[1], "slug": r[2],
                    "published_at": str(r[3]) if r[3] is not None else None}),
     "announcements": (
         "SELECT id, title, source, source_url, published_date "

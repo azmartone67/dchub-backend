@@ -134,12 +134,16 @@ def _check(cid: str, name: str, passed, detail: str,
 
 
 def _lane_verdict(checks: list[dict]) -> str:
-    """green only when every critical check affirmatively passed; an
-    indeterminate critical check yields '?' — never green-by-silence."""
-    crits = [k for k in checks if k.get("critical")]
+    """green only when something was actually decided and nothing failed.
+
+    2026-07-25 (adversarial review): the critical-only escalation let a lane
+    whose checks were ALL indeterminate-and-non-critical render a confident
+    PASS. Mirrors routes/integrity_master_shell.py:161 (#25)."""
     if any(k["pass"] is False for k in checks):
         return "FAIL"
-    if any(k["pass"] is None for k in crits):
+    if any(k["pass"] is None for k in checks if k.get("critical")):
+        return "?"
+    if not [k for k in checks if k["pass"] is not None]:
         return "?"
     return "PASS"
 
