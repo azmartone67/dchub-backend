@@ -280,11 +280,17 @@ def job_db_health_snapshot():
                     return int(cur.fetchone()[0] or 0)
                 except Exception:
                     return None
+            # These are RAW per-table row counts for db_health_snapshots —
+            # table-growth monitoring, never a public/headline figure. The
+            # legacy `facilities` table is the intended subject: this row sits
+            # next to deals/news/users counts and pg_database_size to watch the
+            # database itself. Switching to discovered_facilities would measure
+            # a different table and break the growth series.
             snap = {
-                'facility_count':  _c("SELECT COUNT(*) FROM facilities"),
+                'facility_count':  _c("SELECT COUNT(*) FROM facilities"),  # lint: legacy-facilities-ok
                 'deal_count':      _c("SELECT COUNT(*) FROM deals"),
                 'news_count':      _c("SELECT COUNT(*) FROM news"),
-                'capacity_count':  _c("SELECT COUNT(*) FROM facilities "
+                'capacity_count':  _c("SELECT COUNT(*) FROM facilities "  # lint: legacy-facilities-ok
                                       "WHERE power_mw IS NOT NULL AND power_mw > 0"),
                 'user_count':      _c("SELECT COUNT(*) FROM users"),
                 'ecosystem_count': _c("SELECT COUNT(*) FROM ai_cumulative"),

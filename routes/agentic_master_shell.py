@@ -69,6 +69,8 @@ import urllib.request
 
 from flask import Blueprint, jsonify, request
 
+from routes.url_registry import build_public_url   # public URLs: single source of truth
+
 logger = logging.getLogger(__name__)
 
 agentic_bp = Blueprint("agentic_master_shell", __name__)
@@ -400,7 +402,7 @@ def _research_evidence(question: str) -> list:
                                                 f"time_to_power={r[4]}mo, queue_wait={r[5]}mo, "
                                                 f"reserve_margin={r[6]}%, curtailment={r[7]}%, "
                                                 f"avg_kwh={r[8]}c, verdict={r[9]}, as_of={r[10]}"),
-                                       "cite": {"url": f"https://dchub.cloud/markets/{r[1]}"}})
+                                       "cite": {"url": build_public_url("markets", r[1])}})
                 finally:
                     try: c.close()
                     except Exception: pass

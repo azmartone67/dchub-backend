@@ -129,6 +129,12 @@ _TRANSACTIONAL_SENDERS = frozenset({
     "brain_innovation_email.py",     # operator innovation digest — transactional, not marketing
     "enterprise_inquiry.py",         # enterprise data-licensing inquiry receipts
     "feedback_triage.py",            # routes /feedback to operator (ops, not promo)
+    "agent_adoption_master_shell.py",  # operator agent-adoption digest — admin-gated
+                                     # POST /api/v1/admin/agent-adoption/digest, recipients
+                                     # are DCHUB_BRIEFING_EMAIL / BRAIN_DIGEST_EMAIL and
+                                     # default to the OWNER inbox. Same shape as
+                                     # growth_ops_digest/paid_intent_ledger: an ops report
+                                     # to the operator, never customer marketing.
     "growth_ops_digest.py",          # operator growth-ops digest (wins/watch/red-lane
                                      # report to the OWNER inbox, admin-gated
                                      # /admin/growth-digest/send) — mirrors
