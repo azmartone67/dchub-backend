@@ -7672,6 +7672,13 @@ def check_facility_duplicate_clusters() -> list[dict]:
             if not dup_ids:
                 continue
             with c.cursor() as cur:
+                # This detector IS the dedup pass over the legacy table:
+                # duplicate_of_id lives on `facilities`, and the finding it
+                # raises ("cross-source duplicate facility rows not yet
+                # collapsed") is about those exact rows. Pointing it at
+                # discovered_facilities would measure the wrong table and
+                # silence the dedup signal.
+                # lint: legacy-facilities-ok
                 cur.execute("SELECT COUNT(*) FROM facilities WHERE id = ANY(%s) "
                             "AND duplicate_of_id IS NULL", (dup_ids,))
                 unmarked = cur.fetchone()[0] or 0
