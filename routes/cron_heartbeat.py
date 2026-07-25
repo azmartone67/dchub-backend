@@ -477,6 +477,18 @@ _DISPATCH = [
      lambda now: now.hour == 8 and now.minute < 55
                  and os.environ.get("SURFACE_TRUTH_SHELL_DISABLE") != "1"),
 
+    # 2026-07-25 shell #31: daily tick of the Intelligence Expansion Master
+    # Shell — measures the five expansion fronts (RAG stage-2 rerank alive,
+    # evidence/self-healing incl. zone-worker canon, media-growth SEE stage
+    # landing, self-learning loops closing, LLM usage/cache efficiency) from
+    # live state and beats the ledger (feed intelligence-expansion-shell-
+    # daily) itself. Read-only. Kill: INTEL_EXPANSION_SHELL_DISABLE=1.
+    ("intel_expansion_shell_daily",
+     f"{BASE}/api/v1/admin/intelligence-expansion/master-tick",
+     "POST",
+     lambda now: now.hour == 9 and now.minute < 55
+                 and os.environ.get("INTEL_EXPANSION_SHELL_DISABLE") != "1"),
+
     # 2026-07-25 (#28 wave 2): daily merged-PR metric snapshot — harvest
     # brain merges, snapshot canonical KPIs (merge phase), re-stamp d14/d30.
     # Idempotent (UNIQUE pr/phase/metric). Kill: BRAIN_PR_METRICS_DISABLE=1.

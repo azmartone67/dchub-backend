@@ -2081,6 +2081,20 @@ try:
     except Exception as _stms:
         import logging
         logging.getLogger(__name__).warning('surface_truth_master_shell wiring failed: %s', _stms)
+    # 2026-07-25: Intelligence Expansion Master Shell (#31) — measures the five
+    # expansion fronts (RAG stage-2 rerank, evidence/self-healing incl. the
+    # zone-worker canon check, media-growth SEE stage, self-learning loops,
+    # LLM usage/cache efficiency) from live state. Read-only; a lane never
+    # reads PASS when it could not check. GET /admin/intelligence-expansion
+    # · /api/v1/admin/intelligence-expansion/master-tick
+    # · kill INTEL_EXPANSION_SHELL_DISABLE=1
+    try:
+        from routes.intelligence_expansion_master_shell import intelligence_expansion_master_shell_bp
+        app.register_blueprint(intelligence_expansion_master_shell_bp)
+        print("[main] intelligence_expansion_master_shell_bp registered: GET /admin/intelligence-expansion", flush=True)
+    except Exception as _iems:
+        import logging
+        logging.getLogger(__name__).warning('intelligence_expansion_master_shell wiring failed: %s', _iems)
     # 2026-07-25: Brain Ascension Master Shell (#28) — watches the five-audit
     # fix-wave lanes (brain deadman coverage, cross-model roster, competitor→
     # product wiring, RAG truth, merged-PR metric harness, growth/MRR truth).

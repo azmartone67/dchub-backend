@@ -60,6 +60,66 @@ def _rerank_on() -> bool:
     return (os.environ.get("BRAIN_RAG_RERANK", "1").strip().lower()
             not in ("0", "false", "no", "off"))
 
+
+# ── neutral rerank (r-rag-neutral-rerank 2026-07-25, shell #31) ──────
+# The cross-encoder above is provider-locked, so the day the embed provider
+# moved to mistral the pipeline silently lost its ENTIRE second stage — every
+# consumer got raw cosine order and nothing went red. This leg restores a
+# stage 2 for non-Cohere providers with a bounded lexical re-score of the
+# over-fetched cosine candidates: no API call, no key, no new failure mode
+# (any surprise falls back to cosine order). The bonus is deliberately small
+# (0.08 max, ~the measured mistral gap between on-topic and nonsense) so it
+# re-orders within the candidate set rather than overruling the embedding.
+# Master toggle BRAIN_RAG_RERANK still rules; BRAIN_RAG_RERANK_NEUTRAL=0
+# kills just this leg.
+_NEUTRAL_STOP = frozenset((
+    "the", "a", "an", "of", "for", "to", "in", "on", "and", "or", "with",
+    "what", "is", "are", "how", "why", "when", "where", "which", "that",
+    "this", "by", "from", "as", "at", "into", "out", "over", "under",
+    "about", "across", "your", "our", "their", "its", "it", "they", "we",
+    "you", "be", "will"))
+
+
+def _neutral_rerank_on() -> bool:
+    if _embed_provider() == "cohere":
+        return False   # real cross-encoder available — use that instead
+    if (os.environ.get("BRAIN_RAG_RERANK", "1").strip().lower()
+            in ("0", "false", "no", "off")):
+        return False
+    return (os.environ.get("BRAIN_RAG_RERANK_NEUTRAL", "1").strip().lower()
+            not in ("0", "false", "no", "off"))
+
+
+def _lexical_rerank(query, base, k):
+    """Re-order over-fetched candidates by cosine + a capped term-coverage
+    bonus. Every result keeps its original "cosine" untouched (the gate
+    contract from r-rag-cosine-passthrough); "score" becomes the blend and
+    "_rerank"='neutral' marks the leg. Never raises — any surprise returns
+    the cosine order."""
+    try:
+        terms, seen = [], set()
+        for tok in re.findall(r"[a-z0-9]{3,}", (query or "").lower()):
+            if tok not in _NEUTRAL_STOP and tok not in seen:
+                seen.add(tok)
+                terms.append(tok)
+        terms = terms[:12]
+        if not terms:
+            return base[:int(k)]
+        out = []
+        for d in base:
+            toks = set(re.findall(r"[a-z0-9]{3,}",
+                                  (d.get("text") or "").lower()))
+            cov = sum(1 for t in terms if t in toks) / float(len(terms))
+            nd = dict(d)
+            nd["score"] = round(float(d.get("cosine") or 0.0) + 0.08 * cov, 4)
+            nd["_rerank"] = "neutral"
+            out.append(nd)
+        out.sort(key=lambda x: x["score"], reverse=True)
+        return out[:int(k)]
+    except Exception:
+        return base[:int(k)]
+
+
 # ── corpus registry — add a row to roll RAG onto a new source (no new code) ──
 # Each: source_table → {id (t-qualified ::text), text (SQL expr over alias t),
 # kind, where}. All exprs are hardcoded/trusted (never user input).
@@ -980,10 +1040,12 @@ def retrieve_context(query: str, k: int = 8, corpus: str = None) -> list:
         # back to keyword full-text over the stored corpus so search still answers.
         return _keyword_fallback(query, k, corpus)
     qs = _vec(qv[0])
-    # Over-fetch candidates when reranking so the cross-encoder has room to
-    # re-order; without rerank, fetch exactly k.
+    # Over-fetch candidates when a stage 2 will re-order them (Cohere
+    # cross-encoder OR the provider-neutral lexical leg); otherwise exactly k.
     rerank = _rerank_on()
-    fetch_k = min(int(k) * _RERANK_OVERFETCH, _RERANK_MAX_FETCH) if rerank else int(k)
+    neutral = (not rerank) and _neutral_rerank_on()
+    fetch_k = (min(int(k) * _RERANK_OVERFETCH, _RERANK_MAX_FETCH)
+               if (rerank or neutral) else int(k))
     c = _db()
     if c is None:
         return []
@@ -1023,6 +1085,8 @@ def retrieve_context(query: str, k: int = 8, corpus: str = None) -> list:
             for idx, rel in ranked:
                 d = dict(base[idx]); d["score"] = rel; out.append(d)
             return out
+    if neutral and len(base) > int(k):
+        return _lexical_rerank(query, base, int(k))
     return base[:int(k)]
 
 

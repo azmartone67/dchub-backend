@@ -213,3 +213,60 @@ def parse_structured_json(text: str) -> Optional[dict]:
     except Exception:
         return None
     return parsed if isinstance(parsed, dict) else None
+
+
+# ── Usage / cache telemetry (shell #31, 2026-07-25) ──────────────────
+# cached_system() shipped 2026-07-23 on the assumption it would lift the
+# cache hit-rate, but nothing MEASURES whether the cache actually hits — the
+# API reports it on every response (usage.cache_read_input_tokens) and the
+# call sites just drop it. This recorder lands that evidence in
+# brain_llm_usage so the Intelligence Expansion shell can report a real
+# hit-rate instead of an assumption. Best-effort by contract: no DB, no
+# usage block, any error → silent no-op. NEVER raises into a brain call.
+_USAGE_DDL_DONE = False
+
+
+def record_llm_usage(component: str, model: str, resp_json) -> None:
+    global _USAGE_DDL_DONE
+    try:
+        usage = (resp_json or {}).get("usage") or {}
+        if not usage:
+            return
+        url = (os.environ.get("DATABASE_URL")
+               or os.environ.get("NEON_DATABASE_URL") or "").strip()
+        if not url:
+            return
+        import psycopg2
+        conn = psycopg2.connect(url, connect_timeout=5)
+        try:
+            with conn.cursor() as cur:
+                if not _USAGE_DDL_DONE:
+                    cur.execute(
+                        "CREATE TABLE IF NOT EXISTS brain_llm_usage ("
+                        " id BIGSERIAL PRIMARY KEY,"
+                        " ts TIMESTAMPTZ DEFAULT NOW(),"
+                        " component TEXT,"
+                        " model TEXT,"
+                        " input_tokens BIGINT,"
+                        " output_tokens BIGINT,"
+                        " cache_read_tokens BIGINT,"
+                        " cache_write_tokens BIGINT)")
+                    _USAGE_DDL_DONE = True
+                cur.execute(
+                    "INSERT INTO brain_llm_usage (component, model,"
+                    " input_tokens, output_tokens, cache_read_tokens,"
+                    " cache_write_tokens) VALUES (%s,%s,%s,%s,%s,%s)"
+                    " ON CONFLICT DO NOTHING",
+                    (str(component)[:80], str(model)[:80],
+                     usage.get("input_tokens"),
+                     usage.get("output_tokens"),
+                     usage.get("cache_read_input_tokens"),
+                     usage.get("cache_creation_input_tokens")))
+            conn.commit()
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+    except Exception as e:  # noqa: BLE001 — telemetry must never break a call
+        logger.debug("record_llm_usage swallowed: %s", e)

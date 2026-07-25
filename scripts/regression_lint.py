@@ -31,6 +31,11 @@ WHITELIST_TABLES = {
     'audit_log', 'alert_history', 'energy_sync_log', 'email_drip_log',
     'ai_outreach_log', 'smoke_test_history', 'pipeline_drafts',
     'redeem_funnel_events',
+    # brain_llm_usage is append-only LLM usage/cache telemetry (shell #31,
+    # serial PK, no natural key). The SQL carries ON CONFLICT DO NOTHING
+    # anyway, but split across adjacent string fragments — this rule's regex
+    # window stops at the first quote, so it can't see it.
+    'brain_llm_usage',
     # market_power_scores is upserted via an explicit UPDATE-or-INSERT
     # (the INSERT only runs when the UPDATE matched 0 rows) — not an
     # accidental bare insert. ON CONFLICT was removed deliberately
