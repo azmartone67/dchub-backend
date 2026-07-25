@@ -761,7 +761,7 @@ def run():
     # 09:00 UTC), backfill the most-recent DUE active slot (08/12/16/20) that
     # has no successful post today. Each call posts at most one missed slot;
     # _already_posted (success-only) + UNIQUE(slot_date,slot_hour) keep it
-    # idempotent, so both slots reliably land across the day's later ticks.
+    # idempotent, so all active slots reliably land across the day's later ticks.
     if not target_slot:
         _today = now.date()
         _due_unposted = [
