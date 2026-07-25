@@ -2067,7 +2067,7 @@ try:
     except Exception as _gfms:
         import logging
         logging.getLogger(__name__).warning('growthfix_master_shell wiring failed: %s', _gfms)
-    # 2026-07-25: Surface Truth Master Shell (#29) — fetches the LIVE agent-facing
+    # 2026-07-25: Surface Truth Master Shell (#30) — fetches the LIVE agent-facing
     # surfaces through the edge and compares them to ai_surface_canon. Built after
     # the canonical-counts fence went green while every served surface still
     # published the retired pre-dedup facility floor: the fence scans repo-root

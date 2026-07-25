@@ -1,4 +1,4 @@
-"""Surface Truth Master Shell (#29, 2026-07-25) — pins the shell's contract.
+"""Surface Truth Master Shell (#30, 2026-07-25) — pins the shell's contract.
 
 The shell exists because the canonical-counts FENCE went green while every
 live agent-facing surface still served the retired pre-dedup facility floor:

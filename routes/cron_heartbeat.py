@@ -464,7 +464,7 @@ _DISPATCH = [
                  and os.environ.get("BRAIN_ASCENSION_SHELL_DISABLE") != "1"),
 
     # 2026-07-25 surface-truth wave: daily tick of the Surface Truth Master
-    # Shell (#29) — fetches the LIVE agent-facing surfaces through the edge and
+    # Shell (#30) — fetches the LIVE agent-facing surfaces through the edge and
     # compares them to ai_surface_canon. Built because the canonical-counts
     # FENCE went green while every served surface still published the retired
     # pre-dedup facility floor: the fence scans repo-root files that nothing

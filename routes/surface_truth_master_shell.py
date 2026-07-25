@@ -1,4 +1,4 @@
-"""routes/surface_truth_master_shell.py — Surface Truth Master Shell (#29, 2026-07-25).
+"""routes/surface_truth_master_shell.py — Surface Truth Master Shell (#30, 2026-07-25).
 
 WHY THIS EXISTS
 ===============
@@ -54,8 +54,6 @@ import json
 import logging
 import os
 import re
-import urllib.request
-
 from flask import Blueprint, jsonify, request
 
 logger = logging.getLogger(__name__)
@@ -139,12 +137,18 @@ def _canon_floor() -> str | None:
 
 
 def _fetch(path: str):
-    """GET a live surface. Returns (body, error). Never raises."""
+    """GET a live surface. Returns (body, error). Never raises.
+
+    requests, not urllib (regression_lint urllib-request-on-railway).
+    A non-2xx is an ERROR, not a body: a CF 403 or a 404 means we could NOT
+    check, which must render '?' — never a PASS on an error page's contents.
+    """
     try:
-        req = urllib.request.Request(ORIGIN + path,
-                                     headers={"User-Agent": _UA})
-        with urllib.request.urlopen(req, timeout=12) as r:
-            return r.read().decode("utf-8", "replace"), None
+        import requests as _rq
+        r = _rq.get(ORIGIN + path, headers={"User-Agent": _UA}, timeout=12)
+        if r.status_code >= 400:
+            return None, "HTTP %d" % r.status_code
+        return r.text, None
     except Exception as e:  # noqa: BLE001
         return None, "%s: %s" % (type(e).__name__, str(e)[:110])
 
@@ -291,13 +295,12 @@ def _beat_ledger(note: str) -> None:
         admin_key = (os.environ.get("DCHUB_ADMIN_KEY")
                      or os.environ.get("DCHUB_INTERNAL_KEY")
                      or os.environ.get("ADMIN_API_KEY", ""))
-        req = urllib.request.Request(
-            "http://127.0.0.1:" + str(port) + "/api/v1/admin/ingest-runs/beat",
-            data=body, method="POST",
-            headers={"Content-Type": "application/json",
-                     "User-Agent": "dchub-surface-truth-shell/1.0",
-                     "X-Admin-Key": admin_key})
-        urllib.request.urlopen(req, timeout=5).read()
+        import requests as _rq   # not urllib (regression_lint urllib-request-on-railway)
+        _rq.post("http://127.0.0.1:" + str(port) + "/api/v1/admin/ingest-runs/beat",
+                 data=body, timeout=5,
+                 headers={"Content-Type": "application/json",
+                          "User-Agent": "dchub-surface-truth-shell/1.0",
+                          "X-Admin-Key": admin_key})
     except Exception as e:  # noqa: BLE001 — a beat error must never break the tick
         logger.debug("[surface-truth] ledger beat failed: %s", e)
 
@@ -339,7 +342,7 @@ def _run_tick() -> dict:
     summary = " ".join("%s=%s" % (ln["id"], ln["verdict"]) for ln in lanes)
     out = {
         "ok": True,
-        "shell": "surface-truth-29",
+        "shell": "surface-truth-30",
         "origin": ORIGIN,
         "canon_floor": canon,
         "generated_at": datetime.datetime.utcnow().isoformat() + "Z",
@@ -386,10 +389,10 @@ def dashboard():
                            % ({True: "✓", False: "✗"}.get(k["pass"], "?"),
                               _esc(k["name"]), _esc(k["detail"]))
                            for k in ln["checks"])))
-    return ("<html><head><title>Surface Truth #29</title>"
+    return ("<html><head><title>Surface Truth #30</title>"
             "<meta http-equiv='refresh' content='60'></head>"
             "<body style='font-family:system-ui;max-width:1100px;margin:24px auto'>"
-            "<h1>Surface Truth <small>#29</small></h1>"
+            "<h1>Surface Truth <small>#30</small></h1>"
             "<p>Canon floor <b>%s</b> · origin <code>%s</code> · %s</p>"
             "<p><small>Checks the bytes an agent actually receives, not the repo. "
             "A lane never reads PASS when it could not check.</small></p>"
