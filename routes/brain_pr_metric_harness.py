@@ -107,22 +107,26 @@ def _conn():
 
 def _gh_json(path: str):
     """GitHub REST GET. None on any failure (callers treat None as
-    'watcher blind', never as 'no PRs')."""
-    tok = (os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
-           or "").strip()
-    if not tok:
-        return None
-    req = urllib.request.Request(
-        "https://api.github.com" + path,
-        headers={"Authorization": "Bearer " + tok,
-                 "Accept": "application/vnd.github+json",
-                 "User-Agent": "dchub-pr-metric-harness/1.0"})
-    try:
-        with urllib.request.urlopen(req, timeout=20) as r:
-            return json.loads(r.read())
-    except Exception as e:  # noqa: BLE001
-        logger.debug("[pr-metrics] gh %s failed: %s", path, e)
-        return None
+    'watcher blind', never as 'no PRs').
+
+    Tries EACH candidate token until one answers — live prod (2026-07-25)
+    has a dead GH_TOKEN (401, pre-rotation leftover) alongside a working
+    GITHUB_TOKEN; 'first non-empty wins' would stay blind forever."""
+    toks = [t for t in ((os.environ.get("GH_TOKEN") or "").strip(),
+                        (os.environ.get("GITHUB_TOKEN") or "").strip()) if t]
+    for tok in toks:
+        req = urllib.request.Request(
+            "https://api.github.com" + path,
+            headers={"Authorization": "Bearer " + tok,
+                     "Accept": "application/vnd.github+json",
+                     "User-Agent": "dchub-pr-metric-harness/1.0"})
+        try:
+            with urllib.request.urlopen(req, timeout=20) as r:
+                return json.loads(r.read())
+        except Exception as e:  # noqa: BLE001
+            logger.debug("[pr-metrics] gh %s failed with one token: %s",
+                         path, e)
+    return None
 
 
 _TARGET_RE = re.compile(r"^\s*target_metric:\s*([a-z0-9_]+)\s*$",
