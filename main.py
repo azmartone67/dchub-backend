@@ -2141,6 +2141,20 @@ try:
     except Exception as _dxs:
         import logging
         logging.getLogger(__name__).warning('dcpi_excess_master_shell wiring failed: %s', _dxs)
+    # 2026-07-25: Platform-Doors master shell (#27) — read-only DIAGNOSTIC. Tracks
+    # whether the owed AI-platform doors (gemini/copilot/grok/meta) are OPEN vs
+    # crawl-only, the published-comp-key exposure + recipe validity (SECURITY),
+    # agent-card A2A honesty, and the honest RETURNING-agent north-star. Names the
+    # actuator per lane, fires nothing.
+    # GET /admin/platform-doors · /api/v1/admin/platform-doors/master-tick
+    # Kill: PLATFORM_DOORS_SHELL_DISABLE=1
+    try:
+        from routes.platform_doors_master_shell import platform_doors_master_shell_bp
+        app.register_blueprint(platform_doors_master_shell_bp)
+        print("[main] platform_doors_master_shell_bp registered: GET /admin/platform-doors", flush=True)
+    except Exception as _pds:
+        import logging
+        logging.getLogger(__name__).warning('platform_doors_master_shell wiring failed: %s', _pds)
     # 2026-07-06: Back-of-Funnel Truth master shell — ONE pane for the 07-06
     # funnel fix-wave (retention durable-keys, claim→paid attribution, conversion
     # demand) measured with CORRECTED metrics the older panes were blind to.
