@@ -463,6 +463,20 @@ _DISPATCH = [
      lambda now: now.hour == 6 and now.minute < 55
                  and os.environ.get("BRAIN_ASCENSION_SHELL_DISABLE") != "1"),
 
+    # 2026-07-25 surface-truth wave: daily tick of the Surface Truth Master
+    # Shell (#30) — fetches the LIVE agent-facing surfaces through the edge and
+    # compares them to ai_surface_canon. Built because the canonical-counts
+    # FENCE went green while every served surface still published the retired
+    # pre-dedup facility floor: the fence scans repo-root files that nothing
+    # serves. Read-only; beats the dead-man ledger (feed surface-truth-shell-
+    # daily) itself. _hit() attaches X-Admin-Key.
+    # Kill: SURFACE_TRUTH_SHELL_DISABLE=1.
+    ("surface_truth_shell_daily",
+     f"{BASE}/api/v1/admin/surface-truth/master-tick",
+     "POST",
+     lambda now: now.hour == 8 and now.minute < 55
+                 and os.environ.get("SURFACE_TRUTH_SHELL_DISABLE") != "1"),
+
     # 2026-07-25 (#28 wave 2): daily merged-PR metric snapshot — harvest
     # brain merges, snapshot canonical KPIs (merge phase), re-stamp d14/d30.
     # Idempotent (UNIQUE pr/phase/metric). Kill: BRAIN_PR_METRICS_DISABLE=1.

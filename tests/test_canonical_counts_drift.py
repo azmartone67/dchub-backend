@@ -127,6 +127,12 @@ SURFACES = (
 #    a changelog header of past counts, so it gets a surgical guard
 #    (test_worker_mcp_card_is_canonical) instead of a whole-file line-scan. ──────
 AGENT_CODE_SURFACES = (
+    # ★2026-07-25: ai_discovery_routes.py SERVES /llms.txt and /llms-full.txt
+    # inline (main.py:20177 — the old file-backed routes were removed). It was
+    # absent from this tuple, so the fence scanned four repo-root files that
+    # nothing serves and went green while the live surfaces carried 21,000+ in
+    # ten places. The served path must be fenced, not just the artifact.
+    "ai_discovery_routes.py",
     "chatgpt_mcp_compat.py",
     "ai_interconnection.py",
     "mcp_gatekeeper.py",
@@ -154,6 +160,19 @@ _HISTORICAL_RE = re.compile(
 #    LARGER number (e.g. "2,000+ deals" is NOT a substring hit on "22,000+
 #    facilities"). ─────────────────────────────────────────────────────────────
 BANNED_STALE = [
+    (
+        "facilities_stale_floor",
+        re.compile(r"(?<![\d,])(?:19|20|21|22|23),\d{3}\+"),
+        "12,650+ facilities",
+        "facilit",
+        "2026-07-25: the pre-dedup facility floor. ai_surface_canon rebased to "
+        "DISTINCT SITES on 07-24 (customer dedup audit) and the old floor became "
+        "a ~1.7x over-claim. A RANGE, not one value, on purpose: 20,000+, "
+        "21,000+ and 22,000+ were all live simultaneously — llms.txt served "
+        "21,000+ from ai_discovery_routes while the repo-root copy the fence "
+        "scanned said 22,000+ and dchub-frontend said 20,000+. Pinning a single "
+        "retired value would have caught one of the three.",
+    ),
     (
         "markets_232",
         re.compile(r"(?<![\d,])232\+?\b"),

@@ -448,6 +448,12 @@ def _lane_inventory(c) -> list[dict]:
     What remains: both counts as stated facts, plus one REAL check — that
     the discovery queue is still accruing."""
     checks = []
+    # Published `facilities` is the INTENDED subject here, per this lane's
+    # docstring: it reports the published count and the discovery-queue count
+    # as two separate stated facts, not as a ratio. Switching to
+    # discovered_facilities would report the same pipeline twice and delete
+    # the comparison the lane exists to make.
+    # lint: legacy-facilities-ok
     pub = _row(c, "SELECT COUNT(*) FROM facilities") if c else None
     disc = _row(c, "SELECT COUNT(*) FROM discovered_facilities "
                    "WHERE COALESCE(is_duplicate, 0) = 0") if c else None

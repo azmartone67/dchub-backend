@@ -85,12 +85,20 @@ BACKEND_ANTI_PATTERNS = [
     (
         r"SELECT\s+COUNT\(\*\)\s+FROM\s+facilities\b",
         "Runs `SELECT COUNT(*) FROM facilities` — that's the legacy table "
-        "(~12,907 rows). The canonical table is `discovered_facilities` "
-        "(~21,433 rows). The Inspector brain that powers /daily's narrative "
-        "hit this trap and narrated '12,907 facilities tracked' on a page "
-        "the homepage says is 21,000+. Use `discovered_facilities` for the "
-        "headline count; keep `facilities` only if you specifically need "
-        "the curated subset. See r48.1.",
+        "(~12,907 rows), and the discovery queue is `discovered_facilities` "
+        "(~21,433 RAW rows). Neither is the published headline. "
+        "★2026-07-25: this rule used to say 'use discovered_facilities for "
+        "the headline count' — that advice is now WRONG and was quietly "
+        "recommending the over-claim the dedup rebase retired. The 07-24 "
+        "customer dedup audit established that flooring RAW discovered rows "
+        "was a ~1.7x over-claim (cross-source duplicates: the same physical "
+        "site listed by several providers), and canon moved to DISTINCT "
+        "SITES — ai_surface_canon.PINNED['public']['facilities'] = '12,650+'. "
+        "For any PUBLISHED or agent-facing count, read canon (or "
+        "canonical_stats), not a COUNT(*) on either table. Use `facilities` "
+        "or `discovered_facilities` directly only for internal, table-scoped "
+        "work (row-growth monitoring, the dedup pass itself) and annotate it "
+        "`# lint: legacy-facilities-ok` saying which. See r48.1.",
         "discovered_facilities",
     ),
 ]
