@@ -94,3 +94,13 @@ dchub-frontend/index.legacy-2026-05-11.html.bak
 # MCP registry signing key — never commit (rotated 2026-05-30 after public-repo leak)
 *registry-key*.hex
 *.key.hex
+# 2026-07-25 hygiene: never track code backups or DB dumps (public repo)
+*.bak[0-9]*
+*.bak_*
+*.pre_*
+*.pre-*
+*.orig
+*.old
+backups/*.json.gz
+backups/*.sql
+backups/*.dump
