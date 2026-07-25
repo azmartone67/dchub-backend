@@ -202,14 +202,16 @@ def test_no_hardcoded_live_keys_in_tracked_files():
         ["git", "grep", "-nIE", r"dchub_(pro|live)_[A-Za-z0-9]{20,}", "--", "."],
         cwd=ROOT, capture_output=True, text=True).stdout.strip()
     def _is_placeholder(line):
-        m = re.search(r"dchub_(?:pro|live)_([A-Za-z0-9]{20,})", line)
-        if not m:
+        # EVERY key-shaped match on the line must be a placeholder. re.search
+        # returns only the FIRST match, so a doc placeholder appearing earlier
+        # on the same grep line would whitelist a REAL key after it.
+        ms = re.findall(r"dchub_(?:pro|live)_([A-Za-z0-9]{20,})", line)
+        if not ms:
             return True
-        body = m.group(1)
-        # documentation placeholders: all-x / all-same-char runs, or the
-        # literal words used in examples
-        return (len(set(body.lower())) <= 2
-                or body.lower().startswith(("xxxx", "your", "abc123")))
+        def _ph(body):
+            return (len(set(body.lower())) <= 2
+                    or body.lower().startswith(("xxxx", "your", "abc123")))
+        return all(_ph(b) for b in ms)
     offenders = [ln for ln in out.splitlines()
                  if ln and not ln.startswith("tests/") and not _is_placeholder(ln)]
     assert not offenders, "hardcoded key literal(s):\n" + "\n".join(offenders[:5])

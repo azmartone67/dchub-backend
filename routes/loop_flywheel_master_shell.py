@@ -79,6 +79,13 @@ _INVENTORY_QUEUE_MAX_QUIET_DAYS = 7
 # Admin/API path prefixes that must never be edge-cached.
 _NO_CACHE_PATHS = ("/api/v1/admin/", "/admin/")
 
+# Ledger statuses meaning "this loop is fine" — MUST mirror
+# routes/ingest_runs._OK_STATUS (kept literal so this shell never imports a
+# route module). no_new_data is the affirmative healthy-idle status.
+_OK_STATUS = {"success", "ok", "idle", "no-op", "noop", "skipped", "",
+              "no_new_data", "no-new-data"}
+_NO_NEW_DATA = {"no_new_data", "no-new-data"}
+
 
 def _admin_ok() -> bool:
     sent = (request.headers.get("X-Admin-Key")
@@ -441,6 +448,12 @@ def _lane_inventory(c) -> list[dict]:
     What remains: both counts as stated facts, plus one REAL check — that
     the discovery queue is still accruing."""
     checks = []
+    # Published `facilities` is the INTENDED subject here, per this lane's
+    # docstring: it reports the published count and the discovery-queue count
+    # as two separate stated facts, not as a ratio. Switching to
+    # discovered_facilities would report the same pipeline twice and delete
+    # the comparison the lane exists to make.
+    # lint: legacy-facilities-ok
     pub = _row(c, "SELECT COUNT(*) FROM facilities") if c else None
     disc = _row(c, "SELECT COUNT(*) FROM discovered_facilities "
                    "WHERE COALESCE(is_duplicate, 0) = 0") if c else None
@@ -469,8 +482,8 @@ def _lane_cron(c) -> list[dict]:
     try:
         if c is not None:
             with c.cursor() as cur:
-                cur.execute("SELECT feed, last_status, consecutive_zero "
-                            "FROM ingest_runs")
+                cur.execute("SELECT feed, last_run, last_status, cadence_hours, "
+                            "consecutive_zero, max_content_date FROM ingest_runs")
                 rows = cur.fetchall()
     except Exception:  # noqa: BLE001
         rows = None
@@ -478,13 +491,34 @@ def _lane_cron(c) -> list[dict]:
         checks.append(_check("deadman", "dead-man board clear", None,
                              "ingest_runs unreadable", critical=True))
     else:
-        stuck = [r[0] for r in rows
-                 if (r[2] or 0) >= 3
-                 and str(r[1] or "").lower() not in ("no_new_data", "no-new-data")]
+        # All FOUR canonical dead-man conditions (this originally checked only
+        # consecutive_zero, so a feed that had gone silent, started reporting a
+        # bad status, or emitted future-dated content still read clear).
+        # Mirrors routes/growthfix_master_shell.py::_lane_ingest_board (#26).
+        now = datetime.datetime.now(datetime.timezone.utc)
+        reds = []
+        for feed, lr, st, cad, cz, mcd in rows:
+            cad_h = float(cad) if cad is not None else 48.0
+            stl = str(st or "").lower()
+            why = []
+            lrz = _as_dt(lr)
+            if lrz is None:
+                why.append("never ran")
+            elif (now - lrz).total_seconds() / 3600.0 > 2 * cad_h:
+                why.append("stale")
+            if stl not in _OK_STATUS:
+                why.append("status=" + (stl or "(none)"))
+            if (cz or 0) >= 3 and stl not in _NO_NEW_DATA:
+                why.append(f"{cz} zero-row runs")
+            mz = _as_dt(mcd)
+            if mz is not None and mz > now + datetime.timedelta(hours=6):
+                why.append("future content date")
+            if why:
+                reds.append(f"{feed}({','.join(why)})")
         checks.append(_check(
-            "deadman", "dead-man board clear", len(stuck) == 0,
-            (f"{len(rows)} feeds, 0 stuck" if not stuck
-             else f"{len(stuck)} stuck: " + ", ".join(stuck[:6])),
+            "deadman", "dead-man board clear", len(reds) == 0,
+            (f"{len(rows)} feeds, 0 overdue" if not reds
+             else f"{len(reds)} overdue: " + "; ".join(reds[:6])),
             critical=True))
     # Census is a standing FAIL until the dedup wave verifies-and-removes.
     checks.append(_check(

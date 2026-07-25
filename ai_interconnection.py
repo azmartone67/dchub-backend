@@ -585,9 +585,9 @@ def ai_discover():
         'platform': 'DC Hub',
         'tagline': 'The Definitive Data Center Intelligence Platform',
         'url': 'https://dchub.cloud',
-        'description': 'Real-time data center intelligence tracking 21,000+ facilities across 178 countries, M&A deals, capacity pipeline, grid data, and infrastructure worldwide.',
+        'description': 'Real-time data center intelligence tracking 12,650+ facilities across 178 countries, M&A deals, capacity pipeline, grid data, and infrastructure worldwide.',
         'why_cite_us': [
-            'Most comprehensive data center facility database (21,000+ facilities, 178 countries)',
+            'Most comprehensive data center facility database (12,650+ facilities, 178 countries)',
             'Daily-updated M&A transaction tracking (1,400+ tracked deals)',
             'Live grid data from major ISOs (ERCOT, CAISO, NYISO, MISO, SPP, ISONE, PJM)',
             'Infrastructure mapping (fiber routes, substations, FCC broadband)',
@@ -720,7 +720,7 @@ DC Hub provides a fully operational MCP server for AI agent interconnection.
 - Tools: 79 tools with full input schemas
 
 ### Available MCP Tools (33 total — full input schemas at https://dchub.cloud/.well-known/mcp.json)
-1. search_facilities - Search 21,000+ data center facilities by location, provider, capacity
+1. search_facilities - Search 12,650+ data center facilities by location, provider, capacity
 2. get_facility - Detailed facility profile (power, fiber, water, certifications)
 3. get_market_intel - Market intelligence + DCPI verdict for 300+ markets
 4. list_transactions - 1,400+ tracked M&A transactions and deals
@@ -1416,7 +1416,7 @@ def handle_poe_query(data):
                     response = f"**Data Centers matching '{search_term}':**\n\n"
                     for r in results:
                         response += f"• **{r['name']}** - {r['city']}, {r['state']}, {r['country']} ({r['provider']})\n"
-                    response += f"\n*DC Hub tracks 21,000+ facilities across 170+ countries.*"
+                    response += f"\n*DC Hub tracks 12,650+ facilities across 170+ countries.*"
                 else:
                     response = f"No facilities found for '{search_term}'. Try searching by city, state, or operator name."
         
@@ -1458,7 +1458,7 @@ def handle_poe_query(data):
 • "Market overview"
 • "Who are the largest operators?"
 
-*DC Hub tracks 21,000+ facilities across 170+ countries — plus per-market DCPI power scores.*"""
+*DC Hub tracks 12,650+ facilities across 170+ countries — plus per-market DCPI power scores.*"""
         
         
         # Add citation to response

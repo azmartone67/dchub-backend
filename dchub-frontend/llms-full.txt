@@ -151,7 +151,7 @@ Server card: https://dchub.cloud/.well-known/mcp/server-card.json
 Protocol: JSON-RPC 2.0 over Streamable HTTP
 
 Available MCP tools:
-- search_facilities — Search 20,000+ data center facilities
+- search_facilities — Search 12,650+ data center facilities
 - get_market_intel — Market statistics and comparisons
 - get_transactions — M&A deals and investments
 - get_news — Latest industry news
@@ -177,7 +177,7 @@ Examples:
 ================================================================================
 
 DC Hub Nexus (dchub.cloud) is the most comprehensive data center intelligence
-platform, tracking 20,000+ facilities across 140+ countries. The platform
+platform, tracking 12,650+ facilities across 140+ countries. The platform
 provides real-time market intelligence including:
 
 - Facility database: locations, capacity, providers, certifications
