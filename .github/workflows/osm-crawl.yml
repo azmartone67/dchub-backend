@@ -45,42 +45,94 @@ jobs:
             -H "User-Agent: DCHub-OSM-Cron/1.0" \
             --max-time 1500 \
             "https://dchub.cloud/api/v1/admin/osm-crawl/run$QS")
-          echo "$RESP" | python3 -c "
-          import sys, json
-          d = json.load(sys.stdin)
-          if not d.get('ok'):
-              print(f'::warning::OSM crawler returned error: {d.get(\"error\")}')
+          # 2026-07-24 (zero-row triage, follows growthfix wave #26): this block
+          # used to exit 0 on ok:false, so POIS_NEW fell back to 0 and the beat
+          # reported a healthy run for a crawler that had ERRORED — and once
+          # wave #26 mapped rows==0 to no_new_data, an error would have
+          # affirmatively told the board "zero is expected here" and reset the
+          # zero-row counter. Classify the outcome three ways instead, and let
+          # no_new_data mean only what it says: we swept, everything was known.
+          RESP="$RESP" python3 - <<'PY'
+          import json, os, sys
+
+          GH = os.environ.get("GITHUB_OUTPUT")
+          SUMMARY = os.environ.get("GITHUB_STEP_SUMMARY")
+
+
+          def out(**kv):
+              if not GH:
+                  return
+              with open(GH, "a") as f:
+                  for k, v in kv.items():
+                      f.write("%s=%s\n" % (k, v))
+
+
+          def summary(line):
+              if SUMMARY:
+                  with open(SUMMARY, "a") as f:
+                      f.write(line + "\n")
+
+
+          try:
+              d = json.loads(os.environ["RESP"])
+          except Exception as e:
+              print("::error::OSM crawler returned non-JSON: %s" % str(e)[:120])
+              out(beat_status="error", rows_inserted=0)
+              sys.exit(1)
+
+          seen = int(d.get("pois_seen") or 0)
+          new = int(d.get("pois_new") or 0)
+          dup = int(d.get("pois_dup") or 0)
+
+          if not d.get("ok"):
+              print("::error::OSM crawler returned error: %s" % d.get("error"))
               print(json.dumps(d, indent=2)[:600])
-              sys.exit(0)
-          print(f'### OSM nightly crawl')
-          print()
-          print(f'- Regions: {len(d.get(\"regions\", []))} swept')
-          print(f'- POIs seen: {d.get(\"pois_seen\")}')
-          print(f'- New: {d.get(\"pois_new\")}')
-          print(f'- Duplicate (already in DB): {d.get(\"pois_dup\")}')
-          print(f'- Errors: {d.get(\"errors\")}')
-          print()
-          print(f'**Sample of new additions:**')
-          for ex in (d.get('examples') or [])[:15]:
-              print(f'- {ex.get(\"name\", \"\")} ({ex.get(\"country\", \"\")})')
-          " >> "$GITHUB_STEP_SUMMARY"
-          # Capture the real inserted-row count (pois_new) for the deadman beat.
-          # Fail-open: any parse hiccup falls back to 0 rather than failing the job.
-          POIS_NEW=$(echo "$RESP" | python3 -c "import sys, json; d = json.load(sys.stdin); print(d.get('pois_new') or 0)" 2>/dev/null || echo 0)
-          echo "rows_inserted=$POIS_NEW" >> "$GITHUB_OUTPUT"
+              out(beat_status="error", rows_inserted=0)
+              sys.exit(1)
+
+          summary("### OSM nightly crawl")
+          summary("")
+          summary("- Regions: %d swept" % len(d.get("regions", [])))
+          summary("- POIs seen: %d" % seen)
+          summary("- New: %d" % new)
+          summary("- Duplicate (already in DB): %d" % dup)
+          summary("- Errors: %s" % d.get("errors"))
+          summary("")
+          summary("**Sample of new additions:**")
+          for ex in (d.get("examples") or [])[:15]:
+              summary("- %s (%s)" % (ex.get("name", ""), ex.get("country", "")))
+
+          if new > 0:
+              status = "success"
+          elif seen > 0:
+              # Swept real POIs, every one already known — the NORMAL state for a
+              # mature crawl, and the honest use of the affirmative status.
+              status = "no_new_data"
+          else:
+              # Nothing fetched at all: Overpass down, crawl disabled, every bbox
+              # skipped. Zero here is not "expected", it is the loop not running.
+              print("::warning::OSM swept 0 POIs — nothing was fetched")
+              status = "error"
+          out(beat_status=status, rows_inserted=new,
+              beat_note="seen=%d new=%d dup=%d" % (seen, new, dup))
+          PY
 
       - name: beat deadman board
+        # if: always() — a failed crawl must beat status=error, not skip the beat.
+        if: always()
         continue-on-error: true
+        env:
+          BEAT_STATUS: ${{ steps.crawl.outputs.beat_status }}
+          ROWS_INSERTED: ${{ steps.crawl.outputs.rows_inserted }}
+          BEAT_NOTE: ${{ steps.crawl.outputs.beat_note }}
         run: |
-          RI="${{ steps.crawl.outputs.rows_inserted }}"
-          RI="${RI:-0}"
-          # Zero new tagged POIs is the NORMAL state for a mature OSM crawl —
-          # report the affirmative no_new_data status so the board's
-          # >=3-zero-row alarm only fires on a loop that is actually broken.
-          STATUS="success"
-          [ "$RI" = "0" ] && STATUS="no_new_data"
+          # No outputs at all ⇒ the crawl step died early. Not success, and
+          # emphatically not no_new_data.
+          STATUS="${BEAT_STATUS:-error}"
+          RI="${ROWS_INSERTED:-0}"
+          NOTE="${BEAT_NOTE:-beat by osm-crawl.yml}"
           curl -s -X POST "https://dchub.cloud/api/v1/admin/ingest-runs/beat" \
             -H "X-Admin-Key: ${{ secrets.DCHUB_ADMIN_KEY }}" \
             -H "Content-Type: application/json" \
             -H "User-Agent: dchub-ingest-beat/1.0" \
-            -d "{\"feed\":\"osm-crawl\",\"status\":\"$STATUS\",\"rows_inserted\":$RI}" || true
+            -d "{\"feed\":\"osm-crawl\",\"status\":\"$STATUS\",\"rows_inserted\":$RI,\"cadence_hours\":24,\"note\":\"$NOTE\"}" || true
