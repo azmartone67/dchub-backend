@@ -45,16 +45,33 @@ export DATABASE_URL TARGET
 
 API_BASE="${DCHUB_API_BASE:-https://api.dchub.cloud}"
 
-# Prove a key is a live drop-in: an admin001 pro key sees 10 of 132 markets;
-# anonymous sees 5. Anything else means the key is not resolving as expected.
+# Prove a key is valid. Two traps make the obvious probes lie:
+#
+#  1. Cloudflare caches these GETs and the cache key IGNORES X-API-Key, so a
+#     plain curl happily returns another key's cached response — during the
+#     2026-07-25 rotation this made a REVOKED key look alive and made a brand
+#     new key echo the old key's key_issued_at. Always send a unique ?cb= and
+#     a unique User-Agent, and confirm cf-cache-status is BYPASS/MISS.
+#  2. /api/v1/markets/list soft-gates on key PRESENCE, not validity — a bogus
+#     key gets tier=free (10 of 132 markets) exactly like a real one. It can
+#     never prove a key works. /api/v1/me is the authoritative check: it
+#     joins api_keys with is_active=1 and 401s "invalid_or_revoked_key".
 probe() {
     local key="$1" label="$2"
-    curl -s -H "X-API-Key: $key" -H "User-Agent: key-rotation/2.0" \
-         "$API_BASE/api/v1/markets/list" --max-time 30 \
+    local cb="$$-$(od -An -N4 -tu4 </dev/urandom | tr -d ' ')"
+    curl -s -H "X-API-Key: $key" -H "Cache-Control: no-cache" \
+         -H "User-Agent: key-rotation/2.0-$cb" \
+         "$API_BASE/api/v1/me?cb=$cb" --max-time 30 \
       | python3 -c "
 import json,sys
-d=json.load(sys.stdin)
-print(f\"  [$label] tier={d.get('tier')} count={d.get('count')} total={d.get('total')}\")"
+raw=sys.stdin.read()
+try: d=json.loads(raw)
+except Exception: print('  [$label] unparseable:', raw[:120]); raise SystemExit
+if d.get('success'):
+    u=d.get('user',{})
+    print(f\"  [$label] VALID  id={u.get('id')} plan={u.get('plan')} issued={str(u.get('key_issued_at'))[:19]}\")
+else:
+    print(f\"  [$label] DENIED error={d.get('error')}\")"
 }
 
 case "$CMD" in
@@ -161,7 +178,7 @@ if n_api == 0:
     print("WARNING: no api_keys row matched — the key was NOT revoked.")
 PY
 
-    echo "=== post-revoke probe (expect tier=anonymous count=5) ==="
+    echo "=== post-revoke probe (expect DENIED invalid_or_revoked_key) ==="
     probe "$TARGET" "revoked"
     cat <<'EOF'
 
