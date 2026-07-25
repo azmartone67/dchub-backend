@@ -879,6 +879,62 @@ def mcp_credits_burn():
 
 import re as _kc_re
 
+
+def _restamp_claim_session(api_key: str) -> None:
+    """Re-point a REUSED claim key at the session claiming it right now.
+
+    brain-ascension #28 wave 3 (2026-07-25) — the durable-identity carry fix.
+    Both reuse branches below return an existing key WITHOUT touching its
+    metadata, and DCHUB_CLAIM_REUSE_HOURS defaults to 720h/30d, so most repeat
+    claims returned a key still stamped with a session that died weeks ago.
+    Three things broke at once off that one stale field:
+      1. flywheel `ret_claim_carry` joins mcp_call_log.session_id to
+         metadata->>'session_id' — a stale stamp drops the key out of the
+         denominator entirely (the measured 30/60 = 50%).
+      2. _resolve_session_claimed_key (above) can never resolve the live
+         session, so post-claim calls stay attributed to the anon identity.
+      3. trial_check's session_api_key handoff returns nothing, so server.mjs
+         never binds sessionMeta — the agent keeps calling as anonymous.
+    Re-stamping makes the CURRENT session the owner, which is the true state:
+    this session just claimed this key. Fail-soft and best-effort — a stamp
+    error must never break a claim (better an unstamped key than a 500).
+    """
+    sid = (request.headers.get("X-MCP-Session") or "").strip()[:200]
+    if not sid or not api_key:
+        return
+    conn = None
+    try:
+        # Same autocommit connection helper track_tool_call uses — this module
+        # has no module-level get_db, and an autocommit conn keeps the stamp
+        # independent of any surrounding aborted transaction.
+        conn = _open_track_conn()
+        with conn.cursor() as cur:
+            cur.execute(
+                """UPDATE mcp_dev_keys
+                      SET metadata = jsonb_set(
+                            COALESCE(metadata, '{}'::jsonb),
+                            '{session_id}', to_jsonb(%s::text), true)
+                    WHERE api_key = %s
+                      AND COALESCE(metadata->>'session_id', '') <> %s""",
+                (sid, api_key, sid))
+        # Drop the memo so the very next call resolves the new owner instead
+        # of a cached miss from before this claim.
+        _SESSION_CLAIMED_KEY_CACHE.pop(sid, None)
+    except Exception as e:  # noqa: BLE001 — never break a claim on a stamp
+        try:
+            import logging as _lg
+            _lg.getLogger(__name__).debug(
+                "claim session re-stamp skipped: %s", str(e)[:120])
+        except Exception:
+            pass
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
 @mcp_bp.post("/api/v1/keys/claim")
 def claim_key():
     """Public: claim a free dev key without email. Rate-limited by IP.
@@ -980,6 +1036,7 @@ def claim_key():
             )
             _gated = cur.fetchone()
         if _gated:
+            _restamp_claim_session(_gated[0])
             return jsonify(
                 ok=True,
                 api_key=_gated[0],
@@ -1047,6 +1104,7 @@ def claim_key():
             # minted before the 'identified' carrot is still 'free'; a new claim is
             # 'identified'. Never hardcode — that would over-claim to the agent.
             existing_tier = (existing[2] if len(existing) > 2 and existing[2] else "free")
+            _restamp_claim_session(existing_key)
             return jsonify(
                 ok=True,
                 api_key=existing_key,

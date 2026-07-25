@@ -2091,6 +2091,17 @@ try:
     except Exception as _bpmh:
         import logging
         logging.getLogger(__name__).warning('brain_pr_metric_harness wiring failed: %s', _bpmh)
+    # 2026-07-25: Loop & Flywheel Master Shell (#29) — the CROSS-DOMAIN board
+    # (infra/edge/failover/identity/rag/mcp/ai-doors/inventory/cron). Watches
+    # the seams between subsystems, incl. the calendar-critical Neon migration.
+    # GET /admin/loop-flywheel · kill LOOP_FLYWHEEL_SHELL_DISABLE=1
+    try:
+        from routes.loop_flywheel_master_shell import loop_flywheel_master_shell_bp
+        app.register_blueprint(loop_flywheel_master_shell_bp)
+        print("[main] loop_flywheel_master_shell_bp registered: GET /admin/loop-flywheel", flush=True)
+    except Exception as _lfms:
+        import logging
+        logging.getLogger(__name__).warning('loop_flywheel_master_shell wiring failed: %s', _lfms)
     # 2026-07-08: WRI Aqueduct water-stress ingest — replaces the paused inverted
     # proxy. Honest by construction (writes ONLY verified-source rows; no-op without
     # WRI_AQUEDUCT_URL). rank_sites water objectives auto-enable once real rows land.

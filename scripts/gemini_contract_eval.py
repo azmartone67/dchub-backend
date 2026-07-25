@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import datetime
 import json
+import os
 import sys
 import time
 
@@ -56,10 +57,13 @@ MCP_URL = BASE + "/mcp"
 MCP_HEALTH_URL = ("https://dchub-mcp-server-production-4d2e.up.railway.app"
                   "/health")
 
-# A live free-tier key so the connectivity-score endpoint returns the FULL
-# read (the dark_screen block is keyed-or-internal only). Read-only usage.
-CONNECTIVITY_KEY = ("dchub_live_b341d6e6a92936a3200348acaa3a3662"
-                    "cd4f887a4bd943c8")
+# A key so the connectivity-score endpoint returns the FULL read (the
+# dark_screen block is keyed-or-internal only). Read-only usage.
+# 2026-07-25 security sweep: this was HARDCODED (and split across two string
+# literals, which defeats naive secret scanners) in a PUBLIC repo. Now
+# env-only — the eval skips the keyed read rather than ship a credential.
+CONNECTIVITY_KEY = (os.environ.get("DCHUB_API_KEY")
+                    or os.environ.get("DCHUB_SMOKE_ENTERPRISE_KEY") or "")
 
 HTTP_TIMEOUT = 45  # seconds; the live envelope can cold-start a worker
 

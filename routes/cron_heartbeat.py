@@ -472,6 +472,15 @@ _DISPATCH = [
      lambda now: now.hour == 7 and now.minute < 55
                  and os.environ.get("BRAIN_PR_METRICS_DISABLE") != "1"),
 
+    # 2026-07-25 (#29): daily cross-domain Loop & Flywheel board — read-only
+    # probe of the nine domain lanes; beats its own dead-man feed.
+    # Kill: LOOP_FLYWHEEL_SHELL_DISABLE=1.
+    ("loop_flywheel_shell_daily",
+     f"{BASE}/api/v1/admin/loop-flywheel/master-tick",
+     "POST",
+     lambda now: now.hour == 8 and now.minute < 55
+                 and os.environ.get("LOOP_FLYWHEEL_SHELL_DISABLE") != "1"),
+
     # r47.14 (2026-05-25): weekly partnership LinkedIn post. Cycles
     # through 7 anchors (one per ISO week) targeting /partners and
     # the per-partner anchors (#dchawk, #cbre, #dcd, etc.). Wed 14:00 UTC

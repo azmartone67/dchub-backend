@@ -5,7 +5,7 @@
 
 ## What shipped
 - Flask `/mcp` GET handler → 405 fast (was hanging indefinitely).
-- Enterprise API key id=18 (`dchub_live_8fdd954c4...`) active in Neon.
+- Enterprise API key id=18 (`dchub_<redacted>...`) active in Neon.
 - Claude Desktop config points to `https://dchub.cloud/mcp` via mcp-remote + X-API-Key.
 - Auth gate on `POST /mcp` for `tools/list` / `tools/call` (this session).
 - CF `mcp-proxy` worker GET shim (if worker file was in workspace; else manual).

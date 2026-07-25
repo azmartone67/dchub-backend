@@ -7,8 +7,8 @@ _As of 2026-07-19. Owner steps are marked **YOU**; everything else runs automati
 
 ### 1. Claude / Anthropic Connectors Directory — READY TODAY
 - **YOU**: Resubmit the connector (Anthropic's connector-directory submission form, same one used before). Server URL `https://dchub.cloud/mcp`. In the reviewer notes include:
-  > Reviewer key (full-tier, all 74 tools return complete data): `dchub_pro_IscxtvSnskvrKPgynwUWtLU8l4Pigmiz` — send as `Authorization: Bearer` or `X-API-Key`. Keyless free tier also works (10 calls/day). OAuth (WorkOS) supported for end users.
-- Why it stalled before: reviewers hit paywalled tools. That key removes the blocker. Revoke it after approval via `/api/v1/admin/partner-key/revoke/dchub_pro_IscxtvSn`.
+  > Reviewer key (full-tier, all 74 tools return complete data): `${DCHUB_API_KEY}` — send as `Authorization: Bearer` or `X-API-Key`. Keyless free tier also works (10 calls/day). OAuth (WorkOS) supported for end users.
+- Why it stalled before: reviewers hit paywalled tools. That key removes the blocker. Revoke it after approval via `/api/v1/admin/partner-key/revoke/dchub_<redacted>`.
 - **Done looks like**: DC Hub listed in claude.ai's connector directory; `Claude-User` traffic climbs in `partner_calls_wow` / reach reports.
 
 ### 2. ChatGPT / OpenAI App Directory (Apps SDK) — prereqs DONE 2026-07-19, submission package ready
@@ -24,9 +24,9 @@ Business verification ✅ · global-residency project ✅ · CSP on /mcp ✅. Su
 | Privacy policy | `https://dchub.cloud/privacy` |
 | Terms | `https://dchub.cloud/terms` |
 | Support contact | `api@dchub.cloud` |
-| Reviewer notes | Full-tier reviewer key (all 74 tools return complete data): `dchub_pro_nviYrCV2M03fdFlrvHwW2Bf8bEfaAiFh` — send as `Authorization: Bearer`. Try: "Which US grid has the most renewable headroom right now?" → `get_grid_scoreboard`. |
+| Reviewer notes | Full-tier reviewer key (all 74 tools return complete data): `${DCHUB_API_KEY}` — send as `Authorization: Bearer`. Try: "Which US grid has the most renewable headroom right now?" → `get_grid_scoreboard`. |
 
-Revoke the reviewer key after approval: `/api/v1/admin/partner-key/revoke/dchub_pro_nviYrCV2`.
+Revoke the reviewer key after approval: `/api/v1/admin/partner-key/revoke/dchub_<redacted>`.
 - **Done looks like**: DC Hub app in the ChatGPT App Directory; `ChatGPT-User`/`OAI-SearchBot` traffic rises.
 
 ---

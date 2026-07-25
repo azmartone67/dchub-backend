@@ -4,9 +4,12 @@
 # Tests API, auth, plan display, and key validation against PRODUCTION
 
 PROD="https://dchub.cloud"
-EJ_KEY="dchub_pro_2b328908164a63507bca662d38c23a3c"
-SCOTT_EMAIL="theterrills@gmail.com"
-EJ_EMAIL="m18563991063@126.com"
+# 2026-07-25 security sweep: a real customer key + two customer email
+# addresses were hardcoded here in a PUBLIC repo. All three are env-only now
+# (the sweep skips the checks that need them rather than ship customer PII).
+EJ_KEY="${DCHUB_API_KEY}"
+SCOTT_EMAIL="${QA_SCOTT_EMAIL}"
+EJ_EMAIL="${QA_EJ_EMAIL}"
 
 PASS=0
 FAIL=0
@@ -65,7 +68,7 @@ else
 fi
 
 # Invalid key should be rejected
-INVALID_RESP=$(curl -s --max-time 10 -H "X-API-Key: dchub_pro_fakekeynotreal" "$PROD/api/v1/facilities?limit=1")
+INVALID_RESP=$(curl -s --max-time 10 -H "X-API-Key: dchub_<redacted>" "$PROD/api/v1/facilities?limit=1")
 if echo "$INVALID_RESP" | grep -q "invalid_api_key"; then
     pass "Invalid API key correctly rejected"
 else

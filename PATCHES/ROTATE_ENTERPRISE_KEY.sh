@@ -3,7 +3,7 @@
 # RUN THIS LOCALLY — needs railway login + DCHUB_ADMIN_KEY env var.
 set -e
 
-LEAKED_KEY="dchub_live_08f4fb4d9ade02fceb3e63acd2691730d8a95dc2ed02122d"
+LEAKED_KEY="${DCHUB_API_KEY}"
 NEW_KEY=""  # will be set after mint
 
 echo "=== Step 1: Revoke leaked key ==="

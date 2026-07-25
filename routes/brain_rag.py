@@ -123,6 +123,58 @@ CORPORA = {
                  "coalesce(t.market,'') || ' ' || coalesce(t.facility_type,'')"),
         "where": "coalesce(t.name,'') <> '' AND coalesce(t.is_duplicate, 0) = 0",
         "fresh_col": "last_updated"},
+    # ── wave-3 corpus expansion (brain-ascension #28, 2026-07-25) ────────
+    # The 07-25 RAG audit found whole prose shelves unindexed while agents
+    # asked questions they could answer. Schemas LIVE-VERIFIED against Neon
+    # (repo DDL drifts — power_plants trap): fresh_col only where the live
+    # column is a real timestamp; TEXT-timestamp tables stay insert-only.
+    "press_releases": {                       # 147 rows — DC Hub's own PRs
+        "id": "t.id::text", "kind": "press",
+        "text": ("coalesce(t.title,'') || ' — ' || coalesce(t.summary, t.subheadline, '') "
+                 "|| ' ' || coalesce(t.body,'')"),
+        "where": "coalesce(t.title,'') <> ''",
+        "fresh_col": "published_at"},
+    "announcements": {                        # 12.4k rows — industry announcements
+        "id": "t.id::text", "kind": "announcement",
+        "text": ("coalesce(t.title,'') || ' — ' || coalesce(t.summary, t.content, '') "
+                 "|| ' · ' || coalesce(t.companies,'') || ' ' || coalesce(t.locations,'')"),
+        "where": "coalesce(t.title,'') <> ''"},
+    "permitting_intel": {                     # 245 rows — jurisdiction rules
+        "id": "t.id::text", "kind": "permitting",
+        "text": ("concat_ws(', ', t.jurisdiction, t.state, t.country) || ' [' || "
+                 "coalesce(t.class,'') || '] ' || coalesce(t.title,'') || ' — ' || "
+                 "coalesce(t.detail,'')"),
+        "where": "coalesce(t.title, t.detail, '') <> ''",
+        "fresh_col": "updated_at"},
+    "construction_permits": {                 # 708 rows — filed DC permits
+        "id": "t.id::text", "kind": "permit",
+        "text": ("coalesce(t.project_name, t.permit_number, '') || ' — ' || "
+                 "coalesce(t.applicant,'') || ' · ' || concat_ws(', ', t.city, t.state, "
+                 "t.county) || ' · ' || coalesce(t.permit_type,'') || ' ' || "
+                 "coalesce(t.status,'') || ': ' || coalesce(t.description,'')"),
+        "where": "coalesce(t.project_name, t.description, '') <> ''"},
+    "tax_incentives_neon": {                  # 50 rows — state incentive programs
+        "id": "t.id::text", "kind": "incentive",
+        "text": ("coalesce(t.state_name, t.state_abbr, '') || ' data-center incentives: ' "
+                 "|| coalesce(t.incentive_details,'') || ' Qualifying: ' || "
+                 "coalesce(t.qualifying_investment,'') || ' ' || "
+                 "coalesce(t.qualifying_jobs,'') || '. Max benefit: ' || "
+                 "coalesce(t.max_benefit,'') || '. ' || coalesce(t.notes,'')"),
+        "where": "coalesce(t.incentive_details,'') <> ''",
+        "fresh_col": "created_at"},
+    "capacity_pipeline": {                    # 1.9k rows — build pipeline
+        "id": "t.id::text", "kind": "pipeline",
+        "text": ("coalesce(t.operator,'') || ' — ' || concat_ws(', ', t.market, "
+                 "t.region, t.country) || ' · ' || coalesce(t.phase,'') || ' ' || "
+                 "coalesce(t.status,'') || ' (announced ' || "
+                 "coalesce(t.announcement_date,'') || ', completion ' || "
+                 "coalesce(t.completion_date,'') || ') ' || coalesce(t.notes,'')"),
+        "where": "coalesce(t.operator, t.market, '') <> ''"},
+    "brain_briefs": {                         # 254 rows — brain-internal briefs
+        "id": "t.id::text", "kind": "brief",
+        "text": "coalesce(t.summary, left(t.brief_md, 1200), '')",
+        "where": "coalesce(t.summary, t.brief_md, '') <> '' AND coalesce(t.error,'') = ''",
+        "fresh_col": "generated_at"},
     # ── self-learning "lessons" (r-rag-lessons 2026-07-04) ───────────────
     # The brain already CAPTURES outcomes (autopilot_outcomes,
     # brain_finding_outcomes) but never RECALLED them, so it re-proposed ideas
@@ -288,7 +340,12 @@ def _contextualize_chunks(doc_title, doc_md, chunks, max_calls=None):
     return out
 
 # Corpora an unauthenticated agent may semantically search (brain internals excluded).
-PUBLIC_CORPORA = ("news_articles", "deals", "discovered_facilities", "market_narratives")
+# wave-3 expansion (2026-07-25): press/announcement/permitting/permit/
+# incentive/pipeline join the public search surface. brain_briefs stays
+# INTERNAL (operator-facing prose, not agent product).
+PUBLIC_CORPORA = ("news_articles", "deals", "discovered_facilities", "market_narratives",
+                  "press_releases", "announcements", "permitting_intel",
+                  "construction_permits", "tax_incentives_neon", "capacity_pipeline")
 
 
 # ── auth ──────────────────────────────────────────────────────────────
@@ -1203,6 +1260,39 @@ _HYDRATE = {
                    "market": (r[1] or {}).get("market_slug"),
                    "generated_at": (r[1] or {}).get("generated_at"),
                    "url": (r[1] or {}).get("url")}),
+    # ── wave-3 corpora (2026-07-25): citable source fields per new kind ──
+    "press_releases": (
+        "SELECT id, title, slug, published_at FROM press_releases WHERE id::text = ANY(%s)",
+        lambda r: {"title": r[1],
+                   "url": ("https://dchub.cloud/press/" + r[2]) if r[2] else None,
+                   "published_at": str(r[3]) if r[3] is not None else None}),
+    "announcements": (
+        "SELECT id, title, source, source_url, published_date "
+        "FROM announcements WHERE id::text = ANY(%s)",
+        lambda r: {"title": r[1], "source": r[2], "url": r[3],
+                   "published_at": r[4]}),
+    "permitting_intel": (
+        "SELECT id, title, jurisdiction, state, source_url "
+        "FROM permitting_intel WHERE id::text = ANY(%s)",
+        lambda r: {"title": r[1],
+                   "location": ", ".join([x for x in (r[2], r[3]) if x]),
+                   "url": r[4]}),
+    "construction_permits": (
+        "SELECT id, project_name, permit_number, city, state, source_url "
+        "FROM construction_permits WHERE id::text = ANY(%s)",
+        lambda r: {"title": r[1] or r[2],
+                   "location": ", ".join([x for x in (r[3], r[4]) if x]),
+                   "url": r[5]}),
+    "tax_incentives_neon": (
+        "SELECT id, state_name, source_url FROM tax_incentives_neon "
+        "WHERE id::text = ANY(%s)",
+        lambda r: {"title": (r[1] or "") + " data-center incentives",
+                   "url": r[2]}),
+    "capacity_pipeline": (
+        "SELECT id, operator, market, status, source_url "
+        "FROM capacity_pipeline WHERE id::text = ANY(%s)",
+        lambda r: {"title": ((r[1] or "") + " — " + (r[2] or "")).strip(" —"),
+                   "status": r[3], "url": r[4]}),
 }
 
 

@@ -190,3 +190,55 @@ def test_expired_oneshot_workflows_removed():
     wf = os.path.join(ROOT, ".github", "workflows")
     assert not os.path.exists(os.path.join(wf, "announce-global-grid.yml"))
     assert not os.path.exists(os.path.join(wf, "publish-registry-pr.yml"))
+
+
+# ── wave 3 / shell #29 ────────────────────────────────────────────────
+
+def test_no_hardcoded_live_keys_in_tracked_files():
+    """A real customer key + the owner's live enterprise key were committed to
+    this PUBLIC repo. Nothing may reintroduce a full key literal."""
+    import subprocess
+    out = subprocess.run(
+        ["git", "grep", "-nIE", r"dchub_(pro|live)_[A-Za-z0-9]{20,}", "--", "."],
+        cwd=ROOT, capture_output=True, text=True).stdout.strip()
+    def _is_placeholder(line):
+        m = re.search(r"dchub_(?:pro|live)_([A-Za-z0-9]{20,})", line)
+        if not m:
+            return True
+        body = m.group(1)
+        # documentation placeholders: all-x / all-same-char runs, or the
+        # literal words used in examples
+        return (len(set(body.lower())) <= 2
+                or body.lower().startswith(("xxxx", "your", "abc123")))
+    offenders = [ln for ln in out.splitlines()
+                 if ln and not ln.startswith("tests/") and not _is_placeholder(ln)]
+    assert not offenders, "hardcoded key literal(s):\n" + "\n".join(offenders[:5])
+
+
+def test_claim_reuse_restamps_session():
+    """The durable-identity carry fix: BOTH reuse branches must re-stamp."""
+    src = open(os.path.join(ROOT, "flask_mcp_endpoints.py"), encoding="utf-8").read()
+    assert "def _restamp_claim_session" in src
+    assert src.count("_restamp_claim_session(") >= 3   # def + 2 call sites
+    assert "jsonb_set(" in src and "'{session_id}'" in src
+
+
+def test_wave3_rag_corpora_registered():
+    from routes.brain_rag import CORPORA, PUBLIC_CORPORA, _HYDRATE
+    for t in ("press_releases", "announcements", "permitting_intel",
+              "construction_permits", "tax_incentives_neon", "capacity_pipeline"):
+        assert t in CORPORA, t
+        assert t in PUBLIC_CORPORA, t
+        assert t in _HYDRATE, f"{t} has no citation hydration"
+    # brain_briefs is operator prose — indexed but deliberately NOT public
+    assert "brain_briefs" in CORPORA
+    assert "brain_briefs" not in PUBLIC_CORPORA
+
+
+def test_loop_flywheel_shell_honest():
+    from routes.loop_flywheel_master_shell import _check, _lane_verdict, _lane_infra
+    assert _lane_verdict([_check("a", "a", None, "", critical=True)]) == "?"
+    assert _lane_verdict([_check("a", "a", False, "")]) == "FAIL"
+    # the Neon deadline lane must actually count down, not hardcode a pass
+    details = " ".join(k["detail"] for k in _lane_infra())
+    assert "2026-10-05" in details
