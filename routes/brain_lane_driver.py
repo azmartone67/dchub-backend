@@ -464,6 +464,11 @@ def _reason(lane: str, kpi: dict, recall: list, prev: dict, kpi_table: str) -> d
         decision["_structured"] = applied
         usage = data.get("usage") or {}
         decision["_cache_read"] = usage.get("cache_read_input_tokens")
+        try:
+            from routes.brain_llm_structured import record_llm_usage
+            record_llm_usage("brain-lane-driver", model, data)
+        except Exception:
+            pass
         return decision
     except Exception as e:
         return {"error": f"{type(e).__name__}: {str(e)[:140]}", "model": model}
