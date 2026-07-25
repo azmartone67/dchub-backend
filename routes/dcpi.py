@@ -1203,6 +1203,87 @@ def _clip(x: float, lo: float = 0.0, hi: float = 100.0) -> float:
     return max(lo, min(hi, x))
 
 
+# ---------------------------------------------------------------------------
+# r-local-granularity (2026-07-25): market-LOCAL infrastructure terms.
+#
+# WHY: every scorer input is ISO- or STATE-level (queue depth, reserve margin,
+# curtailment...), so markets sharing a state carried byte-identical
+# (constraint, excess) pairs — allen/fort-worth/irving/abilene all 53.4/57.8,
+# and the intl default row made barueri/bologna/midrand (three continents!)
+# identical at 41.1/44.8. 101/317 markets shared a pair on 07-24 (integrity
+# shell #25 dc_pairs check). These terms read the market's OWN infrastructure
+# within a radius of its coordinates:
+#   substations        (HIFLD ~127k, US-only)  -> grid ACCESS within 40 km
+#   gem_power operating (GEM ~128k, GLOBAL)    -> deliverable generation, 60 km
+#   discovered_facilities canonical fleet      -> DC competition within 25 km
+#
+# ADDITIVE-ONLY + BOUNDED (<= +8 excess, <= +6 constraint) + FAIL-SOFT: no
+# coords / no rows / DB error -> zero adjustment. A market must never be
+# PENALIZED for absent data (HIFLD is US-only) — the same honesty rule as
+# local_saturation's "no_local_facility_footprint" label. Deterministic: same
+# rows in, same score out; no noise. Verdict thresholds are untouched — this
+# breaks input DUPLICATION (the integrity lane's diagnosis), it does not
+# relabel identical inputs.
+# ---------------------------------------------------------------------------
+_LOCAL_INFRA_CACHE: dict = {}
+
+
+def _local_infra_metrics(lat, lon) -> dict:
+    """Bounded bbox counts of the market's own grid/generation/DC footprint.
+    Returns zero-dict on ANY failure — callers can always .get() safely."""
+    out = {"local_substation_count": 0, "local_max_kv": 0.0,
+           "local_gen_mw": 0.0, "local_dc_count": 0}
+    try:
+        latf, lonf = float(lat), float(lon)
+    except (TypeError, ValueError):
+        return dict(out)
+    if not latf and not lonf:          # (0, 0) = coords unknown
+        return dict(out)
+    key = (round(latf, 3), round(lonf, 3))
+    hit = _LOCAL_INFRA_CACHE.get(key)
+    if hit is not None:
+        return dict(hit)
+    import math
+    coslat = max(0.2, abs(math.cos(math.radians(latf))))
+    d_sub, d_gen, d_dc = 40.0 / 111.0, 60.0 / 111.0, 25.0 / 111.0
+    try:
+        with _conn() as c, c.cursor() as cur:
+            # SET LOCAL inside the implicit tx — a plain SET does not stick
+            # on Neon's pooled endpoint.
+            cur.execute("SET LOCAL statement_timeout = 3500")
+            cur.execute(
+                """SELECT
+                     (SELECT COUNT(*) FROM substations
+                       WHERE lat BETWEEN %s AND %s AND lng BETWEEN %s AND %s),
+                     (SELECT COALESCE(MAX(voltage_kv), 0) FROM substations
+                       WHERE lat BETWEEN %s AND %s AND lng BETWEEN %s AND %s),
+                     (SELECT COALESCE(SUM(capacity_mw), 0) FROM gem_power
+                       WHERE status = 'operating'
+                         AND lat BETWEEN %s AND %s AND lng BETWEEN %s AND %s),
+                     (SELECT COUNT(*) FROM discovered_facilities
+                       WHERE COALESCE(is_duplicate, 0) = 0
+                         AND latitude  BETWEEN %s AND %s
+                         AND longitude BETWEEN %s AND %s)""",
+                (latf - d_sub, latf + d_sub,
+                 lonf - d_sub / coslat, lonf + d_sub / coslat,
+                 latf - d_sub, latf + d_sub,
+                 lonf - d_sub / coslat, lonf + d_sub / coslat,
+                 latf - d_gen, latf + d_gen,
+                 lonf - d_gen / coslat, lonf + d_gen / coslat,
+                 latf - d_dc, latf + d_dc,
+                 lonf - d_dc / coslat, lonf + d_dc / coslat))
+            row = cur.fetchone() or (0, 0, 0, 0)
+        out = {"local_substation_count": int(row[0] or 0),
+               "local_max_kv": round(float(row[1] or 0), 1),
+               "local_gen_mw": round(float(row[2] or 0), 1),
+               "local_dc_count": int(row[3] or 0)}
+    except Exception as _e:
+        print(f"[dcpi] local-infra lookup failed (neutral 0s): {_e}", flush=True)
+        return dict(out)
+    _LOCAL_INFRA_CACHE[key] = dict(out)
+    return dict(out)
+
+
 def compute_constraint_score(metrics: dict) -> float:
     """High score = MORE constrained (avoid). 0..100."""
     queue_wait_m = float(metrics.get("queue_wait_months") or 18)
@@ -1217,7 +1298,12 @@ def compute_constraint_score(metrics: dict) -> float:
     s_emerg = _clip(emergencies * 20, 0, 100)
     s_demand = _clip((demand_yoy / 12.0) * 100, 0, 100)
 
-    return round((0.4*s_wait + 0.25*s_reserve + 0.20*s_emerg + 0.15*s_demand) or 0, 1)
+    base = 0.4*s_wait + 0.25*s_reserve + 0.20*s_emerg + 0.15*s_demand
+    # r-local-granularity: local DC density competes for the same feeders and
+    # queue positions — a bounded (<= +6) bump. Zero when the key is absent,
+    # so callers that never gathered local terms score byte-identically.
+    s_local_comp = _clip((float(metrics.get("local_dc_count") or 0) / 40.0) * 100, 0, 100)
+    return round(_clip(base + 0.06 * s_local_comp, 0, 100) or 0, 1)
 
 
 def compute_excess_power_score(metrics: dict) -> float:
@@ -1243,11 +1329,19 @@ def compute_excess_power_score(metrics: dict) -> float:
     s_strand   = _clip((stranded_mw / 1000.0) * 100, 0, 100)
     s_btm      = _clip((btm_headroom_mw / 500.0) * 100, 0, 100)
 
-    return round(
-        0.20*s_reserve + 0.20*s_additions + 0.20*s_curtail +
-        0.15*s_approval + 0.15*s_strand + 0.10*s_btm,
-        1,
-    )
+    base = (0.20*s_reserve + 0.20*s_additions + 0.20*s_curtail +
+            0.15*s_approval + 0.15*s_strand + 0.10*s_btm)
+    # r-local-granularity: the market's OWN grid access — substation density
+    # (40 km), HV class, and deliverable local generation (60 km, GLOBAL
+    # gem_power so intl markets differentiate too). Bounded <= +8, additive
+    # only, zero when keys are absent or no rows exist.
+    _subs = float(metrics.get("local_substation_count") or 0)
+    _kv = float(metrics.get("local_max_kv") or 0)
+    _gen = float(metrics.get("local_gen_mw") or 0)
+    s_local_grid = _clip((_subs / 300.0) * 55.0
+                         + (25.0 if _kv >= 345 else 12.0 if _kv >= 230 else 0.0)
+                         + (_gen / 3000.0) * 20.0, 0, 100)
+    return round(_clip(base + 0.08 * s_local_grid, 0, 100), 1)
 
 
 def derive_verdict(constraint: float, excess: float) -> str:
@@ -1938,6 +2032,32 @@ def gather_metrics_for_market(market: tuple) -> dict:
                 "used unchanged (identical values to other footprint-less "
                 "markets in this ISO are real, not fabricated variation)"
             ),
+        }
+    # r-local-granularity (2026-07-25): the market's OWN infrastructure within
+    # a radius of its coordinates — the input the intra-state and intl-default
+    # clones were missing. Stamped into data_basis so every delta is auditable
+    # from this row alone (house rule from local_saturation above).
+    _loc = _local_infra_metrics(lat, lon)
+    metrics.update(_loc)
+    if any(v for v in _loc.values()):
+        data_basis["local_grid_access"] = dict(
+            _loc,
+            radius_km={"substations": 40, "generation": 60, "dc_competition": 25},
+            adjusts=["excess_power_score (<= +8)", "constraint_score (<= +6)"],
+            basis="own_footprint_bbox_counts (HIFLD substations US; GEM "
+                  "gem_power operating GLOBAL; discovered_facilities canonical)",
+            differentiation=(
+                "excess += 0.08 x clip(subs/300x55 + kv_class + gen/3000x20); "
+                "constraint += 0.06 x clip(dc_count/40x100) — deterministic, "
+                "additive-only, zero when no rows (absence never penalizes)"),
+        )
+    else:
+        data_basis["local_grid_access"] = {
+            "basis": "no_local_infrastructure_rows",
+            "differentiation": ("no substations/gem_power/facilities rows in "
+                                "radius — scores carry zero local adjustment "
+                                "(identical-to-baseline is a documented fact, "
+                                "not fabricated variation)"),
         }
     metrics["data_basis"] = data_basis
 
