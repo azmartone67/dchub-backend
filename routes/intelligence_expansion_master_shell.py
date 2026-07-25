@@ -360,28 +360,34 @@ def _lane_media_growth() -> list[dict]:
         return out
     try:
         with c.cursor() as cur:
-            row = _q1(cur, "SELECT max(snap_date), count(*) "
-                           "FROM media_growth_snapshots")
-            latest, total = (row or (None, 0))[0], int((row or (None, 0))[1])
-            if latest is None:
+            # ★live schema (introspected 2026-07-25): the timestamp column is
+            # created_at — NOT snap_date (the first tick guessed from a repo
+            # DDL fragment and rendered '?'; the repo-vs-live drift class).
+            row = _q1(cur, "SELECT count(*) FROM media_growth_snapshots")
+            total = int(row[0]) if row else 0
+            latest = _q1(cur, "SELECT created_at, li_followers, x_followers "
+                              "FROM media_growth_snapshots "
+                              "ORDER BY created_at DESC LIMIT 1")
+            if not latest:
                 out.append(_check(
                     "mg_see", "SEE stage landing audience telemetry", False,
                     "media_growth_snapshots is EMPTY — the shell ticks but "
                     "audience telemetry never lands (the audit's 'brain is "
                     "audience-blind' state)", critical=True))
             else:
-                if isinstance(latest, datetime.datetime):
-                    latest_d = latest.date()
-                else:
-                    latest_d = latest
-                age_d = (datetime.datetime.now(datetime.timezone.utc).date()
-                         - latest_d).days
+                ts, li, x = latest
+                age_d = ((datetime.datetime.now(datetime.timezone.utc) - ts)
+                         .total_seconds() / 86400.0)
+                blind = li is None and x is None
                 out.append(_check(
                     "mg_see", "SEE stage landing audience telemetry",
-                    age_d <= 2,
-                    "%d snapshot rows, latest %s (%dd old)"
-                    % (total, latest_d.isoformat(), age_d)
-                    + ("" if age_d <= 2 else " — STALE, snapshots stopped"),
+                    (age_d <= 2) and not blind,
+                    "%d rows, latest %.1fd old, li=%s x=%s"
+                    % (total, age_d, li, x)
+                    + (" — snapshots land but BOTH follower counts are NULL: "
+                       "the collectors are blind, not the loop" if blind
+                       else ("" if age_d <= 2
+                             else " — STALE, snapshots stopped")),
                     critical=True))
     except Exception as e:  # noqa: BLE001
         out.append(_check("mg_see", "SEE stage landing audience telemetry",
@@ -443,8 +449,10 @@ def _lane_self_learning() -> list[dict]:
                                   None, "unreadable: %s" % str(e)[:100],
                                   critical=True))
             try:
+                # ★live schema: the stamp column is captured_at, not created_at
+                # (introspected 2026-07-25 after the first tick rendered '?').
                 row = _q1(cur, "SELECT count(*) FROM brain_pr_metric_snapshots "
-                               "WHERE created_at > now() - interval '8 days'")
+                               "WHERE captured_at > now() - interval '8 days'")
                 fresh = int(row[0])
                 out.append(_check("sl_harness", "PR-metric harness beating",
                                   fresh > 0,
