@@ -17615,8 +17615,73 @@ def _eia_purge_stale_tasks():
             _EIA_TASKS.pop(k, None)
 
 
+def _eia_task_persist(task_id: str, status: str, result) -> None:
+    """Mirror a finished async task into Postgres so ANY replica can answer
+    the poll.
+
+    2026-07-25 root cause: _EIA_TASKS is a per-process dict, but the backend
+    runs numReplicas=2 behind Railway's load balancer. The cron POSTs /run
+    (task created on replica A) then polls /status, which round-robins — so
+    roughly half the polls hit replica B, which has never heard of the task
+    and 404s. eia-pricing-ingest.yml polled 404s for its full 420s budget,
+    the step exited 1, and the beat fell back to its `${BEAT_STATUS:-error}`
+    default. That is the ONLY reason the feed reads 'error': all three
+    fetchers succeed when run directly (2000 + 154 + 500 rows).
+    Fail-soft — persistence must never break the ingest itself."""
+    try:
+        import json as _json
+        from db_utils import get_db as _gdb
+        conn = _gdb()
+        if conn is None:
+            return
+        with conn.cursor() as cur:
+            cur.execute("""CREATE TABLE IF NOT EXISTS async_task_results (
+                task_id     TEXT PRIMARY KEY,
+                kind        TEXT NOT NULL,
+                status      TEXT NOT NULL,
+                result      JSONB,
+                finished_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )""")
+            cur.execute(
+                """INSERT INTO async_task_results (task_id, kind, status, result)
+                   VALUES (%s, 'eia_ingest', %s, %s::jsonb)
+                   ON CONFLICT (task_id) DO UPDATE
+                     SET status = EXCLUDED.status,
+                         result = EXCLUDED.result,
+                         finished_at = NOW()""",
+                (task_id, status, _json.dumps(result or {})))
+        conn.commit()
+    except Exception as e:  # noqa: BLE001
+        logger.debug("eia task persist skipped: %s", str(e)[:120])
+
+
+def _eia_task_lookup(task_id: str):
+    """Read a finished task from Postgres (the cross-replica fallback)."""
+    try:
+        from db_utils import get_db as _gdb
+        conn = _gdb()
+        if conn is None:
+            return None
+        with conn.cursor() as cur:
+            cur.execute("SELECT to_regclass('async_task_results')")
+            if not (cur.fetchone() or [None])[0]:
+                return None
+            cur.execute(
+                "SELECT status, result, extract(epoch from finished_at) "
+                "  FROM async_task_results WHERE task_id = %s", (task_id,))
+            r = cur.fetchone()
+        if not r:
+            return None
+        return {"status": r[0], "result": r[1],
+                "started_at": float(r[2] or 0), "finished_at": float(r[2] or 0)}
+    except Exception as e:  # noqa: BLE001
+        logger.debug("eia task lookup skipped: %s", str(e)[:120])
+        return None
+
+
 def _eia_run_ingest(task_id: str):
-    """The actual ingest. Runs on a background thread. Writes to _EIA_TASKS."""
+    """The actual ingest. Runs on a background thread. Writes to _EIA_TASKS
+    AND mirrors the terminal state to Postgres (cross-replica poll)."""
     results = {"electricity_rates": None, "natural_gas_prices": None,
                "gas_storage": None, "errors": []}
     conn = None
@@ -17675,15 +17740,18 @@ def _eia_run_ingest(task_id: str):
             _EIA_TASKS[task_id] = {"status": "done", "result": result,
                                     "started_at": existing.get("started_at", _eia_time.time()),
                                     "finished_at": _eia_time.time()}
+        _eia_task_persist(task_id, "done", result)
     except Exception as e:
         import traceback
+        _err = {"ok": False, "error": str(e)[:300],
+                "traceback": traceback.format_exc()[-500:]}
         with _EIA_TASKS_LOCK:
             existing = _EIA_TASKS.get(task_id, {})
-            _EIA_TASKS[task_id] = {"status": "error", "result": {
-                "ok": False, "error": str(e)[:300],
-                "traceback": traceback.format_exc()[-500:],
-            }, "started_at": existing.get("started_at", _eia_time.time()),
-               "finished_at": _eia_time.time()}
+            _EIA_TASKS[task_id] = {
+                "status": "error", "result": _err,
+                "started_at": existing.get("started_at", _eia_time.time()),
+                "finished_at": _eia_time.time()}
+        _eia_task_persist(task_id, "error", _err)
     finally:
         try:
             if conn: conn.close()
@@ -18155,6 +18223,11 @@ def energy_eia_ingest_status():
     _eia_purge_stale_tasks()
     with _EIA_TASKS_LOCK:
         task = _EIA_TASKS.get(task_id)
+    if not task:
+        # Cross-replica fallback: with numReplicas=2 the poll frequently lands
+        # on a replica that never held this task in memory. Before 2026-07-25
+        # that returned a hard 404 and the cron polled itself to death.
+        task = _eia_task_lookup(task_id)
     if not task:
         return jsonify(ok=False, error="task_not_found",
                        hint="Task ID unknown or expired (>1h finished)."), 404

@@ -87,6 +87,10 @@ DARK_HONESTY_PHRASE = "NOT confirmed strand availability"
 
 # ── result recording ─────────────────────────────────────────────────────
 PASS, FAIL, ERROR = "PASS", "FAIL", "ERROR"
+# SKIP = the check could not be EVALUATED (e.g. its credential is absent).
+# Distinct from FAIL: reporting an unevaluated check as failed is a false
+# negative, and a harness that cries wolf gets ignored.
+SKIP = "SKIP"
 _results = []            # list of dict(id, desc, status, observed)
 # every error_code observed in checks A-D, fed to the E drift guard.
 _observed_error_codes = set()
@@ -289,6 +293,14 @@ def check_b_dark_fiber():
         ("B4", "connectivity/score dark_screen.v == inferred"),
         ("B5", f"connectivity/score method says '{DARK_HONESTY_PHRASE}'"),
     ]
+    if not CONNECTIVITY_KEY:
+        # Honest skip, not a fabricated failure. The dark_screen block is
+        # keyed-or-internal only, so with no key these checks CANNOT be
+        # evaluated — reporting them as failures would be a false negative.
+        for _cid, _label in point_rows:
+            record(_cid, _label, SKIP,
+                   "no DCHUB_API_KEY in env — keyed read not evaluated")
+        return
     try:
         _, d = get_json(
             "/api/infrastructure/connectivity/score?lat=39.02&lon=-77.46",
