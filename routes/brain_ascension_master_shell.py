@@ -301,17 +301,49 @@ def _lane_rag_truth() -> list[dict]:
             "eval_truth", "every eval query carries anchor ground truth",
             None, f"rag_master_shell probe failed: {type(e).__name__}",
             critical=True))
-    # DELIBERATE RED (wave 2): the cosine gates are still Cohere-scale while
-    # mistral-embed is live. Recalibration must be measured (score
-    # distributions on live data, pre-registered thresholds) — not blind-tuned
-    # here. This check stays False until that ships.
-    checks.append(_check(
-        "gates_calibrated", "cosine gates recalibrated for live provider",
-        False,
-        "WAVE 2: dup gates 0.90/0.92, related-intel 0.30, eval floors "
-        "0.42-0.50 were tuned on Cohere's scale; mistral scores ~0.75+ on "
-        "nonsense, so the dup gates likely never fire. Measure distributions, "
-        "pre-register new thresholds, then flip this check."))
+    # Wave 2 (2026-07-25): gates recalibrated from LIVE measured distributions
+    # (see PROVIDER_COSINE_GATES in brain_rag.py). This check verifies the
+    # registry exists for the live provider AND every gate site actually
+    # derives from it — registry drift or a reverted site goes red again.
+    try:
+        from routes.brain_rag import PROVIDER_COSINE_GATES, cosine_gate
+        prov2 = _embed_provider()
+        g = PROVIDER_COSINE_GATES.get(prov2)
+        problems = []
+        if not g:
+            problems.append(f"no registered gates for provider={prov2}")
+        else:
+            from routes.rag_master_shell import _EVAL_QUERIES, _EVAL_MEAN_FLOOR
+            low = [q["q"][:24] for q in _EVAL_QUERIES
+                   if float(q.get("floor", 0)) < g["eval_floor"]]
+            if low:
+                problems.append("eval floors below registered "
+                                + str(g["eval_floor"]) + ": " + "; ".join(low))
+            if float(_EVAL_MEAN_FLOOR) < g["eval_floor"]:
+                problems.append("mean floor below registered")
+            if abs(cosine_gate("related_min") - g["related_min"]) > 1e-9:
+                problems.append("cosine_gate helper drifted")
+            main_src = ""
+            try:
+                with open(os.path.join(os.getcwd(), "main.py"),
+                          encoding="utf-8") as f:
+                    main_src = f.read()
+            except Exception:  # noqa: BLE001
+                pass
+            if 'cosine_gate("related_min")' not in main_src:
+                problems.append("_rag_related_intel not wired to registry")
+        checks.append(_check(
+            "gates_calibrated", "cosine gates recalibrated for live provider",
+            (len(problems) == 0) if g else False,
+            ("registered+wired: dup 0.90/0.92 validated in the 0.86-0.925 "
+             "separation gap; related_min=" + str(g["related_min"])
+             + " eval_floor=" + str(g["eval_floor"])
+             + " (measured 2026-07-25: nonsense<=0.675, on-topic>=0.744)"
+             if g and not problems else "; ".join(problems)[:220])))
+    except Exception as e:  # noqa: BLE001
+        checks.append(_check(
+            "gates_calibrated", "cosine gates recalibrated for live provider",
+            None, f"gate registry probe failed: {type(e).__name__}"))
     return checks
 
 
@@ -327,19 +359,22 @@ def _lane_metric_harness(c) -> list[dict]:
     checks.append(_check(
         "harness_real", "merged-PR before/after harness is REAL",
         (True if exists else False) if c is not None else None,
-        ("brain_pr_metric_snapshots exists — harness landed"
+        ("brain_pr_metric_snapshots exists — harness landed "
+         "(routes/brain_pr_metric_harness.py, daily 07:xx tick)"
          if exists else
-         "WAVE 2: implement _proposed_merged_pr_before_after_metric_harness "
-         "for real (PRs declare target_metric at open; daily job snapshots "
-         "merge/+14d/+30d) or delete the 501 scaffold"),
+         "harness shipped but table absent — fire "
+         "POST /api/v1/admin/brain/pr-metrics/tick (first tick creates it)"),
         critical=True))
+    # brain_fix_outcomes tri-state lives in still_broken (BOOLEAN, NULL =
+    # unchecked) — brain_learning._SCHEMA is the DDL SoT.
     ver = _row(c, "SELECT COUNT(*) FROM brain_fix_outcomes "
-                  "WHERE verified IS NOT NULL") if c else None
+                  "WHERE still_broken IS NOT NULL") if c else None
     checks.append(_check(
         "verify_flow", "fix-outcome verification accrues ground truth",
         (True if (ver and int(ver[0] or 0) > 0) else None),
-        (f"{int(ver[0])} verified fix outcomes" if ver and ver[0] is not None
-         else "brain_fix_outcomes unreadable / empty")))
+        (f"{int(ver[0])} checked fix outcomes (still_broken stamped)"
+         if ver and ver[0] is not None
+         else "brain_fix_outcomes unreadable / none checked yet")))
     return checks
 
 
@@ -368,22 +403,24 @@ def _lane_growth_truth() -> list[dict]:
         checks.append(_check(
             "map_lockstep", "canonical + funnel_health price maps identical",
             None, f"price-map probe failed: {type(e).__name__}", critical=True))
-    # DELIBERATE RED (wave 2, owner call on display shape): annual SKUs are
-    # charged via Stripe links but invisible to the public tier surface.
+    # Wave 2 (2026-07-25): ANNUAL_OPTIONS is the additive display surface —
+    # rank/access/limits untouched (founding==pro rule intact).
     try:
-        from tier_registry import TIER_PRICE_USD_MONTH
-        has_annual = any("annual" in k for k in TIER_PRICE_USD_MONTH)
+        from tier_registry import ANNUAL_OPTIONS
+        ok = bool((ANNUAL_OPTIONS.get("pro") or {}).get("annual_usd_year"))
         checks.append(_check(
             "annual_visible", "annual pricing visible on /api/v1/tiers",
-            has_annual,
-            ("annual present in tier_registry" if has_annual else
-             "WAVE 2: pro_annual ($1,188/yr) + promo ($1,794/yr one-time) "
-             "exist only in _stripe_links.py — the paywall/frontend mirror "
-             "cannot render an annual toggle")))
+            ok,
+            ("ANNUAL_OPTIONS['pro']: $"
+             + str((ANNUAL_OPTIONS.get('pro') or {}).get('annual_usd_year'))
+             + "/yr + promo $"
+             + str((ANNUAL_OPTIONS.get('pro') or {}).get('annual_promo_usd_year'))
+             + "/yr one-time, surfaced in as_public_dict()" if ok else
+             "ANNUAL_OPTIONS present but pro annual price missing")))
     except Exception as e:  # noqa: BLE001
         checks.append(_check(
             "annual_visible", "annual pricing visible on /api/v1/tiers",
-            None, f"tier_registry probe failed: {type(e).__name__}"))
+            False, f"ANNUAL_OPTIONS absent: {type(e).__name__}"))
     return checks
 
 
@@ -514,8 +551,9 @@ def dashboard():
         "small{color:#64748b}</style>"
         "<h1>Brain Ascension Master Shell #28</h1>"
         "<small>generated " + _esc(d["generated_at"]) + " · read-only · "
-        "refreshes 60s · deliberate wave-2 reds: rag gates, metric harness, "
-        "annual visibility · kill BRAIN_ASCENSION_SHELL_DISABLE=1</small>"
+        "refreshes 60s · wave 2 shipped 07-25 (gates measured+registered, "
+        "PR metric harness, annual visibility) · "
+        "kill BRAIN_ASCENSION_SHELL_DISABLE=1</small>"
         "<table>" + "".join(rows) + "</table>")
     return Response(html, mimetype="text/html")
 

@@ -211,6 +211,30 @@ def paid_plans():
     return {name for name, t in TIERS.items() if t['paid'] and name not in ('admin',)}
 
 
+# ── annual options (brain-ascension #28 wave 2, 2026-07-25) ───────────
+# The annual SKUs were charged via routes/_stripe_links.py but INVISIBLE to
+# this registry, so /api/v1/tiers (the frontend/paywall mirror) could never
+# render an annual toggle. Display-only and ADDITIVE: keyed by the base tier
+# it upgrades; nothing here changes rank/access/limits (founding==pro rule
+# and test_tier_consistency are untouched). Keep amounts in lock-step with
+# _stripe_links.py comments.
+ANNUAL_OPTIONS = {
+    'pro': {
+        'annual_usd_year': 1188,        # pro_annual link — $99/mo equivalent
+        'annual_link_key': 'pro_annual',
+        'annual_promo_usd_year': 1794,  # one-time, 50% off $299/mo list
+        'annual_promo_link_key': 'pro_annual_promo',
+        'note': 'annual is a Stripe-link SKU (webhook → plan pro_annual, '
+                '365-day expiry); monthly list stays $299',
+    },
+    'enterprise': {
+        'annual_usd_year': None,        # custom / contact sales
+        'annual_link_key': 'enterprise_annual',
+        'note': 'custom annual — contact sales',
+    },
+}
+
+
 def as_public_dict():
     """Serializable registry for GET /api/v1/tiers (frontend mirror).
 
@@ -224,11 +248,13 @@ def as_public_dict():
                       'price_usd_month': TIER_PRICE_USD_MONTH.get(n),
                       'calls_per_day': TIER_LIMITS.get(n, {}).get('mcp_daily'),
                       'stripe_link': _stripe_link(n),
+                      'annual': ANNUAL_OPTIONS.get(n),
                       'features': TIER_FEATURES.get(n, {}),
                       'includes': TIER_PRICING_COPY.get(n, [])}
                   for n, t in TIERS.items()},
         'limits': TIER_LIMITS,
         'pricing': {n: TIER_PRICE_USD_MONTH.get(n) for n in TIERS},
+        'annual_options': ANNUAL_OPTIONS,
         'features': TIER_FEATURES,
         'rule': 'founding == pro for access and benefits',
         'price_note': 'price_usd_month: starter 9 · developer 49 · pro 299 · team 699 · enterprise custom. calls_per_day = mcp_daily.',

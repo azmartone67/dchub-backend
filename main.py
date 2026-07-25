@@ -2080,6 +2080,17 @@ try:
     except Exception as _bams:
         import logging
         logging.getLogger(__name__).warning('brain_ascension_master_shell wiring failed: %s', _bams)
+    # 2026-07-25 (#28 wave 2): merged-PR before/after metric harness — the
+    # REAL implementation of the brain's own "shipping blind" diagnosis.
+    # Daily tick snapshots canonical KPIs at merge/+14d/+30d per brain PR.
+    # Kill BRAIN_PR_METRICS_DISABLE=1
+    try:
+        from routes.brain_pr_metric_harness import brain_pr_metric_harness_bp
+        app.register_blueprint(brain_pr_metric_harness_bp)
+        print("[main] brain_pr_metric_harness_bp registered: /api/v1/admin/brain/pr-metrics", flush=True)
+    except Exception as _bpmh:
+        import logging
+        logging.getLogger(__name__).warning('brain_pr_metric_harness wiring failed: %s', _bpmh)
     # 2026-07-08: WRI Aqueduct water-stress ingest — replaces the paused inverted
     # proxy. Honest by construction (writes ONLY verified-source rows; no-op without
     # WRI_AQUEDUCT_URL). rank_sites water objectives auto-enable once real rows land.
@@ -3896,7 +3907,12 @@ def _grid_intel_cached(region, rto_code):
 # rerank cross-encoder scale — r-rag-cosine-passthrough). It runs a SYNCHRONOUS
 # Cohere embed, so callers on HOT PUBLIC paths (market/grid web pages) gate it
 # behind an explicit ?rag=1 opt-in; only low-volume agent tools call it always.
-def _rag_related_intel(query, corpus=None, k=4, min_cosine=0.30):
+def _rag_related_intel(query, corpus=None, k=4, min_cosine=None):
+    # brain-ascension #28 wave 2 (2026-07-25): the old default 0.30 was
+    # Cohere-scale — under mistral-embed even nonsense scores 0.65+, so the
+    # gate attached junk passages to tool payloads. Default now resolves from
+    # brain_rag.cosine_gate("related_min") (0.72 mistral / 0.30 cohere,
+    # measured live); explicit callers still win.
     # Kill-switch (r-rag-tooldata): RAG_TOOLDATA_DISABLED=1 sheds ALL tool-data
     # grounding without a redeploy — the fast lever if the synchronous embed on a
     # hot path (esp. get_grid_intelligence) needs to be turned off in a hurry.
@@ -3904,9 +3920,14 @@ def _rag_related_intel(query, corpus=None, k=4, min_cosine=0.30):
     if _os.getenv("RAG_TOOLDATA_DISABLED") == "1" or not query:
         return []
     try:
-        from routes.brain_rag import retrieve_context, _hydrate
+        from routes.brain_rag import retrieve_context, _hydrate, cosine_gate
     except Exception:
         return []
+    if min_cosine is None:
+        try:
+            min_cosine = cosine_gate("related_min")
+        except Exception:
+            min_cosine = 0.72
     try:
         hits = retrieve_context(query, k=k, corpus=corpus) or []
     except Exception:

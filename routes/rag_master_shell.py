@@ -74,7 +74,13 @@ _REACH_TARGET = 20          # ~20 real external agents/wk baseline → reach sco
 # Health-lever floors (below => a gap finding when armed).
 _COVERAGE_FLOOR = 0.50      # deep-dive completeness over published markets
 _FRESHNESS_FLOOR = 0.60     # flat-corpus embedding coverage
-_EVAL_MEAN_FLOOR = 0.45     # mean top-1 cosine across the eval set
+_EVAL_MEAN_FLOOR = 0.70     # mean top-1 cosine across the eval set.
+                            # brain-ascension #28 wave 2 (2026-07-25): raised
+                            # 0.45→0.70 for the mistral scale — measured live:
+                            # nonsense tops out ~0.675, weakest on-topic 0.744,
+                            # so 0.45 was trivially passable. Anchors (below)
+                            # are the real relevance check; the floor now only
+                            # separates on-topic from nonsense.
 _EVAL_REGRESS_DROP = 0.05   # a drop this large vs the prior snapshot trips a finding
 
 # Fixed retrieval eval — each query has a VERIFIED good hit (live 2026-07-03/04);
@@ -87,24 +93,24 @@ _EVAL_REGRESS_DROP = 0.05   # a drop this large vs the prior snapshot trips a fi
 # independent (same trick public_search uses for its miss capture).
 _EVAL_QUERIES = [
     {"q": "why is northern virginia constrained for data centers",
-     "corpus": "market_narratives", "floor": 0.50,
+     "corpus": "market_narratives", "floor": 0.70,
      "anchors": ["virginia", "loudoun", "ashburn", "dominion"]},
     {"q": "grids opening up for AI load in the Southeast",
-     "corpus": "news_articles", "floor": 0.45,
+     "corpus": "news_articles", "floor": 0.70,
      "anchors": ["southeast", "georgia", "tennessee", "carolina", "tva",
                  "southern company", "duke"]},
     {"q": "nuclear power deals for hyperscalers",
-     "corpus": ["deals", "news_articles"], "floor": 0.45,
+     "corpus": ["deals", "news_articles"], "floor": 0.70,
      "anchors": ["nuclear", "smr", "reactor"]},
     {"q": "behind-the-meter gas for AI data centers",
-     "corpus": "news_articles", "floor": 0.45,
+     "corpus": "news_articles", "floor": 0.70,
      "anchors": ["gas", "behind-the-meter", "btm", "turbine"]},
     {"q": "hyperscale AI data center campus in Northern Virginia",
-     "corpus": "discovered_facilities", "floor": 0.45,
+     "corpus": "discovered_facilities", "floor": 0.70,
      "anchors": ["virginia", "ashburn", "loudoun", "manassas", "sterling",
                  "leesburg"]},
     {"q": "PJM capacity auction clearing price and AI demand",
-     "corpus": "news_articles", "floor": 0.42,
+     "corpus": "news_articles", "floor": 0.70,
      "anchors": ["pjm", "capacity auction", "clearing price"]},
 ]
 

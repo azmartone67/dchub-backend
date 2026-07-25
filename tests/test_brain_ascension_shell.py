@@ -106,14 +106,82 @@ def test_lane_verdict_never_green_by_silence():
                           _check("b", "b", None, "")]) == "PASS"
 
 
-def test_deliberate_wave2_reds_present():
-    """The wave-2 work orders must stay visibly red — a shell that only
-    scores what already passes is a vanity dashboard."""
+def test_wave2_checks_are_real_verification():
+    """Wave 2 shipped: the three former placeholder-reds must now be REAL
+    checks (registry-derived, table-probing, ANNUAL_OPTIONS-reading) — a
+    hardcoded pass would be the same lie in green."""
     src = open(os.path.join(ROOT, "routes", "brain_ascension_master_shell.py"),
                encoding="utf-8").read()
-    assert '"gates_calibrated"' in src and "False" in src
-    assert '"harness_real"' in src
-    assert '"annual_visible"' in src
+    assert "PROVIDER_COSINE_GATES" in src          # gates verified vs registry
+    assert "brain_pr_metric_snapshots" in src      # harness probed via table
+    assert "ANNUAL_OPTIONS" in src                 # annual read from registry
+    assert "still_broken" in src                   # real brain_fix_outcomes col
+
+
+# ── wave 2: provider-aware cosine gates ───────────────────────────────
+
+def test_provider_gates_registered_and_helper_strict_on_typo():
+    from routes.brain_rag import PROVIDER_COSINE_GATES, cosine_gate
+    for prov in ("mistral", "cohere"):
+        g = PROVIDER_COSINE_GATES[prov]
+        assert set(g) == {"dup_loose", "dup_strict", "related_min", "eval_floor"}
+    # mistral scale from the 2026-07-25 live measurement
+    m = PROVIDER_COSINE_GATES["mistral"]
+    assert m["related_min"] == 0.72 and m["eval_floor"] == 0.70
+    assert m["dup_loose"] == 0.90 and m["dup_strict"] == 0.92
+    # unknown gate name falls back STRICT (never opens a gate on a typo)
+    assert cosine_gate("no_such_gate") == max(m.values())
+
+
+def test_eval_floors_meet_registered_floor():
+    from routes.brain_rag import PROVIDER_COSINE_GATES
+    from routes.rag_master_shell import _EVAL_QUERIES, _EVAL_MEAN_FLOOR
+    floor = PROVIDER_COSINE_GATES["mistral"]["eval_floor"]
+    assert _EVAL_MEAN_FLOOR >= floor
+    for q in _EVAL_QUERIES:
+        assert float(q["floor"]) >= floor, q["q"]
+
+
+def test_related_intel_wired_to_registry():
+    src = open(os.path.join(ROOT, "main.py"), encoding="utf-8").read()
+    assert 'cosine_gate("related_min")' in src
+    assert "def _rag_related_intel(query, corpus=None, k=4, min_cosine=None)" in src
+
+
+def test_dup_gate_defaults_match_registry():
+    from routes.brain_rag import PROVIDER_COSINE_GATES
+    m = PROVIDER_COSINE_GATES["mistral"]
+    fp = open(os.path.join(ROOT, "routes", "brain_feature_proposer.py"),
+              encoding="utf-8").read()
+    assert f'"{m["dup_loose"]:.2f}"' in fp
+    di = open(os.path.join(ROOT, "deal_ingestion_scheduler.py"),
+              encoding="utf-8").read()
+    assert f"_env_float('DEAL_DUP_COSINE', {m['dup_strict']})" in di
+
+
+# ── wave 2: metric harness + annual visibility ────────────────────────
+
+def test_metric_harness_module_real():
+    src = open(os.path.join(ROOT, "routes", "brain_pr_metric_harness.py"),
+               encoding="utf-8").read()
+    assert "brain_pr_metric_snapshots" in src
+    assert "canonical_funnel" in src              # KPI SoT, never local SQL
+    assert "ON CONFLICT (pr_number, phase, metric_key)" in src
+    assert not os.path.exists(os.path.join(
+        ROOT, "routes", "_proposed_merged_pr_before_after_metric_harness.py"))
+
+
+def test_annual_options_additive_and_consistent():
+    from tier_registry import (ANNUAL_OPTIONS, TIER_PRICE_USD_MONTH,
+                               as_public_dict)
+    assert ANNUAL_OPTIONS["pro"]["annual_usd_year"] == 1188
+    assert ANNUAL_OPTIONS["pro"]["annual_promo_usd_year"] == 1794
+    # ADDITIVE: no annual key leaked into the monthly price map (access/rank
+    # surfaces key off that map; test_tier_consistency guards the rest)
+    assert not any("annual" in k for k in TIER_PRICE_USD_MONTH)
+    d = as_public_dict()
+    assert d["tiers"]["pro"]["annual"]["annual_usd_year"] == 1188
+    assert d["annual_options"] is not None
 
 
 # ── cron hygiene: the expired one-shots stay deleted ──────────────────

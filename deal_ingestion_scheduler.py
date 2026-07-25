@@ -289,6 +289,10 @@ def _semantic_dup_check(deal, cur, retrieve_fn, embed_fn):
         cs = _cosine(qv, vecs[i + 1])
         if cs > best_cos:
             best_cos, best_ix = cs, i
+    # brain-ascension #28 wave 2 (2026-07-25): 0.92 VALIDATED for
+    # mistral-embed by live measurement — near-dup paraphrases score
+    # 0.925-0.93, distinct same-topic docs <=0.86. Registered as
+    # PROVIDER_COSINE_GATES['mistral']['dup_strict'] in routes/brain_rag.py.
     if best_cos < _env_float('DEAL_DUP_COSINE', 0.92):
         return 'keep', None
     hit = hits[best_ix]

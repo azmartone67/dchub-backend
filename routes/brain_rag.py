@@ -384,6 +384,41 @@ def _live_embed_model() -> str:
     return EMBED_MODEL if _embed_provider() == "cohere" else "mistral-embed"
 
 
+# ── provider-aware cosine gates (brain-ascension #28 wave 2, 2026-07-25) ──
+# Every cosine threshold in the codebase was tuned on Cohere embed-v3's
+# asymmetric scale; mistral-embed (symmetric) compresses the range upward.
+# Measured LIVE on prod 2026-07-25 via /api/v1/admin/brain/rag/retrieve:
+#   nonsense-query top-1        0.65–0.675   (three word-salad probes)
+#   weakest on-topic top-1      0.744        (nuclear/hyperscaler query)
+#   strong on-topic top-1       0.84–0.85
+#   same-story DIFFERENT doc    0.85–0.86
+#   near-dup paraphrase         0.925–0.93   (two rephrasings of a live doc)
+#   exact duplicate             1.0
+# Verdicts: the dup gates (0.90 loose / 0.92 strict) sit correctly in the
+# 0.86–0.925 separation gap and are VALIDATED as-is under mistral. The
+# related-intel floor 0.30 filtered NOTHING (nonsense scores 0.65+) and the
+# eval floors 0.42–0.50 were trivially passable — both re-registered here.
+# Gate sites read these defaults (env overrides still win at each site).
+PROVIDER_COSINE_GATES = {
+    "mistral": {"dup_loose": 0.90, "dup_strict": 0.92,
+                "related_min": 0.72, "eval_floor": 0.70},
+    # legacy Cohere scale, kept for a future RAG_EMBED_PROVIDER=cohere revert
+    "cohere":  {"dup_loose": 0.90, "dup_strict": 0.92,
+                "related_min": 0.30, "eval_floor": 0.45},
+}
+
+
+def cosine_gate(name: str) -> float:
+    """Provider-appropriate default for a named cosine gate. Unknown names
+    fall back to the strictest registered value so a typo can never open a
+    gate wider than intended."""
+    g = PROVIDER_COSINE_GATES.get(_embed_provider(),
+                                  PROVIDER_COSINE_GATES["mistral"])
+    if name in g:
+        return float(g[name])
+    return max(float(v) for v in g.values())
+
+
 def _embed_cohere(texts, input_type="search_document"):
     key = (os.environ.get("COHERE_API_KEY") or "").strip()
     if not key or not texts:

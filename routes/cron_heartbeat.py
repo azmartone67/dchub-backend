@@ -463,6 +463,15 @@ _DISPATCH = [
      lambda now: now.hour == 6 and now.minute < 55
                  and os.environ.get("BRAIN_ASCENSION_SHELL_DISABLE") != "1"),
 
+    # 2026-07-25 (#28 wave 2): daily merged-PR metric snapshot — harvest
+    # brain merges, snapshot canonical KPIs (merge phase), re-stamp d14/d30.
+    # Idempotent (UNIQUE pr/phase/metric). Kill: BRAIN_PR_METRICS_DISABLE=1.
+    ("brain_pr_metrics_daily",
+     f"{BASE}/api/v1/admin/brain/pr-metrics/tick",
+     "POST",
+     lambda now: now.hour == 7 and now.minute < 55
+                 and os.environ.get("BRAIN_PR_METRICS_DISABLE") != "1"),
+
     # r47.14 (2026-05-25): weekly partnership LinkedIn post. Cycles
     # through 7 anchors (one per ISO week) targeting /partners and
     # the per-partner anchors (#dchawk, #cbre, #dcd, etc.). Wed 14:00 UTC

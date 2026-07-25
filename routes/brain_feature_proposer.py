@@ -124,7 +124,13 @@ def _dup_threshold() -> float:
     delivery" routinely clears 0.82 against a loosely-related prior and gets
     SKIPPED (this gate skips the WHOLE cluster). 0.90 keeps only near-identical
     matches; the weekly cap + min-cluster + the soft 'return null if same idea'
-    prompt still prevent a flood, so the hard-skip should fire only on true dups."""
+    prompt still prevent a flood, so the hard-skip should fire only on true dups.
+
+    brain-ascension #28 wave 2 (2026-07-25): VALIDATED for mistral-embed by
+    live measurement — near-dup paraphrases score 0.925-0.93, distinct
+    same-topic docs <=0.86, so 0.90 sits in the separation gap. Registered as
+    PROVIDER_COSINE_GATES['mistral']['dup_loose'] in routes/brain_rag.py —
+    keep the two in lock-step."""
     try:
         return float(os.environ.get(
             "BRAIN_FEATURE_PROPOSER_DUP_THRESHOLD", "0.90"))
