@@ -42,6 +42,42 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # ── STALE-WORKER GUARD (2026-07-25) ───────────────────────────────
+      # The header above says why the push trigger is disabled: this subdir's
+      # _worker.js is stale, and deploying it over the canonical frontend
+      # (the standalone dchub-frontend repo) caused the endemic prod flap —
+      # /facilities 404s, /transactions + /markets timeouts, backend healthy.
+      # But "manual-only" is a convention, not a guard: one workflow_dispatch
+      # still rolls the edge worker back. As of today that is 4.24.0-switzerland
+      # here vs 4.55.0 live — ~31 minor versions, ~2 months of rollback.
+      # So compare this subdir's VERSION against what prod is actually serving
+      # and FAIL CLOSED on a mismatch. Unreachable prod also fails: a guard
+      # that can't check must never wave the deploy through.
+      - name: 0a — refuse to deploy a worker older than prod
+        run: |
+          SUBDIR_V=$(grep -oE "VERSION *= *'[^']+'" dchub-frontend/_worker.js \
+                     | head -1 | sed "s/.*'\(.*\)'/\1/")
+          # The live edge worker states its own version in a response header on
+          # any proxied API path. A header beats parsing a body: it is present
+          # on success as well as on an error page.
+          LIVE_V=$(curl -sSI --max-time 20 -H "User-Agent: dchub-deploy-guard/1.0" \
+                     https://dchub.cloud/api/v1/ops/deadman \
+                   | tr -d '\r' \
+                   | sed -n 's/^[Xx]-[Dd][Cc]-[Ww]orker-[Vv]ersion: *//p' | head -1)
+          echo "subdir=${SUBDIR_V:-<unreadable>}  live=${LIVE_V:-<unreachable>}"
+          if [ -z "$LIVE_V" ]; then
+            echo "::error::Could not read the live worker version — refusing to \
+          deploy. A guard that cannot check must not pass."
+            exit 1
+          fi
+          if [ "$SUBDIR_V" != "$LIVE_V" ]; then
+            echo "::error::STALE WORKER — this subdir is '$SUBDIR_V' but prod \
+          serves '$LIVE_V'. Deploying would roll the edge worker BACK. The \
+          canonical frontend is the standalone dchub-frontend repo; deploy from \
+          there (deploy-pages.yml). Sync this subdir first if you truly need it."
+            exit 1
+          fi
+
       # GitHub-hosted ubuntu-latest pins Node 20; wrangler@4 needs >=22.
       # Without this step v3 fix logs were misleading ("token missing
       # permission" was the secondary symptom, not the root cause).
