@@ -18288,6 +18288,12 @@ def energy_eia_ingest_run():
             _EIA_TASKS[task_id] = {"status": "running", "result": None,
                                     "started_at": _eia_time.time(),
                                     "finished_at": None}
+        # Publish 'running' BEFORE the work starts, not just the terminal
+        # state: the ingest takes ~90s and the cron polls throughout, so a
+        # poll landing on another replica must resolve the task immediately —
+        # otherwise it 404s for the whole run and only the final state is
+        # ever answerable. Persisting both ends makes every poll answerable.
+        _eia_task_persist(task_id, "running", None)
         t = _eia_threading.Thread(target=_eia_run_ingest, args=(task_id,), daemon=True)
         t.start()
         return jsonify(ok=True, task_id=task_id, status="running",

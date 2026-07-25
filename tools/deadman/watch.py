@@ -128,7 +128,16 @@ def gh_json(args, retries=3):
 
 
 def last_success(workflow):
-    """Return (iso_ts, status_note) for the workflow's most recent successful run."""
+    """Return (iso_ts, status_note) for the workflow's most recent successful run.
+
+    The status must describe CURRENT health, not merely "a success exists
+    somewhere in the last 20 runs". 2026-07-25: this beat status='success'
+    for eia-pricing-ingest while its two most recent runs had just failed,
+    overwriting the producer's own status='error' and silently un-redding a
+    live-failing loop on the board. The timestamp still reports the genuine
+    last success (that is what cadence is measured against) — but a currently
+    failing loop now carries a status OUTSIDE _OK_STATUS so it stays visible.
+    """
     d = gh_json(
         ["run", "list", "--repo", REPO, "--workflow", workflow, "--limit", "20",
          "--json", "conclusion,updatedAt,status"]
@@ -137,9 +146,18 @@ def last_success(workflow):
         return None, "actions-api-error"
     if not d:
         return None, "never-run"
+    # Newest COMPLETED run decides current health; an in-flight run is not a
+    # failure, so skip entries with no conclusion yet.
+    newest_done = next((r for r in d if r.get("conclusion")), None)
+    currently_failing = bool(
+        newest_done and newest_done.get("conclusion") != "success")
     for r in d:
         if r.get("conclusion") == "success":
-            return r.get("updatedAt"), "success"
+            ts = r.get("updatedAt")
+            if currently_failing:
+                return ts, ("latest-run-failed (latest="
+                            + str(newest_done.get("conclusion")) + ")")
+            return ts, "success"
     # runs exist but none of the recent ones succeeded
     latest = d[0]
     return None, f"no-recent-success (latest={latest.get('conclusion') or latest.get('status')})"

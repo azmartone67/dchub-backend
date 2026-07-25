@@ -494,7 +494,7 @@ def _lane_cron(c) -> list[dict]:
         # All FOUR canonical dead-man conditions (this originally checked only
         # consecutive_zero, so a feed that had gone silent, started reporting a
         # bad status, or emitted future-dated content still read clear).
-        # Mirrors routes/brain_ascension_master_shell.py _lane_ingest_board.
+        # Mirrors routes/growthfix_master_shell.py::_lane_ingest_board (#26).
         now = datetime.datetime.now(datetime.timezone.utc)
         reds = []
         for feed, lr, st, cad, cz, mcd in rows:
