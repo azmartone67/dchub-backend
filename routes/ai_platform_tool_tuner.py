@@ -416,6 +416,10 @@ def _claude_rewrite(tool_name: str, generic_desc: str, platform: str,
         "  - 1-2 sentences\n"
         "  - 280 characters max\n"
         "  - Plain text, no markdown, no code fences\n"
+        # 2026-07-25: agent stores (Microsoft Copilot Agent Store policy 1140.9)
+        # reject tool descriptions containing URLs or emoji. Forbid both so every
+        # tuned description is submission-safe across platforms, not just chat.
+        "  - NO URLs / links and NO emoji (agent stores reject either)\n"
         "  - Preserve all data the generic claims (counts, scope)\n"
         "  - Lead with action (verb-first when natural)\n"
         "  - Do NOT include the tool name in the description\n\n"
