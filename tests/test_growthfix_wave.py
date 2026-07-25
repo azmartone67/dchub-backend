@@ -67,9 +67,29 @@ def test_deadman_zero_row_alarm_exempts_no_new_data():
 def test_workflows_report_no_new_data():
     for path in (EIA, OSM):
         src = _read(path)
-        assert 'STATUS="no_new_data"' in src, f"{path} never reports no_new_data"
+        assert "no_new_data" in src, f"{path} never reports no_new_data"
         assert '\\"status\\":\\"$STATUS\\"' in src, \
             f"{path} beat does not send the computed STATUS"
+
+
+def test_no_new_data_is_earned_not_a_bare_zero_map():
+    """2026-07-25 — no_new_data is an ASSERTION that zero was EXPECTED: it
+    resets consecutive_zero and exempts the >=3-zero-row alarm. Mapping a bare
+    rows==0 to it silences broken counters instead of fixing them. Both feeds
+    had one: eia read total_records off an async 202 that has never carried it
+    (0 forever, task never polled), and osm exited 0 on crawler errors. The
+    status must come from a run that demonstrably completed and found nothing.
+    """
+    for path, zero_var in ((EIA, "COUNT"), (OSM, "RI")):
+        src = _read(path)
+        assert '[ "$%s" = "0" ] && STATUS="no_new_data"' % zero_var not in src, \
+            f"{path} maps a bare rows==0 to no_new_data — it must be earned"
+        assert "${BEAT_STATUS:-error}" in src, \
+            f"{path} does not default to status=error when the run step " \
+            "produced no outputs (silence must not read as healthy)"
+        assert "if: always()" in src, \
+            f"{path} beat step is skippable by a failed job — a skipped beat " \
+            "is silence, and silence reads as healthy until the cadence expires"
 
 
 # ── 2 · competitor gap rotating window ───────────────────────────────
