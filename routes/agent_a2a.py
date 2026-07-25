@@ -11,6 +11,7 @@ Routes:
   GET /.well-known/agent-card.json  — alternate alias
 """
 import datetime
+import os
 from flask import Blueprint, jsonify
 
 agent_a2a_bp = Blueprint("agent_a2a", __name__)
