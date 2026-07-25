@@ -2067,6 +2067,19 @@ try:
     except Exception as _gfms:
         import logging
         logging.getLogger(__name__).warning('growthfix_master_shell wiring failed: %s', _gfms)
+    # 2026-07-25: Brain Ascension Master Shell (#28) — watches the five-audit
+    # fix-wave lanes (brain deadman coverage, cross-model roster, competitor→
+    # product wiring, RAG truth, merged-PR metric harness, growth/MRR truth).
+    # Read-only; deliberate wave-2 reds stay visible until shipped.
+    # GET /admin/brain-ascension · /api/v1/admin/brain-ascension/master-tick ·
+    # kill BRAIN_ASCENSION_SHELL_DISABLE=1
+    try:
+        from routes.brain_ascension_master_shell import brain_ascension_master_shell_bp
+        app.register_blueprint(brain_ascension_master_shell_bp)
+        print("[main] brain_ascension_master_shell_bp registered: GET /admin/brain-ascension", flush=True)
+    except Exception as _bams:
+        import logging
+        logging.getLogger(__name__).warning('brain_ascension_master_shell wiring failed: %s', _bams)
     # 2026-07-08: WRI Aqueduct water-stress ingest — replaces the paused inverted
     # proxy. Honest by construction (writes ONLY verified-source rows; no-op without
     # WRI_AQUEDUCT_URL). rank_sites water objectives auto-enable once real rows land.

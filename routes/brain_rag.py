@@ -376,6 +376,14 @@ def _embed_provider() -> str:
     return (os.environ.get("RAG_EMBED_PROVIDER") or "mistral").strip().lower()
 
 
+def _live_embed_model() -> str:
+    """The embed model actually in use. brain-ascension #28 (2026-07-25):
+    /status and /reindex reported the hardcoded Cohere EMBED_MODEL even while
+    mistral vectors were being written — the operator-facing surface lied
+    about the live provider."""
+    return EMBED_MODEL if _embed_provider() == "cohere" else "mistral-embed"
+
+
 def _embed_cohere(texts, input_type="search_document"):
     key = (os.environ.get("COHERE_API_KEY") or "").strip()
     if not key or not texts:
@@ -1252,7 +1260,8 @@ def reindex():
                        narrative_docs_pending=chunk_docs_pending,
                        orphans_deleted=sum(orphans.values()),
                        orphans_by_corpus=orphans,
-                       done=(remaining == 0), model=EMBED_MODEL), 200
+                       done=(remaining == 0), model=_live_embed_model(),
+                       provider=_embed_provider()), 200
     except Exception as e:
         return jsonify(ok=False, error=f"{type(e).__name__}: {str(e)[:160]}", embedded=embedded), 200
     finally:
@@ -1607,7 +1616,8 @@ def status():
                        coverage_pct=round(100.0 * emb / max(1, total), 1),
                        by_corpus=per, fresh_cols=fresh,
                        orphans=orphans, orphans_total=sum(orphans.values()),
-                       last_indexed=str(last), model=EMBED_MODEL,
+                       last_indexed=str(last), model=_live_embed_model(),
+                       provider=_embed_provider(),
                        planner_wired=str(os.environ.get("BRAIN_RAG_ENABLED", "")).lower() in ("1", "true", "yes")), 200
     except Exception as e:
         return jsonify(ok=False, error=f"{type(e).__name__}: {str(e)[:160]}"), 200

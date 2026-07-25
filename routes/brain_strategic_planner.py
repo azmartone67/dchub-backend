@@ -477,6 +477,10 @@ _COMPETITOR_UNIVERSE = {
         {"name": "Wood Mackenzie",
          "url": "https://www.woodmac.com",
          "focus": "enterprise energy intel ($$$)"},
+        {"name": "Electricity Maps",
+         "url": "https://www.electricitymaps.com",
+         "focus": "grid carbon-intensity API — the agent-facing grid-data "
+                  "competitor (carbon only; no headroom/queue/facility layers)"},
         {"name": "ERCOT public API",
          "url": "https://www.ercot.com/mp/data-products",
          "focus": "Texas grid data — free but rate-limited"},
@@ -486,6 +490,13 @@ _COMPETITOR_UNIVERSE = {
         {"name": "EIA OpenData",
          "url": "https://www.eia.gov/opendata/",
          "focus": "US energy data — free reference"},
+    ],
+    "analyst_research": [
+        {"name": "SemiAnalysis",
+         "url": "https://semianalysis.com",
+         "focus": "AI-infrastructure research + datacenter model "
+                  "(subscription prose/spreadsheets — not machine-readable, "
+                  "no API/MCP; the analyst mindshare competitor)"},
     ],
     "mcp_directories": [
         {"name": "Smithery",   "url": "https://smithery.ai"},
@@ -505,17 +516,63 @@ _COMPETITOR_UNIVERSE = {
 }
 
 
+def _read_crawled_gaps(days: int = 45, sample: int = 12) -> dict:
+    """Live coverage_gaps rows from the competitor-gap crawler.
+
+    brain-ascension #28 (2026-07-25): the crawler wrote coverage_gaps daily
+    but NOTHING strategic ever read the table — the one competitor→product
+    path fed on the static universe only, so crawled evidence dead-ended.
+    Fail-soft: {} on any miss. created_at is TEXT in this table — compare
+    lexically against an ISO cutoff, never cast in SQL."""
+    c = _get_db()
+    if c is None:
+        return {}
+    cutoff = (_dt.datetime.now(_dt.timezone.utc)
+              - _dt.timedelta(days=days)).isoformat()
+    try:
+        with c.cursor() as cur:
+            cur.execute(
+                """SELECT competitor, gap_type, COUNT(*)
+                     FROM coverage_gaps
+                    WHERE created_at >= %s
+                    GROUP BY competitor, gap_type
+                    ORDER BY COUNT(*) DESC""", (cutoff,))
+            counts = [{"competitor": r[0], "gap_type": r[1], "n": int(r[2])}
+                      for r in (cur.fetchall() or [])]
+            cur.execute(
+                """SELECT competitor, description
+                     FROM coverage_gaps
+                    WHERE created_at >= %s
+                    ORDER BY created_at DESC
+                    LIMIT %s""", (cutoff, sample))
+            examples = [{"competitor": r[0], "description": (r[1] or "")[:300]}
+                        for r in (cur.fetchall() or [])]
+        if not counts and not examples:
+            return {}
+        return {"window_days": days, "counts_by_competitor": counts,
+                "recent_examples": examples}
+    except Exception:
+        try:
+            c.rollback()
+        except Exception:
+            pass
+        return {}
+
+
 def _gather_competitor_context() -> dict:
     """Assemble the competitor-intel envelope the L6 prompt feeds on.
 
-    Three layers (each layer is fail-soft → empty dict on miss):
+    Four layers (each layer is fail-soft → empty dict on miss):
       1. `presence` — live MCP-presence crawler snapshot
          (/api/v1/mcp/presence/recent) — what other MCP directories
          say about DC Hub, drift, recently-discovered registries
       2. `universe` — curated static catalog of the real competitive
          landscape (DC registries, energy data providers, MCP dirs)
-      3. `signal` — recent mcp_presence_* findings from brain_findings
-         (fallback path; keeps the legacy data flowing)
+      3. `signal` — recent mcp_presence_* AND coverage_gap_competitor
+         findings from brain_findings
+      4. `crawled_gaps` — live coverage_gaps rows the daily crawler
+         stages (what competitors list that DC Hub doesn't cover) —
+         wired 2026-07-25; previously this evidence dead-ended
 
     Why static + live: the live crawler covers MCP directories well
     but doesn't track Baxtel/DCByte/etc. (they're not MCP servers).
@@ -531,15 +588,27 @@ def _gather_competitor_context() -> dict:
     if not presence:
         presence = _http_get_json("/api/v1/mcp-presence/status")
 
-    # Layer 3: brain_findings already-filed competitor signals
+    # Layer 3: brain_findings already-filed competitor signals — both the
+    # MCP-presence stream and the crawler's coverage_gap_competitor stream.
     findings = _http_get_json(
         "/api/v1/brain/findings?issue_like=mcp_presence&limit=20")
+    gap_findings = _http_get_json(
+        "/api/v1/brain/findings?issue_like=coverage_gap_competitor&limit=10")
+    if gap_findings:
+        if isinstance(findings, list) and isinstance(gap_findings, list):
+            findings = findings + gap_findings
+        elif not findings:
+            findings = gap_findings
+
+    # Layer 4: the crawler's own table (direct DB read, fail-soft)
+    crawled = _read_crawled_gaps()
 
     envelope = {
         "presence": presence or {"_note": "presence_endpoint_unreachable"},
         "universe": _COMPETITOR_UNIVERSE,
         "signal":   findings or {"_note": "no_competitor_findings_yet"},
-        "_layers":  ["presence", "universe", "signal"],
+        "crawled_gaps": crawled or {"_note": "no_crawled_gaps_in_window"},
+        "_layers":  ["presence", "universe", "signal", "crawled_gaps"],
         "_pulled_at": _dt.datetime.now(_dt.timezone.utc).isoformat(),
     }
 
@@ -551,6 +620,7 @@ def _gather_competitor_context() -> dict:
               or presence.get("recently_discovered")))
         or (findings and isinstance(findings, (list, dict))
             and findings)
+        or crawled
     )
     envelope["_has_real_data"] = has_real_data
     return envelope

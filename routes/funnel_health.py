@@ -75,9 +75,15 @@ _ADMIN_KEY = (os.environ.get("DCHUB_ADMIN_KEY")
 _PLAN_MONTHLY_USD = {
     "starter":            9,
     "developer":          49,
-    "pro":                199,
+    "pro":                199,  # conservative floor — existing subs grandfathered
+                                # at $199; new list is $299 (r-reprice 2026-06-19)
     "pro_annual":         99,   # $1188/yr ≈ $99/mo equivalent
     "pro_annual_onetime": 99,   # source_plan value matches above
+    # brain-ascension #28 (2026-07-25): team + founding were MISSING — a $699
+    # Team or $99 Founding subscriber contributed $0 to MRR (and the users
+    # query below filtered them out of the probe entirely).
+    "team":               699,  # $699/mo, 5 seats
+    "founding":           99,   # $99/mo r-founder99 link (conservative floor)
     "enterprise":         500,
     "enterprise_annual":  500,
     "research_seed_nlr":  250,  # $3,000/yr ≈ $250/mo
@@ -424,6 +430,7 @@ def _build_data() -> dict:
                 " FROM users "
                 " WHERE COALESCE(subscription_status, 'active') = 'active' "
                 "   AND plan IN ('starter','developer','pro','pro_annual',"
+                "                'pro_annual_onetime','team','founding',"
                 "                'enterprise','enterprise_annual',"
                 "                'research_seed_nlr') "
                 " GROUP BY plan"

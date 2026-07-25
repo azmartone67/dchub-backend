@@ -448,6 +448,17 @@ _DISPATCH = [
      lambda now: now.hour == 5 and now.minute < 55
                  and os.environ.get("GROWTHFIX_SHELL_DISABLE") != "1"),
 
+    # 2026-07-25 brain-ascension wave: daily tick of the Brain Ascension
+    # Master Shell (#28) — read-only probe of the six audit-fix lanes; on
+    # completion it beats the dead-man ledger (feed brain-ascension-shell-
+    # daily) itself. _hit() attaches X-Admin-Key.
+    # Kill: BRAIN_ASCENSION_SHELL_DISABLE=1.
+    ("brain_ascension_shell_daily",
+     f"{BASE}/api/v1/admin/brain-ascension/master-tick",
+     "POST",
+     lambda now: now.hour == 6 and now.minute < 55
+                 and os.environ.get("BRAIN_ASCENSION_SHELL_DISABLE") != "1"),
+
     # r47.14 (2026-05-25): weekly partnership LinkedIn post. Cycles
     # through 7 anchors (one per ISO week) targeting /partners and
     # the per-partner anchors (#dchawk, #cbre, #dcd, etc.). Wed 14:00 UTC

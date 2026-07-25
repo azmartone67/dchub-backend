@@ -405,13 +405,49 @@ def get_competitor(competitor_id):
         **CompetitorAnalysis.get_competitor(competitor_id)
     })
 
+def _crawled_coverage_gaps(competitor=None, limit=50):
+    """Live rows from the coverage_gaps table the daily competitor-gap
+    crawler writes. brain-ascension #28 (2026-07-25): this endpoint served
+    only the hand-written COVERAGE_GAPS constant while the crawler's real
+    evidence sat unread. Fail-soft [] so the static gaps always render.
+    created_at is TEXT in this table — ordered lexically (ISO), never cast."""
+    try:
+        conn = get_db()
+        with conn.cursor() as cur:
+            if competitor:
+                cur.execute(
+                    """SELECT competitor, gap_type, description,
+                              dc_hub_advantage, created_at
+                         FROM coverage_gaps
+                        WHERE LOWER(competitor) = LOWER(%s)
+                        ORDER BY created_at DESC LIMIT %s""",
+                    (competitor, limit))
+            else:
+                cur.execute(
+                    """SELECT competitor, gap_type, description,
+                              dc_hub_advantage, created_at
+                         FROM coverage_gaps
+                        ORDER BY created_at DESC LIMIT %s""", (limit,))
+            return [{'competitor': r[0], 'gap_type': r[1],
+                     'gap': (r[2] or '')[:400], 'dc_hub_advantage': r[3],
+                     'observed_at': r[4]} for r in (cur.fetchall() or [])]
+    except Exception as e:
+        logger.debug("crawled coverage_gaps read failed: %s", e)
+        return []
+
+
 @competitor_bp.route('/api/competitors/gaps')
 def get_coverage_gaps():
-    """Get coverage gaps"""
+    """Coverage gaps: strategic (curated) + crawled (live daily evidence)"""
     competitor = request.args.get('competitor')
+    static = CompetitorAnalysis.get_coverage_gaps(competitor)
+    crawled = _crawled_coverage_gaps(competitor)
     return jsonify({
         'success': True,
-        **CompetitorAnalysis.get_coverage_gaps(competitor)
+        **static,
+        'crawled_gaps': crawled,
+        'crawled_count': len(crawled),
+        'crawled_source': 'coverage_gaps (competitor_gap_crawler, daily)'
     })
 
 @competitor_bp.route('/api/competitors/position')

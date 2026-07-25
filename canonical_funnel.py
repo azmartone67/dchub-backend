@@ -46,10 +46,19 @@ import threading
 # should import from here. Keep in lock-step with Stripe pricing.
 PLAN_MONTHLY_USD = {
     "starter":            9,
+    # pro: list is $299 since r-reprice 2026-06-19, but every EXISTING sub is
+    # grandfathered on the old $199 link (Stripe never migrates a sub's price).
+    # 199 is the conservative floor (house rule: never above reality); real
+    # cash truth is mrr_invoiced_usd from mcp_conversions.mrr_cents.
     "developer":          49,
     "pro":                199,
     "pro_annual":         99,    # $1188/yr ≈ $99/mo equivalent
     "pro_annual_onetime": 99,
+    # brain-ascension #28 (2026-07-25): team + founding were MISSING — a $699
+    # Team or $99 Founding subscriber contributed $0 to every MRR run-rate.
+    "team":               699,   # $699/mo, 5 seats (r-reprice 2026-06-19)
+    "founding":           99,    # $99/mo r-founder99 link (legacy display $199;
+                                 # 99 is the conservative floor for the cohort)
     "enterprise":         500,
     "enterprise_annual":  500,
     "research_seed_nlr":  250,   # $3,000/yr ≈ $250/mo

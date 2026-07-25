@@ -79,19 +79,33 @@ _EVAL_REGRESS_DROP = 0.05   # a drop this large vs the prior snapshot trips a fi
 
 # Fixed retrieval eval — each query has a VERIFIED good hit (live 2026-07-03/04);
 # the lever reads the bi-encoder COSINE (always present) not the rerank 'score'.
+# brain-ascension #28 (2026-07-25): `anchors` is the GROUND TRUTH the cosine
+# floors never gave — the top-1 doc's text must contain >=1 anchor term or the
+# query is a MISS regardless of cosine. The floors were tuned on Cohere's
+# asymmetric scale; mistral-embed scores ~0.75+ even on nonsense, so a
+# floor-pass proves nothing about relevance. Term-presence is provider-
+# independent (same trick public_search uses for its miss capture).
 _EVAL_QUERIES = [
     {"q": "why is northern virginia constrained for data centers",
-     "corpus": "market_narratives", "floor": 0.50},
+     "corpus": "market_narratives", "floor": 0.50,
+     "anchors": ["virginia", "loudoun", "ashburn", "dominion"]},
     {"q": "grids opening up for AI load in the Southeast",
-     "corpus": "news_articles", "floor": 0.45},
+     "corpus": "news_articles", "floor": 0.45,
+     "anchors": ["southeast", "georgia", "tennessee", "carolina", "tva",
+                 "southern company", "duke"]},
     {"q": "nuclear power deals for hyperscalers",
-     "corpus": ["deals", "news_articles"], "floor": 0.45},
+     "corpus": ["deals", "news_articles"], "floor": 0.45,
+     "anchors": ["nuclear", "smr", "reactor"]},
     {"q": "behind-the-meter gas for AI data centers",
-     "corpus": "news_articles", "floor": 0.45},
+     "corpus": "news_articles", "floor": 0.45,
+     "anchors": ["gas", "behind-the-meter", "btm", "turbine"]},
     {"q": "hyperscale AI data center campus in Northern Virginia",
-     "corpus": "discovered_facilities", "floor": 0.45},
+     "corpus": "discovered_facilities", "floor": 0.45,
+     "anchors": ["virginia", "ashburn", "loudoun", "manassas", "sterling",
+                 "leesburg"]},
     {"q": "PJM capacity auction clearing price and AI demand",
-     "corpus": "news_articles", "floor": 0.42},
+     "corpus": "news_articles", "floor": 0.42,
+     "anchors": ["pjm", "capacity auction", "clearing price"]},
 ]
 
 # Static code-shaped RAG gaps upserted every ARMED tick so the autonomy loop can
@@ -393,7 +407,8 @@ def _measure_eval(prev: dict | None) -> dict:
     and drift vs the prior snapshot's mean. Each query is HARD-bounded so a
     slow/hung Cohere degrades gracefully (skipped, not counted as broken)."""
     out = {"eval_mean_cosine": None, "eval_below_floor": 0, "eval_zero_results": 0,
-           "eval_skipped": 0, "eval_full": False, "eval_per_query": [], "eval_regressed": False}
+           "eval_skipped": 0, "eval_full": False, "eval_per_query": [], "eval_regressed": False,
+           "eval_anchor_miss": 0}
     try:
         from routes.brain_rag import retrieve_context
     except Exception:
@@ -420,9 +435,22 @@ def _measure_eval(prev: dict | None) -> dict:
             out["eval_zero_results"] += 1
         if below:
             out["eval_below_floor"] += 1
+        # Ground truth: the top-1 doc must actually be ABOUT the query
+        # (>=1 anchor term in its text). None = no anchors declared.
+        anchor_hit = None
+        anchors = spec.get("anchors") or []
+        if anchors and n > 0:
+            _t = (rows[0].get("text") or "").lower()
+            anchor_hit = any(a in _t for a in anchors)
+            if not anchor_hit:
+                out["eval_anchor_miss"] += 1
+        elif anchors:
+            anchor_hit = False
+            out["eval_anchor_miss"] += 1
         cosines.append(top1)
         out["eval_per_query"].append({"q": spec["q"][:48], "top1_cosine": round(top1, 4),
-                                      "results": n, "below_floor": below})
+                                      "results": n, "below_floor": below,
+                                      "anchor_hit": anchor_hit})
     if cosines:
         out["eval_mean_cosine"] = round(sum(cosines) / len(cosines), 4)
     out["eval_full"] = (out["eval_skipped"] == 0 and len(cosines) == len(_EVAL_QUERIES))

@@ -73,6 +73,24 @@ WORKFLOWS = {
     "churn-watcher.yml": 190,           # weekly Mon 14:27 UTC — at-risk churn sweep
     "facility-snapshot-daily.yml": 30,  # daily 05:19 UTC — competitor-gap facility snapshot
     "media-organism-tick.yml": 3,       # hourly :22 — media organism heartbeat
+    # brain cadence (2026-07-25 brain-ascension #28): the registry covered
+    # ingest/growth/media loops but NOT ONE brain-* workflow — if every brain
+    # loop stopped succeeding, nothing alarmed. These are the liveness spine;
+    # cadences are 2-4x each workflow's own cron so one missed run never alarms.
+    "cron-heartbeat.yml": 3,            # every 5 min — drives the 93-job dispatcher
+    "brain-autonomy.yml": 3,            # every 30 min — core autonomy tick
+    "brain-autopilot.yml": 3,           # :15,:45 — 5-min-MTTR remediation
+    "brain-verify.yml": 3,              # :10,:30,:50 — outcome verification
+    "brain-master-tick.yml": 8,         # every 2h — master orchestrator tick
+    "brain-model-reachability.yml": 8,  # every 2h — model roster probe (Fable gate)
+    "brain-layer5.yml": 20,             # every 6h — codegen proposals
+    "brain-inspector.yml": 20,          # every 6h — inspector pass
+    "brain-reasoning-layers.yml": 20,   # every 6h — L7 evolving detectors
+    "brain-self-direct.yml": 16,        # every 4h — self-directed work queue
+    "brain-mirror.yml": 30,             # daily 09:30 — honest layer-grading reflection
+    "brain-stuck-drain.yml": 30,        # daily 08:20 — stuck-findings drain
+    "strategic-briefing-weekly.yml": 190,   # Mon 14:20 — L6 synthesis + digest
+    "brain-lifecycle-curator.yml": 190,     # Mon 07:37 — L23 moat curator
 }
 
 NOW = datetime.datetime.now(datetime.timezone.utc)

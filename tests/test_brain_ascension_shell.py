@@ -1,0 +1,124 @@
+"""Brain Ascension #28 wave-1 pins (2026-07-25).
+
+House rule: tests NEVER import main. Everything here imports leaf modules or
+reads files directly.
+"""
+import os
+import re
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+# ── growth truth: the MRR price maps stay in lock-step ────────────────
+
+def test_price_maps_identical():
+    """canonical_funnel and funnel_health each keep a plan→USD map; drift
+    between them was how team/founding silently counted $0 for weeks."""
+    from canonical_funnel import PLAN_MONTHLY_USD as canon
+    from routes.funnel_health import _PLAN_MONTHLY_USD as fh
+    assert dict(canon) == dict(fh)
+
+
+def test_team_and_founding_priced():
+    from canonical_funnel import PLAN_MONTHLY_USD as canon
+    assert canon.get("team") == 699
+    assert canon.get("founding") == 99
+
+
+def test_mrr_probe_filter_covers_every_paid_plan():
+    """Every plan with a nonzero price must appear in the users-probe plan
+    filter in funnel_health — a priced plan missing from the IN (...) list
+    is invisible to the MRR probe (the team/founding bug)."""
+    from canonical_funnel import PLAN_MONTHLY_USD as canon
+    src = open(os.path.join(ROOT, "routes", "funnel_health.py"),
+               encoding="utf-8").read()
+    m = re.search(r"AND plan IN \((.*?)\)", src, re.S)
+    assert m, "users-probe plan filter not found"
+    filt = m.group(1)
+    for plan, usd in canon.items():
+        if usd and usd > 0:
+            assert f"'{plan}'" in filt, f"paid plan {plan!r} missing from MRR probe filter"
+
+
+# ── brain deadman: the liveness spine stays registered ────────────────
+
+def test_deadman_registry_covers_brain_spine():
+    src = open(os.path.join(ROOT, "tools", "deadman", "watch.py"),
+               encoding="utf-8").read()
+    for wf in ("cron-heartbeat.yml", "brain-autonomy.yml", "brain-autopilot.yml",
+               "brain-verify.yml", "brain-master-tick.yml",
+               "brain-model-reachability.yml", "brain-mirror.yml",
+               "strategic-briefing-weekly.yml"):
+        assert f'"{wf}"' in src, f"{wf} missing from deadman WORKFLOWS registry"
+
+
+# ── competitor → product wiring ───────────────────────────────────────
+
+def test_planner_has_crawled_gaps_layer():
+    from routes.brain_strategic_planner import _read_crawled_gaps  # noqa: F401
+
+
+def test_universe_models_semianalysis_and_electricity_maps():
+    from routes.brain_strategic_planner import _COMPETITOR_UNIVERSE
+    names = " ".join(
+        e.get("name", "") for cat in _COMPETITOR_UNIVERSE.values()
+        if isinstance(cat, list) for e in cat if isinstance(e, dict))
+    assert "SemiAnalysis" in names
+    assert "Electricity Maps" in names
+
+
+def test_gaps_endpoint_reads_live_table():
+    """Textual check — importing competitor_intelligence pulls a heavyweight
+    chain (db init side effects), which tests must never do."""
+    src = open(os.path.join(ROOT, "competitor_intelligence.py"),
+               encoding="utf-8").read()
+    assert "def _crawled_coverage_gaps" in src
+    assert "'crawled_gaps': crawled" in src
+
+
+# ── rag truth ─────────────────────────────────────────────────────────
+
+def test_live_embed_model_tracks_provider(monkeypatch):
+    from routes import brain_rag
+    monkeypatch.delenv("RAG_EMBED_PROVIDER", raising=False)
+    assert brain_rag._live_embed_model() == "mistral-embed"
+    monkeypatch.setenv("RAG_EMBED_PROVIDER", "cohere")
+    assert brain_rag._live_embed_model() == brain_rag.EMBED_MODEL
+
+
+def test_every_eval_query_has_anchors():
+    from routes.rag_master_shell import _EVAL_QUERIES
+    for q in _EVAL_QUERIES:
+        assert q.get("anchors"), f"eval query lacks anchor ground truth: {q['q']!r}"
+        assert all(a == a.lower() for a in q["anchors"]), \
+            f"anchors must be lowercase (matched against lowered text): {q['q']!r}"
+
+
+# ── shell verdict honesty ─────────────────────────────────────────────
+
+def test_lane_verdict_never_green_by_silence():
+    from routes.brain_ascension_master_shell import _check, _lane_verdict
+    assert _lane_verdict([_check("a", "a", True, "", critical=True)]) == "PASS"
+    assert _lane_verdict([_check("a", "a", None, "", critical=True)]) == "?"
+    assert _lane_verdict([_check("a", "a", False, "")]) == "FAIL"
+    # non-critical indeterminate does not block green
+    assert _lane_verdict([_check("a", "a", True, "", critical=True),
+                          _check("b", "b", None, "")]) == "PASS"
+
+
+def test_deliberate_wave2_reds_present():
+    """The wave-2 work orders must stay visibly red — a shell that only
+    scores what already passes is a vanity dashboard."""
+    src = open(os.path.join(ROOT, "routes", "brain_ascension_master_shell.py"),
+               encoding="utf-8").read()
+    assert '"gates_calibrated"' in src and "False" in src
+    assert '"harness_real"' in src
+    assert '"annual_visible"' in src
+
+
+# ── cron hygiene: the expired one-shots stay deleted ──────────────────
+
+def test_expired_oneshot_workflows_removed():
+    wf = os.path.join(ROOT, ".github", "workflows")
+    assert not os.path.exists(os.path.join(wf, "announce-global-grid.yml"))
+    assert not os.path.exists(os.path.join(wf, "publish-registry-pr.yml"))
