@@ -2,7 +2,7 @@
 
 **Status:** Integration Ready
 **Path:** Llama Function Calling (Primary) / MCP streamable-http (Secondary)
-**Verification Key:** `dchub_meta_2026_verify` (Pro tier: 300 req/min, 100 results/query)
+**Verification Key:** `YOUR_DCHUB_KEY` (Pro tier: 300 req/min, 100 results/query)
 **Notable:** Honest about outbound constraints from first response — no fabrication
 
 ---
@@ -41,7 +41,7 @@ tools = [
     "dchub": {
       "url": "https://dchub.cloud/mcp",
       "transport": "streamable-http",
-      "headers": {"X-API-Key": "dchub_meta_2026_verify"}
+      "headers": {"X-API-Key": "YOUR_DCHUB_KEY"}
     }
   }
 }
@@ -50,7 +50,7 @@ tools = [
 ### Option C: Direct REST
 
 ```bash
-curl -H "X-API-Key: dchub_meta_2026_verify" \
+curl -H "X-API-Key: YOUR_DCHUB_KEY" \
      https://dchub.cloud/api/agent/facilities?q=Equinix&country=US
 ```
 

@@ -2,7 +2,7 @@
 
 **Status:** [Integration Ready / Verified / Pending]
 **Path:** [MCP / OpenAPI Actions / Function Calling / REST]
-**Verification Key:** `dchub_[platform]_2026_verify` (Pro tier: 300 req/min, 100 results/query)
+**Verification Key:** `YOUR_DCHUB_KEY` (Pro tier: 300 req/min, 100 results/query)
 
 ---
 
@@ -12,13 +12,13 @@
 
 ```bash
 # Option 1: X-API-Key header
-curl -H "X-API-Key: dchub_[platform]_2026_verify" https://dchub.cloud/api/agent/stats
+curl -H "X-API-Key: YOUR_DCHUB_KEY" https://dchub.cloud/api/agent/stats
 
 # Option 2: Bearer token
-curl -H "Authorization: Bearer dchub_[platform]_2026_verify" https://dchub.cloud/api/agent/stats
+curl -H "Authorization: Bearer YOUR_DCHUB_KEY" https://dchub.cloud/api/agent/stats
 
 # Option 3: Query parameter
-curl "https://dchub.cloud/api/agent/stats?api_key=dchub_[platform]_2026_verify"
+curl "https://dchub.cloud/api/agent/stats?api_key=YOUR_DCHUB_KEY"
 ```
 
 ### MCP Connection
@@ -40,28 +40,28 @@ curl "https://dchub.cloud/api/agent/stats?api_key=dchub_[platform]_2026_verify"
 
 ```bash
 # 1. Facilities search
-curl -H "X-API-Key: dchub_[platform]_2026_verify" "https://dchub.cloud/api/agent/facilities?q=Equinix&country=US"
+curl -H "X-API-Key: YOUR_DCHUB_KEY" "https://dchub.cloud/api/agent/facilities?q=Equinix&country=US"
 
 # 2. Agent stats
-curl -H "X-API-Key: dchub_[platform]_2026_verify" https://dchub.cloud/api/agent/stats
+curl -H "X-API-Key: YOUR_DCHUB_KEY" https://dchub.cloud/api/agent/stats
 
 # 3. M&A transactions
-curl -H "X-API-Key: dchub_[platform]_2026_verify" "https://dchub.cloud/api/transactions?limit=10"
+curl -H "X-API-Key: YOUR_DCHUB_KEY" "https://dchub.cloud/api/transactions?limit=10"
 
 # 4. Industry news
-curl -H "X-API-Key: dchub_[platform]_2026_verify" "https://dchub.cloud/api/news?limit=5"
+curl -H "X-API-Key: YOUR_DCHUB_KEY" "https://dchub.cloud/api/news?limit=5"
 
 # 5. Platform stats
-curl -H "X-API-Key: dchub_[platform]_2026_verify" https://dchub.cloud/api/stats
+curl -H "X-API-Key: YOUR_DCHUB_KEY" https://dchub.cloud/api/stats
 
 # 6. Markets list
-curl -H "X-API-Key: dchub_[platform]_2026_verify" https://dchub.cloud/api/v1/markets/list
+curl -H "X-API-Key: YOUR_DCHUB_KEY" https://dchub.cloud/api/v1/markets/list
 
 # 7. Energy pricing
-curl -H "X-API-Key: dchub_[platform]_2026_verify" https://dchub.cloud/api/v1/lmp/prices
+curl -H "X-API-Key: YOUR_DCHUB_KEY" https://dchub.cloud/api/v1/lmp/prices
 
 # 8. Construction pipeline
-curl -H "X-API-Key: dchub_[platform]_2026_verify" https://dchub.cloud/api/v1/pipeline
+curl -H "X-API-Key: YOUR_DCHUB_KEY" https://dchub.cloud/api/v1/pipeline
 ```
 
 ---

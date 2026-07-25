@@ -2,7 +2,7 @@
 
 **Status:** Integration Ready
 **Path:** MCP Native (Primary) / Direct REST (Secondary)
-**Verification Key:** `dchub_claude_2026_verify` (Pro tier: 300 req/min, 100 results/query)
+**Verification Key:** `YOUR_DCHUB_KEY` (Pro tier: 300 req/min, 100 results/query)
 **Notable:** Most self-aware response in AI Wars — identified the prompt structure, flagged credential security, offered to build real assets instead
 
 ---
@@ -20,7 +20,7 @@ Add to your Claude Desktop `claude_desktop_config.json`:
       "url": "https://dchub.cloud/mcp",
       "transport": "streamable-http",
       "headers": {
-        "X-API-Key": "dchub_claude_2026_verify"
+        "X-API-Key": "YOUR_DCHUB_KEY"
       }
     }
   }
@@ -60,7 +60,7 @@ tools = [
 ### Option C: Direct REST
 
 ```bash
-curl -H "X-API-Key: dchub_claude_2026_verify" \
+curl -H "X-API-Key: YOUR_DCHUB_KEY" \
      https://dchub.cloud/api/agent/facilities?q=Equinix&country=US
 ```
 

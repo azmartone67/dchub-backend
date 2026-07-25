@@ -4,7 +4,7 @@
       "url": "https://dchub.cloud/mcp",
       "transport": "streamable-http",
       "headers": {
-        "X-API-Key": "dchub_grok_2026_verify",
+        "X-API-Key": "YOUR_DCHUB_KEY",
         "User-Agent": "Grok-DC-Hub/1.0"
       },
       "description": "DC Hub — 21,000+ data centers (170+ countries), 300+ power markets (DCPI), 7 US ISO grids, interconnection queues, fiber, gas & 4,000+ M&A deals. 51 MCP tools.",

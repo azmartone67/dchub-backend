@@ -184,6 +184,22 @@ def _card():
          "tags":        s.get("tags") or (list(s.get("tools", [])) + [s["name"].replace("_", " ")])}
         for s in AGENT_CARD["skills"]
     ]
+    # r-a2a-0725: advertise the auth surface so Gemini Enterprise Custom-MCP /
+    # Spark ingestion knows how to connect. The empty {} in `security` FIRST
+    # declares the ANONYMOUS free tier (no key needed for the free-tool surface) —
+    # this is what lets a Gemini Enterprise "No Authentication" data store connect
+    # /mcp with zero OAuth. apiKey (X-API-Key) and oauth2 (WorkOS AuthKit) follow
+    # for the paid tiers. Additive — nothing existing is removed.
+    _authkit = os.environ.get("WORKOS_AUTHKIT_DOMAIN", "https://beloved-stream-52.authkit.app").rstrip("/")
+    out["securitySchemes"] = {
+        "apiKey": {"type": "apiKey", "in": "header", "name": "X-API-Key"},
+        "oauth2": {"type": "oauth2", "flows": {"authorizationCode": {
+            "authorizationUrl": f"{_authkit}/oauth2/authorize",
+            "tokenUrl": f"{_authkit}/oauth2/token",
+            "refreshUrl": f"{_authkit}/oauth2/token",
+            "scopes": {"openid": "", "profile": "", "email": "", "offline_access": ""}}}},
+    }
+    out["security"] = [{}, {"apiKey": []}, {"oauth2": ["openid", "email"]}]
     return out
 
 

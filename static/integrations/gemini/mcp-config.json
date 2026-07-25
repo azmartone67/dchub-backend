@@ -4,7 +4,7 @@
       "type": "streamable-http",
       "url": "https://dchub.cloud/mcp",
       "headers": {
-        "X-API-Key": "dchub_gemini_2026_verify"
+        "X-API-Key": "YOUR_DCHUB_KEY"
       },
       "tools": [
         "search_facilities",

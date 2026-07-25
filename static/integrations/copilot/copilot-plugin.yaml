@@ -13,7 +13,7 @@ api:
 auth:
   type: api_key
   header: X-API-Key
-  key: dchub_copilot_2026_verify
+  key: YOUR_DCHUB_KEY
 mcp:
   url: https://dc-hub-replit-fixedzip--azmartone1.replit.app/mcp
   transport: streamable-http

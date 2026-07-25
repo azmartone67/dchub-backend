@@ -2,7 +2,7 @@
 # DC Hub × NVIDIA: MCP Data Layer + NIM Inference Layer
 #
 # Usage:
-#   export DC_HUB_API_KEY=dchub_nvidia_2026_verify
+#   export DC_HUB_API_KEY=YOUR_DCHUB_KEY
 #   docker-compose up -d
 #
 # Architecture:
@@ -17,7 +17,7 @@ services:
     image: python:3.11-slim
     container_name: dchub-mcp-client
     environment:
-      - DC_HUB_API_KEY=${DC_HUB_API_KEY:-dchub_nvidia_2026_verify}
+      - DC_HUB_API_KEY=${DC_HUB_API_KEY:-YOUR_DCHUB_KEY}
       - DC_HUB_MCP_URL=https://dchub.cloud/mcp
       - DC_HUB_BASE_URL=https://dchub.cloud/api
     volumes:

@@ -95,7 +95,7 @@
   "api_config": {
     "base_url": "https://dchub.cloud/api",
     "auth_header": "X-API-Key",
-    "auth_value": "dchub_chatgpt_2026_verify",
+    "auth_value": "YOUR_DCHUB_KEY",
     "plugin_manifest": "https://dchub.cloud/.well-known/ai-plugin.json",
     "openapi_spec": "https://dchub.cloud/openapi.json",
     "endpoint_mapping": {

@@ -8,7 +8,7 @@
     "type": "service_http",
     "authorization_type": "bearer",
     "verification_tokens": {
-      "openai": "dchub_chatgpt_2026_verify"
+      "openai": "YOUR_DCHUB_KEY"
     }
   },
   "api": {

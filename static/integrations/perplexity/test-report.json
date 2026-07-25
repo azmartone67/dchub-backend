@@ -1,7 +1,7 @@
 {
   "report": "DC Hub Integration Verification",
   "platform": "Perplexity",
-  "key": "dchub_perplexity_2026_verify",
+  "key": "YOUR_DCHUB_KEY",
   "tested_at": "2026-02-16T20:00:00Z",
   "tested_by": "DC Hub (server-side)",
   "base_url": "https://dc-hub-replit-fixedzip--azmartone1.replit.app",

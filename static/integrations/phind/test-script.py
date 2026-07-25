@@ -14,7 +14,7 @@ except ImportError:
     os.system("pip install requests")
     import requests
 
-API_KEY = os.environ.get("DC_HUB_API_KEY", "dchub_phind_2026_verify")
+API_KEY = os.environ.get("DC_HUB_API_KEY", "YOUR_DCHUB_KEY")
 BASE_URL = "https://dchub.cloud/api"
 
 HEADERS = {

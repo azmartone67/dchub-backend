@@ -2,7 +2,7 @@
 
 **Status:** Integration Ready
 **Path:** MCP (Primary) / NIM Inference Layer (Optional)
-**Verification Key:** `dchub_nvidia_2026_verify` (Pro tier: 300 req/min, 100 results/query)
+**Verification Key:** `YOUR_DCHUB_KEY` (Pro tier: 300 req/min, 100 results/query)
 
 ---
 
@@ -30,7 +30,7 @@ for summarization, risk scoring, and market forecasting on top of raw DC Hub dat
 
 ```bash
 # Register DC Hub as an MCP tool source
-export DC_HUB_API_KEY="dchub_nvidia_2026_verify"
+export DC_HUB_API_KEY="YOUR_DCHUB_KEY"
 
 # Python SDK generation from OpenAPI spec
 openapi-generator-cli generate \
@@ -47,7 +47,7 @@ MCP data retrieval with NIM inference.
 ### Option C: Direct REST
 
 ```bash
-curl -H "X-API-Key: dchub_nvidia_2026_verify" \
+curl -H "X-API-Key: YOUR_DCHUB_KEY" \
      https://dchub.cloud/api/agent/facilities?q=Equinix&country=US
 ```
 
@@ -113,11 +113,11 @@ risk_assessment = nim_client.generate(
 
 This integration is **"Integration Ready"** status.
 Upgrades to **"DC Hub Verified"** once server logs capture
-authenticated requests from `dchub_nvidia_2026_verify`.
+authenticated requests from `YOUR_DCHUB_KEY`.
 
 ### Health Check
 ```bash
-curl -s -H "X-API-Key: dchub_nvidia_2026_verify" \
+curl -s -H "X-API-Key: YOUR_DCHUB_KEY" \
      https://dchub.cloud/api/verify-key
 # Expected: {"verified": true, "platform": "NVIDIA", "tier": "pro"}
 ```

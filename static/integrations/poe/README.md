@@ -2,7 +2,7 @@
 
 **Status:** Integration Ready
 **Path:** MCP streamable-http (Primary) / REST API (Secondary)
-**Verification Key:** `dchub_poe_2026_verify` (Pro tier: 300 req/min, 100 results/query)
+**Verification Key:** `YOUR_DCHUB_KEY` (Pro tier: 300 req/min, 100 results/query)
 **Notable:** Multi-model aggregator — DC Hub integration propagates to Grok, GPT, DeepSeek, Claude, and other models routed through Poe
 
 ---
@@ -17,7 +17,7 @@
     "dchub": {
       "url": "https://dchub.cloud/mcp",
       "transport": "streamable-http",
-      "headers": {"X-API-Key": "dchub_poe_2026_verify"}
+      "headers": {"X-API-Key": "YOUR_DCHUB_KEY"}
     }
   }
 }
@@ -26,7 +26,7 @@
 ### Option B: Direct REST
 
 ```bash
-curl -H "X-API-Key: dchub_poe_2026_verify" \
+curl -H "X-API-Key: YOUR_DCHUB_KEY" \
      https://dchub.cloud/api/agent/facilities?q=Equinix&country=US
 ```
 
@@ -35,7 +35,7 @@ curl -H "X-API-Key: dchub_poe_2026_verify" \
 ```python
 import os, requests
 
-API_KEY = os.getenv("DC_HUB_API_KEY", "dchub_poe_2026_verify")
+API_KEY = os.getenv("DC_HUB_API_KEY", "YOUR_DCHUB_KEY")
 HEADERS = {"X-API-Key": API_KEY, "Accept": "application/json"}
 
 def query_dchub(path, params=None):

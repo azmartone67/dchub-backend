@@ -773,16 +773,13 @@ def require_plan(min_plan='pro'):
                     if api_key:
                         info = validate_api_key(api_key)  # Returns dict or None (NOT tuple)
                         if not info or not isinstance(info, dict):
-                            # Check AI Wars verification keys (inline to avoid circular import)
-                            AI_WARS_KEYS_TIER = {
-                                "dchub_chatgpt_2026_verify", "dchub_grok_2026_verify",
-                                "dchub_gemini_2026_verify", "dchub_perplexity_2026_verify",
-                                "dchub_mistral_2026_verify", "dchub_claude_2026_verify",
-                                "dchub_copilot_2026_verify", "dchub_meta_2026_verify",
-                                "dchub_poe_2026_verify", "dchub_openrouter_2026_verify",
-                                "dchub_pi_2026_verify", "dchub_phind_2026_verify",
-                                "dchub_nvidia_2026_verify"
-                            }
+                            # AI Wars verification keys — env-driven, NO hardcoded
+                            # fallback (2026-07-25 security close; the strings were
+                            # public in this repo = free PRO to anyone). Unset env
+                            # => empty set => leaked strings grant nothing. Set
+                            # DCHUB_AI_WARS_KEYS in Railway with fresh values to re-enable.
+                            AI_WARS_KEYS_TIER = {k.strip() for k in
+                                os.environ.get("DCHUB_AI_WARS_KEYS", "").split(",") if k.strip()}
                             _ai_key = request.headers.get('X-API-Key') or request.args.get('api_key') or (request.headers.get('Authorization', '')[7:].strip() if request.headers.get('Authorization', '').startswith('Bearer ') else '')
                             if _ai_key in AI_WARS_KEYS_TIER:
                                 auth_method = 'api_key'

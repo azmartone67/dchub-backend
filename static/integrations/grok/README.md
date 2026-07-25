@@ -2,7 +2,7 @@
 
 **Status:** Integration Ready
 **Path:** xAI Agent SDK (Primary) / MCP streamable-http (Secondary) / Direct REST
-**Verification Key:** `dchub_grok_2026_verify` (Pro tier: 300 req/min, 100 results/query)
+**Verification Key:** `YOUR_DCHUB_KEY` (Pro tier: 300 req/min, 100 results/query)
 **Notable:** First platform to potentially make live API calls from chat
 
 ---
@@ -13,7 +13,7 @@
 
 ```bash
 # Grok/xAI has web access — this may work directly
-curl -H "X-API-Key: dchub_grok_2026_verify" \
+curl -H "X-API-Key: YOUR_DCHUB_KEY" \
      https://dchub.cloud/api/agent/facilities?q=Equinix&country=US
 ```
 
@@ -28,7 +28,7 @@ client.register_tool_source(
     name="dchub",
     mcp_url="https://dchub.cloud/mcp",
     transport="streamable-http",
-    headers={"X-API-Key": "dchub_grok_2026_verify"}
+    headers={"X-API-Key": "YOUR_DCHUB_KEY"}
 )
 
 response = client.chat(
@@ -45,7 +45,7 @@ response = client.chat(
     "dchub": {
       "url": "https://dchub.cloud/mcp",
       "transport": "streamable-http",
-      "headers": {"X-API-Key": "dchub_grok_2026_verify"}
+      "headers": {"X-API-Key": "YOUR_DCHUB_KEY"}
     }
   }
 }
@@ -55,7 +55,7 @@ response = client.chat(
 
 ```bash
 grok mcp add dchub --transport streamable-http https://dchub.cloud/mcp \
-  -e X-API-Key=dchub_grok_2026_verify
+  -e X-API-Key=YOUR_DCHUB_KEY
 ```
 
 ---

@@ -7,7 +7,7 @@ import json
 import sys
 
 BASE = "https://dc-hub-replit-fixedzip--azmartone1.replit.app"
-KEY = "dchub_grok_2026_verify"
+KEY = "YOUR_DCHUB_KEY"
 HEADERS = {"X-API-Key": KEY}
 
 ENDPOINTS = [

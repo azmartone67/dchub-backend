@@ -2,7 +2,7 @@
 
 **Status:** Integration Ready
 **Path:** Search-Augmented Generation (Primary) / MCP streamable-http (Secondary)
-**Verification Key:** `dchub_phind_2026_verify` (Pro tier: 300 req/min, 100 results/query)
+**Verification Key:** `YOUR_DCHUB_KEY` (Pro tier: 300 req/min, 100 results/query)
 
 ---
 
@@ -11,7 +11,7 @@
 ### Option A: Direct REST
 
 ```bash
-curl -H "X-API-Key: dchub_phind_2026_verify" \
+curl -H "X-API-Key: YOUR_DCHUB_KEY" \
      https://dchub.cloud/api/agent/facilities?q=Equinix&country=US
 ```
 
@@ -20,7 +20,7 @@ curl -H "X-API-Key: dchub_phind_2026_verify" \
 ```python
 import os, requests
 
-API_KEY = os.getenv("DC_HUB_API_KEY", "dchub_phind_2026_verify")
+API_KEY = os.getenv("DC_HUB_API_KEY", "YOUR_DCHUB_KEY")
 HEADERS = {"X-API-Key": API_KEY, "Accept": "application/json"}
 
 def query_dchub(path, params=None):
@@ -47,7 +47,7 @@ energy = query_dchub("/v1/lmp/prices")
     "dchub": {
       "url": "https://dchub.cloud/mcp",
       "transport": "streamable-http",
-      "headers": {"X-API-Key": "dchub_phind_2026_verify"}
+      "headers": {"X-API-Key": "YOUR_DCHUB_KEY"}
     }
   }
 }

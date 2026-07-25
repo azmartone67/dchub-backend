@@ -4,7 +4,7 @@
       "url": "https://dchub.cloud/mcp",
       "transport": "streamable-http",
       "headers": {
-        "X-API-Key": "dchub_perplexity_2026_verify",
+        "X-API-Key": "YOUR_DCHUB_KEY",
         "User-Agent": "Perplexity-DC-Hub/1.0"
       },
       "description": "DC Hub — 10,706+ data centers, $185B+ M&A, 7 ISO energy markets",

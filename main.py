@@ -6888,25 +6888,24 @@ def require_api_key(f):
     return decorated_function
 
 # =============================================================================
-# AI WARS - VERIFICATION API KEYS (Feb 2026)
-# Platform-specific keys for AI Wars integration testing.
-# Each key grants Pro-tier access (100 results, 300 req/min).
-# These supplement the existing DCHUB_API_KEYS env var and Moltbook auth.
+# AI WARS - VERIFICATION API KEYS (Feb 2026 · de-hardcoded 2026-07-25)
+# Platform-specific comp keys granting Pro-tier access (100 results, 300 req/min)
+# for platform integration testing.
+#
+# ★ 2026-07-25 SECURITY CLOSE: the key STRINGS used to be hardcoded here. This
+# repo is PUBLIC, and the Copilot/Grok keys were also published in
+# static/integrations/*/mcp-config.json — so anyone could read a working PRO key
+# (free 300/day, a 30x free-tier bypass). Now the keys are loaded from the
+# DCHUB_AI_WARS_KEYS env var (comma-separated) with NO hardcoded fallback:
+#   · env unset  -> AI_WARS_KEYS is empty -> the old leaked strings grant NOTHING
+#                   (callers fall through to normal validate_api_key / free-anon).
+#   · to re-enable, set DCHUB_AI_WARS_KEYS in Railway with FRESH, non-public
+#     values (never commit them). Rotating the strings in the public repo would
+#     be a no-op — a new public string is just as leaked.
 # =============================================================================
 AI_WARS_KEYS = {
-    "dchub_copilot_2026_verify":    {"platform": "Copilot",    "tier": "pro", "rate_limit": 300, "max_results": 100},
-    "dchub_chatgpt_2026_verify":    {"platform": "ChatGPT",    "tier": "pro", "rate_limit": 300, "max_results": 100},
-    "dchub_grok_2026_verify":       {"platform": "Grok",       "tier": "pro", "rate_limit": 300, "max_results": 100},
-    "dchub_gemini_2026_verify":     {"platform": "Gemini",     "tier": "pro", "rate_limit": 300, "max_results": 100},
-    "dchub_perplexity_2026_verify": {"platform": "Perplexity", "tier": "pro", "rate_limit": 300, "max_results": 100},
-    "dchub_mistral_2026_verify":    {"platform": "Mistral",    "tier": "pro", "rate_limit": 300, "max_results": 100},
-    "dchub_claude_2026_verify":     {"platform": "Claude",     "tier": "pro", "rate_limit": 300, "max_results": 100},
-    "dchub_meta_2026_verify":       {"platform": "Meta",       "tier": "pro", "rate_limit": 300, "max_results": 100},
-    "dchub_poe_2026_verify":        {"platform": "Poe",        "tier": "pro", "rate_limit": 300, "max_results": 100},
-    "dchub_openrouter_2026_verify": {"platform": "OpenRouter",  "tier": "pro", "rate_limit": 300, "max_results": 100},
-    "dchub_pi_2026_verify":         {"platform": "Pi",         "tier": "pro", "rate_limit": 300, "max_results": 100},
-    "dchub_phind_2026_verify":      {"platform": "Phind",      "tier": "pro", "rate_limit": 300, "max_results": 100},
-    "dchub_nvidia_2026_verify":     {"platform": "NVIDIA",     "tier": "pro", "rate_limit": 300, "max_results": 100},
+    k.strip(): {"platform": "verify", "tier": "pro", "rate_limit": 300, "max_results": 100}
+    for k in os.environ.get("DCHUB_AI_WARS_KEYS", "").split(",") if k.strip()
 }
 
 def get_ai_wars_key_info(req=None):

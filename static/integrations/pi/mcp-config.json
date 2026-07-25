@@ -7,7 +7,7 @@
       "authentication": {
         "type": "api-key",
         "header": "X-API-Key",
-        "key": "dchub_pi_2026_verify"
+        "key": "YOUR_DCHUB_KEY"
       }
     }
   }

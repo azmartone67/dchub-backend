@@ -50,16 +50,11 @@ from db_utils import get_db
 
 logger = logging.getLogger("dc_hub.data_protection")
 
-# AI Wars verification keys (inline to avoid circular imports)
-AI_WARS_KEYS_TIER = {
-    "dchub_chatgpt_2026_verify", "dchub_grok_2026_verify",
-    "dchub_gemini_2026_verify", "dchub_perplexity_2026_verify",
-    "dchub_mistral_2026_verify", "dchub_claude_2026_verify",
-    "dchub_copilot_2026_verify", "dchub_meta_2026_verify",
-    "dchub_poe_2026_verify", "dchub_openrouter_2026_verify",
-    "dchub_pi_2026_verify", "dchub_phind_2026_verify",
-    "dchub_nvidia_2026_verify"
-}
+# AI Wars verification keys — env-driven, NO hardcoded fallback (2026-07-25
+# security close: the strings were public in this repo = free PRO to anyone).
+# Unset DCHUB_AI_WARS_KEYS => empty set => leaked strings grant nothing.
+AI_WARS_KEYS_TIER = {k.strip() for k in
+    os.environ.get("DCHUB_AI_WARS_KEYS", "").split(",") if k.strip()}
 
 # ---------------------------------------------------------------------------
 # Configuration — tune these per tier

@@ -2,7 +2,7 @@
 
 **Status:** Integration Ready
 **Path:** REST API
-**Verification Key:** `dchub_pi_2026_verify` (Pro tier: 300 req/min, 100 results/query)
+**Verification Key:** `YOUR_DCHUB_KEY` (Pro tier: 300 req/min, 100 results/query)
 
 ---
 
@@ -21,11 +21,11 @@ https://dc-hub-replit-fixedzip--azmartone1.replit.app
 
 ### Authentication
 ```
-X-API-Key: dchub_pi_2026_verify
+X-API-Key: YOUR_DCHUB_KEY
 ```
 Or:
 ```
-Authorization: Bearer dchub_pi_2026_verify
+Authorization: Bearer YOUR_DCHUB_KEY
 ```
 
 ### Core Endpoints (Free Tier)
@@ -47,13 +47,13 @@ Authorization: Bearer dchub_pi_2026_verify
 
 ### Example: Search Facilities
 ```bash
-curl -H "X-API-Key: dchub_pi_2026_verify" \
+curl -H "X-API-Key: YOUR_DCHUB_KEY" \
   "https://dc-hub-replit-fixedzip--azmartone1.replit.app/api/agent/facilities?q=Equinix&country=US&limit=5"
 ```
 
 ### Example: Site Score
 ```bash
-curl -H "X-API-Key: dchub_pi_2026_verify" \
+curl -H "X-API-Key: YOUR_DCHUB_KEY" \
   "https://dc-hub-replit-fixedzip--azmartone1.replit.app/api/site-score?lat=33.45&lon=-112.07"
 ```
 
@@ -86,7 +86,7 @@ Full OpenAPI 3.0 specification: `https://dchub.cloud/openapi.json`
 
 - [ ] Make at least 1 authenticated API call (any endpoint)
 - [ ] Response includes real DC Hub data (facility count ~10,706)
-- [ ] Server logs confirm request from `dchub_pi_2026_verify`
+- [ ] Server logs confirm request from `YOUR_DCHUB_KEY`
 - [ ] Status upgrades to **Verified**
 
 ---

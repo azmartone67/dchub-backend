@@ -95,7 +95,7 @@
   "api_config": {
     "base_url": "https://dchub.cloud/api",
     "auth_header": "X-API-Key",
-    "auth_value": "dchub_phind_2026_verify",
+    "auth_value": "YOUR_DCHUB_KEY",
     "endpoint_mapping": {
       "search_facilities": "/agent/facilities",
       "get_facility": "/agent/facilities/{facility_id}",

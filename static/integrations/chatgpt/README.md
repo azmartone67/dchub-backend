@@ -2,7 +2,7 @@
 
 **Status:** Integration Ready
 **Path:** ChatGPT Actions / Custom GPT (Primary) / MCP streamable-http (Secondary)
-**Verification Key:** `dchub_chatgpt_2026_verify` (Pro tier: 300 req/min, 100 results/query)
+**Verification Key:** `YOUR_DCHUB_KEY` (Pro tier: 300 req/min, 100 results/query)
 **Notable:** Honest about platform boundaries — correctly identified that Action registration requires OpenAI-side operator access
 
 ---
@@ -13,7 +13,7 @@
 
 1. Go to ChatGPT → Create a GPT → Configure → Actions
 2. Import from URL: `https://dchub.cloud/openapi.json`
-3. Authentication: API Key → Header → `X-API-Key` → paste `dchub_chatgpt_2026_verify`
+3. Authentication: API Key → Header → `X-API-Key` → paste `YOUR_DCHUB_KEY`
 4. Save and test
 
 **Plugin manifest:** `https://dchub.cloud/.well-known/ai-plugin.json`
@@ -26,7 +26,7 @@
     "dchub": {
       "url": "https://dchub.cloud/mcp",
       "transport": "streamable-http",
-      "headers": {"X-API-Key": "dchub_chatgpt_2026_verify"}
+      "headers": {"X-API-Key": "YOUR_DCHUB_KEY"}
     }
   }
 }
@@ -35,7 +35,7 @@
 ### Option C: Direct REST
 
 ```bash
-curl -H "X-API-Key: dchub_chatgpt_2026_verify" \
+curl -H "X-API-Key: YOUR_DCHUB_KEY" \
      https://dchub.cloud/api/agent/facilities?q=Equinix&country=US
 ```
 
