@@ -90,11 +90,13 @@ SLOTS = [
     {"hour": 20, "topic": "industry_pulse",     "style": "contrarian", "title": "Industry Counter-Take"},
 ]
 
-# Slots the heartbeat actually fires (slots 08 + 20 were disabled in the
-# 2026-06-08 "4->2/day" quality cut — see routes/cron_heartbeat.py). The
-# catch-up backfill in run() only re-posts these, so it never resurrects the
-# retired 08/20 posts.
-_ACTIVE_SLOT_HOURS = {12, 16}
+# Slots the heartbeat fires AND the catch-up backfill in run() re-posts.
+# Cadence history: the 2026-06-08 "4->2/day" quality cut retired 08/20;
+# r-media-goldmine 2026-07-14 re-enabled their heartbeat dispatches but not
+# this set, so 08/20 only posted when a tick landed in the first 15 min of
+# the hour and were never backfilled. r-quad-4day 2026-07-24: operator
+# confirmed 4/day — all four slots active, all backfill when missed.
+_ACTIVE_SLOT_HOURS = {8, 12, 16, 20}
 
 OG_IMAGE_MAP = {
     "dcpi_mover":         "https://api.dchub.cloud/static/og/landing-ai-capacity.png",
@@ -756,8 +758,8 @@ def run():
     # (~26 runs/day, stateless, no replay) so a slot's exact hour-window is
     # frequently missed entirely — which is why whole days had ZERO posts. On
     # ANY later call (the linkedin_quad_catchup heartbeat fires hourly from
-    # 13:00 UTC), backfill the most-recent DUE active slot (12/16) that has no
-    # successful post today. Each call posts at most one missed slot;
+    # 09:00 UTC), backfill the most-recent DUE active slot (08/12/16/20) that
+    # has no successful post today. Each call posts at most one missed slot;
     # _already_posted (success-only) + UNIQUE(slot_date,slot_hour) keep it
     # idempotent, so both slots reliably land across the day's later ticks.
     if not target_slot:

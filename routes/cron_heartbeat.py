@@ -376,10 +376,12 @@ _DISPATCH = [
     # so calling at :00/:05 of slot hours is safe even if both fire.
     # Without this entry, the quad only ran via manual force triggers and
     # all 4 slots fired in one 4-minute burst (LinkedIn spam-throttled).
-    # 2026-06-08 QUALITY OVER QUANTITY: cut LinkedIn 4x/day -> 2x/day. The 08:00
-    # (3-4 AM ET) and 20:00 (3-4 PM ET) slots are disabled; keep the two peak-
-    # engagement slots 12:00 (7-8 AM ET) + 16:00 (11 AM-noon ET). Fewer, sharper
-    # posts. (Combined with CONTENT_QUALITY_MIN 0.5 -> 0.72.)
+    # Cadence history: 2026-06-08 quality cut ran 2x/day (12/16 only, with
+    # CONTENT_QUALITY_MIN 0.5 -> 0.72); r-media-goldmine 2026-07-14 re-enabled
+    # 08/20 (diverse moat/pillar pool now feeds them); r-quad-4day 2026-07-24:
+    # operator confirmed 4x/day and linkedin_quad_daily._ACTIVE_SLOT_HOURS now
+    # includes 8/20 too, so all four slots post reliably (exact window OR
+    # catch-up backfill) instead of only when a tick hit minute<15.
     ("linkedin_quad_slot_08",
      f"{BASE}/api/v1/linkedin-quad/run",
      "POST",
@@ -397,14 +399,16 @@ _DISPATCH = [
      f"{BASE}/api/v1/linkedin-quad/run",
      "POST",
      lambda now: now.hour == 16 and now.minute < 55),
-    # 2026-06-20: TRUE catch-up. If the throttled heartbeat misses hours 12/16
-    # entirely, this fires every tick from 13:00 UTC onward and /run backfills
-    # the most-recent DUE-but-unposted active slot (12/16) for today — so the
-    # day's 2 posts still land even when the exact slot window was never hit.
+    # 2026-06-20: TRUE catch-up. If the throttled heartbeat misses a slot hour
+    # entirely, this fires every tick from 09:00 UTC onward and /run backfills
+    # the most-recent DUE-but-unposted active slot (08/12/16/20) for today —
+    # so the day's 4 posts still land even when the exact slot window was
+    # never hit. (r-quad-4day 2026-07-24: was hour >= 13 when only 12/16 were
+    # active; starts at 09 now so a missed 08 slot backfills promptly.)
     ("linkedin_quad_catchup",
      f"{BASE}/api/v1/linkedin-quad/run",
      "POST",
-     lambda now: now.hour >= 13 and now.minute < 55),
+     lambda now: now.hour >= 9 and now.minute < 55),
     ("linkedin_quad_slot_20",
      f"{BASE}/api/v1/linkedin-quad/run",
      "POST",
