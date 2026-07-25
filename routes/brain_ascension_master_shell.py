@@ -512,7 +512,11 @@ def master_tick():
         return jsonify(ok=False, error="BRAIN_ASCENSION_SHELL_DISABLE=1"), 503
     if not _admin_ok():
         return jsonify(ok=False, error="admin key required"), 401
-    return jsonify(_run_tick())
+    resp = jsonify(_run_tick())
+    # CF edge cached a wave-1 GET of this endpoint for >30 min post-deploy
+    # (the Cache-Rules leak) — the operator read a stale board. Never cache.
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
 
 
 @brain_ascension_master_shell_bp.route("/admin/brain-ascension", methods=["GET"])
@@ -555,7 +559,9 @@ def dashboard():
         "PR metric harness, annual visibility) · "
         "kill BRAIN_ASCENSION_SHELL_DISABLE=1</small>"
         "<table>" + "".join(rows) + "</table>")
-    return Response(html, mimetype="text/html")
+    resp = Response(html, mimetype="text/html")
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
 
 
 def register_brain_ascension_master_shell(app):
