@@ -64,8 +64,11 @@ logger = logging.getLogger(__name__)
 # ── Model support (verified against live docs 2026-07-04) ───────────
 # Prefix match so dated snapshots of a supported alias (e.g. a future
 # claude-haiku-4-5-2025xxxx) stay supported. NOTE: "claude-sonnet-4-5"
-# does NOT prefix-match "claude-sonnet-5" (Sonnet 4.0, which is
-# unsupported), because the 6th char differs ("5" vs "2").
+# does NOT prefix-match "claude-sonnet-4-0" (Sonnet 4.0, which is
+# unsupported), because the 6th char differs ("5" vs "0").
+# ★2026-07-25: this comment had been rewritten to say "claude-sonnet-5" by a
+# blanket model-ID migration, which inverted its meaning — Sonnet 5 IS in the
+# supported tuple below. The tuple itself was correct; only the prose broke.
 STRUCTURED_OUTPUT_MODEL_PREFIXES = (
     "claude-fable-5",
     "claude-mythos-5",

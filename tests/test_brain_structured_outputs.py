@@ -100,6 +100,14 @@ def _http_error(code, body: bytes):
         io.BytesIO(body))
 
 
+def _sys_text(system):
+    """The system field is a cache_control block list since prompt caching
+    landed (2026-07-23); it was a bare string before. Compare on the text so
+    these assertions pin the PROMPT, not the caching wrapper."""
+    if isinstance(system, str):
+        return system
+    return "".join(b.get("text", "") for b in system)
+
 def _req_body(req) -> dict:
     return json.loads(req.data.decode("utf-8"))
 
@@ -115,9 +123,14 @@ def test_model_gate_matches_verified_docs():
               "claude-sonnet-4-6", "claude-sonnet-4-5", "claude-haiku-4-5"):
         assert so.model_supports_structured(m), m
     # NOT supported: Sonnet 4.0 (the proposer's static fallback rung),
-    # Opus 4.1/4.0, retired 3.x
-    for m in ("claude-sonnet-5", "claude-opus-4-1",
-              "claude-opus-4-8", "claude-3-5-haiku-20241022", ""):
+    # Opus 4.1/4.0, retired 3.x.
+    # ★2026-07-25: this list had been rewritten to "claude-sonnet-5" and
+    # "claude-opus-4-8" by a blanket model-ID migration — both of which the
+    # gate DOES support, so the test asserted a model was and was not
+    # supported in the same function and could never pass. The prose above
+    # ("Sonnet 4.0", "Opus 4.1/4.0") is the original intent; restored.
+    for m in ("claude-sonnet-4-0", "claude-opus-4-1",
+              "claude-opus-4-0", "claude-3-5-haiku-20241022", ""):
         assert not so.model_supports_structured(m), m
 
 
@@ -222,7 +235,7 @@ def test_planner_400_falls_back_to_legacy_and_fence_strip_still_works(monkeypatc
     assert len(calls) == 2
     assert "output_config" in calls[0]["body"]
     assert "output_config" not in calls[1]["body"]
-    assert calls[1]["body"]["system"] == sp._SYSTEM_PROMPT
+    assert _sys_text(calls[1]["body"]["system"]) == sp._SYSTEM_PROMPT
     assert calls[0]["body"]["model"] == calls[1]["body"]["model"]
     assert out["summary"] == "state of play"
     # the 400 blamed output_config → model memoized as runtime-unsupported
@@ -239,7 +252,7 @@ def test_planner_kill_switch_forces_legacy(monkeypatch):
 
     assert len(calls) == 1
     assert "output_config" not in calls[0]["body"]
-    assert calls[0]["body"]["system"] == sp._SYSTEM_PROMPT
+    assert _sys_text(calls[0]["body"]["system"]) == sp._SYSTEM_PROMPT
     assert out["summary"] == "state of play"          # legacy fence-strip
 
 
@@ -330,7 +343,7 @@ def test_investigator_400_falls_back_same_model_then_fence_strip(monkeypatch):
     assert "output_config" in _req_body(reqs[0])
     legacy_body = _req_body(reqs[1])
     assert "output_config" not in legacy_body
-    assert legacy_body["system"] == inv._DECOMPOSE_SYSTEM     # untouched
+    assert _sys_text(legacy_body["system"]) == inv._DECOMPOSE_SYSTEM     # untouched
     assert legacy_body["model"] == "claude-opus-4-8"          # SAME model
     # (3) legacy fence-strip still works on the fenced fixture
     assert inv._parse_json(text) == json.loads(_DECOMP_JSON)
@@ -351,7 +364,7 @@ def test_investigator_kill_switch_forces_legacy(monkeypatch):
     assert len(reqs) == 1
     body = _req_body(reqs[0])
     assert "output_config" not in body
-    assert body["system"] == inv._DECOMPOSE_SYSTEM
+    assert _sys_text(body["system"]) == inv._DECOMPOSE_SYSTEM
 
 
 def test_investigator_legacy_chain_walk_preserved(monkeypatch):
@@ -438,7 +451,7 @@ def test_proposer_400_falls_back_same_model_then_fence_strip(monkeypatch):
     assert "output_config" in _req_body(reqs[0])
     legacy_body = _req_body(reqs[1])
     assert "output_config" not in legacy_body
-    assert legacy_body["system"] == fp._PROPOSE_SYSTEM
+    assert _sys_text(legacy_body["system"]) == fp._PROPOSE_SYSTEM
     assert legacy_body["model"] == _req_body(reqs[0])["model"]
     # (3) legacy fence-strip still parses the fenced fixture
     assert fp._parse_spec_json(text)["feature_name"] == "Fiber Route Compare"
@@ -457,16 +470,16 @@ def test_proposer_kill_switch_forces_legacy(monkeypatch):
     assert len(reqs) == 1
     body = _req_body(reqs[0])
     assert "output_config" not in body
-    assert body["system"] == fp._PROPOSE_SYSTEM
+    assert _sys_text(body["system"]) == fp._PROPOSE_SYSTEM
 
 
 def test_proposer_unsupported_fallback_model_stays_legacy(monkeypatch):
-    """The static fallback rung claude-sonnet-5 (Sonnet 4.0) does NOT
+    """The static fallback rung claude-sonnet-4-0 (Sonnet 4.0) does NOT
     support structured outputs — the per-model gate must keep it legacy even
     with structured mode globally ON."""
     monkeypatch.setattr(fp, "ANTHROPIC_API_KEY", "test-key")
     monkeypatch.setattr(bm, "brain_model_for",
-                        lambda tier="routine": "claude-sonnet-5")
+                        lambda tier="routine": "claude-sonnet-4-0")
     raw = json.dumps(_anthropic_ok_body(_SPEC_JSON)).encode()
     reqs = _patch_urlopen(monkeypatch, [raw])
 
