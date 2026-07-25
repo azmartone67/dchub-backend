@@ -137,6 +137,34 @@ def _lane_verdict(checks: list[dict]) -> str:
     return "PASS"
 
 
+def _as_dt(ts):
+    """Coerce a DB timestamp into an aware datetime. Several house tables
+    store timestamps as TEXT (coverage_gaps.created_at 500'd growthfix's first
+    live tick), so strings are parsed, never assumed. None on failure."""
+    if ts is None:
+        return None
+    if isinstance(ts, str):
+        try:
+            ts = datetime.datetime.fromisoformat(
+                ts.replace("Z", "+00:00").strip())
+        except Exception:  # noqa: BLE001
+            return None
+    if getattr(ts, "tzinfo", None) is None:
+        try:
+            ts = ts.replace(tzinfo=datetime.timezone.utc)
+        except Exception:  # noqa: BLE001
+            return None
+    return ts
+
+
+def _age_days(ts) -> float | None:
+    ts = _as_dt(ts)
+    if ts is None:
+        return None
+    now = datetime.datetime.now(datetime.timezone.utc)
+    return (now - ts).total_seconds() / 86400.0
+
+
 def _http_head(url: str, timeout: float = 6.0, headers: dict | None = None):
     """Return (status, headers) or (None, {}). Never raises. An HTTP error
     status is still an ANSWER (401/404 carry headers), so it is returned

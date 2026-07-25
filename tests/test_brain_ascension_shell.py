@@ -242,3 +242,23 @@ def test_loop_flywheel_shell_honest():
     # the Neon deadline lane must actually count down, not hardcode a pass
     details = " ".join(k["detail"] for k in _lane_infra())
     assert "2026-10-05" in details
+
+
+def test_shell29_lanes_have_no_missing_helpers():
+    """Shell #29's inventory lane shipped calling _age_days, which was never
+    defined in that module — _safe_lane caught it as an honest '?', but the
+    lane checked nothing for a full deploy. Exercise every lane offline so a
+    NameError can never reach production again."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "lf29", os.path.join(ROOT, "routes", "loop_flywheel_master_shell.py"))
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    lanes = [(m._lane_infra, ()), (m._lane_inventory, (None,)),
+             (m._lane_ai_doors, (None,)), (m._lane_cron, (None,)),
+             (m._lane_identity, (None,)), (m._lane_rag, ()), (m._lane_mcp, ())]
+    for fn, args in lanes:
+        crashes = [c for c in m._safe_lane(fn, *args) if c["id"] == "lane_crash"]
+        assert not crashes, f"{fn.__name__} crashed: {crashes[0]['detail']}"
+    assert m._age_days(None) is None
+    assert m._age_days("2026-07-24T00:00:00Z") > 0
