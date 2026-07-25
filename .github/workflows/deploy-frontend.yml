@@ -29,6 +29,11 @@ on:
         description: 'CF Pages project name (override auto-detect)'
         required: false
         type: string
+      force_stale_deploy:
+        description: 'DANGER: deploy even if the subdir worker is not newer than what prod serves (stale-worker outage risk)'
+        required: false
+        type: boolean
+        default: false
 
 jobs:
   deploy:
@@ -41,6 +46,35 @@ jobs:
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
     steps:
       - uses: actions/checkout@v4
+
+      # r43-H made this workflow manual-only; this step makes the manual
+      # button itself safe. The r43-H outage class: dispatching this deploys
+      # the SUBDIR's _worker.js over the canonical one prod is serving.
+      # Refuse unless the subdir is STRICTLY newer than live — and refuse
+      # when live can't be read (fail closed: an unreachable prod is exactly
+      # when a blind overwrite is most dangerous).
+      - name: Stale-deploy guard (subdir vs what prod serves)
+        run: |
+          SUB=$(grep -oE "WORKER_VERSION\s*=\s*'[^']+'" dchub-frontend/_worker.js | head -1 | grep -oE "'[^']+'" | tr -d "'")
+          LIVE=$(curl -sI --max-time 20 "https://dchub.cloud/api/v1/dcpi/scores?cb=$(date +%s)&limit=1" \
+                   | tr -d '\r' | grep -iE '^x-dc-worker-version:' | head -1 \
+                   | sed 's/^[^:]*:[[:space:]]*//')
+          echo "subdir _worker.js WORKER_VERSION: ${SUB:-<unreadable>}"
+          echo "live  x-dc-worker-version:       ${LIVE:-<unreadable>}"
+          if [ "${{ inputs.force_stale_deploy }}" = "true" ]; then
+            echo "::warning::force_stale_deploy=true — stale-deploy guard bypassed by operator"
+            exit 0
+          fi
+          if [ -z "$SUB" ] || [ -z "$LIVE" ]; then
+            echo "::error::Guard fails CLOSED: could not read the subdir WORKER_VERSION and/or the live x-dc-worker-version. Deploy the canonical dchub-frontend repo via its deploy-pages.yml instead, or re-run with force_stale_deploy=true only if you are certain the subdir is current."
+            exit 1
+          fi
+          NEWEST=$(printf '%s\n%s\n' "$LIVE" "$SUB" | sort -V | tail -1)
+          if [ "$SUB" = "$LIVE" ] || [ "$NEWEST" != "$SUB" ]; then
+            echo "::error::REFUSING to deploy: subdir worker ($SUB) is not newer than what prod is serving ($LIVE). This is the r43-H stale-worker outage. Use the dchub-frontend repo's deploy-pages.yml, or force_stale_deploy=true to override."
+            exit 1
+          fi
+          echo "OK: subdir ($SUB) is newer than live ($LIVE) — proceeding."
 
       # GitHub-hosted ubuntu-latest pins Node 20; wrangler@4 needs >=22.
       # Without this step v3 fix logs were misleading ("token missing
