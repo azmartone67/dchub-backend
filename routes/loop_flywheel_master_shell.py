@@ -24,8 +24,8 @@ Nine lanes, one per domain of the 07-25 loop review:
   6. MCP                    — manifest drift across the three manifests.
   7. AI DOORS               — owed doors OPEN but unused: reach without calls
      is a distribution problem, and this states it in one number.
-  8. INVENTORY              — verified vs tracked facilities, the moat's
-     weakest public number, plus the supply-limited backlog rule.
+  8. INVENTORY              — published-vs-queue counts stated as FACTS (never
+     a ratio: they are separate pipelines) + the supply-limited backlog rule.
   9. CRON                   — dead-man board health + the duplicate-job census
      from the 07-25 inventory (~314 live jobs, documented overlaps).
 
@@ -51,6 +51,7 @@ import datetime
 import json
 import logging
 import os
+import urllib.error
 import urllib.request
 from html import escape as _esc
 
@@ -70,8 +71,10 @@ _NEON_WARN_DAYS = 45        # amber inside this window, red inside half of it
 _CARRY_FLOOR_PCT = 70.0
 _ACTIVATION_FLOOR_PCT = 40.0
 
-# Verified-vs-tracked: the honest public split (HEALTH_BASELINE canon).
-_INVENTORY_VERIFIED_FLOOR = 0.20   # verified/tracked below this = say so plainly
+# (an inventory "verified/tracked ratio" floor lived here until the first live
+# tick proved the two tables are separate pipelines, not a ratio — see
+# _lane_inventory. Deliberately not replaced with another invented number.)
+_INVENTORY_QUEUE_MAX_QUIET_DAYS = 7
 
 # Admin/API path prefixes that must never be edge-cached.
 _NO_CACHE_PATHS = ("/api/v1/admin/", "/admin/")
@@ -134,14 +137,18 @@ def _lane_verdict(checks: list[dict]) -> str:
     return "PASS"
 
 
-def _http_head(url: str, timeout: float = 6.0):
-    """Return (status, headers) or (None, {}). Never raises."""
+def _http_head(url: str, timeout: float = 6.0, headers: dict | None = None):
+    """Return (status, headers) or (None, {}). Never raises. An HTTP error
+    status is still an ANSWER (401/404 carry headers), so it is returned
+    rather than swallowed as a failure."""
     try:
-        req = urllib.request.Request(
-            url, method="GET",
-            headers={"User-Agent": "dchub-loop-flywheel-shell/1.0"})
+        h = {"User-Agent": "dchub-loop-flywheel-shell/1.0"}
+        h.update(headers or {})
+        req = urllib.request.Request(url, method="GET", headers=h)
         with urllib.request.urlopen(req, timeout=timeout) as r:
             return r.status, {k.lower(): v for k, v in r.headers.items()}
+    except urllib.error.HTTPError as e:
+        return e.code, {k.lower(): v for k, v in (e.headers or {}).items()}
     except Exception:  # noqa: BLE001
         return None, {}
 
@@ -181,22 +188,34 @@ def _lane_infra() -> list[dict]:
 
 def _lane_edge() -> list[dict]:
     checks = []
-    base = "https://dchub.cloud"
-    st, h = _http_head(base + "/api/v1/admin/brain-ascension/master-tick")
+    # Probe LOOPBACK, not the public host: from inside Railway the egress to
+    # dchub.cloud is unreliable (first live tick rendered "probe failed
+    # (network)" every time, which checks nothing). Loopback proves the
+    # APP sets no-store — the half we control. Whether the EDGE honors it
+    # needs an off-box probe, so that half stays honestly indeterminate.
+    port = os.environ.get("PORT", "8080")
+    akey = (os.environ.get("DCHUB_ADMIN_KEY")
+            or os.environ.get("DCHUB_INTERNAL_KEY") or "")
+    st, h = _http_head(f"http://127.0.0.1:{port}"
+                       "/api/v1/admin/brain-ascension/master-tick",
+                       headers={"X-Admin-Key": akey} if akey else None)
     cc = (h.get("cache-control") or "").lower()
-    cfs = (h.get("cf-cache-status") or "").upper()
     if st is None:
-        checks.append(_check("admin_nocache", "admin surfaces are never edge-cached",
-                             None, "probe failed (network)", critical=True))
-    else:
-        # 401 is the expected unauthenticated answer; what matters is that the
-        # response is not a cacheable one.
-        cacheable = ("no-store" not in cc and "no-cache" not in cc
-                     and cfs in ("HIT", "STALE", "UPDATING"))
+        checks.append(_check("admin_nocache", "admin responses declare no-store",
+                             None, "loopback probe failed", critical=True))
+    elif st != 200:
+        # Without a 200 we never saw the real response headers — say so
+        # rather than pass on a 401 that legitimately carries no cache header.
         checks.append(_check(
-            "admin_nocache", "admin surfaces are never edge-cached",
-            not cacheable,
-            f"HTTP {st} cache-control='{cc or '(none)'}' cf-cache-status={cfs or 'n/a'}",
+            "admin_nocache", "admin responses declare no-store", None,
+            f"probe got HTTP {st} (need 200 to read the real headers)",
+            critical=True))
+    else:
+        checks.append(_check(
+            "admin_nocache", "admin responses declare no-store",
+            "no-store" in cc,
+            f"HTTP 200 cache-control='{cc or '(none)'}'"
+            + ("" if "no-store" in cc else " — MISSING no-store"),
             critical=True))
     checks.append(_check(
         "nocache_policy", "no-cache policy documented for admin prefixes", True,
@@ -347,8 +366,11 @@ def _lane_mcp() -> list[dict]:
 
 def _lane_ai_doors(c) -> list[dict]:
     checks = []
+    # 2026-07-25 first live tick: this queried mcp_client, which is NOT a
+    # column on mcp_call_log (it lives on mcp_upgrade_signals) — the lane
+    # rendered "unreadable" every tick. The real column is `platform`.
     row = _row(c, """
-        SELECT COUNT(DISTINCT mcp_client), COUNT(*)
+        SELECT COUNT(DISTINCT platform), COUNT(*)
           FROM mcp_call_log
          WHERE timestamp >= NOW() - INTERVAL '7 days'""") if c else None
     if row is None:
@@ -368,23 +390,35 @@ def _lane_ai_doors(c) -> list[dict]:
 # ── lane 8: inventory (the moat's weakest public number) ──────────────
 
 def _lane_inventory(c) -> list[dict]:
+    """Inventory is REPORT-ONLY on the counts and CHECKS only what is truly
+    checkable.
+
+    2026-07-25, first live tick: this lane originally divided facilities by
+    discovered_facilities and rendered "317.7%" as a PASS. That was a
+    fabricated ratio — `facilities` (published/serving) and
+    `discovered_facilities` (discovery queue) are two different pipelines,
+    not numerator and denominator. A meaningless number that reads green is
+    exactly what the honesty rule exists to prevent, so the ratio is gone.
+    What remains: both counts as stated facts, plus one REAL check — that
+    the discovery queue is still accruing."""
     checks = []
-    tracked = _row(c, "SELECT COUNT(*) FROM discovered_facilities "
-                      "WHERE COALESCE(is_duplicate, 0) = 0") if c else None
-    verified = _row(c, "SELECT COUNT(*) FROM facilities") if c else None
-    if tracked is None or verified is None:
-        checks.append(_check("verified_ratio", "verified/tracked ratio healthy",
-                             None, "facility tables unreadable", critical=True))
-    else:
-        t, v = int(tracked[0] or 0), int(verified[0] or 0)
-        ratio = (v / t) if t else 0.0
-        checks.append(_check(
-            "verified_ratio", "verified/tracked ratio healthy",
-            ratio >= _INVENTORY_VERIFIED_FLOOR,
-            f"verified {v} / tracked {t} = {ratio:.1%} (floor "
-            f"{_INVENTORY_VERIFIED_FLOOR:.0%}) — publish BOTH numbers; the "
-            "backlog is SUPPLY-limited, never schedule a dedup to 'fix' it",
-            critical=True))
+    pub = _row(c, "SELECT COUNT(*) FROM facilities") if c else None
+    disc = _row(c, "SELECT COUNT(*) FROM discovered_facilities "
+                   "WHERE COALESCE(is_duplicate, 0) = 0") if c else None
+    checks.append(_check(
+        "counts", "published + discovery-queue counts", True,
+        (f"facilities(published)={int(pub[0]) if pub else '?'} · "
+         f"discovered_facilities(non-dupe queue)={int(disc[0]) if disc else '?'}"
+         " — publish BOTH; they are separate pipelines, never a ratio")))
+    fresh = _row(c, "SELECT MAX(last_updated) FROM discovered_facilities") if c else None
+    age = _age_days(fresh[0]) if fresh and fresh[0] else None
+    checks.append(_check(
+        "queue_accruing", "discovery queue still accruing",
+        (True if (age is not None and age <= _INVENTORY_QUEUE_MAX_QUIET_DAYS) else None),
+        (f"newest discovered row {age:.1f}d ago" if age is not None
+         else "unreadable / no timestamped rows") +
+        " — the backlog is SUPPLY-limited; NEVER schedule a dedup to 'fix' it",
+        critical=True))
     return checks
 
 
