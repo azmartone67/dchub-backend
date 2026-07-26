@@ -2174,6 +2174,19 @@ try:
     # that separates callers from crawlers per platform (the blind spot that
     # made crawler traffic read as adoption). Read-only, admin-gated.
     # GET /admin/platform-funnel · /api/v1/admin/platform-funnel
+    # 2026-07-26: planner-quality board — reads the execute_plan_steps and
+    # recipe:<name> telemetry emitted since v2.7.2 and splits PLANNING vs
+    # EXECUTION vs LATENCY per intent class, with integrity (clean runs) as
+    # the headline. Answers the question completion-rate cannot: did the
+    # workflow stay correct? Read-only, admin-gated.
+    # GET /admin/planner-quality · /api/v1/admin/planner-quality
+    try:
+        from routes.planner_quality import planner_quality_bp
+        app.register_blueprint(planner_quality_bp)
+        print("[main] planner_quality_bp registered: GET /admin/planner-quality", flush=True)
+    except Exception as _pqb:
+        import logging
+        logging.getLogger(__name__).warning('planner_quality wiring failed: %s', _pqb)
     try:
         from routes.platform_funnel import platform_funnel_bp
         app.register_blueprint(platform_funnel_bp)
