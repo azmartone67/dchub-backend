@@ -2552,10 +2552,32 @@ def admin_agent_pay_events():
 # reference_psycopg2_empty_tuple_percent_trap memo). Keep the %% doubled.
 _SYNTH_PLATFORM_SQL = (
     " ( platform IS NULL "
+    # r-synth-align (2026-07-25): '%%dchub%%' was MISSING and it mattered. The MCP
+    # gateway collapses every harness/QA/self-ID clientInfo (test, verify, probe,
+    # audit, smoke, regression, selfheal, 'clawith', 'value-harness', …) to the single
+    # tag 'dchub-internal' (server.mjs _KNOWN_PLATFORM_FROM_NAME, r-junk-platform),
+    # on the documented assumption that "every backend read predicate already excludes
+    # %%dchub%%". THIS predicate did not — so all internal traffic counted as REAL
+    # agent pay-intent and the master-tick reported our own probes as customer demand.
+    # Mirrors the canonical exclusion set in
+    # migrations/2026-07-01_mcp_calls_identity_platform_tag_exclusions.sql.
+    "   OR COALESCE(LOWER(platform),'') LIKE '%%dchub%%' "
     "   OR COALESCE(LOWER(platform),'') LIKE '%%test%%' "
     "   OR COALESCE(LOWER(platform),'') LIKE '%%canary%%' "
     "   OR COALESCE(LOWER(platform),'') LIKE '%%probe%%' "
     "   OR COALESCE(LOWER(platform),'') LIKE '%%staging%%' "
+    "   OR COALESCE(LOWER(platform),'') LIKE '%%verify%%' "
+    "   OR COALESCE(LOWER(platform),'') LIKE '%%audit%%' "
+    "   OR COALESCE(LOWER(platform),'') LIKE '%%harness%%' "
+    "   OR COALESCE(LOWER(platform),'') LIKE '%%check%%' "
+    "   OR COALESCE(LOWER(platform),'') LIKE '%%diag%%' "
+    "   OR COALESCE(LOWER(platform),'') LIKE '%%sweep%%' "
+    "   OR COALESCE(LOWER(platform),'') LIKE '%%smoke%%' "
+    "   OR COALESCE(LOWER(platform),'') LIKE '%%regression%%' "
+    "   OR COALESCE(LOWER(platform),'') LIKE '%%selfheal%%' "
+    "   OR COALESCE(LOWER(platform),'') IN ('clawith','value-harness','dbg','raw','full',"
+    "        'f5r','fv','rev','final','vinline','qa','qa-mozilla','fix2-v2','mcp-vouch',"
+    "        'capwall2','pipeline_mcp','curl','insomnia','postman','node-script','python-script') "
     "   OR LENGTH(COALESCE(platform,'')) <= 2 ) "  # junk 1-2 char clientInfo tags ('v', …)
 )
 _REAL_PLATFORM_SQL = " NOT " + _SYNTH_PLATFORM_SQL
