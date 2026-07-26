@@ -155,9 +155,16 @@ def test_published_figure_wins_over_inference(monkeypatch):
     assert out["by_iso"]["ERCOT"] == 225.0          # published, not 0.13
     assert out["by_iso"]["NYISO"] == 13.9           # inference kept where no published figure
     inserts = [(sql, p) for sql, p in cur.executed if sql.startswith("INSERT")]
-    assert len(inserts) == 2
-    inferred_isos = [p[1] for sql, p in inserts if "'inferred'" in sql]
-    published_isos = [p[1] for sql, p in inserts if "'published_queue'" in sql]
+    # shell#35 (2026-07-26) deliberately added an INDEPENDENT
+    # dc_load_queue_measured series (source dchub_classified) for EVERY core
+    # ISO alongside these rows, so a bare INSERT count no longer isolates the
+    # behaviour under test. This test guards PUBLISHED-WINS-OVER-INFERRED, so
+    # scope the count to the verdict category it actually asserts on.
+    verdict_inserts = [(sql, p) for sql, p in inserts
+                       if "dc_load_queue_measured" not in sql]
+    assert len(verdict_inserts) == 2, [s[:60] for s, _ in verdict_inserts]
+    inferred_isos = [p[1] for sql, p in verdict_inserts if "'inferred'" in sql]
+    published_isos = [p[1] for sql, p in verdict_inserts if "'published_queue'" in sql]
     assert inferred_isos == ["NYISO"] and published_isos == ["ERCOT"]
 
 
