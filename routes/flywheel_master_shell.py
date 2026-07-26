@@ -237,6 +237,43 @@ def _lane_retention(c) -> list[dict]:
         pct = round(100.0 * used / total, 1) if total else 0.0
         out.append(_check("ret_claim_activation", "claimed keys used after mint (mature, 30d)",
                           pct >= 40.0, f"{used}/{total} = {pct}% of claimed keys made a call after mint"))
+
+    # r-return-hook measurement (2026-07-26 retention wave): the boards named
+    # "measure r-return hook effect" as the step before the durable-identity
+    # spend. Among real agents active in the PRIOR completed week, split this
+    # week's return rate by whether they called get_changes (the hook) that
+    # prior week. Informational — it MEASURES the shipped actuator, it does
+    # not gate on it (cohorts are small; a rate needs several weeks to firm).
+    _rh = _rows(c, "WITH prior AS ("
+                   " SELECT ip_address, bool_or(tool_name='get_changes') AS hooked"
+                   " FROM mcp_calls_identity"
+                   " WHERE is_real_external IS TRUE"
+                   " AND created_at >= date_trunc('week', now()) - interval '7 days'"
+                   " AND created_at <  date_trunc('week', now())"
+                   " GROUP BY 1)"
+                   " SELECT COUNT(*) FILTER (WHERE hooked),"
+                   " COUNT(*) FILTER (WHERE hooked AND EXISTS("
+                   "   SELECT 1 FROM mcp_calls_identity m WHERE m.ip_address=prior.ip_address"
+                   "   AND m.is_real_external IS TRUE AND m.created_at >= date_trunc('week', now()))),"
+                   " COUNT(*) FILTER (WHERE NOT hooked),"
+                   " COUNT(*) FILTER (WHERE NOT hooked AND EXISTS("
+                   "   SELECT 1 FROM mcp_calls_identity m WHERE m.ip_address=prior.ip_address"
+                   "   AND m.is_real_external IS TRUE AND m.created_at >= date_trunc('week', now())))"
+                   " FROM prior")
+    r = _rh[0] if _rh else None
+    if not r or (int(r[0] or 0) + int(r[2] or 0)) == 0:
+        out.append(_check("ret_return_hook", "r-return hook effect (get_changes → return)",
+                          None, "no prior-week real agents yet"))
+    else:
+        hk, hk_ret, nh, nh_ret = (int(x or 0) for x in r)
+        hk_pct = round(100.0 * hk_ret / hk, 1) if hk else None
+        nh_pct = round(100.0 * nh_ret / nh, 1) if nh else None
+        out.append(_check(
+            "ret_return_hook", "r-return hook effect (get_changes → return)",
+            True,
+            f"hooked: {hk_ret}/{hk} returned ({hk_pct}%) · un-hooked: "
+            f"{nh_ret}/{nh} ({nh_pct}%) — the measured lift of the shipped "
+            f"hook; several weeks of cohorts before reading it as causal"))
     return out
 
 

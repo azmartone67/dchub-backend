@@ -2133,6 +2133,17 @@ try:
     except Exception as _pft:
         import logging
         logging.getLogger(__name__).warning('perf_timing wiring failed: %s', _pft)
+    # 2026-07-26 retention wave: per-platform adoption funnel — the instrument
+    # that separates callers from crawlers per platform (the blind spot that
+    # made crawler traffic read as adoption). Read-only, admin-gated.
+    # GET /admin/platform-funnel · /api/v1/admin/platform-funnel
+    try:
+        from routes.platform_funnel import platform_funnel_bp
+        app.register_blueprint(platform_funnel_bp)
+        print("[main] platform_funnel_bp registered: GET /admin/platform-funnel", flush=True)
+    except Exception as _pfb:
+        import logging
+        logging.getLogger(__name__).warning('platform_funnel wiring failed: %s', _pfb)
     # 2026-07-25: Brain Ascension Master Shell (#28) — watches the five-audit
     # fix-wave lanes (brain deadman coverage, cross-model roster, competitor→
     # product wiring, RAG truth, merged-PR metric harness, growth/MRR truth).
