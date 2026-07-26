@@ -185,6 +185,7 @@ def _grounding_block(items, lessons) -> str:
     return "\n" + "\n\n".join(parts) + "\n"
 
 
+# AUTO-REPAIR: duplicate route '/api/v1/brain/ask' also in routes/brain_qa.py:644 — review and remove one
 @brain_layer9_bp.route("/api/v1/brain/ask", methods=["POST", "GET"])
 def ask():
     """Natural-language Q&A against full brain state."""
