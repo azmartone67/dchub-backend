@@ -11886,23 +11886,37 @@ def energy_retail_alias():
 # paths are removed from LOCKED_GATE_MANIFEST in this same commit — the boot
 # canary expects 401/403/404 from unrouted manifest paths and would flag the
 # summary-teaser 200s as UNGATED.
-def _ghost_alias(target):
+def _ghost_alias(target, iso_path=False):
+    # iso_path=True: the target takes the ISO as a PATH segment
+    # (/api/v1/grid/intelligence/<iso> — the same endpoint server.mjs
+    # get_grid_data uses; /api/v1/grid/data does NOT exist, it's swallowed by
+    # the grid-headroom catch-all as region='data'). Accept iso=/region=/state=
+    # from the ghost's query string, default pjm like server.mjs.
     def _view():
-        qs = request.query_string.decode()
+        from urllib.parse import urlencode, quote
+        qs_map = request.args.to_dict(flat=True)
+        if iso_path:
+            _iso = (qs_map.pop('iso', None) or qs_map.pop('region', None)
+                    or qs_map.pop('state', None) or 'pjm').lower()
+            t = f"{target}/{quote(_iso)}"
+        else:
+            t = target
+        qs = urlencode(qs_map)
         sep = '?' if qs else ''
-        with app.test_request_context(f'{target}{sep}{qs}', headers=dict(request.headers)):
+        with app.test_request_context(f'{t}{sep}{qs}', headers=dict(request.headers)):
             return app.full_dispatch_request()
     return _view
 
-for _ghost_path, _ghost_target, _ghost_name in (
-    ('/api/v1/energy/retail/rates',     '/api/v1/energy/summary', 'ghost_energy_retail_rates'),
-    ('/api/v1/energy/naturalgas/price', '/api/v1/energy/summary', 'ghost_energy_naturalgas_price'),
-    ('/api/v1/energy/rto/demand',       '/api/v1/grid/data',      'ghost_energy_rto_demand'),
-    ('/api/v1/energy/rto/fuelmix',      '/api/v1/grid/data',      'ghost_energy_rto_fuelmix'),
-    ('/api/grid/demand',                '/api/v1/grid/data',      'ghost_grid_demand'),
-    ('/api/grid/prices',                '/api/v1/energy/summary', 'ghost_grid_prices'),
+for _ghost_path, _ghost_target, _ghost_name, _ghost_isopath in (
+    ('/api/v1/energy/retail/rates',     '/api/v1/energy/summary',       'ghost_energy_retail_rates',     False),
+    ('/api/v1/energy/naturalgas/price', '/api/v1/energy/summary',       'ghost_energy_naturalgas_price', False),
+    ('/api/v1/energy/rto/demand',       '/api/v1/grid/intelligence',    'ghost_energy_rto_demand',       True),
+    ('/api/v1/energy/rto/fuelmix',      '/api/v1/grid/intelligence',    'ghost_energy_rto_fuelmix',      True),
+    ('/api/grid/demand',                '/api/v1/grid/intelligence',    'ghost_grid_demand',             True),
+    ('/api/grid/prices',                '/api/v1/energy/summary',       'ghost_grid_prices',             False),
 ):
-    app.add_url_rule(_ghost_path, _ghost_name, _ghost_alias(_ghost_target), methods=['GET'])
+    app.add_url_rule(_ghost_path, _ghost_name,
+                     _ghost_alias(_ghost_target, iso_path=_ghost_isopath), methods=['GET'])
 
 # =============================================================================
 # SECURITY HEADERS & API TRACKING (Applied to all responses)
@@ -32859,6 +32873,29 @@ def cf_stub_energy_summary():
         # Fail-closed for unknown callers; log so a regression surfaces.
         logger.warning(f"energy-gate: tier-detect failed ({_e}); defaulting anonymous")
         _caller_tier, _paid_access = "anonymous", False
+
+    # r-esum-tiermax (2026-07-26, tier-gating QA): _detect_caller_tier misses
+    # api_keys-backed customer keys entirely — the QA canary PRO key resolved
+    # 'anonymous' here, so real paid keys were shown the signup wall on the
+    # market-page energy block. Promote via the canonical cross-table resolver
+    # (api_keys dual-hash + users.plan + mcp_dev_keys + session cookie),
+    # PROMOTE-ONLY, same recipe as r-tiermax / r-mkt-tiermax. Unbound free
+    # keys stay 'free' (< identified) so the Phase-QQ email-capture incentive
+    # is preserved. NB util.tier_gate.Tier is an IntEnum — use .name.
+    try:
+        from util.tier_gate import resolve_tier as _rt_es
+        _t_es, _ = _rt_es()
+        _tv_es = str(getattr(_t_es, 'name', getattr(_t_es, 'value', _t_es))).lower()
+        _tv_es = {'founding': 'pro', 'paid': 'pro', 'team': 'pro', 'metered': 'pro',
+                  'admin': 'enterprise', 'research_seed': 'enterprise'}.get(_tv_es, _tv_es)
+        _rank_es = {'anonymous': 0, 'free': 1, 'identified': 1, 'developer': 2,
+                    'pro': 3, 'enterprise': 4, 'internal': 5}
+        if _rank_es.get(_tv_es, 0) > _rank_es.get(_caller_tier, 0):
+            _caller_tier = _tv_es
+            _paid_access = _paid_access or (_caller_tier in {
+                "identified", "developer", "pro", "enterprise", "founding", "internal"})
+    except Exception:
+        pass
 
     if not _paid_access:
         # SEO-friendly redacted payload. We return the state echo + a
