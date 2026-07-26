@@ -36,6 +36,9 @@ WHITELIST_TABLES = {
     # anyway, but split across adjacent string fragments — this rule's regex
     # window stops at the first quote, so it can't see it.
     'brain_llm_usage',
+    # slow_requests is the same append-only class (shell #32 perf capture) —
+    # and the same adjacent-fragment blindness applies to its ON CONFLICT.
+    'slow_requests',
     # market_power_scores is upserted via an explicit UPDATE-or-INSERT
     # (the INSERT only runs when the UPDATE matched 0 rows) — not an
     # accidental bare insert. ON CONFLICT was removed deliberately
