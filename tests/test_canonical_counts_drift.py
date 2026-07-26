@@ -98,7 +98,7 @@ FIXWAVE = "canonical-counts drift (fixes #1689/#1690/#74/#75, 2026-07-20)"
 #    goalposts — test_fence_baseline_matches_canon_sot cross-checks that the
 #    imported SoT still agrees with these. ──────────────────────────────────────
 CANONICAL = {
-    "tools": 79,        # live tools/list length on the public MCP gate
+    "tools": 80,        # live tools/list length on the public MCP gate
     "markets_min": 300,  # DCPI markets floor (live ~311; grows via intl expansion)
     "deals_min": 1400,  # DISTINCT deduped tracked deals floor (rows over-state ~2.9x)
     "gas": 52,          # gas-suitability states (DCGI)

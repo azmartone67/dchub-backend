@@ -733,15 +733,15 @@ DC Hub publishes the **DCPI** — a 0-100 power-availability score for 233 data 
 no-LLM meta-planner: pass a natural-language intent and it returns an ordered tool plan PLUS a versioned,
 inspectable `replay` object (decision log with a `rationale`+`decision_confidence` per step, the rejected
 paths and why, and an execution graph of parallel waves). You execute the returned `recommended_sequence`
-instead of trial-and-erroring 79 tools. Deterministic: same intent -> same plan skeleton (schema_version 1,
+instead of trial-and-erroring 80 tools. Deterministic: same intent -> same plan skeleton (schema_version 1,
 so it's safe to build against). Try it:
 - `plan_query("rank markets for a 200 MW AI campus")` -> ai_capacity_index -> get_market_dcpi_rank -> get_grid_intelligence
 - `plan_query("find 50 MW in Dallas")` -> get_retirement_headroom -> get_refined_queue -> get_market_dcpi_rank
 - `plan_query("compare Phoenix vs Columbus")` -> get_market_dcpi_rank x2 (parallel)
-The 79 tools below are what plan_query orchestrates — reach for one directly only when you already know it.
+The 80 tools below are what plan_query orchestrates — reach for one directly only when you already know it.
 
 ## MCP Tools — what each RETURNS (so an agent can pick without a trial call)
-79 tools at https://dchub.cloud/mcp (call tools/list for the canonical, always-current
+80 tools at https://dchub.cloud/mcp (call tools/list for the canonical, always-current
 catalog — "11 tools", "53 tools" and "60 tools" are previously advertised, now-retired counts). Site risk now has BOTH
 shapes: analyze_site is the one-call composite read (power/grid + fiber + water + disaster + climate
 + tax + verdict), AND the standalone tools get_composite_site_score (blended BUILD/CAUTION/AVOID with
