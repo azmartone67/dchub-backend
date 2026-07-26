@@ -189,6 +189,21 @@ MCP_LANDING_HTML = """<!DOCTYPE html>
 </div>
 
 <div class="pane">
+  <h2>Starter pack — AI Campus Power + Interconnect</h2>
+  <p style="color:#64748b;margin:0 0 10px">The energy-first pack for the hyperscale wave. Scope your client&rsquo;s <code>allowed_tools</code> to 10 tools, then any of six intents is one <code>execute_plan</code> call (also protocol-visible as the MCP resource <code>dchub://packs/ai-campus-power</code>):</p>
+  <p style="margin:0 0 10px"><code>execute_plan &middot; plan_query &middot; get_grid_scoreboard &middot; get_interconnection_queue &middot; get_retirement_headroom &middot; rank_markets &middot; get_market_dcpi_rank &middot; search_facilities &middot; get_fiber_intel &middot; analyze_site</code></p>
+  <ul style="margin:0 0 6px;padding-left:20px;line-height:1.9">
+    <li>&ldquo;rank markets for a 200 MW AI campus&rdquo;</li>
+    <li>&ldquo;how much power is available in ERCOT for a 100 MW data center&rdquo;</li>
+    <li>&ldquo;find 100 MW of buildable capacity near Dallas&rdquo;</li>
+    <li>&ldquo;compare Phoenix vs Columbus for an AI campus&rdquo;</li>
+    <li>&ldquo;where do fiber density and grid headroom overlap in Atlanta&rdquo;</li>
+    <li>&ldquo;analyze the site at 39.0438,-77.4874 for a 200 MW build&rdquo;</li>
+  </ul>
+  <p style="color:#64748b;margin:0"><small>Every answer returns the auditable replay + a <code>next_recipe</code> follow-up. Free tier answers all six at preview depth &mdash; <code>claim_free_key</code> raises it.</small></p>
+</div>
+
+<div class="pane">
   <h2>The 80 tools — highlights</h2>
   <div class="tools">
     <div class="tool"><b>search_facilities</b>12,650+ distinct sites, by city/MW/operator</div>
