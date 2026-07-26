@@ -2787,10 +2787,22 @@ def admin_agent_pay_master_tick():
                            "and make the paywall challenge legible to autonomous callers.",
         }
     else:
+        # r-mpp-onestep (2026-07-25): the gateway now ships a ready-to-pay challenge
+        # INSIDE the paywall preview (structuredContent.agent_payment.challenges[0]),
+        # so an agent no longer has to request one via _meta.mpp_pay=true. A passively
+        # offered challenge is NOT pay-intent and is deliberately not recorded as
+        # 'mpp_challenge' — that status still means "an agent explicitly asked to pay".
+        # Consequence: challenges≈0 is now the EXPECTED steady state, not evidence the
+        # challenge is missing. The live signal moved downstream to settle attempts
+        # (mpp_paid / mpp_verify_failed), so point the operator there instead of at the
+        # old "is it even surfaced?" check, which was verified surfaced on 2026-07-25.
         out["verdict"] = {
             "status": "NO_INTENT",
-            "headline": "Rail live but zero opt-ins (no challenges of any kind in window).",
-            "next_action": "Verify the MPP challenge is actually surfaced on flagship-tool calls "
-                           "for unpaid agents — if no challenge fires, no one can pay.",
+            "headline": "Rail live, challenge shipped inline with every gated preview — "
+                        "no agent has attempted a settle yet.",
+            "next_action": "Challenges are now offered passively, so a 0 here is expected — "
+                           "watch mpp_paid/mpp_verify_failed (settle attempts), not challenges. "
+                           "To move it: drive real agent traffic to the gated flagship tools and "
+                           "confirm agent_payment.challenges[0] is present on a live anon preview.",
         }
     return jsonify(out), 200
