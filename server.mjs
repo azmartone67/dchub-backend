@@ -491,7 +491,7 @@ function createServer() {
   const I = z.number().int().optional();
   const B = z.boolean().optional();
 
-  trackedTool(srv, 'search_facilities', 'Search 21,000+ global data center facilities.',
+  trackedTool(srv, 'search_facilities', 'Search 12,650+ global data center facilities.',
     { query: S, country: S, state: S, city: S, operator: S, min_capacity_mw: N, max_capacity_mw: N, tier: I, limit: I, offset: I },
     async (a) => ({ content: [{ type: 'text', text: JSON.stringify(await callAPI('/api/v1/facilities', a)) }] }));
 
@@ -901,7 +901,7 @@ const MCP_LANDING_HTML = `<!DOCTYPE html>
 <html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Connect DC Hub MCP · Claude, Cursor, Cline</title>
-<meta name="description" content="Add DC Hub's MCP server to any AI agent runtime. 40 tools, 21,000+ facilities, no signup needed for the free tier.">
+<meta name="description" content="Add DC Hub's MCP server to any AI agent runtime. 79 tools, 12,650+ facilities, no signup needed for the free tier.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600;700&display=swap" rel="stylesheet">
@@ -935,7 +935,7 @@ const MCP_LANDING_HTML = `<!DOCTYPE html>
 <header>
   <div class="eyebrow">Model Context Protocol · MCP Server</div>
   <h1>Connect DC Hub to your AI in 30 seconds.</h1>
-  <p class="lead">Native MCP server. 40 tools covering 21,000+ facilities, M&amp;A, grid intelligence, fiber, water risk, tax incentives. No signup needed for the free tier.</p>
+  <p class="lead">Native MCP server. 79 tools covering 12,650+ facilities, M&amp;A, grid intelligence, fiber, water risk, tax incentives. No signup needed for the free tier.</p>
 </header>
 
 <div class="urlbox">

@@ -474,7 +474,7 @@ def _render_html(d, title_suffix=""):
   Generated {d['generated_at'][:19].replace('T',' ')} UTC.</p>
 
   <div class="stat-grid">
-    <div class="stat"><div class="stat-num">{_fmt_n(d.get('total_facilities'))}</div><div class="stat-label">Facilities Tracked</div><div class="stat-sub">21,000+ across 170+ countries</div></div>
+    <div class="stat"><div class="stat-num">{_fmt_n(d.get('total_facilities'))}</div><div class="stat-label">Facilities Tracked</div><div class="stat-sub">12,650+ across 170+ countries</div></div>
     <div class="stat"><div class="stat-num">{d.get('markets_scored',0)}</div><div class="stat-label">Markets Scored (DCPI)</div><div class="stat-sub">incl. AESO · Hydro-Québec · Nord Pool</div></div>
     <div class="stat"><div class="stat-num">{len(d.get('top_build_markets',[]))}</div><div class="stat-label">BUILD Markets</div><div class="stat-sub">verdict = recommended for new deployment</div></div>
     <div class="stat"><div class="stat-num">{len(d.get('top_avoid_markets',[]))}</div><div class="stat-label">AVOID Flags</div><div class="stat-sub">grid-constrained, capacity-saturated</div></div>

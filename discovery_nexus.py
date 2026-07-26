@@ -3,7 +3,7 @@
 DC HUB DATA NEXUS - ULTIMATE DISCOVERY ENGINE v4.0
 ===================================================
 Enhanced with fixed data sources and 12+ RSS feeds
-Target: 21,000+ facilities from 15+ sources
+Target: 12,650+ facilities from 15+ sources
 
 Sources:
   FREE APIs (Tier 1 - Run Daily):

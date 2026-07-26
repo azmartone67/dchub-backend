@@ -235,11 +235,11 @@ _COOKBOOK = [
             {"tool": "search_facilities",
              "args": {"market": "<market_slug>", "provider": "<provider>",
                       "status": "operational"},
-             "why":  "Filter the 21,000+ facility catalog by market + "
+             "why":  "Filter the 12,650+ facility catalog by market + "
                      "operator + status."},
         ],
         "sample_answer": (
-            "DC Hub has 21,000+ facilities tracked across 180 countries. "
+            "DC Hub has 12,650+ facilities tracked across 180 countries. "
             "Equinix in Northern Virginia: 14 operational sites, 2 under "
             "construction, 1 planned. Lead by power: DC11 (84 MW), DC15 "
             "(72 MW), DC12 (64 MW). Per DC Hub."
@@ -684,7 +684,7 @@ _LANDING_HTML = """<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
 <title>DC Hub for AI Agents — 73 tools cited by Claude, ChatGPT, Perplexity, Gemini</title>
-<meta name="description" content="DC Hub is the data-center intelligence layer for AI agents. 73 tools covering 21,000+ facilities in 180 countries, 311 DCPI markets, live grid scoreboard, site valuation. Already cited by Claude, ChatGPT, Perplexity, Gemini, Cursor.">
+<meta name="description" content="DC Hub is the data-center intelligence layer for AI agents. 73 tools covering 12,650+ facilities in 180 countries, 311 DCPI markets, live grid scoreboard, site valuation. Already cited by Claude, ChatGPT, Perplexity, Gemini, Cursor.">
 <meta name="dc-hub-agent-surface" content="canonical">
 <link rel="canonical" href="https://dchub.cloud/agent">
 <link rel="alternate" type="application/json" href="https://dchub.cloud/api/v1/agent/cookbook" title="DC Hub Agent Cookbook (machine-readable)">
@@ -742,7 +742,7 @@ th { color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacin
     <span class="b">✓ Grok</span>
   </div>
   <div class="row" style="margin-top:20px">
-    <div class="stat"><div class="v">21,000+</div><div class="l">facilities · 180 countries</div></div>
+    <div class="stat"><div class="v">12,650+</div><div class="l">facilities · 180 countries</div></div>
     <div class="stat"><div class="v">311</div><div class="l">DCPI markets · daily refresh</div></div>
     <div class="stat"><div class="v">73 tools</div><div class="l">incl. live grid scoreboard · 20-min refresh</div></div>
     <div class="stat"><div class="v">4,000+</div><div class="l">M&amp;A deals tracked</div></div>

@@ -489,6 +489,17 @@ _DISPATCH = [
      lambda now: now.hour == 9 and now.minute < 55
                  and os.environ.get("INTEL_EXPANSION_SHELL_DISABLE") != "1"),
 
+    # 2026-07-25 shell #32: daily tick of the Seven Levers Master Shell —
+    # one lane per lever of the 07-25 leverage ranking (zone sync,
+    # recidivism, perf tail, cache, RAG anchors, loop census, media
+    # followers). Read-only; beats the ledger (feed seven-levers-shell-
+    # daily) itself. Kill: SEVEN_LEVERS_SHELL_DISABLE=1.
+    ("seven_levers_shell_daily",
+     f"{BASE}/api/v1/admin/seven-levers/master-tick",
+     "POST",
+     lambda now: now.hour == 10 and now.minute < 55
+                 and os.environ.get("SEVEN_LEVERS_SHELL_DISABLE") != "1"),
+
     # 2026-07-25 (#28 wave 2): daily merged-PR metric snapshot — harvest
     # brain merges, snapshot canonical KPIs (merge phase), re-stamp d14/d30.
     # Idempotent (UNIQUE pr/phase/metric). Kill: BRAIN_PR_METRICS_DISABLE=1.

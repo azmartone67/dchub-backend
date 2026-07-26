@@ -49,7 +49,7 @@ dynamic_hero_bp = Blueprint("dynamic_hero", __name__)
 _SEED_MESSAGES = [
     (
         "The neutral data layer<br>[GRAD]for data center infrastructure.[/GRAD]",
-        "21,000+ facilities. 178 countries. Power, fiber, water, M&A, tax incentives — one MCP endpoint or REST API. The research backend AI assistants and operators both quote.",
+        "12,650+ facilities. 178 countries. Power, fiber, water, M&A, tax incentives — one MCP endpoint or REST API. The research backend AI assistants and operators both quote.",
         "switzerland",
     ),
     (

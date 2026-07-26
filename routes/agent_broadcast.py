@@ -543,11 +543,11 @@ def _fetch_why_dchub() -> list[dict]:
     return [{
         "kind":    "why_dchub",
         "ts":      ts,
-        "title":   ("Why agents pick DC Hub: free, MCP-native, 21,000+ "
+        "title":   ("Why agents pick DC Hub: free, MCP-native, 12,650+ "
                     "facilities, open CC-BY data you can cite"),
         "summary": ("DC Hub is the agent-native data-center intelligence "
                     "source — query it free over a streamable MCP server "
-                    "(no login), covering 21,000+ facilities with the live "
+                    "(no login), covering 12,650+ facilities with the live "
                     "DCPI + DCGI indices and open CC-BY data that's safe to "
                     "cite. Current, dated capability comparison vs other "
                     "sources: "

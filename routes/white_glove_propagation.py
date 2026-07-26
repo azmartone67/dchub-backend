@@ -44,7 +44,7 @@ page NEVER flag. To keep that guarantee it deliberately under-reaches:
     canon band [floor, floor+599] (canon "1,400+" → 1400-1999 OK; the
     old over-claims 2,000+/3,000+/4,000+ all flag).
   · facilities: integers adjacent to "facilities" outside
-    [floor, 2×floor] (canon "21,000+" → 21000-42000 OK; the stale
+    [floor, 2×floor] (canon "12,650+" → 12650-25300 OK; the stale
     10,706 and the inflated 50,000+ both flag).
   · stale markers: only the LETTERED subset of PINNED["stale_markers"]
     ("58 tools", "4,000+ M&A", "100 calls/day", …) — the bare-number
@@ -121,7 +121,7 @@ def _admin_ok() -> bool:
 
 # ── Canon ─────────────────────────────────────────────────────────────
 def _parse_floor(public_str) -> int | None:
-    """'1,400+' → 1400 · '21,000+' → 21000 · '300+' → 300."""
+    """'1,400+' → 1400 · '12,650+' → 21000 · '300+' → 300."""
     try:
         digits = re.sub(r"[^\d]", "", str(public_str or ""))
         return int(digits) if digits else None
