@@ -11870,6 +11870,40 @@ def energy_retail_alias():
     with app.test_request_context(f'/api/v1/energy/summary{sep}{qs}', headers=dict(request.headers)):
         return app.full_dispatch_request()
 
+# r-ghost-aliases (2026-07-26, issue #1768 / brain agenda #100138): the platform
+# function-calling specs (static/copilot-spec.json, gemini-extension.json,
+# groq-tools.json) and two frontend JS files (energy-enhancement-v3.js,
+# pdf-enhancement.js) still advertise pre-migration paths that were never
+# ported to this backend (endpoint_migration_guide.py lists them as TODOs;
+# real traffic in api_endpoint_log: 4 lifetime calls, all the owner's key).
+# Platforms cache those specs, so fixing the spec files alone can't heal
+# already-deployed copies — serve the ghosts via the SAME internal-dispatch
+# alias pattern as energy_retail_alias above (which was mounted one segment
+# short of the advertised /retail/rates path — this block covers the real
+# ghost paths). The TARGET handlers carry the real tier gates
+# (/api/v1/grid/data = @require_plan('pro'), /api/v1/energy/summary =
+# identified-tier teaser), so aliases add ZERO new data exposure. The six
+# paths are removed from LOCKED_GATE_MANIFEST in this same commit — the boot
+# canary expects 401/403/404 from unrouted manifest paths and would flag the
+# summary-teaser 200s as UNGATED.
+def _ghost_alias(target):
+    def _view():
+        qs = request.query_string.decode()
+        sep = '?' if qs else ''
+        with app.test_request_context(f'{target}{sep}{qs}', headers=dict(request.headers)):
+            return app.full_dispatch_request()
+    return _view
+
+for _ghost_path, _ghost_target, _ghost_name in (
+    ('/api/v1/energy/retail/rates',     '/api/v1/energy/summary', 'ghost_energy_retail_rates'),
+    ('/api/v1/energy/naturalgas/price', '/api/v1/energy/summary', 'ghost_energy_naturalgas_price'),
+    ('/api/v1/energy/rto/demand',       '/api/v1/grid/data',      'ghost_energy_rto_demand'),
+    ('/api/v1/energy/rto/fuelmix',      '/api/v1/grid/data',      'ghost_energy_rto_fuelmix'),
+    ('/api/grid/demand',                '/api/v1/grid/data',      'ghost_grid_demand'),
+    ('/api/grid/prices',                '/api/v1/energy/summary', 'ghost_grid_prices'),
+):
+    app.add_url_rule(_ghost_path, _ghost_name, _ghost_alias(_ghost_target), methods=['GET'])
+
 # =============================================================================
 # SECURITY HEADERS & API TRACKING (Applied to all responses)
 # Note: CORS headers are handled at the top of the app (before blueprints)
@@ -29551,8 +29585,12 @@ except Exception as e:
 # =============================================================================
 LOCKED_GATE_MANIFEST = {
     'pro': [
-        '/api/grid/demand',
-        '/api/grid/prices',
+        # r-ghost-aliases (2026-07-26): /api/grid/demand, /api/grid/prices,
+        # /api/v1/energy/rto/{demand,fuelmix}, /api/v1/energy/naturalgas/price
+        # and /api/v1/energy/retail/rates moved OUT of this manifest — they are
+        # now internal-dispatch aliases to gated live handlers (see the
+        # r-ghost-aliases block near energy_retail_alias), so the boot canary's
+        # 401/403/404 expectation no longer applies; the TARGETS carry the gates.
         '/api/v1/energy/gas-storage',
         '/api/v1/infrastructure/transmission',
         '/api/v1/infrastructure/substations',
@@ -29564,10 +29602,6 @@ LOCKED_GATE_MANIFEST = {
         '/api/v1/fiber/sources',
         '/api/v1/fiber/routes',
         '/api/v1/energy/power-plants',
-        '/api/v1/energy/rto/demand',
-        '/api/v1/energy/rto/fuelmix',
-        '/api/v1/energy/naturalgas/price',
-        '/api/v1/energy/retail/rates',
         '/api/v1/energy/power-plants/nearby',
         '/api/v1/connectivity/ixps',
         '/api/v1/connectivity/facilities',

@@ -53,6 +53,13 @@ on:
     # Backup (Neon → R2): 02:00 UTC
     - cron: '0 2 * * *'
 
+    # ── Weekly ────────────────────────────────────────────────────────
+    # Gas infra refresh (pipelines/compressors/processings): Sunday 06:30 UTC.
+    # r-ghost-aliases wave (2026-07-26, issue #1768): /api/jobs/gas-refresh had
+    # NO dispatcher anywhere — cron_last_run shows it never completed; its only
+    # historical trigger was the brain's freshness lane, silent since ~June.
+    - cron: '30 6 * * 0'
+
   workflow_dispatch:
     inputs:
       job:
@@ -102,26 +109,27 @@ jobs:
           case "${HOUR}:00" in
             "01:00") JOBS="infrastructure-sync" ;;
             "02:00") JOBS="backup" ;;
-            "03:00") JOBS="discovery,auto-approve" ;;
+            "03:00") JOBS="discovery,auto-approve,db-health-snapshot" ;;
             "04:00") JOBS="capacity-headroom" ;;
             "05:00") JOBS="simple-alerts" ;;
             "07:00") JOBS="outreach" ;;
-            "09:00") JOBS="discovery,auto-approve" ;;
+            "09:00") JOBS="discovery,auto-approve,db-health-snapshot" ;;
             "10:00") JOBS="capacity-headroom" ;;
             "11:00") JOBS="simple-alerts" ;;
             "13:00") JOBS="promotion" ;;
-            "15:00") JOBS="discovery,auto-approve" ;;
+            "15:00") JOBS="discovery,auto-approve,db-health-snapshot" ;;
             "16:00") JOBS="capacity-headroom" ;;
             "17:00") JOBS="simple-alerts" ;;
             "19:00") JOBS="outreach" ;;
             "20:00") JOBS="ambassador" ;; # 20:30 cron rounds to 20:00 check
-            "21:00") JOBS="discovery,auto-approve" ;;
+            "21:00") JOBS="discovery,auto-approve,db-health-snapshot" ;;
             "22:00") JOBS="capacity-headroom" ;;
             "23:00") JOBS="simple-alerts" ;;
           esac
 
           # Half-hour jobs
           case "${HOUR}:${MINUTE}" in
+            "06:30"|"06:3"*) JOBS="${JOBS:+$JOBS,}gas-refresh" ;;
             "08:30"|"08:3"*) JOBS="${JOBS:+$JOBS,}ambassador" ;;
             "12:30"|"12:3"*) JOBS="${JOBS:+$JOBS,}evolution" ;;
             "14:30"|"14:3"*) JOBS="${JOBS:+$JOBS,}market-report" ;;
