@@ -207,6 +207,10 @@ ISO_REGISTRY = {
 def _has_creds(iso: str) -> bool:
     cfg = ISO_REGISTRY.get(iso, {})
     auth, p = cfg.get("auth"), cfg.get("env", iso)
+    if iso == "PJM" and _env("EIA_API_KEY"):
+        # shell#35 WS8: fetch_pjm's PRIMARY is EIA-930 (no PJM creds needed);
+        # PJM_API_KEY remains only the optional DM2 fallback.
+        return True
     if auth == "public":
         return True
     if auth == "key":
