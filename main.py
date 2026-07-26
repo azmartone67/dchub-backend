@@ -1833,6 +1833,14 @@ try:
     except Exception as _crn_early:
         import logging
         logging.getLogger(__name__).warning('competitor_recon wiring failed: %s', _crn_early)
+    # shell#35 (2026-07-26): grid/fiber heavy-user radar (monetization
+    # measurement) — safe-zone registration, same recipe.
+    try:
+        from routes.grid_fiber_usage_radar import grid_fiber_radar_bp
+        app.register_blueprint(grid_fiber_radar_bp)
+    except Exception as _gfr_early:
+        import logging
+        logging.getLogger(__name__).warning('grid_fiber_radar wiring failed: %s', _gfr_early)
     # Powered Land Gas Pricing (2026-06-04, Phase 1 spine):
     # Per-DCPI-market Henry Hub spot + regional basis + delivered industrial /
     # electric tariff + heat-rate-derived $/MWh. PRO-gated (free = teaser).
@@ -3693,6 +3701,55 @@ def _grid_ext_metrics_for(rto_code):
     return ext
 
 
+# shell#35 moat (2026-07-26): measured (gen−demand) headroom from the live ISO
+# telemetry table, bias-adjusted per the documented ERCOT/MISO structural
+# offsets. Response-time attach (the grid-intel payload cache is ~30 min, so
+# this keeps its own small TTL cache). Fail-soft {} — never affects the base
+# payload.
+_GRID_TELEMETRY_CACHE = {}
+_GRID_TELEMETRY_TTL = 300
+
+
+def _grid_telemetry_for(rto_code):
+    iso = _GRID_EXT_ISO.get((rto_code or '').upper()) or (rto_code or '').upper()
+    if not iso:
+        return {}
+    now_s = time.time()
+    hit = _GRID_TELEMETRY_CACHE.get(iso)
+    if hit and now_s - hit[0] < _GRID_TELEMETRY_TTL:
+        return hit[1]
+    block = {}
+    try:
+        conn = get_read_db()
+        if conn:
+            try:
+                cur = conn.cursor()
+                cur.execute("""
+                    SELECT observed_at, online_gen_mw, load_mw, headroom_mw,
+                           reserve_margin_pct, source
+                      FROM grid_telemetry
+                     WHERE iso = %s AND headroom_mw IS NOT NULL
+                     ORDER BY observed_at DESC LIMIT 1
+                """, (iso,))
+                row = cur.fetchone()
+                if row:
+                    from routes.grid_payload_freshness import measured_headroom_block
+                    block = measured_headroom_block({
+                        'observed_at': row[0], 'online_gen_mw': row[1],
+                        'load_mw': row[2], 'headroom_mw': row[3],
+                        'reserve_margin_pct': row[4], 'source': row[5],
+                    }, iso)
+            finally:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+    except Exception:
+        block = {}
+    _GRID_TELEMETRY_CACHE[iso] = (now_s, block)
+    return block
+
+
 def _grid_intel_fetch(region, rto_code):
     """Expensive upstream assembly for phase19b_grid_intelligence. Cached by
     _grid_intel_cached. Timeouts trimmed (15→8, 8→5) so a cache miss can't
@@ -3981,6 +4038,12 @@ def _grid_intel_fetch(region, rto_code):
                 out['capacity_price_as_of'] = _ext['capacity_price'].get('as_of')
             if _ext.get('dc_load_queue'):
                 out['dc_load_queue_gw'] = _ext['dc_load_queue'].get('value')
+            # shell#35: independent row-level classification of OUR queue
+            # data (category dc_load_queue_measured) alongside the ISO's
+            # published figure — "published vs measured", both citable.
+            if _ext.get('dc_load_queue_measured'):
+                out['dc_load_queue_measured_gw'] = \
+                    _ext['dc_load_queue_measured'].get('value')
     except Exception as _ee:
         out['extended_metrics_error'] = type(_ee).__name__
 
@@ -4244,6 +4307,15 @@ def phase19b_grid_intelligence(region):
                    default_v="published")
         except Exception:
             pass
+        # shell#35: freshness is a TRUST feature — anon/gated callers see the
+        # verifiable data-age block too (it advertises exactly what a key buys).
+        try:
+            from routes.grid_payload_freshness import build_freshness_block as _fb35g
+            _frg = _fb35g(gated)
+            if _frg:
+                gated['freshness_sla'] = _frg
+        except Exception:
+            pass
         resp = jsonify(gated)
         resp.headers['Cache-Control'] = 'public, max-age=60'  # Shorter — encourage re-fetch with key
         resp.headers['Access-Control-Allow-Origin'] = '*'
@@ -4256,6 +4328,22 @@ def phase19b_grid_intelligence(region):
     # provenance-v1 (2026-07-11): same copy-before-mutate rule applies to the
     # provenance stamp below — never mutate the shared cache entry.
     out = dict(out)
+    # shell#35 moat (2026-07-26): measured bias-adjusted headroom + verifiable
+    # per-layer freshness. Attached at RESPONSE time (post cache-copy) so ages
+    # are current even on a 30-min-cached payload. Both fail-soft.
+    try:
+        _tel = _grid_telemetry_for(rto_code)
+        if _tel:
+            out['headroom_measured'] = _tel
+    except Exception:
+        pass
+    try:
+        from routes.grid_payload_freshness import build_freshness_block as _fb35
+        _fr = _fb35(out)
+        if _fr:
+            out['freshness_sla'] = _fr
+    except Exception:
+        pass
     if request.args.get('rag'):
         out['related_intel'] = _rag_related_intel(
             f"{out.get('region') or region} grid power demand data center capacity",

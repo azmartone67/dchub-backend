@@ -134,7 +134,10 @@ _BATCH = [
     # routes/_proposed_register_orphan_grid_pages_as_brain_surfaces.py)
     ("auto_grid_hub", "Grid Hub",
      "/grid — public ISO grid intelligence index + per-ISO grid pages",
-     ["/grid", "/grid/CAISO", "/grid/ERCOT", "/grid/PJM"],
+     # shell#35: lowercase — grid_public_routes 301s uppercase to lowercase,
+     # and page_integrity does an exact path membership test, so the
+     # uppercase entries pointed at redirects (orphan verdict risk).
+     ["/grid", "/grid/caiso", "/grid/ercot", "/grid/pjm"],
      ["get_grid_data", "get_grid_intelligence"], ["view"]),
     ("auto_integrations_tools", "Integrations Tool Catalog",
      "/integrations/tools.json — machine-readable tool catalog for integrations",

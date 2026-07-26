@@ -978,6 +978,25 @@ def _persist_and_file(run_date, signals, rows, dchub_row, dchub_evidence,
                                    m["why"], m["evidence"]))[:2000],
                         detector="competitor_recon", status="open")
                     out["findings_filed"] += 1
+                # shell#35 (WS6): CBRE/JLL report-cycle counter-programming.
+                # A brokerage positioning/report shift stages a DRAFT social
+                # card (content_publisher.stage_draft → status='draft',
+                # operator approves — never auto-sent).
+                for sh in (synthesis.get("positioning_shifts") or []):
+                    if sh.get("slug") not in ("cbre", "jll"):
+                        continue
+                    try:
+                        from content_publisher import stage_draft
+                        stage_draft(
+                            ("%s just refreshed its data-center research "
+                             "(\"%s\"). Analyst PDFs are snapshots — the DC Hub "
+                             "Power Index is live, per-market, and agent-"
+                             "queryable the moment conditions change: "
+                             "https://dchub.cloud/dcpi") % (
+                                sh["slug"].upper(), sh.get("now", "")[:90]),
+                            platform="linkedin")
+                    except Exception:
+                        pass
                 for sh in (synthesis.get("positioning_shifts") or [])[:_MAX_THREAT_FINDINGS]:
                     upsert_brain_finding(
                         cur,

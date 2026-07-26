@@ -197,6 +197,43 @@ def _snapshot_provenance(as_of=None, *, default_v):
         return None
 
 
+# shell#35 (2026-07-26): latest dchub_classified DC-queue series written by
+# depth_master_shell._act_large_load (category dc_load_queue_measured).
+# Fail-soft readers — snapshot must never 500 on a missing table/rows.
+def _dchub_classified_by_iso() -> dict:
+    try:
+        from db_utils import get_connection
+        conn = get_connection()
+    except Exception:
+        return {}
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT DISTINCT ON (iso) iso, primary_value, as_of
+                  FROM grid_ext_metrics
+                 WHERE category = 'dc_load_queue_measured'
+                   AND primary_value IS NOT NULL
+                 ORDER BY iso, as_of DESC NULLS LAST
+            """)
+            return {r[0]: {"gw": float(r[1]),
+                           "as_of": r[2].isoformat() if r[2] else None}
+                    for r in cur.fetchall()}
+    except Exception:
+        return {}
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def _dchub_classified_total():
+    by = _dchub_classified_by_iso()
+    if not by:
+        return None
+    return round(sum(v["gw"] for v in by.values()), 2)
+
+
 @interconnection_queues_bp.route("/api/v1/interconnection-queue/snapshot")
 def api_snapshot():
     snap = _latest_snapshot()
@@ -226,6 +263,17 @@ def api_snapshot():
             "queued_load_gw": total_gw,
             "queued_load_data_center_gw": dc_gw,
             "dc_share_pct": round(100.0 * dc_gw / total_gw, 1) if (dc_gw is not None and total_gw) else None,
+            # shell#35: DC Hub's own row-level classification (independent of
+            # ISO-published large-load figures) — per-ISO in dchub_classified.
+            "dchub_classified_dc_gw": _dchub_classified_total(),
+        },
+        "dchub_classified": {
+            "by_iso": _dchub_classified_by_iso(),
+            "method": ("Conservative classifier over the tracked per-project "
+                       "queue rows: fuel_type=Load OR DC name-match "
+                       "(data center/hyperscale/colocation/compute campus). "
+                       "Independent of, and comparable to, ISO-published "
+                       "large-load totals."),
         },
         "data_center_load": {
             "tracked": False,

@@ -222,6 +222,25 @@ def scan_competitors() -> dict:
         t2.start()
     except Exception as e:
         out["recon"] = {"status": "spawn_failed", "error": str(e)[:120]}
+
+    # ── STEP 4 (shell#35, 2026-07-26) — weekly grid/fiber heavy-user radar
+    # (monetization measurement; findings only, no gate changes). Same
+    # pattern: daemon thread, in-module weekly gate.
+    out["usage_radar"] = {"status": "spawned_background"}
+    try:
+        import threading as _th_radar
+
+        def _radar_bg():
+            try:
+                from routes.grid_fiber_usage_radar import run_usage_radar
+                run_usage_radar()
+            except Exception:
+                pass
+
+        _th_radar.Thread(target=_radar_bg, name="grid-fiber-radar",
+                         daemon=True).start()
+    except Exception as e:
+        out["usage_radar"] = {"status": "spawn_failed", "error": str(e)[:120]}
     return out
 
 

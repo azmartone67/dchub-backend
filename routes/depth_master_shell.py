@@ -316,6 +316,62 @@ def _act_large_load() -> dict:
                     note_swallowed_write("grid_ext_metrics", where="depth_master_shell._act_large_load")
                     c.rollback()
                     continue
+            # shell#35 (2026-07-26): INDEPENDENT row-level series for EVERY
+            # ISO (including ones with a published figure) — category
+            # dc_load_queue_measured, source dchub_classified. "Published vs
+            # measured" side by side is citable and continuously updated.
+            _CORE7 = ("ERCOT", "PJM", "MISO", "CAISO", "SPP", "NYISO", "ISONE")
+            _measured_seen = set()
+            for iso, gw, n in rows:
+                _measured_seen.add(iso)
+                raw_m = {"iso": iso, "dc_gw": float(gw), "project_count": int(n),
+                         "method": ("dchub_classified: interconnect_queue rows, "
+                                    "fuel_type=Load OR conservative DC name-match "
+                                    "(regex avoids 'DC'=direct-current)")}
+                try:
+                    cur.execute("""
+                        INSERT INTO grid_ext_metrics
+                          (source, dataset_id, iso, category, primary_value, unit, as_of, raw)
+                        VALUES ('dchub_classified', %s, %s, 'dc_load_queue_measured', %s, 'GW', %s, %s)
+                        ON CONFLICT (dataset_id, as_of) DO UPDATE
+                          SET source = EXCLUDED.source,
+                              primary_value = EXCLUDED.primary_value,
+                              raw = EXCLUDED.raw, ingested_at = NOW()
+                    """, (f"dc_load_queue_measured:{iso}", iso, float(gw),
+                          now_iso, json.dumps(raw_m)))
+                    wrote += 1
+                except Exception:
+                    note_swallowed_write("grid_ext_metrics",
+                                         where="depth_master_shell._act_large_load.measured")
+                    c.rollback()
+                    continue
+            for iso in _CORE7:
+                if iso in _measured_seen:
+                    continue
+                # Honest zero: the classifier RAN and found no DC-classified
+                # rows for this ISO (ISO-NE typically) — a measurement, not
+                # missing data.
+                raw_z = {"iso": iso, "dc_gw": 0.0, "project_count": 0,
+                         "method": ("dchub_classified: 0 rows matched the "
+                                    "conservative DC classifier in this ISO's "
+                                    "tracked queue")}
+                try:
+                    cur.execute("""
+                        INSERT INTO grid_ext_metrics
+                          (source, dataset_id, iso, category, primary_value, unit, as_of, raw)
+                        VALUES ('dchub_classified', %s, %s, 'dc_load_queue_measured', 0, 'GW', %s, %s)
+                        ON CONFLICT (dataset_id, as_of) DO UPDATE
+                          SET source = EXCLUDED.source,
+                              primary_value = EXCLUDED.primary_value,
+                              raw = EXCLUDED.raw, ingested_at = NOW()
+                    """, (f"dc_load_queue_measured:{iso}", iso, now_iso,
+                          json.dumps(raw_z)))
+                    wrote += 1
+                except Exception:
+                    note_swallowed_write("grid_ext_metrics",
+                                         where="depth_master_shell._act_large_load.measured_zero")
+                    c.rollback()
+                    continue
             for iso, p in published.items():
                 dataset_id = f"dc_load_queue:{iso}"
                 raw = {"iso": iso, "dc_gw": p["gw"],
@@ -471,6 +527,23 @@ def _act_hosting_capacity() -> dict:
     market_power_scores lat/lng), storing a headroom score per market in
     grid_ext_metrics (category='hosting_capacity', unit='score'). Bounded: one
     batch of markets per tick (the stalest)."""
+    # shell#35: piggyback the weekly utility FEEDER hosting-capacity ingest
+    # (PHI + National Grid NY verified public FeatureServers) on this act's
+    # cadence — weekly-gated + budget-capped inside the module, daemon thread,
+    # fail-soft. No new cron.
+    try:
+        import threading as _th_hc
+
+        def _hc_bg():
+            try:
+                from routes.hosting_capacity_ingest import run_hosting_capacity_ingest
+                run_hosting_capacity_ingest()
+            except Exception:
+                pass
+        _th_hc.Thread(target=_hc_bg, name="hosting-capacity-ingest",
+                      daemon=True).start()
+    except Exception:
+        pass
     c = _conn()
     if c is None:
         return {"ok": False, "reason": "db_unavailable"}
@@ -818,6 +891,17 @@ def grid_hosting_capacity():
                 try: c.close()
                 except Exception: pass
     hr = _substation_headroom(lat, lon, radius)
+    # shell#35: upgrade to utility-published FEEDER truth when ingested rows
+    # exist near the point; the substation-proximity read stays as fallback
+    # context. Fail-soft — a feeder-table problem can't break the endpoint.
+    try:
+        from routes.hosting_capacity_ingest import feeders_near
+        _fh = feeders_near(lat, lon, radius)
+        if _fh:
+            hr["feeder_hosting"] = _fh
+            hr["basis"] = "utility_feeder_data + substation_proximity"
+    except Exception:
+        pass
     if hr is None:
         return jsonify(available=False, reason="need lat+lon or a known market slug"), 200
     hr["available"] = True

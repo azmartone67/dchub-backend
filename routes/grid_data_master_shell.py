@@ -743,6 +743,7 @@ def grid_extended(iso):
             "grid_carbon_intensity_lb_mwh": "emissions",
             "zone_lmp_usd_mwh": "lmp",
             "dc_load_queue_gw": "dc_load_queue",
+            "dc_load_queue_measured_gw": "dc_load_queue_measured",
         }
         for field, c0 in mapping.items():
             r = cat.get(c0)
