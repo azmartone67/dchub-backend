@@ -206,6 +206,44 @@ def _resolve_session_claimed_key(conn, sid):
     return _val
 
 
+# ── r-session-restore (2026-07-26, claim-carry wave) ───────────────────────
+# The mcp-server's session→key binding lives in in-memory sessionMeta PER
+# REPLICA, so an agent that claimed a key mid-session silently loses its
+# identity on replica rotation or a server restart — the confirmed remaining
+# half of the claim-carry leak (50% of post-claim sessions carried the key;
+# the /track resolver above patches TELEMETRY only, not live tier). This
+# internal endpoint lets the mcp-server ask "does this session own a
+# recently-claimed key?" and re-adopt it live. Gated by the same
+# X-Internal-Key the worker↔backend sync uses; serves from
+# _resolve_session_claimed_key's cache, so the hot path costs one dict hit.
+
+@mcp_bp.get("/api/v1/mcp/session-key")
+def mcp_session_key():
+    _sent = request.headers.get("X-Internal-Key", "") or ""
+    if not INTERNAL_KEY or _sent != INTERNAL_KEY:
+        return jsonify(ok=False, error="internal key required"), 401
+    sid = (request.args.get("session_id") or "").strip()[:200]
+    if not sid:
+        resp = jsonify(ok=True, api_key=None)
+        resp.headers["Cache-Control"] = "no-store"
+        return resp
+    conn = None
+    try:
+        conn = _open_track_conn()
+        key = _resolve_session_claimed_key(conn, sid)
+    except Exception:
+        key = None
+    finally:
+        try:
+            if conn is not None:
+                conn.close()
+        except Exception:
+            pass
+    resp = jsonify(ok=True, api_key=key or None)
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
+
+
 # ── r-streak (2026-07-18): return-streak surfacing helper ──────────────────
 # The progressive daily-cap unlock (return_streak.py) only moves the key-reuse
 # needle if agents KNOW about it. Fail-open static ladder text for claim /
