@@ -732,11 +732,66 @@ def fetch_pjm() -> list[dict]:
     if not key:
         return [_unavailable("PJM", "PJM_API_KEY", base,
                              "PJM Data Miner 2 requires Ocp-Apim-Subscription-Key.")]
-    # Key present but extraction not yet wired/verified → stay honest (no fake).
-    print("[iso_grid] PJM_API_KEY present but extraction not yet implemented; "
-          "returning source_unavailable (no fabricated data).", flush=True)
-    return [_unavailable("PJM", "PJM_API_KEY", base,
-                         "PJM key set but gen/load extraction not yet wired.")]
+    # shell#35 follow-up (2026-07-26): extraction wired so the key going into
+    # Railway env = instant live telemetry. Tolerant parse, FAIL-CLOSED.
+    _hdr = {"Ocp-Apim-Subscription-Key": key, "Accept": "application/json"}
+    try:
+        gen_js = _http_json(
+            base + "/gen_by_fuel?rowCount=50&startRow=1&format=json",
+            headers=_hdr)
+        load_js = _http_json(
+            base + "/inst_load?rowCount=25&startRow=1&format=json",
+            headers=_hdr)
+
+        def _items(js):
+            if isinstance(js, dict):
+                return js.get("items") or js.get("Items") or []
+            return js if isinstance(js, list) else []
+
+        fuel_mix, gen = {}, 0.0
+        for r in _items(gen_js):
+            if not isinstance(r, dict):
+                continue
+            mw = None
+            for k, v in r.items():
+                if k.lower() in ("mw", "market_generation_mw", "gen_mw"):
+                    try:
+                        mw = float(v)
+                    except (TypeError, ValueError):
+                        mw = None
+                    break
+            if mw is None:
+                continue
+            cat = str(r.get("fuel_type") or r.get("fuel") or "other").lower()
+            fuel_mix[cat] = round(fuel_mix.get(cat, 0.0) + mw, 1)
+            gen += mw
+        load = None
+        for r in _items(load_js):
+            if not isinstance(r, dict):
+                continue
+            area = str(r.get("area") or r.get("area_name") or "")
+            for k, v in r.items():
+                if "load" in k.lower() and k.lower().endswith("_mw"):
+                    try:
+                        cand = float(v)
+                    except (TypeError, ValueError):
+                        continue
+                    if "RTO" in area.upper() or load is None:
+                        load = cand
+                    break
+            if load is not None and "RTO" in area.upper():
+                break
+        if gen > 0 and load and load > 0:
+            return [_record("PJM", "PJM", online_gen_mw=round(gen, 1),
+                            load_mw=round(load, 1), fuel_mix=fuel_mix,
+                            source="pjm_dataminer2")]
+        return [_unavailable("PJM", "PJM_API_KEY", base,
+                             "PJM responded but gen/load parse was empty "
+                             "(no fabricated data).")]
+    except Exception as e:
+        print(f"[iso_grid] PJM extraction failed: {str(e)[:120]}", flush=True)
+        return [_unavailable("PJM", "PJM_API_KEY", base,
+                             f"PJM fetch error: {type(e).__name__}")]
 
 
 def fetch_isone() -> list[dict]:
@@ -749,11 +804,65 @@ def fetch_isone() -> list[dict]:
     if not (user and pw):
         return [_unavailable("ISONE", "ISONE_USERNAME+ISONE_PASSWORD", base,
                              "ISO-NE Web Services requires HTTP basic auth.")]
-    print("[iso_grid] ISO-NE credentials present but extraction not yet "
-          "implemented; returning source_unavailable (no fabricated data).",
-          flush=True)
-    return [_unavailable("ISONE", "ISONE_USERNAME+ISONE_PASSWORD", base,
-                         "ISO-NE creds set but gen/load extraction not yet wired.")]
+    # shell#35 follow-up (2026-07-26): owner registered ISO Express creds —
+    # real extraction. HTTP basic; JSON via .json suffix. Tolerant parse,
+    # FAIL-CLOSED to the honest marker if either feed can't be read.
+    import base64 as _b64
+    _auth = {"Authorization": "Basic " + _b64.b64encode(
+        f"{user}:{pw}".encode()).decode(), "Accept": "application/json"}
+
+    def _find_rows(obj, key):
+        """Depth-first: first list of dicts whose members carry `key`."""
+        if isinstance(obj, list):
+            if obj and isinstance(obj[0], dict) and key in obj[0]:
+                return obj
+            for it in obj:
+                r = _find_rows(it, key)
+                if r:
+                    return r
+        elif isinstance(obj, dict):
+            if key in obj:
+                return [obj]
+            for v in obj.values():
+                r = _find_rows(v, key)
+                if r:
+                    return r
+        return None
+
+    try:
+        mix_js = _http_json(base + "/genfuelmix/current.json", headers=_auth)
+        load_js = _http_json(base + "/fiveminutesystemload/current.json",
+                             headers=_auth)
+        mix_rows = _find_rows(mix_js, "GenMw") or []
+        load_rows = _find_rows(load_js, "LoadMw") or []
+        fuel_mix, gen = {}, 0.0
+        for r in mix_rows:
+            try:
+                mw = float(r.get("GenMw"))
+            except (TypeError, ValueError):
+                continue
+            cat = str(r.get("FuelCategory") or r.get("FuelCategoryRollup")
+                      or "other").strip().lower()
+            fuel_mix[cat] = round(fuel_mix.get(cat, 0.0) + mw, 1)
+            gen += mw
+        load = None
+        if load_rows:
+            try:
+                load = float(load_rows[0].get("LoadMw"))
+            except (TypeError, ValueError):
+                load = None
+        if gen > 0 and load and load > 0:
+            return [_record("ISONE", "ISONE", online_gen_mw=round(gen, 1),
+                            load_mw=round(load, 1), fuel_mix=fuel_mix,
+                            source="isone_webservices")]
+        return [_unavailable("ISONE", "ISONE_USERNAME+ISONE_PASSWORD", base,
+                             "ISO-NE responded but gen/load parse was empty "
+                             "(no fabricated data).")]
+    except Exception as e:
+        print(f"[iso_grid] ISO-NE extraction failed: {str(e)[:120]}",
+              flush=True)
+        return [_unavailable("ISONE", "ISONE_USERNAME+ISONE_PASSWORD", base,
+                             f"ISO-NE fetch error: {type(e).__name__}")]
 
 
 # Dispatch table — maps impl names to functions.
