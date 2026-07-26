@@ -16488,8 +16488,11 @@ def list_markets():
         try:
             from util.tier_gate import resolve_tier as _rt_mk
             _t_obj_mk, _ = _rt_mk()
-            _tv_mk = str(getattr(_t_obj_mk, 'value',
-                                 getattr(_t_obj_mk, 'name', _t_obj_mk))).lower()
+            # util.tier_gate.Tier is an IntEnum — .value is 0-4, the tier WORD
+            # is .name (first deploy of this block read .value first and got
+            # '3', which silently never promoted).
+            _tv_mk = str(getattr(_t_obj_mk, 'name',
+                                 getattr(_t_obj_mk, 'value', _t_obj_mk))).lower()
             _tv_mk = {'founding': 'pro', 'paid': 'pro', 'team': 'pro',
                       'metered': 'pro', 'admin': 'enterprise',
                       'internal': 'enterprise', 'research_seed': 'enterprise',
