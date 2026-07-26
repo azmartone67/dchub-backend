@@ -577,15 +577,21 @@ def _read_recidivism(days: int = 60, top: int = 8) -> list:
         return []
     try:
         with c.cursor() as cur:
+            # ★live schema (introspected 2026-07-26): brain_fix_outcomes is
+            # the ORIGINAL shape — proposal_id/proposal_kind/checked_at/
+            # evidence_note. The reconciler's richer DDL (issue_label,
+            # reconciled_at) never ran because the table pre-existed; the
+            # first version of this reader used those columns and fail-softed
+            # to [] on every call, silently skipping the whole section.
             cur.execute("""
-                SELECT COALESCE(NULLIF(issue_label, ''), 'unlabeled') AS label,
+                SELECT COALESCE(NULLIF(proposal_kind, ''), 'unknown') AS kind,
                        COUNT(*) AS n,
-                       MAX(reconciled_at)::date AS latest,
-                       (ARRAY_AGG(LEFT(COALESCE(evidence, ''), 160)
-                                  ORDER BY reconciled_at DESC))[1] AS ev
+                       MAX(checked_at)::date AS latest,
+                       (ARRAY_AGG(LEFT(COALESCE(evidence_note, ''), 160)
+                                  ORDER BY checked_at DESC))[1] AS ev
                   FROM brain_fix_outcomes
                  WHERE still_broken IS TRUE
-                   AND reconciled_at > NOW() - make_interval(days => %s)
+                   AND checked_at > NOW() - make_interval(days => %s)
                  GROUP BY 1
                  ORDER BY n DESC, latest DESC
                  LIMIT %s""", (days, top))

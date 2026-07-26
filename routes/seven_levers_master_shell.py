@@ -156,8 +156,12 @@ def _lane_zone_sync() -> list[dict]:
         return [_check("zs_canon", "canon available", None,
                        "ai_surface_canon import failed: %s" % str(e)[:100],
                        critical=True)]
-    for cid, path in (("zs_card", "/.well-known/mcp/server-card.json"),
-                      ("zs_landing", "/mcp")):
+    # The CARD is the count-bearing surface: canon floor REQUIRED there.
+    # /mcp (GET) is a status envelope that legitimately carries no floor —
+    # it is scanned for stale floors only, plus its self-reported tool count.
+    for cid, path, need_floor in (
+            ("zs_card", "/.well-known/mcp/server-card.json", True),
+            ("zs_landing", "/mcp", False)):
         body, err = _fetch(path)
         if body is None:
             out.append(_check(cid, path + " serves canon", None,
@@ -169,7 +173,7 @@ def _lane_zone_sync() -> list[dict]:
         problems = []
         if stale:
             problems.append("retired floor(s): %s" % ", ".join(stale))
-        if canon_floor and canon_floor not in body:
+        if need_floor and canon_floor and canon_floor not in body:
             problems.append("canon floor %s absent" % canon_floor)
         if want_tools and got_tools is not None and got_tools != want_tools:
             problems.append("advertises %d tools (canon %d)"
@@ -177,6 +181,26 @@ def _lane_zone_sync() -> list[dict]:
         out.append(_check(cid, path + " serves canon", not problems,
                           "in sync" if not problems else "; ".join(problems),
                           critical=True))
+        if path == "/mcp":
+            # The envelope's "tools": N self-count vs canon — the manifest
+            # chain has disagreed three ways before ([[manifests]] class).
+            # 2026-07-26: envelope says 72 while manifest/card/canon say 79 —
+            # somebody is wrong, and a disagreement must read RED until the
+            # registry itself is recounted, not smoothed over.
+            try:
+                env_tools = json.loads(body).get("tools")
+            except Exception:
+                env_tools = None
+            if isinstance(env_tools, int) and want_tools:
+                out.append(_check(
+                    "zs_envelope_tools", "/mcp envelope tool count vs canon",
+                    env_tools == want_tools,
+                    "envelope self-reports %d, canon %d%s"
+                    % (env_tools, want_tools,
+                       "" if env_tools == want_tools else
+                       " — manifest-chain disagreement; recount the live "
+                       "registry (tools/list) to settle which is lying"),
+                    critical=False))
     return out
 
 
@@ -200,11 +224,13 @@ def _lane_recidivism() -> list[dict]:
         return out
     try:
         with c.cursor() as cur:
+            # ★live schema: the stamp column is checked_at (the reconciler's
+            # reconciled_at DDL never ran — table pre-existed, older shape).
             cur.execute(
                 "SELECT count(*) FILTER (WHERE still_broken IS NOT NULL), "
                 "count(*) FILTER (WHERE still_broken IS TRUE), "
                 "count(*) FILTER (WHERE still_broken IS TRUE AND "
-                "  reconciled_at > now() - interval '60 days') "
+                "  checked_at > now() - interval '60 days') "
                 "FROM brain_fix_outcomes")
             checked, recid, recent = [int(x) for x in cur.fetchone()]
         pct = (100.0 * recid / checked) if checked else 0.0
