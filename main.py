@@ -36117,6 +36117,14 @@ try:
 except Exception as _e:
     print(f"[main] competitor_intel register failed: {_e}", file=sys.stderr)
 
+# Phase (2026-07-25): competitor recon — weekly good/bad/gaps/win-moves
+# intelligence over the rival set, filed to the brain (competitor_recon).
+try:
+    from routes.competitor_recon import competitor_recon_bp
+    app.register_blueprint(competitor_recon_bp)
+except Exception as _e:
+    print(f"[main] competitor_recon register failed: {_e}", file=sys.stderr)
+
 # Phase ZZZZ (2026-05-16): market_deep_dive moved to safe zone (~line 1180)
 # because late-line blueprint registration silently fails on Railway.
 

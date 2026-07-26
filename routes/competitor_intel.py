@@ -195,6 +195,33 @@ def scan_competitors() -> dict:
         t.start()
     except Exception as e:
         out["gap_scan"] = {"status": "spawn_failed", "error": str(e)[:120]}
+
+    # ── STEP 3 (2026-07-25) — weekly competitor RECON (posture/positioning
+    # intelligence → brain: good/bad/gaps/win-moves). Same piggyback
+    # pattern as STEP 2: background daemon thread, budget-capped inside
+    # the module, fail-soft. The module's own 7-day gate makes this a
+    # cheap no-op on 6 of 7 daily runs — no new cron.
+    out["recon"] = {"status": "spawned_background"}
+    try:
+        import threading as _threading_recon
+
+        def _recon_bg():
+            try:
+                from routes.competitor_recon import run_competitor_recon
+                run_competitor_recon()
+            except Exception as e:
+                try:
+                    import logging
+                    logging.getLogger(__name__).warning(
+                        "competitor recon (bg) failed: %s", str(e)[:160])
+                except Exception:
+                    pass
+
+        t2 = _threading_recon.Thread(target=_recon_bg,
+                                     name="competitor-recon", daemon=True)
+        t2.start()
+    except Exception as e:
+        out["recon"] = {"status": "spawn_failed", "error": str(e)[:120]}
     return out
 
 
