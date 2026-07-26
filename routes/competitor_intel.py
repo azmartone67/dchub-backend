@@ -241,6 +241,33 @@ def scan_competitors() -> dict:
                          daemon=True).start()
     except Exception as e:
         out["usage_radar"] = {"status": "spawn_failed", "error": str(e)[:120]}
+
+    # ── STEP 5 (shell#35 fix, 2026-07-26) — grid-depth extras that were
+    # wrongly piggybacked on depth-shell ACT functions (acts only run when
+    # their lever is the shell's WEAKEST — can be dormant for weeks).
+    # Daily here instead: measured DC-queue series is idempotent per hour;
+    # the feeder ingest weekly-gates itself in-module.
+    out["grid_depth_extras"] = {"status": "spawned_background"}
+    try:
+        import threading as _th_depth
+
+        def _depth_bg():
+            try:
+                from routes.depth_master_shell import _act_large_load
+                _act_large_load()
+            except Exception:
+                pass
+            try:
+                from routes.hosting_capacity_ingest import run_hosting_capacity_ingest
+                run_hosting_capacity_ingest()
+            except Exception:
+                pass
+
+        _th_depth.Thread(target=_depth_bg, name="grid-depth-extras",
+                         daemon=True).start()
+    except Exception as e:
+        out["grid_depth_extras"] = {"status": "spawn_failed",
+                                    "error": str(e)[:120]}
     return out
 
 
