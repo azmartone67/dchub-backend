@@ -68,6 +68,21 @@
         <h1>My Agent</h1>
         <p class="subtitle">See what your AI actually did on DC Hub — its live query log, tool mix, and limits. Data is scoped to your key and never cached.</p>
 
+        <!-- r-key-rotated-banner (2026-07-26): dchub-api-base.js quarantines a
+             localStorage key the server confirms invalid_or_revoked (rotation
+             class) into dchub_api_key_suspect. This is the repair surface. -->
+        <div id="key-rotated-banner" style="display:none;background:rgba(245,158,11,0.10);border:1px solid rgba(245,158,11,0.45);border-radius:10px;padding:14px 18px;margin:0 0 18px;color:#fbbf24;font-size:0.95rem;line-height:1.5;">
+            ⚠️ <strong>Your saved API key was rotated or revoked.</strong> Your browser has set it aside and is using your login session instead. Paste your current key below (or mint a fresh one from your dashboard) to re-sync this device.
+            <button onclick="try{localStorage.removeItem('dchub_api_key_suspect');localStorage.removeItem('dchub_api_key_suspect_at');}catch(e){};this.parentNode.style.display='none';" style="margin-left:10px;background:none;border:1px solid rgba(245,158,11,0.45);border-radius:6px;color:#fbbf24;padding:2px 10px;cursor:pointer;font-size:0.8rem;">Dismiss</button>
+        </div>
+        <script>
+        (function(){ try {
+            if (localStorage.getItem('dchub_api_key_suspect') && !localStorage.getItem('dchub_api_key')) {
+                document.getElementById('key-rotated-banner').style.display = 'block';
+            }
+        } catch(e){} })();
+        </script>
+
         <div class="key-row">
             <input id="key" type="password" placeholder="Paste your DC Hub API key (dch_trial_… or dchub_live_…)" autocomplete="off">
             <button onclick="load()">Show my agent</button>

@@ -237,6 +237,20 @@ def get_power_plants():
                 "Free preview: capped results with approximate locations. "
                 "Upgrade for full coverage + exact coordinates — dchub.cloud/pricing")
             payload['_pricing_url'] = "https://dchub.cloud/pricing"
+            # r-coord-disclosure (2026-07-26, tier-gating QA): the 0.1° rounding
+            # was SILENT — an agent computing distances from these coords gets
+            # ±10 km error with no warning, which is worse for citation trust
+            # than the gate itself. Label the precision explicitly (owner call:
+            # rounding for sub-Pro tiers is intended pricing architecture —
+            # developer = analytics tier, pro = site-grade precision).
+            payload['coord_precision'] = 'approx_0.1deg'
+            payload['coord_precision_km'] = 11
+            payload['coord_precision_note'] = (
+                "lat/lng are rounded to 0.1° (~11 km, city-level) on this tier. "
+                "Do not use for distance/adjacency math. Pro returns full-precision "
+                "coordinates — dchub.cloud/pricing")
+        else:
+            payload['coord_precision'] = 'full'
         _memo_set(cache_key, {**payload, '_cache': 'hit'})
         return jsonify(payload)
     except Exception as e:
@@ -371,6 +385,20 @@ def get_transmission_lines():
                 "Free preview: capped results with approximate locations. "
                 "Upgrade for full coverage + exact coordinates — dchub.cloud/pricing")
             payload['_pricing_url'] = "https://dchub.cloud/pricing"
+            # r-coord-disclosure (2026-07-26, tier-gating QA): the 0.1° rounding
+            # was SILENT — an agent computing distances from these coords gets
+            # ±10 km error with no warning, which is worse for citation trust
+            # than the gate itself. Label the precision explicitly (owner call:
+            # rounding for sub-Pro tiers is intended pricing architecture —
+            # developer = analytics tier, pro = site-grade precision).
+            payload['coord_precision'] = 'approx_0.1deg'
+            payload['coord_precision_km'] = 11
+            payload['coord_precision_note'] = (
+                "lat/lng are rounded to 0.1° (~11 km, city-level) on this tier. "
+                "Do not use for distance/adjacency math. Pro returns full-precision "
+                "coordinates — dchub.cloud/pricing")
+        else:
+            payload['coord_precision'] = 'full'
         _memo_set(cache_key, {**payload, '_cache': 'hit'})
         return jsonify(payload)
     except Exception as e:
