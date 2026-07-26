@@ -147,19 +147,19 @@ def test_routes_admin_gated_and_no_store(shell):
     os.environ["DCHUB_ADMIN_KEY"] = "secret-under-test"
     c = app.test_client()
 
-    r = c.get("/api/v1/admin/agent-pay/master-tick")
+    r = c.get("/api/v1/admin/agent-pay-shell/master-tick")
     assert r.status_code == 401
     # ★CF caches admin GETs ~30min — a stale board is indistinguishable from a
     # failed deploy, which already cost a debugging cycle on 2026-07-25.
     assert r.headers.get("Cache-Control") == "no-store"
 
-    r = c.get("/api/v1/admin/agent-pay/master-tick",
+    r = c.get("/api/v1/admin/agent-pay-shell/master-tick",
               headers={"X-Admin-Key": "secret-under-test"})
     assert r.status_code == 200
     assert r.get_json()["shell"] == "agent-pay-34"
     assert r.headers.get("Cache-Control") == "no-store"
 
-    r = c.get("/admin/agent-pay", headers={"X-Admin-Key": "secret-under-test"})
+    r = c.get("/admin/agent-pay-shell", headers={"X-Admin-Key": "secret-under-test"})
     assert r.status_code == 200 and b"Agent Pay" in r.data
 
 
@@ -176,10 +176,43 @@ def test_kill_switch(shell):
 
 def c_status(app):
     return app.test_client().get(
-        "/api/v1/admin/agent-pay/master-tick").status_code
+        "/api/v1/admin/agent-pay-shell/master-tick").status_code
 
 
 def test_registered_in_main():
     src = open(os.path.join(ROOT, "main.py"), encoding="utf-8").read()
     assert "agent_pay_master_shell_bp" in src
     assert "register_blueprint(agent_pay_master_shell_bp)" in src
+
+
+def test_does_not_shadow_the_watcher_route(shell):
+    """/api/v1/admin/agent-pay/master-tick belongs to funnel_health — it is the
+    endpoint the dchub-agent-pay-watcher scheduled task calls. Registering it
+    here would shadow the watcher (regression-lint caught this pre-merge)."""
+    src = open(os.path.join(ROOT, "routes/agent_pay_master_shell.py"),
+               encoding="utf-8").read()
+    code = "\n".join(ln for ln in src.splitlines()
+                     if not ln.lstrip().startswith("#"))
+    assert '.route("/api/v1/admin/agent-pay/master-tick"' not in code
+    assert '.route("/api/v1/admin/agent-pay-shell/master-tick"' in code
+
+
+def test_probe_is_memoized_and_budgeted(shell):
+    """One tick used to fire THREE handshakes at prod (lane 2, then lane 3
+    twice). Memo + a tick-wide budget bound what a wedged gateway can cost a
+    single-replica web service."""
+    calls = []
+    orig = shell._mcp_probe_uncached
+    shell._mcp_probe_uncached = lambda t, a: (calls.append(t), ({}, None))[1]
+    try:
+        shell._probe_memo_clear()
+        shell._mcp_probe("analyze_site", {"lat": 1, "lon": 2})
+        shell._mcp_probe("analyze_site", {"lat": 1, "lon": 2})
+        shell._mcp_probe("analyze_site", {"lat": 1, "lon": 2})
+        assert len(calls) == 1, "identical probe must be served from the memo"
+        shell._probe_memo_clear()
+        shell._mcp_probe("analyze_site", {"lat": 1, "lon": 2})
+        assert len(calls) == 2, "a new tick must re-probe for fresh evidence"
+    finally:
+        shell._mcp_probe_uncached = orig
+    assert shell._PROBE_BUDGET_S <= 30.0

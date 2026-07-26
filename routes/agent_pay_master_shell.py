@@ -33,9 +33,13 @@ HOUSE RULES
     re-declared — a copy would drift and re-open the exact bug this shell exists
     to catch.
 
-Surface:  GET /admin/agent-pay                              (HTML)
-          GET /api/v1/admin/agent-pay                       (HTML)
-          GET|POST /api/v1/admin/agent-pay/master-tick      (JSON)
+Surface:  GET /admin/agent-pay-shell                             (HTML)
+          GET /api/v1/admin/agent-pay-shell                      (HTML)
+          GET|POST /api/v1/admin/agent-pay-shell/master-tick     (JSON)
+
+          NOT /api/v1/admin/agent-pay/master-tick — that route belongs to the
+          raw watcher in funnel_health.py, which the dchub-agent-pay-watcher
+          scheduled task calls. Registering it twice would shadow the watcher.
 Beat:     agent-pay-shell-daily
 Kill:     AGENT_PAY_SHELL_DISABLE=1
 """
@@ -166,7 +170,7 @@ def _n(row, i, default=0):
         return default
 
 
-def _mcp_probe(tool: str, args: dict):
+def _mcp_probe(tool: str, args: dict, _memo={}):
     """ONE bounded anon MCP call against the public gateway, to read what an
     unpaid agent actually receives. Returns (structuredContent, error).
 
@@ -174,14 +178,56 @@ def _mcp_probe(tool: str, args: dict):
     platform `dchub-internal`, which the synthetic filter excludes — so this
     shell can never inflate its own demand lane. That is also a live end-to-end
     assertion of lane 5.
+
+    ★ Memoized per tick (_run_tick clears it). Lane 2 and lane 3 both want the
+    deep-tier offer, and lane 3 falls back to it after the flagship — without
+    the memo one tick fired THREE handshakes at prod. Timeouts are deliberately
+    tight: this handler answers a WEB request on a single-replica service, so a
+    slow gateway must never hold the connection open (see the 502/starve
+    traps). Worst case is now ~2 probes x ~28s, typical <8s total.
     """
+    key = (tool, json.dumps(args, sort_keys=True))
+    if key in _memo:
+        return _memo[key]
+    # Hard budget for ALL probing in one tick. Per-call timeouts bound a single
+    # hop; only this bounds the tick. Without it a wedged gateway could hold a
+    # WEB connection for the sum of every hop in every lane.
+    left = _PROBE_BUDGET_S - (_now_s() - _tick_started_at[0])
+    if _tick_started_at[0] and left <= 2:
+        res = (None, "probe budget exhausted (%.0fs) — skipped to protect the "
+                     "web replica" % _PROBE_BUDGET_S)
+    else:
+        res = _mcp_probe_uncached(tool, args)
+    _memo[key] = res
+    return res
+
+
+_PROBE_BUDGET_S = 30.0
+_tick_started_at = [0.0]
+
+
+def _now_s() -> float:
+    import time
+    return time.monotonic()
+
+
+def _probe_memo_clear():
+    """Reset per-tick probe state: memo + the budget clock."""
+    try:
+        _mcp_probe.__defaults__[0].clear()
+    except Exception:  # noqa: BLE001
+        pass
+    _tick_started_at[0] = _now_s()
+
+
+def _mcp_probe_uncached(tool: str, args: dict):
     try:
         import requests as _rq   # not urllib (regression_lint)
         h = {"Content-Type": "application/json",
              "Accept": "application/json, text/event-stream",
              "User-Agent": _UA}
         s = _rq.Session()
-        r = s.post(ORIGIN + "/mcp", timeout=20, headers=h, json={
+        r = s.post(ORIGIN + "/mcp", timeout=8, headers=h, json={
             "jsonrpc": "2.0", "id": 1, "method": "initialize",
             "params": {"protocolVersion": "2025-06-18", "capabilities": {},
                        "clientInfo": {"name": "dchub-agent-pay-shell-probe",
@@ -190,9 +236,9 @@ def _mcp_probe(tool: str, args: dict):
         if not sid:
             return None, "no mcp-session-id on initialize (HTTP %d)" % r.status_code
         h2 = dict(h, **{"mcp-session-id": sid})
-        s.post(ORIGIN + "/mcp", timeout=10, headers=h2,
+        s.post(ORIGIN + "/mcp", timeout=5, headers=h2,
                json={"jsonrpc": "2.0", "method": "notifications/initialized"})
-        r2 = s.post(ORIGIN + "/mcp", timeout=45, headers=h2, json={
+        r2 = s.post(ORIGIN + "/mcp", timeout=15, headers=h2, json={
             "jsonrpc": "2.0", "id": 2, "method": "tools/call",
             "params": {"name": tool, "arguments": args}})
         # ★ Two traps, both silent:
@@ -585,6 +631,7 @@ def _safe_lane(fn) -> list[dict]:
 
 
 def _run_tick() -> dict:
+    _probe_memo_clear()   # each tick gets fresh live evidence
     lanes = [
         {"id": "demand", "name": "1 · real agent demand",
          "checks": _safe_lane(_lane_demand)},
@@ -621,7 +668,7 @@ def _no_store(resp):
     return resp
 
 
-@agent_pay_master_shell_bp.route("/api/v1/admin/agent-pay/master-tick",
+@agent_pay_master_shell_bp.route("/api/v1/admin/agent-pay-shell/master-tick",
                                  methods=["GET", "POST"])
 def master_tick():
     if _disabled():
@@ -637,8 +684,8 @@ def _esc(s) -> str:
             .replace(">", "&gt;").replace('"', "&quot;"))
 
 
-@agent_pay_master_shell_bp.route("/admin/agent-pay", methods=["GET"])
-@agent_pay_master_shell_bp.route("/api/v1/admin/agent-pay", methods=["GET"])
+@agent_pay_master_shell_bp.route("/admin/agent-pay-shell", methods=["GET"])
+@agent_pay_master_shell_bp.route("/api/v1/admin/agent-pay-shell", methods=["GET"])
 def dashboard():
     from flask import make_response
     if _disabled():
