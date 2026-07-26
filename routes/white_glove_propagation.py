@@ -226,6 +226,28 @@ def _dchub_windows(text: str) -> str:
     return "\n".join(text[lo:hi] for lo, hi in spans)
 
 
+def _official_registry_latest_only(body: str) -> str:
+    """The official-registry listing URL is a SEARCH endpoint that returns
+    EVERY published version (26 at last count) — historical descriptions
+    legitimately carry retired counts ('33 MCP tools', '21k+'), so scanning
+    the whole payload made this registry read PERMANENTLY drifted and buried
+    real drift (2026-07-26: the isLatest 2.5.1 entry was clean while the loop
+    flagged four stale tool-counts from 2.1.x-era versions). Clients resolve
+    the latest version, so drift is judged on the isLatest entry ONLY.
+    Fail-soft: any parse surprise returns the body unchanged (over-detection
+    is safer than silence)."""
+    try:
+        d = json.loads(body)
+        for s in (d.get("servers") or []):
+            meta = ((s.get("_meta") or {})
+                    .get("io.modelcontextprotocol.registry/official") or {})
+            if meta.get("isLatest"):
+                return json.dumps(s)
+    except Exception:
+        pass
+    return body
+
+
 def detect_number_drift(page_text: str, canon: dict,
                         scope_to_dchub: bool = True) -> list[dict]:
     """Pure detector. Returns [{kind, found, expected, context}, …].
@@ -547,6 +569,8 @@ def run_white_glove_propagation(dry_run: bool = False) -> dict:
         if not body:
             summary["fetch_failed"] += 1
             continue
+        if name == "mcp_official_registry":
+            body = _official_registry_latest_only(body)
         drifts = detect_number_drift(body, canon)
         if drifts:
             drifts_by_registry[name] = drifts

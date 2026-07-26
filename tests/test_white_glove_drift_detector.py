@@ -290,3 +290,32 @@ def test_auto_vs_human_partition_is_complete():
     assert not unknown_auto, f"AUTO_PATH names unseeded registries: {unknown_auto}"
     human = seeded - AUTO_PATH_REGISTRIES
     assert "mcp_so" in human and "smithery" in AUTO_PATH_REGISTRIES
+
+
+# ── r-registry-latest-only (2026-07-26) ──────────────────────────────
+
+from routes.white_glove_propagation import _official_registry_latest_only
+
+
+def test_official_registry_scans_latest_version_only():
+    """The registry search payload carries EVERY historical version; old
+    descriptions legitimately hold retired counts. Drift must be judged on
+    the isLatest entry only — the 2026-07-26 false-permadrift regression."""
+    import json as _json
+    body = _json.dumps({"servers": [
+        {"server": {"version": "2.1.22",
+                    "description": "stale era: 33 MCP tools, 21,000+ facilities"},
+         "_meta": {"io.modelcontextprotocol.registry/official":
+                   {"isLatest": False}}},
+        {"server": {"version": "2.5.1",
+                    "description": "clean latest — query and cite."},
+         "_meta": {"io.modelcontextprotocol.registry/official":
+                   {"isLatest": True}}},
+    ]})
+    out = _official_registry_latest_only(body)
+    assert "2.5.1" in out and "33 MCP tools" not in out
+
+
+def test_official_registry_filter_failsoft_on_non_json():
+    raw = "<html>33 tools somewhere</html>"
+    assert _official_registry_latest_only(raw) == raw
