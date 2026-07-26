@@ -500,6 +500,17 @@ _DISPATCH = [
      lambda now: now.hour == 10 and now.minute < 55
                  and os.environ.get("SEVEN_LEVERS_SHELL_DISABLE") != "1"),
 
+    # 2026-07-26 shell #33: daily tick of the Fix Closure Master Shell —
+    # pins the 07-25/26 fix set (eia mirror, paid-key contract, envelope 79,
+    # media hygiene, retention north-star, sync-source integrity) to live
+    # checks and beats the ledger (feed fix-closure-shell-daily) itself.
+    # Kill: FIX_CLOSURE_SHELL_DISABLE=1.
+    ("fix_closure_shell_daily",
+     f"{BASE}/api/v1/admin/fix-closure/master-tick",
+     "POST",
+     lambda now: now.hour == 11 and now.minute < 55
+                 and os.environ.get("FIX_CLOSURE_SHELL_DISABLE") != "1"),
+
     # 2026-07-25 (#28 wave 2): daily merged-PR metric snapshot — harvest
     # brain merges, snapshot canonical KPIs (merge phase), re-stamp d14/d30.
     # Idempotent (UNIQUE pr/phase/metric). Kill: BRAIN_PR_METRICS_DISABLE=1.
