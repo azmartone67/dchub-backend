@@ -1841,6 +1841,13 @@ try:
     except Exception as _gfr_early:
         import logging
         logging.getLogger(__name__).warning('grid_fiber_radar wiring failed: %s', _gfr_early)
+    # shell#35 WS8b (2026-07-26): PJM nodal LMP (budget-guarded gridstatus).
+    try:
+        from routes.pjm_node_lmp import pjm_node_lmp_bp
+        app.register_blueprint(pjm_node_lmp_bp)
+    except Exception as _pnl_early:
+        import logging
+        logging.getLogger(__name__).warning('pjm_node_lmp wiring failed: %s', _pnl_early)
     # Powered Land Gas Pricing (2026-06-04, Phase 1 spine):
     # Per-DCPI-market Henry Hub spot + regional basis + delivered industrial /
     # electric tariff + heat-rate-derived $/MWh. PRO-gated (free = teaser).
