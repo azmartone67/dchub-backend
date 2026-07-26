@@ -4204,9 +4204,9 @@ DCPI_INDEX_TEMPLATE = """<!DOCTYPE html>
 <meta charset="utf-8">
 <title>DCPI · Data Center Power Index | datacenterpowerindex.com | DC Hub</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="description" content="DCPI (Data Center Power Index) tracks power availability across {{ count }}+ U.S. data center markets in real time. The Excess Power Score surfaces stranded capacity nobody else publishes. Also at datacenterpowerindex.com.">
+<meta name="description" content="DCPI (Data Center Power Index) tracks power availability across {{ total_rows }}+ U.S. data center markets in real time. The Excess Power Score surfaces stranded capacity nobody else publishes. Also at datacenterpowerindex.com.">
 <meta property="og:title" content="DCPI — The Data Center Power Index | datacenterpowerindex.com">
-<meta property="og:description" content="Real-time power availability across {{ count }}+ U.S. markets. Find the excess capacity hidden in plain sight. The industry-standard power index.">
+<meta property="og:description" content="Real-time power availability across {{ total_rows }}+ U.S. markets. Find the excess capacity hidden in plain sight. The industry-standard power index.">
 <meta property="og:image" content="https://dchub.cloud/dcpi/og.svg">
 <meta property="og:url" content="https://dchub.cloud/dcpi">
 <meta name="twitter:card" content="summary_large_image">
@@ -4227,7 +4227,7 @@ DCPI_INDEX_TEMPLATE = """<!DOCTYPE html>
   "@type": "Dataset",
   "name": "Data Center Power Index (DCPI)",
   "alternateName": "DCPI",
-  "description": "Real-time power-availability scoring across {{ count }} U.S. data center markets. Combines ISO grid constraint signals, retail electricity prices, and interconnection-queue pressure into a 0–100 Excess Power Score with an actionable BUILD / CAUTION / AVOID / LOW_SIGNAL verdict per market. Recomputed continuously.",
+  "description": "Real-time power-availability scoring across {{ total_rows }} U.S. data center markets. Combines ISO grid constraint signals, retail electricity prices, and interconnection-queue pressure into a 0–100 Excess Power Score with an actionable BUILD / CAUTION / AVOID / LOW_SIGNAL verdict per market. Recomputed continuously.",
   "url": "https://dchub.cloud/dcpi",
   "sameAs": "https://dchub.cloud/dcpi",
   "creator": {"@type": "Organization", "name": "DC Hub", "url": "https://dchub.cloud"},
@@ -4655,13 +4655,16 @@ footer a:hover { color: var(--acc-light); }
 </nav>
 
 <div class="status-strip">
-  <span class="pulse"></span>LIVE · {{ count }} MARKETS SCORED · UPDATED DAILY 06:00 UTC · FREE FOR PRESS CITATION
+  {# r-hero-total (2026-07-26): coverage claims use the TOTAL catalog, not the
+     tier-capped card count — anon mobile read "LIVE · 25 MARKETS SCORED",
+     underselling a 317-market index (same r47.47 rule as the stats row). #}
+  <span class="pulse"></span>LIVE · {{ total_rows }} MARKETS SCORED · UPDATED DAILY 06:00 UTC · FREE FOR PRESS CITATION
 </div>
 
 <div class="wrap">
   <section class="hero">
     <h1>The <span class="accent">Data Center Power Index</span></h1>
-    <p class="lede">Real-time power availability across {{ count }} U.S. data center markets. Two scores per market: <strong>Excess Power</strong> (where buyers don't know to look) and <strong>Constraint</strong> (where the queue is dead). The contrarian metric the incumbents won't publish.</p>
+    <p class="lede">Real-time power availability across {{ total_rows }} U.S. data center markets. Two scores per market: <strong>Excess Power</strong> (where buyers don't know to look) and <strong>Constraint</strong> (where the queue is dead). The contrarian metric the incumbents won't publish.</p>
   </section>
 
   <a href="/dcgi" style="display:block;text-decoration:none;background:linear-gradient(135deg,#10b981 0%,#0ea5e9 100%);border-radius:14px;padding:1.6rem 2rem;margin:0 0 2rem;position:relative;overflow:hidden;">
@@ -4810,9 +4813,25 @@ footer a:hover { color: var(--acc-light); }
     .then(function(r){ return r.json(); })
     .then(function(d){
       var t = ((d && (d.tier || d.plan)) || '').toLowerCase();
-      if (['pro','enterprise','founding','developer','starter','admin'].indexOf(t) >= 0) {
+      var paid = ['pro','enterprise','founding','developer','starter','admin'].indexOf(t) >= 0;
+      if (paid) {
         var b = document.getElementById('pro-cta-block');
         if (b) b.style.display = 'none';
+      }
+      /* r-ssr-reconcile (2026-07-26, tier-gating QA): srv is the tier this
+         RENDER was built for. If the session is actually PAID but we're
+         showing the anon/free teaser (stale edge copy or race), reload ONCE —
+         authed requests bypass the edge cache (zone rule 2026-07-26), so the
+         reload returns the true per-tier render. sessionStorage guard = no
+         reload loops, ever. */
+      var srv = '{{ tier_state }}';
+      if (paid && srv !== 'paid' && !sessionStorage.getItem('dcpi_tier_reload')) {
+        sessionStorage.setItem('dcpi_tier_reload', '1');
+        location.reload();
+        return;
+      }
+      if (paid && srv === 'paid') {
+        try { sessionStorage.removeItem('dcpi_tier_reload'); } catch(e2) {}
       }
     }).catch(function(){}); } catch(e){} })();
   </script>

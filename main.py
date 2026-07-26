@@ -16476,6 +16476,31 @@ def list_markets():
             elif api_key.startswith(('dchub_pro_', 'pro_')):  tier = 'pro'
             elif api_key.startswith(('dchub_ent_', 'ent_')):  tier = 'enterprise'
 
+        # r-mkt-tiermax (2026-07-26, tier-gating QA): the prefix heuristics
+        # never match the real customer key shapes (dchub_live_…, dchub_qa_…,
+        # partner keys) and validate_api_key misses raw-hash rows — so genuine
+        # PRO/ENTERPRISE keys stayed 'free' (10 of 132) and the response even
+        # echoed tier=free back to paying agents. Promote via the canonical
+        # cross-table resolver (api_keys dual-hash + users.plan + mcp_dev_keys
+        # + session cookie — so logged-in browsers count too, mirroring
+        # r-tiermax in routes/tier_gate.py). PROMOTE-ONLY: never lowers the
+        # heuristic result; stays anonymous on any resolver error.
+        try:
+            from util.tier_gate import resolve_tier as _rt_mk
+            _t_obj_mk, _ = _rt_mk()
+            _tv_mk = str(getattr(_t_obj_mk, 'value',
+                                 getattr(_t_obj_mk, 'name', _t_obj_mk))).lower()
+            _tv_mk = {'founding': 'pro', 'paid': 'pro', 'team': 'pro',
+                      'metered': 'pro', 'admin': 'enterprise',
+                      'internal': 'enterprise', 'research_seed': 'enterprise',
+                      'identified': 'free', 'starter': 'free'}.get(_tv_mk, _tv_mk)
+            _rank_mk = {'anonymous': 0, 'free': 1, 'developer': 2,
+                        'pro': 3, 'enterprise': 4}
+            if _rank_mk.get(_tv_mk, 0) > _rank_mk.get(tier, 0):
+                tier = _tv_mk
+        except Exception:
+            pass
+
         TIER_LIMITS = {
             'anonymous': 5,       # No signup yet — teaser to convert
             'free':      10,      # Signed up but no paid plan — small incentive
@@ -28434,6 +28459,37 @@ def api_v1_me():
                 LIMIT 1
             """, (api_key,))
             row = cur.fetchone()
+        if not row:
+            # r-me-freekeys (2026-07-26, tier-gating QA): self-serve
+            # claim_free_key keys live ONLY in mcp_dev_keys (raw api_key
+            # column) — they have NO api_keys row, so every free-tier key died
+            # here with "invalid_or_revoked_key" while /api/v1/me/tier resolved
+            # the same key as free/1. Union the table — but NEVER resurrect a
+            # key api_keys KNOWS and has revoked (is_active=0): the 07-25 key
+            # rotation must stay authoritative, so only fall back when the key
+            # is entirely absent from api_keys.
+            cur.execute(
+                "SELECT 1 FROM api_keys WHERE key_hash IN (%s, %s) LIMIT 1",
+                (key_hash, api_key))
+            if not cur.fetchone():
+                cur.execute("""
+                    SELECT COALESCE(developer_id::text, email, 'mcp-dev') AS id,
+                           email,
+                           CASE
+                             WHEN LOWER(COALESCE(tier,'free')) IN ('paid','pro','founding') THEN 'pro'
+                             WHEN LOWER(COALESCE(tier,'free')) = 'enterprise' THEN 'enterprise'
+                             WHEN LOWER(COALESCE(tier,'free')) = 'developer' THEN 'developer'
+                             ELSE 'free'
+                           END AS plan,
+                           created_at AS user_created_at,
+                           created_at AS key_issued_at,
+                           1 AS is_active
+                    FROM mcp_dev_keys
+                    WHERE api_key = %s
+                      AND LOWER(COALESCE(status,'active')) = 'active'
+                    LIMIT 1
+                """, (api_key,))
+                row = cur.fetchone()
         if not row:
             return jsonify({'success': False, 'error': 'invalid_or_revoked_key'}), 401
         return jsonify({'success': True, 'user': dict(row)})

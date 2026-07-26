@@ -9572,6 +9572,73 @@ def check_cross_surface_value_drift() -> list[dict]:
     return findings[:20]
 
 
+def check_dcpi_ssr_cross_tier() -> list[dict]:
+    """2026-07-26 incident alarm — /dcpi INDEX HTML is SSR'd per-tier but was
+    edge-cached under ONE shared key: a pro-cookied load poisoned the entry
+    with the full 317-score page for ANONYMOUS visitors (paid-product leak),
+    and a stale anon entry was served to a logged-in Pro (payer mis-gated,
+    zero console errors — the owner caught it by eye). Fixed with the zone
+    Cache Rule 'Bypass cache - tier-varying HTML for AUTHED users'
+    (e30fab55…, bypasses when a dchub_token/dchub_refresh cookie is present)
+    on top of the origin's existing authed no-store (r-tierleak). This check
+    guards BOTH halves staying true:
+
+      (a) anon GET /dcpi HTML must contain NO numeric score decimals —
+          >3 matches means the paid bulk index reaches anonymous (critical);
+      (b) GET /dcpi WITH a dchub_token cookie must NOT be a cache HIT — the
+          bypass rule keys on cookie PRESENCE, so an unsigned canary cookie
+          is enough; validity is irrelevant to the edge.
+
+    Network canary: degrades silently on connectivity errors (never crashes
+    the scan, never false-fires on a timeout). cf
+    [[reference_dchub_tier_gating_qa_0726]]."""
+    findings: list[dict] = []
+    try:
+        import re as _re2
+        import requests as _req
+        _u = 'https://dchub.cloud/dcpi'
+        _a = _req.get(_u, timeout=20,
+                      headers={'User-Agent': 'dchub-radar-dcpi-ssr-canary'})
+        if _a.status_code == 200:
+            _scores = _re2.findall(r'>\s*\d{2}\.\d\s*<', _a.text)
+            if len(_scores) > 3:
+                findings.append({
+                    "issue": "dcpi_anon_ssr_leak",
+                    "url": _u,
+                    "count": len(_scores),
+                    "severity": "critical",
+                    "detail": (f"anon GET /dcpi returned HTML containing "
+                               f"{len(_scores)} numeric DCPI scores "
+                               f"(cf-cache-status={_a.headers.get('cf-cache-status')}, "
+                               f"age={_a.headers.get('age')}). The paid bulk index is "
+                               f"leaking to anonymous visitors — a paid render is being "
+                               f"edge-cached again. Verify the zone bypass rule "
+                               f"(tier-varying HTML, e30fab55…) is still LAST in the "
+                               f"ruleset and routes/dcpi.py still no-stores authed "
+                               f"renders; then purge /dcpi."),
+                })
+        _b = _req.get(_u, timeout=20,
+                      headers={'User-Agent': 'dchub-radar-dcpi-ssr-canary',
+                               'Cookie': 'dchub_token=radar-presence-canary'})
+        if (_b.headers.get('cf-cache-status') or '').upper() == 'HIT':
+            findings.append({
+                "issue": "dcpi_authed_edge_cached",
+                "url": _u,
+                "count": 1,
+                "severity": "warning",
+                "detail": ("GET /dcpi WITH a dchub_token cookie returned "
+                           "cf-cache-status=HIT — the authed-bypass zone rule is "
+                           "gone or shadowed, so logged-in payers can again be "
+                           "served the cached ANON teaser (locks for paying "
+                           "customers) and their paid render can poison the shared "
+                           "entry. Restore 'Bypass cache - tier-varying HTML for "
+                           "AUTHED users' as the LAST cache rule."),
+            })
+    except Exception:
+        pass
+    return findings
+
+
 def scan_all() -> list[dict]:
     """Run every detector. Return a flat list of finding dicts ready
     to merge into actionable_backend_issues.
@@ -9600,6 +9667,10 @@ def scan_all() -> list[dict]:
                # cached, or if anon stops being gated. cf gating_routes +
                # [[dchub-capacity-paywall-gating]].
                check_paywall_capacity_gating,
+               # 2026-07-26 /dcpi cross-tier edge-cache incident alarm — anon
+               # HTML must never contain scores; cookied requests must never
+               # be edge HITs. cf [[reference_dchub_tier_gating_qa_0726]].
+               check_dcpi_ssr_cross_tier,
                check_cron_coverage,
                check_cron_collisions,
                # Phase FF+7 (2026-05-19) — catches the bug L14 helped

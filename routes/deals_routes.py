@@ -761,7 +761,27 @@ def get_transactions():
         @_lazy_protect_data
         def _authed_transactions():
             return get_deals()
-        return _authed_transactions()
+        # r-txinversion (2026-07-26, tier-gating QA): if the pro gate declines a
+        # KEYED caller, fall through to the same freemium teaser an anonymous
+        # caller gets. Before this, a free/developer key got a hard 403 upsell
+        # wall on an endpoint where NO key at all got a 200 teaser — presenting
+        # a key (including the paid $49 developer tier) made the product
+        # strictly worse than staying anonymous. Sibling /api/v1/deals already
+        # serves every tier with $-masking. This only ever GRANTS the anon
+        # teaser on a 401/402/403 verdict — paid data stays behind the gate.
+        from werkzeug.exceptions import HTTPException as _WZHTTPException
+        try:
+            resp = _authed_transactions()
+        except _WZHTTPException as _e:
+            if getattr(_e, 'code', None) in (401, 402, 403):
+                return _get_transactions_free()
+            raise
+        _status = (resp[1] if (isinstance(resp, tuple) and len(resp) > 1
+                               and isinstance(resp[1], int))
+                   else getattr(resp, 'status_code', 200))
+        if _status in (401, 402, 403):
+            return _get_transactions_free()
+        return resp
 
     return _get_transactions_free()
 
