@@ -154,6 +154,11 @@ def _lane_eia_mirror() -> list[dict]:
                 "%d rows with non-word sectors — a naive copy ran" % badvocab,
                 critical=True))
             if latest is not None:
+                # ★live: updated_at is timestamp WITHOUT time zone — coerce
+                # naive→UTC or the subtraction raises (first tick rendered
+                # this check '?' on exactly that TypeError).
+                if latest.tzinfo is None:
+                    latest = latest.replace(tzinfo=datetime.timezone.utc)
                 age_d = ((datetime.datetime.now(datetime.timezone.utc)
                           - latest).total_seconds() / 86400.0)
                 out.append(_check(
