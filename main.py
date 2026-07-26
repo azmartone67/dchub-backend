@@ -1824,6 +1824,15 @@ try:
     except Exception as _mdde_early:
         import logging
         logging.getLogger(__name__).warning('market_deep_dive wiring failed: %s', _mdde_early)
+    # Phase relocate (2026-07-26): competitor_recon was registered late-line
+    # (~36110) and silently failed in prod (same late-line pattern that bit
+    # market_deep_dive/press_loop). Safe-zone registration, same recipe.
+    try:
+        from routes.competitor_recon import competitor_recon_bp
+        app.register_blueprint(competitor_recon_bp)
+    except Exception as _crn_early:
+        import logging
+        logging.getLogger(__name__).warning('competitor_recon wiring failed: %s', _crn_early)
     # Powered Land Gas Pricing (2026-06-04, Phase 1 spine):
     # Per-DCPI-market Henry Hub spot + regional basis + delivered industrial /
     # electric tariff + heat-rate-derived $/MWh. PRO-gated (free = teaser).
@@ -36116,14 +36125,6 @@ try:
     app.register_blueprint(competitor_intel_bp)
 except Exception as _e:
     print(f"[main] competitor_intel register failed: {_e}", file=sys.stderr)
-
-# Phase (2026-07-25): competitor recon — weekly good/bad/gaps/win-moves
-# intelligence over the rival set, filed to the brain (competitor_recon).
-try:
-    from routes.competitor_recon import competitor_recon_bp
-    app.register_blueprint(competitor_recon_bp)
-except Exception as _e:
-    print(f"[main] competitor_recon register failed: {_e}", file=sys.stderr)
 
 # Phase ZZZZ (2026-05-16): market_deep_dive moved to safe zone (~line 1180)
 # because late-line blueprint registration silently fails on Railway.
