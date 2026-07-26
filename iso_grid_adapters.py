@@ -729,9 +729,52 @@ def fetch_pjm() -> list[dict]:
     gen_by_fuel + inst_load). Wire extraction here once PJM_API_KEY is set."""
     key = _env("PJM_API_KEY")
     base = ISO_REGISTRY["PJM"]["base"]
+    # Owner decision 2026-07-26: gridstatus.io is the PRIMARY PJM source —
+    # DC Hub's provisioned key, licensed redistribution, no DM2
+    # redistribution-license exposure. DM2 direct remains a fallback ONLY if
+    # PJM_API_KEY is ever set (requires a PJM Redistribution License for
+    # user-facing serving — see DM2 ToS).
+    try:
+        from pjm_dataminer import _gridstatus_get
+        fm_rows, _fe = _gridstatus_get("pjm_fuel_mix",
+                                       {"limit": 1, "order": "desc"})
+        ld_rows, _le = _gridstatus_get("pjm_load",
+                                       {"limit": 1, "order": "desc"})
+        if fm_rows and ld_rows:
+            _skip = ("interval_start_utc", "interval_end_utc", "time_utc",
+                     "interval_start_local", "interval_end_local")
+            fuel_mix, gen = {}, 0.0
+            for k, v in (fm_rows[0] or {}).items():
+                if k in _skip:
+                    continue
+                try:
+                    mw = float(v)
+                except (TypeError, ValueError):
+                    continue
+                fuel_mix[str(k).lower()] = round(mw, 1)
+                gen += mw
+            ld = ld_rows[0] or {}
+            load = None
+            for cand in ("load", "pjm_rto", "rto", "total", "mid_atlantic"):
+                if ld.get(cand) is not None:
+                    try:
+                        load = float(ld[cand])
+                        break
+                    except (TypeError, ValueError):
+                        continue
+            if gen > 0 and load and load > 0:
+                return [_record("PJM", "PJM", online_gen_mw=round(gen, 1),
+                                load_mw=round(load, 1), fuel_mix=fuel_mix,
+                                source="gridstatus_pjm")]
+        print(f"[iso_grid] PJM gridstatus parse empty (fm={_fe} ld={_le}); "
+              "trying DM2 fallback if keyed.", flush=True)
+    except Exception as e:
+        print(f"[iso_grid] PJM gridstatus path failed: {str(e)[:120]}",
+              flush=True)
     if not key:
-        return [_unavailable("PJM", "PJM_API_KEY", base,
-                             "PJM Data Miner 2 requires Ocp-Apim-Subscription-Key.")]
+        return [_unavailable("PJM", "GRIDSTATUS_API_KEY|PJM_API_KEY", base,
+                             "gridstatus PJM feed unavailable and no DM2 key "
+                             "set (DM2 also needs a redistribution license).")]
     # shell#35 follow-up (2026-07-26): extraction wired so the key going into
     # Railway env = instant live telemetry. Tolerant parse, FAIL-CLOSED.
     _hdr = {"Ocp-Apim-Subscription-Key": key, "Accept": "application/json"}
