@@ -370,7 +370,7 @@ class NexusDatabase:
                         latitude, longitude, power_mw, sqft, status, tier,
                         certifications, connectivity, source, source_url, source_id,
                         confidence, first_seen, last_updated, raw_data
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
                 ''', (
                     facility.id, facility.name, facility.provider, facility.address,
                     facility.city, facility.state, facility.country, facility.region,
@@ -401,7 +401,7 @@ class NexusDatabase:
                 id, title, summary, content, source, source_url, published_date,
                 announcement_type, companies, locations, power_mw, investment_usd,
                 sqft, expected_completion, confidence, processed_at
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
         ''', (
             announcement.id, announcement.title, announcement.summary, announcement.content,
             announcement.source, announcement.source_url, announcement.published_date,
