@@ -709,6 +709,18 @@ DISABLED_JOBS = {
         'minute': 20,
         'timeout': 60,
     },
+    'agent_pay_shell_tick': {
+        # 2026-07-25 (shell #34): agent-pay board — real pay-intent vs the
+        # rail's plumbing vs the synthetic filter that reported our own probes
+        # as customer demand for two and a half weeks. Read-only; makes one
+        # bounded anon MCP probe to confirm the pay offer is actually rendered.
+        'name': 'Agent Pay — master shell tick',
+        'endpoint': '/api/v1/admin/agent-pay-shell/master-tick',
+        'method': 'POST',
+        'hours': [16],
+        'minute': 35,
+        'timeout': 60,
+    },
     'agent_adoption_digest': {
         'name': 'Agent Adoption — operator funnel digest',
         'endpoint': '/api/v1/admin/agent-adoption/digest?send=true',
