@@ -216,3 +216,110 @@ def test_probe_is_memoized_and_budgeted(shell):
     finally:
         shell._mcp_probe_uncached = orig
     assert shell._PROBE_BUDGET_S <= 30.0
+
+
+# ── the flattering zero (adversarial review, 2026-07-25) ──────────────
+
+class _FailingCursor:
+    """A LIVE connection whose queries fail — the case that shipped a green
+    lane 4 reading 'clean — 0 verify failures/30d' while the ledger was
+    unreadable. _q() swallows the exception and returns None; any caller that
+    then treats None as 0 fabricates a healthy answer."""
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def execute(self, *a, **k):
+        raise RuntimeError("SSL connection has been closed unexpectedly")
+
+    def fetchone(self):
+        raise AssertionError("unreachable")
+
+    def fetchall(self):
+        raise AssertionError("unreachable")
+
+
+class _FailingConn:
+    def cursor(self):
+        return _FailingCursor()
+
+    def close(self):
+        pass
+
+
+@pytest.mark.parametrize("lane", ["_lane_demand", "_lane_rail_health",
+                                  "_lane_reachability"])
+def test_no_lane_fabricates_a_pass_from_a_failed_query(shell, monkeypatch, lane):
+    """A live connection whose every query errors must never yield a True
+    check. This is the class the review caught on lane 4 — pinned for ALL
+    lanes so it cannot reappear in another one."""
+    monkeypatch.setattr(shell, "_db", lambda: _FailingConn())
+    checks = getattr(shell, lane)()
+    greens = [c for c in checks if c["pass"] is True]
+    assert not greens, \
+        "%s fabricated PASS from a failed query: %s" % (
+            lane, [(c["id"], c["detail"]) for c in greens])
+    assert shell._lane_verdict(checks) != "PASS"
+
+
+def test_lane4_says_unknown_not_clean_when_the_ledger_is_unreadable(
+        shell, monkeypatch):
+    monkeypatch.setattr(shell, "_db", lambda: _FailingConn())
+    checks = {c["id"]: c for c in shell._lane_rail_health()}
+    c = checks["rh_settle_errors"]
+    assert c["pass"] is None
+    assert "0 verify failures" not in c["detail"], \
+        "must not report a failure count it never read"
+    assert "UNKNOWN" in c["detail"]
+
+
+def test_probe_treats_a_jsonrpc_error_as_unknown(shell, monkeypatch):
+    """An MCP error response carries no `result`. Reading it as an empty
+    structuredContent made lane 2 report 'the rail is invisible' for what was
+    actually a failed probe."""
+    class _R:
+        status_code = 200
+        headers = {"mcp-session-id": "s"}
+        content = (b'event: message\ndata: {"jsonrpc":"2.0","id":2,'
+                   b'"error":{"code":-32603,"message":"boom"}}\n')
+        text = content.decode()
+
+    class _S:
+        def post(self, *a, **k):
+            return _R()
+
+    monkeypatch.setattr(shell, "_probe_memo_clear", lambda: None)
+    import requests
+    monkeypatch.setattr(requests, "Session", lambda: _S())
+    sc, err = shell._mcp_probe_uncached("analyze_site", {"lat": 1, "lon": 2})
+    assert sc is None and err and "MCP error" in err, (sc, err)
+
+
+def test_queries_are_time_bounded(shell):
+    """No statement_timeout on the pooled Neon connection means an unbounded
+    scan can hold a request open on a single-replica web service."""
+    src = open(os.path.join(ROOT, "routes/agent_pay_master_shell.py"),
+               encoding="utf-8").read()
+    assert "statement_timeout" in src
+
+
+def test_beat_has_a_scheduler_entry(shell):
+    """The docstring advertises a daily beat; a shell nothing ever calls is a
+    dead-man that never fires."""
+    sched = open(os.path.join(ROOT, "dchub-scheduler.py"), encoding="utf-8").read()
+    assert "/api/v1/admin/agent-pay-shell/master-tick" in sched
+
+
+def test_lane5_source_checks_survive_a_dead_db_but_its_live_check_does_not(
+        shell, monkeypatch):
+    """Lane 5's token checks read the imported predicate's SOURCE, so they are
+    genuinely verified with the DB down — but its one query-backed check must
+    still degrade to unknown rather than claiming the filter is clean."""
+    monkeypatch.setattr(shell, "_db", lambda: _FailingConn())
+    checks = {c["id"]: c for c in shell._lane_metric_integrity()}
+    assert checks["mi_dchub"]["pass"] is True     # source inspection, not a query
+    assert checks["mi_live"]["pass"] is None      # query-backed -> unknown
+    assert "clean" not in checks["mi_live"]["detail"]

@@ -153,13 +153,41 @@ def _synth_predicates():
 
 
 def _q(cur, sql, params):
-    """Isolated probe — returns a row or None, never raises."""
+    """Isolated probe — returns a row, or None IF THE QUERY DID NOT RUN.
+
+    ★ None here means UNKNOWN, never zero. Callers must use _num() and branch on
+    None; reading it as 0 fabricates a healthy-looking answer out of a failed
+    read, which is the exact defect this shell exists to catch.
+
+    Bounded per statement: funnel_health._conn opens a raw autocommit connection
+    to the Neon pooler with no statement_timeout, so an unbounded scan here
+    would hold a request open on a single-replica web service.
+    """
     try:
+        try:
+            cur.execute("SET LOCAL statement_timeout = 8000")
+        except Exception:  # noqa: BLE001
+            pass          # autocommit ⇒ SET LOCAL may no-op; not worth failing
         cur.execute(sql, params)
         return cur.fetchone()
     except Exception as e:  # noqa: BLE001
         logger.debug("[agent-pay] query failed: %s", e)
         return None
+
+
+def _num(row, i):
+    """Value from a row, or None when the query never ran. Unlike _n() this
+    NEVER substitutes a default — a failed read must not read as zero."""
+    if row is None:
+        return None
+    try:
+        v = row[i]
+        return None if v is None else int(v)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+_UNKNOWN = "could not read the pay ledger — this is UNKNOWN, not zero"
 
 
 def _n(row, i, default=0):
@@ -262,7 +290,17 @@ def _mcp_probe_uncached(tool: str, args: dict):
                     continue
         if body is None:
             return None, "unparseable MCP response"
-        return (body.get("result", {}) or {}).get("structuredContent", {}) or {}, None
+        # ★ A JSON-RPC error carries no `result`. Falling through would hand the
+        # caller an empty structuredContent, and lane 2 would report "NO
+        # agent_payment on a gated preview — the rail is invisible" for what is
+        # actually a failed probe. An error is UNKNOWN, not evidence.
+        if body.get("error") is not None:
+            e = body.get("error") or {}
+            return None, "MCP error %s: %s" % (e.get("code"),
+                                               str(e.get("message"))[:90])
+        if "result" not in body:
+            return None, "MCP response carried no result"
+        return (body.get("result") or {}).get("structuredContent", {}) or {}, None
     except Exception as e:  # noqa: BLE001
         return None, "%s: %s" % (type(e).__name__, str(e)[:110])
 
@@ -283,44 +321,52 @@ def _lane_demand() -> list[dict]:
         with c.cursor() as cur:
             r = _q(cur, "SELECT MIN(timestamp) FROM mcp_call_log "
                         " WHERE status = %s AND " + real_sql, (chal,))
-            first_chal = r[0] if r else None
+            first_chal = (r[0] if r is not None else None)
             out.append(_check(
                 "dm_first_intent", "a REAL agent has ever asked to pay",
-                bool(first_chal),
-                "first real challenge %s" % first_chal if first_chal else
-                "NEVER — zero real pay-intent all-time (the 2026-07-07 "
-                "milestone was internal traffic, reclassified 07-25)",
+                None if r is None else bool(first_chal),
+                _UNKNOWN if r is None else
+                ("first real challenge %s" % first_chal if first_chal else
+                 "NEVER — zero real pay-intent all-time (the 2026-07-07 "
+                 "milestone was internal traffic, reclassified 07-25)"),
                 critical=True))
 
             r = _q(cur, "SELECT MIN(timestamp), COUNT(*) FROM mcp_call_log "
                         " WHERE status IN %s AND " + real_sql,
                    (tuple(paid_st),))
-            first_paid, n_paid = (r[0] if r else None), _n(r, 1)
+            first_paid = (r[0] if r is not None else None)
+            n_paid = _num(r, 1)
             out.append(_check(
                 "dm_settled", "a REAL agent has ever settled",
-                bool(first_paid),
-                "first settle %s · %d total" % (first_paid, n_paid)
-                if first_paid else
-                "no autonomous agent has ever completed a payment",
+                None if r is None else bool(first_paid),
+                _UNKNOWN if r is None else
+                ("first settle %s · %s total" % (first_paid, n_paid)
+                 if first_paid else
+                 "no autonomous agent has ever completed a payment"),
                 critical=True))
 
             r = _q(cur, "SELECT COUNT(*) FROM mcp_call_log "
                         " WHERE status = %s AND " + real_sql +
                         "   AND timestamp > NOW() - INTERVAL '30 days'",
                    (chal,))
+            _c30 = _num(r, 0)
             out.append(_check(
-                "dm_30d", "real pay-intent in the last 30d", _n(r, 0) > 0,
-                "%d real challenges/30d" % _n(r, 0), critical=False))
+                "dm_30d", "real pay-intent in the last 30d",
+                None if _c30 is None else (_c30 > 0),
+                _UNKNOWN if _c30 is None else
+                "%d real challenges/30d" % _c30, critical=False))
 
             r = _q(cur, "SELECT COUNT(DISTINCT platform) FROM mcp_call_log "
                         " WHERE tool IN %s AND " + real_sql +
                         "   AND timestamp > NOW() - INTERVAL '30 days'",
                    (tuple(_MPP_TOOLS),))
+            _aud = _num(r, 0)
             out.append(_check(
                 "dm_audience", "real agents are reaching payable tools at all",
-                _n(r, 0) > 0,
-                "%d distinct real platforms called a payable tool/30d"
-                % _n(r, 0), critical=False))
+                None if _aud is None else (_aud > 0),
+                _UNKNOWN if _aud is None else
+                "%d distinct real platforms called a payable tool/30d" % _aud,
+                critical=False))
     except Exception as e:  # noqa: BLE001
         out.append(_check("dm_db", "pay ledger readable", None,
                           "query failed: %s" % str(e)[:110], critical=True))
@@ -385,7 +431,12 @@ def _lane_reachability() -> list[dict]:
                         " FROM mcp_call_log WHERE tool IN %s AND " + real_sql +
                         "   AND timestamp > NOW() - INTERVAL '30 days'",
                    (tuple(_GATED_ST), tuple(_GRANTED_ST), tuple(_MPP_TOOLS)))
-            gated, granted = _n(r, 0), _n(r, 1)
+            gated, granted = _num(r, 0), _num(r, 1)
+            if gated is None or granted is None:
+                out.append(_check(
+                    "rc_share", "unpaid agents actually reach the wall", None,
+                    _UNKNOWN, critical=False))
+                return out
             tot = gated + granted
             pct = (100.0 * gated / tot) if tot else 0.0
             out.append(_check(
@@ -494,10 +545,12 @@ def _lane_rail_health() -> list[dict]:
                         " WHERE status IN %s AND " + real_sql +
                         "   AND timestamp > NOW() - INTERVAL '30 days'",
                    (tuple(fail_st),))
-            fails = _n(r, 0)
+            fails = _num(r, 0)
             out.append(_check(
                 "rh_settle_errors", "no settle FAILURES (a bug signal)",
-                fails == 0,
+                None if fails is None else (fails == 0),
+                _UNKNOWN + " — settle health is NOT proven clean"
+                if fails is None else
                 "clean — 0 verify failures/30d" if fails == 0 else
                 "%d settle failures/30d — agents TRIED and the rail rejected "
                 "them; this is a defect, not a demand gap" % fails,
@@ -508,10 +561,11 @@ def _lane_rail_health() -> list[dict]:
                         " FROM mcp_call_log WHERE " + real_sql +
                         "   AND timestamp > NOW() - INTERVAL '30 days'",
                    (chal, tuple(paid_st)))
-            ch, pd = _n(r, 0), _n(r, 1)
+            ch, pd = _num(r, 0), _num(r, 1)
             out.append(_check(
                 "rh_abandon", "challenge→settle conversion (demand signal)",
-                None if ch == 0 else (pd > 0),
+                None if (ch is None or ch == 0) else (pd > 0),
+                _UNKNOWN if ch is None else
                 "no real challenges in 30d — nothing to convert (demand, see "
                 "lane 1)" if ch == 0 else
                 "%d/%d settled (%.0f%%)" % (pd, ch, 100.0 * pd / ch),
