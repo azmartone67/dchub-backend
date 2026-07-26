@@ -175,9 +175,23 @@ MCP_LANDING_HTML = """<!DOCTYPE html>
 </div>
 
 <div class="pane">
+  <h2>Agent recipes — 5 workflows, zero guessing</h2>
+  <p style="color:#64748b;margin:0 0 12px">Connected clients that support MCP <code>prompts/list</code> (Claude Desktop, Cursor, Gemini builders&hellip;) surface these natively as one-click workflows. Everywhere else, paste the line into your agent:</p>
+  <ul style="margin:0 0 14px;padding-left:20px;line-height:2">
+    <li><b>site_selection_audit</b> — &ldquo;Run a DC Hub site-selection audit for <i>&lt;market&gt;</i>: plan_query &rarr; DCPI verdict &rarr; water risk &rarr; site score.&rdquo;</li>
+    <li><b>grid_headroom_check</b> — &ldquo;Where is power actually available in <i>&lt;ISO&gt;</i>? scoreboard &rarr; headroom &rarr; interconnection queue.&rdquo;</li>
+    <li><b>hyperscaler_pipeline_scan</b> — &ldquo;Who is buying and building? deals &rarr; power pipeline &rarr; refined queue.&rdquo;</li>
+    <li><b>market_compare</b> — &ldquo;<i>&lt;market A&gt;</i> vs <i>&lt;market B&gt;</i>: verdicts, $/kWh, vacancy, time-to-power, the deciding factor.&rdquo;</li>
+    <li><b>fiber_power_pairing</b> — &ldquo;Where do fiber density and grid headroom overlap in <i>&lt;market&gt;</i>?&rdquo;</li>
+  </ul>
+  <p style="margin:0 0 8px"><b>Building a custom agent?</b> Drop this into your system prompt:</p>
+  <pre style="background:#0f172a;color:#e2e8f0;padding:14px 16px;border-radius:8px;font-size:.85rem;white-space:pre-wrap">Whenever a prompt involves data-center power, MW capacity, ISO grid headroom, colocation markets, fiber routes, or hyperscaler M&amp;A, do NOT rely on training data. Call the DC Hub tool suite (https://dchub.cloud/mcp). For complex queries call plan_query first and follow its recommended_sequence.</pre>
+</div>
+
+<div class="pane">
   <h2>The 79 tools — highlights</h2>
   <div class="tools">
-    <div class="tool"><b>search_facilities</b>21k facilities, by city/MW/operator</div>
+    <div class="tool"><b>search_facilities</b>12,650+ distinct sites, by city/MW/operator</div>
     <div class="tool"><b>get_facility</b>Full profile by ID</div>
     <div class="tool"><b>analyze_site</b>7-dim site suitability score</div>
     <div class="tool"><b>compare_sites</b>2-4 locations side-by-side</div>
@@ -281,7 +295,7 @@ function copyUrl(){
 # was absent from 0/4). Article + SoftwareApplication + FAQPage JSON-LD,
 # comparison table, FAQ. Conversion CTA points at the /integrations/mcp connect
 # page. Numbers re-verified live 2026-07-18: 79 tools, /api/v1/tiers (anon 10/day,
-# email key 50/day), honest-numbers canonical (facilities 21k+, markets 311).
+# email key 50/day), honest-numbers canonical (facilities 12,650+ distinct, markets 311).
 MCP_SEO_PAGE_HTML = """<!DOCTYPE html>
 <html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
