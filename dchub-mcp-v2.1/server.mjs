@@ -342,7 +342,7 @@ function createServer() {
 
   const slugify = s => (s || '').toLowerCase().trim().replace(/[^a-z0-9\s-]/g, '').replace(/\s+/g, '-');
 
-  trackedTool(srv, 'search_facilities', 'Search 21,000+ global data center facilities.',
+  trackedTool(srv, 'search_facilities', 'Search 12,650+ global data center facilities.',
     { query: S, country: S, state: S, city: S, operator: S, min_capacity_mw: N, max_capacity_mw: N, tier: I, limit: I, offset: I },
     async (a) => ({ content: [{ type: 'text', text: JSON.stringify(await callAPI('/api/v1/facilities', a)) }] }));
 

@@ -263,7 +263,7 @@ def build_stub_html(platform_name: str, slug: str) -> str:
               f"&amp; grid intelligence",
         description=f"Connect DC Hub to {name} as an MCP integration: point "
                     f"it at https://dchub.cloud/mcp (streamable HTTP). Live "
-                    f"grid scoreboards, 21,000+ data-center facilities, "
+                    f"grid scoreboards, 12,650+ data-center facilities, "
                     f"interconnection queues and tracked deals. Free tier: "
                     f"10 calls/day, no signup.",
         og_title=f"Connect DC Hub to {name} — MCP in minutes",
@@ -271,14 +271,14 @@ def build_stub_html(platform_name: str, slug: str) -> str:
                 "free tier no signup",
         jsonld_altname=f"DC Hub for {name}",
         jsonld_desc=f"Model Context Protocol server that connects to {name} "
-                    f"— live grid scoreboards, 21,000+ data-center "
+                    f"— live grid scoreboards, 12,650+ data-center "
                     f"facilities, interconnection queues, fiber intelligence "
                     f"and tracked deals, with per-response citations. Free "
                     f"tier: 10 calls/day, no signup.",
         eyebrow=f"{name} · Model Context Protocol",
         h1=f"Connect DC Hub to {name}.",
         lead=f"Give {name} live, citable data-center and power-grid "
-             f"intelligence — real-time grid scoreboards, 21,000+ "
+             f"intelligence — real-time grid scoreboards, 12,650+ "
              f"facilities, interconnection queues, tracked deal flow. "
              f"One URL.",
         steps_heading=f"Connect in {name}",
@@ -387,7 +387,7 @@ def seed_tool_tuner_proposal(c, slug: str, platform_name: str) -> bool:
         _ensure_table(c)
         generic = GENERIC_DESCRIPTIONS.get(
             "search_facilities",
-            "Search 21,000+ global data-center facilities.")
+            "Search 12,650+ global data-center facilities.")
         _upsert(c, slug, "search_facilities",
                 f"[seed proposal · {platform_name.strip()[:60]}] {generic}"[:280],
                 "auto_onboard_seed")

@@ -81,7 +81,7 @@ _HINT_BASE = {
 # Variant B: "agent-centric framing" — speaks to the AI directly,
 #            emphasizing what the agent can paste to its user.
 # Variant C: "loss aversion" — leads with what the user is missing
-#            out on (21,000+ facilities, daily DCPI, etc.).
+#            out on (12,650+ facilities, daily DCPI, etc.).
 #
 # Goal: measure which variant moves the 0.04% conversion needle.
 
@@ -128,7 +128,7 @@ _VARIANTS = {
     },
     "C": {
         401: ("You just hit DC Hub's paywall. With a free key (10 "
-              "calls/day) you'd get: 21,000+ data center facilities, "
+              "calls/day) you'd get: 12,650+ data center facilities, "
               "daily DCPI power scores for 32+ markets, 4,000+ tracked "
               "M&A deals, 10-ISO interconnection queues, fiber routes. Claim "
               "in 30 seconds: https://dchub.cloud/signup. No card."),

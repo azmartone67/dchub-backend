@@ -407,7 +407,7 @@ _VERIFY_SYSTEM = (
     "Check every number in the ANSWER — money, MW, months, counts, "
     "percentages, years, prices. A number is SUPPORTED if it, or an "
     "equivalent formatting of it (e.g. $2.5B vs 2500000000, ~24mo vs "
-    "24 months, 21,000+ vs 21000), appears in the FACTS. Report each "
+    "24 months, 12,650+ vs 21000), appears in the FACTS. Report each "
     "UNSUPPORTED number together with the exact sentence of the ANSWER that "
     "contains it. Set ok=true only when every number in the ANSWER is "
     "supported by the FACTS."
@@ -448,7 +448,13 @@ def _post_messages(body: dict, timeout: float) -> dict:
     req.add_header("anthropic-version", "2023-06-01")
     req.add_header("Content-Type", "application/json")
     with urllib.request.urlopen(req, timeout=timeout) as r:
-        return json.loads(r.read())
+        data = json.loads(r.read())
+    try:
+        from routes.brain_llm_structured import record_llm_usage
+        record_llm_usage("brain-answer-cache", (body or {}).get("model"), data)
+    except Exception:
+        pass
+    return data
 
 
 _DIGIT_RE = re.compile(r"\d")

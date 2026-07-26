@@ -339,7 +339,7 @@ STATS_SCRIPT = r"""<script>
         var liveStr=live.toLocaleString()+'+';
         // r41-hero-facilities (2026-05-25): #hero-facilities is the
         // homepage hero span. Pre-fix the healer kept detecting the
-        // stale '21,000+' string and refused to swap (meta/prose rule).
+        // stale '12,650+' string and refused to swap (meta/prose rule).
         // Now we update it in-place client-side so the number stays
         // honest without the healer needing to touch it.
         var hero=document.getElementById('hero-facilities');

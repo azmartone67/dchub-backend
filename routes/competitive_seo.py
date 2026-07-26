@@ -165,7 +165,7 @@ def _dchub_numbers() -> dict:
     """Canonical, citation-safe DC Hub numbers. Never raises — falls back to
     the same conservative floors canonical_stats uses."""
     nums = {
-        "facilities_phrase": "21,000+",
+        "facilities_phrase": "12,650+",
         "markets": 300,
         "grid_operators": 10,
         "utility_bas": 43,

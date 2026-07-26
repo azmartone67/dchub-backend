@@ -33,13 +33,13 @@ import glob
 # CANONICAL VALUES — Single source of truth
 # ═══════════════════════════════════════════════════════════════
 CANONICAL = {
-    'facilities': '21,000+',
-    'facilities_number': '21000',
+    'facilities': '12,650+',
+    'facilities_number': '12650',
     'countries': '170+',
     'deals_tracked': '4,000+ deals',
     'pipeline_projects': '540+',
     'pipeline_gw': '369 GW',
-    'mcp_tools': '31',
+    'mcp_tools': '79',
     'markets': '311',
     'substations': '126,427',
     'news_sources': '40+',

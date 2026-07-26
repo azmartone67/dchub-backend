@@ -187,11 +187,11 @@ SOCIAL_PLATFORMS = {
     'reddit_chatgpt': {
         'name': 'r/ChatGPT',
         'url': 'https://www.reddit.com/r/ChatGPT/',
-        'post_title': 'I built a GPT for Data Center Intelligence - search 21,000+ facilities worldwide',
+        'post_title': 'I built a GPT for Data Center Intelligence - search 12,650+ facilities worldwide',
         'post_body': f'''Just launched a free GPT that can answer any question about data centers, colocation, and hyperscale facilities.
 
 **What it does:**
-- Search 21,000+ data center facilities across 170+ countries
+- Search 12,650+ data center facilities across 170+ countries
 - Get real-time capacity and M&A deal data
 - Find facilities by location, provider, or power capacity
 
@@ -204,7 +204,7 @@ Powered by dchub.cloud API.'''
     'reddit_datacenter': {
         'name': 'r/datacenter',
         'url': 'https://www.reddit.com/r/datacenter/',
-        'post_title': 'Free tool to search 21,000+ data centers worldwide',
+        'post_title': 'Free tool to search 12,650+ data centers worldwide',
         'post_body': f'''Created a ChatGPT GPT that queries a real database of data centers.
 
 Ask things like:
@@ -219,21 +219,21 @@ Data from dchub.cloud - tracking facilities, deals, and capacity pipeline.'''
     'hackernews': {
         'name': 'Hacker News',
         'url': 'https://news.ycombinator.com/submit',
-        'post_title': 'Show HN: GPT that queries 21,000+ data center facilities worldwide',
+        'post_title': 'Show HN: GPT that queries 12,650+ data center facilities worldwide',
         'post_body': f'{GPT_URL}'
     },
     'producthunt': {
         'name': 'Product Hunt',
         'url': 'https://www.producthunt.com/posts/new',
         'post_title': 'Data Center Intelligence GPT',
-        'post_body': 'Ask ChatGPT about any of 21,000+ data center facilities. Search by location, provider, capacity. Powered by dchub.cloud.'
+        'post_body': 'Ask ChatGPT about any of 12,650+ data center facilities. Search by location, provider, capacity. Powered by dchub.cloud.'
     },
     'twitter': {
         'name': 'Twitter/X',
         'url': 'https://twitter.com/intent/tweet',
         'post_body': f'''Just launched: Data Center Intelligence GPT 🏢
 
-Ask ChatGPT about any of 21,000+ data center facilities worldwide.
+Ask ChatGPT about any of 12,650+ data center facilities worldwide.
 
 ✅ Search by location, provider, capacity
 ✅ M&A deals & market intel
@@ -248,7 +248,7 @@ Try it free: {GPT_URL}
         'url': 'https://www.linkedin.com/sharing/share-offsite/',
         'post_body': f'''Excited to announce: Data Center Intelligence GPT
 
-I built a ChatGPT GPT that can answer questions about 21,000+ data center facilities across 170+ countries.
+I built a ChatGPT GPT that can answer questions about 12,650+ data center facilities across 170+ countries.
 
 🔍 Search facilities by location, provider, or capacity
 📊 Access M&A deal data and market intelligence
@@ -279,7 +279,7 @@ AI_PLATFORMS = {
     'chatgpt': {
         'name': 'OpenAI ChatGPT',
         'discovery_hint': f'{BASE_URL}/llms.txt',
-        'pitch': 'DC Hub provides real-time data center intelligence for 21,000+ facilities across 170+ countries.',
+        'pitch': 'DC Hub provides real-time data center intelligence for 12,650+ facilities across 170+ countries.',
         'crawl_endpoints': [
             'https://openai.com/robots.txt',
         ]
@@ -311,7 +311,7 @@ AI_PLATFORMS = {
     'grok': {
         'name': 'xAI Grok',
         'discovery_hint': f'{BASE_URL}/llms-full.txt',
-        'pitch': 'DC Hub tracks 21,000+ facilities, 132 M&A deals across 170+ countries.',
+        'pitch': 'DC Hub tracks 12,650+ facilities, 132 M&A deals across 170+ countries.',
         'crawl_endpoints': [
             'https://grok.com/robots.txt',
         ]
@@ -327,7 +327,7 @@ AI_PLATFORMS = {
     'you': {
         'name': 'You.com',
         'discovery_hint': f'{BASE_URL}/llms-full.txt',
-        'pitch': 'DC Hub custom agent live on You.com — query 21,000+ facilities via dchub.cloud APIs.',
+        'pitch': 'DC Hub custom agent live on You.com — query 12,650+ facilities via dchub.cloud APIs.',
         'agent_url': 'https://you.com/agents/user_mode_74dc3a3f-42e1-4a74-9334-c22031b9c320',
         'crawl_endpoints': [
             'https://you.com/robots.txt',
@@ -348,7 +348,7 @@ AI_PLATFORMS = {
     'mistral': {
         'name': 'Mistral (Le Chat)',
         'discovery_hint': f'{BASE_URL}/llms-full.txt',
-        'pitch': 'DC Hub is an MCP connector for Le Chat — query 21,000+ facilities, 300+ markets & live ISO grids at dchub.cloud/mcp (free, no key).',
+        'pitch': 'DC Hub is an MCP connector for Le Chat — query 12,650+ facilities, 300+ markets & live ISO grids at dchub.cloud/mcp (free, no key).',
         'crawl_endpoints': [
             'https://chat.mistral.ai/robots.txt',
             'https://mistral.ai/robots.txt',
@@ -366,7 +366,7 @@ AI_PLATFORMS = {
     'base44': {
         'name': 'base44',
         'discovery_hint': f'{BASE_URL}/openapi.json',
-        'pitch': 'DC Hub is a ready tool/API for base44 agents — 73 MCP tools + OpenAPI over 21,000+ facilities at dchub.cloud/mcp.',
+        'pitch': 'DC Hub is a ready tool/API for base44 agents — 73 MCP tools + OpenAPI over 12,650+ facilities at dchub.cloud/mcp.',
         'crawl_endpoints': [
             'https://base44.com/robots.txt',
             'https://app.base44.com/robots.txt',
@@ -876,7 +876,7 @@ MCP_SERVICE_HEADERS = {
     'X-MCP-Server': f'{BASE_URL}/mcp',
     'X-MCP-Endpoint': f'{BASE_URL}/.well-known/mcp.json',
     'X-Service-Name': 'DC Hub - Data Center Intelligence',
-    'X-Service-Description': 'DC Hub - 21,000+ data center facilities, M&A deals, capacity pipeline via MCP',
+    'X-Service-Description': 'DC Hub - 12,650+ data center facilities, M&A deals, capacity pipeline via MCP',
     'X-Service-URL': BASE_URL,
 }
 
@@ -1134,11 +1134,11 @@ def generate_submission_content():
     """Generate content for directory submissions"""
     return {
         'name': 'Data Center Intelligence GPT',
-        'tagline': 'Ask ChatGPT about 21,000+ data centers worldwide',
+        'tagline': 'Ask ChatGPT about 12,650+ data centers worldwide',
         'description': '''A free ChatGPT GPT that provides real-time data center intelligence.
 
 Features:
-- Search 21,000+ data center facilities across 170+ countries
+- Search 12,650+ data center facilities across 170+ countries
 - Access M&A deal database with 132 verified transactions
 - Query capacity pipeline by quarter
 - Get market intelligence and trend analysis
@@ -1637,10 +1637,10 @@ def register_outreach_routes(app):
         
         pitch = f"""DC Hub — Data Center Intelligence Platform
 
-DC Hub is the world's largest open data center intelligence platform, tracking 21,000+ facilities across 170+ countries with daily-updated M&A, capacity pipeline, energy pricing, and construction data.
+DC Hub is the world's largest open data center intelligence platform, tracking 12,650+ facilities across 170+ countries with daily-updated M&A, capacity pipeline, energy pricing, and construction data.
 
 KEY DATA POINTS:
-• 21,000+ data center facilities tracked globally
+• 12,650+ data center facilities tracked globally
 • 170+ countries covered
 • 673+ M&A deals with buyer, seller, MW, and transaction value
 • 19,532 MW total capacity tracked

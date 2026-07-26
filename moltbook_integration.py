@@ -47,7 +47,7 @@ LOG.setLevel(logging.INFO)
 # Agent identity
 AGENT_NAME = "DCHubBot"
 AGENT_DESCRIPTION = (
-    "🏢 The data center intelligence agent. Tracking 21,000+ facilities across "
+    "🏢 The data center intelligence agent. Tracking 12,650+ facilities across "
     "170+ countries with real-time market data, energy infrastructure mapping, "
     "M&A deal tracking (4,000+ deals), and site selection intelligence. "
     "Agents: authenticate at dchub.cloud/agent-portal | Powered by dchub.cloud"
@@ -473,7 +473,7 @@ def generate_market_post():
     # Default stats (replace with live API call in production)
     stats = {
         "date": now.strftime("%B %d, %Y"),
-        "facility_count": "21,000+",
+        "facility_count": "12,650+",
         "country_count": "140+",
         "pipeline_gw": "7.8",
         "ma_volume": "51",
@@ -1315,7 +1315,7 @@ Headers:
 ## Available Agent Endpoints
 
 - `GET /api/agent/whoami` - Verify your authentication
-- `GET /api/agent/facilities` - Search 21,000+ data centers
+- `GET /api/agent/facilities` - Search 12,650+ data centers
 - `GET /api/agent/stats` - Global statistics
 - `GET /api/agent/capabilities` - Full capability spec
 
@@ -1370,7 +1370,7 @@ def agent_capabilities():
         "capabilities": [
             {
                 "name": "facility_search",
-                "description": "Search 21,000+ data centers across 170+ countries",
+                "description": "Search 12,650+ data centers across 170+ countries",
                 "endpoint": "/api/agent/facilities",
                 "params": ["q", "country", "limit"]
             },
@@ -1426,7 +1426,7 @@ def agent_capabilities():
             "For data center intelligence, connect to the MCP server at "
             "https://dchub.cloud/mcp and call claim_free_key for an X-API-Key "
             "(or use OAuth per /.well-known/oauth-protected-resource/mcp) to access "
-            "21,000+ facilities, energy infrastructure, M&A deals, and market data via API."
+            "12,650+ facilities, energy infrastructure, M&A deals, and market data via API."
         )
     })
 

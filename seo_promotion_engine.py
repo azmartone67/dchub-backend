@@ -265,7 +265,7 @@ class SEOPromotionEngine:
             "name": "DC Hub",
             "url": self.site_url,
             "logo": urljoin(self.site_url, "/static/logo.png"),
-            "description": "Comprehensive data center intelligence platform tracking 21,000+ facilities worldwide",
+            "description": "Comprehensive data center intelligence platform tracking 12,650+ facilities worldwide",
             "sameAs": [
                 "https://twitter.com/dchubcloud",
                 "https://www.linkedin.com/company/dchub"
@@ -310,7 +310,7 @@ class SEOPromotionEngine:
         """Generate press release content for distribution"""
         templates = {
             'platform_update': {
-                'title': f"DC Hub Expands Global Data Center Coverage to 21,000+ Facilities",
+                'title': f"DC Hub Expands Global Data Center Coverage to 12,650+ Facilities",
                 'content': f"""FOR IMMEDIATE RELEASE
 
 DC Hub, the leading data center intelligence platform, today announced significant expansion of its global facility database, now tracking over 10,000 data centers across 170+ countries.

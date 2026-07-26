@@ -872,6 +872,11 @@ def _call_model(system: str, prompt: str, *, tier: str = "reasoning",
                 )
                 with urllib.request.urlopen(req, timeout=50) as r:
                     data = json.loads(r.read().decode("utf-8"))
+                try:
+                    from routes.brain_llm_structured import record_llm_usage
+                    record_llm_usage("brain-investigator", model, data)
+                except Exception:
+                    pass
                 for block in data.get("content", []):
                     if block.get("type") == "text":
                         return block.get("text", ""), None, model

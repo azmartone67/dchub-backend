@@ -56,7 +56,7 @@ def build() -> dict:
         "pricing_usd_month": {k: t.price(k) for k in PRICE_TIERS},
         "calls_per_day": {k: t.calls_per_day(k) for k in DAILY_TIERS},
         "numbers": {
-            "facilities": c.facilities_phrase(),       # "21,000+"
+            "facilities": c.facilities_phrase(),       # "12,650+"
             "countries": c.countries_phrase(),         # "170+"
             "markets": _markets_floor(),               # "311" (exact live count)
             "deals": "4,000+",                         # canonical floor (live ~4,025 on 07-10)

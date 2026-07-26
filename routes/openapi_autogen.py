@@ -163,7 +163,7 @@ def _build_spec(app) -> dict:
                 "Where static research (DCHawk, dcByte, DCK) ships quarterly "
                 "PDFs and $25K contracts, DC Hub ships live JSON, free MCP "
                 "tools, and freshness SLAs published every 60 seconds.\n\n"
-                "21,000+ facilities in 170+ countries, 369 GW pipeline, "
+                "12,650+ facilities in 170+ countries, 369 GW pipeline, "
                 "daily-refreshed DCPI scores for 300+ markets, MCP server "
                 "with 28+ tools. Designed for AI agent consumption — claim "
                 "a free dev key at POST /api/v1/keys/claim.\n\n"

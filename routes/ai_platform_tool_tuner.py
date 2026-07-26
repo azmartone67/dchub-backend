@@ -231,7 +231,7 @@ def _ensure_table(c) -> None:
 # The MCP server itself remains the source of truth; this is just used
 # as the source string for Claude's per-platform rewrite.
 GENERIC_DESCRIPTIONS = {
-    "search_facilities":      ("Search 21,000+ global data-center facilities by "
+    "search_facilities":      ("Search 12,650+ global data-center facilities by "
                                "city, operator, status, capacity, and more."),
     "get_facility":           ("Detailed profile of a single facility: capacity, "
                                "operator, location, power source, infrastructure."),
@@ -279,7 +279,7 @@ def _canonical_descriptions() -> dict:
     """2026-07-04 FIX: source the per-tool descriptions the seed feeds to Claude
     from the LIVE tools/list SoT instead of the frozen 2026-06-07
     GENERIC_DESCRIPTIONS snapshot. That snapshot overstated search_facilities'
-    scope (an inflated facility count vs the canonical 21,000+) and the seed baked
+    scope (an inflated facility count vs the canonical 12,650+) and the seed baked
     the stale figure into every per-platform rewrite.
 
     Returns {tool_name: description} for TOP_10_TOOLS, starting from

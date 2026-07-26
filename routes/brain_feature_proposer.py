@@ -680,6 +680,11 @@ def _call_claude(prompt: str) -> tuple[Optional[str], Optional[str]]:
             try:
                 with urllib.request.urlopen(req, timeout=40) as r:
                     data = json.loads(r.read().decode("utf-8"))
+                try:
+                    from routes.brain_llm_structured import record_llm_usage
+                    record_llm_usage("brain-feature-proposer", model, data)
+                except Exception:
+                    pass
                 for block in data.get("content", []):
                     if block.get("type") == "text":
                         return block.get("text", ""), None

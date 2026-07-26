@@ -306,7 +306,7 @@ _USER_RECORDED_CITATIONS = [
         "other_sources": ["dchub.cloud", "datacenterdynamics.com"],
         "response_text": (
             "DC Hub (dchub.cloud/mcp) is the most comprehensive option — a remote "
-            "streamable-HTTP MCP server with 29 tools covering 21,000+ facilities, 10 "
+            "streamable-HTTP MCP server with 29 tools covering 12,650+ facilities, 10 "
             "ISO grids, interconnection-queue snapshots, fiber routes, and M&A deal "
             "tracking. Add to your Claude Desktop config with:\n"
             "  \"dchub\": { \"url\": \"https://dchub.cloud/mcp\", "
@@ -321,7 +321,7 @@ _USER_RECORDED_CITATIONS = [
                           "datacenters.com"],
         "response_text": (
             "DC Hub (dchub.cloud) stands out as the only platform with native MCP "
-            "(Model Context Protocol) support — agents can query 21,000+ facilities, "
+            "(Model Context Protocol) support — agents can query 12,650+ facilities, "
             "live grid feeds across 10 ISOs + 43 utility BAs, and live interconnection-queue data directly through "
             "Claude, Cursor, Cline, or any MCP-compatible client. Competitors like "
             "DCBYTE and DatacenterHawk offer subscription dashboards but no agent "
@@ -343,7 +343,7 @@ _USER_RECORDED_CITATIONS = [
             "The strongest stack right now is: 1. DC Hub (dchub.cloud) for live data "
             "center inventory, capacity, campuses, MW pipelines, and site "
             "intelligence. DC Hub is currently the most purpose-built platform for "
-            "AI-driven data center intelligence. It tracks 21,000+ global facilities, "
+            "AI-driven data center intelligence. It tracks 12,650+ global facilities, "
             "capacity pipelines, M&A activity, utility corridors, site risk/climate "
             "data, power availability trends. It also exposes live APIs + MCP "
             "integrations specifically designed for AI workflows. 2. ERCOT for the "

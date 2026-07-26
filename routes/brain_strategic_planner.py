@@ -113,6 +113,9 @@ _CTX_BUDGET = {
     "competitors":  5000,
     "self_model":   2500,
     "recent_recs":  1500,
+    # Seven-levers #32 (2026-07-25): recidivist finding clusters — the
+    # fixes that didn't hold, so the planner stops re-proposing them.
+    "recidivism":   1200,
     # 2026-06-07 ROUND 2: pr_outcomes feeds the brain's own track
     # record into the synthesis so it learns from past attempts.
     # ~2 KB holds the last 30d of merged brain-authored PRs +
@@ -325,6 +328,7 @@ def _gather_strategic_context() -> dict:
         "competitors":     competitors,
         "self_model":      self_model,
         "recent_recs":     recent_recs,
+        "recidivism":      _read_recidivism(),
         "pr_outcomes":     pr_outcomes,
         "self_perception": self_perception,
         "code_inventory":      code_inventory,
@@ -559,6 +563,46 @@ def _read_crawled_gaps(days: int = 45, sample: int = 12) -> dict:
         return {}
 
 
+def _read_recidivism(days: int = 60, top: int = 8) -> list:
+    """Seven-levers #32 (2026-07-25): clusters of brain_fix_outcomes rows
+    with still_broken=TRUE — merged fixes whose finding re-fired afterward.
+    On ship day 485 of 1,210 stamped outcomes (40%) were recidivist and
+    NOTHING consumed that signal; the planner kept proposing fresh work
+    while old fixes silently un-fixed themselves. Grouped by issue_label
+    (the reconciler's stable finding key), newest evidence attached, so
+    the synthesis can weigh 'this class of fix does not hold' as a
+    first-order signal. Fail-soft → [] (the section is skipped)."""
+    c = _get_db()
+    if c is None:
+        return []
+    try:
+        with c.cursor() as cur:
+            cur.execute("""
+                SELECT COALESCE(NULLIF(issue_label, ''), 'unlabeled') AS label,
+                       COUNT(*) AS n,
+                       MAX(reconciled_at)::date AS latest,
+                       (ARRAY_AGG(LEFT(COALESCE(evidence, ''), 160)
+                                  ORDER BY reconciled_at DESC))[1] AS ev
+                  FROM brain_fix_outcomes
+                 WHERE still_broken IS TRUE
+                   AND reconciled_at > NOW() - make_interval(days => %s)
+                 GROUP BY 1
+                 ORDER BY n DESC, latest DESC
+                 LIMIT %s""", (days, top))
+            rows = cur.fetchall() or []
+        return [{"label": r[0], "recidivist_count": int(r[1]),
+                 "latest": str(r[2]), "evidence": (r[3] or "").strip()}
+                for r in rows]
+    except Exception as e:  # noqa: BLE001
+        logger.debug("L6 recidivism read failed: %s", e)
+        return []
+    finally:
+        try:
+            c.close()
+        except Exception:
+            pass
+
+
 def _gather_competitor_context() -> dict:
     """Assemble the competitor-intel envelope the L6 prompt feeds on.
 
@@ -760,6 +804,16 @@ def _build_prompt(ctx: dict) -> str:
                     "learn from regressions):\n" +
                     _truncate(ctx.get("pr_outcomes"),
                               _CTX_BUDGET["pr_outcomes"]))
+    # Seven-levers #32 (2026-07-25): recidivist findings — 40% of verified
+    # fixes re-broke (485/1210 still_broken on the day this shipped) and
+    # nothing prioritized them. The synthesis must treat a re-broken cluster
+    # as evidence the SHALLOW fix pattern failed and root-cause it instead.
+    if ctx.get("recidivism"):
+        sections.append("RECIDIVIST FINDINGS (fixes that did NOT hold — "
+                        "root-cause these before proposing anything similar; "
+                        "a repeat shallow patch here is a wasted merge):\n" +
+                        _truncate(ctx.get("recidivism"),
+                                  _CTX_BUDGET["recidivism"]))
     # Task #161 (2026-06-07): brain's own daily self-assessments. The
     # prompt now sees "here's how you self-assessed yesterday + the
     # past 2 weeks". Wins / losses / adjustments are honest grades the
@@ -1053,6 +1107,11 @@ def _call_claude(prompt: str) -> Optional[dict]:
                 logger.warning("L6 strategic: %s", last_err)
                 continue
             body = r.json() or {}
+            try:
+                from routes.brain_llm_structured import record_llm_usage
+                record_llm_usage("brain-strategic-planner", model, body)
+            except Exception:
+                pass
             if body.get("stop_reason") == "max_tokens":
                 # fable-5 trap: thinking is billed against max_tokens, so a
                 # long think can starve the JSON answer → truncated JSON →
@@ -1077,6 +1136,11 @@ def _call_claude(prompt: str) -> Optional[dict]:
                         r, _structured = _post(_want_structured)
                         if r.status_code == 200:
                             body = r.json() or {}
+                            try:
+                                from routes.brain_llm_structured import record_llm_usage
+                                record_llm_usage("brain-strategic-planner", model, body)
+                            except Exception:
+                                pass
                     except Exception as _re:
                         logger.warning(
                             "L6 strategic: %s boosted-retry exception: %s",
