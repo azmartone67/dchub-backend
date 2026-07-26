@@ -43,10 +43,15 @@ _ADMIN_KEY = (os.environ.get("DCHUB_ADMIN_KEY")
 
 # Public surfaces we scrape. Keep tight: too many = brittle + slow.
 _COMPETITORS = [
-    {"slug": "dchawk",  "name": "DCHawk",
-     "urls": ["https://dchawk.com/", "https://dchawk.com/pricing"]},
-    {"slug": "dcbyte",  "name": "dcByte",
-     "urls": ["https://dcbyte.com/", "https://dcbyte.com/pricing"]},
+    # shell#35 cleanup (2026-07-26): dchawk.com was a WRONG domain (fetch
+    # failed daily since 05-16); real domain is datacenterhawk.com.
+    {"slug": "dchawk",  "name": "DataCenterHawk",
+     "urls": ["https://datacenterhawk.com/"]},
+    # DC Byte REMOVED from daily fetches: its ToS prohibits automated
+    # crawling (same policy as competitor_gap_crawler + competitor_recon —
+    # zero requests to dcbyte.com). Its /pricing was 404ing anyway.
+    {"slug": "baxtel",  "name": "Baxtel",
+     "urls": ["https://baxtel.com/"]},
     {"slug": "dck",     "name": "Data Center Knowledge",
      "urls": ["https://www.datacenterknowledge.com/"]},
     {"slug": "dcd",     "name": "Data Center Dynamics",
