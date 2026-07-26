@@ -729,52 +729,46 @@ def fetch_pjm() -> list[dict]:
     gen_by_fuel + inst_load). Wire extraction here once PJM_API_KEY is set."""
     key = _env("PJM_API_KEY")
     base = ISO_REGISTRY["PJM"]["base"]
-    # Owner decision 2026-07-26: gridstatus.io is the PRIMARY PJM source —
-    # DC Hub's provisioned key, licensed redistribution, no DM2
-    # redistribution-license exposure. DM2 direct remains a fallback ONLY if
-    # PJM_API_KEY is ever set (requires a PJM Redistribution License for
-    # user-facing serving — see DM2 ToS).
-    try:
-        from pjm_dataminer import _gridstatus_get
-        fm_rows, _fe = _gridstatus_get("pjm_fuel_mix",
-                                       {"limit": 1, "order": "desc"})
-        ld_rows, _le = _gridstatus_get("pjm_load",
-                                       {"limit": 1, "order": "desc"})
-        if fm_rows and ld_rows:
-            _skip = ("interval_start_utc", "interval_end_utc", "time_utc",
-                     "interval_start_local", "interval_end_local")
-            fuel_mix, gen = {}, 0.0
-            for k, v in (fm_rows[0] or {}).items():
-                if k in _skip:
-                    continue
-                try:
-                    mw = float(v)
-                except (TypeError, ValueError):
-                    continue
-                fuel_mix[str(k).lower()] = round(mw, 1)
-                gen += mw
-            ld = ld_rows[0] or {}
-            load = None
-            for cand in ("load", "pjm_rto", "rto", "total", "mid_atlantic"):
-                if ld.get(cand) is not None:
+    # Owner decisions 2026-07-26: (1) NO direct DM2 serving without a PJM
+    # Redistribution License; (2) gridstatus free tier = 250 req/MONTH —
+    # a 15-min pull would burn ~5,760/mo, so gridstatus is BANNED from this
+    # cadence path (it serves only the 6h-cached PJM-DOM depth in
+    # pjm_dataminer). PRIMARY here = EIA-930 hourly (public domain, free,
+    # redistribution-safe): net generation + demand for the PJM BA.
+    # HONEST: hourly cadence, and EIA NG excludes imports (same documented
+    # bias class as ISO-NE/MISO) — labeled in source, no invented offset.
+    eia_key = _env("EIA_API_KEY")
+    if eia_key:
+        try:
+            def _eia_latest(series_type):
+                js = _http_json(
+                    "https://api.eia.gov/v2/electricity/rto/region-data/data/"
+                    f"?api_key={eia_key}&frequency=hourly&data[0]=value"
+                    f"&facets[respondent][]=PJM&facets[type][]={series_type}"
+                    "&sort[0][column]=period&sort[0][direction]=desc&length=1")
+                rows = (((js or {}).get("response") or {}).get("data")) or []
+                if rows:
                     try:
-                        load = float(ld[cand])
-                        break
+                        return float(rows[0].get("value")), rows[0].get("period")
                     except (TypeError, ValueError):
-                        continue
-            if gen > 0 and load and load > 0:
+                        return None, None
+                return None, None
+
+            gen, _gp = _eia_latest("NG")
+            load, _lp = _eia_latest("D")
+            if gen and load and gen > 0 and load > 0:
                 return [_record("PJM", "PJM", online_gen_mw=round(gen, 1),
-                                load_mw=round(load, 1), fuel_mix=fuel_mix,
-                                source="gridstatus_pjm")]
-        print(f"[iso_grid] PJM gridstatus parse empty (fm={_fe} ld={_le}); "
-              "trying DM2 fallback if keyed.", flush=True)
-    except Exception as e:
-        print(f"[iso_grid] PJM gridstatus path failed: {str(e)[:120]}",
-              flush=True)
+                                load_mw=round(load, 1),
+                                source="eia930_hourly")]
+            print(f"[iso_grid] PJM EIA-930 parse empty (gen={gen} load={load});"
+                  " trying DM2 fallback if keyed.", flush=True)
+        except Exception as e:
+            print(f"[iso_grid] PJM EIA-930 path failed: {str(e)[:120]}",
+                  flush=True)
     if not key:
-        return [_unavailable("PJM", "GRIDSTATUS_API_KEY|PJM_API_KEY", base,
-                             "gridstatus PJM feed unavailable and no DM2 key "
-                             "set (DM2 also needs a redistribution license).")]
+        return [_unavailable("PJM", "EIA_API_KEY|PJM_API_KEY", base,
+                             "EIA-930 PJM feed unavailable and no DM2 key set "
+                             "(DM2 also needs a redistribution license).")]
     # shell#35 follow-up (2026-07-26): extraction wired so the key going into
     # Railway env = instant live telemetry. Tolerant parse, FAIL-CLOSED.
     _hdr = {"Ocp-Apim-Subscription-Key": key, "Accept": "application/json"}

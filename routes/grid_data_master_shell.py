@@ -326,10 +326,26 @@ def _ingested_state() -> dict:
     return out
 
 
+_GS_ALLOWLIST = set((os.environ.get(
+    "GRIDSTATUS_DATASET_ALLOWLIST",
+    "pjm_load,pjm_fuel_mix,pjm_load_forecast,pjm_generation_capacity_daily"
+)).split(","))
+
+
 def _ingest_gridstatus_dataset(entry: dict) -> dict:
     """Pull the latest row of one gridstatus dataset into grid_ext_metrics.
     Column-agnostic + fail-soft: always captures the raw row; primary_value is
-    best-effort (entry.value_col, else first non-timestamp numeric)."""
+    best-effort (entry.value_col, else first non-timestamp numeric).
+
+    shell#35 WS8 (2026-07-26): gridstatus free tier = 250 req/MONTH and July
+    burned 375, mostly here (~20 datasets × every-other-day). ALLOWLIST =
+    PJM-only (no free direct source without a DM2 redistribution license);
+    everything else (ercot_*/caiso_*/isone_*/spp_*/miso_*/aeso_*/eia_*) has a
+    free direct source we already hold creds for — skipped with an honest
+    marker so the brain can repoint them (finding filed by the caller)."""
+    if entry["id"] not in _GS_ALLOWLIST:
+        return {"ok": False, "dataset": entry["id"],
+                "error": "skipped_budget_allowlist_repoint_to_free_source"}
     rows, err = _gs_get(entry["id"], {"limit": 1, "order": "desc"})
     if err or not rows:
         return {"ok": False, "dataset": entry["id"], "error": err or "no_rows"}

@@ -39,7 +39,10 @@ UA = "DCHub-PJM/1.0 (+https://dchub.cloud)"
 
 # small in-process cache: PJM rate limit is tight (6/min for non-members)
 _PJM_CACHE = {}
-_PJM_TTL = 300  # 5 min — DOM load/LMP move on a 5-min/hourly cadence
+# shell#35 WS8 (2026-07-26): gridstatus free tier = 250 req/MONTH (July blew
+# it: 375). 5-min TTL burned ~143 calls/mo on DOM alone — 6h TTL ≈ 12/day max
+# worst-case, and the budget ledger below hard-caps the month regardless.
+_PJM_TTL = int(os.environ.get("PJM_DOM_CACHE_TTL_S", "21600"))  # 6h default
 
 
 def pjm_key():
@@ -129,11 +132,53 @@ def gridstatus_key():
     return (os.environ.get("GRIDSTATUS_API_KEY") or "").strip()
 
 
+_GS_MONTHLY_BUDGET = int(os.environ.get("GRIDSTATUS_MONTHLY_BUDGET", "200"))
+
+
+def _gs_budget_ok() -> bool:
+    """Hard monthly call cap (shell#35 WS8): a pg ledger row per month.
+    Fail-OPEN on DB trouble (a ledger outage must not kill the feed) —
+    the vendor-side 250 cap is the true backstop."""
+    try:
+        import psycopg2
+        db = os.environ.get("DATABASE_URL")
+        if not db:
+            return True
+        conn = psycopg2.connect(db, sslmode="require", connect_timeout=4)
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS gridstatus_call_ledger (
+                        month TEXT PRIMARY KEY, calls INT NOT NULL DEFAULT 0)
+                """)
+                cur.execute("""
+                    INSERT INTO gridstatus_call_ledger (month, calls)
+                    VALUES (to_char(NOW(), 'YYYY-MM'), 1)
+                    ON CONFLICT (month) DO UPDATE
+                      SET calls = gridstatus_call_ledger.calls + 1
+                    RETURNING calls
+                """)
+                n = int(cur.fetchone()[0])
+            conn.commit()
+            return n <= _GS_MONTHLY_BUDGET
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+    except Exception:
+        return True
+
+
 def _gridstatus_get(dataset, params=None, timeout=15):
     """GET one gridstatus.io dataset query. Returns (rows_list, error_str)."""
     key = gridstatus_key()
     if not key:
         return None, "source_unavailable: GRIDSTATUS_API_KEY not set"
+    if not _gs_budget_ok():
+        return None, ("budget_exhausted: GRIDSTATUS_MONTHLY_BUDGET "
+                      f"({_GS_MONTHLY_BUDGET}/mo) reached — spend the free "
+                      "250 wisely (owner directive 2026-07-26)")
     p = {"api_key": key}
     if params:
         p.update(params)
