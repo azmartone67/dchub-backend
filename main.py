@@ -2122,6 +2122,19 @@ try:
     except Exception as _fcms:
         import logging
         logging.getLogger(__name__).warning('fix_closure_master_shell wiring failed: %s', _fcms)
+    # Agent-Pay Master Shell (#34, 2026-07-25) — separates REAL agent pay-intent
+    # from the rail's plumbing so "nobody paid" can never again be misread as
+    # "the rail is broken", and pins the synthetic-traffic filter that spent two
+    # and a half weeks reporting our own probes as customer demand.
+    # GET /admin/agent-pay · /api/v1/admin/agent-pay/master-tick
+    # · kill AGENT_PAY_SHELL_DISABLE=1 (probe only: AGENT_PAY_SHELL_PROBE=0)
+    try:
+        from routes.agent_pay_master_shell import agent_pay_master_shell_bp
+        app.register_blueprint(agent_pay_master_shell_bp)
+        print("[main] agent_pay_master_shell_bp registered: GET /admin/agent-pay", flush=True)
+    except Exception as _apms:
+        import logging
+        logging.getLogger(__name__).warning('agent_pay_master_shell wiring failed: %s', _apms)
     # 2026-07-25 (#32 lever 3): slow-request capture — before/after_app_request
     # hooks that record >2s requests into slow_requests so the p99 tail has an
     # in-app meter (Railway HTTP logs are invisible to the brain). Fail-soft;
