@@ -546,6 +546,15 @@ def _persist(m: dict, sc: dict, act: dict) -> bool:
         return False
     try:
         with c, c.cursor() as cur:
+            # ★fix-closure #33 (2026-07-26): one snapshot row per day. The
+            # heartbeat fires this tick up to ~11× inside its cron hour and
+            # every firing appended a full row (8 identical rows on 07-25).
+            # Telemetry itself stays fresh (social_audience upserts on every
+            # tick); only the duplicate snapshot append is skipped.
+            cur.execute("SELECT 1 FROM media_growth_snapshots "
+                        "WHERE created_at::date = CURRENT_DATE LIMIT 1")
+            if cur.fetchone():
+                return True
             cur.execute("""
                 INSERT INTO media_growth_snapshots
                     (li_followers, li_followers_wow, x_followers, x_followers_wow,

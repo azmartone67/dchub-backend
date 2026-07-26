@@ -2108,6 +2108,20 @@ try:
     except Exception as _slms:
         import logging
         logging.getLogger(__name__).warning('seven_levers_master_shell wiring failed: %s', _slms)
+    # 2026-07-26: Fix Closure Master Shell (#33) — pins every fix from the
+    # 07-25/26 waves to a live check (eia mirror projection, paid-key
+    # contract, zone envelope 79, media dedup + LI landing, minted-key
+    # retention north-star, sync-source integrity). Read-only; a lane never
+    # reads PASS when it could not check.
+    # GET /admin/fix-closure · /api/v1/admin/fix-closure/master-tick
+    # · kill FIX_CLOSURE_SHELL_DISABLE=1
+    try:
+        from routes.fix_closure_master_shell import fix_closure_master_shell_bp
+        app.register_blueprint(fix_closure_master_shell_bp)
+        print("[main] fix_closure_master_shell_bp registered: GET /admin/fix-closure", flush=True)
+    except Exception as _fcms:
+        import logging
+        logging.getLogger(__name__).warning('fix_closure_master_shell wiring failed: %s', _fcms)
     # 2026-07-25 (#32 lever 3): slow-request capture — before/after_app_request
     # hooks that record >2s requests into slow_requests so the p99 tail has an
     # in-app meter (Railway HTTP logs are invisible to the brain). Fail-soft;
@@ -17771,12 +17785,68 @@ def _eia_run_ingest(task_id: str):
                         retrieved_at  TIMESTAMPTZ DEFAULT NOW()
                     )
                 """)
-                _rc.execute("DELETE FROM eia_retail_rates")
+                # ★fix-closure #33 (2026-07-26). This sync was broken since
+                # 2026-05-14: the INSERT named a retrieved_at column the LIVE
+                # mirror doesn't have (live: updated_at), and the resulting
+                # UndefinedColumn rollback was the ONLY thing preventing the
+                # blanket DELETE above from destroying the mirror — the two
+                # tables speak different vocabularies on all three axes
+                # (states 2-letter vs FULL NAMES, sectors COM/IND vs
+                # commercial/industrial, periods MONTHLY vs ANNUAL), so a
+                # naive copy would have emptied every consumer that keys on
+                # the word forms. The mirror also holds 2021-2024 annual
+                # history the source CANNOT regenerate (source monthlies
+                # start 2025-04), so:
+                #   · the DELETE is BOUNDED to the years the source covers;
+                #   · the INSERT projects source→mirror vocabulary (state
+                #     names, sector words, annual averages of monthlies);
+                #   · a zero-row projection raises and rolls back the whole
+                #     transaction — the old accidental protection, explicit.
                 _rc.execute("""
-                    INSERT INTO eia_retail_rates (state, sector, rate_cents_kwh, period, retrieved_at)
-                    SELECT state, sector, price_cents_kwh, period, retrieved_at
-                    FROM eia_electricity_rates
+                    DELETE FROM eia_retail_rates
+                     WHERE period IN (
+                        SELECT DISTINCT left(period, 4)
+                          FROM eia_electricity_rates
+                         WHERE sector IN ('COM', 'IND'))
                 """)
+                _rc.execute("""
+                    INSERT INTO eia_retail_rates
+                        (state, sector, rate_cents_kwh, period, updated_at)
+                    SELECT m.full_name,
+                           CASE e.sector WHEN 'COM' THEN 'commercial'
+                                         ELSE 'industrial' END,
+                           ROUND(AVG(e.price_cents_kwh)::numeric, 2),
+                           left(e.period, 4),
+                           NOW()
+                      FROM eia_electricity_rates e
+                      JOIN (VALUES
+                        ('AL','Alabama'),('AK','Alaska'),('AZ','Arizona'),
+                        ('AR','Arkansas'),('CA','California'),('CO','Colorado'),
+                        ('CT','Connecticut'),('DE','Delaware'),
+                        ('DC','District of Columbia'),('FL','Florida'),
+                        ('GA','Georgia'),('HI','Hawaii'),('ID','Idaho'),
+                        ('IL','Illinois'),('IN','Indiana'),('IA','Iowa'),
+                        ('KS','Kansas'),('KY','Kentucky'),('LA','Louisiana'),
+                        ('ME','Maine'),('MD','Maryland'),('MA','Massachusetts'),
+                        ('MI','Michigan'),('MN','Minnesota'),('MS','Mississippi'),
+                        ('MO','Missouri'),('MT','Montana'),('NE','Nebraska'),
+                        ('NV','Nevada'),('NH','New Hampshire'),('NJ','New Jersey'),
+                        ('NM','New Mexico'),('NY','New York'),
+                        ('NC','North Carolina'),('ND','North Dakota'),
+                        ('OH','Ohio'),('OK','Oklahoma'),('OR','Oregon'),
+                        ('PA','Pennsylvania'),('RI','Rhode Island'),
+                        ('SC','South Carolina'),('SD','South Dakota'),
+                        ('TN','Tennessee'),('TX','Texas'),('UT','Utah'),
+                        ('VT','Vermont'),('VA','Virginia'),('WA','Washington'),
+                        ('WV','West Virginia'),('WI','Wisconsin'),('WY','Wyoming')
+                      ) AS m(abbr, full_name) ON m.abbr = e.state
+                     WHERE e.sector IN ('COM', 'IND')
+                     GROUP BY 1, 2, 4
+                """)
+                if _rc.rowcount <= 0:
+                    raise RuntimeError(
+                        "retail_rates projection produced 0 rows — rolling "
+                        "back to preserve the mirror")
                 results["retail_rates_synced"] = _rc.rowcount
             conn.commit()
         except Exception as e:
@@ -18383,12 +18453,68 @@ def energy_eia_ingest_run():
                         retrieved_at  TIMESTAMPTZ DEFAULT NOW()
                     )
                 """)
-                _rc.execute("DELETE FROM eia_retail_rates")
+                # ★fix-closure #33 (2026-07-26). This sync was broken since
+                # 2026-05-14: the INSERT named a retrieved_at column the LIVE
+                # mirror doesn't have (live: updated_at), and the resulting
+                # UndefinedColumn rollback was the ONLY thing preventing the
+                # blanket DELETE above from destroying the mirror — the two
+                # tables speak different vocabularies on all three axes
+                # (states 2-letter vs FULL NAMES, sectors COM/IND vs
+                # commercial/industrial, periods MONTHLY vs ANNUAL), so a
+                # naive copy would have emptied every consumer that keys on
+                # the word forms. The mirror also holds 2021-2024 annual
+                # history the source CANNOT regenerate (source monthlies
+                # start 2025-04), so:
+                #   · the DELETE is BOUNDED to the years the source covers;
+                #   · the INSERT projects source→mirror vocabulary (state
+                #     names, sector words, annual averages of monthlies);
+                #   · a zero-row projection raises and rolls back the whole
+                #     transaction — the old accidental protection, explicit.
                 _rc.execute("""
-                    INSERT INTO eia_retail_rates (state, sector, rate_cents_kwh, period, retrieved_at)
-                    SELECT state, sector, price_cents_kwh, period, retrieved_at
-                    FROM eia_electricity_rates
+                    DELETE FROM eia_retail_rates
+                     WHERE period IN (
+                        SELECT DISTINCT left(period, 4)
+                          FROM eia_electricity_rates
+                         WHERE sector IN ('COM', 'IND'))
                 """)
+                _rc.execute("""
+                    INSERT INTO eia_retail_rates
+                        (state, sector, rate_cents_kwh, period, updated_at)
+                    SELECT m.full_name,
+                           CASE e.sector WHEN 'COM' THEN 'commercial'
+                                         ELSE 'industrial' END,
+                           ROUND(AVG(e.price_cents_kwh)::numeric, 2),
+                           left(e.period, 4),
+                           NOW()
+                      FROM eia_electricity_rates e
+                      JOIN (VALUES
+                        ('AL','Alabama'),('AK','Alaska'),('AZ','Arizona'),
+                        ('AR','Arkansas'),('CA','California'),('CO','Colorado'),
+                        ('CT','Connecticut'),('DE','Delaware'),
+                        ('DC','District of Columbia'),('FL','Florida'),
+                        ('GA','Georgia'),('HI','Hawaii'),('ID','Idaho'),
+                        ('IL','Illinois'),('IN','Indiana'),('IA','Iowa'),
+                        ('KS','Kansas'),('KY','Kentucky'),('LA','Louisiana'),
+                        ('ME','Maine'),('MD','Maryland'),('MA','Massachusetts'),
+                        ('MI','Michigan'),('MN','Minnesota'),('MS','Mississippi'),
+                        ('MO','Missouri'),('MT','Montana'),('NE','Nebraska'),
+                        ('NV','Nevada'),('NH','New Hampshire'),('NJ','New Jersey'),
+                        ('NM','New Mexico'),('NY','New York'),
+                        ('NC','North Carolina'),('ND','North Dakota'),
+                        ('OH','Ohio'),('OK','Oklahoma'),('OR','Oregon'),
+                        ('PA','Pennsylvania'),('RI','Rhode Island'),
+                        ('SC','South Carolina'),('SD','South Dakota'),
+                        ('TN','Tennessee'),('TX','Texas'),('UT','Utah'),
+                        ('VT','Vermont'),('VA','Virginia'),('WA','Washington'),
+                        ('WV','West Virginia'),('WI','Wisconsin'),('WY','Wyoming')
+                      ) AS m(abbr, full_name) ON m.abbr = e.state
+                     WHERE e.sector IN ('COM', 'IND')
+                     GROUP BY 1, 2, 4
+                """)
+                if _rc.rowcount <= 0:
+                    raise RuntimeError(
+                        "retail_rates projection produced 0 rows — rolling "
+                        "back to preserve the mirror")
                 results["retail_rates_synced"] = _rc.rowcount
             conn.commit()
         except Exception as e:
