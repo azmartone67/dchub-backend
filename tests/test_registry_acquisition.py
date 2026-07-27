@@ -78,6 +78,21 @@ def test_absent_only_when_live_and_readable_and_missing(ra):
     assert "submittable" in v["reason"]
 
 
+def test_client_side_search_cannot_prove_absence(ra):
+    """Found by the first live scan: opentools and mcp-get render search
+    client-side, so ?q=dchub returns byte-identical HTML to ?q=<nonsense>.
+    The first version called them 'absent' — which would have sent someone to
+    submit to directories we may already be on."""
+    page = "<html>a directory shell with no results rendered server-side</html>"
+    v = ra.classify_candidate(200, 200, page, control_body=page)
+    assert v["verdict"] == "unverified"
+    assert "client-side" in v["reason"].lower()
+    # a genuinely filtering search still yields absent
+    v2 = ra.classify_candidate(200, 200, "<html>no match for dc-hub</html>",
+                               control_body="<html>different: zero results</html>")
+    assert v2["verdict"] == "absent"
+
+
 def test_empty_probe_body_is_unknown(ra):
     v = ra.classify_candidate(200, 200, "   ")
     assert v["verdict"] == "unverified"

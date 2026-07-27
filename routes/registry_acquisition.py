@@ -48,6 +48,7 @@ from __future__ import annotations
 import datetime
 import logging
 import os
+import re
 
 from flask import Blueprint, jsonify, request
 
@@ -126,11 +127,23 @@ def _db():
 
 # ── the classifier (pure — unit-tested without network) ──────────────
 
-def classify_candidate(home_status, probe_status, probe_body) -> dict:
+CONTROL_TOKEN = "zqxjkbwmp"   # a term no directory can legitimately match
+
+
+def classify_candidate(home_status, probe_status, probe_body,
+                       control_body=None) -> dict:
     """Two-question verdict from already-fetched evidence.
 
     Question 1 gates question 2: if the directory itself does not resolve,
     "are we listed" is meaningless and must not be answered.
+
+    CONTROL PROBE (added after the first live scan): many directories render
+    search CLIENT-SIDE, so `?q=dchub` returns byte-identical HTML to
+    `?q=<nonsense>` and the absence of our name proves nothing about the
+    directory's contents. Live: opentools and mcp-get both did exactly this,
+    and the first scan called them "absent" — which would have sent someone
+    to submit to directories we might already be on. When the control body
+    matches the probe body, presence is UNKNOWN.
     """
     out = {"verdict": "unverified", "reason": ""}
 
@@ -163,6 +176,16 @@ def classify_candidate(home_status, probe_status, probe_body) -> dict:
         out["verdict"] = "present"
         out["reason"] = "DC Hub found on the directory"
         return out
+    # Absence is only meaningful if the probe actually FILTERS. If a nonsense
+    # query returns the same bytes, the search is client-side and this page
+    # would never have shown us either way.
+    if control_body is not None and control_body.strip():
+        if control_body.strip() == (probe_body or "").strip():
+            out["verdict"] = "unverified"
+            out["reason"] = ("search renders CLIENT-SIDE (a nonsense query "
+                             "returns identical HTML) — absence cannot be "
+                             "read from this page; needs a real listing URL")
+            return out
     out["verdict"] = "absent"
     out["reason"] = "directory is live and does not list DC Hub — submittable"
     return out
@@ -207,7 +230,12 @@ def run_scan() -> dict:
         for cand in CANDIDATE_DIRECTORIES:
             hs, _ = _fetch(cand["home"])
             ps, pb = _fetch(cand["probe"])
-            v = classify_candidate(hs, ps, pb)
+            cb = None
+            probe = cand["probe"]
+            if "dchub" in probe.lower():
+                _, cb = _fetch(re.sub("dchub", CONTROL_TOKEN, probe,
+                                      flags=re.I))
+            v = classify_candidate(hs, ps, pb, cb)
             v.update({"name": cand["name"], "submit_url": cand["submit"],
                       "home_status": hs, "probe_status": ps})
             results.append(v)
