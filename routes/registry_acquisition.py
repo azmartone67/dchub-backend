@@ -99,8 +99,14 @@ CANDIDATE_DIRECTORIES = [
     # so this must never enter the submission queue as an actionable task.
     {"name": "composio", "home": "https://composio.dev/",
      "probe": "https://composio.dev/toolkits/sitemap.xml", "submit": None},
+    # ★ submit=None: fleurmcp.com is a ONE-PAGE site — /submit, /apps, /directory,
+    # /developers, /contact and every other path return the same 72,867-byte
+    # landing page. No form, no mailto, no external form link, no sitemap. Its
+    # catalog (Discord, Notion, Stripe, Linear...) is curated by Fleur, and its
+    # own FAQ "Can I add my own MCP servers" is about END USERS wiring up a
+    # server locally, not about being listed. There is no route in.
     {"name": "fleur", "home": "https://www.fleurmcp.com/",
-     "probe": "https://www.fleurmcp.com/?q=dchub", "submit": "https://www.fleurmcp.com/"},
+     "probe": "https://www.fleurmcp.com/?q=dchub", "submit": None},
     {"name": "toolbase", "home": "https://gettoolbase.ai/",
      "probe": "https://gettoolbase.ai/?q=dchub", "submit": "https://gettoolbase.ai/"},
     # ★ submit was .../pulls — WRONG. wong2's README line 4: "We do not accept
@@ -151,6 +157,42 @@ def _db():
 # ── the classifier (pure — unit-tested without network) ──────────────
 
 CONTROL_TOKEN = "zqxjkbwmp"   # a term no directory can legitimately match
+
+# Rotating nonces, CSRF tokens and the echoed query string all make a
+# non-filtering page differ from its control by a few characters. Measured
+# 2026-07-27 across the live seed, the gap is unambiguous: non-filtering pages
+# differ by 0-81 chars, genuinely filtering ones by 3,475-148,179.
+_CONTROL_NOISE_CHARS = 256
+
+
+def _bodies_equivalent(a, b) -> bool:
+    """True when probe and control differ only TRIVIALLY.
+
+    Exact equality was too brittle. fleurmcp.com defeated it with a single
+    rotating Cloudflare email-protection nonce (#75 vs #e8) — TWO characters in
+    a 72,857-byte page — so the loop read a static landing page as a filtering
+    search and called it "submittable". Compare the differing REGION after
+    stripping the common prefix and suffix instead: a few hundred characters is
+    a nonce or an echoed query, not search results.
+    """
+    a = (a or "").strip()
+    b = (b or "").strip()
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    n = min(len(a), len(b))
+    pre = 0
+    while pre < n and a[pre] == b[pre]:
+        pre += 1
+    suf = 0
+    while suf < n - pre and a[len(a) - 1 - suf] == b[len(b) - 1 - suf]:
+        suf += 1
+    diff = max(len(a) - pre - suf, len(b) - pre - suf)
+    # Absolute AND relative. An absolute-only threshold misjudges small pages,
+    # where a 20-character difference is most of the content; a relative-only
+    # one misjudges large pages, where real results can be under 1%.
+    return diff < _CONTROL_NOISE_CHARS and diff < 0.02 * max(len(a), len(b))
 
 
 def classify_candidate(home_status, probe_status, probe_body,
@@ -203,7 +245,7 @@ def classify_candidate(home_status, probe_status, probe_body,
     # query returns the same bytes, the search is client-side and this page
     # would never have shown us either way.
     if control_body is not None and control_body.strip():
-        if control_body.strip() == (probe_body or "").strip():
+        if _bodies_equivalent(probe_body, control_body):
             out["verdict"] = "unverified"
             out["reason"] = ("search renders CLIENT-SIDE (a nonsense query "
                              "returns identical HTML) — absence cannot be "

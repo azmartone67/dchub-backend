@@ -221,3 +221,38 @@ def test_the_two_mcpservers_rows_share_one_submit_route(ra):
     by = {c["name"]: c["submit"] for c in ra.CANDIDATE_DIRECTORIES}
     assert by["mcpservers_org"] == by["wong2_awesome_mcp"]
     assert by["mcpservers_org"] == "https://mcpservers.org/submit"
+
+
+# ── the control probe must survive rotating nonces ───────────────────
+
+def test_a_single_rotating_nonce_does_not_look_like_filtering(ra):
+    """fleurmcp.com defeated exact-equality with a Cloudflare email-protection
+    nonce: #75 vs #e8, TWO characters in a 72,857-byte page. The loop then read
+    a static one-page site as a filtering search and called it submittable."""
+    page = "<html>" + ("x" * 70000) + '<a href="/cdn-cgi/l/email-protection#%s"></a></html>'
+    assert ra._bodies_equivalent(page % "75", page % "e8")
+    v = ra.classify_candidate(200, 200, page % "75", page % "e8")
+    assert v["verdict"] == "unverified"
+
+
+def test_real_search_results_still_read_as_absent(ra):
+    """Measured live: genuinely filtering pages differ by 3,475-148,179 chars.
+    The threshold must not swallow those."""
+    base = "<html>" + ("x" * 60000)
+    probe = base + ("RESULT " * 900) + "</html>"     # ~6,300 chars of results
+    ctl = base + "no results found</html>"
+    assert not ra._bodies_equivalent(probe, ctl)
+    assert ra.classify_candidate(200, 200, probe, ctl)["verdict"] == "absent"
+
+
+def test_identical_bodies_still_unverified(ra):
+    body = "<html>a list of other servers</html>"
+    assert ra._bodies_equivalent(body, body)
+    assert ra.classify_candidate(200, 200, body, body)["verdict"] == "unverified"
+
+
+def test_fleur_has_no_submission_route(ra):
+    """One-page site: /submit, /apps, /directory, /contact all return the same
+    72,867-byte landing page. Catalog is curated by Fleur."""
+    by = {c["name"]: c["submit"] for c in ra.CANDIDATE_DIRECTORIES}
+    assert by["fleur"] is None
