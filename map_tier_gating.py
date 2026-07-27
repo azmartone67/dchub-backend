@@ -65,10 +65,21 @@ def _detect_caller_tier(decode_jwt_func=None):
     api_key = request.headers.get('X-API-Key', '') or request.args.get('api_key', '')
     if not api_key:
         auth_header = request.headers.get('Authorization', '')
-        if auth_header.startswith('Bearer ') and auth_header[7:].startswith('dchub_'):
+        if auth_header.startswith('Bearer ') and auth_header[7:].startswith(('dchub_', 'dch_')):
             api_key = auth_header[7:]
 
-    if api_key and api_key.startswith('dchub_'):
+    # r-detect-tiermax (2026-07-26, tier-gating QA): this lookup was
+    # sha256-only and dchub_-prefix-only, so (a) RAW-stored partner/QA keys
+    # (api_keys.key_hash = the raw string — the util/tier_gate r79.1
+    # convention, ~14 active rows incl. PAYWALL_CANARY_KEY) and (b) every
+    # self-serve dch_live_ claim key (mcp_dev_keys, no api_keys row) resolved
+    # 'anonymous' — PAID keys hit the signup wall on every consumer of this
+    # resolver (energy/summary, dcgi, dcpi components, grid_public, deals
+    # $-mask...). Fix: dual-hash match, best-of the three plan columns, and an
+    # mcp_dev_keys fallback (enterprise→enterprise, paid→pro, email-bound→
+    # identified, else free). DB cost unchanged for keyless traffic — this
+    # branch only runs when a key is presented.
+    if api_key and api_key.startswith(('dchub_', 'dch_')):
         try:
             from main import get_pg_connection, return_pg_connection
             conn = get_pg_connection(retries=1)
@@ -76,16 +87,46 @@ def _detect_caller_tier(decode_jwt_func=None):
                 cur = conn.cursor()
                 key_hash = hashlib.sha256(api_key.encode()).hexdigest()
                 cur.execute("""
-                    SELECT u.plan, u.id, u.email 
-                    FROM api_keys ak JOIN users u ON ak.user_id = u.id 
-                    WHERE ak.key_hash = %s AND ak.is_active = 1 
+                    SELECT LOWER(COALESCE(NULLIF(ak.plan,''),'')),
+                           LOWER(COALESCE(NULLIF(ak.rate_limit_tier,''),'')),
+                           LOWER(COALESCE(NULLIF(u.plan,''),'free')),
+                           u.id, u.email
+                    FROM api_keys ak JOIN users u ON ak.user_id = u.id
+                    WHERE ak.key_hash IN (%s, %s) AND ak.is_active = 1
                     LIMIT 1
-                """, (key_hash,))
+                """, (key_hash, api_key))
                 row = cur.fetchone()
-                cur.close()
                 if row:
-                    plan = (row[0] or 'free').lower()
-                    return plan, {'user_id': row[1], 'email': row[2], 'plan': plan}
+                    cur.close()
+                    _rank = {'anonymous': 0, '': 0, 'free': 1, 'identified': 1,
+                             'starter': 1, 'developer': 2, 'paid': 3, 'team': 3,
+                             'metered': 3, 'pro': 3, 'founding': 3,
+                             'enterprise': 4, 'admin': 4, 'internal': 4,
+                             'research_seed': 4}
+                    plan = max((row[0], row[1], row[2]),
+                               key=lambda p: _rank.get(p, 0)) or 'free'
+                    plan = {'paid': 'pro', 'team': 'pro', 'metered': 'pro',
+                            'admin': 'enterprise',
+                            'research_seed': 'enterprise'}.get(plan, plan)
+                    return plan, {'user_id': row[3], 'email': row[4], 'plan': plan}
+                cur.execute("""
+                    SELECT LOWER(COALESCE(tier,'free')), email
+                    FROM mcp_dev_keys
+                    WHERE api_key = %s
+                      AND LOWER(COALESCE(status,'active')) = 'active'
+                    LIMIT 1
+                """, (api_key,))
+                mrow = cur.fetchone()
+                cur.close()
+                if mrow:
+                    _mt, _memail = mrow[0], (mrow[1] or '').strip()
+                    plan = ('enterprise' if _mt == 'enterprise'
+                            else 'pro' if _mt in ('paid', 'pro', 'founding')
+                            else 'developer' if _mt == 'developer'
+                            else 'identified' if _memail
+                            else 'free')
+                    return plan, {'email': _memail or None, 'plan': plan,
+                                  'source': 'mcp_dev_keys'}
             finally:
                 return_pg_connection(conn)
         except Exception as e:
