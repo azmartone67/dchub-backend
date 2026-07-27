@@ -497,6 +497,15 @@ _DISPATCH = [
     # 2026-07-27: registry-truth scan — reads every tracked listing the way a
     # visitor does and records a four-state verdict. Runs after white-glove.
     # Kill: REGISTRY_TRUTH_DISABLE=1.
+    # 2026-07-27: acquisition scan — weekly is enough; directories do not
+    # appear daily and each scan is ~26 outbound fetches.
+    # Kill: REGISTRY_ACQUISITION_DISABLE=1.
+    ("registry_acquisition_scan_weekly",
+     f"{BASE}/api/v1/admin/registry-acquisition/scan",
+     "POST",
+     lambda now: now.weekday() == 1 and now.hour == 21 and now.minute < 55
+                 and os.environ.get("REGISTRY_ACQUISITION_DISABLE") != "1"),
+
     ("registry_truth_scan_daily",
      f"{BASE}/api/v1/admin/registry-truth/scan",
      "POST",

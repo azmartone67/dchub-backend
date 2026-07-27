@@ -247,6 +247,32 @@ def _lane_registry_truth() -> list[dict]:
     return out
 
 
+def _lane_registry_acquisition() -> list[dict]:
+    """Advisory, NOT critical. An empty submission queue is a perfectly good
+    state, and a non-empty one is work-to-do rather than a defect — unlike
+    registry_truth's broken/unread listings, which are real breakage."""
+    try:
+        from routes.registry_acquisition import read_queue
+    except Exception as e:  # noqa: BLE001
+        return [_check("ra_import", "acquisition queue readable", None,
+                       "import failed: %s" % str(e)[:90], critical=False)]
+    q = read_queue()
+    if not q.get("ok"):
+        return [_check("ra_db", "acquisition queue readable", None,
+                       "unreadable: %s" % q.get("error"), critical=False)]
+    counts = q.get("counts") or {}
+    depth = q.get("queue_depth", 0)
+    names = ", ".join(x["directory"] for x in (q.get("submission_queue") or [])[:6])
+    return [
+        _check("ra_queue", "directories we are absent from", True,
+               ("none — every live candidate lists DC Hub" if not depth
+                else "%d submittable: %s" % (depth, names)), critical=False),
+        _check("ra_coverage", "candidate scan coverage", True,
+               ", ".join("%s=%d" % (k, v) for k, v in sorted(counts.items()))
+               or "never scanned", critical=False),
+    ]
+
+
 # ── lane 2 · recidivism ───────────────────────────────────────────────
 
 def _lane_recidivism() -> list[dict]:
@@ -597,6 +623,8 @@ def _run_tick() -> dict:
          "checks": _safe_lane(_lane_zone_sync)},
         {"id": "registry_truth", "name": "1b · registry listings (top of funnel)",
          "checks": _safe_lane(_lane_registry_truth)},
+        {"id": "registry_acquisition", "name": "1c · directory acquisition queue",
+         "checks": _safe_lane(_lane_registry_acquisition)},
         {"id": "recidivism", "name": "2 · recidivism loop",
          "checks": _safe_lane(_lane_recidivism)},
         {"id": "perf", "name": "3 · performance tail",
