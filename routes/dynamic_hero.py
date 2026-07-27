@@ -29,6 +29,7 @@ This module ships three things the homepage hero needs:
 Public endpoints. No auth. Cached aggressively (1m–5m).
 """
 import os
+import re as _re
 import json
 import time
 import hashlib
@@ -46,10 +47,36 @@ dynamic_hero_bp = Blueprint("dynamic_hero", __name__)
 # for a span with the gradient class. Keep messages short — they replace
 # the static hero, not pad it. Brain can append to hero_messages table to
 # grow this list autonomously.
+#
+# ★★2026-07-27 data QA — every number here used to be a hardcoded LITERAL wired
+# to nothing, and each had drifted: "178 countries" (live 180), "48 tools" (live
+# 80), "Cited by 15+ AI platforms" (live 10 distinct), and "2,000+ tracked
+# transactions" — an OVER-CLAIM (deduped reality ~1,5xx) that the
+# ai_surface_canon sentinel failed to catch because its stale_markers denylist
+# matches the literal strings "2,000+ tracked deals"/"2,000+ M&A"/"2,000+ deals"
+# and this copy said "transactions". A denylist that matches strings instead of
+# claims cannot hold this surface.
+#
+# So: NO bare numerals in hero copy. Use the {placeholders} below and they are
+# resolved from canon at serve time by _fill() — a value can no longer go stale
+# without canon itself going stale.
+#   {facilities} {facilities_full} {countries} {markets} {deals}
+# There is intentionally NO {tools} placeholder: the live tool count is only
+# available via ai_surface_canon.resolve_canon(), which does HTTP, and nothing
+# network-bound belongs on the homepage hero path (see _phrases()). Hero copy
+# therefore does not cite a tool count at all.
+# ★{facilities} resolves to the RAW tracked floor ("22,000+"), which counts
+# SOURCE RECORDS, not distinct facilities — 22,775 rows represent ~14,686
+# distinct facilities by canonical_slug. Copy therefore says "facility records",
+# never "facilities", so the claim is true on the raw basis. Do NOT relabel it
+# "facilities" without switching to a distinct-count phrase: that is a ~55%
+# over-claim. The distinct number is pending the dedup keeper-election repair
+# (9,318 of 14,686 distinct facilities currently have NO keeper row, so no
+# is_duplicate-based count can be cited yet).
 _SEED_MESSAGES = [
     (
         "The neutral data layer<br>[GRAD]for data center infrastructure.[/GRAD]",
-        "12,650+ facilities. 178 countries. Power, fiber, water, M&A, tax incentives — one MCP endpoint or REST API. The research backend AI assistants and operators both quote.",
+        "{facilities} facility records. {countries} countries. Power, fiber, water, M&A, tax incentives — one MCP endpoint or REST API. The research backend AI assistants and operators both quote.",
         "switzerland",
     ),
     (
@@ -58,8 +85,8 @@ _SEED_MESSAGES = [
         "ai-citations",
     ),
     (
-        "21,374 facilities.<br>[GRAD]One source of truth.[/GRAD]",
-        "Operators, investors and AI agents all query the same neutral layer. 178 countries. 7 ISOs. 4x/day refresh. The map the industry can finally agree on.",
+        "{facilities} facility records.<br>[GRAD]One source of truth.[/GRAD]",
+        "Operators, investors and AI agents all query the same neutral layer. {countries} countries. 7 ISOs. 4x/day refresh. The map the industry can finally agree on.",
         "single-source",
     ),
     (
@@ -69,15 +96,68 @@ _SEED_MESSAGES = [
     ),
     (
         "Off-market pocket listings.<br>[GRAD]Live deal flow.[/GRAD]",
-        "Sub-MW capacity, brownfield campuses, 4,000+ tracked transactions, M&A pipeline tagged by market tier and DCPI score. The deal book operators don't post publicly.",
+        "Sub-MW capacity, brownfield campuses, {deals} tracked transactions, M&A pipeline tagged by market tier and DCPI score. The deal book operators don't post publicly.",
         "deal-flow",
     ),
     (
         "Built for AI agents.<br>[GRAD]Loved by humans.[/GRAD]",
-        "MCP-native from day one. 48 tools. Sub-300ms median latency. Cited by 15+ AI platforms. Designed so your agent can answer 'where should I build' in one call.",
+        "MCP-native from day one. Sub-300ms median latency. Cited by AI assistants across every major platform. Designed so your agent can answer 'where should I build' in one call.",
         "agent-first",
     ),
 ]
+
+
+# ── canon substitution ───────────────────────────────────────────────
+_PHRASE_TTL_S = 300
+_phrase_cache: dict | None = None
+_phrase_ts: float = 0.0
+
+
+def _phrases() -> dict:
+    """Canon phrases for hero copy, cached and NETWORK-FREE.
+
+    ★Deliberately does NOT call ai_surface_canon.resolve_canon(): that performs
+    HTTP fetches, and this runs on the homepage hero path — a slow or hanging
+    upstream would stall the hero for every visitor. canonical_stats reads Neon
+    directly with its own 10-minute cache and a 6s connect timeout, so the worst
+    case here is a stale-but-valid phrase, never a hang. Nothing that needs the
+    network belongs in this function.
+    """
+    global _phrase_cache, _phrase_ts
+    now = time.time()
+    if _phrase_cache is not None and (now - _phrase_ts) < _PHRASE_TTL_S:
+        return _phrase_cache
+    vals: dict = {}
+    try:
+        import canonical_stats as _cs
+        vals = {
+            "facilities":      _cs.facilities_phrase(),
+            "facilities_full": _cs.facilities_phrase_full(),
+            "countries":       _cs.countries_phrase(),
+            "markets":         _cs.markets_phrase(),
+            "deals":           _cs.deals_phrase(),
+        }
+    except Exception as e:
+        logger.warning(f"[hero] canon resolve failed: {e}")
+    if vals:
+        _phrase_cache, _phrase_ts = vals, now
+    return vals or (_phrase_cache or {})
+
+
+def _fill(text: str) -> str:
+    """Resolve {placeholders} in hero copy from canon at serve time.
+
+    ★2026-07-27: exists so hero numbers cannot drift. Every canon helper floors
+    DOWN (citation-safe, never above reality), so a canon hiccup under-claims
+    rather than over-claims. A placeholder we cannot resolve is stripped rather
+    than shown to a visitor as a literal "{brace}".
+    """
+    if not text or "{" not in text:
+        return text
+    for k, v in (_phrases() or {}).items():
+        if v:
+            text = text.replace("{" + k + "}", str(v))
+    return _re.sub(r"\s*\{[a-z_]+\}", "", text)
 
 
 # ── DB helpers ───────────────────────────────────────────────────────
@@ -170,7 +250,7 @@ def hero_messaging():
         return jsonify(
             ok=True,
             messages=[
-                {"h1_html": h1, "sub_text": s, "tag": t}
+                {"h1_html": _fill(h1), "sub_text": _fill(s), "tag": t}
                 for h1, s, t in rows
             ],
             count=len(rows),
@@ -190,6 +270,9 @@ def hero_messaging():
         idx = h % len(rows)
 
     h1, sub, tag = rows[idx]
+    # Resolve canon placeholders AFTER the pick so the numbers are current even
+    # when the copy itself came from the hero_messages table (or the brain).
+    h1, sub = _fill(h1), _fill(sub)
     resp = jsonify(
         ok=True,
         h1_html=h1,

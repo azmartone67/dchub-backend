@@ -193,18 +193,39 @@ def stats_canonical():
             stats["total_facilities"] = int(cur.fetchone()[0] or 0)
             cur.execute("SELECT COUNT(*) FROM facilities WHERE country IS NOT NULL AND country != ''")
             stats["facilities_with_country"] = int(cur.fetchone()[0] or 0)
-            cur.execute("SELECT COUNT(DISTINCT country) FROM facilities WHERE country IS NOT NULL")
+            # ★2026-07-27: added `country != ''` — without it the empty-string
+            # bucket counts as a country and this returned 181 while
+            # /api/v1/stats (which has the guard) returned 180.
+            cur.execute("SELECT COUNT(DISTINCT country) FROM facilities "
+                        "WHERE country IS NOT NULL AND country != ''")
             stats["countries_covered"] = int(cur.fetchone()[0] or 0)
             try:
                 cur.execute("SELECT COUNT(*) FROM news")
                 stats["news_articles"] = int(cur.fetchone()[0] or 0)
             except Exception:
                 pass
+            # ★2026-07-27: `deals_tracked` was COUNT(*) FROM deals — the RAW row
+            # pile (4,484). The AUTO id embeds the ingest date
+            # (AUTO-<yyyymmdd>-<hash>) so a re-ingest of the same deal never
+            # conflicts and accrues one row per DAY; one atNorth deal held 945
+            # rows. Publishing rows as "deals tracked" over-stated reality ~3.2x
+            # — on the very endpoint whose stated purpose is making surfaces
+            # agree. Now serves the deduped count (canonical_stats does the
+            # AUTO-by-content-hash / tuple dedup and drops data_flag quarantine
+            # rows); the raw row count stays available as `deals_rows`.
             try:
                 cur.execute("SELECT COUNT(*) FROM deals")
-                stats["deals_tracked"] = int(cur.fetchone()[0] or 0)
+                stats["deals_rows"] = int(cur.fetchone()[0] or 0)
             except Exception:
                 pass
+            try:
+                from canonical_stats import get_canonical_stats as _gcs_deals
+                _dd = int((_gcs_deals() or {}).get("deals") or 0)
+                if _dd > 0:
+                    stats["deals_tracked"] = _dd
+            except Exception:
+                pass
+            stats.setdefault("deals_tracked", stats.get("deals_rows", 0))
             try:
                 cur.execute("SELECT COUNT(*) FROM market_power_scores")
                 stats["dcpi_markets_scored"] = int(cur.fetchone()[0] or 0)
@@ -216,6 +237,35 @@ def stats_canonical():
             # public; facilities_tracked = the raw discovery pile it comes from.
             # Placed LAST in the tx block (a failed statement aborts the tx for
             # any query after it); falls back to cached canonical_stats.
+            # ★★2026-07-27 data QA — `facilities_verified` is AMBIGUOUS and must
+            # not be cited until the dedup repair lands. Its documented method
+            # (COALESCE(is_duplicate,0)=0) returns 5,737, but the deployed
+            # surface serves 13,395 (duplicate_of_id IS NULL) — repo and prod
+            # disagree, so consumers cannot know which they got.
+            #
+            # ROOT CAUSE of the 5,737: the dedup pipeline flags rows
+            # is_duplicate=1 WITHOUT electing a keeper. Grouping by
+            # canonical_slug, 9,318 of 14,686 distinct facilities have NO row
+            # with is_duplicate=0 — every member flagged, so the facility is
+            # invisible to any is_duplicate-based count. The suppressed set
+            # includes Meta Hyperion, Stargate Abilene, CoreWeave Project
+            # Horizon and Microsoft Wisconsin (confidence 0.85-0.95).
+            #
+            # The three fields below are UNAMBIGUOUS by construction. New
+            # consumers should read `facilities_distinct`; the two legacy fields
+            # are kept only for back-compat.
+            try:
+                cur.execute("SELECT COUNT(DISTINCT canonical_slug) "
+                            "FROM discovered_facilities "
+                            "WHERE canonical_slug IS NOT NULL")
+                stats["facilities_distinct"] = int(cur.fetchone()[0] or 0)
+                cur.execute("SELECT COUNT(*) FROM discovered_facilities")
+                stats["facilities_records"] = int(cur.fetchone()[0] or 0)
+                cur.execute("SELECT COUNT(*) FROM discovered_facilities "
+                            "WHERE COALESCE(is_duplicate,0)=0")
+                stats["facilities_with_keeper"] = int(cur.fetchone()[0] or 0)
+            except Exception:
+                pass
             try:
                 # canonical fleet = distinct sites after cross-source dedup
                 # (duplicate_of_id IS NULL, r-facility-dedup 2026-07-20), which
