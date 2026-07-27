@@ -605,7 +605,7 @@ def _tick_cached() -> dict:
 @roadmap_master_shell_bp.route("/api/v1/admin/roadmap/master-tick", methods=["GET", "POST"])
 def roadmap_master_tick():
     if _disabled():
-        return jsonify(ok=False, error="disabled"), 503
+        return jsonify(ok=False, error="disabled"), 404
     if not _admin_ok():
         return jsonify(ok=False, error="forbidden"), 403
     if (request.args.get("fresh") or "") == "1":

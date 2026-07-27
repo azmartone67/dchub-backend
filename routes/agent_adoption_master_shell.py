@@ -88,6 +88,13 @@ def _admin_ok() -> bool:
     return bool(expected) and provided == expected
 
 
+def _disabled() -> bool:
+    """Kill switch (r-shell-killswitch 2026-07-27). Every shell must have one:
+    without it there is nothing to pull when a shell misbehaves in prod, and
+    this was the last shell with routes and no switch (Shell #37 lane 5)."""
+    return (os.environ.get("AGENT_ADOPTION_SHELL_DISABLE") or "").strip() == "1"
+
+
 def _measure():
     """Pull the honest funnel. Fail-soft — a missing source degrades to zeros for
     that field, never an exception."""
@@ -293,6 +300,8 @@ def _persist_snapshot(f):
 
 @agent_adoption_master_shell_bp.route("/api/v1/admin/agent-adoption/state")
 def aa_state():
+    if _disabled():
+        return jsonify(ok=False, error="disabled"), 404
     if not _admin_ok():
         return jsonify(ok=False, error="unauthorized"), 401
     return jsonify(ok=True, **_funnel()), 200
@@ -301,6 +310,8 @@ def aa_state():
 @agent_adoption_master_shell_bp.route("/api/v1/admin/agent-adoption/master-tick",
                                       methods=["POST"])
 def aa_tick():
+    if _disabled():
+        return jsonify(ok=False, error="disabled"), 404
     if not _admin_ok():
         return jsonify(ok=False, error="unauthorized"), 401
     f = _funnel()
@@ -338,6 +349,8 @@ Attribution gap: {fn["attribution_gap_pct"]}% land as generic 'mcp' · Conversio
 @agent_adoption_master_shell_bp.route("/api/v1/admin/agent-adoption/digest",
                                       methods=["POST", "GET"])
 def aa_digest():
+    if _disabled():
+        return jsonify(ok=False, error="disabled"), 404
     if not _admin_ok():
         return jsonify(ok=False, error="unauthorized"), 401
     send = request.args.get("send", "").lower() in ("1", "true", "yes")

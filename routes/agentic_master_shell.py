@@ -976,7 +976,7 @@ def unmet_demand():
 @agentic_bp.route("/api/v1/agentic/scenario", methods=["POST"])
 def scenario():
     if _disabled("scenario"):
-        return jsonify(error="disabled"), 503
+        return jsonify(error="disabled"), 404
     body = request.get_json(silent=True) or {}
     deltas = {k: body.get(k) for k in _SCENARIO_DELTAS if body.get(k) is not None}
     try:
@@ -1054,7 +1054,7 @@ def scenario():
 @agentic_bp.route("/api/v1/agentic/research", methods=["POST"])
 def research_submit():
     if _disabled("research_tasks"):
-        return jsonify(error="disabled"), 503
+        return jsonify(error="disabled"), 404
     if not _caller_keyed():
         return jsonify(error="api_key_required",
                        how="X-API-Key header with any live key",
@@ -1129,7 +1129,7 @@ def research_poll(pid):
 @agentic_bp.route("/api/v1/agentic/intents", methods=["GET", "POST"])
 def intents():
     if _disabled("standing_intents"):
-        return jsonify(error="disabled"), 503
+        return jsonify(error="disabled"), 404
     key = _caller_key()
     if not key or not _caller_keyed():
         return jsonify(error="api_key_required",

@@ -204,6 +204,30 @@ def test_no_literal_percent_in_sql_strings():
     assert not bad, f"literal % inside SQL: {bad}"
 
 
+def test_shell_detection_requires_actual_routes():
+    """★ `_brand_shell.py` is an HTML template helper with ZERO routes. The
+    first cut of lane 5 matched on filename and reported it as "no kill
+    switch" — meaningless for a module you cannot call, and exactly the
+    false-alarm class this shell exists to prevent."""
+    src = _src()
+    assert "_is_route" in src, "route detection helper is gone"
+    scan = _func_src("_scan_routes")
+    assert "and route_fns" in scan, (
+        "lane 5 classifies shells by FILENAME again — _brand_shell will be "
+        "flagged forever")
+
+
+def test_question_class_is_stamped_by_the_track_writer():
+    """Lane 4's actuator. The classifier must be wired into the single place
+    mcp_call_log params are built, or the lane can never go green."""
+    fme = (_ROOT / "flask_mcp_endpoints.py").read_text(encoding="utf-8")
+    assert "from routes._question_class import classify" in fme
+    assert '"question_class"' in fme
+    i = fme.index("question_class")
+    assert "except Exception" in fme[i:i + 900], \
+        "the enrichment is not fail-soft — telemetry must never break a call"
+
+
 # ── live ──────────────────────────────────────────────────────────────
 
 _DB = (os.environ.get("NEON_REPLICA_URL") or os.environ.get("DATABASE_URL")

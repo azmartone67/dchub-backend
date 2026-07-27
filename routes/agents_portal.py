@@ -213,7 +213,7 @@ def _state_cached() -> dict:
 @agents_portal_bp.route("/api/v1/admin/agents/state", methods=["GET"])
 def agents_state():
     if _disabled():
-        return jsonify(ok=False, error="disabled"), 503
+        return jsonify(ok=False, error="disabled"), 404
     if not _admin_ok():
         return jsonify(ok=False, error="forbidden"), 403
     return jsonify(_state_cached())

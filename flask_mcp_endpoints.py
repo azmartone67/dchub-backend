@@ -1672,6 +1672,30 @@ def track_tool_call():
         ts_dt = datetime.now(timezone.utc)
 
     params = body.get("params")
+
+    # r-question-class (2026-07-27): stamp the SHAPE of the caller's question
+    # onto the logged params. Shell #37 lane 4 was RED because we recorded WHAT
+    # ran but never WHAT KIND of question was asked, so the GraphRAG demand
+    # read had to reverse-engineer intent from raw params by hand
+    # (reference_dchub_global_question_demand). Buckets are frozen to that
+    # read's taxonomy so the ~October re-read is like-for-like.
+    # Pure + fail-soft: classify() never raises and returns None when the call
+    # carried no text key, so params is left untouched for the ~99.5% of calls
+    # that are typed-param lookups.
+    try:
+        _qc_src = params
+        if isinstance(_qc_src, str):
+            _qc_src = json.loads(_qc_src)
+        if isinstance(_qc_src, dict):
+            from routes._question_class import classify as _classify_q
+            _qc = _classify_q(_qc_src)
+            if _qc:
+                _qc_src = dict(_qc_src)
+                _qc_src["question_class"] = _qc
+                params = _qc_src
+    except Exception:
+        pass  # telemetry enrichment — never block or alter the tracked call
+
     if params is not None and not isinstance(params, str):
         params = json.dumps(params, default=str)
 

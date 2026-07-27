@@ -175,6 +175,14 @@ _SCAN: dict | None = None
 _MUTATES = re.compile(r"^\s*(DELETE\s+FROM|UPDATE\s+|TRUNCATE\s+)", re.I)
 
 
+def _is_route(dec) -> bool:
+    """True when a decorator is a Flask route registration."""
+    try:
+        return "route(" in ast.unparse(dec)
+    except Exception:
+        return False
+
+
 def _static_sql(node):
     """Reconstruct a statement from a literal / concat / f-string. None when
     the SQL is assembled dynamically (those are counted, never judged —
@@ -207,8 +215,15 @@ def _scan_routes() -> dict:
             continue
         out["files"] += 1
 
+        # A file is only a SHELL if it actually serves something. `_brand_shell`
+        # is an HTML template helper with ZERO routes and matched the filename
+        # glob — the first cut of lane 5 reported it as "no kill switch", which
+        # is meaningless for a module you cannot call. Route count, not name.
+        route_fns = [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)
+                     and any(_is_route(d) for d in n.decorator_list)]
+
         # ── lane 5: shell hygiene ──
-        if "master_shell" in base or base.endswith("_shell.py"):
+        if ("master_shell" in base or base.endswith("_shell.py")) and route_fns:
             out["shells"] += 1
             if re.search(r"error=[\"']disabled[\"']\s*\)\s*,\s*5\d\d", src):
                 out["shells_5xx"].append(base)
@@ -216,13 +231,7 @@ def _scan_routes() -> dict:
                 out["shells_nokill"].append(base)
 
         # ── lane 1: set-wide mutations inside route handlers ──
-        for fn in [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)]:
-            try:
-                decorated = any("route(" in ast.unparse(d) for d in fn.decorator_list)
-            except Exception:
-                decorated = False
-            if not decorated:
-                continue
+        for fn in route_fns:
             out["handlers"] += 1
             for call in ast.walk(fn):
                 if not (isinstance(call, ast.Call)

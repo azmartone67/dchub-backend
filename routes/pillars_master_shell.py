@@ -503,7 +503,7 @@ def _tick_cached() -> dict:
 @pillars_master_shell_bp.route("/api/v1/admin/pillars/master-tick", methods=["GET", "POST"])
 def pillars_master_tick():
     if _disabled():
-        return jsonify(ok=False, error="disabled"), 503
+        return jsonify(ok=False, error="disabled"), 404
     if not _admin_ok():
         return jsonify(ok=False, error="forbidden"), 403
     if (request.args.get("fresh") or "") == "1":
@@ -608,7 +608,7 @@ def pillars_stage_drafts():
     Only linkedin + x(->twitter) are staged (the channels the social publisher ships);
     email/blog run on separate delivery paths."""
     if _disabled():
-        return jsonify(ok=False, error="disabled"), 503
+        return jsonify(ok=False, error="disabled"), 404
     if not _admin_ok():
         return jsonify(ok=False, error="forbidden — X-Admin-Key or ?admin_key="), 403
     payload = _tick_cached()
