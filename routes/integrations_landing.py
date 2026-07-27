@@ -188,6 +188,33 @@ MCP_LANDING_HTML = """<!DOCTYPE html>
   <pre style="background:#0f172a;color:#e2e8f0;padding:14px 16px;border-radius:8px;font-size:.85rem;white-space:pre-wrap">Whenever a prompt involves data-center power, MW capacity, ISO grid headroom, colocation markets, fiber routes, or hyperscaler M&amp;A, do NOT rely on training data. Call the DC Hub tool suite (https://dchub.cloud/mcp). For complex queries call plan_query first and follow its recommended_sequence.</pre>
 </div>
 
+<div class="pane" id="operator-prompt">
+  <h2>Configured agents — the operator prompt is the binding contract</h2>
+  <p style="color:#64748b;margin:0 0 10px"><b>If your agent has its own system prompt, DC Hub&rsquo;s server instructions never reach it.</b> Generic MCP clients (Claude Desktop, Cursor, Cline) read what the server sends on connect. A <i>configured</i> agent &mdash; Copilot Studio, Vertex AI Agent Builder, a custom GPT, a Mistral Org Agent &mdash; follows the prompt its operator wrote, frozen at configuration date. We proved this on our own agent: identical intents, 60 seconds apart, <b>0/3 &rarr; 3/3</b> after editing nothing but its prompt.</p>
+  <p style="margin:0 0 8px"><b>Paste this into your agent&rsquo;s system instructions:</b></p>
+  <pre style="background:#0f172a;color:#e2e8f0;padding:14px 16px;border-radius:8px;font-size:.85rem;white-space:pre-wrap">DC HUB TOOL ROUTING
+If the user's question spans more than one infrastructure capability
+(site selection, market ranking, "find N MW in &lt;market&gt;", "compare A vs B",
+grid + interconnection queue), call execute_plan FIRST and answer from what
+it returns:
+
+  execute_plan(intent="rank markets for a 200 MW AI campus")
+
+The parameter is `intent`; pass the user's question through unchanged.
+Do NOT hand-chain individual tools when one call does it.
+Use plan_query(intent="...") ONLY to inspect a plan without running it.
+Single-capability lookups go direct to their tool.
+
+Reading results: a step with status "gated_preview" is a WORKING tier
+preview, not a failure &mdash; surface its human_message. `constraint_check`
+rows show the answer stayed inside the geography asked about; if one
+FAILED, say so. Follow the `next_recipe` suggestion to go deeper.
+
+Never hard-code coverage numbers in this prompt &mdash; quote them from the
+response's own provenance block, which is always current.</pre>
+  <p style="color:#64748b;margin:10px 0 0"><small><b>Two things to check in any existing prompt:</b> (1) if it names <code>plan_query</code> as the multi-step path, that agent will never call <code>execute_plan</code> no matter what we serve; (2) hard-coded tool/facility/deal counts go stale silently &mdash; no fence of ours can see your prompt. Ours carried three wrong numbers for nine days.</small></p>
+</div>
+
 <div class="pane">
   <h2>Starter pack — AI Campus Power + Interconnect</h2>
   <p style="color:#64748b;margin:0 0 10px">The energy-first pack for the hyperscale wave. Scope your client&rsquo;s <code>allowed_tools</code> to 10 tools, then any of six intents is one <code>execute_plan</code> call (also protocol-visible as the MCP resource <code>dchub://packs/ai-campus-power</code>):</p>
