@@ -228,11 +228,41 @@ def test_question_class_is_stamped_by_the_track_writer():
         "the enrichment is not fail-soft — telemetry must never break a call"
 
 
+def test_lane2_asserts_the_schema_not_the_data():
+    """★ v1 checked "0 NULLs right now" — true by LUCK, since nothing stopped a
+    writer inserting one. The column is now NOT NULL DEFAULT 0 on live, and the
+    lane must assert THAT: a data check passes right up until the moment the
+    invariant breaks, a schema check cannot."""
+    body = _func_src("_lane_predicates")
+    assert "information_schema.columns" in body and "is_nullable" in body, (
+        "lane 2 checks live NULL counts again — assert the constraint, not the "
+        "data it happens to hold today")
+    assert "is_duplicate IS NULL" not in body, \
+        "the old data-shaped check is back"
+
+
 # ── live ──────────────────────────────────────────────────────────────
 
 _DB = (os.environ.get("NEON_REPLICA_URL") or os.environ.get("DATABASE_URL")
        or os.environ.get("NEON_DATABASE_URL"))
 _live = pytest.mark.skipif(not _DB, reason="no DB URL — live checks skipped")
+
+
+@_live
+def test_live_is_duplicate_is_not_nullable():
+    """The migration itself, asserted against live. Reverting it silently
+    re-arms 79 call sites in a table that is 75% duplicates."""
+    import psycopg2
+    c = psycopg2.connect(_DB, connect_timeout=10)
+    c.autocommit = True
+    with c.cursor() as cur:
+        cur.execute("SELECT is_nullable, column_default FROM information_schema.columns"
+                    " WHERE table_name='discovered_facilities'"
+                    "   AND column_name='is_duplicate'")
+        nullable, default = cur.fetchone()
+    c.close()
+    assert nullable == "NO", "discovered_facilities.is_duplicate is nullable again"
+    assert (default or "").startswith("0"), f"default lost: {default!r}"
 
 
 @_live

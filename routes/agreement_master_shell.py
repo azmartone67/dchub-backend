@@ -331,22 +331,42 @@ def _lane_predicates(c, ctx) -> list[dict]:
     out of a table that is 75% duplicates."""
     out = []
 
-    r = _row(c, "SELECT count(*), count(*) FILTER (WHERE is_duplicate IS NULL),"
-                " count(*) FILTER (WHERE COALESCE(is_duplicate,0) = 0)"
-                " FROM discovered_facilities")
+    # ★ ASSERT THE GUARANTEE, NOT TODAY'S DATA (r-isdup-notnull 2026-07-27).
+    # v1 checked "0 NULLs right now", which was true by LUCK: nothing in the
+    # schema stopped a writer from inserting one, and 79 call sites use the
+    # bare `is_duplicate = 0` form that silently drops NULL rows out of a table
+    # that is 75% duplicates. The column is now NOT NULL DEFAULT 0 on live, so
+    # the check moved up a level — a data check can pass while the invariant is
+    # one careless writer away; a schema check cannot.
+    # (With NOT NULL enforced the bare form is CORRECT, so the 79 call sites
+    # need no churn — COALESCE there is now redundant, not load-bearing.)
+    r = _row(c, "SELECT is_nullable, coalesce(column_default,'')"
+                " FROM information_schema.columns"
+                " WHERE table_name = 'discovered_facilities'"
+                "   AND column_name = 'is_duplicate'")
     if not r:
-        out.append(_check("pt_isdup_null", "is_duplicate holds no NULLs",
-                          None, "query failed", critical=True))
+        out.append(_check("pt_isdup_null", "is_duplicate is NOT NULL in the schema",
+                          None, "column not found", critical=True))
     else:
-        total, nulls, live = int(r[0] or 0), int(r[1] or 0), int(r[2] or 0)
-        ctx["isdup_nulls"] = nulls
+        nullable, default = str(r[0]), str(r[1])
+        ok = nullable == "NO" and default.startswith("0")
         out.append(_check(
-            "pt_isdup_null", "is_duplicate holds no NULLs",
-            nulls == 0,
-            f"{nulls:,} NULLs of {total:,} rows · {live:,} pass the fleet "
-            f"filter ({_pct(total - live, total)}% are duplicates). 79 call "
-            "sites use bare `is_duplicate = 0`, which silently admits NULLs",
+            "pt_isdup_null", "is_duplicate is NOT NULL in the schema",
+            ok,
+            f"is_nullable={nullable} default={default or '(none)'} — the fleet "
+            "filter is enforced by the SCHEMA, so the 79 bare "
+            "`is_duplicate = 0` call sites cannot silently drop rows",
             critical=True))
+
+    r = _row(c, "SELECT count(*), count(*) FILTER (WHERE is_duplicate = 0)"
+                " FROM discovered_facilities")
+    if r:
+        total, live = int(r[0] or 0), int(r[1] or 0)
+        out.append(_check(
+            "pt_isdup_share", "fleet filter share", None,
+            f"{live:,} of {total:,} rows pass the fleet filter — "
+            f"{_pct(total - live, total)}% are duplicates, which is why a NULL "
+            "leaking into this column would be so expensive"))
 
     # data_flag — the quarantine that the RAG registry failed to learn.
     r = _row(c, "SELECT count(*), count(*) FILTER (WHERE COALESCE(left(data_flag,11),'')"
