@@ -117,8 +117,12 @@ def _verified_map() -> dict:
             have = {r[0] for r in cur.fetchall()}
             if "registry_name" not in have:
                 return {}
-            tools_col = ("dchub_metric_published_tools"
-                         if "dchub_metric_published_tools" in have else "NULL")
+            # ONLY the count the verifying scan itself measured. The older
+            # dchub_metric_published_tools comes from a different run, so
+            # pairing it with truth_checked_at would date a number nobody
+            # took that day (live showed "mcp.so 58" while the scan read 79).
+            tools_col = ("truth_found_tools"
+                         if "truth_found_tools" in have else "NULL")
             if "truth_ok_at" in have and "truth_checked_at" in have:
                 # verified_drift leaves truth_ok_at NULL but WAS verified —
                 # date it from the check, else a lagging listing shows nothing.

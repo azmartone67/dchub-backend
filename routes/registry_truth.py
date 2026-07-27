@@ -194,6 +194,12 @@ def _ensure_columns(cur) -> None:
         "ALTER TABLE mcp_presence_listings ADD COLUMN IF NOT EXISTS truth_final_url TEXT",
         "ALTER TABLE mcp_presence_listings ADD COLUMN IF NOT EXISTS truth_checked_at TIMESTAMPTZ",
         "ALTER TABLE mcp_presence_listings ADD COLUMN IF NOT EXISTS truth_ok_at TIMESTAMPTZ",
+        # ★ 2026-07-27: the scan MEASURED found_tools and threw it away, so the
+        # only tool count on the row was dchub_metric_published_tools from an
+        # older crawler run. /mcp-standing then paired TODAY's verification date
+        # with a number from weeks ago — a date vouching for a measurement it
+        # never took. Store the count beside the verdict that observed it.
+        "ALTER TABLE mcp_presence_listings ADD COLUMN IF NOT EXISTS truth_found_tools INT",
     ):
         try:
             cur.execute(ddl)
@@ -239,12 +245,14 @@ def run_scan() -> dict:
                     cur.execute(
                         "UPDATE mcp_presence_listings SET truth_verdict=%s,"
                         " truth_reason=%s, truth_http_status=%s,"
-                        " truth_final_url=%s, truth_checked_at=NOW(),"
+                        " truth_final_url=%s, truth_found_tools=%s,"
+                        " truth_checked_at=NOW(),"
                         " truth_ok_at = CASE WHEN %s = 'verified_ok' THEN NOW()"
                         "                    ELSE truth_ok_at END"
                         " WHERE registry_name=%s",
                         (v["verdict"], v["reason"][:400], v["http_status"],
-                         (v["final_url"] or "")[:400], v["verdict"], name))
+                         (v["final_url"] or "")[:400], v.get("found_tools"),
+                         v["verdict"], name))
                 c.commit()
             except Exception:  # noqa: BLE001
                 try:

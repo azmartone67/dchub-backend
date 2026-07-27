@@ -182,3 +182,29 @@ def test_a_lagging_listing_still_shows_when_it_was_checked(ms):
     i = src.index("def _verified_map")
     body = src[i:src.index("def _registries_live")]
     assert "COALESCE(truth_ok_at, truth_checked_at)" in body
+
+
+def test_the_count_and_the_date_come_from_the_same_observation(ms):
+    """Live showed 'mcp.so — 58 tools, verified 2026-07-27' while that day's scan
+    had actually read 79: the date came from registry_truth, the number from an
+    older crawler column. A date must not vouch for a measurement nobody took
+    that day, so the page reads only the count the verifying scan stored."""
+    src = _read(os.path.join("routes", "mcp_standing.py"))
+    i = src.index("def _verified_map")
+    body = src[i:src.index("def _registries_live")]
+    # strip comments — an earlier version of this assertion failed on the very
+    # comment explaining the fix, which is the same self-matching bug as
+    # test_no_fake_push_reintroduced.
+    code = "\n".join(l for l in body.split("\n") if not l.lstrip().startswith("#"))
+    assert "truth_found_tools" in code
+    assert "dchub_metric_published_tools" not in code
+
+
+def test_registry_truth_persists_the_count_it_measured():
+    """It computed found_tools and threw it away — the reason the only count on
+    the row came from a different run."""
+    src = _read(os.path.join("routes", "registry_truth.py"))
+    assert "truth_found_tools INT" in src
+    i = src.index("UPDATE mcp_presence_listings")
+    stmt = src[i:i + 600]
+    assert "truth_found_tools=%s" in stmt
