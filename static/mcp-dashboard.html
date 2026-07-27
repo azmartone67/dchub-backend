@@ -99,7 +99,11 @@ async function load() {
     const fa = document.getElementById('fetched-at'); if (fa) fa.textContent = 'fetched ' + new Date().toLocaleTimeString();
     // r86 retention panel
     try {
-      const rt = await (await fetch('/api/v1/mcp/retention?weeks=10')).json();
+      // r-ret-bust (2026-07-27): this was the ONLY unbusted fetch on the page —
+      // CF edge-caches /api/v1/mcp/retention (~1h HIT despite origin no-store),
+      // so a frame cached during a deploy/error window pinned the weekly table
+      // EMPTY for everyone until TTL. Same fix as the funnel fetch above.
+      const rt = await (await fetch('/api/v1/mcp/retention?weeks=10&_=' + Date.now(), {cache: 'no-store'})).json();
       const s = rt.summary || {};
       document.getElementById('ret-kpis').innerHTML = `
         <div class="card"><div class="label">Key reuse (30d)</div><div class="value">${s.pct_reused_30d ?? '—'}%</div>

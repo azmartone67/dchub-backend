@@ -114,12 +114,21 @@ function load(){
     fetch('/api/v1/agents/utilization?_='+Date.now(),{cache:'no-store'}).then(function(r){return r.json()}).then(renderUtil).catch(function(){document.getElementById('util-body').innerHTML='<span class=err>engine unavailable</span>';return null}),
     fetch('/api/v1/engines/trend?_='+Date.now(),{cache:'no-store'}).then(function(r){return r.json()}).catch(function(){return null})
   ]).then(function(v){
-    var L=v[0],U=v[1],T=v[2]||{},b=document.getElementById('banner');
-    fillDelta('lead-delta',T.leadership);fillDelta('util-delta',T.utilization);
-    if(!L||!U){b.innerHTML='<b>Convergent diagnosis:</b> one engine unavailable — see panels below.';return;}
-    var lp=(L.top_priority||{}).dimension||'?',ul=(U.biggest_leak||{}).track||'?',f=U.lifecycle_funnel||{};
-    var same=(lp==='retention'&&ul==='incent')||(lp===ul);
-    b.innerHTML='<b>Convergent diagnosis:</b> the Leadership Engine\'s top priority is <b style="color:#ffb4b4">'+lp+'</b>; the Utilization Engine\'s biggest leak is <b style="color:#ffb4b4">'+ul+'</b>'+(same?' — the same constraint, <b>the return loop</b>':' (engines diverging — investigate')+'. Live: agents activate heavily ('+(f.activate||'?')+') but don\'t return ('+(f['return']||'?')+'). Onboarding &amp; training strong.';
+    // r-banner-guard (2026-07-27): the owner caught the banner stuck on
+    // "Loading engines…" WITH both panels rendered — any exception in this
+    // callback (e.g. an unexpected trend frame) left the loader pinned
+    // forever. Wrap the whole body; the banner ALWAYS resolves to something.
+    var b=document.getElementById('banner');
+    try {
+      var L=v[0],U=v[1],T=v[2]||{};
+      fillDelta('lead-delta',T.leadership);fillDelta('util-delta',T.utilization);
+      if(!L||!U){b.innerHTML='<b>Convergent diagnosis:</b> one engine unavailable — see panels below.';return;}
+      var lp=(L.top_priority||{}).dimension||'?',ul=(U.biggest_leak||{}).track||'?',f=U.lifecycle_funnel||{};
+      var same=(lp==='retention'&&ul==='incent')||(lp===ul);
+      b.innerHTML='<b>Convergent diagnosis:</b> the Leadership Engine\'s top priority is <b style="color:#ffb4b4">'+lp+'</b>; the Utilization Engine\'s biggest leak is <b style="color:#ffb4b4">'+ul+'</b>'+(same?' — the same constraint, <b>the return loop</b>':' (engines diverging — investigate')+'. Live: agents activate heavily ('+(f.activate||'?')+') but don\'t return ('+(f['return']||'?')+'). Onboarding &amp; training strong.';
+    } catch(e) {
+      try { b.innerHTML='<b>Engines rendered;</b> summary line failed ('+(e&&e.message||'error')+') — panels below are live.'; } catch(e2) {}
+    }
   });
 }
 load();setInterval(load,60000);
