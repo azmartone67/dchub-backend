@@ -54,10 +54,10 @@ on:
     - cron: '0 2 * * *'
 
     # ── Weekly ────────────────────────────────────────────────────────
-    # Gas infra refresh (pipelines/compressors/processings): Sunday 06:30 UTC.
-    # r-ghost-aliases wave (2026-07-26, issue #1768): /api/jobs/gas-refresh had
-    # NO dispatcher anywhere — cron_last_run shows it never completed; its only
-    # historical trigger was the brain's freshness lane, silent since ~June.
+    # Gas infra refresh (pipelines/compressors/processings) + site-score
+    # percentile baseline (rank_sites "better than X%" reference, ~40 internal
+    # site-score calls): Sunday 06:30 UTC. Both were dispatcher-less orphans
+    # (#1768/#1770 follow-ups, 2026-07-26).
     - cron: '30 6 * * 0'
 
   workflow_dispatch:
@@ -116,7 +116,11 @@ jobs:
             "09:00") JOBS="discovery,auto-approve,db-health-snapshot" ;;
             "10:00") JOBS="capacity-headroom" ;;
             "11:00") JOBS="simple-alerts" ;;
-            "13:00") JOBS="promotion" ;;
+            # ai-wars rides the single-fire 13:05 slot — a dedicated 06:00 cron
+            # would double-fire on Sundays via the 06:30 run's HOUR:00 match
+            # (same quirk the 20:00 ambassador comment documents). Daily tick:
+            # drains stuck battles + one fresh auto-battle (#1770 follow-up).
+            "13:00") JOBS="promotion,ai-wars" ;;
             "15:00") JOBS="discovery,auto-approve,db-health-snapshot" ;;
             "16:00") JOBS="capacity-headroom" ;;
             "17:00") JOBS="simple-alerts" ;;
@@ -129,7 +133,7 @@ jobs:
 
           # Half-hour jobs
           case "${HOUR}:${MINUTE}" in
-            "06:30"|"06:3"*) JOBS="${JOBS:+$JOBS,}gas-refresh" ;;
+            "06:30"|"06:3"*) JOBS="${JOBS:+$JOBS,}gas-refresh,site-baseline" ;;
             "08:30"|"08:3"*) JOBS="${JOBS:+$JOBS,}ambassador" ;;
             "12:30"|"12:3"*) JOBS="${JOBS:+$JOBS,}evolution" ;;
             "14:30"|"14:3"*) JOBS="${JOBS:+$JOBS,}market-report" ;;
