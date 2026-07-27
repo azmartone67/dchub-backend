@@ -4386,7 +4386,17 @@ def stats_live_proof():
             and not _UUID_RE_MOD.match(p)
         ]
         out["platforms_30d"] = externals
-        out["distinct_platforms"] = len(externals)
+        # ★★2026-07-27: was len(externals) — the count of distinct raw platform
+        # STRINGS that passed the allowlist. That still multiple-counts a single
+        # vendor: `claude`, `claude-code`, `anthropic/claudeai` and
+        # `anthropicapi` are all Anthropic, and each was its own "platform".
+        # Count canonical VENDORS instead, through the same module
+        # /api/v1/ai/reach uses, so the two endpoints cannot drift apart again
+        # (they previously published 10 over 30 days against 15 over 7 — a
+        # longer window reporting fewer platforms, which is impossible).
+        # platforms_30d keeps the raw ids; only the headline count collapses.
+        from ai_platform_canon import count_platforms
+        out["distinct_platforms"] = count_platforms(e["platform"] for e in externals)
         out["flags"]["platforms_available"] = True
         out["data_available"] = True
     except Exception as e:

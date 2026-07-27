@@ -175,6 +175,21 @@ def _compute_week(cur, week_start: date, week_end: date) -> dict:
             plat_reqs[plat] = plat_reqs.get(plat, 0) + int(n or 0)
         reqs += int(n or 0)
 
+    # ★★2026-07-27: distinct_platforms was len(plats) — EVERY distinct platform
+    # string, unfiltered. For week 2026-07-20 that published 15, of which six
+    # were not platforms at all (`mcp` — the protocol name, and the LARGEST
+    # bucket at 1,931 requests — plus mcp-server-validator, smithery connect,
+    # unknown, connectors-manager and reviewer-sim, our own test simulator),
+    # while `claude`, `claude-code` and `anthropic/claudeai` triple-counted one
+    # vendor. That is how /api/v1/ai/reach reported 15 platforms over 7 days
+    # while /api/v1/stats/live-proof reported 10 over 30 — an impossible
+    # inversion, since a longer window cannot hold fewer platforms.
+    # Both endpoints now count through ai_platform_canon so they cannot diverge.
+    # The per-platform breakdown below deliberately keeps the RAW ids: the
+    # fragmentation only misleads when summed into a headline count.
+    from ai_platform_canon import count_platforms
+    n_platforms = count_platforms(plats)
+
     # per-platform breakdown — [{platform_id, agents=distinct-IPs, requests}], top 25.
     per_platform = sorted(
         ({"platform_id": p, "agents": len(s), "requests": plat_reqs.get(p, 0)}
@@ -208,10 +223,10 @@ def _compute_week(cur, week_start: date, week_end: date) -> dict:
             id_hi                 = NULL,
             per_platform          = EXCLUDED.per_platform,
             computed_at           = NOW()
-    """, (week_start, len(ips), len(plats), new_ips, reqs, json.dumps(per_platform)))
+    """, (week_start, len(ips), n_platforms, new_ips, reqs, json.dumps(per_platform)))
 
     return {"week_start": week_start.isoformat(), "distinct_external_ips": len(ips),
-            "distinct_platforms": len(plats), "new_external_ips": new_ips,
+            "distinct_platforms": n_platforms, "new_external_ips": new_ips,
             "requests": reqs, "per_platform": per_platform}
 
 

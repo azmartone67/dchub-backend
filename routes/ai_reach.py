@@ -98,7 +98,21 @@ def ai_reach():
                     try: pp = json.loads(pp)
                     except Exception: pp = []
                 out["distinct_agents_7d"] = agents
-                out["distinct_platforms"] = nplats or len(pp)
+                # ★2026-07-27: the `or len(pp)` fallback counted the RAW
+                # per_platform array — every distinct platform string, including
+                # `mcp` (the protocol), `reviewer-sim` (our test simulator) and
+                # three separate entries for Anthropic. That is exactly the
+                # inflated 15 this fix removes, so falling back to it would
+                # resurrect the bad number the moment the rollup column read 0.
+                # Count canonical vendors instead, via the shared module.
+                if not nplats and pp:
+                    try:
+                        from ai_platform_canon import count_platforms
+                        nplats = count_platforms(
+                            d.get("platform_id") for d in pp if isinstance(d, dict))
+                    except Exception:
+                        nplats = 0
+                out["distinct_platforms"] = nplats
                 out["per_platform"] = pp
                 out["requests_7d"] = reqs
                 out["window"] = "weekly rollup (reach_weekly · precomputed daily)"
