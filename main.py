@@ -2341,6 +2341,23 @@ try:
     except Exception as _gss:
         import logging
         logging.getLogger(__name__).warning('graph_spine_master_shell wiring failed: %s', _gss)
+    # 2026-07-27: Agreement master shell (#37) — read-only DIAGNOSTIC. Five lanes
+    # over the class of defect the #36 wave kept surfacing: two representations of
+    # one fact drifting apart with nothing checking. Set-wide destructive writes,
+    # exclusion-flag tripwires, PUBLIC_CORPORA publication gates (the
+    # press_releases/deals leak class), missing intent instrumentation, and shell
+    # hygiene (a shell that 5xxs on its kill switch fails the site over to the
+    # stale Render origin). Source scan cached per process. Names the actuator per
+    # lane, fires nothing.
+    # GET /admin/agreement · /api/v1/admin/agreement/master-tick
+    # Kill: AGREEMENT_SHELL_DISABLE=1
+    try:
+        from routes.agreement_master_shell import agreement_master_shell_bp
+        app.register_blueprint(agreement_master_shell_bp)
+        print("[main] agreement_master_shell_bp registered: GET /admin/agreement", flush=True)
+    except Exception as _ams:
+        import logging
+        logging.getLogger(__name__).warning('agreement_master_shell wiring failed: %s', _ams)
     # 2026-07-06: Back-of-Funnel Truth master shell — ONE pane for the 07-06
     # funnel fix-wave (retention durable-keys, claim→paid attribution, conversion
     # demand) measured with CORRECTED metrics the older panes were blind to.
