@@ -494,6 +494,15 @@ _DISPATCH = [
     # recidivism, perf tail, cache, RAG anchors, loop census, media
     # followers). Read-only; beats the ledger (feed seven-levers-shell-
     # daily) itself. Kill: SEVEN_LEVERS_SHELL_DISABLE=1.
+    # 2026-07-27: registry-truth scan — reads every tracked listing the way a
+    # visitor does and records a four-state verdict. Runs after white-glove.
+    # Kill: REGISTRY_TRUTH_DISABLE=1.
+    ("registry_truth_scan_daily",
+     f"{BASE}/api/v1/admin/registry-truth/scan",
+     "POST",
+     lambda now: now.hour == 20 and 20 <= now.minute < 55
+                 and os.environ.get("REGISTRY_TRUTH_DISABLE") != "1"),
+
     ("seven_levers_shell_daily",
      f"{BASE}/api/v1/admin/seven-levers/master-tick",
      "POST",

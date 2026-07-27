@@ -2187,6 +2187,16 @@ try:
     # the headline. Answers the question completion-rate cannot: did the
     # workflow stay correct? Read-only, admin-gated.
     # GET /admin/planner-quality · /api/v1/admin/planner-quality
+    # 2026-07-27: registry truth — listings verified against what a VISITOR
+    # sees, with "could not check" as its own verdict. Directories are ~84% of
+    # arrivals and 11/16 listings were unreadable-but-reported-clean.
+    try:
+        from routes.registry_truth import registry_truth_bp
+        app.register_blueprint(registry_truth_bp)
+        print("[main] registry_truth_bp registered: /api/v1/admin/registry-truth", flush=True)
+    except Exception as _rtb:
+        import logging
+        logging.getLogger(__name__).warning('registry_truth wiring failed: %s', _rtb)
     try:
         from routes.planner_quality import planner_quality_bp
         app.register_blueprint(planner_quality_bp)
