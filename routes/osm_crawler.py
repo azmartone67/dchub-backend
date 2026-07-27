@@ -632,6 +632,50 @@ def _crawl(region: str | None, dry_run: bool) -> dict:
                 try: lc.close()
                 except Exception: pass
 
+        # ── Overpass-throttle sentinel (2026-07-27) ──────────────────
+        # `errors` conflates three causes (throttle skip / non-ok fetch /
+        # insert failure) and the run log persists only the COUNT, so a
+        # rising number reads as vague "crawler errors" when the real
+        # story is: Overpass throttled us and we SKIPPED most regions.
+        # File the breakdown as a brain finding so it is durable and
+        # visible without reading logs. Fail-soft: never affect the crawl.
+        try:
+            _thr = int(summary.get("throttled") or 0)
+            _skipped = list(summary.get("regions_skipped") or [])
+            _done = list(summary.get("regions_processed") or [])
+            _alert = int(os.environ.get("OSM_THROTTLE_ALERT", "3"))
+            if _thr >= _alert or len(_skipped) > len(_done):
+                from routes.brain_findings_writer import upsert_brain_finding
+                fc = _get_db()
+                if fc is not None:
+                    try:
+                        with fc.cursor() as cur:
+                            upsert_brain_finding(
+                                cur,
+                                issue="ingest_health:osm_overpass_throttle",
+                                url="dchub://ingest/osm-crawl",
+                                count=_thr,
+                                detail=("[warn] Overpass throttled %d region(s); "
+                                        "crawled %d, SKIPPED %d (%s). errors=%d "
+                                        "seen=%d new=%d. Coverage is being lost "
+                                        "to rate-limiting, not to a code fault — "
+                                        "consider raising OSM_BACKOFF_S / "
+                                        "lowering OSM_CRAWL_MAX_BBOXES, or "
+                                        "spreading regions across more runs."
+                                        % (_thr, len(_done), len(_skipped),
+                                           ", ".join(_skipped[:8]),
+                                           summary.get("errors", 0),
+                                           summary.get("pois_seen", 0),
+                                           summary.get("pois_new", 0)))[:2000],
+                                detector="osm_crawler", status="open")
+                        fc.commit()
+                    finally:
+                        try: fc.close()
+                        except Exception: pass
+        except Exception as _se:
+            logger.info("[osm-crawl] throttle sentinel skipped: %s",
+                        str(_se)[:120])
+
     return summary
 
 
