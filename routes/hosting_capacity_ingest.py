@@ -130,7 +130,8 @@ SOURCES = [
                 "queued_kw": "Sum_DER_Installed_and_approved_kW",
                 "updated": None}},
     # Xcel NSP (MN/ND/SD): service is RENAMED MONTHLY — try candidates,
-    # first that yields rows wins. kW stored as strings.
+    # first that yields rows wins. ★ Values are MW (not kW) despite the
+    # kW-named DG columns in the same row (verified 2026-07-27).
     {"utility": "Xcel NSP (MN/ND/SD)",
      "key": "xcel_nsp",
      "url_candidates": [
@@ -142,11 +143,150 @@ SOURCES = [
      "fields": {"feeder": "Feeder", "substation": "Substation",
                 "state": None, "region": None,
                 "voltage_kv": "NominalVoltage",
-                "mw_max": ("MaxHostingCap", 0.001),      # kW strings → MW
-                "mw_min": ("MinHostingCap", 0.001),
+                "mw_max": ("MaxHostingCap", 1.0),
+                "mw_min": ("MinHostingCap", 1.0),
                 "queued_kw": "FeederQueuedDG",
-                "updated": "LastQrtUpdate"}},
+                "updated": "NewQrtDataCuttoff"}},
+    # ── WS11 (2026-07-27 verified probes) ───────────────────────────────
+    {"utility": "Xcel PSCO (Colorado)",
+     "key": "xcel_psco",
+     "url_candidates": [
+        ("https://services1.arcgis.com/eM84fwjsSggLQk61/arcgis/rest/"
+         "services/PSCO_Blurred_Popup_GEN_June_2026/FeatureServer/0/query"),
+     ],
+     "fields": {"feeder": "Circuit", "substation": "Substation",
+                "state": None, "region": None, "voltage_kv": "NOMINAL_VO",
+                "mw_max": ("Maximum__MW_", 1.0),
+                "mw_min": ("Minimum__MW_", 1.0),
+                "queued_kw": "fddg_kva", "updated": "Data_Cutoff"}},
+    # ★★ LOAD-side hosting capacity (what a DATA CENTER actually needs —
+    # most utility maps publish GENERATION HC). AEP covers Columbus OH.
+    {"utility": "AEP Ohio & I&M (load)",
+     "key": "aep_load",
+     "capacity_type": "load",
+     "url": ("https://services.arcgis.com/ZnwBsu4Q8SvSAofV/arcgis/rest/"
+             "services/PROD_MI_HC_GRID/FeatureServer/0/query"),
+     "fields": {"feeder": "CIRCUITID", "substation": "SUBSTATION",
+                "state": "STATE_ABBR", "region": None,
+                "voltage_kv": "CIRCUIT_VOLTAGE_CLASS",
+                "mw_max": ("MAX_HCLOAD", 0.001),          # kW → MW
+                "mw_min": ("HCLOAD", 0.001),
+                "queued_kw": "DER_QUEUED_CAPACITY",
+                "updated": "LAST_REFRESH_DATE"}},
+    {"utility": "Ameren Illinois (load)",
+     "key": "ameren_il_load",
+     "capacity_type": "load",
+     "url": ("https://services5.arcgis.com/3jEEGnl6c1x9Sze7/arcgis/rest/"
+             "services/AIC_LC_Grids/FeatureServer/0/query"),
+     # MAXLOADMW_TXT is a STRING holding MW — _num() casts it.
+     "fields": {"feeder": "FEEDERID", "substation": None,
+                "state": None, "region": None,
+                "voltage_kv": "OPERATINGVOLTAGE",
+                "mw_max": ("MAXLOADMW_TXT", 1.0),
+                "mw_min": None, "queued_kw": None, "updated": None}},
+    {"utility": "DTE Electric (MI)",
+     "key": "dte",
+     "url": ("https://services.arcgis.com/jVbCQRNRZvxyQyrx/arcgis/rest/"
+             "services/HCA_June_2023/FeatureServer/0/query"),
+     # Service NAME says 2023 but Date_of_La verified 2026-04-14.
+     "fields": {"feeder": "Circuit_1", "substation": None,
+                "state": None, "region": None, "voltage_kv": "Voltage__k",
+                "mw_max": ("Hosting__1", 0.001),          # kW → MW
+                "mw_min": None, "queued_kw": "Installed",
+                "updated": "Date_of_La"}},
+    # Transmission BUS headroom (Spokane/Post Falls) — not distribution
+    # HC; typed separately so it can never be blended with feeder HC.
+    {"utility": "Avista (bus headroom)",
+     "key": "avista_bus",
+     "capacity_type": "bus_headroom",
+     "url": ("https://services3.arcgis.com/WlYQgAChrqj0tuQi/arcgis/rest/"
+             "services/HeatMap_MW_Impact_PRD/FeatureServer/0/query"),
+     "fields": {"feeder": None, "substation": "Bus_Name",
+                "state": None, "region": None, "voltage_kv": "Bus_Voltage",
+                "mw_max": ("MW_Available", 1.0),
+                "mw_min": None, "queued_kw": None, "updated": None}},
+    # ★★ CENTRAL HUDSON — the best find of the WS11 sweep: an actual
+    # LOAD-headroom publication in MW (summer + winter), not solar HC.
+    # Most rows are geometry-only stubs → filter on Feeder NOT NULL.
+    {"utility": "Central Hudson (load headroom)",
+     "key": "cenhud_load",
+     "capacity_type": "load",
+     "where": "Feeder IS NOT NULL",
+     "url": ("https://services1.arcgis.com/CEN9MBRF2dIzEmKF/arcgis/rest/"
+             "services/Electrification_HC/FeatureServer/0/query"),
+     # Summer is the binding season → headline; winter kept alongside.
+     "fields": {"feeder": "Feeder", "substation": "Substation",
+                "state": None, "region": None, "voltage_kv": "Voltage_kV",
+                "mw_max": ("Summer_Headroom", 1.0),
+                "mw_min": ("Winter_Headroom", 1.0),
+                "queued_kw": None, "updated": "RefreshDate"}},
+    {"utility": "Central Hudson (DER HC)",
+     "key": "cenhud_gen",
+     "where": "Feeder IS NOT NULL",
+     "url": ("https://services1.arcgis.com/CEN9MBRF2dIzEmKF/arcgis/rest/"
+             "services/Hosting_Capacity_Stage3/FeatureServer/0/query"),
+     "fields": {"feeder": "Feeder", "substation": "Substation",
+                "state": None, "region": None, "voltage_kv": "Voltage_kV",
+                "mw_max": ("HCMax", 1.0), "mw_min": ("HCMin", 1.0),
+                "queued_kw": "QUEUEDDER", "updated": "HCA_REFRESH_DATE"}},
+    # National Grid MA — the earlier 403 was header-only; the portal
+    # answers with a browser UA + its own Referer (verified 2026-07-27).
+    {"utility": "National Grid MA",
+     "key": "ngrid_ma",
+     "headers": {"User-Agent": "Mozilla/5.0 (compatible; DCHub-GridData/1.0)",
+                 "Referer": "https://systemdataportal.nationalgrid.com/"},
+     # ★ MASDP_HostingCapacity returns EMPTY geometry (server config) —
+     # its Nodal_Hosting_Capacity_MA sibling carries paths AND feeder
+     # max/min HC, same schema family as the NY portal. Verified 07-27.
+     "url": ("https://systemdataportal.nationalgrid.com/arcgis/rest/"
+             "services/MASDP/Nodal_Hosting_Capacity_MA/MapServer/0/query"),
+     "fields": {"feeder": "feeder_cdf", "substation": "substation_name",
+                "state": None, "region": None,
+                "voltage_kv": "feeder_voltage",
+                "mw_max": ("feeder_max_hc", 1.0),
+                "mw_min": ("feeder_min_hc", 1.0),
+                "queued_kw": "feeder_queued_dg",
+                "updated": "hca_refresh_date"}},
+    # Eversource CT — published by Cadmus Group (a consultancy), NOT by
+    # Eversource itself. Ingested with the third-party provenance IN THE
+    # UTILITY NAME so no popup can imply a first-party source.
+    {"utility": "Eversource CT (via Cadmus)",
+     "key": "eversource_ct",
+     "url": ("https://services3.arcgis.com/p04uQpu9ausDBOAh/arcgis/rest/"
+             "services/DG_Hosting_CT_Final_full/FeatureServer/56/query"),
+     "fields": {"feeder": "CIRCUITID", "substation": "DIST_SUB_NAME",
+                "state": None, "region": None,
+                "voltage_kv": "SECTION_OPERATING_VOLTAGE",
+                "mw_max": ("HOSTING_CAPACITY_MW", 1.0),
+                "mw_min": None, "queued_kw": "IN_QUEUE_DG_KW",
+                "updated": "DATE_UPDATED"}},
 ]
+# Verified-but-EXCLUDED (agent probe 2026-07-27): PSE&G NJ EVCapacity
+# (CAPACITY_REMAINING units UNLABELED — likely MW but unproven; do not
+# ingest a magnitude we can't name), PECO (one unlabeled number per grid
+# tile, no ids/date, and LAT/LON columns are SWAPPED), BGE EPRI service
+# (MW + substation-level but DATE_GIS_UPDATED reads 2022 — freshness
+# unproven), NGrid MA MASDP_Feeders (5-yr peak-MVA forecast — excellent,
+# but headroom needs a rating−peak derivation the mapper can't express
+# yet), PSEG Long Island (org-restricted 403), Eversource's OWN host
+# (times out; the Cadmus mirror stands in), Consumers Energy MI
+# (feeder/substation/voltage buried in a JSON string column — v2),
+# PGE Oregon (feeder names *REDACTED*, no true HC field), Ameren IL GEN +
+# subtransmission (redundant with LOAD / null feeder), Avista DER polyline
+# (509k rows, no substation/voltage/date). NOT public: NV Energy (login),
+# PSE (email request), PacifiCorp, Hawaiian Electric (non-Esri), all Texas
+# (no ERCOT DER-HC mandate), SRP/TEP/SMUD (none found), Ameren MO (none),
+# JCP&L/PPL/United Illuminating/Unitil/GMP/CMP (no public REST service).
+# ★ Xcel renames services MONTHLY — publisher account HCAPublisher_xeago
+# (feeder/substation/voltage are buried in a JSON string column — v2),
+# PGE Oregon (feeder names *REDACTED*, no true HC field), Ameren IL GEN +
+# subtransmission (redundant with LOAD / null feeder), Avista DER polyline
+# (509k rows, no substation/voltage/date). NOT public: NV Energy (login),
+# PSE (email request), PacifiCorp, Hawaiian Electric (non-Esri), all Texas
+# (no ERCOT DER-HC mandate), SRP/TEP/SMUD (none found), Ameren MO (none).
+# ★ Xcel renames services MONTHLY — publisher account HCAPublisher_xeago
+# (org eM84fwjsSggLQk61); re-resolve newest Feature Service by `modified`
+# rather than by name pattern when the candidates go stale.
 # NGrid-MA (MASDP): probed 2026-07-27 → HTTP 403 (folder forbidden, unlike
 # NYSDP). Not ingested — do not guess. Georgia Power/Duke/ComEd remain
 # excluded per ToS/proxy findings.
@@ -167,6 +307,7 @@ CREATE TABLE IF NOT EXISTS hosting_capacity_feeders (
     lat          DOUBLE PRECISION,
     lng          DOUBLE PRECISION,
     src_updated  TEXT,
+    capacity_type TEXT NOT NULL DEFAULT 'gen',
     ingested_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE UNIQUE INDEX IF NOT EXISTS uq_hcf_feeder
@@ -203,10 +344,38 @@ def _rep_point(geom: dict):
 
 
 def _num(v, scale=1.0):
-    try:
-        return round(float(v) * scale, 3)
-    except (TypeError, ValueError):
-        return None
+    """Tolerant numeric parse. Some utilities publish capacity as a STRING,
+    and Ameren publishes a COMMA-SEPARATED LIST of values per cell
+    (e.g. "9.9,9.9,5.31,2.08,0.85"). For a list we return the MAX; the
+    caller pairs it with _num_lo() for the binding MIN so the range is
+    shown honestly rather than a single flattering number."""
+    vals = _num_all(v, scale)
+    return max(vals) if vals else None
+
+
+def _num_lo(v, scale=1.0):
+    vals = _num_all(v, scale)
+    return min(vals) if vals else None
+
+
+def _num_all(v, scale=1.0):
+    if v is None:
+        return []
+    if isinstance(v, (int, float)):
+        try:
+            return [round(float(v) * scale, 3)]
+        except (TypeError, ValueError):
+            return []
+    out = []
+    for part in str(v).split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            out.append(round(float(part) * scale, 3))
+        except ValueError:
+            continue
+    return out
 
 
 def map_feature(feat: dict, src: dict) -> dict | None:
@@ -227,6 +396,16 @@ def map_feature(feat: dict, src: dict) -> dict | None:
     mw_max = g(f["mw_max"])
     if mw_max is None:
         return None
+    # Multi-value cell (Ameren): pair the max with its binding min so the
+    # popup can show a range instead of only the flattering number.
+    mw_min = g(f["mw_min"]) if f["mw_min"] else None
+    if mw_min is None and f["mw_max"] is not None:
+        _spec = f["mw_max"]
+        _raw = attrs.get(_spec[0] if isinstance(_spec, tuple) else _spec)
+        _scale = _spec[1] if isinstance(_spec, tuple) else 1.0
+        _lo = _num_lo(_raw, _scale)
+        if _lo is not None and _lo != mw_max:
+            mw_min = _lo
     feeder_id = g(f["feeder"])
     row = {"utility": src["utility"],
            "feeder_key": f"{feeder_id or ''}|{round(lat,4)},{round(lng,4)}",
@@ -235,10 +414,14 @@ def map_feature(feat: dict, src: dict) -> dict | None:
            "state": g(f["state"]), "region": g(f["region"]),
            "voltage_kv": _num(g(f["voltage_kv"])),
            "capacity_mw_max": mw_max,
-           "capacity_mw_min": g(f["mw_min"]),
+           "capacity_mw_min": mw_min,
            "queued_gen_kw": _num(g(f["queued_kw"])),
            "lat": lat, "lng": lng,
-           "src_updated": str(g(f["updated"]) or "")[:40] or None}
+           "src_updated": str(g(f["updated"]) or "")[:40] or None,
+           # gen = DER/generation hosting capacity (the common utility
+           # publication); load = load-serving capacity (what a data
+           # center needs); bus_headroom = transmission bus MW available.
+           "capacity_type": src.get("capacity_type", "gen")}
     return row
 
 
@@ -278,14 +461,16 @@ def _fetch_pages(src: dict, budget_deadline: float) -> list:
     while len(out) < _MAX_ROWS_PER_SOURCE and time.monotonic() < budget_deadline:
         try:
             params = {
-                "where": "1=1", "outFields": outfields, "f": "json",
-                "resultOffset": offset, "resultRecordCount": _PAGE_SIZE,
+                "where": src.get("where", "1=1"), "outFields": outfields,
+                "f": "json", "resultOffset": offset,
+                "resultRecordCount": _PAGE_SIZE,
                 "returnGeometry": "true", "outSR": 4326,
             }
             if order_field:
                 params["orderByFields"] = f"{order_field} DESC"
-            r = requests.get(url, params=params,
-                             timeout=25, headers={"User-Agent": _UA})
+            _hdrs = {"User-Agent": _UA}
+            _hdrs.update(src.get("headers") or {})
+            r = requests.get(url, params=params, timeout=25, headers=_hdrs)
             if r.status_code != 200:
                 break
             data = r.json()
@@ -339,6 +524,31 @@ def run_hosting_capacity_ingest(force: bool = False) -> dict:
         with c.cursor() as cur:
             cur.execute(_SCHEMA)
         c.commit()
+        # capacity_type was added after the first ship. The ALTER needs an
+        # ACCESS EXCLUSIVE lock, which a concurrent backup/dump (holding
+        # AccessShareLock on every table) will block — so attempt it with a
+        # SHORT lock_timeout and NEVER let it fail the run. Then INTROSPECT
+        # the live column set and build the INSERT from the intersection
+        # (house rule: the repo DDL lies, the live table is the truth).
+        try:
+            with c.cursor() as cur:
+                cur.execute("SET lock_timeout = '3s'")
+                cur.execute("ALTER TABLE hosting_capacity_feeders "
+                            "ADD COLUMN IF NOT EXISTS capacity_type "
+                            "TEXT NOT NULL DEFAULT 'gen'")
+            c.commit()
+        except Exception:
+            c.rollback()
+            logger.info("hosting_capacity: capacity_type ALTER deferred "
+                        "(table locked); continuing without it")
+        with c.cursor() as cur:
+            cur.execute("SET lock_timeout = 0")
+            cur.execute("SELECT column_name FROM information_schema.columns "
+                        "WHERE table_name = 'hosting_capacity_feeders'")
+            live_cols = {r[0] for r in cur.fetchall()}
+        c.commit()
+        has_type = "capacity_type" in live_cols
+        out["capacity_type_column"] = has_type
         # WS9 hardening: fetch → BATCH-write → COMMIT per source. Single-row
         # round-trips took ~20ms each (60k rows ≈ 20 min — thread died on
         # web worker recycle before anything committed). execute_values
@@ -348,20 +558,33 @@ def run_hosting_capacity_ingest(force: bool = False) -> dict:
             INSERT INTO hosting_capacity_feeders
               (utility, feeder_key, feeder_id, substation, state,
                region, voltage_kv, capacity_mw_max, capacity_mw_min,
-               queued_gen_kw, lat, lng, src_updated)
-            VALUES %s
+               queued_gen_kw, lat, lng, src_updated%s)
+            VALUES %%s
             ON CONFLICT (utility, feeder_key) DO UPDATE SET
               capacity_mw_max = EXCLUDED.capacity_mw_max,
               capacity_mw_min = EXCLUDED.capacity_mw_min,
               queued_gen_kw = EXCLUDED.queued_gen_kw,
               voltage_kv = EXCLUDED.voltage_kv,
-              src_updated = EXCLUDED.src_updated,
+              src_updated = EXCLUDED.src_updated,%s
               ingested_at = NOW()
-        """
+        """ % ((", capacity_type", " capacity_type = EXCLUDED.capacity_type,")
+               if has_type else ("", ""))
         for src in SOURCES:
             rows = _fetch_pages(src, deadline)
             out["sources"][src["key"]] = len(rows)
             if not rows:
+                continue
+            # ★ NEVER hold one connection across the slow rate-limited
+            # fetches (documented failure: Neon recycles it mid-run →
+            # "SSL bad record mac" then "connection already closed" for
+            # every later source). Fresh short-lived conn per WRITE.
+            try:
+                c.close()
+            except Exception:
+                pass
+            c = _conn()
+            if c is None:
+                out["sources"][src["key"]] = "write_failed: no_connection"
                 continue
             # In-batch dedup on the conflict key (ON CONFLICT can't see two
             # identical keys inside one VALUES page).
@@ -371,11 +594,13 @@ def run_hosting_capacity_ingest(force: bool = False) -> dict:
                 if k in seen:
                     continue
                 seen.add(k)
-                vals.append((r["utility"], r["feeder_key"], r["feeder_id"],
-                             r["substation"], r["state"], r["region"],
-                             r["voltage_kv"], r["capacity_mw_max"],
-                             r["capacity_mw_min"], r["queued_gen_kw"],
-                             r["lat"], r["lng"], r["src_updated"]))
+                base = (r["utility"], r["feeder_key"], r["feeder_id"],
+                        r["substation"], r["state"], r["region"],
+                        r["voltage_kv"], r["capacity_mw_max"],
+                        r["capacity_mw_min"], r["queued_gen_kw"],
+                        r["lat"], r["lng"], r["src_updated"])
+                vals.append(base + ((r.get("capacity_type", "gen"),)
+                                    if has_type else ()))
             try:
                 with c.cursor() as cur:
                     execute_values(cur, _UPSERT_SQL, vals, page_size=500)
@@ -446,7 +671,8 @@ def hosting_capacity_feeders_endpoint():
         with c.cursor() as cur:
             cur.execute("""
                 SELECT utility, feeder_id, substation, region, voltage_kv,
-                       capacity_mw_max, capacity_mw_min, lat, lng, src_updated
+                       capacity_mw_max, capacity_mw_min, lat, lng,
+                       src_updated, capacity_type
                   FROM hosting_capacity_feeders
                  WHERE lng BETWEEN %s AND %s AND lat BETWEEN %s AND %s
                    AND capacity_mw_max IS NOT NULL
@@ -456,12 +682,19 @@ def hosting_capacity_feeders_endpoint():
             feeders = [{"utility": r[0], "feeder_id": r[1], "substation": r[2],
                         "region": r[3], "voltage_kv": r[4],
                         "capacity_mw_max": r[5], "capacity_mw_min": r[6],
-                        "lat": r[7], "lng": r[8], "src_updated": r[9]}
+                        "lat": r[7], "lng": r[8], "src_updated": r[9],
+                        "capacity_type": r[10]}
                        for r in cur.fetchall()]
         resp = jsonify(feeders=feeders, count=len(feeders), limit=limit,
-                       source="utility-published hosting-capacity GIS "
-                              "(PHI, ConEd, ORU, NYSEG/RG&E, RI Energy, "
-                              "NGrid-NY, Dominion VA binned)",
+                       source="utility-published hosting-capacity GIS",
+                       capacity_types={
+                           "gen": ("DER/generation hosting capacity — how "
+                                   "much generation the feeder can accept "
+                                   "(the common utility publication)"),
+                           "load": ("LOAD-serving capacity — what a new "
+                                    "data-center load can draw"),
+                           "bus_headroom": ("transmission bus MW available "
+                                            "(not distribution feeder HC)")},
                        note=("Informational, not binding interconnection "
                              "guidance; verify with the utility."))
         resp.headers["Cache-Control"] = "public, max-age=300"
@@ -504,7 +737,8 @@ def hosting_capacity_coverage_endpoint():
                        ROUND(AVG(lat)::numeric, 4), ROUND(AVG(lng)::numeric, 4),
                        ROUND(MIN(lat)::numeric, 4), ROUND(MIN(lng)::numeric, 4),
                        ROUND(MAX(lat)::numeric, 4), ROUND(MAX(lng)::numeric, 4),
-                       ROUND(MAX(capacity_mw_max)::numeric, 1)
+                       ROUND(MAX(capacity_mw_max)::numeric, 1),
+                       MAX(capacity_type)
                   FROM hosting_capacity_feeders
                  WHERE lat IS NOT NULL AND lng IS NOT NULL
                  GROUP BY utility ORDER BY COUNT(*) DESC
@@ -519,6 +753,7 @@ def hosting_capacity_coverage_endpoint():
                     "bbox": {"south": float(r[4]), "west": float(r[5]),
                              "north": float(r[6]), "east": float(r[7])},
                     "max_capacity_mw": float(r[8]) if r[8] is not None else None,
+                    "capacity_type": r[9] or "gen",
                     "binned": "binned" in (r[0] or ""),
                 })
         resp = jsonify(markets=markets,
