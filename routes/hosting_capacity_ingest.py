@@ -462,6 +462,67 @@ def hosting_capacity_feeders_endpoint():
             pass
 
 
+# Market labels for the covered utilities (map jump-list). Derived
+# centers/bboxes come from the data itself — only the human label is here.
+_MARKET_LABELS = {
+    "PHI (Pepco/Delmarva/ACE)": "DC · Baltimore · Delmarva",
+    "Con Edison NY": "New York City · Westchester",
+    "Orange & Rockland NY": "Hudson Valley NY",
+    "NYSEG/RG&E": "Upstate NY · Rochester",
+    "Rhode Island Energy": "Providence · Rhode Island",
+    "National Grid NY": "Albany · Syracuse · Buffalo",
+    "Dominion Energy VA (binned)": "Northern Virginia · Richmond",
+}
+
+
+@hosting_capacity_bp.route("/api/v1/grid/hosting-capacity/coverage",
+                           methods=["GET"])
+def hosting_capacity_coverage_endpoint():
+    """Which markets have feeder coverage — per utility: count, center,
+    bbox, best MW. Powers the map's market jump-list. Anon-open."""
+    c = _conn()
+    if c is None:
+        return jsonify(error="no_database"), 503
+    try:
+        with c.cursor() as cur:
+            cur.execute("""
+                SELECT utility, COUNT(*),
+                       ROUND(AVG(lat)::numeric, 4), ROUND(AVG(lng)::numeric, 4),
+                       ROUND(MIN(lat)::numeric, 4), ROUND(MIN(lng)::numeric, 4),
+                       ROUND(MAX(lat)::numeric, 4), ROUND(MAX(lng)::numeric, 4),
+                       ROUND(MAX(capacity_mw_max)::numeric, 1)
+                  FROM hosting_capacity_feeders
+                 WHERE lat IS NOT NULL AND lng IS NOT NULL
+                 GROUP BY utility ORDER BY COUNT(*) DESC
+            """)
+            markets = []
+            for r in cur.fetchall():
+                markets.append({
+                    "utility": r[0],
+                    "market": _MARKET_LABELS.get(r[0], r[0]),
+                    "feeders": int(r[1]),
+                    "center": {"lat": float(r[2]), "lng": float(r[3])},
+                    "bbox": {"south": float(r[4]), "west": float(r[5]),
+                             "north": float(r[6]), "east": float(r[7])},
+                    "max_capacity_mw": float(r[8]) if r[8] is not None else None,
+                    "binned": "binned" in (r[0] or ""),
+                })
+        resp = jsonify(markets=markets,
+                       total_feeders=sum(m["feeders"] for m in markets),
+                       note=("Utility-published hosting capacity. "
+                             "Informational only — verify with the utility."))
+        resp.headers["Cache-Control"] = "public, max-age=900"
+        resp.headers["Access-Control-Allow-Origin"] = "*"
+        return resp
+    except Exception as ex:
+        return jsonify(error=str(ex)[:160]), 500
+    finally:
+        try:
+            c.close()
+        except Exception:
+            pass
+
+
 @hosting_capacity_bp.route("/api/v1/grid/hosting-capacity/ingest",
                            methods=["POST"])
 def hosting_capacity_ingest_endpoint():
