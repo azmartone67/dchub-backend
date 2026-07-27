@@ -368,6 +368,39 @@ def install_tracker(app) -> dict:
         ak = (request.headers.get("X-API-Key") or "").strip()
         if ak and ak.startswith("dchub_") and len(ak) >= 24:
             g._usage_key_prefix = ak[:24]
+        else:
+            # r-admin-observability (2026-07-27): ADMIN traffic was invisible.
+            # _record() below tracks a request only if it carries an X-API-Key,
+            # and admin/cron calls authenticate with X-Admin-Key or
+            # X-Internal-Key instead — so NONE of them were ever logged. Live
+            # proof: api_endpoint_log held 56 admin rows out of 548,096, and 0
+            # of ~50 admin reindex calls made on 2026-07-27.
+            #
+            # That blindness is not cosmetic. It made "which destructive admin
+            # endpoint has NEVER actually run?" unanswerable, and Shell #37
+            # lane 1 had to be rebuilt around it — `purge-noise` had a
+            # catastrophically wrong predicate and survived only because
+            # nobody happened to call it. You cannot audit a surface you
+            # cannot see.
+            #
+            # ★ The marker is a CREDENTIAL CLASS, never the secret. Storing a
+            # hash would still be needless key material in a 90-day table; the
+            # question this answers is "was this endpoint ever invoked, and by
+            # what kind of caller", which a class answers completely.
+            # ★ It deliberately does NOT start with "dchub_", so it can never
+            # collide with a real partner prefix — partner-usage reporting
+            # filters `WHERE api_key_prefix = <dchub_...>` and stays exact.
+            # ★ Query-string creds (?admin_key=) are detected but NEVER logged:
+            # _collapse_path() records request.path only, which excludes the
+            # query string.
+            _h = request.headers
+            if (_h.get("X-Admin-Key") or _h.get("X-Admin-Token")
+                    or request.args.get("admin_key")):
+                g._usage_key_prefix = "admin"
+            elif _h.get("X-Internal-Cron") or _h.get("X-DC-Internal-Cron"):
+                g._usage_key_prefix = "cron"
+            elif _h.get("X-Internal-Key") or _h.get("X-DC-Internal-Token"):
+                g._usage_key_prefix = "internal"
         # paths to skip — short-circuit
         p = request.path or ""
         for pfx in _SKIP_PATH_PREFIXES:

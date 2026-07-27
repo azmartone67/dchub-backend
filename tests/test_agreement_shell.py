@@ -149,15 +149,70 @@ def test_gate_col_classifier_matrix():
 
 # ── (2) lane 1 must not claim invocation ──────────────────────────────
 
-def test_lane1_does_not_claim_endpoints_are_never_invoked():
-    """api_endpoint_log captures ~0 admin traffic, so 'never invoked' is
-    unmeasurable. The lane must report the GAP, not a verdict."""
+def test_lane1_observability_is_a_liveness_check_on_credential_classes():
+    """Was a gauge while admin traffic was invisible. api_usage_tracker now
+    stamps a credential CLASS, so the check asserts — and is satisfied by this
+    shell's own admin tick, which makes it a can-we-see-ourselves probe."""
     body = _func_src("_lane_destructive")
-    assert "ds_observability" in body, "the observability gauge is gone"
-    m = re.search(r'_check\(\s*"ds_observability".*?\)', body, re.S)
-    assert m and re.search(r'"ds_observability",[^,]*,\s*None', m.group(0)), \
-        "ds_observability must be a GAUGE (pass=None) — it cannot be asserted"
+    assert "ds_observability" in body
+    assert "'admin','cron','internal'" in body, \
+        "the lane no longer looks for the credential-class markers"
+    assert "critical=True" in body.split("ds_observability")[-1][:400], \
+        "observability must be critical — an unmeasurable surface is not a pass"
 
+
+def test_tracker_records_admin_credentials_without_storing_the_secret():
+    """★ The fix, exercised FUNCTIONALLY rather than by grepping the source.
+
+    A string-presence assertion passed even with the admin branch deleted,
+    because "X-Admin-Key" still appeared in the explanatory comment — the same
+    weak-guard failure this shell exists to catch. So: build a real Flask app,
+    install the tracker, issue requests, and read the buffer.
+
+    Two properties, both load-bearing:
+      · an admin-authenticated request IS recorded (it was invisible before)
+      · what lands is the credential CLASS, never the secret, and never a
+        `dchub_`-prefixed value that could collide with a partner in
+        partner-usage reporting
+    """
+    from flask import Flask
+    import routes.api_usage_tracker as t
+
+    app = Flask(__name__)
+
+    @app.route("/api/v1/admin/probe", methods=["POST"])
+    def _probe():
+        return "ok"
+
+    @app.route("/api/v1/open")
+    def _open():
+        return "ok"
+
+    # install_tracker() touches the DB for schema; the hooks are what we want
+    try:
+        t.install_tracker(app)
+    except Exception:
+        pytest.skip("tracker install unavailable in this environment")
+
+    secret = "SUPERSECRETADMINKEY_do_not_log_me_0123456789"
+    with t._BUFFER_LOCK:
+        t._BUFFER.clear()
+    client = app.test_client()
+    client.post("/api/v1/admin/probe", headers={"X-Admin-Key": secret})
+    client.get("/api/v1/open")           # unauthenticated — must stay untracked
+    with t._BUFFER_LOCK:
+        entries = list(t._BUFFER)
+        t._BUFFER.clear()
+
+    admin = [e for e in entries if e["path"] == "/api/v1/admin/probe"]
+    assert admin, "admin-authenticated request was NOT recorded — the gap is back"
+    prefix = admin[0]["key_prefix"]
+    assert prefix == "admin", f"expected credential class 'admin', got {prefix!r}"
+    assert secret not in str(entries), "the admin secret reached the buffer"
+    assert not str(prefix).startswith("dchub_"), \
+        "marker collides with the partner key-prefix namespace"
+    assert not [e for e in entries if e["path"] == "/api/v1/open"], \
+        "unauthenticated traffic is now being tracked — scope creep"
 
 def test_lane1_baseline_is_a_baseline_not_zero():
     """18 set-wide statements exist and several are legitimate (TTL cleanups,

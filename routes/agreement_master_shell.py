@@ -307,16 +307,33 @@ def _lane_destructive(c, ctx) -> list[dict]:
     # api_endpoint_log captured 0 of ~50 admin reindex calls and 0 graph-spine
     # ticks on 2026-07-27 (56 admin rows in 548k). purge-noise proved the
     # hazard class: catastrophically wrong predicate, never fired, pure luck.
-    r = _row(c, "SELECT count(*) FILTER (WHERE endpoint_path LIKE '/api/v1/admin'"
-                " || chr(37)), count(*) FROM api_endpoint_log")
-    if r:
-        admin_rows, total = int(r[0] or 0), int(r[1] or 0)
+    # ★ Now a real LIVENESS assertion, not a gauge (r-admin-observability
+    # 2026-07-27). The tracker used to record a request only if it carried an
+    # X-API-Key, and admin calls authenticate with X-Admin-Key — so admin
+    # traffic was invisible and this check could only describe the hole.
+    # api_usage_tracker now stamps a credential CLASS ('admin'/'cron'/
+    # 'internal', never the secret), so the hole is closed and the check can
+    # assert.
+    #
+    # It is satisfied by THIS SHELL'S OWN TICK, which is itself an admin call —
+    # deliberately. That is not circular: if the tracker regresses, the tick
+    # stops being logged and the check goes red. It is a genuine
+    # can-we-still-see-ourselves probe, and the cheapest possible one.
+    r = _row(c, "SELECT count(*) FROM api_endpoint_log"
+                " WHERE api_key_prefix IN ('admin','cron','internal')"
+                "   AND called_at > now() - interval '7 days'")
+    if r is None or r[0] is None:
+        out.append(_check("ds_observability", "admin traffic is observable",
+                          None, "query failed", critical=True))
+    else:
+        seen = int(r[0])
         out.append(_check(
-            "ds_observability", "admin traffic is observable", None,
-            f"api_endpoint_log holds {admin_rows:,} admin rows of {total:,} "
-            f"({_pct(admin_rows, total)}%) — admin calls are NOT logged, so "
-            "'never invoked' is UNMEASURABLE. Until that is fixed, no lane may "
-            "claim an endpoint is dead"))
+            "ds_observability", "admin traffic is observable",
+            seen > 0,
+            f"{seen:,} admin/cron/internal calls logged in 7d. While this is "
+            "0, 'which destructive endpoint has never run' is UNMEASURABLE and "
+            "no lane may claim an endpoint is dead — the state that let "
+            "purge-noise sit armed and unnoticed", critical=True))
     return out
 
 
