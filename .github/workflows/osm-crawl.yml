@@ -49,12 +49,52 @@ jobs:
           # POST against the Railway origin returns ok:true (693 POIs seen).
           # Long-running admin jobs must bypass the edge. Public traffic is
           # unaffected — this is a cron-only, admin-keyed path.
+          # ...and a 3-minute SYNCHRONOUS request survives no proxy at all:
+          # the Railway edge answered 502 "Application failed to respond"
+          # (and a deploy landing mid-crawl kills the request outright).
+          # So: SPAWN via ?async=1 (returns 202 immediately), then poll
+          # /status, which reads osm_crawl_log — the crawl persists every
+          # run there, so the real numbers are never lost to a dropped HTTP
+          # connection. The edge is fine for these short calls.
           ORIGIN="${DCHUB_ORIGIN_URL:-https://dchub-backend-production.up.railway.app}"
-          RESP=$(curl -sS -X POST \
+          [ -z "$QS" ] && QS="?async=1" || QS="$QS&async=1"
+          BEFORE=$(curl -sS --max-time 30 -H "X-Admin-Key: $ADMIN_KEY" \
+            "$ORIGIN/api/v1/admin/osm-crawl/status" \
+            | python3 -c "import json,sys; print((json.load(sys.stdin).get('last_run') or {}).get('started_at') or '')" 2>/dev/null || echo "")
+          SPAWN=$(curl -sS --max-time 60 -X POST \
             -H "X-Admin-Key: $ADMIN_KEY" \
             -H "User-Agent: DCHub-OSM-Cron/1.0" \
-            --max-time 1500 \
             "$ORIGIN/api/v1/admin/osm-crawl/run$QS")
+          echo "spawn: $SPAWN"
+          # Poll up to ~12 min for a NEWER completed run than BEFORE.
+          RESP=""
+          for i in $(seq 1 48); do
+            sleep 15
+            S=$(curl -sS --max-time 30 -H "X-Admin-Key: $ADMIN_KEY" \
+              "$ORIGIN/api/v1/admin/osm-crawl/status" || echo "")
+            [ -z "$S" ] && continue
+            DONE=$(BEFORE="$BEFORE" S="$S" python3 - <<'PP'
+          import json, os
+          try:
+              lr = (json.loads(os.environ["S"]).get("last_run") or {})
+          except Exception:
+              print(""); raise SystemExit
+          st, fin = lr.get("started_at") or "", lr.get("finished_at")
+          print(json.dumps(lr) if (st and st != os.environ.get("BEFORE") and fin) else "")
+          PP
+            )
+            if [ -n "$DONE" ]; then RESP="$DONE"; break; fi
+          done
+          if [ -z "$RESP" ]; then
+            echo "::error::OSM crawl did not report a completed run within the poll window"
+            echo "beat_status=error" >> "$GITHUB_OUTPUT"
+            echo "rows_inserted=0" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          # /status rows carry the same keys the sync response did, plus an
+          # explicit finished_at — mark ok so the classifier below reads it
+          # exactly as before.
+          RESP=$(RESP="$RESP" python3 -c "import json,os; d=json.loads(os.environ['RESP']); d.setdefault('ok', True); print(json.dumps(d))")
           # 2026-07-24 (zero-row triage, follows growthfix wave #26): this block
           # used to exit 0 on ok:false, so POIS_NEW fell back to 0 and the beat
           # reported a healthy run for a crawler that had ERRORED — and once

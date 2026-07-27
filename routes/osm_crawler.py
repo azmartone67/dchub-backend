@@ -642,6 +642,32 @@ def crawl_run():
         return jsonify(ok=False, error="forbidden"), 403
     region = (request.args.get("region") or "").strip().lower() or None
     dry_run = (request.args.get("dry_run") or "").lower() in ("1", "true", "yes")
+    # 2026-07-27: the full crawl takes ~3+ minutes, which NO proxy in front
+    # of this app survives — the CF worker returns its own 503 envelope and
+    # the Railway proxy returns 502 "Application failed to respond" (and a
+    # deploy mid-crawl kills the request outright). Three red cron days came
+    # from that, not from the crawler. `async=1` spawns it and returns
+    # immediately; the caller polls /status, which reads osm_crawl_log —
+    # the crawl already persists every run there, so nothing is lost.
+    if (request.args.get("async") or "").lower() in ("1", "true", "yes"):
+        import threading
+
+        def _bg():
+            try:
+                _crawl(region, dry_run)
+            except Exception as e:  # never surface in the request path
+                try:
+                    import logging
+                    logging.getLogger(__name__).warning(
+                        "osm crawl (bg) failed: %s", str(e)[:160])
+                except Exception:
+                    pass
+
+        threading.Thread(target=_bg, name="osm-crawl-bg",
+                         daemon=True).start()
+        return jsonify(ok=True, spawned=True, mode="async", region=region,
+                       dry_run=dry_run,
+                       poll="/api/v1/admin/osm-crawl/status"), 202
     return jsonify(_crawl(region, dry_run))
 
 
