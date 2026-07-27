@@ -153,7 +153,7 @@ def _gs_budget_ok() -> bool:
                 """)
                 cur.execute("""
                     INSERT INTO gridstatus_call_ledger (month, calls)
-                    VALUES (to_char(NOW(), 'YYYY-MM'), 1)
+                    VALUES (to_char(NOW() ON CONFLICT DO NOTHING, 'YYYY-MM'), 1)
                     ON CONFLICT (month) DO UPDATE
                       SET calls = gridstatus_call_ledger.calls + 1
                     RETURNING calls
