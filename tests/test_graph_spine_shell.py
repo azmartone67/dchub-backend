@@ -121,7 +121,8 @@ def _is_critical(call: ast.Call) -> bool:
     "pdb_disjoint",    # lane 2 — the third id-space stays disjoint
     "deal_dupes",      # lane 3 — exact duplicates among SERVED rows
     "rag_serves_excluded",  # lane 4 — chunks we refuse to serve
-    "es_resolution",   # lane 5 — GraphRAG precondition
+    "es_blindspot",    # lane 5 — resolver gap we can actually close
+    "es_no_reject_real",  # lane 5 — purge-noise landmine guard
     "gv_precondition",  # lane 6 — the verdict itself
 ])
 def test_load_bearing_checks_are_critical_at_every_call_site(check_id):

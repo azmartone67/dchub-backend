@@ -578,29 +578,84 @@ def _lane_rag_redundancy(c, ctx) -> list[dict]:
 # ── lane 5 · entity spine — the GraphRAG precondition ─────────────────
 
 def _lane_entity_spine(c, ctx) -> list[dict]:
+    """★ THIS LANE'S FIRST FLOOR WAS UNREACHABLE BY CONSTRUCTION.
+
+    v1 asserted ">=60% of extracted entities resolve to a facility" and sat
+    permanently RED at 18.3%. But `in_facilities` does not mean "resolves to
+    the graph" — it means "is a data-centre operator we track", and the
+    unresolved set is Nokia, Ericsson, Samsung, Broadcom, Qualcomm, Cisco,
+    Intel, Chevron, DARPA. Those are real companies that legitimately do not
+    operate a facility in our table. Normalising names gains exactly 0 exact
+    matches. No amount of work moves that ratio to 60, so the check could only
+    ever be a red light that says nothing — the same defect as lane 3b flagging
+    history, one lane over.
+
+    v2 asserts what is actually actionable and actually reachable: that the
+    RESOLVER has no known blind spot, and that the entity-quality filter never
+    rejects something that resolves. The raw ratio stays, as a gauge, labelled.
+    """
     out = []
 
-    # 5a — the gate. Community summaries / global search over a knowledge
-    # graph are only worth building once entities RESOLVE; summarising
-    # unresolved entities summarises noise, expensively and per re-index.
-    r = _row(c, "SELECT count(*), count(*) FILTER (WHERE in_facilities)"
-                " FROM news_discovered_entities")
-    if not r:
-        out.append(_check("es_resolution", "extracted entities resolve to the graph",
+    # 5a — resolver blind spot. Entities that fail the resolver but WOULD be
+    # found by a token-boundary prefix match against facility names. This is a
+    # gap in our code, not in the world, so it is fixable and must be 0.
+    # (Was 16 — Azure, Crown Castle, Alibaba, Facebook, Stargate … — because
+    # facility names carry the site: "Azure Korea Central (Seoul)".)
+    r = _row(c, "SELECT count(*) FROM news_discovered_entities e"
+                " WHERE e.in_facilities = FALSE"
+                "   AND length(trim(e.entity_name)) >= 4"
+                "   AND EXISTS (SELECT 1 FROM facilities f"
+                "               WHERE lower(f.name) LIKE lower(trim(e.entity_name))"
+                "                     || ' ' || chr(37))")
+    if r is None or r[0] is None:
+        out.append(_check("es_blindspot", "resolver has no known blind spot",
                           None, "query failed", critical=True))
     else:
+        missed = int(r[0])
+        ctx["es_blindspot"] = missed
+        out.append(_check(
+            "es_blindspot", "resolver has no known blind spot",
+            missed == 0,
+            f"{missed:,} entities are unresolved but DO prefix-match a facility "
+            "name at a token boundary — our matcher cannot see them, the graph "
+            "already holds them", critical=True))
+
+    # 5b — the landmine guard. /api/v1/admin/news-ner/purge-noise applies
+    # _is_real_entity DESTRUCTIVELY (status='rejected') across every row. That
+    # predicate rejected every single-token mixed-case name until 07-27, i.e.
+    # Google, Apple, Amazon Web Services, Huawei, Vodafone, CoreWeave — 48 of
+    # which resolve. Nothing may ever be both resolved and rejected.
+    r = _row(c, "SELECT count(*) FROM news_discovered_entities"
+                " WHERE in_facilities = TRUE AND coalesce(status,'') = 'rejected'")
+    if r is None or r[0] is None:
+        out.append(_check("es_no_reject_real", "no resolved entity is marked rejected",
+                          None, "query failed", critical=True))
+    else:
+        bad = int(r[0])
+        out.append(_check(
+            "es_no_reject_real", "no resolved entity is marked rejected",
+            bad == 0,
+            f"{bad:,} entities resolve to a facility AND carry "
+            "status='rejected' — purge-noise would be deleting real operators",
+            critical=True))
+
+    # 5c — the raw ratio, as a GAUGE with its ceiling stated. Never a target.
+    r = _row(c, "SELECT count(*), count(*) FILTER (WHERE in_facilities)"
+                " FROM news_discovered_entities")
+    if r:
         total, resolved = int(r[0] or 0), int(r[1] or 0)
         share = _pct(resolved, total)
         ctx["es_share"] = share
         ctx["es_total"], ctx["es_resolved"] = total, resolved
         out.append(_check(
-            "es_resolution", "extracted entities resolve to the graph (>=60%)",
-            (share is not None and share >= 60.0),
-            f"{resolved:,} of {total:,} discovered entities ({share}%) resolve "
-            "to a facility — the rest are names with no node to attach to",
-            critical=True))
+            "es_resolution", "entity → facility resolution (gauge, NOT a target)",
+            None,
+            f"{resolved:,} of {total:,} ({share}%) resolve. The remainder is "
+            "mostly Nokia/Ericsson/Qualcomm/Intel-class firms that legitimately "
+            "operate no facility we track — normalising names gains 0 exact "
+            "matches, so a 60% floor here would be unreachable by construction"))
 
-    # 5b — is extraction even keeping up with the corpus it reads from?
+    # 5d — is extraction keeping up with the corpus it reads from?
     r = _row(c, "SELECT (SELECT count(*) FROM news_articles),"
                 " (SELECT count(*) FROM news_discovered_entities)")
     if r:
@@ -622,23 +677,43 @@ def _lane_graph_verdict(c, ctx) -> list[dict]:
 
     share = ctx.get("es_share")
     worst = ctx.get("rag_worst_share")
+    excluded = ctx.get("rag_excluded")
+    blind = ctx.get("es_blindspot")
 
-    if share is None or worst is None:
+    if worst is None or excluded is None or blind is None:
         out.append(_check(
             "gv_precondition", "precondition for a graph retrieval layer", None,
             "lane 4 or lane 5 did not resolve — no verdict", critical=True))
         ctx["verdict"] = "UNKNOWN"
         return out
 
-    ready = share >= 60.0 and worst < 10.0
-    ctx["verdict"] = "READY" if ready else "NOT_READY"
+    # ★ The precondition is about the SPINE→INDEX WIRING being clean, not about
+    # the entity ratio. v1 gated on "entity resolution >= 60%", which lane 5
+    # now shows is unreachable by construction — a verdict that can never flip
+    # is not a verdict. What IS in our control: the index must not hold rows we
+    # refuse to serve, the served corpus must not be mostly duplicate text, and
+    # the resolver must have no known blind spot.
+    ready = excluded == 0 and worst < 10.0 and blind == 0
+    ctx["verdict"] = "WIRING_CLEAN" if ready else "NOT_READY"
     out.append(_check(
-        "gv_precondition", "precondition for a graph retrieval layer",
+        "gv_precondition", "spine → index wiring is clean",
         ready,
-        f"entity resolution {share}% (need >=60) · worst-corpus redundancy "
-        f"{worst}% (need <10) — a graph layer built now would inherit "
-        "the duplicates as nodes and the unresolved names as dangling edges",
-        critical=True))
+        f"chunks we refuse to serve {excluded} (need 0) · served-corpus "
+        f"redundancy {worst}% (need <10) · resolver blind spot {blind} "
+        "(need 0)", critical=True))
+
+    # ★ WIRING_CLEAN IS NOT "BUILD THE GRAPH". It only means the measured
+    # objections are gone. The remaining question is one this shell cannot
+    # answer from the database: whether callers actually ask GLOBAL questions
+    # ("what themes run across these 10,000 docs") that vector search cannot
+    # serve. That is the ONLY thing GraphRAG genuinely beats RAG at, and it is
+    # a demand question — measure it in mcp_call_log before building anything.
+    out.append(_check(
+        "gv_next", "what would actually justify a graph layer", None,
+        "unanswered here: do callers ask GLOBAL/thematic questions? A graph "
+        "wins on those and only those. We already run a typed graph in "
+        "Postgres and a deterministic tool graph in execute_plan, so the "
+        "build is a retrieval layer, not a migration"))
 
     # The honest read of the original question, stated in the surface itself
     # so nobody has to re-derive it from six lanes of numbers.

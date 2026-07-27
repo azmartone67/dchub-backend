@@ -187,11 +187,33 @@ CORPORA = {
     # _count_orphans, _sweep_orphans), so a literal % here would make psycopg2
     # %-substitute and 500 all three (reference_psycopg2_empty_tuple_percent_trap;
     # this exact table taught this exact lesson on 07-17).
+    # ★ TEXT TEMPLATE v2 (r-rag-deals-template 2026-07-27). The v1 expression
+    # concatenated five fields with fixed separators, so a row carrying only a
+    # buyer rendered as "Google →  (, ) " — 811 of 1,544 served deals (52.5%)
+    # have neither seller nor notes, and 11 DISTINCT deals collapsed to one
+    # byte-identical string, i.e. one vector standing for eleven deals. Worse,
+    # 1,015 rows carry a value or MW that v1 threw away entirely.
+    # v2 uses concat_ws + nullif so empty fields vanish instead of emitting
+    # punctuation, and adds value ($M — the post-07-17 convention), MW and the
+    # date. Measured on live: worst identical render 11 → 4, collapsed rows
+    # 127 → 47, mean chunk length 74 chars, zero empty renders.
+    # ★ Changing this expression does NOT re-embed on its own: _pending only
+    # picks rows with no embedding or a moved fresh_col. The one-time re-embed
+    # is a `SET updated_at = NOW()` bump on served rows, which is exactly what
+    # fresh_col exists for and keeps the old vectors searchable meanwhile.
     "deals": {
         "id": "t.id::text", "kind": "deal",
-        "text": ("coalesce(t.buyer,'') || ' → ' || coalesce(t.seller,'') || ' (' || "
-                 "coalesce(t.type,'') || ', ' || coalesce(t.market, t.region, '') || ') ' || "
-                 "coalesce(t.notes,'')"),
+        "text": ("concat_ws(' · ',"
+                 " nullif(concat_ws(' → ', nullif(trim(t.buyer),''),"
+                 "                        nullif(trim(t.seller),'')),''),"
+                 " nullif(concat_ws(', ', nullif(trim(t.type),''),"
+                 "                        nullif(trim(coalesce(t.market,t.region)),'')),''),"
+                 " CASE WHEN t.value IS NOT NULL"
+                 "      THEN '$' || round(t.value::numeric,1)::text || 'M' END,"
+                 " CASE WHEN t.mw IS NOT NULL"
+                 "      THEN round(t.mw::numeric,1)::text || ' MW' END,"
+                 " nullif(trim(coalesce(t.date, t.year::text)),''),"
+                 " nullif(trim(t.notes),''))"),
         "where": ("(coalesce(t.buyer,'') <> '' OR coalesce(t.seller,'') <> '')"
                   " AND coalesce(left(t.data_flag,11),'') <> 'quarantine_'"),
         "fresh_col": "updated_at"},

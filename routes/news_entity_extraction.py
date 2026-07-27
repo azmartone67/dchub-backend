@@ -208,13 +208,39 @@ def _is_real_entity(phrase: str) -> bool:
     # All-caps single word ≥ 3 chars (acronym pattern like TSMC, NTT)
     if len(tokens) == 1 and p.isupper() and len(p) >= 3:
         return True
+    # ★ SINGLE-TOKEN PROPER NOUN (r-ner-singletoken 2026-07-27). Without this
+    # branch every one-word mixed-case name fell through to the "2+ word Title
+    # Case" test below, failed `len(tokens) >= 2`, and returned False — so
+    # _is_real_entity rejected 287 of 470 live entities INCLUDING Google,
+    # Apple, Amazon Web Services, Huawei, Vodafone, Comcast, CoreWeave,
+    # ByteDance, AirTrunk, Orange and Telus. 48 of them resolve to a real
+    # facility or provider. That made /api/v1/admin/news-ner/purge-noise — which
+    # applies this predicate DESTRUCTIVELY (status='rejected') over every row —
+    # a loaded gun; it had never been run, which is the only reason the entity
+    # table survived intact.
+    #
+    # Deliberately permissive: a false ACCEPT costs one advisory candidate row
+    # that a human triages, a false REJECT silently deletes Google from the
+    # graph. These rows are candidates, never auto-promoted, so the asymmetry
+    # is the whole argument. It does admit common nouns ("Debate", "Front");
+    # separating those from "Orange" needs a dictionary or an LLM pass, and is
+    # NOT solved here.
+    # Intercaps counts: "nLighten" and "euNetworks" are real operators whose
+    # first letter is lowercase, so testing p[0].isupper() alone loses them.
+    if (len(tokens) == 1 and len(p) >= 4
+            and any(ch.isupper() for ch in p) and not p.isupper()):
+        return True
     # Entity suffix? Strong signal
     if tokens[-1] in ENTITY_SUFFIXES:
         return True
-    # 2+ word Title Case (each word starts with caps) → maybe a name
+    # 2+ word name-shaped tokens → maybe a name.
+    # ★ The original test demanded t[0].isupper() AND t[1:].islower(), which
+    # rejected every acronym-bearing and lowercase-initial operator we carry:
+    # "Colt DCS", "Pure DC", "SK Telecom", "LG Uplus", "nLighten",
+    # "euNetworks". A token is name-shaped if it contains ANY capital (covers
+    # Title Case, ALLCAPS acronyms and intercaps) or is a bare number.
     if (len(tokens) >= 2
-            and all(t[0].isupper() and (t[1:].islower() or t[1:].isdigit() or "-" in t)
-                    for t in tokens)):
+            and all(any(ch.isupper() for ch in t) or t.isdigit() for t in tokens)):
         # But reject if it ends in a verb-y form
         last = tokens[-1].lower()
         if last.endswith(("ing", "ed", "es", "ly", "tion")):
@@ -315,6 +341,16 @@ def _extract_names_llm(headline: str, body: str) -> list[str]:
 
 
 # ── Dedup against facilities ─────────────────────────────────────────
+# Words that are legitimate facility-name PREFIXES but meaningless as an
+# entity — a prefix match on these claims half the fleet. Kept tight: every
+# addition costs real resolutions, so only genuinely ambiguous infra nouns.
+_GENERIC_PREFIX_STOP = {
+    "power", "data", "center", "centre", "energy", "grid", "cloud", "network",
+    "digital", "global", "tech", "technology", "systems", "solutions", "group",
+    "holdings", "international", "national", "american", "new", "future", "key",
+}
+
+
 def _already_known(cur, name: str) -> bool:
     """Is this entity already in our facilities or discovered_facilities
     table by name?"""
@@ -341,6 +377,39 @@ def _already_known(cur, name: str) -> bool:
     except Exception:
         try: cur.connection.rollback()
         except Exception: pass
+
+    # ★ TOKEN-BOUNDARY PREFIX MATCH (r-ner-prefix 2026-07-27) — the blind spot
+    # exact matching could never see. Our facility NAMES carry the site, not
+    # just the operator: "Azure Korea Central (Seoul)", "Crown Castle
+    # Baltimore", "Alibaba Cloud Zhangbei DC". So an entity that IS in the
+    # graph 55 times ("Azure") matched nothing at all. This one predicate
+    # resolves 16 further entities — Azure(55 facilities), Crown Castle(22),
+    # Alibaba(13), Microsoft Azure(12), Facebook(11), Stargate(11), XLSMART,
+    # Matrix, Dell, Synergy, Cisco, Samsung, Dish, Grok, Lightstorm, Flex —
+    # every one verified correct by hand.
+    #
+    # GUARDS, because a prefix match is exactly how false positives get in:
+    #   · trailing space in the pattern = a real token boundary, so "Dell"
+    #     matches "Dell 350 Holger Way" but never "Dellwood ..."
+    #   · len >= 4 and a generic-infra stoplist, or "Power" would claim
+    #     "power generator for government-linked data center ..."
+    #   · DECOY CONTROL: the same query run over entity_name || 'x' returns 0
+    #     matches, so these are not coincidental prefixes (the lesson from the
+    #     carrier join — a count that a decoy also scores is not evidence).
+    # The % lives in the PARAMETER, never in the SQL string, so the empty-tuple
+    # %-substitution trap does not apply.
+    n = (name or "").strip()
+    if len(n) >= 4 and n.lower() not in _GENERIC_PREFIX_STOP:
+        try:
+            cur.execute(
+                "SELECT 1 FROM facilities WHERE LOWER(name) LIKE %s LIMIT 1",
+                (n.lower() + " %",),
+            )
+            if cur.fetchone():
+                return True
+        except Exception:
+            try: cur.connection.rollback()
+            except Exception: pass
     return False
 
 
@@ -1103,9 +1172,20 @@ def ner_purge_noise():
     kept = 0
     try:
         with c.cursor() as cur:
+            # ★ NEVER re-classify something that resolves to a real facility
+            # or provider (r-ner-purge-guard 2026-07-27). This endpoint applies
+            # a HEURISTIC destructively across every row, and that heuristic
+            # has been wrong before — until 07-27 it rejected every
+            # single-token mixed-case name, i.e. Google, Apple, Huawei,
+            # Vodafone, CoreWeave. `in_facilities` is ground truth from the
+            # facilities table; a guess must never overrule it. This guard is
+            # what makes the predicate safe to keep improving, and it is the
+            # invariant Shell #36 lane 5b asserts (in_facilities AND
+            # status='rejected' must be 0).
             cur.execute("""
                 SELECT id, entity_name FROM news_discovered_entities
                  WHERE status NOT IN ('rejected', 'seeded')
+                   AND COALESCE(in_facilities, FALSE) = FALSE
             """)
             rows = cur.fetchall()
             for r in rows:
