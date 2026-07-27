@@ -71,11 +71,16 @@ _IDENTITY_TOKENS = ("dchub.cloud", "dchub", "dc hub")
 #   probe  — a URL that would show DC Hub IF we were listed (search page
 #            preferred; these sites' search pages are the honest test)
 #   submit — where a human goes to add us
+# RETIRED CANDIDATES — kept as a note so they are not re-added:
+#   mcp_run (mcp.run) — 2026-07-27: www.mcp.run now 301s to turbomcp.ai, which
+#   is a self-hosted MCP GATEWAY product behind a "stay tuned" holding page, not
+#   a server directory. Every path 404s to a constant-size page. There is no
+#   listing to be in, so no probe URL can be correct. NOTE this is a blind spot
+#   in the classifier: a candidate whose home resolves 200 but has PIVOTED away
+#   from being a directory can never be auto-detected as dead_directory.
 CANDIDATE_DIRECTORIES = [
     {"name": "mcpservers_org", "home": "https://mcpservers.org/",
      "probe": "https://mcpservers.org/?q=dchub", "submit": "https://mcpservers.org/"},
-    {"name": "mcp_run", "home": "https://www.mcp.run/",
-     "probe": "https://www.mcp.run/search?q=dchub", "submit": "https://www.mcp.run/"},
     {"name": "opentools", "home": "https://opentools.com/",
      "probe": "https://opentools.com/registry?q=dchub", "submit": "https://opentools.com/"},
     {"name": "mcpmarket", "home": "https://mcpmarket.com/",
@@ -84,23 +89,41 @@ CANDIDATE_DIRECTORIES = [
      "probe": "https://himcp.ai/?s=dchub", "submit": "https://himcp.ai/submit"},
     {"name": "mcp_get", "home": "https://mcp-get.com/",
      "probe": "https://mcp-get.com/packages?q=dchub", "submit": "https://mcp-get.com/"},
+    # ★ Probe is the toolkits SITEMAP, not a search page. composio.dev/toolkits
+    # returns byte-identical HTML for ?q=dchub and ?q=<nonsense> (client-side
+    # search), so absence could never be read there. The sitemap is a complete,
+    # server-rendered enumeration of all ~1,096 toolkits — a definitive test.
+    # submit=None: the toolkits are integrations Composio BUILDS; there is no
+    # public submission route (/request-integration, /submit, /toolkits/request
+    # all 404). Getting DC Hub in is a BD conversation at composio.dev/contact,
+    # so this must never enter the submission queue as an actionable task.
     {"name": "composio", "home": "https://composio.dev/",
-     "probe": "https://composio.dev/tools?q=dchub", "submit": "https://composio.dev/"},
+     "probe": "https://composio.dev/toolkits/sitemap.xml", "submit": None},
     {"name": "fleur", "home": "https://www.fleurmcp.com/",
      "probe": "https://www.fleurmcp.com/?q=dchub", "submit": "https://www.fleurmcp.com/"},
     {"name": "toolbase", "home": "https://gettoolbase.ai/",
      "probe": "https://gettoolbase.ai/?q=dchub", "submit": "https://gettoolbase.ai/"},
+    # ★ submit was .../pulls — WRONG. wong2's README line 4: "We do not accept
+    # PRs. Please submit your MCP on the website: https://mcpservers.org/submit"
+    # (and this repo's GitHub homepage field IS mcpservers.org, so wong2 and the
+    # mcpservers_org entry are the same directory reached two ways — the README
+    # probe tests the source, the other tests the rendered site).
     {"name": "wong2_awesome_mcp", "home": "https://mcpservers.org/",
      "probe": "https://raw.githubusercontent.com/wong2/awesome-mcp-servers/main/README.md",
-     "submit": "https://github.com/wong2/awesome-mcp-servers/pulls"},
+     "submit": "https://mcpservers.org/submit"},
     {"name": "punkpeye_awesome_mcp",
      "home": "https://github.com/punkpeye/awesome-mcp-servers",
      "probe": "https://raw.githubusercontent.com/punkpeye/awesome-mcp-servers/main/README.md",
      "submit": "https://github.com/punkpeye/awesome-mcp-servers/pulls"},
+    # ★ submit=None: PRs are OFF on this repo. The pulls REST endpoint 404s and
+    # server-side search returns 0 PRs in ANY state (a control repo returns 292,
+    # so it is not a token scope issue); no community PR has merged since
+    # 2025-09-03. The README probe still works, so absence stays measurable —
+    # there is simply no way to act on it.
     {"name": "appcypher_awesome_mcp",
      "home": "https://github.com/appcypher/awesome-mcp-servers",
      "probe": "https://raw.githubusercontent.com/appcypher/awesome-mcp-servers/main/README.md",
-     "submit": "https://github.com/appcypher/awesome-mcp-servers/pulls"},
+     "submit": None},
 ]
 
 
@@ -131,7 +154,7 @@ CONTROL_TOKEN = "zqxjkbwmp"   # a term no directory can legitimately match
 
 
 def classify_candidate(home_status, probe_status, probe_body,
-                       control_body=None) -> dict:
+                       control_body=None, submittable=True) -> dict:
     """Two-question verdict from already-fetched evidence.
 
     Question 1 gates question 2: if the directory itself does not resolve,
@@ -186,6 +209,16 @@ def classify_candidate(home_status, probe_status, probe_body,
                              "returns identical HTML) — absence cannot be "
                              "read from this page; needs a real listing URL")
             return out
+    # Q3 — can we even get on it? Confirmed-absent is only a TASK if a
+    # submission route exists. Composio's toolkits are integrations they build;
+    # there is no public submit path, so queueing it would manufacture work
+    # nobody can complete — the same busywork the unverified states exist to
+    # prevent, just arriving from the other direction.
+    if not submittable:
+        out["verdict"] = "no_submit_path"
+        out["reason"] = ("live and does not list DC Hub, but there is no public "
+                         "submission route — BD contact, not a queue item")
+        return out
     out["verdict"] = "absent"
     out["reason"] = "directory is live and does not list DC Hub — submittable"
     return out
@@ -235,7 +268,8 @@ def run_scan() -> dict:
             if "dchub" in probe.lower():
                 _, cb = _fetch(re.sub("dchub", CONTROL_TOKEN, probe,
                                       flags=re.I))
-            v = classify_candidate(hs, ps, pb, cb)
+            v = classify_candidate(hs, ps, pb, cb,
+                                   submittable=bool(cand.get("submit")))
             v.update({"name": cand["name"], "submit_url": cand["submit"],
                       "home_status": hs, "probe_status": ps})
             results.append(v)
@@ -318,7 +352,7 @@ def read_queue() -> dict:
             c.close()
         except Exception:
             pass
-    counts, queue, unverified = {}, [], []
+    counts, queue, unverified, no_route = {}, [], [], []
     for name, verdict, reason, submit, checked, since in rows:
         counts[verdict or "?"] = counts.get(verdict or "?", 0) + 1
         if verdict == "absent":
@@ -327,12 +361,20 @@ def read_queue() -> dict:
                           "absent_since": since.isoformat() if since else None})
         elif verdict == "unverified":
             unverified.append(name)
+        elif verdict == "no_submit_path":
+            # Confirmed absent, but nothing to DO about it — surfaced so the
+            # finding is not lost, deliberately OUT of the submission queue so
+            # it never reads as an actionable task.
+            no_route.append(name)
     return {"ok": True, "counts": counts,
             "submission_queue": queue, "unverified": unverified,
+            "no_submit_path": no_route,
             "queue_depth": len(queue),
             "note": ("absent = the directory is live and does not list us; "
                      "submit via submit_url. Nothing here auto-submits — most "
-                     "directories take a manual form or a GitHub PR.")}
+                     "directories take a manual form or a GitHub PR. "
+                     "no_submit_path = confirmed absent with no public way in "
+                     "(BD contact only) — counted, never queued.")}
 
 
 @registry_acquisition_bp.route(

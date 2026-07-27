@@ -137,3 +137,69 @@ def test_shell_read_path_does_no_outbound_http():
     body = src[i:src.index("@registry_acquisition_bp", i)]
     for banned in ("requests.", "_fetch(", "urlopen"):
         assert banned not in body, banned
+
+
+# ── Q3: absence is only a TASK if there is a way in ──────────────────
+
+def test_no_submit_path_is_not_a_submission(ra):
+    """Confirmed-absent with no public route must NOT read as submittable.
+    Composio's toolkits are integrations Composio builds (/request-integration,
+    /submit, /toolkits/request all 404), so queueing it would manufacture work
+    nobody can complete — the same busywork the unverified states prevent,
+    arriving from the other direction."""
+    v = ra.classify_candidate(200, 200, "<html>a list of other servers</html>",
+                              None, submittable=False)
+    assert v["verdict"] == "no_submit_path"
+    assert "submittable" not in v["reason"]
+
+
+def test_submittable_default_is_unchanged(ra):
+    v = ra.classify_candidate(200, 200, "<html>a list of other servers</html>")
+    assert v["verdict"] == "absent"
+
+
+def test_every_seed_declares_a_submit_route_or_none(ra):
+    """A seed row must either carry a real submit URL or explicitly say None —
+    a placeholder that 404s is how absence became an uncompletable task."""
+    for c in ra.CANDIDATE_DIRECTORIES:
+        assert "submit" in c, c["name"]
+        if c["submit"] is not None:
+            assert c["submit"].startswith("https://"), c["name"]
+
+
+def test_known_dead_submit_routes_cannot_come_back(ra):
+    """Verified 2026-07-27: wong2 refuses PRs in its README and points at the
+    mcpservers.org form; appcypher has PRs disabled entirely."""
+    dead = {
+        "https://github.com/wong2/awesome-mcp-servers/pulls",
+        "https://github.com/appcypher/awesome-mcp-servers/pulls",
+        "https://composio.dev/",
+    }
+    for c in ra.CANDIDATE_DIRECTORIES:
+        assert c["submit"] not in dead, c["name"]
+
+
+def test_retired_mcp_run_is_gone_and_documented(ra):
+    """www.mcp.run 301s to turbomcp.ai — now a self-hosted GATEWAY product
+    behind a holding page, not a directory. No probe URL can be correct."""
+    assert not any(c["name"] == "mcp_run" for c in ra.CANDIDATE_DIRECTORIES)
+    src = _read(os.path.join("routes", "registry_acquisition.py"))
+    assert "RETIRED CANDIDATES" in src and "turbomcp.ai" in src
+
+
+def test_composio_probe_is_not_a_client_side_search(ra):
+    """composio.dev/toolkits returns byte-identical HTML for ?q=dchub and a
+    nonsense query, so absence could never be read there. The sitemap is a
+    complete server-rendered enumeration."""
+    c = [x for x in ra.CANDIDATE_DIRECTORIES if x["name"] == "composio"][0]
+    assert c["probe"].endswith("sitemap.xml")
+    assert "?q=" not in c["probe"]
+
+
+def test_queue_excludes_no_submit_path():
+    src = _read(os.path.join("routes", "registry_acquisition.py"))
+    i = src.index("counts, queue, unverified")
+    body = src[i:i + 1200]
+    # counted and surfaced, but never appended to the submission queue
+    assert '"no_submit_path": no_route' in body
+    assert 'no_route.append(name)' in body
