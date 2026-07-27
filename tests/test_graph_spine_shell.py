@@ -119,8 +119,8 @@ def _is_critical(call: ast.Call) -> bool:
 @pytest.mark.parametrize("check_id", [
     "cf_decoy",        # lane 1 — the semantic decoy control
     "pdb_disjoint",    # lane 2 — the third id-space stays disjoint
-    "deal_dupes",      # lane 3 — exact duplicate rows
-    "rag_worst_corpus",  # lane 4 — duplicate text in the vector index
+    "deal_dupes",      # lane 3 — exact duplicates among SERVED rows
+    "rag_serves_excluded",  # lane 4 — chunks we refuse to serve
     "es_resolution",   # lane 5 — GraphRAG precondition
     "gv_precondition",  # lane 6 — the verdict itself
 ])
@@ -147,6 +147,59 @@ def test_decoy_threshold_separates_real_from_decoy():
     # measured 2026-07-26 on the Neon replica
     assert real_ceiling >= 0.0 and real_ceiling <= 1.0, "real ceiling too loose"
     assert decoy_floor >= 1.0, "decoy floor too loose to catch a colliding join"
+
+
+# ── (2b) every deals count must honour the quarantine ─────────────────
+
+def test_every_deals_query_filters_quarantine():
+    """★ The bug this lane shipped once: `deals` is de-duped by data_flag, not
+    by DELETE, so a bare COUNT(*) over it reports 2,078 duplicates (46.4%)
+    where the served table holds 40 of 1,611 (2.5%). Any SQL here that reads
+    `deals` without the data_flag predicate is measuring history."""
+    # Checked per FUNCTION, not per string literal: the lane assembles its SQL
+    # as "… FROM deals WHERE " + _LIVE_DEALS, and ast does not fold a literal
+    # concatenated with a NAME, so a literal-level scan sees only fragments and
+    # passes vacuously. (It did, on the first attempt.)
+    tree = ast.parse(_shell_src())
+    lines = _shell_src().splitlines()
+    offenders = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        body = "\n".join(lines[node.lineno - 1:node.end_lineno])
+        if not re.search(r"\b(FROM|JOIN)\s+deals\b", body, re.I):
+            continue
+        if "_LIVE_DEALS" not in body and "data_flag" not in body:
+            offenders.append(node.name)
+    assert not offenders, (
+        "these functions read `deals` with no data_flag filter and will count "
+        f"quarantined rows as live: {offenders}")
+
+
+def test_live_deals_predicate_exists_and_is_percent_free():
+    from routes.graph_spine_master_shell import _LIVE_DEALS
+    assert "data_flag" in _LIVE_DEALS
+    assert "%" not in _LIVE_DEALS, "literal % in the quarantine predicate"
+    assert "left(" in _LIVE_DEALS.lower(), \
+        "use LEFT(data_flag,11) — the LIKE form carries a literal %"
+
+
+def test_brain_rag_deals_corpus_has_quarantine_gate():
+    """The registry fix itself: without it, 2,811 embedded chunks point at
+    rows /api/deals refuses to serve, and `deals` is in PUBLIC_CORPORA so they
+    are retrievable on the unauthenticated /api/v1/rag/search."""
+    rag = (_ROOT / "routes" / "brain_rag.py").read_text(encoding="utf-8")
+    m = re.search(r'"deals":\s*\{(.*?)\n    \}', rag, re.S)
+    assert m, "CORPORA['deals'] not found in brain_rag.py"
+    spec = m.group(1)
+    assert "data_flag" in spec, \
+        "CORPORA['deals'] where-clause lost its quarantine filter"
+    where = re.search(r'"where":\s*\((.*?)\),\s*\n', spec, re.S)
+    assert where, "could not isolate the deals where-clause"
+    assert "%" not in where.group(1), (
+        "literal % in the deals where-clause — spec['where'] is interpolated "
+        "into queries that pass a params tuple (_corpus_total, _count_orphans, "
+        "_sweep_orphans); use LEFT(...,11) not LIKE 'quarantine_%'")
 
 
 # ── (3) the snapshot must not be written on the replica ───────────────
@@ -279,9 +332,16 @@ def test_no_literal_percent_in_no_params_sql():
 
 def test_pattern_matches_use_regex_not_like():
     """Every LIKE is written as a POSIX regex (~) so no SQL string in this
-    module carries a literal % wildcard."""
-    assert not re.search(r"\bLIKE\s+'", _shell_src(), re.I), \
-        "use a POSIX regex (~ '^AUTO-') instead of LIKE 'AUTO-%'"
+    module carries a literal % wildcard. Scoped to SQL literals — the module
+    prose deliberately names the LIKE form it is telling you not to use."""
+    sql_kw = re.compile(r"\b(SELECT|INSERT INTO|CREATE TABLE)\b")
+    for node in ast.walk(ast.parse(_shell_src())):
+        if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
+            continue
+        s = node.value
+        if sql_kw.search(s) and re.search(r"\bLIKE\s+'", s, re.I):
+            assert False, (
+                f"use a POSIX regex (~ '^AUTO-') instead of LIKE: {s[:120]}")
 
 
 def test_shell_writes_nothing_but_its_own_snapshot():

@@ -12,18 +12,29 @@ single chunk contains the answer.
 
 This shell exists because the interesting question is not "graph or RAG" — it
 is "where is our retrieval actually losing?" and the answer turned out to be
-UPSTREAM of retrieval entirely. We already run a graph: facilities, markets,
-ISOs, plants, fiber, carriers and deals are typed nodes with typed edges in
-Postgres, and execute_plan already walks a deterministic tool graph over them.
-What we do NOT have is an identity spine — and the missing spine is visibly
-poisoning the vector index:
+neither the index nor the schema, but the WIRING between them. We already run a
+graph: facilities, markets, ISOs, plants, fiber, carriers and deals are typed
+nodes with typed edges in Postgres, and execute_plan already walks a
+deterministic tool graph over them.
 
-    60.3% of the `deals` corpus in brain_corpus_embeddings is byte-identical
-    duplicate text. One chunk ("atNorth → (acquisition, Nordic)") is present
-    952 times. At k=3 the retriever can return three copies of one deal.
+    2,811 of 4,348 embedded deal chunks (64.7%) pointed at rows /api/deals
+    deliberately refuses to serve — and `deals` is in PUBLIC_CORPORA, so every
+    one was retrievable, with a citation stamp, on the UNAUTHENTICATED
+    /api/v1/rag/search: 2,766 known duplicates, 34 unit-garbage NER fragments
+    ("gap After → Orbion and", "Musk quietly → mobile gas") and 11 example.com
+    seed placeholders. The `deals` table was de-duped on 2026-07-17 by flagging
+    rows with data_flag; the served queries learned, the RAG registry never did.
 
 That is not an architecture problem. Rebuilding it as triples in Neo4j would
-faithfully reproduce all 952 copies as 952 nodes.
+faithfully reproduce every one of those rows as a node.
+
+★ THIS LANE SET SHIPPED WRONG ONCE, AND THE CORRECTION IS THE LESSON. The first
+cut counted `deals` with a bare COUNT(*) and reported "2,078 of 4,477 rows
+(46.4%) are duplicates" as a live defect. But dedup on this table is done by
+data_flag, not by DELETE — 2,868 of those rows were already quarantined and
+already unserved. The true live figure is 40 of 1,611 (2.5%). Any count over
+`deals` that omits the data_flag filter measures history, not what we serve.
+Lanes 3 and 4 now carry that filter, and lane 3c states the trap on the page.
 
 Six lanes, each one a place where an ID has more than one meaning:
 
@@ -34,13 +45,13 @@ Six lanes, each one a place where an ID has more than one meaning:
      every one of which returned HTTP 200.
   2. PEERINGDB — a THIRD id-space. pdb_*.fac_id matches facilities.id in 0 of
      59,728 rows. The bridge is facilities.source_id WHERE source='PeeringDB'.
-  3. DEALS — the primary key embeds the INGEST DATE (`AUTO-<yyyymmdd>-…`), so
-     one announcement re-ingested daily becomes a new row every day, up to 48
-     times. The partial unique index on source_announcement_id cannot fire
-     because the ingester writes NULL there.
-  4. RAG REDUNDANCY — lane 3's duplicates, measured where they actually hurt:
-     inside the vector index. This is the lane that answers the original
-     question.
+  3. DEALS — is the 07-17 de-dup holding, measured over SERVED rows only, plus
+     whether any writer still mints the old ingest-dated AUTO-<yyyymmdd>- key
+     that made ON CONFLICT (id) unable to fire.
+  4. RAG WIRING — does the index hold chunks we refuse to serve, does the
+     served corpus duplicate itself, and do distinct deals RENDER identically
+     (the template emits buyer/seller/type/market/notes, so a buyer-only row
+     collapses to "Google →  (, )" — 11 distinct deals, one vector).
   5. ENTITY SPINE — news_discovered_entities resolves 86 of 470 entities to a
      facility (18.3%). This is the PRECONDITION gate for any GraphRAG layer:
      community summaries built over unresolved entities summarise noise.
@@ -374,63 +385,82 @@ _DEAL_BUSINESS_COLS = (
     " verified, status, notes, assets, deal_date, deal_category, data_flag,"
     " extraction_confidence, extracted_via")
 
+# ★ THE QUARANTINE PREDICATE. `deals` is not deduped by DELETE — the 07-17
+# integrity wave flagged 2,868 redundant/garbage rows with data_flag and taught
+# the served queries to skip them. ANY count over this table that ignores
+# data_flag is measuring history, not what we serve. The first cut of this lane
+# did exactly that and reported 2,078 duplicate rows (46.4%) as a live defect;
+# the true live figure is 40 of 1,611 (2.5%).
+# LEFT(...,11) not LIKE 'quarantine_%' — literal % + params tuple = 500.
+_LIVE_DEALS = "coalesce(left(data_flag,11),'') <> 'quarantine_'"
+
 
 def _lane_deals_identity(c, ctx) -> list[dict]:
     out = []
 
-    # 3a — EXACT duplicates: identical on every one of the 19 business
-    # columns, differing only by id and the ingest timestamps. Deliberately
-    # not a fuzzy match — a fuzzy key here collapses blank columns together
-    # and inflates the number (an early cut of this check read 3,276 excess
-    # rows because `assets` is blank in 100% of rows and contributed nothing).
-    # Exact-match on all content cannot produce a false positive.
-    r = _row(c, "WITH b AS (SELECT " + _DEAL_BUSINESS_COLS + " FROM deals),"
+    # 3a — EXACT duplicates among the rows we actually SERVE: identical on
+    # every one of the 19 business columns, differing only by id and the
+    # ingest timestamps. Deliberately not a fuzzy match — a fuzzy key
+    # collapses blank columns together and inflates the number (an early cut
+    # read 3,276 because `assets` is blank in 100% of rows).
+    r = _row(c, "WITH b AS (SELECT " + _DEAL_BUSINESS_COLS + " FROM deals"
+                " WHERE " + _LIVE_DEALS + "),"
                 " g AS (SELECT count(*) AS n FROM b GROUP BY " + _DEAL_BUSINESS_COLS + ")"
-                " SELECT (SELECT count(*) FROM deals),"
+                " SELECT (SELECT count(*) FROM deals WHERE " + _LIVE_DEALS + "),"
                 "        (SELECT count(*) FROM g),"
-                "        (SELECT coalesce(sum(n) - count(*), 0) FROM g WHERE n > 1)")
+                "        (SELECT coalesce(sum(n) - count(*), 0) FROM g WHERE n > 1),"
+                "        (SELECT count(*) FROM deals)")
     if not r:
-        out.append(_check("deal_dupes", "deals table holds no exact duplicates",
+        out.append(_check("deal_dupes", "served deals hold no exact duplicates",
                           None, "query failed", critical=True))
     else:
-        total, distinct, excess = int(r[0] or 0), int(r[1] or 0), int(r[2] or 0)
-        ctx["deal_total"], ctx["deal_distinct"] = total, distinct
+        live, distinct, excess, raw = (int(x or 0) for x in r)
+        share = _pct(excess, live)
+        ctx["deal_live"], ctx["deal_distinct"] = live, distinct
+        ctx["deal_raw"] = raw
         out.append(_check(
-            "deal_dupes", "deals table holds no exact duplicates",
-            excess == 0,
-            f"{excess:,} of {total:,} rows ({_pct(excess, total)}%) are "
-            f"byte-identical to another row on all 19 business columns · "
-            f"{distinct:,} genuinely distinct deals", critical=True))
+            "deal_dupes", "served deals hold no exact duplicates (<5%)",
+            (share is not None and share < 5.0),
+            f"{excess:,} of {live:,} SERVED rows ({share}%) are byte-identical "
+            f"to another on all 19 business columns · {distinct:,} distinct · "
+            f"{raw - live:,} further rows are quarantined and never served",
+            critical=True))
 
-    # 3b — WHY. The primary key embeds the ingest date (AUTO-<yyyymmdd>-…), so
-    # re-ingesting one announcement mints a new row daily; and the partial
-    # unique index on source_announcement_id cannot fire because the ingester
-    # writes NULL there (NULLs are excluded from a partial unique index —
-    # reference_pg_partial_index_on_conflict).
-    r = _row(c, "SELECT count(*) FILTER (WHERE id ~ '^AUTO-'),"
-                " count(*) FILTER (WHERE id ~ '^AUTO-' AND source_announcement_id IS NULL)"
-                " FROM deals")
+    # 3b — did the 07-17 writer fix HOLD? The old key embedded the ingest date
+    # (AUTO-<yyyymmdd>-…) so one announcement re-ingested daily; deal_scraper
+    # now mints AUTO-<hash6> so ON CONFLICT (id) collapses a re-scrape.
+    #
+    # ★ Keyed on RECENCY, not on presence. 389 served rows still carry a dated
+    # id, but every one predates the fix (newest embedded date: 20260717, the
+    # day of it). Flagging those would be flagging history forever — a
+    # permanent red that says nothing. What matters is whether a dated id has
+    # been minted SINCE, which means a writer regressed or an unknown fourth
+    # writer exists (the 07-17 wave already found a hidden third one).
+    r = _row(c, "SELECT count(*) FILTER (WHERE substring(id from 6 for 8) > '20260717'),"
+                " count(*), coalesce(max(substring(id from 6 for 8)),'none')"
+                " FROM deals WHERE id ~ '^AUTO-[0-9]{8}-'")
     if not r:
-        out.append(_check("deal_dedup_key", "every deal carries a dedup key",
+        out.append(_check("deal_dedup_key", "no writer mints ingest-dated ids any more",
                           None, "query failed"))
     else:
-        auto, auto_null = int(r[0] or 0), int(r[1] or 0)
+        after, dated_total, newest = int(r[0] or 0), int(r[1] or 0), str(r[2])
         out.append(_check(
-            "deal_dedup_key", "every deal carries a dedup key",
-            auto_null == 0,
-            f"{auto_null:,} of {auto:,} AUTO- rows have a NULL "
-            "source_announcement_id — deals_announcement_uniq is a PARTIAL "
-            "index and cannot constrain NULLs, so nothing stops re-ingest"))
+            "deal_dedup_key", "no writer mints ingest-dated ids any more",
+            after == 0,
+            f"{after:,} dated AUTO- ids minted since the 2026-07-17 writer fix "
+            f"(newest embedded date {newest}) · {dated_total:,} legacy dated "
+            "ids remain, which is history, not a regression"))
 
-    # 3c — the blast radius, in the units the site publishes.
-    r = _row(c, "SELECT max(d) FROM (SELECT count(DISTINCT coalesce(extracted_at::date,"
-                " created_at::date)) AS d FROM deals"
-                " GROUP BY coalesce(notes,''), coalesce(buyer,''), coalesce(mw,-1)) x")
-    if r and r[0] is not None:
+    # 3c — gauge: how much of the table the quarantine is holding back. Makes
+    # the raw-vs-served gap explicit so nobody re-derives 46% from COUNT(*).
+    r = _row(c, "SELECT coalesce(data_flag,'(served)'), count(*) FROM deals"
+                " GROUP BY 1 ORDER BY 2 DESC LIMIT 4")
+    if r:
         out.append(_check(
-            "deal_reingest_span", "re-ingest multiplicity", None,
-            f"the worst-affected announcement has been re-ingested on "
-            f"{int(r[0])} separate days"))
+            "deal_quarantine", "quarantine is doing the de-dup work", None,
+            f"largest class: {r[0]} = {int(r[1] or 0):,} rows · dedup here is "
+            "by data_flag, never by DELETE — count deals WITHOUT that filter "
+            "and you measure history"))
     return out
 
 
@@ -443,45 +473,79 @@ def _lane_deals_identity(c, ctx) -> list[dict]:
 def _lane_rag_redundancy(c, ctx) -> list[dict]:
     out = []
 
-    # 4a — worst corpus by share of byte-identical chunk text.
-    r = _row(c, "SELECT source_table, count(*), count(DISTINCT md5(text))"
-                " FROM brain_corpus_embeddings GROUP BY source_table"
-                " HAVING count(*) >= 100"
-                " ORDER BY (count(*) - count(DISTINCT md5(text))) DESC LIMIT 1")
+    # 4a — ★THE REAL DEFECT, and not the one this lane first reported.
+    #
+    # The first cut measured raw duplicate TEXT and blamed a broken dedup in
+    # `deals`. Wrong diagnosis: dedup there works, by data_flag. What does not
+    # work is that this registry never learned about it — brain_rag.CORPORA's
+    # deals `where` had no quarantine filter, so 2,811 of 4,348 embedded deal
+    # chunks (64.7%) pointed at rows /api/deals deliberately refuses to serve:
+    # 2,766 duplicates, 34 unit-garbage NER fragments ("gap After → Orbion
+    # and") and 11 example.com placeholders. `deals` is in PUBLIC_CORPORA, so
+    # every one was retrievable with a citation stamp on the UNAUTHENTICATED
+    # /api/v1/rag/search — the press_releases publish-gate class, one corpus
+    # over. Fixed 2026-07-27 (r-rag-deals-quarantine); _sweep_orphans drains
+    # the strays at 1,000/corpus/run, so this goes green over ~3 reindex ticks.
+    r = _row(c, "SELECT count(*), count(*) FILTER (WHERE d.id IS NULL"
+                "   OR coalesce(left(d.data_flag,11),'') = 'quarantine_')"
+                " FROM brain_corpus_embeddings e"
+                " LEFT JOIN deals d ON d.id = e.source_id"
+                " WHERE e.source_table = 'deals'")
     if not r:
-        out.append(_check("rag_worst_corpus", "no corpus is mostly duplicate text",
+        out.append(_check("rag_serves_excluded", "index holds no chunk we refuse to serve",
                           None, "query failed", critical=True))
     else:
-        name, chunks, distinct = str(r[0]), int(r[1] or 0), int(r[2] or 0)
-        redundant = chunks - distinct
-        share = _pct(redundant, chunks)
-        ctx["rag_worst_share"] = share
-        ctx["rag_worst_corpus"] = name
+        chunks, excluded = int(r[0] or 0), int(r[1] or 0)
+        ctx["rag_excluded"] = excluded
         out.append(_check(
-            "rag_worst_corpus", "no corpus is mostly duplicate text (<10%)",
-            (share is not None and share < 10.0),
-            f"worst corpus '{name}': {redundant:,} of {chunks:,} chunks "
-            f"({share}%) are byte-identical to another chunk — these consume "
-            "retrieval slots without adding information", critical=True))
+            "rag_serves_excluded", "index holds no chunk we refuse to serve",
+            excluded == 0,
+            f"{excluded:,} of {chunks:,} embedded deal chunks "
+            f"({_pct(excluded, chunks)}%) point at a quarantined or deleted "
+            "row — retrievable on the public /api/v1/rag/search while "
+            "/api/deals refuses them", critical=True))
 
-    # 4b — the multiplicity that actually breaks k=3. One chunk present 952
-    # times means a query landing in that neighbourhood can fill every slot
-    # with the same sentence: effective k=1.
-    r = _row(c, "SELECT max(n), (SELECT source_table FROM brain_corpus_embeddings"
-                "   GROUP BY source_table, md5(text) ORDER BY count(*) DESC LIMIT 1)"
-                " FROM (SELECT count(*) AS n FROM brain_corpus_embeddings"
-                "        GROUP BY source_table, md5(text)) x")
-    if not r or r[0] is None:
-        out.append(_check("rag_worst_chunk", "no chunk is repeated more than 5x",
+    # 4b — duplicate text among the chunks we DO intend to serve. Scoped to
+    # live rows so the quarantine backlog above cannot flatter or inflate it.
+    r = _row(c, "SELECT count(*), count(DISTINCT md5(e.text))"
+                " FROM brain_corpus_embeddings e JOIN deals d ON d.id = e.source_id"
+                " WHERE e.source_table = 'deals'"
+                "   AND coalesce(left(d.data_flag,11),'') <> 'quarantine_'")
+    if not r or not r[0]:
+        out.append(_check("rag_live_dupes", "served corpus is not mostly duplicate text",
                           None, "query failed"))
     else:
-        mult, where = int(r[0]), str(r[1] or "?")
+        chunks, distinct = int(r[0]), int(r[1] or 0)
+        share = _pct(chunks - distinct, chunks)
+        ctx["rag_worst_share"] = share
+        ctx["rag_worst_corpus"] = "deals"
         out.append(_check(
-            "rag_worst_chunk", "no chunk is repeated more than 5x",
+            "rag_live_dupes", "served corpus is not mostly duplicate text (<10%)",
+            (share is not None and share < 10.0),
+            f"{chunks - distinct:,} of {chunks:,} served deal chunks ({share}%) "
+            "are byte-identical to another"))
+
+    # 4c — distinct deals that RENDER identically. Not duplicate rows: the
+    # text template is buyer/seller/type/market/notes, so a row carrying only
+    # a buyer collapses to "Google →  (, )" — 11 different deals reduced to
+    # one indistinguishable vector. This is a template defect, not a dedup one.
+    r = _row(c, "SELECT max(n) FROM (SELECT count(*) AS n"
+                " FROM brain_corpus_embeddings e JOIN deals d ON d.id = e.source_id"
+                " WHERE e.source_table = 'deals'"
+                "   AND coalesce(left(d.data_flag,11),'') <> 'quarantine_'"
+                " GROUP BY md5(e.text)) x")
+    if not r or r[0] is None:
+        out.append(_check("rag_template_collapse", "no served chunk renders more than 5x",
+                          None, "query failed"))
+    else:
+        mult = int(r[0])
+        out.append(_check(
+            "rag_template_collapse", "no served chunk renders more than 5x",
             mult <= 5,
-            f"the most-repeated chunk appears {mult:,} times (corpus "
-            f"'{where}') — at k=3 a query in that neighbourhood retrieves the "
-            "same text three times, an effective k of 1"))
+            f"{mult:,} DISTINCT served deals render to byte-identical text — "
+            "the corpus template emits buyer/seller/type/market/notes, so a "
+            "buyer-only row becomes 'Google →  (, )'. At k=3 they are "
+            "interchangeable; enrich the template, this is not a dedup bug"))
 
     # 4c — the 07-03 seq-scan regression guard. Without the HNSW index the
     # index is still CORRECT and merely 18x slower, which is why it went
@@ -575,11 +639,13 @@ def _lane_graph_verdict(c, ctx) -> list[dict]:
     # so nobody has to re-derive it from six lanes of numbers.
     out.append(_check(
         "gv_reading", "where the retrieval defect actually lives", None,
-        f"upstream of retrieval: {ctx.get('deal_total', '?')} deal rows "
-        f"collapse to {ctx.get('deal_distinct', '?')} distinct deals, and that "
-        f"duplication is {worst}% of the '{ctx.get('rag_worst_corpus','?')}' "
-        "corpus. Fix the spine and the existing index improves; swapping the "
-        "index for a graph moves the same duplicates into nodes"))
+        f"in the WIRING between the spine and the index, not in the retrieval "
+        f"architecture: {ctx.get('rag_excluded', '?')} embedded deal chunks "
+        f"point at rows we refuse to serve, and entity resolution is {share}%. "
+        f"Served deals are {ctx.get('deal_live','?')} of "
+        f"{ctx.get('deal_raw','?')} raw rows — the rest are quarantined, and "
+        "counting them is how this lane first over-reported the defect. A "
+        "graph layer inherits every one of these; it does not fix them"))
     return out
 
 
@@ -597,12 +663,15 @@ _LANES = [
      "services) so the weekly peeringdb_network_sync stops running anonymous "
      "at 20 req/min"),
     ("deals_identity", "3 · Deals identity (dedup)", _lane_deals_identity,
-     "backfill source_announcement_id from (source_url, notes) then drop the "
-     "ingest date from the AUTO- key so deals_announcement_uniq can finally "
-     "fire; de-dupe historical rows keeping MIN(created_at)"),
-    ("rag_redundancy", "4 · RAG index redundancy", _lane_rag_redundancy,
-     "re-embed the deals corpus AFTER lane 3's de-dup — re-embedding first "
-     "just re-encodes the duplicates"),
+     "none needed while green — dedup is by data_flag (07-17 wave) and the "
+     "AUTO-<hash6> writer fix holds; physical DELETE of the quarantined rows "
+     "is an optional space reclaim, not a correctness fix"),
+    ("rag_redundancy", "4 · RAG wiring (index vs what we serve)",
+     _lane_rag_redundancy,
+     "4a is FIXED at the registry (brain_rag.CORPORA deals `where` now carries "
+     "the quarantine filter) and drains via _sweep_orphans at 1,000/run; 4c "
+     "needs the corpus text template enriched so buyer-only deals stop "
+     "collapsing to one vector"),
     ("entity_spine", "5 · Entity spine (GraphRAG precondition)",
      _lane_entity_spine,
      "extend news_entity_extraction.py resolution beyond exact name match "

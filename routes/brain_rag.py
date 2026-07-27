@@ -169,12 +169,31 @@ CORPORA = {
         "id": "t.id::text", "kind": "news",
         "text": "coalesce(t.title,'') || ' — ' || coalesce(t.summary,'')",
         "where": "coalesce(t.title,'') <> ''"},
+    # ★ QUARANTINE GATE (r-rag-deals-quarantine 2026-07-27) — same class as the
+    # press_releases publish gate below, and the same omission: `deals` is in
+    # PUBLIC_CORPORA, so anything embedded here is retrievable with a CC-BY
+    # citation stamp on the UNAUTHENTICATED /api/v1/rag/search. The 07-17
+    # integrity wave quarantined 2,868 rows via data_flag and taught the served
+    # query (/api/deals, list_transactions) to exclude them — but this registry
+    # never learned, so 2,811 of 4,348 embedded deal chunks (64.7%) pointed at
+    # rows the API deliberately refuses to serve: 2,766 duplicates, 34
+    # unit-garbage NER fragments ("gap After → Orbion and", "Musk quietly →
+    # mobile gas") and 11 example.com seed placeholders.
+    # Adding the filter is sufficient to REMOVE them: _sweep_orphans already
+    # deletes embeddings whose source row "no longer satisfies the registry
+    # where" (capped 1,000/corpus/run, so ~3 reindex ticks to drain).
+    # ★ LEFT(...,11) NOT LIKE 'quarantine_%' — spec['where'] is f-string
+    # interpolated into queries that DO pass a params tuple (_corpus_total,
+    # _count_orphans, _sweep_orphans), so a literal % here would make psycopg2
+    # %-substitute and 500 all three (reference_psycopg2_empty_tuple_percent_trap;
+    # this exact table taught this exact lesson on 07-17).
     "deals": {
         "id": "t.id::text", "kind": "deal",
         "text": ("coalesce(t.buyer,'') || ' → ' || coalesce(t.seller,'') || ' (' || "
                  "coalesce(t.type,'') || ', ' || coalesce(t.market, t.region, '') || ') ' || "
                  "coalesce(t.notes,'')"),
-        "where": "coalesce(t.buyer,'') <> '' OR coalesce(t.seller,'') <> ''",
+        "where": ("(coalesce(t.buyer,'') <> '' OR coalesce(t.seller,'') <> '')"
+                  " AND coalesce(left(t.data_flag,11),'') <> 'quarantine_'"),
         "fresh_col": "updated_at"},
     "discovered_facilities": {
         "id": "t.id::text", "kind": "facility",
