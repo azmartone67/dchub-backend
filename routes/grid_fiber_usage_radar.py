@@ -67,24 +67,78 @@ def run_usage_radar(force: bool = False) -> dict:
             if not force and _ran_recently(cur):
                 return {"status": "skipped_recent"}
             c.rollback()  # clear any aborted probe state before real work
+            # ★★ 2026-07-27 CORRECTION. The first version grouped by
+            # (api_key, COALESCE(tier,'free')) and flagged the top caller as
+            # a free-tier freeloader with 1,215 calls. It was OUR OWN key —
+            # `dchub_live_08f…`, api_keys.name='DCHUB', plan='pro', with
+            # 165,201 of its 180,282 monthly calls already logged tier=paid.
+            # Only the rows whose tier wasn't resolved at log time said
+            # 'free', and grouping BY tier split one key into a phantom
+            # free caller. Metering it would have throttled internal traffic
+            # and monitoring for zero revenue.
+            # Now: judge a key by its WHOLE 30 days, take the tier from
+            # api_keys (authoritative) not the per-row log value, and
+            # exclude first-party/self traffic outright.
             cur.execute("""
-                SELECT api_key, COALESCE(tier,'free') AS tier,
-                       COUNT(*) AS calls, COUNT(DISTINCT tool) AS tools_used
-                  FROM mcp_call_log
-                 WHERE timestamp >= NOW() - make_interval(days => %s)
-                   AND tool = ANY(%s)
-                   AND api_key IS NOT NULL AND api_key <> ''
-                   AND COALESCE(tier,'free') IN ('free','identified','trial')
-                 GROUP BY api_key, COALESCE(tier,'free')
-                HAVING COUNT(*) >= %s
-                 ORDER BY calls DESC LIMIT 50
+                WITH per_key AS (
+                    SELECT l.api_key,
+                           COUNT(*) AS calls,
+                           COUNT(DISTINCT l.tool) AS tools_used,
+                           COUNT(*) FILTER (WHERE l.tier = 'paid') AS paid_rows,
+                           BOOL_OR(COALESCE(l.platform,'') = 'dchub-internal'
+                                   OR COALESCE(l.user_agent,'') ILIKE '%%dchub%%'
+                                   OR COALESCE(l.user_agent,'') ILIKE '%%curl%%'
+                                  ) AS self_traffic
+                      FROM mcp_call_log l
+                     WHERE l.timestamp >= NOW() - make_interval(days => %s)
+                       AND l.tool = ANY(%s)
+                       AND l.api_key IS NOT NULL AND l.api_key <> ''
+                       -- attribution bug: some rows store an IP here
+                       AND l.api_key NOT SIMILAR TO '[0-9]{1,3}[.][0-9]%%'
+                     GROUP BY l.api_key
+                )
+                SELECT k.api_key, k.calls, k.tools_used
+                  FROM per_key k
+                 WHERE k.calls >= %s
+                   AND k.paid_rows = 0          -- ANY paid row ⇒ not a free rider
+                   AND NOT k.self_traffic
+                   -- first-party prefix: dchub_live_* is ours; the
+                   -- self-serve free keys are dch_live_*
+                   AND k.api_key NOT LIKE 'dchub[_]%%'
+                 ORDER BY k.calls DESC LIMIT 50
             """, (_DAYS, list(TOOLS), THRESHOLD))
-            rows = cur.fetchall()
+            candidates = cur.fetchall()
+
+        # Identity resolution in Python: this Postgres has NO pgcrypto, so
+        # digest() is unavailable and the hash join must happen here.
+        # api_keys is the AUTHORITATIVE tier source — the per-row tier in
+        # mcp_call_log is unreliable (that's what caused the false flag).
+        rows = []
+        with c.cursor() as cur:
+            for api_key, calls, tools_used in candidates:
+                kh = hashlib.sha256(api_key.encode()).hexdigest()
+                plan, key_name = "unknown", ""
+                try:
+                    cur.execute("SELECT COALESCE(plan,''), COALESCE(name,'') "
+                                "FROM api_keys WHERE key_hash = %s LIMIT 1",
+                                (kh,))
+                    r = cur.fetchone()
+                    if r:
+                        plan, key_name = (r[0] or "unknown"), (r[1] or "")
+                except Exception:
+                    c.rollback()
+                if str(plan).lower() in ("pro", "paid", "enterprise",
+                                         "founding", "developer", "partner"):
+                    continue
+                if "dchub" in key_name.lower():
+                    continue
+                rows.append((api_key, calls, tools_used, plan, key_name))
         heavy = []
-        for api_key, tier, calls, tools_used in rows:
+        for api_key, calls, tools_used, plan, key_name in rows:
             kid = hashlib.sha256(api_key.encode()).hexdigest()[:10]
-            heavy.append({"key_id": kid, "tier": tier, "calls_30d": int(calls),
-                          "tools_used": int(tools_used)})
+            heavy.append({"key_id": kid, "tier": plan, "calls_30d": int(calls),
+                          "tools_used": int(tools_used),
+                          "key_name": key_name or None})
         out["heavy_users"] = heavy
         try:
             from routes.brain_findings_writer import upsert_brain_finding
@@ -95,9 +149,14 @@ def run_usage_radar(force: bool = False) -> dict:
                         issue=f"monetize:grid_fiber_heavy:{h['key_id']}",
                         url="dchub://monetize/grid-fiber-radar",
                         count=h["calls_30d"],
-                        detail=(f"[{h['tier']}] {h['calls_30d']} grid/fiber "
-                                f"calls/30d across {h['tools_used']} tools — "
-                                f"metering candidate (owner-gated)")[:2000],
+                        detail=(f"[plan={h['tier']}] {h['calls_30d']} "
+                                f"grid/fiber calls/30d across "
+                                f"{h['tools_used']} tools, zero paid rows, "
+                                f"not self-traffic — metering candidate "
+                                f"(owner-gated). Verify the key's identity "
+                                f"in api_keys before acting: the first cut of "
+                                f"this radar flagged our own DCHUB pro key."
+                                )[:2000],
                         detector="grid_fiber_usage_radar", status="open")
                     out["findings_filed"] += 1
                 upsert_brain_finding(
