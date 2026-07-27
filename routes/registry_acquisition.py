@@ -80,7 +80,7 @@ _IDENTITY_TOKENS = ("dchub.cloud", "dchub", "dc hub")
 #   from being a directory can never be auto-detected as dead_directory.
 CANDIDATE_DIRECTORIES = [
     {"name": "mcpservers_org", "home": "https://mcpservers.org/",
-     "probe": "https://mcpservers.org/?q=dchub", "submit": "https://mcpservers.org/"},
+     "probe": "https://mcpservers.org/?q=dchub", "submit": "https://mcpservers.org/submit"},
     {"name": "opentools", "home": "https://opentools.com/",
      "probe": "https://opentools.com/registry?q=dchub", "submit": "https://opentools.com/"},
     {"name": "mcpmarket", "home": "https://mcpmarket.com/",
@@ -353,12 +353,15 @@ def read_queue() -> dict:
         except Exception:
             pass
     counts, queue, unverified, no_route = {}, [], [], []
+    routes_seen = {}
     for name, verdict, reason, submit, checked, since in rows:
         counts[verdict or "?"] = counts.get(verdict or "?", 0) + 1
         if verdict == "absent":
             queue.append({"directory": name, "submit_url": submit,
                           "reason": reason,
                           "absent_since": since.isoformat() if since else None})
+            if submit:
+                routes_seen.setdefault(submit, []).append(name)
         elif verdict == "unverified":
             unverified.append(name)
         elif verdict == "no_submit_path":
@@ -366,10 +369,19 @@ def read_queue() -> dict:
             # finding is not lost, deliberately OUT of the submission queue so
             # it never reads as an actionable task.
             no_route.append(name)
+    # ★ Depth counts DISTINCT SUBMIT ROUTES, not rows. mcpservers_org and
+    # wong2_awesome_mcp are the same directory reached two ways (wong2's GitHub
+    # homepage field IS mcpservers.org), so counting rows told a human they had
+    # 4 submissions to make when 3 forms would clear the queue. Both rows stay —
+    # two independent probes of one directory is good detection — but the WORK
+    # is one item.
+    shared = {u: n for u, n in routes_seen.items() if len(n) > 1}
     return {"ok": True, "counts": counts,
             "submission_queue": queue, "unverified": unverified,
             "no_submit_path": no_route,
-            "queue_depth": len(queue),
+            "queue_depth": len(routes_seen),
+            "rows_absent": len(queue),
+            "shared_submit_routes": shared,
             "note": ("absent = the directory is live and does not list us; "
                      "submit via submit_url. Nothing here auto-submits — most "
                      "directories take a manual form or a GitHub PR. "

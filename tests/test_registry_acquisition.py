@@ -199,7 +199,25 @@ def test_composio_probe_is_not_a_client_side_search(ra):
 def test_queue_excludes_no_submit_path():
     src = _read(os.path.join("routes", "registry_acquisition.py"))
     i = src.index("counts, queue, unverified")
-    body = src[i:i + 1200]
+    body = src[i:src.index("@registry_acquisition_bp", i)]
     # counted and surfaced, but never appended to the submission queue
     assert '"no_submit_path": no_route' in body
     assert 'no_route.append(name)' in body
+
+
+def test_queue_depth_counts_routes_not_rows():
+    """mcpservers_org and wong2_awesome_mcp are the SAME directory reached two
+    ways (wong2's GitHub homepage field IS mcpservers.org). Counting rows told a
+    human they had 4 submissions to make when 3 forms clear the queue. Two
+    probes of one directory is good detection; the WORK is still one item."""
+    src = _read(os.path.join("routes", "registry_acquisition.py"))
+    i = src.index("counts, queue, unverified")
+    body = src[i:src.index("@registry_acquisition_bp", i)]
+    assert '"queue_depth": len(routes_seen)' in body
+    assert '"rows_absent": len(queue)' in body
+
+
+def test_the_two_mcpservers_rows_share_one_submit_route(ra):
+    by = {c["name"]: c["submit"] for c in ra.CANDIDATE_DIRECTORIES}
+    assert by["mcpservers_org"] == by["wong2_awesome_mcp"]
+    assert by["mcpservers_org"] == "https://mcpservers.org/submit"
