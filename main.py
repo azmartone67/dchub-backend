@@ -19065,14 +19065,28 @@ def get_stats():
         stats['pipeline_gw'] = round((pipeline_row[1] or 0) / 1000, 1)
 
         try:
-            c.execute("SELECT COUNT(*), COALESCE(SUM(capacity_mw),0) FROM capacity_pipeline")
+            # ★★2026-07-27 pipeline-GW audit — every capacity_pipeline read now
+            # excludes quarantined rows (data_flag stamped by
+            # repair_capacity_pipeline_quarantine.py, mirroring the `deals`
+            # pattern). The unfiltered SUM was 2,580.5 GW and we published it as
+            # 2,514: 67.1% of it came from 160 `quarantine_aggregate` rows —
+            # utility interconnection-request queues (AEP 63,000 MW, Dominion
+            # 48,000, PPL 25,200) and impossible singles (Google Nevada 150,000
+            # MW flagged 'operational'). Plus 392 unparsed rows, 102 duplicates
+            # and 71 non-pipeline statuses. Filtered: 1,195 rows / 486.4 GW.
+            # Quarantined rows are KEPT — the utility queue data is real and
+            # valuable, it is simply a different metric and needs its own
+            # surface. Never drop the data_flag guard from a published figure.
+            _CP_OK = "COALESCE(data_flag,'') = ''"
+            c.execute("SELECT COUNT(*), COALESCE(SUM(capacity_mw),0) "
+                      f"FROM capacity_pipeline WHERE {_CP_OK}")
             cp = c.fetchone()
             stats['curated_pipeline_count'] = cp[0] or 0
             stats['curated_pipeline_gw'] = round((cp[1] or 0) / 1000, 1)
             # Phase GG (2026-05-14): real distinct-market count — was a
             # hardcoded 32.
             c.execute("SELECT COUNT(DISTINCT market) FROM capacity_pipeline "
-                      "WHERE market IS NOT NULL AND market != ''")
+                      f"WHERE market IS NOT NULL AND market != '' AND {_CP_OK}")
             stats['curated_pipeline_markets'] = c.fetchone()[0] or 0
         except Exception:
             stats['curated_pipeline_count'] = 0
