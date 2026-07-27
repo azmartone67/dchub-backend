@@ -1848,6 +1848,13 @@ try:
     except Exception as _pnl_early:
         import logging
         logging.getLogger(__name__).warning('pjm_node_lmp wiring failed: %s', _pnl_early)
+    # shell#35 WS9 (2026-07-27): feeder hosting-capacity admin force-ingest.
+    try:
+        from routes.hosting_capacity_ingest import hosting_capacity_bp
+        app.register_blueprint(hosting_capacity_bp)
+    except Exception as _hci_early:
+        import logging
+        logging.getLogger(__name__).warning('hosting_capacity_ingest wiring failed: %s', _hci_early)
     # Powered Land Gas Pricing (2026-06-04, Phase 1 spine):
     # Per-DCPI-market Henry Hub spot + regional basis + delivered industrial /
     # electric tariff + heat-rate-derived $/MWh. PRO-gated (free = teaser).

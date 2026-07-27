@@ -34,7 +34,7 @@ import datetime
 logger = logging.getLogger(__name__)
 
 _UA = "DCHub-GridData/1.0 (+https://dchub.cloud; public-gis-ingest)"
-_BUDGET_S = float(os.environ.get("HOSTING_CAPACITY_INGEST_BUDGET_S", "180"))
+_BUDGET_S = float(os.environ.get("HOSTING_CAPACITY_INGEST_BUDGET_S", "300"))
 _PAGE_SIZE = 2000
 _MAX_ROWS_PER_SOURCE = int(os.environ.get("HOSTING_CAPACITY_MAX_ROWS", "20000"))
 _GATE_DAYS = 6
@@ -61,7 +61,80 @@ SOURCES = [
                 "mw_min": ("feeder_min_hc", 1.0),
                 "queued_kw": None,
                 "updated": "hca_refresh_date"}},
+    # ── WS9 expansion (2026-07-27 probes, all sample-verified) ──────────
+    # Dominion VA: THE NoVA market. Public layer is BINNED (LIMIT_VAL map
+    # class, no feeder id) — ingested honestly as approximate class-MW.
+    {"utility": "Dominion Energy VA (binned)",
+     "key": "dominion_va",
+     "url": ("https://services.arcgis.com/DmE6Z8jKWf8lv84J/arcgis/rest/"
+             "services/Primary_Hosting_Capacity_Available_EB/"
+             "FeatureServer/6/query"),
+     "fields": {"feeder": None, "substation": None,
+                "state": None, "region": None,
+                "voltage_kv": ("Line_Voltage", 0.001),   # volts → kV
+                "mw_max": ("LIMIT_VAL", 1.0),            # binned class value
+                "mw_min": None, "queued_kw": None, "updated": None}},
+    {"utility": "Con Edison NY",
+     "key": "coned",
+     "url": ("https://services.arcgis.com/ciPnsNFi1JLWVjva/arcgis/rest/"
+             "services/CECONY_NodalHCV_Prod/FeatureServer/0/query"),
+     "fields": {"feeder": "FEEDER_ID", "substation": "FRIENDLY_CIRCUIT_NAME",
+                "state": None, "region": "NYISO_LOAD_ZONE",
+                "voltage_kv": "LOCAL_VOLTAGE",
+                "mw_max": ("LOCAL_MAX", 1.0),
+                "mw_min": ("LOCAL_MIN", 1.0),
+                "queued_kw": None, "updated": "HC_REFESH_DATE"}},
+    {"utility": "Orange & Rockland NY",
+     "key": "oru",
+     "url": ("https://services.arcgis.com/ciPnsNFi1JLWVjva/arcgis/rest/"
+             "services/ORU_NodalHCV_Prod/FeatureServer/0/query"),
+     "fields": {"feeder": "FEEDER_ID", "substation": "FRIENDLY_CIRCUIT_NAME",
+                "state": None, "region": "NYISO_LOAD_ZONE",
+                "voltage_kv": "LOCAL_VOLTAGE",
+                "mw_max": ("LOCAL_MAX", 1.0),
+                "mw_min": ("LOCAL_MIN", 1.0),
+                "queued_kw": None, "updated": "HC_REFESH_DATE"}},
+    {"utility": "NYSEG/RG&E",
+     "key": "nyseg_rge",
+     "url": ("https://services.arcgis.com/c0HK6TaWF3mGiNhc/arcgis/rest/"
+             "services/NY_Nodal_HC_HFS/FeatureServer/0/query"),
+     "fields": {"feeder": "circuit_1", "substation": "SUBSTATION",
+                "state": None, "region": "Zone",
+                "voltage_kv": "VOLTAGE",
+                "mw_max": ("MAX_hostin", 1.0),
+                "mw_min": ("MIN_hostin", 1.0),
+                "queued_kw": None, "updated": "HCA_Date"}},
+    {"utility": "Rhode Island Energy",
+     "key": "ri_energy",
+     "url": ("https://services.arcgis.com/NTSXKyJwdnK9ffCb/arcgis/rest/"
+             "services/RI_Hosting_Capacity_2025/FeatureServer/0/query"),
+     "fields": {"feeder": "Network_ID", "substation": "Substation",
+                "state": None, "region": "Area",
+                "voltage_kv": "Voltage",
+                "mw_max": ("HC", 1.0),   # official criteria-constrained MW
+                "mw_min": None, "queued_kw": None,
+                "updated": "DG_Refresh_Date"}},
+    # Xcel NSP (MN/ND/SD): service is RENAMED MONTHLY — try candidates,
+    # first that yields rows wins. kW stored as strings.
+    {"utility": "Xcel NSP (MN/ND/SD)",
+     "key": "xcel_nsp",
+     "url_candidates": [
+        ("https://services1.arcgis.com/eM84fwjsSggLQk61/arcgis/rest/"
+         "services/NSP_HCA_Blurred_GEN_Popup_July_2026/FeatureServer/0/query"),
+        ("https://services1.arcgis.com/eM84fwjsSggLQk61/arcgis/rest/"
+         "services/NSP_HCA_Popup_June_2026/FeatureServer/0/query"),
+     ],
+     "fields": {"feeder": "Feeder", "substation": "Substation",
+                "state": None, "region": None,
+                "voltage_kv": "NominalVoltage",
+                "mw_max": ("MaxHostingCap", 0.001),      # kW strings → MW
+                "mw_min": ("MinHostingCap", 0.001),
+                "queued_kw": "FeederQueuedDG",
+                "updated": "LastQrtUpdate"}},
 ]
+# NGrid-MA (MASDP): probed 2026-07-27 → HTTP 403 (folder forbidden, unlike
+# NYSDP). Not ingested — do not guess. Georgia Power/Duke/ComEd remain
+# excluded per ToS/proxy findings.
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS hosting_capacity_feeders (
@@ -154,14 +227,37 @@ def map_feature(feat: dict, src: dict) -> dict | None:
     return row
 
 
+def _resolve_url(src: dict) -> str | None:
+    """Fixed url, or first url_candidate that answers 200 with features
+    (WS9: Xcel renames its service monthly)."""
+    if src.get("url"):
+        return src["url"]
+    import requests
+    for cand in src.get("url_candidates") or []:
+        try:
+            r = requests.get(cand, params={
+                "where": "1=1", "returnCountOnly": "true", "f": "json"},
+                timeout=15, headers={"User-Agent": _UA})
+            if r.status_code == 200 and (r.json().get("count") or 0) > 0:
+                return cand
+        except Exception:
+            continue
+        time.sleep(0.5)
+    return None
+
+
 def _fetch_pages(src: dict, budget_deadline: float) -> list:
     import requests
     out, offset = [], 0
+    url = _resolve_url(src)
+    if not url:
+        logger.warning("hosting_capacity: %s no working endpoint", src["key"])
+        return out
     outfields = ",".join(x[0] if isinstance(x, tuple) else x
                          for x in src["fields"].values() if x)
     while len(out) < _MAX_ROWS_PER_SOURCE and time.monotonic() < budget_deadline:
         try:
-            r = requests.get(src["url"], params={
+            r = requests.get(url, params={
                 "where": "1=1", "outFields": outfields, "f": "json",
                 "resultOffset": offset, "resultRecordCount": _PAGE_SIZE,
                 "returnGeometry": "true", "outSR": 4326,
@@ -271,6 +367,31 @@ def run_hosting_capacity_ingest(force: bool = False) -> dict:
             pass
     logger.info("hosting_capacity_ingest: %s", out)
     return out
+
+
+# ── WS9: admin force endpoint (the weekly gate otherwise blocks new-source
+# backfill until the next window). Safe-zone registered in main.py.
+from flask import Blueprint, jsonify, request as _rq  # noqa: E402
+
+hosting_capacity_bp = Blueprint("hosting_capacity_ingest", __name__)
+
+_ADMIN_KEY = (os.environ.get("DCHUB_ADMIN_KEY")
+              or os.environ.get("DCHUB_INTERNAL_KEY") or "").strip()
+
+
+@hosting_capacity_bp.route("/api/v1/grid/hosting-capacity/ingest",
+                           methods=["POST"])
+def hosting_capacity_ingest_endpoint():
+    provided = (_rq.headers.get("X-Admin-Key") or "").strip()
+    if _ADMIN_KEY and provided != _ADMIN_KEY:
+        return jsonify(error="unauthorized"), 401
+    force = _rq.args.get("force") == "1"
+    if _rq.args.get("sync") == "1":
+        return jsonify(run_hosting_capacity_ingest(force=force)), 200
+    import threading
+    threading.Thread(target=lambda: run_hosting_capacity_ingest(force=force),
+                     name="hosting-capacity-manual", daemon=True).start()
+    return jsonify(status="spawned", force=force), 202
 
 
 def feeders_near(lat: float, lng: float, radius_km: float = 40.0) -> dict:
