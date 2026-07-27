@@ -307,11 +307,6 @@ def run_hosting_capacity_ingest(force: bool = False) -> dict:
         return {"status": "skipped_recent"}
     deadline = time.monotonic() + _BUDGET_S
     out = {"status": "ok", "sources": {}, "rows": 0}
-    rows_all = []
-    for src in SOURCES:
-        rows = _fetch_pages(src, deadline)
-        out["sources"][src["key"]] = len(rows)
-        rows_all.extend(rows)
     c = _conn()
     if c is None:
         out["status"] = "no_database"
@@ -319,31 +314,57 @@ def run_hosting_capacity_ingest(force: bool = False) -> dict:
     try:
         with c.cursor() as cur:
             cur.execute(_SCHEMA)
-            for r in rows_all:
-                try:
-                    cur.execute("""
-                        INSERT INTO hosting_capacity_feeders
-                          (utility, feeder_key, feeder_id, substation, state,
-                           region, voltage_kv, capacity_mw_max, capacity_mw_min,
-                           queued_gen_kw, lat, lng, src_updated)
-                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                        ON CONFLICT (utility, feeder_key) DO UPDATE SET
-                          capacity_mw_max = EXCLUDED.capacity_mw_max,
-                          capacity_mw_min = EXCLUDED.capacity_mw_min,
-                          queued_gen_kw = EXCLUDED.queued_gen_kw,
-                          voltage_kv = EXCLUDED.voltage_kv,
-                          src_updated = EXCLUDED.src_updated,
-                          ingested_at = NOW()
-                    """, (r["utility"], r["feeder_key"], r["feeder_id"],
-                          r["substation"], r["state"], r["region"],
-                          r["voltage_kv"], r["capacity_mw_max"],
-                          r["capacity_mw_min"], r["queued_gen_kw"],
-                          r["lat"], r["lng"], r["src_updated"]))
-                    out["rows"] += 1
-                except Exception:
-                    c.rollback()
-                    continue
         c.commit()
+        # WS9 hardening: fetch → BATCH-write → COMMIT per source. Single-row
+        # round-trips took ~20ms each (60k rows ≈ 20 min — thread died on
+        # web worker recycle before anything committed). execute_values
+        # batches + per-source commits make progress durable.
+        from psycopg2.extras import execute_values
+        _UPSERT_SQL = """
+            INSERT INTO hosting_capacity_feeders
+              (utility, feeder_key, feeder_id, substation, state,
+               region, voltage_kv, capacity_mw_max, capacity_mw_min,
+               queued_gen_kw, lat, lng, src_updated)
+            VALUES %s
+            ON CONFLICT (utility, feeder_key) DO UPDATE SET
+              capacity_mw_max = EXCLUDED.capacity_mw_max,
+              capacity_mw_min = EXCLUDED.capacity_mw_min,
+              queued_gen_kw = EXCLUDED.queued_gen_kw,
+              voltage_kv = EXCLUDED.voltage_kv,
+              src_updated = EXCLUDED.src_updated,
+              ingested_at = NOW()
+        """
+        for src in SOURCES:
+            rows = _fetch_pages(src, deadline)
+            out["sources"][src["key"]] = len(rows)
+            if not rows:
+                continue
+            # In-batch dedup on the conflict key (ON CONFLICT can't see two
+            # identical keys inside one VALUES page).
+            seen, vals = set(), []
+            for r in rows:
+                k = (r["utility"], r["feeder_key"])
+                if k in seen:
+                    continue
+                seen.add(k)
+                vals.append((r["utility"], r["feeder_key"], r["feeder_id"],
+                             r["substation"], r["state"], r["region"],
+                             r["voltage_kv"], r["capacity_mw_max"],
+                             r["capacity_mw_min"], r["queued_gen_kw"],
+                             r["lat"], r["lng"], r["src_updated"]))
+            try:
+                with c.cursor() as cur:
+                    execute_values(cur, _UPSERT_SQL, vals, page_size=500)
+                c.commit()
+                out["rows"] += len(vals)
+            except Exception as e:
+                try:
+                    c.rollback()
+                except Exception:
+                    pass
+                out["sources"][src["key"]] = f"write_failed: {str(e)[:80]}"
+                logger.warning("hosting_capacity: %s write failed: %s",
+                               src["key"], str(e)[:160])
         try:
             from routes.brain_findings_writer import upsert_brain_finding
             with c.cursor() as cur:
