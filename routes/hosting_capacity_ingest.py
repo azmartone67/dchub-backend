@@ -115,6 +115,20 @@ SOURCES = [
                 "mw_max": ("HC", 1.0),   # official criteria-constrained MW
                 "mw_min": None, "queued_kw": None,
                 "updated": "DG_Refresh_Date"}},
+    # BGE (Baltimore Gas & Electric, Exelon — same AGOL org as PHI).
+    # Layer 37 = finest grid (37.7k polys, 25.2k with >100kW remaining).
+    # NOTE: MAP_NAME is a map-grid tile id, NOT a feeder id — left unset
+    # rather than mislabeled. Capacity = REMAINING hosting capacity (kW).
+    {"utility": "BGE (Baltimore)",
+     "key": "bge",
+     "url": ("https://services3.arcgis.com/agWTKEK7X5K1Bx7o/arcgis/rest/"
+             "services/BGE_HOSTING_CAPACITY_AGOL/FeatureServer/37/query"),
+     "fields": {"feeder": None, "substation": None,
+                "state": None, "region": None, "voltage_kv": None,
+                "mw_max": ("Max_Hosting_Capacity_Remaining_kW", 0.001),
+                "mw_min": ("Min_Hosting_Capacity_Remaining_kW", 0.001),
+                "queued_kw": "Sum_DER_Installed_and_approved_kW",
+                "updated": None}},
     # Xcel NSP (MN/ND/SD): service is RENAMED MONTHLY — try candidates,
     # first that yields rows wins. kW stored as strings.
     {"utility": "Xcel NSP (MN/ND/SD)",
