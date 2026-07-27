@@ -305,6 +305,12 @@ KNOWN_BACKEND_FINDINGS: dict[str, int] = {
     "routes/sitemap_auto.py":     1,
     "routes/site_stats.py":       2,
     "routes/facilities_by_dims.py": 2,
+    # Graph-Spine shell #36 (2026-07-27): both findings are DELIBERATE — the
+    # pdb-bridge lane measures the LEGACY `facilities` id-space on purpose,
+    # proving pdb fac_id never collides with facilities.id (the reason
+    # _resolve_facility_ids exists). Pointing it at discovered_facilities
+    # would test a different id-space and stop guarding the one that drifts.
+    "routes/graph_spine_master_shell.py": 2,
 }
 
 

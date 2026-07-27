@@ -330,6 +330,11 @@ def _lane_pdb_bridge(c, ctx) -> list[dict]:
     # 2a — the disjointness fact the resolver exists for. If this ever stops
     # being 0, someone has started writing dchub ids into a pdb column (or
     # vice versa) and _resolve_facility_ids is now lying in both directions.
+    # lint: legacy-facilities-ok — this lane MEASURES the legacy `facilities`
+    # id-space on purpose: it proves pdb fac_id never collides with
+    # facilities.id, which is the whole reason _resolve_facility_ids exists.
+    # Switching to discovered_facilities would test a different id-space and
+    # silently stop guarding the one that actually drifts.
     r = _row(c, "SELECT (SELECT count(*) FROM pdb_network_facilities),"
                 " (SELECT count(*) FROM pdb_network_facilities p"
                 "   JOIN facilities f ON f.id = p.fac_id::text)")
