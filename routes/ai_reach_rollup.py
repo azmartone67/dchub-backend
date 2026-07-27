@@ -157,16 +157,33 @@ def _compute_week(cur, week_start: date, week_end: date) -> dict:
     plat_ips: dict = {}   # platform -> set(ip)  → per-platform distinct-agent counts
     plat_reqs: dict = {}  # platform -> request count
     ws, we = week_start.isoformat(), week_end.isoformat()
+    # ★★2026-07-27 agent-count audit — this read `mcp_tool_calls` filtered by
+    # real_calls_predicate(), which is LOOSER than the canonical identity view.
+    # For week 2026-07-20 that published 75 "distinct agents" where the canonical
+    # basis gives 67: `is_real_external` additionally excludes scripted clients
+    # (python-httpx, curl/, wget, node-fetch, axios, go-http, okhttp, requests/,
+    # scrapy, httpie), probe/QA platforms (mcp-probe, value-harness, qa, verify,
+    # *audit*, *harness*, *sweep*, sub-3-char platform noise) and known internal
+    # IPs. Reading the view instead means reach and /api/v1/stats/live-proof
+    # share ONE definition of a real external caller.
+    #
+    # `AND agent_id IS NOT NULL` drops Cloudflare edge ranges — the view nulls
+    # agent_id for them precisely so proxy nodes are not counted as callers
+    # (the original "reach counted ~16 proxy nodes" bug).
+    #
+    # We still collect client_ip, NOT agent_id, because reach_ip_seen holds raw
+    # IPs for the new-vs-returning signal; switching that column to hashes would
+    # make every historical IP look new. agent_id is md5(client_ip) anyway, so
+    # distinctness is identical either way.
     cur.execute(
-        "SELECT (" + PLATFORM_CASE.strip() + ") AS plat, ip_address, COUNT(*) AS n "
-        "FROM mcp_tool_calls "
+        "SELECT (" + PLATFORM_CASE.strip() + ") AS plat, client_ip, COUNT(*) AS n "
+        "FROM mcp_calls_identity "
         "WHERE created_at >= '" + ws + "'::timestamptz "
         "  AND created_at <  '" + we + "'::timestamptz "
-        "  AND ip_address IS NOT NULL AND ip_address <> '' "
-        "  AND (" + real_calls_predicate() + ") "
-        "GROUP BY 1, ip_address")
+        "  AND is_public_ip AND is_real_external AND agent_id IS NOT NULL "
+        "GROUP BY 1, client_ip")
     for plat, ip, n in cur.fetchall():
-        if _PRIV_RE.match(ip or ''):      # private + CGNAT 100.64/10 (now in _PRIVATE_IP)
+        if _PRIV_RE.match(ip or ''):      # belt-and-braces; is_public_ip covers this
             continue
         ips.add(ip)
         if plat:

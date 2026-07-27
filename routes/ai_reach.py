@@ -49,7 +49,13 @@ def ai_reach():
         return jsonify(_cache["data"]), 200
     out = {"distinct_agents_7d": 0, "distinct_platforms": 0, "per_platform": [], "requests_7d": 0,
            "window": "~recent (id-bounded ≈7d)",
-           "note": "Honest reach = DISTINCT public IPs per platform (real agent sources), not cumulative request volume. The big 'requests served' counts are real traffic but loop-inflated; this is the addressable reach."}
+           "note": "Honest reach = DISTINCT public IPs per platform (real agent sources), not cumulative request volume. The big 'requests served' counts are real traffic but loop-inflated; this is the addressable reach.",
+           "basis": ("distinct_agents_7d counts DISTINCT non-Cloudflare public client IPs "
+                     "that pass the canonical is_real_external de-loop — the SAME basis as "
+                     "/api/v1/stats/live-proof.distinct_callers_7d. It is an IP-derived PROXY "
+                     "for agents, not a true agent identity: agent_id is md5(client_ip), so "
+                     "several agents behind one NAT count once, and one agent on a rotating "
+                     "proxy counts many times. Treat it as distinct calling SOURCES.")}
     # fail-soft (2026-06-14): this is a PUBLIC DISPLAY endpoint for the /ai page —
     # it must NEVER return 5xx. A 5xx throws an F12 console error and can blank the
     # reach lines (caught live: a cold replica whose first request hit the 9s scan
