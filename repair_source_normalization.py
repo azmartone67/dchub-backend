@@ -156,16 +156,18 @@ def rollback(dsn: str, path: str) -> None:
     conn = _conn(dsn)
     try:
         with conn, conn.cursor() as cur:
+            # Drop the trigger FIRST: it would re-normalise `source` on the way
+            # back in and defeat the restore.
             cur.execute("DROP TRIGGER IF EXISTS trg_df_normalize_source "
                         "ON discovered_facilities")
-            n = 0
-            for row in doc["prior"]:
-                rid, src, sid, isdup, dupof = row
-                cur.execute("UPDATE discovered_facilities SET source=%s, source_id=%s,"
-                            " is_duplicate=%s, duplicate_of_id=%s WHERE id=%s",
-                            (src, sid, isdup, dupof, rid))
-                n += cur.rowcount
-            print(f"restored {n} rows; trigger dropped")
+            from psycopg2.extras import execute_values
+            execute_values(cur,
+                           "UPDATE discovered_facilities d SET source=v.src::text,"
+                           " source_id=v.sid::text, is_duplicate=v.isdup::int,"
+                           " duplicate_of_id=v.dupof::int FROM (VALUES %s)"
+                           " AS v(id, src, sid, isdup, dupof) WHERE d.id = v.id::int",
+                           [tuple(r) for r in doc["prior"]], page_size=1000)
+            print(f"restored {len(doc['prior'])} rows; trigger dropped")
     finally:
         conn.close()
 
@@ -223,16 +225,26 @@ def main() -> int:
                        "prior": prior}, open(rb, "w"))
             print(f"\nrollback file written: {rb}")
 
+            # ★Set-based, NOT row-by-row. The first cut issued ~10,400 single-row
+            # UPDATEs over the Neon pooler; it stalled with an open transaction
+            # and had to be killed (it rolled back cleanly, no data changed).
+            # Two statements do the same work server-side in seconds.
+            from psycopg2.extras import execute_values
+
             # 1. flag redundant rows (keys left untouched -> no unique violation)
-            for r in redundant:
-                cur.execute("UPDATE discovered_facilities SET is_duplicate=1,"
-                            " duplicate_of_id=%s WHERE id=%s", (r[7], r[0]))
+            execute_values(cur,
+                           "UPDATE discovered_facilities d SET is_duplicate=1,"
+                           " duplicate_of_id=v.keeper::int FROM (VALUES %s)"
+                           " AS v(id, keeper) WHERE d.id = v.id::int",
+                           [(r[0], r[7]) for r in redundant], page_size=1000)
             print(f"  flagged {len(redundant):,} redundant rows")
 
             # 2. normalise the rest
-            for r in safe:
-                cur.execute("UPDATE discovered_facilities SET source=%s, source_id=%s"
-                            " WHERE id=%s", (r[3], r[4], r[0]))
+            execute_values(cur,
+                           "UPDATE discovered_facilities d SET source=v.src::text,"
+                           " source_id=v.sid::text FROM (VALUES %s)"
+                           " AS v(id, src, sid) WHERE d.id = v.id::int",
+                           [(r[0], r[3], r[4]) for r in safe], page_size=1000)
             print(f"  normalised {len(safe):,} rows")
 
             # 3. install the guard
