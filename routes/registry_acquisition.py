@@ -107,8 +107,14 @@ CANDIDATE_DIRECTORIES = [
     # server locally, not about being listed. There is no route in.
     {"name": "fleur", "home": "https://www.fleurmcp.com/",
      "probe": "https://www.fleurmcp.com/?q=dchub", "submit": None},
+    # ★ submit=None: every path (/submit, /add, /servers, /directory, /contact,
+    # /docs — even /robots.txt and /sitemap.xml) returns the same "Not Found"
+    # HTML shell; only / and /dashboard are real pages. Toolbase is a desktop
+    # app whose catalog is curated, with no public submission route. Its ?q=
+    # probe also does not filter — the 3,476-char probe/control gap was
+    # Cloudflare font CSS reordering, not results.
     {"name": "toolbase", "home": "https://gettoolbase.ai/",
-     "probe": "https://gettoolbase.ai/?q=dchub", "submit": "https://gettoolbase.ai/"},
+     "probe": "https://gettoolbase.ai/?q=dchub", "submit": None},
     # ★ submit was .../pulls — WRONG. wong2's README line 4: "We do not accept
     # PRs. Please submit your MCP on the website: https://mcpservers.org/submit"
     # (and this repo's GitHub homepage field IS mcpservers.org, so wong2 and the
@@ -165,6 +171,23 @@ CONTROL_TOKEN = "zqxjkbwmp"   # a term no directory can legitimately match
 _CONTROL_NOISE_CHARS = 256
 
 
+def _visible_text(html: str) -> str:
+    """Rendered TEXT, not raw markup.
+
+    Raw HTML is full of per-response noise that has nothing to do with whether
+    a search filtered: Cloudflare font CSS whose @font-face blocks reorder
+    (3,476 chars on gettoolbase.ai), email-protection nonces (2 chars on
+    fleurmcp.com), and hydration/stream ids inside an i18n payload (20,953
+    chars on mcpservers.org). All three looked like search results to a
+    byte-level comparison. Measured across the live seed, comparing text
+    instead cleanly separates the one directory that really filters
+    (mcpmarket, 3,664 chars of text) from six that do not (0 chars each).
+    """
+    h = re.sub(r"(?is)<(script|style|noscript)\b.*?</\1>", " ", html or "")
+    h = re.sub(r"(?s)<[^>]+>", " ", h)
+    return re.sub(r"\s+", " ", h).strip()
+
+
 def _bodies_equivalent(a, b) -> bool:
     """True when probe and control differ only TRIVIALLY.
 
@@ -175,8 +198,8 @@ def _bodies_equivalent(a, b) -> bool:
     stripping the common prefix and suffix instead: a few hundred characters is
     a nonce or an echoed query, not search results.
     """
-    a = (a or "").strip()
-    b = (b or "").strip()
+    a = _visible_text(a)
+    b = _visible_text(b)
     if not a or not b:
         return False
     if a == b:

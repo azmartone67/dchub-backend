@@ -256,3 +256,28 @@ def test_fleur_has_no_submission_route(ra):
     72,867-byte landing page. Catalog is curated by Fleur."""
     by = {c["name"]: c["submit"] for c in ra.CANDIDATE_DIRECTORIES}
     assert by["fleur"] is None
+
+
+def test_css_and_hydration_noise_is_not_search_results(ra):
+    """Three live sites defeated a byte-level control: reordered Cloudflare
+    @font-face CSS (gettoolbase.ai, 3,476 chars), an email-protection nonce
+    (fleurmcp.com, 2 chars) and a hydration id in an i18n payload
+    (mcpservers.org, 20,953 chars). None were results."""
+    body = "<html><body><p>Directory of MCP servers</p></body>"
+    css_a = "<style>@font-face{src:url(/cf-fonts/a.woff2);unicode-range:U+0460-052F}</style></html>"
+    css_b = "<style>@font-face{src:url(/cf-fonts/b.woff2);unicode-range:U+1F00-1FFF}</style></html>"
+    assert ra._bodies_equivalent(body + css_a, body + css_b)
+    assert ra.classify_candidate(200, 200, body + css_a, body + css_b)["verdict"] == "unverified"
+
+
+def test_a_real_text_difference_still_reads_absent(ra):
+    """mcpmarket really does filter — 3,664 chars of TEXT differ."""
+    probe = "<html><body>" + ("Result item. " * 400) + "</body></html>"
+    ctl = "<html><body>No servers matched your search.</body></html>"
+    assert not ra._bodies_equivalent(probe, ctl)
+    assert ra.classify_candidate(200, 200, probe, ctl)["verdict"] == "absent"
+
+
+def test_visible_text_drops_markup_and_scripts(ra):
+    t = ra._visible_text("<html><script>var x=1</script><p>hello</p><style>p{}</style></html>")
+    assert t == "hello"
