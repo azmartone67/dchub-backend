@@ -119,8 +119,16 @@ def _verified_map() -> dict:
                 return {}
             tools_col = ("dchub_metric_published_tools"
                          if "dchub_metric_published_tools" in have else "NULL")
-            when_col = ("truth_ok_at" if "truth_ok_at" in have
-                        else "last_crawled_at" if "last_crawled_at" in have else "NULL")
+            if "truth_ok_at" in have and "truth_checked_at" in have:
+                # verified_drift leaves truth_ok_at NULL but WAS verified —
+                # date it from the check, else a lagging listing shows nothing.
+                when_col = "COALESCE(truth_ok_at, truth_checked_at)"
+            elif "truth_ok_at" in have:
+                when_col = "truth_ok_at"
+            elif "last_crawled_at" in have:
+                when_col = "last_crawled_at"
+            else:
+                when_col = "NULL"
             verdict_col = "truth_verdict" if "truth_verdict" in have else "NULL"
             cur.execute(
                 "SELECT registry_name, %s, %s, %s FROM mcp_presence_listings"
@@ -135,13 +143,18 @@ def _verified_map() -> dict:
             pass
     out = {}
     for name, tools, when, verdict in rows:
+        verified = str(verdict or "").startswith("verified")
+        # ★ The published tool count is gated on the SAME evidence as the
+        # checkmark. Live showed "Official MCP Registry — 30 tools", which is a
+        # parse artifact off a JSON API response, not a count that registry
+        # publishes about us. A number a reader would read as a fact has to
+        # clear the same bar as the claim it sits next to.
         out[name] = {
-            "tools": int(tools) if tools else None,
+            "tools": int(tools) if (tools and verified) else None,
             # Only 'verified_*' earns a checkmark. broken / unverified / NULL all
             # fall through to a plain "listed" — we state what we checked, and
             # stay silent about what we could not.
-            "verified_at": (when.strftime("%Y-%m-%d")
-                            if when and str(verdict or "").startswith("verified") else None),
+            "verified_at": when.strftime("%Y-%m-%d") if (when and verified) else None,
         }
     return out
 

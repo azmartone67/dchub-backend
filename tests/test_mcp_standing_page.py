@@ -162,3 +162,23 @@ def test_glama_seed_points_at_a_real_listing_not_the_search_redirect():
     url = re.search(r'"listing_url":\s*"([^"]+)"', block).group(1)
     assert url.rstrip("/") != "https://glama.ai/mcp/servers/dchub"
     assert "dchub" in url.lower() or "dc-hub" in url.lower()
+
+
+def test_tool_count_is_gated_on_the_same_evidence_as_the_checkmark(ms):
+    """Live briefly showed 'Official MCP Registry — 30 tools'. That 30 is a parse
+    artifact off a JSON API response, not a count that registry publishes about
+    us. A number a reader reads as fact must clear the bar of the claim beside
+    it, so an unverified row shows neither a date nor a count."""
+    src = _read(os.path.join("routes", "mcp_standing.py"))
+    i = src.index("def _verified_map")
+    body = src[i:src.index("def _registries_live")]
+    assert '"tools": int(tools) if (tools and verified) else None' in body
+
+
+def test_a_lagging_listing_still_shows_when_it_was_checked(ms):
+    """verified_drift leaves truth_ok_at NULL but WAS verified — dating it from
+    the check keeps lag distinguishable from 'never looked'."""
+    src = _read(os.path.join("routes", "mcp_standing.py"))
+    i = src.index("def _verified_map")
+    body = src[i:src.index("def _registries_live")]
+    assert "COALESCE(truth_ok_at, truth_checked_at)" in body
