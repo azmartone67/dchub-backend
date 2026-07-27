@@ -217,67 +217,23 @@ def test_queue_depth_counts_routes_not_rows():
     assert '"rows_absent": len(queue)' in body
 
 
-def test_the_two_mcpservers_rows_share_one_submit_route(ra):
-    by = {c["name"]: c["submit"] for c in ra.CANDIDATE_DIRECTORIES}
-    assert by["mcpservers_org"] == by["wong2_awesome_mcp"]
-    assert by["mcpservers_org"] == "https://mcpservers.org/submit"
+def test_a_curated_readme_is_not_a_probe_for_the_website_behind_it(ra):
+    """The 2026-07-27 duplicate submission. wong2's GitHub homepage field points
+    at mcpservers.org, so the README was treated as proof of absence from the
+    SITE. It is not: the README is 537 curated entries, the site is a separate
+    database of 32,807 listing URLs. DC Hub was absent from the first and
+    already present on the second — three listing pages.
+
+    mcpservers_org must not come back as a candidate: the site is fully
+    client-rendered (even a real listing page's raw HTML contains no "dchub"),
+    so no single-fetch probe can measure presence there at all."""
+    names = {c["name"] for c in ra.CANDIDATE_DIRECTORIES}
+    assert "mcpservers_org" not in names
+    src = _read(os.path.join("routes", "registry_acquisition.py"))
+    assert "DO NOT conflate this README with the mcpservers.org WEBSITE" in src
 
 
-# ── the control probe must survive rotating nonces ───────────────────
-
-def test_a_single_rotating_nonce_does_not_look_like_filtering(ra):
-    """fleurmcp.com defeated exact-equality with a Cloudflare email-protection
-    nonce: #75 vs #e8, TWO characters in a 72,857-byte page. The loop then read
-    a static one-page site as a filtering search and called it submittable."""
-    page = "<html>" + ("x" * 70000) + '<a href="/cdn-cgi/l/email-protection#%s"></a></html>'
-    assert ra._bodies_equivalent(page % "75", page % "e8")
-    v = ra.classify_candidate(200, 200, page % "75", page % "e8")
-    assert v["verdict"] == "unverified"
-
-
-def test_real_search_results_still_read_as_absent(ra):
-    """Measured live: genuinely filtering pages differ by 3,475-148,179 chars.
-    The threshold must not swallow those."""
-    base = "<html>" + ("x" * 60000)
-    probe = base + ("RESULT " * 900) + "</html>"     # ~6,300 chars of results
-    ctl = base + "no results found</html>"
-    assert not ra._bodies_equivalent(probe, ctl)
-    assert ra.classify_candidate(200, 200, probe, ctl)["verdict"] == "absent"
-
-
-def test_identical_bodies_still_unverified(ra):
-    body = "<html>a list of other servers</html>"
-    assert ra._bodies_equivalent(body, body)
-    assert ra.classify_candidate(200, 200, body, body)["verdict"] == "unverified"
-
-
-def test_fleur_has_no_submission_route(ra):
-    """One-page site: /submit, /apps, /directory, /contact all return the same
-    72,867-byte landing page. Catalog is curated by Fleur."""
-    by = {c["name"]: c["submit"] for c in ra.CANDIDATE_DIRECTORIES}
-    assert by["fleur"] is None
-
-
-def test_css_and_hydration_noise_is_not_search_results(ra):
-    """Three live sites defeated a byte-level control: reordered Cloudflare
-    @font-face CSS (gettoolbase.ai, 3,476 chars), an email-protection nonce
-    (fleurmcp.com, 2 chars) and a hydration id in an i18n payload
-    (mcpservers.org, 20,953 chars). None were results."""
-    body = "<html><body><p>Directory of MCP servers</p></body>"
-    css_a = "<style>@font-face{src:url(/cf-fonts/a.woff2);unicode-range:U+0460-052F}</style></html>"
-    css_b = "<style>@font-face{src:url(/cf-fonts/b.woff2);unicode-range:U+1F00-1FFF}</style></html>"
-    assert ra._bodies_equivalent(body + css_a, body + css_b)
-    assert ra.classify_candidate(200, 200, body + css_a, body + css_b)["verdict"] == "unverified"
-
-
-def test_a_real_text_difference_still_reads_absent(ra):
-    """mcpmarket really does filter — 3,664 chars of TEXT differ."""
-    probe = "<html><body>" + ("Result item. " * 400) + "</body></html>"
-    ctl = "<html><body>No servers matched your search.</body></html>"
-    assert not ra._bodies_equivalent(probe, ctl)
-    assert ra.classify_candidate(200, 200, probe, ctl)["verdict"] == "absent"
-
-
-def test_visible_text_drops_markup_and_scripts(ra):
-    t = ra._visible_text("<html><script>var x=1</script><p>hello</p><style>p{}</style></html>")
-    assert t == "hello"
+def test_wong2_probe_is_the_readme_only(ra):
+    c = [x for x in ra.CANDIDATE_DIRECTORIES if x["name"] == "wong2_awesome_mcp"][0]
+    assert c["probe"].startswith("https://raw.githubusercontent.com/")
+    assert c["submit"] == "https://mcpservers.org/submit"

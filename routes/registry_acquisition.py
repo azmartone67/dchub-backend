@@ -71,6 +71,19 @@ _IDENTITY_TOKENS = ("dchub.cloud", "dchub", "dc hub")
 #   probe  — a URL that would show DC Hub IF we were listed (search page
 #            preferred; these sites' search pages are the honest test)
 #   submit — where a human goes to add us
+# ★★2026-07-27 — mcpservers_org REMOVED: we are already PRESENT. Confirmed by
+#   enumerating all 10 sitemap shards (32,807 listing URLs, 3 of them dchub) and
+#   by page-size discrimination (a real listing renders 52-69KB, a nonsense slug
+#   gets a 31KB shell). The live page is
+#   https://mcpservers.org/servers/azmartone67/dchub-mcp-server and it is STALE
+#   — advertises 15 tools / 20,000+ facilities vs canon 80 / 12,650+. It has a
+#   "Request update" control, so it is a MAINTENANCE item for registry_truth,
+#   not an acquisition target.
+#   ★Why the loop could not see it: the site is fully CLIENT-RENDERED — even the
+#   real listing page's raw HTML contains zero occurrences of "dchub" — so no
+#   single-fetch identity probe can detect presence. The only server-side signal
+#   is the sitemap shards, which a one-URL probe cannot cover. Absence here is
+#   NOT measurable by this loop; do not re-add it as a candidate.
 # RETIRED CANDIDATES — kept as a note so they are not re-added:
 #   mcp_run (mcp.run) — 2026-07-27: www.mcp.run now 301s to turbomcp.ai, which
 #   is a self-hosted MCP GATEWAY product behind a "stay tuned" holding page, not
@@ -79,8 +92,6 @@ _IDENTITY_TOKENS = ("dchub.cloud", "dchub", "dc hub")
 #   in the classifier: a candidate whose home resolves 200 but has PIVOTED away
 #   from being a directory can never be auto-detected as dead_directory.
 CANDIDATE_DIRECTORIES = [
-    {"name": "mcpservers_org", "home": "https://mcpservers.org/",
-     "probe": "https://mcpservers.org/?q=dchub", "submit": "https://mcpservers.org/submit"},
     {"name": "opentools", "home": "https://opentools.com/",
      "probe": "https://opentools.com/registry?q=dchub", "submit": "https://opentools.com/"},
     {"name": "mcpmarket", "home": "https://mcpmarket.com/",
@@ -117,9 +128,14 @@ CANDIDATE_DIRECTORIES = [
      "probe": "https://gettoolbase.ai/?q=dchub", "submit": None},
     # ★ submit was .../pulls — WRONG. wong2's README line 4: "We do not accept
     # PRs. Please submit your MCP on the website: https://mcpservers.org/submit"
-    # (and this repo's GitHub homepage field IS mcpservers.org, so wong2 and the
-    # mcpservers_org entry are the same directory reached two ways — the README
-    # probe tests the source, the other tests the rendered site).
+    #
+    # ★★DO NOT conflate this README with the mcpservers.org WEBSITE. The repo's
+    # GitHub homepage field points at mcpservers.org, and that inference cost a
+    # duplicate submission on 2026-07-27: the README is a CURATED list of 537
+    # entries, while the site is a separate database of 32,807 listing URLs —
+    # 61x larger. DC Hub is absent from the README and PRESENT on the site
+    # (three pages, incl. /servers/azmartone67/dchub-mcp-server). This probe
+    # answers "are we in the README", nothing more.
     {"name": "wong2_awesome_mcp", "home": "https://mcpservers.org/",
      "probe": "https://raw.githubusercontent.com/wong2/awesome-mcp-servers/main/README.md",
      "submit": "https://mcpservers.org/submit"},
