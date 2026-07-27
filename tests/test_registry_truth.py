@@ -90,6 +90,35 @@ def test_our_page_without_a_count_is_ok(rt):
     assert v["verdict"] == "verified_ok"
 
 
+def test_json_api_endpoint_is_not_a_search_page(rt):
+    """v2 false-positive fix. The official MCP registry's tracked URL IS an
+    API query (/v0/servers?search=cloud.dchub) and returns JSON that contains
+    us. The first version applied the search-page rule to it and reported a
+    HEALTHY listing as broken — crying wolf is how earlier versions of this
+    check got ignored."""
+    body = '{"servers":[{"server":{"name":"cloud.dchub/mcp-server"}}]}'
+    v = rt.classify("https://registry.modelcontextprotocol.io/v0/servers?search=cloud.dchub",
+                    200, "https://registry.modelcontextprotocol.io/v0/servers?search=cloud.dchub",
+                    body, 80)
+    assert v["verdict"] != "broken", v
+    # a JSON payload that does NOT contain us is still broken
+    v2 = rt.classify("https://x/api?search=y", 200, "https://x/api?search=y",
+                     '{"servers":[]}', 80)
+    assert v2["verdict"] == "broken"
+
+
+def test_multiple_counts_on_one_page_prefers_the_dominant_and_reports_both(rt):
+    """Surface Truth #30 found four different numbers live simultaneously.
+    Taking the FIRST regex match made the verdict depend on page order —
+    mcp.so carries "79 tools" x6 and "55 tools" x1."""
+    body = ("<html>DC Hub dchub.cloud — 79 tools … 79 tools … 55 tools … "
+            "79 tools … 79 tools … 79 tools … 79 tools</html>")
+    v = rt.classify("u", 200, "u", body, 79)
+    assert v["found_tools"] == 79           # dominant, not first-seen
+    assert v["all_counts"] == {55: 1, 79: 6}
+    assert "mixed numbers" in v["reason"]
+
+
 def test_hard_404_is_broken(rt):
     assert rt.classify("u", 404, "u", "", 80)["verdict"] == "broken"
 
