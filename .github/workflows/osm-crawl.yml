@@ -40,11 +40,21 @@ jobs:
           if [ "$DRY" = "true" ]; then
             [ -z "$QS" ] && QS="?dry_run=1" || QS="$QS&dry_run=1"
           fi
+          # 2026-07-27 FIX (3 consecutive red days, 07-25→07-27): the crawl
+          # takes ~3m16s, which exceeds the Cloudflare worker's subrequest
+          # budget — the edge returned its own 503 envelope
+          # ("Backend unreachable and no cached data available",
+          # worker_version 4.55.0) and the job read that as a crawler error
+          # while the BACKEND was healthy the whole time. Verified: the same
+          # POST against the Railway origin returns ok:true (693 POIs seen).
+          # Long-running admin jobs must bypass the edge. Public traffic is
+          # unaffected — this is a cron-only, admin-keyed path.
+          ORIGIN="${DCHUB_ORIGIN_URL:-https://dchub-backend-production.up.railway.app}"
           RESP=$(curl -sS -X POST \
             -H "X-Admin-Key: $ADMIN_KEY" \
             -H "User-Agent: DCHub-OSM-Cron/1.0" \
             --max-time 1500 \
-            "https://dchub.cloud/api/v1/admin/osm-crawl/run$QS")
+            "$ORIGIN/api/v1/admin/osm-crawl/run$QS")
           # 2026-07-24 (zero-row triage, follows growthfix wave #26): this block
           # used to exit 0 on ok:false, so POIS_NEW fell back to 0 and the beat
           # reported a healthy run for a crawler that had ERRORED — and once
