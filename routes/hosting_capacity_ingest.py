@@ -88,7 +88,8 @@ SOURCES = [
      "key": "oru",
      "url": ("https://services.arcgis.com/ciPnsNFi1JLWVjva/arcgis/rest/"
              "services/ORU_NodalHCV_Prod/FeatureServer/0/query"),
-     "fields": {"feeder": "FEEDER_ID", "substation": "FRIENDLY_CIRCUIT_NAME",
+     # ORU sibling uses CIRCUIT (not FEEDER_ID) — probed 2026-07-27.
+     "fields": {"feeder": "CIRCUIT", "substation": None,
                 "state": None, "region": "NYISO_LOAD_ZONE",
                 "voltage_kv": "LOCAL_VOLTAGE",
                 "mw_max": ("LOCAL_MAX", 1.0),
@@ -255,13 +256,22 @@ def _fetch_pages(src: dict, budget_deadline: float) -> list:
         return out
     outfields = ",".join(x[0] if isinstance(x, tuple) else x
                          for x in src["fields"].values() if x)
+    # Capacity-DESC ordering: when a big layer hits _MAX_ROWS_PER_SOURCE,
+    # keep the HIGHEST-capacity feeders (the site-selection-relevant tail),
+    # not an arbitrary 20k.
+    mw_spec = src["fields"].get("mw_max")
+    order_field = mw_spec[0] if isinstance(mw_spec, tuple) else mw_spec
     while len(out) < _MAX_ROWS_PER_SOURCE and time.monotonic() < budget_deadline:
         try:
-            r = requests.get(url, params={
+            params = {
                 "where": "1=1", "outFields": outfields, "f": "json",
                 "resultOffset": offset, "resultRecordCount": _PAGE_SIZE,
                 "returnGeometry": "true", "outSR": 4326,
-            }, timeout=25, headers={"User-Agent": _UA})
+            }
+            if order_field:
+                params["orderByFields"] = f"{order_field} DESC"
+            r = requests.get(url, params=params,
+                             timeout=25, headers={"User-Agent": _UA})
             if r.status_code != 200:
                 break
             data = r.json()
