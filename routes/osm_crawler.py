@@ -644,7 +644,12 @@ def _crawl(region: str | None, dry_run: bool) -> dict:
             _skipped = list(summary.get("regions_skipped") or [])
             _done = list(summary.get("regions_processed") or [])
             _alert = int(os.environ.get("OSM_THROTTLE_ALERT", "3"))
-            if _thr >= _alert or len(_skipped) > len(_done):
+            # ★ ONLY throttle counts as a problem. `regions_skipped` also
+            # collects the deliberate rotation cap (34 regions configured
+            # vs OSM_CRAWL_MAX_BBOXES=6/run and a 180s budget), so a
+            # "skipped > done" rule would fire on EVERY healthy run and
+            # train the board to ignore this detector.
+            if _thr >= _alert:
                 from routes.brain_findings_writer import upsert_brain_finding
                 fc = _get_db()
                 if fc is not None:
@@ -655,18 +660,24 @@ def _crawl(region: str | None, dry_run: bool) -> dict:
                                 issue="ingest_health:osm_overpass_throttle",
                                 url="dchub://ingest/osm-crawl",
                                 count=_thr,
-                                detail=("[warn] Overpass throttled %d region(s); "
-                                        "crawled %d, SKIPPED %d (%s). errors=%d "
-                                        "seen=%d new=%d. Coverage is being lost "
-                                        "to rate-limiting, not to a code fault — "
-                                        "consider raising OSM_BACKOFF_S / "
-                                        "lowering OSM_CRAWL_MAX_BBOXES, or "
-                                        "spreading regions across more runs."
-                                        % (_thr, len(_done), len(_skipped),
-                                           ", ".join(_skipped[:8]),
-                                           summary.get("errors", 0),
+                                detail=("[warn] Overpass THROTTLED %d of %d "
+                                        "attempted region(s) this run (crawled "
+                                        "%d, seen=%d new=%d, errors=%d). "
+                                        "Throttled regions are lost coverage — "
+                                        "distinct from the deliberate rotation "
+                                        "cap (OSM_CRAWL_MAX_BBOXES=%s/run over "
+                                        "%d configured regions). Levers: raise "
+                                        "OSM_BACKOFF_S (now %ss) or lower the "
+                                        "per-run bbox cap so fewer queries get "
+                                        "rate-limited. Sample skipped: %s"
+                                        % (_thr, _thr + len(_done), len(_done),
                                            summary.get("pois_seen", 0),
-                                           summary.get("pois_new", 0)))[:2000],
+                                           summary.get("pois_new", 0),
+                                           summary.get("errors", 0),
+                                           os.environ.get("OSM_CRAWL_MAX_BBOXES", "6"),
+                                           len(BBOXES),
+                                           os.environ.get("OSM_BACKOFF_S", "8"),
+                                           ", ".join(_skipped[:6])))[:2000],
                                 detector="osm_crawler", status="open")
                         fc.commit()
                     finally:
