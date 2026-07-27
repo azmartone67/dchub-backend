@@ -195,6 +195,25 @@ REGISTRY = [
         "trend": "AI assistants are sourcing live data-center infrastructure facts from DC Hub",
         "so_what": "the MCP-native data layer is becoming the default ground truth agents cite.",
     },
+    # r-requests-milestone (2026-07-27, owner directive 100003): total requests
+    # served — the /ai headline counter — fires at each new MILLION crossed.
+    # Honest labeling per the /ai-page rule: this is TOTAL (all sources); the
+    # external AI-platform subset lives on the same page and is named in the
+    # trend line so the quad's copy can't over-claim. Baseline seeded at
+    # 3,000,000 on ship (the 3M crossing was announced by hand 2026-07-27) so
+    # the first radar-fired post is 4,000,000.
+    {
+        "key": "requests_served_total",
+        "mode": "milestone", "round_step": 1000000, "value_key": "n", "score": 84,
+        "metric_sql": "SELECT COALESCE(SUM(total_requests),0)::bigint AS n FROM ai_cumulative",
+        "source_url": "https://dchub.cloud/ai",
+        "headline": lambda r: (f"DC Hub has now served {int(r['_milestone']):,}+ total requests "
+                               f"across its live infrastructure data layer"),
+        "trend": ("total queries served, all sources, per the public dchub.cloud/ai counter; "
+                  "the external AI-platform subset is broken out on the same page"),
+        "so_what": ("request volume is the adoption curve: agents query live infrastructure "
+                    "data instead of guessing from static training sets."),
+    },
     # ---- ACHIEVEMENT: competitive standing (live-verified, announce once) ---
     {
         "key": "smithery_rank_1",
