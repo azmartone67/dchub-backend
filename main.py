@@ -2190,6 +2190,16 @@ try:
     # 2026-07-27: registry truth — listings verified against what a VISITOR
     # sees, with "could not check" as its own verdict. Directories are ~84% of
     # arrivals and 11/16 listings were unreadable-but-reported-clean.
+    # 2026-07-27: acquisition — finds directories we are ABSENT from and
+    # produces a reviewed submission queue. Maintenance keeps presence from
+    # rotting; only this grows it. Directories are ~84% of arrivals.
+    try:
+        from routes.registry_acquisition import registry_acquisition_bp
+        app.register_blueprint(registry_acquisition_bp)
+        print("[main] registry_acquisition_bp registered: /api/v1/admin/registry-acquisition", flush=True)
+    except Exception as _rab:
+        import logging
+        logging.getLogger(__name__).warning('registry_acquisition wiring failed: %s', _rab)
     try:
         from routes.registry_truth import registry_truth_bp
         app.register_blueprint(registry_truth_bp)
