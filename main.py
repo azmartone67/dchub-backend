@@ -2211,6 +2211,27 @@ try:
     except Exception as _pfb:
         import logging
         logging.getLogger(__name__).warning('platform_funnel wiring failed: %s', _pfb)
+    # 2026-07-27 digest wave: agent→human upgrade relay — GET /upgrade/h/<token>
+    # (HMAC, human-readable, ONE attributed CTA) + relay_opens instrumentation.
+    # The bridge behind '2,155 claims, zero humans'. Kill logging:
+    # DCHUB_HUMAN_RELAY_DISABLE=1 (page always renders).
+    try:
+        from routes.human_relay import human_relay_bp
+        app.register_blueprint(human_relay_bp)
+        print("[main] human_relay_bp registered: GET /upgrade/h/<token>", flush=True)
+    except Exception as _hrb:
+        import logging
+        logging.getLogger(__name__).warning('human_relay wiring failed: %s', _hrb)
+    # 2026-07-27 digest wave: entitlement self-check (customer-visible tier
+    # truth + mismatch list) + admin repair with audit trail. Serves the open
+    # founder-tier 'license not working' ask.
+    try:
+        from routes.account_entitlements import account_entitlements_bp
+        app.register_blueprint(account_entitlements_bp)
+        print("[main] account_entitlements_bp registered: GET /api/v1/account/entitlements", flush=True)
+    except Exception as _aeb:
+        import logging
+        logging.getLogger(__name__).warning('account_entitlements wiring failed: %s', _aeb)
     # 2026-07-25: Brain Ascension Master Shell (#28) — watches the five-audit
     # fix-wave lanes (brain deadman coverage, cross-model roster, competitor→
     # product wiring, RAG truth, merged-PR metric harness, growth/MRR truth).

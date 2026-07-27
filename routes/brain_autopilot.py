@@ -1874,11 +1874,88 @@ def _quarantined_patterns() -> frozenset:
     return s
 
 
+_RECIDIVISM_WINDOW_DAYS = 30
+_RECIDIVISM_ACTION_THRESHOLD = 3
+
+
+def _recidivism_check(cur, pattern: str) -> str | None:
+    """Digest #3 (2026-07-27 wave): the recidivist class the quarantine
+    misses. Quarantine requires explicit verify-FAILURES; but 486 findings
+    re-fired AFTER actions whose outcomes were 'ok' or never verified at
+    all — cron_schedule_collision alone spammed recent_actions with
+    rate_limited firings for weeks. Gate: if this pattern acted >=3 times
+    in 30d and NOT ONE outcome verified succeeded=TRUE in that window, the
+    tactical patch demonstrably isn't holding — suppress it and escalate
+    root-cause ONCE instead of re-firing every cycle. Patterns that verify
+    their successes are exempt by construction. Kill:
+    DCHUB_RECIDIVISM_GATE=0. Returns the suppress-reason or None."""
+    if (os.environ.get("DCHUB_RECIDIVISM_GATE") or "1").strip() == "0":
+        return None
+    try:
+        n_actions = _recent_actions(cur, pattern,
+                                    _RECIDIVISM_WINDOW_DAYS * 24)
+        if n_actions < _RECIDIVISM_ACTION_THRESHOLD:
+            return None
+        cur.execute(
+            "SELECT COUNT(*) FILTER (WHERE succeeded IS TRUE)"
+            "  FROM autopilot_outcomes"
+            " WHERE pattern_name = %s"
+            "   AND fired_at > NOW() - make_interval(days => %s)",
+            (pattern, _RECIDIVISM_WINDOW_DAYS))
+        row = cur.fetchone()
+        # ★flattering-zero rule: a failed read is UNKNOWN, never 0 — only
+        # gate on an affirmative count.
+        if row is None or row[0] is None:
+            return None
+        if int(row[0]) == 0:
+            return ("recidivism_gate (%d actions/%dd, 0 verified successes "
+                    "— tactical patch isn't holding; escalated for "
+                    "root-cause)" % (n_actions, _RECIDIVISM_WINDOW_DAYS))
+    except Exception:
+        try:
+            cur.connection.rollback()
+        except Exception:
+            pass
+    return None
+
+
+def _escalate_recidivism_once(cur, pattern: str, reason: str,
+                              n_actions: int | None = None) -> None:
+    """One durable escalation row per pattern (upsert refreshes evidence).
+    Best-effort; never blocks the gate decision."""
+    try:
+        cur.execute(
+            "CREATE TABLE IF NOT EXISTS autopilot_recidivism_escalations ("
+            " pattern TEXT PRIMARY KEY,"
+            " first_escalated TIMESTAMPTZ DEFAULT NOW(),"
+            " last_refreshed TIMESTAMPTZ DEFAULT NOW(),"
+            " suppress_count BIGINT DEFAULT 1,"
+            " note TEXT)")
+        cur.execute(
+            "INSERT INTO autopilot_recidivism_escalations (pattern, note)"
+            " VALUES (%s, %s)"
+            " ON CONFLICT (pattern) DO UPDATE SET"
+            "   last_refreshed = NOW(),"
+            "   suppress_count = autopilot_recidivism_escalations"
+            ".suppress_count + 1,"
+            "   note = EXCLUDED.note",
+            (pattern, reason[:400]))
+    except Exception:
+        try:
+            cur.connection.rollback()
+        except Exception:
+            pass
+
+
 def _rate_limit_check(cur, pattern: str, url: str | None) -> tuple[bool, str]:
     """Return (allowed, reason)."""
     if pattern in _quarantined_patterns():
         return False, (f"quarantined (>={_QUARANTINE_FAIL_THRESHOLD} verify-failures, "
                        f"0 verified fixes; auto-retry after {_QUARANTINE_WINDOW_HOURS}h)")
+    _rec = _recidivism_check(cur, pattern)
+    if _rec:
+        _escalate_recidivism_once(cur, pattern, _rec)
+        return False, _rec
     last_age = _last_action_age_minutes(cur, pattern, url)
     if last_age is not None and last_age < _COOLDOWN_MIN_BETWEEN_SAME_ACTIONS:
         return False, f"cooldown_active ({last_age}min < {_COOLDOWN_MIN_BETWEEN_SAME_ACTIONS}min)"
