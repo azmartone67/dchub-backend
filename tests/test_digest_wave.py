@@ -117,3 +117,22 @@ def test_recidivism_gate_never_gates_on_a_failed_read():
     i = src.index("def _recidivism_check")
     body = src[i:src.index("def _escalate_recidivism_once")]
     assert "row is None or row[0] is None" in body
+
+
+# ── digest wave 2 (metered visibility + .dxt) ────────────────────────
+
+def test_dxt_artifact_and_route():
+    p = os.path.join(ROOT, "static", "downloads", "dchub.dxt")
+    assert os.path.isfile(p) and os.path.getsize(p) > 1500, \
+        "dchub.dxt bundle must ship with the repo"
+    assert "register_blueprint(downloads_bp)" in _read("main.py")
+    src = _read(os.path.join("routes", "downloads.py"))
+    assert "application/octet-stream" in src
+
+
+def test_entitlements_two_form_key_lookup():
+    # Legacy api_keys rows store the RAW key in key_hash (QA canary id 92);
+    # newer rows store sha256 — the lookup must check both forms or a valid
+    # legacy key reads 'not found' while the resolver grants its tier.
+    src = _read(os.path.join("routes", "account_entitlements.py"))
+    assert "k.key_hash = %s OR k.key_hash = %s" in src

@@ -2232,6 +2232,17 @@ try:
     except Exception as _aeb:
         import logging
         logging.getLogger(__name__).warning('account_entitlements wiring failed: %s', _aeb)
+    # 2026-07-27 digest wave 2: one-click Claude Desktop extension artifact —
+    # GET /downloads/dchub.dxt (built from dchub-mcp-server/dxt, a
+    # dependency-free stdio⇄HTTP bridge). Claude Desktop = the densest
+    # external cohort; this turns copy-paste config into one click.
+    try:
+        from routes.downloads import downloads_bp
+        app.register_blueprint(downloads_bp)
+        print("[main] downloads_bp registered: GET /downloads/dchub.dxt", flush=True)
+    except Exception as _dlb:
+        import logging
+        logging.getLogger(__name__).warning('downloads wiring failed: %s', _dlb)
     # 2026-07-25: Brain Ascension Master Shell (#28) — watches the five-audit
     # fix-wave lanes (brain deadman coverage, cross-model roster, competitor→
     # product wiring, RAG truth, merged-PR metric harness, growth/MRR truth).

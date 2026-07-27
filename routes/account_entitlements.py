@@ -85,12 +85,18 @@ def my_entitlements():
         return _no_store(jsonify(ok=False, error="store unavailable")), 503
     try:
         with c.cursor() as cur:
+            # ★two-form lookup (2026-07-27, found live): legacy api_keys rows
+            # store the RAW key in key_hash (e.g. the QA canary, id 92) while
+            # newer rows store sha256 — a sha256-only lookup reports a valid
+            # legacy key as 'not found' while the resolver still grants its
+            # tier (confusing mismatch). Check both forms.
             cur.execute(
                 "SELECT k.plan, k.is_active, k.rate_limit_tier, u.email,"
                 "       u.plan, u.stripe_customer_id"
                 "  FROM api_keys k LEFT JOIN users u ON u.id = k.user_id"
-                " WHERE k.key_hash = %s ORDER BY k.created_at DESC LIMIT 1",
-                (key_hash,))
+                " WHERE k.key_hash = %s OR k.key_hash = %s"
+                " ORDER BY k.created_at DESC LIMIT 1",
+                (key_hash, key))
             row = cur.fetchone()
             if row:
                 kplan, active, rlt, email, uplan, stripe = row
