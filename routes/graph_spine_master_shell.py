@@ -1,0 +1,785 @@
+"""
+routes/graph_spine_master_shell.py — Graph-Spine Master Shell (#36, 2026-07-26).
+
+Born from a question: "can we replace our RAG with graph engineering?" The
+claim going around is that Microsoft, Stanford and Anthropic all independently
+dropped RAG for knowledge graphs, at +18% accuracy and -85% cost. Most of that
+is wrong (Anthropic ships Contextual Retrieval, not a graph; the -85% is
+measured against stuffing whole documents into context, not against RAG; DSPy
+is a prompt optimiser and has no knowledge graph in it). But one honest thing
+survives: a graph beats vector search on GLOBAL questions, the kind where no
+single chunk contains the answer.
+
+This shell exists because the interesting question is not "graph or RAG" — it
+is "where is our retrieval actually losing?" and the answer turned out to be
+UPSTREAM of retrieval entirely. We already run a graph: facilities, markets,
+ISOs, plants, fiber, carriers and deals are typed nodes with typed edges in
+Postgres, and execute_plan already walks a deterministic tool graph over them.
+What we do NOT have is an identity spine — and the missing spine is visibly
+poisoning the vector index:
+
+    60.3% of the `deals` corpus in brain_corpus_embeddings is byte-identical
+    duplicate text. One chunk ("atNorth → (acquisition, Nordic)") is present
+    952 times. At k=3 the retriever can return three copies of one deal.
+
+That is not an architecture problem. Rebuilding it as triples in Neo4j would
+faithfully reproduce all 952 copies as 952 nodes.
+
+Six lanes, each one a place where an ID has more than one meaning:
+
+  1. CARRIER↔FACILITY — carrier_facility_presence.dchub_facility_id holds TWO
+     id-spaces at once (int-as-text discovered_facilities.id + hex16
+     facilities.id). The union join reaches 13,870 facilities; the naive
+     f.id-only join reaches 109. This cliff has produced three wrong fixes,
+     every one of which returned HTTP 200.
+  2. PEERINGDB — a THIRD id-space. pdb_*.fac_id matches facilities.id in 0 of
+     59,728 rows. The bridge is facilities.source_id WHERE source='PeeringDB'.
+  3. DEALS — the primary key embeds the INGEST DATE (`AUTO-<yyyymmdd>-…`), so
+     one announcement re-ingested daily becomes a new row every day, up to 48
+     times. The partial unique index on source_announcement_id cannot fire
+     because the ingester writes NULL there.
+  4. RAG REDUNDANCY — lane 3's duplicates, measured where they actually hurt:
+     inside the vector index. This is the lane that answers the original
+     question.
+  5. ENTITY SPINE — news_discovered_entities resolves 86 of 470 entities to a
+     facility (18.3%). This is the PRECONDITION gate for any GraphRAG layer:
+     community summaries built over unresolved entities summarise noise.
+  6. VERDICT — one honest field: is the graph-replacement precondition met?
+
+★ THE DECOY CONTROL (lane 1c) is the load-bearing idea here. Match COUNT alone
+proves nothing — integer id-spaces collide trivially, and a deliberately-wrong
+`df.id + 1` join still matches 13,815 of 13,870 rows (99.6%). It is only when
+you compare SEMANTICS that the two separate: the real join's matched pairs sit
+0.0000° apart, the decoy's sit 60.6° apart on average. Any future "simplify
+this join" change that keeps the count but loses the meaning trips 1c and
+nothing else. A count-based version of this lane would have passed happily
+through all three historical breakages.
+
+★ PURE-DB shell. No outbound requests, no writes to business tables. Every
+lane names an actuator and fires NOTHING. The only write is one row into
+graph_spine_snapshots for trending.
+
+★ COST: a full tick runs ~10-12s of sequential Neon reads (several are
+whole-table md5/regex scans that no index can serve). Admin-only, cached 180s.
+Do NOT wire this into a health check or a page a user waits on.
+
+Endpoints:
+  GET/POST /api/v1/admin/graph-spine/master-tick   JSON scoreboard (6 lanes)
+  GET      /admin/graph-spine                       HTML dashboard
+  GET      /api/v1/admin/graph-spine                CF zone-worker bypass alias
+
+Auth: X-Admin-Key header or ?admin_key= vs DCHUB_ADMIN_KEY (falls back to
+DCHUB_INTERNAL_KEY) — same gate as integrity_master_shell.
+Kill: GRAPH_SPINE_SHELL_DISABLE=1
+"""
+from __future__ import annotations
+
+import json
+import logging
+import os
+import threading
+import time
+from datetime import datetime, timezone
+from html import escape as _esc
+
+from flask import Blueprint, Response, jsonify, request
+
+logger = logging.getLogger(__name__)
+
+graph_spine_master_shell_bp = Blueprint("graph_spine_master_shell", __name__)
+
+
+# ── auth / kill ───────────────────────────────────────────────────────
+
+def _admin_ok() -> bool:
+    sent = (request.headers.get("X-Admin-Key")
+            or request.args.get("admin_key") or "").strip()
+    expected = ((os.environ.get("DCHUB_ADMIN_KEY")
+                 or os.environ.get("DCHUB_INTERNAL_KEY") or "").strip())
+    return bool(sent) and sent == expected
+
+
+def _disabled() -> bool:
+    return (os.environ.get("GRAPH_SPINE_SHELL_DISABLE") or "").strip() == "1"
+
+
+# ── db helpers ────────────────────────────────────────────────────────
+
+def _connect(url: str | None):
+    """Raw psycopg2 connection, deliberately OUTSIDE the app pool — this tick
+    holds a connection for ~10s and must never occupy a shared pool slot."""
+    if not url:
+        return None
+    try:
+        import psycopg2 as _pg
+        c = _pg.connect(url, connect_timeout=8)
+        c.autocommit = True
+        return c
+    except Exception as e:
+        logger.warning("[graph-spine] db connect failed: %s", e)
+        return None
+
+
+def _conn():
+    """READ connection. Prefers NEON_REPLICA_URL: every query in this module
+    is read-only and several are whole-table md5/regex scans, so they belong
+    on the replica rather than the primary the write path shares."""
+    return _connect(os.environ.get("NEON_REPLICA_URL")
+                    or os.environ.get("DATABASE_URL")
+                    or os.environ.get("NEON_DATABASE_URL"))
+
+
+def _write_conn():
+    """WRITE connection for the snapshot row ONLY, and never the replica.
+
+    ★ The replica rejects writes ("cannot execute CREATE TABLE in a read-only
+    transaction"). Reusing the read connection for the snapshot INSERT means
+    the insert raises, gets swallowed by the fail-soft handler, and the
+    snapshot table stays empty forever while every tick reports success — a
+    write that silently does nothing is exactly the class of bug this shell
+    audits, so it does not get to live inside it.
+    """
+    return _connect(os.environ.get("DATABASE_URL")
+                    or os.environ.get("NEON_DATABASE_URL"))
+
+
+def _row(c, sql: str):
+    """Fail-soft single row. None on error — NOT a zero-filled tuple. A probe
+    must be able to tell "the query broke" from "the count is zero"
+    (reference_dchub_zero_row_feed_semantics).
+
+    Literal SQL only, NO params tuple: a literal % anywhere in the statement
+    makes psycopg2 attempt %-substitution against an empty tuple and 500
+    (reference_psycopg2_empty_tuple_percent_trap). Every LIKE in this module
+    is written as a POSIX regex for exactly that reason.
+    """
+    if c is None:
+        return None
+    try:
+        with c.cursor() as cur:
+            cur.execute(sql)
+            return cur.fetchone()
+    except Exception as e:
+        logger.debug("[graph-spine] row failed: %s -- %s", sql[:90], e)
+        try:
+            c.rollback()
+        except Exception:
+            pass
+        return None
+
+
+def _scalar(c, sql: str):
+    r = _row(c, sql)
+    return r[0] if r else None
+
+
+def _num(v, default=None):
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return default
+
+
+def _pct(part, whole):
+    p, w = _num(part), _num(whole)
+    if p is None or not w:
+        return None
+    return round(p * 100.0 / w, 1)
+
+
+# ── check / verdict primitives (mirrors integrity_master_shell) ───────
+
+def _check(cid: str, name: str, passed, detail: str, critical: bool = False) -> dict:
+    """passed: True / False / None (None = indeterminate or pure gauge, "?").
+
+    critical=True means this check is the REASON the lane exists. If a
+    critical check comes back undetermined the lane must NOT render green —
+    see _lane_verdict. A lane that reads PASS while admitting it could not
+    reach the thing it audits is the exact failure this house pattern exists
+    to prevent (reference_dchub_integrity_master_shell).
+    """
+    return {"id": cid, "name": name, "pass": passed,
+            "detail": (detail or "")[:300], "critical": critical}
+
+
+def _lane_verdict(checks: list[dict]):
+    if any(ch["pass"] is None and ch.get("critical") for ch in checks):
+        return None
+    decided = [ch for ch in checks if ch["pass"] is not None]
+    if not decided:
+        return None
+    return all(ch["pass"] for ch in decided)
+
+
+# ── lane 1 · carrier ↔ facility, two id-spaces ────────────────────────
+
+def _lane_carrier_idspaces(c, ctx) -> list[dict]:
+    out = []
+
+    # 1a — GAUGE. The shape of the column: how much of it is each id-space.
+    # Reported, never asserted: the mix shifts every time the hex backfill
+    # runs, and a shifting mix is not a defect.
+    r = _row(c, "SELECT "
+                " count(*) FILTER (WHERE dchub_facility_id ~ '^[0-9]+$'),"
+                " count(DISTINCT dchub_facility_id) FILTER (WHERE dchub_facility_id ~ '^[0-9]+$'),"
+                " count(*) FILTER (WHERE dchub_facility_id ~ '^[0-9a-f]{16}$'),"
+                " count(DISTINCT dchub_facility_id) FILTER (WHERE dchub_facility_id ~ '^[0-9a-f]{16}$'),"
+                " count(*) FILTER (WHERE dchub_facility_id !~ '^[0-9]+$'"
+                "                    AND dchub_facility_id !~ '^[0-9a-f]{16}$')"
+                " FROM carrier_facility_presence")
+    if not r:
+        out.append(_check("cf_split", "id-space split of dchub_facility_id",
+                          None, "query failed"))
+    else:
+        int_rows, int_ids, hex_rows, hex_ids, other = (int(x or 0) for x in r)
+        ctx["cf_int_ids"], ctx["cf_hex_ids"] = int_ids, hex_ids
+        out.append(_check(
+            "cf_split", "id-space split of dchub_facility_id", None,
+            f"int-as-text {int_rows:,} rows / {int_ids:,} ids · "
+            f"hex16 {hex_rows:,} rows / {hex_ids:,} ids · neither {other:,}"))
+
+    # 1b — the union join must still reach the fleet. This is the number the
+    # map and every connectivity surface depend on.
+    union_reach = _scalar(
+        c, "SELECT count(DISTINCT df.id) FROM discovered_facilities df"
+           " WHERE EXISTS (SELECT 1 FROM carrier_facility_presence cfp"
+           "   WHERE cfp.dchub_facility_id IN (df.id::text, df.merged_facility_id))")
+    naive_reach = _scalar(
+        c, "SELECT count(DISTINCT df.id) FROM discovered_facilities df"
+           " WHERE EXISTS (SELECT 1 FROM carrier_facility_presence cfp"
+           "   WHERE cfp.dchub_facility_id = df.merged_facility_id)")
+    ctx["cf_union_reach"] = union_reach
+    if union_reach is None:
+        out.append(_check("cf_union_reach", "two-space union join reaches the fleet",
+                          None, "query failed"))
+    else:
+        lost = _pct((union_reach or 0) - (naive_reach or 0), union_reach)
+        out.append(_check(
+            "cf_union_reach", "two-space union join reaches the fleet (>=13,000)",
+            int(union_reach) >= 13000,
+            f"union join {int(union_reach):,} facilities · naive "
+            f"merged_facility_id-only join {int(naive_reach or 0):,} "
+            f"({lost}% would be silently lost)"))
+
+    # 1c — ★THE DECOY CONTROL. The whole lane rests on this.
+    #
+    # A count-based check cannot tell a right join from a wrong one here: the
+    # deliberately-broken `df.id + 1` join still matches 99.6% as many rows,
+    # because consecutive integer ids both exist in the same dense space. Only
+    # SEMANTICS separate them — matched pairs must describe the same building.
+    # Real join: 0.0000° apart. Decoy: ~60° apart (a different continent).
+    #
+    # LIMIT 20000 inside each subquery bounds the scan; both samples are drawn
+    # the same way so the comparison stays fair.
+    real = _row(c, "SELECT round(max(d)::numeric,4), count(*) FROM ("
+                   " SELECT abs(df.latitude - cfp.facility_lat)"
+                   "      + abs(df.longitude - cfp.facility_lng) AS d"
+                   " FROM discovered_facilities df"
+                   " JOIN carrier_facility_presence cfp"
+                   "   ON cfp.dchub_facility_id = df.id::text"
+                   " WHERE df.latitude IS NOT NULL AND cfp.facility_lat IS NOT NULL"
+                   " LIMIT 20000) x")
+    decoy = _row(c, "SELECT round(avg(d)::numeric,4), count(*) FROM ("
+                    " SELECT abs(df.latitude - cfp.facility_lat)"
+                    "      + abs(df.longitude - cfp.facility_lng) AS d"
+                    " FROM discovered_facilities df"
+                    " JOIN carrier_facility_presence cfp"
+                    "   ON cfp.dchub_facility_id = (df.id + 1)::text"
+                    " WHERE df.latitude IS NOT NULL AND cfp.facility_lat IS NOT NULL"
+                    " LIMIT 20000) x")
+    real_max = _num(real[0]) if real else None
+    real_n = int(real[1]) if real and real[1] is not None else 0
+    decoy_avg = _num(decoy[0]) if decoy else None
+    decoy_n = int(decoy[1]) if decoy and decoy[1] is not None else 0
+
+    if real_max is None or decoy_avg is None or real_n < 1000 or decoy_n < 1000:
+        # Not a failure — we simply learned nothing. Critical, so the lane
+        # renders "?" rather than green.
+        out.append(_check(
+            "cf_decoy", "decoy control: real join is semantically right", None,
+            f"insufficient coordinate sample (real n={real_n}, decoy n={decoy_n}) "
+            "— cannot distinguish a correct join from a colliding one",
+            critical=True))
+    else:
+        out.append(_check(
+            "cf_decoy", "decoy control: real join is semantically right",
+            real_max <= 0.01 and decoy_avg >= 5.0,
+            f"real join max deviation {real_max}° over {real_n:,} pairs · "
+            f"decoy (df.id+1) avg {decoy_avg}° over {decoy_n:,} pairs — "
+            "counts alone cannot tell these apart (decoy matches 99.6% as many)",
+            critical=True))
+    return out
+
+
+# ── lane 2 · PeeringDB, the third id-space ────────────────────────────
+
+def _lane_pdb_bridge(c, ctx) -> list[dict]:
+    out = []
+
+    # 2a — the disjointness fact the resolver exists for. If this ever stops
+    # being 0, someone has started writing dchub ids into a pdb column (or
+    # vice versa) and _resolve_facility_ids is now lying in both directions.
+    r = _row(c, "SELECT (SELECT count(*) FROM pdb_network_facilities),"
+                " (SELECT count(*) FROM pdb_network_facilities p"
+                "   JOIN facilities f ON f.id = p.fac_id::text)")
+    if not r:
+        out.append(_check("pdb_disjoint", "pdb fac_id and facilities.id stay disjoint",
+                          None, "query failed", critical=True))
+    else:
+        total, collide = int(r[0] or 0), int(r[1] or 0)
+        out.append(_check(
+            "pdb_disjoint", "pdb fac_id and facilities.id stay disjoint",
+            collide == 0,
+            f"{collide} direct matches out of {total:,} pdb_network_facilities "
+            "rows — must be 0; the bridge is facilities.source_id, never a "
+            "direct id comparison", critical=True))
+
+    # 2b — bridge coverage. A gauge with a floor: below it, connectivity
+    # answers stop being available for most of the fleet.
+    r = _row(c, "SELECT (SELECT count(*) FROM facilities),"
+                " (SELECT count(*) FROM facilities"
+                "   WHERE source = 'PeeringDB' AND source_id IS NOT NULL)")
+    if not r:
+        out.append(_check("pdb_bridge", "PeeringDB bridge coverage", None, "query failed"))
+    else:
+        total, bridged = int(r[0] or 0), int(r[1] or 0)
+        out.append(_check(
+            "pdb_bridge", "PeeringDB bridge coverage (>=5,000 facilities)",
+            bridged >= 5000,
+            f"{bridged:,} of {total:,} facilities carry a PeeringDB source_id "
+            f"({_pct(bridged, total)}%) — these are the only ones "
+            "/api/v1/connectivity can answer for"))
+
+    # 2c — GAUGE, and a standing warning. carrier_facility_presence.
+    # facility_pdb_id is NOT a PeeringDB id despite the name (values look like
+    # 'nearby-6-11530'). Reported as a gauge rather than asserted: a bare
+    # integer here is a naming hazard, not proof of a break, and we cannot
+    # cheaply prove those integers are or are not real pdb ids.
+    r = _row(c, "SELECT count(*), count(*) FILTER (WHERE facility_pdb_id ~ '^[0-9]+$')"
+                " FROM carrier_facility_presence WHERE facility_pdb_id IS NOT NULL")
+    if r:
+        tot, digits = int(r[0] or 0), int(r[1] or 0)
+        out.append(_check(
+            "pdb_redherring", "facility_pdb_id is NOT a PeeringDB id", None,
+            f"{digits:,} of {tot:,} values ({_pct(digits, tot)}%) are bare "
+            "integers and will LOOK like pdb ids to the next reader — never "
+            "use this column as a pdb bridge"))
+    return out
+
+
+# ── lane 3 · deals identity ───────────────────────────────────────────
+
+_DEAL_BUSINESS_COLS = (
+    "date, year, buyer, seller, value, mw, type, region, market, source_url,"
+    " verified, status, notes, assets, deal_date, deal_category, data_flag,"
+    " extraction_confidence, extracted_via")
+
+
+def _lane_deals_identity(c, ctx) -> list[dict]:
+    out = []
+
+    # 3a — EXACT duplicates: identical on every one of the 19 business
+    # columns, differing only by id and the ingest timestamps. Deliberately
+    # not a fuzzy match — a fuzzy key here collapses blank columns together
+    # and inflates the number (an early cut of this check read 3,276 excess
+    # rows because `assets` is blank in 100% of rows and contributed nothing).
+    # Exact-match on all content cannot produce a false positive.
+    r = _row(c, "WITH b AS (SELECT " + _DEAL_BUSINESS_COLS + " FROM deals),"
+                " g AS (SELECT count(*) AS n FROM b GROUP BY " + _DEAL_BUSINESS_COLS + ")"
+                " SELECT (SELECT count(*) FROM deals),"
+                "        (SELECT count(*) FROM g),"
+                "        (SELECT coalesce(sum(n) - count(*), 0) FROM g WHERE n > 1)")
+    if not r:
+        out.append(_check("deal_dupes", "deals table holds no exact duplicates",
+                          None, "query failed", critical=True))
+    else:
+        total, distinct, excess = int(r[0] or 0), int(r[1] or 0), int(r[2] or 0)
+        ctx["deal_total"], ctx["deal_distinct"] = total, distinct
+        out.append(_check(
+            "deal_dupes", "deals table holds no exact duplicates",
+            excess == 0,
+            f"{excess:,} of {total:,} rows ({_pct(excess, total)}%) are "
+            f"byte-identical to another row on all 19 business columns · "
+            f"{distinct:,} genuinely distinct deals", critical=True))
+
+    # 3b — WHY. The primary key embeds the ingest date (AUTO-<yyyymmdd>-…), so
+    # re-ingesting one announcement mints a new row daily; and the partial
+    # unique index on source_announcement_id cannot fire because the ingester
+    # writes NULL there (NULLs are excluded from a partial unique index —
+    # reference_pg_partial_index_on_conflict).
+    r = _row(c, "SELECT count(*) FILTER (WHERE id ~ '^AUTO-'),"
+                " count(*) FILTER (WHERE id ~ '^AUTO-' AND source_announcement_id IS NULL)"
+                " FROM deals")
+    if not r:
+        out.append(_check("deal_dedup_key", "every deal carries a dedup key",
+                          None, "query failed"))
+    else:
+        auto, auto_null = int(r[0] or 0), int(r[1] or 0)
+        out.append(_check(
+            "deal_dedup_key", "every deal carries a dedup key",
+            auto_null == 0,
+            f"{auto_null:,} of {auto:,} AUTO- rows have a NULL "
+            "source_announcement_id — deals_announcement_uniq is a PARTIAL "
+            "index and cannot constrain NULLs, so nothing stops re-ingest"))
+
+    # 3c — the blast radius, in the units the site publishes.
+    r = _row(c, "SELECT max(d) FROM (SELECT count(DISTINCT coalesce(extracted_at::date,"
+                " created_at::date)) AS d FROM deals"
+                " GROUP BY coalesce(notes,''), coalesce(buyer,''), coalesce(mw,-1)) x")
+    if r and r[0] is not None:
+        out.append(_check(
+            "deal_reingest_span", "re-ingest multiplicity", None,
+            f"the worst-affected announcement has been re-ingested on "
+            f"{int(r[0])} separate days"))
+    return out
+
+
+# ── lane 4 · what the duplicates do to the vector index ───────────────
+#
+# The lane that answers "should we replace RAG with a graph". If retrieval is
+# losing to duplicate text, a knowledge graph would inherit the duplicates as
+# nodes and lose in exactly the same way.
+
+def _lane_rag_redundancy(c, ctx) -> list[dict]:
+    out = []
+
+    # 4a — worst corpus by share of byte-identical chunk text.
+    r = _row(c, "SELECT source_table, count(*), count(DISTINCT md5(text))"
+                " FROM brain_corpus_embeddings GROUP BY source_table"
+                " HAVING count(*) >= 100"
+                " ORDER BY (count(*) - count(DISTINCT md5(text))) DESC LIMIT 1")
+    if not r:
+        out.append(_check("rag_worst_corpus", "no corpus is mostly duplicate text",
+                          None, "query failed", critical=True))
+    else:
+        name, chunks, distinct = str(r[0]), int(r[1] or 0), int(r[2] or 0)
+        redundant = chunks - distinct
+        share = _pct(redundant, chunks)
+        ctx["rag_worst_share"] = share
+        ctx["rag_worst_corpus"] = name
+        out.append(_check(
+            "rag_worst_corpus", "no corpus is mostly duplicate text (<10%)",
+            (share is not None and share < 10.0),
+            f"worst corpus '{name}': {redundant:,} of {chunks:,} chunks "
+            f"({share}%) are byte-identical to another chunk — these consume "
+            "retrieval slots without adding information", critical=True))
+
+    # 4b — the multiplicity that actually breaks k=3. One chunk present 952
+    # times means a query landing in that neighbourhood can fill every slot
+    # with the same sentence: effective k=1.
+    r = _row(c, "SELECT max(n), (SELECT source_table FROM brain_corpus_embeddings"
+                "   GROUP BY source_table, md5(text) ORDER BY count(*) DESC LIMIT 1)"
+                " FROM (SELECT count(*) AS n FROM brain_corpus_embeddings"
+                "        GROUP BY source_table, md5(text)) x")
+    if not r or r[0] is None:
+        out.append(_check("rag_worst_chunk", "no chunk is repeated more than 5x",
+                          None, "query failed"))
+    else:
+        mult, where = int(r[0]), str(r[1] or "?")
+        out.append(_check(
+            "rag_worst_chunk", "no chunk is repeated more than 5x",
+            mult <= 5,
+            f"the most-repeated chunk appears {mult:,} times (corpus "
+            f"'{where}') — at k=3 a query in that neighbourhood retrieves the "
+            "same text three times, an effective k of 1"))
+
+    # 4c — the 07-03 seq-scan regression guard. Without the HNSW index the
+    # index is still CORRECT and merely 18x slower, which is why it went
+    # unnoticed for a day.
+    n = _scalar(c, "SELECT count(*) FROM pg_indexes"
+                   " WHERE tablename = 'brain_corpus_embeddings'"
+                   "   AND indexdef ~ 'hnsw'")
+    out.append(_check(
+        "rag_hnsw", "HNSW index present on the embedding column",
+        (int(n) > 0) if n is not None else None,
+        f"{int(n) if n is not None else '?'} hnsw index(es) — absence is a "
+        "silent 18x slowdown, never an error"))
+
+    # 4d — whole-index gauge, so the worst-corpus number has a denominator.
+    r = _row(c, "SELECT count(*), count(DISTINCT md5(text)) FROM brain_corpus_embeddings")
+    if r:
+        tot, dis = int(r[0] or 0), int(r[1] or 0)
+        out.append(_check(
+            "rag_index_size", "index-wide redundancy", None,
+            f"{tot:,} chunks · {dis:,} distinct texts · "
+            f"{_pct(tot - dis, tot)}% redundant overall"))
+    return out
+
+
+# ── lane 5 · entity spine — the GraphRAG precondition ─────────────────
+
+def _lane_entity_spine(c, ctx) -> list[dict]:
+    out = []
+
+    # 5a — the gate. Community summaries / global search over a knowledge
+    # graph are only worth building once entities RESOLVE; summarising
+    # unresolved entities summarises noise, expensively and per re-index.
+    r = _row(c, "SELECT count(*), count(*) FILTER (WHERE in_facilities)"
+                " FROM news_discovered_entities")
+    if not r:
+        out.append(_check("es_resolution", "extracted entities resolve to the graph",
+                          None, "query failed", critical=True))
+    else:
+        total, resolved = int(r[0] or 0), int(r[1] or 0)
+        share = _pct(resolved, total)
+        ctx["es_share"] = share
+        ctx["es_total"], ctx["es_resolved"] = total, resolved
+        out.append(_check(
+            "es_resolution", "extracted entities resolve to the graph (>=60%)",
+            (share is not None and share >= 60.0),
+            f"{resolved:,} of {total:,} discovered entities ({share}%) resolve "
+            "to a facility — the rest are names with no node to attach to",
+            critical=True))
+
+    # 5b — is extraction even keeping up with the corpus it reads from?
+    r = _row(c, "SELECT (SELECT count(*) FROM news_articles),"
+                " (SELECT count(*) FROM news_discovered_entities)")
+    if r:
+        arts, ents = int(r[0] or 0), int(r[1] or 0)
+        out.append(_check(
+            "es_yield", "entity yield per article", None,
+            f"{ents:,} distinct entities extracted from {arts:,} news articles "
+            f"({round(ents / arts, 3) if arts else '?'} per article)"))
+    return out
+
+
+# ── lane 6 · the verdict ──────────────────────────────────────────────
+
+def _lane_graph_verdict(c, ctx) -> list[dict]:
+    """Reads the metrics the earlier lanes stashed in ctx. Deliberately does
+    NOT re-query: a verdict that disagrees with the lanes above it because it
+    sampled the database a second time is worse than no verdict."""
+    out = []
+
+    share = ctx.get("es_share")
+    worst = ctx.get("rag_worst_share")
+
+    if share is None or worst is None:
+        out.append(_check(
+            "gv_precondition", "precondition for a graph retrieval layer", None,
+            "lane 4 or lane 5 did not resolve — no verdict", critical=True))
+        ctx["verdict"] = "UNKNOWN"
+        return out
+
+    ready = share >= 60.0 and worst < 10.0
+    ctx["verdict"] = "READY" if ready else "NOT_READY"
+    out.append(_check(
+        "gv_precondition", "precondition for a graph retrieval layer",
+        ready,
+        f"entity resolution {share}% (need >=60) · worst-corpus redundancy "
+        f"{worst}% (need <10) — a graph layer built now would inherit "
+        "the duplicates as nodes and the unresolved names as dangling edges",
+        critical=True))
+
+    # The honest read of the original question, stated in the surface itself
+    # so nobody has to re-derive it from six lanes of numbers.
+    out.append(_check(
+        "gv_reading", "where the retrieval defect actually lives", None,
+        f"upstream of retrieval: {ctx.get('deal_total', '?')} deal rows "
+        f"collapse to {ctx.get('deal_distinct', '?')} distinct deals, and that "
+        f"duplication is {worst}% of the '{ctx.get('rag_worst_corpus','?')}' "
+        "corpus. Fix the spine and the existing index improves; swapping the "
+        "index for a graph moves the same duplicates into nodes"))
+    return out
+
+
+# ── tick orchestration ────────────────────────────────────────────────
+# (key, label, fn, actuator) — actuator is NAMED but never fired.
+
+_LANES = [
+    ("carrier_idspaces", "1 · Carrier↔facility (two id-spaces)",
+     _lane_carrier_idspaces,
+     "none needed while green — the union join in main.py/map + "
+     "routes/connectivity_score.py is correct; this lane exists to catch the "
+     "next 'simplification' of it"),
+    ("pdb_bridge", "2 · PeeringDB (third id-space)", _lane_pdb_bridge,
+     "raise bridge coverage by setting PEERINGDB_API_KEY on Railway (both "
+     "services) so the weekly peeringdb_network_sync stops running anonymous "
+     "at 20 req/min"),
+    ("deals_identity", "3 · Deals identity (dedup)", _lane_deals_identity,
+     "backfill source_announcement_id from (source_url, notes) then drop the "
+     "ingest date from the AUTO- key so deals_announcement_uniq can finally "
+     "fire; de-dupe historical rows keeping MIN(created_at)"),
+    ("rag_redundancy", "4 · RAG index redundancy", _lane_rag_redundancy,
+     "re-embed the deals corpus AFTER lane 3's de-dup — re-embedding first "
+     "just re-encodes the duplicates"),
+    ("entity_spine", "5 · Entity spine (GraphRAG precondition)",
+     _lane_entity_spine,
+     "extend news_entity_extraction.py resolution beyond exact name match "
+     "(alias table + normalisation) — this is the 'deduplicate and normalise' "
+     "step, the only part of the graph pipeline we genuinely lack"),
+    ("graph_verdict", "6 · Verdict: replace RAG with a graph?",
+     _lane_graph_verdict,
+     "no actuator — this lane exists to keep the answer honest and dated"),
+]
+
+_cache: dict = {"ts": 0.0, "payload": None}
+_cache_lock = threading.Lock()
+_TICK_TTL = 180.0  # a full tick is ~10-12s of Neon reads; do not tighten
+
+
+def _ensure_snapshots(c) -> None:
+    try:
+        with c.cursor() as cur:
+            cur.execute(
+                "CREATE TABLE IF NOT EXISTS graph_spine_snapshots ("
+                " id BIGSERIAL PRIMARY KEY,"
+                " created_at TIMESTAMPTZ NOT NULL DEFAULT now(),"
+                " lanes_pass INT, lanes_total INT, verdict TEXT, payload JSONB)")
+    except Exception as e:
+        logger.debug("[graph-spine] snapshot ddl skipped: %s", e)
+
+
+def _run_tick() -> dict:
+    c = _conn()
+    ctx: dict = {}
+    lanes = []
+    for key, label, fn, actuator in _LANES:
+        t0 = time.time()
+        try:
+            checks = fn(c, ctx)
+        except Exception as e:  # a lane must never sink the tick
+            checks = [_check(f"{key}_error", "lane crashed", None, str(e)[:200])]
+        ms = int((time.time() - t0) * 1000)
+        decided = [ch for ch in checks if ch["pass"] is not None]
+        lanes.append({
+            "lane": key, "label": label, "pass": _lane_verdict(checks),
+            "actuator": actuator, "checks": checks, "ms": ms,
+            "progress": f"{sum(1 for ch in decided if ch['pass'])}/{len(decided)}"
+            if decided else "0/0"})
+
+    payload = {
+        "ok": True,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "verdict": ctx.get("verdict", "UNKNOWN"),
+        "lanes_pass": sum(1 for l in lanes if l["pass"]),
+        "lanes_total": len(lanes),
+        "lanes": lanes,
+        "note": "read-only DIAGNOSTIC; names an actuator per lane and fires "
+                "nothing. Pure-DB, replica-preferred, no outbound requests. "
+                "See routes/graph_spine_master_shell.py",
+    }
+    if c is not None:
+        try:
+            c.close()
+        except Exception:
+            pass
+
+    # Snapshot goes to the PRIMARY on its own short-lived connection — the
+    # read connection above is (correctly) the replica and cannot accept it.
+    # persisted=False in the payload so a reader can tell "trend unavailable"
+    # from "trend flat".
+    payload["persisted"] = False
+    w = _write_conn()
+    if w is not None:
+        try:
+            _ensure_snapshots(w)
+            with w.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO graph_spine_snapshots"
+                    " (lanes_pass, lanes_total, verdict, payload)"
+                    " VALUES (%s, %s, %s, %s)",
+                    (payload["lanes_pass"], payload["lanes_total"],
+                     payload["verdict"], json.dumps(payload)))
+            payload["persisted"] = True
+        except Exception as e:
+            logger.warning("[graph-spine] snapshot insert failed: %s", e)
+        try:
+            w.close()
+        except Exception:
+            pass
+    return payload
+
+
+def _tick_cached() -> dict:
+    with _cache_lock:
+        if _cache["payload"] is not None and time.time() - _cache["ts"] < _TICK_TTL:
+            return _cache["payload"]
+    payload = _run_tick()
+    with _cache_lock:
+        _cache["ts"] = time.time()
+        _cache["payload"] = payload
+    return payload
+
+
+# ── routes ────────────────────────────────────────────────────────────
+
+@graph_spine_master_shell_bp.route(
+    "/api/v1/admin/graph-spine/master-tick", methods=["GET", "POST"])
+def graph_spine_master_tick():
+    if _disabled():
+        # 404, never 5xx: the CF worker's proxyWithRetry reads ANY 5xx from
+        # Railway as a dead origin and fails over to the stale Render backend.
+        return jsonify(ok=False, error="disabled"), 404
+    if not _admin_ok():
+        return jsonify(ok=False, error="forbidden"), 403
+    if (request.args.get("fresh") or "") == "1":
+        with _cache_lock:
+            _cache["payload"] = None
+    return jsonify(_tick_cached())
+
+
+@graph_spine_master_shell_bp.route("/admin/graph-spine", methods=["GET"])
+@graph_spine_master_shell_bp.route("/api/v1/admin/graph-spine", methods=["GET"])
+def graph_spine_dashboard():
+    if _disabled():
+        return Response("graph-spine shell disabled", status=404)
+    if not _admin_ok():
+        return Response("forbidden — X-Admin-Key or ?admin_key=", status=403)
+    p = _tick_cached()
+
+    def _chip(v):
+        if v is True:
+            return '<span style="color:#22c55e">✓</span>'
+        if v is False:
+            return '<span style="color:#ef4444">✗</span>'
+        return '<span style="color:#eab308">?</span>'
+
+    cards = []
+    for lane in p["lanes"]:
+        rows = "".join(
+            f"<tr><td style='padding:4px 8px;vertical-align:top'>{_chip(ch['pass'])}</td>"
+            f"<td style='padding:4px 8px;vertical-align:top'>{_esc(ch['name'])}"
+            f"{' <b style=color:#f59e0b>*</b>' if ch.get('critical') else ''}</td>"
+            f"<td style='padding:4px 8px;color:#94a3b8'>{_esc(ch['detail'])}</td></tr>"
+            for ch in lane["checks"])
+        border = "#22c55e" if lane["pass"] else (
+            "#ef4444" if lane["pass"] is False else "#334155")
+        cards.append(
+            f"<div style='background:#0f172a;border:1px solid {border};border-radius:12px;"
+            f"padding:16px;margin:12px 0'>"
+            f"<div style='font-weight:700;font-size:15px'>{_chip(lane['pass'])} "
+            f"{_esc(lane['label'])} <span style='color:#64748b;font-weight:400'>"
+            f"({lane['progress']} checks green · {lane.get('ms',0)}ms)</span></div>"
+            f"<table style='margin-top:8px;font-size:13px;border-collapse:collapse'>{rows}</table>"
+            f"<div style='margin-top:8px;font-size:12px;color:#64748b'>⚡ actuator (not fired): "
+            f"{_esc(lane.get('actuator',''))}</div></div>")
+
+    verdict = p.get("verdict", "UNKNOWN")
+    vcolor = {"READY": "#22c55e", "NOT_READY": "#f59e0b"}.get(verdict, "#eab308")
+    html = (
+        "<!doctype html><meta charset='utf-8'>"
+        "<meta http-equiv='refresh' content='300'>"
+        "<title>Graph-Spine Master Shell · DC Hub</title>"
+        "<body style='background:#020617;color:#e2e8f0;font-family:-apple-system,Segoe UI,"
+        "Roboto,sans-serif;max-width:920px;margin:24px auto;padding:0 16px'>"
+        f"<h2 style='margin:0 0 4px'>Graph-Spine Master Shell "
+        f"<span style='color:{'#22c55e' if p['lanes_pass'] == p['lanes_total'] else '#eab308'}'>"
+        f"{p['lanes_pass']}/{p['lanes_total']} lanes green</span></h2>"
+        f"<div style='color:#64748b;font-size:12px'>#36 · 07-26 · read-only "
+        f"DIAGNOSTIC (names an actuator per lane, fires nothing) · pure-DB, "
+        f"replica-preferred · {int(_TICK_TTL)}s tick cache · generated "
+        f"{_esc(p['generated_at'])} · JSON: "
+        f"/api/v1/admin/graph-spine/master-tick</div>"
+        f"<div style='background:#0f172a;border:1px solid {vcolor};border-radius:12px;"
+        f"padding:14px;margin:14px 0'><b style='color:{vcolor}'>"
+        f"Replace RAG with a graph? {_esc(verdict)}</b>"
+        f"<div style='color:#94a3b8;font-size:13px;margin-top:6px'>"
+        "We already run a typed graph in Postgres and a deterministic tool "
+        "graph in execute_plan. The measured retrieval defect is duplicate "
+        "text from a missing identity spine — a defect a knowledge graph "
+        "would inherit, not fix. <b style='color:#f59e0b'>*</b> marks the "
+        "check each lane exists for; an undetermined one renders the lane "
+        "'?', never green.</div></div>"
+        + "".join(cards) + "</body>")
+    return Response(html, mimetype="text/html")

@@ -2317,6 +2317,23 @@ try:
     except Exception as _pds:
         import logging
         logging.getLogger(__name__).warning('platform_doors_master_shell wiring failed: %s', _pds)
+    # 2026-07-26: Graph-Spine master shell (#36) — read-only DIAGNOSTIC, pure-DB,
+    # replica-preferred. Answers "replace RAG with graph engineering?" by measuring
+    # where retrieval actually loses: the identity spine. Six lanes — carrier<->
+    # facility two id-spaces (with a SEMANTIC decoy control, because match counts
+    # cannot tell a right join from a colliding one), the PeeringDB third space,
+    # deals dedup (the PK embeds the ingest date), duplicate text inside the vector
+    # index, entity resolution as the GraphRAG precondition, and one dated verdict.
+    # Names the actuator per lane, fires nothing.
+    # GET /admin/graph-spine · /api/v1/admin/graph-spine/master-tick
+    # Kill: GRAPH_SPINE_SHELL_DISABLE=1
+    try:
+        from routes.graph_spine_master_shell import graph_spine_master_shell_bp
+        app.register_blueprint(graph_spine_master_shell_bp)
+        print("[main] graph_spine_master_shell_bp registered: GET /admin/graph-spine", flush=True)
+    except Exception as _gss:
+        import logging
+        logging.getLogger(__name__).warning('graph_spine_master_shell wiring failed: %s', _gss)
     # 2026-07-06: Back-of-Funnel Truth master shell — ONE pane for the 07-06
     # funnel fix-wave (retention durable-keys, claim→paid attribution, conversion
     # demand) measured with CORRECTED metrics the older panes were blind to.
