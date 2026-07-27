@@ -299,14 +299,13 @@ def infra_ticker():
     """
     out = {
         "facilities":           None,
-        "global_power":         None,
         "transmission_lines":   None,
         "substations":          None,
         "gas_pipelines":        None,
         "fiber_routes":         None,
         "water_risk_records":   None,
         "operational_mw":       None,
-        "pipeline_mw":          None,
+        # pipeline_mw intentionally absent — see the audit note on _probes below.
         "served_at":            datetime.datetime.utcnow().isoformat() + "Z",
     }
     conn = _get_db()
@@ -319,7 +318,6 @@ def infra_ticker():
     # table doesn't burn the others.
     _probes = [
         ("facilities",         "SELECT COUNT(*) FROM discovered_facilities"),
-        ("global_power",       "SELECT COUNT(*) FROM gem_power"),
         ("transmission_lines", "SELECT COUNT(*) FROM transmission_lines"),
         ("substations",        "SELECT COUNT(*) FROM substations"),
         ("gas_pipelines",      "SELECT COUNT(*) FROM gas_pipelines"),
@@ -337,8 +335,28 @@ def infra_ticker():
                                "  AND (status IS NULL OR LOWER(status) NOT IN "
                                "       ('planned','permitting','construction','proposed',"
                                "        'under construction','pipeline'))"),
-        ("pipeline_mw",        "SELECT COALESCE(SUM(capacity_mw),0)::bigint "
-                               "FROM capacity_pipeline"),
+        # ★★2026-07-27 pipeline-GW audit — `pipeline_mw` is REMOVED from this
+        # public ticker, not restated. `SUM(capacity_mw) FROM capacity_pipeline`
+        # returned 2,580,500 MW (published as 2,514 GW), and the table is
+        # contaminated:
+        #   - 45 rows >=10,000 MW carry 1,021.7 GW (39.6% of the total). Google
+        #     Nevada 150,000 MW with status 'operational'; NextEra/Dominion
+        #     130,000 MW status 'acquisition'; AEP 63,000; Dominion 48,000;
+        #     PPL 25,200 — the last three are UTILITY data-centre load-request
+        #     queues, summed as if each were one building.
+        #   - 285 duplicate groups double-count 761.0 GW (29.5%).
+        #   - ~339 GW sits under operational/acquisition/cancelled/lease.
+        #   - 428 rows have Unknown/blank operator = 546.0 GW (21.2%).
+        # Strict cleanup lands at 486.4 GW (5.2x below what we published), and
+        # the sibling figure from `facilities` cleans to 251.4 GW — still 1.9x
+        # apart. No pipeline number is publishable from either source until the
+        # dchub_pipeline extractor stops writing aggregates and unparsed
+        # None/Unknown rows, and the aggregates are quarantined behind a
+        # data_flag the way `deals` does it.
+        # The homepage has no pipeline pill, so nothing renders differently —
+        # but this endpoint is public, so leaving the field served meant any
+        # agent reading it consumed the 2,514 GW claim. Do NOT re-add without
+        # the quarantine work.
     ]
     try:
         for key, sql in _probes:
