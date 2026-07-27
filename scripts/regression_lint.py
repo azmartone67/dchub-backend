@@ -39,6 +39,11 @@ WHITELIST_TABLES = {
     # slow_requests is the same append-only class (shell #32 perf capture) —
     # and the same adjacent-fragment blindness applies to its ON CONFLICT.
     'slow_requests',
+    # Digest wave 2026-07-27, same append-only class: relay_opens (human-relay
+    # open log; carries fragment-split ON CONFLICT), entitlement_repairs
+    # (admin audit trail), autopilot_recidivism_escalations (escalate-once
+    # ledger; its ON CONFLICT upsert is also fragment-split).
+    'relay_opens', 'entitlement_repairs', 'autopilot_recidivism_escalations',
     # market_power_scores is upserted via an explicit UPDATE-or-INSERT
     # (the INSERT only runs when the UPDATE matched 0 rows) — not an
     # accidental bare insert. ON CONFLICT was removed deliberately
