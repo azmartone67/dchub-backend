@@ -126,9 +126,15 @@ def classify(url: str, status, final_url: str, body: str,
         out["reason"] = "HTTP %s — the listing URL does not serve a page" % status
         return out
 
-    # A 200 that landed on a search/browse page is not a listing.
+    text_head = (body or "").lstrip()[:400]
+    is_json = text_head.startswith("{") or text_head.startswith("[")
+    # v2: an API QUERY endpoint legitimately carries ?search= — the official
+    # MCP registry's tracked URL is /v0/servers?search=cloud.dchub and returns
+    # JSON that DOES contain us. Applying the search-page rule to it cried
+    # wolf on a healthy listing, which is how earlier versions of this check
+    # got ignored. For JSON, identity in the payload is the test.
     fu = (final_url or url or "").lower()
-    if any(m in fu for m in _SEARCH_MARKERS):
+    if (not is_json) and any(m in fu for m in _SEARCH_MARKERS):
         out["verdict"] = "broken"
         out["reason"] = ("resolves to a SEARCH page, not a listing (%s) — the "
                          "tracked URL is wrong or the listing was removed" % fu)
@@ -147,9 +153,19 @@ def classify(url: str, status, final_url: str, body: str,
                          "listing (wrong URL, or delisted)")
         return out
 
-    m = re.search(r"(\d{1,3})\s*tools", low)
-    found = int(m.group(1)) if m else None
+    # v2: a page can carry SEVERAL different counts at once (Surface Truth
+    # #30 found four live simultaneously). Taking the FIRST match made the
+    # verdict depend on page order — mcp.so carries both "79 tools" (x6) and
+    # "55 tools" (x1). Count every distinct value, prefer the most frequent,
+    # and surface disagreement rather than hiding it behind one number.
+    counts: dict = {}
+    for mm in re.finditer(r"(\d{1,3})\s*tools", low):
+        v = int(mm.group(1))
+        counts[v] = counts.get(v, 0) + 1
+    found = max(counts, key=lambda k: (counts[k], k)) if counts else None
     out["found_tools"] = found
+    if len(counts) > 1:
+        out["all_counts"] = dict(sorted(counts.items()))
     if found is None:
         out["verdict"] = "verified_ok"
         out["reason"] = "our listing, no tool count published on the page"
@@ -161,7 +177,10 @@ def classify(url: str, status, final_url: str, body: str,
                          % (found, canon_tools))
         return out
     out["verdict"] = "verified_ok"
-    out["reason"] = "in sync (%s tools)" % found
+    out["reason"] = ("in sync (%s tools)" % found
+                     + ("; page also shows %s — mixed numbers live at once"
+                        % ", ".join(str(k) for k in out["all_counts"] if k != found)
+                        if out.get("all_counts") else ""))
     return out
 
 
