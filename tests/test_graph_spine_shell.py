@@ -185,6 +185,23 @@ def test_live_deals_predicate_exists_and_is_percent_free():
         "use LEFT(data_flag,11) — the LIKE form carries a literal %"
 
 
+def test_blindspot_lane_mirrors_the_resolver_guards():
+    """★ A lane must not measure a target the code it audits is forbidden to
+    hit. Lane 5a's first cut omitted the resolver's _GENERIC_PREFIX_STOP and
+    counted 17 blind-spot entities where the resolver can only ever resolve 16
+    — "Power" prefix-matches a garbage facility name and is stoplisted ON
+    PURPOSE — so the check would have sat permanently RED at 1.
+
+    The stoplist must be IMPORTED from the resolver, never restated here, or
+    the two drift and the lane silently starts lying again."""
+    body = _func_src("_lane_entity_spine")
+    assert "_GENERIC_PREFIX_STOP" in body, \
+        "lane 5a does not apply the resolver's stoplist — unreachable target"
+    assert "from routes.news_entity_extraction import" in body, \
+        "the stoplist is restated rather than imported — it will drift"
+    assert "NOT IN (" in body
+
+
 def test_brain_rag_deals_corpus_has_quarantine_gate():
     """The registry fix itself: without it, 2,811 embedded chunks point at
     rows /api/deals refuses to serve, and `deals` is in PUBLIC_CORPORA so they

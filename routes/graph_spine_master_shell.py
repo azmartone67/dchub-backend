@@ -601,9 +601,29 @@ def _lane_entity_spine(c, ctx) -> list[dict]:
     # gap in our code, not in the world, so it is fixable and must be 0.
     # (Was 16 — Azure, Crown Castle, Alibaba, Facebook, Stargate … — because
     # facility names carry the site: "Azure Korea Central (Seoul)".)
+    # ★ The lane MUST mirror the resolver's guards exactly, or it measures a
+    # target the resolver is not allowed to hit. The first cut omitted
+    # _GENERIC_PREFIX_STOP and counted 17 where the resolver can only ever
+    # resolve 16 — "Power" prefix-matches "power generator for
+    # government-linked data center …" and is stoplisted ON PURPOSE, so the
+    # check would have sat permanently RED at 1. The stoplist is IMPORTED
+    # rather than restated so the two can never drift apart.
+    try:
+        from routes.news_entity_extraction import _GENERIC_PREFIX_STOP as _stop
+        stop_sql = ", ".join(
+            "'" + w.replace("'", "''") + "'" for w in sorted(_stop)) or "''"
+    except Exception as e:
+        logger.debug("[graph-spine] stoplist import failed: %s", e)
+        out.append(_check(
+            "es_blindspot", "resolver has no known blind spot", None,
+            "could not import the resolver's stoplist — refusing to measure "
+            "against guards that may not match the code", critical=True))
+        return out
+
     r = _row(c, "SELECT count(*) FROM news_discovered_entities e"
                 " WHERE e.in_facilities = FALSE"
                 "   AND length(trim(e.entity_name)) >= 4"
+                "   AND lower(trim(e.entity_name)) NOT IN (" + stop_sql + ")"
                 "   AND EXISTS (SELECT 1 FROM facilities f"
                 "               WHERE lower(f.name) LIKE lower(trim(e.entity_name))"
                 "                     || ' ' || chr(37))")
