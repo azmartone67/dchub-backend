@@ -213,26 +213,33 @@ def run_scan() -> dict:
             results.append(v)
             try:
                 with c.cursor() as cur:
-                    cur.execute(
-                        "INSERT INTO registry_acquisition_candidates"
-                        " (name, home_url, probe_url, submit_url, verdict,"
-                        "  reason, home_status, probe_status, checked_at,"
-                        "  first_absent_at)"
-                        " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,NOW(),"
-                        "         CASE WHEN %s='absent' THEN NOW() END)"
-                        " ON CONFLICT (name) DO UPDATE SET"
-                        "  verdict=EXCLUDED.verdict, reason=EXCLUDED.reason,"
-                        "  home_status=EXCLUDED.home_status,"
-                        "  probe_status=EXCLUDED.probe_status,"
-                        "  checked_at=NOW(),"
-                        "  first_absent_at = CASE"
-                        "    WHEN EXCLUDED.verdict='absent'"
-                        "     AND registry_acquisition_candidates.first_absent_at IS NOT NULL"
-                        "    THEN registry_acquisition_candidates.first_absent_at"
-                        "    WHEN EXCLUDED.verdict='absent' THEN NOW() ELSE NULL END",
-                        (cand["name"], cand["home"], cand["probe"],
-                         cand["submit"], v["verdict"], v["reason"][:400],
-                         hs, ps, v["verdict"]))
+                    # NOTE: kept as ONE contiguous string. The
+                    # insert-no-on-conflict lint reads a quote-bounded window,
+                    # so an ON CONFLICT split across adjacent string fragments
+                    # is invisible to it (third time this trap has bitten —
+                    # brain_llm_usage and slow_requests were whitelisted, but
+                    # this table genuinely upserts, so whitelisting would hide
+                    # a real omission later).
+                    cur.execute("""
+                        INSERT INTO registry_acquisition_candidates
+                          (name, home_url, probe_url, submit_url, verdict,
+                           reason, home_status, probe_status, checked_at,
+                           first_absent_at)
+                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,NOW(),
+                                CASE WHEN %s='absent' THEN NOW() END)
+                        ON CONFLICT (name) DO UPDATE SET
+                          verdict=EXCLUDED.verdict, reason=EXCLUDED.reason,
+                          home_status=EXCLUDED.home_status,
+                          probe_status=EXCLUDED.probe_status,
+                          checked_at=NOW(),
+                          first_absent_at = CASE
+                            WHEN EXCLUDED.verdict='absent'
+                             AND registry_acquisition_candidates.first_absent_at IS NOT NULL
+                            THEN registry_acquisition_candidates.first_absent_at
+                            WHEN EXCLUDED.verdict='absent' THEN NOW() ELSE NULL END
+                    """, (cand["name"], cand["home"], cand["probe"],
+                          cand["submit"], v["verdict"], v["reason"][:400],
+                          hs, ps, v["verdict"]))
                 c.commit()
             except Exception:  # noqa: BLE001
                 try:
