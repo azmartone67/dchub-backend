@@ -115,9 +115,19 @@ def _query_live() -> dict:
         # artifact fired canonical_floor_above_live_reality ("live=5 vs floor
         # 400") and made a healthy pipeline look dead. Queue counts belong to
         # the dedup/approval loops, never to "verified".
+        # ★★2026-07-27: count DISTINCT canonical_slug, not ROWS. The keeper-
+        # election repair (repair_dedup_keeper_election.py) elected a survivor
+        # for the 9,318 facilities that had none, taking keeper ROWS from 5,737
+        # to 15,055 — but there are only 14,686 distinct facilities, because 41
+        # groups carry more than one keeper. Counting rows made this phrase
+        # read "15,000+ verified" against a reality of 14,686: an over-claim,
+        # and exactly the canonical_floor_above_live_reality failure this module
+        # exists to prevent. Distinct-slug is the facility count; rows are not.
         try:
-            cur.execute("SELECT COUNT(*) FROM discovered_facilities "
-                        "WHERE COALESCE(is_duplicate,0)=0")
+            cur.execute("SELECT COUNT(DISTINCT canonical_slug) "
+                        "FROM discovered_facilities "
+                        "WHERE COALESCE(is_duplicate,0)=0 "
+                        "  AND canonical_slug IS NOT NULL")
             n = int((cur.fetchone() or [0])[0] or 0)
             if n > 0:
                 out["facilities_verified"] = n
