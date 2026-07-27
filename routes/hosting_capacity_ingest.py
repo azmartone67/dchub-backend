@@ -410,6 +410,58 @@ _ADMIN_KEY = (os.environ.get("DCHUB_ADMIN_KEY")
               or os.environ.get("DCHUB_INTERNAL_KEY") or "").strip()
 
 
+@hosting_capacity_bp.route("/api/v1/grid/hosting-capacity/feeders",
+                           methods=["GET"])
+def hosting_capacity_feeders_endpoint():
+    """Map layer feed: utility-published feeder hosting capacity within a
+    bbox. Public data (all sourced from public utility GIS), anon-open,
+    capacity-DESC so the cap keeps the most useful rows. ?bbox=w,s,e,n."""
+    try:
+        w, s, e, n = [float(x) for x in
+                      (_rq.args.get("bbox") or "").split(",")]
+    except Exception:
+        return jsonify(error="bbox_required",
+                       hint="bbox=west,south,east,north (lng/lat)"), 400
+    if not (-180 <= w < e <= 180 and -90 <= s < n <= 90):
+        return jsonify(error="bad_bbox"), 400
+    limit = max(1, min(int(_rq.args.get("limit", 3000) or 3000), 4000))
+    c = _conn()
+    if c is None:
+        return jsonify(error="no_database"), 503
+    try:
+        with c.cursor() as cur:
+            cur.execute("""
+                SELECT utility, feeder_id, substation, region, voltage_kv,
+                       capacity_mw_max, capacity_mw_min, lat, lng, src_updated
+                  FROM hosting_capacity_feeders
+                 WHERE lng BETWEEN %s AND %s AND lat BETWEEN %s AND %s
+                   AND capacity_mw_max IS NOT NULL
+                 ORDER BY capacity_mw_max DESC
+                 LIMIT %s
+            """, (w, e, s, n, limit))
+            feeders = [{"utility": r[0], "feeder_id": r[1], "substation": r[2],
+                        "region": r[3], "voltage_kv": r[4],
+                        "capacity_mw_max": r[5], "capacity_mw_min": r[6],
+                        "lat": r[7], "lng": r[8], "src_updated": r[9]}
+                       for r in cur.fetchall()]
+        resp = jsonify(feeders=feeders, count=len(feeders), limit=limit,
+                       source="utility-published hosting-capacity GIS "
+                              "(PHI, ConEd, ORU, NYSEG/RG&E, RI Energy, "
+                              "NGrid-NY, Dominion VA binned)",
+                       note=("Informational, not binding interconnection "
+                             "guidance; verify with the utility."))
+        resp.headers["Cache-Control"] = "public, max-age=300"
+        resp.headers["Access-Control-Allow-Origin"] = "*"
+        return resp
+    except Exception as ex:
+        return jsonify(error=str(ex)[:160]), 500
+    finally:
+        try:
+            c.close()
+        except Exception:
+            pass
+
+
 @hosting_capacity_bp.route("/api/v1/grid/hosting-capacity/ingest",
                            methods=["POST"])
 def hosting_capacity_ingest_endpoint():
