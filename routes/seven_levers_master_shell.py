@@ -204,6 +204,49 @@ def _lane_zone_sync() -> list[dict]:
     return out
 
 
+def _lane_registry_truth() -> list[dict]:
+    """Registry listings are the top of the funnel — ~84% of new agents arrive
+    as generic MCP clients, i.e. via directories. This lane is CRITICAL because
+    the previous machinery reported healthy on a population it could not read:
+    11 of 16 listings were unreadable (403/429/redirect-to-search) and every one
+    recorded drift_detected=False. 'Could not check' is now its own verdict and
+    never counts as clean."""
+    try:
+        from routes.registry_truth import read_state, UNVERIFIED_RED_DAYS
+    except Exception as e:  # noqa: BLE001
+        return [_check("rt_import", "registry-truth readable", None,
+                       "import failed: %s" % str(e)[:100], critical=True)]
+    st = read_state()
+    if not st.get("ok"):
+        return [_check("rt_db", "registry-truth readable", None,
+                       "state unreadable: %s" % st.get("error"), critical=True)]
+    counts = st.get("counts") or {}
+    total = sum(counts.values())
+    ok_n = counts.get("verified_ok", 0)
+    out = [_check(
+        "rt_broken", "no listing resolves to a non-DC-Hub page",
+        not st.get("broken"),
+        "all %d listings resolve to our page" % total if not st.get("broken")
+        else ("BROKEN: %s — the tracked URL is wrong or the listing was "
+              "removed; these are invisible arrivals" % ", ".join(st["broken"])),
+        critical=True)]
+    out.append(_check(
+        "rt_unverified", "no listing unread for >%dd" % UNVERIFIED_RED_DAYS,
+        not st.get("stale_unverified"),
+        "every listing verified recently" if not st.get("stale_unverified")
+        else ("UNREAD >%dd: %s — a listing we cannot read is NOT a listing we "
+              "know is healthy" % (UNVERIFIED_RED_DAYS,
+                                   ", ".join(st["stale_unverified"]))),
+        critical=True))
+    out.append(_check(
+        "rt_coverage", "listing verdict coverage", True,
+        "%d/%d verified_ok · %s" % (ok_n, total,
+            ", ".join("%s=%d" % (k, v) for k, v in sorted(counts.items())
+                      if k != "verified_ok") or "no other states"),
+        critical=False))
+    return out
+
+
 # ── lane 2 · recidivism ───────────────────────────────────────────────
 
 def _lane_recidivism() -> list[dict]:
@@ -552,6 +595,8 @@ def _run_tick() -> dict:
     lanes = [
         {"id": "zone_sync", "name": "1 · zone worker sync",
          "checks": _safe_lane(_lane_zone_sync)},
+        {"id": "registry_truth", "name": "1b · registry listings (top of funnel)",
+         "checks": _safe_lane(_lane_registry_truth)},
         {"id": "recidivism", "name": "2 · recidivism loop",
          "checks": _safe_lane(_lane_recidivism)},
         {"id": "perf", "name": "3 · performance tail",
