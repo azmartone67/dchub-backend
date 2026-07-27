@@ -38,13 +38,31 @@ _RANK_HIGHLIGHTS = [
 # The registries DC Hub is CONFIRMED listed on (homepage-verified). Curated + stable
 # so the shareable page never shows aspirational/abandoned crawler seeds as "listed".
 CONFIRMED_REGISTRIES = [
-    {"registry": "Smithery",              "url": "https://smithery.ai/servers/azmartone67/dchub"},
-    {"registry": "Glama",                 "url": "https://glama.ai/mcp/servers/azmartone67/dchub-mcp-server"},
-    {"registry": "mcp.so",                "url": "https://mcp.so/servers/dchub-mcp-server"},
-    {"registry": "PulseMCP",              "url": "https://www.pulsemcp.com/servers/dchub"},
-    {"registry": "LobeHub",               "url": "https://lobehub.com/mcp/dchub-mcp-server"},
-    {"registry": "Official MCP Registry", "url": "https://github.com/modelcontextprotocol/registry"},
-    {"registry": "GitHub MCP Registry",   "url": "https://github.com/mcp"},
+    {"registry": "Smithery",              "db": "smithery",
+     "url": "https://smithery.ai/servers/azmartone67/dchub"},
+    {"registry": "Glama",                 "db": "glama",
+     "url": "https://glama.ai/mcp/servers/azmartone67/dchub-mcp-server"},
+    {"registry": "mcp.so",                "db": "mcp_so",
+     "url": "https://mcp.so/servers/dchub-mcp-server"},
+    {"registry": "PulseMCP",              "db": "pulsemcp",
+     "url": "https://www.pulsemcp.com/servers/dchub"},
+    {"registry": "LobeHub",               "db": "lobehub",
+     "url": "https://lobehub.com/mcp/dchub-mcp-server"},
+    # ★ 2026-07-27: both of these previously linked a page that does NOT mention
+    # DC Hub — the official registry's own SOURCE REPO, and the bare github.com/mcp
+    # index. The listings are real; the links were unverifiable, so a reader who
+    # clicked "verify" found nothing. Now both point at a URL that actually
+    # contains our entry (the registry search API returns our isLatest record;
+    # github.com/mcp filters SERVER-side, confirmed against a control query).
+    {"registry": "Official MCP Registry", "db": "mcp_official_registry",
+     "url": "https://registry.modelcontextprotocol.io/v0/servers?search=cloud.dchub"},
+    {"registry": "GitHub MCP Registry",   "db": None,
+     "url": "https://github.com/mcp?query=dchub"},
+    {"registry": "Awesome MCP Servers",   "db": None,
+     "url": "https://github.com/search?q=repo%3Apunkpeye%2Fawesome-mcp-servers"
+            "+dchub&type=code"},
+    {"registry": "Source (GitHub)",       "db": None,
+     "url": "https://github.com/azmartone67/dchub-mcp-server"},
 ]
 
 # The recognizable AI platforms that reach DC Hub (homepage-verified by request volume).
@@ -73,10 +91,76 @@ def _tools_count() -> int:
     return _TOOLS_FALLBACK
 
 
+def _verified_map() -> dict:
+    """Per-registry VERIFIED facts from the presence crawler's own table.
+
+    Pure DB read — no outbound HTTP on a public page (and it preserves the
+    no-self-request invariant from the 2026-07-06 flywheel outage).
+
+    Columns are INTROSPECTED before use: registry_truth ALTERs this table to add
+    the truth_* verdict columns, and live schema has diverged from the repo DDL
+    before. A missing column degrades to "no verification shown" — never to a
+    wrong claim, and never to a 500 on a public page.
+    """
+    try:
+        from routes.brain_rag import _db
+        c = _db()
+    except Exception:
+        return {}
+    if c is None:
+        return {}
+    try:
+        with c.cursor() as cur:
+            cur.execute(
+                "SELECT column_name FROM information_schema.columns"
+                " WHERE table_name = 'mcp_presence_listings'")
+            have = {r[0] for r in cur.fetchall()}
+            if "registry_name" not in have:
+                return {}
+            tools_col = ("dchub_metric_published_tools"
+                         if "dchub_metric_published_tools" in have else "NULL")
+            when_col = ("truth_ok_at" if "truth_ok_at" in have
+                        else "last_crawled_at" if "last_crawled_at" in have else "NULL")
+            verdict_col = "truth_verdict" if "truth_verdict" in have else "NULL"
+            cur.execute(
+                "SELECT registry_name, %s, %s, %s FROM mcp_presence_listings"
+                % (tools_col, when_col, verdict_col))
+            rows = cur.fetchall()
+    except Exception:
+        return {}
+    finally:
+        try:
+            c.close()
+        except Exception:
+            pass
+    out = {}
+    for name, tools, when, verdict in rows:
+        out[name] = {
+            "tools": int(tools) if tools else None,
+            # Only 'verified_*' earns a checkmark. broken / unverified / NULL all
+            # fall through to a plain "listed" — we state what we checked, and
+            # stay silent about what we could not.
+            "verified_at": (when.strftime("%Y-%m-%d")
+                            if when and str(verdict or "").startswith("verified") else None),
+        }
+    return out
+
+
 def _registries_live():
-    """Confirmed registry listings (curated, homepage-verified)."""
-    return [{**r, "listed": True, "tools": None, "last_seen": None}
-            for r in CONFIRMED_REGISTRIES]
+    """Confirmed listings, ENRICHED with what the crawler actually verified.
+
+    The SET of rows stays curated so aspirational crawler seeds never appear as
+    "listed"; the per-row verification date and published tool count come from
+    the crawler, so the checkmark means something a reader can date.
+    """
+    vm = _verified_map()
+    out = []
+    for r in CONFIRMED_REGISTRIES:
+        v = vm.get(r.get("db") or "", {})
+        out.append({"registry": r["registry"], "url": r["url"], "listed": True,
+                    "tools": v.get("tools"), "verified_at": v.get("verified_at"),
+                    "last_seen": None})
+    return out
 
 
 def _platforms_live():
@@ -137,7 +221,7 @@ def page_standing():
         for r in s["rank_highlights"])
     reg_rows = "".join(
         f"<tr><td><a href='{e(r['url'])}' rel='noopener'>{e(r['registry'])}</a></td>"
-        f"<td>{'✅ listed' if r['listed'] else '—'}</td>"
+        f"<td>{('✅ verified ' + e(r['verified_at'])) if r.get('verified_at') else 'listed'}</td>"
         f"<td>{e(r['tools']) if r.get('tools') else '—'}</td></tr>"
         for r in s["registries"]) or "<tr><td colspan=3>Refreshing…</td></tr>"
     plat_rows = "".join(
@@ -155,6 +239,17 @@ def page_standing():
         "<h1>DC Hub — MCP Standing &amp; Adoption</h1>"
         f"<p class=\"lede\">{e(s['headline'])}</p>"
         f"<div class=\"big\">{e(s['summary'])}</div>"
+        "<h2>Where the MCP server lives</h2>"
+        "<table><tbody>"
+        f"<tr><td><b>Endpoint</b></td><td><code>{BASE}/mcp</code></td></tr>"
+        "<tr><td><b>Transport</b></td><td>Streamable HTTP (remote — nothing to install)</td></tr>"
+        f"<tr><td><b>Tools</b></td><td>{e(plats.get('tools_count'))} live</td></tr>"
+        "<tr><td><b>Access</b></td><td>Works keyless at free-tier depth; "
+        "call <code>claim_free_key</code> for the full free tier</td></tr>"
+        "<tr><td><b>Source</b></td><td><a href=\"https://github.com/azmartone67/dchub-mcp-server\" "
+        "rel=\"noopener\">github.com/azmartone67/dchub-mcp-server</a></td></tr>"
+        "<tr><td><b>Setup</b></td><td><a href=\"/connect#start\">Per-client setup guides →</a></td></tr>"
+        "</tbody></table>"
         "<h2>Registry rankings</h2><table><thead><tr><th>Registry</th><th>Standing</th><th></th></tr></thead><tbody>"
         + rank_rows + "</tbody></table>"
         "<h2>Listed on</h2><table><thead><tr><th>Registry</th><th>Status</th><th>Tools</th></tr></thead><tbody>"

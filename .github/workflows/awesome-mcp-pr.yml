@@ -28,7 +28,7 @@ on:
   schedule:
     # r40 (2026-05-25): weekly auto-attempt. The workflow's first step
     # no-ops if PR_SUBMIT_TOKEN secret is absent, and the clone step
-    # no-ops if dchub.cloud is already in the README. So this cron is
+    # no-ops if our entry is already in the README. So this cron is
     # safe to run every week even before the secret is provisioned —
     # once added, the next Sunday-04:17 UTC tick auto-opens the PR.
     - cron: '17 4 * * 0'
@@ -85,7 +85,9 @@ jobs:
           git clone --depth 1 "https://github.com/$TARGET" /tmp/amcp
           cd /tmp/amcp
 
-          # Step 2: skip if our entry is already there.
+          # Step 2: skip if our entry is already there. The guard greps the
+          # REPO SLUG (azmartone67/dchub-mcp-server) because that is what the
+          # README entry actually contains — it does NOT contain 'dchub.cloud'.
           if grep -q "azmartone67/dchub-mcp-server" README.md; then
             echo "::notice::dchub-mcp-server already present in README.md — no PR needed."
             echo "ALREADY_PRESENT=1" >> "$GITHUB_ENV"

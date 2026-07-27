@@ -277,6 +277,15 @@ def _seed_registries(cur) -> int:
     Existing rows are left alone — use the reseed-broken endpoint to
     force-update a row's URLs/notes."""
     inserted = 0
+    # ★ 2026-07-27 — was ON CONFLICT DO NOTHING, which meant a listing_url
+    # CORRECTED in this seed never reached an existing row. That is the root
+    # cause of the recurring "Glama listing is broken" finding: the seed has
+    # carried the right connectors URL for weeks while the live row kept the
+    # stale https://glama.ai/mcp/servers/dchub, which 302s to a SEARCH page —
+    # so registry_truth kept reading someone else's page and calling it ours.
+    # The repo seed is reviewed and version-controlled, so it is the source of
+    # truth for SEEDED rows; discovered rows are not in SEED_REGISTRIES and are
+    # untouched. The WHERE clause keeps this a no-op when nothing changed.
     for r in SEED_REGISTRIES:
         try:
             notes_blob = json.dumps(r.get("notes") or {})
@@ -285,7 +294,12 @@ def _seed_registries(cur) -> int:
                 INSERT INTO mcp_presence_listings
                     (registry_name, listing_url, submit_url, discovered, notes)
                 VALUES (%s, %s, %s, FALSE, %s::jsonb)
-                ON CONFLICT (registry_name) DO NOTHING
+                ON CONFLICT (registry_name) DO UPDATE
+                    SET listing_url = EXCLUDED.listing_url,
+                        submit_url  = COALESCE(EXCLUDED.submit_url,
+                                               mcp_presence_listings.submit_url)
+                    WHERE mcp_presence_listings.listing_url
+                          IS DISTINCT FROM EXCLUDED.listing_url
                 """,
                 (r["registry_name"], r["listing_url"],
                  r.get("submit_url"), notes_blob),
