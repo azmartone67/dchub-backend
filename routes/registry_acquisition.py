@@ -220,26 +220,36 @@ def run_scan() -> dict:
                     # brain_llm_usage and slow_requests were whitelisted, but
                     # this table genuinely upserts, so whitelisting would hide
                     # a real omission later).
+                    # NOTE: no apostrophes may appear between INSERT INTO and
+                    # ON CONFLICT — the insert-no-on-conflict lint reads a
+                    # window that terminates at the first quote OR apostrophe,
+                    # so a 'literal' in the VALUES clause hides the ON CONFLICT
+                    # that follows it. The absent-flag is therefore passed as a
+                    # BOOLEAN parameter rather than compared to a SQL literal.
+                    # (Third recurrence of this trap: brain_llm_usage and
+                    # slow_requests were whitelisted because they are
+                    # append-only; this table genuinely upserts, so a
+                    # whitelist would hide a real omission later.)
+                    is_absent = (v["verdict"] == "absent")
                     cur.execute("""
                         INSERT INTO registry_acquisition_candidates
                           (name, home_url, probe_url, submit_url, verdict,
                            reason, home_status, probe_status, checked_at,
                            first_absent_at)
                         VALUES (%s,%s,%s,%s,%s,%s,%s,%s,NOW(),
-                                CASE WHEN %s='absent' THEN NOW() END)
+                                CASE WHEN %s THEN NOW() END)
                         ON CONFLICT (name) DO UPDATE SET
                           verdict=EXCLUDED.verdict, reason=EXCLUDED.reason,
                           home_status=EXCLUDED.home_status,
                           probe_status=EXCLUDED.probe_status,
                           checked_at=NOW(),
                           first_absent_at = CASE
-                            WHEN EXCLUDED.verdict='absent'
-                             AND registry_acquisition_candidates.first_absent_at IS NOT NULL
+                            WHEN %s AND registry_acquisition_candidates.first_absent_at IS NOT NULL
                             THEN registry_acquisition_candidates.first_absent_at
-                            WHEN EXCLUDED.verdict='absent' THEN NOW() ELSE NULL END
+                            WHEN %s THEN NOW() ELSE NULL END
                     """, (cand["name"], cand["home"], cand["probe"],
                           cand["submit"], v["verdict"], v["reason"][:400],
-                          hs, ps, v["verdict"]))
+                          hs, ps, is_absent, is_absent, is_absent))
                 c.commit()
             except Exception:  # noqa: BLE001
                 try:
