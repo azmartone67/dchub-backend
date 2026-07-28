@@ -57,20 +57,24 @@ jobs:
           # discarded. Plain --force against our own bot branch is correct.
           git push --force origin "$BRANCH"
 
+          # Built here, at the run-block's base indentation, NOT inside the
+          # `else` below. A heredoc terminator must sit at column 0 of the
+          # generated script; YAML strips only this block's own indent, so a
+          # heredoc nested one level deeper keeps 2 extra spaces, never matches
+          # `MD`, and the step dies with "unexpected end of file". (It did.)
+          cat > /tmp/pr-body.md <<'MD'
+          Automated weekly refresh of `docs/SHADOWED-ROUTES.md` by `weekly-shadow-audit`.
+
+          This used to be a direct push to `main`, which branch protection rejected (GH006) while `|| true` hid the failure — the file had not actually been updated since 2026-07-13.
+
+          Merge or close; the branch is force-refreshed each week.
+          MD
+
           EXISTING=$(gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number // empty')
           if [ -n "$EXISTING" ]; then
             echo "refreshed existing PR #$EXISTING"
             echo "- shadow inventory: refreshed [PR #$EXISTING]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/pull/$EXISTING)" >> "$GITHUB_STEP_SUMMARY"
           else
-            # --body-file, not an inline multi-line --body: continuation lines
-            # at column 0 would terminate this YAML block scalar.
-            cat > /tmp/pr-body.md <<'MD'
-            Automated weekly refresh of `docs/SHADOWED-ROUTES.md` by `weekly-shadow-audit`.
-
-            This used to be a direct push to `main`, which branch protection rejected (GH006) while `|| true` hid the failure — the file had not actually been updated since 2026-07-13.
-
-            Merge or close; the branch is force-refreshed each week.
-            MD
             URL=$(gh pr create --base main --head "$BRANCH" \
               --title "chore: weekly shadow route inventory refresh" \
               --body-file /tmp/pr-body.md \

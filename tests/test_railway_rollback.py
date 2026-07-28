@@ -259,6 +259,36 @@ def test_auto_rollback_remediation_steps_do_not_abort_the_job():
 
 
 @pytest.mark.parametrize("name", GIT_PUSH_WORKFLOWS)
+def test_run_scripts_are_valid_bash(name):
+    """Every `run:` script must actually parse as bash.
+
+    A heredoc nested inside an if/else keeps the extra indentation after YAML
+    strips the block indent, so its terminator never matches column 0 and the
+    step dies with "unexpected end of file". That shipped in
+    weekly-shadow-audit and only surfaced by dispatching the workflow: the
+    YAML parses fine, and the failure is in the *generated* shell script.
+    """
+    import re
+    import shutil
+    import subprocess
+
+    bash = shutil.which("bash")
+    if not bash:
+        pytest.skip("bash not available")
+
+    for i, script in enumerate(_run_scripts(WORKFLOWS / name)):
+        # ${{ ... }} is interpolated by Actions before bash sees it; substitute
+        # a harmless literal so it does not confuse the parser.
+        cleaned = re.sub(r"\$\{\{[^}]*\}\}", "X", script)
+        proc = subprocess.run(
+            [bash, "-n"], input=cleaned, text=True, capture_output=True
+        )
+        assert proc.returncode == 0, (
+            f"{name} run-script #{i} is not valid bash:\n{proc.stderr.strip()}"
+        )
+
+
+@pytest.mark.parametrize("name", GIT_PUSH_WORKFLOWS)
 def test_no_push_failure_is_swallowed(name):
     """`git push ... || true` is what hid two weeks of no-op runs.
 
