@@ -27266,7 +27266,24 @@ def _build_sitemap_sections():
         provider_slug = slugify(provider) or ''
         name_slug = slugify(name) or ''
 
-        if not name_slug or len(name_slug) < 3:
+        # ★★ 2026-07-28: the FROZEN slug wins, and it must be consulted BEFORE
+
+        # this guard. main.py's own slugify keeps only [a-z0-9], so a facility
+
+        # named in Chinese/Japanese/Cyrillic computes an EMPTY name_slug and
+
+        # was `continue`d out of the sitemap entirely — even though the slug
+
+        # freeze had already given it a perfectly good transliterated URL.
+
+        # That silently cost 210 live facilities their sitemap entry, and it
+
+        # is why generation 53 did not pick them up despite the freeze.
+
+        _stored_first = row[7] if len(row) > 7 else None
+
+        if not _stored_first and (not name_slug or len(name_slug) < 3):
+
             continue
 
         # Generate STABLE 8-char hash keyed on provider|name (invariant across

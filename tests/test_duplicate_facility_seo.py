@@ -133,3 +133,29 @@ def test_dupe_set_excludes_slugs_a_LIVE_row_still_uses():
         "the duplicate-slug set must exclude any slug a LIVE row still uses, "
         "or the filter removes real pages")
     assert "COALESCE(s.is_duplicate, 0) = 0" in seg
+
+
+def test_frozen_slug_survives_the_name_length_guard():
+    """A facility named in a non-Latin script must still reach the sitemap.
+
+    ★ main.py's own slugify keeps only [a-z0-9], so a Chinese/Japanese/Cyrillic
+    name computes an EMPTY name_slug. The `len(name_slug) < 3 -> continue` guard
+    ran BEFORE the stored canonical_slug was consulted 15 lines later, so 210
+    live facilities with a perfectly good transliterated frozen slug were
+    dropped from the sitemap. Generation 53 proved it: the facility shard count
+    did not move at all (15,717 before and after) while the freeze had already
+    given those rows real URLs.
+    """
+    code = _code(MAIN)
+    # ★ anchor on CODE, not a comment -- _code() strips comment lines, so a
+    # comment anchor makes the split silently return one part and the test
+    # dies with IndexError instead of asserting anything.
+    seg = code.split("for row in fac_rows:", 1)[1][:2600]
+    assert "_stored_first" in seg, "the frozen slug must be read before the guard"
+    i_stored = seg.find("_stored_first =")
+    i_guard = seg.find("len(name_slug) < 3")
+    assert i_stored < i_guard, (
+        "the stored canonical_slug must be consulted BEFORE the name-length "
+        "guard, or frozen non-Latin slugs are skipped")
+    assert "not _stored_first and" in seg, (
+        "the guard must not fire when a frozen slug exists")
