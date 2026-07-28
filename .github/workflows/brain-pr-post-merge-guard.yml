@@ -130,6 +130,7 @@ jobs:
             echo "detail=RAILWAY_TOKEN not set" >> $GITHUB_OUTPUT
             exit 1
           fi
+          python3 -c 'import requests' 2>/dev/null || pip install --quiet requests
           python3 scripts/railway_rollback.py --json > /tmp/rb.json 2>/tmp/rb.err
           RC=$?
           cat /tmp/rb.err

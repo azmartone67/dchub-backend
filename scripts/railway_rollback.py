@@ -50,8 +50,8 @@ import json
 import os
 import sys
 import time
-import urllib.error
-import urllib.request
+
+import requests
 
 API = os.environ.get("RAILWAY_API", "https://backboard.railway.com/graphql/v2")
 
@@ -86,27 +86,24 @@ class RailwayError(RuntimeError):
 
 def gql(query: str, variables: dict, token: str, timeout: int = 30) -> dict:
     """POST a GraphQL request and return `data`, raising on `errors`."""
-    body = json.dumps({"query": query, "variables": variables}).encode()
-    req = urllib.request.Request(
-        API,
-        data=body,
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {token}",
-            # Default urllib UA gets filtered by some edges; be explicit.
-            "User-Agent": "dchub-auto-rollback/1.0",
-        },
-    )
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            payload = json.loads(resp.read().decode() or "{}")
-    except urllib.error.HTTPError as exc:  # 4xx/5xx still carry a GraphQL body
-        try:
-            payload = json.loads(exc.read().decode() or "{}")
-        except Exception:
-            raise RailwayError(f"HTTP {exc.code} from Railway API") from exc
+        resp = requests.post(
+            API,
+            json={"query": query, "variables": variables},
+            headers={
+                "Authorization": f"Bearer {token}",
+                "User-Agent": "dchub-auto-rollback/1.0",
+            },
+            timeout=timeout,
+        )
     except Exception as exc:
         raise RailwayError(f"Railway API unreachable: {exc}") from exc
+
+    # A 4xx/5xx still carries a GraphQL error body worth surfacing.
+    try:
+        payload = resp.json() or {}
+    except ValueError:
+        raise RailwayError(f"HTTP {resp.status_code} from Railway API (non-JSON body)")
 
     if payload.get("errors"):
         msgs = "; ".join(e.get("message", "?") for e in payload["errors"])

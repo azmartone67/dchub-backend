@@ -112,6 +112,9 @@ jobs:
             echo "outcome=no-token" >> $GITHUB_OUTPUT
             exit 1
           fi
+          # Do not rely on the runner image preinstalling requests — this path
+          # only ever runs while production is broken.
+          python3 -c 'import requests' 2>/dev/null || pip install --quiet requests
           MODE=""
           if [ "$DRILL" = "true" ]; then MODE="--dry-run"; fi
           python3 scripts/railway_rollback.py $MODE --json > /tmp/rb.json 2>/tmp/rb.err
