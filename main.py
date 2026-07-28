@@ -35823,6 +35823,33 @@ try:
 except Exception as _e:
     print(f"[main] brain_l14_slo_burn register failed: {_e}", flush=True)
 
+# SLO rollback sentinel (2026-07-28): the post-deploy SLO probe, moved off
+# GitHub cron. auto-rollback.yml declares */5 but GitHub throttles schedules in
+# this repo to a MEASURED median gap of 29.7 min (p90 72.6, max 84.1, never
+# under 22) — so the safety net advertised 5-minute detection and delivered
+# ~30-85. This scheduler is ours and actually runs every 60s.
+#
+# Worker only. The blueprint is registered in every role so /status is readable
+# from the public domain, but the loop is gated on _ROLE_RUNS_BG: dchub-worker
+# is a SEPARATE Railway service from dchub-backend, so it keeps grading while
+# the web service is 5xxing. It reads the verdict in-process from
+# slo_error_budget.compute_budget() (a DB read), so there is no HTTP hop
+# through the thing it is measuring.
+#
+# Rollback actuation is DISARMED unless SLO_SENTINEL_ROLLBACK=1 AND
+# RAILWAY_TOKEN are both set on the worker. Disarmed it still detects, logs and
+# files a brain finding.
+try:
+    from routes.slo_rollback_sentinel import sentinel_bp, start_scheduler as _slo_sentinel_start
+    app.register_blueprint(sentinel_bp)
+    if _ROLE_RUNS_BG:
+        _started = _slo_sentinel_start()
+        print(f"[main] slo_rollback_sentinel registered; loop started={_started}", flush=True)
+    else:
+        print("[main] slo_rollback_sentinel registered (role=web — loop runs on worker)", flush=True)
+except Exception as _e:
+    print(f"[main] slo_rollback_sentinel register failed: {_e}", flush=True)
+
 # Phase ZZZZZ-round41 (2026-05-25): DCPI cron health + recovery
 try:
     from routes.dcpi_cron_health import dcpi_health_bp

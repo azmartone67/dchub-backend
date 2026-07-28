@@ -73,6 +73,58 @@ To confirm it works once set, run `auto-rollback` from the Actions tab with
 **drill = true**. That resolves the rollback target and opens a `🧪 drill` issue
 without touching production.
 
+## Who is watching, and how often
+
+| detector | where | real cadence | can roll back |
+|---|---|---|---|
+| `slo_rollback_sentinel` | **dchub-worker** | every 60s | yes, when armed |
+| `auto-rollback.yml` | GitHub cron | **~30 min median** (p90 73, max 84) | yes, if `RAILWAY_TOKEN` set |
+
+The sentinel is the primary. The GitHub job declares `*/5` but GitHub throttles
+schedules in this repo — measured over 100 runs, the median gap is 29.7 min and
+it is never under 22. It is kept as a backstop because it is the only detector
+in a **separate failure domain**: `dchub-worker` deploys from this same repo, so
+a bad commit can take the sentinel down along with the backend.
+
+The sentinel grades in-process via `slo_error_budget.compute_budget()` — a DB
+read, no HTTP hop through the web service it is measuring, and the same function
+the endpoint serves, so the two cannot drift on what `hard_burn` means.
+
+> **Blind spot, unchanged by the move:** the verdict reads `brain_http_errors`,
+> which the *web* role writes after each response. A **total** outage writes no
+> rows and therefore grades as `within_budget`. Total-outage detection belongs
+> to the uptime probes and the failover chain, not to this gate.
+
+### Arming the sentinel
+
+Detection always runs. Rolling production back needs BOTH, on **dchub-worker**:
+
+```
+SLO_SENTINEL_ROLLBACK=1
+RAILWAY_TOKEN=<project-scoped token>
+```
+
+Disarmed it still detects, logs, and files a `brain_findings` row
+(`detector='slo_rollback_sentinel'`) — it just does not actuate.
+
+Check it: `GET /api/v1/slo/sentinel/status`. If `serving_process_runs_loop` is
+false you reached a *web* replica; the loop runs on the worker, so read
+dchub-worker logs for the real state.
+
+Other knobs: `SLO_SENTINEL_ENABLED=0` (kill switch),
+`SLO_SENTINEL_INTERVAL_S` (default 60), `SLO_SENTINEL_COOLDOWN_S` (default
+1800 — after acting it stays quiet, because `brain_http_errors` still holds the
+pre-rollback 5xx for its 5-minute window and would otherwise re-trigger on
+damage already fixed).
+
+### ⚠️ Arm only one
+
+If `RAILWAY_TOKEN` is set as a **GitHub secret** *and* the sentinel is armed,
+both can roll back the same incident. The second actor runs after the first
+already restored the good image, sees it as "same commit as current", skips it,
+and **rolls back too far**. Recommended: arm the sentinel, leave `RAILWAY_TOKEN`
+unset in GitHub so `auto-rollback.yml` stays alert-only.
+
 ## Automatic path
 
 `auto-rollback.yml` samples `/api/v1/slo/error-budget` five times. On 3+/5

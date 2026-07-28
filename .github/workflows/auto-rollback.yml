@@ -1,4 +1,21 @@
 name: auto-rollback
+#
+# BACKSTOP, not the primary detector. The primary is the worker-side sentinel
+# (routes/slo_rollback_sentinel.py), which samples every 60s.
+#
+# This job's `*/5` cron is aspirational: GitHub throttles scheduled workflows in
+# this repo to a MEASURED median gap of 29.7 min (p90 72.6, max 84.1, never
+# under 22, over 100 runs 2026-07-25→07-28). It is kept because it is the only
+# detector in a SEPARATE failure domain — dchub-worker deploys from this same
+# repo, so a bad commit can take the sentinel down with the backend, and then
+# this is all that is left.
+#
+# ⚠️ Arm ONE of them. If `RAILWAY_TOKEN` is set here AND the worker sentinel is
+# armed (SLO_SENTINEL_ROLLBACK=1), both can roll back the same incident; the
+# second one runs after the first already restored the good image, so it would
+# skip that image as "same commit as current" and roll back TOO FAR.
+# Recommended: arm the sentinel, leave RAILWAY_TOKEN unset here so this stays
+# alert-only. See docs/ROLLBACK-RUNBOOK.md.
 on:
   push:
     branches: [main]   # run 5 min after every deploy
