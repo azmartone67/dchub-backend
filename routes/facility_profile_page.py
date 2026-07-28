@@ -559,10 +559,21 @@ def _render_profile(fac: dict, slug: str) -> str:
     # them. 6,192 flagged rows carry a duplicate_of_id; 5,674 of those resolve to
     # a live page, and only a RESOLVED twin is used — an unresolvable pointer
     # leaves the self-canonical alone rather than inventing a target.
+    # ★★ 2026-07-28 (third pass): consolidate on duplicate_of_id ALONE, not on
+    # is_duplicate. Setting is_duplicate=1 is a VISIBILITY flag — it drops the
+    # row from every is_duplicate-filtered count and from the sitemap, which is
+    # exactly how 9,318 facilities went missing and why
+    # repair_dedup_keeper_election.py had to elect keepers on 2026-07-27. I
+    # reproduced that bug at small scale: 57 of 58 slugs I flagged were left
+    # with no keeper, and it was reverted.
+    # The SEO job needs none of that. A duplicate_of_id pointer is enough to
+    # emit rel=canonical at the twin: the row stays live, stays counted, keeps
+    # serving 200, and Google consolidates the two URLs on its own. Suppression
+    # deletes a page; a canonical MERGES it.
     try:
-        if fac.get("is_duplicate"):
+        if fac.get("duplicate_of_id"):
             _twin = _canonical_twin_url(fac.get("duplicate_of_id"))
-            if _twin:
+            if _twin and _twin != canonical:
                 canonical = _twin
     except Exception:
         pass

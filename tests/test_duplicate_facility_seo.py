@@ -56,9 +56,17 @@ def test_duplicate_pages_canonicalise_to_their_twin():
     src = _code(PROFILE)
     assert "_canonical_twin_url" in src
     seg = src.split("canonical = f\"https://dchub.cloud/facilities/{_fslug}\"", 1)[1][:1200]
-    assert "is_duplicate" in seg and "canonical = _twin" in seg, (
-        "a flagged duplicate must point its canonical at the surviving row, "
-        "not at itself")
+    assert "duplicate_of_id" in seg and "canonical = _twin" in seg, (
+        "a row with a duplicate_of_id must point its canonical at the surviving "
+        "row, not at itself")
+    # ★ and it must NOT require is_duplicate. Gating on the visibility flag
+    # forces a suppression to buy a canonical: is_duplicate=1 drops the row from
+    # every filtered count and from the sitemap (how 9,318 facilities went
+    # missing, per repair_dedup_keeper_election.py). Consolidation needs the
+    # POINTER only -- the row stays live, counted, serving 200, and Google
+    # merges the two URLs itself.
+    assert 'fac.get("is_duplicate")' not in seg, (
+        "consolidation must not be gated on the suppression flag")
 
 
 def test_twin_lookup_refuses_an_unusable_target():
