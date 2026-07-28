@@ -37599,6 +37599,14 @@ try:
 except Exception as _fd_e:
     print(f"[main] facility_dedup register skipped: {_fd_e}", file=sys.stderr)
 
+try:
+    from routes.facility_dedup_v3 import facility_dedup_v3_bp
+    app.register_blueprint(facility_dedup_v3_bp)
+    print("[main] facility_dedup_v3_bp registered: "
+          "/api/v1/admin/facility-dedup-v3/{analyze,apply,undo}", flush=True)
+except Exception as _fd3_e:
+    print(f"[main] facility_dedup_v3 register skipped: {_fd3_e}", file=sys.stderr)
+
 # facility geo-quality: correct country labels from coordinates (bulk US-mislabel).
 try:
     from routes.facility_geo_quality import facility_geo_quality_bp, _ensure_columns as _gq_ensure
