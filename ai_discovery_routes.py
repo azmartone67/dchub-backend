@@ -1111,72 +1111,53 @@ Allow: /sitemap.xml
 Disallow: /api/
 Disallow: /admin/
 Disallow: /cdn-cgi/
+# /sites/<slug> serves ONE identical "Site Capacity Report" shell for every
+# slug (each variant canonicals back to /sites/), so the variants are an
+# unbounded crawl sink that can never rank. Keep the real /sites/ landing
+# page indexable; block the infinite per-slug variants beneath it.
+Disallow: /sites/
+Allow: /sites/$
 
-# AI Crawlers Welcome
-User-agent: GPTBot
-Allow: /
-
-User-agent: OAI-SearchBot
-Allow: /
-
-User-agent: ChatGPT-User
-Allow: /
-
-User-agent: ClaudeBot
-Allow: /
-
-User-agent: Claude-Web
-Allow: /
-
-User-agent: anthropic-ai
-Allow: /
-
-User-agent: PerplexityBot
-Allow: /
-
-User-agent: Perplexity-User
-Allow: /
-
-User-agent: Amazonbot
-Allow: /
-
-User-agent: Google-Extended
-Allow: /
-
-User-agent: Applebot-Extended
-Allow: /
-
-User-agent: meta-externalagent
-Allow: /
-
-# xAI / Grok — explicitly welcomed (documented UAs). Grok often rotates
+# ============================================================================
+# NAMED CRAWLER GROUPS — these do NOT inherit the rules above.
+# ★ Per RFC 9309 a crawler obeys ONLY its single most specific matching group
+#   and ignores "User-agent: *" entirely. So every hygiene Disallow must be
+#   REPEATED here or it is void for these bots. Measured 2026-07-28, when this
+#   section carried a bare "Allow: /": bingbot spent 20% of its crawl budget on
+#   /sites/* and 2% on /cdn-cgi/*, while only 24% reached /facilities/*.
+#   If you add a UA below, it inherits nothing — the rules must stay together.
+#
+# /api/* is deliberately left OPEN for this group: it is the only surface the
+# assistant crawlers fetch (Gemini crawls as Googlebot/GoogleOther, Copilot as
+# Bingbot). Restored 2026-06-28 after the 2026-06-13 blanket Disallows silently
+# cut them off. Only the never-rankable surfaces are closed here.
+#
+# xAI / Grok are explicitly welcomed (documented UAs). Grok often rotates
 # residential IPs + spoofs browser UAs, so this is a welcome signal, not a gate.
+# ============================================================================
+User-agent: GPTBot
+User-agent: OAI-SearchBot
+User-agent: ChatGPT-User
+User-agent: ClaudeBot
+User-agent: Claude-Web
+User-agent: anthropic-ai
+User-agent: PerplexityBot
+User-agent: Perplexity-User
+User-agent: Amazonbot
+User-agent: Google-Extended
+User-agent: Applebot-Extended
+User-agent: meta-externalagent
 User-agent: GrokBot
-Allow: /
-
 User-agent: xAI-Grok
-Allow: /
-
 User-agent: Grok-DeepSearch
-Allow: /
-
 User-agent: Bytespider
-Allow: /
-
 User-agent: CCBot
-Allow: /
-
-# Search/answer crawlers behind AI assistants — override the wildcard
-# Disallows so they keep fetching /api/* (their only paths). Gemini crawls as
-# Googlebot/GoogleOther; Copilot crawls as Bingbot. Restored 2026-06-28 after
-# the 2026-06-13 generic crawl-budget Disallows silently cut them off.
 User-agent: Googlebot
-Allow: /
-
 User-agent: GoogleOther
-Allow: /
-
 User-agent: Bingbot
+Disallow: /sites/
+Allow: /sites/$
+Disallow: /cdn-cgi/
 Allow: /
 
 # Discovery files
