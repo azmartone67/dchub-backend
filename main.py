@@ -26661,6 +26661,49 @@ def _build_sitemap_sections():
         # ~9k URLs short) with zero log trace. Count + log every outcome so
         # a regression here is visible in Railway logs, never inferred from
         # GSC weeks later.
+        # ★★ 2026-07-28 — THE "CRAWLED, CURRENTLY NOT INDEXED" CAUSE (4,494).
+        # discovered_facilities is filtered by `COALESCE(is_duplicate,0) = 0`
+        # above, but THIS legacy union has no such filter — and the comment
+        # above ("seen_slugs drops any overlap with discovered") is exactly
+        # why it leaks: a flagged duplicate was already EXCLUDED from the
+        # discovered query, so its slug never enters seen_slugs and there is
+        # nothing for the overlap guard to catch. The legacy row then re-adds
+        # it. Measured: 7,877 of the 17,870 legacy rows are facilities we have
+        # ALREADY identified as duplicates — and all of them were being served
+        # 200 and submitted to Google. We flagged the duplicates and then
+        # published them anyway.
+        # ★ Filtered in PYTHON, not SQL, so the minimal fallback query below
+        #   (which cannot select canonical_slug) is covered by the same guard.
+        # ★ Fail-open: if the duplicate set cannot be loaded the union proceeds
+        #   unfiltered — a bigger sitemap is a smaller failure than an empty one.
+        _dupe_slugs = set()
+        try:
+            c.execute("SELECT canonical_slug FROM discovered_facilities "
+                      "WHERE COALESCE(is_duplicate, 0) <> 0 "
+                      "  AND canonical_slug IS NOT NULL AND canonical_slug <> ''")
+            _dupe_slugs = {r[0] for r in (c.fetchall() or []) if r and r[0]}
+        except Exception as _dz:
+            try: conn.rollback()
+            except Exception: pass
+            logger.warning("sitemap: duplicate-slug set unavailable, legacy union "
+                           "will NOT be duplicate-filtered: %s", _dz)
+
+        def _drop_known_dupes(rows):
+            """Strip rows whose canonical_slug is a KNOWN duplicate."""
+            if not _dupe_slugs or not rows:
+                return rows
+            out, dropped = [], 0
+            for _r in rows:
+                _cs = _r[7] if len(_r) > 7 else None
+                if _cs and _cs in _dupe_slugs:
+                    dropped += 1
+                    continue
+                out.append(_r)
+            if dropped:
+                logger.info("sitemap: legacy union dropped %d known-duplicate "
+                            "facility URLs", dropped)
+            return out
+
         _legacy_unioned = 0
         try:
             _has_canon_legacy = False
@@ -26685,7 +26728,7 @@ def _build_sitemap_sections():
                 """ + _osm_excl_legacy + """
                 LIMIT 50000
             """)
-            _legacy_rows = c.fetchall()
+            _legacy_rows = _drop_known_dupes(c.fetchall())
             _legacy_unioned = len(_legacy_rows)
             fac_rows = list(fac_rows) + list(_legacy_rows)
         except Exception as _legacy_err:
@@ -26699,7 +26742,7 @@ def _build_sitemap_sections():
                     WHERE name IS NOT NULL AND name != ''
                     LIMIT 50000
                 """)
-                _legacy_rows = c.fetchall()
+                _legacy_rows = _drop_known_dupes(c.fetchall())
                 _legacy_unioned = len(_legacy_rows)
                 fac_rows = list(fac_rows) + list(_legacy_rows)
             except Exception as _legacy_err2:

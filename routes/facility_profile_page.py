@@ -541,6 +541,25 @@ def _render_profile(fac: dict, slug: str) -> str:
     _fslug = fac.get("canonical_slug") or slug
     canonical = f"https://dchub.cloud/facilities/{_fslug}"
 
+    # ★★ 2026-07-28 — a KNOWN duplicate must canonicalise to its TWIN, not itself.
+    # We flag 7,928 facilities is_duplicate and then served every one of them a
+    # SELF-canonical, so two byte-identical pages each declared itself the
+    # original. That is the textbook way to land in "Crawled - currently not
+    # indexed" (4,494) and "Duplicate without user-selected canonical" (1,492):
+    # Google sees the pair, cannot pick, and indexes neither. Verified on live
+    # pairs — two /facilities/ URLs whose rendered text is 100.0% identical.
+    # Pointing at the surviving row consolidates the signals instead of splitting
+    # them. 6,192 flagged rows carry a duplicate_of_id; 5,674 of those resolve to
+    # a live page, and only a RESOLVED twin is used — an unresolvable pointer
+    # leaves the self-canonical alone rather than inventing a target.
+    try:
+        if fac.get("is_duplicate"):
+            _twin = _canonical_twin_url(fac.get("duplicate_of_id"))
+            if _twin:
+                canonical = _twin
+    except Exception:
+        pass
+
     # Schema.org JSON-LD
     import json as _json
     # 2026-06-29: enrich for AI-answer-engine citation (Copilot already cites these
@@ -878,6 +897,44 @@ def _render_profile(fac: dict, slug: str) -> str:
   <script src="/js/dchub-nav.js" defer></script>
 </body>
 </html>"""
+
+
+def _canonical_twin_url(dup_of_id):
+    """URL of the surviving facility a duplicate should canonicalise to.
+
+    Returns None unless the target exists, is NOT itself a duplicate, and has a
+    real frozen slug — a canonical pointing at a 404 is worse than a
+    self-canonical. Fail-soft: any error returns None.
+    """
+    if not dup_of_id:
+        return None
+    try:
+        # ★ the module's own pattern — a local `from main import get_read_db`.
+        # I first wrote `_get_conn()`, which does NOT exist here: it would have
+        # raised NameError straight into the `except Exception: return None`
+        # below, so this feature would have silently never fired and the tests
+        # would still have passed.
+        from main import get_read_db
+        conn = get_read_db()
+        if conn is None:
+            return None
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT canonical_slug FROM discovered_facilities "
+                    "WHERE id = %s AND COALESCE(is_duplicate, 0) = 0 "
+                    "  AND canonical_slug IS NOT NULL AND canonical_slug <> '' "
+                    "LIMIT 1",
+                    (dup_of_id,))
+                row = cur.fetchone()
+        finally:
+            try: conn.close()
+            except Exception: pass
+        if row and row[0]:
+            return "https://dchub.cloud/facilities/" + str(row[0])
+    except Exception:
+        return None
+    return None
 
 
 @facility_profile_bp.route("/facilities/<path:slug>", methods=["GET"])

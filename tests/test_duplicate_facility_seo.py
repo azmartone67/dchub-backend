@@ -1,0 +1,92 @@
+"""Known-duplicate facilities must not be published as rivals (2026-07-28).
+
+Diagnosis of GSC "Crawled - currently not indexed" (4,494). Measured:
+  - 577 of 1000 sampled not-indexed URLs are /facilities/ pages
+  - two of them rendered 100.0% IDENTICAL text (same facility, two rows)
+  - the rejected pages are NOT thinner in the DB (provider +17pp, latitude
+    +26pp vs the population) -- so it was never a data-completeness problem
+  - 7,928 rows are flagged is_duplicate, 7,912 still had a canonical_slug,
+    all served 200, and 7,877 were re-added to the sitemap by the LEGACY
+    `facilities` union, which had no duplicate filter
+  - every one of them emitted a SELF-canonical, so identical pages each
+    claimed to be the original
+
+pytest functions only -- no module-scope work or exit.
+"""
+import ast
+import pathlib
+import re
+
+REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
+MAIN = REPO_ROOT / "main.py"
+PROFILE = REPO_ROOT / "routes" / "facility_profile_page.py"
+
+
+def _code(path):
+    """Source with comment lines stripped -- comments satisfy grep."""
+    return "\n".join(
+        ln for ln in path.read_text(encoding="utf-8").splitlines()
+        if not ln.strip().startswith("#")
+    )
+
+
+def test_legacy_union_filters_known_duplicates():
+    seg = _code(MAIN).split("_legacy_unioned = 0", 1)[1][:4000]
+    assert "_drop_known_dupes" in seg, (
+        "the legacy facilities union re-added 7,877 known duplicates; the "
+        "seen_slugs guard cannot catch them because the discovered query "
+        "already excluded them")
+
+
+def test_both_union_paths_are_filtered():
+    """The minimal fallback query cannot select canonical_slug, which is why
+    the filter is applied in Python rather than SQL."""
+    seg = _code(MAIN).split("_legacy_unioned = 0", 1)[1][:4000]
+    assert seg.count("_drop_known_dupes(c.fetchall())") >= 2, (
+        "primary AND fallback union must both be filtered")
+
+
+def test_duplicate_set_failure_is_fail_open():
+    seg = _code(MAIN).split("_dupe_slugs = set()", 1)[1][:2000]
+    assert "if not _dupe_slugs or not rows:" in seg, (
+        "an unloadable duplicate set must not empty the sitemap")
+
+
+def test_duplicate_pages_canonicalise_to_their_twin():
+    src = _code(PROFILE)
+    assert "_canonical_twin_url" in src
+    seg = src.split("canonical = f\"https://dchub.cloud/facilities/{_fslug}\"", 1)[1][:1200]
+    assert "is_duplicate" in seg and "canonical = _twin" in seg, (
+        "a flagged duplicate must point its canonical at the surviving row, "
+        "not at itself")
+
+
+def test_twin_lookup_refuses_an_unusable_target():
+    """A canonical pointing at a 404 or at another duplicate is worse than a
+    self-canonical, so the target must be live and non-duplicate."""
+    src = PROFILE.read_text(encoding="utf-8")
+    seg = src.split("def _canonical_twin_url", 1)[1].split("\ndef ", 1)[0]
+    seg = "\n".join(ln for ln in seg.splitlines()
+                    if not ln.strip().startswith("#"))
+    assert "COALESCE(is_duplicate, 0) = 0" in seg
+    assert "canonical_slug <> ''" in seg
+    assert "if not dup_of_id:" in seg, "a null pointer must not query at all"
+
+
+def test_twin_lookup_uses_a_connection_helper_that_exists():
+    """This module has no _get_conn(); calling one would raise NameError into
+    the helper's own `except Exception: return None` and the feature would
+    silently never fire while every test still passed."""
+    src = PROFILE.read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    defined = {n.name for n in ast.walk(tree)
+               if isinstance(n, ast.FunctionDef)}
+    # ★ strip comments -- the docstring/comment in the helper NAMES the wrong
+    # symbol on purpose (to record the trap), and a raw scan flags it. Third
+    # time today a comment satisfied a grep-shaped assertion.
+    seg = _code(PROFILE).split("def _canonical_twin_url", 1)[1].split("\ndef ", 1)[0]
+    called = set(re.findall(r"\b(_[a-z_]+)\(", seg))
+    for name in called:
+        if name.startswith("_") and name not in ("_canonical_twin_url",):
+            assert name in defined, (
+                "{}() is called but not defined in this module".format(name))
