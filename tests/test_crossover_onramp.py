@@ -225,10 +225,18 @@ _DCPI_S = _SDict(
 def _render_dcpi(gated):
     app = Flask(__name__)
     with app.app_context():
+        # r-iso-taxonomy-2 (2026-07-28): mirror the production call site.
+        # The JSON-LD Place name is now precomputed via _place_label instead
+        # of concatenated in the template (it was emitting "Cheyenne, WY, WY"
+        # for the seven markets whose market_name already carries the state).
+        # Omitting it renders Undefined and |tojson raises.
         return render_template_string(
             dcpi_mod.DCPI_MARKET_TEMPLATE, s=_SDict(_DCPI_S),
             risks=["risk one"], opps=["opp one"], gated=gated,
-            narrative="test narrative", facilities_html="")
+            narrative="test narrative",
+            place_label=dcpi_mod._place_label(_DCPI_S.get("market_name"),
+                                              _DCPI_S.get("state")),
+            facilities_html="")
 
 
 def test_dcpi_template_jsonld_and_onramp_gated_and_paid():

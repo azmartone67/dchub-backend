@@ -5301,7 +5301,7 @@ DCPI_MARKET_TEMPLATE = """<!DOCTYPE html>
   {% endif %}"measurementTechnique": "DCPI is recomputed daily from interconnection-queue depth, capacity-pipeline additions, grid-emergency events, and reserve-margin signals for the serving ISO/RTO. Methodology: dchub.cloud/dcpi",
   "spatialCoverage": {
     "@type": "Place",
-    "name": {{ ((s.market_name ~ (", " ~ s.state if s.state else "")))|tojson }}{% if s.latitude is not none and s.longitude is not none %},
+    "name": {{ place_label|tojson }}{% if s.latitude is not none and s.longitude is not none %},
     "geo": {"@type": "GeoCoordinates", "latitude": {{ s.latitude|tojson }}, "longitude": {{ s.longitude|tojson }}}{% endif %}
   },
   "variableMeasured": [
@@ -6205,9 +6205,17 @@ def public_market_page(slug):
             f"{s.get('verdict') or 'LOW_SIGNAL'} for new data-center builds. "
             "The numeric DCPI scores (excess-power, grid-constraint, time-to-power) "
             "are available to DC Hub Pro — unlock at dchub.cloud/pricing.")
+    # r-iso-taxonomy-2 (2026-07-28): the SSR page builds its OWN JSON-LD
+    # spatialCoverage, separate from the api_scores Dataset block. The first
+    # pass fixed only the Python one, so /dcpi/cheyenne-wy kept publishing
+    # "Cheyenne, WY, WY" to Google — the template had been concatenating
+    # `market_name ~ ", " ~ state` on its own. Same helper both places now;
+    # two copies of the rule was the whole reason one of them stayed wrong.
     market_html = render_template_string(DCPI_MARKET_TEMPLATE, s=s,
                                           risks=risks, opps=opps, gated=_gated,
                                           narrative=narrative_text,
+                                          place_label=_place_label(s.get('market_name'),
+                                                                   s.get('state')),
                                           facilities_html=_facilities_html)
     # r43-H: cache the rendered page (bounded — 300+ markets max).
     if len(_DCPI_PAGE_CACHE) < 500:

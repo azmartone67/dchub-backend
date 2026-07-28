@@ -398,3 +398,51 @@ def _load_normalizer():
     assert len(labels) >= 10, f"_US_DCPI_ISOS parsed as {labels} — refusing to test vacuously"
     return _load_func("routes/dcpi.py", "_normalize_us_isos",
                       {"_US_DCPI_ISOS": labels, "print": lambda *a, **k: None})
+
+
+# ── the SSR page's own JSON-LD (r-iso-taxonomy-2) ───────────────────────
+def test_ssr_template_does_not_rebuild_the_place_label_itself():
+    """The /dcpi/<slug> page builds its OWN spatialCoverage, separate from
+    the api_scores Dataset block. The first pass fixed only the Python one,
+    so the live page kept publishing "Cheyenne, WY, WY".
+
+    Renders the actual template fragment rather than asserting on source
+    text — a comment naming place_label would satisfy a grep while the
+    concat stayed.
+    """
+    import jinja2
+
+    text = open(os.path.join(ROOT, "routes/dcpi.py"), encoding="utf-8").read()
+    # Several spatialCoverage blocks exist (a static "United States" one
+    # among them). The market page's is the one carrying GeoCoordinates.
+    # Slice a fixed window, NOT up to the next "}," — Jinja's `{% if %},`
+    # contains that sequence and truncates the block mid-way.
+    window = None
+    for m in re.finditer(r'"spatialCoverage": \{', text):
+        cand = text[m.start():m.start() + 600]
+        if "GeoCoordinates" in cand:
+            window = cand
+            break
+    assert window, "market-page spatialCoverage block not found — locator stale"
+    assert "~ s.state" not in window, "template is concatenating state again"
+
+    name_expr = re.search(r'"name": (\{\{.*?\}\})', window)
+    assert name_expr, "could not find the Place name expression"
+    assert "place_label" in name_expr.group(1), (
+        "SSR spatialCoverage no longer uses place_label — if it rebuilt the "
+        'concat it will publish "Cheyenne, WY, WY" again'
+    )
+    rendered = jinja2.Template(name_expr.group(1)).render(place_label="Cheyenne, WY")
+    assert rendered == '"Cheyenne, WY"', rendered
+    assert "WY, WY" not in rendered
+
+
+def test_ssr_render_call_passes_place_label():
+    """Template + call site must agree, or Jinja silently renders null."""
+    text = open(os.path.join(ROOT, "routes/dcpi.py"), encoding="utf-8").read()
+    i = text.index("render_template_string(DCPI_MARKET_TEMPLATE")
+    call = text[i:text.index(")", text.index("facilities_html", i))]
+    assert "place_label=" in call, (
+        "DCPI_MARKET_TEMPLATE is rendered without place_label — the JSON-LD "
+        "Place name would serialize as null"
+    )
