@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import os
 import json
+import math
 import time
 import logging
 import datetime
@@ -787,37 +788,120 @@ def hosting_capacity_ingest_endpoint():
     return jsonify(status="spawned", force=force), 202
 
 
+# How many raw rows to pull before de-duplicating vertices into feeders. The
+# table stores one row per GIS geometry VERTEX (see _fold_vertices), measured at
+# ~15x (Ameren) to ~29x (Rhode Island Energy) rows per distinct feeder, so the
+# old LIMIT 12 could not surface more than ~1-4 real feeders. Ordered
+# capacity-DESC, so this is the high-capacity head — which is what the block
+# wants anyway.
+_FEEDERS_NEAR_SCAN = 600
+
+
+def _fold_vertices(rows):
+    """Fold GIS vertex rows into one entry per feeder, keeping its max capacity.
+
+    hosting_capacity_feeders stores one row per geometry vertex of a feeder
+    line, NOT one row per feeder. Counting rows over-states the feeder count by
+    more than an order of magnitude and lets the same feeder occupy every slot
+    in a top-N list (live 2026-07-28: Providence returned feeder 2295 three
+    times in a 6-row top_feeders). Capacity is constant across a feeder's
+    vertices, so folding on (utility, feeder_id) is lossless.
+
+    Rows with no feeder_id (Avista publishes none) cannot be de-duplicated and
+    each stay their own entry rather than collapsing into one phantom feeder.
+    """
+    folded = {}
+    for i, r in enumerate(rows):
+        fid = r[1] if r[1] not in (None, "") else None
+        key = (r[0], fid if fid is not None else "@row%d" % i)
+        prev = folded.get(key)
+        if prev is None or (r[4] or 0) > (prev[4] or 0):
+            folded[key] = r
+    return list(folded.values())
+
+
 def feeders_near(lat: float, lng: float, radius_km: float = 40.0) -> dict:
     """Feeder-truth block for the hosting-capacity endpoint. {} fail-soft."""
+    # The caller passes request.args values STRAIGHT through, so lat/lng arrive
+    # as STRINGS on the ?lat=&lon= path. `lat - deg` then raised TypeError into
+    # the bare except below and this function returned {} for every point query
+    # since it shipped — silently, because the except logged nothing. The
+    # ?market= path happened to work only because market_power_scores yields
+    # floats. Coerce first (mirrors _substation_headroom, which calls _num()).
+    try:
+        lat = float(lat)
+        lng = float(lng)
+        radius_km = float(radius_km)
+    except (TypeError, ValueError):
+        return {}
+    if not (-90.0 <= lat <= 90.0 and -180.0 <= lng <= 180.0):
+        return {}
     c = _conn()
     if c is None:
         return {}
     try:
-        deg = max(0.05, radius_km / 111.0)
+        # Longitude degrees shrink with latitude; without the cos correction the
+        # east-west window was ~33% wider than the requested radius at lat 41.
+        # Mirrors _substation_headroom's bbox math.
+        dlat = max(0.05, radius_km / 111.0)
+        dlng = max(0.05, radius_km / (111.0 * max(0.1, math.cos(math.radians(lat)))))
         with c.cursor() as cur:
             cur.execute("""
                 SELECT utility, feeder_id, substation, voltage_kv,
-                       capacity_mw_max, capacity_mw_min, lat, lng, src_updated
+                       capacity_mw_max, capacity_mw_min, lat, lng, src_updated,
+                       capacity_type
                   FROM hosting_capacity_feeders
                  WHERE lat BETWEEN %s AND %s AND lng BETWEEN %s AND %s
                    AND capacity_mw_max IS NOT NULL
-                 ORDER BY capacity_mw_max DESC LIMIT 12
-            """, (lat - deg, lat + deg, lng - deg, lng + deg))
+                 ORDER BY capacity_mw_max DESC LIMIT %s
+            """, (lat - dlat, lat + dlat, lng - dlng, lng + dlng,
+                  _FEEDERS_NEAR_SCAN))
             rows = cur.fetchall()
         if not rows:
             return {}
+        feeders = _fold_vertices(rows)
+        feeders.sort(key=lambda r: r[4] or 0, reverse=True)
         top = [{"utility": r[0], "feeder_id": r[1], "substation": r[2],
                 "voltage_kv": r[3], "capacity_mw_max": r[4],
                 "capacity_mw_min": r[5], "lat": r[6], "lng": r[7],
-                "src_updated": r[8]} for r in rows[:6]]
-        return {"feeder_count_in_bbox": len(rows),
-                "max_feeder_capacity_mw": max(r[4] for r in rows),
+                "src_updated": r[8], "capacity_type": r[9]} for r in feeders[:6]]
+        types = sorted({(r[9] or "gen") for r in feeders})
+        return {"feeder_count_in_bbox": len(feeders),
+                "geometry_rows_scanned": len(rows),
+                "max_feeder_capacity_mw": max(r[4] for r in feeders),
                 "top_feeders": top,
-                "utilities": sorted({r[0] for r in rows}),
+                "utilities": sorted({r[0] for r in feeders}),
+                "capacity_types": types,
                 "basis": "utility-published feeder hosting-capacity (ingested)",
+                # capacity_type decides whether these MW mean anything for a
+                # data center. 14 of 18 utilities publish 'gen' (DER export
+                # headroom — what the feeder can ACCEPT from solar/storage),
+                # which is NOT load a data center can draw. Saying so here
+                # matters because this block answers "can this site get power?".
+                "capacity_type_meaning": {
+                    "load": ("LOAD-serving capacity — what a new data-center "
+                             "load can draw."),
+                    "gen": ("DER/generation hosting capacity — what the feeder "
+                            "can accept from solar/storage for EXPORT. Not "
+                            "available load; do not read it as siteable "
+                            "data-center capacity."),
+                    "bus_headroom": ("Transmission bus MW available, not "
+                                     "distribution-feeder hosting capacity."),
+                },
+                "counting": ("feeder_count_in_bbox counts DISTINCT feeders; "
+                             "geometry_rows_scanned is the raw GIS vertex rows "
+                             "they were folded from (one row per vertex)."),
                 "note": ("Utility hosting-capacity maps are informational, "
                          "not binding interconnection guidance.")}
-    except Exception:
+    except Exception as ex:
+        # Stays fail-soft — a feeder-table problem must not break the endpoint —
+        # but no longer SILENT. The swallowed TypeError above is exactly why
+        # this path was dead in production without anyone noticing.
+        try:
+            logger.warning("feeders_near failed: %s: %s",
+                           type(ex).__name__, str(ex)[:200])
+        except Exception:
+            pass
         return {}
     finally:
         try:
