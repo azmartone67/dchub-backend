@@ -31,6 +31,7 @@ CONFLICT DO NOTHING) so re-running is always safe.
 import os
 import re
 import hashlib
+import unicodedata
 import logging
 
 from flask import Blueprint, request, jsonify
@@ -48,10 +49,47 @@ _FACILITY_TABLES = ("discovered_facilities", "facilities")
 # live facility route. Do NOT "improve" the regex here without changing both;
 # any drift re-mints duplicate URLs (the exact bug this file exists to kill).
 # ─────────────────────────────────────────────────────────────────────────
+# ── ASCII folding for non-Latin names (2026-07-28) ──────────────────────
+# The old _slugify kept only [a-z0-9], so a name written in Chinese, Japanese
+# or Cyrillic reduced to the EMPTY string and the facility got NO URL at all —
+# 221 live facilities were unreachable and unindexable (measured), and the same
+# stripping mangled accented Latin: "Bouygues Télécom" -> "bouygues-t-l-com"
+# (that exact slug is in the GSC Not-found export).
+#
+# ★ Unidecode is imported OPTIONALLY and the chain degrades on its own:
+#     1. unidecode      -> 联通云数据中心 = "lian-tong-yun-shu-ju-zhong-xin"
+#     2. stdlib NFKD    -> accented Latin still folds (télécom -> telecom)
+#     3. raw            -> unchanged behaviour
+#   so if the dependency ever fails to install, slugging keeps working instead
+#   of the whole ingest breaking on an ImportError.
+try:                                     # pragma: no cover - import shape
+    from unidecode import unidecode as _unidecode
+except Exception:                        # pragma: no cover
+    _unidecode = None
+
+
+def _fold_to_ascii(text):
+    """Best-effort ASCII rendering of any script. Never raises."""
+    s = str(text)
+    if _unidecode is not None:
+        try:
+            folded = _unidecode(s)
+            if folded and folded.strip():
+                return folded
+        except Exception:
+            pass
+    try:
+        s = unicodedata.normalize('NFKD', s)
+        s = ''.join(ch for ch in s if not unicodedata.combining(ch))
+    except Exception:
+        pass
+    return s
+
+
 def _slugify(text):
     if not text:
         return None
-    s = str(text).lower().strip()
+    s = _fold_to_ascii(text).lower().strip()
     s = re.sub(r'[^a-z0-9\s-]', '', s)
     s = re.sub(r'[\s-]+', '-', s)
     return s.strip('-')
@@ -206,7 +244,8 @@ def backfill_canonical_slugs(conn, table, batch=5000, max_batches=50):
     for _ in range(max_batches):
         cur.execute(f"""
             SELECT id, provider, name FROM {table}
-            WHERE canonical_slug IS NULL AND name IS NOT NULL AND name <> ''
+            WHERE (canonical_slug IS NULL OR canonical_slug = '')
+              AND name IS NOT NULL AND name <> ''
             LIMIT %s
         """, (batch,))
         rows = cur.fetchall()
@@ -246,7 +285,13 @@ def backfill_canonical_slugs(conn, table, batch=5000, max_batches=50):
         execute_values(cur, f"""
             UPDATE {table} AS t SET canonical_slug = v.slug
             FROM (VALUES %s) AS v(id, slug)
-            WHERE t.id::text = v.id::text AND t.canonical_slug IS NULL
+            -- ★ set-once is preserved for REAL slugs: a non-empty
+            -- canonical_slug is never overwritten. The '' sentinel is
+            -- re-openable because no URL was ever served for it, and
+            -- v.slug <> '' stops an empty result re-writing an empty value.
+            WHERE t.id::text = v.id::text
+              AND (t.canonical_slug IS NULL OR t.canonical_slug = '')
+              AND v.slug <> ''
         """, values, template="(%s, %s)")
         conn.commit()
         updated += sum(1 for _, s in values if s)
