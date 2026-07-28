@@ -575,7 +575,7 @@ def _persist(lane: str, kpi: dict, decision: dict, act: dict) -> bool:
                 INSERT INTO brain_lane_decisions
                   (lane, kpi, kpi_main, diagnosis, action, action_reason,
                    expected_effect, confidence, dispatched, dispatch_http)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING
             """, (lane, json.dumps(kpi, default=str), kpi.get("kpi_main"),
                   str(decision.get("diagnosis"))[:2000], decision.get("action"),
                   str(decision.get("action_reason"))[:1000],
