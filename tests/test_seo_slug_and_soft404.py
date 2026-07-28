@@ -126,3 +126,60 @@ def test_the_404_body_still_links_onward():
     seg2 = dd.split("def _markets_404_response", 1)[1].split("\ndef ", 1)[0]
     assert "/markets/directory" in seg2
     assert "noindex" in seg2
+
+
+# ── resolve city-state -> city BEFORE 404ing (second pass, 2026-07-28) ──
+# Facility pages link to /markets/{city}-{state}, but market slugs are
+# METRO/CITY keyed: `dallas` is real, `dallas-texas` is not. The first pass
+# turned that 302-to-hub into an honest 404 -- honest, and still wrong, because
+# the site then hard-404'd its OWN internal links. Verified live before the fix:
+# /markets/dallas = 200, /markets/dallas-texas = 404.
+def _deepdive_src():
+    return DEEPDIVE.read_text(encoding="utf-8")
+
+
+def _state_stripper():
+    tree = ast.parse(_deepdive_src())
+    want = {"_market_slug_without_state"}
+    body = [n for n in tree.body
+            if (isinstance(n, ast.FunctionDef) and n.name in want)
+            or (isinstance(n, ast.Assign)
+                and getattr(n.targets[0], "id", "") == "_US_STATE_SUFFIXES")]
+    assert {n.name for n in body if isinstance(n, ast.FunctionDef)} == want
+    g = {"_conn": lambda: None}          # no DB -> the DB guard returns None
+    mod = ast.Module(body=body, type_ignores=[])
+    ast.fix_missing_locations(mod)
+    exec(compile(mod, "<extracted>", "exec"), g)
+    return g
+
+
+def test_state_suffix_is_detected_only_as_a_whole_token():
+    g = _state_stripper()
+    sfx = g["_US_STATE_SUFFIXES"]
+    assert "texas" in sfx and "virginia" in sfx
+    # kansas-city must NOT be read as <kansas><-city>; it does not END in a state
+    assert not "kansas-city".endswith("-kansas")
+
+
+def test_no_db_means_no_redirect():
+    """The DB check is the real guard -- unreachable DB must 404, never guess."""
+    g = _state_stripper()
+    assert g["_market_slug_without_state"]("dallas-texas") is None
+
+
+def test_slug_without_a_state_suffix_is_left_alone():
+    g = _state_stripper()
+    assert g["_market_slug_without_state"]("northern-virginia") != "northern"
+    assert g["_market_slug_without_state"]("ashburn") is None
+    assert g["_market_slug_without_state"]("") is None
+
+
+def test_resolution_runs_before_the_404():
+    src = _deepdive_src()
+    seg = src.split("if _fac_ct == 0:", 1)[1].split("\n    if not md", 1)[0]
+    i_resolve = seg.find("_market_slug_without_state")
+    i_404 = seg.find("_markets_404_response")
+    assert i_resolve != -1 and i_404 != -1
+    assert i_resolve < i_404, (
+        "a 404 must only be reached AFTER trying to resolve the real market")
+    assert "code=301" in seg, "a known market rename is permanent -> 301"

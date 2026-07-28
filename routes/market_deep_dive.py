@@ -435,6 +435,56 @@ def read_deep_dive(slug: str) -> dict | None:
         except Exception: pass
 
 
+_US_STATE_SUFFIXES = (
+    "alabama alaska arizona arkansas california colorado connecticut delaware "
+    "florida georgia hawaii idaho illinois indiana iowa kansas kentucky "
+    "louisiana maine maryland massachusetts michigan minnesota mississippi "
+    "missouri montana nebraska nevada new-hampshire new-jersey new-mexico "
+    "new-york north-carolina north-dakota ohio oklahoma oregon pennsylvania "
+    "rhode-island south-carolina south-dakota tennessee texas utah vermont "
+    "virginia washington west-virginia wisconsin wyoming district-of-columbia"
+).split()
+
+
+def _market_slug_without_state(slug_norm):
+    """`dallas-texas` -> `dallas`, but ONLY when the shorter slug is a market
+    that actually has facilities. Returns None otherwise.
+
+    ★ Guarded two ways so this can never invent a redirect:
+      1. the suffix must be a real US state token, not any trailing word
+         (`kansas-city` must NOT become `kansas`... which is why the check is
+         on the REMAINDER being non-empty AND the full slug ending in
+         '-<state>', and why the target is then verified against the DB);
+      2. the target must return facilities. No rows -> no redirect -> 404.
+    """
+    if not slug_norm or "-" not in slug_norm:
+        return None
+    for st in _US_STATE_SUFFIXES:
+        if not slug_norm.endswith("-" + st):
+            continue
+        base = slug_norm[: -(len(st) + 1)]
+        if not base:
+            return None
+        try:
+            c = _conn()
+            if c is None:
+                return None
+            try:
+                with c.cursor() as cur:
+                    cur.execute(
+                        "SELECT 1 FROM market_power_scores WHERE market_slug = %s "
+                        "LIMIT 1", (base,))
+                    if cur.fetchone():
+                        return base
+            finally:
+                try: c.close()
+                except Exception: pass
+        except Exception:
+            return None
+        return None
+    return None
+
+
 def _markets_404_response():
     """Honest 404 for a market with zero facilities, WITH onward links.
 
@@ -758,6 +808,20 @@ def market_short_html(slug):
             # measured 299 Soft 404s. Redirecting every empty market to one hub
             # IS the soft-404 pattern; _fac_ct == 0 means there is nothing to
             # serve, so say 404 and link onward instead of faking a 200.
+            # ★★ RESOLVE BEFORE YOU 404 (2026-07-28, second pass).
+            # Facility pages link to /markets/{city}-{state} (seo_pages builds
+            # `_slug(city + '-' + state)`), but market slugs are METRO/CITY keyed:
+            # `dallas` and `dallas-fort-worth` are real, `dallas-texas` is not.
+            # The 2026-07-15 code papered over that with a 302 to the hub (a soft
+            # 404); my first pass turned it into an honest 404 — which was honest
+            # and still wrong, because the site was then hard-404ing its OWN
+            # internal links. Try the city-only form first and 301 to it.
+            _alt = _market_slug_without_state(slug_norm)
+            if _alt:
+                _r = redirect("/markets/" + _alt, code=301)
+                _r.headers["Cache-Control"] = "public, max-age=3600"
+                _r.headers["X-DC-Page-Source"] = "market-state-suffix-301"
+                return _r
             _r = _markets_404_response()
             _r.headers["Cache-Control"] = "public, max-age=3600"
             _r.headers["X-DC-Page-Source"] = "market-deepdive-404"
