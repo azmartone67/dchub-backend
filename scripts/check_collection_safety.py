@@ -52,14 +52,21 @@ MIN_TEST_FILES = 50
 
 
 def _is_main_guard(node):
-    """True for `if __name__ == "__main__":` — pytest never runs that body."""
+    """True for `if __name__ == "__main__":` — pytest never runs that body.
+
+    Either operand order counts. `if "__main__" == __name__:` is the same guard
+    and was previously reported as an offence, which is the kind of false
+    positive that gets a guard deleted rather than fixed.
+    """
     if not isinstance(node, ast.If):
         return False
     t = node.test
-    return (isinstance(t, ast.Compare)
-            and isinstance(t.left, ast.Name) and t.left.id == '__name__'
-            and any(isinstance(c, ast.Constant) and c.value == '__main__'
-                    for c in t.comparators))
+    if not isinstance(t, ast.Compare):
+        return False
+    operands = [t.left] + list(t.comparators)
+    return (any(isinstance(o, ast.Name) and o.id == '__name__' for o in operands)
+            and any(isinstance(o, ast.Constant) and o.value == '__main__'
+                    for o in operands))
 
 
 def _exit_label(node):
@@ -117,11 +124,30 @@ def offending_lines(tree):
 
 def main(argv):
     tests_dir = pathlib.Path(argv[1] if len(argv) > 1 else 'tests')
-    files = sorted(tests_dir.glob('test_*.py'))
-    if len(files) < MIN_TEST_FILES:
-        print(f"::error::only {len(files)} test_*.py found under {tests_dir} — "
-              f"expected at least {MIN_TEST_FILES}. The scan is broken, so a "
-              f"clean result here would mean nothing.")
+
+    # EVERY .py under tests/, not just top-level test_*.py. pytest also imports
+    # conftest.py and the package __init__.py during collection, and an exit in
+    # conftest is WORSE than one in a test module:
+    #
+    #   test module   sys.exit() -> INTERNALERROR, exit 3, run dies LOUDLY
+    #   conftest.py   sys.exit(0) -> exit 0, NO output at all, zero tests run
+    #
+    # Measured on main: a guaranteed-failing test gives `1 failed, 2342 passed`
+    # (rc=1); append `sys.exit(0)` to tests/conftest.py and the same suite gives
+    # rc=0 and zero bytes of output. CI goes GREEN having run nothing. The old
+    # glob could not see either file. rglob also picks up subdirectories and the
+    # *_test.py naming, which pytest collects and the old glob missed too.
+    files = sorted(tests_dir.rglob('*.py'))
+
+    # The floor still counts TEST MODULES specifically -- that is what makes a
+    # clean result meaningful. Counting all .py would let the floor be satisfied
+    # by helpers while the test glob silently matched nothing.
+    modules = [f for f in files
+               if f.name.startswith('test_') or f.name.endswith('_test.py')]
+    if len(modules) < MIN_TEST_FILES:
+        print(f"::error::only {len(modules)} test modules found under "
+              f"{tests_dir} — expected at least {MIN_TEST_FILES}. The scan is "
+              f"broken, so a clean result here would mean nothing.")
         return 2
 
     bad = []
@@ -136,11 +162,19 @@ def main(argv):
             bad.append((f, f'{label} at module scope, line {lineno}'))
 
     for f, why in bad:
-        print(f"::error file={f}::{why} — this aborts pytest COLLECTION "
-              f"(exit 3, zero tests run). Move the script body under "
+        # conftest.py / __init__.py fail DIFFERENTLY and far more quietly than a
+        # test module, so do not tell the reader to expect a red exit 3.
+        if f.name in ('conftest.py', '__init__.py'):
+            effect = ("pytest exits 0 with NO output and runs zero tests — a "
+                      "SILENT GREEN, worse than the exit-3 a test module gives")
+        else:
+            effect = "this aborts pytest COLLECTION (exit 3, zero tests run)"
+        print(f"::error file={f}::{why} — {effect}. Move the script body under "
               f"`if __name__ == \"__main__\":` or drop the test_ prefix.")
 
-    print(f"checked {len(files)} test modules — {len(bad)} would abort collection")
+    print(f"checked {len(files)} importable files under {tests_dir} "
+          f"({len(modules)} test modules, incl. conftest/__init__) — "
+          f"{len(bad)} would abort collection")
     return 1 if bad else 0
 
 
