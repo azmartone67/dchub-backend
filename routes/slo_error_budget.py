@@ -35,11 +35,22 @@ def _dsn():
     return os.environ.get("DATABASE_URL") or os.environ.get("NEON_DATABASE_URL") or ""
 
 
-@slo_bp.route("/api/v1/slo/error-budget", methods=["GET"])
-def error_budget():
-    """Return current error-budget burn state. Used by deploy-pages SLO gate."""
+def compute_budget():
+    """Compute the current error-budget state. Returns (payload, http_status).
+
+    Factored out of the route so the worker-side sentinel
+    (routes/slo_rollback_sentinel.py) grades on the EXACT same verdict, in the
+    same process, with no HTTP hop. Two copies of this threshold logic would be
+    a drift class: the endpoint and the thing that rolls production back must
+    never disagree about what "hard_burn" means.
+
+    Note this reads brain_http_errors, which the WEB role writes after each
+    response — so it is a global, DB-backed view. The worker can therefore
+    grade the web service's health without depending on the web service being
+    reachable.
+    """
     if not (_pg and _dsn()):
-        return jsonify({"ok": False, "reason": "no_db"}), 503
+        return {"ok": False, "reason": "no_db"}, 503
     out = {
         "window_min": WINDOW_MIN,
         "as_of": _dt.datetime.utcnow().isoformat() + "Z",
@@ -100,7 +111,14 @@ def error_budget():
             "top_5xx_paths": top_paths,
             "source": "brain_http_errors (last 5 min)",
         })
-        return jsonify(out), (200 if verdict != "hard_burn" else 503)
+        return out, (200 if verdict != "hard_burn" else 503)
     except Exception as e:
         out.update({"ok": False, "reason": f"{type(e).__name__}: {str(e)[:160]}"})
-        return jsonify(out), 503
+        return out, 503
+
+
+@slo_bp.route("/api/v1/slo/error-budget", methods=["GET"])
+def error_budget():
+    """Return current error-budget burn state. Used by deploy-pages SLO gate."""
+    payload, status = compute_budget()
+    return jsonify(payload), status
