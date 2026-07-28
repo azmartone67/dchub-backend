@@ -52,8 +52,22 @@ on:
 # state, so a newer deploy's check subsumes an older one. And the cron lane
 # still gives continuous coverage every 5 minutes — the sample loop was trimmed
 # to ~4m05s so it finishes inside that interval instead of being cancelled.
+# ★ workflow_dispatch GETS ITS OWN LANE. It used to fall into the 'scheduled'
+# bucket, so a manual drill shared a cancel-in-progress group with a cron that
+# fires every 5 minutes while the drill itself needs ~4m05s of SLO sampling.
+# The cron reliably killed it mid-sample: measured 2026-07-28, a drill dispatched
+# at 18:53:41 was cancelled by the scheduled run at 18:53:55, and the retry only
+# completed because the cron happened to go quiet for 15 minutes. A rehearsal you
+# can only run by winning a race is not a rehearsal — and this is the workflow
+# whose whole job is proving the rollback works BEFORE an outage needs it.
+#
+# Cost of the extra lane: a manual drill can now sample concurrently with a
+# scheduled run, so the SLO endpoint sees two probes for ~4 minutes. That is
+# rare and deliberate (a human ran it), and far cheaper than a drill that cannot
+# finish. The stacking this guard was added to stop was the AUTOMATIC cadence
+# overlapping itself, which the cron lane still prevents.
 concurrency:
-  group: auto-rollback-${{ github.event_name == 'push' && 'push' || 'scheduled' }}
+  group: auto-rollback-${{ github.event_name }}
   cancel-in-progress: true
 
 jobs:
