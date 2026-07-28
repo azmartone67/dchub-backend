@@ -10,17 +10,11 @@ try: import psycopg2
 except ImportError: print("ERROR: psycopg2 missing", file=sys.stderr); sys.exit(2)
 
 
-US_STATE_ISO = {
-    "AL":"SERC","AK":"AK","AR":"MISO","AZ":"WECC","CA":"CAISO","CO":"WECC",
-    "CT":"ISONE","DE":"PJM","FL":"FRCC","GA":"SERC","HI":"HECO","IA":"MISO",
-    "ID":"WECC","IL":"PJM","IN":"PJM","KS":"SPP","KY":"PJM","LA":"MISO",
-    "MA":"ISONE","MD":"PJM","ME":"ISONE","MI":"MISO","MN":"MISO","MO":"SPP",
-    "MS":"MISO","MT":"WECC","NC":"SERC","ND":"MISO","NE":"SPP","NH":"ISONE",
-    "NJ":"PJM","NM":"WECC","NV":"WECC","NY":"NYISO","OH":"PJM","OK":"SPP",
-    "OR":"WECC","PA":"PJM","RI":"ISONE","SC":"SERC","SD":"SPP","TN":"TVA",
-    "TX":"ERCOT","UT":"WECC","VA":"PJM","VT":"ISONE","WA":"WECC","WI":"MISO",
-    "WV":"PJM","WY":"WECC","DC":"PJM",
-}
+# r-iso-taxonomy (2026-07-28): was the fourth copy of the state→ISO map.
+# Re-exported from the single source of truth so this script cannot drift
+# from what the DCPI recompute writes.
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from util.iso_taxonomy import STATE_ISO as US_STATE_ISO  # noqa: E402
 
 
 def normalize_slug(name, state):

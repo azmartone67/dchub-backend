@@ -113,7 +113,12 @@ class TestOverrideTableHygiene:
     def test_every_override_actually_contradicts_its_state(self):
         # An override that merely restates the state default is dead weight and
         # hides the fact that the state map could have been fixed instead.
-        states = {"kansas-city": "MO"}
+        # r-iso-taxonomy (2026-07-28): the rest of the Evergy Metro Missouri
+        # side joined kansas-city here. north-kansas-city was live with
+        # iso=MISO on the same wrong state default, so correcting only
+        # kansas-city would have left one half of the metro on the wrong grid
+        # while the Kansas side (Olathe/Overland Park/Lenexa) sat on SPP.
+        states = {slug: "MO" for slug in _MARKET_ISO_OVERRIDES}
         for slug, iso in _MARKET_ISO_OVERRIDES.items():
             st = states.get(slug)
             assert st, f"{slug} has no state recorded in this test — add it"
@@ -123,55 +128,68 @@ class TestOverrideTableHygiene:
             )
 
 
-class TestThreeMapDrift:
-    """There are THREE state->ISO maps in this repo. routes/dcpi.py feeds the
-    daily recompute and so decides what agents actually see; the other two are
-    byte-identical to each other. They still disagree on five states. That is
-    recorded here rather than silently reconciled — changing any of them moves
-    live markets and deserves its own review. What this test forbids is NEW,
-    undocumented drift.
+class TestSingleMapInvariant:
+    """Superseded TestThreeMapDrift (r-iso-taxonomy, 2026-07-28).
+
+    That class recorded five states on which the three state->ISO maps
+    disagreed, and forbade NEW undocumented drift. There are no longer three
+    maps to drift: routes/dcpi.py, dchub_self_heal.py,
+    scripts/bulk_dcpi_score.py, routes/brain_data_gatherer.py and
+    pipeline_sync.py all resolve through util/iso_taxonomy now, so the
+    invariant is enforced by construction rather than by comparison.
+
+    (The earlier count of three was low. brain_data_gatherer held the same
+    map as a SQL VALUES literal and pipeline_sync held a partial one that
+    said TN->MISO; neither matched a `US_STATE_ISO = {` text search. Six
+    copies, five opinions.)
+
+    The five deferred divergences are resolved here, each with the utility
+    that decides it:
     """
 
-    KNOWN_DIVERGENCES = {
-        # state: (routes/dcpi.py, the other two)
-        "AL": ("SOCO", "SERC"),   # SOCO is a balancing authority, SERC the region
-        "GA": ("SOCO", "SERC"),   # same
-        "SC": ("SOCO", "SERC"),   # Duke / Dominion SC / Santee Cooper, not Southern Co
-        "SD": ("MISO", "SPP"),    # genuinely split; neither value is clean
-        "MO": ("MISO", "SPP"),    # split: StL=MISO (state default), KC=SPP (override)
+    RESOLVED_DIVERGENCES = {
+        # state: (chosen, why)
+        "AL": ("SOCO", "Alabama Power IS Southern Company; BA is more "
+                       "specific than the SERC region and needs no change"),
+        "GA": ("SOCO", "Georgia Power, same reasoning as AL"),
+        "SC": ("SERC", "Dominion Energy SC / Santee Cooper / Duke — NOT "
+                       "Southern Company, so SOCO was simply wrong"),
+        "SD": ("MISO", "genuinely split; the only SD market scored is Sioux "
+                       "Falls, which is Xcel Energy and MISO"),
+        "MO": ("MISO", "genuinely split; state stays MISO for St. Louis "
+                       "(Ameren) and Kansas City takes a per-market override"),
     }
 
-    @staticmethod
-    def _shared_map():
-        src = (ROOT / "scripts" / "bulk_dcpi_score.py").read_text()
-        body = src.split("US_STATE_ISO = {")[1].split("}")[0]
-        return dict(re.findall(r'"([A-Z]{2})"\s*:\s*"([A-Za-z-]+)"', body))
+    def test_each_deferred_divergence_was_decided(self):
+        for state, (expected, _why) in self.RESOLVED_DIVERGENCES.items():
+            assert _state_to_iso(state) == expected, (
+                f"{state} resolves to {_state_to_iso(state)}, expected "
+                f"{expected} — see RESOLVED_DIVERGENCES for the reasoning"
+            )
 
-    def test_nc_and_mi_now_agree_with_the_other_maps(self):
-        # Both fixes brought dcpi.py into line with the maps that were already
-        # right — neither invented a new value.
-        shared = self._shared_map()
-        assert shared["NC"] == _state_to_iso("NC") == "SERC"
-        assert shared["MI"] == _state_to_iso("MI") == "MISO"
+    def test_nc_and_mi_kept_the_values_the_other_maps_already_had(self):
+        # Neither fix invented a value; both adopted what the correct-but-
+        # unreachable maps had said all along.
+        assert _state_to_iso("NC") == "SERC"
+        assert _state_to_iso("MI") == "MISO"
 
-    def test_no_undocumented_drift(self):
-        shared = self._shared_map()
-        drift = {
-            st: (_state_to_iso(st), iso)
-            for st, iso in shared.items()
-            if _state_to_iso(st) and _state_to_iso(st) != iso
-        }
-        assert drift == self.KNOWN_DIVERGENCES, (
-            "state->ISO maps drifted. Either fix the state in routes/dcpi.py "
-            "(it writes market_power_scores.iso) or add it to "
-            "KNOWN_DIVERGENCES with the utility that justifies it."
-        )
+    def test_the_duplicate_maps_are_gone_not_merely_agreeing(self):
+        """The old guard compared copies. Assert there are no copies left."""
+        for rel in ("scripts/bulk_dcpi_score.py", "dchub_self_heal.py"):
+            src = (ROOT / rel).read_text()
+            assert "US_STATE_ISO = {" not in src, (
+                f"{rel} redefined US_STATE_ISO — it must import STATE_ISO "
+                "from util.iso_taxonomy so the maps cannot drift again"
+            )
+            assert "iso_taxonomy" in src, f"{rel} no longer delegates"
 
-    def test_the_two_copies_are_still_identical(self):
-        # If these ever diverge there are four maps, not three.
-        heal = (ROOT / "dchub_self_heal.py").read_text()
-        body = heal.split("US_STATE_ISO = {")[1].split("}")[0]
-        assert dict(re.findall(r'"([A-Z]{2})"\s*:\s*"([A-Za-z-]+)"', body)) == self._shared_map()
+    def test_dcpi_is_still_the_map_that_writes_the_column(self):
+        """The reason routes/dcpi.py mattered most: it feeds the recompute
+        that writes market_power_scores.iso. Still true — it just delegates
+        now instead of holding its own table."""
+        src = (ROOT / "routes" / "dcpi.py").read_text()
+        assert "from util.iso_taxonomy import" in src
+        assert '"NC":"PJM"' not in src.replace(" ", "")
 
 
 if __name__ == "__main__":

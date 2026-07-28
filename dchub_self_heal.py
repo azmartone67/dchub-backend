@@ -829,17 +829,14 @@ def detect(body, status):
 # ============================================================================
 
 # US state → primary ISO/RTO mapping. Not exhaustive (some states split).
-US_STATE_ISO = {
-    "AL":"SERC","AK":"AK","AR":"MISO","AZ":"WECC","CA":"CAISO","CO":"WECC",
-    "CT":"ISONE","DE":"PJM","FL":"FRCC","GA":"SERC","HI":"HECO","IA":"MISO",
-    "ID":"WECC","IL":"PJM","IN":"PJM","KS":"SPP","KY":"PJM","LA":"MISO",
-    "MA":"ISONE","MD":"PJM","ME":"ISONE","MI":"MISO","MN":"MISO","MO":"SPP",
-    "MS":"MISO","MT":"WECC","NC":"SERC","ND":"MISO","NE":"SPP","NH":"ISONE",
-    "NJ":"PJM","NM":"WECC","NV":"WECC","NY":"NYISO","OH":"PJM","OK":"SPP",
-    "OR":"WECC","PA":"PJM","RI":"ISONE","SC":"SERC","SD":"SPP","TN":"TVA",
-    "TX":"ERCOT","UT":"WECC","VA":"PJM","VT":"ISONE","WA":"WECC","WI":"MISO",
-    "WV":"PJM","WY":"WECC","DC":"PJM",
-}
+# r-iso-taxonomy (2026-07-28): was a private copy of the state→ISO map, one
+# of four in the tree. This copy was CORRECT (NC→SERC, MO→SPP) but had no
+# effect: the only writer that consults it is guarded by
+# `WHERE iso IS NULL OR iso = '' OR iso = 'UNK'`, and the DCPI recompute
+# writes `iso` unconditionally from its own (wrong) map — so the guard never
+# matched and this map never fired. Now re-exported from the one source of
+# truth so "correct" and "actually applied" are the same map.
+from util.iso_taxonomy import STATE_ISO as US_STATE_ISO  # noqa: E402
 
 
 def _slug_root(slug):

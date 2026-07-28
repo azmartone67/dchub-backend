@@ -39,28 +39,13 @@ log = logging.getLogger(__name__)
 
 # ── Grid / connectivity mapping ─────────────────────────────────────────────
 
-GRID_MAP = {
-    "TX": "ERCOT",
-    "VA": "PJM",
-    "OH": "PJM",
-    "NJ": "PJM",
-    "MD": "PJM",
-    "IL": "PJM",
-    "TN": "MISO",
-    "LA": "MISO",
-    "WI": "MISO",
-    "IN": "MISO",
-    "MS": "MISO",
-    "AR": "MISO",
-    "MO": "SPP",
-    "AZ": "WECC",
-    "NM": "WECC",
-    "OR": "BPA",
-    "CA": "CAISO",
-    "GA": "Southern",
-    "SC": "Duke",
-    "CO": "WAPA",
-}
+# r-iso-taxonomy (2026-07-28): was a sixth hand-written state→grid map, and
+# the most wrong of them — it claimed TN was MISO (Tennessee is TVA) and
+# mixed code labels with free text ("Southern", "Duke", "BPA"). The
+# `connectivity` field it feeds is persisted on synced pipeline records, so
+# the bad values travelled. Now the one source of truth, which also covers
+# the 30 states this partial map simply omitted.
+from util.iso_taxonomy import STATE_ISO as GRID_MAP  # noqa: E402
 
 # ── City centroid coordinates ───────────────────────────────────────────────
 
