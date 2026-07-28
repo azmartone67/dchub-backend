@@ -2376,6 +2376,24 @@ try:
     except Exception as _pds:
         import logging
         logging.getLogger(__name__).warning('platform_doors_master_shell wiring failed: %s', _pds)
+    # 2026-07-28: Actuation master shell (#39) — the shell whose SUBJECT is the other
+    # shells. Every one of them ends "names an actuator per lane, fires nothing", and
+    # the brain's approved self-agenda items end "recorded only" — that open loop is
+    # why the numbers do not move. Five lanes: handoff delivery (the 77->0 cliff),
+    # brain evidence-assembly starvation (79/112 drafts refuted for citing evidence
+    # they were never given), the dark investigation lane (nothing schedules
+    # /api/v1/brain/investigate), platform-active honesty, and the
+    # integration->revenue gate. ★Lane 3 ACTUALLY FIRES on POST ?fire=investigations
+    # — a sixth read-only shell would BE the bug.
+    # GET /admin/actuation · /api/v1/admin/actuation/master-tick
+    # Kill: ACTUATION_SHELL_DISABLE=1
+    try:
+        from routes.actuation_master_shell import actuation_master_shell_bp
+        app.register_blueprint(actuation_master_shell_bp)
+        print("[main] actuation_master_shell_bp registered: GET /admin/actuation", flush=True)
+    except Exception as _acts:
+        import logging
+        logging.getLogger(__name__).warning('actuation_master_shell wiring failed: %s', _acts)
     # 2026-07-26: Graph-Spine master shell (#36) — read-only DIAGNOSTIC, pure-DB,
     # replica-preferred. Answers "replace RAG with graph engineering?" by measuring
     # where retrieval actually loses: the identity spine. Six lanes — carrier<->
