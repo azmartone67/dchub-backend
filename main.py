@@ -2410,6 +2410,20 @@ try:
     except Exception as _inv:
         import logging
         logging.getLogger(__name__).warning('inventory_acquisition_master_shell wiring failed: %s', _inv)
+    # 2026-07-28: REIT Schedule III coverage-FLOOR auditor. ★NOT an importer —
+    # Schedule III is aggregated BY MARKET with no facility names or addresses, so the
+    # "10-Ks list every property" premise was wrong. What it gives is an AUDITED
+    # per-market OWNED building count = a verification oracle. Only ours BELOW filed is
+    # a provable gap (these operators lease heavily, so above is normal). First run:
+    # DLR 158 owned across 20 markets, 11 buildings short in NY/Sydney/Portland/Boston.
+    # GET /admin/reit-audit · /api/v1/admin/reit-audit/run · kill REIT_AUDIT_DISABLE=1
+    try:
+        from routes.reit_schedule_audit import reit_schedule_audit_bp
+        app.register_blueprint(reit_schedule_audit_bp)
+        print("[main] reit_schedule_audit_bp registered: GET /admin/reit-audit", flush=True)
+    except Exception as _reit:
+        import logging
+        logging.getLogger(__name__).warning('reit_schedule_audit wiring failed: %s', _reit)
     # 2026-07-26: Graph-Spine master shell (#36) — read-only DIAGNOSTIC, pure-DB,
     # replica-preferred. Answers "replace RAG with graph engineering?" by measuring
     # where retrieval actually loses: the identity spine. Six lanes — carrier<->
