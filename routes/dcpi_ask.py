@@ -103,6 +103,7 @@ def _extract_citations(text: str) -> list:
     return cites
 
 
+# AUTO-REPAIR: duplicate route '/api/v1/dcpi/ask' also in routes/dcpi.py:3356 — review and remove one
 @dcpi_ask_bp.route("/api/v1/dcpi/ask", methods=["GET", "POST"])
 def ask():
     q = (request.args.get("q") or
