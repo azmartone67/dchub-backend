@@ -130,6 +130,74 @@ class TestPickRollbackTarget:
         assert "same commit" in reason
 
 
+class TestAntiStackingGuard:
+    """Refuse to roll back onto a deployment that only just became live.
+
+    More than one actor reacts to the same incident — the worker sentinel runs
+    on two processes, and auto-rollback.yml is armed as a backstop. Whoever
+    acts second sees the freshly restored good image as "same commit as
+    current", skips it, and rolls back to something OLDER. One correct
+    rollback becomes an over-rollback.
+    """
+
+    T0 = 1_800_000_000.0  # fixed clock; the fixtures below are relative to it
+
+    def at(self, offset_s):
+        import datetime as _dt
+        return _dt.datetime.fromtimestamp(
+            self.T0 + offset_s, _dt.timezone.utc
+        ).isoformat().replace("+00:00", "Z")
+
+    def test_refuses_when_the_live_deployment_just_changed(self):
+        deps = [
+            dep("cur", "SUCCESS", "restored", created=self.at(-120)),   # 2 min old
+            dep("older", "SUCCESS", "good111", created=self.at(-9000)),
+        ]
+        current, target, reason = rb.pick_rollback_target(deps, now=self.T0)
+        assert target is None, "must not stack a rollback on a 2-minute-old deployment"
+        assert current["id"] == "cur"
+        assert "already rolled back" in reason or "just deployed" in reason
+
+    def test_allows_once_the_live_deployment_has_settled(self):
+        deps = [
+            dep("cur", "SUCCESS", "bad0000", created=self.at(-1200)),   # 20 min old
+            dep("older", "SUCCESS", "good111", created=self.at(-9000)),
+        ]
+        _, target, reason = rb.pick_rollback_target(deps, now=self.T0)
+        assert target["id"] == "older"
+        assert reason == "ok"
+
+    def test_force_overrides_the_guard(self):
+        deps = [
+            dep("cur", "SUCCESS", "restored", created=self.at(-10)),
+            dep("older", "SUCCESS", "good111", created=self.at(-9000)),
+        ]
+        _, blocked, _ = rb.pick_rollback_target(deps, now=self.T0)
+        assert blocked is None
+        _, forced, reason = rb.pick_rollback_target(deps, now=self.T0, min_current_age_s=0)
+        assert forced["id"] == "older" and reason == "ok"
+
+    def test_unparseable_timestamp_does_not_block(self):
+        """Fail open on a timestamp we cannot read — never wedge a real rollback."""
+        deps = [
+            dep("cur", "SUCCESS", "bad0000", created="not-a-timestamp"),
+            dep("older", "SUCCESS", "good111", created="also-bad"),
+        ]
+        _, target, reason = rb.pick_rollback_target(deps, now=self.T0)
+        assert target["id"] == "older" and reason == "ok"
+
+    @pytest.mark.parametrize("stamp,expected_ok", [
+        ("2026-07-28T08:20:04.893Z", True),      # GraphQL ISO-8601 with Z
+        ("2026-07-28 08:20:04.893", True),       # space-separated, as the CLI prints
+        ("2026-07-28T08:20:04+00:00", True),     # explicit offset
+        ("", False),
+        (None, False),
+        (12345, False),                          # non-string
+    ])
+    def test_timestamp_parsing(self, stamp, expected_ok):
+        assert (rb._parse_ts(stamp) > 0) is expected_ok
+
+
 class TestCommitSha:
     @pytest.mark.parametrize("meta,expected", [
         ({"commitHash": "abc123"}, "abc123"),
