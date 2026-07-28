@@ -25,6 +25,14 @@ jobs:
             fi
           done < <(find . -name '*.py' -not -path './.git/*' -not -path './node_modules/*' -not -path './.venv/*')
           exit $fail
+      # A module-scope sys.exit() under tests/ does not fail a test — pytest
+      # re-raises SystemExit during COLLECTION, so the whole run dies with exit
+      # 3 and ZERO tests execute. #1797 and #1803 were both this exact bug, four
+      # hours apart. It belongs HERE and not in the suite: collection aborts
+      # before any test runs, so a pytest guard would be killed by the very bug
+      # it is meant to catch.
+      - name: tests/ cannot abort pytest collection
+        run: python3 scripts/check_test_collection_safety.py
 
   regression-lint:
     runs-on: ubuntu-latest
