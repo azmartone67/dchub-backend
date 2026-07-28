@@ -1071,11 +1071,74 @@ def _prev_titles() -> dict:
     return out
 
 
+def reemit_findings() -> dict:
+    """Re-file the CURRENT report's win moves without re-crawling.
+
+    ★ WHY THIS EXISTS (two compounding gates, both discovered 2026-07-28):
+    (1) `brain_consistency_radar` full-sweep RESOLVES any open finding whose
+        `last_seen` is older than 24h, regardless of detector — correct for
+        incident findings, fatal for a WEEKLY strategic detector, which is
+        why all six recon findings read status=resolved seen=1.
+    (2) the autopilot worklist only reads findings with
+        `last_seen > NOW() - INTERVAL '10 minutes'`, so a weekly finding is
+        actionable for ten minutes a week even when open.
+    Re-emitting daily (cheap: reads the stored synthesis, no crawl) keeps
+    the moves fresh, open, and inside the act window. Idempotent — the
+    canonical writer upserts and bumps last_seen."""
+    c = _conn()
+    if c is None:
+        return {"status": "no_database"}
+    out = {"reemitted": 0}
+    try:
+        with c.cursor() as cur:
+            cur.execute(
+                "SELECT assessment FROM competitor_recon_reports "
+                "WHERE target_slug = %s ORDER BY run_date DESC LIMIT 1",
+                (_SYNTH_SLUG,))
+            row = cur.fetchone()
+        synth = (row[0] if row else None) or {}
+        moves = (synth.get("win_moves") or [])[:_MAX_WIN_MOVE_FINDINGS]
+        if not moves:
+            return {"status": "no_report_yet"}
+        from routes.brain_findings_writer import upsert_brain_finding
+        with c.cursor() as cur:
+            for m in moves:
+                upsert_brain_finding(
+                    cur,
+                    issue="competitor_recon:win_move:%s" % m["key"],
+                    url="dchub://competitor-recon/win/%s" % m["key"],
+                    count=int(m.get("priority") or 1),
+                    detail=("[P%s/%s] %s — %s Evidence: %s"
+                            % (m.get("priority"), m.get("lever"),
+                               m.get("title"), m.get("why"),
+                               m.get("evidence")))[:2000],
+                    detector="competitor_recon", status="open")
+                out["reemitted"] += 1
+        c.commit()
+        out["status"] = "ok"
+    except Exception as e:
+        try:
+            c.rollback()
+        except Exception:
+            pass
+        out["status"] = "error"
+        out["error"] = str(e)[:160]
+    finally:
+        try:
+            c.close()
+        except Exception:
+            pass
+    return out
+
+
 def run_competitor_recon(budget_s: float = None, force: bool = False) -> dict:
     """Full recon pass. Weekly-gated unless force. Returns a summary dict
     (also the sync-endpoint response body)."""
     if not force and _ran_recently():
-        return {"status": "skipped_recent", "gate_days": _GATE_DAYS}
+        # Gated day: still re-emit so the win moves stay inside the
+        # autopilot's freshness window instead of aging into 'resolved'.
+        return {"status": "skipped_recent", "gate_days": _GATE_DAYS,
+                "reemit": reemit_findings()}
     budget = budget_s or _DEFAULT_BUDGET_S
     run_date = datetime.datetime.utcnow().date().isoformat()
     logger.info("competitor_recon: starting run %s (budget %ss)",
@@ -1136,6 +1199,118 @@ def recon_run_endpoint():
     threading.Thread(target=_bg, name="competitor-recon-manual",
                      daemon=True).start()
     return jsonify(status="spawned", force=force), 202
+
+
+def act_on_win_moves() -> dict:
+    """Perform the SAFE, mechanical half of the latest recon's win moves.
+
+    The brain's act-loop calls this (pattern key `competitor_recon`). Before
+    this existed the findings were a silent no_action: `_lookup_pattern`
+    prefix-matches on `competitor_recon` and there was no entry, so the
+    autopilot recognised nothing and the intelligence sat unused.
+
+    ★ WHAT IS AUTOMATED vs NOT — the line matters:
+      * agent_flank_<slug>  → VERIFY the /vs/<slug> comparison page actually
+        serves. That is a fact check, safe to automate. If it is missing we
+        file a specific, actionable finding; we do NOT auto-write a page.
+      * moat_<axis>         → STAGE a draft positioning card via
+        content_publisher.stage_draft (status='draft'). An operator approves
+        it. Nothing is ever auto-published or auto-sent.
+      * everything else (pricing, partnership, tightening a trial) is a
+        COMMERCIAL judgement and is deliberately left to the owner.
+    """
+    out = {"checked_vs_pages": [], "missing_vs_pages": [],
+           "drafts_staged": 0, "findings_filed": 0, "errors": []}
+    c = _conn()
+    if c is None:
+        return {"status": "no_database"}
+    try:
+        with c.cursor() as cur:
+            cur.execute(
+                "SELECT assessment FROM competitor_recon_reports "
+                "WHERE target_slug = %s ORDER BY run_date DESC LIMIT 1",
+                (_SYNTH_SLUG,))
+            row = cur.fetchone()
+        synth = (row[0] if row else None) or {}
+        moves = synth.get("win_moves") or []
+        if not moves:
+            return {"status": "no_report_yet"}
+
+        import requests as _rq
+        # ── agent-flank moves: is the comparison page actually live? ──
+        _alias = {"dcbyte": "dc-byte", "dchawk": "datacenterhawk",
+                  "dcd": "datacenterdynamics", "dcf": "data-center-frontier"}
+        for m in moves:
+            key = str(m.get("key") or "")
+            if not key.startswith("agent_flank_"):
+                continue
+            slug = key.replace("agent_flank_", "")
+            url = "https://dchub.cloud/vs/%s" % _alias.get(slug, slug)
+            try:
+                r = _rq.get(url, timeout=12, allow_redirects=True,
+                            headers={"User-Agent": RECON_USER_AGENT})
+                ok = r.status_code == 200 and len(r.text or "") > 2000
+                out["checked_vs_pages"].append(
+                    {"slug": slug, "url": url, "status": r.status_code,
+                     "ok": ok})
+                if not ok:
+                    out["missing_vs_pages"].append(slug)
+            except Exception as e:
+                out["errors"].append("vs:%s:%s" % (slug, str(e)[:60]))
+
+        # ── moat moves: stage ONE draft positioning card per moat ──
+        # stage_draft dedups on a content hash, so re-running is idempotent
+        # and a weekly re-emit cannot spam the queue.
+        try:
+            from content_publisher import stage_draft
+            for m in moves:
+                if not str(m.get("key") or "").startswith("moat_"):
+                    continue
+                body = ("%s\n\n%s\n\nEvidence: %s\n\nhttps://dchub.cloud/dcpi"
+                        % (m.get("title"), m.get("why"), m.get("evidence")))
+                res = stage_draft(body[:2800], platform="linkedin")
+                if (res or {}).get("action") == "inserted":
+                    out["drafts_staged"] += 1
+        except Exception as e:
+            out["errors"].append("stage_draft:%s" % str(e)[:80])
+
+        # ── file the outcome so the loop is measurable, not just executed ──
+        try:
+            from routes.brain_findings_writer import upsert_brain_finding
+            with c.cursor() as cur:
+                for slug in out["missing_vs_pages"]:
+                    upsert_brain_finding(
+                        cur,
+                        issue="competitor_recon:vs_page_missing:%s" % slug,
+                        url="dchub://competitor-recon/vs/%s" % slug,
+                        count=1,
+                        detail=("[action] %s is closed to AI agents, so its "
+                                "category should resolve to DC Hub — but the "
+                                "/vs comparison page does not serve. Create or "
+                                "repair it (routes/competitive_seo.py is the "
+                                "LIVE handler; competitive_vs.py is dead code)."
+                                % slug)[:2000],
+                        detector="competitor_recon", status="open")
+                    out["findings_filed"] += 1
+            c.commit()
+        except Exception as e:
+            c.rollback()
+            out["errors"].append("findings:%s" % str(e)[:80])
+    finally:
+        try:
+            c.close()
+        except Exception:
+            pass
+    out["status"] = "ok"
+    logger.info("competitor_recon act: %s", out)
+    return out
+
+
+@competitor_recon_bp.route("/api/v1/competitors/recon/act", methods=["POST"])
+def recon_act_endpoint():
+    if not _authorized():
+        return jsonify(error="unauthorized"), 401
+    return jsonify(act_on_win_moves()), 200
 
 
 @competitor_recon_bp.route("/api/v1/competitors/recon/latest", methods=["GET"])

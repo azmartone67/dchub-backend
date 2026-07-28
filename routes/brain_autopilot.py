@@ -338,6 +338,24 @@ def _action_competitor_gap(finding: dict) -> tuple[str | None, dict | None]:
     return "/api/discovery/run?sources=competitor_gap", {}
 
 
+def _action_competitor_recon(finding: dict) -> tuple[str | None, dict | None]:
+    """2026-07-28 — act on the weekly competitor-recon win moves.
+
+    competitor_recon files `competitor_recon:win_move:<key>` /
+    `:threat:<slug>` / `:vs_page_missing:<slug>`. ALL of them prefix-match
+    to `competitor_recon`, which had NO library entry — so every one was a
+    silent no_action and the intelligence sat unused (6 findings, seen=1,
+    never touched).
+
+    The endpoint does only the SAFE, mechanical half: VERIFY that the /vs
+    comparison page serves for each agent-locked rival (a fact check), and
+    STAGE a draft positioning card for each uncontested moat (status
+    'draft' — an operator approves; nothing is auto-published or sent).
+    Pricing, partnership and trial-tightening moves stay with the owner by
+    design."""
+    return "/api/v1/competitors/recon/act", {}
+
+
 def _action_worker_source_unreachable(finding: dict) -> tuple[str | None, dict | None]:
     """raw.githubusercontent.com fetch failed (private repo, no token).
     Needs GITHUB_TOKEN env var. Escalate."""
@@ -980,6 +998,12 @@ _PATTERN_LIBRARY: dict[str, dict[str, Any]] = {
     # competitor sitemaps, diffs, and stages TRUE gaps into
     # discovered_facilities (auto-approve promotes them). Contrast with
     # coverage_gap_canada/alberta which stay escalation-only.
+    "competitor_recon": {
+        "action":      _action_competitor_recon,
+        "method":      "POST",
+        "use_admin":   True,
+        "description": "Autonomous: the weekly competitor recon measured a win move (agent-locked rival, uncontested moat, or a positioning shift). Brain POSTs /api/v1/competitors/recon/act, which VERIFIES the /vs comparison page serves for each agent-locked rival and STAGES a draft positioning card for each moat (draft only — an operator approves, nothing auto-publishes). A missing /vs page becomes its own actionable finding. Commercial moves (pricing, partnership, tightening the trial) are deliberately NOT automated. Inspect /api/v1/competitors/recon/latest.",
+    },
     "coverage_gap_competitor": {
         "action":      _action_competitor_gap,
         "method":      "POST",
