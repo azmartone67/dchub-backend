@@ -179,6 +179,18 @@ class TestNoDriftWithTheEndpoint:
             "the route must delegate to compute_budget so both paths grade identically"
         )
 
+    def test_findings_go_through_the_canonical_writer(self):
+        """Hand-rolled INSERTs into brain_findings have failed silently before.
+
+        The repo DDL for that table is drifted; brain_findings_writer
+        introspects the live columns and upserts constraint-agnostically.
+        """
+        src = (ROOT / "routes" / "slo_rollback_sentinel.py").read_text()
+        assert "upsert_brain_finding" in src
+        assert "INSERT INTO brain_findings" not in src, (
+            "use brain_findings_writer.upsert_brain_finding, not a raw INSERT"
+        )
+
     def test_rollback_logic_is_reused_not_reimplemented(self):
         """The tested Railway contract lives in scripts/railway_rollback.py."""
         src = (ROOT / "routes" / "slo_rollback_sentinel.py").read_text()
