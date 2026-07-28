@@ -82,6 +82,13 @@ jobs:
         # requests / yaml / psycopg2. Installing these light, no-DB deps lets the
         # brain auto-merge/draft/gate tests actually RUN (a real gate, not a skip).
         # Verified green: 210 passed, 8 skipped (DB tests skip w/o DATABASE_URL).
-        run: python3 -m pip install pytest requests flask pyyaml psycopg2-binary "psycopg[binary]"
+        #
+        # 2026-07-28: + Unidecode. tests/test_seo_slug_and_soft404.py imports it
+        # to check non-Latin facility names slug to something usable ('ドコモ').
+        # It is in requirements.txt (Unidecode==1.3.8) so it was present locally
+        # and on the running app, but NOT in this deliberately-light CI install —
+        # so main went red the moment that test landed, and every PR inherited
+        # the failure. Without it NFKD alone folds CJK to '' and two tests fail.
+        run: python3 -m pip install pytest requests flask pyyaml psycopg2-binary "psycopg[binary]" Unidecode
       - name: Run pure-function tests
         run: python3 -m pytest tests/ -v --tb=short
