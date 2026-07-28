@@ -10,8 +10,10 @@ moves, both deployed 2026-06-24:
   · MOVE #2 — AUTO-REDEEM: at a high-intent moment (a repeat Pro-tool siting
               workflow) the gateway auto-redeems the signed claim_token and binds
               a working 7d/50-call trial key FOR THE AGENT, inline — no human
-              page-open. Measured by claims_used_30d / claims_with_key_30d on
-              /api/v1/mcp/high-intent/stats.
+              page-open. Measured by claims_redeemed_30d / claims_with_key_30d on
+              /api/v1/mcp/high-intent/stats (was claims_used_30d until 2026-07-27,
+              when that key was repointed at the human claim_page_opened_at
+              instrument — see r-used-is-human).
   · MOVE #3 — KEY-BOUND UPGRADE: paying flips the agent's OWN key in place
               ($9 tier-flip via a DCM- pair-code, or $5/$10 pack credits) — no key
               swap, no copy-paste. Measured by keys_by_tier.paid / conversions_30d
@@ -66,7 +68,13 @@ _PUBLIC = os.environ.get("DCHUB_PUBLIC_BASE", "https://dchub.cloud")
 # ── 2026-06-24 deploy baselines (the day Moves #2 + #3 shipped) ───────
 _BASELINE = {
     "claims_minted_30d": 25,
-    "claims_used_30d": 2,
+    # r-used-is-human (2026-07-27): this 2 was measured against the OLD
+    # claims_used_30d (any-channel redeem), so it is the claims_redeemed_30d
+    # baseline. claims_used_30d now means "human opened the claim page" and has
+    # its own baseline — claim_page_opened_at had fired 0x all-time as of
+    # 2026-06-25, so ANY nonzero human open is genuine movement.
+    "claims_redeemed_30d": 2,
+    "claims_used_30d": 0,
     "claim_to_paid_30d": 0,
     "paid_keys": 22,
     "conversions_30d": 8,
@@ -146,6 +154,16 @@ def tier1_measure() -> dict:
         # Move #2
         "claims_minted_30d": int(s.get("claims_minted_30d") or 0),
         "claims_used_30d": int(s.get("claims_used_30d") or 0),
+        # r-used-is-human (2026-07-27): Move #2 asks "is the gateway auto-redeem
+        # firing", which is the ANY-CHANNEL number. That used to be claims_used_30d;
+        # it is now claims_redeemed_30d (claims_used_30d was repointed at the human
+        # claim_page_opened_at instrument). Fall back to the old key so this shell
+        # keeps scoring correctly against a backend that has not deployed the
+        # rename yet — `or 0` alone would read a real 0 as "auto-redeem dead".
+        "claims_redeemed_30d": int(
+            (s.get("claims_redeemed_30d")
+             if s.get("claims_redeemed_30d") is not None
+             else s.get("claims_used_30d")) or 0),
         "claims_with_key_30d": int(s.get("claims_with_key_30d") or 0),
         "claim_email_captured_30d": int(s.get("claim_email_captured_30d") or 0),
         "claim_to_paid_30d": int(s.get("claim_to_paid_30d") or 0),
@@ -170,15 +188,19 @@ def tier2_score(m: dict) -> dict:
 
     # ── MOVE #2 — auto-redeem firing? ────────────────────────────────
     minted_grew = m["claims_minted_30d"] > b["claims_minted_30d"]
-    used_climbed = m["claims_used_30d"] > b["claims_used_30d"]
-    got_key = m["claims_with_key_30d"] > b["claims_used_30d"]   # working key delivered
+    # r-used-is-human (2026-07-27): compare the ANY-CHANNEL redeem count, not the
+    # (now human-only) claims_used_30d — Move #2 is a gateway-health question.
+    used_climbed = m["claims_redeemed_30d"] > b["claims_redeemed_30d"]
+    got_key = m["claims_with_key_30d"] > b["claims_redeemed_30d"]  # working key delivered
     route_alive = m["redeem_route_status"] == 400
 
     if used_climbed or got_key:
         move2_status = "firing"
-        move2_note = (f"claims_used_30d={m['claims_used_30d']} / "
+        move2_note = (f"claims_redeemed_30d={m['claims_redeemed_30d']} / "
                       f"claims_with_key_30d={m['claims_with_key_30d']} — above baseline "
-                      f"({b['claims_used_30d']}); the gateway is binding keys for agents.")
+                      f"({b['claims_redeemed_30d']}); the gateway is binding keys for "
+                      f"agents. Humans who actually opened a claim page: "
+                      f"claims_used_30d={m['claims_used_30d']}.")
     elif not route_alive:
         move2_status = "route_broken"
         move2_note = (f"POST /high-intent/redeem returned {m['redeem_route_status']} "
@@ -189,8 +211,8 @@ def tier2_score(m: dict) -> dict:
     elif minted_grew:
         move2_status = "not_firing"
         move2_note = (f"claims_minted_30d={m['claims_minted_30d']} grew but "
-                      f"claims_used_30d={m['claims_used_30d']} is stuck at baseline — "
-                      "claims mint but never redeem. Verify server.mjs "
+                      f"claims_redeemed_30d={m['claims_redeemed_30d']} is stuck at "
+                      "baseline — claims mint but never redeem. Verify server.mjs "
                       "buildHighIntentClaimBlock calls _autoRedeemClaim and "
                       "DCHUB_AUTO_REDEEM_DISABLE is unset.")
         worklist.append({"move": 2, "owner_gated": False, "priority": 90,

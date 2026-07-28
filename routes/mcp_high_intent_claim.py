@@ -1370,7 +1370,8 @@ def high_intent_stats():
        * high_intent_sessions_30d
        * claims_minted_30d
        * claim_minted_rate_30d  (claims / high_intent_sessions)
-       * claims_used_30d
+       * claims_used_30d        — HUMAN-OPENED claims (see r-used-is-human below)
+       * claims_redeemed_30d    — any-channel redeem (human OR machine auto-redeem)
        * claim_to_paid_rate_30d  (paid conversions where the email matches
          a claim_used_at row within 14d after the claim was used)
     """
@@ -1381,6 +1382,10 @@ def high_intent_stats():
         "high_intent_sessions_30d": 0,
         "claims_minted_30d": 0,
         "claims_used_30d": 0,
+        "claims_opened_30d": 0,
+        "claims_redeemed_30d": 0,
+        "claims_used_human_30d": 0,
+        "claims_used_agent_30d": 0,
         "claim_minted_rate_30d_pct": 0.0,
         "claim_to_paid_rate_30d_pct": 0.0,
         "claim_to_paid_30d": 0,
@@ -1418,10 +1423,47 @@ def high_intent_stats():
                 )
                 out["claims_minted_30d"] = int((cur.fetchone() or [0])[0] or 0)
             except Exception: pass
+            # r-used-is-human (2026-07-27): claims_used_30d counted claim_used_at,
+            # which since the 07-04 auto-redeem restore is DOMINATED by server.mjs
+            # _autoRedeemClaim stamping every fresh mint ~0-25s later with
+            # X-Internal-Key — no human, no browser. Live proof it was measuring the
+            # machine: claims_used_30d(326) == claims_with_key_30d(326) exactly, and
+            # _email_captured_sources.claim_flow == 0 (326 "used" claims, zero emails
+            # from the claim form). Against a 3/30d baseline that read as a 100x
+            # breakout and tripped the growth monitor daily.
+            #
+            # Same fix, same instrument as r-funnel-honest (2026-06-25), which already
+            # repointed the dashboard's human_acted at claim_page_opened_at — this
+            # PUBLIC route was missed by it, exactly like the 06-23 _hi_real_sql
+            # followup missed it. claim_page_opened_at is stamped ONLY by the GET of
+            # the HTML claim form (a browser rendered the page); the machine redeem
+            # POSTs straight to /high-intent/redeem and never touches it.
+            #
+            # The machine number is NOT deleted — it moves to claims_redeemed_30d
+            # (any channel) and splits into claims_used_agent_30d (claim_email IS
+            # NULL = auto-redeem) / claims_used_human_30d (IS NOT NULL = human
+            # form-submit), the Branch-A/B convention already used by
+            # claim-variant-conversion. Consumers that want "did auto-redeem fire"
+            # read claims_redeemed_30d; consumers that want humans read this key.
             try:
                 # DISTINCT session — a single looping registry client (e.g. one
                 # Smithery session crossing threshold on 10 tools) was inflating
-                # this 10x via COUNT(*). Count real redeeming sessions, not rows.
+                # this 10x via COUNT(*). Count real sessions, not rows.
+                cur.execute(
+                    """SELECT COUNT(DISTINCT mcp_session_id)
+                         FROM mcp_high_intent_sessions
+                        WHERE claim_page_opened_at IS NOT NULL
+                          AND claim_page_opened_at >= NOW() - INTERVAL '30 days'"""
+                    + " AND " + _hi_real_sql(),
+                )
+                out["claims_used_30d"] = int((cur.fetchone() or [0])[0] or 0)
+                out["claims_opened_30d"] = out["claims_used_30d"]
+            except Exception:
+                try: c.rollback()
+                except Exception: pass
+            # Any-channel redeem — the PREVIOUS claims_used_30d definition, kept
+            # under an honest name so the auto-redeem health signal is not lost.
+            try:
                 cur.execute(
                     """SELECT COUNT(DISTINCT mcp_session_id)
                          FROM mcp_high_intent_sessions
@@ -1429,8 +1471,28 @@ def high_intent_stats():
                           AND claim_used_at >= NOW() - INTERVAL '30 days'"""
                     + " AND " + _hi_real_sql(),
                 )
-                out["claims_used_30d"] = int((cur.fetchone() or [0])[0] or 0)
-            except Exception: pass
+                out["claims_redeemed_30d"] = int((cur.fetchone() or [0])[0] or 0)
+            except Exception:
+                try: c.rollback()
+                except Exception: pass
+            # Split that redeem total into its two channels.
+            try:
+                cur.execute(
+                    """SELECT COUNT(DISTINCT mcp_session_id)
+                           FILTER (WHERE claim_email IS NOT NULL AND claim_email <> ''),
+                              COUNT(DISTINCT mcp_session_id)
+                           FILTER (WHERE claim_email IS NULL OR claim_email = '')
+                         FROM mcp_high_intent_sessions
+                        WHERE claim_used_at IS NOT NULL
+                          AND claim_used_at >= NOW() - INTERVAL '30 days'"""
+                    + " AND " + _hi_real_sql(),
+                )
+                _r = cur.fetchone() or (0, 0)
+                out["claims_used_human_30d"] = int(_r[0] or 0)
+                out["claims_used_agent_30d"] = int(_r[1] or 0)
+            except Exception:
+                try: c.rollback()
+                except Exception: pass
             # r-loop-metric (2026-07-04): the TRUE Move #2 firing signal is not
             # claims_used alone but "did the agent walk away with a WORKING key" —
             # minted_api_key IS NOT NULL. And the 07-03 pivot's own success metric is
@@ -1545,9 +1607,21 @@ def high_intent_stats():
         if out["high_intent_sessions_30d"] > 0:
             out["claim_minted_rate_30d_pct"] = round(
                 100.0 * out["claims_minted_30d"] / out["high_intent_sessions_30d"], 2)
-        if out["claims_used_30d"] > 0:
+        # r-used-is-human (2026-07-27): denominator is the HUMAN form-submit cohort,
+        # not every redeem. claim_to_paid_30d requires claim_email IS NOT NULL (it
+        # JOINs mcp_conversions on that email), so it is a strict subset of
+        # claims_used_human_30d — the old denominator (all redeems, ~99% machine)
+        # made the numerator structurally incapable of filling it.
+        if out["claims_used_human_30d"] > 0:
             out["claim_to_paid_rate_30d_pct"] = round(
-                100.0 * out["claim_to_paid_30d"] / out["claims_used_30d"], 2)
+                100.0 * out["claim_to_paid_30d"] / out["claims_used_human_30d"], 2)
+        out["_claims_used_definition"] = (
+            "claims_used_30d = DISTINCT real sessions with claim_page_opened_at in 30d "
+            "(HUMAN opened the /claim/<token> page). Changed 2026-07-27 (r-used-is-human); "
+            "before that it counted claim_used_at, which is ~99% server-side machine "
+            "auto-redeem. Old number = claims_redeemed_30d; channel split = "
+            "claims_used_human_30d (form-submit) / claims_used_agent_30d (auto-redeem)."
+        )
         return jsonify(ok=True, **out, threshold=HIGH_INTENT_THRESHOLD)
     finally:
         try: c.close()

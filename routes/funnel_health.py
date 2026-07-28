@@ -362,11 +362,14 @@ def _build_data() -> dict:
         # the last 30d (the honest mint-rate denominator — see the query
         # block for why the old paid_call_count_24h >= 3 filter was wrong).
         # claims_minted = signed URLs emitted into paywall responses.
-        # claims_used = redeemed by agent auto-redeem OR human form-submit.
+        # r-used-is-human (2026-07-27): claims_used = HUMAN opened the claim page
+        # (claim_page_opened_at). claims_redeemed = agent auto-redeem OR human
+        # form-submit (the pre-07-27 claims_used).
         # claim_to_paid = email-path (users.plan) UNION key-path (Stripe
         # pack/top-up on the minted key).
         "high_intent": {"sessions_30d": 0, "claims_minted_30d": 0,
-                        "claims_used_30d": 0, "claim_to_paid_30d": 0,
+                        "claims_used_30d": 0, "claims_redeemed_30d": 0,
+                        "claims_used_human_30d": 0, "claim_to_paid_30d": 0,
                         "minted_rate_pct": 0.0, "claim_to_paid_rate_pct": 0.0,
                         # Round 2 (2026-06-07): threshold is env-driven via
                         # DCHUB_HIGH_INTENT_THRESHOLD (default 2 since 3→2 drop).
@@ -927,10 +930,27 @@ def _build_data() -> dict:
                     "SELECT COUNT(*) FROM " + _hi_real_from() +
                     " WHERE claim_minted_at IS NOT NULL "
                     "   AND claim_minted_at >= NOW() - INTERVAL '30 days'") or 0)
+                # r-used-is-human (2026-07-27): mirror of the public
+                # /high-intent/stats change — claim_used_at is ~99% server-side
+                # machine auto-redeem (server.mjs _autoRedeemClaim, ~0-25s after
+                # mint), so it measured the gateway, not adoption. The human
+                # instrument is claim_page_opened_at (stamped only by the GET of
+                # the HTML claim form). Old number kept as claims_redeemed_30d.
+                # Both surfaces must move together or the dashboard and the
+                # public route publish different "claims used" numbers.
                 out["high_intent"]["claims_used_30d"] = int(_scalar(cur,
+                    "SELECT COUNT(*) FROM " + _hi_real_from() +
+                    " WHERE claim_page_opened_at IS NOT NULL "
+                    "   AND claim_page_opened_at >= NOW() - INTERVAL '30 days'") or 0)
+                out["high_intent"]["claims_redeemed_30d"] = int(_scalar(cur,
                     "SELECT COUNT(*) FROM " + _hi_real_from() +
                     " WHERE claim_used_at IS NOT NULL "
                     "   AND claim_used_at >= NOW() - INTERVAL '30 days'") or 0)
+                out["high_intent"]["claims_used_human_30d"] = int(_scalar(cur,
+                    "SELECT COUNT(*) FROM " + _hi_real_from() +
+                    " WHERE claim_used_at IS NOT NULL "
+                    "   AND claim_used_at >= NOW() - INTERVAL '30 days' "
+                    "   AND claim_email IS NOT NULL AND claim_email <> ''") or 0)
                 # claim_to_paid — r-two-branch (2026-07-03): email-path (users.plan
                 # via claim_email) UNION key-path (Stripe pack/top-up on the minted
                 # key). 11 of 12 live redemptions have claim_email NULL (agents
@@ -968,10 +988,14 @@ def _build_data() -> dict:
                     out["high_intent"]["minted_rate_pct"] = min(100.0, round(
                         100.0 * out["high_intent"]["claims_minted_30d"]
                         / out["high_intent"]["sessions_30d"], 1))
-                if out["high_intent"]["claims_used_30d"] > 0:
+                # r-used-is-human (2026-07-27): this claim_to_paid_30d has TWO legs
+                # (email-path AND key-path), so unlike the public route's email-only
+                # numerator it can legitimately count agent redemptions — keep the
+                # any-channel denominator here, just under its honest name.
+                if out["high_intent"]["claims_redeemed_30d"] > 0:
                     out["high_intent"]["claim_to_paid_rate_pct"] = min(100.0, round(
                         100.0 * out["high_intent"]["claim_to_paid_30d"]
-                        / out["high_intent"]["claims_used_30d"], 1))
+                        / out["high_intent"]["claims_redeemed_30d"], 1))
                 # Round 2: pull the LIVE threshold so the dashboard reflects
                 # what the endpoint is using (env-driven via
                 # DCHUB_HIGH_INTENT_THRESHOLD).
@@ -1486,7 +1510,8 @@ def _render_html(data: dict, admin_key: str) -> str:
     rn = data["renewal_nudge"]
     coh = data["source_plan_cohort"]
     hi = data.get("high_intent", {"sessions_30d": 0, "claims_minted_30d": 0,
-                                   "claims_used_30d": 0, "claim_to_paid_30d": 0,
+                                   "claims_used_30d": 0, "claims_redeemed_30d": 0,
+                                   "claim_to_paid_30d": 0,
                                    "minted_rate_pct": 0.0,
                                    "claim_to_paid_rate_pct": 0.0,
                                    "threshold": 2})
@@ -2010,8 +2035,12 @@ def _render_html(data: dict, admin_key: str) -> str:
         <div class="ss-v" style="color:{('#22c55e' if hi.get('minted_rate_pct',0)>=80 else '#f59e0b' if hi.get('minted_rate_pct',0)>=40 else '#94a3b8')}">{hi.get('minted_rate_pct',0):.1f}%</div>
       </div>
       <div class="sub-stat">
-        <div class="ss-l">Claims used 30d</div>
+        <div class="ss-l">Claims opened 30d (human)</div>
         <div class="ss-v">{_fmt_n(hi.get('claims_used_30d',0))}</div>
+      </div>
+      <div class="sub-stat">
+        <div class="ss-l">Claims redeemed 30d (any channel)</div>
+        <div class="ss-v" style="color:var(--muted)">{_fmt_n(hi.get('claims_redeemed_30d',0))}</div>
       </div>
       <div class="sub-stat">
         <div class="ss-l">Claim → paid 30d</div>
