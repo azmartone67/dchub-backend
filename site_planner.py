@@ -1952,16 +1952,32 @@ def register_site_planner_routes(app):
         # ~1km grid — far finer than either source's own resolution
         return (kind, round(float(lat), 2), round(float(lng), 2), extra)
 
+    def _ci_rkey(key):
+        return 'ci:' + ':'.join(str(x) for x in key)
+
     def _ci_get(key):
         if os.environ.get('CLIMATE_INTEL_CACHE') == '0':
             return None
-        hit = _CI_CACHE.get(key)
-        if not hit:
-            return None
-        if hit[0] < time.time():
+        hit = _CI_CACHE.get(key)                     # L1: this process
+        if hit and hit[0] >= time.time():
+            return hit[1]
+        if hit:
             _CI_CACHE.pop(key, None)
-            return None
-        return hit[1]
+        # ★★ L2: SHARED across replicas. An in-process dict alone measured ZERO
+        # hits in production (10/10 live calls missed) — the backend runs several
+        # replicas, so a repeat request lands on a cold one. That is the SAME
+        # per-replica-in-memory-state trap that caused the lane-3 instruction
+        # contradiction. A process-local cache on a multi-replica service is
+        # decoration, not a cache.
+        try:
+            from redis_cache import cache_get as _rc_get
+            v = _rc_get(_ci_rkey(key))               # fails soft to None
+            if v:
+                _CI_CACHE[key] = (time.time() + _CI_TTL_S, v)   # promote to L1
+                return v
+        except Exception:
+            pass
+        return None
 
     def _ci_put(key, value):
         if os.environ.get('CLIMATE_INTEL_CACHE') == '0':
@@ -1969,6 +1985,11 @@ def register_site_planner_routes(app):
         if len(_CI_CACHE) >= _CI_MAX:       # bounded; simplest correct eviction
             _CI_CACHE.clear()
         _CI_CACHE[key] = (time.time() + _CI_TTL_S, value)
+        try:
+            from redis_cache import cache_set as _rc_set
+            _rc_set(_ci_rkey(key), value, ttl=_CI_TTL_S)
+        except Exception:
+            pass
 
     @app.route('/api/v1/site-planner/climate-intel', methods=['GET', 'POST'])
     @require_pro
