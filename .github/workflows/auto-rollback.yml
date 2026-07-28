@@ -20,13 +20,23 @@ on:
 # r71-stabilize: prevent run-stacking (the 5-min sample loop overlapped the next
 # */5 trigger → continuous self-probe of the single replica). Latest run wins.
 #
-# 2026-07-28: split the group by trigger. Previously every run shared one group,
+# 2026-07-28: split the group by trigger. Previously every run shared ONE group,
 # so the */5 cron cancelled the post-deploy (push) run — the single most
-# important check — before it finished. 73 of the last 100 runs ended
-# `cancelled`. Push runs now get their own group keyed on the SHA, and the
-# sample loop was trimmed to finish inside the 5-minute cron interval.
+# important check — before it finished: 73 of the last 100 runs ended
+# `cancelled`. Two lanes fix that without letting runs pile up.
+#
+# Both lanes keep cancel-in-progress. Keying the push lane per-SHA instead was
+# tempting, but main takes up to 34 commits/hour against an ~8-minute job, so
+# ~5 runs would overlap — and during a real burn each one would independently
+# issue a Railway rollback and open its own issue and revert PR. A rollback
+# storm is worse than a missed sample.
+#
+# Superseding a push check is safe: the SLO endpoint reports global CURRENT
+# state, so a newer deploy's check subsumes an older one. And the cron lane
+# still gives continuous coverage every 5 minutes — the sample loop was trimmed
+# to ~4m05s so it finishes inside that interval instead of being cancelled.
 concurrency:
-  group: auto-rollback-${{ github.event_name == 'push' && github.sha || 'scheduled' }}
+  group: auto-rollback-${{ github.event_name == 'push' && 'push' || 'scheduled' }}
   cancel-in-progress: true
 
 jobs:
