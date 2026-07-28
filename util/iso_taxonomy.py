@@ -156,7 +156,31 @@ MARKET_ISO_OVERRIDES = {
     "riverside":         "SPP",
     "belton":            "SPP",
     "raymore":           "SPP",
+
+    # r-iso-sweep (2026-07-28): found by probing every metro in a split state
+    # against its serving utility, rather than waiting for two maps to
+    # disagree. Both were live with an RTO label on a grid that is not in that
+    # RTO — the harmful direction, since callers act on an RTO label.
+    #
+    # El Paso Electric is a WECC utility. ERCOT stops well short of it: the
+    # far-west Texas grid is synchronised with the Western Interconnection,
+    # not the Texas one. Reported ERCOT live on 2026-07-28.
+    "el-paso":           "WECC",
+    #
+    # SMUD is its own balancing authority inside BANC and is NOT a CAISO
+    # member. Reported CAISO live on 2026-07-28. Labelled WECC (the region)
+    # rather than BANC because BANC is absent from ISO_TYPE above — add it
+    # there first if a BA-level label is ever wanted here.
+    "sacramento":        "WECC",
 }
+
+# NOTE (r-iso-sweep 2026-07-28): these keys are bare city slugs with no state,
+# so a city name that exists in two states resolves to ONE entry for both.
+# "riverside" above means Riverside MISSOURI (Kansas City metro, SPP); if a
+# Riverside CALIFORNIA market is ever scored it would silently inherit SPP for
+# a CAISO-adjacent grid. No Riverside market is scored today, so this is
+# latent, not live — but the next same-named market makes it real. The fix
+# when it matters is to key overrides on (slug, state), not slug alone.
 
 
 def iso_type_of(iso: str | None) -> str:
