@@ -63,15 +63,46 @@ def _stable_hash8(provider, name):
     return hashlib.md5(f"{provider or ''}|{name or ''}".encode("utf-8")).hexdigest()[:8]
 
 
+def _dedupe_provider_prefix(provider_slug, name_slug):
+    """Drop the provider prefix when the NAME already starts with it.
+
+    ★ The bug this fixes (GSC 2026-07-28): the slug was an unconditional
+      f"{provider}-{name}-{hash}", but operators name facilities with their own
+      brand in front. That produced `ntt-ntt-frankfurt-...`,
+      `pentech-pentech-...`, `equinix-equinix-sp3-so-paulo-...`. Measured on
+      5,064 frozen rows: 45.7% carry the doubling.
+    ★ TOKEN-BOUNDARY match only. A bare startswith() would mangle a provider
+      that is a prefix of an unrelated word (provider "int" vs name "internap"),
+      so the name must equal the provider or continue with "-".
+    """
+    if not provider_slug or not name_slug:
+        return name_slug
+    if name_slug == provider_slug or name_slug.startswith(provider_slug + '-'):
+        return name_slug
+    return f"{provider_slug}-{name_slug}"
+
+
 def build_canonical_slug(provider, name):
     """Current canonical /facilities/<slug> segment, or None (name too short).
-    Matches the sitemap's `{provider-slug}-{name-slug}-{stable_hash8}` exactly."""
+    Matches the sitemap's `{provider-slug}-{name-slug}-{stable_hash8}` exactly.
+
+    ★★ FORWARD-ONLY, BY DESIGN. This changes the slug only for rows that have
+    not been frozen yet. The ~6,800 already-frozen doubled slugs are LEFT ALONE
+    on purpose: canonical_slug is set-once precisely so live URLs never move,
+    and re-slugging them to prettier URLs would mint ~6,800 fresh redirects —
+    the exact churn that put 9,819 pages in GSC's "Page with redirect" bucket.
+    An ugly URL that is stable beats a pretty one that moves.
+    ★ The HASH is unchanged (it keys on provider|name, not on the slug text), so
+    a row's identity is untouched — only the human-readable part differs.
+    """
     name_slug = _slugify(name) or ''
     if not name_slug or len(name_slug) < 3:
         return None
     provider_slug = _slugify(provider) or ''
     h = _stable_hash8(provider, name)
-    return f"{provider_slug}-{name_slug}-{h}" if provider_slug else f"{name_slug}-{h}"
+    if not provider_slug:
+        return f"{name_slug}-{h}"
+    return f"{_dedupe_provider_prefix(provider_slug, name_slug)}-{h}"
 
 
 def build_id_scheme_slug(provider, name, fac_id):
@@ -183,6 +214,33 @@ def backfill_canonical_slugs(conn, table, batch=5000, max_batches=50):
             break
         values = [(fid, build_canonical_slug(provider, name) or '')
                   for fid, provider, name in rows]
+        # ★★ ALIAS THE PRE-DEDUPE FORM (2026-07-28). Until this row is frozen it
+        # is SERVED from a live compute of build_canonical_slug(), so the
+        # provider-prefix dedupe shipped today silently MOVES its URL:
+        #   ntt-ntt-frankfurt-<h>  ->  ntt-frankfurt-<h>
+        # Freezing the new form without an alias would turn every already-indexed
+        # old URL into a 404 — re-creating the exact bucket this whole change set
+        # is trying to drain. Mint old->new first; the hash is identical on both
+        # sides, so this is a rename, not a re-identification.
+        _legacy = []
+        for fid, provider, name in rows:
+            _ns = _slugify(name) or ''
+            _ps = _slugify(provider) or ''
+            if not _ns or len(_ns) < 3 or not _ps:
+                continue
+            _doubled = f"{_ps}-{_ns}-{_stable_hash8(provider, name)}"
+            _clean = build_canonical_slug(provider, name)
+            if _clean and _doubled != _clean:
+                _legacy.append((_doubled, _clean, str(fid), 'provider-dedupe'))
+        if _legacy:
+            try:
+                execute_values(cur, """
+                    INSERT INTO facility_slug_aliases
+                      (old_slug, canonical_slug, facility_id, source)
+                    VALUES %s ON CONFLICT (old_slug) DO NOTHING
+                """, _legacy, template="(%s, %s, %s, %s)")
+            except Exception:
+                conn.rollback()   # an alias failure must never block the freeze
         # id cast to text on both sides so the same statement works for the
         # SERIAL (int) discovered_facilities id and the TEXT facilities id.
         execute_values(cur, f"""

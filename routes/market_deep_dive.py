@@ -435,6 +435,26 @@ def read_deep_dive(slug: str) -> dict | None:
         except Exception: pass
 
 
+def _markets_404_response():
+    """Honest 404 for a market with zero facilities, WITH onward links.
+
+    Kept local (not imported from seo_pages) so this module has no new import
+    edge; the body mirrors seo_pages._error_page's shape.
+    """
+    from flask import Response as _Resp
+    body = ("<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
+            "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+            "<title>DC Hub \u2014 Market not found</title>"
+            "<meta name=\"robots\" content=\"noindex,follow\">"
+            "<link rel=\"canonical\" href=\"https://dchub.cloud/markets/directory\">"
+            "</head><body><h1>Market not found</h1>"
+            "<p>That market has no data centers in DC Hub yet.</p>"
+            "<p><a href=\"/markets/directory\">Browse all markets</a> \u00b7 "
+            "<a href=\"/facilities\">Browse all facilities</a> \u00b7 "
+            "<a href=\"/\">DC Hub home</a></p></body></html>")
+    return _Resp(body, status=404, mimetype="text/html")
+
+
 @market_deep_dive_bp.route("/api/v1/markets/<slug>/deep-dive", methods=["GET"])
 def deep_dive_json(slug):
     r = read_deep_dive(slug)
@@ -733,9 +753,14 @@ def market_short_html(slug):
             # 404s resolve. Still NOT a soft-404 (a real redirect to a real 200
             # page, not an empty 200 shell). 302 (not 301) + short cache so a
             # market self-heals to its own 200 page the moment a facility backfills.
-            _r = redirect("/markets/directory", code=302)
+            # ★★ REVERSED 2026-07-28 — see routes/seo_pages.py:_markets_dir_redirect.
+            # The comment above claims this is "Still NOT a soft-404". GSC
+            # measured 299 Soft 404s. Redirecting every empty market to one hub
+            # IS the soft-404 pattern; _fac_ct == 0 means there is nothing to
+            # serve, so say 404 and link onward instead of faking a 200.
+            _r = _markets_404_response()
             _r.headers["Cache-Control"] = "public, max-age=3600"
-            _r.headers["X-DC-Page-Source"] = "market-deepdive-404-redirect"
+            _r.headers["X-DC-Page-Source"] = "market-deepdive-404"
             return _r
 
     if not md:

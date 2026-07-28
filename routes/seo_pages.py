@@ -639,9 +639,22 @@ def _markets_dir_redirect():
     # Send crawlers to the server-rendered markets hub instead of a dead end
     # (link equity → real market pages). 302 (not 301) + short cache so a market
     # self-heals to its own 200 page the moment a facility backfills.
-    _r = redirect("/markets/directory", code=302)
+    # ★★ REVERSED 2026-07-28. The 2026-07-15 note above argued this is "not a
+    # soft-404 (a real redirect to a real 200 page)". Google disagrees, and GSC
+    # now says so: 299 Soft 404s. Mass-redirecting many unrelated missing pages
+    # to ONE generic hub is Google's own textbook definition of a soft 404 —
+    # what matters is that the destination does not answer the request, not
+    # that it returns 200.
+    # ★The redirect only ever fired when the market has ZERO facilities, i.e.
+    # there is genuinely nothing to serve. 404 is the honest answer.
+    # Link equity is preserved by LINKING to the hub from the 404 body: a 404
+    # page's links are still crawled for discovery, and an honest 404 costs far
+    # less than a soft-404 flag across the whole /markets/ space.
+    _r = _error_page(
+        "That market has no data centers in DC Hub yet. "
+        "Browse the full market directory for one that does.", 404)
     _r.headers['Cache-Control'] = 'public, max-age=3600'
-    _r.headers['X-DC-Page-Source'] = 'seo-market-redirect'
+    _r.headers['X-DC-Page-Source'] = 'seo-market-404'
     return _r
 
 
@@ -1542,7 +1555,9 @@ def _error_page(message: str, code: int = 404) -> Response:
   <h1>{('Page not found' if code == 404 else 'Service issue')}</h1>
   <p class="lede">{_h(message)}</p>
 </header>
-<section><a href="/" class="cta">Back to DC Hub home</a></section>"""
+<section><a href="/" class="cta">Back to DC Hub home</a>
+  <a href="/markets/directory" class="cta secondary">Browse all markets</a>
+  <a href="/facilities" class="cta secondary">Browse all facilities</a></section>"""
     return Response(
         _base_html(
             title=f"DC Hub — {'Not found' if code == 404 else 'Error'}",
