@@ -114,32 +114,37 @@ def _load_rollback_module():
 
 
 def _file_finding(verdict, pattern, n5xx, action):
-    """Record what happened in brain_findings (best-effort, no DDL).
+    """Record what happened in brain_findings (best-effort).
 
-    Uses the canonical schema (issue, url, count, detail, detector, status) —
-    see routes/brain_layer14_slo_burn.py for the same shape.
+    Goes through routes/brain_findings_writer.upsert_brain_finding — the
+    canonical writer — rather than a hand-rolled INSERT. That module
+    introspects the live columns (the repo DDL for this table is drifted),
+    upserts constraint-agnostically whether or not UNIQUE(issue,url) exists,
+    and savepoint-wraps every op so a write failure cannot poison the
+    transaction. Hand-rolled INSERTs into this table have failed silently
+    before; do not reintroduce one here.
     """
     if not (_pg and _dsn()):
         return
     try:
+        from routes.brain_findings_writer import upsert_brain_finding
+        # Plain connect(): autocommit stays OFF, which the writer's SAVEPOINTs
+        # require to mean anything.
         with _pg.connect(_dsn(), connect_timeout=4) as c, c.cursor() as cur:
-            cur.execute(
-                """
-                INSERT INTO brain_findings
-                    (issue, url, count, detail, detector, status)
-                VALUES (%s, %s, 1, %s, %s, 'open')
-                """,
-                (
-                    f"slo_sentinel_{action}",
-                    pattern or "unknown",
+            upsert_brain_finding(
+                cur,
+                issue=f"slo_sentinel_{action}",
+                url=pattern or "unknown",
+                detail=(
                     f"SLO sentinel: {TRIGGER_N}+/{WINDOW_N} samples {verdict} "
-                    f"(worst path {pattern} = {n5xx} 5xx/5min). Action: {action}.",
-                    "slo_rollback_sentinel",
+                    f"(worst path {pattern} = {n5xx} 5xx/5min). Action: {action}."
                 ),
+                detector="slo_rollback_sentinel",
+                status="open",
             )
             c.commit()
     except Exception as e:
-        log.warning("[slo-sentinel] finding insert failed: %s", e)
+        log.warning("[slo-sentinel] finding write failed: %s", e)
 
 
 def _rollback():
