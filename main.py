@@ -4654,22 +4654,63 @@ def phase14c_health_aggregate():
             row = cur.fetchone() or {}
             signals_7d = int(row.get('signals_7d') or 0)
             signals_30d = int(row.get('signals_30d') or 0)
-            # Try multiple table names for conversions count
-            conv_30d = 0
-            for tbl in ('conversions', 'mcp_conversions', 'stripe_conversions'):
-                try:
-                    cur.execute(f"""SELECT COUNT(*) AS n FROM {tbl}
-                                    WHERE created_at >= CURRENT_DATE - INTERVAL '30 days'""")
-                    r = cur.fetchone() or {}
-                    conv_30d = int(r.get('n') or 0)
-                    break
-                except Exception:
-                    try: conn.rollback()
-                    except Exception: pass
+            # ★★FALSE ZERO, #1551 class, 3rd recurrence (fixed 2026-07-28).
+            # This used to walk ('conversions', 'mcp_conversions',
+            # 'stripe_conversions') and `break` on the first table that QUERIED
+            # successfully. `conversions` exists with 0 rows EVER, so the loop
+            # always stopped there, reported conversions_30d=0, and never
+            # reached the canonical ledger — which held 9 real conversions in
+            # the same window. /health published "funnel leak — 100+ signals,
+            # 0 conversions" (yellow, site-wide) continuously while the funnel
+            # was converting fine. A fallback chain must never break on an
+            # EMPTY result; existence is not data.
+            #
+            # Now: read the canonical ledger `mcp_conversions` directly, with
+            # the same honest-conversion WHERE clause as canonical_funnel.py
+            # (conversions_30d_real) and routes/funnel_health.py so the three
+            # definitions cannot drift apart.
+            #
+            # ★Deliberately NOT calling canonical_funnel.get_canonical_funnel()
+            # here even though it is the SoT elsewhere: its per-field except
+            # blocks leave conversions_30d at the _FALLBACK value of 0, so a
+            # transient DB error would hand this check a 0 that is
+            # indistinguishable from a real one — reintroducing the exact bug
+            # in the one check whose job is to detect a genuine zero.
+            #
+            # ★UNMEASURED (None) is NOT a leak. If the ledger cannot be read we
+            # report status 'unknown' and leave the overall status alone. The
+            # old code could only ever fail toward "leak", which is how this
+            # went unnoticed: the alarm looked like a finding.
+            conv_30d = None          # None = UNMEASURED, never a silent 0
+            conv_real_30d = None
+            try:
+                cur.execute("""
+                    SELECT COUNT(*) AS raw_n,
+                           COUNT(*) FILTER (
+                               WHERE stripe_customer_id IS NOT NULL
+                                 AND LOWER(COALESCE(plan_to,'')) NOT IN
+                                     ('comp','complimentary','research_seed_nlr','seed')
+                                 AND LOWER(COALESCE(source,'')) <> 'seed'
+                           ) AS real_n
+                      FROM mcp_conversions
+                     WHERE created_at >= NOW() - INTERVAL '30 days'
+                """)
+                r = cur.fetchone() or {}
+                conv_30d = int(r.get('raw_n') or 0)
+                conv_real_30d = int(r.get('real_n') or 0)
+            except Exception:
+                try: conn.rollback()
+                except Exception: pass
             check = {'signals_7d': signals_7d, 'signals_30d': signals_30d,
-                     'conversions_30d': conv_30d}
-            # Funnel-leak heuristic: lots of signals but no conversions
-            if signals_30d >= 100 and conv_30d == 0:
+                     'conversions_30d': conv_30d,
+                     'conversions_30d_real': conv_real_30d,
+                     'conversions_source': 'mcp_conversions'}
+            if conv_30d is None:
+                # Cannot read the ledger — say so; do NOT infer a leak.
+                check['status'] = 'unknown'
+                check['note'] = ('conversions UNMEASURED — mcp_conversions '
+                                 'unreadable; not a leak claim')
+            elif signals_30d >= 100 and conv_30d == 0:
                 check['status'] = 'yellow'
                 check['note'] = 'funnel leak — 100+ signals, 0 conversions'
                 if out['status'] == 'green': out['status'] = 'yellow'
