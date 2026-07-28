@@ -2087,11 +2087,12 @@ def _post_headline_signature(text: str) -> dict:
 # takes the content string:
 #   (a) concrete non-zero stat  → _post_headline_signature().metric_value
 #   (b) freshness               → recency phrases / a current-ish year
-#   (c) novelty                 → _classify_post_for_dedup() class is the
-#                                 existing dedup-class signal; a generic
-#                                 "other" post that names no entity is the
-#                                 low-novelty case
-#   (d) real article_url/link   → the same https?:// regex the publisher uses
+#   (c) novelty                 → _names_concrete_subject(): does the post name
+#                                 an operator/market/company/place, or carry a
+#                                 market or metric signature? (2026-07-28: this
+#                                 used to read the dedup CLASS, which answers a
+#                                 scheduling question, not a substance one)
+#   (d) real article_url/link   → an http(s) URL or a scheme-less domain+path
 #
 # This is an ADDITIONAL conservative gate layered into _should_skip_publish;
 # it does NOT touch the daily caps. Fail-OPEN for scoring *errors* (if scoring
@@ -2188,6 +2189,87 @@ def _opening_hook(text: str) -> str:
     return " ".join(words[:10])
 
 
+# ---------------------------------------------------------------------------
+# 2026-07-28 — SPECIFICITY, the novelty signal, decoupled from dedup.
+#
+# _quality_score used to take its novelty signal from _classify_post_for_dedup.
+# That function exists to answer a SCHEDULING question ("max 1 dcpi_verdict per
+# day") and its buckets are campaign types, so it was a bad proxy for substance
+# in both directions: specific posts that fit no bucket scored zero novelty,
+# and boilerplate that fit one scored full novelty. This asks the substance
+# question directly — does the post name a concrete SUBJECT? — and touches
+# nothing the dedup path uses.
+#
+# Two things are deliberately NOT subjects:
+#   • DC Hub itself. Every post names the publisher; that cannot be what makes
+#     a post specific, or "100% free access to DC Hub" would score as specific.
+#   • Units and generic abbreviations (MW, GW, API, PDF, US, EU). They are the
+#     vocabulary these posts are written in, not things they are ABOUT.
+# The stop-set is therefore units + generic abbreviations + self-reference — a
+# small, stable list. It is NOT a topic taxonomy, which is the thing that has
+# needed patching five times (see _METRIC_PATTERNS); no new market, operator or
+# protocol ever needs to be added here to be recognised.
+_SUBJECT_STOPWORDS = frozenset({
+    # DC Hub referring to itself
+    "DC", "HUB", "DCHUB", "DCPI",
+    # units
+    "MW", "GW", "KW", "TW", "KWH", "MWH", "GWH", "TWH", "KV", "MVA", "HZ",
+    "USD", "EUR", "GBP", "SQFT",
+    # generic abbreviations / boilerplate
+    "AI", "API", "APIS", "PDF", "PDFS", "CEO", "CTO", "COO", "CFO", "FAQ",
+    "URL", "HTTP", "HTTPS", "JSON", "CSV", "XML", "RSS", "SLA", "QA", "OK",
+    "CC", "BY", "SA", "ND", "NC", "MIT", "TBD", "ETA", "FYI", "AKA",
+    # too coarse to be the subject of a post
+    "US", "USA", "EU", "UK", "GB", "NA", "APAC", "EMEA", "GLOBAL",
+    # sentence-initial words that survive the position filter after a bullet
+    "THE", "THIS", "THAT", "THESE", "THOSE", "AND", "BUT", "FOR", "NOT",
+    "NEW", "NOW", "MOST", "EVERY", "WHERE", "WHEN", "WHAT", "WHY", "HOW",
+    "THREE", "TWO", "ONE", "FOUR", "FIVE", "BOTH", "EACH", "LOAD", "GEN",
+})
+# Uppercase tokens: ERCOT, PJM, CAISO, NYISO, ONS, KPX, MCP, ISO-NE, CC-BY.
+_SUBJECT_ACRONYM_RE = _re_legacy.compile(r'\b[A-Z][A-Z0-9]{1,6}(?:-[A-Z0-9]{1,4})?\b')
+# Capitalised words: Ashburn, Edison, Brazil, Bishop. Sentence-initial ones are
+# filtered out by POSITION below (not by a word list) — "Three things shipped"
+# must not count "Three" as a named subject.
+_SUBJECT_PROPER_RE = _re_legacy.compile(r'\b[A-Z][a-z]{2,}\b')
+_SENTENCE_SPLIT_RE = _re_legacy.compile(r'(?:[.!?;:]|\n|[•·→*]|\s[-–—]\s)\s*')
+
+
+def _names_concrete_subject(text: str) -> bool:
+    """True when the post names a specific subject — an operator, market,
+    company, protocol, place or person — rather than only describing itself.
+
+    Position-aware: the first word of every sentence/bullet is skipped before
+    looking for proper nouns, so an ordinary capitalised opener is not mistaken
+    for a named entity. Never raises."""
+    if not text:
+        return False
+    try:
+        for chunk in _SENTENCE_SPLIT_RE.split(str(text)):
+            chunk = chunk.strip()
+            if not chunk:
+                continue
+            # An acronym is a named thing wherever it appears — capitalisation
+            # is not positional for ERCOT the way it is for "Three".
+            for m in _SUBJECT_ACRONYM_RE.finditer(chunk):
+                tok = m.group(0)
+                if tok.replace("-", "") not in _SUBJECT_STOPWORDS \
+                        and tok.split("-")[0] not in _SUBJECT_STOPWORDS:
+                    return True
+            # Proper nouns: skip the chunk's first word, which is capitalised
+            # by grammar rather than by being a name.
+            words = chunk.split()
+            for w in words[1:]:
+                mm = _SUBJECT_PROPER_RE.match(w)
+                if mm and mm.group(0).upper() not in _SUBJECT_STOPWORDS:
+                    return True
+    except Exception:
+        # Fail-open to "not specific": a parse failure may cost credit,
+        # never invent it.
+        return False
+    return False
+
+
 def _quality_score(post) -> float:
     """Score a candidate post 0.0–1.0 on publish-worthiness. B3 (2026-05-31).
 
@@ -2198,10 +2280,13 @@ def _quality_score(post) -> float:
       (a) concrete non-zero stat   0.35  — _post_headline_signature parses a
                                            numeric headline metric > 0
       (b) freshness                0.20  — references something recent
-      (c) novelty                  0.25  — names a concrete entity/metric
-                                           (i.e. NOT the catch-all "other"
-                                           dedup class with no signature)
-      (d) real article_url/link    0.20  — a dchub.cloud (or any http) link
+      (c) novelty                  0.25  — names a concrete SUBJECT (an
+                                           operator, market, company, place)
+                                           or carries a market/metric
+                                           signature. Independent of the
+                                           dedup class since 2026-07-28.
+      (d) real article_url/link    0.20  — a dchub.cloud (or any http) link,
+                                           with or without the scheme
 
     Returns a float in [0,1]. A short/empty body floors low. Designed to be
     called inside a try/except by the gate so a raising input fails OPEN."""
@@ -2243,14 +2328,22 @@ def _quality_score(post) -> float:
     if _FRESHNESS_RE.search(text_nourl) or _RECENT_YEAR_RE.search(text_nourl):
         score += 0.20
 
-    # (c) novelty — reuse the existing dedup-class signal. A post that
-    # classifies as anything other than the catch-all "other" is about a
-    # known, identifiable topic; an "other" post WITH a parsed entity/metric
-    # signature still counts. Only a truly generic "other" post (no class,
-    # no market_verdict, no metric_label) is treated as low-novelty.
-    cls = _classify_post_for_dedup(text)
-    has_entity = bool(sig.get("market_verdict") or sig.get("metric_label"))
-    if cls != "other" or has_entity:
+    # (c) novelty — does the post name a concrete SUBJECT?
+    # 2026-07-28: this used to read `_classify_post_for_dedup(text) != "other"`,
+    # which asked the wrong question. That function answers "which daily
+    # rate-limit bucket is this post in?" — a SCHEDULING question, keyed on
+    # campaign types ("switzerland model", "tony bishop", "open invitation")
+    # that say nothing about substance, and looking at only the first 300 chars
+    # because a bucket is about a post's LEAD. Using it as the novelty signal
+    # meant: a post naming ERCOT, PJM and three countries scored ZERO novelty
+    # for falling in no rate-limit bucket, while a boilerplate partnership
+    # invite scored full marks for being in one. The pillars X card is the
+    # measured case — three real figures, no bucket, no novelty credit.
+    # The two now move independently: adding a rate-limit bucket no longer
+    # changes anyone's score, and making a post more specific no longer
+    # silently changes which daily cap it competes under.
+    if _names_concrete_subject(text) or sig.get("market_verdict") \
+            or sig.get("metric_label"):
         score += 0.25
 
     # (d) real article_url / link. 2026-07-28: a scheme-less "dchub.cloud/connect"
