@@ -1961,6 +1961,24 @@ _METRIC_PATTERNS = [
      _re_legacy.compile(r'([\d,]{2,})\+?\s+countries\b', _re_legacy.I)),
     ("tools_count",
      _re_legacy.compile(r'([\d,]{2,})\s+(?:live\s+)?(?:agent\s+)?tools?\b', _re_legacy.I)),
+    # 2026-07-28: analyst COVERAGE-COMPLETENESS ratios — "7 of 7 US ISOs",
+    # "5 of 6 markets". This construction IS the headline metric of a coverage
+    # post, but no pattern saw it, so moat_live_telemetry — a substantive post
+    # about live per-ISO telemetry carrying a documented +9.9% / -3.1%
+    # correction — scored 0.550 against QUALITY_MIN 0.60 and was REFUSED at
+    # publish. It had never been publishable. The post was not thin; the
+    # recogniser was blind to its metric TYPE.
+    #
+    # Deliberately narrow, matching "<n> of <n>" and NOT a bare percentage. A
+    # percentage appears in almost any prose ("up 5%", "-3.1%"), so a pct rule
+    # would hand the 0.35 stat credit to genuinely thin posts and quietly gut
+    # the gate — the opposite of the problem being fixed here. "N of N" is a
+    # distinctive analyst construction that a low-signal post does not stumble
+    # into. Both sides bounded to 3 digits so it cannot grab an unrelated pair;
+    # value = the NUMERATOR (what is actually covered). Placed LAST, so every
+    # specific label above still wins first.
+    ("coverage_ratio",
+     _re_legacy.compile(r'\b(\d{1,3})\s+of\s+(\d{1,3})\b')),
 ]
 
 # Labels that dedup on label+VALUE (generic units where the label alone would
@@ -1974,7 +1992,14 @@ _VALUE_DEDUP_LABELS = {"gw_figure", "usd_billion", "mw_figure"}
 # posts (provenance vs ledger both cite facilities/markets). They still lift the
 # quality score; the opening-hook dedup still catches literal repeats.
 _NO_METRIC_DEDUP = {"dcpi_score", "facilities_count", "markets_count",
-                    "countries_count", "tools_count"}
+                    "countries_count", "tools_count",
+                    # coverage_ratio is a completeness statement ("7 of 7 ISOs"),
+                    # not a story. Deduping on the label would let one coverage
+                    # post lock out every other for the whole lookback window —
+                    # e.g. "7 of 7 ISOs" suppressing "5 of 6 markets". Same
+                    # reasoning as the coverage counts above; rotation is the
+                    # editorial (kind, entity) cooldown's job.
+                    "coverage_ratio"}
 
 
 def _post_headline_signature(text: str) -> dict:
