@@ -2665,9 +2665,15 @@ def admin_agent_pay_master_tick():
 
     out = {
         "window_days": win,
-        "split": {"all": {"challenges": 0, "paid": 0, "failed": 0},
-                  "real": {"challenges": 0, "paid": 0, "failed": 0},
-                  "test": {"challenges": 0, "paid": 0, "failed": 0}},
+        # ★ 2026-07-28: `prewall` added. `_ALL_PAY_ST` already carried
+        # mpp_offer_prewall, so those rows were INSIDE the query window — but no
+        # projection ever counted them, so every surface reported the pre-wall
+        # offer as nonexistent rather than as a number. Being in the universe is
+        # not the same as being reported; extend the SELECT list, not just the
+        # status filter.
+        "split": {"all": {"challenges": 0, "paid": 0, "failed": 0, "prewall": 0},
+                  "real": {"challenges": 0, "paid": 0, "failed": 0, "prewall": 0},
+                  "test": {"challenges": 0, "paid": 0, "failed": 0, "prewall": 0}},
         "funnel": {"real_challenges": 0, "real_paid": 0, "real_failed": 0,
                    "settle_rate": None, "abandoned": 0},
         "by_tool": [],
@@ -2713,26 +2719,28 @@ def admin_agent_pay_master_tick():
             # ── split: all vs real vs test, over the window ──────────────
             base = (" FROM mcp_call_log WHERE status = ANY(%s) "
                     " AND timestamp > NOW() - make_interval(days => %s) ")
-            r = _run(cur, "split_all",
-                     "SELECT "
-                     "  COUNT(*) FILTER (WHERE status = 'mpp_challenge') AS chal, "
-                     "  COUNT(*) FILTER (WHERE status IN ('mpp_paid','x402_paid')) AS paid, "
-                     "  COUNT(*) FILTER (WHERE status IN ('mpp_verify_failed','x402_failed')) AS fail"
-                     + base,
-                     (list(_ALL_PAY_ST), win))
+            _sel = ("SELECT "
+                    "  COUNT(*) FILTER (WHERE status = 'mpp_challenge') AS chal, "
+                    "  COUNT(*) FILTER (WHERE status IN ('mpp_paid','x402_paid')) AS paid, "
+                    "  COUNT(*) FILTER (WHERE status IN ('mpp_verify_failed','x402_failed')) AS fail, "
+                    # ★ PASSIVE offer shipped to an agent — NOT pay-intent. Kept
+                    # in its own column and deliberately never folded into
+                    # `challenges`: mpp_challenge means "an agent ASKED to pay",
+                    # and mixing a passively-attached offer in would turn that
+                    # signal into "every call near the cap" and destroy it.
+                    "  COUNT(*) FILTER (WHERE status = 'mpp_offer_prewall') AS prewall")
+            r = _run(cur, "split_all", _sel + base, (list(_ALL_PAY_ST), win))
             if r:
-                out["split"]["all"] = {"challenges": _n(r, 0), "paid": _n(r, 1), "failed": _n(r, 2)}
+                out["split"]["all"] = {"challenges": _n(r, 0), "paid": _n(r, 1),
+                                       "failed": _n(r, 2), "prewall": _n(r, 3)}
             r = _run(cur, "split_real",
-                     "SELECT "
-                     "  COUNT(*) FILTER (WHERE status = 'mpp_challenge') AS chal, "
-                     "  COUNT(*) FILTER (WHERE status IN ('mpp_paid','x402_paid')) AS paid, "
-                     "  COUNT(*) FILTER (WHERE status IN ('mpp_verify_failed','x402_failed')) AS fail"
-                     + base + " AND " + _REAL_PLATFORM_SQL,
+                     _sel + base + " AND " + _REAL_PLATFORM_SQL,
                      (list(_ALL_PAY_ST), win))
             if r:
-                out["split"]["real"] = {"challenges": _n(r, 0), "paid": _n(r, 1), "failed": _n(r, 2)}
+                out["split"]["real"] = {"challenges": _n(r, 0), "paid": _n(r, 1),
+                                        "failed": _n(r, 2), "prewall": _n(r, 3)}
             # test = all − real (derived; avoids a third round-trip)
-            for k in ("challenges", "paid", "failed"):
+            for k in ("challenges", "paid", "failed", "prewall"):
                 out["split"]["test"][k] = max(0, out["split"]["all"][k] - out["split"]["real"][k])
 
             # ── funnel: real challenge→settle ───────────────────────────
@@ -2743,21 +2751,36 @@ def admin_agent_pay_master_tick():
                 "real_challenges": rc, "real_paid": rp, "real_failed": rf,
                 "settle_rate": (round(rp / rc, 4) if rc else None),
                 "abandoned": max(0, rc - rp - rf),
+                # ★ Offers DELIVERED to real agents. This is the pre-wall
+                # surface's own reach number — the thing lane 2's gating-based
+                # reachability metric structurally cannot see, because the offer
+                # attaches to calls that SUCCEED (`gate.allowed`) while that lane
+                # only counts calls that were GATED. A healthy pre-wall surface
+                # can therefore run with reachability pinned at 0.1% forever;
+                # read THIS instead. Success is still mpp_paid/mpp_verify_failed.
+                "real_prewall_offers": out["split"]["real"]["prewall"],
             }
 
             # ── by_tool: real pay-intent per flagship tool ──────────────
             rows = _run(cur, "by_tool",
                         "SELECT tool, "
                         "  COUNT(*) FILTER (WHERE status = 'mpp_challenge') AS chal, "
-                        "  COUNT(*) FILTER (WHERE status IN ('mpp_paid','x402_paid')) AS paid "
+                        "  COUNT(*) FILTER (WHERE status IN ('mpp_paid','x402_paid')) AS paid, "
+                        "  COUNT(*) FILTER (WHERE status = 'mpp_offer_prewall') AS prewall "
                         + base + " AND " + _REAL_PLATFORM_SQL +
-                        " GROUP BY tool ORDER BY chal DESC, paid DESC LIMIT 20",
+                        # ★ order by prewall too: with 0 real challenges (the
+                        # steady state) the old ordering left every row tied at
+                        # 0 and the tools actually receiving offers sorted
+                        # arbitrarily — i.e. the only non-zero signal on this
+                        # board had no influence on what you were shown.
+                        " GROUP BY tool ORDER BY chal DESC, paid DESC, prewall DESC LIMIT 20",
                         (list(_ALL_PAY_ST), win), fetch="all")
             for r in (rows or []):
                 g = (lambda i: r.get(list(r.keys())[i]) if hasattr(r, "get") else r[i])
                 out["by_tool"].append({"tool": g(0) or "?",
                                        "real_challenges": int(g(1) or 0),
-                                       "real_paid": int(g(2) or 0)})
+                                       "real_paid": int(g(2) or 0),
+                                       "real_prewall_offers": int(g(3) or 0)})
 
             # ── trend: WoW real challenges/paid ─────────────────────────
             def _wow(status_pred, params):
