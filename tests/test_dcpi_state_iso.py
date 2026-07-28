@@ -109,6 +109,62 @@ class TestKansasCity:
         assert _MARKET_ISO_OVERRIDES["kansas-city"] == "SPP"
 
 
+class TestSplitStateSweep:
+    """r-iso-sweep (2026-07-28).
+
+    The six markets fixed before this were found because two of the state->ISO
+    maps disagreed. That method is blind by construction: a market in a split
+    state where every map AGREES on the (wrong) state default is invisible to
+    it. So every metro in a genuinely split state was probed against its actual
+    serving utility instead. Uniformly-served states cannot produce an error
+    and were skipped.
+
+    Two more turned up, both the HARMFUL direction — an RTO label on a grid
+    that is not in that RTO, which is what makes callers pull the wrong queue.
+    """
+
+    def test_el_paso_is_wecc_not_ercot(self):
+        # El Paso Electric sits in the WESTERN Interconnection. ERCOT stops
+        # well short of far-west Texas. Reported ERCOT live on 2026-07-28.
+        assert _resolve("el-paso", "TX") == "WECC"
+        assert _state_to_iso("TX") == "ERCOT"   # ...and the state default is right for the rest
+
+    def test_sacramento_is_not_caiso(self):
+        # SMUD is its own balancing authority inside BANC, not a CAISO member.
+        # Reported CAISO live on 2026-07-28.
+        assert _resolve("sacramento", "CA") == "WECC"
+        assert _state_to_iso("CA") == "CAISO"   # correct for the IOU majority
+
+    def test_both_replaced_an_rto_label_with_a_non_rto_one(self):
+        # This is the property that made them worth fixing: the OLD value named
+        # a real market with a queue, so consumers acted on it.
+        from util.iso_taxonomy import has_interconnection_queue
+        for old in ("ERCOT", "CAISO"):
+            assert has_interconnection_queue(old)
+        for slug in ("el-paso", "sacramento"):
+            assert not has_interconnection_queue(_MARKET_ISO_OVERRIDES[slug])
+
+    def test_states_verified_clean_stay_untouched(self):
+        # Probed live and already correct — pinned so a future state-map edit
+        # cannot quietly move them.
+        assert _resolve("indianapolis", "IN") == "MISO"   # AES Indiana
+        assert _resolve("south-bend", "IN") == "MISO"     # NIPSCO
+        assert _resolve("albuquerque", "NM") == "WECC"    # PNM
+        assert _resolve("sioux-falls", "SD") == "MISO"    # Xcel
+        assert _resolve("louisville", "KY") == "SERC"     # LG&E, non-RTO
+        assert _resolve("los-angeles", "CA") == "CAISO"   # SCE majority
+
+    def test_bare_slug_keys_collide_across_states(self):
+        # "riverside" in the override table is Riverside MISSOURI (SPP). A
+        # Riverside CALIFORNIA market would silently inherit it. None is
+        # scored today, so this is latent — but it is the next instance of
+        # this bug class, and keying on (slug, state) is the fix when it
+        # becomes real.
+        assert _MARKET_ISO_OVERRIDES["riverside"] == "SPP"
+        assert _state_to_iso("CA") == "CAISO"
+        assert _resolve("riverside", "CA") == "SPP"   # documents the collision
+
+
 class TestOverrideTableHygiene:
     def test_every_override_actually_contradicts_its_state(self):
         # An override that merely restates the state default is dead weight and
@@ -118,10 +174,28 @@ class TestOverrideTableHygiene:
         # iso=MISO on the same wrong state default, so correcting only
         # kansas-city would have left one half of the metro on the wrong grid
         # while the Kansas side (Olathe/Overland Park/Lenexa) sat on SPP.
-        states = {slug: "MO" for slug in _MARKET_ISO_OVERRIDES}
+        # r-iso-sweep (2026-07-28): this used to derive the state as
+        # {slug: "MO" for slug in _MARKET_ISO_OVERRIDES} — true when every
+        # override was a Kansas City suburb, and a landmine the moment one is
+        # not. el-paso (TX) and sacramento (CA) would each have been checked
+        # against MISSOURI's default and passed for the wrong reason. States
+        # are now recorded explicitly, and an unlisted override is a failure
+        # rather than a silent MO assumption.
+        states = dict(
+            {slug: "MO" for slug in (
+                "kansas-city", "north-kansas-city", "lees-summit",
+                "blue-springs", "independence", "liberty", "gladstone",
+                "raytown", "grandview", "riverside", "belton", "raymore",
+            )},
+            **{"el-paso": "TX", "sacramento": "CA"},
+        )
+        missing = set(_MARKET_ISO_OVERRIDES) - set(states)
+        assert not missing, (
+            f"overrides with no state recorded in this test: {sorted(missing)} — "
+            "add them here so the contradiction check is real"
+        )
         for slug, iso in _MARKET_ISO_OVERRIDES.items():
-            st = states.get(slug)
-            assert st, f"{slug} has no state recorded in this test — add it"
+            st = states[slug]
             assert iso != _state_to_iso(st), (
                 f"{slug} override ({iso}) equals the {st} default; "
                 "delete the override or fix the state map"
