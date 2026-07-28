@@ -10,6 +10,7 @@ Driven by the Search Console Coverage export: 299 Soft 404s, 3,454 Not-found,
   tests/test_targeted_evidence.py).
 """
 import ast
+import builtins
 import functools
 import hashlib
 import pathlib
@@ -23,6 +24,62 @@ DEEPDIVE = REPO_ROOT / "routes" / "market_deep_dive.py"
 
 WANT = {"_slugify", "_stable_hash8", "build_canonical_slug",
         "_dedupe_provider_prefix", "_fold_to_ascii"}
+
+_BUILTINS = set(dir(builtins))
+
+
+def _free_names(fn):
+    """Names `fn` reads but never binds itself."""
+    bound = {a.arg for a in fn.args.args + fn.args.kwonlyargs}
+    if fn.args.vararg:
+        bound.add(fn.args.vararg.arg)
+    if fn.args.kwarg:
+        bound.add(fn.args.kwarg.arg)
+    loads = set()
+    for n in ast.walk(fn):
+        if isinstance(n, ast.Name):
+            (bound if isinstance(n.ctx, ast.Store) else loads).add(n.id)
+        elif isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef,
+                            ast.ClassDef)) and n is not fn:
+            bound.add(n.name)
+        elif isinstance(n, ast.comprehension):
+            for t in ast.walk(n.target):
+                if isinstance(t, ast.Name):
+                    bound.add(t.id)
+        elif isinstance(n, ast.ExceptHandler) and n.name:
+            bound.add(n.name)
+        elif isinstance(n, (ast.Import, ast.ImportFrom)):
+            for al in n.names:
+                bound.add((al.asname or al.name).split(".")[0])
+    return loads - bound - _BUILTINS
+
+
+def _assert_extraction_is_complete(body, provided):
+    """Every name the extracted functions read must actually resolve.
+
+    A helper or constant left out of the extraction list raises NameError only
+    when a test happens to walk that branch -- or never, leaving the path
+    silently untested inside a test that looks like it covers it. Both have
+    happened in this repo: `_ci_rkey` (#1797, silently untested Redis path) and,
+    in this very file, `_US_STATE_ABBREVS` (loud NameError) plus `_market_exists`
+    (latent -- it sat behind the DB guard and nothing reached it).
+
+    Checking free variables up front converts both into one named failure at
+    extraction time.
+    """
+    defined = {n.name for n in body if isinstance(n, ast.FunctionDef)}
+    defined |= {t.id for n in body if isinstance(n, ast.Assign)
+                for t in n.targets if isinstance(t, ast.Name)}
+    need = set()
+    for n in body:
+        if isinstance(n, ast.FunctionDef):
+            need |= _free_names(n)
+    missing = need - defined - set(provided)
+    assert not missing, (
+        "AST extraction is incomplete -- {} unresolved. The extracted code "
+        "would raise NameError the moment a test reaches that branch (or "
+        "never, leaving it untested). Add each to the extraction list or to "
+        "the globals dict.".format(sorted(missing)))
 
 
 @functools.lru_cache(maxsize=1)
@@ -38,6 +95,7 @@ def _slug_fns():
         _u = None
     g = {"re": re, "hashlib": hashlib, "unicodedata": unicodedata,
          "_unidecode": _u}
+    _assert_extraction_is_complete(body, g)
     mod = ast.Module(body=body, type_ignores=[])
     ast.fix_missing_locations(mod)
     exec(compile(mod, "<extracted>", "exec"), g)
@@ -164,13 +222,24 @@ def _deepdive_src():
 
 def _state_stripper():
     tree = ast.parse(_deepdive_src())
-    want = {"_market_slug_without_state"}
+    # _market_exists must come along: _market_slug_without_state calls it on
+    # EVERY branch that matches a state suffix. It was missing here from the
+    # start and only escaped notice because the absent _US_STATE_ABBREVS raised
+    # first -- adding the constant alone would just move the NameError one line.
+    want = {"_market_slug_without_state", "_market_exists"}
+    # _US_STATE_ABBREVS was added to the resolver in 9d094891 (the sitemap emits
+    # the abbreviated form: miami-fl, tacoma-wa) but not added here.
+    consts = {"_US_STATE_ABBREVS", "_US_STATE_SUFFIXES"}
     body = [n for n in tree.body
             if (isinstance(n, ast.FunctionDef) and n.name in want)
             or (isinstance(n, ast.Assign)
-                and getattr(n.targets[0], "id", "") == "_US_STATE_SUFFIXES")]
+                and getattr(n.targets[0], "id", "") in consts)]
     assert {n.name for n in body if isinstance(n, ast.FunctionDef)} == want
-    g = {"_conn": lambda: None}          # no DB -> the DB guard returns None
+    got = {n.targets[0].id for n in body if isinstance(n, ast.Assign)}
+    assert got == consts, "constants not extracted: {}".format(
+        sorted(consts - got))
+    g = {"_conn": lambda: None}          # no DB -> the DB guard returns False
+    _assert_extraction_is_complete(body, g)
     mod = ast.Module(body=body, type_ignores=[])
     ast.fix_missing_locations(mod)
     exec(compile(mod, "<extracted>", "exec"), g)
@@ -226,6 +295,7 @@ def _fold_fns():
     except Exception:
         _u = None
     g = {"re": re, "unicodedata": unicodedata, "_unidecode": _u}
+    _assert_extraction_is_complete(body, g)
     mod = ast.Module(body=body, type_ignores=[])
     ast.fix_missing_locations(mod)
     exec(compile(mod, "<extracted>", "exec"), g)
