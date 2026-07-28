@@ -1261,14 +1261,64 @@ def act_on_win_moves() -> dict:
         # ── moat moves: stage ONE draft positioning card per moat ──
         # stage_draft dedups on a content hash, so re-running is idempotent
         # and a weekly re-emit cannot spam the queue.
+        # ★ 2026-07-28 REWRITE. The first version pasted the win move's
+        # title/why/evidence straight into the post body — but `why` is an
+        # INTERNAL DIRECTIVE ("Say it explicitly on /vs pages…") and
+        # `evidence` is internal scoring jargon ("matrix: rival best 1/3").
+        # Both shipped into two drafts that read like leaked strategy notes.
+        # A draft is aimed at a READER; the win move is aimed at US. Write
+        # reader-facing copy from live facts instead, and never echo the
+        # internal fields.
         try:
             from content_publisher import stage_draft
+            _COPY = {
+                "moat_live_telemetry": (
+                    "Most data-center market data is a quarterly PDF. Grid "
+                    "conditions are not quarterly.\n\n"
+                    "DC Hub now serves measured headroom for all seven US "
+                    "ISOs — generation minus demand, refreshed every 20 "
+                    "minutes, with the source and the reading's age attached "
+                    "to every answer.\n\n"
+                    "It also publishes the awkward part. ERCOT's raw headroom "
+                    "reads comfortable; corrected for a documented "
+                    "measurement artifact in the feed, it is materially "
+                    "tighter. Both numbers ship, with the method, because a "
+                    "site decision made on the flattering one is a bad "
+                    "decision.\n\n"
+                    "Live, cited, and queryable by an AI agent directly."),
+                "moat_power_grid_data": (
+                    "\"Can this site get power?\" usually gets answered with "
+                    "a distance to the nearest substation.\n\n"
+                    "DC Hub now answers it with what the utility actually "
+                    "published: hosting capacity for %s feeders across 18 "
+                    "utility sources — including the utilities that publish "
+                    "LOAD-serving capacity, which is the number a data "
+                    "center needs, not the solar-hosting figure most maps "
+                    "show.\n\n"
+                    "Where a utility publishes thin data, we say so rather "
+                    "than interpolating. Informational, not binding "
+                    "interconnection guidance — verify with the utility.\n\n"
+                    "Live on the map and over MCP."),
+            }
+            _feeders = "—"
+            try:
+                with c.cursor() as _fc:
+                    _fc.execute("SELECT COUNT(*) FROM hosting_capacity_feeders")
+                    _feeders = "{:,}".format(int(_fc.fetchone()[0]))
+            except Exception:
+                c.rollback()
             for m in moves:
-                if not str(m.get("key") or "").startswith("moat_"):
+                key = str(m.get("key") or "")
+                if not key.startswith("moat_"):
                     continue
-                body = ("%s\n\n%s\n\nEvidence: %s\n\nhttps://dchub.cloud/dcpi"
-                        % (m.get("title"), m.get("why"), m.get("evidence")))
-                res = stage_draft(body[:2800], platform="linkedin")
+                copy = _COPY.get(key)
+                if not copy:
+                    continue          # no vetted copy → stage nothing
+                if "%s" in copy:
+                    copy = copy % _feeders
+                res = stage_draft(
+                    (copy + "\n\nhttps://dchub.cloud/dcpi")[:2800],
+                    platform="linkedin")
                 if (res or {}).get("action") == "inserted":
                     out["drafts_staged"] += 1
         except Exception as e:
