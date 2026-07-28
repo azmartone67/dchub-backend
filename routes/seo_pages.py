@@ -158,6 +158,80 @@ def _round(x, digits=2):
         return None
 
 
+# ── validated market links (2026-07-28) ─────────────────────────────────
+# ROOT CAUSE of the /markets/* coverage churn. Facility pages emitted
+#   href="/markets/{_slug(city + '-' + state)}"
+# with NO check that the market exists. Market slugs are METRO/CITY keyed, so
+# `dallas` and `dallas-fort-worth` are real and `dallas-texas` is not — every
+# Dallas facility page linked to a URL that did not resolve. That is what put
+# ~113/1000 of the GSC "Not found (404)" sample under /markets/, and it is why
+# 2026-07-15 reached for a 302-to-hub (a soft 404) and why 2026-07-28 had to add
+# a city-state -> city 301. Both patch the DESTINATION. This fixes the LINK.
+#
+# ★ Resolution order: `city-state` (a real metro slug like northern-virginia
+#   wins outright) -> `city` -> no link at all. A page must never link to its
+#   own 404.
+# ★ ONE cached query, not one per render: the slug set is small, changes rarely,
+#   and is refreshed on a TTL. A per-facility lookup would put a query on every
+#   SEO page render — the sitemap-stampede failure mode.
+# ★ FAIL-OPEN: if the set cannot be loaded we emit the legacy computed slug
+#   rather than stripping navigation site-wide. The market route now resolves
+#   city-state -> city with a 301, so a stale link still lands on the right page.
+_MARKET_SLUGS_CACHE = {"at": 0.0, "slugs": None}
+_MARKET_SLUGS_TTL_S = 900
+
+
+def _valid_market_slugs():
+    """Set of market slugs that actually resolve, or None when unknown."""
+    import time as _t
+    now = _t.time()
+    if (_MARKET_SLUGS_CACHE["slugs"] is not None
+            and now - _MARKET_SLUGS_CACHE["at"] < _MARKET_SLUGS_TTL_S):
+        return _MARKET_SLUGS_CACHE["slugs"]
+    try:
+        c = _conn()
+        if c is None:
+            return _MARKET_SLUGS_CACHE["slugs"]
+        try:
+            with c.cursor() as cur:
+                cur.execute("SELECT DISTINCT market_slug FROM market_power_scores "
+                            "WHERE market_slug IS NOT NULL AND market_slug <> ''")
+                got = {r[0] for r in (cur.fetchall() or []) if r and r[0]}
+        finally:
+            try: c.close()
+            except Exception: pass
+        if got:
+            _MARKET_SLUGS_CACHE["slugs"] = got
+            _MARKET_SLUGS_CACHE["at"] = now
+        return _MARKET_SLUGS_CACHE["slugs"]
+    except Exception:
+        return _MARKET_SLUGS_CACHE["slugs"]      # stale beats wrong
+
+
+def _market_slug_for(city, state):
+    """Best REAL market slug for a city/state, or None when none exists."""
+    city_s = _slug(city or '')
+    if not city_s:
+        return None
+    combo = _slug(f"{city}-{state}") if state else city_s
+    known = _valid_market_slugs()
+    if known is None:                    # cache cold/unavailable -> legacy shape
+        return combo
+    for cand in (combo, city_s):
+        if cand and cand in known:
+            return cand
+    return None
+
+
+def _market_link(city, state, label_html, cls=''):
+    """<a> to the real market, or plain text when there is no market to link."""
+    slug = _market_slug_for(city, state)
+    if not slug:
+        return label_html
+    _cls = f' class="{cls}"' if cls else ''
+    return f'<a href="/markets/{_esc_attr(slug)}"{_cls}>{label_html}</a>'
+
+
 def _slug(s: str) -> str:
     """Make a URL-safe slug — lowercase, dashes, no special chars."""
     if not s:
@@ -551,7 +625,7 @@ def _render_facility(f: dict, nearby: list) -> str:
   <ul class="facility-list">
     {''.join(items)}
   </ul>
-  <p><a href="/markets/{_esc_attr(_slug(city + '-' + state))}">All {_h(city)} data centers →</a></p>"""
+  <p>{_market_link(city, state, f"All {_h(city)} data centers &rarr;")}</p>"""
 
     map_link = ""
     if lat and lon:
@@ -567,15 +641,20 @@ def _render_facility(f: dict, nearby: list) -> str:
     #  - /facilities/in/<country> (hub returns 200 for any country) ✓
     # NOT operator (/operators/<slug> 404s for long-tail ops) or /dcpi/<city>
     # (404 for non-DCPI cities) — verified — so those stay plain text.
-    _market_href = f"/markets/{_esc_attr(_slug(city + '-' + state))}" if city else ""
-    _loc_cell = (f'<a href="{_market_href}">{_h(location)}</a>' if _market_href else _h(location))
+    # ★ 2026-07-28: the note above claimed "the market always has >=1 facility
+    # — this one ✓". That is the exact wrong assumption. The FACILITY exists;
+    # the market SLUG built from city+state may not (dallas-texas vs dallas), so
+    # this link 404'd for every facility in a city whose metro slug differs.
+    # Third emitter of the same bug, and the one a grep for 'href="/markets/'
+    # misses because it assembles the URL into a variable first.
+    _loc_cell = _market_link(city, state, _h(location))
     _country_browse = (
         f'<p class="dc-browse" style="margin-top:14px">'
         f'<a href="/facilities/in/{_esc_attr(country.lower().strip())}">'
         f'← Browse all data centers in {_h(country)}</a></p>' if country else '')
     body = f"""<header class="dc-seo">
   <nav class="breadcrumb">
-    <a href="/">DC Hub</a> · <a href="/facilities">Facilities</a>{_country_crumb} · <a href="/markets/{_esc_attr(_slug(city + '-' + state))}">{_h(city)}, {_h(state)}</a> · {_h(name)}
+    <a href="/">DC Hub</a> · <a href="/facilities">Facilities</a>{_country_crumb} · {_market_link(city, state, f"{_h(city)}, {_h(state)}")} · {_h(name)}
   </nav>
   <h1>{_h(name)}</h1>
   <p class="lede">{_h(operator)} data center in {_h(location)}.</p>
