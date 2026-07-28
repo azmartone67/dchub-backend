@@ -3,38 +3,60 @@ on:
   push:
     branches: [main]   # run 5 min after every deploy
   workflow_dispatch:
+    inputs:
+      force_rollback:
+        description: 'Skip SLO sampling and roll back immediately (break-glass)'
+        type: boolean
+        default: false
+      drill:
+        description: 'Rehearse the remediation path without changing production'
+        type: boolean
+        default: false
   schedule:
     - cron: '4-59/5 * * * *'   # safety net ~every 5 min — staggered to :04,:09… so it no
                                # longer collides with health-check.yml (:02,:07…) or
                                # uptime-probe (:00,:05…). Fixes brain-l22 #1247.
+
 # r71-stabilize: prevent run-stacking (the 5-min sample loop overlapped the next
 # */5 trigger → continuous self-probe of the single replica). Latest run wins.
+#
+# 2026-07-28: split the group by trigger. Previously every run shared one group,
+# so the */5 cron cancelled the post-deploy (push) run — the single most
+# important check — before it finished. 73 of the last 100 runs ended
+# `cancelled`. Push runs now get their own group keyed on the SHA, and the
+# sample loop was trimmed to finish inside the 5-minute cron interval.
 concurrency:
-  group: auto-rollback
+  group: auto-rollback-${{ github.event_name == 'push' && github.sha || 'scheduled' }}
   cancel-in-progress: true
+
 jobs:
   check-and-rollback:
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 25
     permissions:
-      contents: write
-      issues: write
+      contents: write        # push the revert BRANCH (never main — main is protected)
+      pull-requests: write   # open the revert PR
+      issues: write          # alert
     steps:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 5
           token: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Wait for Railway to settle
         if: github.event_name == 'push'
         run: sleep 240   # 4 min — Railway rebuild + warmup
-      - name: Sample SLO 5x over 5min
+
+      - name: Sample SLO 5x over ~4min
         id: probe
         run: |
           set +e
           HARD=0
           BURN_DETAIL=""
+          LAST_BODY=""
           for i in 1 2 3 4 5; do
             BODY=$(curl -s --max-time 12 https://dchub.cloud/api/v1/slo/error-budget)
+            LAST_BODY="$BODY"
             VERDICT=$(echo "$BODY" | python3 -c 'import sys,json;d=json.loads(sys.stdin.read() or "{}");print(d.get("verdict","unknown"))' 2>/dev/null || echo unknown)
             PCT=$(echo "$BODY" | python3 -c 'import sys,json;d=json.loads(sys.stdin.read() or "{}");print(d.get("global_err_pct",-1))' 2>/dev/null || echo -1)
             WORST=$(echo "$BODY" | python3 -c 'import sys,json;d=json.loads(sys.stdin.read() or "{}");p=(d.get("top_5xx_paths") or [{}])[0];print(p.get("pattern","-"))' 2>/dev/null || echo -)
@@ -43,35 +65,218 @@ jobs:
               HARD=$((HARD+1))
               BURN_DETAIL="err_pct=$PCT worst=$WORST"
             fi
-            sleep 60
+            # No trailing sleep after the final sample: the extra 60s pushed the
+            # job past the 5-minute cron interval, so the next trigger cancelled
+            # it mid-flight. 4 sleeps, not 5.
+            if [ "$i" -lt 5 ]; then sleep 60; fi
           done
           echo "hard_burn_count=$HARD" >> $GITHUB_OUTPUT
           echo "burn_detail=$BURN_DETAIL" >> $GITHUB_OUTPUT
+          {
+            echo "slo_body<<SLOEOF"
+            echo "$LAST_BODY"
+            echo "SLOEOF"
+          } >> $GITHUB_OUTPUT
+
       - name: Decide (rollback only if 3+/5 samples hard_burn)
         id: decide
         run: |
           HARD='${{ steps.probe.outputs.hard_burn_count }}'
-          if [ "$HARD" -ge 3 ]; then
+          FORCED='${{ inputs.force_rollback }}'
+          if [ "$FORCED" = "true" ]; then
+            echo "::warning::force_rollback requested — bypassing SLO sampling"
+            echo "rollback=true" >> $GITHUB_OUTPUT
+          elif [ "$HARD" -ge 3 ]; then
             echo "rollback=true" >> $GITHUB_OUTPUT
           else
             echo "rollback=false" >> $GITHUB_OUTPUT
           fi
-      - name: Auto-revert HEAD
+
+      # ── Remediation 1 (primary): roll production back on the deploy platform ──
+      # A git push to main CANNOT work here: main requires substance-gate /
+      # syntax-check / unit-tests and github-actions[bot] is not an admin, so
+      # GitHub rejects it with GH006. Worse, a rollback that waits for green CI
+      # deadlocks precisely when production is broken. Railway re-runs the
+      # previous image directly — branch protection cannot veto it.
+      - name: Roll back Railway to last good deployment
+        id: railway
         if: steps.decide.outputs.rollback == 'true'
+        continue-on-error: true
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          DRILL: ${{ inputs.drill }}
         run: |
+          set +e
+          if [ -z "${RAILWAY_TOKEN:-}" ]; then
+            echo "::error::RAILWAY_TOKEN not set — production CANNOT be rolled back automatically."
+            echo "outcome=no-token" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          MODE=""
+          if [ "$DRILL" = "true" ]; then MODE="--dry-run"; fi
+          python3 scripts/railway_rollback.py $MODE --json > /tmp/rb.json 2>/tmp/rb.err
+          RC=$?
+          cat /tmp/rb.err
+          echo "--- result ---"; cat /tmp/rb.json
+          TARGET=$(python3 -c 'import json;d=json.load(open("/tmp/rb.json"));t=d.get("target") or {};print((t.get("sha") or t.get("id") or "")[:8])' 2>/dev/null || echo "")
+          echo "target=$TARGET" >> $GITHUB_OUTPUT
+          if [ "$RC" -eq 0 ]; then
+            echo "outcome=rolled-back" >> $GITHUB_OUTPUT
+          else
+            echo "outcome=failed-rc$RC" >> $GITHUB_OUTPUT
+          fi
+          exit $RC
+
+      # ── Remediation 2: land the git revert as a PR, never as a push to main ──
+      # Pushing a BRANCH is allowed (protection only covers main), so the revert
+      # always gets written down somewhere a human can merge it, even when the
+      # platform rollback already restored service.
+      - name: Open revert PR
+        id: revertpr
+        if: steps.decide.outputs.rollback == 'true' && inputs.drill != true
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RW_OUTCOME: ${{ steps.railway.outputs.outcome }}
+        run: |
+          set +e
           git config user.email "azmartone@gmail.com"
           git config user.name "SLO-Gate Bot"
-          git revert --no-edit HEAD || { echo "revert failed"; exit 1; }
-          git push origin main
+          SHA=$(git rev-parse --short HEAD)
+          BRANCH="auto-rollback/revert-${SHA}-${GITHUB_RUN_ID}"
+          git checkout -b "$BRANCH" || { echo "outcome=branch-failed" >> $GITHUB_OUTPUT; exit 1; }
+          if ! git revert --no-edit HEAD; then
+            git revert --abort 2>/dev/null
+            echo "::error::git revert of $SHA conflicted — needs a human"
+            echo "outcome=revert-conflict" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          if ! git push origin "$BRANCH"; then
+            echo "::error::could not push revert branch"
+            echo "outcome=push-failed" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          # Body via --body-file: an inline multi-line --body would need its
+          # continuation lines at column 0, which terminates this YAML block
+          # scalar and makes the whole workflow unparseable.
+          cat > /tmp/pr-body.md <<'MD'
+          Opened automatically by `auto-rollback`: 3+ of 5 post-deploy SLO samples reported `hard_burn`.
+
+          Production is restored by the **Railway rollback**, not by this PR. This PR reverts the offending commit in git so the next deploy does not re-ship it.
+
+          - Offending commit: `__SHA__`
+          - Railway rollback outcome: `__RW__`
+          - Run: __RUN__
+
+          Merging this needs the usual green checks. **Do not wait on it to restore service.**
+          MD
+          # `sed -i` differs between GNU and BSD; redirect instead so this runs
+          # identically on the runner and on a laptop (it is tested locally).
+          sed "s|__SHA__|${SHA}|; s|__RW__|${RW_OUTCOME:-unknown}|; s|__RUN__|${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}|" \
+            /tmp/pr-body.md > /tmp/pr-body.final.md && mv /tmp/pr-body.final.md /tmp/pr-body.md
+          URL=$(gh pr create \
+            --base main --head "$BRANCH" \
+            --title "revert: auto-rollback of ${SHA} (SLO hard_burn)" \
+            --body-file /tmp/pr-body.md \
+            --label auto-rollback 2>&1 | tail -1)
+          echo "PR: $URL"
+          echo "url=$URL" >> $GITHUB_OUTPUT
+          echo "outcome=opened" >> $GITHUB_OUTPUT
+
+      # ── Alert: must fire whatever happened above ──
+      # The old version had no `if: always()`. When the push to main failed the
+      # job died at that step and this one was SKIPPED, so a real burn produced
+      # no rollback AND no alert. That silent-failure mode is the reason this
+      # whole change exists; keep the condition permissive.
       - name: Open issue
-        if: steps.decide.outputs.rollback == 'true'
+        if: ${{ !cancelled() && (steps.decide.outputs.rollback == 'true' || failure()) }}
         uses: actions/github-script@v7
+        env:
+          RAILWAY_STEP:   ${{ steps.railway.outcome }}
+          RAILWAY_RESULT: ${{ steps.railway.outputs.outcome }}
+          RAILWAY_TARGET: ${{ steps.railway.outputs.target }}
+          PR_RESULT:      ${{ steps.revertpr.outputs.outcome }}
+          PR_URL:         ${{ steps.revertpr.outputs.url }}
+          BURN_DETAIL:    ${{ steps.probe.outputs.burn_detail }}
+          HARD_COUNT:     ${{ steps.probe.outputs.hard_burn_count }}
+          SLO_BODY:       ${{ steps.probe.outputs.slo_body }}
+          DRILL:          ${{ inputs.drill }}
         with:
           script: |
-            github.rest.issues.create({
+            const rw     = process.env.RAILWAY_RESULT || '(step did not run)';
+            const rwStep = process.env.RAILWAY_STEP || 'skipped';
+            const target = process.env.RAILWAY_TARGET || '?';
+            const pr     = process.env.PR_RESULT || '(step did not run)';
+            const prUrl  = process.env.PR_URL || '';
+            const burn   = process.env.BURN_DETAIL || '(none captured)';
+            const hard   = process.env.HARD_COUNT || '?';
+            const drill  = process.env.DRILL === 'true';
+            const runUrl = `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`;
+
+            const restored = rw === 'rolled-back';
+            const icon = drill ? '🧪' : (restored ? '✅' : '🚨');
+            const head = drill
+              ? 'auto-rollback drill'
+              : (restored
+                  ? 'slo-gate: production rolled back'
+                  : 'slo-gate: ROLLBACK FAILED — production may still be broken');
+
+            const manual = [
+              '**Automatic rollback did not complete.** Roll back by hand:',
+              '',
+              '```bash',
+              'RAILWAY_TOKEN=… python3 scripts/railway_rollback.py --dry-run   # check the target',
+              'RAILWAY_TOKEN=… python3 scripts/railway_rollback.py            # do it',
+              '```',
+              '',
+              rw === 'no-token'
+                ? '> The `RAILWAY_TOKEN` repository secret is **not set**, so the automated path is disabled. See `docs/ROLLBACK-RUNBOOK.md`.'
+                : '> Or: Railway dashboard → dchub-backend → Deployments → ⋯ → Rollback.',
+            ].join('\n');
+
+            const body = [
+              `### ${icon} ${head}`,
+              ``,
+              `${hard} of 5 SLO samples reported \`hard_burn\` at \`/api/v1/slo/error-budget\`.`,
+              `Burn detail: \`${burn}\``,
+              ``,
+              `| remediation | result |`,
+              `|---|---|`,
+              `| Railway rollback — restores service | \`${rw}\` (step: ${rwStep}), target \`${target}\` |`,
+              `| Revert PR — stops a re-ship | \`${pr}\` ${prUrl} |`,
+              ``,
+              restored
+                ? `Production was rolled back to the previous Railway image. **Merge the revert PR** so the next deploy does not re-ship the bad commit.`
+                : manual,
+              ``,
+              `<details><summary>Last SLO response</summary>`,
+              ``,
+              '```json',
+              (process.env.SLO_BODY || '').slice(0, 3000),
+              '```',
+              `</details>`,
+              ``,
+              `Run: ${runUrl}`,
+              ``,
+              `> This gate no longer pushes to \`main\`: \`main\` is protected and`,
+              `> \`github-actions[bot]\` cannot push to it (GH006), and a rollback that`,
+              `> waits for green CI deadlocks exactly when production is broken.`,
+            ].join('\n');
+
+            await github.rest.issues.create({
               owner: context.repo.owner,
               repo:  context.repo.repo,
-              title: `slo-gate: HEAD reverted (${{ steps.probe.outputs.burn_detail }})`,
-              body:  'SLO gate: 3+ of 5 post-deploy samples reported hard_burn at /api/v1/slo/error-budget (global 5xx >10% OR any pattern >100 5xx/5min). HEAD reverted automatically. Investigate top_5xx_paths in the SLO endpoint to find the regressing path.',
-              labels: ['slo-gate','auto-rollback']
-            })
+              title: drill
+                ? `slo-gate: rollback drill (${new Date().toISOString().slice(0, 16)})`
+                : `slo-gate: ${restored ? 'rolled back' : 'ROLLBACK FAILED'} (${burn})`,
+              body,
+              labels: drill ? ['slo-gate', 'drill'] : ['slo-gate', 'auto-rollback'],
+            });
+
+      # Make the run visibly red when a rollback was needed but nothing worked,
+      # so it cannot pass as a healthy green run in the history.
+      - name: Fail if production was left broken
+        if: ${{ steps.decide.outputs.rollback == 'true' && inputs.drill != true && steps.railway.outputs.outcome != 'rolled-back' }}
+        run: |
+          echo "::error::SLO hard_burn detected but automatic rollback did not complete. See the issue just opened."
+          exit 1
