@@ -12187,6 +12187,44 @@ def add_security_headers(response):
         response.headers['Cache-Control'] = 'public, max-age=60, stale-while-revalidate=300'
     elif path.startswith('/api/') or path.startswith('/mcp'):
         response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+    elif path == '/robots.txt' or (path.startswith('/sitemap') and path.endswith('.xml')):
+        # 2026-07-28 — crawler DIRECTIVE files: never stale-while-revalidate.
+        #
+        # These fell through to the catch-all `else` below, which stamps
+        # stale-while-revalidate=3600 onto Cache-Control AND Surrogate-Control.
+        # CF honours Surrogate-Control OVER Cache-Control, so a robots/sitemap
+        # change could be served from the edge for up to an HOUR after the
+        # origin was already correct — and purging the URL re-pinned the stale
+        # body into a fresh SWR window instead of clearing it. Three purges
+        # "succeeded" and changed nothing during the #1798/#1801 rollouts.
+        #
+        # SWR is right for slow-changing marketing HTML. It is wrong for the two
+        # files that TELL CRAWLERS WHAT THEY MAY FETCH: when those change they
+        # must take effect promptly, and an operator must be able to purge them
+        # and see the result on the very next request.
+        #
+        # s-maxage is KEPT (not no-store) deliberately. Serving sitemap shards
+        # uncached is what caused the months-long Neon pool saturation (07-20
+        # stampede: ~20k-row union rebuilt per request across both replicas).
+        # Shards now serve from sitemap_snapshot, but they are still ~1.8MB, so
+        # edge caching stays load-bearing. Bounded staleness, not zero caching.
+        #
+        # TTLs preserve each surface's existing intent — the bug is the SWR, not
+        # the TTL. robots.txt is 4KB and correctness-critical (shorter window);
+        # the sitemap views already chose 3600 (_sitemap_xml_response) and the
+        # zone rule for /sitemap.xml agrees, so that is left as-is.
+        #
+        # ★ NOT SUFFICIENT ALONE: /robots.txt is also matched by the zone Cache
+        # Rule "Cache AI discovery files 15min", whose edge_ttl uses
+        # mode=override_origin and therefore IGNORES every header set here.
+        # This is the correct floor for when that rule is narrowed. Never assume
+        # a robots change is live because this code says 300 — verify the BARE
+        # url as the crawler UA (a ?cachebuster= query is a different cache key
+        # and proves only that the ORIGIN is right).
+        _crawler_ttl = 300 if path == '/robots.txt' else 3600
+        response.headers['Cache-Control'] = f'public, max-age={_crawler_ttl}, s-maxage={_crawler_ttl}'
+        response.headers['CDN-Cache-Control'] = f'public, s-maxage={_crawler_ttl}'
+        response.headers['Surrogate-Control'] = f'public, max-age={_crawler_ttl}'
     elif (response.status_code == 200 and request.method in ('GET', 'HEAD')
           and _match_html_cache(path) is not None):
         # r43-htmlcache (2026-05-29): edge-cacheable public HTML pages.
