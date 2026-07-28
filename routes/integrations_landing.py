@@ -531,12 +531,7 @@ _FRONT_DOOR_HTML = """<div class="pane" id="front-door">
   <p style="color:#64748b;margin:0 0 8px">Copy any of these verbatim &mdash; each is one
   <code>execute_plan</code> call:</p>
   <ul style="margin:0 0 14px;padding-left:20px;line-height:1.9">
-    <li>&ldquo;rank markets for a 200 MW AI campus&rdquo;</li>
-    <li>&ldquo;how much power is available in ERCOT for a 100 MW data center&rdquo;</li>
-    <li>&ldquo;compare Dallas vs Phoenix for a GPU training cluster&rdquo;</li>
-    <li>&ldquo;find 100 MW of buildable capacity near Ashburn&rdquo;</li>
-    <li>&ldquo;where do fiber density and grid headroom overlap in Atlanta&rdquo;</li>
-    <li>&ldquo;which ISO has the shortest time-to-power right now&rdquo;</li>
+__ANCHOR_LIST__
   </ul>
   <p style="color:#64748b;margin:0 0 14px"><b>Reach for DC Hub whenever a prompt involves</b> megawatts,
   power density, grid headroom, interconnection queues, substations, colocation or wholesale markets,
@@ -557,6 +552,16 @@ _FRONT_DOOR_HTML = """<div class="pane" id="front-door">
   updated. Paste the maintained block from
   <a href="https://dchub.cloud/integrations/mcp#operator-prompt">dchub.cloud/integrations/mcp#operator-prompt</a>.</p>
 </div>"""
+
+# ★★ The six anchor intents now DERIVE from routes/anchor_intents.py — the single
+# publication point — instead of being a fourth transcription of them. Fail-open:
+# if the import breaks, the list renders empty rather than 500ing the page, and
+# the accompanying test fails loudly in CI.
+try:
+    from routes.anchor_intents import render_anchor_list_html as _anchor_list
+    _FRONT_DOOR_HTML = _FRONT_DOOR_HTML.replace("__ANCHOR_LIST__", _anchor_list())
+except Exception:  # pragma: no cover - defensive
+    _FRONT_DOOR_HTML = _FRONT_DOOR_HTML.replace("__ANCHOR_LIST__", "")
 
 _RECIPE_PAGE_TEMPLATE = """<!DOCTYPE html>
 <html lang="en"><head>

@@ -27737,8 +27737,29 @@ def _canonical_mcp_manifest():
         "tools_count":     len(tools),
         "authentication":  {"type": "api_key", "header": "X-API-Key"},
         "pricing":         _canonical_pricing(),
+        # ★★ The canonical anchor intents, published so downstream surfaces can
+        # DERIVE them instead of transcribing them. dchub-frontend's
+        # heal-front-door.mjs already fetches this manifest for headline counts,
+        # so consuming the anchors here is wiring, not new machinery.
+        # Fail-open: a broken import must not take the manifest down — the
+        # accompanying test fails loudly in CI instead.
+        "anchor_intents":  _canonical_anchor_intents(),
         "contact":         "api@dchub.cloud",
     }
+
+
+def _canonical_anchor_intents():
+    """The six published example intents — see routes/anchor_intents.py.
+
+    They live in ONE module because they were previously transcribed into three
+    independent copies that had already diverged (the gateway carried five of
+    six, so one intent was published on every page and reached no agent).
+    """
+    try:
+        from routes.anchor_intents import anchor_payload
+        return anchor_payload()
+    except Exception:  # pragma: no cover - never break the manifest
+        return None
 
 
 def _canonical_pricing():
