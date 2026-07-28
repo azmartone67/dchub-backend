@@ -1499,7 +1499,7 @@ def _post_to_twitter(content_text):
             auth = OAuth1(api_key, api_sec, acc_tok, acc_sec)
             resp = requests.post(
                 'https://api.twitter.com/2/tweets',
-                json={'text': content_text[:280]},
+                json={'text': as_published(content_text, 'twitter')},
                 auth=auth,
                 timeout=15,
             )
@@ -1518,7 +1518,7 @@ def _post_to_twitter(content_text):
         return False, "no_twitter_credentials"
     resp = requests.post(
         'https://api.twitter.com/2/tweets',
-        json={'text': content_text[:280]},
+        json={'text': as_published(content_text, 'twitter')},
         headers={'Authorization': f'Bearer {bearer}',
                  'Content-Type': 'application/json'},
         timeout=15,
@@ -1574,7 +1574,8 @@ def _post_to_bluesky(content_text):
         from datetime import datetime as _dt, timezone as _tz
         now_iso = _dt.now(_tz.utc).isoformat().replace('+00:00', 'Z')
         # Bluesky: 300 grapheme limit. Truncate by chars (close enough).
-        text = content_text[:297] + '...' if len(content_text) > 300 else content_text
+        # Single source of truth with the publish gate — see as_published().
+        text = as_published(content_text, 'bluesky')
         record_resp = requests.post(
             'https://bsky.social/xrpc/com.atproto.repo.createRecord',
             json={
@@ -1843,6 +1844,47 @@ def _rewrite_legacy_to_rich(text: str) -> str | None:
 # Without this, the publisher could fire 3 "DCPI verdict" posts in a row
 # (operator caught Chantilly/Edison/Buffalo AVOID posts at 3-4m apart).
 # Classification is lightweight pattern-match on the first ~200 chars.
+# ---------------------------------------------------------------------------
+# 2026-07-28 — THE WIRE TRANSFORM. What each platform actually receives.
+#
+# The posters have always truncated (X hard-cuts at 280; Bluesky cuts at 297 and
+# appends an ellipsis), but the publish gate scored the untruncated DRAFT. So
+# the gate was judging a different artifact than the one that shipped, and the
+# gap was invisible to every measurement — measured 2026-07-28 on the pillars X
+# card: the 359-char draft scored 0.600 while the 280-char tweet that actually
+# published scored 0.150 and had lost its link entirely to the cut.
+#
+# Both the posters and the gate now go through as_published(), so they cannot
+# drift. If a platform's limit changes, change it HERE — not in the poster.
+# LinkedIn is absent on purpose: its poster does not truncate, so its wire text
+# IS the draft.
+_WIRE_LIMITS = {
+    "twitter": {"limit": 280, "suffix": ""},
+    # Bluesky counts GRAPHEMES, not chars; the poster approximates with chars
+    # and this mirrors it exactly rather than being more correct than the thing
+    # it models — the point is to predict what the poster will send.
+    "bluesky": {"limit": 300, "suffix": "...", "cut": 297},
+}
+
+
+def as_published(content_text: str, platform: str) -> str:
+    """The text the platform will actually receive, after its own truncation.
+
+    This is what the publish gate must judge — scoring the draft instead is how
+    a tweet shipped with its link cut off while the gate recorded 0.600. Returns
+    the text unchanged for platforms that do not truncate. Never raises."""
+    try:
+        spec = _WIRE_LIMITS.get((platform or "").strip().lower())
+        if not spec or not content_text:
+            return content_text or ""
+        if len(content_text) <= spec["limit"]:
+            return content_text
+        return content_text[:spec.get("cut", spec["limit"])] + spec["suffix"]
+    except Exception:
+        # Fail-open to the draft: never let this helper block a post.
+        return content_text or ""
+
+
 def _classify_post_for_dedup(text: str) -> str:
     """Return a coarse class tag so we can rate-limit per-class daily.
     Goal: max 1 'dcpi_verdict' per day, max 1 'partnership_invite' per
@@ -2634,8 +2676,30 @@ def _should_skip_publish(cur, content_text: str, platform: str):
 
     FAIL-OPEN: any DB / parse error returns (False, "") so a transient blip
     never dark-holds the publisher. The caller logs the reason when skip=True.
+
+    2026-07-28: every check below judges the text AS PUBLISHED, not the draft.
+    X hard-cuts at 280 and Bluesky at 297+ellipsis, and scoring the draft meant
+    the gate was rating an artifact nobody would ever see — the pillars X card
+    scored 0.600 as a 359-char draft while the 280-char tweet that actually
+    shipped scored 0.150 with its link cut off. Truncating ONCE here (rather
+    than only inside the quality score) keeps every downstream signal honest:
+    a stat, an entity or a link that falls past the cut is not in the published
+    post, so it must not earn credit, satisfy the zero-stat guard, or drive
+    dedup.
     """
-    _text = content_text or ""
+    _draft = content_text or ""
+    content_text = as_published(_draft, platform)
+    _text = content_text
+    if _text != _draft:
+        # Visible, not silent: a post that only passes as a draft is a COPY bug
+        # (the tail is being thrown away on the wire), and the operator should
+        # see which posts are in that state rather than discovering it in the feed.
+        logger.warning(
+            "[wire] %s draft is %d chars, over the wire limit — the gate is "
+            "judging the %d chars that will actually publish; %d chars "
+            "(ending %r) are discarded by the poster",
+            platform, len(_draft), len(_text), len(_draft) - len(_text),
+            _draft[len(_text):][:60])
     # (d) r65-qa: NEVER showcase a post that quotes an LLM DISCLAIMING knowledge
     # ("I don't have specific current information about these two services... to
     # give you an accurate comparison"). That reads as the opposite of an
