@@ -267,6 +267,7 @@ def analyze():
             plans, stats = _collect(cur, request.args.get("country"),
                                     int(request.args.get("limit") or 0) or None)
         return jsonify(ok=True, dry_run=True, method=DEDUP_METHOD,
+                       mode="pointer_only (never sets is_duplicate)",
                        write_conn=_write_diag(),
                        groups_planned=len(plans),
                        urls_removed=sum(len(p["duplicates"]) for p in plans),
@@ -301,13 +302,33 @@ def apply():
                 # ★ The WHERE re-asserts every precondition at WRITE time: a row
                 # another pass flagged between analyze and apply is left alone,
                 # and a row can never be made its own duplicate.
+                # ★★ POINTER-ONLY. is_duplicate is DELIBERATELY NOT WRITTEN.
+                # The first apply set is_duplicate=1 and left 57 of 58 slugs
+                # with no surviving keeper — the bug
+                # repair_dedup_keeper_election.py fixed on 2026-07-27. It was
+                # reverted. is_duplicate is a VISIBILITY flag: it drops the row
+                # from every filtered count and from the sitemap, and buys
+                # nothing a canonical does not already buy.
+                # A duplicate_of_id alone makes the page emit rel=canonical at
+                # its twin (routes/facility_profile_page.py) while the row stays
+                # live, counted and serving 200. Verified on a single pair:
+                # unknown-brainserve-dd3fd3d9 and brainserve-1d8a2e5a both
+                # canonicalise to brainserve-sa-brainserve-a3c43931, all three
+                # still HTTP 200, live count and no-keeper count both unchanged.
+                # ★ duplicate_of_id IS NULL replaces the old dedup_method IS NULL
+                #   guard. The old one blocked 375 rows because v2 had merely
+                #   EXAMINED them (stamped, nothing pointing at them, no
+                #   decision). What must never be overwritten is an existing
+                #   POINTER — another pass's actual verdict.
+                # ★ The v2 stamp on such a row records "examined, no cluster";
+                #   v3 is deciding where v2 did not, so the method is replaced.
+                #   undo returns it to NULL.
                 cur.execute(
                     "UPDATE discovered_facilities "
-                    "   SET is_duplicate = 1, duplicate_of_id = %s, "
-                    "       dedup_method = %s "
+                    "   SET duplicate_of_id = %s, dedup_method = %s "
                     " WHERE id = ANY(%s) "
+                    "   AND duplicate_of_id IS NULL "
                     "   AND COALESCE(is_duplicate, 0) = 0 "
-                    "   AND dedup_method IS NULL "
                     "   AND id <> %s",
                     (p["canonical"], DEDUP_METHOD, p["duplicates"],
                      p["canonical"]))
@@ -315,6 +336,7 @@ def apply():
         return jsonify(ok=True, applied=True, method=DEDUP_METHOD,
                        groups=len(plans), rows_marked=marked,
                        skipped=stats,
+                       mode="pointer_only (never sets is_duplicate)",
                        note="reversible: POST .../facility-dedup-v3/undo?confirm=1"), 200
     except Exception as e:
         logger.warning("facility_dedup_v3 apply failed: %s", e)
@@ -340,11 +362,16 @@ def undo():
         with conn.cursor() as cur:
             # ★ dedup_method = THIS module's stamp only. A v3 undo must never
             # roll back a v2 decision.
+            # ★ Clears ONLY what apply wrote — the pointer and the stamp.
+            # is_duplicate is not touched on the way out either: this module
+            # never sets it, so "restoring" it would be writing a value we did
+            # not change. The is_duplicate=0 predicate also means a row some
+            # OTHER pass later suppressed is left alone.
             cur.execute(
                 "UPDATE discovered_facilities "
-                "   SET is_duplicate = 0, duplicate_of_id = NULL, "
-                "       dedup_method = NULL "
-                " WHERE dedup_method = %s", (DEDUP_METHOD,))
+                "   SET duplicate_of_id = NULL, dedup_method = NULL "
+                " WHERE dedup_method = %s "
+                "   AND COALESCE(is_duplicate, 0) = 0", (DEDUP_METHOD,))
             n = cur.rowcount or 0
         return jsonify(ok=True, rows_cleared=n, method=DEDUP_METHOD), 200
     except Exception as e:

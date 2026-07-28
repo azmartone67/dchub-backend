@@ -133,9 +133,32 @@ def _code():
 def test_apply_reasserts_preconditions_at_write_time():
     seg = _code().split("def apply", 1)[1].split("def undo", 1)[0]
     assert "COALESCE(is_duplicate, 0) = 0" in seg, (
-        "a row flagged between analyze and apply must be left alone")
-    assert "dedup_method IS NULL" in seg, "must not clobber a v2 decision"
+        "a row suppressed between analyze and apply must be left alone")
+    assert "duplicate_of_id IS NULL" in seg, (
+        "an existing POINTER is another pass's actual verdict and must never "
+        "be overwritten")
     assert "id <> %s" in seg, "a row can never be its own duplicate"
+
+
+def test_apply_is_pointer_only_and_never_suppresses():
+    """is_duplicate=1 left 57 of 58 slugs with no keeper. Never again.
+
+    is_duplicate is a VISIBILITY flag: setting it drops the row from every
+    filtered count and from the sitemap. Consolidation needs only the pointer —
+    the page then emits rel=canonical at the twin while staying live and 200.
+    """
+    seg = _code().split("def apply", 1)[1].split("def undo", 1)[0]
+    assert "is_duplicate = 1" not in seg, (
+        "apply must never suppress a row; write the pointer only")
+    assert "SET duplicate_of_id = %s" in seg
+
+
+def test_undo_clears_only_what_apply_wrote():
+    seg = _code().split("def undo", 1)[1]
+    assert "is_duplicate = 0" not in seg, (
+        "undo must not write is_duplicate — apply never set it, so restoring "
+        "it would be changing a value this module did not touch")
+    assert "duplicate_of_id = NULL" in seg and "dedup_method = NULL" in seg
 
 
 def test_undo_only_clears_this_modules_marks():
