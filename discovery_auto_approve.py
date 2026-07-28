@@ -291,8 +291,26 @@ def _process_batch(conn, batch, stats, name_index, geo_index):
                     VALUES (%s, %s, 'duplicate_skipped', 'name_match', %s)
                 """, (disc['id'], disc['source'], match_id))
                 c = conn.cursor()
+                # ★ Stamp the REASON on the row itself. The audit row above
+                # records match_reason + promoted_facility_id, but it lands in
+                # discovery_approvals — a table nothing downstream reads. Every
+                # consumer (keeper election, canonical resolution, the sitemap,
+                # facility_dedup_v3) reads discovered_facilities, where a bare
+                # `SET is_duplicate = 1` looks arbitrary. That is why
+                # repair_dedup_keeper_election.py calls these "flagged by a
+                # legacy path that recorded nothing": the reason WAS recorded,
+                # just nowhere useful. Measured 2026-07-28: 845 rows suppressed
+                # this way in one day, 291 of the 311 keeperless groups.
+                # ★ duplicate_of_id is deliberately NOT set. match_id is a
+                #   `facilities` id; duplicate_of_id refers to
+                #   `discovered_facilities`. Those are two different id spaces
+                #   and assigning across them would point at an unrelated row.
+                #   Resolving it needs a slug lookup — out of scope here.
                 c.execute("""
-                    UPDATE discovered_facilities SET is_duplicate = 1 WHERE id = %s
+                    UPDATE discovered_facilities
+                       SET is_duplicate = 1,
+                           dedup_method = 'auto_approve/name_match'
+                     WHERE id = %s
                 """, (disc['id'],))
                 stats['duplicate_skipped'] += 1
                 continue
@@ -404,7 +422,32 @@ def _process_batch(conn, batch, stats, name_index, geo_index):
                 else:
                     stats['approved'] += 1
 
-            except Exception:
+            except Exception as _promote_err:
+                # ★★ 2026-07-28: this used to suppress the row on ANY exception
+                # and label it 'unique_constraint'. A timeout, a dropped
+                # connection, a NULL violation — anything raised here marked a
+                # real facility as a duplicate, on a guess about why the
+                # exception happened. Zero of those rows carry a
+                # promoted_facility_id, because there is no match; the label was
+                # a story about the failure, not evidence of a duplicate.
+                # A transient DB error must NEVER decide that a facility is a
+                # duplicate. Only an actual uniqueness violation means "this
+                # already exists".
+                _is_dupe_err = False
+                try:
+                    import psycopg2.errors as _pgerr
+                    _is_dupe_err = isinstance(_promote_err, _pgerr.UniqueViolation)
+                except Exception:
+                    # psycopg2 unavailable or a wrapped driver — fall back to the
+                    # SQLSTATE, never to the exception text.
+                    _is_dupe_err = getattr(
+                        getattr(_promote_err, 'pgcode', None), '__str__',
+                        lambda: '')() == '23505'
+                if not _is_dupe_err:
+                    print(f"   Record {disc['id']} promote failed "
+                          f"({type(_promote_err).__name__}): {_promote_err}")
+                    stats['errors'] = stats.get('errors', 0) + 1
+                    continue
                 c = conn.cursor()
                 c.execute("""
                     INSERT INTO discovery_approvals
@@ -413,7 +456,10 @@ def _process_batch(conn, batch, stats, name_index, geo_index):
                 """, (disc['id'], disc['source']))
                 c = conn.cursor()
                 c.execute("""
-                    UPDATE discovered_facilities SET is_duplicate = 1 WHERE id = %s
+                    UPDATE discovered_facilities
+                       SET is_duplicate = 1,
+                           dedup_method = 'auto_approve/unique_constraint'
+                     WHERE id = %s
                 """, (disc['id'],))
                 stats['duplicate_skipped'] += 1
 
