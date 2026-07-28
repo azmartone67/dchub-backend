@@ -80,10 +80,20 @@ _STATE = {
 _LOCK = threading.Lock()
 
 
+def _arm_flag_set():
+    flag = (os.environ.get("SLO_SENTINEL_ROLLBACK", "") or "").strip().lower()
+    return flag in ("1", "true", "yes")
+
+
+def _token_present():
+    """Whether RAILWAY_TOKEN is set. Presence only — the value is never read
+    out of this module, logged, or returned by the status endpoint."""
+    return bool(os.environ.get("RAILWAY_TOKEN", "").strip())
+
+
 def _armed():
     """Rollback actuation requires an explicit arm AND a token."""
-    flag = (os.environ.get("SLO_SENTINEL_ROLLBACK", "") or "").strip().lower()
-    return flag in ("1", "true", "yes") and bool(os.environ.get("RAILWAY_TOKEN", "").strip())
+    return _arm_flag_set() and _token_present()
 
 
 def _enabled():
@@ -267,8 +277,16 @@ def start_scheduler():
         return False
     start_scheduler._started = True
     threading.Thread(target=_loop, daemon=True, name="slo-rollback-sentinel").start()
-    log.info("[slo-sentinel] started: every %ss, %d/%d hard_burn triggers, armed=%s",
-             INTERVAL_S, TRIGGER_N, WINDOW_N, _armed())
+    # Report the two arm conditions separately. "armed=False" alone does not
+    # say WHICH half is missing, and the worker has no public domain, so the
+    # boot log is the only place an operator can see this.
+    log.info(
+        "[slo-sentinel] started: every %ss, %d/%d hard_burn triggers, "
+        "armed=%s (SLO_SENTINEL_ROLLBACK=%s, RAILWAY_TOKEN=%s)",
+        INTERVAL_S, TRIGGER_N, WINDOW_N, _armed(),
+        "set" if _arm_flag_set() else "MISSING",
+        "present" if _token_present() else "MISSING",
+    )
     return True
 
 
@@ -291,6 +309,10 @@ def status():
         "running": bool(getattr(start_scheduler, "_started", False)),
         "enabled": _enabled(),
         "armed": _armed(),
+        # Which half is missing. Booleans only — the token value is never
+        # exposed here.
+        "arm_flag_set": _arm_flag_set(),
+        "railway_token_present": _token_present(),
         "interval_s": INTERVAL_S,
         "trigger": f"{TRIGGER_N}/{WINDOW_N} hard_burn",
         "cooldown_s": COOLDOWN_S,
