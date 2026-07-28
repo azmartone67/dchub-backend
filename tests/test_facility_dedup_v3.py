@@ -147,3 +147,28 @@ def test_undo_only_clears_this_modules_marks():
 def test_apply_requires_explicit_confirmation():
     seg = _code().split("def apply", 1)[1].split("def undo", 1)[0]
     assert 'confirm' in seg and '"1"' in seg
+
+
+def test_writes_take_a_primary_connection_not_a_hand_rolled_dsn():
+    """apply/undo must not roll their own psycopg2.connect(DATABASE_URL).
+
+    ★ The first apply died with "cannot execute UPDATE in a read-only
+    transaction" while analyze read fine: a hand-rolled connection landed on a
+    read-only endpoint in the web process. The app's pooled get_db() is the
+    blessed writable path.
+    """
+    code = _code()
+    for fn in ("def apply", "def undo"):
+        seg = code.split(fn, 1)[1].split("\n@", 1)[0]
+        assert "_conn(write=True)" in seg, (
+            "{} must request a WRITE connection".format(fn))
+
+
+def test_analyze_surfaces_the_write_connection_state():
+    """A read-only surprise must appear in the DRY RUN, not as a 500 halfway
+    through the apply."""
+    code = _code()
+    seg = code.split("def analyze", 1)[1].split("\n@", 1)[0]
+    assert "_write_diag()" in seg
+    diag = code.split("def _conn_diag", 1)[1].split("\ndef ", 1)[0]
+    assert "transaction_read_only" in diag and "pg_is_in_recovery" in diag

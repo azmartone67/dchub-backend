@@ -75,7 +75,27 @@ _COORD_EPS = 0.02
 _ANON = ("", "unknown", "n/a", "na", "none", "null", "-")
 
 
-def _conn():
+def _conn(write=False):
+    """Connection. `write=True` MUST return a primary, never the replica.
+
+    ★★ The first apply died with "cannot execute UPDATE in a read-only
+    transaction" while analyze read happily. A hand-rolled
+    psycopg2.connect(DATABASE_URL) landed on a read-only endpoint in the web
+    process — the exact trap the house `_write_conn()` helpers exist for. The
+    app's own pooled get_db() is the blessed writable path (the sitemap
+    rebuild writes through it from this same process), so use that first and
+    keep the raw DSN only as a fallback.
+    """
+    if write:
+        try:
+            from main import get_db
+            c = get_db()
+            if c is not None:
+                try: c.autocommit = True
+                except Exception: pass
+                return c
+        except Exception as e:
+            logger.warning("facility_dedup_v3: get_db unavailable: %s", e)
     import psycopg2
     db = os.environ.get("DATABASE_URL") or os.environ.get("NEON_DATABASE_URL")
     if not db:
@@ -87,6 +107,19 @@ def _conn():
     except Exception as e:
         logger.warning("facility_dedup_v3: connect failed: %s", e)
         return None
+
+
+def _conn_diag(c):
+    """What did we actually connect to? Reported by /analyze so a read-only
+    surprise is visible BEFORE apply fails, not after."""
+    try:
+        with c.cursor() as cur:
+            cur.execute("SELECT current_setting('transaction_read_only'), "
+                        "       pg_is_in_recovery(), inet_server_addr()::text")
+            ro, rec, host = cur.fetchone()
+        return {"read_only": ro, "in_recovery": bool(rec), "server": str(host)}
+    except Exception as e:
+        return {"error": str(e)[:120]}
 
 
 def _admin_ok():
@@ -207,6 +240,19 @@ def _collect(cur, country=None, limit=None):
     return plans, stats
 
 
+def _write_diag():
+    """Probe the WRITE connection during a dry run — a read-only endpoint must
+    surface in /analyze, not as a 500 halfway through /apply."""
+    c = _conn(write=True)
+    if c is None:
+        return {"error": "no_write_conn"}
+    try:
+        return _conn_diag(c)
+    finally:
+        try: c.close()
+        except Exception: pass
+
+
 @facility_dedup_v3_bp.route("/api/v1/admin/facility-dedup-v3/analyze")
 def analyze():
     if _disabled():
@@ -221,6 +267,7 @@ def analyze():
             plans, stats = _collect(cur, request.args.get("country"),
                                     int(request.args.get("limit") or 0) or None)
         return jsonify(ok=True, dry_run=True, method=DEDUP_METHOD,
+                       write_conn=_write_diag(),
                        groups_planned=len(plans),
                        urls_removed=sum(len(p["duplicates"]) for p in plans),
                        skipped=stats, sample=plans[:20]), 200
@@ -242,7 +289,7 @@ def apply():
     if request.args.get("confirm") != "1":
         return jsonify(ok=False, error="confirm=1 required",
                        hint="run /analyze first"), 400
-    conn = _conn()
+    conn = _conn(write=True)
     if conn is None:
         return jsonify(ok=False, error="db_unavailable"), 503
     marked = 0
@@ -286,7 +333,7 @@ def undo():
         return jsonify(ok=False, error="admin_key_required"), 401
     if request.args.get("confirm") != "1":
         return jsonify(ok=False, error="confirm=1 required"), 400
-    conn = _conn()
+    conn = _conn(write=True)
     if conn is None:
         return jsonify(ok=False, error="db_unavailable"), 503
     try:
