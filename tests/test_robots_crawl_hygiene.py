@@ -192,13 +192,31 @@ def test_wildcard_group_also_blocks_the_sinks(robots):
 
 # ── 4 · /api/* is deliberately still open to the assistant crawlers ─────────
 
-def test_api_left_open_for_named_agents_but_closed_to_the_wildcard(robots):
-    """Pins the 2026-06-28 decision so it changes on purpose, not by accident:
-    /api/* is the only surface Copilot (Bingbot) and Gemini (Googlebot) fetch.
-    It is ~36% of Bing's crawl budget, so revisit — but deliberately."""
-    assert can_fetch(robots, "bingbot", "/api/v1/facilities/foo") is True
+def test_api_closed_to_bingbot_but_open_to_the_other_assistant_crawlers(robots):
+    """Pins the 2026-07-28 decision so it changes on purpose, not by accident.
+
+    /api/* was 36.4% of Bingbot's crawl budget (raw JSON, 1 in 3 sampled paths
+    404) against 24.3% reaching /facilities/*, so it is closed to Bingbot. The
+    accepted cost is Copilot, which crawls as Bingbot and has no other surface.
+
+    Gemini is deliberately NOT affected: Googlebot/GoogleOther keep /api/*. That
+    asymmetry is the whole point of splitting Bingbot into its own group — if a
+    future edit folds it back into the merged group, this test fails.
+    """
+    assert can_fetch(robots, "bingbot", "/api/v1/facilities/foo") is False
     assert can_fetch(robots, "Googlebot", "/api/v1/facilities/foo") is True
+    assert can_fetch(robots, "GoogleOther", "/api/v1/facilities/foo") is True
+    assert can_fetch(robots, "GPTBot", "/api/v1/facilities/foo") is True
     assert can_fetch(robots, "SomeUnknownCrawler", "/api/v1/facilities/foo") is False
+
+
+def test_bingbot_keeps_every_content_surface(robots):
+    """Closing /api/ must not cost Bing a single rankable page — that would
+    defeat the purpose of freeing the crawl budget in the first place."""
+    for path in MUST_ALLOW + ["/facilities/edgecore-mesa-ph01-54e3fad5", "/grid/ercot"]:
+        assert can_fetch(robots, "bingbot", path) is True, (
+            f"bingbot lost {path} — the /api/ split over-reached"
+        )
 
 
 # ── 5 · the literal is what the route actually returns ──────────────────────
