@@ -78,10 +78,25 @@ jobs:
             # No --label: `gh pr create --label` fails outright if the label
             # does not exist in the repo, which is how this step failed after
             # the heredoc was fixed. Label afterwards, best-effort.
-            URL=$(gh pr create --base main --head "$BRANCH" \
-              --title "chore: weekly shadow route inventory refresh" \
-              --body-file /tmp/pr-body.md)
-            gh pr edit "$URL" --add-label chore >/dev/null 2>&1 || true
-            echo "opened $URL"
-            echo "- shadow inventory: opened $URL" >> "$GITHUB_STEP_SUMMARY"
+            if OUT=$(gh pr create --base main --head "$BRANCH" \
+                  --title "chore: weekly shadow route inventory refresh" \
+                  --body-file /tmp/pr-body.md 2>&1); then
+              URL=$(printf '%s\n' "$OUT" | tail -1)
+              gh pr edit "$URL" --add-label chore >/dev/null 2>&1 || true
+              echo "opened $URL"
+              echo "- shadow inventory: opened $URL" >> "$GITHUB_STEP_SUMMARY"
+            else
+              # "Allow GitHub Actions to create and approve pull requests" is
+              # off, so GITHUB_TOKEN cannot open the PR. The refreshed
+              # inventory IS committed and pushed to the branch; surface a
+              # one-click compare link instead of losing it. Deliberately still
+              # fails the run — a silent green here is what hid this for two
+              # weeks in the first place.
+              COMPARE="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/compare/main...$BRANCH?expand=1"
+              echo "::error::gh pr create failed: $OUT"
+              echo "::warning::Inventory IS committed on '$BRANCH' — open the PR: $COMPARE"
+              echo "- shadow inventory: branch pushed, **PR not opened** — [open it]($COMPARE)" >> "$GITHUB_STEP_SUMMARY"
+              echo "- cause: Settings → Actions → General → \"Allow GitHub Actions to create and approve pull requests\" is off" >> "$GITHUB_STEP_SUMMARY"
+              exit 1
+            fi
           fi

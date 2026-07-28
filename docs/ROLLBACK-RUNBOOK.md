@@ -31,6 +31,31 @@ Two paths, two jobs:
 
 Do both. Never wait on the second to get the first.
 
+## What CI is actually allowed to do
+
+Measured 2026-07-28, with `GITHUB_TOKEN`:
+
+| action | allowed? |
+|---|---|
+| push a branch | ✅ |
+| push to `main` | ❌ `GH006` — protected, bot is not an admin |
+| open a pull request | ❌ *"GitHub Actions is not permitted to create or approve pull requests"* |
+
+So **the git side of a rollback cannot be automated end to end today.** The
+workflows push the revert branch — which does work — and put a one-click
+compare link in the alert. Opening the PR is a human click.
+
+That is precisely why rollback is a Railway operation: it is the only
+remediation CI can actually complete on its own.
+
+To let the bot open the PR too, either:
+
+- **Settings → Actions → General → "Allow GitHub Actions to create and approve
+  pull requests"** (repo-wide; also lets any workflow open PRs), or
+- add a `GH_PAT` secret — `brain-pr-post-merge-guard.yml` already prefers it.
+
+Neither is required for a rollback to restore service.
+
 ## Prerequisite: the `RAILWAY_TOKEN` secret
 
 **The automated rollback is inert until this is set.** Without it the gate still

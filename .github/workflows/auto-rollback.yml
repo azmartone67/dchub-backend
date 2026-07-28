@@ -194,8 +194,17 @@ jobs:
                 --base main --head "$BRANCH" \
                 --title "revert: auto-rollback of ${SHA} (SLO hard_burn)" \
                 --body-file /tmp/pr-body.md 2>&1); then
+            # Expected today: the repo has "Allow GitHub Actions to create and
+            # approve pull requests" OFF, so GITHUB_TOKEN gets
+            #   GraphQL: GitHub Actions is not permitted to create ... pull requests
+            # The revert BRANCH is pushed regardless, which is the part that
+            # matters — hand the human a one-click compare link rather than
+            # losing the work.
+            COMPARE="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/compare/main...${BRANCH}?expand=1"
             echo "::error::gh pr create failed: $OUT"
-            echo "outcome=pr-failed" >> $GITHUB_OUTPUT
+            echo "::warning::Revert branch IS pushed — open the PR here: $COMPARE"
+            echo "url=$COMPARE" >> $GITHUB_OUTPUT
+            echo "outcome=branch-pushed-no-pr" >> $GITHUB_OUTPUT
             exit 1
           fi
           URL=$(printf '%s\n' "$OUT" | tail -1)
@@ -268,6 +277,12 @@ jobs:
               `|---|---|`,
               `| Railway rollback — restores service | \`${rw}\` (step: ${rwStep}), target \`${target}\` |`,
               `| Revert PR — stops a re-ship | \`${pr}\` ${prUrl} |`,
+              ``,
+              pr === 'branch-pushed-no-pr'
+                ? `> The revert branch is pushed but the PR could not be opened: this repo has\n` +
+                  `> **Settings → Actions → General → "Allow GitHub Actions to create and approve\n` +
+                  `> pull requests"** turned off. Open it in one click: ${prUrl}`
+                : ``,
               ``,
               restored
                 ? `Production was rolled back to the previous Railway image. **Merge the revert PR** so the next deploy does not re-ship the bad commit.`
