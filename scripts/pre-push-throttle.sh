@@ -13,10 +13,18 @@
 # and feeds, on stdin, one line per ref being pushed:
 #     <local ref> <local sha> <remote ref> <remote sha>
 #
+# 2026-07-28 — PR-DEPLOY MIGRATION (phase 2). A push whose remote ref is main
+# is now BLOCKED outright rather than merely throttled, because the throttle
+# only paced ungated deploys; it never made them safe. The throttle below is
+# retained and still reachable via DCHUB_ALLOW_MAIN_PUSH=1, so phase 2 can be
+# rolled back with an env var instead of a revert.
+#
 # Behavior:
-#   * Only throttles pushes whose REMOTE ref is main (refs/heads/main or main).
-#     All other branches/tags push freely.
-#   * Threshold: DCHUB_PUSH_THROTTLE_MIN minutes (default 20).
+#   * Only acts on pushes whose REMOTE ref is main (refs/heads/main or main).
+#     All other branches/tags push freely — that is the intended path now.
+#   * main push            -> BLOCKED with the PR recipe (see below).
+#   * DCHUB_ALLOW_MAIN_PUSH=1 -> block skipped; old throttle applies.
+#   * Threshold (throttle only): DCHUB_PUSH_THROTTLE_MIN minutes (default 20).
 #   * Bypass:    DCHUB_PUSH_FORCE=1 git push   -> always allowed.
 #   * Fails OPEN: any internal/git introspection error -> ALLOW the push.
 #     (A missed throttle costs one extra deploy; failing closed would block
@@ -94,6 +102,43 @@ fi
 if [ "$pushes_main" -eq 0 ]; then
   exit 0
 fi
+
+# --- PR-based deploys (migration phase 2, 2026-07-28) ----------------------
+# Direct pushes to main are BLOCKED. Deploys go through a pull request so the
+# required checks actually run against the change before it reaches prod.
+#
+# WHY THIS IS NOT REDUNDANT WITH BRANCH PROTECTION: `main` requires
+# substance-gate + syntax-check + unit-tests, and GitHub genuinely enforces
+# that on direct pushes too — a bot push is rejected with
+#   "GH006: Protected branch update failed / Required status check ... expected"
+# But `enforce_admins` is false, so a push from the repo ADMIN sails past all
+# of it. In the 7 days before this landed, 137 of 223 commits (61%) reached
+# main that way, entirely ungated. This hook is what closes that gap for the
+# admin, because GitHub itself cannot: enforce_admins:true would also block
+# auto-rollback, and a ruleset bypass actor is org-only (this repo is
+# user-owned). See scripts/../CLAUDE.md "Deploys".
+#
+# Escape hatches, in increasing order of bluntness:
+#   DCHUB_ALLOW_MAIN_PUSH=1  -> skip this block, fall through to the old
+#                               20-minute deploy throttle (phase-2 rollback)
+#   DCHUB_PUSH_FORCE=1       -> skip every guard in this hook (real emergency)
+if [ "${DCHUB_ALLOW_MAIN_PUSH:-}" != "1" ]; then
+  _red  "push to main is BLOCKED — deploys go through a pull request now."
+  _ylw  ""
+  _ylw  "  git switch -c fix/<slug>          # or feat/<slug>"
+  _ylw  "  git push -u origin HEAD"
+  _ylw  "  gh pr create --fill"
+  _ylw  "  gh pr merge --auto --squash       # merges itself once checks pass"
+  _ylw  ""
+  _ylw  "Your commits are SAFE — nothing is lost, they are already local."
+  _ylw  "A merged PR pushes to main exactly like you would, so Railway still"
+  _ylw  "auto-deploys; the only change is that CI runs first."
+  _ylw  ""
+  _ylw  "Emergency override (skips every guard):  DCHUB_PUSH_FORCE=1 git push"
+  _ylw  "Old throttle behaviour instead:          DCHUB_ALLOW_MAIN_PUSH=1 git push"
+  exit 1
+fi
+_ylw "push-guard: DCHUB_ALLOW_MAIN_PUSH=1 — direct main push permitted, applying throttle."
 
 # --- determine age of the latest commit currently on origin/main -----------
 # Try, in order: the tracking ref origin/main, then <remote-name>/main, then a
