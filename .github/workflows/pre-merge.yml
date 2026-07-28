@@ -25,6 +25,14 @@ jobs:
             fi
           done < <(find . -name '*.py' -not -path './.git/*' -not -path './node_modules/*' -not -path './.venv/*')
           exit $fail
+      # Runs HERE, not in tests/, on purpose. tests/test_tests_are_collectable.py
+      # checks the same property with better messages, but it is a pytest test —
+      # so against the very bug it targets it cannot run: a module-scope exit
+      # aborts collection and takes the guard with it (verified: exit 3, "no
+      # tests ran"). The two are complementary; this is the one that still fires
+      # once the suite is already dead.
+      - name: No test module aborts collection
+        run: python3 scripts/check_collection_safety.py tests
 
   regression-lint:
     runs-on: ubuntu-latest
