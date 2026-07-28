@@ -2424,6 +2424,20 @@ try:
     except Exception as _reit:
         import logging
         logging.getLogger(__name__).warning('reit_schedule_audit wiring failed: %s', _reit)
+    # 2026-07-28: EPA air-permit facility discovery — the first acquisition source that
+    # yields NAMED facilities WITH STREET ADDRESSES (a DC must permit its generators
+    # under its own name+address). ★NOT EPA_AQS_API_KEY: AQS is ambient MONITORING
+    # (air_permitting_data.py = 23,028 monitors) = siting context, not a registry.
+    # Uses EPA ECHO, no key. First clean run: 241 gated, 100% with an address, 141 new
+    # to us (58 colo_operator / 83 enterprise). ★DISARMED (AIR_PERMIT_INGEST_ARM).
+    # POST /api/v1/admin/air-permits/discover · kill AIR_PERMIT_DISABLE=1
+    try:
+        from routes.air_permit_discovery import air_permit_discovery_bp
+        app.register_blueprint(air_permit_discovery_bp)
+        print("[main] air_permit_discovery_bp registered: /api/v1/admin/air-permits/discover", flush=True)
+    except Exception as _airp:
+        import logging
+        logging.getLogger(__name__).warning('air_permit_discovery wiring failed: %s', _airp)
     # 2026-07-26: Graph-Spine master shell (#36) — read-only DIAGNOSTIC, pure-DB,
     # replica-preferred. Answers "replace RAG with graph engineering?" by measuring
     # where retrieval actually loses: the identity spine. Six lanes — carrier<->
