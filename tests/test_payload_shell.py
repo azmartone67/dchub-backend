@@ -34,7 +34,7 @@ _SHELL = _ROOT / "routes" / "payload_master_shell.py"
 sys.path.insert(0, str(_ROOT))
 
 from routes.payload_master_shell import (  # noqa: E402
-    PROBE_PLATFORM, classify_payload, coherence_issues)
+    PROBE_PLATFORM, PROBE_UA, classify_payload, coherence_issues)
 
 
 def _src() -> str:
@@ -97,12 +97,20 @@ def test_probe_tags_itself():
 
 @pytest.mark.parametrize("lane", ["_lane_wait", "_lane_navigation"])
 def test_traffic_lanes_exclude_probe_traffic(lane):
-    """★ The core guard. Without this the shell inflates the call counts,
-    the one-tool share and the wait totals it reports — the instrument
-    manufacturing its own findings."""
+    """★ The core guard. Without it the shell inflates the call counts, the
+    one-tool share and the wait totals it reports — the instrument
+    manufacturing its own findings.
+
+    ★★ MUST key on USER-AGENT. The first version excluded on `platform`, and
+    the MCP server OVERWRITES that field with its own detection: a probe sent
+    as platform='shell38-probe' was recorded as platform='mcp'. The filter
+    excluded NOTHING while the SQL still read correctly. Verified live —
+    0 rows matched the platform tag, 2 matched the UA.
+    """
     body = _func_src(lane)
-    assert "PROBE_PLATFORM" in body, \
-        f"{lane} does not exclude probe traffic — it will measure itself"
+    assert "PROBE_UA" in body, (
+        f"{lane} does not exclude by User-Agent — a platform-only filter is "
+        "silently a no-op, the server rewrites platform")
 
 
 # ── (2) no probe ⇒ "?" , never a guess ────────────────────────────────
@@ -185,6 +193,27 @@ def test_every_lane_names_an_actuator():
 _DB = (os.environ.get("NEON_REPLICA_URL") or os.environ.get("DATABASE_URL")
        or os.environ.get("NEON_DATABASE_URL"))
 _live = pytest.mark.skipif(not _DB, reason="no DB URL")
+
+
+@_live
+def test_live_probe_traffic_is_actually_excluded():
+    """★ END-TO-END, not a string check. The earlier guard only asserted the
+    SQL mentioned the constant — it passed while excluding nothing. This one
+    requires the predicate to REMOVE rows the probe really wrote."""
+    import psycopg2
+    c = psycopg2.connect(_DB, connect_timeout=10); c.autocommit = True
+    with c.cursor() as cur:
+        cur.execute(
+            "SELECT count(*) FILTER (WHERE coalesce(left(user_agent,%s),'') = %s),"
+            "       count(*)"
+            "  FROM mcp_call_log WHERE timestamp > now() - interval '2 days'",
+            (len(PROBE_UA), PROBE_UA))
+        probe_rows, total = cur.fetchone()
+    c.close()
+    if not probe_rows:
+        pytest.skip("no probe has run in 2d — nothing to prove exclusion against")
+    assert probe_rows > 0 and total > probe_rows, \
+        "probe rows exist but the predicate would not reduce the population"
 
 
 @_live

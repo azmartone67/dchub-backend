@@ -64,8 +64,14 @@ logger = logging.getLogger(__name__)
 
 payload_master_shell_bp = Blueprint("payload_master_shell", __name__)
 
-# Traffic this shell generates, excluded from every traffic lane by name.
+# Traffic this shell generates, excluded from every traffic lane.
+# ★★ EXCLUDE BY USER-AGENT, NOT platform. The MCP server OVERWRITES the platform
+# field with its own detection — a probe sent with platform='shell38-probe' was
+# recorded as platform='mcp', so a platform-based filter silently excluded
+# NOTHING while the SQL still looked correct. The User-Agent survives intact.
+# Verified live 2026-07-27: 0 rows matched the platform tag, 2 matched the UA.
 PROBE_PLATFORM = "shell38-probe"
+PROBE_UA = "dchub-shell38-probe"
 PROBE_TOOL = "get_market_intel"
 
 # Keys that carry SELLING, not data. Measured 2026-07-27 on a live response.
@@ -367,7 +373,8 @@ def _lane_coherence(c, ctx):
 
 def _lane_wait(c, ctx):
     out = []
-    ex = " AND coalesce(platform,'') <> '" + PROBE_PLATFORM + "'"
+    ex = (" AND coalesce(left(user_agent, " + str(len(PROBE_UA)) + "), '') <> '" + PROBE_UA + "'"
+          " AND coalesce(platform,'') <> '" + PROBE_PLATFORM + "'")
     r = _row(c, "SELECT round(sum(duration_ms)/1000.0)::bigint, count(*)"
                 " FROM mcp_call_log WHERE timestamp > now() - interval '30 days'"
                 "   AND duration_ms IS NOT NULL" + ex)
@@ -400,7 +407,8 @@ def _lane_wait(c, ctx):
 
 def _lane_navigation(c, ctx):
     out = []
-    ex = " AND coalesce(platform,'') <> '" + PROBE_PLATFORM + "'"
+    ex = (" AND coalesce(left(user_agent, " + str(len(PROBE_UA)) + "), '') <> '" + PROBE_UA + "'"
+          " AND coalesce(platform,'') <> '" + PROBE_PLATFORM + "'")
     r = _row(c, "SELECT count(*), count(*) FILTER (WHERE d = 1) FROM ("
                 " SELECT api_key, count(DISTINCT tool) d FROM mcp_call_log"
                 " WHERE timestamp > now() - interval '30 days'"
