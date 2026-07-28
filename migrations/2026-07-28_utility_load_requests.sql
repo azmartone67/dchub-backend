@@ -360,3 +360,102 @@ INSERT INTO utility_load_requests (utility,state,iso,gw_requested,as_of_date,sou
 INSERT INTO utility_load_requests (utility,state,iso,gw_requested,as_of_date,source_url,source_title,filing_type,request_type,notes,verified_by) VALUES ('Oncor Electric Delivery','TX','ERCOT',18,'2026-03-31','https://www.sec.gov/Archives/edgar/data/1193311/000119312526210424/d21793dex991.htm','Oncor Electric Delivery Company LLC, 8-K exhibit 99.1 filed with the SEC 2026-05-07 (CIK 1193311), Q1-2026 results, interconnection-queue paragraph','8-K earnings exhibit (SEC)','RAW interconnection REQUESTS, NON-data-centre industrial (FLOOR, ''over 18 GW'')','VERBATIM: "Oncor''s active transmission LC&I interconnection queue included 697 requests at the end of the first quarter of 2026. Those requests included approximately 271 gigawatts from data centers and over 18 gigawatts of load from various other industrial sectors, demonstrating broad-based industrial growth within Oncor''s service territory." ★★THIS ROW IS THE NON-DATA-CENTRE REMAINDER, and it is what makes Oncor''s data-centre share computable BY MW: 271 of ~289 GW = 93.8% of the LC&I load queue is data centre. That puts Oncor alongside NV Energy (97.6%) and Evergy Metro (98.3%) as an MW-attributed share, rather than Georgia Power''s count-only share. ★VALUE IS A FLOOR - the filing says "over 18 gigawatts", so 18 is a lower bound and the 93.8% share is an UPPER bound. ★★DO NOT CONFUSE WITH ONCOR''S GENERATION QUEUE IN THE SAME PARAGRAPH, VERBATIM: "As of March 31, 2026, Oncor had 565 active generation POI requests in queue, composed of approximately 47% storage, 40% solar, 8% wind, and 5% gas." That is GENERATION interconnection (points of interconnection), a completely different queue from the LC&I LOAD queue this row belongs to. Oncor reports no GW total for it. ★★★CROSS-CHECK RESULT: ONCOR''S FIGURES ARE CORROBORATED IN A SEC FILING. The 271 GW and 122 GW rows in this register were originally cited to oncor.com press-release pages. The IDENTICAL sentences appear in Oncor''s own 8-K exhibit 99.1 filed with the SEC on 2026-05-07 - Oncor is a separate SEC registrant (CIK 1193311) because it has public debt. An EDGAR exhibit is a more durable citation than a corporate web page, which can be moved or pulled. ★★SECONDARY SOURCES ARE WRONG ABOUT THIS QUEUE, AGAIN - FOUR DIFFERENT WAYS. Coverage variously reports Oncor''s queue as ''200 GW of interconnection requests'', ''82 GW of AI/data center interconnection requests'', and its 2026 RTP submission as ''102.22 GW large-load ... total substantiated load now standing at 127 GW''. The primary says 271 GW from data centres and a 122 GW large-load RTP submission, and says it twice - on oncor.com and in an SEC filing. Note the tell: secondary gets the 5.2 GW MEDIUM-load figure right while getting the large-load figure wrong, so it is paraphrasing the same paragraph and mis-transcribing it. This is the second time Oncor secondary has been provably wrong (batch 1 found 186 GW and ~200 GW quoted against a filed 271 GW). ★ALWAYS CITE THE FILING. ★SEMPRA (Oncor''s ~80% parent) ADDS NOTHING AND WAS NOT USED. Its Q1-2026 8-K exhibit 99.1 has ZERO matches for gigawatt/GW/''data cent''; it files no deck on EDGAR; and its IR static-file endpoint (investor.sempra.com/static-files/...) fails - HTTP/2 protocol error, then hangs to timeout over HTTP/1.1 - the same wall as investors.evergy.com. ★No matter: a parent''s restatement would be WEAKER evidence than the subsidiary''s own SEC filing, which we have. The cross-check is therefore CLOSED as satisfied, not as blocked.','claude-opus-5 2026-07-28 (EDGAR exhibit fetched + verbatim-quoted; cross-check of the existing Oncor rows)') ON CONFLICT (utility, as_of_date, gw_requested) DO NOTHING;
 UPDATE utility_load_requests SET notes = notes || ' ★★CROSS-CHECKED 2026-07-28 AGAINST AN SEC FILING: this exact sentence also appears in Oncor Electric Delivery Company LLC 8-K exhibit 99.1 filed 2026-05-07 (CIK 1193311), https://www.sec.gov/Archives/edgar/data/1193311/000119312526210424/d21793dex991.htm - Oncor is a separate SEC registrant because it has public debt, so this figure is corroborated by a filing, not only by a corporate web page. Prefer the EDGAR URL if the oncor.com page ever moves. ★Secondary coverage remains wrong in four distinct ways (200 GW / 82 GW / 102.22 GW large-load / 127 GW total substantiated) - all contradicted by the primary. ★Oncor 10-Q (2026-05-07) does NOT carry these figures: its only gigawatt reference is energy volumes in GWh, and data centres appear once as a risk-factor cross-reference. ★See also the paired 18 GW row: non-data-centre industrial load in the same queue, which makes the data-centre share 271 of ~289 GW = 93.8%.' WHERE utility = 'Oncor Electric Delivery' AND as_of_date = DATE '2026-03-31' AND gw_requested = 271 AND notes NOT LIKE '%CROSS-CHECKED 2026-07-28 AGAINST AN SEC FILING%';
 UPDATE utility_load_requests SET notes = notes || ' ★★CROSS-CHECKED 2026-07-28 AGAINST AN SEC FILING: this exact sentence also appears in Oncor Electric Delivery Company LLC 8-K exhibit 99.1 filed 2026-05-07 (CIK 1193311), https://www.sec.gov/Archives/edgar/data/1193311/000119312526210424/d21793dex991.htm - Oncor is a separate SEC registrant because it has public debt, so this figure is corroborated by a filing, not only by a corporate web page. Prefer the EDGAR URL if the oncor.com page ever moves. ★Secondary coverage remains wrong in four distinct ways (200 GW / 82 GW / 102.22 GW large-load / 127 GW total substantiated) - all contradicted by the primary. ★Oncor 10-Q (2026-05-07) does NOT carry these figures: its only gigawatt reference is energy volumes in GWh, and data centres appear once as a risk-factor cross-reference. ★See also the paired 18 GW row: non-data-centre industrial load in the same queue, which makes the data-centre share 271 of ~289 GW = 93.8%.' WHERE utility = 'Oncor Electric Delivery' AND as_of_date = DATE '2026-04-01' AND gw_requested = 122 AND notes NOT LIKE '%CROSS-CHECKED 2026-07-28 AGAINST AN SEC FILING%';
+
+-- ═══════════════════════════════════════════════════════════════════════════════
+-- THE DISCOUNT CURVE — measured across 15 utilities / 40 cited rows (2026-07-28)
+--
+-- This is what the table is FOR. Read it before writing any query that aggregates,
+-- compares or publishes a figure from utility_load_requests.
+--
+-- ── A · THE SIX RUNGS (weakest -> hardest). request_type exists to keep these apart.
+--    A NUMBER IS ONLY COMPARABLE TO ANOTHER NUMBER ON THE SAME RUNG.
+--  1. INTEREST / OPPORTUNITY  no application need exist.
+--       NV Energy 22 GW "interest inquiries" · APS ~20 GW "Uncommitted Load
+--       Opportunity" · Xcel >20 GW "Additional Pipeline".  Softest class here --
+--       softer than an interconnection queue, because nobody has necessarily applied.
+--  2. RAW QUEUE / REQUESTS  an application exists, nothing is studied.
+--       Oncor 271 GW (+18 GW non-DC => DC is 93.8% by MW) · LG&E-KU 11.9 GW ·
+--       NV Energy 16.53 GW across 39 data-centre projects.
+--  3. UTILITY-CURATED PIPELINE  the utility has filtered it and calls it "advanced",
+--     "high-confidence" or "late-stage".
+--       Georgia Power 73.1 · PPL-PA 28.3 · Duke 15.4 · Evergy Metro 2.416.
+--       ★★ THE MOST DANGEROUS RUNG: the adjectives imply firmness the INSTRUMENTS do
+--       not support. PPL's 28.3 GW is agreements with DEVELOPERS whose costs are
+--       reimbursable if they walk; all four of Evergy's have ZERO studies complete.
+--  4. COMMITTED -- and the instrument must be NAMED, because they are not equivalent:
+--       ESA (Duke 7.6, PPL-PA 10, Dominion 9.8) · RFS (Georgia Power 12.4, 31
+--       customers) · TSA (Exelon 18 GW but only ~45% TSA-secured) · CLOA 7.1 /
+--       ELOA 30.1 (Dominion; ELOA = site control + a $250k deposit) · LLPS
+--       (Evergy 0.9) · Rule 9 (NV Energy 6 GW -- INFRASTRUCTURE ONLY, the filing says
+--       "these agreements do not address generation and electric supply") ·
+--       APS 4.5 GW (instrument UNDISCLOSED => weaker than the confident label reads).
+--  5. UNDER CONSTRUCTION  steel in the ground, the hardest forward rung.
+--       Georgia Power 8.5 · Duke 5 · PPL-PA 5 · Xcel ~2 · LG&E-KU 0.65.
+--  6. FORECAST / REALIZED  what the utility plans to, or already serves.
+--       Oncor 122 · Dominion 16.6 · Georgia Power 7.8 · LG&E-KU 3.5 ·
+--       TVA 1.2 GW = THE ONLY PURE AS-BUILT FIGURE IN THIS TABLE (in service today).
+--       Never compare TVA's 1.2 against a pipeline row; it is a different species.
+--
+-- ── B · THE MEASURED MULTIPLIER (headline -> firmest rung), n = 10
+--       2.2 · 2.7 · 2.8 · 3.1 · 3.7 · 4.4 · 5.7 · 9.4 · 10.0 · 18.3
+--       median 4.05x · mean 6.2x · p25 2.8x · p75 9.4x · range 2.2-18.3x
+--    Oncor 2.2 · Evergy Metro 2.7 · Dominion 2.8 · Duke 3.1 · NV Energy 3.7 ·
+--    APS 4.4 · PPL-PA 5.7 · Georgia Power 9.4 · Xcel 10.0 · LG&E-KU 18.3
+--    ★★ THIS SUPERSEDES THE "2-3x" CLAIM IN THE HEADER OF THIS FILE, which was drawn
+--    from n=4. At n=10 only 3 of 10 are under 3x and 3 of 10 exceed 6x. Quote
+--    ~4x median with a tail to 18x.
+--    ★ EXCLUDED, deliberately -- do NOT let these back into the distribution:
+--      AEP 1.0 and Exelon 1.0 are SINGLE-ROW utilities where headline == firmest, an
+--      artifact of having one row rather than a measurement · Entergy 1.7 is a RANGE
+--      WIDTH (12 high vs 7 low), not a ladder · Santee Cooper has no firm rung (its
+--      stochastic band is 1.536 hi / 0.101 lo = 15.2x) · TVA publishes no pipeline.
+--    ★ HONEST LIMIT: 10 US utilities that we happened to reach, skewed toward those
+--      that disclose. A real measurement of THIS register, not a population estimate.
+--
+-- ── C · THE ONLY DIRECTLY-STATED MULTIPLIERS (everyone else must be inferred)
+--    NV Energy (PUCN IRP): "projects in the study phase saw an average overall
+--      reduction of 83 percent; the loads of projects with signed Rule 9 agreements
+--      were reduced by 38 percent" (fn 7: ~43% excluding one LOI customer carried at
+--      100%). => study-phase requests are worth ~17% of face value, signed ~57-62%.
+--    Evergy (MO PSC IRP): publishes an ADMISSION TEST instead of a percentage --
+--      base planning requires service commenced / LLPS ESA executed / SPP
+--      load-addition study finished. Binary, and it bites: all four pipeline
+--      customers fail it, so 2,416 MW sits outside the forecast vs ~900 MW inside.
+--    Santee Cooper (SCPSC): books the 50th percentile of 50,000 Monte Carlo trials
+--      over 24 customers, and is the ONLY utility here publishing a DOWNSIDE case
+--      (its Low Case also books LOSING 400 MW of existing industrial load).
+--    ★ These three are the differentiated asset: every other utility merely EXHIBITS
+--      the gap; these three QUANTIFY it themselves, in a regulatory filing.
+--
+-- ── D · HOW TO USE THIS TABLE
+--    ★ NEVER MIX RUNGS. Group by request_type, always.
+--    ★ NEVER SUM gw_requested. SUM() = ~895 GW and is meaningless by construction --
+--      it mixes nested subsets, range bounds, scenario bounds, capacity-vs-coincident-
+--      peak bases and one realized as-built figure. THAT SUM IS THE 2,514 GW ERROR.
+--    ★ CHECK NESTED vs INCREMENTAL BEFORE ANY ARITHMETIC. Duke: "15.4 INCLUDES 7.6,
+--      OF WHICH 5" = subsets, never add. Xcel: ~2 PLUS ~4 PLUS >20 = increments.
+--      Same funnel graphic, opposite maths -- read the connective words.
+--    ★ FLOORS ARE FLOORS: Xcel 20 (">20 GW"), Oncor 18 ("over 18 GW"). Never average
+--      or sum a floor.
+--    ★ DATA-CENTRE ATTRIBUTION DIFFERS IN KIND: by MW at NV Energy (97.6%), Evergy
+--      (98.3%) and Oncor (93.8%); by PROJECT COUNT ONLY at Georgia Power (101 of 122;
+--      per-project MW is redacted); and ABSENT at APS, Santee Cooper and Georgia
+--      Power's 8,448 MW row -- those are large-load or total-load, NOT data centre.
+--
+-- ── E · APPLYING THIS FILE (a real footgun, verified 2026-07-28)
+--    ★★ THIS FILE CONTAINS LITERAL % CHARACTERS -- in the notes text, in the
+--    "NOT LIKE '%marker%'" idempotency guards, and in the percentages above. Under
+--    psycopg2 that means:
+--        cur.execute(sql)      -> OK     (no interpolation attempted)
+--        cur.execute(sql, ())  -> FAILS  IndexError: tuple index out of range
+--    Passing ANY args sequence, even an empty one, makes psycopg2 treat % as a
+--    placeholder. Apply this file with NO parameters, or via psql. This is
+--    PRE-EXISTING behaviour, not something the comment block introduced -- the
+--    version already on main was verified to fail identically.
+--    ★★ THE THREE "UPDATE ... SET notes = notes || ..." STATEMENTS ARE APPEND-STYLE
+--    and are safe ONLY because each carries "AND notes NOT LIKE '%<marker>%'". Any
+--    new UPDATE of that shape MUST CARRY THE SAME GUARD -- and the idempotency check
+--    must compare ROW CONTENT (hash the rows), never row counts: an UPDATE does not
+--    change the count, so a count-only check is blind to a double-append. That exact
+--    blindness let an unguarded UPDATE ship in an earlier batch of this file.
+-- ═══════════════════════════════════════════════════════════════════════════════
