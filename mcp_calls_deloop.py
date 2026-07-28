@@ -259,6 +259,11 @@ def external_platform_predicate(col: str = "platform") -> str:
             f"AND {p} NOT LIKE '%crawler%' "
             f"AND {p} NOT LIKE '%scanner%' "
             f"AND {p} NOT LIKE '%uptime%' "
+            # ★ 2026-07-28 follow-up: spotted in the LIVE reach payload right
+            # after shipping the families above — `mcp-server-validator`
+            # (3 agents / 156 calls) is the same class and matched none of
+            # them. Found by re-reading production rather than the list.
+            f"AND {p} NOT LIKE '%validator%' "
             f"AND ({p} = '' OR LENGTH({p}) > 2))")
 
 

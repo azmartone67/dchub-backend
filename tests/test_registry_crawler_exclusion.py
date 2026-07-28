@@ -17,11 +17,15 @@ import pytest
 
 dl = pytest.importorskip("mcp_calls_deloop")
 
-# The SQL predicate emulated in Python, so these tests reason about the same
-# fragments the rendered view uses rather than a re-implementation of intent.
-_FRAGMENTS = ('dchub', 'verify', 'probe', 'audit', 'harness', 'test', 'check',
-              'diag', 'sweep', 'registry', 'catalog', 'mirror', 'watchdog',
-              'health', 'crawler', 'scanner', 'uptime')
+# ★ DERIVED from the predicate, never transcribed. A hardcoded copy of these
+# fragments drifts the moment someone adds a family — which happened within
+# minutes of the first version of this file: `%validator%` was added to the
+# module and every test here kept passing against the stale list. Read the
+# contract, do not restate it.
+import re as _re
+
+_FRAGMENTS = tuple(_re.findall(r"NOT LIKE '%([a-z]+)%'",
+                               dl.external_platform_predicate()))
 
 
 def _excluded(name: str) -> bool:
@@ -87,3 +91,12 @@ def test_predicate_is_reusable_on_another_column():
     keeping a second hand-maintained list — that reuse must keep working."""
     sql = dl.external_platform_predicate("mcp_client")
     assert "mcp_client" in sql and "registry" in sql
+
+
+def test_validator_family_is_covered():
+    """Found by re-reading the LIVE reach payload after shipping the first
+    families: `mcp-server-validator` (3 agents / 156 calls) matched none of
+    them. The list is derived from production, not from imagination."""
+    sql = dl.external_platform_predicate()
+    assert "'%validator%'" in sql
+    assert _excluded("mcp-server-validator")
