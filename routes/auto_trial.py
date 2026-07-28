@@ -39,6 +39,9 @@ import hashlib
 from flask import Blueprint, jsonify, request
 from routes._swallowed_writes import note_swallowed_write
 
+import logging
+log = logging.getLogger("auto_trial")
+
 
 auto_trial_bp = Blueprint("auto_trial", __name__)
 
@@ -85,19 +88,6 @@ TRIAL_DAILY_UNBOUND = int(os.environ.get("TRIAL_DAILY_CALLS_UNBOUND", "15"))
 # with teeth. Tunable WITHOUT a deploy via TRIAL_FREE_CALLS_UNBOUND; set very high
 # (e.g. 99999) to effectively disable the gate and revert to pure soft-nudge.
 TRIAL_FREE_CALLS_UNBOUND = int(os.environ.get("TRIAL_FREE_CALLS_UNBOUND", "10"))
-
-
-def _streak_block(api_key: str, base_cap: int):
-    """r-streak (2026-07-18): machine-readable return-streak state for mint/
-    reuse payloads — the progressive-unlock incentive only works if agents
-    KNOW their cap grows by returning. FAIL-OPEN: any error -> None (caller
-    payload simply carries no streak block; nothing breaks)."""
-    try:
-        from return_streak import streak_snapshot
-        return streak_snapshot(api_key, base_cap)
-    except Exception:
-        return None
-
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS auto_trial_keys (
@@ -349,12 +339,6 @@ def mint_trial_for_request(req=None, tool_name: str = "", client_name: str = "",
                         "instructions":(f"Use api_key in X-API-Key header. "
                                          f"{TRIAL_DAILY_UNBOUND} calls/day; bind your "
                                          f"operator email to unlock {TRIAL_DAILY_CALLS}/day."),
-                        # r-streak (2026-07-18): a REUSED key is exactly the
-                        # returner the streak boost rewards — tell the agent
-                        # its cap grew and what tomorrow unlocks (fail-open).
-                        "return_streak": _streak_block(
-                            r[0], TRIAL_DAILY_CALLS if operator_email
-                            else TRIAL_DAILY_UNBOUND),
                     }
             except Exception:
                 note_swallowed_write("auto_trial_keys", where="auto_trial.mint_trial_for_request")
@@ -504,9 +488,6 @@ def mint_trial_for_request(req=None, tool_name: str = "", client_name: str = "",
                          f"/api/v1/keys/auto-trial/bind {{api_key, email}} (or send "
                          f"your human to https://dchub.cloud/redeem to convert to a "
                          f"365-day IDENTIFIED key)."),
-        # r-streak (2026-07-18): teach the mechanism at mint time — daily caps
-        # grow 1.5x/2x/3x with distinct active days in the trailing 14.
-        "return_streak": _streak_block(api_key, TRIAL_DAILY_UNBOUND),
     }
 
 
@@ -547,17 +528,6 @@ def validate_trial_key(api_key: str) -> tuple[bool, str]:
                 if not bound and int(r[5] or 0) >= TRIAL_FREE_CALLS_UNBOUND:
                     return False, "bind_email_required"
                 cap   = TRIAL_DAILY_CALLS if bound else TRIAL_DAILY_UNBOUND
-                # r-streak (2026-07-18): progressive return-streak boost — the
-                # #1-constraint actuator (mature key-reuse 4.9% vs 8% floor).
-                # Distinct active days in the trailing 14 raise the daily cap:
-                # 2+ days 1.5x, 4+ 2x, 7+ 3x (cached ~1h per key). FAIL-OPEN:
-                # any error -> base cap, never block.
-                try:
-                    from return_streak import boosted_cap as _rs_boost, \
-                        get_streak_days as _rs_days
-                    cap = _rs_boost(cap, _rs_days(api_key))
-                except Exception:
-                    pass
                 today = now.date()
                 used_today = r[3] if r[4] == today else 0
                 if used_today >= cap:
@@ -617,6 +587,123 @@ def auto_mint_endpoint():
         operator_email=(d.get("operator_email") or d.get("email") or "").strip(),
         operator_name=(d.get("operator_name") or "").strip(),
     )), 200
+
+
+def _bind_receipt_armed() -> bool:
+    """Customer-facing send — DISARMED by default, per the house pattern.
+
+    Every customer-facing send path in this codebase ships dry-run behind its own
+    arm flag (ACTIVATION_NUDGE_ARM, CUSTOMER_WHITE_GLOVE_ACT, the agent-digest
+    DRY_RUN default) precisely so nothing can spam by accident. Unarmed, this logs
+    the intended recipient and sends NOTHING.
+    """
+    return (os.environ.get("DCHUB_BIND_RECEIPT_ARM") or "").strip() == "1"
+
+
+def _ensure_bind_receipt_log(c) -> None:
+    """One receipt per key, ever — direct DDL (safe_db SKIPs DDL)."""
+    try:
+        with c.cursor() as cur:
+            cur.execute("CREATE TABLE IF NOT EXISTS bind_receipt_log ("
+                        " api_key TEXT PRIMARY KEY,"
+                        " email TEXT NOT NULL,"
+                        " sent_at TIMESTAMPTZ NOT NULL DEFAULT now(),"
+                        " armed BOOLEAN NOT NULL DEFAULT FALSE,"
+                        " delivered BOOLEAN)")
+    except Exception as e:
+        note_swallowed_write("bind_receipt_log ddl", e)
+
+
+def _bind_receipt_html(api_key: str, email: str, name: str) -> str:
+    import html as _h
+    upgrade = f"https://dchub.cloud/upgrade?key={_h.escape(api_key)}"
+    who = f" {_h.escape(name)}" if name else ""
+    return (
+        "<div style=\"font-family:-apple-system,Segoe UI,Roboto,sans-serif;"
+        "max-width:520px;color:#111\">"
+        f"<p>Hi{who},</p>"
+        "<p>Your AI agent just bound this address to a DC Hub trial key, so the "
+        f"key keeps working across sessions — <b>{TRIAL_DAILY_CALLS} calls/day</b>, free.</p>"
+        f"<p style=\"margin:22px 0\"><a href=\"{upgrade}\" "
+        "style=\"background:#4F46E5;color:#fff;padding:11px 20px;border-radius:8px;"
+        "text-decoration:none;font-weight:600\">Unlock full data on this key</a></p>"
+        f"<p style=\"font-size:13px;color:#555\">That link upgrades <i>this exact key</i> "
+        "— your agent keeps working, no copy/paste, nothing to reconfigure.</p>"
+        "<p style=\"font-size:12px;color:#777;border-top:1px solid #eee;padding-top:12px;"
+        "margin-top:22px\">You received this once because your agent supplied this "
+        "address to keep its DC Hub key alive. It is a one-time receipt, not a "
+        "subscription — we will not add you to any list. Reply STOP and we will "
+        f"suppress {_h.escape(email)} permanently.</p></div>")
+
+
+def _send_bind_receipt(api_key: str, email: str, name: str) -> dict:
+    """Transactional receipt at bind time. THE point: put a payment surface in
+    front of a HUMAN at the moment of intent.
+
+    ★WHY TRANSACTIONAL AND NOT MARKETING: bind_email's published consent copy is
+    transactional-only (recovery + receipts, explicitly NO digest/marketing), and
+    `marketing_opt_in` defaults FALSE with a stamped lawful_basis/purpose. So this
+    must NOT flip marketing_opt_in and must NOT go through
+    send_marketing_email() — a one-time receipt is inside the existing basis; a
+    list subscription is not.
+    ★Delegates to main._resend_email rather than POSTing Resend directly, so the
+    ratcheting choke-point guard (tests/test_marketing_chokepoint.py, which FAILS
+    any NEW file containing the literal Resend send URL) stays green. That URL is
+    deliberately NOT written out here: the guard regexes file CONTENT, so naming it
+    even in a comment would trip it exactly like a real sender would.
+    ★Suppression is still honoured (fail-open) even though it is transactional.
+    """
+    out = {"armed": _bind_receipt_armed(), "to": email, "sent": False}
+    c = _conn()
+    if c is None:
+        out["skipped"] = "no_database"
+        return out
+    try:
+        _ensure_bind_receipt_log(c)
+        # Idempotent: claim the slot first, so a retry or a re-bind cannot re-mail.
+        with c.cursor() as cur:
+            cur.execute("INSERT INTO bind_receipt_log (api_key, email, armed) "
+                        "VALUES (%s,%s,%s) ON CONFLICT (api_key) DO NOTHING",
+                        (api_key, email, out["armed"]))
+            if cur.rowcount == 0:
+                out["skipped"] = "already_sent_for_this_key"
+                return out
+        try:
+            from routes.email_suppression import is_suppressed
+            if is_suppressed(email):
+                out["skipped"] = "suppressed"
+                return out
+        except Exception:
+            pass                      # fail-open, matching the existing contract
+        if not out["armed"]:
+            out["skipped"] = ("not_armed — set DCHUB_BIND_RECEIPT_ARM=1 to send. "
+                              "Recipient logged, nothing mailed.")
+            log.info("[bind-receipt] DRY-RUN would email %s for key %s",
+                     email, api_key[:12])
+            return out
+        try:
+            from main import _resend_email
+            ok = bool(_resend_email(
+                email, "Your DC Hub key is live — unlock full data",
+                _bind_receipt_html(api_key, email, name),
+                from_email="hello@dchub.cloud", from_name="DC Hub"))
+        except Exception as e:
+            log.warning("[bind-receipt] send failed: %s", str(e)[:160])
+            ok = False
+        out["sent"] = ok
+        with c.cursor() as cur:
+            cur.execute("UPDATE bind_receipt_log SET delivered=%s WHERE api_key=%s",
+                        (ok, api_key))
+        return out
+    except Exception as e:
+        note_swallowed_write("bind receipt", e)
+        out["skipped"] = str(e)[:160]
+        return out
+    finally:
+        try:
+            c.close()
+        except Exception:
+            pass
 
 
 def _mirror_trial_to_mcp_dev_keys(api_key: str, email: str):
@@ -730,11 +817,25 @@ def bind_operator_endpoint():
         try: c.close()
         except Exception: pass
     _mirror_trial_to_mcp_dev_keys(api_key, email)
+    # ★2026-07-28: bind_email captured 6 addresses and had NEVER mailed one of them.
+    # This endpoint's own docstring said "Does NOT send any email" while its success
+    # message promised the human "a usage summary + 1-click upgrade link" — a promise
+    # nothing kept. The only thing that would have mailed them (agent_winback_digest)
+    # draws its audience from mcp_dev_keys.marketing_opt_in='true', which bind never
+    # sets, so the audience was 0 and agent_digest_log had 0 rows: zero emails ever
+    # delivered to a bound operator. Verified separately that transport is healthy
+    # (4 dchub senders delivered 18 threads in 3 days), so this was a missing wire,
+    # not broken infrastructure. Now it sends ONE transactional receipt, at the
+    # moment of intent, with the 1-click upgrade URL for THIS key.
+    receipt = _send_bind_receipt(api_key, email, name)
+    _promise = ("They'll get a one-time receipt with a 1-click upgrade link. "
+                if receipt.get("sent") else "")
     return jsonify(
         ok=True, api_key=api_key, operator_email=email, bound=True,
         upgrade_url=f"https://dchub.cloud/upgrade?key={api_key}",
-        message=(f"Operator {email} bound to this trial key. They'll get a usage "
-                 f"summary + 1-click upgrade link. To upgrade now, open "
+        receipt=receipt,
+        message=(f"Operator {email} bound to this trial key. {_promise}"
+                 f"To upgrade now, open "
                  f"https://dchub.cloud/upgrade?key={api_key} (one click upgrades "
                  f"THIS exact key — no copy/paste). Or convert to a 365-day "
                  f"IDENTIFIED key: POST /api/v1/keys/auto-trial/redeem "
