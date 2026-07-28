@@ -1,0 +1,104 @@
+name: Apply identity views (manual)
+
+# Re-applies mcp_calls_identity + mcp_agent_retention_30d from
+# mcp_calls_deloop via scripts/render_identity_views.py --apply.
+#
+# WHY THIS EXISTS: those views are GENERATED from the de-loop module, but
+# nothing applies them — editing the module changes no number until the SQL is
+# executed. The registry-crawler exclusion (#1865/#1866) sat merged-but-inert
+# for exactly that reason. Applying it needs DATABASE_URL, which lives only in
+# Railway and in repo secrets, so CI is the auditable place to run it.
+#
+# workflow_dispatch ONLY — never scheduled. This CHANGES PUBLISHED METRICS
+# (it reclassifies traffic as non-agent), so it must be a deliberate act with a
+# name attached, not something that fires on a cron.
+#
+# The DDL is two CREATE OR REPLACE VIEW statements. No DROP/DELETE/ALTER/GRANT.
+# Reverting = re-render from an earlier commit and run this again.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type APPLY to confirm — this changes published agent metrics'
+        required: true
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Refuse unless explicitly confirmed
+        run: |
+          if [ "${{ github.event.inputs.confirm }}" != "APPLY" ]; then
+            echo "::error::confirm input was '${{ github.event.inputs.confirm }}' — expected APPLY. Nothing changed."
+            exit 1
+          fi
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install psycopg2
+        run: pip install --quiet psycopg2-binary
+
+      - name: Show the DDL that is about to run
+        run: |
+          set -euo pipefail
+          python3 scripts/render_identity_views.py > /tmp/ddl.sql
+          echo "statements:"; grep -cE '^\s*CREATE OR REPLACE VIEW' /tmp/ddl.sql
+          echo "destructive verbs (must be 0):"
+          grep -ciE '^\s*(DROP|DELETE|TRUNCATE|ALTER|GRANT)' /tmp/ddl.sql || true
+          if grep -qiE '^\s*(DROP|DELETE|TRUNCATE|ALTER|GRANT)' /tmp/ddl.sql; then
+            echo "::error::rendered DDL contains a destructive statement — refusing"; exit 1
+          fi
+
+      - name: Apply
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          NEON_DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}
+        run: |
+          set -euo pipefail
+          python3 scripts/render_identity_views.py --apply
+
+      - name: Verify the new predicate is live in the view
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          NEON_DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}
+        run: |
+          python3 - <<'PY'
+          import os, psycopg2
+          dsn = os.environ.get("DATABASE_URL") or os.environ.get("NEON_DATABASE_URL")
+          con = psycopg2.connect(dsn, connect_timeout=15); con.autocommit = True
+          with con.cursor() as c:
+              c.execute("SELECT pg_get_viewdef('mcp_calls_identity'::regclass, true)")
+              ddl = c.fetchone()[0]
+          # The point of the whole change: these families must be IN the live view.
+          missing = [f for f in ('registry','catalog','mirror','watchdog',
+                                 'health','crawler','scanner','uptime','validator')
+                     if f"%{f}%" not in ddl]
+          print("families present:", 9 - len(missing), "/ 9")
+          if missing:
+              raise SystemExit(f"view applied but missing families: {missing}")
+          # And the documented-ambiguous ones must NOT have become exclusions.
+          for keep in ('glama', 'agent-toolscloud'):
+              if f"NOT LIKE '%{keep}%'" in ddl:
+                  raise SystemExit(f"{keep} was excluded — it is documented as deliberately kept")
+          print("verified: crawler families live, ambiguous platforms still counted")
+          PY
+
+      - name: Summary
+        run: |
+          {
+            echo "### Identity views re-applied"
+            echo "\`mcp_calls_identity\` + \`mcp_agent_retention_30d\` regenerated from \`mcp_calls_deloop\`."
+            echo "Registry crawlers are now classified as non-agent traffic."
+            echo ""
+            echo "Published agent counts will DROP. That is the intended effect."
+          } >> "$GITHUB_STEP_SUMMARY"
