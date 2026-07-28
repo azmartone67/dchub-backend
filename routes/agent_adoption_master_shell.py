@@ -10,8 +10,12 @@ THE FUNNEL (per platform + global):
   real_calls   de-looped real external tool calls (mcp_calls_identity,
                is_real_external — CF-POP + probe + internal excluded)
   real_agents  distinct real agent_ids
-  planner_first % of tool-using sessions whose FIRST call is plan_query — the
-               behavioural signal the agents themselves said is the real test
+  planner_first % of tool-using sessions whose FIRST call is execute_plan — the
+               behavioural signal the agents themselves said is the real test.
+               ★ Was plan_query until 2026-07-28. execute_plan replaced it as the
+               front door and this metric was never rewired, so it scored agents
+               that had correctly migrated as NOT planner-first — a stale metric
+               driving the lane classifier below toward the opposite of the fix.
   conversions  real paid conversions (mcp_conversions, non-test)
 
 THE LANES (per platform → state + next action + owner):
@@ -20,8 +24,8 @@ THE LANES (per platform → state + next action + owner):
                  (directory/store submission, connector publish).
   ATTRIBUTION    real calls, but landing in the generic 'mcp'/null bucket, not the
                  platform column. Owner: dev (X-MCP-Platform header mapping).
-  FIRST_TOUCH    real calls, but planner-first ~0 — agents skip plan_query. Owner:
-                 dev (lead with plan_query in instructions/tool-desc/llms.txt).
+  FIRST_TOUCH    real calls, but planner-first ~0 — agents skip execute_plan. Owner:
+                 dev (lead with execute_plan in instructions/tool-desc/llms.txt).
   HEALTHY        real agents + reasonable planner adoption.
 
 DIAGNOSTIC + read-only: measures and NAMES the actuator per lane; it fires nothing
@@ -165,13 +169,23 @@ def _measure():
                          AND session_id IS NOT NULL AND session_id <> ''
                        ORDER BY session_id, timestamp ASC
                     )
-                    SELECT COUNT(*), COUNT(*) FILTER (WHERE tool='plan_query')
+                    SELECT COUNT(*),
+                           COUNT(*) FILTER (WHERE tool='execute_plan'),
+                           COUNT(*) FILTER (WHERE tool='plan_query')
                       FROM first_call
                 """)
-                s, pf = cur.fetchone()
+                s, pf, legacy = cur.fetchone()
                 out["tool_sessions"] = int(s or 0)
                 out["planner_first_sessions"] = int(pf or 0)
                 out["planner_first_pct"] = round(100.0 * (pf or 0) / max(int(s or 0), 1), 3)
+                # plan_query-first is now itself a STALE-DOOR signal, not planner
+                # adoption: that agent is running on pre-execute_plan instructions.
+                out["legacy_door_first_sessions"] = int(legacy or 0)
+                out["legacy_door_first_pct"] = round(100.0 * (legacy or 0) / max(int(s or 0), 1), 3)
+                out["planner_first_caveat"] = (
+                    "session-scoped: session_id rotates per MCP connection (~1.2 calls each), "
+                    "so this is closer to 'share of calls' than 'share of agents'. "
+                    "/api/v1/admin/planner-bypass measures the same behaviour per agent-day.")
             except Exception as e:
                 logger.warning("[aa] planner: %s", str(e)[:120])
 
@@ -206,8 +220,8 @@ def _classify(pf: dict, planner_first_pct):
     # has real calls
     if planner_first_pct is not None and planner_first_pct < 1.0:
         return ("FIRST_TOUCH",
-                "Real calls landing, but planner-first ~0% — agents skip plan_query. "
-                "Lead with plan_query in server instructions, tool descriptions, "
+                "Real calls landing, but planner-first ~0% — agents skip execute_plan. "
+                "Lead with execute_plan in server instructions, tool descriptions, "
                 "llms.txt and worked examples to shape cold-agent first-touch.",
                 "dev", 2)
     if calls >= POWER_CALLS:

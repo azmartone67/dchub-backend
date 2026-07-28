@@ -976,6 +976,8 @@ META_LANDING_HTML = """<!DOCTYPE html>
 
 __FRONT_DOOR_HTML__
 
+__META_REPLAYS_HTML__
+
 <div class="pane">
   <h2>Copy-paste prompts</h2>
   <p>Three prompts that put DC Hub's live data to work in Meta AI — paste them as-is:</p>
@@ -1036,6 +1038,16 @@ __FRONT_DOOR_HTML__
 
 # Same rule as _recipe_page: the front door is substituted in, never hand-copied.
 META_LANDING_HTML = META_LANDING_HTML.replace("__FRONT_DOOR_HTML__", _FRONT_DOOR_HTML)
+
+# Rendered execute_plan replays (Meta's #2 ask). Import-time substitution, same
+# rule again: composed once, never hand-copied. Fail-open — if the renderer is
+# unavailable the page loses the section rather than 500ing.
+try:
+    from routes.meta_replays import render_meta_replays as _render_meta_replays
+    META_LANDING_HTML = META_LANDING_HTML.replace("__META_REPLAYS_HTML__",
+                                                  _render_meta_replays())
+except Exception:  # pragma: no cover - defensive
+    META_LANDING_HTML = META_LANDING_HTML.replace("__META_REPLAYS_HTML__", "")
 
 
 @integrations_landing_bp.route("/integrations/meta", strict_slashes=False, methods=["GET"])

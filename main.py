@@ -37498,6 +37498,10 @@ try:
     from routes.agent_adoption_master_shell import agent_adoption_master_shell_bp
     app.register_blueprint(agent_adoption_master_shell_bp)
     print("[main] agent_adoption_master_shell_bp registered: /api/v1/admin/agent-adoption/{state,master-tick,digest}", flush=True)
+
+    from routes.planner_bypass import planner_bypass_bp
+    app.register_blueprint(planner_bypass_bp)
+    print("[main] planner_bypass_bp registered: /api/v1/admin/planner-bypass", flush=True)
 except Exception as _aa_e:
     print(f"[main] agent_adoption_master_shell register skipped: {_aa_e}", file=sys.stderr)
 
