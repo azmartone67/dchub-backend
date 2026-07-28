@@ -110,34 +110,41 @@ dcpi_bp = Blueprint("dcpi", __name__)
 # Both call sites (HTML page handler + API endpoint) now read from this
 # single dict, so future additions are one-edit fixes.
 # ---------------------------------------------------------------------------
-DCPI_METRO_ALIASES = {
-    # Northern Virginia cluster → Ashburn
-    'northern-virginia': 'ashburn',
-    'n-virginia':        'ashburn',
-    'nova':              'ashburn',
-    # Dallas-Fort Worth → Dallas
-    'dallas-fort-worth': 'dallas',
-    'dallas-ft-worth':   'dallas',
-    'dfw':               'dallas',
-    # Silicon Valley → Santa Clara (r47.43 — was 404'ing)
-    'silicon-valley':    'santa-clara',
-    'sv':                'santa-clara',
-    'bay-area':          'santa-clara',
-    'sf-bay-area':       'santa-clara',
-    'south-bay':         'santa-clara',
-    # r-twin-dedup (2026-07-19): the same market got defined under two slugs —
-    # a legacy state-suffixed form + the canonical bare-city form. The exact-
-    # slug universe merge kept both and the orphan re-adopter perpetuated them,
-    # so rank_markets/ai_ready and the /dcpi list showed duplicate rows. Map the
-    # redundant slug → canonical so any direct link still resolves after the
-    # redundant row is unpublished. Canonical picks are reference-informed:
-    # 'dc' (68 press refs, the intentional 'Washington, DC' market) beats the
-    # bare 'washington' dynamic dupe; the others canonicalize to bare-city.
-    'cheyenne-wy':       'cheyenne',
-    'columbus-oh':       'columbus',
-    'the-dalles-or':     'the-dalles',
-    'washington':        'dc',
-}
+# r-twin-unpublish (2026-07-28): the table moved to util/market_aliases so
+# dchub_self_heal can import it WITHOUT importing this module (which builds
+# MARKETS at import time — a live DB query). Re-exported, not redefined:
+# a hand-copied second table is the bug class fixed in util/iso_taxonomy
+# the same day. routes/site_valuation_engine.py imports this name too.
+from util.market_aliases import DCPI_METRO_ALIASES  # noqa: E402,F401
+
+
+
+def _canonical_first(slug, candidates):
+    """Reorder lookup candidates so a known alias target is tried FIRST.
+
+    r-twin-unpublish (2026-07-28). Both /dcpi/<slug> and
+    /api/v1/dcpi/scores/<slug> built `candidates = [slug, …aliases]`, so an
+    alias key that still had its OWN row matched itself and the alias branch
+    never ran. r-twin-dedup drops those redundant slugs from the scoring
+    universe but their rows stayed behind, published and frozen — on
+    2026-07-28 all seven (northern-virginia, dallas-fort-worth,
+    silicon-valley, cheyenne-wy, columbus-oh, the-dalles-or, washington)
+    were serving scores 9 days stale with iso_type NULL, while their
+    canonical twins were current.
+
+    Unpublishing alone does NOT fix the page: neither lookup filters on
+    `published`, so the stale row would still be found and served. Promoting
+    the canonical target is what makes /dcpi/northern-virginia 301 to
+    /dcpi/ashburn and the API return ashburn's row.
+
+    Scoped deliberately: only slugs that are KEYS of DCPI_METRO_ALIASES move.
+    Every other market resolves exactly as before, published or not.
+    """
+    target = DCPI_METRO_ALIASES.get((slug or "").lower())
+    if not target:
+        return candidates
+    out = [target] + [c for c in candidates if c != target]
+    return out
 
 # ---------------------------------------------------------------------------
 # DB
@@ -2451,6 +2458,54 @@ def recompute_all_scores(source: str = "manual",
             errors += 1
             error_notes.append(f"{slug}: {type(e).__name__}: {str(e)[:120]}")
 
+    # r-twin-unpublish (2026-07-28): retire the redundant alias-twin rows.
+    #
+    # r-twin-dedup removed these slugs from the scoring universe, and its
+    # comment says the redundant row "is unpublished separately" — that step
+    # did not exist. Result: seven rows stayed published and simply stopped
+    # being updated (frozen 2026-07-19, iso_type NULL, still ranked) while
+    # their canonical twins were recomputed daily. Because they are excluded
+    # from MARKETS, no offset/limit chunk can ever reach them — a full sweep
+    # reports success and leaves them stale forever.
+    #
+    # Runs every recompute so it self-heals rather than needing a one-off
+    # UPDATE that dchub_self_heal's blanket re-publish would undo anyway.
+    # ONLY unpublishes a twin whose canonical row actually exists, so this
+    # can never orphan a market that has nowhere to redirect to.
+    try:
+        from util.market_aliases import REDUNDANT_TWIN_SLUGS
+        _retired = []
+        with _conn() as c, c.cursor() as cur:
+            # Seven rows — a plain parameterized statement per pair. Deliberately
+            # NOT a VALUES join built with %-formatting: mixing Python % into a
+            # string that also carries %s placeholders is how a literal % ends
+            # up in SQL (see the psycopg2 percent trap), and there is no
+            # performance case for cleverness at this size.
+            for _twin in sorted(REDUNDANT_TWIN_SLUGS):
+                _canon = DCPI_METRO_ALIASES.get(_twin)
+                if not _canon:
+                    continue
+                cur.execute("""
+                    UPDATE market_power_scores t
+                       SET published = false
+                     WHERE t.market_slug = %s
+                       AND COALESCE(t.published, true) = true
+                       AND EXISTS (
+                             SELECT 1 FROM market_power_scores c2
+                              WHERE c2.market_slug = %s
+                                AND COALESCE(c2.published, true) = true
+                           )
+                    RETURNING t.market_slug
+                """, (_twin, _canon))
+                _retired += [r[0] for r in cur.fetchall()]
+            c.commit()
+        if _retired:
+            print(f"[dcpi] r-twin-unpublish: retired {len(_retired)} redundant "
+                  f"alias-twin rows: {_retired}", flush=True)
+    except Exception as e:
+        # Never fail a recompute over this — the scores are the product.
+        print(f"[dcpi] r-twin-unpublish: skipped (non-fatal): {e}", flush=True)
+
     with _conn() as c, c.cursor() as cur:
         cur.execute("""
             UPDATE dcpi_runs
@@ -2949,6 +3004,10 @@ def api_score_market(slug):
         _alias = DCPI_METRO_ALIASES.get(_cand_slug)
         if _alias and _alias not in candidates:
             candidates.append(_alias)
+    # r-twin-unpublish (2026-07-28): same promotion as the HTML route — an
+    # alias key with a leftover row of its own must still resolve to the
+    # canonical market, so agents get the fresh row and `_canonical_slug`.
+    candidates = _canonical_first(slug, candidates)
     row = None
     matched_slug = None
     with _conn() as c, c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
@@ -6079,6 +6138,9 @@ def public_market_page(slug):
     _alias = DCPI_METRO_ALIASES.get(slug.lower())
     if _alias:
         candidates.append(_alias)
+    # r-twin-unpublish (2026-07-28): try the canonical target BEFORE the alias
+    # key's own row, so a leftover twin row cannot shadow the redirect.
+    candidates = _canonical_first(slug, candidates)
 
     s = None
     with _conn() as c, c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
