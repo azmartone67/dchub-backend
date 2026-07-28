@@ -232,6 +232,29 @@ def _fold_fns():
     return g
 
 
+def test_unidecode_is_installed():
+    """Unidecode is a REAL dependency, not a nice-to-have.
+
+    Without it `_fold_to_ascii` silently falls back to unicodedata NFKD, which
+    folds accented Latin only — every CJK/Cyrillic/Katakana name then slugs to
+    "" and the facility gets no URL at all. requirements.txt pins it, so any
+    environment missing it is testing a degraded path production never runs.
+
+    This test exists so that shows up as "Unidecode is not installed" rather
+    than as "'ドコモ' still slugs to ''" two tests below, which reads like a bug
+    in the slugger and costs a diagnosis. (It cost one: the unit-tests job was
+    red on main for ~30min because the install line omitted it.)
+    """
+    try:
+        import unidecode  # noqa: F401
+    except ImportError:
+        raise AssertionError(
+            "Unidecode is not installed — non-Latin facility names will slug "
+            "to '' and get no URL. requirements.txt pins Unidecode==1.3.8; the "
+            "unit-tests job in .github/workflows/pre-merge.yml must install it "
+            "too.")
+
+
 def test_accented_latin_folds_instead_of_shattering():
     """The pre-fix slug was 'bouygues-t-l-com' --每 accent became a separator."""
     sl = _fold_fns()["_slugify"]

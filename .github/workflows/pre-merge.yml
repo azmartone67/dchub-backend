@@ -82,6 +82,15 @@ jobs:
         # requests / yaml / psycopg2. Installing these light, no-DB deps lets the
         # brain auto-merge/draft/gate tests actually RUN (a real gate, not a skip).
         # Verified green: 210 passed, 8 skipped (DB tests skip w/o DATABASE_URL).
-        run: python3 -m pip install pytest requests flask pyyaml psycopg2-binary "psycopg[binary]"
+        #
+        # Unidecode is NOT optional here. facility_slug_freeze._fold_to_ascii
+        # falls back to unicodedata NFKD when it is missing, and NFKD only folds
+        # accented LATIN — every CJK/Cyrillic/Katakana name then slugs to "" and
+        # the facility gets no URL. Production has it (requirements.txt pins
+        # 1.3.8), so leaving it out made CI exercise a degraded path that never
+        # runs in prod. PINNED to the requirements.txt version on purpose: the
+        # slug tests assert exact transliterations ("ドコモ" -> "dokomo"), which
+        # are version-sensitive, and a frozen slug must stay reproducible.
+        run: python3 -m pip install pytest requests flask pyyaml psycopg2-binary "psycopg[binary]" "Unidecode==1.3.8"
       - name: Run pure-function tests
         run: python3 -m pytest tests/ -v --tb=short
