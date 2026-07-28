@@ -1290,19 +1290,30 @@ def act_on_win_moves() -> dict:
                     "\"Can this site get power?\" usually gets answered with "
                     "a distance to the nearest substation.\n\n"
                     "DC Hub now answers it with what the utility actually "
-                    "published: hosting capacity for %s feeders across 18 "
-                    "utility sources — including the utilities that publish "
+                    # ★ "records", NOT "feeders": _feeders is COUNT(*) on
+                    # hosting_capacity_feeders, and that table stores one row per
+                    # GIS geometry VERTEX — measured 2026-07-28 at ~15x (Ameren)
+                    # to ~29x (Rhode Island Energy) rows per DISTINCT feeder. So
+                    # the count is published RECORDS; calling them feeders
+                    # over-claims the feeder count by more than an order of
+                    # magnitude in public copy. (get_hosting_capacity reports
+                    # distinct_feeders and geometry_rows_scanned separately for
+                    # exactly this reason.)
+                    "published: hosting capacity across 18 utility sources, %s "
+                    "published records — including the utilities that publish "
                     "LOAD-serving capacity, which is the number a data "
                     "center needs, not the solar-hosting figure most maps "
                     "show.\n\n"
                     "Where a utility publishes thin data, we say so rather "
                     "than interpolating. Informational, not binding "
                     "interconnection guidance — verify with the utility.\n\n"
-                    # ★ NOT "over MCP": verified 2026-07-28 that NO MCP tool
-                    # exposes feeder hosting capacity (tools/list has no
-                    # feeder/hosting-capacity tool). It is map + REST only.
-                    # Restore the MCP claim ONLY when a tool actually serves it.
-                    "Live on the Land & Power map and the public API."),
+                    # ★ "over MCP" RESTORED 2026-07-28: the get_hosting_capacity
+                    # tool now serves this layer (gateway v2.9.3, tool #81,
+                    # free tier) — verified live in tools/list and via a keyless
+                    # tools/call. The claim was correctly withheld until then;
+                    # withdraw it again if that tool is ever removed.
+                    "Live on the Land & Power map, the public API, and over "
+                    "MCP — queryable by an AI agent directly."),
             }
             _feeders = "—"
             try:
