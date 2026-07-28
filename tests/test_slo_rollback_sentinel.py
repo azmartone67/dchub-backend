@@ -187,7 +187,12 @@ class TestNoDriftWithTheEndpoint:
         """
         src = (ROOT / "routes" / "slo_rollback_sentinel.py").read_text()
         assert "upsert_brain_finding" in src
-        assert "INSERT INTO brain_findings" not in src, (
+        # Assembled, not written literally: regression_lint's
+        # `insert-no-on-conflict` rule matches the raw text, so spelling the
+        # forbidden pattern out here would make this guard trip the very lint
+        # it exists to keep green.
+        forbidden = "INSERT INTO " + "brain_findings"
+        assert forbidden not in src, (
             "use brain_findings_writer.upsert_brain_finding, not a raw INSERT"
         )
 
