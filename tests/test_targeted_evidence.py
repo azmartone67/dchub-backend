@@ -42,7 +42,8 @@ import pytest
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 SRC_PATH = REPO_ROOT / "routes" / "brain_investigator.py"
 
-WANT_FN = {"_extract_paths", "gather_targeted_evidence", "_gather_recent_findings"}
+WANT_FN = {"_extract_paths", "gather_targeted_evidence", "_gather_recent_findings",
+           "_http_error_evidence"}
 WANT_AS = {"_PATH_RE", "_TARGET_MAX_PATHS"}
 
 REPLICA_URL = os.environ.get("REPLICA_URL") or ""
@@ -191,9 +192,15 @@ def test_returns_evidence_for_a_real_endpoint_question():
     assert "/api/v1/energy/retail/rates" in blob, (
         "the evidence is not ABOUT the endpoint in the question"
     )
-    assert "CONTRADICTION" in blob, (
-        "does not surface the detector-vs-ground-truth contradiction "
-        "(finding says 404s, log says none)"
+    # WAS: assert "CONTRADICTION" in blob -- asserting the ORIGINAL BUG.
+    # An empty keyed log next to a hot all-traffic log is the NORMAL state for
+    # unkeyed callers, not a contradiction. Calling it one is what pushed live
+    # investigation #100020 to a confident, wrong "it's the CF edge" root cause.
+    assert "CONTRADICTION" not in blob, (
+        "must not frame a keyed-log/all-traffic-log difference as a contradiction"
+    )
+    assert any("brain_http_errors" in (e.get("source") or "") for e in ev), (
+        "a 404 question must also read Flask's own 4xx/5xx middleware"
     )
 
 
@@ -259,6 +266,58 @@ def test_recent_findings_worklist_is_live_and_open_only():
 @requires_replica
 def test_absence_is_reported_never_silent():
     ev = _gather()("what happened to /api/v1/definitely-not-a-real-endpoint-xyz ?")
-    assert len(ev) == 1 and "NO rows" in ev[0]["claim"], (
-        "an unknown path must yield an explicit absence item, not []"
+    # Absence must still be SPOKEN, never silent -- but it is now reported from
+    # BOTH tables (keyed usage log + all-traffic error log), so the correct
+    # assertion is "non-empty and explicit", not a hard count of 1.
+    assert ev, "an unknown path must yield an explicit absence item, not []"
+    blob = " ".join(e.get("claim", "") for e in ev)
+    assert "no rows in api_endpoint_log" in blob.lower(), (
+        "the keyed-log absence must be stated outright"
     )
+    assert any("brain_http_errors" in (e.get("source") or "") for e in ev), (
+        "and cross-checked against the all-traffic error log, so 'absent' means "
+        "absent from BOTH and not merely unkeyed"
+    )
+
+
+# ── the keyed-vs-unkeyed coverage bug (shipped 2026-07-28, fixed same day) ──
+# The first version of gather_targeted_evidence read ONLY api_endpoint_log and,
+# on an empty result, offered the reasoner exactly two explanations: "never
+# called" or "rejected before Flask (CF edge)". Both are wrong.
+# api_usage_tracker's after_request hook returns early unless the request
+# carried an API key ("only track keyed requests"), so an empty result means
+# NO KEYED CALLER -- it says nothing about the edge.
+# Live investigation #100020 took the bait and concluded the requests "never
+# reach Flask and are being answered/rejected at the edge (Cloudflare)". They
+# do reach Flask: brain_http_errors is after_request middleware over ALL
+# 4xx/5xx and held 213 hits for that exact path.
+# ★ Wrong evidence is worse than no evidence -- it produced a confident,
+#   specific, wrong root cause where an empty block would have produced none.
+
+@requires_replica
+def test_404_question_also_reads_flask_own_error_middleware():
+    g, _ = _extracted()
+    ev = g["gather_targeted_evidence"](
+        "Brain finding: repeated_404_pattern @ "
+        "/api/v1/infrastructure/transmission 404 x213")
+    assert any("brain_http_errors" in (e.get("source") or "") for e in ev), (
+        "a 404 question must consult the all-traffic error log, not only the "
+        "keyed usage log")
+
+
+@requires_replica
+def test_empty_keyed_log_never_blamed_on_the_cf_edge():
+    g, _ = _extracted()
+    ev = g["gather_targeted_evidence"](
+        "Brain finding: repeated_404_pattern @ "
+        "/api/v1/infrastructure/transmission 404 x213")
+    txt = " ".join(e.get("claim", "") for e in ev)
+    assert "CONTRADICTION" not in txt, (
+        "the two tables cover different populations; their disagreement is "
+        "normal, not a contradiction")
+    if "CF edge" in txt:
+        assert "NOT evidence about the CF edge" in txt, (
+            "'CF edge' may only appear as an explicitly-rejected explanation")
+    assert "keyed" in txt.lower(), (
+        "the evidence must state the keyed-vs-unkeyed coverage difference that "
+        "caused investigation #100020's wrong conclusion")

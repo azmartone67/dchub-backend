@@ -728,6 +728,54 @@ def _extract_paths(question: str) -> list[str]:
     return out
 
 
+def _http_error_evidence(cur, conn, path: str) -> list[dict]:
+    """What Flask's own 4xx/5xx middleware saw for this path.
+
+    ★ This is the table that actually answers "is it 404ing?". brain_http_capture
+    is an after_request middleware over EVERY 4xx/5xx, keyed or not, so unlike
+    api_endpoint_log it sees anonymous browser/frontend/bot traffic. Pairing the
+    two is what turns an absence into a diagnosis:
+      keyed-log EMPTY + error-log HOT  -> real 404s from UNKEYED callers; the
+                                          request DOES reach Flask; no route matches
+      keyed-log EMPTY + error-log COLD -> genuinely not called (or dies at the edge)
+    """
+    try:
+        cur.execute(
+            "SELECT status, COUNT(*), MAX(occurred_at) "
+            "FROM brain_http_errors "
+            "WHERE pattern = %s AND occurred_at > now() - interval '24 hours' "
+            "GROUP BY status ORDER BY 2 DESC LIMIT 5",
+            (path,),
+        )
+        rows = cur.fetchall() or []
+    except Exception:
+        try: conn.rollback()
+        except Exception: pass
+        return []
+    if not rows:
+        return [{
+            "claim": f"{path} — brain_http_errors (Flask middleware over ALL 4xx/5xx, "
+                     f"keyed or not) recorded NOTHING in 24h. Combined with an empty "
+                     f"api_endpoint_log this is consistent with the path genuinely not "
+                     f"being called, or being terminated before Flask.",
+            "source": "brain_http_errors (question-targeted)",
+            "value": 0,
+        }]
+    total = sum(int(r[1] or 0) for r in rows)
+    split = ", ".join(f"{int(r[0] or 0)}×{int(r[1] or 0)}" for r in rows)
+    newest = max((r[2] for r in rows if r[2]), default=None)
+    return [{
+        "claim": f"{path} — Flask's OWN error middleware recorded {total} error "
+                 f"response(s) in 24h (status split {split}; last "
+                 f"{newest.isoformat()[:19] if newest else 'n/a'}). ★So the request "
+                 f"DOES reach Flask. If api_endpoint_log is empty for the same path, "
+                 f"the callers are UNKEYED (browser/frontend/bot) — that is a coverage "
+                 f"difference between the two tables, NOT evidence about the CF edge.",
+        "source": "brain_http_errors (question-targeted)",
+        "value": total,
+    }]
+
+
 def gather_targeted_evidence(question: str) -> list[dict]:
     """REAL rows about the SUBJECT of this question. [] on anything unexpected."""
     if (os.environ.get("BRAIN_TARGETED_EVIDENCE") or "").strip() == "0":
@@ -762,12 +810,19 @@ def gather_targeted_evidence(question: str) -> list[dict]:
 
                 if not rows:
                     out.append({
-                        "claim": f"{path} — NO rows in api_endpoint_log in 30d. "
-                                 f"Absence is evidence: either it is never called, "
-                                 f"or it is served/rejected before Flask (CF edge).",
+                        "claim": f"{path} — no rows in api_endpoint_log in 30d. "
+                                 f"★READ THIS CORRECTLY: api_endpoint_log is an "
+                                 f"after_request hook that returns early unless the "
+                                 f"request carried an API key ('only track keyed "
+                                 f"requests'). Absence here means NO KEYED CALLER hit "
+                                 f"it — it does NOT mean the path is uncalled, and it "
+                                 f"does NOT imply anything about the CF edge. "
+                                 f"Unkeyed browser/frontend/bot traffic is invisible "
+                                 f"to this table by construction.",
                         "source": "api_endpoint_log (question-targeted)",
                         "value": 0,
                     })
+                    out.extend(_http_error_evidence(cur, conn, path))
                     continue
 
                 total = sum(int(r[1] or 0) for r in rows)
@@ -783,19 +838,14 @@ def gather_targeted_evidence(question: str) -> list[dict]:
                     "value": total,
                 })
                 # ★ detector-vs-ground-truth contradiction, stated explicitly
-                n404 = sum(int(r[1] or 0) for r in rows if int(r[0] or 0) == 404)
-                if n404 == 0 and re.search(r"404", question or ""):
-                    out.append({
-                        "claim": f"CONTRADICTION to check FIRST: the question asserts "
-                                 f"404s on {path}, but api_endpoint_log records "
-                                 f"ZERO 404s there in 30d (it does record 404s "
-                                 f"elsewhere, so this is not a logging hole). The "
-                                 f"finding may be stale, or the 404 happens at the "
-                                 f"CF edge before Flask. Resolve this before "
-                                 f"recommending a code change.",
-                        "source": "api_endpoint_log (question-targeted, control-checked)",
-                        "value": 0,
-                    })
+                # ★★ A "contradiction" between these two tables was asserted here
+                # and it was WRONG — it compared DIFFERENT POPULATIONS. api_endpoint_log
+                # covers KEYED requests only; brain_http_errors is Flask middleware
+                # over ALL 4xx/5xx. Zero 404s in the first with hits in the second is
+                # the NORMAL state for unkeyed traffic, not a contradiction. Report
+                # both tables and let the reasoner combine them.
+                if re.search(r"404", question or ""):
+                    out.extend(_http_error_evidence(cur, conn, path))
     except Exception as e:
         logger.warning("brain_investigator: targeted evidence failed: %s", e)
     finally:
