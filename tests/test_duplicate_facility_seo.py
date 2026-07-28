@@ -90,3 +90,29 @@ def test_twin_lookup_uses_a_connection_helper_that_exists():
         if name.startswith("_") and name not in ("_canonical_twin_url",):
             assert name in defined, (
                 "{}() is called but not defined in this module".format(name))
+
+
+def test_the_row_query_actually_selects_the_dedup_columns():
+    """The twin-canonical branch reads fac["is_duplicate"] / ["duplicate_of_id"].
+
+    ★ This shipped INERT the first time: the canonical override was correct and
+    every test passed, but no query selected those columns, so
+    fac.get("is_duplicate") was always None and the branch never ran. Caught
+    only by fetching a known-duplicate page and seeing it still self-canonical.
+    A feature whose INPUT is never loaded is indistinguishable from a feature
+    that is absent.
+    """
+    src = _code(PROFILE)
+    head = src.split("def _canonical_twin_url", 1)[0]
+    # ★ Assert the SELECT clauses themselves. A raw count of "is_duplicate" is
+    # useless here: `fac.get("is_duplicate")` and the _twin call contribute two
+    # hits on their own, so a >=2 threshold passes even with every SELECT
+    # stripped. Verified by mutation.
+    selects = re.findall(r"is_duplicate,\s*duplicate_of_id", head)
+    assert len(selects) >= 2, (
+        "both discovered_facilities queries must SELECT is_duplicate + "
+        "duplicate_of_id (found {})".format(len(selects)))
+    # the legacy `facilities` table has neither column -> must be declared NULL
+    assert "NULL AS is_duplicate" in head, (
+        "the legacy-table query lacks these columns; select them as NULL or the "
+        "query 500s on a legacy-only facility")

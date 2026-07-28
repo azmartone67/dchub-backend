@@ -44,8 +44,13 @@ def _fetch_facility_by_slug(slug: str) -> dict | None:
         try:
             from routes.facility_slug import hash_sql
             c = conn.cursor()
+            # ★ is_duplicate + duplicate_of_id are SELECTED, not decoration:
+            # the twin-canonical branch reads them off this row. Without them
+            # fac.get("is_duplicate") is always None and the branch can never
+            # fire — verified live, the fix shipped inert until this line.
             _cols = ("id, name, provider, city, state, country, {region}, "
-                     "latitude, longitude, power_mw, status, address")
+                     "latitude, longitude, power_mw, status, address, "
+                     "is_duplicate, duplicate_of_id")
             # r-slug-freeze (2026-07-03): exact match on the FROZEN
             # canonical_slug column FIRST — indexed, and immune to the
             # name/provider drift that recomputing MD5(provider|name) live
@@ -76,7 +81,8 @@ def _fetch_facility_by_slug(slug: str) -> dict | None:
             c.execute("""
                 SELECT id, name, provider, city, state, country,
                        market AS region, latitude, longitude,
-                       power_mw, status, address
+                       power_mw, status, address,
+                       is_duplicate, duplicate_of_id
                 FROM discovered_facilities
                 WHERE """ + hash_sql('') + """ = %s
                 ORDER BY COALESCE(power_mw, 0) DESC, id ASC
@@ -95,7 +101,8 @@ def _fetch_facility_by_slug(slug: str) -> dict | None:
                     c.execute("""
                         SELECT id, name, provider, city, state, country,
                                NULL AS region, latitude, longitude,
-                               power_mw, status, address
+                               power_mw, status, address,
+                               NULL AS is_duplicate, NULL AS duplicate_of_id
                         FROM facilities
                         WHERE """ + hash_sql('') + """ = %s
                         ORDER BY COALESCE(power_mw, 0) DESC, id ASC
