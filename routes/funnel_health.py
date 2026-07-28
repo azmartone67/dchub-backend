@@ -2513,7 +2513,11 @@ def admin_agent_pay_events():
            "totals": {"challenges": 0, "paid": 0, "failed": 0},
            "recent": [], "first_paid_at": None,
            "note": "mpp_challenge=agent opted in; mpp_paid/x402_paid=settled real payment"}
-    _ST = ['mpp_challenge', 'mpp_paid', 'mpp_verify_failed', 'x402_paid', 'x402_failed']
+    # ★ 2026-07-28: + mpp_offer_prewall (PASSIVE pre-wall offer). Without it
+    # this watcher reported the surface as nonexistent rather than as zero.
+    # Visibility only — it is NOT pay-intent (see _CHAL_ST note below).
+    _ST = ['mpp_challenge', 'mpp_paid', 'mpp_verify_failed', 'x402_paid',
+           'x402_failed', 'mpp_offer_prewall']
     conn = _conn()
     if conn is None:
         out["error"] = "no_db"
@@ -2613,8 +2617,19 @@ _REAL_PLATFORM_SQL = " NOT " + _SYNTH_PLATFORM_SQL
 _PAID_ST = ('mpp_paid', 'x402_paid')
 _FAIL_ST = ('mpp_verify_failed', 'x402_failed')
 _CHAL_ST = 'mpp_challenge'
-# Full pay-status universe — mirrors the local _ST list in admin_agent_pay_events.
-_ALL_PAY_ST = ['mpp_challenge', 'mpp_paid', 'mpp_verify_failed', 'x402_paid', 'x402_failed']
+# ★ 2026-07-28: `mpp_offer_prewall` (the PASSIVE pre-wall offer) was missing
+# from this universe, so both admin surfaces reported the whole surface as
+# NONEXISTENT rather than as zero — the flattering-zero pattern, one level up:
+# not a failed read rendering 0, but a real event class no query could see.
+# It is included here for VISIBILITY only.
+# ★★ It is deliberately NOT in _CHAL_ST: `mpp_challenge` means "an agent ASKED
+# to pay" and is the pay-intent metric. A passively-shipped offer is not
+# intent; counting it would turn pay-intent into "every call near the cap" and
+# destroy the signal. The success measure for this surface stays
+# mpp_paid / mpp_verify_failed.
+_PREWALL_ST = 'mpp_offer_prewall'
+_ALL_PAY_ST = ['mpp_challenge', 'mpp_paid', 'mpp_verify_failed', 'x402_paid',
+               'x402_failed', _PREWALL_ST]
 
 
 @funnel_health_bp.route("/api/v1/admin/agent-pay/master-tick", methods=["GET"])
