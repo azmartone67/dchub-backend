@@ -121,6 +121,9 @@ SCHEDULE = [
     # back-of-funnel + flywheel master shells (passive validation of the funnel
     # fix-wave). Same-hour pairing = once/day. Kill: GROWTH_DIGEST_DISABLE=1.
     (13, 13, "growth_ops_digest",   "_run_growth_ops_digest"),
+    # r-track-reconcile (2026-07-21): daily durable-identity retention actuator
+    # (once/day via same-hour pair). Kill: DCHUB_TRACK_RECONCILE=0.
+    (18, 18, "retention_reconcile", "_run_retention_reconcile"),
     # r-auto-interconnect (2026-06-04): scan novel UAs + pending buckets
     # once daily, write findings + email digest. Endpoint is admin-gated
     # AND idempotent (UNIQUE index on user_agent for pending/approved
@@ -243,6 +246,10 @@ SCHEDULE = [
     # Kill: MODEL_RELATIONS_CRON_DISABLE=1. Manual off-cycle fire (e.g. a
     # platform ships a new flagship): POST /api/jobs/model-relations.
     (23, 23, "model_relations",     "_run_model_relations"),
+    # Self-growing DB index engine (2026-07-16): daily 4 UTC slot, self-gates to
+    # WEEKLY on index_advisor_runs. Auto-indexes hot seq-scans (the facility
+    # hard_burn class). Kill: SELF_GROWING_INDEX_DISABLE=1.
+    (4, 4, "self_growing_index",    "_run_self_growing_index"),
     # CRM Reverse-ETL flush (r74, 2026-06-07): twice daily 7/19 UTC, push
     # status='queued' rows from crm_outbound_queue to the configured CRM
     # (Salesforce / HubSpot / stub). Each capture_event() hook (MCP HI,
@@ -292,6 +299,21 @@ SCHEDULE = [
     # inside the runner — the dispatcher's per-registry 1/hour rate-
     # limit token + the human-loop fallback are the safety net.
     (19, 19, "mcp_presence_auto_fix", "_run_mcp_presence_auto_fix"),
+    # White-glove canonical-facts propagation (r-white-glove BUILD 1,
+    # 2026-07-18): daily sweep of every SEED_REGISTRIES listing for OLD
+    # numbers in the listing COPY ("58 tools", "3,000+ deals" vs the
+    # ai_surface_canon PINNED/live values). Automated-path registries
+    # (manifest re-crawl / real POST / official-registry republish) get
+    # auto_resubmit_listing + a workflow_dispatch of
+    # mcp-registry-weekly-sync.yml; human-gated ones get ONE consolidated
+    # brain finding + ONE fingerprint-deduped GitHub issue
+    # ("[white-glove] listing copy drift") with paste-ready corrected
+    # copy per listing. Slot 20/20 (same-hour pair → once/day), one hour
+    # AFTER the 19:00 presence auto-fix so this run verifies it; shares
+    # the hour with deals/feedback_triage but each runner has its own
+    # per-name last_run guard (prior art: verdict_shift_post 16/16).
+    # Kill switch: WHITE_GLOVE_PROPAGATE_DISABLE=1.
+    (20, 20, "white_glove_propagate", "_run_white_glove_propagate"),
     # Customer Feedback Forum triage (2026-06-06): twice-daily brain
     # triage of new /feedback submissions. Classifies LOW/MEDIUM/HIGH/
     # SPAM, writes brain_recommendation back, and (LOW-class only +
@@ -742,6 +764,22 @@ SCHEDULE = [
     # feedback_triage 8/20 sharing with deals).
     (15,  3, "sales_outreach_detect",
               "_run_sales_outreach_detect"),
+    # r-fiberreg (2026-07-16): weekly PeeringDB carrier↔facility sync.
+    # fiber_integration.py was orphaned in the api_server→main.py migration,
+    # so carrier_facility_presence froze 2026-05-19 — this is the schedule
+    # entry that never existed. Same-hour pair caps to one run per UTC day;
+    # the runner gates internally to Sunday (the harness is hour-based, not
+    # weekly — watchlist_weekly_digest pattern). 04:00 UTC Sunday is
+    # off-peak (Saturday night US) and shares the hour only with the quick
+    # gas_pricing_refresh + brain_self_perception runs.
+    ( 4,  4, "carrier_facility_sync", "_run_carrier_facility_sync"),
+    # r-netixreg (2026-07-17): weekly PeeringDB network + IX sync. Same story
+    # as carrier_facility_sync above — network_ix_ingestion.py was never
+    # registered, so the pdb_* tables froze at their 2026-03-27 seed. Also
+    # Sunday-gated internally. 05:00 UTC deliberately, NOT the 04:00 slot the
+    # carrier sync holds: both pull PeeringDB in bulk and anonymous callers
+    # share one rate-limit budget, so overlapping them would 429 both.
+    ( 5,  5, "peeringdb_network_sync", "_run_peeringdb_network_sync"),
 ]
 
 # ---------------------------------------------------------------------------
@@ -1577,6 +1615,37 @@ def _run_growth_ops_digest():
         logger.warning("📧 growth_ops_digest error: %s", e)
 
 
+def _run_retention_reconcile():
+    """r-track-reconcile (2026-07-21): the daily durable-identity RETENTION
+    actuator — the one loop we auto-close on the constraint the flywheel keeps
+    naming. Loopback POST to /api/v1/admin/track/reconcile-session-keys?apply=1:
+    sweeps post-claim calls that wrote NULL api_key (cold/other replica, cache
+    miss, flag-off window, pre-fix) and attributes them to the session's claimed
+    key + advances last_used_at. In-DB only, idempotent, telemetry-layer (never
+    touches tier/gating). Kill: DCHUB_TRACK_RECONCILE=0."""
+    if (os.environ.get("DCHUB_TRACK_RECONCILE", "1") or "").strip() == "0":
+        return
+    import requests as _rq
+    key = (os.environ.get("DCHUB_ADMIN_KEY")
+           or os.environ.get("DCHUB_INTERNAL_KEY")
+           or os.environ.get("DCHUB_ADMIN_API_KEY") or "")
+    if not key:
+        logger.warning("🔁 retention_reconcile: skipped — DCHUB_ADMIN_KEY not set")
+        return
+    base = (os.environ.get("DCHUB_INTERNAL_API", "http://127.0.0.1:8080") or "").strip()
+    try:
+        r = _rq.post(
+            f"{base}/api/v1/admin/track/reconcile-session-keys?apply=1",
+            headers={"X-Internal-Key": key, "X-Admin-Key": key,
+                     "User-Agent": "dchub-cron-retention-reconcile/1.0"},
+            timeout=120)
+        d = (r.json() if r.headers.get("content-type", "").startswith("application/json") else {}) or {}
+        logger.info("🔁 retention_reconcile: status=%s attributed=%s keys_touched=%s",
+                    r.status_code, d.get("attributed"), d.get("keys_touched"))
+    except Exception as e:
+        logger.warning("🔁 retention_reconcile error: %s", e)
+
+
 def _run_lost_conversion_outreach():
     """Fire /api/v1/admin/lost-conversion/send for the lost-conversion pool.
     Now wired to Resend (was Office 365 SMTP that 503'd silently). Caps at
@@ -2053,9 +2122,17 @@ def _run_model_relations():
             _c.close()
         except Exception:
             last = None  # table absent pre-first-tick → run
-        if last is not None and (_dt.now(_tz.utc) - last) < _td(days=28):
-            logger.info("🤝 model_relations: skipped — last tick %s (<28d, monthly cadence)",
-                        last.date())
+        # partner-iteration (2026-07-19): 28d → weekly by default. The user
+        # wants an active partner-evolution loop; a monthly pulse meant the
+        # MODELREL keys sat silent for weeks and nobody noticed billing-blocked
+        # lanes. Tune via MODELREL_CADENCE_DAYS (raise back to 28 to go monthly).
+        try:
+            _cadence = int(os.environ.get("MODELREL_CADENCE_DAYS", "7"))
+        except Exception:
+            _cadence = 7
+        if last is not None and (_dt.now(_tz.utc) - last) < _td(days=_cadence):
+            logger.info("🤝 model_relations: skipped — last tick %s (<%dd cadence)",
+                        last.date(), _cadence)
             return
         from model_relations import run_model_relations_tick
         out = run_model_relations_tick()
@@ -2063,6 +2140,37 @@ def _run_model_relations():
                     {k: v.get("status") for k, v in (out.get("runs") or {}).items()})
     except Exception as e:
         logger.error("🤝 model_relations: ❌ %s", str(e)[:200])
+
+
+def _run_self_growing_index():
+    """Self-growing DB index engine (2026-07-16). Daily slot, self-gates to WEEKLY
+    on index_advisor_runs MAX(created_at) — restart/replica-safe, no wall clock.
+    Reads pg_stat_statements, EXPLAINs the hottest+slowest SELECTs, and AUTO-CREATES
+    safe single-column indexes for seq-scans on big tables — so a new hot path gets
+    its index without a human noticing the pool starvation (the class L14 DETECTED
+    but nothing ACTED on: /api/v1/facilities/<slug> hard_burn). Also runs the #3
+    edge/origin divergence check. Worker-only (this scheduler is worker-only).
+    Kill: SELF_GROWING_INDEX_DISABLE=1."""
+    if (os.environ.get("SELF_GROWING_INDEX_DISABLE") or "").strip() == "1":
+        return
+    try:
+        import self_growing_index as _sgi
+        age = _sgi.last_run_age_hours()
+        if age is not None and age < 168:   # weekly cadence (168h)
+            logger.info("🌱 self_growing_index: skipped — last run %.0fh ago (<168h)", age)
+            return
+        out = _sgi.run_index_advisor(reason="weekly")
+        logger.info("🌱 self_growing_index: applied=%d proposed=%d seen=%s",
+                    len(out.get("applied") or []), len(out.get("proposed") or []),
+                    out.get("seen"))
+        try:
+            div = _sgi.check_edge_origin_divergence()
+            if div.get("diverged"):
+                logger.warning("🚨 self_growing_index: edge/origin divergence %s", div["diverged"])
+        except Exception as _e:
+            logger.warning("self_growing_index: divergence check failed: %s", str(_e)[:120])
+    except Exception as e:
+        logger.error("🌱 self_growing_index: ❌ %s", str(e)[:200])
 
 
 def _run_media_spike_responder():
@@ -2475,6 +2583,19 @@ def _run_ai_platform_onboarder():
     confirmation. Loopback POST so the same admin-key gate applies to
     cron and to manual triggers. Never raises."""
     import requests as _rq
+    # Cron-specific kill switch (2026-07-21): AI_PLATFORM_ONBOARDER_CRON_DISABLE=1.
+    # Deliberately NOT the family-wide AI_AGENT_EXPANSION_DISABLE master switch —
+    # that flag ALSO 503s the LIVE public self-register endpoint
+    # (routes/agent_self_register.py, POST /api/v1/platforms/register) and
+    # disables ai_platform_tool_tuner. This narrow flag keeps ONLY the
+    # auto-approve/publish/email cron dormant while self-register + tuner stay
+    # live. Mirrors the per-cron switches on model_relations
+    # (MODEL_RELATIONS_CRON_DISABLE) and founding_welcome
+    # (DCHUB_FOUNDING_WELCOME_DISABLE).
+    if os.environ.get("AI_PLATFORM_ONBOARDER_CRON_DISABLE", "").strip() in ("1", "true", "yes"):
+        logger.info("ai_platform_onboarder: cron kill switch active "
+                    "(AI_PLATFORM_ONBOARDER_CRON_DISABLE) - skipping")
+        return
     key = (os.environ.get("DCHUB_ADMIN_KEY")
            or os.environ.get("DCHUB_INTERNAL_KEY")
            or os.environ.get("DCHUB_ADMIN_API_KEY") or "")
@@ -2734,13 +2855,39 @@ def _run_mcp_presence_auto_fix():
             auto_fix_all_drifted as _fix,
         )
         result = _fix(dry_run=False) or {}
+        # r-honestcount (2026-07-17): report the honest buckets. "submitted" is
+        # ONLY a real form/POST 2xx; manifest_upstream = registries that re-crawl
+        # our GitHub manifest/About (no push happened here — the daily heal does
+        # it); human_loop = queued a brain_finding. The old single "submitted"
+        # count folded the no-op upstream path in and looked like automation.
         logger.info(
-            "📡 mcp_presence_auto_fix: checked=%s submitted=%s rate_limited=%s errors=%s",
+            "📡 mcp_presence_auto_fix: checked=%s submitted=%s manifest_upstream=%s "
+            "human_loop=%s rate_limited=%s errors=%s",
             result.get("checked"), result.get("submitted"),
+            result.get("manifest_upstream"), result.get("human_loop"),
             result.get("rate_limited"), result.get("errors"),
         )
     except Exception as e:
         logger.error("📡 mcp_presence_auto_fix error: %s", e, exc_info=True)
+    # r-url-rediscovery (2026-07-18): same daily slot also sweeps listings
+    # whose URL went dead (403/404/410) and self-heals moved ones from the
+    # registry's own sitemap/homepage — the mcp.so /server→/servers
+    # restructure sat unnoticed for 15 days because drift-sweep only sees
+    # copy drift. Kill switch: MCP_URL_REDISCOVERY_DISABLE=1.
+    try:
+        from routes.mcp_presence_crawler import (
+            rediscover_moved_listings as _rediscover,
+        )
+        r = _rediscover(dry_run=False) or {}
+        logger.info(
+            "📡 mcp_presence_url_rediscovery: checked=%s healed=%s "
+            "confirmed=%s gone=%s skipped=%s errors=%s",
+            r.get("checked"), r.get("healed"), r.get("confirmed"),
+            r.get("gone"), r.get("skipped"), r.get("errors"),
+        )
+    except Exception as e:
+        logger.error("📡 mcp_presence_url_rediscovery error: %s", e,
+                     exc_info=True)
 
 
 def _run_expired_onetime_demote():
@@ -3452,6 +3599,139 @@ def _run_ai_surface_sentinel():
         logger.error("🛰️ ai_surface_sentinel: error — %s", e)
 
 
+def _run_white_glove_propagate():
+    """White-glove canonical-facts propagation (r-white-glove BUILD 1,
+    2026-07-18): read the pinned canon, probe every SEED_REGISTRIES
+    listing for stale numbers in the listing copy, fire the automated
+    refresh paths (auto_resubmit_listing + the mcp-registry-weekly-sync
+    workflow_dispatch), and consolidate human-gated drift into ONE brain
+    finding + ONE fingerprint-deduped GitHub issue with paste-ready
+    corrected copy. Direct module call (no HTTP loopback — the run is
+    bounded at ~16 polite 1s-spaced fetches). Defensive — never raises.
+    Kill switch: WHITE_GLOVE_PROPAGATE_DISABLE=1 (checked here AND
+    inside the module)."""
+    if (os.environ.get("WHITE_GLOVE_PROPAGATE_DISABLE") or "").strip().lower() \
+            in ("1", "true", "yes"):
+        logger.info("🧤 white_glove_propagate: disabled "
+                    "(WHITE_GLOVE_PROPAGATE_DISABLE=1)")
+        return
+    try:
+        from routes.white_glove_propagation import run_white_glove_propagation
+        result = run_white_glove_propagation(dry_run=False) or {}
+        logger.info(
+            "🧤 white_glove_propagate: checked=%s drifted=%s auto_fired=%s "
+            "human_gated=%s issue=%s finding=%s elapsed=%ss",
+            result.get("checked"), len(result.get("drifted") or []),
+            len(result.get("auto_path_fired") or []),
+            len(result.get("human_gated") or []),
+            (result.get("github_issue") or {}).get("action") or "n/a",
+            result.get("finding_written"),
+            result.get("elapsed_s"),
+        )
+    except Exception as e:
+        logger.error("🧤 white_glove_propagate error: %s", e, exc_info=True)
+
+
+def _run_carrier_facility_sync():
+    """Weekly PeeringDB carrier↔facility sync (r-fiberreg 2026-07-16).
+    Refreshes carrier_profiles, the carrier_facility_presence link table
+    (incl. the dchub_facility_id hex-id backfill) and fiber_coverage_zones.
+    Self-gates to Sundays (weekday()==6) — the SCHEDULE harness is
+    hour-based, not weekly (watchlist_weekly_digest pattern). Loopback POST
+    so the same internal-key gate serves cron and manual triggers; the
+    scheduler is worker-only, so this runs locally on the worker (no
+    delegation). PeeringDB rate-limits anonymous bulk pulls after ~one per
+    hours — set PEERINGDB_API_KEY on Railway for reliable weekly runs
+    (carrier_facility_ingestion._pdb_fetch sends it when present). Never
+    raises."""
+    import requests as _rq
+    now = datetime.now(timezone.utc)
+    if now.weekday() != 6:  # 6 == Sunday
+        logger.info(
+            "🔌 carrier_facility_sync: skipped — weekly gate "
+            "(today=%s, runs Sundays only)",
+            now.strftime("%A"),
+        )
+        return
+    key = (os.environ.get("DCHUB_INTERNAL_KEY")
+           or os.environ.get("DCHUB_SYNC_KEY")
+           or os.environ.get("DCHUB_ADMIN_KEY") or "")
+    if not key:
+        logger.warning("🔌 carrier_facility_sync: skipped — no internal key env set")
+        return
+    base = (os.environ.get("DCHUB_INTERNAL_API", "http://127.0.0.1:8080") or "").strip()  # strip(): trailing \n in env → %0a in URL → NameResolutionError
+    try:
+        r = _rq.post(
+            f"{base}/api/jobs/carrier-sync",
+            headers={"X-Internal-Key": key,
+                     "User-Agent": "dchub-cron-carrier-sync/1.0"},
+            timeout=1500,  # PeeringDB bulk pulls run minutes; < HARD_TIMEOUT_SECONDS
+        )
+        d = (r.json() if r.headers.get("content-type", "").startswith("application/json") else {}) or {}
+        cf = d.get("carrier_facilities") or {}
+        logger.info(
+            "🔌 carrier_facility_sync: status=%s success=%s "
+            "carriers_upserted=%s links_upserted=%s matched_to_dchub=%s zones=%s",
+            r.status_code, d.get("success"),
+            (d.get("carriers") or {}).get("upserted"),
+            cf.get("upserted"), cf.get("matched_to_dchub"),
+            (d.get("coverage_zones") or {}).get("zones_created"),
+        )
+    except Exception as e:
+        logger.error("🔌 carrier_facility_sync: error — %s", e)
+
+
+def _run_peeringdb_network_sync():
+    """Weekly PeeringDB network + internet-exchange sync (r-netixreg
+    2026-07-17). Refreshes pdb_networks, pdb_network_facilities, pdb_ix,
+    pdb_ix_facilities and pdb_campus — the tables behind
+    /api/v1/networks/*, /api/v1/ix/summary and /api/v1/connectivity/<id>.
+    Those tables were seeded once on 2026-03-27 and never refreshed, because
+    the module went unregistered; this is the schedule entry that never
+    existed. Self-gates to Sundays (weekday()==6) — the SCHEDULE harness is
+    hour-based, not weekly (carrier_facility_sync pattern). Loopback POST so
+    the same internal-key gate serves cron and manual triggers. PeeringDB
+    rate-limits anonymous bulk pulls hard — set PEERINGDB_API_KEY on Railway
+    for reliable weekly runs (_pdb_fetch_paginated sends it when present).
+    Never raises."""
+    import requests as _rq
+    now = datetime.now(timezone.utc)
+    if now.weekday() != 6:  # 6 == Sunday
+        logger.info(
+            "🔗 peeringdb_network_sync: skipped — weekly gate "
+            "(today=%s, runs Sundays only)",
+            now.strftime("%A"),
+        )
+        return
+    key = (os.environ.get("DCHUB_INTERNAL_KEY")
+           or os.environ.get("DCHUB_SYNC_KEY")
+           or os.environ.get("DCHUB_ADMIN_KEY") or "")
+    if not key:
+        logger.warning("🔗 peeringdb_network_sync: skipped — no internal key env set")
+        return
+    base = (os.environ.get("DCHUB_INTERNAL_API", "http://127.0.0.1:8080") or "").strip()  # strip(): trailing \n in env → %0a in URL → NameResolutionError
+    try:
+        r = _rq.post(
+            f"{base}/api/jobs/peeringdb-full-sync",
+            headers={"X-Internal-Key": key,
+                     "User-Agent": "dchub-cron-peeringdb-network-sync/1.0"},
+            timeout=1500,  # paginated bulk pulls run minutes; < HARD_TIMEOUT_SECONDS
+        )
+        d = (r.json() if r.headers.get("content-type", "").startswith("application/json") else {}) or {}
+        logger.info(
+            "🔗 peeringdb_network_sync: status=%s success=%s total_records=%s "
+            "networks=%s netfac=%s ix=%s ixfac=%s campus=%s",
+            r.status_code, d.get("success"), d.get("total_records"),
+            (d.get("networks") or {}).get("upserted"),
+            (d.get("network_facilities") or {}).get("upserted"),
+            (d.get("internet_exchanges") or {}).get("upserted"),
+            (d.get("ix_facilities") or {}).get("upserted"),
+            (d.get("campus") or {}).get("upserted"),
+        )
+    except Exception as e:
+        logger.error("🔗 peeringdb_network_sync: error — %s", e)
+
+
 _RUNNERS = {
     "market_refresh":      _run_market_refresh,
     "news":                _run_news_crawler,
@@ -3481,12 +3761,72 @@ _RUNNERS = {
     "mcp_presence_crawl":  _run_mcp_presence_crawl,
     "mcp_registry_discover": _run_mcp_registry_discover,
     "mcp_presence_auto_fix": _run_mcp_presence_auto_fix,
+    # r-white-glove BUILD 1 (2026-07-18): canonical-facts propagation.
+    "white_glove_propagate": _run_white_glove_propagate,
+    # r-track-reconcile (2026-07-21): daily durable-identity retention actuator.
+    "retention_reconcile": _run_retention_reconcile,
+    # BUGFIX (2026-07-21): growth_ops_digest was in SCHEDULE (line ~123) but
+    # MISSING from _RUNNERS, so the dispatch `_RUNNERS[name]` KeyError'd every day
+    # at 13:00 UTC — the daily operator digest (incl. the Phase-2 planner alert +
+    # backfunnel retention checks) never fired via the scheduler, and no GH Action
+    # fires it either. Register the (already-defined) runner. Operator-inbox only.
+    "growth_ops_digest": _run_growth_ops_digest,
+    # BUGFIX (2026-07-21): same class as growth_ops_digest above — model_relations
+    # is in SCHEDULE (line ~248, daily 23:00 UTC) and _run_model_relations is
+    # defined (~line 2102), but the name was NEVER registered here, so the dispatch
+    # guard `name in _RUNNERS` skipped it every night → the weekly partner-eval tick
+    # never fired via the scheduler (no GH Action fires it either). The Sunday
+    # planner_grading_panel in dchub-scheduler.py depends on this tick. Runner is
+    # cadence-self-gated (MODELREL_CADENCE_DAYS, default 7d, DB-based), NEVER
+    # publishes (verdicts → model_relations_runs for human review), and never
+    # raises. Kill: MODEL_RELATIONS_CRON_DISABLE=1.
+    "model_relations": _run_model_relations,
+    # BUGFIX (2026-07-21): same registration-gap class as model_relations /
+    # growth_ops_digest above — both of these are in SCHEDULE (lines ~150 and
+    # ~187, daily 01:00 UTC) with a defined _run_* function, but the NAME was
+    # never a key here, so the dispatch guard `name in _RUNNERS` skipped them
+    # every slot → silent no-op (NOT a KeyError). Both are internal, idempotent
+    # data/cache jobs with no outward-facing side effect:
+    #   • eia_gas_prices — loads state delivered gas tariffs (EIA PIN/PEU), the
+    #     UPSTREAM for the DCGI gas_cost_score factor + powered_land_gas
+    #     delivered tariffs. Dead = ~40% of DCGI was a dead constant. Idempotent
+    #     (UNIQUE state,sector,period); never raises (SystemExit + Exception
+    #     both caught); no-ops without EIA_API_KEY (the natural kill switch).
+    #   • daily_r2_refresh — POSTs /refresh on the daily FastAPI so today's PNGs
+    #     land in R2. This is the SECOND, redundant trigger (extractor_cron.py's
+    #     daily_refresh_if_needed on the other worker is the primary); dead = the
+    #     SPOF-free backstop was gone. Idempotent (re-renders today); never
+    #     raises; no-ops without REFRESH_SECRET (the natural kill switch).
+    "eia_gas_prices":      _run_eia_gas_prices,
+    "daily_r2_refresh":    _run_daily_r2_refresh,
+    # BUGFIX (2026-07-21): same registration-gap class, but these two are
+    # OUTWARD-FACING, so each is gated by its own cron-specific kill switch
+    # (NOT the family-wide AI_AGENT_EXPANSION_DISABLE master, which would also
+    # 503 the live public self-register endpoint):
+    #   • founding_customer_welcome (09:00 UTC) — RE-ENABLED LIVE (owner OK,
+    #     2026-07-21). Idempotent: only emails founding_customers rows with
+    #     contact_status IN ('new','auto-tagged'); stamps 'welcomed' so re-runs
+    #     no-op. At enable time all 12 rows were already 'welcomed' → 0 sends;
+    #     arms the intended activation backstop for FUTURE founding customers.
+    #     Kill: DCHUB_FOUNDING_WELCOME_DISABLE=1; dry-run
+    #     DCHUB_FOUNDING_WELCOME_DRY_RUN=1.
+    #   • ai_platform_onboarder + _b (00:00 / 06:00 UTC) — RE-ENABLED but
+    #     FLAG-GATED OFF (owner decision, 2026-07-21): registered here to fix
+    #     the structural no-op, held dormant at runtime via the runner's own
+    #     AI_PLATFORM_ONBOARDER_CRON_DISABLE=1 (set on dchub-worker). Both
+    #     SCHEDULE names map to the single _run_ai_platform_onboarder runner.
+    #     Flip the flag off to arm the autonomous approve→publish→email lane.
+    "founding_customer_welcome": _run_founding_customer_welcome,
+    "ai_platform_onboarder":     _run_ai_platform_onboarder,
+    "ai_platform_onboarder_b":   _run_ai_platform_onboarder,
     "market_brief_warm":   _run_market_brief_warm,
     "state_brief_warm":    _run_state_brief_warm,
     "operator_brief_warm": _run_operator_brief_warm,
     "feedback_triage":     _run_feedback_triage,
     "brain_feature_proposer": _run_brain_feature_proposer,
     "sales_outreach_detect":  _run_sales_outreach_detect,
+    "carrier_facility_sync":  _run_carrier_facility_sync,
+    "peeringdb_network_sync": _run_peeringdb_network_sync,
     "expired_onetime_demote": _run_expired_onetime_demote,
     "verdict_shift_post":  _run_verdict_shift_post,
     "weekly_newsletter":   _run_weekly_newsletter,
@@ -3519,6 +3859,8 @@ _RUNNERS = {
     "state_of_2026_claim_evolve":    _run_state_of_2026_claim_evolve,
     # r74 (2026-06-07): CRM Reverse-ETL flush — twice-daily push queue → CRM
     "crm_outbound_flush":            _run_crm_outbound_flush,
+    # Self-growing DB index engine (2026-07-16) — auto-indexes hot seq-scans.
+    "self_growing_index":            _run_self_growing_index,
 }
 
 
