@@ -75,10 +75,13 @@ jobs:
             echo "refreshed existing PR #$EXISTING"
             echo "- shadow inventory: refreshed [PR #$EXISTING]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/pull/$EXISTING)" >> "$GITHUB_STEP_SUMMARY"
           else
+            # No --label: `gh pr create --label` fails outright if the label
+            # does not exist in the repo, which is how this step failed after
+            # the heredoc was fixed. Label afterwards, best-effort.
             URL=$(gh pr create --base main --head "$BRANCH" \
               --title "chore: weekly shadow route inventory refresh" \
-              --body-file /tmp/pr-body.md \
-              --label chore)
+              --body-file /tmp/pr-body.md)
+            gh pr edit "$URL" --add-label chore >/dev/null 2>&1 || true
             echo "opened $URL"
             echo "- shadow inventory: opened $URL" >> "$GITHUB_STEP_SUMMARY"
           fi
