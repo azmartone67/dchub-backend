@@ -24,10 +24,19 @@ LANES
      (brain investigation #14) from "no handoffs OR broken write path" down to
      delivery/appeal alone. mcp_conversion_clicks has been dead since 2026-05-05.
   2. BRAIN EVIDENCE ASSEMBLY — 79 of 112 self-agenda drafts in 30d (70.5%) carry a
-     refutation saying the cited prior work is "not present in the evidence", and
-     mean confidence sits at 0.44. The reasoner and the critic are both good; the
-     RETRIEVAL step starves them by citing prior findings by id without inlining
-     their content. This is the cheapest available upgrade to brain output.
+     refutation saying needed evidence was "not present in the evidence", and mean
+     confidence sits at 0.44. The reasoner and the critic are both good.
+     ★★ CAUSE CORRECTED 2026-07-28. The original text here blamed retrieval for
+     "citing prior findings by id without inlining their content". That was WRONG,
+     and it was wrong in the direction that makes a fix look cheap. Live rows show
+     prior_work IS fully inlined as text (89/111 drafts) and prior_fixes in 32/111.
+     The actual cause: gather_evidence() took NO ARGUMENTS, so 111 DISTINCT
+     questions yielded only SEVEN evidence-source signatures (46 sharing one). A
+     question about a 404 on /api/v1/energy/retail/rates was handed facility
+     counts, ISO counts and funnel KPIs — nothing about that endpoint. The critics
+     asked for exactly what was missing (21 of 111 named timestamps/recency).
+     ★ A diagnosis nobody re-derived from the raw rows survived into the shell's
+     own header AND its actuator text. Read the primary rows, not the summary.
   3. INVESTIGATION LANE DARK — brain_investigations' newest row is 2026-07-01 (27
      days). self_agenda and enhancement_proposals both ran today, so it is ONE dead
      lane, not a dead brain. Root cause: NOTHING schedules POST
@@ -226,10 +235,13 @@ def _lane_evidence(c) -> list:
     out.append(_check(
         "evidence_starved", f"refutations citing missing evidence <= {_STARVED_MAX_PCT:.0f}%",
         pct <= _STARVED_MAX_PCT,
-        f"{starved}/{n} drafts ({pct:.1f}%) in 30d were refuted for citing prior "
-        f"work that is NOT in their own evidence block. The reasoner and critic are "
-        f"fine; the RETRIEVAL step starves them — it cites prior findings by id "
-        f"without inlining their content.", critical=True))
+        f"{starved}/{n} drafts ({pct:.1f}%) in 30d were refuted because the evidence "
+        f"block lacked what the question needed. ★CORRECTED 2026-07-28: this is NOT "
+        f"'prior findings cited by id' — live rows show prior_work IS fully inlined "
+        f"as text (89/111 drafts), prior_fixes in 32/111. The real cause is that "
+        f"gather_evidence() took NO ARGUMENTS: 111 distinct questions produced only "
+        f"SEVEN evidence-source signatures, so every question got the same generic "
+        f"bundle. Fixed by gather_targeted_evidence(question).", critical=True))
     out.append(_check(
         "mean_confidence", f"mean draft confidence >= {_CONF_MIN}",
         (conf is not None and float(conf) >= _CONF_MIN),
@@ -345,7 +357,7 @@ _LANES = [
      "on 2026-07-01 — but note lane 1 already proves the WRITE path, so the open "
      "question is now delivery/appeal only"),
     ("evidence",  "2 · Brain evidence assembly (starvation)",   _lane_evidence,
-     "inline referenced prior findings/fixes into the evidence block before the "
+     "gather evidence about the SUBJECT of the question (targeted retrieval) before the "
      "drafting step — cheapest upgrade to brain output quality"),
     ("investig",  "3 · Investigation lane dark",                _lane_investigations,
      "★FIRES: POST /api/v1/admin/actuation/master-tick?fire=investigations kicks "

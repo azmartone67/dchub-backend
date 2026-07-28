@@ -665,6 +665,130 @@ def _evidence_block(evidence: list[dict]) -> str:
     return "\n".join(lines)
 
 
+# ── Question-TARGETED evidence (2026-07-28, actuation shell #39 lane 2) ──
+# THE MEASURED DEFECT: gather_evidence() takes NO ARGUMENTS. Every question got
+# the SAME curated bundle — 111 drafts in 30d produced only SEVEN distinct
+# evidence-source signatures, and 46 of them shared one. So a question like
+# "why does /api/v1/energy/retail/rates 404 171 times?" was handed facility
+# counts, ISO counts and funnel KPIs, and NOTHING about that endpoint.
+#
+# ★ The critics were right and specific. Sampled refutations asked for
+#   per-endpoint request logs, status codes, and recency — 21 of 111 explicitly
+#   named timestamps/recency. The reasoner then over-read the generic bundle
+#   ("7 US ISOs already tracked" inferred from facility counts grouped by ISO)
+#   and the critic correctly shredded it. That is not a weak reasoner; it is a
+#   reasoner with nothing relevant to reason FROM.
+#
+# ★★ NOTE — the shell's original stated cause was WRONG and is corrected there
+#   too: it claimed retrieval "cites prior findings by id without inlining their
+#   content". Inspection of live rows shows prior_work IS fully inlined as text
+#   (89/111 drafts) and prior_fixes in 32/111. Prior work was never the gap.
+#
+# What this adds: when the question names a URL path, pull what the endpoint
+# ACTUALLY did — call volume, status split, last-seen, distinct callers — from
+# api_endpoint_log. ★Absence is reported as evidence, never as silence.
+# ★★ It also surfaces DETECTOR-vs-GROUND-TRUTH contradictions: brain_findings
+#    claims 142 404s on /api/v1/energy/retail/rates while api_endpoint_log shows
+#    10 calls, ALL 200. Control-checked: the table DOES record 404s (8,991 in
+#    30d, top path /api/v1/facility/<id> at 8,329), so a zero here is a real
+#    signal and not an instrumentation hole. Either the finding is stale or the
+#    404s die at the CF edge before Flask — both are useful, and neither was
+#    reachable from the generic bundle.
+# Kill switch, no deploy: BRAIN_TARGETED_EVIDENCE=0
+_PATH_RE = re.compile(r"(?<![\w.])(/(?:api|admin|mcp|for|markets|facilities|"
+                      r"facility|dcpi|grid|vs)/[A-Za-z0-9_./<>\-]{0,80})")
+_TARGET_MAX_PATHS = 3
+
+
+def _extract_paths(question: str) -> list[str]:
+    """URL paths named in the question, de-duped, order-preserving, bounded."""
+    seen, out = set(), []
+    for m in _PATH_RE.finditer(question or ""):
+        p = (m.group(1) or "").rstrip(".,;:)'\"")
+        if p and p not in seen:
+            seen.add(p)
+            out.append(p)
+        if len(out) >= _TARGET_MAX_PATHS:
+            break
+    return out
+
+
+def gather_targeted_evidence(question: str) -> list[dict]:
+    """REAL rows about the SUBJECT of this question. [] on anything unexpected."""
+    if (os.environ.get("BRAIN_TARGETED_EVIDENCE") or "").strip() == "0":
+        return []
+    paths = _extract_paths(question)
+    if not paths:
+        return []
+    conn = _conn()
+    if conn is None:
+        return []
+    out: list[dict] = []
+    try:
+        with conn.cursor() as cur:
+            for path in paths:
+                try:
+                    # NOTE equality, never LIKE — a literal % in SQL with a
+                    # params tuple is a documented 500 in this codebase.
+                    cur.execute(
+                        "SELECT status, COUNT(*), MAX(called_at), "
+                        "       COUNT(DISTINCT api_key_prefix) "
+                        "FROM api_endpoint_log "
+                        "WHERE endpoint_path = %s "
+                        "  AND called_at > now() - interval '30 days' "
+                        "GROUP BY status ORDER BY 2 DESC LIMIT 6",
+                        (path,),
+                    )
+                    rows = cur.fetchall() or []
+                except Exception:
+                    try: conn.rollback()
+                    except Exception: pass
+                    continue
+
+                if not rows:
+                    out.append({
+                        "claim": f"{path} — NO rows in api_endpoint_log in 30d. "
+                                 f"Absence is evidence: either it is never called, "
+                                 f"or it is served/rejected before Flask (CF edge).",
+                        "source": "api_endpoint_log (question-targeted)",
+                        "value": 0,
+                    })
+                    continue
+
+                total = sum(int(r[1] or 0) for r in rows)
+                split = ", ".join(f"{int(r[0] or 0)}×{int(r[1] or 0)}" for r in rows)
+                newest = max((r[2] for r in rows if r[2]), default=None)
+                callers = max((int(r[3] or 0) for r in rows), default=0)
+                out.append({
+                    "claim": f"{path} — REAL traffic in 30d: {total} call(s); "
+                             f"status split {split}; last seen "
+                             f"{newest.isoformat()[:19] if newest else 'n/a'}; "
+                             f"{callers} distinct caller prefix(es)",
+                    "source": "api_endpoint_log (question-targeted)",
+                    "value": total,
+                })
+                # ★ detector-vs-ground-truth contradiction, stated explicitly
+                n404 = sum(int(r[1] or 0) for r in rows if int(r[0] or 0) == 404)
+                if n404 == 0 and re.search(r"404", question or ""):
+                    out.append({
+                        "claim": f"CONTRADICTION to check FIRST: the question asserts "
+                                 f"404s on {path}, but api_endpoint_log records "
+                                 f"ZERO 404s there in 30d (it does record 404s "
+                                 f"elsewhere, so this is not a logging hole). The "
+                                 f"finding may be stale, or the 404 happens at the "
+                                 f"CF edge before Flask. Resolve this before "
+                                 f"recommending a code change.",
+                        "source": "api_endpoint_log (question-targeted, control-checked)",
+                        "value": 0,
+                    })
+    except Exception as e:
+        logger.warning("brain_investigator: targeted evidence failed: %s", e)
+    finally:
+        try: conn.close()
+        except Exception: pass
+    return out
+
+
 # ── Corpus recall (RAG): so the brain stops re-investigating seen topics ──
 def _recall_prior_work(question: str, k: int = 6) -> list[dict]:
     """Semantic recall of PRIOR findings + recommendations on the same theme,
@@ -1020,7 +1144,16 @@ def investigate(question: str, *, depth: str = "default") -> dict:
     except Exception as e:
         evidence = []
         logger.warning("brain_investigator: gather_evidence failed: %s", e)
+    # ★ Question-TARGETED evidence FIRST in the block, so the model reads what
+    #   is actually about its subject before the generic platform bundle.
+    try:
+        targeted = gather_targeted_evidence(question)
+    except Exception as e:
+        targeted = []
+        logger.warning("brain_investigator: gather_targeted_evidence failed: %s", e)
+    evidence = targeted + evidence
     base["evidence"] = evidence
+    base["targeted_evidence_count"] = len(targeted)
     evidence_block = _evidence_block(evidence)
 
     # Corpus recall: pull PRIOR findings + recommendations on this same theme so
