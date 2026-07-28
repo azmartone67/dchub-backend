@@ -117,6 +117,18 @@ Other knobs: `SLO_SENTINEL_ENABLED=0` (kill switch),
 pre-rollback 5xx for its 5-minute window and would otherwise re-trigger on
 damage already fixed).
 
+### Anti-stacking guard
+
+`pick_rollback_target` refuses to act when the **live deployment is younger
+than 10 minutes** (`RAILWAY_ROLLBACK_MIN_AGE_S`). More than one actor can react
+to the same incident — the worker runs *two* sentinel processes, and
+`auto-rollback.yml` is a backstop — and whoever acts second would see the
+just-restored good image as "same commit as current", skip it, and roll back
+something **older**. One correct rollback becomes an over-rollback.
+
+So a second actor arriving after a rollback does nothing, which is right. The
+manual CLI can override with `--force` when a human is sure nobody else acted.
+
 ### ⚠️ Arm only one
 
 If `RAILWAY_TOKEN` is set as a **GitHub secret** *and* the sentinel is armed,

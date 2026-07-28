@@ -46,6 +46,7 @@ Exit codes: 0 rolled back (or dry-run found a target), 2 no eligible target,
 from __future__ import annotations
 
 import argparse
+import datetime
 import json
 import os
 import sys
@@ -63,6 +64,13 @@ SERVICE_ID = os.environ.get("RAILWAY_SERVICE_ID", "f6198b88-799d-4b60-8cc8-069f3
 
 # Statuses that mean "this deployment is, or is becoming, the live one".
 LIVE_STATUSES = {"SUCCESS", "DEPLOYING", "BUILDING", "QUEUED", "WAITING"}
+
+# Anti-stacking: refuse to roll back onto a deployment that only just became
+# live. More than one actor can react to the same incident (two worker
+# sentinel processes, plus auto-rollback.yml as a backstop), and the second
+# one to act would skip the just-restored image as "same commit as current"
+# and roll back further than anyone intended.
+MIN_CURRENT_AGE_S = int(os.environ.get("RAILWAY_ROLLBACK_MIN_AGE_S", "600"))
 
 _DEPLOYMENTS_Q = """
 query deployments($input: DeploymentListInput!, $first: Int) {
@@ -143,7 +151,27 @@ def list_deployments(token: str, service_id: str = SERVICE_ID, first: int = 25) 
     return [e["node"] for e in edges if e.get("node")]
 
 
-def pick_rollback_target(deployments: list[dict]) -> tuple[dict | None, dict | None, str]:
+def _parse_ts(value) -> float:
+    """Railway timestamps -> epoch seconds. 0.0 when unparseable."""
+    if not value or not isinstance(value, str):
+        return 0.0
+    txt = value.strip().replace("Z", "+00:00")
+    if " " in txt and "T" not in txt:
+        txt = txt.replace(" ", "T", 1)
+    try:
+        dt = datetime.datetime.fromisoformat(txt)
+    except ValueError:
+        return 0.0
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=datetime.timezone.utc)
+    return dt.timestamp()
+
+
+def pick_rollback_target(
+    deployments: list[dict],
+    now: float | None = None,
+    min_current_age_s: int = MIN_CURRENT_AGE_S,
+) -> tuple[dict | None, dict | None, str]:
     """Choose what to roll back *from* and *to*.
 
     Pure function so it can be tested against real captured Railway data
@@ -151,11 +179,29 @@ def pick_rollback_target(deployments: list[dict]) -> tuple[dict | None, dict | N
 
     Returns (current, target, reason). `target` is None when no eligible
     rollback exists, and `reason` explains why.
+
+    `min_current_age_s` is the anti-stacking guard. More than one actor can
+    decide to roll back the same incident: the worker sentinel runs on two
+    processes, and auto-rollback.yml is still armed as a backstop. Whoever
+    acts second would see the freshly restored good image as "same commit as
+    current", skip it, and roll back to something OLDER — turning one correct
+    rollback into an over-rollback. So: if the live deployment changed within
+    the last few minutes, someone already acted; do nothing. Pass 0 to
+    override (the CLI exposes --force).
     """
     if not deployments:
         return None, None, "Railway returned no deployments for this service"
 
     current = next((d for d in deployments if d.get("status") in LIVE_STATUSES), None)
+    if current is not None and min_current_age_s > 0:
+        created = _parse_ts(current.get("createdAt"))
+        age = (now if now is not None else time.time()) - created
+        if created and age < min_current_age_s:
+            return current, None, (
+                f"live deployment is only {int(age)}s old (< {min_current_age_s}s) — "
+                "something just deployed or already rolled back; refusing to stack "
+                "a second rollback on top of it"
+            )
     if current is None:
         return None, None, "no live deployment found (nothing is currently serving)"
 
@@ -225,6 +271,9 @@ def main() -> int:
     ap.add_argument("--service-id", default=SERVICE_ID)
     ap.add_argument("--wait-timeout", type=int, default=420)
     ap.add_argument("--no-wait", action="store_true", help="issue the rollback but do not poll for recovery")
+    ap.add_argument("--force", action="store_true",
+                    help=f"ignore the {MIN_CURRENT_AGE_S}s anti-stacking guard (a human is sure "
+                         "no other actor has already rolled back)")
     args = ap.parse_args()
 
     out: dict = {"ok": False, "action": "none", "dry_run": args.dry_run}
@@ -247,7 +296,9 @@ def main() -> int:
         print(f"::error::{out['reason']}", file=sys.stderr)
         return emit(3)
 
-    current, target, reason = pick_rollback_target(deployments)
+    current, target, reason = pick_rollback_target(
+        deployments, min_current_age_s=0 if args.force else MIN_CURRENT_AGE_S
+    )
     out["current"] = {"id": current["id"], "sha": commit_sha(current)} if current else None
 
     if target is None:
