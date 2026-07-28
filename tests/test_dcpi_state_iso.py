@@ -57,6 +57,32 @@ class TestCharlotte:
         assert "charlotte" not in _MARKET_ISO_OVERRIDES
 
 
+class TestMichigan:
+    """Same defect shape as NC: the whole state was labelled PJM when PJM
+    serves almost none of it."""
+
+    def test_michigan_is_not_pjm(self):
+        assert _state_to_iso("MI") == "MISO"
+        assert _state_to_iso("MI") != "PJM"
+
+    def test_every_michigan_market_resolves_to_miso(self):
+        # The four that exist, all on DTE Electric or Consumers Energy.
+        # Probed live 2026-07-28: all four reported iso=PJM before this fix.
+        for slug in ("detroit", "southfield", "grand-rapids", "lansing"):
+            assert _resolve(slug, "MI") == "MISO"
+
+    def test_no_override_needed_for_the_pjm_sliver(self):
+        # PJM's only Michigan footprint is AEP Indiana Michigan Power in the
+        # far southwest. No DCPI market sits there — benton-harbor and
+        # kalamazoo both 404 — so unlike Missouri this state has no split to
+        # carve out. If one is ever added it needs a _MARKET_ISO_OVERRIDES
+        # entry of "PJM", and this test is the reminder.
+        assert not any(
+            slug in _MARKET_ISO_OVERRIDES
+            for slug in ("benton-harbor", "kalamazoo", "st-joseph")
+        )
+
+
 class TestKansasCity:
     def test_kansas_city_resolves_to_spp(self):
         assert _resolve("kansas-city", "MO") == "SPP"
@@ -110,10 +136,6 @@ class TestThreeMapDrift:
         # state: (routes/dcpi.py, the other two)
         "AL": ("SOCO", "SERC"),   # SOCO is a balancing authority, SERC the region
         "GA": ("SOCO", "SERC"),   # same
-        "MI": ("PJM", "MISO"),    # Detroit is DTE/Consumers = MISO; PJM is the
-                                  # AEP I&M sliver in the southwest. Looks wrong,
-                                  # same shape as the NC bug — not fixed here
-                                  # because it was not in scope.
         "SC": ("SOCO", "SERC"),   # Duke / Dominion SC / Santee Cooper, not Southern Co
         "SD": ("MISO", "SPP"),    # genuinely split; neither value is clean
         "MO": ("MISO", "SPP"),    # split: StL=MISO (state default), KC=SPP (override)
@@ -125,9 +147,12 @@ class TestThreeMapDrift:
         body = src.split("US_STATE_ISO = {")[1].split("}")[0]
         return dict(re.findall(r'"([A-Z]{2})"\s*:\s*"([A-Za-z-]+)"', body))
 
-    def test_nc_and_the_other_maps_now_agree(self):
-        # The fix brought dcpi.py into line with the map that was already right.
-        assert self._shared_map()["NC"] == _state_to_iso("NC") == "SERC"
+    def test_nc_and_mi_now_agree_with_the_other_maps(self):
+        # Both fixes brought dcpi.py into line with the maps that were already
+        # right — neither invented a new value.
+        shared = self._shared_map()
+        assert shared["NC"] == _state_to_iso("NC") == "SERC"
+        assert shared["MI"] == _state_to_iso("MI") == "MISO"
 
     def test_no_undocumented_drift(self):
         shared = self._shared_map()

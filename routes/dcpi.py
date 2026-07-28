@@ -1046,7 +1046,15 @@ def _state_to_iso(state: str) -> str:
         # the charlotte-nc defect: PJM is a real RTO, so consumers took iso=PJM
         # literally and pulled PJM queue projects for a Duke grid. SERC is the
         # reliability region, matching what the other two maps already say.
-        "OH":"PJM","KY":"PJM","NC":"SERC","IN":"PJM","IL":"PJM","MI":"PJM",
+        # MI corrected 2026-07-28: PJM -> MISO, same defect shape as NC. The
+        # Michigan grid is DTE Electric (Detroit) + Consumers Energy (most of
+        # the rest), both MISO; PJM's ONLY Michigan footprint is the AEP
+        # Indiana Michigan Power sliver in the far southwest (Benton Harbor /
+        # St. Joseph). All four Michigan DCPI markets — Detroit, Southfield,
+        # Grand Rapids, Lansing — sit on DTE or Consumers, and no market exists
+        # in the I&M sliver (benton-harbor and kalamazoo both 404), so this
+        # needs no per-market override. Matches the other two maps.
+        "OH":"PJM","KY":"PJM","NC":"SERC","IN":"PJM","IL":"PJM","MI":"MISO",
         "MN":"MISO","WI":"MISO","IA":"MISO","ND":"MISO","SD":"MISO","MO":"MISO",
         "AR":"MISO","LA":"MISO","MS":"MISO",
         "KS":"SPP","OK":"SPP","NE":"SPP",
