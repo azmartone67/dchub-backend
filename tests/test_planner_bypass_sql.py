@@ -146,3 +146,28 @@ def test_observation_and_judgement_are_separate_fields():
     for field in ("planner_adoption_pct", "manual_orchestration_pct",
                   "planner_bypass_pct", "bypass_definition"):
         assert field in src, f"{field} missing — the two-metric split was lost"
+
+
+def test_metric_declares_its_definition_version():
+    """ChatGPT's fifth field (07-28). The four-part model — observation,
+    interpretation, assumptions, consumers — misses the failure that actually
+    bit us: the numbers were never wrong, the INTERPRETATION CONTRACT changed
+    under a consumer that did not know it. `planner_first` kept meaning
+    "first call was plan_query" long after execute_plan became the front door,
+    and a consumer reading v1 semantics off a v2 producer recommended the
+    opposite of the fix. Declaring the version makes that checkable."""
+    assert pb.DEFINITION_VERSION >= 2
+    src = open(pb.__file__.replace('.pyc', '.py'), encoding='utf-8').read()
+    assert '"definition_version"' in src, "the payload must carry the version, not just the module"
+    assert '"definition_changelog"' in src, \
+        "a version with no changelog tells a consumer it is incompatible but not why"
+
+
+def test_every_declared_version_is_documented():
+    """A bump with no changelog entry is a version nobody can act on."""
+    import re
+    src = open(pb.__file__.replace('.pyc', '.py'), encoding='utf-8').read()
+    body = src[src.index('"definition_changelog"'):]
+    documented = {int(m) for m in re.findall(r'^\s*(\d+):', body, re.M)}
+    for v in range(1, pb.DEFINITION_VERSION + 1):
+        assert v in documented, f"DEFINITION_VERSION {v} has no changelog entry"

@@ -96,6 +96,25 @@ planner_bypass_bp = Blueprint("planner_bypass", __name__)
 FRONT_DOOR = "execute_plan"
 LEGACY_DOOR = "plan_query"
 
+# ★★ CONTRACT VERSION — ChatGPT's fifth field (07-28). The four we already had
+# (observation / interpretation / assumptions / consumers) do not catch the
+# failure that actually bit us: the numbers were never wrong, the INTERPRETATION
+# CONTRACT changed underneath a consumer that did not know it.
+#
+# Concretely: agent_adoption_master_shell's `planner_first` kept meaning
+# "first call was plan_query" long after execute_plan became the front door. A
+# consumer reading v1 semantics off a v2 producer emitted a recommendation for
+# the exact opposite of the fix. That is API evolution — producer evolved,
+# consumer did not — and these surfaces are versioned whether or not we say so.
+# Declaring it does not create the versioning; it makes it checkable.
+#
+# Consumers SHOULD assert compatibility before acting on these fields.
+# BUMP THIS whenever a field's MEANING changes, even if its name and type do not:
+#   1  initial — single bypass rate, session-scoped, 2+ distinct tools
+#   2  agent-day episodes; observation split from judgement (planner_adoption vs
+#      manual_orchestration); benign fan-out excluded; hand-off signal required
+DEFINITION_VERSION = 2
+
 # Reuse the canonical synthetic-client list rather than inventing a third one
 # (the de-loop drift this repo already fixed once). Same import+fallback shape
 # as routes/enterprise_leads_sweep.py.
@@ -256,6 +275,16 @@ def _measure(days: int = 14) -> dict:
         "ok": True,
         "window_days": days,
         "front_door": FRONT_DOOR,
+        # Declare the semantics, not just the numbers. A consumer that acts on
+        # these fields should refuse to run against a version it does not know.
+        "definition_version": DEFINITION_VERSION,
+        "definition_changelog": {
+            1: "session-scoped; single bypass rate; any 2+ distinct tools counted",
+            2: "agent-day episodes; planner_adoption (observed) split from "
+               "manual_orchestration (observed) and bypass (policy); benign "
+               "fan-out and single-capability lookups excluded; hand-off signal "
+               "required before an episode counts as orchestration",
+        },
         "unit": "agent-day episode (durable api_key, else session; bucketed by calendar day)",
         "status": "UNMEASURED",
         "assumptions": [
