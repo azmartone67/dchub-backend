@@ -1219,12 +1219,24 @@ def fix_enforce_publish_gate():
             """)
 
             # Curated/full-scored rows always publish (handcrafted, trust them)
+            #
+            # r-twin-unpublish (2026-07-28): …except the redundant alias twins.
+            # This UPDATE matches on tier_required alone, and the twins are
+            # tier_required='free', so it re-published every one of them. That
+            # made retiring them impossible: the DCPI recompute unpublishes the
+            # twin, this job flips it straight back, and the pair flap forever
+            # depending on which ran last. Excluding them by slug is what makes
+            # the retirement stick. Imported from util.market_aliases (no side
+            # effects) rather than copied — a second copy of this table is the
+            # bug class fixed in util/iso_taxonomy the same day.
+            from util.market_aliases import REDUNDANT_TWIN_SLUGS
             cur.execute("""
                 UPDATE market_power_scores
                 SET quality_score = GREATEST(quality_score, 80),
                     published = true
-                WHERE tier_required IS NULL OR tier_required != 'lite-pro';
-            """)
+                WHERE (tier_required IS NULL OR tier_required != 'lite-pro')
+                  AND market_slug <> ALL(%s);
+            """, (sorted(REDUNDANT_TWIN_SLUGS),))
 
             # Lite-pro rows: publish iff quality_score >= 60
             cur.execute("""
