@@ -1,0 +1,104 @@
+name: actuation shell — weekly posed investigation
+
+# Closes the gap Actuation shell #39 lane 3 measures (2026-07-28).
+#
+# WHAT WAS ACTUALLY DARK — precisely, because the obvious reading is wrong:
+# brain-self-direct.yml ALREADY runs investigate() every 4 hours, so the
+# investigation CAPABILITY is exercised constantly. But it writes the brain's OWN
+# chosen questions to brain_self_agenda (live, 146 rows). `brain_investigations`
+# holds questions POSED to the brain — and nothing ever posed one on a schedule,
+# so its newest row sat 26 days stale while the self-directed lane ran daily.
+# This cron supplies the posed question. It does not duplicate self-direct.
+#
+# THE QUESTION IS DERIVED, NOT FROZEN. The shell builds it at fire time from the
+# critical checks that are RED right now (_derive_question). A cron that asked one
+# hardcoded question forever would become exactly the stale noise this shell
+# exists to catch — by the time it ran, the binding constraint would have moved.
+#
+# WEEKLY, not daily. An investigation is a deep LLM run and the binding constraint
+# does not change day to day; the other deep brain lanes are weekly too
+# (brain-lifecycle-curator '37 7 * * 1', agent-digest-weekly '27 15 * * 1').
+#
+# ★TARGETS THE RAILWAY ORIGIN, NOT dchub.cloud. Verified 2026-07-28: the same POST
+# gave 503 through the CF edge and 200 against the origin — the zone route has a
+# 15s timeout that 503s admin POSTs. Every brain workflow uses RAILWAY_BASE for
+# this reason.
+#
+# ★FIRE-AND-FORGET BY DESIGN. The endpoint dispatches the investigation on a
+# background thread and returns immediately, because awaiting an LLM call would pin
+# a gunicorn worker for minutes and starve the small pool. So a fast 200 here means
+# DISPATCHED, not finished — the investigation writes its own brain_investigations
+# row when it completes. Do not add a longer --max-time expecting the result.
+#
+# Slot: Monday 06:53 UTC. Minute 53 is unused across all 159 cron lines in this
+# repo, and hour 6 Monday holds only minutes 21 and 39 — chosen to avoid the
+# colliding-cron class already open as brain-l22 issues #1692 and #1792.
+#
+# Kill: set ACTUATION_SHELL_DISABLE=1 (the endpoint 404s) or disable this workflow.
+
+on:
+  schedule:
+    - cron: '53 6 * * 1'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+env:
+  RAILWAY_BASE: https://dchub-backend-production.up.railway.app
+
+jobs:
+  posed-investigation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - name: Fire lane 3 — pose an investigation derived from live red criticals
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${ADMIN_KEY:-}" ]; then
+            echo "::warning::DCHUB_ADMIN_KEY not set — skipping posed investigation"
+            exit 0
+          fi
+          response=$(curl -sS --max-time 120 -X POST \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            "$RAILWAY_BASE/api/v1/admin/actuation/master-tick?fire=investigations" \
+            || echo '{"ok":false,"error":"curl_fail"}')
+          echo "$response" | head -c 3000
+          echo
+          echo "$response" | python3 -c "
+          import json, sys
+          try:
+              d = json.load(sys.stdin)
+          except Exception as e:
+              print(f'::warning::unparseable response: {e}'); sys.exit(0)
+          f = d.get('fired') or {}
+          if f.get('dispatched'):
+              print('::notice::actuation lane 3 DISPATCHED a posed investigation '
+                    f\"({d.get('lanes_pass')}/{d.get('lanes_total')} lanes green). \"
+                    'It writes its own brain_investigations row on completion.')
+              print('::notice::question: ' + (f.get('question') or '')[:300])
+          else:
+              print('::warning::lane 3 did NOT dispatch: '
+                    + str(f.get('error') or d.get('error') or 'no fired block')[:300])
+          "
+
+      - name: Report the five lane verdicts (visible without opening the dashboard)
+        if: always()
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          set -euo pipefail
+          [ -z "${ADMIN_KEY:-}" ] && exit 0
+          curl -sS --max-time 60 \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            "$RAILWAY_BASE/api/v1/admin/actuation/master-tick" \
+          | python3 -c "
+          import json, sys
+          d = json.load(sys.stdin)
+          print(f\"actuation shell: {d.get('lanes_pass')}/{d.get('lanes_total')} lanes green\")
+          for l in d.get('lanes', []):
+              v = 'PASS' if l.get('pass') else ('?' if l.get('pass') is None else 'FAIL')
+              print(f\"  [{v:4}] {l.get('label')}  ({l.get('progress')})\")
+          " || echo "::warning::lane report unavailable"

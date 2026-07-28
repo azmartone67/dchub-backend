@@ -371,16 +371,41 @@ def _ensure_snapshots(pc) -> None:
         logger.debug("[actuation] snapshot ddl skipped: %s", e)
 
 
-def _fire_investigations() -> dict:
+def _derive_question(lanes: list) -> str:
+    """Build the investigation question from the CURRENTLY-failing critical checks.
+
+    ★A cron that fires a frozen question forever becomes the stale noise this whole
+    shell exists to catch: by the time it runs, the binding constraint may have
+    moved. Deriving the question from live red criticals means the scheduled fire
+    always asks about what is actually broken THIS week. Falls back to the relay
+    cliff, which is the standing #1 while lane 1 is red.
+    """
+    reds = [ch["detail"] for lane in lanes for ch in lane["checks"]
+            if ch.get("critical") and ch.get("pass") is False]
+    if not reds:
+        return ("All critical actuation checks are green for the first time. Which "
+                "measurement is most likely wrong or too lenient, rather than the "
+                "business genuinely being fixed?")
+    body = " ".join(r.rstrip(".") + "." for r in reds[:3])
+    return ("These are the measured, currently-failing critical constraints on DC "
+            f"Hub's actuation loop: {body} Given these, what is the SINGLE highest-"
+            "leverage change, and what would prove within 7 days that it worked?")
+
+
+def _fire_investigations(lanes: list | None = None) -> dict:
     """Lane 3's actuator. The ONE thing this shell fires.
 
     Goes to the app's OWN blueprint via an internal HTTP call to the internal
     Railway URL — never through the public CF edge (the pool-saturation footgun).
     POST-gated and never called from the dashboard GET path.
+
+    ★NB what is actually dark: brain-self-direct.yml already runs investigate()
+    every 4h, but it writes the brain's OWN chosen questions to brain_self_agenda
+    (live, 146 rows). brain_investigations holds questions POSED to it — that path
+    has no scheduler, which is why it reads 26d stale. This actuator supplies the
+    posed question, derived from live reds.
     """
-    q = ("Zero real humans have ever opened a relay link (relay_opens holds only "
-         "our own probe traffic) while the write path is proven functional. What "
-         "single change makes an agent actually hand the link to its human?")
+    q = _derive_question(lanes or [])
     # ★.strip() is REQUIRED, not defensive: DCHUB_INTERNAL_API carries a TRAILING
     # NEWLINE in the Railway env. Without the strip, urllib rejects the URL outright
     # ("URL can't contain control characters … found at least '\\n'") — which is
@@ -393,20 +418,39 @@ def _fire_investigations() -> dict:
             or "http://127.0.0.1:" + ((os.environ.get("PORT") or "8080").strip()))
     if base and not base.startswith("http"):
         base = "https://" + base
+    url = base.rstrip("/") + "/api/v1/brain/investigate"
+    key = (os.environ.get("DCHUB_ADMIN_KEY") or "").strip()
+
+    # ★DISPATCH ON A THREAD, do not await. An investigation is an LLM call —
+    # brain-self-direct.yml allows it 180s. The first attempt awaited it with a 20s
+    # timeout and died with "The read operation timed out" while the work was still
+    # running; awaiting it properly would instead pin a gunicorn worker for minutes
+    # and starve the small pool (the same reason cron_reach_rollup threads its
+    # heavy scan and returns 202). The investigation writes its own
+    # brain_investigations row on completion, so fire-and-forget loses nothing.
+    def _bg():
+        try:
+            import urllib.request
+            req = urllib.request.Request(
+                url, data=json.dumps({"question": q}).encode(),
+                headers={"Content-Type": "application/json",
+                         "X-Admin-Key": key,
+                         "User-Agent": "dchub-actuation-shell/1.0"},
+                method="POST")
+            with urllib.request.urlopen(req, timeout=300) as r:
+                logger.info("[actuation] investigate dispatched -> %s", r.status)
+        except Exception as e:
+            logger.warning("[actuation] investigate failed: %s", str(e)[:200])
+
     try:
-        import urllib.request
-        req = urllib.request.Request(
-            base.rstrip("/") + "/api/v1/brain/investigate",
-            data=json.dumps({"question": q}).encode(),
-            headers={"Content-Type": "application/json",
-                     "X-Admin-Key": (os.environ.get("DCHUB_ADMIN_KEY") or "").strip(),
-                     "User-Agent": "dchub-actuation-shell/1.0"},
-            method="POST")
-        with urllib.request.urlopen(req, timeout=20) as r:
-            return {"fired": True, "status": r.status,
-                    "body": r.read(2000).decode("utf-8", "replace")[:600]}
+        threading.Thread(target=_bg, daemon=True,
+                         name="actuation-investigate").start()
+        return {"dispatched": True, "url": url, "question": q[:400],
+                "note": ("fire-and-forget: an investigation takes minutes and writes "
+                         "its own brain_investigations row. Poll that table, or "
+                         "/api/v1/brain/innovation/dashboard, for the result.")}
     except Exception as e:
-        return {"fired": False, "error": str(e)[:300]}
+        return {"dispatched": False, "error": str(e)[:300]}
 
 
 def _run_tick(fired: dict | None = None) -> dict:
@@ -483,16 +527,21 @@ def actuation_tick():
         return jsonify(ok=False, error="disabled"), 404
     if not _admin_ok():
         return jsonify(ok=False, error="forbidden"), 403
-    fired = None
-    if request.method == "POST" and (request.args.get("fire") or "") == "investigations":
-        fired = _fire_investigations()
-        with _cache_lock:
-            _cache["payload"] = None
     if (request.args.get("fresh") or "") == "1":
         with _cache_lock:
             _cache["payload"] = None
-    if fired is not None:
-        return jsonify(_run_tick(fired=fired))
+    if request.method == "POST" and (request.args.get("fire") or "") == "investigations":
+        # Run the lanes FIRST so the question is derived from live reds, then
+        # dispatch. ★Call this against the RAILWAY ORIGIN, not dchub.cloud: the CF
+        # zone route has a 15s timeout that 503s admin POSTs (verified 2026-07-28 —
+        # edge gave 503, origin gave 200), which is why every brain workflow uses
+        # RAILWAY_BASE.
+        payload = _run_tick()
+        payload["fired"] = _fire_investigations(payload.get("lanes") or [])
+        with _cache_lock:
+            _cache["ts"] = time.time()
+            _cache["payload"] = payload
+        return jsonify(payload)
     return jsonify(_tick_cached())
 
 
