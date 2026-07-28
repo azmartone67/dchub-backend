@@ -288,6 +288,65 @@ def test_run_scripts_are_valid_bash(name):
         )
 
 
+def _logical_commands(script: str):
+    """Comment-stripped logical shell commands (backslash continuations joined).
+
+    Only WHOLE-LINE comments are dropped. Splitting on the first `#` would
+    truncate at the `#` inside a quoted PR title (`"revert: brain PR #123"`)
+    and silently hide the rest of the command from these guards — which it did.
+    """
+    lines = [
+        "" if ln.lstrip().startswith("#") else ln.rstrip()
+        for ln in script.splitlines()
+    ]
+    out, buf = [], ""
+    for ln in lines:
+        if ln.endswith("\\"):
+            buf += ln[:-1] + " "
+            continue
+        out.append(buf + ln)
+        buf = ""
+    if buf:
+        out.append(buf)
+    return out
+
+
+def _pr_create_commands(path: pathlib.Path):
+    return [
+        cmd
+        for script in _run_scripts(path)
+        for cmd in _logical_commands(script)
+        if "gh pr create" in cmd
+    ]
+
+
+@pytest.mark.parametrize("name", GIT_PUSH_WORKFLOWS)
+def test_pr_create_exit_code_is_not_masked(name):
+    """`gh pr create ... | tail` throws away the exit code.
+
+    The rollback path recorded `outcome=opened` off a piped create, so a
+    failure — e.g. `could not add label: 'auto-rollback' not found`, which is
+    exactly what happened — would have been reported to the incident issue as
+    a revert PR that did not exist.
+    """
+    for cmd in _pr_create_commands(WORKFLOWS / name):
+        after = cmd.split("gh pr create", 1)[1]
+        assert "|" not in after, (
+            f"{name} pipes gh pr create, masking its exit code: {cmd.strip()!r}"
+        )
+
+
+@pytest.mark.parametrize("name", GIT_PUSH_WORKFLOWS)
+def test_pr_create_does_not_require_a_label(name):
+    """`--label` on create is fatal when the label is missing; label after."""
+    for cmd in _pr_create_commands(WORKFLOWS / name):
+        assert "--label" not in cmd, (
+            f"{name} passes --label to gh pr create; if the label does not "
+            "exist the whole command fails and no PR is opened. Use "
+            f"`gh pr edit --add-label` afterwards instead: {cmd.strip()!r}"
+        )
+
+
 @pytest.mark.parametrize("name", GIT_PUSH_WORKFLOWS)
 def test_no_push_failure_is_swallowed(name):
     """`git push ... || true` is what hid two weeks of no-op runs.

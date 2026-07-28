@@ -178,10 +178,18 @@ jobs:
           # `sed -i` differs between GNU and BSD; redirect instead.
           sed "s|__MERGE__|${MERGE_SHA}|; s|__PRNUM__|${PR_NUMBER}|; s|__RUN__|${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}|" \
             /tmp/pr-body.md > /tmp/pr-body.final.md && mv /tmp/pr-body.final.md /tmp/pr-body.md
-          URL=$(gh pr create --base main --head "$BRANCH" \
-            --title "revert: brain PR #${PR_NUMBER} failed post-merge health check" \
-            --body-file /tmp/pr-body.md \
-            --label auto-rollback 2>&1 | tail -1)
+          # Capture rather than pipe: piping into `tail` masks gh's exit code,
+          # so a failed create would still be reported as a PR URL.
+          if ! OUT=$(gh pr create --base main --head "$BRANCH" \
+                --title "revert: brain PR #${PR_NUMBER} failed post-merge health check" \
+                --body-file /tmp/pr-body.md 2>&1); then
+            echo "::error::gh pr create failed: $OUT"
+            echo "url=(pr create failed)" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          URL=$(printf '%s\n' "$OUT" | tail -1)
+          # Best-effort label; a missing label must not block the revert PR.
+          gh pr edit "$URL" --add-label auto-rollback >/dev/null 2>&1 || true
           echo "url=$URL" >> $GITHUB_OUTPUT
 
       - name: Comment outcome on the brain PR

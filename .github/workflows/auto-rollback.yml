@@ -187,12 +187,23 @@ jobs:
           # identically on the runner and on a laptop (it is tested locally).
           sed "s|__SHA__|${SHA}|; s|__RW__|${RW_OUTCOME:-unknown}|; s|__RUN__|${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}|" \
             /tmp/pr-body.md > /tmp/pr-body.final.md && mv /tmp/pr-body.final.md /tmp/pr-body.md
-          URL=$(gh pr create \
-            --base main --head "$BRANCH" \
-            --title "revert: auto-rollback of ${SHA} (SLO hard_burn)" \
-            --body-file /tmp/pr-body.md \
-            --label auto-rollback 2>&1 | tail -1)
+          # No pipe into `tail` here: that masks gh's exit code, so a failed
+          # `gh pr create` would still record outcome=opened and the alert
+          # would claim a revert PR exists when none does. Capture, then test.
+          if ! OUT=$(gh pr create \
+                --base main --head "$BRANCH" \
+                --title "revert: auto-rollback of ${SHA} (SLO hard_burn)" \
+                --body-file /tmp/pr-body.md 2>&1); then
+            echo "::error::gh pr create failed: $OUT"
+            echo "outcome=pr-failed" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          URL=$(printf '%s\n' "$OUT" | tail -1)
           echo "PR: $URL"
+          # Labelling is best-effort and must never block the revert PR: a
+          # missing label makes `gh pr create --label` fail outright.
+          gh pr edit "$URL" --add-label auto-rollback >/dev/null 2>&1 \
+            || echo "::warning::could not label $URL (missing label?) — PR is open regardless"
           echo "url=$URL" >> $GITHUB_OUTPUT
           echo "outcome=opened" >> $GITHUB_OUTPUT
 
