@@ -4,6 +4,12 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # On demand. Several steps here self-skip when a secret is absent
+  # (DCHUB_FRONTEND_RO_TOKEN, DCHUB_QA_PRO_TOKEN) and the job still reports
+  # success, so after adding one you need to re-run this to confirm the step
+  # actually EXECUTES rather than printing its skip warning. Without a manual
+  # trigger the only way to check was to open a throwaway PR.
+  workflow_dispatch:
 jobs:
   lint:
     runs-on: ubuntu-latest
