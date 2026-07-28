@@ -315,11 +315,13 @@ def test_dcpi_state_to_iso_delegates_rather_than_redefining():
 # ── scoring-parameter coverage ──────────────────────────────────────────
 #: Labels with NO iso_defaults row, which therefore silently inherit WECC's
 #: western-grid parameters (curtailment 7.5%, approval 50%, btm 500MW).
-#: PRE-EXISTING as of r-iso-taxonomy — SOCO (~15 markets) and FRCC (~7) were
-#: already live and already falling back before this change, which adds no
-#: market to this set. Recorded rather than fixed because writing real
-#: defaults moves ~22 published scores and belongs in its own change.
-_KNOWN_ISO_DEFAULTS_GAP = {"AK", "FRCC", "HECO", "SOCO"}
+#: r-iso-defaults-southeast (2026-07-28): SOCO and FRCC CLOSED — they carry
+#: real Southeast rows now, so ~22 markets stopped being scored on Western
+#: parameters. AK and HECO remain: both are isolated island/remote grids
+#: whose planning numbers do not resemble WECC either, but neither has a
+#: scored market today, so closing them would be writing fiction with no
+#: reader. Add the row when a market lands there.
+_KNOWN_ISO_DEFAULTS_GAP = {"AK", "HECO"}
 
 
 def _iso_defaults_keys():
@@ -445,4 +447,71 @@ def test_ssr_render_call_passes_place_label():
     assert "place_label=" in call, (
         "DCPI_MARKET_TEMPLATE is rendered without place_label — the JSON-LD "
         "Place name would serialize as null"
+    )
+
+
+# ── Southeast scoring parameters (r-iso-defaults-southeast) ─────────────
+def _iso_defaults_row(label):
+    """Parse one iso_defaults row from source (no DB import)."""
+    text = open(os.path.join(ROOT, "routes/dcpi.py"), encoding="utf-8").read()
+    i = text.index("    iso_defaults = {")
+    j = text.index("base = iso_defaults.get(iso", i)
+    m = re.search(r'"%s":\s*\{(.*?)\}' % label, text[i:j], re.S)
+    assert m, f"{label} has no iso_defaults row"
+    row = eval("{" + m.group(1) + "}")           # literal dict of numbers
+    assert len(row) >= 5, f"{label} row parsed as {row} — refusing to test vacuously"
+    return row
+
+
+@pytest.mark.parametrize("label", ["SOCO", "FRCC"])
+def test_southeast_isos_do_not_inherit_western_parameters(label):
+    """SOCO and FRCC fell through to WECC, so ~22 Southeast markets were
+    scored on Western-grid numbers. `iso_defaults.get(iso, WECC)` fails
+    OPEN, so the only symptom was wrong output — never an error."""
+    row = _iso_defaults_row(label)
+    wecc = _iso_defaults_row("WECC")
+    assert row != wecc, f"{label} is byte-identical to WECC — that is the bug"
+    # The Southeast has essentially no renewable curtailment; WECC's 7.5%
+    # was worth 15 excess-power points (curtailment is 20% of that score).
+    assert row["curtailment_pct"] <= 2.0, (
+        f"{label} curtailment {row['curtailment_pct']}% is a Western number; "
+        "the non-RTO Southeast (SERC 1.5, TVA 1.0) has almost none"
+    )
+    # btm_headroom_mw == 500 lands exactly on the `bh >= 500` threshold in
+    # derive_top_signals and publishes a fabricated BTM opportunity.
+    assert row["btm_headroom_mw"] < 500, (
+        f"{label} btm_headroom {row['btm_headroom_mw']}MW would republish "
+        '"500 MW behind-the-meter industrial headroom" as a fake opportunity'
+    )
+
+
+def test_southeast_family_is_internally_consistent():
+    """SOCO/FRCC must score in the same band as their real peers.
+
+    The tell that the WECC fallback was wrong: given identical live inputs
+    the non-RTO Southeast scored ~34 excess (AVOID) while SOCO/FRCC scored
+    50.4 (CAUTION) purely on borrowed Western parameters.
+    """
+    text = open(os.path.join(ROOT, "routes/dcpi.py"), encoding="utf-8").read()
+    ns = {}
+    for name in ("_clip", "compute_excess_power_score"):
+        exec(compile(_func_src("routes/dcpi.py", name), "dcpi", "exec"), ns)
+
+    same_inputs = {"gen_additions_12mo_mw": 1400.0, "demand_growth_yoy_pct": 5}
+    scores = {}
+    for label in ("SERC", "TVA", "SOCO", "FRCC"):
+        d = dict(_iso_defaults_row(label))
+        d.update(same_inputs)
+        scores[label] = ns["compute_excess_power_score"](d)
+
+    assert scores, "no scores computed — refusing to pass vacuously"
+    spread = max(scores.values()) - min(scores.values())
+    assert spread <= 15, (
+        f"non-RTO Southeast excess scores diverge by {spread:.1f}: {scores}. "
+        "One of these is probably back on Western parameters."
+    )
+    # And none of them should reach the CAUTION floor on these inputs.
+    assert all(v < 50 for v in scores.values()), (
+        f"a Southeast ISO scored >=50 excess (the CAUTION threshold) on "
+        f"middling inputs: {scores} — check for a WECC-shaped row"
     )

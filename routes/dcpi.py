@@ -1710,6 +1710,46 @@ def gather_metrics_for_market(market: tuple) -> dict:
                    "queue_approval_rate_pct": 60, "btm_headroom_mw": 350},
         "TVA":    {"queue_wait_months": 22, "reserve_margin_pct": 19.5, "curtailment_pct": 1.0,
                    "queue_approval_rate_pct": 65, "btm_headroom_mw": 250},
+        # r-iso-defaults-southeast (2026-07-28): SOCO and FRCC were MISSING, and
+        # `iso_defaults.get(iso, iso_defaults["WECC"])` fails OPEN — so ~22 live
+        # Southeast markets were being scored with WESTERN-grid parameters. Not
+        # merely imprecise: Atlanta (Georgia Power) published `curtailment_pct:
+        # 7.5` — a Western curtailment figure, worth 15 of its 49.2 excess-power
+        # points (curtailment is 20% of that score) — and every SOCO/FRCC market
+        # published the opportunity "500 MW behind-the-meter industrial
+        # headroom", which is simply WECC's btm_headroom_mw landing exactly on
+        # the `bh >= 500` threshold in derive_top_signals.
+        #
+        # Both are non-RTO, vertically integrated, so they belong to the SERC/TVA
+        # family above (low curtailment, high approval, modest BTM) — NOT WECC's.
+        # Same standing as every other row here: heuristic planning-level
+        # estimates, and they stay labelled `modeled` in data_basis.
+        #
+        # SOCO = Georgia Power + Alabama Power + Mississippi Power.
+        #   wait 30   longest in the Southeast family: Georgia is the most
+        #             contended large-load market in it. (Atlanta's slug_override
+        #             of 36 still wins for the metro itself.)
+        #   reserve   15.5 — Southern plans to a tighter margin than SERC's 18
+        #             under the current load surge.
+        #   curtail   0.5 — gas/nuclear/coal fleet with modest solar; the lowest
+        #             in the family, below TVA's 1.0.
+        #   approval  65 — vertically integrated bilateral interconnection has
+        #             far less speculative attrition than an RTO queue (cf. PJM 30).
+        #   btm       300 — between TVA 250 and SERC 350, and deliberately under
+        #             the 500 threshold that was fabricating the BTM opportunity.
+        "SOCO":   {"queue_wait_months": 30, "reserve_margin_pct": 15.5, "curtailment_pct": 0.5,
+                   "queue_approval_rate_pct": 65, "btm_headroom_mw": 300},
+        # FRCC = FPL + Duke Energy Florida + TECO.
+        #   reserve   20.0 — the firmest number here: Florida utilities plan to a
+        #             20% reserve margin (long-standing FPSC/FRCC planning basis).
+        #   wait 26   peninsula with limited import capability, so transmission
+        #             binds sooner, but still non-RTO and faster than an RTO queue.
+        #   curtail   1.0 — large FPL solar build, but high summer load
+        #             coincidence on a peninsula leaves little to curtail.
+        #   approval  60 · btm 200 — tighter transmission envelope and less heavy
+        #             industry than the Southeast interior.
+        "FRCC":   {"queue_wait_months": 26, "reserve_margin_pct": 20.0, "curtailment_pct": 1.0,
+                   "queue_approval_rate_pct": 60, "btm_headroom_mw": 200},
         # r57 (2026-05-25): International ISO defaults. Sourced from
         # ENTSO-E 2024 winter outlook, AEMO ESOO 2024, IESO Annual
         # Planning Outlook, EirGrid Generation Capacity Statement 2024,
