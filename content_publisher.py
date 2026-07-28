@@ -2019,8 +2019,13 @@ _METRIC_PATTERNS = [
     # DEDUP_NONE: a completeness statement ("7 of 7 ISOs") is not a story.
     # Deduping on the label would let one coverage post lock out every other for
     # the whole lookback window — "7 of 7 ISOs" suppressing "5 of 6 markets".
+    # 2026-07-28: the lookarounds stop it reading ACROSS a thousands separator.
+    # \b let "4,923 of 12,650 analyst-verified" match as "923 of 12" and record
+    # metric_value 923 — a nonsense headline metric off a perfectly ordinary
+    # sentence. Score-only, so it never mis-deduped anything, but the recorded
+    # metric was wrong. "7 of 7" / "18 of 22" are unaffected.
     ("coverage_ratio",
-     _re_legacy.compile(r'\b(\d{1,3})\s+of\s+(\d{1,3})\b'),
+     _re_legacy.compile(r'(?<![\d,])(\d{1,3})\s+of\s+(\d{1,3})(?![\d,])'),
      DEDUP_NONE),
 ]
 
