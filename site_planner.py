@@ -1925,6 +1925,51 @@ def register_site_planner_routes(app):
         })
 
     # ── GET/POST /api/v1/site-planner/climate-intel ──
+    # ── STATIC-SOURCE CACHE (2026-07-28, shell #38 lane 4) ──────────────────
+    # get_climate_intel was the slowest tool on the platform (p50 3,120ms) and
+    # the single failing check in the agent-wait lane. Cause: THREE SEQUENTIAL
+    # external federal calls (USGS ASCE 7 -> ACIS StnMeta -> ACIS StnData), each
+    # with a 12s timeout, so worst case is 36s of BLOCKED agent time.
+    #
+    # ★ Why caching is safe HERE when a response cache generally is not:
+    #   the cached object is the UPSTREAM PUBLIC FEDERAL response, not our view
+    #   of it. ASCE 7-16 seismic is a published building code (fixed); the NOAA
+    #   normals are annual aggregates over a closed 2022-2024 window (fixed).
+    #   It is identical for every caller, so there is NO tier axis to leak —
+    #   unlike a cached tool RESPONSE, which is tier-varying and is a documented
+    #   incident class here. The route is @require_pro, so gating already
+    #   happened upstream of anything stored.
+    # ★ NEVER cache a failure. A cached "unavailable" would pin a permanent hole
+    #   in the data for that coordinate (same lesson as the MCP keyCache, which
+    #   refuses to cache a validation failure because it silently downgrades a
+    #   paid tier to free).
+    # Kill switch, no deploy: CLIMATE_INTEL_CACHE=0
+    _CI_CACHE = {}                      # (kind, lat_r, lng_r) -> (expires_at, value)
+    _CI_TTL_S = 7 * 24 * 3600           # static sources; a week is conservative
+    _CI_MAX   = 4000
+
+    def _ci_key(kind, lat, lng, extra=''):
+        # ~1km grid — far finer than either source's own resolution
+        return (kind, round(float(lat), 2), round(float(lng), 2), extra)
+
+    def _ci_get(key):
+        if os.environ.get('CLIMATE_INTEL_CACHE') == '0':
+            return None
+        hit = _CI_CACHE.get(key)
+        if not hit:
+            return None
+        if hit[0] < time.time():
+            _CI_CACHE.pop(key, None)
+            return None
+        return hit[1]
+
+    def _ci_put(key, value):
+        if os.environ.get('CLIMATE_INTEL_CACHE') == '0':
+            return
+        if len(_CI_CACHE) >= _CI_MAX:       # bounded; simplest correct eviction
+            _CI_CACHE.clear()
+        _CI_CACHE[key] = (time.time() + _CI_TTL_S, value)
+
     @app.route('/api/v1/site-planner/climate-intel', methods=['GET', 'POST'])
     @require_pro
     def site_planner_climate_intel():
@@ -1952,92 +1997,120 @@ def register_site_planner_routes(app):
         radius_km = _f(data.get('radius_km') or data.get('search_radius_km')) or 25.0
 
         # ── seismic (USGS ASCE 7-16 building-codes) ──
-        seismic = {'status': 'unavailable', 'source': 'USGS ASCE 7-16'}
-        try:
-            su = ('https://earthquake.usgs.gov/ws/building-codes/asce7-16/calculate?'
-                  + _up.urlencode({'latitude': lat, 'longitude': lng, 'riskCategory': 'III',
-                                   'siteClass': 'D', 'title': 'dchub'}))
-            req = _u.Request(su, headers={'User-Agent': 'dchub-climate-intel/1.0'})
-            with _u.urlopen(req, timeout=12) as r:
-                sd = ((_j.loads(r.read(500_000).decode('utf-8', 'replace')) or {})
-                      .get('response', {}).get('data', {}))
-            pga = sd.get('pga')
-            if isinstance(pga, (int, float)):
-                lvl = ('very high' if pga >= 0.6 else 'high' if pga >= 0.3
-                       else 'moderate' if pga >= 0.1 else 'low')
-                seismic = {'status': 'available', 'source': 'USGS ASCE 7-16 (earthquake.usgs.gov)',
-                           'peak_ground_acceleration_g': pga, 'ss': sd.get('ss'), 's1': sd.get('s1'),
-                           'seismic_design_category': sd.get('sdc'), 'hazard_class': lvl,
-                           'reference': 'ASCE 7-16, Risk Category III, Site Class D'}
-        except Exception as e:
-            logger.warning(f"climate-intel seismic failed: {e}")
+        def _seismic_block():
+            seismic = {'status': 'unavailable', 'source': 'USGS ASCE 7-16'}
+            _k = _ci_key('seismic', lat, lng)
+            _c = _ci_get(_k)
+            if _c is not None:
+                return _c
+            try:
+                su = ('https://earthquake.usgs.gov/ws/building-codes/asce7-16/calculate?'
+                      + _up.urlencode({'latitude': lat, 'longitude': lng, 'riskCategory': 'III',
+                                       'siteClass': 'D', 'title': 'dchub'}))
+                req = _u.Request(su, headers={'User-Agent': 'dchub-climate-intel/1.0'})
+                with _u.urlopen(req, timeout=12) as r:
+                    sd = ((_j.loads(r.read(500_000).decode('utf-8', 'replace')) or {})
+                          .get('response', {}).get('data', {}))
+                pga = sd.get('pga')
+                if isinstance(pga, (int, float)):
+                    lvl = ('very high' if pga >= 0.6 else 'high' if pga >= 0.3
+                           else 'moderate' if pga >= 0.1 else 'low')
+                    seismic = {'status': 'available', 'source': 'USGS ASCE 7-16 (earthquake.usgs.gov)',
+                               'peak_ground_acceleration_g': pga, 'ss': sd.get('ss'), 's1': sd.get('s1'),
+                               'seismic_design_category': sd.get('sdc'), 'hazard_class': lvl,
+                               'reference': 'ASCE 7-16, Risk Category III, Site Class D'}
+            except Exception as e:
+                logger.warning(f"climate-intel seismic failed: {e}")
+            if seismic.get('status') == 'available':
+                _ci_put(_k, seismic)      # success only — never pin a hole
+            return seismic
 
         # ── climate normals (NOAA via ACIS, tokenless) ──
-        climate = {'status': 'unavailable', 'source': 'NOAA (ACIS/NCEI)'}
-        try:
-            bb = f'{lng - 0.7},{lat - 0.7},{lng + 0.7},{lat + 0.7}'
-            mreq = _u.Request('https://data.rcc-acis.org/StnMeta',
-                              data=_j.dumps({'bbox': bb, 'meta': 'name,ll,sids'}).encode(),
-                              headers={'Content-Type': 'application/json',
-                                       'User-Agent': 'dchub-climate-intel/1.0'})
-            with _u.urlopen(mreq, timeout=12) as r:
-                stns = (_j.loads(r.read(2_000_000).decode('utf-8', 'replace')) or {}).get('meta') or []
-
-            def _hav(la1, lo1, la2, lo2):
-                R = 6371.0
-                p = _m.pi / 180
-                a = (_m.sin((la2 - la1) * p / 2) ** 2
-                     + _m.cos(la1 * p) * _m.cos(la2 * p) * _m.sin((lo2 - lo1) * p / 2) ** 2)
-                return 2 * R * _m.asin(min(1.0, _m.sqrt(a)))
-            best = None
-            for s in stns:
-                ll = s.get('ll')
-                sids = s.get('sids') or []
-                if not ll or not sids:
-                    continue
-                d = _hav(lat, lng, ll[1], ll[0])
-                if best is None or d < best[0]:
-                    best = (d, s)
-            if best is None:
-                climate = {'status': 'unavailable', 'reason': 'no_station_in_area',
-                           'source': 'NOAA (ACIS/NCEI)'}
-            elif best[0] > radius_km:
-                climate = {'status': 'unavailable_exceeds_radius', 'source': 'NOAA (ACIS/NCEI)',
-                           'reason': (f'nearest NOAA station {round(best[0], 1)}km > radius '
-                                      f'{radius_km}km — climate normals not estimated')}
-            else:
-                s = best[1]
-                sid = (s.get('sids') or [''])[0].split(' ')[0]
-                dreq = _u.Request('https://data.rcc-acis.org/StnData',
-                                  data=_j.dumps({'sid': sid, 'sdate': '2022-01-01', 'edate': '2024-12-31',
-                                                 'elems': [{'name': 'cdd', 'interval': 'yly', 'duration': 'yly', 'reduce': 'sum', 'base': 65},
-                                                           {'name': 'maxt', 'interval': 'yly', 'duration': 'yly', 'reduce': 'max'}]}).encode(),
+        def _noaa_block():
+            climate = {'status': 'unavailable', 'source': 'NOAA (ACIS/NCEI)'}
+            _k = _ci_key('noaa', lat, lng, str(radius_km))
+            _c = _ci_get(_k)
+            if _c is not None:
+                return _c
+            try:
+                bb = f'{lng - 0.7},{lat - 0.7},{lng + 0.7},{lat + 0.7}'
+                mreq = _u.Request('https://data.rcc-acis.org/StnMeta',
+                                  data=_j.dumps({'bbox': bb, 'meta': 'name,ll,sids'}).encode(),
                                   headers={'Content-Type': 'application/json',
                                            'User-Agent': 'dchub-climate-intel/1.0'})
-                with _u.urlopen(dreq, timeout=12) as r:
-                    dd = (_j.loads(r.read(500_000).decode('utf-8', 'replace')) or {}).get('data') or []
-                cdd = maxt = vintage = None
-                for row in reversed(dd):
-                    def _n(x):
-                        try:
-                            return float(x)
-                        except (TypeError, ValueError):
-                            return None
-                    if _n(row[1]) is not None or _n(row[2]) is not None:
-                        cdd, maxt, vintage = _n(row[1]), _n(row[2]), row[0]
-                        break
-                climate = {'status': 'available', 'source': 'NOAA (ACIS/NCEI)',
-                           'reference_station': {'id': sid, 'name': s.get('name'),
-                                                 'distance_km': round(best[0], 1)},
-                           'cooling_design_metrics': {
-                               'cooling_degree_days_annual': cdd,
-                               'extreme_max_dry_bulb_f': maxt,
-                               'extreme_max_wet_bulb_f': None,
-                               'data_vintage': vintage},
-                           'note': ('Annual values, latest available year at the nearest NOAA station. '
-                                    'Wet-bulb null (not in source; never estimated).')}
-        except Exception as e:
-            logger.warning(f"climate-intel normals failed: {e}")
+                with _u.urlopen(mreq, timeout=12) as r:
+                    stns = (_j.loads(r.read(2_000_000).decode('utf-8', 'replace')) or {}).get('meta') or []
+
+                def _hav(la1, lo1, la2, lo2):
+                    R = 6371.0
+                    p = _m.pi / 180
+                    a = (_m.sin((la2 - la1) * p / 2) ** 2
+                         + _m.cos(la1 * p) * _m.cos(la2 * p) * _m.sin((lo2 - lo1) * p / 2) ** 2)
+                    return 2 * R * _m.asin(min(1.0, _m.sqrt(a)))
+                best = None
+                for s in stns:
+                    ll = s.get('ll')
+                    sids = s.get('sids') or []
+                    if not ll or not sids:
+                        continue
+                    d = _hav(lat, lng, ll[1], ll[0])
+                    if best is None or d < best[0]:
+                        best = (d, s)
+                if best is None:
+                    climate = {'status': 'unavailable', 'reason': 'no_station_in_area',
+                               'source': 'NOAA (ACIS/NCEI)'}
+                elif best[0] > radius_km:
+                    climate = {'status': 'unavailable_exceeds_radius', 'source': 'NOAA (ACIS/NCEI)',
+                               'reason': (f'nearest NOAA station {round(best[0], 1)}km > radius '
+                                          f'{radius_km}km — climate normals not estimated')}
+                else:
+                    s = best[1]
+                    sid = (s.get('sids') or [''])[0].split(' ')[0]
+                    dreq = _u.Request('https://data.rcc-acis.org/StnData',
+                                      data=_j.dumps({'sid': sid, 'sdate': '2022-01-01', 'edate': '2024-12-31',
+                                                     'elems': [{'name': 'cdd', 'interval': 'yly', 'duration': 'yly', 'reduce': 'sum', 'base': 65},
+                                                               {'name': 'maxt', 'interval': 'yly', 'duration': 'yly', 'reduce': 'max'}]}).encode(),
+                                      headers={'Content-Type': 'application/json',
+                                               'User-Agent': 'dchub-climate-intel/1.0'})
+                    with _u.urlopen(dreq, timeout=12) as r:
+                        dd = (_j.loads(r.read(500_000).decode('utf-8', 'replace')) or {}).get('data') or []
+                    cdd = maxt = vintage = None
+                    for row in reversed(dd):
+                        def _n(x):
+                            try:
+                                return float(x)
+                            except (TypeError, ValueError):
+                                return None
+                        if _n(row[1]) is not None or _n(row[2]) is not None:
+                            cdd, maxt, vintage = _n(row[1]), _n(row[2]), row[0]
+                            break
+                    climate = {'status': 'available', 'source': 'NOAA (ACIS/NCEI)',
+                               'reference_station': {'id': sid, 'name': s.get('name'),
+                                                     'distance_km': round(best[0], 1)},
+                               'cooling_design_metrics': {
+                                   'cooling_degree_days_annual': cdd,
+                                   'extreme_max_dry_bulb_f': maxt,
+                                   'extreme_max_wet_bulb_f': None,
+                                   'data_vintage': vintage},
+                               'note': ('Annual values, latest available year at the nearest NOAA station. '
+                                        'Wet-bulb null (not in source; never estimated).')}
+            except Exception as e:
+                logger.warning(f"climate-intel normals failed: {e}")
+            if climate.get('status') == 'available':
+                _ci_put(_k, climate)      # success only — never pin a hole
+            return climate
+
+        # ★ The USGS and NOAA branches are INDEPENDENT — run them concurrently so
+        #   wall time is max(a,b), not a+b. (The two ACIS calls stay sequential
+        #   inside the NOAA branch: StnData needs the station id StnMeta mints.)
+        try:
+            from concurrent.futures import ThreadPoolExecutor
+            with ThreadPoolExecutor(max_workers=2) as _ex:
+                _fs, _fc = _ex.submit(_seismic_block), _ex.submit(_noaa_block)
+                seismic, climate = _fs.result(), _fc.result()
+        except Exception as e:                       # fail-soft to sequential
+            logger.warning(f"climate-intel parallel failed, falling back: {e}")
+            seismic, climate = _seismic_block(), _noaa_block()
 
         parts = []
         if seismic.get('status') == 'available':
