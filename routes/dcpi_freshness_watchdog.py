@@ -223,12 +223,22 @@ def recompute_stale_markets():
     import json as _json
     rescored = 0
     failed = []
+    from util.iso_taxonomy import resolve_iso as _resolve_iso, iso_type_of as _iso_type_of
+
     for row in stale_rows:
         slug = row["market_slug"]
+        # r-iso-taxonomy (2026-07-28): resolve the label instead of echoing
+        # the stored one. This path reconstructs the market from the DB row,
+        # so it used to write row["iso"] straight back — meaning a market
+        # that fell out of the canonical MARKETS list kept its wrong ISO
+        # forever, immune to the corrected taxonomy. Exactly the markets
+        # least likely to be noticed. `default=` keeps intl labels
+        # (ENTSOE-*, AESO…) untouched, since resolve_iso only knows US.
+        _iso = _resolve_iso(slug, row["state"], default=row["iso"])
         # Reconstruct the market tuple from the DB row (this is the
         # whole point — the canonical MARKETS list no longer has them
         # but the DB row preserved name/state/iso/lat/lon at last score)
-        m = (slug, row["market_name"], row["state"], row["iso"],
+        m = (slug, row["market_name"], row["state"], _iso,
              row["latitude"], row["longitude"])
         try:
             metrics = gather_metrics_for_market(m)
@@ -238,7 +248,7 @@ def recompute_stale_markets():
             verdict = derive_verdict(c_score, e_score)
             risks, opps = derive_top_signals(m, metrics, c_score, e_score)
             _vals = (
-                row["market_name"], row["state"], row["iso"],
+                row["market_name"], row["state"], _iso, _iso_type_of(_iso) or None,
                 row["latitude"], row["longitude"],
                 c_score, e_score, ttp,
                 metrics.get("queue_capacity_mw"), metrics.get("queue_wait_months"),
@@ -252,7 +262,8 @@ def recompute_stale_markets():
             with _dcpi_conn() as wc, wc.cursor() as wcur:
                 wcur.execute("""
                     UPDATE market_power_scores SET
-                        market_name=%s, state=%s, iso=%s, latitude=%s, longitude=%s,
+                        market_name=%s, state=%s, iso=%s, iso_type=%s,
+                        latitude=%s, longitude=%s,
                         constraint_score=%s, excess_power_score=%s,
                         time_to_power_months=%s,
                         queue_capacity_mw=%s, queue_wait_months=%s,

@@ -104,21 +104,28 @@ def _fmt_int(n) -> str:
         return str(n)
 
 
-# Canonical US state -> ISO map (mirrors routes/dcpi.py:809 _state_to_iso),
-# inlined as a VALUES join so the breakdown stays consistent with the rest of
-# the platform. discovered_facilities has NO ISO column.
-_STATE_ISO_VALUES = """(VALUES
-  ('CA','CAISO'),('TX','ERCOT'),('NY','NYISO'),
-  ('MA','ISONE'),('NH','ISONE'),('VT','ISONE'),('ME','ISONE'),('CT','ISONE'),('RI','ISONE'),
-  ('PA','PJM'),('NJ','PJM'),('DE','PJM'),('MD','PJM'),('VA','PJM'),('WV','PJM'),('DC','PJM'),
-  ('OH','PJM'),('KY','PJM'),('NC','PJM'),('IN','PJM'),('IL','PJM'),('MI','PJM'),
-  ('MN','MISO'),('WI','MISO'),('IA','MISO'),('ND','MISO'),('SD','MISO'),('MO','MISO'),
-  ('AR','MISO'),('LA','MISO'),('MS','MISO'),
-  ('KS','SPP'),('OK','SPP'),('NE','SPP'),
-  ('AZ','WECC'),('NV','WECC'),('UT','WECC'),('CO','WECC'),('NM','WECC'),('ID','WECC'),
-  ('MT','WECC'),('WY','WECC'),('WA','WECC'),('OR','WECC'),
-  ('TN','TVA'),('AL','SOCO'),('GA','SOCO'),('SC','SOCO'),('FL','FRCC')
-) AS m(st, iso)"""
+# Canonical US state -> ISO map, inlined as a VALUES join so the breakdown
+# stays consistent with the rest of the platform. discovered_facilities has
+# NO ISO column.
+#
+# r-iso-taxonomy (2026-07-28): GENERATED from util/iso_taxonomy.STATE_ISO
+# instead of hand-maintained. It was the fourth hand-copied version of this
+# map and had drifted to the same wrong values as routes/dcpi.py
+# (NC→PJM, MO→MISO, MI→PJM, SC→SOCO), so the brain's ISO breakdown was
+# attributing Carolinas and Kansas City facilities to RTOs that do not
+# serve them. Generating it makes drift structurally impossible.
+#
+# NOTE: this is a STATE-level rollup, so it cannot express the per-market
+# overrides (Kansas City is Evergy/SPP while Missouri defaults to MISO).
+# That is acceptable for a coarse facility breakdown; anything needing
+# per-market truth must go through iso_taxonomy.resolve_iso(slug, state).
+def _build_state_iso_values() -> str:
+    from util.iso_taxonomy import STATE_ISO
+    pairs = ",".join(f"('{st}','{iso}')" for st, iso in sorted(STATE_ISO.items()))
+    return f"(VALUES\n  {pairs}\n) AS m(st, iso)"
+
+
+_STATE_ISO_VALUES = _build_state_iso_values()
 
 
 # ── PRE-WRITTEN, schema-verified, read-only breakdown queries ────────

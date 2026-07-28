@@ -201,6 +201,16 @@ def _ensure_tables():
         # row, score, verdict or writer. Surfaced read-only on /dcpi outputs.
         cur.execute("ALTER TABLE market_power_scores "
                     "ADD COLUMN IF NOT EXISTS data_basis_json JSONB")
+        # r-iso-taxonomy (2026-07-28): says WHICH KIND of thing `iso` names —
+        # 'RTO' (organised market, has an interconnection queue), 'BA'
+        # (balancing authority, no market) or 'REGION' (NERC footprint).
+        # The column has always mixed all three (PJM + TVA + WECC sat in it
+        # interchangeably) and callers could not tell them apart, so an agent
+        # would pull PJM's queue for Charlotte — Duke territory, no RTO.
+        # Additive + nullable: no existing row, score, verdict or writer
+        # changes, and readers that ignore it behave exactly as before.
+        cur.execute("ALTER TABLE market_power_scores "
+                    "ADD COLUMN IF NOT EXISTS iso_type TEXT")
         cur.execute("""
             CREATE TABLE IF NOT EXISTS dcpi_runs (
                 id           SERIAL PRIMARY KEY,
@@ -963,24 +973,24 @@ def _load_markets_dynamic():
                 # press kept writing about Cheyenne because it was one of
                 # the few markets with fresh data.
                 #
-                # Now: emit tuples in the canonical shape. iso is derived
-                # via _state_to_iso() (the common case). lat/lon are the
+                # Now: emit tuples in the canonical shape. iso is resolved
+                # via iso_taxonomy (the common case). lat/lon are the
                 # median facility centroid (r-market-coords 2026-07-06) so the
                 # recompute can COALESCE real coords into market_power_scores
                 # (was hardcoded None,None → 198/317 markets sat NULL). None
                 # still passes through harmlessly for the rare coord-less group.
+                from util.iso_taxonomy import resolve_iso as _resolve_iso
                 out_tuples = []
                 for r in rows:
                     slug, name, state, fac, op_mw, pipe_mw, lat, lon = r
                     # r-period-slug (2026-07-06): strip periods too — 'St. Louis'
                     # → 'st-louis' (was 'st.-louis', a soft-404 dup of canonical).
                     clean_slug = slug.replace(" ", "-").replace(",", "").replace(".", "")
-                    # r-split-state-iso (2026-07-28): a per-market exception
-                    # wins over the state default. Without this the loader
-                    # overwrites correct hand-recorded values (kansas-city was
-                    # already SPP in _MARKETS_HARDCODED and got clobbered to
-                    # MISO on every recompute).
-                    iso = _MARKET_ISO_OVERRIDES.get(clean_slug) or _state_to_iso(state)
+                    # r-iso-taxonomy (2026-07-28): resolve on the SLUG first,
+                    # not the state alone — Kansas City (Evergy/SPP) and
+                    # St. Louis (Ameren/MISO) are both "MO" and a state-only
+                    # lookup is wrong for one of them no matter what it returns.
+                    iso = _resolve_iso(clean_slug, state)
                     lat = float(lat) if lat is not None else None
                     lon = float(lon) if lon is not None else None
                     out_tuples.append((clean_slug, name, state, iso, lat, lon))
@@ -1006,62 +1016,36 @@ def _load_markets_dynamic():
 # Add an entry ONLY for a metro whose serving utility contradicts its state
 # default — not to paper over a state default that is simply wrong (fix the
 # state instead, as NC was below).
-_MARKET_ISO_OVERRIDES = {
-    # Missouri is genuinely SPLIT and no state value can serve both metros:
-    # Kansas City is Evergy Metro (formerly KCP&L), an SPP member, while
-    # St. Louis is Ameren Missouri, MISO. The state default stays MISO for
-    # St. Louis, so Kansas City needs the exception.
-    # _MARKETS_HARDCODED has carried the correct ("kansas-city", ..., "SPP")
-    # tuple all along — the dynamic loader was overwriting it with the state
-    # default. Verified live 2026-07-28: get_market_dcpi_rank("kansas-city-mo")
-    # returned iso=MISO for a grid that is SPP.
-    "kansas-city": "SPP",
-}
+# r-iso-taxonomy (2026-07-28): the override table moved to
+# util/iso_taxonomy.MARKET_ISO_OVERRIDES, alongside the state defaults it
+# overrides — keeping the two halves of one decision in two files is how the
+# maps drifted in the first place. Re-exported (not redefined) so this name
+# stays importable and tests/test_dcpi_state_iso.py keeps working.
+#
+# The Kansas City entry that lived here is preserved there verbatim, and the
+# rest of the Evergy Metro Missouri side (north-kansas-city, lees-summit,
+# independence…) was added with it: north-kansas-city was live with iso=MISO
+# on the same wrong state default, so fixing only kansas-city would have left
+# one half of the metro on the wrong grid.
+from util.iso_taxonomy import MARKET_ISO_OVERRIDES as _MARKET_ISO_OVERRIDES  # noqa: E402
 
 
 def _state_to_iso(state: str) -> str:
-    """Phase ZZ (2026-05-16): map a US state code to its primary ISO/RTO.
-    Used by _load_markets_dynamic when emitting tuple-shape markets.
-    Not exact (some states span multiple ISOs) — picks the dominant one
-    for data-center siting purposes. Where "dominant" is genuinely ambiguous
-    for a specific metro, put that metro in _MARKET_ISO_OVERRIDES above
-    rather than bending the state value and breaking the other metro.
+    """Map a US state code to its dominant grid operator.
 
-    NOTE (2026-07-28): this map is one of THREE state->ISO maps in the repo.
-    The other two (scripts/bulk_dcpi_score.py and dchub_self_heal.py, which
-    are byte-identical to each other) still disagree with this one on
-    AL, GA, MI, SC and SD. This is the map that feeds the daily recompute
-    and therefore writes market_power_scores.iso, so it is the one that
-    decides what agents see. The divergences are recorded in
-    tests/test_dcpi_state_iso.py rather than silently reconciled here —
-    changing them moves live markets and wants its own review."""
-    return {
-        "CA":"CAISO","TX":"ERCOT","NY":"NYISO",
-        "MA":"ISONE","NH":"ISONE","VT":"ISONE","ME":"ISONE","CT":"ISONE","RI":"ISONE",
-        "PA":"PJM","NJ":"PJM","DE":"PJM","MD":"PJM","VA":"PJM","WV":"PJM","DC":"PJM",
-        # NC corrected 2026-07-28: PJM -> SERC. North Carolina's grid is Duke
-        # Energy Carolinas + Duke Energy Progress, neither an RTO member; PJM's
-        # ONLY NC footprint is Dominion's northeastern service area, so the
-        # "dominant" pick was backwards for the state's largest metros. This is
-        # the charlotte-nc defect: PJM is a real RTO, so consumers took iso=PJM
-        # literally and pulled PJM queue projects for a Duke grid. SERC is the
-        # reliability region, matching what the other two maps already say.
-        # MI corrected 2026-07-28: PJM -> MISO, same defect shape as NC. The
-        # Michigan grid is DTE Electric (Detroit) + Consumers Energy (most of
-        # the rest), both MISO; PJM's ONLY Michigan footprint is the AEP
-        # Indiana Michigan Power sliver in the far southwest (Benton Harbor /
-        # St. Joseph). All four Michigan DCPI markets — Detroit, Southfield,
-        # Grand Rapids, Lansing — sit on DTE or Consumers, and no market exists
-        # in the I&M sliver (benton-harbor and kalamazoo both 404), so this
-        # needs no per-market override. Matches the other two maps.
-        "OH":"PJM","KY":"PJM","NC":"SERC","IN":"PJM","IL":"PJM","MI":"MISO",
-        "MN":"MISO","WI":"MISO","IA":"MISO","ND":"MISO","SD":"MISO","MO":"MISO",
-        "AR":"MISO","LA":"MISO","MS":"MISO",
-        "KS":"SPP","OK":"SPP","NE":"SPP",
-        "AZ":"WECC","NV":"WECC","UT":"WECC","CO":"WECC","NM":"WECC","ID":"WECC",
-        "MT":"WECC","WY":"WECC","WA":"WECC","OR":"WECC",
-        "TN":"TVA","AL":"SOCO","GA":"SOCO","SC":"SOCO","FL":"FRCC",
-    }.get((state or "").upper(), "")
+    r-iso-taxonomy (2026-07-28): the map that used to live inline here is
+    now util/iso_taxonomy.STATE_ISO. It was one of four divergent copies in
+    the tree and the only *wrong* one (NC→PJM, MO→MISO, MI→PJM, SC→SOCO),
+    and because the daily recompute writes `iso` unconditionally it was the
+    copy that governed every served row. See util/iso_taxonomy for why.
+
+    Kept as a thin wrapper: routes/gas_intelligence.py imports it by name.
+    Prefer iso_taxonomy.resolve_iso(slug, state) in new code — this
+    signature cannot see the market slug, so it cannot resolve split
+    states (Kansas City vs St. Louis both being MO).
+    """
+    from util.iso_taxonomy import resolve_iso
+    return resolve_iso(state=state)
 
 
 # r-declone-2 (2026-07-17): US-grid ISO codes (incl. territories, whose state
@@ -1074,6 +1058,37 @@ _US_DCPI_ISOS = frozenset({
     "CAISO", "ERCOT", "NYISO", "ISONE", "PJM", "MISO", "SPP", "WECC",
     "TVA", "SOCO", "SERC", "FRCC", "PREPA", "GPA", "WAPA",
 })
+
+
+def _place_label(market_name: str | None, state: str | None) -> str:
+    """'Cheyenne, WY' — appending the state only when it isn't already there.
+
+    r-iso-taxonomy (2026-07-28): the JSON-LD Dataset block built
+    spatialCoverage.name as f"{market_name}, {state}" unconditionally, but
+    seven markets carry the state inside market_name already, so
+    /dcpi/cheyenne-wy published "Cheyenne, WY, WY" to Google and to every
+    agent reading the Schema.org markup. Also hit: williston-nd,
+    the-dalles-or, charleston-sc, dc ("Washington, DC, DC") and
+    upper-michigan ("Upper Peninsula MI, MI").
+
+    Fixed here rather than by rewriting the seven market_name values: the
+    concat is the actual defect, and normalising the names would leave the
+    next 'City, ST'-shaped row to reintroduce it.
+    """
+    name = (market_name or "").strip()
+    st = (state or "").strip()
+    if not st:
+        return name
+    if not name:
+        return st
+    # Already ends with the state, with or without the comma
+    # ('Cheyenne, WY' / 'Upper Peninsula MI').
+    tail = name[-len(st):].upper()
+    if tail == st.upper():
+        boundary = name[:-len(st)].rstrip()
+        if boundary.endswith(",") or boundary != name[:-len(st)]:
+            return name
+    return f"{name}, {st}"
 
 
 def _log_sat(v: float, ceiling: float) -> float:
@@ -1214,6 +1229,54 @@ def _dedup_market_twins(markets):
         return markets
 
 
+def _normalize_us_isos(markets):
+    """r-iso-taxonomy (2026-07-28): re-resolve `iso` on US markets through
+    util/iso_taxonomy so the hardcoded rows and the dynamic rows can't
+    disagree about the same grid.
+
+    Needed because the two sources drifted apart: _MARKETS_HARDCODED said
+    kansas-city was SPP (right) while the dynamic loader's state map said
+    MISO (wrong) — and dynamic wins on slug collisions, so the wrong value
+    is what shipped. Normalising both through one resolver removes the
+    class of bug rather than the instance.
+
+    GUARD — gate on the CURRENT label, not the state code. Intl markets
+    reuse two-letter codes that collide with US states: Munich and Berlin
+    carry state='DE', which is also Delaware. Keying off `state` alone
+    would rewrite Munich from ENTSOE-DE to PJM. A row is only eligible if
+    its existing iso is already a US-grid label (or empty), which no intl
+    market ever satisfies.
+
+    Order-preserving. NEVER raises — a market list is worth more than a
+    perfectly-normalised one.
+    """
+    try:
+        from util.iso_taxonomy import resolve_iso
+        out, changed = [], []
+        for m in markets:
+            if not (isinstance(m, tuple) and len(m) >= 4):
+                out.append(m)
+                continue
+            slug, name, state, iso = m[0], m[1], m[2], m[3]
+            cur = (iso or "").upper().strip()
+            if cur and cur not in _US_DCPI_ISOS:
+                out.append(m)          # international — never touch
+                continue
+            new_iso = resolve_iso(slug, state, default=iso)
+            if new_iso and new_iso != iso:
+                changed.append(f"{slug}({state}) {iso}->{new_iso}")
+                m = (slug, name, state, new_iso) + tuple(m[4:])
+            out.append(m)
+        if changed:
+            print(f"[dcpi] r-iso-taxonomy: corrected {len(changed)} market "
+                  f"ISO labels: {changed}", flush=True)
+        return out
+    except Exception as e:
+        print(f"[dcpi] r-iso-taxonomy: normalization skipped "
+              f"(non-fatal): {e}", flush=True)
+        return markets
+
+
 def _build_markets_list():
     """r57: always-includes-intl market list builder. Tries the dynamic
     US loader, then unions on the international set. Falls back to
@@ -1246,8 +1309,10 @@ def _build_markets_list():
         # r-twin-dedup (2026-07-19): applied AFTER orphans so the orphan
         # re-adopter can't smuggle a redundant twin back into the universe.
         merged = _dedup_market_twins(merged)
-        return merged
-    return _dedup_market_twins(_MARKETS_HARDCODED)
+        # r-iso-taxonomy (2026-07-28): last, so orphan re-adopted rows and
+        # hardcoded rows are normalised too — not just the dynamic ones.
+        return _normalize_us_isos(merged)
+    return _normalize_us_isos(_dedup_market_twins(_MARKETS_HARDCODED))
 
 
 MARKETS = _build_markets_list()
@@ -2281,8 +2346,13 @@ def recompute_all_scores(source: str = "manual",
                 # the existing score/verdict columns and their values are
                 # untouched. json.dumps(None) → "null" if somehow absent.
                 _data_basis_json = json.dumps(metrics.get("data_basis"))
+                # r-iso-taxonomy (2026-07-28): classify the label we're about
+                # to write. Derived, never stored independently, so iso and
+                # iso_type cannot drift apart.
+                from util.iso_taxonomy import iso_type_of as _iso_type_of
+                _iso_type = _iso_type_of(iso) or None
                 _vals = (
-                    name, state, iso, lat, lon,
+                    name, state, iso, _iso_type, lat, lon,
                     c_score, e_score, ttp,
                     metrics.get("queue_capacity_mw"), metrics.get("queue_wait_months"),
                     metrics.get("reserve_margin_pct"),
@@ -2300,7 +2370,7 @@ def recompute_all_scores(source: str = "manual",
                 # existing coord when the scorer has none, but a real value still wins.
                 cur.execute("""
                     UPDATE market_power_scores SET
-                        market_name=%s, state=%s, iso=%s,
+                        market_name=%s, state=%s, iso=%s, iso_type=%s,
                         latitude=COALESCE(%s, latitude), longitude=COALESCE(%s, longitude),
                         constraint_score=%s, excess_power_score=%s, time_to_power_months=%s,
                         queue_capacity_mw=%s, queue_wait_months=%s, reserve_margin_pct=%s,
@@ -2324,7 +2394,7 @@ def recompute_all_scores(source: str = "manual",
                     # incident from r55, just on the INSERT side.
                     cur.execute("""
                         INSERT INTO market_power_scores (
-                            market_name, state, iso, latitude, longitude,
+                            market_name, state, iso, iso_type, latitude, longitude,
                             constraint_score, excess_power_score, time_to_power_months,
                             queue_capacity_mw, queue_wait_months, reserve_margin_pct,
                             gen_additions_12mo_mw, curtailment_pct, stranded_capacity_mw,
@@ -2333,7 +2403,7 @@ def recompute_all_scores(source: str = "manual",
                             data_basis_json,
                             market_slug, published, computed_at
                         )
-                        VALUES (%s,%s,%s,%s,%s, %s,%s,%s, %s,%s,%s, %s,%s,%s, %s, %s,%s,%s, %s, %s, TRUE, NOW())
+                        VALUES (%s,%s,%s,%s, %s,%s, %s,%s,%s, %s,%s,%s, %s,%s,%s, %s, %s,%s,%s, %s, %s, TRUE, NOW())
                     """, _vals + (slug,))
                 c.commit()
             scored += 1
@@ -3851,6 +3921,16 @@ _ISO_NAMES = {
     "SPP":   "Southwest Power Pool",
     "WECC":  "Western Electricity Coordinating Council (non-CAISO)",
     "IESO":  "Independent Electricity System Operator (Ontario)",
+    # r-iso-taxonomy (2026-07-28): these labels were already live in
+    # market_power_scores but missing here, so /api/v1/dcpi/iso/<code>
+    # echoed the bare code back as the name. SERC newly appears at all —
+    # it had zero markets until Carolinas/Kentucky stopped claiming PJM.
+    # Names say what the label IS, so a reader can tell an RTO with a
+    # queue from a balancing authority without one.
+    "SERC":  "SERC Reliability Corporation (region — non-RTO utilities)",
+    "SOCO":  "Southern Company (balancing authority — no organised market)",
+    "TVA":   "Tennessee Valley Authority (balancing authority — no organised market)",
+    "FRCC":  "Florida Reliability Coordinating Council (region — non-RTO)",
 }
 
 
@@ -6516,7 +6596,7 @@ def embed_widget(slug):
                      s['iso'], s['state'], s['verdict'], "DCPI"],
         "spatialCoverage": {
             "@type": "Place",
-            "name": f"{s['market_name']}, {s['state']}",
+            "name": _place_label(s['market_name'], s['state']),
             "addressRegion": s['state'], "addressCountry": "US",
         },
         "variableMeasured": [
