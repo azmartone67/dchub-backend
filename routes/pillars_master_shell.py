@@ -283,13 +283,26 @@ def _drafts(f: dict) -> dict:
         f"→ Connect your AI in 60 seconds: dchub.cloud/connect#start   ·   Data: DC Hub (dchub.cloud), CC-BY-4.0"
     )
 
+    # ★ 2026-07-28 REWRITTEN TO FIT THE WIRE. The previous X copy rendered at
+    # 359 chars, and content_publisher posts `content_text[:280]` to the X API.
+    # So what SHIPPED was a 280-char fragment ending mid-phrase ("...get its
+    # DCPI") with the whole sign-off — CC-BY, "over MCP", and the LINK — cut
+    # off. The quality gate never saw that: it scored the 359-char draft at
+    # 0.600 while the tweet that would actually publish scored 0.150 and had no
+    # link at all. Keep this under 280 RENDERED, not under 280 as a template —
+    # dc_v/dc_t/ranked are live figures that grow (tests/test_pillars_x_wire.py
+    # asserts it still fits when each is a digit wider).
+    # ★ "this month" is load-bearing twice over: it is true (the LinkedIn,
+    # email and partner variants and this module's own docstring all say the
+    # same thing — X was the only one missing it) and it is the freshness
+    # signal _FRESHNESS_RE scores. Without it the card sits at 0.600, exactly
+    # on CONTENT_QUALITY_MIN, where one word of drift re-blocks it silently.
     x = (
-        f"DC Hub shipped 3 things a training-data model can't fake:\n\n"
-        f"• Provenance — cite with confidence ({dc_v} verified in a {dc_t}-tracked frontier)\n"
-        f"• Global grid — {ranked} grids ranked across {cont_word}; Japan/Korea/Brazil now live "
-        f"beside the US & EU\n"
-        f"• Memory — save a site, get its DCPI deltas back next session\n\n"
-        f"CC-BY-4.0, over MCP, no signup → dchub.cloud/connect"
+        f"DC Hub shipped 3 things this month a stateless model can't fake:\n\n"
+        f"• Provenance — {dc_v} of {dc_t} analyst-verified\n"
+        f"• Global grid — {ranked} grids ranked, Japan/Korea/Brazil live\n"
+        f"• Memory — save a site, get DCPI deltas next session\n\n"
+        f"CC-BY-4.0, over MCP → dchub.cloud/connect"
     )
 
     email_subject = "DC Hub: agents that cite with confidence, see the whole world's grid, and remember"
