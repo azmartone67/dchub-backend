@@ -1,0 +1,28 @@
+#!/bin/sh
+# Chained pre-push dispatcher. Canonical source; installed into the shared hooks
+# directory by scripts/install-git-hooks.sh.
+#
+#   (1) pre-push-main-guard.sh   — blocks direct pushes to main. Runs from THIS
+#       directory, which core.hooksPath shares across every worktree, so it
+#       cannot go stale with a branch. That was the hole: a worktree parked on
+#       an old branch carried a scripts/ copy that predated the guard.
+#   (2) scripts/pre-push-throttle.sh — deploy throttle. Still resolved from the
+#       worktree being pushed from, so ordinary version-controlled edits to it
+#       take effect immediately without reinstalling hooks.
+#   (3) pre-push.lfs             — Git LFS, if present.
+#
+# stdin (ref lines) is consumed by the first reader; capture + replay to all.
+# NOTE: printf '%s\n' re-adds the trailing newline that $(cat) strips, so the
+# downstream `while read` loops see the final line (the bug in v1).
+payload="$(cat)"
+top="$(git rev-parse --show-toplevel 2>/dev/null)"
+guard="$(dirname "$0")/pre-push-main-guard.sh"
+if [ -f "$guard" ]; then
+  printf '%s\n' "$payload" | bash "$guard" "$@" || exit $?
+fi
+if [ -n "$top" ] && [ -f "$top/scripts/pre-push-throttle.sh" ]; then
+  printf '%s\n' "$payload" | bash "$top/scripts/pre-push-throttle.sh" "$@" || exit $?
+fi
+if [ -x "$(dirname "$0")/pre-push.lfs" ]; then
+  printf '%s\n' "$payload" | "$(dirname "$0")/pre-push.lfs" "$@"
+fi

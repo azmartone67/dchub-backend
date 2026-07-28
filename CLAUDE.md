@@ -15,8 +15,21 @@ gh pr merge --auto --squash         # merges itself once checks pass
 `gh pr merge --auto` is the point — the PR merges without a second visit, so
 this is about as fast as a direct push, with CI actually run against the change.
 
-A `pre-push` hook rejects pushes to main and prints this recipe. Overrides, in
-increasing order of bluntness:
+A `pre-push` hook rejects pushes to main and prints this recipe. Install or
+verify it — safe to re-run, and it self-tests:
+
+```bash
+bash scripts/install-git-hooks.sh            # install
+bash scripts/install-git-hooks.sh --check    # verify only, exits 1 on drift
+```
+
+The guard is installed into the **shared** hooks directory
+(`git rev-parse --git-common-dir`), not run from the worktree, so it applies no
+matter which branch a worktree sits on — this repo has ~74 worktrees and one
+parked on an old branch was carrying a copy that predated the guard. Canonical
+sources are version-controlled in `scripts/hooks/`.
+
+Overrides, in increasing order of bluntness:
 
 | | effect |
 |---|---|
