@@ -1298,7 +1298,11 @@ def act_on_win_moves() -> dict:
                     "Where a utility publishes thin data, we say so rather "
                     "than interpolating. Informational, not binding "
                     "interconnection guidance — verify with the utility.\n\n"
-                    "Live on the map and over MCP."),
+                    # ★ NOT "over MCP": verified 2026-07-28 that NO MCP tool
+                    # exposes feeder hosting capacity (tools/list has no
+                    # feeder/hosting-capacity tool). It is map + REST only.
+                    # Restore the MCP claim ONLY when a tool actually serves it.
+                    "Live on the Land & Power map and the public API."),
             }
             _feeders = "—"
             try:
