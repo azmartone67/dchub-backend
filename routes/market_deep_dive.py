@@ -435,6 +435,11 @@ def read_deep_dive(slug: str) -> dict | None:
         except Exception: pass
 
 
+_US_STATE_ABBREVS = (
+    "al ak az ar ca co ct de fl ga hi id il in ia ks ky la me md ma mi mn ms "
+    "mo mt ne nv nh nj nm ny nc nd oh ok or pa ri sc sd tn tx ut vt va wa wv "
+    "wi wy dc"
+).split()
 _US_STATE_SUFFIXES = (
     "alabama alaska arizona arkansas california colorado connecticut delaware "
     "florida georgia hawaii idaho illinois indiana iowa kansas kentucky "
@@ -459,30 +464,50 @@ def _market_slug_without_state(slug_norm):
     """
     if not slug_norm or "-" not in slug_norm:
         return None
+    # ★★ 2026-07-28 second measurement: the sitemap emitted the ABBREVIATED
+    # form — miami-fl, goodyear-az, tacoma-wa, charlotte-nc — and the first
+    # version of this resolver only stripped FULL state names, so every one of
+    # those still 404'd. Sampled 14 sitemap market URLs: 12 were 404s of this
+    # exact shape. Abbreviations are checked first because they are the shape
+    # Google actually has indexed.
+    for st in _US_STATE_ABBREVS:
+        if not slug_norm.endswith("-" + st):
+            continue
+        base = slug_norm[: -(len(st) + 1)]
+        if not base:
+            return None
+        hit = _market_exists(base)
+        if hit:
+            return base
+        return None
     for st in _US_STATE_SUFFIXES:
         if not slug_norm.endswith("-" + st):
             continue
         base = slug_norm[: -(len(st) + 1)]
         if not base:
             return None
-        try:
-            c = _conn()
-            if c is None:
-                return None
-            try:
-                with c.cursor() as cur:
-                    cur.execute(
-                        "SELECT 1 FROM market_power_scores WHERE market_slug = %s "
-                        "LIMIT 1", (base,))
-                    if cur.fetchone():
-                        return base
-            finally:
-                try: c.close()
-                except Exception: pass
-        except Exception:
-            return None
-        return None
+        return base if _market_exists(base) else None
     return None
+
+
+def _market_exists(slug):
+    """True only when the market page will actually serve. DB down -> False,
+    so an outage degrades to 404 rather than to a guessed redirect."""
+    try:
+        c = _conn()
+        if c is None:
+            return False
+        try:
+            with c.cursor() as cur:
+                cur.execute(
+                    "SELECT 1 FROM market_power_scores WHERE market_slug = %s "
+                    "LIMIT 1", (slug,))
+                return bool(cur.fetchone())
+        finally:
+            try: c.close()
+            except Exception: pass
+    except Exception:
+        return False
 
 
 def _markets_404_response():

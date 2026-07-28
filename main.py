@@ -27049,29 +27049,48 @@ def _build_sitemap_sections():
         # which Google distrusts). Inner fallback to the date-less query so a
         # missing first_seen column can never drop these 222 indexed URLs.
         try:
+            # ★★ 2026-07-28 — THE SITEMAP WAS SUBMITTING 404s. Sampled 14 of
+            # the 295 market URLs it emits: TWELVE returned 404
+            # (goodyear-az, miami-fl, tacoma-wa, charlotte-nc, richmond-va...).
+            # Cause: this query's criterion (>=3 facilities for a city+state)
+            # is NOT the criterion the /markets/<slug> route serves on. The
+            # route keys on CURATED market slugs; `miami` is a market, `miami-fl`
+            # is not. So we were telling Google to crawl pages we never built —
+            # which is why the Not-found bucket keeps refilling and validation
+            # keeps failing: the sitemap re-submits them after every fix.
+            # ★ Emit the CITY slug (no state suffix) and require it to be a real
+            #   market. INNER JOIN, so a URL can only enter the sitemap if a
+            #   market page exists for it. Verified live: /markets/miami,
+            #   /markets/goodyear, /markets/charlotte, /markets/richmond,
+            #   /markets/tucson all 200.
+            # ★ A sitemap must never contain redirects either, so we list the
+            #   canonical city slug rather than the city-state form that 301s.
             _mkc.execute("""
-                SELECT LOWER(REPLACE(city,' ','-') || '-' || LOWER(state)) AS slug,
-                       MAX(first_seen) AS lm
-                  FROM discovered_facilities
-                 WHERE city IS NOT NULL AND state IS NOT NULL
-                   AND TRIM(city) <> '' AND TRIM(state) <> ''
-                   AND COALESCE(is_duplicate, 0) = 0
-                   AND country IN ('US','USA','United States')
-                 GROUP BY city, state
+                SELECT m.market_slug AS slug, MAX(f.first_seen) AS lm
+                  FROM discovered_facilities f
+                  JOIN market_power_scores m
+                    ON m.market_slug = LOWER(REPLACE(TRIM(f.city),' ','-'))
+                 WHERE f.city IS NOT NULL AND TRIM(f.city) <> ''
+                   AND COALESCE(f.is_duplicate, 0) = 0
+                   AND f.country IN ('US','USA','United States')
+                 GROUP BY m.market_slug
                 HAVING COUNT(*) >= 3
             """)
             _mk_rows = _mkc.fetchall()
         except Exception:
             try: _mk_conn.rollback()
             except Exception: pass
+            # fallback (no first_seen column) — SAME market-existence join, so
+            # the degraded path can never re-introduce the 404s either
             _mkc.execute("""
-                SELECT LOWER(REPLACE(city,' ','-') || '-' || LOWER(state)) AS slug
-                  FROM discovered_facilities
-                 WHERE city IS NOT NULL AND state IS NOT NULL
-                   AND TRIM(city) <> '' AND TRIM(state) <> ''
-                   AND COALESCE(is_duplicate, 0) = 0
-                   AND country IN ('US','USA','United States')
-                 GROUP BY city, state
+                SELECT m.market_slug AS slug
+                  FROM discovered_facilities f
+                  JOIN market_power_scores m
+                    ON m.market_slug = LOWER(REPLACE(TRIM(f.city),' ','-'))
+                 WHERE f.city IS NOT NULL AND TRIM(f.city) <> ''
+                   AND COALESCE(f.is_duplicate, 0) = 0
+                   AND f.country IN ('US','USA','United States')
+                 GROUP BY m.market_slug
                 HAVING COUNT(*) >= 3
             """)
             _mk_rows = [(r[0], None) for r in _mkc.fetchall()]

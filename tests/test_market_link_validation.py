@@ -107,3 +107,84 @@ def test_the_slug_set_is_cached_not_queried_per_render():
     seg = "\n".join(ln for ln in seg.splitlines()
                     if not ln.strip().startswith("#"))
     assert "_MARKET_SLUGS_TTL_S" in seg and "_MARKET_SLUGS_CACHE" in seg
+
+
+# ── the SITEMAP was the dominant source (2026-07-28, third measurement) ──
+# Sampled 14 of the 295 market URLs in /sitemap-markets.xml: TWELVE were 404
+# (goodyear-az, miami-fl, tacoma-wa, charlotte-nc, richmond-va, tucson-az...).
+# The sitemap's criterion (>=3 facilities for a city+state) was never the
+# criterion the /markets/<slug> route serves on. Telling Google to crawl pages
+# we never built is why the Not-found bucket refills and validation keeps
+# failing -- every fix is undone by the next sitemap fetch.
+MAIN = REPO_ROOT / "main.py"
+DEEPDIVE = REPO_ROOT / "routes" / "market_deep_dive.py"
+
+
+def _sitemap_market_block():
+    src = MAIN.read_text(encoding="utf-8")
+    seg = src.split("DB-driven US /markets/", 1)[1][:4000]
+    return "\n".join(ln for ln in seg.splitlines()
+                     if not ln.strip().startswith("#"))
+
+
+def test_sitemap_only_lists_markets_that_exist():
+    seg = _sitemap_market_block()
+    assert "market_power_scores" in seg, (
+        "the sitemap must JOIN a real market table -- otherwise it emits URLs "
+        "the route never serves")
+    assert "JOIN market_power_scores" in seg
+
+
+def test_sitemap_no_longer_builds_a_city_state_slug():
+    seg = _sitemap_market_block()
+    assert "|| '-' || LOWER(state)" not in seg, (
+        "city+state slugs (miami-fl) are not market pages; emit the city slug")
+
+
+def test_sitemap_fallback_query_is_guarded_too():
+    """The degraded path must not re-introduce the 404s."""
+    seg = _sitemap_market_block()
+    assert seg.count("JOIN market_power_scores") >= 2, (
+        "both the primary and the no-first_seen fallback query need the join")
+
+
+def _resolver():
+    tree = ast.parse(DEEPDIVE.read_text(encoding="utf-8"))
+    want = {"_market_slug_without_state", "_market_exists"}
+    body = [n for n in tree.body
+            if (isinstance(n, ast.FunctionDef) and n.name in want)
+            or (isinstance(n, ast.Assign)
+                and getattr(n.targets[0], "id", "").startswith("_US_STATE"))]
+    assert {n.name for n in body if isinstance(n, ast.FunctionDef)} == want
+    g = {"_conn": lambda: None}
+    mod = ast.Module(body=body, type_ignores=[])
+    ast.fix_missing_locations(mod)
+    exec(compile(mod, "<extracted>", "exec"), g)
+    return g
+
+
+def test_state_abbreviations_are_recognised():
+    """The first resolver only stripped FULL state names, so miami-fl -- the
+    shape the sitemap actually emitted -- still 404'd."""
+    g = _resolver()
+    assert "fl" in g["_US_STATE_ABBREVS"]
+    assert "az" in g["_US_STATE_ABBREVS"]
+    g["_market_exists"] = lambda s: s in {"miami", "goodyear", "dallas"}
+    import types
+    fn = g["_market_slug_without_state"]
+    fn.__globals__["_market_exists"] = g["_market_exists"]
+    assert fn("miami-fl") == "miami"
+    assert fn("goodyear-az") == "goodyear"
+    assert fn("dallas-texas") == "dallas"
+
+
+def test_unknown_market_still_404s():
+    g = _resolver()
+    fn = g["_market_slug_without_state"]
+    fn.__globals__["_market_exists"] = lambda s: False
+    assert fn("nowhere-tx") is None
+
+
+def test_db_down_degrades_to_404_not_a_guess():
+    g = _resolver()
+    assert g["_market_exists"]("miami") is False
