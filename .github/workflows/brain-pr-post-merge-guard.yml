@@ -8,8 +8,14 @@ name: Brain PR post-merge guard (Phase GG#4)
 # brain-authored PR (label autonomous-brain-layer5) merges, waits for
 # Railway to redeploy, probes /api/health, and:
 #   - if healthy  → comment ✓ on the PR + mark the proposal merged_healthy
-#   - if broken   → git revert the merge, push, comment ✗ on the PR +
-#                   mark the proposal merged_reverted
+#   - if broken   → roll Railway back to the last good deployment, open a
+#                   revert PR, comment ✗ on the PR + mark merged_reverted
+#
+# 2026-07-28: the "broken" path used to `git push origin main`. main is
+# protected and github-actions[bot] is not an admin, so that push was always
+# rejected (GH006) — and because the step exited non-zero, the PR comment and
+# the brain-DB callback below it were SKIPPED. Rollback is now a Railway
+# operation and every reporting step runs with `!cancelled()`.
 #
 # The mark-merge-outcome callback is the feedback signal GG#2
 # (confidence calibration) reads to tune the auto-PR threshold:
@@ -21,8 +27,12 @@ name: Brain PR post-merge guard (Phase GG#4)
 #   3. Attribution — comments on the exact brain PR + proposal
 #
 # Required secrets:
-#   DCHUB_ADMIN_KEY   — for the mark-merge-outcome callback
-#   GH_PAT (optional) — if GITHUB_TOKEN can't push reverts to main
+#   DCHUB_ADMIN_KEY        — for the mark-merge-outcome callback
+#   RAILWAY_TOKEN          — REQUIRED for the rollback to actually work.
+#                            Without it the guard detects breakage and reports
+#                            it, but cannot restore service.
+#   GH_PAT (optional)      — only affects who authors the revert PR. It is NOT
+#                            needed to push to main any more; nothing here does.
 
 on:
   pull_request:
@@ -88,30 +98,94 @@ jobs:
           echo "dcpi_code=$DCPI" >> $GITHUB_OUTPUT
           echo "findings_code=$FINDINGS" >> $GITHUB_OUTPUT
           echo "Health status: $STATUS | DCPI: $DCPI | findings: $FINDINGS"
-          # Healthy = status 'healthy' AND both probe endpoints 2xx
-          if [ "$STATUS" = "healthy" ] && [ "$DCPI" -lt 400 ] 2>/dev/null && [ "$FINDINGS" -lt 500 ] 2>/dev/null; then
+          # Healthy = health endpoint reports ok/healthy AND both probes 2xx.
+          # /api/health actually returns {"status":"ok"} — this test used to
+          # compare against 'healthy' only, so it graded EVERY merge as broken
+          # and tried to revert it. It never fired in practice (100/100 runs
+          # skipped on the label gate), but it would have reverted healthy PRs
+          # the first time a brain PR merged. Accept both spellings.
+          if { [ "$STATUS" = "ok" ] || [ "$STATUS" = "healthy" ]; } && [ "$DCPI" -lt 400 ] 2>/dev/null && [ "$FINDINGS" -lt 500 ] 2>/dev/null; then
             echo "verdict=healthy" >> $GITHUB_OUTPUT
           else
             echo "verdict=broken" >> $GITHUB_OUTPUT
           fi
 
-      - name: Auto-revert on breakage
+      # Restoring service is a deploy-platform operation, not a git operation.
+      # `git push origin main` here was rejected by branch protection (GH006,
+      # same as auto-rollback.yml) and, because the step then exited non-zero,
+      # every following step — including the PR comment and the brain-DB
+      # callback — was skipped. Railway rolls the image back instead.
+      - name: Roll back Railway on breakage
         id: revert
         if: steps.probe.outputs.verdict == 'broken'
+        continue-on-error: true
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
         run: |
-          echo "::warning::Post-merge health check FAILED — reverting the brain PR merge"
-          MERGE_SHA="${{ github.event.pull_request.merge_commit_sha }}"
-          # The merge of a squash PR is a single commit on main; revert it.
-          git revert --no-edit "$MERGE_SHA" || {
-            echo "::error::git revert failed — manual intervention needed"
+          set +e
+          echo "::warning::Post-merge health check FAILED — rolling production back"
+          if [ -z "${RAILWAY_TOKEN:-}" ]; then
+            echo "::error::RAILWAY_TOKEN not set — cannot roll back automatically."
             echo "reverted=false" >> $GITHUB_OUTPUT
+            echo "detail=RAILWAY_TOKEN not set" >> $GITHUB_OUTPUT
             exit 1
-          }
-          git push origin main
-          echo "reverted=true" >> $GITHUB_OUTPUT
-          echo "::notice::Reverted $MERGE_SHA from main"
+          fi
+          python3 -c 'import requests' 2>/dev/null || pip install --quiet requests
+          python3 scripts/railway_rollback.py --json > /tmp/rb.json 2>/tmp/rb.err
+          RC=$?
+          cat /tmp/rb.err
+          if [ "$RC" -eq 0 ]; then
+            echo "reverted=true" >> $GITHUB_OUTPUT
+            echo "detail=Railway rolled back to the previous good image" >> $GITHUB_OUTPUT
+          else
+            echo "reverted=false" >> $GITHUB_OUTPUT
+            echo "detail=railway_rollback.py exited $RC" >> $GITHUB_OUTPUT
+          fi
+          exit $RC
+
+      # Land the git revert as a PR so the next deploy does not re-ship the bad
+      # merge. This is a branch push + PR, which the bot IS allowed to do.
+      - name: Open revert PR
+        id: revertpr
+        if: steps.probe.outputs.verdict == 'broken'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set +e
+          MERGE_SHA="${{ github.event.pull_request.merge_commit_sha }}"
+          BRANCH="auto-rollback/brain-revert-${MERGE_SHA:0:8}-${GITHUB_RUN_ID}"
+          git checkout -b "$BRANCH" || exit 1
+          if ! git revert --no-edit "$MERGE_SHA"; then
+            git revert --abort 2>/dev/null
+            echo "::error::git revert of $MERGE_SHA conflicted — needs a human"
+            echo "url=(revert conflicted)" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          git push origin "$BRANCH" || { echo "url=(branch push failed)" >> $GITHUB_OUTPUT; exit 1; }
+          # --body-file, not an inline multi-line --body: continuation lines at
+          # column 0 would terminate this YAML block scalar.
+          cat > /tmp/pr-body.md <<'MD'
+          Automated revert opened by `brain-pr-post-merge-guard`.
+
+          Production was rolled back on Railway; this PR removes the merge from git so the next deploy does not re-ship it.
+
+          - Reverted merge: `__MERGE__`
+          - Original PR: #__PRNUM__
+          - Run: __RUN__
+          MD
+          # `sed -i` differs between GNU and BSD; redirect instead.
+          sed "s|__MERGE__|${MERGE_SHA}|; s|__PRNUM__|${PR_NUMBER}|; s|__RUN__|${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}|" \
+            /tmp/pr-body.md > /tmp/pr-body.final.md && mv /tmp/pr-body.final.md /tmp/pr-body.md
+          URL=$(gh pr create --base main --head "$BRANCH" \
+            --title "revert: brain PR #${PR_NUMBER} failed post-merge health check" \
+            --body-file /tmp/pr-body.md \
+            --label auto-rollback 2>&1 | tail -1)
+          echo "url=$URL" >> $GITHUB_OUTPUT
 
       - name: Comment outcome on the brain PR
+        if: ${{ !cancelled() }}
         uses: actions/github-script@v7
         with:
           script: |
@@ -120,6 +194,8 @@ jobs:
             const dcpi    = '${{ steps.probe.outputs.dcpi_code }}';
             const findings= '${{ steps.probe.outputs.findings_code }}';
             const reverted= '${{ steps.revert.outputs.reverted }}';
+            const detail  = '${{ steps.revert.outputs.detail }}' || '(no detail)';
+            const prUrl   = '${{ steps.revertpr.outputs.url }}' || '(not opened)';
             let body;
             if (verdict === 'healthy') {
               body = `### ✅ Post-merge health check PASSED\n\n` +
@@ -131,13 +207,18 @@ jobs:
                 `this raises the trust score for this proposal source ` +
                 `(feeds GG#2 confidence calibration).`;
             } else {
-              body = `### ❌ Post-merge health check FAILED — auto-reverted\n\n` +
-                `Railway came back unhealthy after this brain PR merged, so ` +
-                `the merge commit was **automatically reverted from main**.\n\n` +
+              const rolled = reverted === 'true';
+              body = `### ❌ Post-merge health check FAILED\n\n` +
+                (rolled
+                  ? `Railway came back unhealthy after this brain PR merged, so production was ` +
+                    `**rolled back to the previous deployment**.\n\n`
+                  : `Railway came back unhealthy after this brain PR merged, and the ` +
+                    `**automatic rollback did not complete** — production may still be broken.\n\n`) +
                 `- \`/api/health\`: **${status}**\n` +
                 `- DCPI scores endpoint: HTTP ${dcpi}\n` +
                 `- heal/findings endpoint: HTTP ${findings}\n` +
-                `- Revert pushed: ${reverted}\n\n` +
+                `- Railway rollback: ${rolled ? '✅' : '⚠️'} ${detail}\n` +
+                `- Revert PR: ${prUrl}\n\n` +
                 `The proposal is being marked \`merged_reverted\` in the brain DB — ` +
                 `this lowers the trust score for this proposal source. ` +
                 `The brain spotted a real issue but its fix was wrong; ` +
@@ -151,6 +232,7 @@ jobs:
             });
 
       - name: Mark proposal outcome in brain DB
+        if: ${{ !cancelled() }}
         env:
           ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
         run: |
