@@ -25,6 +25,13 @@ jobs:
             fi
           done < <(find . -name '*.py' -not -path './.git/*' -not -path './node_modules/*' -not -path './.venv/*')
           exit $fail
+      # Lives HERE, not in tests/, on purpose: a module-scope sys.exit() in a
+      # tests/test_*.py aborts pytest COLLECTION (exit 3, zero tests run), which
+      # would disarm a pytest-based guard too — the guard is silenced by the very
+      # bug it exists to catch. Three times in 48h (#1797, #1803, #1806), every
+      # time invisible because main went red identically.
+      - name: No test module aborts collection
+        run: python3 scripts/check_collection_safety.py tests
 
   regression-lint:
     runs-on: ubuntu-latest
