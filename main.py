@@ -2394,6 +2394,22 @@ try:
     except Exception as _acts:
         import logging
         logging.getLogger(__name__).warning('actuation_master_shell wiring failed: %s', _acts)
+    # 2026-07-28: Inventory-Acquisition master shell (#40) — how inventory actually
+    # grows. Built after "16 feeds died on 2026-03-18" turned out to be ONE bulk
+    # backfill at 03:29:40 that stamped first_seen on ~1,700 pre-existing rows.
+    # Lane 1 spread-tests every feed (COUNT(DISTINCT date_trunc('minute', first_seen)))
+    # so a bulk import can never pose as a live source again. The real acquisition
+    # surface is 3 registered crawlers, one of them (datacentermap) cron-commented
+    # behind a Vercel bot wall while DCM_CRAWL_ENABLED=true still reads armed.
+    # GET /admin/inventory · /api/v1/admin/inventory/master-tick
+    # Kill: INVENTORY_SHELL_DISABLE=1
+    try:
+        from routes.inventory_acquisition_master_shell import inventory_acquisition_master_shell_bp
+        app.register_blueprint(inventory_acquisition_master_shell_bp)
+        print("[main] inventory_acquisition_master_shell_bp registered: GET /admin/inventory", flush=True)
+    except Exception as _inv:
+        import logging
+        logging.getLogger(__name__).warning('inventory_acquisition_master_shell wiring failed: %s', _inv)
     # 2026-07-26: Graph-Spine master shell (#36) — read-only DIAGNOSTIC, pure-DB,
     # replica-preferred. Answers "replace RAG with graph engineering?" by measuring
     # where retrieval actually loses: the identity spine. Six lanes — carrier<->
