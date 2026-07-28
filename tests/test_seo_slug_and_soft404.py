@@ -14,6 +14,7 @@ import functools
 import hashlib
 import pathlib
 import re
+import unicodedata
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 FREEZE = REPO_ROOT / "routes" / "facility_slug_freeze.py"
@@ -21,7 +22,7 @@ SEO = REPO_ROOT / "routes" / "seo_pages.py"
 DEEPDIVE = REPO_ROOT / "routes" / "market_deep_dive.py"
 
 WANT = {"_slugify", "_stable_hash8", "build_canonical_slug",
-        "_dedupe_provider_prefix"}
+        "_dedupe_provider_prefix", "_fold_to_ascii"}
 
 
 @functools.lru_cache(maxsize=1)
@@ -31,7 +32,12 @@ def _slug_fns():
             if isinstance(n, ast.FunctionDef) and n.name in WANT]
     found = {n.name for n in body}
     assert found == WANT, "AST extraction missing {}".format(WANT - found)
-    g = {"re": re, "hashlib": hashlib}
+    try:
+        from unidecode import unidecode as _u
+    except Exception:
+        _u = None
+    g = {"re": re, "hashlib": hashlib, "unicodedata": unicodedata,
+         "_unidecode": _u}
     mod = ast.Module(body=body, type_ignores=[])
     ast.fix_missing_locations(mod)
     exec(compile(mod, "<extracted>", "exec"), g)
@@ -80,13 +86,31 @@ def test_no_provider_means_no_prefix():
 
 
 # ── the freeze must stay set-once (the anti-churn guarantee) ───────────
-def test_backfill_only_writes_rows_where_canonical_slug_is_null():
+def test_backfill_never_overwrites_a_real_slug():
+    """Set-once still holds -- it just now treats the '' sentinel as unfrozen.
+
+    WAS: asserted the literal `AND t.canonical_slug IS NULL`. That guard was
+    widened on purpose so the 221 empty-sentinel rows (non-Latin names) could be
+    given a URL. The GUARANTEE is unchanged: a NON-EMPTY canonical_slug is never
+    rewritten, which is what keeps live URLs from moving.
+    """
     src = FREEZE.read_text(encoding="utf-8")
     seg = src.split("def backfill_canonical_slugs", 1)[1].split("\ndef ", 1)[0]
-    assert "WHERE canonical_slug IS NULL" in seg, (
-        "the SELECT must only pick unfrozen rows")
-    assert "AND t.canonical_slug IS NULL" in seg, (
-        "the UPDATE must re-assert set-once, or a re-run would move live URLs")
+    # ★ STRIP COMMENTS FIRST. The prose above the SQL restates every guard
+    # verbatim, so a plain `in seg` check passes even after the real clause is
+    # deleted -- verified by mutation: removing `AND v.slug <> \'\'` left all
+    # 20 tests green until this strip was added. Comments satisfy grep; assert
+    # on the executable text only.
+    seg = "\n".join(
+        ln for ln in seg.splitlines()
+        if not ln.strip().startswith(("--", "#"))
+    )
+    assert "canonical_slug IS NULL OR canonical_slug = \'\'" in seg, (
+        "the SELECT must pick unfrozen rows AND the '' sentinel")
+    assert "t.canonical_slug IS NULL OR t.canonical_slug = \'\'" in seg, (
+        "the UPDATE must still refuse to touch a real slug")
+    assert "v.slug <> \'\'" in seg, (
+        "an empty computed slug must not overwrite anything")
 
 
 def test_backfill_mints_an_alias_for_the_pre_dedupe_slug():
@@ -183,3 +207,72 @@ def test_resolution_runs_before_the_404():
     assert i_resolve < i_404, (
         "a 404 must only be reached AFTER trying to resolve the real market")
     assert "code=301" in seg, "a known market rename is permanent -> 301"
+
+
+# ── transliteration: non-Latin names must still get a URL ──────────────
+# 221 live facilities had canonical_slug='' because _slugify kept only
+# [a-z0-9], so CJK/Cyrillic names reduced to nothing and the facility was
+# unreachable. The same stripping mangled accented Latin into
+# "bouygues-t-l-com" -- a slug that appears verbatim in the GSC 404 export.
+def _fold_fns():
+    import unicodedata
+    tree = ast.parse(FREEZE.read_text(encoding="utf-8"))
+    want = {"_fold_to_ascii", "_slugify"}
+    body = [n for n in tree.body
+            if isinstance(n, ast.FunctionDef) and n.name in want]
+    assert {n.name for n in body} == want
+    try:
+        from unidecode import unidecode as _u
+    except Exception:
+        _u = None
+    g = {"re": re, "unicodedata": unicodedata, "_unidecode": _u}
+    mod = ast.Module(body=body, type_ignores=[])
+    ast.fix_missing_locations(mod)
+    exec(compile(mod, "<extracted>", "exec"), g)
+    return g
+
+
+def test_accented_latin_folds_instead_of_shattering():
+    """The pre-fix slug was 'bouygues-t-l-com' --每 accent became a separator."""
+    sl = _fold_fns()["_slugify"]
+    assert sl("Bouygues Telecom") == "bouygues-telecom"
+    out = sl("Bouygues Télécom")
+    assert out == "bouygues-telecom", out
+    assert sl("Córdoba") == "cordoba"
+
+
+def test_non_latin_names_produce_a_usable_slug():
+    sl = _fold_fns()["_slugify"]
+    for name in ("ドコモ", "Парковий",
+                 "百度地图顺德数据中心"):
+        got = sl(name)
+        assert got and len(got) >= 3, (
+            "{!r} still slugs to {!r} -- that facility has no URL".format(name, got))
+        assert re.fullmatch(r"[a-z0-9-]+", got), got
+
+
+def test_fold_degrades_without_the_dependency():
+    """A failed Unidecode install must not break slugging -- NFKD still folds."""
+    g = _fold_fns()
+    g["_unidecode"] = None
+    assert g["_fold_to_ascii"]("Télécom").lower().startswith("telecom")
+
+
+def test_slugify_is_still_deterministic_and_url_safe():
+    sl = _fold_fns()["_slugify"]
+    a, b = sl("联通云数据中心"), sl("联通云数据中心")
+    assert a == b, "a frozen slug must be reproducible"
+    assert re.fullmatch(r"[a-z0-9-]+", a)
+
+
+# ── the freeze guarantee must survive the sentinel re-open ─────────────
+def test_empty_sentinel_is_reopenable_but_real_slugs_are_not():
+    src = FREEZE.read_text(encoding="utf-8")
+    seg = src.split("def backfill_canonical_slugs", 1)[1].split("\ndef ", 1)[0]
+    assert "canonical_slug IS NULL OR canonical_slug = ''" in seg, (
+        "rows frozen as the '' sentinel serve no URL, so they must be re-openable")
+    assert "v.slug <> ''" in seg, (
+        "an empty computed slug must not overwrite an existing value")
+    assert "t.canonical_slug IS NULL OR t.canonical_slug = ''" in seg, (
+        "a REAL canonical_slug must still never be overwritten -- that guarantee "
+        "is why live URLs do not move")

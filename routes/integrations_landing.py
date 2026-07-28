@@ -725,7 +725,45 @@ GROK_RECIPE_HTML = _recipe_page(
   Grok surfaces send: the consumer custom-connector auth field and the API's Remote MCP block. No key?
   Leave auth blank and use the keyless free tier.</p>
 </div>""",
-    extra_html="""<div class="pane">
+    extra_html="""<div class="pane" id="custom-instructions">
+  <h2>Grok custom instructions &mdash; copy-paste</h2>
+  <p style="color:#64748b;margin:0 0 10px">Short enough for Grok&rsquo;s custom-instructions field, and it leads with the
+  branching decision rather than a tool list. Drafted by Grok itself after the 2026-07-28 front-door audit.
+  <b>No hardcoded counts</b> &mdash; every number comes from the live response&rsquo;s provenance block, which is
+  the one thing that never goes stale.</p>
+  <pre style="background:#0f172a;color:#e2e8f0;padding:14px 16px;border-radius:8px;font-size:.85rem;white-space:pre-wrap">For any question about data centers, power markets, grid capacity,
+interconnection queues, fiber, site selection, or energy infrastructure:
+
+Call execute_plan(intent="...") FIRST. Pass the user's question (or a
+lightly cleaned version of it) as the intent parameter. Example:
+
+  execute_plan(intent="rank markets for a 200 MW AI campus")
+
+One call returns the full multi-step results plus an auditable replay.
+Do not hand-chain individual tools when execute_plan can answer the question.
+
+Use plan_query(intent="...") only when you specifically need the plan
+without executing it (for inspection or logging).
+
+If the response includes a next_recipe, offer or follow it when it
+improves the answer.
+
+Always cite using the provenance or citation block returned in the tool
+response (e.g. "According to DC Hub (dchub.cloud)..."). Never invent or
+hardcode facility counts, tool counts, deal counts, or market counts —
+pull them from the live response.
+
+Prefer the AI Campus Power pack tools when the question involves N MW AI
+campus siting, power availability, or fiber + grid overlap.
+
+Keyless free-tier depth is available; if limits are hit, call
+claim_free_key once and continue.</pre>
+  <p style="color:#64748b;margin:10px 0 0"><small>Works in the grok.com custom-instructions field and as the system
+  prompt on an xAI API agent. For other platforms the maintained equivalent is the
+  <a href="https://dchub.cloud/integrations/mcp#operator-prompt">operator prompt</a>.</small></p>
+</div>
+
+<div class="pane">
   <h2>Grok starter toolkit</h2>
   <p>Grok works best scoped to the energy-first spine rather than the full catalog. These nine cover the
   questions the AI build-out actually generates &mdash; siting, power, and time-to-energize:</p>
