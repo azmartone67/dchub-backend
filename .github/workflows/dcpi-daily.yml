@@ -4,23 +4,22 @@ on:
     # Phase III (2026-05-16): bumped 1x → 4x daily. Pre-fix only 40%
     # of 280 markets were fresh in 24h (autopilot was also firing
     # opportunistically). Now: 06:05 / 12:05 / 18:05 / 00:05 UTC.
-    # Each run covers all 280+ markets via the 4-chunk sequence below
-    # (~3 min total). Markets stay fresh within 6h of recompute.
+    # Each run covers the whole market universe via the chunk loop below.
+    # Markets stay fresh within 6h of recompute.
     - cron: '5 6,12,18,0 * * *'
   workflow_dispatch: {}
 jobs:
   recompute:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # r-dcpi-exactcoverage (2026-07-28): 15 → 30. Chunks are smaller now
+    # (25, not 100) and retry up to 3×, so the worst case runs longer.
+    timeout-minutes: 30
     steps:
       - name: Trigger DCPI recompute (chunked)
         # Phase ZZ (2026-05-16): chunked execution. Pre-fix, the single
         # POST was timing out (Railway 120s) after processing only ~30 of
-        # 276 markets, leaving 89% of DCPI stale 3-5 days. We now drive
-        # 4 sequential chunks of 100 markets each — well under the
-        # per-request timeout, fully covers the 276-market universe with
-        # headroom for growth, and each chunk writes its own dcpi_runs
-        # row so partial-failure recovery is visible.
+        # 276 markets, leaving 89% of DCPI stale 3-5 days. Each chunk
+        # writes its own dcpi_runs row so partial-failure recovery is visible.
         #
         # Phase FF+3 (2026-05-13): hits Railway directly. The previous
         # URL routed through CF Worker (15s timeout) which silently
@@ -33,68 +32,118 @@ jobs:
           # error still "succeeded"; (2) a valid JSON error body parses fine, so
           # `|| echo` never fired; (3) even when it did fire, `echo` exits 0, so
           # the JOB STAYED GREEN. That is exactly how 41 markets sat frozen for
-          # 14 days with every run reporting success. Now a transport error, an
-          # HTTP>=400, a body-level error, or a zero-scored chunk fails the job
-          # RED, and a coverage backstop catches a whole silently-dead chunk.
+          # 14 days with every run reporting success.
+          #
+          # r-dcpi-chunkretry (2026-07-18): retry a chunk once before going RED —
+          # a transient Railway 502 shouldn't red the whole cron.
+          #
+          # r-dcpi-exactcoverage (2026-07-28): the failure MODE was fixed above,
+          # but three silent-gap holes remained — all the same class as the
+          # original swallow, where the run passes while markets go unscored.
+          #
+          #  1. OFFSETS WERE HARDCODED (0/100/200/300) = indices 0-399. The
+          #     universe is 312 today; at 450 the run would score 400, miss 50,
+          #     and still clear the floor. Growth alone reintroduced the bug.
+          #     → offsets now derive from `total_markets_known`, which the
+          #       endpoint returns on every response.
+          #
+          #  2. THE FLOOR (280) WAS A CONSTANT while the universe grew to 312,
+          #     so up to 32 markets could go stale inside tolerance.
+          #     → the check is now EXACT: scored must equal the universe.
+          #
+          #  3. THE PER-CHUNK CHECK WAS `scored >= 1`. A chunk asked for 100
+          #     that returned 1 counted as healthy.
+          #     → each chunk must score exactly what it was asked for.
+          #
+          # Also: a response can be HTTP 200, parse as JSON, and simply have NO
+          # `markets_scored` field (observed live 2026-07-28 — it cost a silent
+          # 25-market gap in a manual sweep). `.markets_scored // 0` makes that
+          # 0, which now fails the chunk instead of adding nothing to a total
+          # nobody was checking.
           set -uo pipefail
           if [ -z "${{ secrets.DCHUB_ADMIN_KEY }}" ]; then
-            echo "::warning::DCHUB_ADMIN_KEY secret missing — skipping"
-            exit 0
+            # Was `exit 0` + a warning — but a missing secret means the cron does
+            # NOTHING while reporting success, the exact failure this workflow
+            # exists to prevent. Only schedule/workflow_dispatch on the base repo
+            # reach here, so there is no fork case to stay quiet for.
+            echo "::error::DCHUB_ADMIN_KEY secret missing — DCPI would silently never recompute"
+            exit 1
           fi
           BASE="https://dchub-backend-production.up.railway.app/api/v1/dcpi/recompute"
+          # 25, not 100: chunks of 100 draw Railway 502s (single replica). At 25
+          # a full live sweep completed in 28-47s per chunk.
+          LIMIT=25
+          ATTEMPTS=3
           FAILED=0
           TOTAL_SCORED=0
-          for OFFSET in 0 100 200 300; do
-            echo "─── Chunk offset=${OFFSET} limit=100 ──────────────────"
-            # RETRY ONCE (r-dcpi-chunkretry 2026-07-18): a single POST that
-            # recomputes 100 markets can trip Railway's 120s gateway (observed:
-            # a live run got HTTP 502 on offset=100 while the other 3 chunks
-            # scored fine, and the same chunk succeeded on the prior run). That
-            # is a TRANSIENT timeout — the very reason the work was chunked. So
-            # only a chunk that fails TWICE is a real freeze worth going RED for;
-            # a single blip self-heals here instead of reddening the whole cron.
-            CODE=0; SCORED=-1
-            for ATTEMPT in 1 2; do
+          TOTAL_KNOWN=0
+          OFFSET=0
+          while : ; do
+            # Stop once the known universe is covered. TOTAL_KNOWN stays 0 until
+            # the first response reports it, so the first chunk always runs.
+            if [ "$TOTAL_KNOWN" -gt 0 ] && [ "$OFFSET" -ge "$TOTAL_KNOWN" ]; then
+              break
+            fi
+            # Runaway guard: never let a bad total spin this loop forever.
+            if [ "$OFFSET" -gt 5000 ]; then
+              echo "::error::offset ${OFFSET} exceeds sanity bound — aborting"
+              FAILED=1
+              break
+            fi
+            echo "─── Chunk offset=${OFFSET} limit=${LIMIT} ──────────────────"
+            CODE=0; SCORED=-1; EXPECTED="$LIMIT"
+            for ATTEMPT in $(seq 1 "$ATTEMPTS"); do
               # -w appends the HTTP code on its own line: curl -sS does NOT fail
               # on HTTP errors without --fail, so read the status explicitly. On
-              # a transport error, synthesize code 000 so the health check below
-              # treats it as a failed attempt (and retries / fails, not aborts).
+              # a transport error synthesize 000 so it counts as a failed try.
               RESP=$(curl -sS -X POST --max-time 150 -w $'\n%{http_code}' \
-                "${BASE}?offset=${OFFSET}&limit=100" \
+                "${BASE}?offset=${OFFSET}&limit=${LIMIT}" \
                 -H "X-Admin-Key: ${{ secrets.DCHUB_ADMIN_KEY }}") || RESP=$'\n000'
               CODE=$(printf '%s' "$RESP" | tail -n1)
               BODY=$(printf '%s' "$RESP" | sed '$d')
-              # Healthy only if HTTP<400 AND no body-level error AND scored>=1.
-              # jq is preinstalled on ubuntu-latest.
+              # A body-level error and a missing markets_scored both land on
+              # -1/0 and fail the attempt. jq is preinstalled on ubuntu-latest.
               SCORED=$(printf '%s' "$BODY" | jq -r \
                 'if (.error != null) then -1 else (.markets_scored // 0) end' \
                 2>/dev/null || echo -1)
-              if [ "${CODE:-0}" -lt 400 ] && [ "${SCORED:-0}" -ge 1 ]; then
-                printf '%s\n' "$BODY" | python3 -m json.tool || printf '%s\n' "$BODY"
+              KNOWN=$(printf '%s' "$BODY" | jq -r '.total_markets_known // 0' \
+                2>/dev/null || echo 0)
+              [ "${KNOWN:-0}" -gt 0 ] && TOTAL_KNOWN="$KNOWN"
+              # What SHOULD this chunk have scored? The tail chunk is short by
+              # design, so compare against the remainder, not LIMIT.
+              EXPECTED="$LIMIT"
+              if [ "$TOTAL_KNOWN" -gt 0 ]; then
+                REMAIN=$((TOTAL_KNOWN - OFFSET))
+                [ "$REMAIN" -lt "$LIMIT" ] && EXPECTED="$REMAIN"
+              fi
+              if [ "${CODE:-0}" -lt 400 ] && [ "${SCORED:-0}" -eq "${EXPECTED:-0}" ]; then
+                echo "  ✓ scored ${SCORED}/${EXPECTED} (http=${CODE})"
                 break
               fi
-              echo "::warning::chunk offset=${OFFSET} attempt ${ATTEMPT} failed (http=${CODE}, scored=${SCORED}) — likely a transient Railway 120s timeout; retrying"
-              sleep 5
+              echo "::warning::chunk offset=${OFFSET} attempt ${ATTEMPT}/${ATTEMPTS} failed (http=${CODE}, scored=${SCORED}, expected=${EXPECTED}) — retrying"
+              sleep $((ATTEMPT * 10))
             done
-            if [ "${CODE:-0}" -ge 400 ] || [ "${SCORED:-0}" -lt 1 ]; then
-              echo "::error::chunk offset=${OFFSET} FAILED after 2 attempts (http=${CODE}, scored=${SCORED})"
+            if [ "${CODE:-0}" -ge 400 ] || [ "${SCORED:-0}" -ne "${EXPECTED:-0}" ]; then
+              echo "::error::chunk offset=${OFFSET} FAILED after ${ATTEMPTS} attempts (http=${CODE}, scored=${SCORED}, expected=${EXPECTED})"
               FAILED=1
             else
               TOTAL_SCORED=$((TOTAL_SCORED + SCORED))
             fi
-            sleep 2
+            OFFSET=$((OFFSET + LIMIT))
+            sleep 3
           done
-          echo "─── Total markets scored across all chunks: ${TOTAL_SCORED} ───"
+          echo "─── Scored ${TOTAL_SCORED} of ${TOTAL_KNOWN} known markets ───"
           if [ "$FAILED" -ne 0 ]; then
             echo "::error::One or more DCPI recompute chunks failed — job is RED so a silent freeze cannot recur"
             exit 1
           fi
-          # Coverage backstop. The live universe is ~316; a whole dead chunk
-          # drops ~100 (=> <=~218), and the 41-orphan freeze dropped to 277. A
-          # <280 floor catches BOTH while tolerating a few transient per-market
-          # blips on a healthy ~316 total.
-          if [ "$TOTAL_SCORED" -lt 280 ]; then
-            echo "::error::DCPI coverage regression: only ${TOTAL_SCORED} markets scored (<280) — a chunk likely died silently, or markets are orphaned again"
+          if [ "$TOTAL_KNOWN" -le 0 ]; then
+            echo "::error::endpoint never reported total_markets_known — coverage is unprovable, refusing to report success"
             exit 1
           fi
-          echo "✓ DCPI recompute healthy: ${TOTAL_SCORED} markets scored across 4 chunks"
+          # EXACT, not a floor. A constant floor is what let 32 markets hide.
+          if [ "$TOTAL_SCORED" -ne "$TOTAL_KNOWN" ]; then
+            echo "::error::DCPI coverage shortfall: scored ${TOTAL_SCORED} of ${TOTAL_KNOWN} — $((TOTAL_KNOWN - TOTAL_SCORED)) markets did not recompute"
+            exit 1
+          fi
+          echo "✓ DCPI recompute healthy: ${TOTAL_SCORED}/${TOTAL_KNOWN} markets scored"
