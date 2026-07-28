@@ -1354,16 +1354,33 @@ def funnel_leakage():
             except Exception:
                 try: c.rollback()
                 except Exception: pass
-            # Stage 4: codes redeemed
+            # Stage 4: real conversions, from the CANONICAL ledger.
+            #
+            # ★ 2026-07-27: this counted mcp_pair_codes.redeemed_at IS NOT NULL
+            # — a column with 0 rows EVER. Issue #1551 established that on
+            # 2026-07-13 and rewired brain_consistency_radar to mcp_conversions
+            # (the ledger the Stripe webhooks actually write); THIS endpoint was
+            # never rewired. So the admin board has been publishing
+            # "4_codes_redeemed: 0" and "drop_codes_to_redeemed_pct: 100.0"
+            # while real money landed in the ledger — 9 non-test conversions in
+            # the 30d before this fix. A dead metric reported as a measured zero
+            # is worse than no metric: it reads as a total conversion failure.
+            #
+            # If the ledger is missing, the stage is None (UNMEASURED), never 0.
             try:
-                cur.execute(
-                    "SELECT COUNT(*) FROM mcp_pair_codes "
-                    "WHERE redeemed_at IS NOT NULL "
-                    "AND redeemed_at >= NOW() - INTERVAL %s",
-                    (f"{days} days",),
-                )
-                out["stages"]["4_codes_redeemed"] = int((cur.fetchone() or [0])[0] or 0)
+                cur.execute("SELECT to_regclass('public.mcp_conversions')")
+                if (cur.fetchone() or [None])[0]:
+                    cur.execute(
+                        "SELECT COUNT(*) FROM mcp_conversions "
+                        "WHERE created_at >= NOW() - INTERVAL %s "
+                        "AND COALESCE(is_test, FALSE) = FALSE",
+                        (f"{days} days",),
+                    )
+                    out["stages"]["4_conversions"] = int((cur.fetchone() or [0])[0] or 0)
+                else:
+                    out["stages"]["4_conversions"] = None
             except Exception:
+                out["stages"]["4_conversions"] = None
                 try: c.rollback()
                 except Exception: pass
             # Stage 5: final paid keys created
@@ -1410,16 +1427,20 @@ def funnel_leakage():
             _tc = stages.get("1_tool_calls", 0) or 0
             _ps = stages.get("2_paywall_signals", 0) or 0
             _cm = stages.get("3_codes_minted", 0) or 0
-            _cr = stages.get("4_codes_redeemed", 0) or 0
+            # ★ None means UNMEASURED and must not become 0 — a suppressed rate
+            # says "we could not check", a 100% drop says "everybody left".
+            _cr = stages.get("4_conversions")
             _pk = stages.get("5_paid_keys", 0) or 0
             if _tc > 0 and _ps > 0:
                 out["drop_calls_to_signals_pct"] = round(100 * (1 - _ps / _tc), 2)
             if _ps > 0:
                 out["drop_signals_to_codes_pct"] = round(100 * (1 - _cm / max(1, _ps)), 2)
-            if _cm > 0:
-                out["drop_codes_to_redeemed_pct"] = round(100 * (1 - _cr / max(1, _cm)), 2)
-            if _cr > 0:
-                out["drop_redeemed_to_paid_pct"] = round(100 * (1 - _pk / max(1, _cr)), 2)
+            if _cm > 0 and _cr is not None:
+                out["drop_codes_to_conversions_pct"] = round(100 * (1 - _cr / max(1, _cm)), 2)
+            if _cr:
+                out["drop_conversions_to_paid_pct"] = round(100 * (1 - _pk / max(1, _cr)), 2)
+            out["stage_4_source"] = ("mcp_conversions (canonical ledger, non-test)"
+                                     if _cr is not None else "UNMEASURED — ledger unreadable")
 
         return jsonify(ok=True, **out)
     finally:
