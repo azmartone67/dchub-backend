@@ -79,7 +79,17 @@ _GATED_ST = ('depth_teased', 'blocked_paid_only', 'anon_daily_cap',
              'credits_depleted')
 # Statuses meaning the caller got data WITHOUT paying — the offer never showed.
 _GRANTED_ST = ('trial_taste_inline', 'trial_taste_bounded', 'trial_used',
-               'ok', 'credits_full', 'return_reward_full')
+               'ok', 'credits_full', 'return_reward_full',
+               # ★★2026-07-28: `mpp_offer_prewall` is a GRANTED call — the agent
+               # received a full answer and the pre-wall offer rode along with
+               # it. It must be here because the gateway OVERWRITES the status
+               # (`trial_taste_inline` → `mpp_offer_prewall`) whenever the offer
+               # fires. Without this entry every successful offer silently left
+               # the granted bucket, shrinking `tot` and INFLATING the gated
+               # share — i.e. the offer working would have made reachability
+               # look better while measuring less. Anything trending
+               # `trial_taste_inline` must likewise sum the two.
+               'mpp_offer_prewall')
 
 
 # ── auth / kill ───────────────────────────────────────────────────────
@@ -427,11 +437,12 @@ def _lane_reachability() -> list[dict]:
         with c.cursor() as cur:
             r = _q(cur, "SELECT "
                         "  COUNT(*) FILTER (WHERE status IN %s), "
-                        "  COUNT(*) FILTER (WHERE status IN %s) "
+                        "  COUNT(*) FILTER (WHERE status IN %s), "
+                        "  COUNT(*) FILTER (WHERE status = 'mpp_offer_prewall') "
                         " FROM mcp_call_log WHERE tool IN %s AND " + real_sql +
                         "   AND timestamp > NOW() - INTERVAL '30 days'",
                    (tuple(_GATED_ST), tuple(_GRANTED_ST), tuple(_MPP_TOOLS)))
-            gated, granted = _num(r, 0), _num(r, 1)
+            gated, granted, prewall = _num(r, 0), _num(r, 1), _num(r, 2)
             if gated is None or granted is None:
                 out.append(_check(
                     "rc_share", "unpaid agents actually reach the wall", None,
@@ -442,9 +453,33 @@ def _lane_reachability() -> list[dict]:
             out.append(_check(
                 "rc_share", "unpaid agents actually reach the wall",
                 (tot > 0 and pct >= 10.0) if tot else None,
+                # ★Wording corrected 2026-07-28: this used to end "...so the pay
+                # offer never rendered", which is no longer true. The PRE-WALL
+                # offer renders precisely on GRANTED calls. Gating share now
+                # bounds only the POST-wall challenge, not the whole rail — see
+                # rc_prewall below for the granted-side reach.
                 "%d/%d (%.1f%%) payable-tool calls were gated — the rest were "
-                "granted free, so the pay offer never rendered" % (gated, tot, pct)
+                "granted free, so the POST-wall challenge never rendered for "
+                "them (the pre-wall offer still can: see rc_prewall)"
+                % (gated, tot, pct)
                 if tot else "no real payable-tool traffic in 30d to measure",
+                critical=False))
+            # (c) the granted-side reach this lane was structurally blind to.
+            # The pre-wall offer attaches to calls that SUCCEED, so no
+            # gating-based metric can ever see it: rc_share could sit at 0.1%
+            # forever while the surface worked perfectly. Count it directly.
+            out.append(_check(
+                "rc_prewall", "pre-wall offer reaches agents on GRANTED calls",
+                (prewall > 0) if granted else None,
+                "%d pre-wall offer(s) delivered to real agents over %d granted "
+                "payable-tool calls in 30d%s" % (
+                    prewall, granted,
+                    "" if prewall else
+                    " — 0 means the offer is not firing: check "
+                    "MPP_PREWALL_DISABLE (must not be '1'), MPP_PREWALL_AT vs "
+                    "DCHUB_TRIAL_TOOL_DAILY_FULL, and that the anon cascade "
+                    "wiring is still present")
+                if granted else "no granted payable-tool traffic in 30d",
                 critical=False))
     except Exception as e:  # noqa: BLE001
         out.append(_check("rc_share", "offer-eligible share measurable", None,
