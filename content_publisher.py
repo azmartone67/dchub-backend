@@ -2121,6 +2121,27 @@ _FRESHNESS_RE = _re_legacy.compile(
     r'(?:24h|48h|7\s*days|7d|30\s*days|30d))\b',
     _re_legacy.IGNORECASE)
 _URL_RE = _re_legacy.compile(r'https?://[^\s)>\]]+', _re_legacy.IGNORECASE)
+# 2026-07-28: SCHEME-LESS links. The X/Twitter drafts sign off with a bare
+# "→ dchub.cloud/connect" (X auto-links bare domains, and the house style for
+# a 280-char post omits the scheme), so _URL_RE — which requires https?:// —
+# scored a REAL link as no link at all. Measured: the pillars X card lost the
+# 0.20 link credit purely to a missing "https://" and sat at 0.150, refused;
+# its LinkedIn sibling has the same bare link and only survived because other
+# signals carried it. This is a false NEGATIVE in the gate, not thin copy.
+#
+# Requires a PATH on purpose. "dchub.cloud/connect" is somewhere to go;
+# a bare "cite as DC Hub (dchub.cloud)" is a citation, not a call to action,
+# and should not earn link credit. Requiring the path also drops the whole
+# false-positive family this could otherwise open up — "main.py",
+# "content_publisher.py", "v2.9.3", "e.g." — none of which carry one. The TLD
+# list is curated rather than a generic [a-z]{2,} for the same reason: a
+# generic one matches every module filename these posts mention by name.
+_BARE_LINK_RE = _re_legacy.compile(
+    r'(?<![\w@.])'                                   # not mid-word, not an email
+    r'(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+'        # domain labels
+    r'(?:cloud|com|org|net|io|ai|dev|app|gov|edu|co)'  # curated TLD (longest first)
+    r'/[^\s)>\]]+',                                  # REQUIRED path
+    _re_legacy.IGNORECASE)
 _RECENT_YEAR_RE = _re_legacy.compile(r'\b(20[2-3]\d)\b')
 # r65-qa (#6): the value-less M&A stub template the user flagged — a bullet line
 # that's just "Deal - Google" / "→ Deal — Blackstone" with NO $ or MW. Matches
@@ -2198,7 +2219,11 @@ def _quality_score(post) -> float:
     # r65-qa (#6): strip URLs before the number/freshness checks so a post can't
     # earn "concrete stat" + "fresh" credit purely from the YYYY-MM-DD in its own
     # /news/<slug> link — the real number/year must be in the human-readable body.
-    text_nourl = _URL_RE.sub(' ', text)
+    # 2026-07-28: strip scheme-less links for the SAME reason — a bare
+    # "dchub.cloud/news/2026-07-28-foo" faked exactly the number+year credit
+    # r65-qa closed for the https:// form. _URL_RE runs FIRST so a full URL is
+    # consumed whole and _BARE_LINK_RE never re-matches its interior.
+    text_nourl = _BARE_LINK_RE.sub(' ', _URL_RE.sub(' ', text))
 
     sig = _post_headline_signature(text)
     score = 0.0
@@ -2228,8 +2253,9 @@ def _quality_score(post) -> float:
     if cls != "other" or has_entity:
         score += 0.25
 
-    # (d) real article_url / link.
-    if _URL_RE.search(text):
+    # (d) real article_url / link. 2026-07-28: a scheme-less "dchub.cloud/connect"
+    # counts too — it is a real destination, and the X drafts write links that way.
+    if _URL_RE.search(text) or _BARE_LINK_RE.search(text):
         score += 0.20
 
     # Clamp (defensive — weights sum to 1.0 but partial-credit paths could
