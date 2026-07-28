@@ -46,10 +46,10 @@ Usage:  python3 check_relay_opens.py
 """
 from __future__ import annotations
 
-import json
 import os
 import sys
-import urllib.request
+
+import requests
 
 ORIGIN = "https://dchub-backend-production.up.railway.app"
 PATH = "/api/v1/admin/actuation/master-tick?fresh=1"
@@ -84,9 +84,13 @@ def main() -> int:
               f"re-check it", file=sys.stderr)
         return 2
 
-    req = urllib.request.Request(ORIGIN + PATH, headers={"X-Admin-Key": key})
-    with urllib.request.urlopen(req, timeout=60) as r:
-        payload = json.load(r)
+    # ★`requests`, NOT urllib — scripts/regression_lint.py blocks
+    # urllib.request.urlopen in this repo (rule: urllib-request-on-railway).
+    # It is a delta-mode ratchet: 1,597 pre-existing violations do not block,
+    # but one NEW one fails the PR. Caught exactly that on #1845.
+    resp = requests.get(ORIGIN + PATH, headers={"X-Admin-Key": key}, timeout=60)
+    resp.raise_for_status()
+    payload = resp.json()
 
     checks = {c.get("id"): c
               for lane in (payload.get("lanes") or [])
