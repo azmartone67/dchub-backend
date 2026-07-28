@@ -1,8 +1,8 @@
 # Shadowed Routes Inventory
 
-_Generated: 2026-07-13T13:09:07.835195Z_  
-_Total routes: 3003_  
-_Shadowed routes: **17**_
+_Generated: 2026-07-28T08:48:36.310785Z_  
+_Total routes: 3228_  
+_Shadowed routes: **18**_
 
 A "shadowed route" is a URL path registered in two or more places.
 Flask uses the FIRST registration; the others are dead code that
@@ -57,6 +57,12 @@ Registered in 2 place(s):
 Registered in 2 place(s):
 - `monthly_trend.monthly_json_current`
 - `comprehensive_report.monthly_json`
+
+### `/api/v1/webhooks/resend` (POST)
+
+Registered in 2 place(s):
+- `resend_webhook.resend_webhook`
+- `email_engagement.resend_webhook`
 
 ### `/integrations/tools.json` (GET)
 
