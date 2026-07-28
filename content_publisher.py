@@ -1900,48 +1900,83 @@ def _classify_post_for_dedup(text: str) -> str:
 _DEDUP_LOOKBACK_DAYS = 5
 
 # Headline-metric extractor. Matches the handful of quotable stats the press
-# engine leads with (marketing_engine._pick_daily_topic). Each entry yields a
-# (metric_label, numeric_value) so we can (a) block zero/null values and
-# (b) dedup on the metric label across the lookback window.
+# engine leads with (marketing_engine._pick_daily_topic).
+#
+# 2026-07-28 — each entry is now (label, regex, DEDUP_MODE). The third field is
+# the fix for this list's double duty. It used to be a 2-tuple, and membership
+# implicitly meant BOTH "this counts as a headline stat" (quality score) AND
+# "two posts sharing this label are the same story" (entity dedup) — two
+# unrelated jobs that want opposite breadth. Score wants every real measurement;
+# dedup wants only labels where collapsing is actually right.
+#
+# The cost of that coupling was visible in the code: SIX of the thirteen labels
+# had to be opted back out via a separate _NO_METRIC_DEDUP set, i.e. they were
+# added to this list purely for score credit and then excluded from the dedup
+# they had silently joined. Worse, the default was DANGEROUS — a new pattern
+# added for scoring would start collapsing posts unless someone remembered the
+# opt-out set two screens away. "7 of 7 ISOs" would have suppressed "5 of 6
+# markets" for the whole 5-day window.
+#
+# DEDUP_MODE values, declared per pattern so the decision is made where the
+# pattern is written, and adding a pattern FORCES the choice:
+#   DEDUP_NONE   — score credit only; never collapses posts. For per-market
+#                  values (dcpi_score dedups via market_verdict instead) and for
+#                  DC Hub's own coverage stats, whose rotation is the editorial
+#                  (kind, entity) cooldown's job.
+#   DEDUP_LABEL  — same label = same story. For named platform metrics.
+#   DEDUP_VALUE  — same label AND ~same number = same story. For generic units
+#                  where the label alone over-collapses distinct stories, but
+#                  the same figure re-leading IS the repeat (the "427 GW x 6
+#                  posts" case).
+DEDUP_NONE, DEDUP_LABEL, DEDUP_VALUE = None, "label", "label+value"
+
 _METRIC_PATTERNS = [
     # "DC Hub MCP served 142,318 AI tool calls in the last 24h"
     ("mcp_tool_calls",
-     _re_legacy.compile(r'MCP\s+served\s+([\d,]+)\s+(?:AI\s+)?tool\s+calls', _re_legacy.I)),
+     _re_legacy.compile(r'MCP\s+served\s+([\d,]+)\s+(?:AI\s+)?tool\s+calls', _re_legacy.I),
+     DEDUP_LABEL),
     # generic "<N> AI tool calls" / "<N> tool calls" fallback (surge posts)
     ("mcp_tool_calls",
-     _re_legacy.compile(r'([\d,]+)\s+(?:AI\s+)?tool\s+calls', _re_legacy.I)),
+     _re_legacy.compile(r'([\d,]+)\s+(?:AI\s+)?tool\s+calls', _re_legacy.I),
+     DEDUP_LABEL),
     # "<N> MCP requests" / "<N> MCP API requests" (the 0-stat case)
     ("mcp_requests",
-     _re_legacy.compile(r'([\d,]+)\s+MCP(?:\s+API)?\s+requests', _re_legacy.I)),
+     _re_legacy.compile(r'([\d,]+)\s+MCP(?:\s+API)?\s+requests', _re_legacy.I),
+     DEDUP_LABEL),
     # "added 1,204 facilities in the last 7 days" / coverage milestones
     ("coverage_added",
-     _re_legacy.compile(r'added\s+([\d,]+)\s+\w+\s+in\s+the\s+last', _re_legacy.I)),
+     _re_legacy.compile(r'added\s+([\d,]+)\s+\w+\s+in\s+the\s+last', _re_legacy.I),
+     DEDUP_LABEL),
     # "<N> unique (AI )callers/agents"
     ("unique_callers",
-     _re_legacy.compile(r'([\d,]+)\s+unique\s+(?:AI\s+)?(?:callers|agents)', _re_legacy.I)),
+     _re_legacy.compile(r'([\d,]+)\s+unique\s+(?:AI\s+)?(?:callers|agents)', _re_legacy.I),
+     DEDUP_LABEL),
     # 2026-06-10: DCPI score — DC Hub's #1 content type was INVISIBLE to the
     # quality scorer (no pattern), so DCPI-led posts ("Cheyenne hit DCPI score
     # 69.5 (BUILD)") scored ~0.55 and were auto-rejected below CONTENT_QUALITY_MIN
     # — the root cause of near-zero social posting. Matches "DCPI 69.5", "DCPI
     # score 69.5", "DCPI score of 69.5", "Excess Power 69.5"; value bounded 0-999
     # so it can't grab an unrelated big number. NOTE: dcpi_score is PER-MARKET
-    # (value differs per market) so it is EXCLUDED from the metric_label dedup
-    # below — DCPI posts dedup on market_verdict, not the shared label.
+    # (value differs per market) so it does NOT dedup on the shared label —
+    # DCPI posts dedup on market_verdict instead.
     ("dcpi_score",
-     _re_legacy.compile(r'(?:DCPI|Excess[\s\-]?Power)(?:\s+score)?(?:\s+of)?\s+([\d]{1,3}(?:\.\d{1,2})?)\b', _re_legacy.I)),
+     _re_legacy.compile(r'(?:DCPI|Excess[\s\-]?Power)(?:\s+score)?(?:\s+of)?\s+([\d]{1,3}(?:\.\d{1,2})?)\b', _re_legacy.I),
+     DEDUP_NONE),
     # 2026-07-02 (operator "it repeats itself"): generic power/capital figures.
     # The ERCOT "427 GW" queue post shipped ~6 times in a week because no
     # pattern matched it → metric_label stayed None → entity dedup never saw
-    # it. These labels dedup on label AND value (see _VALUE_DEDUP_LABELS) so
-    # the same figure can't re-lead within the lookback while genuinely
-    # different GW/$B/MW stories still can. Keep these LAST — first match
-    # wins, so the specific labels above take priority.
+    # it. DEDUP_VALUE so the same figure can't re-lead within the lookback
+    # while genuinely different GW/$B/MW stories still can. Keep these LAST —
+    # first match wins, so the specific labels above take priority.
     ("gw_figure",
-     _re_legacy.compile(r'([\d,]+(?:\.\d+)?)\s*GW\b', _re_legacy.I)),
+     _re_legacy.compile(r'([\d,]+(?:\.\d+)?)\s*GW\b', _re_legacy.I),
+     DEDUP_VALUE),
     ("usd_billion",
-     _re_legacy.compile(r'\$\s*([\d,]+(?:\.\d+)?)\s*(?:B\b|billion)', _re_legacy.I)),
+     _re_legacy.compile(r'\$\s*([\d,]+(?:\.\d+)?)\s*(?:B\b|billion)', _re_legacy.I),
+     DEDUP_VALUE),
     ("mw_figure",
-     _re_legacy.compile(r'([\d,]+(?:\.\d+)?)\s*MW\b', _re_legacy.I)),
+     _re_legacy.compile(r'([\d,]+(?:\.\d+)?)\s*MW\b', _re_legacy.I),
+     DEDUP_VALUE),
     # 2026-07-15: DC Hub's OWN coverage stats. Capability / platform posts
     # (provenance, ledger, tool catalog, grid, memory — the editorial cap_*
     # kinds) LEAD with these, but the scorer only knew market/deal/DCPI/MCP
@@ -1950,17 +1985,21 @@ _METRIC_PATTERNS = [
     # These give the stat + novelty credit so those posts clear CONTENT_QUALITY_MIN
     # honestly. Placed LAST so the specific labels above always win (e.g. an
     # "18 MW facility" post stays mw_figure). Require >=2 leading digits so an
-    # incidental "5 markets" can't grab a label. EXCLUDED from metric-label dedup
-    # (_NO_METRIC_DEDUP) — capability rotation is the editorial (kind,entity)
-    # cooldown's job, not a shared coverage number (mirrors dcpi_score).
+    # incidental "5 markets" can't grab a label. DEDUP_NONE — capability
+    # rotation is the editorial (kind,entity) cooldown's job, not a shared
+    # coverage number (mirrors dcpi_score).
     ("facilities_count",
-     _re_legacy.compile(r'([\d,]{2,})\s+(?:[a-z-]+\s+){0,2}(?:data\s+centers?|facilit\w*)', _re_legacy.I)),
+     _re_legacy.compile(r'([\d,]{2,})\s+(?:[a-z-]+\s+){0,2}(?:data\s+centers?|facilit\w*)', _re_legacy.I),
+     DEDUP_NONE),
     ("markets_count",
-     _re_legacy.compile(r'([\d,]{2,})\s+(?:DCPI[\s-]?)?(?:scored\s+)?markets?\b', _re_legacy.I)),
+     _re_legacy.compile(r'([\d,]{2,})\s+(?:DCPI[\s-]?)?(?:scored\s+)?markets?\b', _re_legacy.I),
+     DEDUP_NONE),
     ("countries_count",
-     _re_legacy.compile(r'([\d,]{2,})\+?\s+countries\b', _re_legacy.I)),
+     _re_legacy.compile(r'([\d,]{2,})\+?\s+countries\b', _re_legacy.I),
+     DEDUP_NONE),
     ("tools_count",
-     _re_legacy.compile(r'([\d,]{2,})\s+(?:live\s+)?(?:agent\s+)?tools?\b', _re_legacy.I)),
+     _re_legacy.compile(r'([\d,]{2,})\s+(?:live\s+)?(?:agent\s+)?tools?\b', _re_legacy.I),
+     DEDUP_NONE),
     # 2026-07-28: analyst COVERAGE-COMPLETENESS ratios — "7 of 7 US ISOs",
     # "5 of 6 markets". This construction IS the headline metric of a coverage
     # post, but no pattern saw it, so moat_live_telemetry — a substantive post
@@ -1977,29 +2016,25 @@ _METRIC_PATTERNS = [
     # into. Both sides bounded to 3 digits so it cannot grab an unrelated pair;
     # value = the NUMERATOR (what is actually covered). Placed LAST, so every
     # specific label above still wins first.
+    # DEDUP_NONE: a completeness statement ("7 of 7 ISOs") is not a story.
+    # Deduping on the label would let one coverage post lock out every other for
+    # the whole lookback window — "7 of 7 ISOs" suppressing "5 of 6 markets".
     ("coverage_ratio",
-     _re_legacy.compile(r'\b(\d{1,3})\s+of\s+(\d{1,3})\b')),
+     _re_legacy.compile(r'\b(\d{1,3})\s+of\s+(\d{1,3})\b'),
+     DEDUP_NONE),
 ]
 
-# Labels that dedup on label+VALUE (generic units where the label alone would
-# over-collapse distinct stories, but the same figure re-leading = a repeat).
-_VALUE_DEDUP_LABELS = {"gw_figure", "usd_billion", "mw_figure"}
+# Fail fast if a pattern is added without declaring its dedup behaviour — the
+# whole point of the third field is that the choice cannot be forgotten.
+for _lbl, _pat, _mode in _METRIC_PATTERNS:
+    if _mode not in (DEDUP_NONE, DEDUP_LABEL, DEDUP_VALUE):
+        raise ValueError(
+            "_METRIC_PATTERNS[%s]: dedup mode must be DEDUP_NONE, DEDUP_LABEL "
+            "or DEDUP_VALUE, got %r" % (_lbl, _mode))
+del _lbl, _pat, _mode
 
-# Labels EXCLUDED from metric-label dedup entirely. dcpi_score is per-market
-# (dedups via market_verdict); the coverage-count labels are DC Hub's own
-# platform stats whose rotation is handled by the editorial (kind,entity)
-# cooldown upstream — deduping them here would collapse distinct capability
-# posts (provenance vs ledger both cite facilities/markets). They still lift the
-# quality score; the opening-hook dedup still catches literal repeats.
-_NO_METRIC_DEDUP = {"dcpi_score", "facilities_count", "markets_count",
-                    "countries_count", "tools_count",
-                    # coverage_ratio is a completeness statement ("7 of 7 ISOs"),
-                    # not a story. Deduping on the label would let one coverage
-                    # post lock out every other for the whole lookback window —
-                    # e.g. "7 of 7 ISOs" suppressing "5 of 6 markets". Same
-                    # reasoning as the coverage counts above; rotation is the
-                    # editorial (kind, entity) cooldown's job.
-                    "coverage_ratio"}
+# label -> dedup mode, derived from the patterns so the two can never drift.
+_METRIC_DEDUP_MODE = {lbl: mode for lbl, _p, mode in _METRIC_PATTERNS}
 
 
 def _post_headline_signature(text: str) -> dict:
@@ -2011,12 +2046,23 @@ def _post_headline_signature(text: str) -> dict:
         "metric_label":   "mcp_tool_calls" | None,    # headline stat kind
         "metric_value":   142318.0 | None,            # parsed numeric value
         "zero_stat":      True | False,               # headline stat is 0/null
+        "dedup_label":    "mcp_tool_calls" | None,    # ONLY if it dedups
+        "dedup_mode":     "label"|"label+value"|None, # how it dedups
       }
+    2026-07-28: dedup_label/dedup_mode are what the entity-dedup reads, and they
+    are populated ONLY for patterns declaring DEDUP_LABEL/DEDUP_VALUE. metric_*
+    still describes every recognised quantity, so a score-only pattern lifts the
+    quality score without ever collapsing two posts. Callers must not infer
+    "these are the same story" from metric_label — that is what dedup_label is
+    for; the two used to be the same field, which is how six labels ended up
+    needing an opt-out set.
+
     Robust across BOTH the structured "📍 X · ISO · DCPI verdict: BUILD" shape
     AND the free-text "Montréal leads the BUILD ranking ..." shape. Never
     raises — returns an all-None signature on any parse failure (fail-open)."""
     sig = {"market_verdict": None, "metric_label": None,
-           "metric_value": None, "zero_stat": False}
+           "metric_value": None, "zero_stat": False,
+           "dedup_label": None, "dedup_mode": None}
     if not text:
         return sig
     try:
@@ -2052,7 +2098,7 @@ def _post_headline_signature(text: str) -> dict:
                     sig["market_verdict"] = f"{slug}|{verdict}"
 
         # --- headline metric -------------------------------------------------
-        for label, pat in _METRIC_PATTERNS:
+        for label, pat, dedup_mode in _METRIC_PATTERNS:
             mm = pat.search(text)
             if not mm:
                 continue
@@ -2062,13 +2108,19 @@ def _post_headline_signature(text: str) -> dict:
                 continue
             sig["metric_label"] = label
             sig["metric_value"] = val
+            # Only patterns that DECLARE a dedup mode can collapse two posts.
+            # A score-only pattern leaves dedup_label None, so it cannot.
+            if dedup_mode is not DEDUP_NONE:
+                sig["dedup_label"] = label
+                sig["dedup_mode"] = dedup_mode
             if val <= 0:
                 sig["zero_stat"] = True
             break
     except Exception:
         # Fail-open: a parse failure must never block legitimate posts.
         return {"market_verdict": None, "metric_label": None,
-                "metric_value": None, "zero_stat": False}
+                "metric_value": None, "zero_stat": False,
+                "dedup_label": None, "dedup_mode": None}
     return sig
 
 
@@ -2746,29 +2798,28 @@ def _should_skip_publish(cur, content_text: str, platform: str):
             return True, (f'duplicate opening hook ("{_hook[:48]}…") already '
                           f"posted to {platform} within {_DEDUP_LOOKBACK_DAYS}d")
         # (a) entity-level dedup — same market+verdict OR same headline metric.
-        if sig.get("market_verdict") or sig.get("metric_label"):
+        # 2026-07-28: reads dedup_label, NOT metric_label. A pattern only
+        # collapses posts if it declared DEDUP_LABEL/DEDUP_VALUE next to itself;
+        # score-only patterns leave dedup_label None and cannot reach here. This
+        # replaces the _NO_METRIC_DEDUP opt-out set, whose default was backwards
+        # — a pattern added for scoring silently started deduping unless someone
+        # remembered to exclude it two screens away.
+        if sig.get("market_verdict") or sig.get("dedup_label"):
             psig = _post_headline_signature(prev or "")
             if (sig.get("market_verdict")
                     and psig.get("market_verdict") == sig.get("market_verdict")):
                 return True, (f"duplicate market+verdict '{sig['market_verdict']}' "
                               f"already posted to {platform} within "
                               f"{_DEDUP_LOOKBACK_DAYS}d")
-            if (sig.get("metric_label")
-                    # 2026-06-10: dcpi_score is per-market (value varies by
-                    # market) — dedup it via market_verdict above, NOT the shared
-                    # label, else every DCPI post after the first over-collapses.
-                    # 2026-07-15: same for the coverage-count labels (facilities/
-                    # markets/countries/tools) — capability posts rotate via the
-                    # editorial kind-cooldown, not this shared number.
-                    and sig.get("metric_label") not in _NO_METRIC_DEDUP
-                    and psig.get("metric_label") == sig.get("metric_label")):
-                # 2026-07-02: generic-unit labels (GW/$B/MW) require the VALUE
-                # to match too — same label with a different figure is a
-                # different story; the same figure re-leading is the repeat
-                # (the "427 GW × 6 posts" case).
-                _lbl = sig.get("metric_label")
+            if (sig.get("dedup_label")
+                    and psig.get("dedup_label") == sig.get("dedup_label")):
+                # DEDUP_VALUE labels (GW/$B/MW) require the VALUE to match too —
+                # same label with a different figure is a different story; the
+                # same figure re-leading is the repeat (the "427 GW × 6 posts"
+                # case).
+                _lbl = sig.get("dedup_label")
                 _vals_match = True
-                if _lbl in _VALUE_DEDUP_LABELS:
+                if sig.get("dedup_mode") == DEDUP_VALUE:
                     try:
                         _a, _b = float(sig.get("metric_value") or 0), \
                                  float(psig.get("metric_value") or 0)
