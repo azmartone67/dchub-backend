@@ -89,6 +89,14 @@ jobs:
         # and on the running app, but NOT in this deliberately-light CI install —
         # so main went red the moment that test landed, and every PR inherited
         # the failure. Without it NFKD alone folds CJK to '' and two tests fail.
-        run: python3 -m pip install pytest requests flask pyyaml psycopg2-binary "psycopg[binary]" Unidecode
+        #
+        # ★ PINNED to the requirements.txt version on purpose. canonical_slug is
+        # FROZEN set-once (routes/facility_slug_freeze.py) and is minted from
+        # this library's output, so a transliteration change under an unpinned
+        # bump would mean CI mints different slugs than the ones already frozen
+        # in the DB and indexed by Google. The tests assert exact strings
+        # ('ドコモ' -> 'dokomo'), so they would flip too. CI must install what
+        # prod runs, not whatever is latest that morning.
+        run: python3 -m pip install pytest requests flask pyyaml psycopg2-binary "psycopg[binary]" "Unidecode==1.3.8"
       - name: Run pure-function tests
         run: python3 -m pytest tests/ -v --tb=short
