@@ -34,11 +34,22 @@ enforces those on direct pushes too — a bot push is rejected with
 push from the repo admin bypasses all of it. In the 7 days to 2026-07-28, **137
 of 223 commits (61%) reached main as ungated direct pushes.**
 
-`enforce_admins: true` is not the fix: it would also block `auto-rollback.yml`,
-which must be able to write to main precisely when CI is red. A GitHub ruleset
-with a bypass actor for the Actions app would solve it, but Integration bypass
-actors are org-only and this repo is user-owned (GitHub returns HTTP 422). So
-the hook carries the admin case until the repo moves to an org.
+A GitHub ruleset with a bypass actor for the Actions app would solve the admin
+case, but Integration bypass actors are org-only and this repo is user-owned
+(GitHub returns HTTP 422). So the hook carries it until the repo moves to an org.
+
+**Nothing in CI writes to `main` any more.** `auto-rollback.yml` used to, and it
+never worked: the push was rejected with GH006 every time, and because the step
+then failed, the alert step after it was skipped — so a real 5xx burn produced
+no rollback *and* no alert. Rollback is now a Railway operation
+(`scripts/railway_rollback.py`), which branch protection cannot veto and which
+does not need CI to be green — the property that actually matters, since a
+rollback gated on green checks deadlocks exactly when production is broken. The
+git revert follows as an ordinary PR. See `docs/ROLLBACK-RUNBOOK.md`.
+
+So "auto-rollback must be able to write to main" is no longer a reason to keep
+`enforce_admins: false`. Whether to flip it is now purely about the 61% of
+commits arriving as ungated admin pushes.
 
 ## Working tree
 

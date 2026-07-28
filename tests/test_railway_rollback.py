@@ -11,6 +11,9 @@ import pathlib
 import sys
 
 import pytest
+import yaml
+
+WORKFLOWS = pathlib.Path(__file__).resolve().parent.parent / ".github" / "workflows"
 
 _SPEC = importlib.util.spec_from_file_location(
     "railway_rollback",
@@ -171,3 +174,102 @@ class TestMutationContract:
         assert "canRollback" in rb._DEPLOYMENTS_Q, (
             "target selection depends on canRollback; it must be requested"
         )
+
+
+# ── Guards on the workflows themselves ────────────────────────────────────────
+# These encode the two properties that were actually broken in production. They
+# are asserted on the parsed YAML, not by grepping source text, so a comment
+# mentioning `git push origin main` cannot satisfy them.
+
+GIT_PUSH_WORKFLOWS = [
+    "auto-rollback.yml",
+    "weekly-shadow-audit.yml",
+    "brain-pr-post-merge-guard.yml",
+]
+
+
+def _run_scripts(path: pathlib.Path):
+    """Every `run:` script in a workflow, as a list of strings."""
+    doc = yaml.safe_load(path.read_text())
+    assert doc, f"{path.name} parsed to nothing"
+    assert "jobs" in doc, f"{path.name} has no jobs"
+    out = []
+    for job in doc["jobs"].values():
+        for step in job.get("steps", []):
+            if isinstance(step.get("run"), str):
+                out.append(step["run"])
+    assert out, f"{path.name} has no run: steps — did the parse silently degrade?"
+    return out
+
+
+@pytest.mark.parametrize("name", GIT_PUSH_WORKFLOWS)
+def test_workflow_parses(name):
+    """A workflow that does not parse does not run at all."""
+    doc = yaml.safe_load((WORKFLOWS / name).read_text())
+    assert doc and doc.get("jobs"), f"{name} is not a valid workflow"
+
+
+@pytest.mark.parametrize("name", GIT_PUSH_WORKFLOWS)
+def test_no_bot_push_to_main(name):
+    """None of these may push to main — the bot is not an admin, so GH006.
+
+    Checks the executable script bodies, with comments stripped, so the
+    explanatory comments about the old `git push origin main` do not count.
+    """
+    for script in _run_scripts(WORKFLOWS / name):
+        code = "\n".join(
+            line for line in script.splitlines() if not line.lstrip().startswith("#")
+        )
+        assert "push origin main" not in code, (
+            f"{name} still pushes to main; branch protection rejects that (GH006)"
+        )
+        assert "push origin HEAD:main" not in code, f"{name} still pushes to main"
+
+
+def test_auto_rollback_alert_cannot_be_skipped():
+    """The alert must survive a failing remediation step.
+
+    Before the fix the issue step was `if: steps.decide.outputs.rollback ==
+    'true'`, so when the push to main failed the job died and the alert was
+    SKIPPED — no rollback and no alert. Verified against real Actions runs:
+    with the old condition the alert reports `skipped`; with `!cancelled()` it
+    runs and can still read the failed step's outputs.
+    """
+    doc = yaml.safe_load((WORKFLOWS / "auto-rollback.yml").read_text())
+    steps = doc["jobs"]["check-and-rollback"]["steps"]
+    alert = next((s for s in steps if s.get("name") == "Open issue"), None)
+    assert alert is not None, "auto-rollback has no 'Open issue' alert step"
+    cond = str(alert.get("if", ""))
+    assert "cancelled()" in cond or "always()" in cond, (
+        "the alert step must run even when a remediation step fails, or a real "
+        "burn produces no rollback AND no alert"
+    )
+
+
+def test_auto_rollback_remediation_steps_do_not_abort_the_job():
+    """Remediation must not kill the job before the alert runs."""
+    doc = yaml.safe_load((WORKFLOWS / "auto-rollback.yml").read_text())
+    steps = doc["jobs"]["check-and-rollback"]["steps"]
+    for name in ("Roll back Railway to last good deployment", "Open revert PR"):
+        step = next((s for s in steps if s.get("name") == name), None)
+        assert step is not None, f"auto-rollback lost its '{name}' step"
+        assert step.get("continue-on-error") is True, (
+            f"'{name}' must be continue-on-error so the alert step still runs"
+        )
+
+
+@pytest.mark.parametrize("name", GIT_PUSH_WORKFLOWS)
+def test_no_push_failure_is_swallowed(name):
+    """`git push ... || true` is what hid two weeks of no-op runs.
+
+    Matched per-line against `git push` specifically, so unrelated uses of
+    `|| true` — and the phrase appearing in PR-body prose — do not trip it.
+    """
+    for script in _run_scripts(WORKFLOWS / name):
+        for line in script.splitlines():
+            code = line.split("#", 1)[0]
+            if "git push" in code:
+                assert "|| true" not in code and "|| :" not in code, (
+                    f"{name} swallows a push failure: {line.strip()!r} — that is how "
+                    "SHADOWED-ROUTES.md silently stopped updating after 2026-07-13"
+                )
