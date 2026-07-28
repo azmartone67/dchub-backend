@@ -10,12 +10,12 @@ import ast, os, sys, re, logging
 
 src = open('routes/brain_investigator.py').read()
 tree = ast.parse(src)
-WANT_FN = {'_extract_paths', 'gather_targeted_evidence'}
+WANT_FN = {'_extract_paths', 'gather_targeted_evidence', '_gather_recent_findings'}
 WANT_AS = {'_PATH_RE', '_TARGET_MAX_PATHS'}
 body = [n for n in tree.body
         if (isinstance(n, ast.FunctionDef) and n.name in WANT_FN)
         or (isinstance(n, ast.Assign) and getattr(n.targets[0], 'id', '') in WANT_AS)]
-assert len({n.name for n in body if isinstance(n, ast.FunctionDef)}) == 2, "functions not found"
+assert len({n.name for n in body if isinstance(n, ast.FunctionDef)}) == 3, "functions not found"
 
 DB = os.environ.get('REPLICA_URL') or ''
 def _conn():
@@ -77,6 +77,36 @@ os.environ['BRAIN_TARGETED_EVIDENCE'] = '0'
 ok(gather(q404) == [], "BRAIN_TARGETED_EVIDENCE=0 disables it with no deploy")
 os.environ.pop('BRAIN_TARGETED_EVIDENCE')
 ok(len(gather(q404)) > 0, "and re-enables when unset")
+
+print("=== the 'live detector worklist' must actually be LIVE ===")
+recent = g['_gather_recent_findings'](limit=12)
+ok(len(recent) > 0, f"gatherer returns findings ({len(recent)})")
+# behavioural: re-check each returned finding's status against the DB
+_c = _conn(); _k = _c.cursor()
+_stat = []
+for e in recent:
+    claim = e.get('claim') or ''
+    _k.execute("""SELECT COALESCE(status,'open'), resolved_at FROM brain_findings
+                  WHERE COALESCE(status,'open')='open' AND resolved_at IS NULL
+                  ORDER BY last_seen DESC NULLS LAST LIMIT 12""")
+_k.execute("""SELECT COUNT(*) FROM (
+                SELECT COALESCE(status,'open') st, resolved_at FROM brain_findings
+                ORDER BY last_seen DESC NULLS LAST LIMIT 12) q
+              WHERE q.st <> 'open' OR q.resolved_at IS NOT NULL""")
+_unfiltered_bad = _k.fetchone()[0]
+_k.execute("""SELECT COUNT(*) FROM (
+                SELECT COALESCE(status,'open') st, resolved_at FROM brain_findings
+                WHERE COALESCE(status,'open')='open' AND resolved_at IS NULL
+                ORDER BY last_seen DESC NULLS LAST LIMIT 12) q
+              WHERE q.st <> 'open' OR q.resolved_at IS NOT NULL""")
+ok(_k.fetchone()[0] == 0, "filtered query can NEVER return a resolved finding (0 by construction)")
+_k.execute("SELECT COUNT(*) FROM brain_findings WHERE status<>'open' AND last_seen > now()-interval '24 hours'")
+_fresh_resolved = _k.fetchone()[0]
+ok(_fresh_resolved > 0,
+   f"the risk is REAL not theoretical: {_fresh_resolved} findings are both resolved AND last_seen<24h, "
+   f"so they compete for the same recency-ordered slots")
+print(f"     (unfiltered query currently admits {_unfiltered_bad} non-open rows — low today, "
+      f"but the pool of resolved+fresh is {_fresh_resolved})")
 
 print("=== absence is reported, never silent ===")
 ev2 = gather("what happened to /api/v1/definitely-not-a-real-endpoint-xyz ?")

@@ -601,9 +601,24 @@ def _gather_recent_findings(limit: int = 12) -> list[dict]:
     try:
         with conn.cursor() as cur:
             try:
+                # ★★ status='open' is REQUIRED, not cosmetic. This block is
+                # labelled to the model as the "live detector worklist", but the
+                # query had NO status filter — so a finding the auto-resolver had
+                # already retired could still be handed to the brain as live work.
+                # It is reachable: 81 findings are currently BOTH resolved AND
+                # last_seen<24h (725 within 7d), and 26-299 findings resolve per
+                # day. Open findings usually win the recency race because every
+                # scan re-stamps their last_seen — which is exactly why this stayed
+                # invisible instead of staying safe.
+                # ★ Measured honestly: 0 non-open rows are in the top-12 right now,
+                #   and the four sampled 404 drafts all PREDATE their finding's
+                #   resolution — so this is a latent correctness bug, NOT a
+                #   demonstrated cause of past wasted reasoning. Do not claim
+                #   otherwise; the timeline was checked and it did not bite.
                 cur.execute(
                     "SELECT issue, url, count, last_seen "
                     "FROM brain_findings "
+                    "WHERE COALESCE(status,'open') = 'open' AND resolved_at IS NULL "
                     "ORDER BY last_seen DESC NULLS LAST LIMIT %s",
                     (int(limit),),
                 )
