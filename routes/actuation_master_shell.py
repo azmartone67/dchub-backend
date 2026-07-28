@@ -381,16 +381,25 @@ def _fire_investigations() -> dict:
     q = ("Zero real humans have ever opened a relay link (relay_opens holds only "
          "our own probe traffic) while the write path is proven functional. What "
          "single change makes an agent actually hand the link to its human?")
-    base = (os.environ.get("DCHUB_INTERNAL_API")
-            or os.environ.get("RAILWAY_BACKEND_URL")
-            or "http://127.0.0.1:" + (os.environ.get("PORT") or "8080"))
+    # ★.strip() is REQUIRED, not defensive: DCHUB_INTERNAL_API carries a TRAILING
+    # NEWLINE in the Railway env. Without the strip, urllib rejects the URL outright
+    # ("URL can't contain control characters … found at least '\\n'") — which is
+    # exactly how this actuator failed on its first real fire (2026-07-28). The same
+    # newline is already worked around at 12 separate call sites in
+    # crawler_scheduler.py ("a trailing \\n … became %0a in the URL ->
+    # NameResolutionError"), so treat any env-derived URL here as untrusted text.
+    base = ((os.environ.get("DCHUB_INTERNAL_API") or "").strip()
+            or (os.environ.get("RAILWAY_BACKEND_URL") or "").strip()
+            or "http://127.0.0.1:" + ((os.environ.get("PORT") or "8080").strip()))
+    if base and not base.startswith("http"):
+        base = "https://" + base
     try:
         import urllib.request
         req = urllib.request.Request(
             base.rstrip("/") + "/api/v1/brain/investigate",
             data=json.dumps({"question": q}).encode(),
             headers={"Content-Type": "application/json",
-                     "X-Admin-Key": (os.environ.get("DCHUB_ADMIN_KEY") or ""),
+                     "X-Admin-Key": (os.environ.get("DCHUB_ADMIN_KEY") or "").strip(),
                      "User-Agent": "dchub-actuation-shell/1.0"},
             method="POST")
         with urllib.request.urlopen(req, timeout=20) as r:
