@@ -1127,10 +1127,12 @@ Allow: /sites/$
 #   /sites/* and 2% on /cdn-cgi/*, while only 24% reached /facilities/*.
 #   If you add a UA below, it inherits nothing — the rules must stay together.
 #
-# /api/* is deliberately left OPEN for this group: it is the only surface the
-# assistant crawlers fetch (Gemini crawls as Googlebot/GoogleOther, Copilot as
-# Bingbot). Restored 2026-06-28 after the 2026-06-13 blanket Disallows silently
-# cut them off. Only the never-rankable surfaces are closed here.
+# /api/* stays OPEN for this group: it is the only surface the assistant
+# crawlers fetch (Gemini crawls as Googlebot/GoogleOther). Restored 2026-06-28
+# after the 2026-06-13 blanket Disallows silently cut them off. Only the
+# never-rankable surfaces are closed here.
+#
+# Bingbot is NOT in this group — see the group below.
 #
 # xAI / Grok are explicitly welcomed (documented UAs). Grok often rotates
 # residential IPs + spoofs browser UAs, so this is a welcome signal, not a gate.
@@ -1154,7 +1156,22 @@ User-agent: Bytespider
 User-agent: CCBot
 User-agent: Googlebot
 User-agent: GoogleOther
+Disallow: /sites/
+Allow: /sites/$
+Disallow: /cdn-cgi/
+Allow: /
+
+# Bingbot — same hygiene as the group above, PLUS /api/ closed (2026-07-28).
+# Measured that day: 36.4% of Bingbot's crawl went to /api/* (raw JSON that can
+# never rank; 1 in 3 of the sampled paths 404'd) while only 24.3% reached
+# /facilities/*. Bing had been reporting "limited crawl capacity" since June, so
+# the budget was the binding constraint and /api/* was the biggest sink.
+# ★ KNOWN COST, accepted deliberately: Copilot crawls as Bingbot, so this closes
+#   Copilot's only surface. Gemini is unaffected — Googlebot/GoogleOther keep
+#   /api/* in the group above. If Copilot citations matter more than Bing
+#   organic later, reopen by deleting the one Disallow line below.
 User-agent: Bingbot
+Disallow: /api/
 Disallow: /sites/
 Allow: /sites/$
 Disallow: /cdn-cgi/
