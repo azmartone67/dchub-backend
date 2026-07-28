@@ -166,7 +166,42 @@ INTERNAL_PLATFORM_VALUES = (
     # WERE passing (1 IP each, cumulatively ~15 fake "agents" over 3 weeks).
     'value-harness', 'clawith', 'dbg', 'raw', 'full', 'f5r',
     'mcp-vouch', 'qa-mozilla', 'qa', 'fix2-v2', 'rev', 'final', 'vinline',
+    # ── r-registry-crawlers (2026-07-28) ──────────────────────────────────
+    # Live audit of ~4.5h of gateway `[MCP] init` logs: the "real agent"
+    # population is dominated by MCP REGISTRY CRAWLERS, INDEXERS, SCORERS and
+    # HEALTH CHECKERS, not AI platforms. Every one passed is_real_external,
+    # because _SYNTHETIC_CLIENT_PREFIXES is a PREFIX match and none of them
+    # begin with dchub-/qa-/probe-/monitor-/healthcheck (e.g. 'yellowmcp-health'
+    # CONTAINS "health" but does not START with "healthcheck").
+    #
+    # Corroborating signature in /api/v1/reach: top_tools_7d showed 53-65
+    # agents on EACH of twelve different tools, near-uniform — a catalog
+    # SWEEP, not work. It also plausibly explains the 5.0% day-2 retention,
+    # since a scanner runs once and never returns.
+    #
+    # Same class as the 2026-07-01 value-harness leak and the 2026-06-30
+    # "86 AI agents" LinkedIn over-claim: our own headline counted machines
+    # that were cataloguing us, not using us.
+    'mcp-gateway-registry', 'catalog-sync', 'yellowmcp-health',
+    'manifest-mirror', 'watchdog', 'agentpulse', 'mcpscoringengine',
+    'mcpqueen-grader', 'mcpexplorerbot', 'mcpindex-trust',
+    'mcp-rugpull-research',
 )
+
+# ★★ DELIBERATELY **NOT** EXCLUDED — read this before "finishing the list".
+# These three look like the family above and are NOT the same thing:
+#   · smithery  — a registry AND a hosted GATEWAY that proxies real end-user
+#     traffic. `smithery connect` already appears as its own platform tag in
+#     /api/v1/reach, which is the fingerprint of proxied users. Excluding it
+#     would delete real agents to make a metric prettier.
+#   · glama     — a directory that also ships a chat client.
+#   · agent-toolscloud — observed presenting an API KEY (`key=8a58cf…`) at
+#     initialize. An anonymous crawler does not hold a key; that is the
+#     signature of a real integration.
+# The honest position is that these are AMBIGUOUS, and the cost of a false
+# exclusion (silently deleting a real customer) is far worse than the cost of
+# a false inclusion (a slightly generous count we can still see and name).
+_AMBIGUOUS_NOT_EXCLUDED = ('smithery', 'glama', 'agent-toolscloud')
 
 
 def _internal_platform_list() -> str:
@@ -209,6 +244,21 @@ def external_platform_predicate(col: str = "platform") -> str:
             f"AND {p} NOT LIKE '%check%' "
             f"AND {p} NOT LIKE '%diag%' "
             f"AND {p} NOT LIKE '%sweep%' "
+            # r-registry-crawlers (2026-07-28): the recurring INFRASTRUCTURE
+            # verbs, so a newly-appearing crawler of the same shape is caught
+            # without waiting for someone to notice and extend the exact list
+            # — the same reasoning as the %harness%/%diag% families above.
+            # 'health' is safe to match broadly in THIS domain: DC Hub is
+            # data-centre infrastructure, and no AI platform names itself with
+            # it. See _AMBIGUOUS_NOT_EXCLUDED for what these must NOT catch.
+            f"AND {p} NOT LIKE '%registry%' "
+            f"AND {p} NOT LIKE '%catalog%' "
+            f"AND {p} NOT LIKE '%mirror%' "
+            f"AND {p} NOT LIKE '%watchdog%' "
+            f"AND {p} NOT LIKE '%health%' "
+            f"AND {p} NOT LIKE '%crawler%' "
+            f"AND {p} NOT LIKE '%scanner%' "
+            f"AND {p} NOT LIKE '%uptime%' "
             f"AND ({p} = '' OR LENGTH({p}) > 2))")
 
 
