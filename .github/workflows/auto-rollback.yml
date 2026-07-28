@@ -331,8 +331,27 @@ jobs:
 
       # Make the run visibly red when a rollback was needed but nothing worked,
       # so it cannot pass as a healthy green run in the history.
-      - name: Fail if production was left broken
-        if: ${{ steps.decide.outputs.rollback == 'true' && inputs.drill != true && steps.railway.outputs.outcome != 'rolled-back' }}
+      #
+      # ★ A DRILL MUST BE ABLE TO FAIL. This used to carry `inputs.drill != true`,
+      # which exempted drills entirely — so a rehearsal that PROVED the rollback
+      # could not authenticate still reported success. Measured 2026-07-28: the
+      # Railway step returned `Not Authorized`, and the run was green. A drill
+      # that cannot fail verifies nothing; it is the same silent-green class as
+      # the shadow audit that reported success for two weeks while its push was
+      # rejected. The drill exemption belongs on the steps that would CHANGE
+      # something (the revert PR above), not on the check that reports truth.
+      #
+      # Still cannot fire when no rollback was attempted: the first clause
+      # requires decide==true, so an ordinary healthy run stays green.
+      - name: Fail if remediation did not complete
+        if: ${{ steps.decide.outputs.rollback == 'true' && steps.railway.outputs.outcome != 'rolled-back' }}
+        env:
+          DRILL: ${{ inputs.drill }}
+          RW_OUTCOME: ${{ steps.railway.outputs.outcome }}
         run: |
-          echo "::error::SLO hard_burn detected but automatic rollback did not complete. See the issue just opened."
+          if [ "$DRILL" = "true" ]; then
+            echo "::error::DRILL FAILED — the rollback path did not complete (outcome=${RW_OUTCOME:-none}). Production was NOT touched, but this is proof that an automatic rollback would NOT work during a real burn. Fix it before relying on it."
+          else
+            echo "::error::SLO hard_burn detected but automatic rollback did not complete (outcome=${RW_OUTCOME:-none}). See the issue just opened."
+          fi
           exit 1
