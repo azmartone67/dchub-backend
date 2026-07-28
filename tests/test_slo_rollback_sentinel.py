@@ -126,6 +126,38 @@ class TestDisarmedByDefault:
         monkeypatch.setenv("RAILWAY_TOKEN", "tok")
         assert sent._armed() is False, "a token present for other jobs must not arm rollback"
 
+    def test_status_reports_which_half_is_missing(self, monkeypatch):
+        """`armed=false` alone does not say why; the worker has no public
+        domain, so this is the only place an operator can see it."""
+        from flask import Flask
+        app = Flask(__name__)
+        app.register_blueprint(sent.sentinel_bp)
+        client = app.test_client()
+
+        j = client.get("/api/v1/slo/sentinel/status").get_json()
+        assert j["arm_flag_set"] is False and j["railway_token_present"] is False
+
+        monkeypatch.setenv("SLO_SENTINEL_ROLLBACK", "1")
+        j = client.get("/api/v1/slo/sentinel/status").get_json()
+        assert j["arm_flag_set"] is True
+        assert j["railway_token_present"] is False, "flag set, token missing"
+        assert j["armed"] is False
+
+        monkeypatch.setenv("RAILWAY_TOKEN", "tok")
+        j = client.get("/api/v1/slo/sentinel/status").get_json()
+        assert j["armed"] is True and j["railway_token_present"] is True
+
+    def test_status_never_leaks_the_token_value(self, monkeypatch):
+        import json as _json
+        from flask import Flask
+        secret = "rw_super_secret_value_9f3a"
+        monkeypatch.setenv("RAILWAY_TOKEN", secret)
+        monkeypatch.setenv("SLO_SENTINEL_ROLLBACK", "1")
+        app = Flask(__name__)
+        app.register_blueprint(sent.sentinel_bp)
+        body = _json.dumps(app.test_client().get("/api/v1/slo/sentinel/status").get_json())
+        assert secret not in body, "status endpoint must expose presence, never the token"
+
     @pytest.mark.parametrize("flag,expected", [
         ("1", True), ("true", True), ("YES", True),
         ("0", False), ("false", False), ("", False), ("maybe", False),
