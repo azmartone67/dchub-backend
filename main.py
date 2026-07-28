@@ -2410,6 +2410,20 @@ try:
     except Exception as _ams:
         import logging
         logging.getLogger(__name__).warning('agreement_master_shell wiring failed: %s', _ams)
+    # 2026-07-27: Payload master shell (#38) — read-only. Measures what a caller
+    # RECEIVES: data-vs-selling bytes, whether consecutive calls contradict, agent
+    # wait, and navigation depth. Lanes 1-3 read an OPT-IN probe (2 real MCP calls,
+    # tagged shell38-probe); lanes 4-5 are pure-DB and EXCLUDE that tag so the
+    # instrument never inflates the traffic it reports.
+    # GET /admin/payload · /api/v1/admin/payload/master-tick · POST …/payload/probe?probe=1
+    # Kill: PAYLOAD_SHELL_DISABLE=1
+    try:
+        from routes.payload_master_shell import payload_master_shell_bp
+        app.register_blueprint(payload_master_shell_bp)
+        print("[main] payload_master_shell_bp registered: GET /admin/payload", flush=True)
+    except Exception as _pms:
+        import logging
+        logging.getLogger(__name__).warning('payload_master_shell wiring failed: %s', _pms)
     # 2026-07-06: Back-of-Funnel Truth master shell — ONE pane for the 07-06
     # funnel fix-wave (retention durable-keys, claim→paid attribution, conversion
     # demand) measured with CORRECTED metrics the older panes were blind to.
