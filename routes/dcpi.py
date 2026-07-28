@@ -975,7 +975,12 @@ def _load_markets_dynamic():
                     # r-period-slug (2026-07-06): strip periods too — 'St. Louis'
                     # → 'st-louis' (was 'st.-louis', a soft-404 dup of canonical).
                     clean_slug = slug.replace(" ", "-").replace(",", "").replace(".", "")
-                    iso = _state_to_iso(state)
+                    # r-split-state-iso (2026-07-28): a per-market exception
+                    # wins over the state default. Without this the loader
+                    # overwrites correct hand-recorded values (kansas-city was
+                    # already SPP in _MARKETS_HARDCODED and got clobbered to
+                    # MISO on every recompute).
+                    iso = _MARKET_ISO_OVERRIDES.get(clean_slug) or _state_to_iso(state)
                     lat = float(lat) if lat is not None else None
                     lon = float(lon) if lon is not None else None
                     out_tuples.append((clean_slug, name, state, iso, lat, lon))
@@ -987,16 +992,69 @@ def _load_markets_dynamic():
         return None
 
 
+# r-split-state-iso (2026-07-28): per-MARKET iso overrides, applied AFTER
+# _state_to_iso() in _load_markets_dynamic().
+#
+# _state_to_iso() gives a whole state one ISO. For a state whose metros sit in
+# different RTOs that cannot be right at any state value, and the damage is not
+# cosmetic: the dynamic loader's derived iso WINS over _MARKETS_HARDCODED on a
+# slug collision, so a market someone already recorded correctly by hand gets
+# silently overwritten on the next recompute. Downstream, agents read this
+# field literally and pull that RTO's interconnection queue.
+#
+# Keyed on the cleaned slug the loader builds (LOWER(city), spaces -> dashes).
+# Add an entry ONLY for a metro whose serving utility contradicts its state
+# default — not to paper over a state default that is simply wrong (fix the
+# state instead, as NC was below).
+_MARKET_ISO_OVERRIDES = {
+    # Missouri is genuinely SPLIT and no state value can serve both metros:
+    # Kansas City is Evergy Metro (formerly KCP&L), an SPP member, while
+    # St. Louis is Ameren Missouri, MISO. The state default stays MISO for
+    # St. Louis, so Kansas City needs the exception.
+    # _MARKETS_HARDCODED has carried the correct ("kansas-city", ..., "SPP")
+    # tuple all along — the dynamic loader was overwriting it with the state
+    # default. Verified live 2026-07-28: get_market_dcpi_rank("kansas-city-mo")
+    # returned iso=MISO for a grid that is SPP.
+    "kansas-city": "SPP",
+}
+
+
 def _state_to_iso(state: str) -> str:
     """Phase ZZ (2026-05-16): map a US state code to its primary ISO/RTO.
     Used by _load_markets_dynamic when emitting tuple-shape markets.
     Not exact (some states span multiple ISOs) — picks the dominant one
-    for data-center siting purposes."""
+    for data-center siting purposes. Where "dominant" is genuinely ambiguous
+    for a specific metro, put that metro in _MARKET_ISO_OVERRIDES above
+    rather than bending the state value and breaking the other metro.
+
+    NOTE (2026-07-28): this map is one of THREE state->ISO maps in the repo.
+    The other two (scripts/bulk_dcpi_score.py and dchub_self_heal.py, which
+    are byte-identical to each other) still disagree with this one on
+    AL, GA, MI, SC and SD. This is the map that feeds the daily recompute
+    and therefore writes market_power_scores.iso, so it is the one that
+    decides what agents see. The divergences are recorded in
+    tests/test_dcpi_state_iso.py rather than silently reconciled here —
+    changing them moves live markets and wants its own review."""
     return {
         "CA":"CAISO","TX":"ERCOT","NY":"NYISO",
         "MA":"ISONE","NH":"ISONE","VT":"ISONE","ME":"ISONE","CT":"ISONE","RI":"ISONE",
         "PA":"PJM","NJ":"PJM","DE":"PJM","MD":"PJM","VA":"PJM","WV":"PJM","DC":"PJM",
-        "OH":"PJM","KY":"PJM","NC":"PJM","IN":"PJM","IL":"PJM","MI":"PJM",
+        # NC corrected 2026-07-28: PJM -> SERC. North Carolina's grid is Duke
+        # Energy Carolinas + Duke Energy Progress, neither an RTO member; PJM's
+        # ONLY NC footprint is Dominion's northeastern service area, so the
+        # "dominant" pick was backwards for the state's largest metros. This is
+        # the charlotte-nc defect: PJM is a real RTO, so consumers took iso=PJM
+        # literally and pulled PJM queue projects for a Duke grid. SERC is the
+        # reliability region, matching what the other two maps already say.
+        # MI corrected 2026-07-28: PJM -> MISO, same defect shape as NC. The
+        # Michigan grid is DTE Electric (Detroit) + Consumers Energy (most of
+        # the rest), both MISO; PJM's ONLY Michigan footprint is the AEP
+        # Indiana Michigan Power sliver in the far southwest (Benton Harbor /
+        # St. Joseph). All four Michigan DCPI markets — Detroit, Southfield,
+        # Grand Rapids, Lansing — sit on DTE or Consumers, and no market exists
+        # in the I&M sliver (benton-harbor and kalamazoo both 404), so this
+        # needs no per-market override. Matches the other two maps.
+        "OH":"PJM","KY":"PJM","NC":"SERC","IN":"PJM","IL":"PJM","MI":"MISO",
         "MN":"MISO","WI":"MISO","IA":"MISO","ND":"MISO","SD":"MISO","MO":"MISO",
         "AR":"MISO","LA":"MISO","MS":"MISO",
         "KS":"SPP","OK":"SPP","NE":"SPP",
