@@ -136,7 +136,7 @@ PLATFORMS: list[dict] = [
         "required_auth": "none", "required_transport": "streamable",
         "directory": "Anthropic Connectors Directory", "directory_listed": False,
         "connect_path": "review", "recipe_published": True,
-        "next_action": "Land the Connectors Directory submission — supply the paid reviewer key so every tool returns data (paywall stalled it twice).",
+        "next_action": "Reviewer key ISSUED 2026-07-27 (enterprise, partner_slug 'anthropic-connectors-review', in ~/.dchub_reviewer_key) and VERIFIED ungated through /mcp — grid_intelligence 4.7KB->7.5KB, fiber_intel 2.8KB->1.53MB, rank_markets no longer previewed. The paywall blocker is GONE; what remains is BD/paperwork — the directory has no public self-serve form (owner_gated), so the submission goes through an Anthropic contact with the endpoint + reviewer key.",
         "owner_gated": True, "effort": "BD/paperwork",
     },
     {
