@@ -116,3 +116,20 @@ def test_the_row_query_actually_selects_the_dedup_columns():
     assert "NULL AS is_duplicate" in head, (
         "the legacy-table query lacks these columns; select them as NULL or the "
         "query 500s on a legacy-only facility")
+
+
+def test_dupe_set_excludes_slugs_a_LIVE_row_still_uses():
+    """A duplicate and its twin usually SHARE one canonical_slug.
+
+    ★ The first version of this filter took every slug belonging to a flagged
+    duplicate and dropped it from the legacy union. Because the slug hashes
+    provider|name — identical for a duplicate pair — 6,846 of the 7,157
+    duplicate slugs ARE the live facility's own URL. Result: 21 live pages lost
+    their sitemap entry. Measured after shipping, not before.
+    "this slug belongs to a duplicate" != "this URL is redundant".
+    """
+    seg = _code(MAIN).split("_dupe_slugs = set()", 1)[1][:2500]
+    assert "NOT EXISTS" in seg, (
+        "the duplicate-slug set must exclude any slug a LIVE row still uses, "
+        "or the filter removes real pages")
+    assert "COALESCE(s.is_duplicate, 0) = 0" in seg

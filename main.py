@@ -26678,9 +26678,23 @@ def _build_sitemap_sections():
         #   unfiltered — a bigger sitemap is a smaller failure than an empty one.
         _dupe_slugs = set()
         try:
-            c.execute("SELECT canonical_slug FROM discovered_facilities "
-                      "WHERE COALESCE(is_duplicate, 0) <> 0 "
-                      "  AND canonical_slug IS NOT NULL AND canonical_slug <> ''")
+            # ★★ CORRECTED 2026-07-28 (same day, after measuring the result).
+            # The first version took EVERY slug belonging to a flagged duplicate.
+            # That was wrong and it cost 21 live pages their sitemap entry.
+            # A duplicate and its surviving twin USUALLY SHARE ONE canonical_slug
+            # — the slug hashes provider|name, and duplicates have identical
+            # provider|name — so "this slug belongs to a duplicate" does NOT mean
+            # "this URL is redundant". Measured: 7,157 distinct duplicate slugs,
+            # of which only 311 are dupe-ONLY. The other 6,846 ARE the live
+            # facility's URL and must stay.
+            # ★ So: drop a slug only when NO live row uses it. NOT EXISTS is the
+            #   whole fix.
+            c.execute("SELECT d.canonical_slug FROM discovered_facilities d "
+                      "WHERE COALESCE(d.is_duplicate, 0) <> 0 "
+                      "  AND d.canonical_slug IS NOT NULL AND d.canonical_slug <> '' "
+                      "  AND NOT EXISTS (SELECT 1 FROM discovered_facilities s "
+                      "                  WHERE COALESCE(s.is_duplicate, 0) = 0 "
+                      "                    AND s.canonical_slug = d.canonical_slug)")
             _dupe_slugs = {r[0] for r in (c.fetchall() or []) if r and r[0]}
         except Exception as _dz:
             try: conn.rollback()
