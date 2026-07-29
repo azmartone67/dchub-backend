@@ -413,7 +413,11 @@ def _issue_body(drifts_by_registry: dict, listings_by_name: dict,
         "## White-glove: listing copy drift (human-gated registries)",
         "",
         "Daily canonical-facts propagation found stale numbers on listings "
-        "that have **no automated refresh path** (dashboard/forum/PR-gated). "
+        "that need a human. Either they have **no automated refresh path** "
+        "(dashboard/forum/PR-gated), or they have one and it reported that it "
+        "**cannot finish** — our upstream manifest already carries canon and "
+        "the listing is still wrong, so the registry's re-crawl is not landing "
+        "and waiting will not fix it. "
         "Paste the corrected copy below into each listing's edit surface.",
         "",
         "**Canonical numbers (ai_surface_canon):** "
@@ -583,6 +587,15 @@ def run_white_glove_propagation(dry_run: bool = False) -> dict:
 
     # ── (c) automated refresh paths ──────────────────────────────────
     auto_drifted = [n for n in drifts_by_registry if n in AUTO_PATH_REGISTRIES]
+    # ★2026-07-28 r-closeloop: registries land in AUTO_PATH_REGISTRIES on the
+    # promise that something automated will fix them, and (d) below excludes
+    # them from the human-gated issue on the strength of that promise. Nothing
+    # ever checked whether the promise was kept. Smithery's submitter returned
+    # an unconditional ok=True while doing nothing, so its listing drifted for
+    # days: too "automated" for the human loop, and the automation was a no-op.
+    # A registry whose submitter reports it cannot finish now escalates, so the
+    # only way out of this set is a fix that actually landed.
+    escalated: set[str] = set()
     if auto_drifted:
         try:
             from routes.mcp_presence_crawler import auto_resubmit_listing
@@ -591,20 +604,25 @@ def run_white_glove_propagation(dry_run: bool = False) -> dict:
                     r = auto_resubmit_listing(name, dry_run=dry_run)
                 except Exception as e:
                     r = {"ok": False, "error": str(e)[:150]}
+                if r.get("escalate"):
+                    escalated.add(name)
                 summary["auto_path_fired"].append({
                     "registry": name,
                     "ok": bool(r.get("ok")),
                     "submitter": r.get("submitter"),
                     "manifest_upstream": bool(r.get("requires_manifest_update")),
                     "rate_limited": bool(r.get("rate_limited")),
+                    "escalated": bool(r.get("escalate")),
+                    "next_action": (r.get("next_action") or "")[:200],
                 })
         except Exception as e:
             summary["auto_path_error"] = str(e)[:150]
         summary["workflow_dispatch"] = _trigger_registry_sync_workflow(dry_run)
+    summary["escalated_to_human"] = sorted(escalated)
 
     # ── (d) human-gated: ONE finding + ONE issue ─────────────────────
     human_drifted = {n: d for n, d in drifts_by_registry.items()
-                     if n not in AUTO_PATH_REGISTRIES}
+                     if n not in AUTO_PATH_REGISTRIES or n in escalated}
     summary["human_gated"] = sorted(human_drifted.keys())
     issue_result = {}
     if human_drifted:

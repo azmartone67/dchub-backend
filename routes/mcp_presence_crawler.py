@@ -2311,11 +2311,16 @@ def _mark_submitted(registry_name: str) -> None:
 
 # ── Canonical numbers (lazy-load from honest_numbers if available) ───
 _CANONICAL_FALLBACK = {
-    "tools":        33,         # live tool count (matches /mcp/tools.json)
-    "facilities":   21433,      # discovered_facilities US+global
-    "markets":      300,        # DCPI live market count
-    "deals":        1420,       # DISTINCT tracked deals (deduped; see canonical_stats.deals_phrase)
-    "deals_phrase": "1,400+ tracked deals",
+    # ★2026-07-28: these were tools=33 / facilities=21,433 / "1,400+" — every
+    # one of them a number canon had moved past. They are only reached when the
+    # honest-numbers import FAILS, which means the failure mode was to publish
+    # a confident stale claim to every registry rather than to go quiet. Kept
+    # in step with ai_surface_canon; a fallback that lies is worse than none.
+    "tools":        81,         # live tool count (matches /mcp/tools.json)
+    "facilities":   12650,      # discovered_facilities, DEDUPED (07-24 rebase)
+    "markets":      311,        # DCPI live market count
+    "deals":        1500,       # DISTINCT tracked deals (deduped; see canonical_stats.deals_phrase)
+    "deals_phrase": "1,500+ tracked deals",
     "countries":    178,
     "countries_phrase": "170+ countries",
 }
@@ -2356,7 +2361,12 @@ def _build_canonical_description(registry_name: str) -> str:
     Always returns a non-empty string. Uses the canonical numbers
     from honest_numbers (or the in-file fallback)."""
     n = _canonical_numbers()
-    tools     = n.get("tools", 33)
+    # ★2026-07-28: this used the PINNED advertised count while white-glove's
+    # drift DETECTOR compares against the LIVE count. They disagreed (80 vs
+    # 81), so the loop handed the operator paste-ready copy that its own
+    # detector would flag as drift the next morning — the loop could not
+    # converge by construction. One quantity, one origin: prefer live.
+    tools = _our_actual_tool_count() or n.get("tools", 81)
     facs      = n.get("facilities", 21433)
     mkts      = n.get("markets", 311)
     deals_p   = n.get("deals_phrase", "1,400+ tracked deals")
@@ -2499,15 +2509,102 @@ def _submitter_manifest_refresh(registry_name: str) -> dict:
     # README/manifest-crawled registries is upstream: bump the GitHub manifest +
     # About (the daily-manifest-sync heal does this — it now heals the deal count
     # too) and let the registry re-crawl on its own cadence.
+    # ★2026-07-28 r-closeloop: this returned an UNCONDITIONAL ok=True. That is
+    # what kept the Smithery listing stale for days behind a green loop.
+    # White-glove classifies these registries as AUTO_PATH and therefore
+    # EXCLUDES them from the human-gated drift issue — on the promise that an
+    # automated path will fix them. This function is that promise, and it did
+    # nothing but assert itself. So Smithery fell in the gap: too "automated"
+    # for the human loop, and the automation was a no-op that reported success.
+    #
+    # The claim "updates land on next crawl" is testable, and which way it
+    # fails decides who should act:
+    #
+    #   upstream manifest != canon  -> the auto-path CAN still work. Heal the
+    #                                  manifest and wait for the re-crawl. ok.
+    #   upstream manifest == canon  -> we already did our half and the listing
+    #     but listing drifts           is STILL wrong, so the re-crawl is not
+    #                                  landing. No amount of waiting fixes it.
+    #                                  Escalate to the human loop.
+    #
+    # Reporting ok=True in the second case is the same defect in a different
+    # place: claiming success for work that was never verified.
+    upstream_ok, upstream_detail = _upstream_manifest_matches_canon()
+    if not upstream_ok:
+        return {
+            "ok": True,
+            "submitter": f"{registry_name}_manifest_refresh",
+            "requires_manifest_update": True,
+            "upstream_manifest": upstream_detail,
+            "next_action": (
+                f"{registry_name} auto-discovers from GitHub README + "
+                f"manifest. Upstream manifest is itself stale ({upstream_detail}) "
+                "— heal it (dchub-mcp-server: node scripts/sync-tools-manifest.mjs "
+                "--fix), then the next crawl carries canon."
+            ),
+        }
     return {
-        "ok": True,
+        "ok": False,
+        "escalate": True,
         "submitter": f"{registry_name}_manifest_refresh",
-        "requires_manifest_update": True,
+        "requires_manifest_update": False,
+        "upstream_manifest": upstream_detail,
         "next_action": (
-            f"{registry_name} auto-discovers from GitHub README + "
-            "manifest. No refresh webhook; updates land on next crawl."
+            f"{registry_name} listing still shows stale numbers while our "
+            f"upstream manifest already matches canon ({upstream_detail}). "
+            "The re-crawl is not landing, so waiting cannot fix this — "
+            "correct the listing by hand on the registry's edit surface."
         ),
     }
+
+
+# Quantities we publish in registry-facing prose. Compared against the
+# upstream manifest so "the crawl will fix it" is a checked claim, not an
+# assumption. Read from canon — never transcribed here.
+_UPSTREAM_MANIFEST_URL = (
+    "https://raw.githubusercontent.com/azmartone67/dchub-mcp-server/main/smithery.yaml"
+)
+
+
+def _upstream_manifest_matches_canon() -> tuple[bool, str]:
+    """Does the manifest the registries crawl already carry canon?
+
+    Returns (matches, human-readable detail). FAIL-CLOSED on any error: if
+    we cannot read the manifest we return False, which routes to the
+    "heal the manifest" branch rather than escalating to a human on the
+    strength of a failed HTTP call. An unreadable manifest is not evidence
+    that a registry's crawler is broken.
+    """
+    try:
+        canon = _canonical_numbers()
+        # Compare the numeric FLOOR only ("1,500+"), never the whole phrase.
+        # Canon says "1,500+ tracked deals" while the manifest legitimately
+        # reads "1,500+ tracked M&A deals" — matching on the full phrase would
+        # report the manifest permanently stale and escalate to a human every
+        # single day for a difference that is purely editorial.
+        want = {
+            "facilities": f"{int(canon.get('facilities') or 0):,}+",
+            "deals": str(canon.get("deals_phrase") or "").split()[0]
+                     if canon.get("deals_phrase") else "",
+        }
+        r = requests.get(_UPSTREAM_MANIFEST_URL,
+                         headers={"User-Agent": AUTOSUBMIT_USER_AGENT},
+                         timeout=AUTOSUBMIT_TIMEOUT_S)
+        if r.status_code != 200:
+            return False, f"manifest unreadable (HTTP {r.status_code})"
+        text = r.text or ""
+        # Only assert on phrases we actually resolved — an empty canon value
+        # must not silently pass by matching the empty string.
+        checked = {k: v for k, v in want.items() if v and v.strip("+,0")}
+        if not checked:
+            return False, "canon phrases unresolved — cannot compare"
+        missing = [f"{k}={v}" for k, v in checked.items() if v not in text]
+        if missing:
+            return False, "manifest missing canon " + ", ".join(missing)
+        return True, "manifest carries canon " + ", ".join(
+            f"{k}={v}" for k, v in checked.items())
+    except Exception as e:
+        return False, f"manifest check failed: {str(e)[:80]}"
 
 
 def _submitter_human_loop(registry_name: str, reason: str) -> dict:
