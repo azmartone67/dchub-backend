@@ -222,3 +222,114 @@ def test_garbage_entries_are_withheld_not_rendered():
         card, why = ns["_card"](junk, ns["METRIC_TOKENS"])
         assert card is None, "junk rendered: %r" % (junk,)
         assert why
+
+
+# ── 5. the 2026-07-29 capability cards ───────────────────────────────────
+#
+# Three cards staged for the owner to approve by merge: the published DCPI
+# methodology, cross-layer site discovery, and the zones-vs-feeds split on the
+# grid scoreboard. The tests above already hold for the store as a whole; these
+# pin the specific trap each new card was one careless edit away from.
+#
+# ★ WHY THE GRID CARD CARRIES NO METRIC AT ALL. get_grid_scoreboard returned
+#   zones_ranked=47 earlier on 2026-07-29 and 43 by 19:06 UTC the same day
+#   (measured, keyless). A literal in that card would have been wrong within
+#   hours — twice. There is no token to bind either, so the card ships the
+#   SPLIT (zones vs independent feeds) as prose and no figure whatsoever.
+#
+# EXPECTED COUNTS for this section
+#   patched (this change):        4 passed
+#   unpatched (the three entries absent from data/platform_updates.json):
+#                                 3 failed, 1 passed —
+#     test_new_capability_cards_are_present_and_render          FAILS (KeyError-free
+#                                   assert: id missing from the store)
+#     test_new_capability_cards_declare_only_known_tokens       FAILS (same missing ids)
+#     test_new_capability_card_bodies_carry_no_bare_figure      FAILS (same missing ids)
+#     test_fence_still_catches_the_figures_these_cards_avoided  PASSES — it tests the
+#                                   fence, not the store, and is the MUST-FAIL control
+#                                   proving the other three are not vacuous.
+#   whole file: 17 passed patched · 3 failed / 14 passed with the store reverted.
+#
+# ★ THE CONTROL EARNED ITS KEEP ON FIRST RUN. Against the fence as it shipped,
+#   "126,840 substations" was NOT rejected — the noun list had grids, zones and
+#   tools but never substations, feeds or sources, the exact vocabulary these
+#   three cards introduce. Measured: 1 failed / 16 passed before the noun list
+#   was widened in routes/platform_updates.py. A guard whose blind spot covers
+#   the new copy is worse than none — it reports green while the literal ships.
+
+_NEW_CARD_IDS = ("dcpi-methodology-machine-readable",
+                 "cross-layer-site-discovery",
+                 "grid-scoreboard-honest-counts")
+
+
+def _new_entries(ns):
+    """The three staged entries, keyed by id. Asserts each one is actually
+    present — a lookup that quietly finds nothing would make every assertion
+    below iterate an empty set and report green."""
+    ups, err = ns["_read_store"](STORE)
+    assert err is None, "store unreadable: %s" % err
+    by_id = {e.get("id"): e for e in ups if isinstance(e, dict)}
+    missing = [i for i in _NEW_CARD_IDS if i not in by_id]
+    assert not missing, "staged capability cards absent from the store: %s" % missing
+    return {i: by_id[i] for i in _NEW_CARD_IDS}
+
+
+def test_new_capability_cards_are_present_and_render():
+    """Approved by merge, and each one survives the loader end to end."""
+    ns = _new_entries(_load())
+    for cid, entry in ns.items():
+        assert entry.get("announced") == "2026-07-29", cid
+        assert entry.get("link", {}).get("href"), "%s: no link to the proof" % cid
+
+
+def test_new_capability_cards_declare_only_known_tokens():
+    """★ A card may show a number ONLY through a token with a live source.
+
+    An unknown token is not an error — it degrades to UNMEASURED — but these
+    three were written to avoid that entirely: the one figure any of them shows
+    is `markets`, which /api/v1/canon/phrases publishes. Adding a token here
+    that is not in METRIC_TOKENS means someone tried to show a number DC Hub
+    cannot bind, and the card would render a hole where a figure was intended.
+    """
+    ld = _load()
+    for cid, entry in _new_entries(ld).items():
+        spec = entry.get("metric")
+        if spec is None:
+            continue                      # no figure claimed — always allowed
+        token = (spec or {}).get("token")
+        assert token in ld["METRIC_TOKENS"], (
+            "%s declares token %r, which has no live source — either bind it in "
+            "METRIC_TOKENS with a real resolver or drop the metric and publish "
+            "the claim without a number" % (cid, token))
+        m = ld["_metric_spec"](spec, ld["METRIC_TOKENS"])
+        assert m["value"] is None, "%s: the store must not carry the number" % cid
+        assert m["basis"] and m["source_url"], "%s: a figure without its basis" % cid
+
+
+def test_new_capability_card_bodies_carry_no_bare_figure():
+    """The whole reason this store exists, applied to the new copy."""
+    ld = _load()
+    for cid, entry in _new_entries(ld).items():
+        for field in ("title", "body"):
+            assert not ld["_looks_like_bare_figure"](entry.get(field)), (
+                "hardcoded figure in %s.%s — bind it to a metric token or drop "
+                "it: %r" % (cid, field, entry.get(field)))
+        card, why = ld["_card"](entry, ld["METRIC_TOKENS"])
+        assert card, "%s withheld: %s" % (cid, why)
+
+
+def test_fence_still_catches_the_figures_these_cards_avoided():
+    """MUST-FAIL CONTROL for the three tests above.
+
+    Those tests are only meaningful if the fence they lean on actually rejects
+    something. These are the sentences the new cards were rewritten to avoid —
+    every one of them a figure that already moved today or would freeze.
+    """
+    bare = _load()["_looks_like_bare_figure"]
+    for s in ("the scoreboard now ranks 46 zones",
+              "47 zones ranked from 7 independent feeds",
+              "ranks 43 grids right now",
+              "cross-layer search across 126,840 substations",
+              "scored across 317 markets",
+              "81 tools live now"):
+        assert bare(s) is True, "the fence would have let this ship: %r" % s
