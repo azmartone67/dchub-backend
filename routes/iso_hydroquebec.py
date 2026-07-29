@@ -11,33 +11,48 @@ Why Hydro-Québec first:
   - Cold climate = lower cooling costs (PUE 1.1 routinely achievable)
   - Surplus exports >$1B/yr to NY/MA/Ontario — proves headroom
 
-DATA SOURCES (in order of preference):
-  1. Hydro-Québec OASIS interconnect feed — https://www.hydroquebec.com/transenergie/en/oasis.html
-     Requires NERC registration; not public-fetchable.
+DATA SOURCES:
+  1. LIVE — hydroquebec.com open data (tokenless, no registration):
+       .../donnees-ouvertes/json/production.json  — generation by source,
+         30-min resolution, keys total/hydraulique/eolien/autres/solaire
+       .../donnees-ouvertes/json/demande.json     — total demand, 15-min
   2. Régie de l'énergie public filings — quarterly capacity + sales reports
-  3. donneesquebec.ca open data — daily aggregate generation
-  4. ENTSO-E equivalent (Hydro-Québec is part of NPCC) — interconnect flows
+  3. Hydro-Québec OASIS — https://www.hydroquebec.com/transenergie/en/oasis.html
+     (NERC-registered interconnect feed; not needed for the mix)
 
-For v1 we use a seasonally-adjusted baseline model anchored to HQ's
-published 2024-25 generation mix. This is REAL data — HQ's mix is
-remarkably stable year-over-year (hydro dominates, seasonal demand swings
-mostly from cooling/heating). The model is far more accurate than a
-"national grid average" for a hydro-dominated system.
+★ CORRECTION (2026-07-28, shell #41 WS2). The block that used to sit here
+said the OASIS feed "Requires NERC registration; not public-fetchable" and
+concluded HQ could only ever be modeled. That conclusion was wrong: it named
+the wrong feed. HQ publishes the generation mix as plain open data with no
+token at all. Probed from this shell 2026-07-28:
+    production.json  HTTP 200, 10,292 B, recentHour 2026-07-28T21:30,
+                     total 18,849 MW / hydraulique 17,305 / eolien 731 /
+                     autres 813 / solaire 0  → renewable 95.7%
+    demande.json     HTTP 200, 19,011 B, recentHour 2026-07-28T23:45,
+                     demandeTotal 16,865 MW
+The module is now LIVE-ONLY (`live_hq_open_data_v1`). _baseline_snapshot()
+is retained ONLY as a documented reference model — it is no longer written
+to grid_data, because once a modeled row lands in that table it is
+indistinguishable from telemetry, and HYDROQUEBEC is now an orchestrator
+slot rather than a manual /run.
 
-v2 (next sprint): replace baseline_model with live OASIS feed once HQ
-NERC registration is set up + signed.
+NOT ingested: spot price. HQ publishes no live wholesale price, so the
+live payload omits it rather than passing the 2024 tariff constant off as
+a spot price — /api/v1/iso/comparison will show lmp_usd_per_mwh: null.
 
 Schema: matches existing `grid_data(iso, metric_name, metric_value, unit,
 timestamp)` with conflict on `(iso, timestamp, metric_name)`.
 """
 
 import os
+import json
 import time
 import datetime
 from contextlib import contextmanager
 
 import psycopg2 as _pg
 from flask import Blueprint, jsonify
+from routes._iso_common import fetch_first_working, latest_for_iso
 from routes._swallowed_writes import note_swallowed_write
 
 iso_hydroquebec_bp = Blueprint("iso_hydroquebec", __name__,
@@ -98,6 +113,133 @@ def _conn():
         yield c
     finally:
         c.close()
+
+
+# ─────────────────────────────────────────────────────────────────────
+# LIVE feed — hydroquebec.com open data (2026-07-28, shell #41 WS2)
+# ─────────────────────────────────────────────────────────────────────
+# `details` is a fixed-length day array PADDED past the last real reading
+# with {"total": 0.0} placeholders — details[-1] is a padding row, not the
+# latest value. `indexDonneePlusRecent` points at the last REAL row (45 of
+# 48 at probe time), so index by it and never take the tail.
+_LIVE_PRODUCTION_URL = ("https://www.hydroquebec.com/data/documents-donnees/"
+                        "donnees-ouvertes/json/production.json")
+_LIVE_DEMAND_URL = ("https://www.hydroquebec.com/data/documents-donnees/"
+                    "donnees-ouvertes/json/demande.json")
+
+# Generation and demand publish on DIFFERENT clocks (30-min vs 15-min, and
+# demand ran 2h15m ahead of generation at probe time), so each carries its
+# OWN as_of. Never stamp one timestamp across both.
+_LIVE_CACHE = {"data": None, "ts": 0.0}
+_LIVE_TTL = 300
+
+
+def _hq_latest_row(doc):
+    """Last REAL reading from an HQ open-data document, or None.
+
+    Prefers indexDonneePlusRecent; falls back to the last details entry
+    carrying a non-zero payload. Never returns a padding row."""
+    details = (doc or {}).get("details") or []
+    idx = (doc or {}).get("indexDonneePlusRecent")
+    if isinstance(idx, int) and 0 <= idx < len(details):
+        row = details[idx] or {}
+        if row.get("valeurs"):
+            return row
+    for row in reversed(details):
+        vals = (row or {}).get("valeurs") or {}
+        if any(isinstance(v, (int, float)) and v for v in vals.values()):
+            return row
+    return None
+
+
+def _live_snapshot():
+    """LIVE Hydro-Québec snapshot, or None when the feed is unreachable.
+
+    Same flat {metric: {"value", "unit"}} shape as _baseline_snapshot() so
+    every existing consumer keeps working, plus string-valued provenance
+    keys (method / as_of / source_url / *_basis) that callers filter out
+    before persisting.
+
+    LIVE-ONLY: returns None rather than degrading to the model. 5-min cache
+    so /snapshot, /comparison and the orchestrator share ONE fetch.
+    """
+    now_ts = time.time()
+    if _LIVE_CACHE["data"] is not None and (now_ts - _LIVE_CACHE["ts"]) < _LIVE_TTL:
+        return _LIVE_CACHE["data"]
+    try:
+        text, _url = fetch_first_working([_LIVE_PRODUCTION_URL],
+                                         ua="dchub-iso-hydroquebec/1.0",
+                                         timeout=6, total_budget=8)
+        prod = _hq_latest_row(json.loads(text))
+    except Exception:
+        return None
+    vals = (prod or {}).get("valeurs") or {}
+    total = vals.get("total")
+    if not isinstance(total, (int, float)) or total <= 0:
+        return None      # padding row or feed gap — write nothing
+    total = float(total)
+    hydro = float(vals.get("hydraulique") or 0.0)
+    wind = float(vals.get("eolien") or 0.0)
+    solar = float(vals.get("solaire") or 0.0)
+    other = float(vals.get("autres") or 0.0)
+
+    metrics = {
+        "generation_total_mw":   {"value": round(total, 1), "unit": "MW"},
+        "fuel_hydro_mw":         {"value": round(hydro, 1), "unit": "MW"},
+        "fuel_wind_mw":          {"value": round(wind, 1),  "unit": "MW"},
+        "fuel_solar_mw":         {"value": round(solar, 1), "unit": "MW"},
+        "fuel_other_mw":         {"value": round(other, 1), "unit": "MW"},
+        # Scoreboard-comparable renewable = hydro+wind+solar over TOTAL
+        # GENERATION (not demand) — the same definition iso_eu_entsoe.py
+        # ranks on (_RENEWABLE_CATS, line 76).
+        "renewable_pct":         {"value": round(100.0 * (hydro + wind + solar) / total, 1),
+                                  "unit": "pct"},
+        "installed_capacity_mw": {"value": INSTALLED_CAPACITY_MW, "unit": "MW"},
+        "carbon_intensity":      {"value": CARBON_INTENSITY_G_PER_KWH, "unit": "g/kWh"},
+        "method":      "live_hq_open_data_v1",
+        "as_of":       (prod or {}).get("date"),
+        "source_url":  _LIVE_PRODUCTION_URL,
+        "renewable_pct_basis": (f"(hydraulique+eolien+solaire)/total = "
+                                f"{round(hydro + wind + solar, 1)}/{round(total, 1)} MW"),
+        # HONEST NUMBERS: HQ publishes NO gas or thermal series. 'autres' is
+        # an unallocated residual (biomass + isolated northern diesel) and is
+        # NOT attributable to gas, so gas share is unknown — reported as a
+        # reason, never as a 0 that would read as "a gas-free grid, measured".
+        "gas_pct_basis": ("hydro-quebec publishes no gas/thermal series; the "
+                          f"'autres' residual is {round(other, 1)} MW of "
+                          f"{round(total, 1)} MW total, fuel unallocated — "
+                          "gas share is UNKNOWN, not zero"),
+        "carbon_intensity_basis": ("HQ 2024 published fleet average — a "
+                                   "constant, not a live measurement"),
+    }
+    # Demand is a SEPARATE file on a different clock. Best-effort, stamped
+    # with its own as_of; its absence never invalidates the mix.
+    try:
+        dtext, _ = fetch_first_working([_LIVE_DEMAND_URL],
+                                       ua="dchub-iso-hydroquebec/1.0",
+                                       timeout=4, total_budget=5)
+        drow = _hq_latest_row(json.loads(dtext))
+        dval = ((drow or {}).get("valeurs") or {}).get("demandeTotal")
+        if isinstance(dval, (int, float)) and dval > 0:
+            metrics["demand_mw"] = {"value": round(float(dval), 1), "unit": "MW"}
+            metrics["demand_as_of"] = (drow or {}).get("date")
+        else:
+            metrics["demand_mw_basis"] = "demande.json returned no current reading"
+    except Exception:
+        metrics["demand_mw_basis"] = "demande.json unreachable this cycle"
+
+    _LIVE_CACHE["data"] = metrics
+    _LIVE_CACHE["ts"] = now_ts
+    return metrics
+
+
+def _numeric_metrics(metrics):
+    """Only the {"value": <number>} entries — provenance strings never
+    reach grid_data.metric_value."""
+    return {k: v for k, v in (metrics or {}).items()
+            if isinstance(v, dict)
+            and isinstance(v.get("value"), (int, float))
+            and not isinstance(v.get("value"), bool)}
 
 
 def _baseline_snapshot():
@@ -165,19 +307,33 @@ def run_extraction():
     started = time.time()
     summary = {
         "iso": ISO_CODE,
-        "method": "baseline_model_v1",
+        "method": "live_hq_open_data_v1",
         "metrics_extracted": 0,
         "rows_inserted": 0,
         "errors": [],
-        "note": "Phase 1 — anchored to HQ 2024 published mix + seasonal demand model. "
-                "Phase 2 will replace with live OASIS feed (requires NERC registration).",
+        "source": "hydroquebec.com open data (production.json + demande.json)",
     }
     try:
-        metrics = _baseline_snapshot()
-        summary["metrics_extracted"] = len(metrics)
-        rows = _persist_metrics(metrics)
-        summary["rows_inserted"] = rows
+        metrics = _live_snapshot()
+        if not metrics:
+            # LIVE-ONLY. The modeled baseline is NOT written as a fallback:
+            # once a synthetic row is in grid_data it is indistinguishable
+            # from telemetry, and HYDROQUEBEC is now a scheduled slot.
+            summary["status"] = "no_new_data"
+            summary["method"] = "none"
+            summary["note"] = ("hydroquebec.com open-data feed unreachable or "
+                               "returned a padding row — wrote nothing "
+                               "(LIVE-only, no modeled fallback)")
+            summary["elapsed_ms"] = int((time.time() - started) * 1000)
+            return summary
+        numeric = _numeric_metrics(metrics)
+        summary["metrics_extracted"] = len(numeric)
+        summary["rows_inserted"] = _persist_metrics(numeric)
+        summary["as_of"] = metrics.get("as_of")
+        summary["demand_as_of"] = metrics.get("demand_as_of")
+        summary["status"] = "ok"
     except Exception as e:
+        summary["status"] = "error"
         summary["errors"].append(f"{type(e).__name__}: {e}")
     summary["elapsed_ms"] = int((time.time() - started) * 1000)
     return summary
@@ -252,17 +408,31 @@ def http_snapshot():
     """Return the current snapshot WITHOUT persisting to DB. Read-only.
     Useful for the live grid dashboard."""
     try:
-        from routes.tier_gate import jsonify_gated_snapshot
-        return jsonify_gated_snapshot({
+        live = _live_snapshot()
+        metrics = live if live else _baseline_snapshot()
+        payload = {
             "iso": ISO_CODE,
-            "as_of": datetime.datetime.utcnow().isoformat() + "Z",
-            "method": "baseline_model_v1",
-            "metrics": _baseline_snapshot(),
-            "generation_mix": GENERATION_MIX,
+            "method": (metrics.get("method") if live else "baseline_model_v1"),
+            # as_of is the FEED's stamp when live (HQ runs ~2h behind wall
+            # clock), and generation time only for the model. Reporting
+            # "now" for a 2h-old reading is the lie this replaces.
+            "as_of": (metrics.get("as_of") if live
+                      else datetime.datetime.utcnow().isoformat() + "Z"),
+            "metrics": metrics,
             "installed_capacity_mw": INSTALLED_CAPACITY_MW,
             "annual_generation_twh": ANNUAL_GENERATION_TWH,
-            "renewable_pct": RENEWABLE_PCT,
-        }, 200)
+        }
+        if not live:
+            # Only the MODEL has a fixed mix + a constant renewable share.
+            # Emitting them beside live numbers would imply the live mix was
+            # measured against them.
+            payload["generation_mix"] = GENERATION_MIX
+            payload["renewable_pct"] = RENEWABLE_PCT
+            payload["degraded_reason"] = ("hydroquebec.com open-data feed "
+                                          "unreachable — showing the reference "
+                                          "model, NOT telemetry")
+        from routes.tier_gate import jsonify_gated_snapshot
+        return jsonify_gated_snapshot(payload, 200)
     except Exception as e:
         return jsonify({"error": str(e), "iso": ISO_CODE}), 500
 
@@ -273,13 +443,46 @@ def http_dcpi_score():
     return jsonify(compute_dcpi_score()), 200
 
 
+@iso_hydroquebec_bp.route("/latest", methods=["GET"])
+def http_latest():
+    """Latest PERSISTED grid_data row per metric — the only HTTP proof that
+    ingestion actually ran. This module shipped with no /latest at all, so
+    there was no way to tell a written row from a never-scheduled module.
+    Contrast /snapshot, which computes on the fly and looks alive either way."""
+    try:
+        return jsonify(iso=ISO_CODE, source="grid_data",
+                       metrics=latest_for_iso(ISO_CODE)), 200
+    except Exception as e:
+        return jsonify(iso=ISO_CODE, source="grid_data", metrics=[],
+                       error=str(e)[:200]), 200
+
+
 @iso_hydroquebec_bp.route("/health", methods=["GET"])
 def http_health():
+    """What is actually IN grid_data plus whether the feed answers right now.
+    The previous body was a hardcoded status:"operational" that would have
+    reported healthy for a module that had never written a single row."""
+    latest_ts, total, db_error = None, 0, None
+    try:
+        with _conn() as c, c.cursor() as cur:
+            cur.execute(
+                "SELECT MAX(timestamp), COUNT(*) FROM grid_data WHERE iso = %s",
+                (ISO_CODE,))
+            latest_ts, total = cur.fetchone()
+    except Exception as e:
+        db_error = str(e)[:200]
+    try:
+        live = _live_snapshot()
+    except Exception:
+        live = None
     return jsonify({
         "iso": ISO_CODE,
         "blueprint": "iso_hydroquebec_bp",
-        "method": "baseline_model_v1",
-        "status": "operational",
-        "first_non_us_iso": True,
-        "phase": "ZZZZZ-round33",
+        "method": "live_hq_open_data_v1" if live else "unavailable",
+        "live_feed_ok": bool(live),
+        "live_as_of": (live or {}).get("as_of"),
+        "latest_data_at": latest_ts.isoformat() if latest_ts else None,
+        "total_records": int(total or 0),
+        "db_error": db_error,
+        "source_id": SOURCE_ID,
     }), 200

@@ -3,8 +3,8 @@ iso_eu_entsoe.py — Europe grid ingestion via ENTSO-E Transparency (LIVE).
 
 #60 global-expansion (2026-06-02). Third LIVE international integration (after
 GB Elexon + AU AEMO) and by far the broadest: ONE token unlocks ~all of the
-European bidding zones. v1 covers the major data-center markets (Frankfurt,
-Paris, Amsterdam, Dublin, Madrid, Brussels, Warsaw, Vienna + Nordics).
+European bidding zones. The zone list is ONE explicit registry
+(_ZONE_REGISTRY below) — adding a bidding zone is one row, nothing else.
 
 DATA SOURCE — ENTSO-E Transparency Platform REST API:
   https://web-api.tp.entsoe.eu/api
@@ -12,7 +12,10 @@ DATA SOURCE — ENTSO-E Transparency Platform REST API:
     per PSR fuel B-code, MW). This is the fuel mix.
   Auth: securityToken query param. The token is read from the environment
   (ENTSOE_API_Token, with case/format fallbacks). NO token embedded in code.
-  Rate limit: 400 req/min — we issue ~1 call/zone (≤12), well under it.
+  Rate limit: this repo cites it TWO ways — 400 req/min here vs 100 req/min in
+  routes/international_ingestion.py:16. UNVERIFIED which is correct, so the
+  call rate is sized against the LOWER of the two. We issue at most one call
+  per zone per _ZONE_TTL, not one per request (see the rate math there).
 
   NOTE: the API speaks XML (GL_MarketDocument), not JSON. We parse it
   namespace-agnostically (local-name matching) and take the LATEST point per
@@ -75,39 +78,120 @@ _PSR = {
 # separately so it never silently inflates the ranking).
 _RENEWABLE_CATS = {"wind", "solar", "hydro"}
 
-# Major European data-center markets. (code → (EIC in_Domain, name, hub city)).
-# Per-zone failure is tolerated (LIVE-only) so a single bad EIC never breaks
-# the batch — verified/corrected against the live API post-deploy.
-_ZONES = {
-    "DE_LU":  ("10Y1001A1001A82H", "Germany–Luxembourg", "Frankfurt"),
-    "FR":     ("10YFR-RTE------C", "France",              "Paris"),
-    "NL":     ("10YNL----------L", "Netherlands",         "Amsterdam"),
-    "IE_SEM": ("10Y1001A1001A59C", "Ireland (SEM)",       "Dublin"),
-    "ES":     ("10YES-REE------0", "Spain",               "Madrid"),
-    "BE":     ("10YBE----------2", "Belgium",             "Brussels"),
-    "PL":     ("10YPL-AREA-----S", "Poland",              "Warsaw"),
-    "AT":     ("10YAT-APG------L", "Austria",             "Vienna"),
-    "SE_3":   ("10Y1001A1001A46L", "Sweden (SE3)",        "Stockholm"),
-    "NO_1":   ("10YNO-1--------2", "Norway (NO1)",        "Oslo"),
-    "FI":     ("10YFI-1--------U", "Finland",             "Helsinki"),
-    "DK_1":   ("10YDK-1--------W", "Denmark (DK1)",       "Copenhagen"),
-    # r-eu-expand (2026-06-25): +13 verified ENTSO-E zones. The key is live, so
-    # each is one parallel call (rate limit 400/min, well under). EIC codes
-    # verified against the entsoe-py canonical mapping. DC-growth zones first.
-    "IT_NORD": ("10Y1001A1001A73I", "Italy North",       "Milan"),
-    "CH":      ("10YCH-SWISSGRIDZ", "Switzerland",        "Zurich"),
-    "PT":      ("10YPT-REN------W", "Portugal",           "Lisbon"),
-    "CZ":      ("10YCZ-CEPS-----N", "Czech Republic",     "Prague"),
-    "SE_4":    ("10Y1001A1001A47J", "Sweden (SE4)",       "Malmo"),
-    "NO_2":    ("10YNO-2--------T", "Norway (NO2)",       "Stavanger"),
-    "DK_2":    ("10YDK-2--------M", "Denmark (DK2)",      "Copenhagen E"),
-    "GR":      ("10YGR-HTSO-----Y", "Greece",             "Athens"),
-    "RO":      ("10YRO-TEL------P", "Romania",            "Bucharest"),
-    "HU":      ("10YHU-MAVIR----U", "Hungary",            "Budapest"),
-    "SK":      ("10YSK-SEPS-----K", "Slovakia",           "Bratislava"),
-    "BG":      ("10YCA-BULGARIA-R", "Bulgaria",           "Sofia"),
-    "SI":      ("10YSI-ELES-----O", "Slovenia",           "Ljubljana"),
+# ── ENTSO-E bidding-zone REGISTRY ──────────────────────────────────
+# THE single source of truth for which European zones this module fetches.
+#
+# TO ADD A ZONE: append ONE row. Nothing else is required — the blueprint is
+# already registered (main.py), there is no DB migration, no cron change and no
+# zone list on the MCP side. _SNAP_TTL is 300s, so a new row is live on every
+# surface within ~5 min of deploy.
+#
+# Row = (code, EIC in_Domain, display name, hub city, EIC provenance)
+#   code       — surfaces on the scoreboard as EU_<code>; keep the SE_3 / NO_1
+#                underscore form so ids stay consistent with the existing rows.
+#   provenance — WHERE that EIC was verified. Never add a row without one: a
+#                wrong EIC fails SILENTLY (non-200 or an Acknowledgement doc
+#                → _zone_snapshot returns None → the zone simply never appears,
+#                with no log, no error and no alert).
+#   hub city   — display label only; nothing joins on it.
+#
+# AFTER ADDING, VERIFY EACH NEW CODE POST-DEPLOY:
+#   GET /api/v1/iso/eu/debug?zone=<CODE> → parsed != null AND zone_snapshot != null
+# Do NOT check your work against /api/v1/iso/eu/snapshot: it is tier-gated and
+# strips "zones" for anonymous callers, so a working zone looks missing there.
+_EXCLUDED_EICS = {
+    # Deliberately NOT in the registry — each grid is already its own scoreboard
+    # row, so adding it here would double-count it. Enforced by _build_zones.
+    "10YGB----------A": "GB — served live by routes/iso_uk_elexon.py (NGESO)",
+    "10YIE-1001A00010": "IE — already covered by the all-island IE_SEM zone",
 }
+
+_ZONE_REGISTRY = [
+    # code       EIC                   display name           hub city          EIC provenance
+    ("DE_LU",   "10Y1001A1001A82H", "Germany–Luxembourg",  "Frankfurt",       "#60 2026-06-02; live"),
+    ("FR",      "10YFR-RTE------C", "France",              "Paris",           "#60 2026-06-02; live"),
+    ("NL",      "10YNL----------L", "Netherlands",         "Amsterdam",       "#60 2026-06-02; live"),
+    ("IE_SEM",  "10Y1001A1001A59C", "Ireland (SEM)",       "Dublin",          "#60 2026-06-02; live"),
+    ("ES",      "10YES-REE------0", "Spain",               "Madrid",          "#60 2026-06-02; live"),
+    ("BE",      "10YBE----------2", "Belgium",             "Brussels",        "#60 2026-06-02; live"),
+    ("PL",      "10YPL-AREA-----S", "Poland",              "Warsaw",          "#60 2026-06-02; live"),
+    ("AT",      "10YAT-APG------L", "Austria",             "Vienna",          "#60 2026-06-02; live"),
+    ("SE_3",    "10Y1001A1001A46L", "Sweden (SE3)",        "Stockholm",       "#60 2026-06-02; live"),
+    ("NO_1",    "10YNO-1--------2", "Norway (NO1)",        "Oslo",            "#60 2026-06-02; live"),
+    ("FI",      "10YFI-1--------U", "Finland",             "Helsinki",        "#60 2026-06-02; live"),
+    ("DK_1",    "10YDK-1--------W", "Denmark (DK1)",       "Copenhagen",      "#60 2026-06-02; live"),
+    # r-eu-expand (2026-06-25): +13 zones, EICs verified against the entsoe-py
+    # canonical mapping. DC-growth zones first.
+    ("IT_NORD", "10Y1001A1001A73I", "Italy North",         "Milan",           "r-eu-expand 2026-06-25; live"),
+    ("CH",      "10YCH-SWISSGRIDZ", "Switzerland",         "Zurich",          "r-eu-expand 2026-06-25; live"),
+    ("PT",      "10YPT-REN------W", "Portugal",            "Lisbon",          "r-eu-expand 2026-06-25; live"),
+    ("CZ",      "10YCZ-CEPS-----N", "Czech Republic",      "Prague",          "r-eu-expand 2026-06-25; live"),
+    ("SE_4",    "10Y1001A1001A47J", "Sweden (SE4)",        "Malmo",           "r-eu-expand 2026-06-25; live"),
+    ("NO_2",    "10YNO-2--------T", "Norway (NO2)",        "Stavanger",       "r-eu-expand 2026-06-25; live"),
+    ("DK_2",    "10YDK-2--------M", "Denmark (DK2)",       "Copenhagen E",    "r-eu-expand 2026-06-25; live"),
+    ("GR",      "10YGR-HTSO-----Y", "Greece",              "Athens",          "r-eu-expand 2026-06-25; live"),
+    ("RO",      "10YRO-TEL------P", "Romania",             "Bucharest",       "r-eu-expand 2026-06-25; live"),
+    ("HU",      "10YHU-MAVIR----U", "Hungary",             "Budapest",        "r-eu-expand 2026-06-25; live"),
+    ("SK",      "10YSK-SEPS-----K", "Slovakia",            "Bratislava",      "r-eu-expand 2026-06-25; live"),
+    # BG answers INTERMITTENTLY: ENTSO-E returns an Acknowledgement (no data)
+    # for long stretches, so this zone drops in and out of the live count. That
+    # is why "configured" and "returned" are reported separately — never quote
+    # the configured number as the number of zones the scoreboard shows.
+    ("BG",      "10YCA-BULGARIA-R", "Bulgaria",            "Sofia",           "r-eu-expand 2026-06-25; INTERMITTENT"),
+    ("SI",      "10YSI-ELES-----O", "Slovenia",            "Ljubljana",       "r-eu-expand 2026-06-25; live"),
+    # ws2-entsoe (2026-07-29): +8. EICs copied from global_power_apis.py AREAS,
+    # which carries its own provenance note (verified against the canonical
+    # entsoe-py mapping) — no un-sourced EIC was invented for this expansion.
+    # Completes Italy (all 7 bidding zones) and Sweden (all 4).
+    ("IT_CNOR", "10Y1001A1001A70O", "Italy Centre-North",  "Florence",        "global_power_apis.AREAS (entsoe-py canonical)"),
+    ("IT_CSUD", "10Y1001A1001A71M", "Italy Centre-South",  "Rome",            "global_power_apis.AREAS (entsoe-py canonical)"),
+    ("IT_SUD",  "10Y1001A1001A788", "Italy South",         "Naples",          "global_power_apis.AREAS (entsoe-py canonical)"),
+    ("IT_SICI", "10Y1001A1001A75E", "Italy Sicily",        "Palermo",         "global_power_apis.AREAS (entsoe-py canonical)"),
+    ("IT_SARD", "10Y1001A1001A74G", "Italy Sardinia",      "Cagliari",        "global_power_apis.AREAS (entsoe-py canonical)"),
+    ("IT_CALA", "10Y1001C--00096J", "Italy Calabria",      "Reggio Calabria", "global_power_apis.AREAS (entsoe-py canonical)"),
+    ("SE_1",    "10Y1001A1001A44P", "Sweden (SE1)",        "Lulea",           "global_power_apis.AREAS (entsoe-py canonical)"),
+    ("SE_2",    "10Y1001A1001A45N", "Sweden (SE2)",        "Sundsvall",       "global_power_apis.AREAS (entsoe-py canonical)"),
+]
+
+
+def _build_zones(registry):
+    """registry rows → {code: (eic, name, hub)} — the exact 3-tuple contract the
+    rest of this module reads, so adding a row touches nothing else.
+
+    NEVER RAISES. main.py registers this blueprint inside a try/except that only
+    prints, so an exception at import time would 404 every /api/v1/iso/eu/*
+    route with no other signal. A malformed / duplicate / excluded row is
+    DROPPED and reported in the returned warnings list, which /zones and /health
+    echo — the drop is visible instead of silent."""
+    zones, by_eic, warnings = {}, {}, []
+    for row in registry:
+        try:
+            code = str(row[0]).strip().upper()
+            eic, name, hub = str(row[1]).strip(), str(row[2]).strip(), str(row[3]).strip()
+        except Exception:
+            warnings.append(f"malformed_row:{row!r}")
+            continue
+        if not code or not eic or not name:
+            warnings.append(f"incomplete_row:{code or row!r}")
+            continue
+        if code in zones:
+            warnings.append(f"duplicate_code:{code}")
+            continue
+        if eic in by_eic:
+            warnings.append(f"duplicate_eic:{code}_vs_{by_eic[eic]}:{eic}")
+            continue
+        if eic in _EXCLUDED_EICS:
+            warnings.append(f"excluded_eic:{code}:{_EXCLUDED_EICS[eic]}")
+            continue
+        if len(row) < 5 or not str(row[4]).strip():
+            warnings.append(f"no_eic_provenance:{code}")   # kept, but flagged
+        zones[code] = (eic, name, hub)
+        by_eic[eic] = code
+    return zones, warnings
+
+
+# (code → (EIC in_Domain, name, hub city)) — built, never hand-edited.
+_ZONES, _ZONE_REGISTRY_WARNINGS = _build_zones(_ZONE_REGISTRY)
 
 
 def _token():
@@ -190,8 +274,41 @@ def _parse_generation_xml(xml_text):
     return cats if found_any else None
 
 
-def _zone_snapshot(code):
-    """Live fuel-mix snapshot for one EIC zone, or None. No fabrication."""
+# Per-zone result cache. _SNAP_CACHE below collapses concurrent CALLERS into
+# one fan-out; this one stops a fan-out from re-fetching a zone that answered
+# moments ago, so registry growth adds zones WITHOUT adding a proportional
+# upstream call rate.
+#
+# RATE MATH (why 900s): the worst case is one full fan-out per _SNAP_TTL, i.e.
+# len(_ZONES) calls / 300s / gunicorn worker / replica (_SNAP_CACHE is a plain
+# module dict — per PROCESS, never shared). At 33 zones that is 33 calls per
+# 5 min per process; with _ZONE_TTL=900 only every third fan-out actually goes
+# upstream, so steady state is ~33 calls / 15 min / process ≈ 2.2 req/min —
+# inside the LOWER of the two rate limits this repo cites (100 req/min).
+#
+# 900s is also honest as DATA: ENTSO-E publishes A75 with a ~1-2h lag, so a
+# ≤15-min-old reading is well inside the source's own resolution, and every
+# zone carries observed_age_s so a consumer can see exactly how old it is.
+# It is deliberately NOT the 6h used by routes/international_ingestion.py:159
+# — that module is unreferenced dead code, and 6h-old fuel mix must never be
+# served as "live".
+_ZONE_CACHE = {}
+_ZONE_TTL = 900
+
+
+def _zone_snapshot(code, max_age=None):
+    """Live fuel-mix snapshot for one EIC zone, or None. No fabrication.
+
+    Reuses a cached reading younger than `max_age` (default _ZONE_TTL) instead
+    of re-calling ENTSO-E. The returned dict always carries observed_age_s
+    (0 = fetched on this call), so a reused reading is never passed off as
+    instantaneous. A failed call still returns None exactly as before — a
+    cached reading is NEVER resurrected past its TTL."""
+    hit = _ZONE_CACHE.get(code)
+    if hit:
+        age = time.time() - hit["ts"]
+        if 0 <= age < (_ZONE_TTL if max_age is None else max_age):
+            return dict(hit["snap"], observed_age_s=int(age))
     token = _token()
     if not token or _rq is None:
         return None
@@ -221,7 +338,7 @@ def _zone_snapshot(code):
     renew = sum(cats.get(c, 0.0) for c in _RENEWABLE_CATS)
     gas = cats.get("gas", 0.0)
     name, city = _ZONES[code][1], _ZONES[code][2]
-    return {
+    snap = {
         "code": code, "name": name, "hub": city,
         "generation_total_mw": round(total, 0),
         "fuel_gas_mw": round(gas, 0),
@@ -234,37 +351,71 @@ def _zone_snapshot(code):
         "renewable_pct": round(100.0 * renew / total, 1),   # wind+solar+hydro (scoreboard-comparable)
         "gas_pct": round(100.0 * gas / total, 1),
     }
+    _ZONE_CACHE[code] = {"snap": snap, "ts": time.time()}
+    return dict(snap, observed_age_s=0)
 
 
 # Short in-process cache so the scoreboard + map + direct callers share ONE
-# fan-out instead of each hammering 12 ENTSO-E endpoints. 5-min TTL — well
-# fresh for grid data (ENTSO-E itself lags ~1-2h) and keeps us far under the
-# 400 req/min limit.
+# fan-out instead of each re-running the whole registry. 5-min TTL — well
+# fresh for grid data (ENTSO-E itself lags ~1-2h); the per-zone _ZONE_CACHE
+# above is what actually bounds the upstream call rate as the registry grows.
 _SNAP_CACHE = {"data": None, "ts": 0.0}
 _SNAP_TTL = 300
+
+# Per-zone outcome of the LAST fan-out: {zone_code: reason}. Populated by
+# _live_snapshot and surfaced on /snapshot so a configured-but-not-ranking
+# zone is visible instead of silently absent. Reset each fan-out, so it
+# describes the current cache generation, not history.
+_ZONE_ERRORS = {}
 
 
 def _live_snapshot():
     """Aggregate EU snapshot across all reachable zones + per-zone detail.
-    Fans out the ~12 zones in PARALLEL (sequential was 12-24s — long enough to
+    Fans the registry out in PARALLEL (sequential was 12-24s — long enough to
     blow the scoreboard's edge/tool timeout) and caches for 5 min. None only if
-    the token is unset or EVERY zone failed (LIVE-only)."""
+    the token is unset or EVERY zone failed (LIVE-only). A zone that fails is
+    dropped, so len(zones) <= len(_ZONES); callers must report both counts."""
     if not _token():
         return None
     now = time.time()
     if _SNAP_CACHE["data"] is not None and (now - _SNAP_CACHE["ts"]) < _SNAP_TTL:
         return _SNAP_CACHE["data"]
     zones = {}
-    with ThreadPoolExecutor(max_workers=min(len(_ZONES), 12)) as pool:
+    zone_errors = {}
+    # ws2-merged (2026-07-29): width scales with the registry so adding zones
+    # adds PARALLELISM, not more sequential waves. Capped at 24 so one process
+    # never opens an unbounded socket burst; with _ZONE_CACHE most zones cost
+    # no socket at all.
+    with ThreadPoolExecutor(max_workers=min(len(_ZONES), 24)) as pool:
         futs = {pool.submit(_zone_snapshot, code): code for code in _ZONES}
-        for fut in as_completed(futs, timeout=25):
-            code = futs[fut]
-            try:
-                snap = fut.result(timeout=16)
-                if snap:
-                    zones[code] = snap
-            except Exception:
-                pass
+        try:
+            for fut in as_completed(futs, timeout=25):
+                code = futs[fut]
+                try:
+                    snap = fut.result(timeout=16)
+                    if snap:
+                        zones[code] = snap
+                    else:
+                        # A bad EIC does NOT raise — _zone_snapshot returns None
+                        # and this branch used to be an unconditional `pass`.
+                        # That is exactly how BG (10YCA-BULGARIA-R) went missing:
+                        # configured but never ranked, no error anywhere.
+                        zone_errors[code] = ("no_data — bad EIC, no A75 publication "
+                                             "for the window, or an Acknowledgement doc")
+                except Exception as e:
+                    zone_errors[code] = f"{type(e).__name__}: {str(e)[:120]}"
+        except Exception as e:
+            # as_completed raises TimeoutError FROM THE GENERATOR when the 25s
+            # budget expires; the inner except only covers fut.result(), so it
+            # escaped http_snapshot() as a 500 on the exact endpoint the grid
+            # scoreboard reads. Degrade to the zones collected so far.
+            for _c in futs.values():
+                zone_errors.setdefault(_c, f"fanout_budget_exceeded:{type(e).__name__}")
+    for _c in _ZONES:
+        if _c not in zones:
+            zone_errors.setdefault(_c, "no_data — zone did not report this cycle")
+    _ZONE_ERRORS.clear()
+    _ZONE_ERRORS.update({k: v for k, v in zone_errors.items() if k not in zones})
     if not zones:
         return None
     agg_total = sum(z["generation_total_mw"] for z in zones.values())
@@ -335,8 +486,12 @@ def run_extraction():
         else:
             summary["metrics_extracted"] = len(snap["metrics"])
             summary["rows_inserted"] = _persist_metrics(snap)
+            # Two readings of "how many zones", named. They differ whenever a
+            # zone's call fails (it is dropped silently) — never collapse them.
+            summary["zones_configured"] = len(_ZONES)
             summary["active_zones"] = len(snap["zones"])
             summary["zones_live"] = sorted(snap["zones"].keys())
+            summary["zones_missing"] = sorted(set(_ZONES) - set(snap["zones"]))
             summary["snapshot"] = {k: v["value"] for k, v in snap["metrics"].items()}
     except Exception as e:
         summary["errors"].append(f"{type(e).__name__}: {e}")
@@ -360,7 +515,7 @@ def compute_dcpi_score():
         "advantages": [
             "FLAP-D markets (Frankfurt, Amsterdam, Paris, Dublin) are the European DC core",
             "High renewable share across most bidding zones",
-            "Live grid data via ENTSO-E Transparency (one token, ~12+ zones)",
+            "Live grid data via ENTSO-E Transparency (one token, every zone in _ZONE_REGISTRY)",
         ],
         "constraints": [
             "Among the most expensive wholesale electricity globally",
@@ -381,13 +536,32 @@ def http_snapshot():
     if not _token():
         return jsonify({"iso": ISO_CODE, "error": "entsoe_token_missing",
                         "hint": "Set ENTSOE_API_Token in Railway env on the backend service."}), 503
-    snap = _live_snapshot()
+    try:
+        snap = _live_snapshot()
+    except Exception as e:
+        # This endpoint feeds the grid scoreboard — it must degrade, never 500.
+        return jsonify({"iso": ISO_CODE, "error": "entsoe_live_unavailable",
+                        "reason": f"fanout_failed:{type(e).__name__}"}), 503
     if snap is None:
-        return jsonify({"iso": ISO_CODE, "error": "entsoe_live_unavailable"}), 503
+        return jsonify({"iso": ISO_CODE, "error": "entsoe_live_unavailable",
+                        "reason": "no_zone_answered"}), 503
     from routes.tier_gate import jsonify_gated_snapshot
+    _missing = {k: v for k, v in _ZONE_ERRORS.items() if k not in snap["zones"]}
+    # HONEST NUMBERS: BOTH readings, named. zones_configured / zones_live are
+    # TOP-LEVEL scalars because dchub-mcp-server/server.mjs reads
+    # `eu.zones_configured` directly; zone_coverage is the structured form and
+    # zones_missing carries the per-zone reason. None of these four keys is in
+    # routes/tier_gate.py:272 _INTL_SNAPSHOT_REDACT, so anonymous callers get
+    # the counts but still no zone detail.
     return jsonify_gated_snapshot({"iso": ISO_CODE, "live": True,
                     "metrics": {k: v["value"] for k, v in snap["metrics"].items()},
                     "zones": snap["zones"],
+                    "zones_configured": len(_ZONES),
+                    "zones_live": len(snap["zones"]),
+                    "zones_missing": _missing,
+                    "zone_coverage": {"configured": len(_ZONES),
+                                      "returned": len(snap["zones"]),
+                                      "missing": sorted(set(_ZONES) - set(snap["zones"]))},
                     "source": "ENTSO-E Transparency (A75)"}, 200)
 
 
@@ -395,7 +569,10 @@ def http_snapshot():
 def http_zones():
     return jsonify({"iso": ISO_CODE,
                     "zones": {k: {"eic": v[0], "name": v[1], "hub": v[2]} for k, v in _ZONES.items()},
-                    "count": len(_ZONES)}), 200
+                    "count": len(_ZONES),
+                    "count_basis": "rows accepted from _ZONE_REGISTRY — CONFIGURED, not live; a zone appears on the scoreboard only if its call answered",
+                    "registry_rows": len(_ZONE_REGISTRY),
+                    "registry_warnings": _ZONE_REGISTRY_WARNINGS}), 200
 
 
 @iso_eu_entsoe_bp.route("/dcpi-score", methods=["GET"])
@@ -406,9 +583,15 @@ def http_dcpi_score():
 @iso_eu_entsoe_bp.route("/health", methods=["GET"])
 def http_health():
     tok = bool(_token())
+    probe = _zone_snapshot("DE_LU") if tok else None
     return jsonify({"iso": ISO_CODE, "token_configured": tok,
-                    "live_feed_ok": (_zone_snapshot("DE_LU") is not None) if tok else False,
+                    "live_feed_ok": probe is not None,
+                    # Basis for live_feed_ok: 0 = fetched on this request,
+                    # >0 = age (s) of the reused DE_LU reading, null = no probe.
+                    # This probe used to be UNCACHED on every single hit.
+                    "probe_age_s": (probe or {}).get("observed_age_s"),
                     "zones_configured": len(_ZONES),
+                    "registry_warnings": _ZONE_REGISTRY_WARNINGS,
                     "source": "entsoe_transparency"}), 200
 
 

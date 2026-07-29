@@ -12,21 +12,59 @@ negative LMP), surge in crypto + AI mining, cold climate, low political
 risk. Alberta is transitioning from coal-dominant to gas+wind.
 
 DATA SOURCES:
-  1. AESO ETS reports — https://www.aeso.ca/market/market-and-system-reporting/
-     CSV/Excel exports, public. Free tier.
+  1. LIVE — AESO ETS Current Supply Demand report, tokenless:
+       http://ets.aeso.ca/ets_web/ip/Market/Reports/CSDReportServlet
+           ?contentType=csv
   2. AESO API (paid premium tier) — https://api.aeso.ca/
   3. OpenEI generation data — has Alberta scraped
 
-For v1: baseline model anchored to AESO 2024 published mix.
-For v2: scrape AESO ETS daily reports (no auth needed).
+★ 2026-07-28 (shell #41 WS2) — THE FEED WAS NEVER DEAD; THE PARSER WAS.
+
+  routes/iso_orchestrator.py removed AESO on 2026-05-30 on the grounds that
+  the extractor "persisted 0 rows since registration". Probed from this
+  shell today, no token: the servlet returns HTTP 200, 9,680 B, in 0.6s,
+  "Last Update : Jul 28, 2026 21:51".
+
+  What actually failed: routes/iso_aeso.py handed the body to
+  _iso_common.parse_csv_numeric_columns, which runs csv.DictReader over it.
+  The body is SECTIONED, not tabular — DictReader sees one header row and
+  264 data rows, takes the LAST one (a per-asset line, e.g. 'Whitecourt
+  Power (EAGL)') and returns {}. parse_json_numeric then raises
+  JSONDecodeError and also returns {}. 0 metrics → 0 rows → status "ok".
+  A parser bug that reported success.
+
+  Layout, verified against the live body:
+    2-col key/value block — "Alberta Internal Load (AIL)","11301"
+    4-col fuel-group block — GROUP, MC (max capability), TNG (total net
+      generation), DCR (dispatched contingency reserve), terminated by a
+      "TOTAL" row; then per-asset sections reusing the same 4-col shape.
+    Anchoring on the known GROUP names and stopping at the FIRST 4-col
+    TOTAL keeps per-asset rows out. At probe time the group TNGs summed to
+    11,797 == the report's own TOTAL row, exactly.
+    COGENERATION 4,424 / COMBINED CYCLE 3,210 / WIND 2,383 / GAS FIRED
+    STEAM 984 / HYDRO 469 / OTHER 260 / SIMPLE CYCLE 66 / SOLAR 1 /
+    ENERGY STORAGE 0  → renewable 24.2%, gas 73.6%.
+
+  ★ The live report has NO COAL LINE AT ALL — Alberta finished the phase-
+    out. The GENERATION_MIX constant below still asserts 9.4% coal and is
+    factually stale; it is now reference-only and no longer written.
+
+  This module is LIVE-ONLY (method="live_aeso_csd_v1"). It is the module
+  that actually owns /api/v1/iso/aeso (main.py registers it twice — at
+  /aeso-intl and again as "iso_aeso_canonical" at /aeso), so the parser
+  belongs HERE. routes/iso_aeso.py is never imported by main.py and stays
+  dead; registering it would collide with the canonical alias.
 """
 import os
+import csv
+import io
 import time
 import datetime
 from contextlib import contextmanager
 
 import psycopg2 as _pg
 from flask import Blueprint, jsonify
+from routes._iso_common import fetch_first_working, latest_for_iso
 from routes._swallowed_writes import note_swallowed_write
 
 iso_aeso_intl_bp = Blueprint("iso_aeso_intl", __name__,
@@ -70,6 +108,152 @@ def _conn():
         yield c
     finally:
         c.close()
+
+
+# ─────────────────────────────────────────────────────────────────────
+# LIVE feed — AESO ETS Current Supply Demand (2026-07-28, shell #41 WS2)
+# ─────────────────────────────────────────────────────────────────────
+_LIVE_URLS = [
+    "http://ets.aeso.ca/ets_web/ip/Market/Reports/CSDReportServlet?contentType=csv",
+]
+# Fuel class per AESO reporting group. COGENERATION is Alberta industrial
+# GAS cogen — classing it as "other" would understate gas share by ~38
+# points. COAL is retained as a key even though the phase-out means it no
+# longer appears, so a restart would be picked up rather than dropped.
+_AESO_GROUP_FUEL = {
+    "COGENERATION": "gas", "COMBINED CYCLE": "gas",
+    "GAS FIRED STEAM": "gas", "SIMPLE CYCLE": "gas", "DUAL FUEL": "gas",
+    "COAL": "coal", "WIND": "wind", "SOLAR": "solar", "HYDRO": "hydro",
+    "OTHER": "other", "ENERGY STORAGE": "storage",
+}
+_LIVE_CACHE = {"data": None, "ts": 0.0}
+_LIVE_TTL = 300
+
+
+def _parse_aeso_csd(text):
+    """AESO CSD report → (last_update, ail_mw, {GROUP: tng_mw}, total_tng).
+
+    Returns None if the fuel-group block is missing OR its parts do not sum
+    to the report's own TOTAL row within 1 MW. That cross-check is the
+    guard: if AESO adds a group name we do not know, the sum diverges and
+    we publish NOTHING rather than a mix that is quietly missing a fuel.
+    """
+    last_update, ail, groups, total = None, None, {}, None
+    for row in csv.reader(io.StringIO(text)):
+        if not row:
+            continue
+        c0 = (row[0] or "").strip()
+        if len(row) == 1 and c0.startswith("Last Update"):
+            last_update = c0.split(":", 1)[1].strip() if ":" in c0 else c0
+        elif len(row) == 2 and c0 == "Alberta Internal Load (AIL)":
+            try:
+                ail = float(row[1])
+            except (TypeError, ValueError):
+                ail = None
+        elif len(row) == 4 and total is None:
+            # First 4-column block only. The per-asset sections further down
+            # reuse this shape, which is exactly what fooled the old parser.
+            key = c0.upper()
+            if key in _AESO_GROUP_FUEL:
+                try:
+                    groups[key] = float(row[2])      # TNG column
+                except (TypeError, ValueError):
+                    pass
+            elif key == "TOTAL" and groups:
+                try:
+                    total = float(row[2])
+                except (TypeError, ValueError):
+                    total = None
+    if not groups or not total or total <= 0:
+        return None
+    if abs(sum(groups.values()) - total) > 1.0:
+        return None      # unrecognised group appeared — refuse a partial mix
+    return last_update, ail, groups, total
+
+
+def _live_snapshot():
+    """LIVE AESO snapshot, or None when the feed is unreachable/unparseable.
+
+    Same flat {metric: {"value", "unit"}} shape as _baseline_snapshot(),
+    plus string provenance keys that callers filter before persisting.
+    LIVE-ONLY. 5-min cache so /snapshot, /latest, /comparison and the
+    orchestrator share ONE fetch.
+    """
+    now_ts = time.time()
+    if _LIVE_CACHE["data"] is not None and (now_ts - _LIVE_CACHE["ts"]) < _LIVE_TTL:
+        return _LIVE_CACHE["data"]
+    try:
+        text, _url = fetch_first_working(_LIVE_URLS, ua="dchub-iso-aeso/1.0",
+                                         timeout=6, total_budget=8)
+        parsed = _parse_aeso_csd(text)
+    except Exception:
+        return None
+    if not parsed:
+        return None
+    last_update, ail, groups, total = parsed
+
+    def _cls(kind):
+        return sum(v for g, v in groups.items() if _AESO_GROUP_FUEL[g] == kind)
+
+    gas, wind, solar = _cls("gas"), _cls("wind"), _cls("solar")
+    hydro, coal = _cls("hydro"), _cls("coal")
+    other, storage = _cls("other"), _cls("storage")
+    renew = wind + solar + hydro
+
+    metrics = {
+        "generation_total_mw":   {"value": round(total, 1), "unit": "MW"},
+        "fuel_gas_mw":           {"value": round(gas, 1), "unit": "MW"},
+        "fuel_wind_mw":          {"value": round(wind, 1), "unit": "MW"},
+        "fuel_solar_mw":         {"value": round(solar, 1), "unit": "MW"},
+        "fuel_hydro_mw":         {"value": round(hydro, 1), "unit": "MW"},
+        "fuel_coal_mw":          {"value": round(coal, 1), "unit": "MW"},
+        "fuel_other_mw":         {"value": round(other, 1), "unit": "MW"},
+        "fuel_storage_mw":       {"value": round(storage, 1), "unit": "MW"},
+        "renewable_pct":         {"value": round(100.0 * renew / total, 1), "unit": "pct"},
+        "gas_pct":               {"value": round(100.0 * gas / total, 1), "unit": "pct"},
+        "installed_capacity_mw": {"value": INSTALLED_CAPACITY_MW, "unit": "MW"},
+        "carbon_intensity":      {"value": CARBON_INTENSITY_G_PER_KWH, "unit": "g/kWh"},
+        "method":     "live_aeso_csd_v1",
+        "as_of":      last_update,      # AESO's own "Last Update", Alberta time
+        "source_url": _LIVE_URLS[0],
+        "renewable_pct_basis": (
+            f"(WIND+SOLAR+HYDRO)/TOTAL net generation = "
+            f"{round(renew, 1)}/{round(total, 1)} MW. ENERGY STORAGE "
+            f"({round(storage, 1)} MW) stays in the denominator because "
+            f"AESO's own TOTAL row includes it; biomass is inside OTHER "
+            f"and is not counted as renewable"),
+        "gas_pct_basis": (
+            "COGENERATION+COMBINED CYCLE+GAS FIRED STEAM+SIMPLE CYCLE. AESO "
+            "publishes no fuel split for COGENERATION, so this is an UPPER "
+            "BOUND on gas, not a measured share"),
+        "coal_basis": (
+            "AESO's live report carries no coal line — Alberta completed the "
+            "phase-out; 0 MW here is measured absence, not a missing feed"),
+        "carbon_intensity_basis": (
+            "AESO 2024 published fleet average — a constant, not a live "
+            "measurement, and stale w.r.t. the completed coal phase-out"),
+    }
+    if isinstance(ail, (int, float)) and ail > 0:
+        # AIL is Alberta Internal Load = demand. Distinct from TOTAL net
+        # generation (11,301 vs 11,797 at probe time — the delta is net
+        # interchange to BC/MT/SK).
+        metrics["demand_mw"] = {"value": round(float(ail), 1), "unit": "MW"}
+    else:
+        metrics["demand_mw_basis"] = ("Alberta Internal Load (AIL) row absent "
+                                      "from this report")
+
+    _LIVE_CACHE["data"] = metrics
+    _LIVE_CACHE["ts"] = now_ts
+    return metrics
+
+
+def _numeric_metrics(metrics):
+    """Only the {"value": <number>} entries — provenance strings never
+    reach grid_data.metric_value."""
+    return {k: v for k, v in (metrics or {}).items()
+            if isinstance(v, dict)
+            and isinstance(v.get("value"), (int, float))
+            and not isinstance(v.get("value"), bool)}
 
 
 def _baseline_snapshot():
@@ -126,15 +310,30 @@ def _persist_metrics(metrics):
 def run_extraction():
     started = time.time()
     summary = {
-        "iso": ISO_CODE, "method": "baseline_model_v1",
+        "iso": ISO_CODE, "method": "live_aeso_csd_v1",
         "metrics_extracted": 0, "rows_inserted": 0, "errors": [],
-        "note": "Phase 1 — baseline anchored to AESO 2024 mix. Phase 2 will scrape live ETS reports.",
+        "source": "AESO ETS Current Supply Demand report (tokenless CSV)",
     }
     try:
-        metrics = _baseline_snapshot()
-        summary["metrics_extracted"] = len(metrics)
-        summary["rows_inserted"] = _persist_metrics(metrics)
+        metrics = _live_snapshot()
+        if not metrics:
+            # LIVE-ONLY: no modeled fallback. AESO now runs on the shared
+            # 15-min cadence, and the modeled mix still asserts 9.4% coal
+            # for a province that finished its phase-out.
+            summary["status"] = "no_new_data"
+            summary["method"] = "none"
+            summary["note"] = ("ets.aeso.ca unreachable or CSD layout changed "
+                               "(fuel groups did not sum to the report TOTAL) "
+                               "— wrote nothing")
+            summary["elapsed_ms"] = int((time.time() - started) * 1000)
+            return summary
+        numeric = _numeric_metrics(metrics)
+        summary["metrics_extracted"] = len(numeric)
+        summary["rows_inserted"] = _persist_metrics(numeric)
+        summary["as_of"] = metrics.get("as_of")
+        summary["status"] = "ok"
     except Exception as e:
+        summary["status"] = "error"
         summary["errors"].append(f"{type(e).__name__}: {e}")
     summary["elapsed_ms"] = int((time.time() - started) * 1000)
     return summary
@@ -203,14 +402,23 @@ def http_snapshot():
 
 @iso_aeso_intl_bp.route("/latest", methods=["GET"])
 def http_latest():
-    # 2026-05-30: parity alias for the other ISOs' /latest, and the
-    # replacement for the deprecated iso_aeso.py /latest (which returned []).
+    # 2026-05-30: parity alias for the other ISOs' /latest.
     # Served at /api/v1/iso/aeso/latest (canonical alias) + /aeso-intl/latest.
-    return jsonify({
-        "iso": ISO_CODE,
-        "method": "baseline_model_v1",
-        "metrics": _baseline_snapshot(),
-    }), 200
+    #
+    # ★ 2026-07-28: this used to return _baseline_snapshot() — a payload
+    # computed on the fly, so it looked identical whether ingestion had ever
+    # written a row or not. iso_bpa/iso_tva /latest read grid_data; this now
+    # does the same, so an empty list means "nothing has been ingested",
+    # which is the answer the caller was asking for.
+    try:
+        return jsonify({
+            "iso": ISO_CODE,
+            "source": "grid_data",
+            "metrics": latest_for_iso(ISO_CODE),
+        }), 200
+    except Exception as e:
+        return jsonify({"iso": ISO_CODE, "source": "grid_data",
+                        "metrics": [], "error": str(e)[:200]}), 200
 
 
 @iso_aeso_intl_bp.route("/dcpi-score", methods=["GET"])
@@ -220,10 +428,29 @@ def http_dcpi_score():
 
 @iso_aeso_intl_bp.route("/health", methods=["GET"])
 def http_health():
+    """Real state: rows in grid_data + whether the CSD feed answers now.
+    The previous body was a hardcoded status:"operational"."""
+    latest_ts, total, db_error = None, 0, None
+    try:
+        with _conn() as c, c.cursor() as cur:
+            cur.execute(
+                "SELECT MAX(timestamp), COUNT(*) FROM grid_data WHERE iso = %s",
+                (ISO_CODE,))
+            latest_ts, total = cur.fetchone()
+    except Exception as e:
+        db_error = str(e)[:200]
+    try:
+        live = _live_snapshot()
+    except Exception:
+        live = None
     return jsonify({
         "iso": ISO_CODE,
         "blueprint": "iso_aeso_intl_bp",
-        "status": "operational",
-        "second_international_iso": True,
-        "phase": "ZZZZZ-round33",
+        "method": "live_aeso_csd_v1" if live else "unavailable",
+        "live_feed_ok": bool(live),
+        "live_as_of": (live or {}).get("as_of"),
+        "latest_data_at": latest_ts.isoformat() if latest_ts else None,
+        "total_records": int(total or 0),
+        "db_error": db_error,
+        "source_id": SOURCE_ID,
     }), 200

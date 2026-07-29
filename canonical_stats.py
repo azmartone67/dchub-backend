@@ -58,7 +58,14 @@ _FALLBACK = {
     # plus EU gas transmission flows (ENTSOG, 10 countries). LIVE, not modeled.
     "grid_continents": 5,
     "intl_grid_regions": 31,  # GB(1) + EU(24) + TW(1) + JP(1) + KR(1) + BR(1) + AU(1) + SG(1)
-    "eu_zones": 24,           # live ENTSO-E bidding zones (verified get_grid_scoreboard 2026-06-25; was ~12)
+    # LIVE count — the zones get_grid_scoreboard actually returned (verified
+    # 2026-06-25). NOT the configured count: routes/iso_eu_entsoe._ZONE_REGISTRY
+    # holds 33 rows as of ws2-entsoe (2026-07-29), and a zone reaches the
+    # scoreboard only if its ENTSO-E call answered (BG is chronically absent).
+    # RE-MEASURE before raising this — never publish the configured number:
+    #   GET /api/v1/iso/eu/snapshot (privileged key) → zone_coverage.returned
+    #   or count the EU_* rows in get_grid_scoreboard.
+    "eu_zones": 24,
     "substations": 126427,    # HIFLD substations (had no SoT home before)
     "pipeline_gw": 369,       # construction pipeline GW (had no SoT home before)
 }

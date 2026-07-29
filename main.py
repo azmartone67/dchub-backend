@@ -34212,7 +34212,7 @@ except Exception as _au_e:
 try:
     from routes.iso_eu_entsoe import iso_eu_entsoe_bp
     app.register_blueprint(iso_eu_entsoe_bp)
-    print("[main] iso_eu_entsoe_bp registered — LIVE Europe grid (ENTSO-E Transparency, ~12 zones, ENTSOE_API_Token)", flush=True)
+    print("[main] iso_eu_entsoe_bp registered — LIVE Europe grid (ENTSO-E Transparency, zones per routes/iso_eu_entsoe._ZONE_REGISTRY, ENTSOE_API_Token)", flush=True)
 except Exception as _eu_e:
     print(f"[main] iso_eu_entsoe_bp register failed: {_eu_e}", flush=True)
 

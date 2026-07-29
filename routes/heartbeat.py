@@ -90,6 +90,14 @@ SURFACES = [
     {"name": "iso_aeso",   "stale_hours": 12, "refresh_func": "refresh_iso"},
     {"name": "iso_tva",    "stale_hours": 12, "refresh_func": "refresh_iso"},
     {"name": "iso_bpa",    "stale_hours": 12, "refresh_func": "refresh_iso"},
+    # shell #41 WS2 (2026-07-28): iso_hydroquebec joined the orchestrator
+    # fan-out, so it needs a surface for iso_snapshot._heartbeat_for_iso to
+    # resolve (it looks up freshness_checks WHERE surface = 'iso_<lower>').
+    # Without this row the HYDROQUEBEC comparison entry can never report a
+    # real freshness state. iso_aeso is already present above and covers the
+    # AESO slot. iso_nordpool is deliberately NOT added — that module is not
+    # scheduled and is not board-eligible.
+    {"name": "iso_hydroquebec", "stale_hours": 12, "refresh_func": "refresh_iso"},
 ]
 
 

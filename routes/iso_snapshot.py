@@ -59,32 +59,82 @@ def _intl_snapshot_row(iso_def):
     broken intl module never poisons the comparison endpoint.
     Returns None on hard failure (skipped from rollup)."""
     try:
-        mod = __import__(iso_def["module"], fromlist=["_baseline_snapshot",
+        mod = __import__(iso_def["module"], fromlist=["_live_snapshot",
+                                                       "_baseline_snapshot",
                                                        "GENERATION_MIX",
                                                        "INSTALLED_CAPACITY_MW",
                                                        "RENEWABLE_PCT"])
     except Exception:
         return None
+    # shell #41 WS2 (2026-07-28): prefer the module's LIVE snapshot. Each one
+    # caches internally for 5 min, so /comparison shares the orchestrator's
+    # fetch instead of adding one per request. Falls back to the model.
+    snap = None
     try:
-        snap = mod._baseline_snapshot() or {}
+        _live = getattr(mod, "_live_snapshot", None)
+        if callable(_live):
+            snap = _live() or None
     except Exception:
-        snap = {}
+        snap = None
+    if snap is None:
+        try:
+            snap = mod._baseline_snapshot() or {}
+        except Exception:
+            snap = {}
+
     def _mv(key):
         v = snap.get(key)
         if isinstance(v, dict):
             return v.get("value")
         return v
+
+    def _pct(key):
+        """Percent 0-100 from a metric that may declare unit 'ratio' (the
+        modeled modules emit 0.997) or 'pct' (the live ones emit 95.7).
+        Converted off the DECLARED UNIT, never off magnitude — 0.9 is a
+        plausible value under both readings."""
+        v = snap.get(key)
+        if isinstance(v, dict):
+            val, unit = v.get("value"), (v.get("unit") or "").strip().lower()
+        else:
+            val, unit = v, ""
+        if val is None:
+            return None
+        try:
+            val = float(val)
+        except (TypeError, ValueError):
+            return None
+        return round(val * 100.0, 1) if unit == "ratio" else round(val, 1)
+
     # Carbon intensity + renewable share are the headline metrics
     # international markets compete on. LMP (spot price) maps to the
     # same column as US LMPs so the frontend can render one table.
     spot_usd = (_mv("spot_price_usd_per_mwh")
                 or _mv("avg_lmp_usd_per_mwh")
                 or _mv("day_ahead_price_usd_per_mwh"))
+    # data_method used to be the literal "baseline_model_v1" for every intl
+    # row — now a lie for the modules that went live. Read it off the payload.
+    method = _mv("method") or "baseline_model_v1"
+    is_live = str(method).startswith("live")
+    # ★ BUG FIX: this was `_as_float(snap.get("renewable_pct") or _mv(...) or
+    # getattr(...))`. snap.get() returns the {"value", "unit"} DICT, which is
+    # truthy, so the `or` chain never advanced and _as_float(dict) raised
+    # TypeError → None. renewable_pct was therefore None on EVERY intl row of
+    # /api/v1/iso/comparison, for every one of these operators, always.
+    renewable_pct = _pct("renewable_pct")
+    if renewable_pct is None:
+        # Module constant, 0-1 ratio by convention.
+        try:
+            _const = getattr(mod, "RENEWABLE_PCT", None)
+            renewable_pct = (round(float(_const) * 100.0, 1)
+                             if _const is not None else None)
+        except (TypeError, ValueError):
+            renewable_pct = None
     return {
         "iso": iso_def["code"],
         "iso_label": iso_def["label"],
         "region": iso_def["region"],
-        "data_method": "baseline_model_v1",
+        "data_method": method,
         "markets_scored": 0,
         "build_count": 0,
         "caution_count": 0,
@@ -96,14 +146,18 @@ def _intl_snapshot_row(iso_def):
         "pipeline_total_mw": None,
         "facility_count": 0,
         "total_facility_mw": None,
-        "heartbeat_status": "baseline",
-        "heartbeat_age_hours": 0,
+        "heartbeat_status": "live" if is_live else "baseline",
+        # A live row's vintage is the FEED's stamp, carried in as_of. Age 0
+        # was honest for a model computed on the spot; on a feed that runs
+        # hours behind wall clock it would be a fabricated freshness.
+        "heartbeat_age_hours": None if is_live else 0,
+        "as_of": _mv("as_of"),
         # Intl-specific metrics — frontend uses these when DCPI is missing
         "lmp_usd_per_mwh": _as_float(spot_usd),
         "carbon_intensity_g_kwh": _as_float(_mv("carbon_intensity")),
-        "renewable_pct": _as_float(snap.get("renewable_pct")
-                                   or _mv("renewable_pct")
-                                   or getattr(mod, "RENEWABLE_PCT", None)),
+        "renewable_pct": renewable_pct,
+        "renewable_pct_units": "percent",
+        "renewable_pct_basis": _mv("renewable_pct_basis"),
         "demand_mw": _as_float(_mv("demand_mw")),
         "installed_capacity_mw": getattr(mod, "INSTALLED_CAPACITY_MW", None),
     }
@@ -264,8 +318,24 @@ def iso_snapshot(iso_code):
     pipeline, facilities. Single connection, best-effort per section."""
     iso = _norm_iso(iso_code)
     if iso not in _KNOWN_ISOS:
+        # ★ CASE-SENSITIVE ROUTING, verified live: /api/v1/iso/aeso/snapshot
+        # (lowercase) is matched by the static iso_aeso_intl blueprint and
+        # returns 200, while /api/v1/iso/AESO/snapshot falls through to this
+        # converter and 404s. _norm_iso uppercases, so adding these codes to
+        # _KNOWN_ISOS would only change the uppercase path and leave TWO
+        # DIFFERENT PAYLOADS on two casings of the same URL. Point at the
+        # owning route instead of forking the response.
+        _INTL_ROUTES = {d["code"]: f"/api/v1/iso/{d['code'].lower()}/snapshot"
+                        for d in _INTL_ISOS}
+        _served_by = _INTL_ROUTES.get(iso)
         return jsonify(ok=False, error="unknown_iso",
-                       known=_KNOWN_ISOS), 404
+                       known=_KNOWN_ISOS,
+                       intl_operators=sorted(_INTL_ROUTES),
+                       served_by=_served_by,
+                       hint=(f"{iso} is an international operator served by its "
+                             f"own blueprint at {_served_by} (lowercase path)"
+                             if _served_by else
+                             "not a tracked ISO; see /api/v1/iso/comparison")), 404
     try:
         with _conn() as c, c.cursor() as cur:
             heartbeat = _heartbeat_for_iso(cur, iso)
