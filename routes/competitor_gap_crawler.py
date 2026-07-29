@@ -570,6 +570,60 @@ def _to_discovered_facility(cand: dict, slug: str) -> dict:
     }
 
 
+def record_sweep(conn, slug: str, srec: dict, p: dict,
+                 window_size: int = 0) -> None:
+    """Persist ONE row per source per run into `competitor_gap_sweeps`.
+
+    ★WHY THIS EXISTS. Cloudscene's sitemap carries 11,859 data-center URLs and
+    we hold 962 distinct (8.1%). Nothing in the database could say whether the
+    other 92% was NEVER REACHED or ALREADY KNOWN, because a candidate matching
+    an existing facility is dropped in diff_gaps (`dropped_existing`) and leaves
+    no trace — `coverage_gaps` only ever stores gaps. That one unknown decides
+    the entire inventory roadmap: unreached means raising the caps is free and
+    worth thousands of facilities; already-known means the source is tapped out
+    and the next lever is a whole new integration.
+
+    The sweep walks a CONTIGUOUS window (offset = day_of_year * limit, wrapping
+    mod sitemap length, step == window width), so (window_offset, window_size,
+    locs_total) is enough to reconstruct exactly which slice has been visited —
+    no need to store 12k URLs per source.
+
+    ★Fail-soft by design: instrumentation must NEVER cost a crawl. Any error
+    here is swallowed, because a lost metric row is trivial and a lost crawl run
+    is not.
+    """
+    try:
+        drops = srec.get("drops") or {}
+        with conn.cursor() as cur:
+            cur.execute(
+                """INSERT INTO competitor_gap_sweeps
+                     (slug, locs_total, window_offset, window_size, parsed,
+                      dropped_existing, dropped_not_facility, true_gaps,
+                      gap_only, inserted, dup, status, error)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                (slug,
+                 int(p.get("locs_seen") or 0),
+                 int(p.get("window_offset") or 0),
+                 # ★window_size is the width of the URL slice visited — NOT
+                 # `parsed`. Many URLs in a window yield no candidate (wrong
+                 # path shape, unparseable slug), so parsed < window_size.
+                 # Conflating them would understate coverage and make a fully
+                 # swept sitemap look partially visited forever.
+                 int(window_size or 0),
+                 int(srec.get("parsed") or 0),
+                 int(drops.get("dropped_existing") or 0),
+                 int(drops.get("dropped_not_facility") or 0),
+                 int(srec.get("true_gaps") or 0),
+                 int(srec.get("gap_only") or 0),
+                 int(srec.get("inserted") or 0),
+                 int(srec.get("dup") or 0),
+                 int(srec.get("status") or 0),
+                 (srec.get("error") or None)))
+    except Exception as e:  # noqa: BLE001
+        logger.debug("[competitor-gap] sweep record failed (non-fatal): %s",
+                     str(e)[:160])
+
+
 def _insert_true_gaps(conn, slug: str, true_gaps: list[dict],
                       max_inserts: int = _MAX_INSERTS_PER_RUN) -> dict:
     """Insert TRUE gaps via news_facility_extractor.insert_discovered_facility
@@ -923,6 +977,10 @@ def run_competitor_gap_scan(limit: int = _DEFAULT_PAGE_LIMIT,
             srec["inserted"] = ins["inserted"]
             srec["dup"] = ins["dup"]
             out["total_inserted"] += ins["inserted"]
+            # ★Record the sweep AFTER inserts so `inserted`/`dup` are final.
+            # Answers "is this source unreached or already-known?" — see
+            # record_sweep's docstring. Never raises.
+            record_sweep(conn, src["slug"], srec, p, window_size=limit)
             out["total_dup"] += ins["dup"]
 
             pg = persist_coverage_gaps(conn, src["slug"], src["name"],
