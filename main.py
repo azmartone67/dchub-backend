@@ -2426,6 +2426,18 @@ try:
     except Exception as _relay:
         import logging
         logging.getLogger(__name__).warning('relay_conversion_watch wiring failed: %s', _relay)
+    # 2026-07-29: Registry surface shell (#42) — what an agent sees BEFORE it
+    # reaches us. Glama served 33 tools / 21,000+ facilities with an EMPTY tool
+    # array for 25 days. GET /api/v1/admin/registry-surface-shell
+    # Kill: REGISTRY_SURFACE_SHELL_DISABLE=1
+    try:
+        from routes.registry_surface_shell import register_registry_surface_shell
+        register_registry_surface_shell(app)
+        print("[main] registry_surface_shell registered: GET /api/v1/admin/registry-surface-shell",
+              flush=True)
+    except Exception as _rss:
+        import logging
+        logging.getLogger(__name__).warning('registry_surface_shell wiring failed: %s', _rss)
     # 2026-07-28: Inventory-Acquisition master shell (#40) — how inventory actually
     # grows. Built after "16 feeds died on 2026-03-18" turned out to be ONE bulk
     # backfill at 03:29:40 that stamped first_seen on ~1,700 pre-existing rows.

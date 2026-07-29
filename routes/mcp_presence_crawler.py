@@ -527,6 +527,30 @@ _DCHUB_SMITHERY_SLUG = "azmartone67/dchub"
 # 2026-07-09 FIX: was "dchub" → glama.ai/api/mcp/v1/servers/dchub 400s. The
 # Glama server slug is namespaced (matches scripts/registry_monitor.py REPO_SLUG).
 _DCHUB_GLAMA_SLUG    = "azmartone67/dchub-mcp-server"
+
+
+def _glama_api_url(slug: str = None) -> str:
+    """THE Glama resource URL. One origin, read AND write.
+
+    ★2026-07-29 (Registry Surface Shell #42 lane 2): the 2026-07-09 fix above —
+    "was 'dchub' -> 400s, the slug is namespaced" — was applied to the READER
+    and never to the WRITER. update_listing_description() kept its own hardcoded
+    copy with BOTH original defects: the un-namespaced slug AND a transposed
+    path (/api/v1/mcp/ instead of /api/mcp/v1/). Measured 2026-07-29:
+
+        reader  /api/mcp/v1/servers/azmartone67/dchub-mcp-server -> 200
+        writer  /api/v1/mcp/servers/dchub                        -> 404
+
+    So every Glama description PATCH we have ever issued went into a 404. The
+    listing has been stuck on "33 tools ... 21,000+ facilities ... 232 US power
+    markets" with an EMPTY tools array since at least 2026-07-04 — the rot that
+    sync-tools-manifest.mjs documents by name — because the only thing that
+    could have corrected it was aimed at a URL that does not exist.
+
+    A second copy of a URL is a second thing to fix, and it is the copy nobody
+    tests that stays broken. Both callers now derive from here.
+    """
+    return f"https://glama.ai/api/mcp/v1/servers/{slug or _DCHUB_GLAMA_SLUG}"
 _DCHUB_LOBEHUB_SLUG  = "dchub-mcp-server"
 _DCHUB_MCPHIVE_SLUG  = "dchub"
 
@@ -621,7 +645,7 @@ def _extractor_glama_api(slug: str = _DCHUB_GLAMA_SLUG) -> dict | None:
     """Hit Glama's public REST API at https://glama.ai/api/mcp/v1/servers/
     <slug>. Returns the canonical extractor dict or None."""
     try:
-        url = f"https://glama.ai/api/mcp/v1/servers/{slug}"
+        url = _glama_api_url(slug)  # single origin — see _glama_api_url()
         data = _api_get_json(url)
         if not isinstance(data, dict):
             return None
@@ -2811,7 +2835,7 @@ def update_listing_description(registry_name: str,
         return result
 
     if registry_name == "glama":
-        target = "https://glama.ai/api/v1/mcp/servers/dchub"
+        target = _glama_api_url()   # single origin — see _glama_api_url()
         try:
             r = requests.patch(
                 target,
