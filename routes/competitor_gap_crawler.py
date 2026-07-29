@@ -600,7 +600,8 @@ def record_sweep(conn, slug: str, srec: dict, p: dict,
                      (slug, locs_total, window_offset, window_size, parsed,
                       dropped_existing, dropped_not_facility, true_gaps,
                       gap_only, inserted, dup, status, error)
-                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                   ON CONFLICT (slug, sweep_day, window_offset) DO NOTHING""",
                 (slug,
                  int(p.get("locs_seen") or 0),
                  int(p.get("window_offset") or 0),

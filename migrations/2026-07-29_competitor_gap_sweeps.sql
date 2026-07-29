@@ -45,3 +45,18 @@ CREATE TABLE IF NOT EXISTS competitor_gap_sweeps (
 );
 
 CREATE INDEX IF NOT EXISTS ix_cgs_slug_run ON competitor_gap_sweeps (slug, run_at DESC);
+
+-- One sweep per (source, day, window). Two runs on the same day over the same
+-- window would double-count dropped_existing/true_gaps and skew the
+-- already-known ratio the whole decision rests on. The interval union is
+-- idempotent, but the SUMs are not.
+--
+-- ★A plain DATE column, NOT an expression index on run_at. Indexing
+-- `timestamptz::date` is non-IMMUTABLE and Postgres rejects it — the trap that
+-- has bitten this codebase before. `sweep_day` defaults to CURRENT_DATE and is
+-- indexable directly.
+ALTER TABLE competitor_gap_sweeps
+    ADD COLUMN IF NOT EXISTS sweep_day DATE NOT NULL DEFAULT CURRENT_DATE;
+
+CREATE UNIQUE INDEX IF NOT EXISTS ux_cgs_slug_day_window
+    ON competitor_gap_sweeps (slug, sweep_day, window_offset);
