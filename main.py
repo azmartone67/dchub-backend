@@ -2394,6 +2394,18 @@ try:
     except Exception as _acts:
         import logging
         logging.getLogger(__name__).warning('actuation_master_shell wiring failed: %s', _acts)
+    # 2026-07-29: Persistence master shell (#41) — the shortlist chain is the ONLY
+    # durable state an agent can create, and it stored zero rows for real external
+    # agents in 90 days. GET /api/v1/admin/persistence-shell
+    # Kill: PERSISTENCE_SHELL_DISABLE=1
+    try:
+        from routes.persistence_master_shell import register_persistence_master_shell
+        register_persistence_master_shell(app)
+        print("[main] persistence_master_shell registered: GET /api/v1/admin/persistence-shell",
+              flush=True)
+    except Exception as _pers:
+        import logging
+        logging.getLogger(__name__).warning('persistence_master_shell wiring failed: %s', _pers)
     # 2026-07-28: Inventory-Acquisition master shell (#40) — how inventory actually
     # grows. Built after "16 feeds died on 2026-03-18" turned out to be ONE bulk
     # backfill at 03:29:40 that stamped first_seen on ~1,700 pre-existing rows.
