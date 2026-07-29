@@ -239,11 +239,14 @@ def lint_file(p, src):
 
     # 2026-07-29: tests are exempt from insert-no-on-conflict. The rule exists
     # to make production ingest idempotent, and a test that ASSERTS ON SQL TEXT
-    # necessarily contains SQL strings it never executes — the guard test for
-    # the WS6 capture block literally asserts "INSERT INTO interconnect_queue "
-    # is ABSENT from the capture path, and got flagged for containing the words.
+    # necessarily contains SQL strings it never executes — the WS6 guard test
+    # asserts that the capture path contains no write verb against the queue
+    # table, and was flagged for naming the verbs it forbids.
     # Flagging those trains people to whitelist the real table name, which is
     # strictly worse: it would suppress genuine violations in production code.
+    # ★ Do not spell a bare write-verb-plus-table literal anywhere in this file:
+    # scripts/ is not a test path, so this module is linted by its own rule and
+    # a comment quoting the pattern trips it. (It did, once.)
     _is_test = 'tests/' in str(p).replace(os.sep, '/') or p.name.startswith('test_')
     if not _is_test:
         for m in re.finditer(r"INSERT\s+INTO\s+(\w+)[^;\"']*", src, re.I):
