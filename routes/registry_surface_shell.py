@@ -113,12 +113,16 @@ def _lane_verdict(checks: list) -> str:
 
 
 def _get_json(url: str):
-    import json as _json
-    import urllib.request
+    """GET + parse. Uses requests, not urllib — house rule
+    (regression_lint: urllib-request-on-railway). Returns (status, payload) and
+    NEVER raises: a transport failure must surface as INDETERMINATE, not as a
+    lane that quietly reports clean."""
+    import requests
     try:
-        req = urllib.request.Request(url, headers=_UA)
-        with urllib.request.urlopen(req, timeout=_TIMEOUT) as r:
-            return r.status, _json.loads(r.read().decode(errors="replace"))
+        r = requests.get(url, headers=_UA, timeout=_TIMEOUT)
+        if r.status_code != 200:
+            return r.status_code, (r.text or "")[:120]
+        return r.status_code, r.json()
     except Exception as e:
         return None, str(e)[:120]
 
