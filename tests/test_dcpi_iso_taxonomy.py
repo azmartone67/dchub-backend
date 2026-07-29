@@ -493,7 +493,26 @@ def test_southeast_family_is_internally_consistent():
     50.4 (CAUTION) purely on borrowed Western parameters.
     """
     text = open(os.path.join(ROOT, "routes/dcpi.py"), encoding="utf-8").read()
-    ns = {}
+    # r-ws3-methodology (2026-07-29): the scorer's weights/ceilings now come
+    # from util/dcpi_method.py (the same object /api/v1/dcpi/methodology
+    # publishes), so the extracted snippet has free variables this harness must
+    # supply. Injecting the REAL constants — not stand-ins — keeps this test a
+    # check on shipped behaviour and makes it fail if an alias is renamed
+    # rather than silently scoring against a stub.
+    import util.dcpi_method as _dm
+    ns = {
+        "_E_DEF": _dm.EXCESS_INPUT_DEFAULTS,
+        "_E_CEIL": _dm.EXCESS_CEILINGS,
+        "_E_W": _dm.EXCESS_WEIGHTS,
+        "_E_RES_FLOOR": _dm.EXCESS_RESERVE_FLOOR_PCT,
+        "_E_RES_SPAN": _dm.EXCESS_RESERVE_SPAN_PCT,
+        "_E_LOCAL_BONUS": _dm.EXCESS_LOCAL_GRID_BONUS,
+        "_LG_SUB_CEIL": _dm.LOCAL_GRID_SUBSTATION_CEILING,
+        "_LG_SUB_PTS": _dm.LOCAL_GRID_SUBSTATION_POINTS,
+        "_LG_KV_PTS": _dm.LOCAL_GRID_KV_POINTS,
+        "_LG_GEN_CEIL": _dm.LOCAL_GRID_GEN_CEILING,
+        "_LG_GEN_PTS": _dm.LOCAL_GRID_GEN_POINTS,
+    }
     for name in ("_clip", "compute_excess_power_score"):
         exec(compile(_func_src("routes/dcpi.py", name), "dcpi", "exec"), ns)
 
