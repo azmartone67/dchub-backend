@@ -65,6 +65,20 @@ SERVICE_ID = os.environ.get("RAILWAY_SERVICE_ID", "f6198b88-799d-4b60-8cc8-069f3
 # Statuses that mean "this deployment is, or is becoming, the live one".
 LIVE_STATUSES = {"SUCCESS", "DEPLOYING", "BUILDING", "QUEUED", "WAITING"}
 
+# ★ WHAT WE CAN ROLL BACK *TO*. This is NOT {"SUCCESS"}.
+#
+# Railway marks a deployment REMOVED as soon as a newer one supersedes it, so
+# at any moment exactly ONE deployment is SUCCESS: the live one. Requiring an
+# older SUCCESS therefore matches nothing, ever — measured 2026-07-29 over 20
+# deployments spanning 18h, the only SUCCESS was the live one and every
+# superseded build was REMOVED. The rollback could never have found a target.
+#
+# REMOVED means "was deployed, then superseded" — exactly what we want to
+# return to. A build that never worked is FAILED (or CRASHED), which stays
+# excluded. Retention is decided by canRollback, Railway's own signal for
+# "the image still exists and can be redeployed", which is checked separately.
+ROLLBACK_ELIGIBLE_STATUSES = {"SUCCESS", "REMOVED"}
+
 # Anti-stacking: refuse to roll back onto a deployment that only just became
 # live. More than one actor can react to the same incident (two worker
 # sentinel processes, plus auto-rollback.yml as a backstop), and the second
@@ -267,6 +281,10 @@ def pick_rollback_target(
 
     current_sha = commit_sha(current)
     seen_current = False
+    # Tally why each candidate was rejected. Without this the failure reads
+    # "no rollback target" and gives the operator nothing to act on — during an
+    # outage that is the difference between a fix and a guess.
+    rej = {"newer": 0, "status": 0, "retention": 0, "same_commit": 0}
     for dep in deployments:
         if dep["id"] == current["id"]:
             seen_current = True
@@ -274,20 +292,28 @@ def pick_rollback_target(
         if not seen_current:
             # Newer than the live deployment (e.g. a build that superseded it);
             # rolling "back" to it would roll forward.
+            rej["newer"] += 1
             continue
-        if dep.get("status") != "SUCCESS":
+        if dep.get("status") not in ROLLBACK_ELIGIBLE_STATUSES:
+            # FAILED/CRASHED — never successfully served traffic.
+            rej["status"] += 1
             continue
         if not dep.get("canRollback"):
             # Past the plan's image-retention window — image is gone.
+            rej["retention"] += 1
             continue
         if current_sha and commit_sha(dep) == current_sha:
             # Same code as what is currently broken; rolling to it is a no-op.
+            rej["same_commit"] += 1
             continue
         return current, dep, "ok"
 
     return current, None, (
-        "no older SUCCESS deployment with canRollback=true and a different commit "
-        "(image retention may have expired, or every retained build is the same commit)"
+        "no eligible rollback target among {n} deployments — rejected: "
+        "{newer} newer than live, {status} never-good (FAILED/CRASHED), "
+        "{retention} image no longer retained (canRollback=false), "
+        "{same_commit} same commit as the live one. Eligible statuses: {ok}."
+        .format(n=len(deployments), ok="/".join(sorted(ROLLBACK_ELIGIBLE_STATUSES)), **rej)
     )
 
 

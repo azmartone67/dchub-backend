@@ -110,7 +110,11 @@ class TestPickRollbackTarget:
     def test_no_target_when_only_one_deployment(self):
         _, target, reason = rb.pick_rollback_target([dep("only", "SUCCESS", "abc")])
         assert target is None
-        assert "no older SUCCESS deployment" in reason
+        # Wording changed 2026-07-29: the reason now itemises WHY each candidate
+        # was rejected. "no rollback target" alone gave an operator nothing to
+        # act on mid-outage.
+        assert "no eligible rollback target" in reason
+        assert "among 1 deployments" in reason
 
     def test_no_target_when_history_empty(self):
         current, target, reason = rb.pick_rollback_target([])
@@ -549,3 +553,56 @@ def test_force_is_never_passed_without_dry_run():
             continue
         assert "--dry-run" in stripped, \
             f"--force appears without --dry-run, authorising a real forced rollback: {stripped!r}"
+
+
+# ── the REMOVED-status bug ──────────────────────────────────────────────────
+# Railway marks a deployment REMOVED the moment a newer one supersedes it, so
+# exactly one deployment is ever SUCCESS: the live one. Selecting targets on
+# status == "SUCCESS" therefore matched nothing, ever. Measured 2026-07-29 over
+# 20 real deployments spanning 18h: one SUCCESS (live), the rest REMOVED/FAILED.
+
+def test_rolls_back_to_a_removed_deployment():
+    """★ The regression. Real-world shape: live SUCCESS, older ones REMOVED."""
+    deps = [
+        dep("live", "SUCCESS", "aaa1111"),
+        dep("prev", "REMOVED", "bbb2222"),
+    ]
+    current, target, reason = rb.pick_rollback_target(deps)
+    assert target is not None, f"no target chosen from a realistic list: {reason}"
+    assert target["id"] == "prev"
+    assert reason == "ok"
+
+
+def test_failed_builds_are_never_a_rollback_target():
+    """REMOVED means 'served then superseded'. FAILED never served."""
+    deps = [
+        dep("live", "SUCCESS", "aaa1111"),
+        dep("bad", "FAILED", "bbb2222"),
+    ]
+    _, target, reason = rb.pick_rollback_target(deps)
+    assert target is None
+    assert "never-good" in reason
+
+
+def test_unretained_images_are_skipped_and_counted():
+    deps = [
+        dep("live", "SUCCESS", "aaa1111"),
+        dep("gone", "REMOVED", "bbb2222", can_rollback=False),
+    ]
+    _, target, reason = rb.pick_rollback_target(deps)
+    assert target is None
+    assert "1 image no longer retained" in reason, reason
+
+
+def test_rejection_reason_is_actionable_not_just_no_target():
+    """During an outage 'no rollback target' alone gives nobody anything to do."""
+    deps = [
+        dep("live", "SUCCESS", "aaa1111"),
+        dep("bad", "FAILED", "bbb2222"),
+        dep("gone", "REMOVED", "ccc3333", can_rollback=False),
+        dep("same", "REMOVED", "aaa1111"),
+    ]
+    _, target, reason = rb.pick_rollback_target(deps)
+    assert target is None
+    for fragment in ("never-good", "no longer retained", "same commit"):
+        assert fragment in reason, f"reason hides the {fragment!r} rejections: {reason}"
