@@ -4691,6 +4691,20 @@ def phase14c_health_aggregate():
                                  AND LOWER(COALESCE(plan_to,'')) NOT IN
                                      ('comp','complimentary','research_seed_nlr','seed')
                                  AND LOWER(COALESCE(source,'')) <> 'seed'
+                                 -- ★2026-07-28 (same day, hours later): refunds
+                                 -- became reversible (#1885) and this filter was
+                                 -- added to canonical_funnel.conversions_30d_real
+                                 -- and funnel_health.real_conversions_30d but NOT
+                                 -- here — so /health published 7 while
+                                 -- /admin/funnel-health published 5, for the same
+                                 -- named metric, within minutes of each other.
+                                 -- The comment right below this query claims the
+                                 -- three definitions are kept in lock-step; that
+                                 -- claim is only true if every filter added to one
+                                 -- is added to ALL THREE. Adding a filter to two
+                                 -- of three places does not fix drift, it CREATES
+                                 -- it.
+                                 AND refunded_at IS NULL
                            ) AS real_n
                       FROM mcp_conversions
                      WHERE created_at >= NOW() - INTERVAL '30 days'
