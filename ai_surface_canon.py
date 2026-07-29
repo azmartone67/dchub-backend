@@ -54,7 +54,16 @@ PINNED = {
         # downstream consumer (registry submitters, description builders, white-glove
         # propagation) kept pasting it. Meta, Microsoft and Grok have all standardised on
         # this deduped basis — keep them in sync.
-        "facilities": "12,650+",
+        # ★2026-07-28: 12,650+ -> 15,000+. This is the DB-DOWN fallback only —
+        # resolve_canon() now overrides it live from
+        # canonical_stats.facilities_verified_phrase(). It froze at 12,650+ while
+        # the real deduped fleet reached 15,207, and because nothing overrode it
+        # this stale floor WAS the public number on every surface.
+        # ★A floor must stay <= reality (floors round DOWN, never up): 15,000 is
+        # safely under 15,207. Re-floor DOWNWARD if the verified count ever
+        # falls below it — an over-stated floor is the
+        # canonical_floor_above_live_reality failure this module exists to stop.
+        "facilities": "15,000+",
         # ★2026-07-29: was the exact literal "311", which had itself drifted ABOVE
         # live canon (306 today — canonical_stats.py:165-167, surfaced as
         # /api/v1/stats top-level `markets`), making this a +5 over-claim on every
@@ -296,6 +305,30 @@ def resolve_canon() -> dict:
         c["public"]["deals"] = _dp
     except Exception as e:
         c["_deals_error"] = str(e)[:120]
+    # ★★2026-07-28: FACILITIES NOW SELF-HEALS TOO. `deals` and `markets` were
+    # overridden live here; `facilities` was NOT — it was the one headline number
+    # still served from the PINNED string, so it froze at "12,650+" while the
+    # real deduped fleet grew to 15,207. And because /api/v1/canon/phrases is the
+    # ONE source the frontend heal, llms.txt and the registry manifests all pull
+    # from, that single un-overridden line held every public surface stale at
+    # once — we were UNDER-claiming by ~2,500 facilities everywhere.
+    #
+    # ★Uses facilities_verified_phrase(), NOT facilities_phrase():
+    #   facilities_phrase()          = COUNT(*) rows      -> "21,000+"  OVER-claim
+    #   facilities_verified_phrase() = DISTINCT slug,     -> "15,200+"  honest
+    #                                  non-duplicate
+    # The raw row count is the discovery pile INCLUDING flagged duplicates. The
+    # March 2026 backfill wrote 21,210 rows for only 13,588 distinct buildings —
+    # that gap is exactly the "21.7k dropped to 13k" confusion. Public copy must
+    # lead with buildings, never rows. floors round DOWN, so the phrase can never
+    # exceed reality.
+    try:
+        from canonical_stats import facilities_verified_phrase as _fac_phrase
+        _fp = _fac_phrase()
+        c["facilities_verified_live"] = _fp
+        c["public"]["facilities"] = _fp
+    except Exception as e:
+        c["_facilities_error"] = str(e)[:120]
     # ★2026-07-29: markets self-heal the same way deals does. The pinned "300+" is
     # a FLOOR, so a consumer that never calls resolve_canon() can only under-claim;
     # this override republishes the live floor from the canonical query so the
