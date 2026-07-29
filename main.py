@@ -1855,6 +1855,15 @@ try:
     except Exception as _hci_early:
         import logging
         logging.getLogger(__name__).warning('hosting_capacity_ingest wiring failed: %s', _hci_early)
+    # shell#41 WS6 (2026-07-29): append-only change-capture spine
+    # (entity_state / entity_changes / entity_capture_runs). Safe-zone
+    # registration, same recipe — late-line registration silently 404s.
+    try:
+        from routes.temporal_capture import temporal_capture_bp
+        app.register_blueprint(temporal_capture_bp)
+    except Exception as _tcap_early:
+        import logging
+        logging.getLogger(__name__).warning('temporal_capture wiring failed: %s', _tcap_early)
     # Powered Land Gas Pricing (2026-06-04, Phase 1 spine):
     # Per-DCPI-market Henry Hub spot + regional basis + delivered industrial /
     # electric tariff + heat-rate-derived $/MWh. PRO-gated (free = teaser).
@@ -5471,12 +5480,27 @@ _degradation_cache_ttl = 300
 # replica (or a cold one) can serve the last-good real numbers as 'boot-degraded'
 # instead of the stub. 1h TTL covers a boot grace window; fully fail-soft.
 _DEGRADATION_REDIS_TTL = 3600
+# ★★2026-07-29 published-number integrity — BUMP THIS STRING whenever a field is
+# REMOVED FROM or REPOINTED IN a payload that is mirrored here. This snapshot
+# carries the WHOLE response body (including nested blobs) for an hour, and it is
+# served on the cold-boot path (get_stats, boot grace 210s) and the exception
+# path. Without a bump, every cold replica keeps emitting the PRE-DEPLOY body —
+# the removed field and the old number — for up to _DEGRADATION_REDIS_TTL seconds
+# after the deploy, so verification inside that window reads 'not fixed' and
+# verification just after it can read 'fixed' while a cold replica still serves
+# the old value. Versioning retires the old snapshot atomically: the reader
+# simply misses and the next successful compute repopulates it (fail-soft — the
+# miss degrades to the existing boot-stub, never to an error).
+# v2 = /api/v1/stats data.total_power_mw + data.total_mw + data.curated_pipeline_markets
+#      removed; data.total_deals repointed from the raw row pile to the deduped canon.
+_DEGRADATION_SCHEMA = "v2"
 
 def cache_for_degradation(key, data):
     _degradation_cache[key] = {'data': data, 'time': time.time()}
     try:
         from redis_cache import cache_set as _rc_set
-        _rc_set(f"degraded:{key}", {'data': data, 'ts': time.time()},
+        _rc_set(f"degraded:{key}:{_DEGRADATION_SCHEMA}",
+                {'data': data, 'ts': time.time()},
                 ttl=_DEGRADATION_REDIS_TTL)
     except Exception:
         pass
@@ -5491,7 +5515,7 @@ def get_degraded_data(key):
     # cold-start boot-stub.
     try:
         from redis_cache import cache_get as _rc_get
-        shared = _rc_get(f"degraded:{key}")
+        shared = _rc_get(f"degraded:{key}:{_DEGRADATION_SCHEMA}")
         if isinstance(shared, dict) and shared.get('data') is not None:
             age = time.time() - float(shared.get('ts') or 0)
             return shared['data'], age
@@ -19228,9 +19252,37 @@ def get_stats():
             "discovered_deduped":      discovered_deduped,
         }
 
-        c.execute("SELECT COALESCE(SUM(power_mw), 0) FROM facilities")
-        stats['total_power_mw'] = round(c.fetchone()[0] or 0, 1)
-        stats['total_mw'] = stats['total_power_mw']  # alias for frontends
+        # ★★2026-07-29 published-number integrity — `total_power_mw` (live 867,037.8)
+        # and its `total_mw` alias are REMOVED, not restated. This was an UNFILTERED
+        # SUM(power_mw) over every row of `facilities` — all statuses — published
+        # with no basis next to a `pipeline_mw` computed from the same table. The
+        # sibling pipeline query 45 lines below claims 671,026.3 MW of that same sum,
+        # so 77% of the 'total' was announced/planned capacity that does not exist
+        # yet: 1,923 pipeline rows carry 671 GW (avg 349 MW/row) while the other
+        # 16,127 rows carry 196 GW (avg 12.2 MW/row).
+        #
+        # It could NOT be repointed, because there is no agreed operational-MW
+        # number to repoint to. The same-table residual (867,037.8 - 671,026.3 =
+        # 196,011.5 MW) and /api/v1/hero/infra-ticker's operational_mw (109,306 MW)
+        # disagree by 1.79x — they are DIFFERENT TABLES (`facilities` 18,050 rows vs
+        # `discovered_facilities` 22,934 rows) under DIFFERENT status filters, and
+        # the repo has four mutually incompatible status vocabularies with no shared
+        # taxonomy module (this file's 11-value deny-list below; dynamic_hero.py:336
+        # 6-value deny-list; this file's 5-value mixed-case list at ~16707 with no
+        # LOWER() and no 'Announced'; operator_brief.py:236-238 6-value ALLOW-list).
+        # canonical_stats governs facilities/countries/markets/deals with live
+        # queries but has NO power/MW key at all, so this figure was ungoverned and
+        # free to drift. Publishing either candidate as 'the operational number'
+        # would recreate the defect under a new name.
+        #
+        # Do NOT re-add. A replacement must be an ALLOW-list over an agreed status
+        # set (copy routes/operator_brief.py:236-238, the only allow-list in the
+        # repo), must be governed by canonical_stats with a live query, and must
+        # name its table + filter in the payload alongside the value. This mirrors
+        # the pipeline_mw removal at routes/dynamic_hero.py:340-358.
+        # NOTE: removing a field does NOT remove it from the wire — the degradation
+        # snapshot mirrors this whole payload to Redis for an hour, which is why
+        # _DEGRADATION_SCHEMA was bumped to v2 in the same change.
 
         # total_substations
         try:
@@ -19306,15 +19358,22 @@ def get_stats():
             cp = c.fetchone()
             stats['curated_pipeline_count'] = cp[0] or 0
             stats['curated_pipeline_gw'] = round((cp[1] or 0) / 1000, 1)
-            # Phase GG (2026-05-14): real distinct-market count — was a
-            # hardcoded 32.
-            c.execute("SELECT COUNT(DISTINCT market) FROM capacity_pipeline "
-                      f"WHERE market IS NOT NULL AND market != '' AND {_CP_OK}")
-            stats['curated_pipeline_markets'] = c.fetchone()[0] or 0
+            # ★★2026-07-29 published-number integrity — `curated_pipeline_markets`
+            # (live 685) is REMOVED. `capacity_pipeline.market` is NOT a market:
+            # crawler_scheduler.py:1130-1133 writes COALESCE(df.city, df.state) into
+            # that column, so this counted distinct free-text city/state strings —
+            # 685 across 1,210 rows, ~1 distinct value per 1.77 rows, which is what
+            # unnormalized text looks like, not a curated set. The field NAME
+            # asserted a curation that does not exist, and it sat one JSON key away
+            # from the real DCPI count (306 canon), inviting a direct comparison
+            # against 306/311/317. Grep across *.py/*.js/*.html/*.json found ZERO
+            # consumers — producer-only. If a pipeline-breadth figure is ever
+            # wanted it must be named for its basis (e.g.
+            # curated_pipeline_distinct_location_strings) and must never sit
+            # adjacent to a DCPI market count.
         except Exception:
             stats['curated_pipeline_count'] = 0
             stats['curated_pipeline_gw'] = 0.0
-            stats['curated_pipeline_markets'] = 0
 
         try:
             c.execute("SELECT COUNT(*) FROM leads")
@@ -19407,11 +19466,25 @@ def get_stats():
         # MCP usage (calls/24h + unique AI-agent callers/7d). These don't
         # leak subscriber data — anyone can hit /api/v1/mcp/funnel and see
         # the same numbers.
+        # ★2026-07-29 published-number integrity — COUNT(*) FROM deals is the RAW
+        # ROW pile (live 4,576), not a deal count. The AUTO id used to embed the
+        # ingest date (AUTO-<yyyymmdd>-<hash>) so a re-ingest never hit ON CONFLICT
+        # and accrued one row per DAY; one atNorth deal held 945 rows. The write
+        # side is fixed forward (deal_scraper.py:492-493 hashes content only;
+        # deal_ingestion_scheduler.py:98-106 drops deal_date from the hash) but the
+        # ~3,000 legacy duplicate rows were never purged, so COUNT(*) stays
+        # permanently hot and the READ side has to dedup. Published here under the
+        # honest name `deals_rows` — the same name /api/v1/stats/canonical already
+        # uses (routes/facilities_by_dims.py:216-218). `total_deals` is REPOINTED to
+        # the deduped canon count at the canon block below; the raw value is seeded
+        # into it here only so that block's existing canon-failure fallback still
+        # has a value to fall back to (fail-soft: canon down => today's behaviour).
         try:
             c.execute("SELECT COUNT(*) FROM deals")
-            stats['total_deals'] = c.fetchone()[0] or 0
+            stats['deals_rows'] = c.fetchone()[0] or 0
         except Exception:
-            stats['total_deals'] = 0
+            stats['deals_rows'] = 0
+        stats['total_deals'] = stats['deals_rows']
 
         try:
             c.execute("SELECT COUNT(*) FROM mcp_call_log "
@@ -19487,6 +19560,29 @@ def get_stats():
             _canon_deals = int(_canon.get('deals', 0)) or int(stats.get('total_deals', 0))
         except Exception:
             _canon_deals = int(stats.get('total_deals', 0) or 0)
+        # ★★2026-07-29 published-number integrity — the nested `data` blob was the
+        # last surface still publishing the RAW deal-row pile: data.total_deals =
+        # 4,576 against the canon's 1,572 (2.91x). The TOP-LEVEL `deals` key in the
+        # envelope below was already canon-governed and correct, so the two levels of
+        # the SAME response disagreed by 2.91x — and which one a consumer got
+        # depended purely on which envelope level it read.
+        # REPOINT, do not rename: dchub-frontend/ai-deals.html:455 resolves
+        # `d.stats||d.data||d` to `d.data` (this response has no `stats` key) and
+        # reads `s.deals||s.total_deals`; `deals` does not exist in this blob, so the
+        # LIVE /ai-deals page renders data.total_deals into #deal-count
+        # (ai-deals.html:662). Renaming total_deals away would silently degrade that
+        # page to `deals.length` — the loaded array, a much smaller number. Setting
+        # it to the deduped count fixes the page with zero frontend edits.
+        # deals_tracked stays None when the canon is unavailable: an UNMEASURED
+        # count must be published as unknown, never as a guess or a 0.
+        _deals_deduped = None
+        try:
+            _deals_deduped = int(_canon.get('deals') or 0) or None
+        except Exception:
+            _deals_deduped = None
+        stats['deals_tracked'] = _deals_deduped
+        if _deals_deduped:
+            stats['total_deals'] = _deals_deduped
         result = {
             'success': True,
             'data': stats,
@@ -21622,10 +21718,22 @@ def serve_by_the_numbers():
         _stats = _gcs() or {}
     except Exception:
         _stats = {}
+    # ★2026-07-29 published-number integrity — the `deals` fallback was the literal
+    # 2032, ABOVE both the canonical floor (canonical_stats._FALLBACK['deals'] =
+    # 1400) and the live deduped count (1,572), so a canonical_stats exception
+    # published a ~29% over-claim — on the page that calls /api/v1/stats "the
+    # canonical stats API" (see the link below), i.e. the highest-authority surface
+    # for these figures. Read the floors from canonical_stats instead of restating
+    # them, so a fallback can never again sit above the canon it stands in for.
+    # (The markets fallback 306 was only coincidentally correct — same treatment.)
+    try:
+        from canonical_stats import _FALLBACK as _canon_floor
+    except Exception:
+        _canon_floor = {}
     facilities = _stats.get('facilities') or 21000
     countries = _stats.get('countries') or 178
-    markets = _stats.get('markets') or 306
-    deals = _stats.get('deals') or 2032
+    markets = _stats.get('markets') or _canon_floor.get('markets', 300)
+    deals = _stats.get('deals') or _canon_floor.get('deals', 1400)
     mcp_tools = _stats.get('mcp_tools') or 33
     ai_platforms = _stats.get('ai_platforms') or 14
     ai_requests = _stats.get('ai_requests') or 630000
@@ -34212,7 +34320,7 @@ except Exception as _au_e:
 try:
     from routes.iso_eu_entsoe import iso_eu_entsoe_bp
     app.register_blueprint(iso_eu_entsoe_bp)
-    print("[main] iso_eu_entsoe_bp registered — LIVE Europe grid (ENTSO-E Transparency, ~12 zones, ENTSOE_API_Token)", flush=True)
+    print("[main] iso_eu_entsoe_bp registered — LIVE Europe grid (ENTSO-E Transparency, zones per routes/iso_eu_entsoe._ZONE_REGISTRY, ENTSOE_API_Token)", flush=True)
 except Exception as _eu_e:
     print(f"[main] iso_eu_entsoe_bp register failed: {_eu_e}", flush=True)
 

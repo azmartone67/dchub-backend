@@ -16,9 +16,10 @@ All read-only. Best-effort per domain — if one table errors, we still
 return the others.
 """
 import os
+import re
 from datetime import datetime, timezone, timedelta
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, jsonify, request, g
 
 try:
     from util.provenance import src, attach_sources, now_iso
@@ -50,7 +51,23 @@ def _safe(cur, sql, params=()):
     try:
         cur.execute(sql, params)
         return cur.fetchall()
-    except Exception:
+    except Exception as _e:
+        # WS6 (2026-07-29) — ★ ZERO IS NOT EVIDENCE. This except swallowed
+        # every SQL error into [], so a missing column, a wrong table and a
+        # genuinely quiet week all rendered identically as 0 and the response
+        # told agents "nothing changed". Record the failure against the table
+        # the query reads so the handler can publish it: a count that cannot
+        # be measured must never be published as 0.
+        try:
+            _m = re.search(r"\bFROM\s+([a-z_][a-z0-9_]*)", sql, re.I)
+            _errs = getattr(g, "_changes_feed_errors", None)
+            if _errs is None:
+                _errs = {}
+                g._changes_feed_errors = _errs
+            _errs[_m.group(1) if _m else "unknown"] = (
+                f"{type(_e).__name__}: {str(_e)[:160]}")
+        except Exception:
+            pass
         # 2026-06-06: roll back after a failed query. Without this, the FIRST
         # domain that hits a missing table/column aborts the transaction and
         # EVERY subsequent domain query fails with "transaction is aborted" ->
@@ -291,15 +308,41 @@ def changes_since():
     except Exception:
         portfolio = None
 
+    # WS6 (2026-07-29): publish WHICH domains actually answered. `_safe`
+    # returns [] on any SQL error, so before this a broken lane and a quiet
+    # window were indistinguishable and total_changes=0 was served to agents
+    # as "nothing changed". Additive only — no existing field renamed.
+    _domain_errors = {}
+    try:
+        _domain_errors = dict(getattr(g, "_changes_feed_errors", None) or {})
+    except Exception:
+        _domain_errors = {}
     payload["counts"] = counts
     payload["total_changes"] = sum(counts.values())
+    payload["counts_complete"] = not _domain_errors
+    if _domain_errors:
+        payload["domain_errors"] = _domain_errors
+        payload["counts_basis"] = (
+            f"PARTIAL - {len(_domain_errors)} source table(s) failed to "
+            "answer. total_changes is a FLOOR over the lanes that ran; a 0 "
+            "for a failed lane means UNKNOWN, not unchanged.")
+    _at_limit = sorted(k for k, v in counts.items()
+                       if isinstance(v, int) and v >= limit)
+    if _at_limit:
+        payload["counts_at_limit"] = _at_limit
+        payload["counts_at_limit_note"] = (
+            "these domains returned exactly limit_per_domain rows - their "
+            "count is a FLOOR, not a total. Raise `limit` to see more.")
     if portfolio is not None:
         payload["portfolio"] = portfolio
     payload["diff"] = diff
     _tip = (
         "Cache this response's `generated_at`. On your next session, "
         "pass it back as `?since=<that-value>` to get only what's new. "
-        "If total_changes is 0, your previous full pull is still fresh.")
+        + ("Some domains could not be read on this call (see "
+           "`domain_errors`) - do NOT read total_changes as 'nothing "
+           "changed'." if _domain_errors else
+           "If total_changes is 0, your previous full pull is still fresh."))
     if portfolio and portfolio.get("moved_count"):
         _names = [m["name"] for m in portfolio.get("moved", [])[:3] if m.get("name")]
         _tip = (f"{portfolio['moved_count']} of your {portfolio['saved_sites']} "

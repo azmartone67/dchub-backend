@@ -273,6 +273,37 @@ def scan_competitors() -> dict:
     except Exception as e:
         out["grid_depth_extras"] = {"status": "spawn_failed",
                                     "error": str(e)[:120]}
+
+    # ── STEP 6 (shell#41 WS6, 2026-07-29) — append-only change-capture
+    # spine. interconnect_queue / hosting_capacity_feeders / capacity_pipeline
+    # / discovered_facilities all destroy or never record their own history
+    # (DELETE-then-reload, ingested_at re-stamped on conflict, no first_seen
+    # column), so every day without capture is history permanently lost.
+    # Same piggyback pattern as STEPS 2-5: daemon thread, budget + day-gate
+    # INSIDE the module, fail-soft. Writes commit per 2,000-row chunk with a
+    # persisted resume offset, because a web-worker daemon thread has been
+    # recycled mid-write with zero rows persisted.
+    out["temporal_capture"] = {"status": "spawned_background"}
+    try:
+        import threading as _th_temporal
+
+        def _temporal_bg():
+            try:
+                from routes.temporal_capture import run_temporal_capture
+                run_temporal_capture()
+            except Exception as e:
+                try:
+                    import logging
+                    logging.getLogger(__name__).warning(
+                        "temporal capture (bg) failed: %s", str(e)[:160])
+                except Exception:
+                    pass
+
+        _th_temporal.Thread(target=_temporal_bg, name="temporal-capture",
+                            daemon=True).start()
+    except Exception as e:
+        out["temporal_capture"] = {"status": "spawn_failed",
+                                   "error": str(e)[:120]}
     return out
 
 

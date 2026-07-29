@@ -218,6 +218,22 @@ def _ensure_tables():
         # changes, and readers that ignore it behave exactly as before.
         cur.execute("ALTER TABLE market_power_scores "
                     "ADD COLUMN IF NOT EXISTS iso_type TEXT")
+        # r-ws3-signal-tier (2026-07-28): per-market SIGNAL QUALITY of the score.
+        # Today a market whose every score input came from the hardcoded
+        # iso_defaults dict is published with exactly the same confidence as one
+        # driven by live interconnect_queue + planned_generators + grid_telemetry
+        # reads — nothing distinguishes them. The LOW_SIGNAL verdict cannot cover
+        # this: it is written by dchub_self_heal's strict matrix only when a score
+        # is exactly 0, which the iso_defaults guarantee never happens (measured
+        # 2026-07-28: 0 of 310 published markets carry it).
+        # 'full' | 'partial' | 'low' — rule in gather_metrics_for_market.
+        # NULL means "the writer of this row did not record one" (rows predating
+        # this column + every row written by lite_recompute). Readers MUST
+        # surface NULL as unknown, never as 'low' — coercing it would invent a
+        # measurement. Additive + nullable: no existing row, score, verdict or
+        # writer changes, and readers that ignore it behave exactly as before.
+        cur.execute("ALTER TABLE market_power_scores "
+                    "ADD COLUMN IF NOT EXISTS signal_tier TEXT")
         cur.execute("""
             CREATE TABLE IF NOT EXISTS dcpi_runs (
                 id           SERIAL PRIMARY KEY,
@@ -1658,6 +1674,21 @@ def gather_metrics_for_market(market: tuple) -> dict:
     # formulas (compute_* read specific numeric keys; they ignore "data_basis").
     _live_fields: set[str] = set()
 
+    # r-ws3-signal-tier (2026-07-28): record WHICH live adapter actually
+    # returned data, not merely which fields ended up populated. The tier below
+    # is a claim about the adapters that ran, so it is recorded at the call
+    # sites themselves — re-inferring it from _live_fields would mis-attribute
+    # the moment a second writer touches one of those fields.
+    # HONEST LIMIT: _state_queue_depth and _state_gen_additions both return None
+    # for a DB ERROR *and* for a legitimately empty result (swallow-all excepts
+    # in each). False here therefore means "returned no data", NOT "the query
+    # failed" — this is never reported as an error count.
+    _adapters = {
+        "interconnect_queue": False,   # _state_queue_depth
+        "planned_generators": False,   # _state_gen_additions
+        "grid_telemetry":     False,   # _latest_grid_telemetry
+    }
+
     # ── Live enrichment from the REAL interconnection-queue table ──────
     # (2026-07-24 rewrite — see _state_queue_depth for the root-cause note.)
     # Drive the constraint input off REAL per-state active-queue DEPTH. We
@@ -1680,6 +1711,7 @@ def gather_metrics_for_market(market: tuple) -> dict:
         metrics["queue_capacity_mw"] = round(q["active_mw"], 1)
         _live_fields.add("queue_wait_months")
         _live_fields.add("queue_capacity_mw")
+        _adapters["interconnect_queue"] = True
 
     # Near-term (<=12mo) generation additions from the REAL generation-SUPPLY
     # source: planned_generators (EIA-860M), aggregated per state and cached.
@@ -1694,6 +1726,7 @@ def gather_metrics_for_market(market: tuple) -> dict:
     if ga is not None:
         metrics["gen_additions_12mo_mw"] = round(ga, 1)
         _live_fields.add("gen_additions_12mo_mw")
+        _adapters["planned_generators"] = True
 
     # Heuristic defaults by ISO (calibrated from public 2025 data)
     iso_defaults = {
@@ -1850,6 +1883,14 @@ def gather_metrics_for_market(market: tuple) -> dict:
         "WAPA":     {"queue_wait_months": 36, "reserve_margin_pct": 10.0, "curtailment_pct": 1.0,
                      "queue_approval_rate_pct": 25, "btm_headroom_mw": 15},
     }
+    # r-ws3-signal-tier (2026-07-28): record WHETHER this .get() fell through to
+    # the WECC default. Behaviour is byte-identical (same dict, same fallback
+    # value) — this only remembers that the fail-open documented in the
+    # SOCO/FRCC note above fired, so the signal tier can refuse to call a market
+    # 'partial'/'full' when its modeled anchors are Western-grid parameters for
+    # a grid that is not WECC. Underscore key → never a score input.
+    _iso_default_matched = bool(iso) and iso in iso_defaults
+    metrics["_iso_default_matched"] = _iso_default_matched
     base = iso_defaults.get(iso, iso_defaults["WECC"])
     for k, v in base.items():
         if metrics[k] is None: metrics[k] = v
@@ -1977,6 +2018,7 @@ def gather_metrics_for_market(market: tuple) -> dict:
         # A real live signal exists for this ISO — it now drives the value.
         metrics["reserve_margin_pct"] = round(_eff_reserve, 1)
         _live_fields.add("reserve_margin_pct")
+        _adapters["grid_telemetry"] = True
         # Stash the raw live read so data_basis can expose the basis honestly
         # (these underscore-prefixed keys are NOT score inputs — compute_* only
         # read the documented numeric keys, so scores stay a pure function of
@@ -2229,6 +2271,84 @@ def gather_metrics_for_market(market: tuple) -> dict:
                                 "(identical-to-baseline is a documented fact, "
                                 "not fabricated variation)"),
         }
+    # ── r-ws3-signal-tier (2026-07-28): per-market SIGNAL QUALITY ───────────
+    # data_basis already says live / mixed / modeled_estimate, but "mixed"
+    # spans everything from one live adapter to all three, and NOTHING today
+    # marks a market whose every score input is a hardcoded constant — it is
+    # published with exactly the confidence of a live-fed one. Derive an
+    # explicit tier from what actually happened this run, and emit the numeric
+    # basis beside it (house rule: never an adjective without its number).
+    #
+    #   full    = all 3 live-capable adapters returned data
+    #   partial = 1 or 2 did
+    #   low     = none did, OR the ISO fell through to the WECC default (the
+    #             modeled anchors are then Western-grid parameters for a grid
+    #             that is not WECC — see the SOCO/FRCC post-mortem above)
+    #
+    # SCOPE, stated so no consumer can over-read it: "full" means every adapter
+    # that CAN be live was live. It does NOT mean every score input is
+    # measured. curtailment_pct, queue_approval_rate_pct, btm_headroom_mw,
+    # stranded_capacity_mw and demand_growth_yoy_pct have no live source at all
+    # and are always modeled; emergency_count_30d is never assigned anywhere in
+    # this module and the scorer reads it as 0 (20% of constraint_score). Both
+    # facts are stamped into signal_detail below.
+    _live_adapters = sorted(k for k, v in _adapters.items() if v)
+    _live_adapter_n = len(_live_adapters)
+    if not _iso_default_matched:
+        _tier = "low"
+        _tier_reason = (
+            "iso_default_fail_open: iso "
+            + (repr(iso) if iso else "NULL")
+            + " is not a key in iso_defaults, so every modeled anchor on this "
+              "market is WECC's — Western-grid parameters for a grid that is "
+              "not WECC")
+    elif _live_adapter_n == 0:
+        _tier = "low"
+        _tier_reason = ("no_live_adapter_returned_data: every score input is a "
+                        "modeled constant from iso_defaults / slug_overrides")
+    elif _live_adapter_n >= len(_adapters):
+        _tier = "full"
+        _tier_reason = "all_live_capable_adapters_returned_data"
+    else:
+        _tier = "partial"
+        _tier_reason = ("live_adapters_returned_data: "
+                        + ", ".join(_live_adapters))
+    data_basis["signal_tier"] = _tier
+    data_basis["signal_detail"] = {
+        "live_adapter_count": _live_adapter_n,
+        "live_adapter_max": len(_adapters),
+        "live_adapters": _live_adapters,
+        "silent_adapters": sorted(k for k, v in _adapters.items() if not v),
+        "live_fields": _live_used,
+        "modeled_fields": _modeled_used,
+        "iso_default_matched": _iso_default_matched,
+        "local_infra_rows": bool(any(_loc.values())),
+        "reason": _tier_reason,
+        "tier_rule": ("full = 3/3 live-capable adapters returned data; "
+                      "partial = 1-2; low = 0, or the ISO fell through to the "
+                      "WECC default"),
+        "always_modeled_inputs": [
+            "curtailment_pct", "queue_approval_rate_pct", "btm_headroom_mw",
+            "stranded_capacity_mw", "demand_growth_yoy_pct",
+        ],
+        "never_populated_inputs": ["emergency_count_30d"],
+        "scope_note": ("'full' means every adapter that CAN be live was live — "
+                       "NOT that every score input is measured. The fields in "
+                       "always_modeled_inputs have no live source; "
+                       "emergency_count_30d is never assigned and the scorer "
+                       "reads it as 0, i.e. 20% of constraint_score is a "
+                       "permanent zero for every market at every tier."),
+        "adapter_null_semantics": ("an adapter reads absent when it returned no "
+                                   "data; the queue and generator adapters "
+                                   "cannot distinguish an empty result from a "
+                                   "failed query, so silent_adapters is NOT an "
+                                   "error count"),
+    }
+    # First-class key so the writer can persist the tier without re-parsing the
+    # JSONB. Non-numeric → compute_constraint_score / compute_excess_power_score
+    # (which .get() only the documented numeric keys) cannot see it, so every
+    # score and verdict stays byte-identical.
+    metrics["signal_tier"] = _tier
     metrics["data_basis"] = data_basis
 
     return metrics
@@ -2393,6 +2513,10 @@ def recompute_all_scores(source: str = "manual",
                 # the existing score/verdict columns and their values are
                 # untouched. json.dumps(None) → "null" if somehow absent.
                 _data_basis_json = json.dumps(metrics.get("data_basis"))
+                # r-ws3-signal-tier (2026-07-28): persist the signal tier the
+                # scorer just derived. None when it somehow produced none —
+                # readers surface NULL as unknown, never as 'low'.
+                _signal_tier = metrics.get("signal_tier") or None
                 # r-iso-taxonomy (2026-07-28): classify the label we're about
                 # to write. Derived, never stored independently, so iso and
                 # iso_type cannot drift apart.
@@ -2407,7 +2531,7 @@ def recompute_all_scores(source: str = "manual",
                     metrics.get("stranded_capacity_mw"),
                     metrics.get("emergency_count_30d") or 0,
                     json.dumps(risks), json.dumps(opps), verdict,
-                    _data_basis_json,
+                    _data_basis_json, _signal_tier,
                 )
                 # lat/lon via COALESCE: _load_markets_dynamic emits (slug, name,
                 # state, iso, None, None) for the ~200 dynamic markets, so a plain
@@ -2424,7 +2548,7 @@ def recompute_all_scores(source: str = "manual",
                         gen_additions_12mo_mw=%s, curtailment_pct=%s, stranded_capacity_mw=%s,
                         emergency_count_30d=%s,
                         top_risks_json=%s, top_opportunities_json=%s, verdict=%s,
-                        data_basis_json=%s,
+                        data_basis_json=%s, signal_tier=%s,
                         computed_at=NOW()
                     WHERE market_slug=%s
                 """, _vals + (slug,))
@@ -2447,10 +2571,10 @@ def recompute_all_scores(source: str = "manual",
                             gen_additions_12mo_mw, curtailment_pct, stranded_capacity_mw,
                             emergency_count_30d,
                             top_risks_json, top_opportunities_json, verdict,
-                            data_basis_json,
+                            data_basis_json, signal_tier,
                             market_slug, published, computed_at
                         )
-                        VALUES (%s,%s,%s,%s, %s,%s, %s,%s,%s, %s,%s,%s, %s,%s,%s, %s, %s,%s,%s, %s, %s, TRUE, NOW())
+                        VALUES (%s,%s,%s,%s, %s,%s, %s,%s,%s, %s,%s,%s, %s,%s,%s, %s, %s,%s,%s, %s,%s, %s, TRUE, NOW())
                     """, _vals + (slug,))
                 c.commit()
             scored += 1
@@ -2674,6 +2798,7 @@ def _fetch_scores_rows() -> list:
                 verdict,
                 top_risks_json, top_opportunities_json,
                 data_basis_json,
+                signal_tier,
                 computed_at
             FROM market_power_scores WHERE published = true ORDER BY market_slug, computed_at DESC
         """)
@@ -2696,6 +2821,17 @@ def _fetch_scores_rows() -> list:
             r["data_basis"] = "modeled_estimate"
             r["data_basis_source"] = ("2024 ENTSO-E/AEMO/EirGrid grid reports "
                                       "+ published market conditions")
+        # r-ws3-signal-tier (2026-07-28): per-market signal quality, read-only.
+        # NULL = the row's writer recorded none (rows predating the column, and
+        # every row from the lite_recompute upsert). Emitted as null + an
+        # explicit basis string, NEVER coerced to "low" — that would publish a
+        # measurement we did not take.
+        _st = r.get("signal_tier") or None
+        r["signal_tier"] = _st
+        r["signal_tier_basis"] = (
+            "live_adapter_count_at_score_time" if _st else
+            "unrecorded: row predates signal tiering or was written by the "
+            "lite recompute path — tier unknown, not low")
         # r41-dcpi-composite (2026-05-25): include a sortable single-number
         # composite_score so agents can rank markets without recombining
         # the three components themselves. See derive_composite_score().
@@ -2890,7 +3026,28 @@ def api_scores():
         rows = _masked
         _gated = True
 
+    # r-ws3-signal-tier (2026-07-28): top-level as-of + the signal-tier mix.
+    # BOTH are computed over the rows ACTUALLY RETURNED — anon callers are
+    # capped at _PREVIEW_CAP and every filter above has already been applied —
+    # so the key says `_returned`. Reading it as a catalog-wide figure would be
+    # wrong; the catalog total is _total_available. computed_at is already
+    # isoformat by here, so max() is a lexicographic max over ISO-8601 strings.
+    _as_of = max((r.get("computed_at") or "" for r in rows), default="") or None
+    _tier_counts = {"full": 0, "partial": 0, "low": 0, "unrecorded": 0}
+    for _r in rows:
+        _k = _r.get("signal_tier") or "unrecorded"
+        _tier_counts[_k] = _tier_counts.get(_k, 0) + 1
     payload = {"scores": rows, "count": len(rows), "sort": sort_by,
+               "as_of": _as_of,
+               "signal_tier_counts_returned": _tier_counts,
+               "signal_tier_note": (
+                   "Per-market signal quality. full = all 3 live-capable "
+                   "adapters (interconnect_queue, planned_generators, "
+                   "grid_telemetry) returned data for that market; partial = "
+                   "1-2; low = 0, or the market's ISO fell through to the WECC "
+                   "default; unrecorded = the row's writer recorded no tier "
+                   "(unknown, NOT low). 'full' does not mean every score input "
+                   "is measured — see each row's data_basis."),
                "filters": {"verdict": verdict_filter, "iso": iso_filter,
                            "state": state_filter}}
     # ALWAYS surface _total_available for paid/admin callers so the QA
@@ -3043,6 +3200,24 @@ def api_score_market(slug):
         row["data_basis"] = "modeled_estimate"
         row["data_basis_source"] = ("2024 ENTSO-E/AEMO/EirGrid grid reports "
                                     "+ published market conditions")
+    # r-ws3-signal-tier (2026-07-28): SELECT * already returned the column.
+    # NULL = the writer of this row recorded no tier (rows predating the column
+    # + every lite_recompute row) → emit null plus the reason, never a
+    # fabricated "low". These keys are ADDITIVE to the contract-locked v1
+    # envelope, and MCP get_market_dcpi_rank passes this body through verbatim,
+    # so that tool inherits the tier with no change of its own.
+    _st = row.get("signal_tier") or None
+    row["signal_tier"] = _st
+    row["signal_tier_basis"] = (
+        "live_adapter_count_at_score_time" if _st else
+        "unrecorded: row predates signal tiering or was written by the lite "
+        "recompute path — tier unknown, not low")
+    row["signal_tier_note"] = (
+        "full = all 3 live-capable adapters (interconnect_queue, "
+        "planned_generators, grid_telemetry) returned data; partial = 1-2; "
+        "low = 0, or this market's ISO fell through to the WECC default. "
+        "'full' does NOT mean every score input is measured — data_basis "
+        "carries the per-field live/modeled split and the adapter counts.")
     # r41-dcpi-composite (2026-05-25): include sortable composite_score
     # alongside the existing component scores for consistency with /scores.
     # r41.1: verdict-aware so LOW_SIGNAL markets don't outrank trusted ones.
@@ -3111,7 +3286,10 @@ def api_score_market(slug):
         attach_provenance(
             row,
             source="DC Hub Power Index (DCPI) — market_power_scores",
-            method="DCPI daily scoring (see data_basis/data_basis_source for the score's input basis)",
+            method=("DCPI daily scoring (see data_basis/data_basis_source for "
+                    "the score's input basis); signal_tier="
+                    + str(row.get("signal_tier") or "unrecorded")
+                    + " (see signal_tier_note)"),
             as_of=row.get("computed_at"),
             cite_template=DCPI_CITE_TEMPLATE,
             # v1: DCPI scores are DC Hub's own model output (derived, not a
@@ -3405,6 +3583,7 @@ def api_dcpi_recommend():
                 queue_capacity_mw, queue_wait_months, reserve_margin_pct,
                 stranded_capacity_mw, curtailment_pct,
                 verdict, top_risks_json, top_opportunities_json,
+                signal_tier,
                 computed_at
               FROM market_power_scores
              WHERE published = true
@@ -3543,6 +3722,17 @@ def api_dcpi_recommend():
             "water_stress_state":    water,
             "reason":                reason,
             "risk_flags":            risk_flags,
+            # r-ws3-signal-tier (2026-07-28): this endpoint hand-builds its
+            # result dicts, so it inherits nothing from the row automatically.
+            # NULL tier stays NULL (unknown) with the reason attached.
+            "signal_tier":           r.get("signal_tier") or None,
+            "signal_tier_basis":     (
+                "live_adapter_count_at_score_time" if r.get("signal_tier") else
+                "unrecorded: row predates signal tiering or was written by the "
+                "lite recompute path — tier unknown, not low"),
+            "as_of":                 (r["computed_at"].isoformat()
+                                      if hasattr(r.get("computed_at"), "isoformat")
+                                      else r.get("computed_at")),
         })
 
     # ── Step 6: rank by composite, then take top_n ──
@@ -3567,6 +3757,14 @@ def api_dcpi_recommend():
         passed_filters=len(candidates),
         generated_at=datetime.datetime.utcnow().isoformat() + "Z",
         methodology="composite = excess_power_score − 0.5 × constraint_score + urgency_bonus; filters: verdict≠AVOID (default), queue ≥ capacity, time_to_power ≤ deadline, water ≤ max, retail ≤ max",
+        signal_tier_note=("Each ranked market carries signal_tier: full = all 3 "
+                          "live-capable adapters (interconnect_queue, "
+                          "planned_generators, grid_telemetry) returned data for "
+                          "it; partial = 1-2; low = 0, or its ISO fell through to "
+                          "the WECC default; null = the row's writer recorded no "
+                          "tier (unknown, NOT low). The composite above is "
+                          "computed identically at every tier — the tier tells "
+                          "you how much of it rests on measured inputs."),
     ), 200
 
 
@@ -3666,7 +3864,7 @@ def api_movers():
             WITH latest AS (
                 SELECT DISTINCT ON (market_slug)
                     market_slug, market_name, excess_power_score AS now_excess,
-                    constraint_score AS now_constraint, computed_at
+                    constraint_score AS now_constraint, signal_tier, computed_at
                 FROM market_power_scores WHERE published = true ORDER BY market_slug, computed_at DESC
             ),
             week_ago AS (
@@ -3678,6 +3876,7 @@ def api_movers():
                 ORDER BY market_slug, snapshot_date DESC
             )
             SELECT l.market_slug, l.market_name, l.now_excess, l.now_constraint,
+                   l.signal_tier, l.computed_at,
                    w.prev_excess, w.prev_constraint,
                    (l.now_excess - COALESCE(w.prev_excess, l.now_excess)) AS excess_delta_7d,
                    (l.now_constraint - COALESCE(w.prev_constraint, l.now_constraint)) AS constraint_delta_7d
@@ -3686,6 +3885,19 @@ def api_movers():
             LIMIT 10
         """)
         rows = cur.fetchall()
+    # r-ws3-signal-tier (2026-07-28): stamp the as-of explicitly (jsonify would
+    # otherwise emit a raw datetime as an RFC-822 string, inconsistent with the
+    # ISO-8601 computed_at every other DCPI surface returns) and carry the tier
+    # with its basis. NULL tier stays NULL — never rendered as "low".
+    for _r in rows:
+        if hasattr(_r.get("computed_at"), "isoformat"):
+            _r["computed_at"] = _r["computed_at"].isoformat()
+        _st = _r.get("signal_tier") or None
+        _r["signal_tier"] = _st
+        _r["signal_tier_basis"] = (
+            "live_adapter_count_at_score_time" if _st else
+            "unrecorded: row predates signal tiering or was written by the "
+            "lite recompute path — tier unknown, not low")
     # r-gate-everywhere (2026-06-27): null the numeric now/prev/delta scores for
     # non-paid (kept the market list + move-ranking order as the free teaser).
     _rows, _g = _dcpi_mask_rows(rows, extra=True)
@@ -3753,7 +3965,7 @@ def api_leaderboard():
             market_slug, market_name, iso, state,
             excess_power_score, constraint_score, quality_score,
             time_to_power_months,
-            verdict, computed_at,
+            verdict, signal_tier, computed_at,
             ('https://dchub.cloud/dcpi/' || market_slug) AS url
         FROM market_power_scores
         WHERE published = true {where_verdict}
@@ -3781,6 +3993,14 @@ def api_leaderboard():
     for r in rows:
         if r.get("computed_at"):
             r["computed_at"] = r["computed_at"].isoformat()
+        # r-ws3-signal-tier (2026-07-28): NULL tier stays NULL (unknown), with
+        # the reason spelled out — never silently rendered as "low".
+        _st = r.get("signal_tier") or None
+        r["signal_tier"] = _st
+        r["signal_tier_basis"] = (
+            "live_adapter_count_at_score_time" if _st else
+            "unrecorded: row predates signal tiering or was written by the "
+            "lite recompute path — tier unknown, not low")
         # Phase 297 (Phase P): add a deterministic reasoning chain so AI
         # agents and journalists can quote the WHY, not just the score.
         # Uses score thresholds from derive_verdict() — keeps reasoning
@@ -3825,7 +4045,8 @@ def api_leaderboard():
         buf = io.StringIO()
         cols = ["rank", "market_slug", "market_name", "iso", "state",
                 "verdict", "excess_power_score", "constraint_score",
-                "quality_score", "computed_at", "url", "reasoning"]
+                "quality_score", "signal_tier", "computed_at", "url",
+                "reasoning"]
         w = csv.DictWriter(buf, fieldnames=cols)
         w.writeheader()
         for i, r in enumerate(rows, 1):
@@ -3845,6 +4066,20 @@ def api_leaderboard():
             {"rank": i, **r} for i, r in enumerate(rows, 1)
         ],
         "methodology_url": "https://dchub.cloud/dcpi#methodology",
+        # r-ws3-signal-tier (2026-07-28): the mix over the RETURNED rows (this
+        # list is capped by ?limit and deduped), not the catalog.
+        "signal_tier_counts_returned": {
+            "full": sum(1 for r in rows if r.get("signal_tier") == "full"),
+            "partial": sum(1 for r in rows if r.get("signal_tier") == "partial"),
+            "low": sum(1 for r in rows if r.get("signal_tier") == "low"),
+            "unrecorded": sum(1 for r in rows if not r.get("signal_tier")),
+        },
+        "signal_tier_note": (
+            "full = all 3 live-capable adapters (interconnect_queue, "
+            "planned_generators, grid_telemetry) returned data for that market; "
+            "partial = 1-2; low = 0, or the market's ISO fell through to the "
+            "WECC default; unrecorded = the row's writer recorded no tier "
+            "(unknown, NOT low)."),
         "citation": "DC Hub Data Center Power Index. https://dchub.cloud/dcpi",
         **(_dcpi_gated_meta() if not _lb_paid else {}),
     }
@@ -4055,7 +4290,7 @@ def _aggregate_iso_stats(iso_code: str | None = None):
                 reserve_margin_pct, gen_additions_12mo_mw,
                 curtailment_pct, stranded_capacity_mw,
                 emergency_count_30d, avg_kwh_cents,
-                verdict, computed_at
+                verdict, signal_tier, computed_at
             FROM market_power_scores
             WHERE published = true {where_iso}
             ORDER BY market_slug, computed_at DESC
@@ -4078,6 +4313,17 @@ def _aggregate_iso_stats(iso_code: str | None = None):
             SUM(CASE WHEN verdict = 'CAUTION'    THEN 1 ELSE 0 END) AS caution_count,
             SUM(CASE WHEN verdict = 'AVOID'      THEN 1 ELSE 0 END) AS avoid_count,
             SUM(CASE WHEN verdict = 'LOW_SIGNAL' THEN 1 ELSE 0 END) AS low_signal_count,
+            -- r-ws3-signal-tier (2026-07-28): SIGNAL-QUALITY counts. These are
+            -- NOT interchangeable with low_signal_count above, which counts the
+            -- LOW_SIGNAL *verdict* and is a permanent 0 in production (that
+            -- verdict is written by dchub_self_heal's strict matrix only when a
+            -- score is exactly 0, which the iso_defaults guarantee never
+            -- happens — measured 0/310 on 2026-07-28). Both readings are
+            -- exposed so no consumer can mistake one for the other.
+            SUM(CASE WHEN signal_tier = 'full'    THEN 1 ELSE 0 END) AS signal_tier_full_count,
+            SUM(CASE WHEN signal_tier = 'partial' THEN 1 ELSE 0 END) AS signal_tier_partial_count,
+            SUM(CASE WHEN signal_tier = 'low'     THEN 1 ELSE 0 END) AS signal_tier_low_count,
+            SUM(CASE WHEN signal_tier IS NULL     THEN 1 ELSE 0 END) AS signal_tier_unrecorded_count,
             MAX(computed_at) AS latest_computed_at
         FROM latest
         GROUP BY iso
@@ -4096,7 +4342,7 @@ def _iso_top_markets(iso_code: str, verdict_filter: str, limit: int = 5):
         SELECT DISTINCT ON (market_slug)
             market_slug, market_name, state,
             excess_power_score, constraint_score, quality_score, verdict,
-            queue_wait_months, avg_kwh_cents,
+            signal_tier, queue_wait_months, avg_kwh_cents,
             ('https://dchub.cloud/dcpi/' || market_slug) AS url
         FROM market_power_scores
         WHERE published = true
@@ -4169,6 +4415,19 @@ def api_iso_deep_dive(iso_code):
         "stats": iso_stats,
         "top_build_markets": top_build,
         "top_avoid_markets": top_avoid,
+        # r-ws3-signal-tier (2026-07-28): name what the two count families mean,
+        # because stats carries BOTH low_signal_count (the LOW_SIGNAL verdict,
+        # a permanent 0 in production) and signal_tier_*_count (the real
+        # per-market signal quality). They are not the same measurement.
+        "signal_tier_note": (
+            "stats.signal_tier_full_count / _partial_count / _low_count / "
+            "_unrecorded_count are the per-market SIGNAL QUALITY mix: full = "
+            "all 3 live-capable adapters (interconnect_queue, "
+            "planned_generators, grid_telemetry) returned data; partial = 1-2; "
+            "low = 0, or the market's ISO fell through to the WECC default; "
+            "unrecorded = the row's writer recorded no tier (unknown, NOT low). "
+            "stats.low_signal_count is a DIFFERENT measurement — the count of "
+            "the LOW_SIGNAL verdict, which is 0 for every ISO in production."),
         "methodology_url": "https://dchub.cloud/dcpi#methodology",
         "citation": (f"DC Hub DCPI · {iso_code} ISO intelligence. "
                       f"https://dchub.cloud/dcpi/iso/{iso_code.lower()}"),
@@ -4221,6 +4480,18 @@ def api_iso_comparison():
                 [r for r in rows if r.get("avg_curtailment_pct") is not None],
                 key=lambda r: -(r["avg_curtailment_pct"]))[:5],
         },
+        # r-ws3-signal-tier (2026-07-28): same two-readings warning as
+        # /api/v1/dcpi/iso/<iso>. The *_count keys survive the non-paid mask
+        # below (it skips every key ending in _count), so the signal-quality mix
+        # stays visible to free callers exactly like the verdict counts do.
+        "signal_tier_note": (
+            "Each ISO row carries signal_tier_full_count / _partial_count / "
+            "_low_count / _unrecorded_count — the per-market SIGNAL QUALITY "
+            "mix (full = all 3 live-capable adapters returned data; partial = "
+            "1-2; low = 0 or the ISO fell through to the WECC default; "
+            "unrecorded = no tier recorded, unknown NOT low). low_signal_count "
+            "on the same row is a DIFFERENT measurement — the LOW_SIGNAL "
+            "verdict count, which is 0 for every ISO in production."),
         "methodology_url": "https://dchub.cloud/dcpi#methodology",
         "citation": "DC Hub DCPI · ISO comparison. https://dchub.cloud/dcpi/iso-comparison",
     }
@@ -5665,6 +5936,9 @@ h1 {
   <div class="crumbs"><a href="/dcpi">DCPI</a> / <a href="/markets">Markets</a> / {{ s.market_name }}</div>
   <h1>{{ s.market_name }}</h1>
   <p class="subtitle">{{ s.iso }} · {{ s.state }} · UPDATED {{ s.computed_at[:10] }}</p>
+  <p class="signal-tier" style="margin:.2rem 0 .3rem;font-size:.78rem;color:#9ca3af">SIGNAL QUALITY:
+    <strong style="color:{% if s.signal_tier == 'full' %}#22c55e{% elif s.signal_tier == 'partial' %}#f59e0b{% elif s.signal_tier == 'low' %}#ef4444{% else %}#6b7280{% endif %}">{{ (s.signal_tier or 'unrecorded')|upper }}</strong>
+    — {{ s.signal_tier_basis }}</p>
   <p class="dc-maplink" style="margin:.4rem 0 .2rem"><a href="/map" style="color:#3b82f6;font-weight:600;text-decoration:none">📍 See {{ s.market_name }} data centers on the live facility map →</a></p>
 
   <div class="verdict-banner {{ s.verdict }}">
@@ -6245,6 +6519,18 @@ def public_market_page(slug):
             pass  # best-effort — fall back to whatever the row carried
 
     if s.get("computed_at"): s["computed_at"] = s["computed_at"].isoformat()
+    # r-ws3-signal-tier (2026-07-28): render the score's signal quality next to
+    # the as-of date. NULL tier prints "UNRECORDED", never "LOW" — the page must
+    # not state a measurement the row does not carry.
+    s["signal_tier"] = s.get("signal_tier") or None
+    s["signal_tier_basis"] = (
+        "3 of 3 live grid feeds fed this score" if s.get("signal_tier") == "full"
+        else "1-2 of 3 live grid feeds fed this score"
+        if s.get("signal_tier") == "partial"
+        else "no live grid feed fed this score — every input is a modeled "
+             "regional estimate" if s.get("signal_tier") == "low"
+        else "this row was scored before signal tiering was recorded — quality "
+             "unknown, not assumed low")
     risks = s.get("top_risks_json") or []
     opps = s.get("top_opportunities_json") or []
 

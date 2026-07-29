@@ -1135,6 +1135,345 @@ def parser_versions():
     })
 
 
+# ══════════════════════════════════════════════════════════════════════
+# WS6 queue-delta capture (2026-07-28) — ADD / ADVANCE / WITHDRAW
+# ══════════════════════════════════════════════════════════════════════
+# The per-project loader is a pure UPSERT with NO delete (UPSERT_SQL,
+# load_interconnect_queue_live.py:602-619), and 5 of the 7 parsers write a
+# hardcoded literal queue_status='active' (:202,:233,:287,:326,:492,:566)
+# after filtering terminal projects out AT PARSE TIME (:273,:311,:359-369,
+# :413-414,:545). So a project that leaves an ISO queue does not get a
+# withdrawal status and does not get removed — its row simply stops being
+# touched and keeps reading 'active' forever, and every consumer that sums
+# capacity_mw counts it as live capacity. _DEAD_STATUS_RE
+# (routes/interconnection_queues.py:513) cannot help: it can only match a
+# status the loader never writes.
+#
+# This block is ADDITIVE. It writes ONLY the two new tables below, never
+# interconnect_queue, and never raises — the ingest's return is unchanged
+# whether capture succeeds, fails, or is skipped. The loader is untouched
+# (it is also imported by the GH runner in --emit-json mode with neither
+# psycopg2 nor DATABASE_URL, so DB work cannot live there).
+#
+# The signal already existed and nothing read it: `loaded_at` is bumped in
+# DO UPDATE only for rows present in that day's feed, i.e. it is already a
+# per-row last-seen watermark. It is uninterpretable ALONE — one parse
+# failure freezes an entire ISO and reads as a mass withdrawal — so the run
+# ledger is not garnish, it is what makes the watermark mean anything.
+_QD_FLOOR = 0.6          # short-feed floor; see _qd_capture
+_QD_SEEN_SLACK_S = 60    # clock slack when matching a row to the last trusted feed
+_QD_SCHEMA_READY = False
+
+# Bootstrapped at the call site (routes/facilities_delta.py:39-68 idiom):
+# db_utils DDL is known to be SKIPPED in this codebase and the LIVE schema
+# routinely differs from repo DDL, so never assume a migration ran. Separate
+# tables on purpose — run_queue_etl.py:188 DROPs interconnect_queue and
+# 04_interconnect_queue.py:179 DELETEs from it; neither may take history.
+_QD_SCHEMA = """
+CREATE TABLE IF NOT EXISTS interconnect_queue_runs (
+    run_id               BIGSERIAL PRIMARY KEY,
+    iso                  TEXT NOT NULL,
+    run_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    mode                 TEXT,
+    rows_parsed          INT,
+    rows_in_table_before INT,
+    parse_ok             BOOLEAN,
+    stale_not_in_feed    INT,
+    feed_seen_at         TIMESTAMPTZ,
+    events_written       INT,
+    note                 TEXT
+);
+ALTER TABLE interconnect_queue_runs
+    ADD COLUMN IF NOT EXISTS mode              TEXT,
+    ADD COLUMN IF NOT EXISTS stale_not_in_feed INT,
+    ADD COLUMN IF NOT EXISTS feed_seen_at      TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS events_written    INT,
+    ADD COLUMN IF NOT EXISTS note              TEXT;
+CREATE INDEX IF NOT EXISTS ix_iqr_iso_run_at
+    ON interconnect_queue_runs (iso, run_at DESC);
+
+CREATE TABLE IF NOT EXISTS interconnect_queue_events (
+    event_id         BIGSERIAL PRIMARY KEY,
+    run_id           BIGINT,
+    iso              TEXT NOT NULL,
+    queue_id         TEXT NOT NULL,
+    event_type       TEXT NOT NULL,
+    project_name     TEXT,
+    prev_capacity_mw DOUBLE PRECISION,
+    new_capacity_mw  DOUBLE PRECISION,
+    prev_status      TEXT,
+    new_status       TEXT,
+    prev_seen_at     TIMESTAMPTZ,
+    detected_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+ALTER TABLE interconnect_queue_events
+    ADD COLUMN IF NOT EXISTS project_name TEXT,
+    ADD COLUMN IF NOT EXISTS prev_seen_at TIMESTAMPTZ;
+CREATE UNIQUE INDEX IF NOT EXISTS interconnect_queue_events_run_key_uidx
+    ON interconnect_queue_events (run_id, iso, queue_id, event_type);
+CREATE INDEX IF NOT EXISTS ix_iqe_iso_detected
+    ON interconnect_queue_events (iso, detected_at DESC);
+CREATE INDEX IF NOT EXISTS ix_iqe_iso_qid
+    ON interconnect_queue_events (iso, queue_id);
+"""
+
+
+def _qd_ensure_schema(conn):
+    """Bootstrap the capture tables. Fail-soft: a DDL failure disables capture,
+    never the ingest. MUST roll back — this shares the psycopg2 connection the
+    upsert is about to use and an aborted transaction fails every later
+    statement, including the post-run counts."""
+    global _QD_SCHEMA_READY
+    if _QD_SCHEMA_READY:
+        return True
+    try:
+        with conn.cursor() as cur:
+            cur.execute(_QD_SCHEMA)
+        conn.commit()
+        _QD_SCHEMA_READY = True
+        return True
+    except Exception:
+        try: conn.rollback()
+        except Exception: pass
+        return False
+
+
+def _qd_mw(v):
+    """capacity_mw -> float or None. psycopg2 returns Decimal for a NUMERIC
+    column and the parsers return float; compare in one space."""
+    try:
+        return None if v is None else float(v)
+    except Exception:
+        return None
+
+
+def _qd_status(v):
+    """queue_status -> comparable label, or None when empty."""
+    if v is None:
+        return None
+    s = str(v).strip().lower()
+    return s or None
+
+
+def _qd_ge(a, b, slack_s=0):
+    """a >= b - slack, or None when the comparison is impossible (a legacy naive
+    `loaded_at` against an aware TIMESTAMPTZ raises TypeError). Callers read
+    `is not True`, so an impossible comparison always fails CLOSED — toward NOT
+    publishing a withdrawal."""
+    if a is None or b is None:
+        return None
+    try:
+        return a >= (b - datetime.timedelta(seconds=slack_s))
+    except Exception:
+        return None
+
+
+def _qd_diff(roster, feed, prev_feed_seen_at, last_gone, seed, emit_disappear):
+    """PURE diff — no DB, no I/O, so tests can ast-extract it (tests never
+    import main, and this module imports flask at module scope).
+
+      roster            {queue_id: (capacity_mw, queue_status, loaded_at,
+                        project_name)} read BEFORE the upsert
+      feed              {queue_id: parsed row tuple} from this run's parse
+      prev_feed_seen_at MAX(loaded_at) recorded by the last parse_ok run for
+                        this ISO — the last moment a row is KNOWN to have been
+                        in the feed
+      last_gone         {queue_id: latest detected_at of a prior disappearance}
+      seed              True on the first ledger run for this ISO
+      emit_disappear    False when the short-feed floor did not clear
+
+    Returns [(queue_id, event_type, project_name, prev_mw, new_mw, prev_status,
+              new_status, prev_seen_at), ...].
+
+    Row shape is load_interconnect_queue_live._row (:117-134):
+      0 queue_id 1 project_name 2 iso 3 state 4 county 5 fuel_type
+      6 capacity_mw 7 queue_status 8 queue_date 9 poi_name 10 lat 11 lng
+      12 source
+    """
+    ev = []
+    if seed:
+        # First run under the ledger. interconnect_queue is ALREADY populated
+        # (the loader has been upserting since 2026-06), so the feed is a
+        # BASELINE, not ~5,300 additions, and rows in the table but absent from
+        # the feed are an accumulated backlog of UNKNOWN AGE, not withdrawals
+        # detected today. Emit the baseline; the backlog is counted on the run
+        # row as stale_not_in_feed and never published as an event.
+        for q, r in feed.items():
+            ev.append((q, "seed", r[1] if len(r) > 1 else None,
+                       None, _qd_mw(r[6]) if len(r) > 6 else None,
+                       None, _qd_status(r[7]) if len(r) > 7 else None, None))
+        return ev
+
+    for q, r in feed.items():
+        new_mw = _qd_mw(r[6]) if len(r) > 6 else None
+        new_st = _qd_status(r[7]) if len(r) > 7 else None
+        pname = r[1] if len(r) > 1 else None
+        if q not in roster:
+            ev.append((q, "appeared_in_feed", pname, None, new_mw, None, new_st, None))
+            continue
+        prev_mw = _qd_mw(roster[q][0])
+        prev_st = _qd_status(roster[q][1])
+        if ((prev_mw is None) != (new_mw is None)
+                or (prev_mw is not None and new_mw is not None
+                    and abs(prev_mw - new_mw) > 0.01)):
+            ev.append((q, "capacity_changed", pname, prev_mw, new_mw,
+                       prev_st, new_st, None))
+        if prev_st != new_st:
+            ev.append((q, "status_changed", pname, prev_mw, new_mw,
+                       prev_st, new_st, None))
+
+    if not emit_disappear:
+        return ev
+
+    for q, rv in roster.items():
+        if q in feed:
+            continue
+        seen = rv[2] if len(rv) > 2 else None
+        # Gate 1 — was this row in the LAST TRUSTED feed? A row whose watermark
+        # predates the last parse_ok run is pre-existing backlog of unknown age,
+        # NOT something that disappeared today.
+        if _qd_ge(seen, prev_feed_seen_at, _QD_SEEN_SLACK_S) is not True:
+            continue
+        # Gate 2 — already reported gone and not re-seen since? Nothing ever
+        # deletes the row, so without this the same project re-emits every day.
+        gone_at = (last_gone or {}).get(q)
+        if gone_at is not None and _qd_ge(seen, gone_at) is not True:
+            continue
+        ev.append((q, "disappeared_from_feed", rv[3] if len(rv) > 3 else None,
+                   _qd_mw(rv[0]), None, _qd_status(rv[1]), None, seen))
+    return ev
+
+
+def _qd_before(conn, iso):
+    """Pre-upsert roster + ledger state for ONE ISO. Returns None on ANY failure
+    (capture is then skipped for that ISO and the ingest is unaffected)."""
+    if not _qd_ensure_schema(conn):
+        return None
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT queue_id, capacity_mw, queue_status, loaded_at, project_name "
+                "FROM interconnect_queue WHERE iso = %s", (iso,))
+            roster = {r[0]: (r[1], r[2], r[3], r[4]) for r in cur.fetchall() if r[0]}
+            cur.execute("SELECT COUNT(*) FROM interconnect_queue_runs WHERE iso = %s",
+                        (iso,))
+            prior_runs = int((cur.fetchone() or [0])[0] or 0)
+            cur.execute(
+                "SELECT feed_seen_at FROM interconnect_queue_runs "
+                "WHERE iso = %s AND parse_ok IS TRUE AND feed_seen_at IS NOT NULL "
+                "ORDER BY run_at DESC LIMIT 1", (iso,))
+            row = cur.fetchone()
+            prev_feed_seen_at = row[0] if row else None
+            cur.execute(
+                "SELECT queue_id, MAX(detected_at) FROM interconnect_queue_events "
+                "WHERE iso = %s AND event_type = 'disappeared_from_feed' "
+                "GROUP BY queue_id", (iso,))
+            last_gone = {r[0]: r[1] for r in cur.fetchall()}
+        conn.commit()
+        return {"roster": roster, "prior_runs": prior_runs,
+                "prev_feed_seen_at": prev_feed_seen_at, "last_gone": last_gone}
+    except Exception:
+        try: conn.rollback()
+        except Exception: pass
+        return None
+
+
+def _qd_capture(conn, iso, rows, before, mode="trigger"):
+    """Post-upsert transition capture for ONE ISO. Commits once per ISO
+    (matching the loader's commit-per-source shape) and rolls back on ANY
+    failure. Returns a small summary for the response, or None when skipped."""
+    if not before:
+        return None
+    try:
+        from psycopg2.extras import execute_values   # lazy, as the loader does
+        feed = {}
+        for r in (rows or []):
+            try:
+                if r and r[0]:
+                    feed[r[0]] = r
+            except Exception:
+                continue
+        roster = before.get("roster") or {}
+        rows_parsed, rows_before = len(feed), len(roster)
+        seed = not before.get("prior_runs")
+        # ★ SHORT-FEED FLOOR. A PARTIAL parse is far more dangerous than a
+        # failed one: `if rows: lq.upsert(...)` correctly skips a ZERO-row
+        # parse, but a header-drift parse returning 40 of 2,000 PJM rows
+        # upserts happily, and naive disappearance inference would then publish
+        # 1,960 fabricated withdrawals. Adds and changes are safe from a short
+        # feed; ONLY the disappearance branch is gated.
+        parse_ok = bool(rows_parsed) and (rows_before == 0
+                                          or rows_parsed >= _QD_FLOOR * rows_before)
+        note = None if parse_ok else ("empty_parse" if not rows_parsed else "short_feed")
+        ev = _qd_diff(roster, feed, before.get("prev_feed_seen_at"),
+                      before.get("last_gone"),
+                      seed and parse_ok, parse_ok and not seed)
+        stale = sum(1 for q in roster if q not in feed)
+        with conn.cursor() as cur:
+            feed_seen_at = None
+            if rows_parsed:
+                cur.execute("SELECT MAX(loaded_at) FROM interconnect_queue "
+                            "WHERE iso = %s", (iso,))
+                feed_seen_at = (cur.fetchone() or [None])[0]
+            cur.execute(
+                "INSERT INTO interconnect_queue_runs "
+                "(iso, mode, rows_parsed, rows_in_table_before, parse_ok, "
+                " stale_not_in_feed, feed_seen_at, events_written, note) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING run_id",
+                (iso, mode, rows_parsed, rows_before, parse_ok, stale,
+                 feed_seen_at, len(ev), note))
+            run_id = cur.fetchone()[0]
+            if ev:
+                execute_values(cur,
+                               "INSERT INTO interconnect_queue_events "
+                               "(run_id, iso, queue_id, event_type, project_name, "
+                               " prev_capacity_mw, new_capacity_mw, prev_status, "
+                               " new_status, prev_seen_at) VALUES %s "
+                               "ON CONFLICT DO NOTHING",
+                               [(run_id, iso) + e for e in ev],
+                               template="(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                               page_size=500)
+        conn.commit()
+        by_type = {}
+        for e in ev:
+            by_type[e[1]] = by_type.get(e[1], 0) + 1
+        return {"run_id": int(run_id), "parse_ok": parse_ok, "mode": mode,
+                "rows_in_table_before": rows_before, "not_in_feed": stale,
+                "events_written": len(ev), "events": by_type, "note": note}
+    except Exception:
+        try: conn.rollback()
+        except Exception: pass
+        return None
+
+
+def _qd_fail(conn, iso, note, mode="trigger"):
+    """Record an ATTEMPTED-but-failed run. Without this row the read surface sees
+    only the days that worked and reports a clean disappearance count for a
+    window that has a hole in it — a feed outage read as a market fact. Rolls
+    back FIRST: this can be reached with the transaction already aborted by
+    whatever failed. Never raises."""
+    try:
+        conn.rollback()
+    except Exception:
+        pass
+    if not _qd_ensure_schema(conn):
+        return None
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO interconnect_queue_runs "
+                "(iso, mode, rows_parsed, parse_ok, events_written, note) "
+                "VALUES (%s,%s,0,FALSE,0,%s) RETURNING run_id",
+                (iso, mode, str(note or "parse_failed")[:200]))
+            run_id = cur.fetchone()[0]
+        conn.commit()
+        return int(run_id)
+    except Exception:
+        try: conn.rollback()
+        except Exception: pass
+        return None
+
+
 # ── r-queue-projects-cron (2026-06-20): per-PROJECT interconnect_queue refresh ──
 # Companion to /ingest (which writes AGGREGATE GW totals to iso_queue_snapshots).
 # This refreshes the per-PROJECT `interconnect_queue` table (5,300+ NAMED ISO queue
@@ -1174,9 +1513,24 @@ def ingest_projects(iso=None):
             name = (body.get("iso") or iso or "POSTED").upper()
             try:
                 rows = [tuple(r) for r in posted if r and r[0]]
+                # WS6: roster snapshot BEFORE the upsert, grouped by the ISO the
+                # rows themselves carry (r[2]) — `name` can be the literal
+                # "POSTED" when the runner omits `iso`, and the roster read keys
+                # on the stored label.
+                _keys = sorted({r[2] for r in rows if len(r) > 2 and r[2]})
+                _pre = {k: _qd_before(conn, k) for k in _keys}
                 if rows:
                     lq.upsert(conn, rows)
                 out[name] = {"status": "ok", "rows": len(rows), "mode": "posted"}
+                _delta = {}
+                for k in _keys:
+                    _d = _qd_capture(conn, k,
+                                     [r for r in rows if len(r) > 2 and r[2] == k],
+                                     _pre.get(k), mode="posted")
+                    if _d:
+                        _delta[k] = _d
+                if _delta:
+                    out[name]["delta"] = _delta
             except Exception as e:
                 out[name] = {"status": "failed", "mode": "posted",
                              "error": f"{type(e).__name__}: {str(e)[:160]}"}
@@ -1194,14 +1548,26 @@ def ingest_projects(iso=None):
                     continue
                 try:
                     rows = [r for r in lq._dedupe(fn()) if r[0]]
+                    # WS6: roster snapshot BEFORE the upsert. Both calls swallow
+                    # every exception internally and roll back on failure, so
+                    # capture can never flip this ISO to "failed" or poison the
+                    # connection for the ISOs after it.
+                    _pre = _qd_before(conn, name)
                     if rows:
                         lq.upsert(conn, rows)
                     out[name] = {"status": "ok", "rows": len(rows),
                                  "with_mw": sum(1 for r in rows if r[6] is not None)}
+                    _d = _qd_capture(conn, name, rows, _pre)
+                    if _d:
+                        out[name]["delta"] = _d
                 except Exception as e:
                     # most likely Railway egress block -> GH-runner fallback re-fetches
                     out[name] = {"status": "failed",
                                  "error": f"{type(e).__name__}: {str(e)[:160]}"}
+                    # WS6: an ATTEMPTED-but-failed run must be on the ledger, or
+                    # the read surface reports a clean withdrawal count for a
+                    # window with a hole in it.
+                    _qd_fail(conn, name, f"{type(e).__name__}: {str(e)[:120]}")
         # post-run table totals — the real confirming count
         with conn.cursor() as cur:
             cur.execute("SELECT iso, COUNT(*) FROM interconnect_queue GROUP BY iso ORDER BY COUNT(*) DESC")

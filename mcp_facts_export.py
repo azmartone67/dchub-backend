@@ -59,7 +59,15 @@ def build() -> dict:
             "facilities": c.facilities_phrase(),       # "12,650+"
             "countries": c.countries_phrase(),         # "170+"
             "markets": _markets_floor(),               # "311" (exact live count)
-            "deals": "4,000+",                         # canonical floor (live ~4,025 on 07-10)
+            # ★2026-07-29: was the hardcoded "4,000+" — the ONE key in this block
+            # that bypassed the governance module it already imports as `c`, and it
+            # floored ROWS of the ~2.9x-duplicated `deals` pile, not deals. The
+            # exact string it emitted, "4,000+ tracked deals", is listed in
+            # ai_surface_canon.py stale_markers: this generator was producing the
+            # string the sentinel exists to scrub. deals_phrase()
+            # (canonical_stats.py:274-287) floors the DEDUPED count to the nearest
+            # 100 -> "1,500+" at live 1,572.
+            "deals": c.deals_phrase(),
             "substations": f'{int(s.get("substations", 126427)):,}',
             "pipeline_gw": int(s.get("pipeline_gw", 369)),
         },

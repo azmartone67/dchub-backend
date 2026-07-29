@@ -71,6 +71,18 @@ ISO_TYPE = {
     # Balancing authorities (grid operators, no organised market)
     "TVA": "BA", "SOCO": "BA", "HECO": "BA", "PREPA": "BA",
     "GPA": "BA", "WAPA": "BA", "MH": "BA", "HQ": "BA", "BCH": "BA",
+    # shell #41 WS2 (2026-07-28): BPA (Bonneville) is a federal Power
+    # Marketing Administration — the same class as WAPA, and the label
+    # routes/iso_bpa.py writes to grid_data. It was absent, so
+    # iso_type_of("BPA") returned "" and has_interconnection_queue("BPA")
+    # returned False for the WRONG REASON: unknown label, not a typed BA
+    # that genuinely has no RTO queue. Same verdict, now for a real reason.
+    "BPA": "BA",
+    # "HQ" above never joined anything: routes/iso_hydroquebec.py:46 sets
+    # ISO_CODE = "HYDROQUEBEC", so every row that module writes was
+    # unclassifiable. This is an ALIAS of the same operator, not a second
+    # one — do not count it as another BA.
+    "HYDROQUEBEC": "BA",
 
     # NERC reliability regions (footprints, not operators)
     "WECC": "REGION", "SERC": "REGION", "FRCC": "REGION", "AK": "REGION",

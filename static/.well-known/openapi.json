@@ -224,7 +224,6 @@
                   "type": "object",
                   "properties": {
                     "total_facilities": {"type": "integer"},
-                    "total_power_mw": {"type": "number"},
                     "total_countries": {"type": "integer"},
                     "total_announcements": {"type": "integer"},
                     "by_source": {"type": "object"}

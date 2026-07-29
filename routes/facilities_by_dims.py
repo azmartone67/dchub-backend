@@ -226,11 +226,33 @@ def stats_canonical():
             except Exception:
                 pass
             stats.setdefault("deals_tracked", stats.get("deals_rows", 0))
+            # ★2026-07-29 published-number integrity — `dcpi_markets_scored` was
+            # COUNT(*) of market_power_scores ROWS (live 317). The canonical market
+            # count (canonical_stats.py:165-167) is COUNT(DISTINCT market_name)
+            # WHERE COALESCE(published,true)=true AND market_slug NOT IN the three
+            # aggregate regions — live 306, which is what /api/v1/stats publishes as
+            # top-level `markets`. So THIS endpoint, whose stated purpose is making
+            # surfaces agree, was itself a fourth disagreeing surface (306 / 311 /
+            # 317 / 685). Worse, ai_surface_canon.py:76 lists "317 " in
+            # stale_markers: the page scrubber was deleting the exact number this
+            # API was serving. Rows stay available under a name that says what they
+            # are; same raw-vs-deduped split already applied to deals above.
+            # Fail-soft: if the canon is unavailable the key is published as null,
+            # never as the row count and never as 0 — an unmeasured count must read
+            # as unknown (routes/pillars_master_shell.py:221 renders None as "—").
             try:
                 cur.execute("SELECT COUNT(*) FROM market_power_scores")
-                stats["dcpi_markets_scored"] = int(cur.fetchone()[0] or 0)
+                stats["dcpi_market_score_rows"] = int(cur.fetchone()[0] or 0)
             except Exception:
                 pass
+            try:
+                from canonical_stats import get_canonical_stats as _gcs_mkts
+                _mm = int((_gcs_mkts() or {}).get("markets") or 0)
+                if _mm > 0:
+                    stats["dcpi_markets_scored"] = _mm
+            except Exception:
+                pass
+            stats.setdefault("dcpi_markets_scored", None)
             # provenance-v1 (2026-07-11): the PUBLICLY CITEABLE verified count —
             # the canonical fleet filter (COALESCE(is_duplicate,0)=0 on
             # discovered_facilities; issue #1539). This is the number we grow in

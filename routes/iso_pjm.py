@@ -27,6 +27,8 @@ from routes._iso_common import (
     persist_metrics, latest_for_iso, health_for_iso,
     parse_eia_v2_fuel_mix, scrub_url,
 )
+# ws2 (2026-07-29): one shared EIA-930 URL builder. See routes/eia930.py.
+from routes.eia930 import eia930_url
 
 try:
     from dchub_heartbeat import heartbeat as _heartbeat
@@ -52,11 +54,11 @@ def _pjm_urls():
     through to dataminer2.pjm.com, which serves the JS SPA HTML shell
     (200 OK, ~1.5KB, no data) → parse → {} → persist 0 rows. EIA_API_KEY
     is already set in env (same key iso_bpa/iso_isone use)."""
-    eia_key = os.environ.get("EIA_API_KEY", "")
     return [
         # PRIMARY: api.eia.gov v2 PJM region (authenticated; ~800ms from Railway).
         # Parsed by parse_eia_v2_fuel_mix in run_extraction (same as BPA).
-        f"https://api.eia.gov/v2/electricity/rto/fuel-type-data/data/?api_key={eia_key}&frequency=hourly&data[0]=value&facets[respondent][]=PJM&sort[0][column]=period&sort[0][direction]=desc&length=12",
+        # ws2 (2026-07-29): built by routes/eia930.eia930_url; byte-identical.
+        eia930_url("PJM"),
         # Fallback: PJM API (subscription) — sends key via Ocp-Apim-Subscription-Key
         # if DCHUB_PJM_API_KEY is set. The fetch helper handles the header.
         "https://api.pjm.com/api/v1/gen_by_fuel/data?rowCount=24&order=desc&download=true",

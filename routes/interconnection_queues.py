@@ -1302,3 +1302,261 @@ def api_refined_queue():
         except Exception:
             pass
     return jsonify(_resp)
+
+
+@interconnection_queues_bp.route("/api/v1/interconnection-queue/changes")
+def api_queue_changes():
+    """WS6 (2026-07-28) — interconnection-queue transitions, from the day capture
+    started forward. Served from interconnect_queue_events, written at INGEST
+    time by /api/v1/iso-queue/ingest-projects — never inferred at read time,
+    because interconnect_queue carries no withdrawal signal to infer from: the
+    loader is a pure UPSERT with no DELETE (load_interconnect_queue_live.py:
+    602-619) and 5 of the 7 parsers write a hardcoded queue_status='active', so a
+    departed project keeps a row reading 'active' indefinitely.
+
+    HONEST-NUMBERS CONTRACT — three parts, all enforced below:
+      1. `disappeared_from_feed` is a PROXY for withdrawal, not a withdrawal. No
+         ISO feed in this pipeline ever says "withdrawn"; the project simply
+         stops appearing. It is published under its own name, never as a
+         withdrawal count or a withdrawal rate.
+      2. `history_starts_at` rides on every response. Zero disappearances in a
+         window means "we have N days of history", never "nothing left the
+         queue".
+      3. Coverage is counted in DAYS, and any ISO with a day that produced no
+         parse_ok run — or no run at all — returns
+         disappeared_from_feed_count = null plus a coverage_gaps entry.
+         UNMEASURED is null, never 0. A feed outage must never read as a
+         withdrawal event.
+
+    Params: iso (comma union), since_days (1-400, default 30), event_type,
+    min_mw, limit (1-2000, default 200), include_seed.
+    """
+    import re as _re
+    a = request.args
+
+    def _clamp(k, d, lo, hi):
+        v = a.get(k)
+        if v in (None, ""):
+            return d
+        try:
+            return max(lo, min(int(v), hi))
+        except Exception:
+            return d
+
+    since_days = _clamp("since_days", 30, 1, 400)
+    limit = _clamp("limit", 200, 1, 2000)
+    iso = (a.get("iso") or "").strip()
+    event_type = (a.get("event_type") or "").strip().lower()
+    include_seed = str(a.get("include_seed", "")).lower() in ("1", "true", "yes")
+    try:
+        min_mw = float(a.get("min_mw")) if a.get("min_mw") not in (None, "") else None
+    except Exception:
+        min_mw = None
+    _TYPES = ("appeared_in_feed", "capacity_changed", "status_changed",
+              "disappeared_from_feed", "seed")
+    if event_type and event_type not in _TYPES:
+        return jsonify(ok=False, error="bad_event_type", allowed=list(_TYPES),
+                       _entity="error"), 400
+    # same ISO normalization as /refined so ISO-NE / ISONE / iso-ne all collapse
+    _iso_toks = [_re.sub(r"[^A-Z0-9]", "", t.strip().upper())
+                 for t in iso.replace(";", ",").split(",") if t.strip()]
+    _iso_toks = [t for t in _iso_toks if t]
+    _NORM = "regexp_replace(upper(coalesce({}.iso,'')),'[^A-Z0-9]','','g') = ANY(%s)"
+
+    if not NEON_URL:
+        return jsonify(ok=False, error="no_db", _entity="error"), 503
+
+    _NOTE = ("disappeared_from_feed is a PROXY for withdrawal, NOT a withdrawal — no "
+             "ISO feed here ever says 'withdrawn', the project just stops appearing, "
+             "so treat it as an exit signal to confirm, not a confirmed exit. Read "
+             "every count against history_starts_at: before capture existed the loader "
+             "was a pure UPSERT with no DELETE, so a departed project kept a row "
+             "reading queue_status='active' indefinitely and no per-project history was "
+             "retained at all. A null count is UNMEASURED for that ISO in that window "
+             "(see coverage_gaps), never zero. rows_in_table_not_in_last_good_feed is "
+             "the accumulated ghost backlog still counted as live capacity by every "
+             "capacity_mw aggregate, including this table's own /refined endpoint.")
+
+    ev_where = ["e.detected_at >= NOW() - make_interval(days => %s)"]
+    ev_params = [since_days]
+    if _iso_toks:
+        ev_where.append(_NORM.format("e")); ev_params.append(_iso_toks)
+    if event_type:
+        ev_where.append("e.event_type = %s"); ev_params.append(event_type)
+    elif not include_seed:
+        ev_where.append("e.event_type <> 'seed'")
+    if min_mw is not None:
+        ev_where.append("GREATEST(COALESCE(e.new_capacity_mw,0), "
+                        "COALESCE(e.prev_capacity_mw,0)) >= %s")
+        ev_params.append(min_mw)
+    ev_wc = " AND ".join(ev_where)
+
+    # the disappearance count runs on its OWN filter set (never narrowed by
+    # event_type) so the headline exit signal is always present with its coverage
+    d_where = ["e.detected_at >= NOW() - make_interval(days => %s)",
+               "e.event_type = 'disappeared_from_feed'"]
+    d_params = [since_days]
+    if _iso_toks:
+        d_where.append(_NORM.format("e")); d_params.append(_iso_toks)
+    if min_mw is not None:
+        d_where.append("COALESCE(e.prev_capacity_mw,0) >= %s"); d_params.append(min_mw)
+    d_wc = " AND ".join(d_where)
+
+    try:
+        with psycopg.connect(NEON_URL, autocommit=True) as conn, conn.cursor() as cur:
+            cur.execute("SELECT to_regclass('public.interconnect_queue_events'), "
+                        "to_regclass('public.interconnect_queue_runs')")
+            _reg = cur.fetchone() or (None, None)
+            if not (_reg[0] and _reg[1]):
+                # capture has never run — say so, and emit null, not zero
+                return jsonify({
+                    "ok": True, "_entity": "queue_change_events",
+                    "capture_status": "not_yet_capturing",
+                    "history_starts_at": None,
+                    "window_days": since_days, "window_fully_covered": False,
+                    "counts": None, "disappeared_from_feed_count": None,
+                    "coverage": {}, "coverage_gaps": [], "events": [],
+                    "count_returned": 0,
+                    "_source": "DC Hub — dchub.cloud",
+                    "note": ("Capture has not run yet: the tables are created by the "
+                             "first /api/v1/iso-queue/ingest-projects run after deploy. "
+                             "Every count is null (UNMEASURED), not zero. " + _NOTE),
+                })
+
+            # per-ISO coverage counted in DAYS, not runs: the GH workflow retries a
+            # Railway-blocked ISO on its own runner, so one failed attempt that the
+            # fallback recovered is NOT a hole — a day with no parse_ok run is.
+            c_params, c_iso = [since_days], ""
+            if _iso_toks:
+                c_iso = " AND " + _NORM.format("r"); c_params.append(_iso_toks)
+            cur.execute(
+                "SELECT r.iso, "
+                "COUNT(DISTINCT (r.run_at AT TIME ZONE 'UTC')::date), "
+                "COUNT(DISTINCT (r.run_at AT TIME ZONE 'UTC')::date) "
+                "  FILTER (WHERE r.parse_ok IS TRUE), "
+                "MIN(r.run_at) FILTER (WHERE r.parse_ok IS TRUE), "
+                "MAX(r.run_at) FILTER (WHERE r.parse_ok IS TRUE) "
+                "FROM interconnect_queue_runs r "
+                "WHERE r.run_at >= NOW() - make_interval(days => %s)" + c_iso +
+                " GROUP BY r.iso", c_params)
+            win = {r[0]: r for r in cur.fetchall()}
+
+            # all-time first run (the per-ISO history floor) + the ghost backlog
+            # from that ISO's LATEST parse_ok run
+            f_params, f_iso = [], ""
+            if _iso_toks:
+                f_iso = " WHERE " + _NORM.format("r"); f_params.append(_iso_toks)
+            cur.execute(
+                "SELECT r.iso, MIN(r.run_at), "
+                "(SELECT r2.stale_not_in_feed FROM interconnect_queue_runs r2 "
+                "  WHERE r2.iso = r.iso AND r2.parse_ok IS TRUE "
+                "  ORDER BY r2.run_at DESC LIMIT 1) "
+                "FROM interconnect_queue_runs r" + f_iso + " GROUP BY r.iso", f_params)
+            allt = {r[0]: (r[1], r[2]) for r in cur.fetchall()}
+
+            cur.execute("SELECT e.event_type, COUNT(*) FROM interconnect_queue_events e "
+                        "WHERE " + ev_wc + " GROUP BY e.event_type", ev_params)
+            counts = {r[0]: int(r[1]) for r in cur.fetchall()}
+
+            cur.execute("SELECT e.iso, COUNT(*) FROM interconnect_queue_events e "
+                        "WHERE " + d_wc + " GROUP BY e.iso", d_params)
+            d_raw = {r[0]: int(r[1]) for r in cur.fetchall()}
+
+            cur.execute(
+                "SELECT e.detected_at, e.iso, e.queue_id, e.event_type, e.project_name, "
+                "e.prev_capacity_mw, e.new_capacity_mw, e.prev_status, e.new_status, "
+                "e.prev_seen_at, e.run_id FROM interconnect_queue_events e WHERE " +
+                ev_wc + " ORDER BY e.detected_at DESC, "
+                "GREATEST(COALESCE(e.new_capacity_mw,0), COALESCE(e.prev_capacity_mw,0)) "
+                "DESC LIMIT %s", ev_params + [limit])
+            cols = [c.name for c in cur.description]
+            events = []
+            for r in cur.fetchall():
+                d = dict(zip(cols, r))
+                for k in ("detected_at", "prev_seen_at"):
+                    if d.get(k) is not None:
+                        d[k] = d[k].isoformat()
+                events.append(d)
+    except Exception as e:
+        return jsonify(ok=False, error=str(e)[:200], _entity="error"), 200
+
+    # ── ★ REFUSE a disappearance count wherever coverage cannot carry it ──
+    _today_ord = datetime.now(timezone.utc).date().toordinal()
+    _win_start_ord = _today_ord - (since_days - 1)
+    history_starts_at, coverage, gaps, disappeared = None, {}, [], {}
+    for _iso, (_first_ever, _stale) in allt.items():
+        if _first_ever is not None and (history_starts_at is None
+                                        or _first_ever < history_starts_at):
+            history_starts_at = _first_ever
+        _w = win.get(_iso)
+        _days = int(_w[1] or 0) if _w else 0
+        _days_ok = int(_w[2] or 0) if _w else 0
+        try:
+            _expected = max(0, _today_ord - max(_win_start_ord,
+                                                _first_ever.date().toordinal()) + 1)
+        except Exception:
+            _expected = None
+        coverage[_iso] = {
+            "days_with_runs": _days, "days_parse_ok": _days_ok,
+            "days_expected": _expected,
+            "first_parse_ok_at": _w[3].isoformat() if _w and _w[3] else None,
+            "last_parse_ok_at": _w[4].isoformat() if _w and _w[4] else None,
+            "history_starts_at": _first_ever.isoformat() if _first_ever else None,
+            "rows_in_table_not_in_last_good_feed": (
+                int(_stale) if _stale is not None else None),
+        }
+        _why = None
+        if _days_ok == 0:
+            _why = ("no capture run cleared the short-feed floor in this window — "
+                    "UNMEASURED, not zero")
+        elif _days_ok < _days:
+            _why = ("{} of {} days had runs but none that cleared the short-feed "
+                    "floor".format(_days - _days_ok, _days))
+        elif _expected is not None and _days_ok < _expected:
+            _why = ("capture produced a good run on {} of {} days in this window — "
+                    "the missing days are a feed/cron outage, not an absence of "
+                    "queue exits".format(_days_ok, _expected))
+        if _why:
+            gaps.append({"iso": _iso, "days_with_runs": _days,
+                         "days_parse_ok": _days_ok, "days_expected": _expected,
+                         "reason": _why})
+            disappeared[_iso] = None
+        else:
+            disappeared[_iso] = int(d_raw.get(_iso, 0))
+    for _iso in d_raw:
+        if _iso not in disappeared:
+            disappeared[_iso] = None
+            gaps.append({"iso": _iso, "days_with_runs": 0, "days_parse_ok": 0,
+                         "days_expected": None,
+                         "reason": "events exist but no capture run is recorded — "
+                                   "UNMEASURED"})
+    for _tok in _iso_toks:
+        if not any(_re.sub(r"[^A-Z0-9]", "", (k or "").upper()) == _tok
+                   for k in coverage):
+            disappeared[_tok] = None
+            gaps.append({"iso": _tok, "days_with_runs": 0, "days_parse_ok": 0,
+                         "days_expected": None,
+                         "reason": "no capture run has ever been recorded for this ISO "
+                                   "— UNMEASURED, not zero"})
+
+    return jsonify({
+        "ok": True, "_entity": "queue_change_events",
+        "capture_status": "capturing" if coverage else "no_runs_recorded",
+        "history_starts_at": (history_starts_at.isoformat()
+                              if history_starts_at else None),
+        "window_days": since_days,
+        "window_fully_covered": bool(
+            history_starts_at is not None and not gaps
+            and history_starts_at.date().toordinal() <= _win_start_ord),
+        "filters": {"iso": _iso_toks or None, "event_type": event_type or None,
+                    "min_mw": min_mw, "include_seed": include_seed},
+        "counts": counts,
+        "disappeared_from_feed_count": disappeared,
+        "coverage": coverage,
+        "coverage_gaps": gaps,
+        "events": events,
+        "count_returned": len(events),
+        "_source": "DC Hub — dchub.cloud",
+        "_cite": "Data: DC Hub (dchub.cloud), CC-BY-4.0 — cite as \"DC Hub, dchub.cloud\"",
+        "note": _NOTE,
+    })

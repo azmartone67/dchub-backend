@@ -66,11 +66,31 @@ def extract_all():
         ("iso_pjm",   "PJM"),     # ← Phase GG
         ("iso_spp",   "SPP"),
         ("iso_isone", "ISONE"),
-        ("iso_ieso",  "IESO"),    # ← Phase HH — Ontario
-        # ("iso_aeso", "AESO") removed 2026-05-30 — the US-realtime extractor
-        # persisted 0 rows since registration. AESO is served by the
-        # iso_aeso_intl baseline model (at /api/v1/iso/aeso + /aeso-intl),
-        # not this orchestrator, so it no longer runs the dead extractor.
+        ("iso_ieso",  "IESO"),    # ← Phase HH — Ontario (LIVE since shell #41)
+        # shell #41 WS2 (2026-07-28) — CORRECTION to the 2026-05-30 note that
+        # used to sit here. It said the AESO extractor "persisted 0 rows since
+        # registration", which read as "the feed is dead". The feed is NOT
+        # dead: ets.aeso.ca answers tokenless (probed HTTP 200, 9,680 B).
+        # The bug was _iso_common.parse_csv_numeric_columns returning {} on a
+        # SECTIONED body and the extractor then reporting status "ok" with 0
+        # rows. The section-aware parser now lives in iso_aeso_intl — the
+        # module that actually owns /api/v1/iso/aeso — so AESO rejoins the
+        # fan-out THERE. routes/iso_aeso.py stays dead: main.py never imports
+        # it, and registering it would collide with the iso_aeso_canonical
+        # alias at main.py:34271-34274.
+        ("iso_aeso_intl", "AESO"),
+        # Registered since 2026-05-24 but scheduled ZERO times until now —
+        # absent from this list AND from crawler_scheduler._RUNNERS, so its
+        # rows only ever landed when a human hit /run. Now LIVE off
+        # hydroquebec.com open data, and LIVE-only: a failed fetch writes
+        # nothing rather than backfilling a modeled row.
+        ("iso_hydroquebec", "HYDROQUEBEC"),
+        # NOT added: iso_nordpool_intl. 7 of its 15 NORDIC_ZONES
+        # (iso_nordpool_intl.py:42-44) already rank LIVE via ENTSO-E as
+        # EU_NO_1/EU_NO_2/EU_SE_3/EU_SE_4/EU_FI/EU_DK_1/EU_DK_2, so a modeled
+        # Nordics aggregate would rank a synthetic row alongside its own live
+        # constituents. The genuinely-missing Nordic/Baltic zones belong in
+        # iso_eu_entsoe._ZONES, not here.
         ("iso_tva",   "TVA"),     # ← Phase HH — Tennessee Valley
         ("iso_bpa",   "BPA"),     # ← Phase HH — Pacific NW
         # #60 (2026-06-02): LIVE international grids via tokenless public APIs
@@ -107,10 +127,14 @@ def extract_all():
         # reports late (visible in this endpoint's per-ISO results).
         ("iso_br_ons",  "ONS"),
         ("iso_kr_kpx",  "KEPCO-KR"),
-        # 2026-05-30: non-ISO utility/co-op balancing authorities (40+ BAs:
+        # 2026-05-30: non-ISO utility/co-op balancing authorities (43 BAs:
         # APS/SRP/FPL + big IOUs + Pacific-NW PUDs + WAPA + co-ops).
         # run_extraction() fans out all of them in parallel internally
-        # (max_workers=12), so this single slot stays under the timeout.
+        # (max_workers=24 in routes/eia_utility_bas.py — this comment read "12"
+        # until 2026-07-29; read the code, not the comment), so this single
+        # slot stays under the timeout. ws2: each BA's EIA fetch is memoised
+        # for the hourly EIA-930 cadence (routes/eia930.py), so most 15-min
+        # ticks reuse a parsed reading instead of re-hitting EIA.
         ("eia_utility_bas", "UTILITY_BAS"),
     ]
 
@@ -192,19 +216,38 @@ def health():
     #     mix — same honest treatment as the other Canadian operators (AESO,
     #     Hydro-Québec). So this is strictly "9 live + 1 modeled", not 10 live.
     # 2026-06-02 (#60): international LIVE grids now shipped — GB (NGESO/Elexon),
-    # AU (AEMO), EU (ENTSO-E, 12 bidding zones), TW (Taipower). The old
+    # AU (AEMO), EU (ENTSO-E bidding zones), TW (Taipower). The old
     # future_isos list (UK/AU/EirGrid) is now LIVE (EirGrid/IE is covered by the
     # ENTSO-E IE_SEM zone). Remaining future = APAC beyond TW/AU, which is
     # auth-gated/fragmented (Japan OCCTO, Korea KPX, India Grid-India, SG EMA).
+    #
+    # ws2-merged (2026-07-29): the EU zone count is READ from the registry,
+    # never typed here — this payload said "12 zones" for two months while the
+    # registry held 25. Import failure → the label carries NO number rather than
+    # a stale one. "configured" is deliberate: a zone reaches the scoreboard
+    # only if its ENTSO-E call answered, so it is an upper bound.
+    try:
+        from routes.iso_eu_entsoe import _ZONES as _eu_zones
+        _eu_zones_configured = len(_eu_zones)
+    except Exception:
+        _eu_zones_configured = None
     return jsonify(
         status="ok",
+        # ★ HAND-MAINTAINED, and it has drifted before. The list that actually
+        # runs is `extractors` inside extract_all() — this is a second copy and
+        # can only be trusted as far as its last edit. POST
+        # /api/v1/iso/all/extract returns the real count.
+        registered_isos_source="hand-maintained copy, NOT derived from extractors",
         registered_isos=["ERCOT", "CAISO", "NYISO", "MISO", "PJM", "SPP", "ISONE",
-                          "IESO", "TVA", "BPA"],
+                          "IESO", "AESO", "HYDROQUEBEC", "TVA", "BPA"],
         endpoint="/api/v1/iso/all/extract",
-        north_america_iso_count=10,
-        live_feed_count=9,
-        modeled_baseline_count=1,
-        modeled_isos=["IESO"],
+        north_america_iso_count=12,
+        # 2026-07-28: IESO, AESO and HYDROQUEBEC all moved from modeled to LIVE
+        # (reports-public.ieso.ca, ets.aeso.ca, hydroquebec.com open data — all
+        # tokenless, all probed). No North-American operator here is modeled.
+        live_feed_count=12,
+        modeled_baseline_count=0,
+        modeled_isos=[],
         utility_bas_count=43,
         # 2026-07-01 (daily-content-feeds #2): Japan + Singapore now LIVE —
         # OCCTO aggregate + TEPCO/JP_<area> rows from 6 verified denki-yoho
@@ -216,7 +259,9 @@ def health():
         # 5-min full mix — the dashboard is token-free; only the data.go.kr
         # API needs a key) now LIVE.
         international_live=["NGESO (GB, Elexon)", "AEMO (AU)",
-                            "ENTSOE (EU, 12 zones)", "TAIPOWER (TW)",
+                            (f"ENTSOE (EU, {_eu_zones_configured} zones configured)"
+                             if _eu_zones_configured else "ENTSOE (EU)"),
+                            "TAIPOWER (TW)",
                             "OCCTO (JP, 5-min demand 6 areas + 30-min full fuel mix all 10 areas)",
                             "EMA (SG, NEMS mirror)",
                             "ONS (BR, 4 subsystems, minute-level full renewable split)",
