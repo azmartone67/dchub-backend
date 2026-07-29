@@ -1837,6 +1837,17 @@ try:
     except Exception as _dcpimeth_early:
         import logging
         logging.getLogger(__name__).warning('dcpi_methodology wiring failed: %s', _dcpimeth_early)
+    # 2026-07-29: platform_updates serves the PR-approved announcement cards on
+    # /whats-new#platform. Registered in the SAFE ZONE deliberately — note that
+    # infra_growth, which serves the same page's coverage feed, sits at ~32790
+    # in the late-line region that silently 404s in prod. That one happens to
+    # work; it is luck, not a precedent to copy.
+    try:
+        from routes.platform_updates import platform_updates_bp
+        app.register_blueprint(platform_updates_bp)
+    except Exception as _pue_early:
+        import logging
+        logging.getLogger(__name__).warning('platform_updates wiring failed: %s', _pue_early)
     # Phase relocate (2026-07-26): competitor_recon was registered late-line
     # (~36110) and silently failed in prod (same late-line pattern that bit
     # market_deep_dive/press_loop). Safe-zone registration, same recipe.

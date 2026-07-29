@@ -100,10 +100,15 @@ _SRC_PROPOSALS = "brain_enhancement_proposals"
 _SRC_AGENDA = "brain_self_agenda"
 _SRC_STRATEGIC = "brain_strategic_recommendations"
 _SRC_DISTRIBUTION = "agent_onboarding_snapshots.worklist_json"
-_SRC_SHIPPED = "/whats-new Platform section (static frontend)"
+# ★2026-07-29: there IS a store now — data/platform_updates.json, the
+# PR-approved registry that /whats-new#platform renders. This lane reads it.
+_SRC_SHIPPED = "data/platform_updates.json (PR-approved)"
 
-# Lane 5 — the five platform updates announced honest on public /whats-new
-# 2026-07-13 (no DB store records shipped platform updates; do NOT fabricate).
+# Fallback only, for when the store cannot be read. Kept deliberately short:
+# it is a HAND-TYPED MIRROR and it had already drifted — it lists five of the
+# six cards the page actually shipped (get_retirement_headroom, added the same
+# day by 2090ec4a0, was never added here). A mirror of a store is a second
+# thing to go stale; the store is the source.
 _SHIPPED_0713 = [
     {"title": "International grid telemetry — JP (OCCTO), KR (KPX), BR (ONS) "
               "ranked; AU + SG live-partial", "announced": "2026-07-13"},
@@ -535,17 +540,34 @@ def _lane_distribution(c) -> dict:
 # ── lane 5 · shipped (context) ────────────────────────────────────────
 
 def _lane_shipped(c) -> dict:
-    # No DB store records shipped platform updates: announcements /
-    # announcements_feed are industry-news ingestion, and the /whats-new
-    # Platform section is static frontend (dchub-frontend/whats-new.html).
-    # Informational static note — nothing fabricated.
-    items = [dict(s, source=_SRC_SHIPPED) for s in _SHIPPED_0713]
-    return _lane("shipped", "5 · Shipped (context — announced 07-13)",
-                 _SRC_SHIPPED, "pass", items,
-                 "informational: no DB store records shipped platform updates "
-                 "(announcements* tables = industry news; /whats-new Platform "
-                 "section is static frontend) — this lane lists the five "
-                 "platform updates announced honest on /whats-new 2026-07-13")
+    # Reads the real store (data/platform_updates.json) — the same registry
+    # /whats-new#platform renders, where a card is visible only because the
+    # owner merged the PR that set status="published". Pure file read, no DB.
+    # Falls back to the hand-typed mirror if the store is unreadable, and SAYS
+    # SO in the note: a silent fallback would make a drifted mirror look like
+    # live truth, which is how the mirror drifted in the first place.
+    try:
+        from routes.platform_updates import published_updates
+        block = published_updates()
+        cards = block.get("cards") or []
+        if block.get("ok") and cards:
+            items = [{"title": ct.get("title"), "announced": ct.get("announced"),
+                      "source": _SRC_SHIPPED} for ct in cards]
+            return _lane("shipped",
+                         "5 · Shipped (context — approved platform updates)",
+                         _SRC_SHIPPED, "pass", items,
+                         "approved platform updates rendered on /whats-new#platform; "
+                         "approval is a merged PR against data/platform_updates.json "
+                         "— %d withheld (unapproved or rejected)"
+                         % int(block.get("withheld_count") or 0))
+    except Exception as e:
+        logger.warning("roadmap lane5: store unreadable: %s", str(e)[:120])
+    items = [dict(s, source="static fallback mirror") for s in _SHIPPED_0713]
+    return _lane("shipped", "5 · Shipped (context — STATIC FALLBACK)",
+                 "static fallback mirror", "warn", items,
+                 "data/platform_updates.json unreadable — showing the hand-typed "
+                 "fallback mirror, which is known to have drifted (five of the six "
+                 "cards actually shipped). Treat as stale until the store reads.")
 
 
 # ── tick ──────────────────────────────────────────────────────────────

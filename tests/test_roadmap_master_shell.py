@@ -144,14 +144,23 @@ def test_lane_shape_and_status_clamp():
     assert lane["count"] == 1 and lane["source"] == "some_table"
 
 
-def test_shipped_lane_is_static_and_informational():
+def test_shipped_lane_reads_the_approved_store():
+    """★2026-07-29: this lane used to assert count == 5 against a hand-typed
+    mirror of the static /whats-new cards — and that mirror had already drifted
+    (the page shipped six; get_retirement_headroom was never mirrored). The
+    lane now reads data/platform_updates.json, the PR-approved store the page
+    itself renders, so the count is whatever the owner has approved. Pinning a
+    literal here is what let the drift sit unnoticed; assert the CONTRACT."""
     lane = r._lane_shipped(None)  # no DB needed by design
     assert lane["status"] == "pass"
-    assert lane["count"] == 5
+    assert lane["count"] >= 1
+    assert lane["source"] == "data/platform_updates.json (PR-approved)"
     titles = " ".join(i["title"] for i in lane["items"])
     assert "Provenance Envelope" in titles
     assert "cluster_sites_by_latency" in titles
-    assert "no DB store" in lane["note"]
+    assert "merged PR" in lane["note"]
+    # Every announced item carries its approval date, never a fabricated one.
+    assert all(i.get("announced") for i in lane["items"])
 
 
 def test_lanes_registry_covers_five_lanes():
