@@ -44,6 +44,40 @@ from __future__ import annotations
 # external traffic we couldn't sub-classify — it is NOT a probe.
 PLATFORM_CASE = r"""
     CASE
+        -- ★2026-07-28: "mcp" is the name of the PROTOCOL, not of a client.
+        -- 4,283 calls/7d arrive with clientInfo.name="mcp", and the verbatim
+        -- branch below trusted it as an identity — which is how 87% of call
+        -- volume ended up in a bucket we described as "unattributed". It was
+        -- never unattributed; it was one generic string being read as a name.
+        --
+        -- Trusting it also PRE-EMPTED the internal-dchub branch, so our own
+        -- probes (dchub-fixwave-probe/1.0 and friends, 1,072 calls / 132
+        -- agent_ids in 7d) were classified 'mcp' rather than as self-traffic.
+        -- PROBE_PLATFORMS could not exclude them because they never reached it.
+        --
+        -- NOTE the trap this avoids. The obvious fix — "don't trust it, fall
+        -- through to the UA branches" — sends every one of these rows to
+        -- `user_agent ILIKE '%node%'` => 'node-script', which IS in
+        -- PROBE_PLATFORMS. That would have silently deleted our LARGEST REAL
+        -- COHORT (3,164 calls / 63 agents of genuine agent work: 35 distinct
+        -- tools, 11-50 calls per episode, zero single-call episodes) and read
+        -- as a traffic collapse. A generic client_name means "unnamed MCP
+        -- client", NOT "someone's node script hitting the REST API", so these
+        -- rows get their own real bucket and never touch the node heuristics.
+        --
+        -- Verified against the replica before shipping: the split yields
+        -- mcp-generic-client 3,212 calls/66 agents (real, preserved — matches
+        -- the 3,207/65 the reach endpoint already reports) and internal-dchub
+        -- 1,072/132 (probe, correctly excluded). Headline real numbers do not
+        -- move; the classification stops being accidentally right.
+        WHEN LOWER(COALESCE(client_name, '')) IN ('mcp', 'mcp-client', 'client', 'default')
+             AND (user_agent ILIKE '%dchub-%' OR user_agent ILIKE '%dchubhealer%'
+                  OR user_agent ILIKE '%brain-v2-headless%' OR user_agent ILIKE '%brain-radar%'
+                  OR user_agent ILIKE '%uptimerobot%' OR user_agent ILIKE '%DCHub/%'
+                  OR user_agent ILIKE '%Globeholder-%')
+            THEN 'internal-dchub'
+        WHEN LOWER(COALESCE(client_name, '')) IN ('mcp', 'mcp-client', 'client', 'default')
+            THEN 'mcp-generic-client'
         WHEN NULLIF(LOWER(client_name), '') IS NOT NULL
              AND client_name !~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
             THEN LOWER(client_name)
