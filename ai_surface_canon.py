@@ -55,7 +55,19 @@ PINNED = {
         # propagation) kept pasting it. Meta, Microsoft and Grok have all standardised on
         # this deduped basis — keep them in sync.
         "facilities": "12,650+",
-        "markets": "311",
+        # ★2026-07-29: was the exact literal "311", which had itself drifted ABOVE
+        # live canon (306 today — canonical_stats.py:165-167, surfaced as
+        # /api/v1/stats top-level `markets`), making this a +5 over-claim on every
+        # surface that reads PINNED without calling resolve_canon(). A pinned EXACT
+        # count re-drifts every time the market set moves and over-claims the moment
+        # it shrinks, so pin the FLOOR instead: "300+" is the form
+        # tests/test_honest_numbers.py:151 documents as sanctioned, matches
+        # canonical_stats.markets_phrase(), and can never exceed reality.
+        # routes/mcp_honest_numbers._floor() parses it to 300 exactly as it already
+        # does for the sibling "12,650+"/"1,500+"/"170+" floors, so every downstream
+        # consumer keeps working. resolve_canon() overrides it live below, the same
+        # way it already does for `deals`.
+        "markets": "300+",
         "deals": "1,500+",   # ★2026-07-24: live distinct = 1,553, floor raised 1,400 -> 1,500. DISTINCT tracked deals (== canonical_stats.deals_phrase). ★2026-07-17: was "4,000+", itself an over-claim — it floored ROWS, and the AUTO id embeds the ingest date so one deal accrues a row per day (4,275 rows -> ~1,420 distinct). ★NOT the raw `deals` COUNT(*) that /api/v1/stats returns. resolve_canon() overrides this live.
         "countries": "170+",
     },
@@ -284,6 +296,18 @@ def resolve_canon() -> dict:
         c["public"]["deals"] = _dp
     except Exception as e:
         c["_deals_error"] = str(e)[:120]
+    # ★2026-07-29: markets self-heal the same way deals does. The pinned "300+" is
+    # a FLOOR, so a consumer that never calls resolve_canon() can only under-claim;
+    # this override republishes the live floor from the canonical query so the
+    # pinned literal can never drift ABOVE reality again (it had: "311" vs live
+    # 306). Fail-soft — on any error the pinned floor stands.
+    try:
+        from canonical_stats import markets_phrase as _markets_phrase
+        _mp = _markets_phrase()
+        c["markets_phrase_live"] = _mp
+        c["public"]["markets"] = _mp
+    except Exception as e:
+        c["_markets_error"] = str(e)[:120]
     # live tool count from the MCP server — override the pinned fallback so
     # every resolve_canon() consumer tracks tools/list and never goes stale.
     try:

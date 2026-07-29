@@ -9476,7 +9476,19 @@ def check_canonical_floor_exceeds_live() -> list[dict]:
                     cur.execute("SELECT COUNT(*) FROM discovered_facilities "
                                 "WHERE duplicate_of_id IS NULL")
                     live_pub["facilities"] = int(cur.fetchone()[0] or 0)
-                    cur.execute("SELECT COUNT(*) FROM market_power_scores")
+                    # ★2026-07-29: was COUNT(*) — ROWS (live 317), which include the
+                    # three aggregate regions and the duplicate slug variants canon
+                    # deliberately excludes. Comparing a pinned floor against ROWS
+                    # made this fence blind to exactly the drift it exists to catch:
+                    # the pinned markets floor "311" was ABOVE live canon (306) yet
+                    # passed here, because 311 <= 317. Use the canonical definition
+                    # (canonical_stats.py:165-167) so the fence measures the same
+                    # thing every public surface publishes.
+                    cur.execute("SELECT COUNT(DISTINCT market_name) "
+                                "FROM market_power_scores "
+                                "WHERE COALESCE(published, true) = true "
+                                "AND market_slug NOT IN ('pacific-nw-rural',"
+                                "'rural-spp','upper-michigan')")
                     live_pub["markets"] = int(cur.fetchone()[0] or 0)
             finally:
                 cx.close()
