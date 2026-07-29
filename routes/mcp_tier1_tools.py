@@ -258,7 +258,8 @@ def _rank_markets_ai_ready(region: str, limit: int, min_cap: float):
     the meaningful floor for "can N MW of new AI load land here". Fully
     isolated from the build-out criteria. Fail-soft (never raises to caller)."""
     try:
-        from routes.dcpi import derive_composite_score, _US_DCPI_ISOS
+        from routes.dcpi import (derive_composite_score, _US_DCPI_ISOS,
+                                 _ensure_tables as _dcpi_ensure_tables)
     except Exception:
         # Canonical composite unavailable → honest failure, never a wrong number.
         return jsonify(merge_error_mitigation(
@@ -284,11 +285,28 @@ def _rank_markets_ai_ready(region: str, limit: int, min_cap: float):
     # result. Headroom is already encoded in the buildability composite via
     # excess_power_score — honoring a phantom MW filter would be worse than
     # ignoring it. Surfaced as advisory in the response instead.
-    sql = (
-        "SELECT market_slug, market_name, state, iso, excess_power_score, "
-        "constraint_score, time_to_power_months, verdict, avg_kwh_cents "
-        "FROM market_power_scores WHERE " + " AND ".join(where)
-    )
+    # r-ws3-signal-tier (2026-07-28): this tool hand-builds its result dicts
+    # below, so — unlike get_market_dcpi_rank, which passes the REST body
+    # through verbatim — it inherits NOTHING from the REST envelope. The tier
+    # and the as-of must be selected and emitted explicitly or this surface,
+    # the highest-traffic DCPI ranking path, stays silently tier-less.
+    _cols = ("SELECT market_slug, market_name, state, iso, excess_power_score, "
+             "constraint_score, time_to_power_months, verdict, avg_kwh_cents")
+    sql = (_cols + ", signal_tier, computed_at "
+           "FROM market_power_scores WHERE " + " AND ".join(where))
+    # Pre-tier twin, kept as a retry. This is the ONE DCPI-reading surface that
+    # does not run through a routes/dcpi.py route, so nothing here guarantees
+    # _ensure_tables has added signal_tier yet: a process serving rank_markets
+    # before any /api/v1/dcpi/* call would 500 on UndefinedColumn. We both
+    # ensure the column (below) and keep this fallback, so the ranking never
+    # goes dark over an optional honesty label.
+    sql_legacy = (_cols + " FROM market_power_scores WHERE "
+                  + " AND ".join(where))
+    _tier_readable = True
+    try:
+        _dcpi_ensure_tables()   # idempotent; flag-guarded after the 1st call
+    except Exception:
+        pass
 
     with _conn() as c:
         if c is None:
@@ -303,7 +321,17 @@ def _rank_markets_ai_ready(region: str, limit: int, min_cap: float):
                 cur.execute(sql, params)
                 rows = cur.fetchall()
         except Exception as e:
-            return jsonify({"error": f"query_failed: {type(e).__name__}: {str(e)[:200]}"}), 500
+            # r-ws3-signal-tier: degrade to the pre-tier column list rather than
+            # 500 the whole ranking. Postgres aborts the transaction on a failed
+            # statement, so roll back before reusing the connection.
+            try:
+                c.rollback()
+                with c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                    cur.execute(sql_legacy, params)
+                    rows = cur.fetchall()
+                _tier_readable = False
+            except Exception:
+                return jsonify({"error": f"query_failed: {type(e).__name__}: {str(e)[:200]}"}), 500
 
     ranked = []
     for r in rows:
@@ -329,6 +357,14 @@ def _rank_markets_ai_ready(region: str, limit: int, min_cap: float):
         _dedup.append((comp, r))
     ranked = _dedup[:limit]
 
+    # r-ws3-signal-tier: one honest reason string for a missing tier — a row
+    # that carries none is NOT the same as a read that could not see the
+    # column, and neither is ever reported as "low".
+    _tier_unknown_reason = (
+        "unrecorded: row predates signal tiering or was written by the lite "
+        "recompute path — tier unknown, not low" if _tier_readable else
+        "unavailable: signal_tier was not readable on this query — tier "
+        "unknown for every row in this response, not low")
     results = []
     for i, (composite, r) in enumerate(ranked):
         verdict = (r["verdict"] or "").upper()
@@ -349,6 +385,15 @@ def _rank_markets_ai_ready(region: str, limit: int, min_cap: float):
             "constraint_score":     r["constraint_score"],
             "time_to_power_months": ttp,
             "avg_kwh_cents":        float(r["avg_kwh_cents"]) if r["avg_kwh_cents"] is not None else None,
+            # r-ws3-signal-tier: how much of this market's score rests on live
+            # data. NULL stays NULL (unknown) — never coerced to "low".
+            "signal_tier":     r.get("signal_tier") or None,
+            "signal_tier_basis": ("live_adapter_count_at_score_time"
+                                  if r.get("signal_tier")
+                                  else _tier_unknown_reason),
+            "as_of":           (r["computed_at"].isoformat()
+                                if hasattr(r.get("computed_at"), "isoformat")
+                                else r.get("computed_at")),
             "url":             f"https://dchub.cloud/dcpi/{r['market_slug']}",
         })
 
@@ -362,8 +407,25 @@ def _rank_markets_ai_ready(region: str, limit: int, min_cap: float):
                          "multiplied by a verdict quality gate (BUILD 1.0 / CAUTION 0.85 / "
                          "AVOID 0.6 / LOW_SIGNAL 0.35). Ranks where NEW AI load can LAND, "
                          "not which markets are already the most built out. "
-                         "Region: 'us' (default) or 'global'."),
+                         "Region: 'us' (default) or 'global'. Every result "
+                         "carries signal_tier + as_of — the composite is "
+                         "computed the same way at every tier, so signal_tier "
+                         "is what tells you how much of it rests on measured "
+                         "inputs rather than regional constants."),
         "data_source":  "DC Hub DCPI (market_power_scores), verdict-gated composite",
+        "signal_tier_note": (
+            "full = all 3 live-capable adapters (interconnect_queue, "
+            "planned_generators, grid_telemetry) returned data for that market; "
+            "partial = 1-2; low = 0, or the market's ISO fell through to the "
+            "WECC default so its modeled anchors are Western-grid parameters; "
+            "null = the row's writer recorded no tier (unknown, NOT low). "
+            "'full' does not mean every score input is measured."),
+        "signal_tier_counts_returned": {
+            "full": sum(1 for x in results if x.get("signal_tier") == "full"),
+            "partial": sum(1 for x in results if x.get("signal_tier") == "partial"),
+            "low": sum(1 for x in results if x.get("signal_tier") == "low"),
+            "unrecorded": sum(1 for x in results if not x.get("signal_tier")),
+        },
         "tier":         "developer",
     }
     if min_cap and min_cap > 0:
