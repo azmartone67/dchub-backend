@@ -167,8 +167,16 @@ def _query_live() -> dict:
 
         # ── MRR invoiced (real Stripe cash, 30d) ──
         try:
+            # ★2026-07-28: exclude refunded sales. Refunds were never reversed —
+            # no Stripe refund event was handled at all — so a refunded row stayed
+            # in the ledger as revenue forever. Two $3,000 rows (one customer,
+            # double-billed then refunded by hand) carried 77% of May and 96% of
+            # June, manufacturing an apparent 84% MRR "collapse" into July that
+            # never happened. The row is KEPT as the audit trail and stamped;
+            # money reads filter it out.
             cur.execute("SELECT COALESCE(SUM(mrr_cents),0) FROM mcp_conversions "
-                        "WHERE created_at >= NOW() - INTERVAL '30 days'")
+                        "WHERE created_at >= NOW() - INTERVAL '30 days' "
+                        "  AND refunded_at IS NULL")
             out["mrr_invoiced_usd"] = round(float((cur.fetchone() or [0])[0] or 0) / 100.0, 2)
         except Exception:
             try: c.rollback()
@@ -190,7 +198,11 @@ def _query_live() -> dict:
                 "  AND stripe_customer_id IS NOT NULL "
                 "  AND LOWER(COALESCE(plan_to,'')) NOT IN "
                 "      ('comp','complimentary','research_seed_nlr','seed') "
-                "  AND LOWER(COALESCE(source,'')) <> 'seed'")
+                "  AND LOWER(COALESCE(source,'')) <> 'seed' "
+                # ★2026-07-28: a refunded sale is not an honest conversion.
+                # Kept out of `conversions_30d` (the documented RAW count) so
+                # that field keeps its back-compat meaning.
+                "  AND refunded_at IS NULL")
             out["conversions_30d_real"] = int((cur.fetchone() or [0])[0] or 0)
         except Exception:
             try: c.rollback()
