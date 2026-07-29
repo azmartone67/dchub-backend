@@ -31,15 +31,70 @@ _MCP_BASE = os.environ.get("DCHUB_MCP_PUBLIC_BASE", "https://dchub.cloud")
 # ── Pinned structural canon (changes rarely; edit HERE, nowhere else) ──
 PINNED = {
     "version": "2.4.4",                       # == repo canonical (server.mjs/server.json); registry mirror auto-bumps to latest+1
-    "tools_advertised": 80,                   # canonical advertised count == live tools/list (80 as of 2026-07-26: +execute_plan; 79 as of 2026-07-20: +get_global_power/get_permitting_intel/plan_query/research_task/simulate_scenario/standing_intent). PINNED fallback; resolve_canon() overrides it with the live count probed from _MCP_BASE (the public gate) so consumers never go stale. /AGENTS.md reads PINNED directly, so keep current.
+    "tools_advertised": 81,                   # canonical advertised count == live tools/list (81 as of 2026-07-29: +get_hosting_capacity; 80 as of 2026-07-26: +execute_plan; 79 as of 2026-07-20: +get_global_power/get_permitting_intel/plan_query/research_task/simulate_scenario/standing_intent). PINNED fallback; resolve_canon() overrides it with the live count probed from _MCP_BASE (the public gate) so consumers never go stale. /AGENTS.md reads PINNED directly, so keep current. ★MUST equal len(tool_manifest) — tests/test_fix_closure_shell.py asserts it, so a count edit that skips the manifest cannot land.
     "mcp_endpoint": "https://dchub.cloud/mcp",
     "registry_id": "cloud.dchub/mcp-server",
     "rest_base": "https://dchub.cloud/api/v1",     # canonical host (NOT api.dchub.cloud)
     "free_tier_calls_per_day": 10,                 # NOT 100
     "platforms": ["Claude", "ChatGPT", "Gemini", "Perplexity", "Copilot", "Meta AI", "Grok"],
+    # ★2026-07-29 (shell #41 WS5) — the COMPLETE advertised tool set, the
+    # membership anchor for the worker.js fallback manifest. Sorted; order is
+    # cosmetic (comparisons are set-based).
+    #
+    # Why this exists as well as tools_advertised: a COUNT check goes green on
+    # a doubly-wrong manifest. During this wave worker.js briefly carried 81
+    # entries against a live 81 while get_hosting_capacity was MISSING and a
+    # different name was EXTRA — the counts matched, the surface was wrong, and
+    # the guard passed. get_hosting_capacity had in fact been absent from the
+    # fallback list the whole time (live 81 / repo 80) and only the arithmetic
+    # ever got compared. Membership is the real invariant; keep this list and
+    # tools_advertised moving together.
+    #
+    # NOT the same list as tool_names below — that is a curated 14-name
+    # FLAGSHIP subset keyed to TOOL_RETURNS and rendered into llms.txt.
+    #
+    # ★find_sites_by_infrastructure is deliberately NOT here: it is not live.
+    # Adding it to worker.js is the exact swap this list exists to reject.
+    "tool_manifest": [
+        "ai_capacity_index", "analyze_parcel", "analyze_site",
+        "bind_email", "claim_free_key", "cluster_sites_by_latency",
+        "compare_isos", "compare_sites", "deal_autopsy",
+        "discover_tools", "execute_plan", "export_dataset", "fetch",
+        "find_alternatives", "generate_site_analysis",
+        "get_agent_registry", "get_backup_status", "get_changes",
+        "get_climate_intel", "get_composite_site_score",
+        "get_dchub_recommendation", "get_disaster_risk",
+        "get_energy_prices", "get_facility", "get_facility_risk_delta",
+        "get_fiber_intel", "get_fiber_readiness", "get_gas_economics",
+        "get_gas_index", "get_gas_intelligence", "get_global_power",
+        "get_grid_data", "get_grid_intelligence", "get_grid_scoreboard",
+        "get_hosting_capacity", "get_infrastructure",
+        "get_intelligence_index", "get_interconnection_queue",
+        "get_iso_context", "get_market_context", "get_market_dcpi_rank",
+        "get_market_intel", "get_metro_fiber", "get_news",
+        "get_permitting_intel", "get_pipeline", "get_power_pipeline",
+        "get_refined_queue", "get_renewable_energy",
+        "get_retirement_headroom", "get_shortlist",
+        "get_tax_incentives", "get_water_risk", "grid_transition_radar",
+        "hyperscaler_deals", "list_saved_sites", "list_transactions",
+        "plan_fiber_leadin", "plan_query", "predict_market_trajectory",
+        "rank_markets", "rank_sites", "recover_my_key", "research_task",
+        "save_site", "save_to_shortlist", "score_facility", "search",
+        "search_facilities", "search_intelligence", "semantic_search",
+        "set_market_alert", "set_shortlist_alert", "set_site_alert",
+        "simulate_scenario", "site_selection_canvas", "standing_intent",
+        "subscribe_digest", "suggest_reallocation", "unlock_more_data",
+        "why_dchub"
+    ],
     "tool_names": [
         "search_facilities", "get_facility", "get_market_intel", "rank_markets",
-        "get_grid_intelligence", "get_interconnection_queue", "get_fiber_intel",
+        "get_grid_intelligence", "get_interconnection_queue",
+        # ★2026-07-29: promoted to flagship with the 81st tool. Distribution-
+        # FEEDER truth (utility-published) is a different layer from the
+        # transmission/queue tools either side of it — agents that only see the
+        # queue tools ask for time-to-power and never learn a named feeder's
+        # published headroom. Coverage is 18 utilities, NOT nationwide.
+        "get_hosting_capacity", "get_fiber_intel",
         "get_gas_intelligence", "list_transactions", "hyperscaler_deals",
         "analyze_site", "compare_sites", "score_facility", "get_news",
     ],
@@ -118,6 +173,9 @@ TOOL_RETURNS = {
     "rank_markets": "markets ranked by power certainty & deliverability with DCPI composite_score + BUILD/CAUTION/AVOID verdict",
     "get_grid_intelligence": "ISO grid headroom, constraint, congestion, reserve margin",
     "get_interconnection_queue": "interconnection-queue depth + typical wait (months) for an ISO",
+    # ★Split BY capacity_type on purpose: "gen" is DER export headroom, NOT
+    # available load, and must never be relayed as "you can site N MW here".
+    "get_hosting_capacity": "utility-published feeder hosting capacity per capacity_type (load / gen / bus_headroom) {distinct_feeders, max + median MW, top feeders with substation, voltage_kv, feeder_id, coords, publish date, publishing utilities} — 18 utilities, not nationwide",
     "get_fiber_intel": "fiber routes, carrier count, lit-building proximity",
     "get_gas_intelligence": "gas-pipeline access + delivered-gas economics",
     "list_transactions": "M&A/deal records {buyer, seller, value_usd, date, type, region}",
@@ -136,8 +194,17 @@ def _get(path, timeout=15):
         return json.loads(r.read().decode("utf-8", "replace"))
 
 
-def _mcp_tool_count(timeout=20):
-    """Live count from the MCP server (tools/list)."""
+def _mcp_tool_names(timeout=20):
+    """Live tool NAMES from the MCP server (tools/list), or None if the
+    response carried no tools/list frame. Raises on transport errors —
+    callers decide whether an unreachable gate is fatal.
+
+    ★2026-07-29: split out of _mcp_tool_count because arity is the WEAKER
+    half of the contract. worker.js MCP_FALLBACK_TOOLS drifted by MEMBERSHIP
+    (get_hosting_capacity live but absent) while its COUNT still matched, and
+    a count-only guard reported green. Anything checking this surface should
+    compare the name SET.
+    """
     hdr = {"Content-Type": "application/json",
            "Accept": "application/json, text/event-stream"}
     init = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize",
@@ -162,8 +229,16 @@ def _mcp_tool_count(timeout=20):
             ln = ln[6:]
         if ln.startswith("{") and '"id":2' in ln.replace(" ", ""):
             d = json.loads(ln)
-            return len((d.get("result") or {}).get("tools", []))
+            return [t.get("name") for t in (d.get("result") or {}).get("tools", [])]
     return None
+
+
+def _mcp_tool_count(timeout=20):
+    """Live count from the MCP server (tools/list). Thin arity view over
+    _mcp_tool_names() — same return contract as before (int, or None when no
+    tools/list frame came back)."""
+    names = _mcp_tool_names(timeout=timeout)
+    return None if names is None else len(names)
 
 
 # ── Funnel metrics (canonical identity views — NEVER raw session counts) ──
