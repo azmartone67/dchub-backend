@@ -234,6 +234,33 @@ def api_shortlist_save():
     metrics = {k: v for k, v in site.items()
                if isinstance(v, (int, float)) and not isinstance(v, bool)
                and k not in ("lat", "lng", "lon", "capacity_mw")}
+
+    # Persistence Master Shell #41 lane 2 (2026-07-29) — derive objectives when
+    # the caller has none.
+    #
+    # The MCP schema used to REQUIRE objectives while this endpoint treated them
+    # as optional (`or {}`), so the two contracts were inverse and the only
+    # payload satisfying both carried a signed-weight map most agents never
+    # build. That is why zero real external agents completed a save in 90 days.
+    #
+    # Making it optional is only safe if the snapshot + re-rank contract survives,
+    # and it did NOT survive before: `objectives: {}` already passed both layers
+    # and produced saved_score=None — a row that can never show drift, which is
+    # the entire feature. The old zod requirement was satisfiable with an empty
+    # object, so it never protected what it claimed to.
+    #
+    # Equal weights over the site's OWN numeric metrics close it at the layer
+    # that can enforce it: saved_objectives is never empty, so re-scoring always
+    # has criteria, and a caller who DOES pass objectives is untouched.
+    # Direction is unknowable without the caller's intent, so weights are
+    # positive (treat each metric as better-when-higher) and `objectives_derived`
+    # marks the row so a consumer can tell a derived basis from a stated one and
+    # never present it as the user's stated criteria.
+    objectives_derived = False
+    if not objectives and metrics:
+        w = round(1.0 / len(metrics), 6)
+        objectives = {k: w for k in metrics}
+        objectives_derived = True
     saved_score = None
     try:
         from site_baseline import score_site
@@ -271,9 +298,16 @@ def api_shortlist_save():
     return jsonify({
         "_entity": "shortlist_saved", "ok": True,
         "shortlist_name": name, "id": sid, "saved_score": saved_score,
+        # Tell the caller when the basis was DERIVED rather than stated, so an
+        # agent never reports equal weights back to its human as their criteria.
+        "objectives_derived": objectives_derived,
         "note": ("Saved with its objectives + percentile score snapshot. Call "
                  "/api/v1/shortlist/get?name=" + name + "&refresh=true later to re-score "
-                 "against the current baseline and see drift. Shortlist is scoped to your API key."),
+                 "against the current baseline and see drift. Shortlist is scoped to your API key."
+                 + (" You passed no objectives, so this site was scored with EQUAL weights "
+                    "across its own metric fields — pass an objectives map on the next save "
+                    "if you ranked it under specific criteria."
+                    if objectives_derived else "")),
         "_source": "DC Hub — dchub.cloud",
     })
 
