@@ -532,6 +532,116 @@ def _trigger_registry_sync_workflow(dry_run: bool) -> dict:
 
 
 # ── The daily job ─────────────────────────────────────────────────────
+# ── customer-onboarding lane (2026-07-29) ────────────────────────────────
+# ★WHY THIS LIVES IN WHITE GLOVE. "White glove" here used to mean ONE thing:
+# registry/listing-copy propagation. Nothing watched whether a HUMAN who just
+# paid us was actually looked after — so the only way to answer "did this
+# customer get white-glove treatment?" was to open Stripe and hand-query four
+# tables, which is exactly what had to be done for alexander@ryex.net on
+# 2026-07-29. That audit found: entitlements perfect (conversion row,
+# users.plan, active api_key, mcp_dev_keys.tier=paid, all inside one second)
+# but FOUR welcome emails in three seconds, no Stripe receipt, and zero API
+# calls 40 minutes after paying. None of it was visible anywhere.
+#
+# A propagation checker that guards our LISTINGS but not our CUSTOMERS has the
+# priority backwards. This lane makes each new payer a checked surface.
+#
+# Read-only and fail-soft: it must never affect the propagation pass.
+_ONBOARD_LOOKBACK_DAYS = int(os.environ.get("WHITE_GLOVE_CUSTOMER_DAYS", "14"))
+
+
+def check_customer_onboarding() -> dict:
+    """Audit recently-paid customers end to end. Returns a summary dict.
+
+    Per customer, three independent questions:
+      entitled   — do users.plan / an ACTIVE api_key / mcp_dev_keys.tier all
+                   exist? (money taken but access not granted is the worst
+                   possible failure, so it is checked first)
+      welcomed   — EXACTLY ONE welcome email. Zero is silence; more than one is
+                   the flood that shipped four in three seconds.
+      activated  — any MCP call after paying. Paid-but-never-called is the
+                   real churn signal and nothing else reports it.
+    """
+    out = {"ok": True, "window_days": _ONBOARD_LOOKBACK_DAYS,
+           "customers": [], "problems": 0, "checked": 0}
+    conn = _db_conn()
+    if conn is None:
+        out["ok"] = False
+        out["error"] = "no_db"
+        return out
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT LOWER(c.user_email), MIN(c.created_at)
+                     FROM mcp_conversions c
+                    WHERE c.created_at >= NOW() - make_interval(days => %s)
+                      AND c.user_email IS NOT NULL
+                      AND c.stripe_customer_id IS NOT NULL
+                      AND c.refunded_at IS NULL
+                    GROUP BY 1 ORDER BY 2 DESC LIMIT 50""",
+                (_ONBOARD_LOOKBACK_DAYS,))
+            payers = cur.fetchall() or []
+            for email, paid_at in payers:
+                rec = {"email": email, "paid_at": str(paid_at)[:19]}
+                # entitled
+                cur.execute(
+                    """SELECT (SELECT COALESCE(plan,'') FROM users
+                                WHERE LOWER(email)=%s LIMIT 1),
+                              (SELECT COUNT(*) FROM api_keys k
+                                WHERE k.user_id IN (SELECT id FROM users
+                                                     WHERE LOWER(email)=%s)),
+                              (SELECT COUNT(*) FROM mcp_dev_keys
+                                WHERE LOWER(COALESCE(email,''))=%s)""",
+                    (email, email, email))
+                plan, nkeys, ndev = cur.fetchone() or ("", 0, 0)
+                rec["plan"] = plan or None
+                rec["entitled"] = bool(plan and plan != "free"
+                                       and int(nkeys or 0) > 0)
+                # welcomed — exactly one
+                cur.execute(
+                    """SELECT COUNT(*) FROM welcome_email_log
+                        WHERE LOWER(email)=%s
+                          AND status IN ('sent','sent_via_resend')""",
+                    (email,))
+                nw = int((cur.fetchone() or [0])[0] or 0)
+                rec["welcome_emails"] = nw
+                rec["welcomed"] = (nw == 1)
+                # activated — any call after paying.
+                # ★★UNMEASURED, NOT ZERO. `api_keys.key_prefix` stores a SHORT
+                # generic prefix ("dchub_dev_"), while `mcp_call_log.api_key`
+                # holds the caller key. Equality can NEVER match, and a LIKE on
+                # a 10-char generic prefix would match every dev key on the
+                # platform — so a naive join reports 0 calls for EVERYONE and
+                # reads as "no customer ever activated". That is a false zero of
+                # exactly the kind this codebase keeps getting burned by
+                # (/health funnel, prewall projections, mcp_conversions refunds),
+                # and it would be the most damaging one yet: it would make a
+                # healthy customer base look dead.
+                # Until customer→key attribution is joinable, report None and
+                # SAY it is unmeasured. A missing metric is honest; a fabricated
+                # zero is not.
+                rec["calls_since_paid"] = None
+                rec["activated"] = None
+                rec["activation_note"] = (
+                    "UNMEASURED — api_keys.key_prefix is a generic prefix and "
+                    "does not join to mcp_call_log.api_key; needs a real "
+                    "customer->key link before activation can be reported")
+                rec["ok"] = bool(rec["entitled"] and rec["welcomed"])
+                if not rec["ok"]:
+                    out["problems"] += 1
+                out["customers"].append(rec)
+                out["checked"] += 1
+    except Exception as e:          # noqa: BLE001
+        out["ok"] = False
+        out["error"] = str(e)[:180]
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+    return out
+
+
 def run_white_glove_propagation(dry_run: bool = False) -> dict:
     """One propagation pass. Defensive — never raises."""
     if _disabled():
@@ -549,6 +659,12 @@ def run_white_glove_propagation(dry_run: bool = False) -> dict:
         "drifted": [], "clean": [],
         "auto_path_fired": [], "human_gated": [],
     }
+    # ★Customer onboarding is now part of every white-glove pass. Fail-soft:
+    # a customer-lane error must never break listing propagation.
+    try:
+        summary["customers"] = check_customer_onboarding()
+    except Exception as _ce:
+        summary["customers"] = {"ok": False, "error": str(_ce)[:150]}
     try:
         from routes.mcp_presence_crawler import SEED_REGISTRIES, _polite_get
     except Exception as e:
