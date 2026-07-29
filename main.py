@@ -38149,6 +38149,16 @@ try:
         No admin key required (idempotent, read-only-ish via INSERT ON CONFLICT)."""
         from flask import jsonify
         import os, psycopg2
+        # r-status-taxonomy (2026-07-29): same single source of truth as
+        # routes/dcpi.py. THIRD WRITER — this handler is registered on the
+        # SAME URL as dcpi_bp.lite_recompute, so if the two disagreed about
+        # what "operational" means the published score would depend on which
+        # handler Werkzeug happened to resolve.
+        from util.status_taxonomy import (
+            operational_sql as _status_operational_sql,
+            pipeline_sql as _status_pipeline_sql,
+        )
+        _op_f, _pipe_f = _status_operational_sql(), _status_pipeline_sql()
         try:
             conn = psycopg2.connect(os.environ.get("DATABASE_URL"), connect_timeout=8)
             scored = 0
@@ -38167,14 +38177,17 @@ try:
                     conn.commit()
                 except Exception: pass
                 # Pull all US markets w/ >= 3 facilities + their state
-                cur.execute("""
+                cur.execute(f"""
                     SELECT LOWER(city), city, state,
                            COUNT(*) AS fac,
-                           COALESCE(SUM(power_mw), 0) AS op_mw,
-                           COALESCE(SUM(power_mw) FILTER (WHERE status IN ('construction','planned','permitting','Under Construction','Planned')), 0) AS pipe_mw
+                           COALESCE(SUM(power_mw) FILTER (WHERE {_op_f}), 0) AS op_mw,
+                           COALESCE(SUM(power_mw) FILTER (WHERE {_pipe_f}), 0) AS pipe_mw
                     FROM discovered_facilities
                     WHERE city IS NOT NULL AND city != ''
-                      AND state IS NOT NULL AND LENGTH(state) = 2 AND state ~ '^[A-Z]{2}$'
+                      -- {{2}} below is the f-string escape for the regex
+                      -- quantifier {{2}}; this query is an f-string so the
+                      -- status filters above come from util/status_taxonomy.
+                      AND state IS NOT NULL AND LENGTH(state) = 2 AND state ~ '^[A-Z]{{2}}$'
                       AND (country = 'US' OR country = 'USA')
                     GROUP BY LOWER(city), city, state
                     HAVING COUNT(*) >= 3
@@ -38189,8 +38202,17 @@ try:
                         cur.execute("SELECT AVG(price_cents_kwh)/100.0 FROM eia_electricity_rates WHERE state=%s AND sector='ALL' AND retrieved_at > NOW() - INTERVAL '365 days';", (state,))
                         kr = cur.fetchone()
                         kwh = float(kr[0]) if kr and kr[0] else None
-                        # Lite scoring
-                        pipe_ratio = (pipe_mw / op_mw) if op_mw > 0 else 0
+                        # Lite scoring. r-status-taxonomy (2026-07-29):
+                        # ratio is pipeline / TOTAL footprint. op_mw used to
+                        # be the total (it contained pipe_mw), so this
+                        # preserves the previous scale; keeping the corrected
+                        # op_mw as the denominator would invert the fix and
+                        # pin markets with real pipeline at constraint=100 →
+                        # AVOID. Identical to routes/dcpi.py::lite_recompute.
+                        op_mw = float(op_mw or 0)
+                        pipe_mw = float(pipe_mw or 0)
+                        _footprint_mw = op_mw + pipe_mw
+                        pipe_ratio = (pipe_mw / _footprint_mw) if _footprint_mw > 0 else 0
                         constraint = min(100, pipe_ratio * 150)
                         excess = 0
                         if kwh:

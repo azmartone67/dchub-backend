@@ -117,6 +117,21 @@ dcpi_bp = Blueprint("dcpi", __name__)
 # the same day. routes/site_valuation_engine.py imports this name too.
 from util.market_aliases import DCPI_METRO_ALIASES  # noqa: E402,F401
 
+# r-status-taxonomy (2026-07-29): the operational/pipeline vocabulary lives in
+# ONE module for the same reason DCPI_METRO_ALIASES does — every hand-copied
+# status literal in this repo drifted, and the copy in this file was the one
+# governing the published index. Fragments are built once at import (pure
+# string work over module constants — no DB, no I/O, no % in the output).
+from util.status_taxonomy import (  # noqa: E402
+    operational_sql as _status_operational_sql,
+    pipeline_sql as _status_pipeline_sql,
+    unclassified_sql as _status_unclassified_sql,
+    basis as _status_basis,
+)
+_SQL_OP_STATUS = _status_operational_sql()
+_SQL_PIPE_STATUS = _status_pipeline_sql()
+_SQL_UNK_STATUS = _status_unclassified_sql()
+
 
 
 def _canonical_first(slug, candidates):
@@ -2081,12 +2096,21 @@ def gather_metrics_for_market(market: tuple) -> dict:
             _is_us_market = (iso in _US_DCPI_ISOS) or not iso
             with _conn() as c, c.cursor() as cur:
                 if _is_us_market:
-                    cur.execute("""
+                    # r-status-taxonomy (2026-07-29): op_mw is an ALLOW-LIST
+                    # of in-service statuses, and pipe_mw an allow-list of
+                    # pre-service ones. The two are DISJOINT, so the 0.25 and
+                    # 0.15 index terms below now measure different megawatts.
+                    # Anything matching neither is summed separately into
+                    # unclassified_mw — never folded into operational, which
+                    # is what the old deny-list did with 'Announced'.
+                    cur.execute(f"""
                         SELECT COUNT(*) AS fac,
-                               COALESCE(SUM(power_mw), 0) AS op_mw,
-                               COALESCE(SUM(power_mw) FILTER (WHERE status IN
-                                 ('construction','planned','permitting',
-                                  'Under Construction','Planned')), 0) AS pipe_mw,
+                               COALESCE(SUM(power_mw) FILTER (WHERE
+                                 {_SQL_OP_STATUS}), 0) AS op_mw,
+                               COALESCE(SUM(power_mw) FILTER (WHERE
+                                 {_SQL_PIPE_STATUS}), 0) AS pipe_mw,
+                               COALESCE(SUM(power_mw) FILTER (WHERE
+                                 {_SQL_UNK_STATUS}), 0) AS unclassified_mw,
                                COUNT(DISTINCT provider) AS providers
                         FROM discovered_facilities
                         WHERE LOWER(city) = LOWER(%s) AND UPPER(COALESCE(state,'')) = %s
@@ -2095,13 +2119,19 @@ def gather_metrics_for_market(market: tuple) -> dict:
                     """, (name, (state or "").upper()))
                 else:
                     # Intl: city-level pooling, non-US rows only (keeps
-                    # Melbourne FL out of Melbourne AU).
-                    cur.execute("""
+                    # Melbourne FL out of Melbourne AU). Status handling is
+                    # byte-identical to the US branch above — the two queries
+                    # sit 14 lines apart and the unfiltered-op_mw bug was in
+                    # BOTH, so they must never define "operational"
+                    # differently again.
+                    cur.execute(f"""
                         SELECT COUNT(*) AS fac,
-                               COALESCE(SUM(power_mw), 0) AS op_mw,
-                               COALESCE(SUM(power_mw) FILTER (WHERE status IN
-                                 ('construction','planned','permitting',
-                                  'Under Construction','Planned')), 0) AS pipe_mw,
+                               COALESCE(SUM(power_mw) FILTER (WHERE
+                                 {_SQL_OP_STATUS}), 0) AS op_mw,
+                               COALESCE(SUM(power_mw) FILTER (WHERE
+                                 {_SQL_PIPE_STATUS}), 0) AS pipe_mw,
+                               COALESCE(SUM(power_mw) FILTER (WHERE
+                                 {_SQL_UNK_STATUS}), 0) AS unclassified_mw,
                                COUNT(DISTINCT provider) AS providers
                         FROM discovered_facilities
                         WHERE LOWER(city) = LOWER(%s)
@@ -2111,14 +2141,35 @@ def gather_metrics_for_market(market: tuple) -> dict:
             _fac = int((_fr[0] if _fr else 0) or 0)
             _op_mw = float((_fr[1] if _fr else 0) or 0)
             _pipe_mw = float((_fr[2] if _fr else 0) or 0)
-            _prov = int((_fr[3] if _fr else 0) or 0)
+            _unk_mw = float((_fr[3] if _fr else 0) or 0)
+            _prov = int((_fr[4] if _fr else 0) or 0)
             # Saturation index 0..1: facility density + installed load +
             # pipeline pressure (future demand) + operator diversity. Each
             # term is log-scaled — ln(1+v)/ln(1+ceiling) — so the difference
             # between 5 and 13 facilities is visible in the published output,
             # not just the difference between 0 and 80. Ceilings = "largest
-            # real metro" (Ashburn-class): 400 facilities / 8 GW installed /
-            # 5 GW pipeline / 40 distinct operators.
+            # real metro" (Ashburn-class): 400 facilities / 8 GW OPERATIONAL
+            # installed / 5 GW pipeline / 40 distinct operators.
+            #
+            # r-status-taxonomy (2026-07-29): NO DOUBLE-COUNT. _op_mw and
+            # _pipe_mw are disjoint status buckets, so the 0.25 term and the
+            # 0.15 term measure different megawatts. Until today _op_mw was an
+            # unfiltered SUM(power_mw) that CONTAINED _pipe_mw, and pipeline
+            # was therefore charged twice at a combined 0.40 weight while the
+            # word "operational" was published over a total. Measured live:
+            # 15% of the figure across the 60 exactly-measured markets was
+            # pipeline; 71% across the announced-heavy greenfield markets
+            # (richland-parish LA scored 5,000 MW of 'Planned' as built).
+            #
+            # The 8 GW ceiling is deliberately NOT rebased for the smaller
+            # _op_mw. Log scaling makes the term nearly inert to the change:
+            # halving _op_mw costs 0.077 of the term, 0.019 of the index, and
+            # the worst fully-measured market moved -0.077 with zero verdict
+            # flips anywhere in the 216 measured markets. Dropping the ceiling
+            # to 4 GW instead RAISES the term for every market and saturates
+            # everything above ~2 GW, re-cloning exactly the markets
+            # r-declone-2 separated — a far bigger score change than the
+            # defect it would be correcting.
             _sat = _clip(0.40 * _log_sat(_fac, 400.0)
                          + 0.25 * _log_sat(_op_mw, 8000.0)
                          + 0.15 * _log_sat(_pipe_mw, 5000.0)
@@ -2126,6 +2177,12 @@ def gather_metrics_for_market(market: tuple) -> dict:
             metrics["local_facility_count"] = _fac
             metrics["local_operational_mw"] = round(_op_mw, 1)
             metrics["local_pipeline_mw"] = round(_pipe_mw, 1)
+            # Rows matching NEITHER bucket. Kept visible rather than folded
+            # into operational: a status nobody mapped is unknown, not built.
+            # Reads 0.0 for every status observed in either table today, so a
+            # non-zero value means a producer invented a value — widen
+            # util/status_taxonomy, never a call site.
+            metrics["local_unclassified_mw"] = round(_unk_mw, 1)
             metrics["local_provider_count"] = _prov
             metrics["_saturation_index"] = round(_sat, 3)
             metrics["_saturation_scope"] = ("us_city_state" if _is_us_market
@@ -2221,8 +2278,17 @@ def gather_metrics_for_market(market: tuple) -> dict:
             "facility_count": metrics.get("local_facility_count"),
             "operational_mw": metrics.get("local_operational_mw"),
             "pipeline_mw": metrics.get("local_pipeline_mw"),
+            "unclassified_mw": metrics.get("local_unclassified_mw"),
             "provider_count": metrics.get("local_provider_count"),
             "match_scope": metrics.get("_saturation_scope"),
+            # r-status-taxonomy (2026-07-29): a figure called operational is
+            # only honest if the reader can see which rows produced it. Name
+            # the table, name the filter, name the values — the same house
+            # rule as capacity_basis / reserve_margin_basis. Plain lists and
+            # strings only, so the dict stays json.dumps-able into the
+            # data_basis_json JSONB column below.
+            "source_table": "discovered_facilities",
+            "status_basis": _status_basis(),
             "adjusts": ["queue_wait_months", "demand_growth_yoy_pct",
                         "btm_headroom_mw"],
             "basis": "iso_anchor_adjusted_by_local_dc_saturation",
@@ -2230,7 +2296,9 @@ def gather_metrics_for_market(market: tuple) -> dict:
                 "queue_wait ×(0.90+0.45×index), demand_growth +4pp×index, "
                 "btm_headroom ×(1−0.40×index); index is log-scaled from this "
                 "market's own discovered_facilities footprint "
-                "(count/MW/pipeline/operators) — deterministic, no noise"
+                "(count/MW/pipeline/operators) — deterministic, no noise. "
+                "operational_mw and pipeline_mw are DISJOINT status buckets "
+                "(util/status_taxonomy), so no megawatt is counted twice"
             ),
         }
     elif not _override_applied and metrics.get("local_facility_count") == 0:
@@ -7226,11 +7294,17 @@ def lite_recompute():
                     slug = m.get("slug") if isinstance(m, dict) else m
                     name = m.get("name") if isinstance(m, dict) else slug.replace("-", " ").title()
                     if not slug: continue
-                    # Pull facility stats
-                    cur.execute("""
+                    # Pull facility stats. r-status-taxonomy (2026-07-29):
+                    # SECOND WRITER — this path never calls
+                    # gather_metrics_for_market, so it carried its own copy of
+                    # the unfiltered SUM and the dead 5-string literal. It
+                    # upserts market_power_scores ON CONFLICT DO UPDATE, i.e.
+                    # it overwrites the full path's scores, so the two must
+                    # agree on what "operational" means.
+                    cur.execute(f"""
                         SELECT COUNT(*),
-                               COALESCE(SUM(power_mw), 0),
-                               COALESCE(SUM(power_mw) FILTER (WHERE status IN ('construction','planned','permitting','Under Construction','Planned')), 0),
+                               COALESCE(SUM(power_mw) FILTER (WHERE {_SQL_OP_STATUS}), 0),
+                               COALESCE(SUM(power_mw) FILTER (WHERE {_SQL_PIPE_STATUS}), 0),
                                COALESCE(MAX(state), 0)
                         FROM discovered_facilities
                         WHERE LOWER(city) = %s OR LOWER(city) LIKE %s;
@@ -7239,6 +7313,8 @@ def lite_recompute():
                     if not row: continue
                     fac, op_mw, pipe_mw, state = row
                     if not fac: continue
+                    op_mw = float(op_mw or 0)
+                    pipe_mw = float(pipe_mw or 0)
 
                     # $/kWh from state
                     cur.execute("""
@@ -7252,7 +7328,19 @@ def lite_recompute():
                     # Lite scoring (0-100 scale):
                     # constraint_score: high pipeline ratio → constrained
                     # excess_power_score: low pipeline + cheap kWh → opportunity
-                    pipe_ratio = (pipe_mw / op_mw) if op_mw > 0 else 0
+                    # r-status-taxonomy (2026-07-29): the denominator is
+                    # the market's TOTAL footprint, not op_mw. It MUST move
+                    # with the op_mw fix or the fix inverts here — op_mw used
+                    # to BE the total (pipeline included), so pipe/op already
+                    # meant "share of footprint that is pipeline" and stayed
+                    # bounded 0..1. Dividing the corrected, smaller op_mw into
+                    # pipe_mw instead multiplies the ratio ~2.6x and pins 7 of
+                    # the 20 measured movers at constraint=100 → AVOID.
+                    # Verified against the measured set: columbus, houston,
+                    # fort-worth, new-albany and albuquerque reproduce their
+                    # previous ratio to 3dp under this form.
+                    _footprint_mw = op_mw + pipe_mw
+                    pipe_ratio = (pipe_mw / _footprint_mw) if _footprint_mw > 0 else 0
                     constraint = min(100, pipe_ratio * 150)  # >0.67 ratio → max constraint
                     excess = 0
                     if kwh:
