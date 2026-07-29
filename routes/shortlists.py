@@ -8,7 +8,14 @@ baseline and gets an explicit drift delta per site — answering Grok's "did thi
 site get worse, or did the comparison set change?".
 
 Ownership is API-key-scoped (Grok's assumed default): a shortlist belongs to the
-key that created it; anonymous callers share a 'public' bucket.
+key that created it.
+
+★2026-07-29 (Persistence Master Shell #41, lane 1): anonymous callers used to
+share a 'public' bucket — one global namespace addressed by name, so any keyless
+agent could read or overwrite any other's shortlist. Keyless callers are now
+REFUSED with a claim_free_key instruction instead. Persistence across
+conversations requires durable identity, and a shared bucket provided neither
+privacy nor durability. See _owner().
 """
 import os
 import json
@@ -135,12 +142,57 @@ def _conn():
     return psycopg2.connect(_dsn())
 
 
+# Persistence Master Shell #41 lane 1 (2026-07-29).
+#
+# _owner() used to return the literal "public" for every keyless caller, so ALL
+# anonymous shortlists shared ONE namespace addressed by name — any anonymous
+# agent could read, overwrite or collide with any other's list by guessing
+# "my-sites". The tool's own response text tells the caller "Shortlist is scoped
+# to your API key", which was false for exactly the callers who needed to know
+# otherwise. It never caused an incident only because real anonymous saves
+# number one in 90 days, and that one was a probe from building the shell.
+#
+# The rejected fix was scoping keyless callers to X-MCP-Session. The gateway does
+# forward that header, so it would have compiled and an isolation test would have
+# passed — but session ids rotate per connection (of 7,933 sessions in 30d exactly
+# one recurred), so a session-scoped shortlist cannot survive to the next
+# conversation. That trades a cross-tenant bug for a silently useless feature:
+# saves appear to work, and the list is simply gone next time. Harder to notice,
+# no better for the user.
+#
+# Persistence requires durable identity. There is no third option, so a keyless
+# save must now REFUSE and convert — claim_free_key is one call with no email and
+# already exists for this. OWNER_REQUIRED is the sentinel; callers turn it into a
+# 401 carrying that instruction rather than writing to a shared bucket.
+OWNER_REQUIRED = None
+
+
 def _owner():
+    """Durable owner for the caller, or OWNER_REQUIRED (None) when keyless.
+
+    Returns None rather than raising so each call site keeps its own response
+    shape; every site MUST check for None before writing or reading.
+    """
     key = (request.headers.get("X-API-Key", "")
            or request.args.get("api_key", "")).strip()
     if not key:
-        return "public"
+        return OWNER_REQUIRED
     return "k_" + hashlib.sha256(key.encode()).hexdigest()[:24]
+
+
+def _owner_required_response():
+    """The honest 402-shaped refusal: what failed, and the one call that fixes it."""
+    return jsonify({
+        "ok": False,
+        "error": "identity_required",
+        "message": (
+            "Shortlists persist across conversations, which needs a durable key — "
+            "anonymous callers have none. Call the `claim_free_key` tool (no email, "
+            "one call), set the returned key as your X-API-Key header, and retry. "
+            "Your shortlist is then private to that key."
+        ),
+        "next_tool": "claim_free_key",
+    }), 401
 
 
 def _ensure_table():
@@ -191,6 +243,8 @@ def api_shortlist_save():
 
     _ensure_table()
     owner = _owner()
+    if owner is OWNER_REQUIRED:            # keyless -> convert, never share a bucket
+        return _owner_required_response()
     try:
         c = _conn()
         cur = c.cursor()
@@ -235,6 +289,8 @@ def api_shortlist_get():
         return jsonify(ok=False, _entity="error", error="name is required"), 400
     _ensure_table()
     owner = _owner()
+    if owner is OWNER_REQUIRED:            # keyless -> convert, never share a bucket
+        return _owner_required_response()
     try:
         c = _conn()
         cur = c.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
@@ -308,6 +364,8 @@ def api_shortlist_reallocate():
         return jsonify(ok=False, _entity="error", error="shortlist_name is required"), 400
     _ensure_table()
     owner = _owner()
+    if owner is OWNER_REQUIRED:            # keyless -> convert, never share a bucket
+        return _owner_required_response()
     try:
         from site_baseline import score_site, load_baseline
         load_baseline(force=True)
@@ -403,6 +461,8 @@ def api_shortlist_alert():
         return jsonify(ok=False, _entity="error", error="notify.webhook or notify.email is required"), 400
     _ensure_alert_table()
     owner = _owner()
+    if owner is OWNER_REQUIRED:            # keyless -> convert, never share a bucket
+        return _owner_required_response()
     try:
         c = _conn(); cur = c.cursor()
         cur.execute("""INSERT INTO shortlist_alerts
