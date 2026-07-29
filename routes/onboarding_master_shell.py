@@ -1,0 +1,340 @@
+"""Onboarding Master Shell (#43) — did the human who just paid us get looked
+after, end to end? (2026-07-29)
+
+★WHY THIS EXISTS. "White glove" in this codebase meant ONE thing: registry
+listing-copy propagation. Nothing watched the CUSTOMER. Answering "did this new
+customer get white-glove treatment?" for alexander@ryex.net (Starter $9, paid
+2026-07-29 14:35:08Z) meant opening Stripe and hand-querying four tables. What
+that found:
+
+  entitlements  PERFECT — mcp_conversions row, users.plan=starter, an ACTIVE
+                api_key and mcp_dev_keys.tier=paid, all inside ONE SECOND.
+  comms         BROKEN — FOUR welcome emails in THREE SECONDS (paid:mint, paid,
+                starter, founding:cohort_welcome), and NO Stripe receipt.
+  activation    UNKNOWN — and still is; see lane 3.
+
+And it was systemic, not one customer: rfontes / landry2 / mykemiller got 4
+each, eren / bryanseefeld 3 each.
+
+★THIS SHELL IS A MEASUREMENT SURFACE, NOT A CLAIM OF REPAIR. Read-only. It
+exists so the gap between "we provisioned them" and "we looked after them" is
+visible on every tick instead of being discovered by hand months later. Several
+lanes below are RED ON PURPOSE and name work that is NOT done. Do not read a
+green tick as "onboarding is fixed"; read the individual checks.
+
+Lanes:
+  1 ENTITLEMENT   money in -> access granted. The one thing that must never fail.
+  2 COMMUNICATION exactly ONE welcome, plus a receipt. Currently failing.
+  3 ACTIVATION    did they ever USE it. Currently UNMEASURABLE — declared, not
+                  faked as zero.
+  4 BILLING       refunds reversed, plan recorded, duplicate customers.
+  5 HUMAN TOUCH   does a person ever reach a new paying customer. Currently no.
+
+GET /admin/onboarding · /api/v1/admin/onboarding/master-tick
+Kill: ONBOARDING_SHELL_DISABLE=1
+"""
+from __future__ import annotations
+
+import os
+import logging
+
+from flask import Blueprint, Response, jsonify, request
+
+logger = logging.getLogger(__name__)
+onboarding_master_shell_bp = Blueprint("onboarding_master_shell", __name__)
+
+_LOOKBACK_DAYS = int(os.environ.get("ONBOARDING_SHELL_DAYS", "30"))
+
+
+def _admin_ok() -> bool:
+    sent = (request.headers.get("X-Admin-Key")
+            or request.args.get("admin_key") or "").strip()
+    expected = ((os.environ.get("DCHUB_ADMIN_KEY")
+                 or os.environ.get("DCHUB_INTERNAL_KEY") or "").strip())
+    return bool(sent) and sent == expected
+
+
+def _disabled() -> bool:
+    return (os.environ.get("ONBOARDING_SHELL_DISABLE") or "").strip() == "1"
+
+
+def _conn():
+    """Read replica — this shell only reads."""
+    try:
+        import psycopg2 as _pg
+        url = ((os.environ.get("NEON_REPLICA_URL") or "").strip()
+               or (os.environ.get("DATABASE_URL") or "").strip()
+               or (os.environ.get("NEON_DATABASE_URL") or "").strip())
+        if not url:
+            return None
+        c = _pg.connect(url, connect_timeout=8)
+        c.autocommit = True
+        return c
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[onboarding-shell] db connect failed: %s", str(e)[:120])
+        return None
+
+
+def _check(cid: str, name: str, passed, detail: str, critical: bool = False) -> dict:
+    return {"id": cid, "name": name, "pass": passed,
+            "detail": (detail or "")[:400], "critical": critical}
+
+
+def _lane_verdict(checks: list):
+    decided = [c for c in checks if c["pass"] is not None]
+    return all(c["pass"] for c in decided) if decided else None
+
+
+def _q(cur, sql, args=None):
+    try:
+        cur.execute(sql, args or ())
+        return cur.fetchall()
+    except Exception as e:  # noqa: BLE001
+        logger.debug("[onboarding-shell] query failed: %s", str(e)[:140])
+        return None
+
+
+def _payers(cur) -> list:
+    rows = _q(cur, """SELECT LOWER(user_email), MIN(created_at)
+                        FROM mcp_conversions
+                       WHERE created_at >= NOW() - make_interval(days => %s)
+                         AND user_email IS NOT NULL
+                         AND stripe_customer_id IS NOT NULL
+                         AND refunded_at IS NULL
+                       GROUP BY 1 ORDER BY 2 DESC LIMIT 100""",
+                (_LOOKBACK_DAYS,))
+    return rows or []
+
+
+# ── lane 1 · entitlement: money in -> access granted ──────────────────
+def _lane_entitlement(cur, payers) -> list:
+    out = []
+    if not payers:
+        return [_check("ent_any", "recent paying customers to check", None,
+                       f"no non-refunded payers in {_LOOKBACK_DAYS}d", critical=True)]
+    bad = []
+    for email, _ in payers:
+        r = _q(cur, """SELECT (SELECT COALESCE(plan,'') FROM users
+                                WHERE LOWER(email)=%s LIMIT 1),
+                              (SELECT COUNT(*) FROM api_keys
+                                WHERE user_id IN (SELECT id FROM users
+                                                   WHERE LOWER(email)=%s))""",
+               (email, email))
+        plan, nkeys = (r[0] if r else ("", 0))
+        if not (plan and plan != "free" and int(nkeys or 0) > 0):
+            bad.append(email)
+    out.append(_check(
+        "ent_provisioned", "every payer has a plan AND an active key",
+        not bad,
+        f"{len(payers)-len(bad)}/{len(payers)} fully provisioned"
+        + (f" — MISSING: {', '.join(bad[:4])}" if bad else
+           " — money in, access granted, no exceptions"),
+        critical=True))
+    return out
+
+
+# ── lane 2 · communication: exactly one welcome, and a receipt ────────
+def _lane_communication(cur, payers) -> list:
+    out = []
+    if not payers:
+        return [_check("com_any", "payers to check", None, "no recent payers")]
+    counts = {}
+    for email, _ in payers:
+        r = _q(cur, """SELECT COUNT(*) FROM welcome_email_log
+                        WHERE LOWER(email)=%s
+                          AND status IN ('sent','sent_via_resend')""", (email,))
+        counts[email] = int((r[0][0] if r else 0) or 0)
+    flooded = {e: n for e, n in counts.items() if n > 1}
+    silent = [e for e, n in counts.items() if n == 0]
+    out.append(_check(
+        "com_exactly_one", "each payer got EXACTLY ONE welcome email",
+        not flooded and not silent,
+        (f"{len(flooded)}/{len(counts)} got MORE than one "
+         f"({', '.join(f'{e.split(chr(64))[0]}={n}' for e, n in list(flooded.items())[:4])})"
+         if flooded else "")
+        + (f" · {len(silent)} got NONE" if silent else "")
+        or "one welcome each — correct",
+        critical=True))
+    # ★The dedupe guard is not missing, it is bypassed. Only ONE of four senders
+    # was fixed (#1907, the founding sender, which documented its own bypass).
+    out.append(_check(
+        "com_senders_guarded", "all welcome senders honour the 24h dedupe",
+        False,
+        "KNOWN GAP: 1 of 4 senders fixed (#1907). main.py ~14903 guards; "
+        "main.py ~15094 and the flask_mcp_endpoints.py:4048 second log row do "
+        "NOT. A guard senders opt out of is decoration. Editing the live "
+        "payment webhook was deliberately deferred, not forgotten.",
+        critical=True))
+    out.append(_check(
+        "com_receipt", "paying customers get a payment receipt",
+        False,
+        "KNOWN GAP: Stripe shows 'No receipts sent' for the 2026-07-29 Starter "
+        "sale. Four welcome emails, zero receipt. Enable Stripe receipt emails "
+        "or send one from the webhook.",
+        critical=False))
+    return out
+
+
+# ── lane 3 · activation: did they ever USE what they bought ───────────
+def _lane_activation(cur, payers) -> list:
+    # ★★DECLARED UNMEASURABLE, NOT REPORTED AS ZERO. `api_keys.key_prefix` is a
+    # short GENERIC prefix ("dchub_dev_"); it cannot equal mcp_call_log.api_key,
+    # and a LIKE on it would match every dev key on the platform. A naive join
+    # returns 0 calls for EVERY customer and reads as "nobody ever activated" —
+    # a false zero that would make a healthy customer base look dead. This
+    # codebase has shipped that bug four times (/health funnel, prewall
+    # projections, unreversed refunds, and my own first cut of this lane).
+    # A missing metric is honest; a fabricated zero is not.
+    linkable = None
+    r = _q(cur, """SELECT COUNT(*) FROM information_schema.columns
+                    WHERE table_name='api_keys'
+                      AND column_name IN ('key_hash','key_prefix')""")
+    if r:
+        linkable = int(r[0][0] or 0) > 0
+    return [
+        _check("act_link", "a customer -> API-key link exists that JOINS to "
+                           "mcp_call_log", False,
+               "UNMEASURABLE: api_keys.key_prefix is a generic prefix and does "
+               "not join to mcp_call_log.api_key. Until a real link exists, "
+               "'paid but never activated' — the single most important churn "
+               "signal for a $9/mo subscriber — cannot be answered at all. "
+               "THIS IS THE HIGHEST-VALUE REMAINING FIX.",
+               critical=True),
+        _check("act_columns", "api_keys carries a joinable key column",
+               linkable, f"key_hash/key_prefix present: {linkable}"),
+    ]
+
+
+# ── lane 4 · billing integrity ────────────────────────────────────────
+def _lane_billing(cur) -> list:
+    out = []
+    r = _q(cur, """SELECT COUNT(*) FROM information_schema.columns
+                    WHERE table_name='mcp_conversions' AND column_name='refunded_at'""")
+    has_ref = bool(r and int(r[0][0] or 0) > 0)
+    out.append(_check("bil_refunds", "refunds reverse in the ledger", has_ref,
+                      "refunded_at present — MRR reads exclude refunded sales"
+                      if has_ref else
+                      "refunded_at MISSING: refunded revenue counts forever",
+                      critical=True))
+    r = _q(cur, """SELECT COUNT(*) FROM mcp_conversions
+                    WHERE created_at >= NOW() - make_interval(days => %s)
+                      AND LOWER(COALESCE(plan_to,'')) IN ('','unknown')""",
+           (_LOOKBACK_DAYS,))
+    n_unknown = int((r[0][0] if r else 0) or 0)
+    out.append(_check(
+        "bil_plan_recorded", "every sale records WHICH plan was bought",
+        n_unknown == 0,
+        f"{n_unknown} conversion(s) in {_LOOKBACK_DAYS}d have plan_to "
+        f"unknown/blank — distorts plan-mix reporting (web subscription path)"
+        if n_unknown else "all sales carry a plan"))
+    out.append(_check(
+        "bil_dup_customers", "checkout reuses an existing Stripe customer",
+        None,
+        "PARTIAL: the dashboard checkout now reuses the customer id, but hosted "
+        "PAYMENT LINKS (how most people actually buy) never touch our code — "
+        "duplicates remain possible there. gabriel.zuckerman@nlr.gov reached 3 "
+        "customer records / 2 subscriptions that way."))
+    return out
+
+
+# ── lane 5 · human touch ──────────────────────────────────────────────
+def _lane_human(cur, payers) -> list:
+    return [_check(
+        "hum_outreach", "a PERSON reaches every new paying customer", False,
+        "KNOWN GAP: there is no human white-glove track. What exists is an "
+        "automated welcome cascade plus this detector. 'White glove' currently "
+        "means monitored, not attended. "
+        f"{len(payers)} payer(s) in {_LOOKBACK_DAYS}d received no human contact.",
+        critical=False)]
+
+
+def _run_tick() -> dict:
+    out = {"shell": "onboarding", "n": 43, "lookback_days": _LOOKBACK_DAYS,
+           "lanes": [], "note": (
+               "Read-only. Several checks are RED ON PURPOSE and name work that "
+               "is NOT done. A green tick would mean onboarding is attended, "
+               "not merely provisioned — read the individual checks.")}
+    c = _conn()
+    if c is None:
+        out["ok"] = False
+        out["error"] = "no_database"
+        return out
+    try:
+        with c.cursor() as cur:
+            payers = _payers(cur)
+            out["payers_checked"] = len(payers)
+            lanes = [
+                ("1 · entitlement — money in, access granted",
+                 _lane_entitlement(cur, payers)),
+                ("2 · communication — exactly one welcome, plus a receipt",
+                 _lane_communication(cur, payers)),
+                ("3 · activation — did they ever use it",
+                 _lane_activation(cur, payers)),
+                ("4 · billing integrity", _lane_billing(cur)),
+                ("5 · human touch", _lane_human(cur, payers)),
+            ]
+            for label, checks in lanes:
+                out["lanes"].append({
+                    "lane": label, "checks": checks,
+                    "pass": _lane_verdict(checks),
+                })
+    except Exception as e:  # noqa: BLE001
+        out["ok"] = False
+        out["error"] = str(e)[:200]
+        return out
+    finally:
+        try:
+            c.close()
+        except Exception:
+            pass
+    decided = [ln["pass"] for ln in out["lanes"] if ln["pass"] is not None]
+    out["lanes_pass"] = sum(1 for p in decided if p)
+    out["lanes_total"] = len(out["lanes"])
+    out["ok"] = True
+    return out
+
+
+@onboarding_master_shell_bp.route("/api/v1/admin/onboarding/master-tick",
+                                  methods=["GET"])
+def onboarding_tick():
+    if _disabled():
+        return jsonify(ok=False, error="disabled"), 404
+    if not _admin_ok():
+        return jsonify(ok=False, error="forbidden"), 403
+    return jsonify(_run_tick())
+
+
+@onboarding_master_shell_bp.route("/admin/onboarding", methods=["GET"])
+@onboarding_master_shell_bp.route("/api/v1/admin/onboarding", methods=["GET"])
+def onboarding_dashboard():
+    if _disabled():
+        return Response("onboarding shell disabled", status=404)
+    if not _admin_ok():
+        return Response("forbidden — X-Admin-Key or ?admin_key=", status=403)
+    p = _run_tick()
+
+    def chip(v):
+        if v is True:
+            return '<span style="color:#22c55e">PASS</span>'
+        if v is False:
+            return '<span style="color:#ef4444">FAIL</span>'
+        return '<span style="color:#eab308">n/a</span>'
+
+    rows = []
+    for ln in p.get("lanes", []):
+        rows.append(f'<h3>{ln["lane"]} — {chip(ln["pass"])}</h3><ul>')
+        for ch in ln["checks"]:
+            star = " ★" if ch.get("critical") else ""
+            rows.append(f'<li>{chip(ch["pass"])}{star} <b>{ch["name"]}</b><br>'
+                        f'<small>{ch["detail"]}</small></li>')
+        rows.append("</ul>")
+    body = "".join(rows)
+    return Response(
+        f"<html><body style='font-family:system-ui;background:#0b0b12;"
+        f"color:#e6e6f0;padding:24px;max-width:900px'>"
+        f"<h1>Onboarding Master Shell #43</h1>"
+        f"<p><small>{p.get('note','')}</small></p>"
+        f"<p>payers checked (last {p.get('lookback_days')}d): "
+        f"<b>{p.get('payers_checked','?')}</b> · lanes passing "
+        f"{p.get('lanes_pass','?')}/{p.get('lanes_total','?')}</p>{body}"
+        f"</body></html>", mimetype="text/html")
