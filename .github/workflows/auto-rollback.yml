@@ -156,8 +156,28 @@ jobs:
           # Do not rely on the runner image preinstalling requests — this path
           # only ever runs while production is broken.
           python3 -c 'import requests' 2>/dev/null || pip install --quiet requests
+          # ★ A DRILL PASSES --force AS WELL AS --dry-run, and the two are
+          # deliberately coupled here.
+          #
+          # --force only disables the anti-stacking guard, which refuses a
+          # rollback when the live deployment is younger than
+          # RAILWAY_ROLLBACK_MIN_AGE_S (600s). That guard exists so two actors
+          # reacting to one incident cannot roll back twice and land further
+          # back than anyone intended. Under --dry-run NOTHING is rolled back,
+          # so there is nothing to stack on and the guard protects nothing —
+          # it only stops the rehearsal from exercising target selection, which
+          # is the single thing a rehearsal exists to exercise.
+          #
+          # Measured 2026-07-29: a drill returned "live deployment is only 276s
+          # old — refusing to stack" and proved nothing. Waiting it out is not
+          # available either; main merges several times an hour, so each attempt
+          # reset the clock before the 600s elapsed.
+          #
+          # NEVER pass --force without --dry-run. On its own it authorises a
+          # real rollback that ignores the guard. tests/test_railway_rollback.py
+          # asserts this file never does that.
           MODE=""
-          if [ "$DRILL" = "true" ]; then MODE="--dry-run"; fi
+          if [ "$DRILL" = "true" ]; then MODE="--dry-run --force"; fi
           python3 scripts/railway_rollback.py $MODE --json > /tmp/rb.json 2>/tmp/rb.err
           RC=$?
           cat /tmp/rb.err
