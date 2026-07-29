@@ -16,6 +16,9 @@ from routes._iso_common import (
     parse_eia_v2_fuel_mix, scrub_url,
     persist_metrics, latest_for_iso, health_for_iso,
 )
+# ws2 (2026-07-29): one shared EIA-930 URL builder instead of a 5th copy of
+# the same query string. See routes/eia930.py.
+from routes.eia930 import eia930_url
 
 try:
     from dchub_heartbeat import heartbeat as _heartbeat
@@ -41,13 +44,13 @@ def _tva_urls():
     403 and we fall through, which is fine — the orchestrator just
     reports 0 rows for TVA.
     """
-    import os
-    eia_key = os.environ.get("EIA_API_KEY", "")
     return [
-        # EIA v2 — primary (api_key required; otherwise 403 → next URL)
-        f"https://api.eia.gov/v2/electricity/rto/fuel-type-data/data/?api_key={eia_key}&frequency=hourly&data[0]=value&facets[respondent][]=TVA&sort[0][column]=period&sort[0][direction]=desc&length=12",
+        # EIA v2 — primary (api_key required; otherwise 403 → next URL).
+        # ws2 (2026-07-29): built by routes/eia930.eia930_url; byte-identical
+        # to the literal that used to sit here.
+        eia930_url("TVA"),
         # EIA v2 region-data variant (different aggregation)
-        f"https://api.eia.gov/v2/electricity/rto/region-data/data/?api_key={eia_key}&frequency=hourly&data[0]=value&facets[respondent][]=TVA&sort[0][column]=period&sort[0][direction]=desc&length=24",
+        eia930_url("TVA", dataset="region-data", length=24),
         # Legacy EIA mirror — keeps returning 301/503 in 2026 but harmless to try last
         "https://www.eia.gov/electricity/data/eia930/api/region/TVA/fuel-type-data",
     ]

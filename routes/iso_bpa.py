@@ -16,6 +16,8 @@ from routes._iso_common import (
     parse_eia_v2_fuel_mix, scrub_url,
     persist_metrics, latest_for_iso, health_for_iso,
 )
+# ws2 (2026-07-29): one shared EIA-930 URL builder. See routes/eia930.py.
+from routes.eia930 import eia930_url
 
 try:
     from dchub_heartbeat import heartbeat as _heartbeat
@@ -39,11 +41,11 @@ def _bpa_urls():
     Fallbacks remain transmission.bpa.gov in case EIA upstream goes
     down — but the primary path is now EIA.
     """
-    import os
-    eia_key = os.environ.get("EIA_API_KEY", "")
     return [
-        # PRIMARY: api.eia.gov v2 BPAT region (fast from Railway, ~800ms)
-        f"https://api.eia.gov/v2/electricity/rto/fuel-type-data/data/?api_key={eia_key}&frequency=hourly&data[0]=value&facets[respondent][]=BPAT&sort[0][column]=period&sort[0][direction]=desc&length=12",
+        # PRIMARY: api.eia.gov v2 BPAT region (fast from Railway, ~800ms).
+        # ws2 (2026-07-29): built by routes/eia930.eia930_url, whose registry
+        # holds the BPA → BPAT divergence. Byte-identical to the old literal.
+        eia930_url("BPA"),
         # Fallback 1: small .aspx variant (~13KB)
         "https://transmission.bpa.gov/business/operations/Wind/baltwg.aspx?format=txt",
         # Fallback 2: larger raw text

@@ -35,9 +35,11 @@ import time
 from flask import Blueprint, jsonify, request
 
 from routes._iso_common import (
-    fetch_first_working, parse_eia_v2_fuel_mix, parse_json_numeric,
-    persist_metrics, latest_for_iso, health_for_iso, scrub_url,
+    persist_metrics, latest_for_iso, health_for_iso,
 )
+# ws2 (2026-07-29): the EIA-930 URL builder + fetch/parse now live in ONE
+# module instead of a per-extractor copy. See routes/eia930.py.
+from routes.eia930 import eia930_url, fetch_eia930_ba
 
 try:
     from dchub_heartbeat import heartbeat as _heartbeat
@@ -117,13 +119,12 @@ SOURCE_PREFIX = "eia-ba"
 
 def _eia_urls(eia_respondent: str):
     """EIA-930 v2 fuel-type-data for one balancing authority — same authed
-    endpoint + parser that fixed PJM/BPA, just a different respondent."""
-    key = os.environ.get("EIA_API_KEY", "")
-    return [
-        f"https://api.eia.gov/v2/electricity/rto/fuel-type-data/data/?api_key={key}"
-        f"&frequency=hourly&data[0]=value&facets[respondent][]={eia_respondent}"
-        f"&sort[0][column]=period&sort[0][direction]=desc&length=12",
-    ]
+    endpoint + parser that fixed PJM/BPA, just a different respondent.
+
+    ws2 (2026-07-29): the query string moved to routes/eia930.eia930_url, which
+    builds the byte-identical URL for all five EIA-930 extractors. Kept as a
+    thin shim so anything holding a URL list keeps working."""
+    return [eia930_url(eia_respondent)]
 
 
 def extract_one(ba: dict) -> dict:
@@ -133,22 +134,41 @@ def extract_one(ba: dict) -> dict:
     summary = {"code": code, "eia": eia, "name": ba["name"],
                "metrics_extracted": 0, "rows_inserted": 0}
     try:
-        text, url = fetch_first_working(_eia_urls(eia), ua="dchub-eia-ba/1.0", timeout=4, total_budget=5)
-        summary["fetched_url"] = scrub_url(url)  # hide api_key in echoed url
-        metrics = {}
-        if "api.eia.gov/v2/" in url:
-            metrics = parse_eia_v2_fuel_mix(text, prefix="fuel_")
-        if not metrics:
-            metrics = parse_json_numeric(text)
+        res = fetch_eia930_ba(eia, ua="dchub-eia-ba/1.0", timeout=4, total_budget=5)
+        summary["fetched_url"] = res.get("fetched_url")  # scrubbed by the adapter
+        # The EIA observation hour. grid_data does NOT store it — that table's
+        # timestamp column defaults to NOW() (routes/iso_ercot.py:67), i.e. the
+        # insert clock — so this is the only honest freshness basis we carry.
+        summary["eia_period"] = res.get("period")
+        summary["eia_cached"] = res.get("cached")
+        summary["eia_cache_age_s"] = res.get("cache_age_s")
+        if res.get("truncated_risk"):
+            summary["truncated_risk"] = True
+        if res.get("status") != "ok":
+            # The adapter never raises. Re-raise so a failed BA takes exactly
+            # the same path (status=error + failure heartbeat) it took when
+            # fetch_first_working raised — otherwise a dead fetch would
+            # heartbeat SUCCESS with 0 rows.
+            raise RuntimeError(f"eia930/{res.get('status')}: "
+                               + (res.get("error") or "no detail"))
+        metrics = res.get("metrics") or {}
+        # 2026-07-29: the old parse_json_numeric fallback is GONE. It only ran
+        # when the EIA v2 parser found nothing, and against an EIA v2 envelope
+        # it walks the response tree and emits junk keys like
+        # `response_data_0_value_mw` — garbage persisted under a real BA code.
+        # 0 metrics is now reported as 0, with a reason.
         summary["metrics_extracted"] = len(metrics)
         if not metrics:
-            summary["preview"] = (text or "")[:240]
+            summary["preview"] = res.get("preview")
+            summary["no_metrics_reason"] = res.get("no_metrics_reason")
         rows = persist_metrics(code, metrics)
         summary["rows_inserted"] = rows
         summary["status"] = "ok"
         _heartbeat(f"{SOURCE_PREFIX}-{code.lower()}", status="success",
                    rows_affected=rows, duration_ms=int((time.time()-started)*1000),
-                   metadata={"eia_respondent": eia, "metrics": len(metrics)})
+                   metadata={"eia_respondent": eia, "metrics": len(metrics),
+                             "eia_period": res.get("period"),
+                             "cached": res.get("cached")})
     except Exception as e:
         summary["status"] = "error"
         summary["error"] = f"{type(e).__name__}: {str(e)[:160]}"
@@ -167,11 +187,24 @@ def run_extraction() -> dict:
     started = time.time()
     with ThreadPoolExecutor(max_workers=24) as pool:
         results = list(pool.map(extract_one, _BAS))
+    # Two readings of "how many BAs worked", both reported rather than one
+    # picked: a BA can extract cleanly and still persist 0 rows (EIA publishes
+    # nothing for it, or every fuel was exactly 0). Collapsing those into one
+    # number is how a coverage claim drifts from the data.
     ok = sum(1 for r in results if r.get("status") == "ok" and r.get("rows_inserted", 0) > 0)
+    ran_ok = sum(1 for r in results if r.get("status") == "ok")
+    live = sum(1 for r in results if r.get("eia_cached") is False)
+    cached = sum(1 for r in results if r.get("eia_cached") is True)
     return {
         "iso": "UTILITY_BAS",
         "total_bas": len(_BAS),
-        "bas_with_data": ok,
+        "bas_with_data": ok,            # extracted AND persisted >= 1 row
+        "bas_extracted_ok": ran_ok,     # extractor ran clean (may be 0 rows)
+        "eia_calls_live": live,
+        "eia_calls_from_cache": cached,
+        "eia_cache_note": ("EIA-930 is hourly, data-pulse runs every 15 min; the "
+                           "cache is PER PROCESS (routes/eia930.py) so this counts "
+                           "one replica of two, not the fleet"),
         "rows_inserted": sum(r.get("rows_inserted", 0) for r in results),
         "duration_ms": int((time.time() - started) * 1000),
         "status": "ok" if ok else "partial",

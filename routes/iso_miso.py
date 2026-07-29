@@ -27,6 +27,8 @@ from routes._iso_common import (
     parse_eia_v2_fuel_mix, scrub_url,
     persist_metrics, latest_for_iso, health_for_iso,
 )
+# ws2 (2026-07-29): one shared EIA-930 URL builder. See routes/eia930.py.
+from routes.eia930 import eia930_url
 
 try:
     from dchub_heartbeat import heartbeat as _heartbeat
@@ -47,13 +49,11 @@ def _miso_urls():
     as of 2026-05-31 they return {"error": "no data"} (the public RTWD feed was
     retired), but we keep them so MISO auto-recovers if EIA upstream is down AND
     MISO ever re-opens the broker."""
-    eia_key = os.environ.get("EIA_API_KEY", "")
     return [
         # PRIMARY: api.eia.gov v2 MISO region (authenticated; parsed by
         # parse_eia_v2_fuel_mix in run_extraction, same as PJM/BPA).
-        f"https://api.eia.gov/v2/electricity/rto/fuel-type-data/data/?api_key={eia_key}"
-        f"&frequency=hourly&data[0]=value&facets[respondent][]=MISO"
-        f"&sort[0][column]=period&sort[0][direction]=desc&length=12",
+        # ws2 (2026-07-29): built by routes/eia930.eia930_url; byte-identical.
+        eia930_url("MISO"),
         # Fallback 1/2: MISO public Data Broker (currently "no data" — kept in
         # case MISO restores the public feed).
         "https://api.misoenergy.org/MISORTWDDataBroker/DataBrokerServices.asmx?messageType=getfuelmix&returnType=json",
