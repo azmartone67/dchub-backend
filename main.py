@@ -2415,6 +2415,17 @@ try:
     except Exception as _pers:
         import logging
         logging.getLogger(__name__).warning('persistence_master_shell wiring failed: %s', _pers)
+    # 2026-07-29: relay conversion watch — the agent->human->money funnel. The
+    # handoff link only began emitting 2026-07-28; this is how we find out whether
+    # it lands. GET /api/v1/admin/relay-watch
+    try:
+        from routes.relay_conversion_watch import register_relay_conversion_watch
+        register_relay_conversion_watch(app)
+        print("[main] relay_conversion_watch registered: GET /api/v1/admin/relay-watch",
+              flush=True)
+    except Exception as _relay:
+        import logging
+        logging.getLogger(__name__).warning('relay_conversion_watch wiring failed: %s', _relay)
     # 2026-07-28: Inventory-Acquisition master shell (#40) — how inventory actually
     # grows. Built after "16 feeds died on 2026-03-18" turned out to be ONE bulk
     # backfill at 03:29:40 that stamped first_seen on ~1,700 pre-existing rows.
