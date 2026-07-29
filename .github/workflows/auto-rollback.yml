@@ -353,6 +353,52 @@ jobs:
               `> waits for green CI deadlocks exactly when production is broken.`,
             ].join('\n');
 
+            // ★★2026-07-28: CLOSE SUPERSEDED DRILLS BEFORE OPENING A NEW ONE.
+            // This step only ever opened. Measured: 8 `drill` issues open and
+            // ZERO closed in the repo's entire history — drills fire every
+            // ~17 minutes, so the backlog grew forever. They were 8 of 19 open
+            // issues (42%), which is why the issue list looked like the brain
+            // had stopped closing things when its real actionable backlog was
+            // ~4. Rehearsal noise was drowning the signal.
+            //
+            // A drill is a REHEARSAL, not an incident: only the latest one
+            // carries information. Keep exactly one open (the newest, created
+            // below) and close the rest as superseded, with a comment so the
+            // trail stays auditable.
+            //
+            // ★Only touches label `drill`. REAL rollbacks are labelled
+            // `auto-rollback` and are never auto-closed — a genuine incident
+            // stays open until a human resolves it.
+            if (drill) {
+              try {
+                const prior = await github.rest.issues.listForRepo({
+                  owner: context.repo.owner,
+                  repo:  context.repo.repo,
+                  state: 'open',
+                  labels: 'drill',
+                  per_page: 100,
+                });
+                for (const iss of prior.data) {
+                  // listForRepo returns PRs too; issues have no pull_request key.
+                  if (iss.pull_request) continue;
+                  await github.rest.issues.createComment({
+                    owner: context.repo.owner, repo: context.repo.repo,
+                    issue_number: iss.number,
+                    body: `Superseded by a newer rollback drill (run ${runUrl}). Closing: a drill is a rehearsal, and only the latest one carries information.`,
+                  });
+                  await github.rest.issues.update({
+                    owner: context.repo.owner, repo: context.repo.repo,
+                    issue_number: iss.number,
+                    state: 'closed', state_reason: 'not_planned',
+                  });
+                }
+                core.info(`closed ${prior.data.length} superseded drill issue(s)`);
+              } catch (e) {
+                // Never fail the gate over housekeeping.
+                core.warning(`drill cleanup failed (non-fatal): ${e.message}`);
+              }
+            }
+
             await github.rest.issues.create({
               owner: context.repo.owner,
               repo:  context.repo.repo,
