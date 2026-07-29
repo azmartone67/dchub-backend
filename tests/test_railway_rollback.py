@@ -515,3 +515,37 @@ def test_both_styles_refused_names_both_headers(monkeypatch):
     msg = str(exc.value)
     assert "Not Authorized" in msg
     assert "bearer" in msg and "project" in msg, f"error hides what was tried: {msg}"
+
+
+# ── drill mode must rehearse, and must not authorise a real rollback ────────
+
+def _rollback_step_script():
+    wf = yaml.safe_load((WORKFLOWS / "auto-rollback.yml").read_text())
+    job = wf["jobs"]["check-and-rollback"]
+    step = next(s for s in job["steps"] if "railway_rollback.py" in (s.get("run") or ""))
+    return step["run"]
+
+
+def test_drill_bypasses_the_anti_stacking_guard():
+    """A dry run rolls nothing back, so the age guard only blocks the rehearsal.
+
+    Without --force a drill returns "live deployment is only Ns old — refusing
+    to stack" and never exercises target selection. Waiting it out is not
+    available: main merges several times an hour and each merge resets the clock.
+    """
+    run = _rollback_step_script()
+    assert "--dry-run --force" in run, \
+        "drill mode must pass --force so it can resolve a target on a fresh deployment"
+
+
+def test_force_is_never_passed_without_dry_run():
+    """★ MUST-FAIL control. --force alone authorises a real rollback that
+    ignores the anti-stacking guard — the exact double-rollback the guard was
+    added to prevent. It is only ever safe coupled to --dry-run."""
+    run = _rollback_step_script()
+    for line in run.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#") or "--force" not in stripped:
+            continue
+        assert "--dry-run" in stripped, \
+            f"--force appears without --dry-run, authorising a real forced rollback: {stripped!r}"
