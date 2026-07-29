@@ -2427,6 +2427,17 @@ try:
     # — a sixth read-only shell would BE the bug.
     # GET /admin/actuation · /api/v1/admin/actuation/master-tick
     # Kill: ACTUATION_SHELL_DISABLE=1
+    # Onboarding Master Shell (#43) — did the human who just paid get looked
+    # after? GET /admin/onboarding · /api/v1/admin/onboarding/master-tick
+    # Kill: ONBOARDING_SHELL_DISABLE=1
+    try:
+        from routes.onboarding_master_shell import onboarding_master_shell_bp
+        app.register_blueprint(onboarding_master_shell_bp)
+        print("[main] onboarding_master_shell_bp registered: GET /admin/onboarding", flush=True)
+    except Exception as _obs:
+        import logging as _l
+        _l.getLogger(__name__).warning("onboarding shell not registered: %s", str(_obs)[:140])
+
     try:
         from routes.actuation_master_shell import actuation_master_shell_bp
         app.register_blueprint(actuation_master_shell_bp)
