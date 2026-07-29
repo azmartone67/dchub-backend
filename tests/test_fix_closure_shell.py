@@ -95,15 +95,123 @@ def test_media_persist_is_daily_idempotent():
 
 # ── zone envelope, pinned ────────────────────────────────────────────
 
-def test_repo_fallback_list_matches_canon():
+def _fallback_tool_names():
+    """The tool names declared in worker.js MCP_FALLBACK_TOOLS, source order."""
     src = _read("worker.js")
     m = re.search(r"const MCP_FALLBACK_TOOLS = \[\n(.*?)\n\];", src, re.S)
     assert m, "MCP_FALLBACK_TOOLS array missing from worker.js"
-    n = len(re.findall(r'\{ name: "', m.group(1)))
-    canon = _read("ai_surface_canon.py")
-    want = int(re.search(r'"tools_advertised":\s*(\d+)', canon).group(1))
-    assert n == want, ("fallback list has %d entries, canon %d — the /mcp "
-                       "envelope reports this array's length" % (n, want))
+    names = re.findall(r'\{ name: "([^"]+)"', m.group(1))
+    assert names, "MCP_FALLBACK_TOOLS parsed to ZERO entries — the array shape "
+    return names
+
+
+def _canon_pinned():
+    """PINNED itself, not a regex over its source. ai_surface_canon is a leaf
+    module (constants + functions, no import-time network or DB), so importing
+    it is safe under the no-main rule — and a regex cannot honestly parse an
+    81-element list literal."""
+    import sys
+    if ROOT not in sys.path:
+        sys.path.insert(0, ROOT)
+    import ai_surface_canon
+    return ai_surface_canon.PINNED
+
+
+def test_repo_fallback_list_matches_canon():
+    """ARITY — the /mcp envelope reports this array's length."""
+    names = _fallback_tool_names()
+    want = _canon_pinned()["tools_advertised"]
+    assert len(names) == want, ("fallback list has %d entries, canon %d — the "
+                                "/mcp envelope reports this array's length"
+                                % (len(names), want))
+
+
+def test_canon_manifest_is_self_consistent():
+    """The count and the name list must move TOGETHER.
+
+    Without this, bumping tools_advertised and forgetting tool_manifest (or
+    vice versa) leaves the two canon fields disagreeing, and whichever one a
+    given consumer reads decides whether it sees the truth.
+    """
+    p = _canon_pinned()
+    manifest = p["tool_manifest"]
+    dupes = sorted({n for n in manifest if manifest.count(n) > 1})
+    assert not dupes, "duplicate names in canon tool_manifest: %s" % dupes
+    assert len(manifest) == p["tools_advertised"], (
+        "canon disagrees with itself: tool_manifest has %d names, "
+        "tools_advertised says %d" % (len(manifest), p["tools_advertised"]))
+
+
+def test_repo_fallback_membership_matches_canon_manifest():
+    """MEMBERSHIP — the half a count check cannot see.
+
+    ★2026-07-29 (shell #41 WS5): len(MCP_FALLBACK_TOOLS) == canon was the ONLY
+    assertion here, and it is green on a doubly-wrong manifest. The array
+    briefly held 81 entries against a live 81 while one member was MISSING and
+    a different one was EXTRA — arity matched, the served surface was wrong,
+    and the guard passed. Separately, get_hosting_capacity was live but absent
+    from the fallback list (live 81 / repo 80) and only arithmetic was ever
+    compared. Compare the SET.
+    """
+    names = _fallback_tool_names()
+    dupes = sorted({n for n in names if names.count(n) > 1})
+    assert not dupes, ("duplicate entries in MCP_FALLBACK_TOOLS: %s — a dupe "
+                       "inflates the count and can mask a missing tool" % dupes)
+
+    manifest = set(_canon_pinned()["tool_manifest"])
+    got = set(names)
+    missing = sorted(manifest - got)
+    extra = sorted(got - manifest)
+    assert not missing and not extra, (
+        "MCP_FALLBACK_TOOLS membership has drifted from canon tool_manifest.\n"
+        "  missing from worker.js: %s\n"
+        "  not in canon (extra)  : %s\n"
+        "Re-probe the live gate (POST %s, method tools/list) and sync BOTH "
+        "worker.js and PINNED[tool_manifest]/[tools_advertised]."
+        % (missing or "none", extra or "none", _canon_pinned()["mcp_endpoint"]))
+
+
+def test_flagship_tool_names_are_real_advertised_tools():
+    """tool_names is a curated FLAGSHIP subset (keyed to TOOL_RETURNS, rendered
+    into llms.txt) — every name in it must still be a tool we actually serve,
+    or the docs surface advertises something that no longer exists."""
+    p = _canon_pinned()
+    orphans = sorted(set(p["tool_names"]) - set(p["tool_manifest"]))
+    assert not orphans, ("flagship tool_names not in the advertised manifest: "
+                         "%s" % orphans)
+
+
+@pytest.mark.skipif(
+    os.environ.get("DCHUB_LIVE_MCP_CHECK") != "1",
+    reason=("live tools/list probe is opt-in (DCHUB_LIVE_MCP_CHECK=1); the unit "
+            "env is offline, so the pinned canon is the in-CI guard. NOTE: this "
+            "skip means repo+canon drifting TOGETHER from live is NOT covered "
+            "here — that is what the opt-in run catches."))
+def test_pinned_manifest_matches_live_tools_list():
+    """The pinned pair's blind spot: worker.js and canon can agree with each
+    other and both be behind the live gate. Run on demand after any tool ships:
+
+        DCHUB_LIVE_MCP_CHECK=1 python3 -m pytest tests/test_fix_closure_shell.py -k live
+    """
+    import sys
+    if ROOT not in sys.path:
+        sys.path.insert(0, ROOT)
+    import ai_surface_canon
+
+    try:
+        live = ai_surface_canon._mcp_tool_names()
+    except Exception as e:                       # transport, not a contract break
+        pytest.skip("MCP gate unreachable: %s" % str(e)[:120])
+    assert live, "tools/list returned no tools — probe shape broke, not the canon"
+
+    pinned = set(_canon_pinned()["tool_manifest"])
+    live_set = set(live)
+    assert live_set == pinned, (
+        "canon tool_manifest is behind the LIVE gate.\n"
+        "  live but not pinned: %s\n"
+        "  pinned but not live: %s"
+        % (sorted(live_set - pinned) or "none",
+           sorted(pinned - live_set) or "none"))
 
 
 def test_fallback_list_carries_the_seven_restored_tools():
