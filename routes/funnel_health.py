@@ -629,13 +629,18 @@ def _build_data() -> dict:
         # number would be contestable. The existing mrr_usd card already shows
         # the plan run-rate WITH its honest caveat. %-free SQL (no LIKE) to
         # dodge the _scalar empty-params %-substitution trap.
+        # ★2026-07-28: + refunded_at IS NULL. Must stay byte-identical in intent
+        # to canonical_funnel.conversions_30d_real — these two definitions are
+        # deliberately kept in lock-step, so a filter added to one belongs in the
+        # other. Refunds were never reversed anywhere until today.
         real_conv30 = _scalar(cur,
             "SELECT COUNT(*) FROM mcp_conversions "
             " WHERE created_at >= NOW() - INTERVAL '30 days' "
             "   AND stripe_customer_id IS NOT NULL "
             "   AND LOWER(COALESCE(plan_to,'')) NOT IN "
             "       ('comp','complimentary','research_seed_nlr','seed') "
-            "   AND LOWER(COALESCE(source,'')) <> 'seed'")
+            "   AND LOWER(COALESCE(source,'')) <> 'seed' "
+            "   AND refunded_at IS NULL")
         out["kpis"]["real_conversions_30d"] = (
             int(real_conv30) if real_conv30 is not None else None)
 

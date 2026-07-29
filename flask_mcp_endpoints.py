@@ -3590,6 +3590,111 @@ def stripe_webhook_mcp():
     # email regardless of event order — and best-effort link an existing
     # conversion row. Additive early-return: it does NOT insert a conversion
     # (subscription.created does), so there is no double-count.
+    # ★★2026-07-28: REFUNDS WERE NEVER REVERSED. mcp_conversions only ever grew;
+    # no Stripe refund event was handled at all (the webhook covered
+    # checkout.session.completed + customer.subscription.* + invoice.payment_failed
+    # and nothing else). A refunded sale therefore stayed in the ledger as revenue
+    # forever.
+    #
+    # This was not hypothetical: gabriel.zuckerman@nlr.gov was double-billed
+    # $3,000/yr across two customer records, the duplicate was refunded by hand in
+    # Stripe — and the ledger never learned. Two $3,000 rows then carried 77% of
+    # May and 96% of June's reported MRR, manufacturing an apparent 84% "collapse"
+    # into July that never happened. Every MRR figure read off this table was
+    # overstated by refunded revenue.
+    #
+    # Stamp the conversion instead of deleting it: a refund is a real event in the
+    # customer's history and the row is the audit trail. Reads exclude
+    # `refunded_at IS NOT NULL` (see canonical_funnel.py) rather than losing it.
+    # ★Match on stripe_customer_id — mcp_conversions carries no charge/invoice id.
+    if event_type in ("charge.refunded", "charge.refund.updated"):
+        try:
+            _obj = event["data"]["object"] if isinstance(event, dict) else event.data.object
+            _obj = dict(_obj) if not isinstance(_obj, dict) else _obj
+            # charge.refund.updated delivers a Refund; charge.refunded a Charge.
+            _cust = _obj.get("customer")
+            _refunded_cents = int(_obj.get("amount_refunded") or _obj.get("amount") or 0)
+            # ★★★NET THE REFUND OFF ANY KEPT CHARGE OF THE SAME AMOUNT before
+            # stamping. A customer's charge list contains their RECURRING monthly
+            # charges, not just the opening sale: cbraun@cbecommercial.com has
+            # SIX $99 charges on one customer — 4 kept, 1 refunded, 1 failed —
+            # i.e. an active monthly subscriber who had ONE month refunded.
+            # Stamping on the refund event alone would mark a live recurring
+            # customer as refunded and delete him from MRR, the mirror image of
+            # the bug this fixes. Only stamp when refunded charges of this amount
+            # OUTNUMBER kept ones. ★`status == 'succeeded'` is required for
+            # "kept" — a FAILED charge is not a payment and must not offset.
+            _net_refunded = True
+            try:
+                if _cust and _refunded_cents > 0:
+                    import stripe as _st_r
+                    _st_r.api_key = os.environ.get("STRIPE_SECRET_KEY", "")
+                    _chs = _st_r.Charge.list(customer=_cust, limit=100)
+                    _ref_n = sum(1 for _c2 in _chs.get("data", [])
+                                 if int(_c2.get("amount_refunded") or 0) == _refunded_cents)
+                    _kept_n = sum(1 for _c2 in _chs.get("data", [])
+                                  if int(_c2.get("amount_refunded") or 0) == 0
+                                  and _c2.get("status") == "succeeded"
+                                  and int(_c2.get("amount") or 0) == _refunded_cents)
+                    _net_refunded = _ref_n > _kept_n
+                    if not _net_refunded:
+                        print(f"↩️ [mcp webhook] refund for {_cust} "
+                              f"${_refunded_cents/100:.2f} is OFFSET by {_kept_n} kept "
+                              f"charge(s) of the same amount — customer still paying, "
+                              f"NOT stamping")
+            except Exception as _ne:
+                # Cannot verify → do NOT stamp. A missed stamp is recoverable
+                # with the backfill; a wrong one silently deletes revenue.
+                _net_refunded = False
+                print(f"⚠️ [mcp webhook] could not net-check refund for {_cust} "
+                      f"({str(_ne)[:80]}) — NOT stamping")
+
+            if _cust and _refunded_cents > 0 and _net_refunded:
+                with _pool.connection() as _c:
+                    with _c.cursor() as _cur:
+                        # ★★MATCH ON AMOUNT, NOT JUST CUSTOMER. A customer can
+                        # hold BOTH a refunded and a kept purchase — e.g.
+                        # bryanseefeld95@gmail.com has a $49 developer row that
+                        # was refunded and a $99 founding row that was NOT.
+                        # Stamping every unstamped row for the customer would
+                        # mark live revenue as refunded and UNDERSTATE MRR — the
+                        # mirror image of the bug this is fixing.
+                        # Stamp exactly ONE row: newest unstamped row whose
+                        # booked mrr_cents equals the refunded amount.
+                        # ★If nothing matches, stamp NOTHING and log loudly. A
+                        # missed stamp is recoverable via
+                        # backfill_conversion_refunds.py; a wrong stamp silently
+                        # deletes real revenue from every report.
+                        _cur.execute(
+                            """UPDATE mcp_conversions
+                                  SET refunded_at = NOW(),
+                                      refunded_cents = %s
+                                WHERE id = (
+                                    SELECT id FROM mcp_conversions
+                                     WHERE stripe_customer_id = %s
+                                       AND refunded_at IS NULL
+                                       AND COALESCE(mrr_cents, 0) = %s
+                                     ORDER BY created_at DESC
+                                     LIMIT 1)""",
+                            (_refunded_cents, _cust, _refunded_cents))
+                        _n = _cur.rowcount or 0
+                if _n:
+                    print(f"↩️ [mcp webhook] refund stamped: customer={_cust} "
+                          f"amount={_refunded_cents/100:.2f}")
+                else:
+                    print(f"⚠️ [mcp webhook] refund for customer={_cust} "
+                          f"amount={_refunded_cents/100:.2f} matched NO unstamped "
+                          f"conversion row — NOT guessing. Reconcile with "
+                          f"backfill_conversion_refunds.py")
+            else:
+                print(f"↩️ [mcp webhook] refund event with no customer/amount — "
+                      f"nothing to stamp")
+        except Exception as _re:
+            # Never 500 a Stripe webhook: Stripe retries, and a retry storm on a
+            # reporting-only stamp is worse than a missed stamp.
+            print(f"⚠️ [mcp webhook] refund stamp failed: {str(_re)[:160]}")
+        return jsonify({"received": True, "refund_handled": True}), 200
+
     if event_type == "checkout.session.completed":
         sess = event["data"]["object"] if isinstance(event, dict) else event.data.object
         sess = dict(sess) if not isinstance(sess, dict) else sess

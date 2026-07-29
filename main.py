@@ -13415,10 +13415,52 @@ def create_checkout_session():
 
     try:
         # Get user email
-        user_email = request.user.get('email', '')
+        # ★★2026-07-28: NORMALIZE, then REUSE the existing Stripe customer.
+        # gabriel.zuckerman@nlr.gov ended up with THREE customer records
+        # (gabriel.zuckerman@… and Gabriel.Zuckerman@… twice) and TWO $3,000/yr
+        # subscriptions — one of which had to be refunded by hand. Passing
+        # `customer_email=` makes Stripe mint a BRAND-NEW customer on every
+        # checkout: it does not look for an existing one. Re-checking-out is
+        # therefore enough to double-bill someone.
+        #
+        # ★Case was NOT the root cause, though it made the mess visible: Stripe's
+        # own customer search IS case-insensitive (verified live — searching
+        # either casing returns all three records), so `_detect_duplicate_active_subs`
+        # was never blind to it. Lowercasing is still correct hygiene for our own
+        # joins (`users.email`, mcp_conversions.user_email), but the fix that
+        # actually prevents the duplicate is reusing the customer id.
+        user_email = (request.user.get('email', '') or '').strip().lower()
+
+        # Find an existing customer for this email and pass `customer=` instead.
+        # Fail-soft: if the lookup errors we fall back to customer_email, i.e.
+        # exactly the old behaviour — a Stripe hiccup must never block a sale.
+        _existing_customer = None
+        try:
+            if user_email:
+                _found = stripe.Customer.search(
+                    query=f"email:'{user_email}'", limit=10)
+                _cands = [c for c in (_found.get('data') or [])]
+                if _cands:
+                    # Prefer a customer that already has a subscription, so we
+                    # attach to the live billing relationship rather than to an
+                    # abandoned-checkout shell (Gabriel had one of those too).
+                    def _has_sub(cid):
+                        try:
+                            s = stripe.Subscription.list(customer=cid,
+                                                         status='all', limit=1)
+                            return bool(s.get('data'))
+                        except Exception:
+                            return False
+                    _existing_customer = next(
+                        (c['id'] for c in _cands if _has_sub(c['id'])),
+                        _cands[0]['id'])
+        except Exception as _ce:
+            print(f"⚠️ [checkout] customer lookup failed, falling back to "
+                  f"customer_email: {str(_ce)[:120]}")
 
         checkout_session = stripe.checkout.Session.create(
-            customer_email=user_email,
+            **({'customer': _existing_customer} if _existing_customer
+               else {'customer_email': user_email}),
             payment_method_types=['card'],
             line_items=[{
                 'price': price_id,
