@@ -1824,6 +1824,19 @@ try:
     except Exception as _mdde_early:
         import logging
         logging.getLogger(__name__).warning('market_deep_dive wiring failed: %s', _mdde_early)
+    # r-ws3-methodology (2026-07-29): GET /api/v1/dcpi/methodology — the
+    # machine-readable DCPI method, emitted from util/dcpi_method.py (the same
+    # constants routes/dcpi.py scores with) rather than hand-written prose.
+    # MUST be registered here, not at EOF: late-line registration silently
+    # 404s in prod, and MUST live under /api/v1/dcpi/* — Cloudflare Pages
+    # intercepts /dcpi/* before Flask, which is precisely how the fabricated
+    # static /dcpi/methodology page went unvalidated by this repo.
+    try:
+        from routes.dcpi_methodology import dcpi_methodology_bp
+        app.register_blueprint(dcpi_methodology_bp)
+    except Exception as _dcpimeth_early:
+        import logging
+        logging.getLogger(__name__).warning('dcpi_methodology wiring failed: %s', _dcpimeth_early)
     # Phase relocate (2026-07-26): competitor_recon was registered late-line
     # (~36110) and silently failed in prod (same late-line pattern that bit
     # market_deep_dive/press_loop). Safe-zone registration, same recipe.

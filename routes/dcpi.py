@@ -249,6 +249,19 @@ def _ensure_tables():
         # writer changes, and readers that ignore it behave exactly as before.
         cur.execute("ALTER TABLE market_power_scores "
                     "ADD COLUMN IF NOT EXISTS signal_tier TEXT")
+        # r-ws3-methodology (2026-07-29): which VERSION of the method produced
+        # this row. market_power_scores is UPDATE-in-place and the only history
+        # is dcpi_daily_snapshots, so a methodology change restates the entire
+        # back series implicitly. Measured: on 2026-07-25 the local-granularity
+        # terms landed and phoenix's published excess jumped 34.8 -> 62.8 in a
+        # day; a subscriber had no way to learn the grid had not changed.
+        # Without this column a restatement is indistinguishable from a market
+        # move. Additive + nullable, same recipe as signal_tier: NULL means the
+        # row predates version stamping (or was written by a path that does not
+        # stamp) — readers surface NULL as unknown, never as the current
+        # version, which would backdate a claim we cannot make.
+        cur.execute("ALTER TABLE market_power_scores "
+                    "ADD COLUMN IF NOT EXISTS method_version TEXT")
         cur.execute("""
             CREATE TABLE IF NOT EXISTS dcpi_runs (
                 id           SERIAL PRIMARY KEY,
@@ -302,6 +315,14 @@ def _ensure_tables():
                     "ON dcpi_daily_snapshots(market_slug, snapshot_date DESC)")
         cur.execute("CREATE INDEX IF NOT EXISTS ix_dcpi_daily_snapshots_date "
                     "ON dcpi_daily_snapshots(snapshot_date DESC)")
+        # r-ws3-methodology (2026-07-29): dcpi_daily_snapshots is the OFFICIAL
+        # DCPI series — the only per-day history that exists. Stamping the
+        # method version on each point is what lets /history label a step
+        # change as a restatement rather than a market move. Additive +
+        # nullable; every existing point keeps NULL, which is honest (nobody
+        # recorded a version when they were written).
+        cur.execute("ALTER TABLE dcpi_daily_snapshots "
+                    "ADD COLUMN IF NOT EXISTS method_version TEXT")
         # r67 (2026-06-02): the scorer now reads the latest live grid_telemetry
         # row per ISO/zone (iso_grid_adapters.py writes it; the iso-data-pull
         # cron populates it every 20 min). That lookup is
@@ -691,9 +712,11 @@ def write_dcpi_snapshot() -> dict:
                 cur.execute("""
                     INSERT INTO dcpi_daily_snapshots
                         (snapshot_date, market_slug, market_name,
-                         excess_power_score, constraint_score, verdict)
+                         excess_power_score, constraint_score, verdict,
+                         method_version)
                     SELECT CURRENT_DATE, market_slug, market_name,
-                           excess_power_score, constraint_score, verdict
+                           excess_power_score, constraint_score, verdict,
+                           method_version
                       FROM market_power_scores
                      WHERE COALESCE(published, true) = true
                     ON CONFLICT (snapshot_date, market_slug) DO UPDATE
@@ -701,6 +724,7 @@ def write_dcpi_snapshot() -> dict:
                            excess_power_score = EXCLUDED.excess_power_score,
                            constraint_score   = EXCLUDED.constraint_score,
                            verdict            = EXCLUDED.verdict,
+                           method_version     = EXCLUDED.method_version,
                            captured_at        = NOW()
                 """)
                 rows = cur.rowcount
@@ -1445,26 +1469,115 @@ def _local_infra_metrics(lat, lon) -> dict:
     return dict(out)
 
 
+# ── r-ws3-methodology (2026-07-29) ──────────────────────────────────────
+# Every weight, ceiling, threshold and scoring-time default below now comes
+# from util/dcpi_method.py, which is ALSO what /api/v1/dcpi/methodology emits.
+# One object, two consumers — so a published weight and a scoring weight
+# cannot silently disagree. They did: the static /dcpi/methodology page
+# published a five-term excess formula whose terms exist nowhere in this
+# repo, and a NEUTRAL verdict band derive_verdict cannot emit.
+#
+# This is an extract-to-constant refactor ONLY. The arithmetic, the operand
+# order and the float literals are unchanged, so every score and verdict is
+# byte-identical — pinned by tests/test_dcpi_methodology.py, which reproduces
+# real published rows from the constants.
+#
+# Module-level import (not function-local) on purpose: util/dcpi_method has no
+# dependencies beyond the stdlib, and the same unguarded style is already used
+# for util.market_aliases and util.iso_taxonomy above. A lazy import inside the
+# scorer would run on every market of every recompute.
+from util.dcpi_method import (                       # noqa: E402
+    DCPI_METHOD_VERSION,
+    CONSTRAINT_INPUT_DEFAULTS as _C_DEF,
+    CONSTRAINT_CEILINGS as _C_CEIL,
+    CONSTRAINT_WEIGHTS as _C_W,
+    CONSTRAINT_EMERGENCY_POINTS_PER_EVENT as _C_EMERG_PTS,
+    CONSTRAINT_LOCAL_COMPETITION_BONUS as _C_LOCAL_BONUS,
+    EXCESS_INPUT_DEFAULTS as _E_DEF,
+    EXCESS_CEILINGS as _E_CEIL,
+    EXCESS_WEIGHTS as _E_W,
+    EXCESS_RESERVE_FLOOR_PCT as _E_RES_FLOOR,
+    EXCESS_RESERVE_SPAN_PCT as _E_RES_SPAN,
+    EXCESS_LOCAL_GRID_BONUS as _E_LOCAL_BONUS,
+    LOCAL_GRID_SUBSTATION_CEILING as _LG_SUB_CEIL,
+    LOCAL_GRID_SUBSTATION_POINTS as _LG_SUB_PTS,
+    LOCAL_GRID_KV_POINTS as _LG_KV_PTS,
+    LOCAL_GRID_GEN_CEILING as _LG_GEN_CEIL,
+    LOCAL_GRID_GEN_POINTS as _LG_GEN_PTS,
+    VERDICT_BANDS as _V_BANDS,
+    VERDICT_FALLBACK as _V_FALLBACK,
+    COMPOSITE_WEIGHTS as _CO_W,
+    COMPOSITE_TTP_CAP_MONTHS as _CO_TTP_CAP,
+    COMPOSITE_VERDICT_MULTIPLIERS as _CO_MULT,
+    COMPOSITE_DEFAULT_MULTIPLIER as _CO_MULT_DEFAULT,
+    SIGNAL_TIER as _METHOD_SIGNAL_TIER,
+)
+
+# r-ws3-methodology (2026-07-29): ONE definition of the signal-tier basis
+# string. It was hand-copied into four readers, and all four copies published
+# the same FALSE claim: that an unrecorded tier may mean the row "was written
+# by the lite recompute path". POST /api/v1/dcpi/lite-recompute iterates
+# MARKETS, which holds tuples, and raises AttributeError on every market inside
+# its own swallow-all `except` — it has written ZERO rows. A confidently wrong
+# reason is worse than no reason, so name only what is true.
+_SIGNAL_TIER_BASIS_RECORDED = "live_adapter_count_at_score_time"
+_SIGNAL_TIER_BASIS_UNRECORDED = (
+    "unrecorded: this row predates signal tiering, or was last written before "
+    "the current recompute — tier unknown, NOT low")
+
+
+def _signal_tier_basis(tier) -> str:
+    """Why this row's signal_tier reads the way it does. NEVER implies 'low'."""
+    return (_SIGNAL_TIER_BASIS_RECORDED if tier
+            else _SIGNAL_TIER_BASIS_UNRECORDED)
+
+
+def _attach_method_version(out: dict, row) -> dict:
+    """Publish method_version ONLY when the row actually carries the column.
+
+    An endpoint whose SELECT never asked for method_version would otherwise
+    emit `null`, which a reader would read as "no version was recorded" when
+    the truth is "this endpoint did not look". Absent means absent; null means
+    the writer recorded none. Those are different claims, so they get
+    different representations.
+    """
+    try:
+        if isinstance(row, dict) and "method_version" in row:
+            out["method_version"] = row.get("method_version") or None
+            out["method_doc"] = "/api/v1/dcpi/methodology"
+    except Exception:
+        pass
+    return out
+
+
 def compute_constraint_score(metrics: dict) -> float:
-    """High score = MORE constrained (avoid). 0..100."""
-    queue_wait_m = float(metrics.get("queue_wait_months") or 18)
-    reserve_pct  = float(metrics.get("reserve_margin_pct") or 12)
-    emergencies  = int(metrics.get("emergency_count_30d") or 0)
-    demand_yoy   = float(metrics.get("demand_growth_yoy_pct") or 3)
+    """High score = MORE constrained (avoid). 0..100.
+
+    Weights/ceilings: util.dcpi_method. Published: /api/v1/dcpi/methodology.
+    """
+    queue_wait_m = float(metrics.get("queue_wait_months") or _C_DEF["queue_wait_months"])
+    reserve_pct  = float(metrics.get("reserve_margin_pct") or _C_DEF["reserve_margin_pct"])
+    emergencies  = int(metrics.get("emergency_count_30d") or _C_DEF["emergency_count_30d"])
+    demand_yoy   = float(metrics.get("demand_growth_yoy_pct") or _C_DEF["demand_growth_yoy_pct"])
 
     # Wait > 36 months is critical
-    s_wait = _clip((queue_wait_m / 36.0) * 100, 0, 100)
+    s_wait = _clip((queue_wait_m / _C_CEIL["queue_wait_months"]) * 100, 0, 100)
     # Reserve < 13% is critical (NERC standard)
-    s_reserve = _clip((1 - (reserve_pct / 25.0)) * 100, 0, 100)
-    s_emerg = _clip(emergencies * 20, 0, 100)
-    s_demand = _clip((demand_yoy / 12.0) * 100, 0, 100)
+    s_reserve = _clip((1 - (reserve_pct / _C_CEIL["reserve_margin_pct"])) * 100, 0, 100)
+    # NOTE: emergency_count_30d is NEVER assigned anywhere in this module, so
+    # this term is a structural zero for every market at every signal tier —
+    # i.e. 20% of every constraint score. Published as a known limitation
+    # rather than quietly carried.
+    s_emerg = _clip(emergencies * _C_EMERG_PTS, 0, 100)
+    s_demand = _clip((demand_yoy / _C_CEIL["demand_growth_yoy_pct"]) * 100, 0, 100)
 
-    base = 0.4*s_wait + 0.25*s_reserve + 0.20*s_emerg + 0.15*s_demand
+    base = (_C_W["queue_wait"]*s_wait + _C_W["reserve_margin"]*s_reserve
+            + _C_W["emergencies"]*s_emerg + _C_W["demand_growth"]*s_demand)
     # r-local-granularity: local DC density competes for the same feeders and
     # queue positions — a bounded (<= +6) bump. Zero when the key is absent,
     # so callers that never gathered local terms score byte-identically.
-    s_local_comp = _clip((float(metrics.get("local_dc_count") or 0) / 40.0) * 100, 0, 100)
-    return round(_clip(base + 0.06 * s_local_comp, 0, 100) or 0, 1)
+    s_local_comp = _clip((float(metrics.get("local_dc_count") or 0) / _C_CEIL["local_dc_count"]) * 100, 0, 100)
+    return round(_clip(base + _C_LOCAL_BONUS * s_local_comp, 0, 100) or 0, 1)
 
 
 def compute_excess_power_score(metrics: dict) -> float:
@@ -1472,26 +1585,27 @@ def compute_excess_power_score(metrics: dict) -> float:
 
     The contrarian metric — what nobody else publishes.
     """
-    reserve_pct       = float(metrics.get("reserve_margin_pct") or 12)
-    gen_additions_mw  = float(metrics.get("gen_additions_12mo_mw") or 0)
-    curtailment_pct   = float(metrics.get("curtailment_pct") or 0)
-    queue_approval    = float(metrics.get("queue_approval_rate_pct") or 50)
-    stranded_mw       = float(metrics.get("stranded_capacity_mw") or 0)
-    btm_headroom_mw   = float(metrics.get("btm_headroom_mw") or 0)
+    reserve_pct       = float(metrics.get("reserve_margin_pct") or _E_DEF["reserve_margin_pct"])
+    gen_additions_mw  = float(metrics.get("gen_additions_12mo_mw") or _E_DEF["gen_additions_12mo_mw"])
+    curtailment_pct   = float(metrics.get("curtailment_pct") or _E_DEF["curtailment_pct"])
+    queue_approval    = float(metrics.get("queue_approval_rate_pct") or _E_DEF["queue_approval_rate_pct"])
+    stranded_mw       = float(metrics.get("stranded_capacity_mw") or _E_DEF["stranded_capacity_mw"])
+    btm_headroom_mw   = float(metrics.get("btm_headroom_mw") or _E_DEF["btm_headroom_mw"])
 
-    # Excess reserve above 18% counts as bonus
-    s_reserve  = _clip(((reserve_pct - 12) / 13.0) * 100, 0, 100)
+    # Reserve above the floor counts as a bonus, spread over the span
+    s_reserve  = _clip(((reserve_pct - _E_RES_FLOOR) / _E_RES_SPAN) * 100, 0, 100)
     # 5000+ MW additions in 12mo = 100
-    s_additions = _clip((gen_additions_mw / 5000.0) * 100, 0, 100)
+    s_additions = _clip((gen_additions_mw / _E_CEIL["gen_additions_12mo_mw"]) * 100, 0, 100)
     # 10%+ curtailment = a LOT of wasted power
-    s_curtail  = _clip((curtailment_pct / 10.0) * 100, 0, 100)
+    s_curtail  = _clip((curtailment_pct / _E_CEIL["curtailment_pct"]) * 100, 0, 100)
     s_approval = _clip(queue_approval, 0, 100)
     # 1000+ MW of stranded capacity = max signal
-    s_strand   = _clip((stranded_mw / 1000.0) * 100, 0, 100)
-    s_btm      = _clip((btm_headroom_mw / 500.0) * 100, 0, 100)
+    s_strand   = _clip((stranded_mw / _E_CEIL["stranded_capacity_mw"]) * 100, 0, 100)
+    s_btm      = _clip((btm_headroom_mw / _E_CEIL["btm_headroom_mw"]) * 100, 0, 100)
 
-    base = (0.20*s_reserve + 0.20*s_additions + 0.20*s_curtail +
-            0.15*s_approval + 0.15*s_strand + 0.10*s_btm)
+    base = (_E_W["reserve_margin"]*s_reserve + _E_W["gen_additions"]*s_additions
+            + _E_W["curtailment"]*s_curtail + _E_W["queue_approval"]*s_approval
+            + _E_W["stranded"]*s_strand + _E_W["btm_headroom"]*s_btm)
     # r-local-granularity: the market's OWN grid access — substation density
     # (40 km), HV class, and deliverable local generation (60 km, GLOBAL
     # gem_power so intl markets differentiate too). Bounded <= +8, additive
@@ -1499,16 +1613,30 @@ def compute_excess_power_score(metrics: dict) -> float:
     _subs = float(metrics.get("local_substation_count") or 0)
     _kv = float(metrics.get("local_max_kv") or 0)
     _gen = float(metrics.get("local_gen_mw") or 0)
-    s_local_grid = _clip((_subs / 300.0) * 55.0
-                         + (25.0 if _kv >= 345 else 12.0 if _kv >= 230 else 0.0)
-                         + (_gen / 3000.0) * 20.0, 0, 100)
-    return round(_clip(base + 0.08 * s_local_grid, 0, 100), 1)
+    # HV class points: first threshold met wins (345kV then 230kV), 0 below.
+    _kv_pts = 0.0
+    for _kv_threshold, _kv_award in _LG_KV_PTS:
+        if _kv >= _kv_threshold:
+            _kv_pts = _kv_award
+            break
+    s_local_grid = _clip((_subs / _LG_SUB_CEIL) * _LG_SUB_PTS
+                         + _kv_pts
+                         + (_gen / _LG_GEN_CEIL) * _LG_GEN_PTS, 0, 100)
+    return round(_clip(base + _E_LOCAL_BONUS * s_local_grid, 0, 100), 1)
 
 
 def derive_verdict(constraint: float, excess: float) -> str:
-    if excess >= 65 and constraint <= 50: return "BUILD"
-    if excess >= 50 and constraint <= 70: return "CAUTION"
-    return "AVOID"
+    """BUILD / CAUTION / AVOID. Bands: util.dcpi_method.VERDICT_BANDS.
+
+    There is deliberately NO 'NEUTRAL' band. The static /dcpi/methodology page
+    published one for months; it was never reachable from this function, which
+    is why 67% of published markets carried a verdict that page could not
+    produce.
+    """
+    for _label, _band in _V_BANDS:
+        if excess >= _band["excess_min"] and constraint <= _band["constraint_max"]:
+            return _label
+    return _V_FALLBACK
 
 
 def derive_composite_score(excess, constraint, ttp_months, verdict=None):
@@ -1539,16 +1667,17 @@ def derive_composite_score(excess, constraint, ttp_months, verdict=None):
       (100 - constraint):   30% (lower constraint = better)
       time-to-power factor: 10% (capped at 60 months)
     """
+    # r-ws3-methodology: weights + multipliers now come from util.dcpi_method,
+    # the same object /api/v1/dcpi/methodology publishes. routes/dcpi_explain.py
+    # still HAND-COPIES this multiplier table under a comment reading "If that
+    # changes, update here too" — that copy should import from here as well.
     e = float(excess or 0)
     c = float(constraint or 0)
-    t = min(float(ttp_months or 0), 60.0)
-    raw = (e * 0.6) + ((100 - c) * 0.3) + ((1 - t / 60.0) * 100 * 0.1)
-    multiplier = {
-        'BUILD':      1.00,
-        'CAUTION':    0.85,
-        'AVOID':      0.60,
-        'LOW_SIGNAL': 0.35,
-    }.get((verdict or '').upper(), 1.00)
+    t = min(float(ttp_months or 0), _CO_TTP_CAP)
+    raw = ((e * _CO_W["excess"])
+           + ((100 - c) * _CO_W["inverse_constraint"])
+           + ((1 - t / _CO_TTP_CAP) * 100 * _CO_W["time_to_power"]))
+    multiplier = _CO_MULT.get((verdict or '').upper(), _CO_MULT_DEFAULT)
     composite = raw * multiplier
     return round(max(0.0, min(100.0, composite)), 1)
 
@@ -2008,10 +2137,32 @@ def gather_metrics_for_market(market: tuple) -> dict:
         f"{slug}-{_state_lc}" if _state_lc else None,  # "cheyenne-wy"  (hardcoded shape)
     ]
     _override_applied = False
+    _override_replaced_live: list[str] = []
     for _candidate in _slug_candidates:
         if _candidate and _candidate in slug_overrides:
-            metrics.update({k: v for k, v in slug_overrides[_candidate].items()
-                            if v is not None})
+            _ov = {k: v for k, v in slug_overrides[_candidate].items()
+                   if v is not None}
+            # ── r-ws3-methodology (2026-07-29): a hand-calibrated constant that
+            # REPLACES a live-read value must also revoke that field's "live"
+            # provenance label. This block runs AFTER the interconnect_queue
+            # read, and _live_fields was populated at that call site and never
+            # revoked — so the published data_basis_note listed
+            # queue_wait_months under "live" for every override market whose
+            # queue adapter had answered.
+            #
+            # Measured live 2026-07-29, before this fix:
+            #   phoenix — real queue depth 9,920 MW -> 12 + 0.6*9.92 = 18.0 mo,
+            #             overridden to 42.0, still published as live.
+            #   chicago — same shape, overridden to 36.0, still published live.
+            # That is a provenance lie on a published field, not a rounding
+            # issue: the number a reader was told came from a table came from
+            # a dict. Discarding the label is the correction; the VALUE is
+            # unchanged, so no score moves. Some markets will flip data_basis
+            # from "mixed" to "modeled_estimate" — that is the point.
+            _override_replaced_live = sorted(k for k in _ov if k in _live_fields)
+            for _k in _override_replaced_live:
+                _live_fields.discard(_k)
+            metrics.update(_ov)
             _override_applied = True
             break
 
@@ -2390,16 +2541,23 @@ def gather_metrics_for_market(market: tuple) -> dict:
         "live_fields": _live_used,
         "modeled_fields": _modeled_used,
         "iso_default_matched": _iso_default_matched,
+        # r-ws3-methodology (2026-07-29): fields where a live adapter DID
+        # answer but a hand-calibrated slug_override then replaced the value.
+        # The adapter still counts toward the tier (it genuinely returned
+        # data), but the field is no longer live, so the two facts are
+        # reported separately instead of one of them being silently wrong.
+        "override_replaced_live_fields": _override_replaced_live,
         "local_infra_rows": bool(any(_loc.values())),
         "reason": _tier_reason,
         "tier_rule": ("full = 3/3 live-capable adapters returned data; "
                       "partial = 1-2; low = 0, or the ISO fell through to the "
                       "WECC default"),
-        "always_modeled_inputs": [
-            "curtailment_pct", "queue_approval_rate_pct", "btm_headroom_mw",
-            "stranded_capacity_mw", "demand_growth_yoy_pct",
-        ],
-        "never_populated_inputs": ["emergency_count_30d"],
+        # r-ws3-methodology: derived from the published input registry rather
+        # than retyped here. These two lists were previously a hand-copy, i.e.
+        # the same drift mechanism that let the static methodology page
+        # describe a formula this file does not implement.
+        "always_modeled_inputs": list(_METHOD_SIGNAL_TIER["always_modeled_inputs"]),
+        "never_populated_inputs": list(_METHOD_SIGNAL_TIER["never_populated_inputs"]),
         "scope_note": ("'full' means every adapter that CAN be live was live — "
                        "NOT that every score input is measured. The fields in "
                        "always_modeled_inputs have no live source; "
@@ -2417,6 +2575,12 @@ def gather_metrics_for_market(market: tuple) -> dict:
     # (which .get() only the documented numeric keys) cannot see it, so every
     # score and verdict stays byte-identical.
     metrics["signal_tier"] = _tier
+    # r-ws3-methodology (2026-07-29): stamp the method that produced these
+    # inputs, so a later step change in the published series is attributable.
+    # Non-numeric, same as signal_tier → invisible to both scorers.
+    data_basis["method_version"] = DCPI_METHOD_VERSION
+    data_basis["method_doc"] = "/api/v1/dcpi/methodology"
+    metrics["method_version"] = DCPI_METHOD_VERSION
     metrics["data_basis"] = data_basis
 
     return metrics
@@ -2585,6 +2749,10 @@ def recompute_all_scores(source: str = "manual",
                 # scorer just derived. None when it somehow produced none —
                 # readers surface NULL as unknown, never as 'low'.
                 _signal_tier = metrics.get("signal_tier") or None
+                # r-ws3-methodology (2026-07-29): stamp the method version that
+                # produced this row. Read from metrics (not the module constant)
+                # so a row can never claim a version the scorer did not run.
+                _method_version = metrics.get("method_version") or None
                 # r-iso-taxonomy (2026-07-28): classify the label we're about
                 # to write. Derived, never stored independently, so iso and
                 # iso_type cannot drift apart.
@@ -2599,7 +2767,7 @@ def recompute_all_scores(source: str = "manual",
                     metrics.get("stranded_capacity_mw"),
                     metrics.get("emergency_count_30d") or 0,
                     json.dumps(risks), json.dumps(opps), verdict,
-                    _data_basis_json, _signal_tier,
+                    _data_basis_json, _signal_tier, _method_version,
                 )
                 # lat/lon via COALESCE: _load_markets_dynamic emits (slug, name,
                 # state, iso, None, None) for the ~200 dynamic markets, so a plain
@@ -2616,7 +2784,7 @@ def recompute_all_scores(source: str = "manual",
                         gen_additions_12mo_mw=%s, curtailment_pct=%s, stranded_capacity_mw=%s,
                         emergency_count_30d=%s,
                         top_risks_json=%s, top_opportunities_json=%s, verdict=%s,
-                        data_basis_json=%s, signal_tier=%s,
+                        data_basis_json=%s, signal_tier=%s, method_version=%s,
                         computed_at=NOW()
                     WHERE market_slug=%s
                 """, _vals + (slug,))
@@ -2639,10 +2807,10 @@ def recompute_all_scores(source: str = "manual",
                             gen_additions_12mo_mw, curtailment_pct, stranded_capacity_mw,
                             emergency_count_30d,
                             top_risks_json, top_opportunities_json, verdict,
-                            data_basis_json, signal_tier,
+                            data_basis_json, signal_tier, method_version,
                             market_slug, published, computed_at
                         )
-                        VALUES (%s,%s,%s,%s, %s,%s, %s,%s,%s, %s,%s,%s, %s,%s,%s, %s, %s,%s,%s, %s,%s, %s, TRUE, NOW())
+                        VALUES (%s,%s,%s,%s, %s,%s, %s,%s,%s, %s,%s,%s, %s,%s,%s, %s, %s,%s,%s, %s,%s,%s, %s, TRUE, NOW())
                     """, _vals + (slug,))
                 c.commit()
             scored += 1
@@ -2896,10 +3064,19 @@ def _fetch_scores_rows() -> list:
         # measurement we did not take.
         _st = r.get("signal_tier") or None
         r["signal_tier"] = _st
-        r["signal_tier_basis"] = (
-            "live_adapter_count_at_score_time" if _st else
-            "unrecorded: row predates signal tiering or was written by the "
-            "lite recompute path — tier unknown, not low")
+        # r-ws3-methodology (2026-07-29): the previous basis string blamed "the
+        # lite recompute path" for unrecorded tiers. That claim is FALSE and
+        # was published on every masked row: POST /api/v1/dcpi/lite-recompute
+        # iterates MARKETS, which holds tuples, and raises AttributeError on
+        # every market inside its own swallow-all — it has written zero rows.
+        # A wrong reason is worse than no reason, so name only what is true.
+        r["signal_tier_basis"] = _signal_tier_basis(_st)
+        # r-ws3-methodology: which version of the scoring method produced this
+        # row. NULL on rows written before version stamping — surfaced as
+        # unknown, never backfilled to the current version, which would
+        # backdate a claim we cannot make. See /api/v1/dcpi/methodology.
+        r["method_version"] = r.get("method_version") or None
+        r["method_doc"] = "/api/v1/dcpi/methodology"
         # r41-dcpi-composite (2026-05-25): include a sortable single-number
         # composite_score so agents can rank markets without recombining
         # the three components themselves. See derive_composite_score().
@@ -3276,10 +3453,7 @@ def api_score_market(slug):
     # so that tool inherits the tier with no change of its own.
     _st = row.get("signal_tier") or None
     row["signal_tier"] = _st
-    row["signal_tier_basis"] = (
-        "live_adapter_count_at_score_time" if _st else
-        "unrecorded: row predates signal tiering or was written by the lite "
-        "recompute path — tier unknown, not low")
+    row["signal_tier_basis"] = _signal_tier_basis(_st)
     row["signal_tier_note"] = (
         "full = all 3 live-capable adapters (interconnect_queue, "
         "planned_generators, grid_telemetry) returned data; partial = 1-2; "
@@ -3317,23 +3491,43 @@ def api_score_market(slug):
         except Exception:
             pass
 
-    # r43-C (2026-05-27): forecast block — linear trend extrapolation
-    # from the last 30 days of market_power_scores history. Adds the
-    # "where will this market be in 6/12/24 months?" question that
-    # CBRE/JLL gate behind their H2 outlook reports. Skipped if there
-    # aren't enough historical samples (<3 data points in 30d).
+    # r43-C (2026-05-27): forecast block — linear trend extrapolation from the
+    # last 30 days of DCPI history. Skipped if there aren't enough samples
+    # (<3 data points in 30d).
+    #
+    # r-ws3-methodology (2026-07-29): repointed from market_power_scores to
+    # dcpi_daily_snapshots. market_power_scores is UPDATE-in-place with
+    # computed_at=NOW() — it holds EXACTLY ONE row per slug, forever — so this
+    # query could only ever return 1 sample and _compute_forecast returned
+    # insufficient_history for every market, permanently. Verified live on
+    # midland-tx: samples_in_30d = 1, while /api/v1/dcpi/history returned 53
+    # real points for the same market from dcpi_daily_snapshots. api_history
+    # was repointed at r80; this endpoint was the straggler.
+    #
+    #  - snapshot_date::timestamptz AS computed_at: _compute_forecast keys on
+    #    "computed_at" and reads .tzinfo, so a bare DATE would raise inside the
+    #    swallow below and silently re-break the block.
+    #  - time_to_power_months is not snapshotted. Emitting NULL is correct:
+    #    _trend() drops None values and _project_ttp returns None, so the TTP
+    #    projection reads UNMEASURED rather than a fabricated 0. The
+    #    excess/constraint guard is unaffected.
     try:
         with _conn() as c2, c2.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur2:
             cur2.execute("""
-                SELECT computed_at, excess_power_score, constraint_score,
-                       time_to_power_months
-                  FROM market_power_scores
+                SELECT snapshot_date::timestamptz AS computed_at,
+                       excess_power_score, constraint_score,
+                       NULL::real AS time_to_power_months
+                  FROM dcpi_daily_snapshots
                  WHERE market_slug = %s
-                   AND computed_at >= NOW() - INTERVAL '30 days'
-                 ORDER BY computed_at ASC
+                   AND snapshot_date > CURRENT_DATE - INTERVAL '30 days'
+                 ORDER BY snapshot_date ASC
             """, (slug,))
             hist = cur2.fetchall() or []
         row["forecast"] = _compute_forecast(hist, row)
+        if isinstance(row.get("forecast"), dict):
+            row["forecast"]["history_source"] = "dcpi_daily_snapshots"
+            row["forecast"]["time_to_power_projection"] = (
+                "unavailable — time_to_power_months is not snapshotted daily")
     except Exception:
         row["forecast"] = {"available": False, "reason": "history_query_failed"}
 
@@ -3354,8 +3548,15 @@ def api_score_market(slug):
         attach_provenance(
             row,
             source="DC Hub Power Index (DCPI) — market_power_scores",
-            method=("DCPI daily scoring (see data_basis/data_basis_source for "
-                    "the score's input basis); signal_tier="
+            # r-ws3-methodology (2026-07-29): carry the method VERSION, not just
+            # a prose string. A citation that cannot name the method version is
+            # not reproducible, because DCPI scores are UPDATE-in-place and a
+            # methodology change restates the whole back series.
+            method=("DCPI scoring method_version="
+                    + str(row.get("method_version") or "unrecorded")
+                    + " (full method: /api/v1/dcpi/methodology); see "
+                    "data_basis/data_basis_source for the score's input "
+                    "basis; signal_tier="
                     + str(row.get("signal_tier") or "unrecorded")
                     + " (see signal_tier_note)"),
             as_of=row.get("computed_at"),
@@ -3431,13 +3632,18 @@ def _compute_forecast(history: list[dict], current: dict) -> dict:
         return round(max(0, v), 1)
 
     def _verdict_for(excess, constraint):
+        # r-ws3-methodology (2026-07-29): use the REAL verdict function.
+        # This helper previously hand-copied a THIRD set of bands
+        # (excess>=60 & constraint<40 -> BUILD) that disagreed with
+        # derive_verdict's published 65/50 — so "implied_verdict" and
+        # "verdict_change_from_now" could report a change that the actual
+        # scorer would never make. Same hand-copy bug class as the fabricated
+        # static methodology page. Safe to correct now: this block returned
+        # insufficient_history for every market until the history source was
+        # repointed in the same change, so no published forecast moves.
         if excess is None or constraint is None:
             return None
-        if excess >= 60 and constraint < 40:
-            return "BUILD"
-        if excess < 30 or constraint > 70:
-            return "AVOID"
-        return "CAUTION"
+        return derive_verdict(constraint, excess)
 
     current_verdict = current.get("verdict")
     forecasts = {}
@@ -3794,14 +4000,14 @@ def api_dcpi_recommend():
             # result dicts, so it inherits nothing from the row automatically.
             # NULL tier stays NULL (unknown) with the reason attached.
             "signal_tier":           r.get("signal_tier") or None,
-            "signal_tier_basis":     (
-                "live_adapter_count_at_score_time" if r.get("signal_tier") else
-                "unrecorded: row predates signal tiering or was written by the "
-                "lite recompute path — tier unknown, not low"),
+            "signal_tier_basis":     _signal_tier_basis(r.get("signal_tier")),
             "as_of":                 (r["computed_at"].isoformat()
                                       if hasattr(r.get("computed_at"), "isoformat")
                                       else r.get("computed_at")),
         })
+        # r-ws3-methodology: only present when this endpoint's SELECT actually
+        # carried the column — absent != null. See _attach_method_version.
+        _attach_method_version(candidates[-1], r)
 
     # ── Step 6: rank by composite, then take top_n ──
     candidates.sort(key=lambda c: -c["scores"]["composite"])
@@ -3962,10 +4168,8 @@ def api_movers():
             _r["computed_at"] = _r["computed_at"].isoformat()
         _st = _r.get("signal_tier") or None
         _r["signal_tier"] = _st
-        _r["signal_tier_basis"] = (
-            "live_adapter_count_at_score_time" if _st else
-            "unrecorded: row predates signal tiering or was written by the "
-            "lite recompute path — tier unknown, not low")
+        _r["signal_tier_basis"] = _signal_tier_basis(_st)
+        _attach_method_version(_r, _r)
     # r-gate-everywhere (2026-06-27): null the numeric now/prev/delta scores for
     # non-paid (kept the market list + move-ranking order as the free teaser).
     _rows, _g = _dcpi_mask_rows(rows, extra=True)
@@ -4065,10 +4269,19 @@ def api_leaderboard():
         # the reason spelled out — never silently rendered as "low".
         _st = r.get("signal_tier") or None
         r["signal_tier"] = _st
-        r["signal_tier_basis"] = (
-            "live_adapter_count_at_score_time" if _st else
-            "unrecorded: row predates signal tiering or was written by the "
-            "lite recompute path — tier unknown, not low")
+        # r-ws3-methodology (2026-07-29): the previous basis string blamed "the
+        # lite recompute path" for unrecorded tiers. That claim is FALSE and
+        # was published on every masked row: POST /api/v1/dcpi/lite-recompute
+        # iterates MARKETS, which holds tuples, and raises AttributeError on
+        # every market inside its own swallow-all — it has written zero rows.
+        # A wrong reason is worse than no reason, so name only what is true.
+        r["signal_tier_basis"] = _signal_tier_basis(_st)
+        # r-ws3-methodology: which version of the scoring method produced this
+        # row. NULL on rows written before version stamping — surfaced as
+        # unknown, never backfilled to the current version, which would
+        # backdate a claim we cannot make. See /api/v1/dcpi/methodology.
+        r["method_version"] = r.get("method_version") or None
+        r["method_doc"] = "/api/v1/dcpi/methodology"
         # Phase 297 (Phase P): add a deterministic reasoning chain so AI
         # agents and journalists can quote the WHY, not just the score.
         # Uses score thresholds from derive_verdict() — keeps reasoning

@@ -48,6 +48,7 @@ def _run_tier(adapters, iso_default_matched, iso="PJM"):
     shipped code starts reading a name this harness does not provide, the exec
     raises NameError and the test fails loudly rather than silently skipping.
     """
+    import util.dcpi_method as _dm
     ns = {
         "_adapters": dict(adapters),
         "_iso_default_matched": iso_default_matched,
@@ -57,6 +58,14 @@ def _run_tier(adapters, iso_default_matched, iso="PJM"):
         "_loc": {"local_substation_count": 0},
         "data_basis": {},
         "metrics": {},
+        # r-ws3-methodology (2026-07-29): two new free variables in the shipped
+        # snippet. _override_replaced_live records fields where a live adapter
+        # answered but a slug_override then replaced the value (the adapter
+        # still counts toward the tier; the FIELD is no longer live).
+        # _METHOD_SIGNAL_TIER replaces the hand-copied always_modeled /
+        # never_populated lists with the published input registry.
+        "_override_replaced_live": [],
+        "_METHOD_SIGNAL_TIER": _dm.SIGNAL_TIER,
     }
     exec(compile(_tier_block_src(), "<tier_block>", "exec"), ns, ns)
     return ns["data_basis"]["signal_tier"], ns["data_basis"]["signal_detail"]
@@ -218,13 +227,28 @@ def test_signal_tier_column_is_added_inside_the_advisory_lock():
 
 
 def test_null_tier_is_surfaced_as_unknown_never_as_low():
-    """A second writer (lite_recompute) upserts rows without a tier, and rows
-    predating the column have none. Coercing NULL to 'low' would publish a
-    measurement that was never taken, so every reader must emit null plus an
-    explicit basis. Checked on the emitted expression, not a comment."""
+    """Rows predating the column have no tier. Coercing NULL to 'low' would
+    publish a measurement that was never taken, so every reader must emit null
+    plus an explicit basis. Checked on the emitted expression, not a comment.
+
+    r-ws3-methodology (2026-07-29): the basis phrase used to be hand-copied
+    into four readers, and all four copies carried the same FALSE claim — that
+    an unrecorded tier might mean the row "was written by the lite recompute
+    path". That path iterates MARKETS (tuples) and raises AttributeError on
+    every market inside its own swallow-all; it has written zero rows. There is
+    now ONE definition and every reader calls it, so this test pins the shared
+    helper rather than counting copies of a string.
+    """
     src = _dcpi_src()
-    # Every reader builds its basis string from the same honest phrase.
-    assert src.count("tier unknown, not low") >= 5, src.count("tier unknown, not low")
+    assert "def _signal_tier_basis(" in src, \
+        "the basis string is hand-copied again instead of shared"
+    assert src.count("_SIGNAL_TIER_BASIS_UNRECORDED = (") == 1, \
+        "more than one definition of the unrecorded basis phrase"
+    assert src.count("_signal_tier_basis(") >= 5, \
+        "some reader still builds the basis string itself"
+    assert "tier unknown, NOT low" in src
+    # The retracted false attribution must not come back.
+    assert "lite recompute path — tier unknown" not in src
     # and none of them defaults the value itself to the string "low".
     assert 'signal_tier") or "low"' not in src
     assert "signal_tier'] or 'low'" not in src
