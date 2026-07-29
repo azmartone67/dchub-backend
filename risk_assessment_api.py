@@ -28,7 +28,13 @@ def get_cached(key, fetch_func):
         return None
 
 NOAA_BASE = "https://api.weather.gov"
-FEMA_BASE = "https://hazards.fema.gov/gis/nfhl/rest/services"
+# shell#41 WS5 (2026-07-29): the previous base
+# "https://hazards.fema.gov/gis/nfhl/rest/services" is DEAD — every request
+# returns HTTP 404 from WebSEAL, which is why /api/risk/flood-zone answered
+# {"flood_zone":"Unknown","error":"FEMA API unavailable"} for every point.
+# Live-probed working base (0.17-0.53 s/point); the layer path
+# /public/NFHL/MapServer/28/query and outFields below were already correct.
+FEMA_BASE = "https://hazards.fema.gov/arcgis/rest/services"
 
 def get_noaa_alerts(lat, lng):
     """Get active weather alerts for a location"""
@@ -130,18 +136,54 @@ def get_fema_flood_zone(lat, lng):
             features = data.get('features', [])
             if features:
                 attrs = features[0].get('attributes', {})
-                zone = attrs.get('FLD_ZONE', 'Unknown')
-                is_sfha = attrs.get('SFHA_TF', 'F') == 'T'
+                zone = attrs.get('FLD_ZONE') or 'Unknown'
+                subty = attrs.get('ZONE_SUBTY') or ''
+                sfha_flag = attrs.get('SFHA_TF')
+                if sfha_flag == 'T':
+                    coverage, is_sfha, risk = 'in_sfha', True, 'high'
+                elif str(zone).upper() == 'D' or 'UNDETERMINED' in str(subty).upper():
+                    # Zone D is "no analysis performed". Undetermined is NOT safe.
+                    coverage, is_sfha, risk = 'undetermined', None, None
+                elif sfha_flag == 'F':
+                    coverage, is_sfha = 'outside_sfha', False
+                    risk = 'low' if str(zone).upper() in ('X', 'C') else 'moderate'
+                else:
+                    # SFHA_TF absent: the old code read a missing flag as 'F'
+                    # (= not in the floodplain). A missing flag is unknown.
+                    coverage, is_sfha, risk = 'undetermined', None, None
                 return {
                     'flood_zone': zone,
+                    'zone_subtype': (subty or None),
+                    'coverage': coverage,
                     'special_flood_hazard_area': is_sfha,
                     'zone_description': get_flood_zone_description(zone),
-                    'flood_risk': 'high' if is_sfha else 'low' if zone in ['X', 'C'] else 'moderate'
+                    'flood_risk': risk,
                 }
-            return {'flood_zone': 'X', 'special_flood_hazard_area': False, 'flood_risk': 'low'}
-        return {'flood_zone': 'Unknown', 'error': 'FEMA API unavailable'}
+            # ★★ THE FIX (shell#41 WS5, 2026-07-29). This branch used to
+            # return {'flood_zone': 'X', 'special_flood_hazard_area': False,
+            # 'flood_risk': 'low'} — i.e. it converted "FEMA has NO COVERAGE
+            # here" into a confident "outside the floodplain". Proved live:
+            # HTTP 200 with features == [] comes back for Alaska interior
+            # (63.5, -149.5) AND for Ireland (53.0, -8.0), so the old code
+            # would certify an Irish site as outside the US 100-year
+            # floodplain. Wrong evidence is worse than no evidence. Third
+            # state, and it fails CLOSED for any exclude-floodplain filter.
+            return {
+                'flood_zone': None,
+                'coverage': 'unmapped',
+                'special_flood_hazard_area': None,
+                'flood_risk': None,
+                'zone_description': ('No FEMA NFHL coverage at this point — '
+                                     'flood status UNKNOWN, which is not the '
+                                     'same as "outside the floodplain"'),
+            }
+        return {'flood_zone': None, 'coverage': 'unknown',
+                'special_flood_hazard_area': None, 'flood_risk': None,
+                'error': 'FEMA API unavailable (HTTP %s)' % resp.status_code}
     except Exception as e:
-        return {'flood_zone': 'Unknown', 'error': str(e)}
+        return {'flood_zone': None, 'coverage': 'unknown',
+                'special_flood_hazard_area': None, 'flood_risk': None,
+                'error': str(e)[:200]}
 
 def get_flood_zone_description(zone):
     """Get description for FEMA flood zone codes"""

@@ -1824,6 +1824,13 @@ try:
     except Exception as _mdde_early:
         import logging
         logging.getLogger(__name__).warning('market_deep_dive wiring failed: %s', _mdde_early)
+    try:
+        from routes.cross_layer_sites import cross_layer_sites_bp
+        app.register_blueprint(cross_layer_sites_bp)
+    except Exception as _xls_early:
+        import logging
+        logging.getLogger(__name__).warning('cross_layer_sites wiring failed: %s', _xls_early)
+    # Powered Land Gas Pricing (2026-06-04, Phase 1 spine):
     # r-ws3-methodology (2026-07-29): GET /api/v1/dcpi/methodology — the
     # machine-readable DCPI method, emitted from util/dcpi_method.py (the same
     # constants routes/dcpi.py scores with) rather than hand-written prose.

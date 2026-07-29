@@ -116,23 +116,57 @@ indexes = [
     ("idx_transactions_region", 
      "CREATE INDEX IF NOT EXISTS idx_transactions_region ON transactions (region)"),
     
-    # Substations — already indexed by voltage, add geo index
-    ("idx_substations_geo", 
-     "CREATE INDEX IF NOT EXISTS idx_substations_geo ON substations (latitude, longitude) WHERE latitude IS NOT NULL"),
-    
-    # Gas pipelines — geo index for spatial queries  
-    ("idx_gas_pipelines_geo", 
-     "CREATE INDEX IF NOT EXISTS idx_gas_pipelines_geo ON gas_pipelines (latitude, longitude) WHERE latitude IS NOT NULL"),
+    # ★★ shell#41 WS5 (2026-07-29) — COLUMN-NAME CORRECTION. The three geo
+    # indexes below named `latitude, longitude` on tables whose LIVE columns
+    # are `lat, lng` (and `power_plants.lat, lon`), and every statement in this
+    # script runs inside a swallowing try/except (see the loop at the bottom),
+    # so all three have been failing SILENTLY. Live schema, read from
+    # /api/v1/admin/schema on 2026-07-29:
+    #   substations      → lat, lng      (NOT latitude/longitude)
+    #   gas_pipelines    → lat, lng      (a duplicate `lon` also exists)
+    #   power_plants     → lat, LON      (and the table is power_plants —
+    #                                     `discovered_power_plants` is not the
+    #                                     live table name)
+    # The same wrong names are still present at scripts/hifld_csv_loader.py:64
+    # and scripts/hifld_substations_loader.py:105.
+    # Corroborating timing (not proof — no EXPLAIN access):
+    # /api/v1/grid/transmission-proximity over EMPTY rural Montana at
+    # radius_km=10 costs 0.89-0.93 s against a 0.16-0.25 s /health baseline,
+    # and stays flat as radius grows to 200 km. Flat-cost-regardless-of-
+    # selectivity over 126,840 rows is the seq-scan signature.
+    # DO NOT run this script from a boot path (DDL storms are a filed
+    # incident); run it as an admin one-shot and ASSERT afterwards — see the
+    # pg_indexes verification block below. CREATE INDEX CONCURRENTLY cannot
+    # run inside a transaction, which is why this script sets autocommit=True.
+    ("idx_substations_lat_lng",
+     "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_substations_lat_lng ON substations (lat, lng) WHERE lat IS NOT NULL AND lng IS NOT NULL"),
 
-    # r-facility-resolver (2026-07-14): the /api/v1/gas-pipelines sort (deals_routes.py:1095
-    # ORDER BY diameter_inches DESC NULLS LAST) was a full-table sort without this.
+    # Gas pipelines — geo index for spatial queries (live cols: lat, lng)
+    ("idx_gas_pipelines_lat_lng",
+     "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_gas_pipelines_lat_lng ON gas_pipelines (lat, lng) WHERE lat IS NOT NULL"),
+
+    # WS5 cross-layer fiber + carrier proximity reads (set-wide bbox scans).
+    ("idx_fcc_fiber_hex_lat_lng",
+     "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_fcc_fiber_hex_lat_lng ON fcc_fiber_hex (lat, lng)"),
+    ("idx_cfp_lat_lng",
+     "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_cfp_lat_lng ON carrier_facility_presence (facility_lat, facility_lng)"),
+
+    # r-facility-resolver (2026-07-14): the /api/v1/gas-pipelines sort
+    # (deals_routes.py:1207 ORDER BY diameter_inches DESC NULLS LAST) was a
+    # full-table sort without this.
+    # ★ WS5 CAVEAT (2026-07-29): `diameter_inches` is populated on 0 of 400
+    # live rows, and the live schema carries a SECOND column `diameter_in`
+    # (double precision). Indexing an all-NULL column is a no-op, and the
+    # ORDER BY it supports is a no-op sort that promises "biggest pipeline
+    # first". Do NOT delete either without first checking which column holds
+    # the data — that check belongs in its own change, not this one.
     ("idx_gas_pipelines_diam",
      "CREATE INDEX IF NOT EXISTS idx_gas_pipelines_diam ON gas_pipelines (diameter_inches DESC NULLS LAST)"),
 
-    # Power plants — geo + capacity
-    ("idx_power_plants_geo", 
-     "CREATE INDEX IF NOT EXISTS idx_power_plants_geo ON discovered_power_plants (latitude, longitude) WHERE latitude IS NOT NULL"),
-    
+    # Power plants — geo + capacity (live table power_plants; cols lat, lon)
+    ("idx_power_plants_lat_lon",
+     "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_power_plants_lat_lon ON power_plants (lat, lon) WHERE lat IS NOT NULL"),
+
     # API keys — used on every authenticated request
     ("idx_api_keys_value", 
      "CREATE INDEX IF NOT EXISTS idx_api_keys_value ON api_keys (key_value) WHERE is_active = TRUE"),
@@ -188,6 +222,37 @@ for name, sql in indexes:
         print(f"  ⚠️ {name}: {str(e)[:80]}")
         failed += 1
 
+# ★ ASSERT the geo indexes actually exist (shell#41 WS5, 2026-07-29).
+# Every CREATE above sits inside a swallowing try/except — that is exactly how
+# idx_substations_geo / idx_gas_pipelines_geo / idx_power_plants_geo "existed"
+# for months while naming columns that do not. A creation loop that prints OK
+# is not evidence; pg_indexes is. This block is deliberately OUTSIDE the
+# try/except and drives a non-zero exit so a runner cannot report green on a
+# silent failure.
+print("\n--- Verifying Geo Indexes (pg_indexes) ---")
+_GEO_EXPECTED = [
+    ('substations',               'idx_substations_lat_lng'),
+    ('gas_pipelines',             'idx_gas_pipelines_lat_lng'),
+    ('fcc_fiber_hex',             'idx_fcc_fiber_hex_lat_lng'),
+    ('carrier_facility_presence', 'idx_cfp_lat_lng'),
+    ('power_plants',              'idx_power_plants_lat_lon'),
+]
+_geo_missing = []
+for _tbl, _idx in _GEO_EXPECTED:
+    try:
+        cur.execute(
+            "SELECT indexdef FROM pg_indexes WHERE tablename = %s AND indexname = %s",
+            (_tbl, _idx))
+        _row = cur.fetchone()
+    except Exception as _e:
+        _row = None
+        print(f"  warn {_idx}: verification query failed: {str(_e)[:80]}")
+    if _row and ('lat' in _row[0]):
+        print(f"  OK   {_idx} present on {_tbl}")
+    else:
+        _geo_missing.append(f"{_tbl}.{_idx}")
+        print(f"  FAIL {_idx} MISSING on {_tbl} — the CREATE was swallowed")
+
 # Analyze tables to update query planner statistics
 print("\n--- Analyzing Tables ---")
 for table in ['facilities', 'discovered_facilities', 'news_articles', 
@@ -206,6 +271,11 @@ conn.close()
 print(f"\n{'=' * 60}")
 print(f"SUMMARY: {created} created, {skipped} already existed, {failed} failed")
 print(f"{'=' * 60}")
+if _geo_missing:
+    # Non-zero exit so a runner cannot report green while the geo indexes are
+    # absent — the exact failure mode this script shipped with for months.
+    print(f"GEO INDEXES MISSING: {', '.join(_geo_missing)}")
+    sys.exit(1)
 print("""
 EXPECTED IMPACT:
   /api/v1/search:  5,210ms → <500ms (trigram index on name/provider/city)

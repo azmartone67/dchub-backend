@@ -497,12 +497,27 @@ def grid_headroom():
     try:
         lat       = float(request.args.get("lat",   39.7405))
         lon       = float(request.args.get("lon",  -105.1686))
-        state     = request.args.get("state", "CO").upper()
+        # ★ HONESTY FIX 2 (2026-07-29, shell#41 WS5): this used to be
+        #   state = request.args.get("state", "CO").upper()
+        # and the default LEAKED into the published response as
+        # location.state. Live-probed: Ashburn VA -> "CO", Austin TX -> "CO",
+        # Portland OR -> "CO" — a citable field that was wrong on 100% of
+        # calls that omitted ?state=. The arg is accepted for back-compat but
+        # is NEVER used as a location claim: _query_substations takes it and
+        # ignores it (nlr_intelligence.py:233-251 is a pure bbox), so the only
+        # defensible state is the one the NEAREST SUBSTATION reports for
+        # itself. Do NOT "fix" the substation query while you are in here —
+        # the headroom arithmetic was never affected by this bug.
+        state     = (request.args.get("state") or "").upper() or None
         radius_km = float(request.args.get("radius_km", 80))
     except (TypeError, ValueError) as e:
         return jsonify({"success": False, "error": str(e)}), 400
 
     subs = _query_substations(lat, lon, state, radius_km)
+    # Derived, never defaulted. UNMEASURED emits None.
+    _state_observed = (subs[0].get("state") if subs else None) or None
+    _state_basis = ("nearest_substation" if _state_observed
+                    else "unresolved — no substation in radius reported a state")
 
     top_subs = []
     total_mw = 0
@@ -536,7 +551,10 @@ def grid_headroom():
 
     result = {
         "success": True,
-        "location": {"lat": lat, "lon": lon, "state": state},
+        "location": {"lat": lat, "lon": lon,
+                     "state": _state_observed,
+                     "state_basis": _state_basis,
+                     **({"state_requested": state} if state else {})},
         "grid_headroom": {
             "substations_analyzed": len(subs),
             "radius_km": radius_km,
