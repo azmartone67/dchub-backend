@@ -81,15 +81,33 @@ _MAX_GAP_ONLY_PER_RUN = int(os.environ.get("COMPETITOR_GAP_MAX_GAP_ONLY", "150")
 #                          NOT inserted as facilities)
 #    "editorial_rss"    → DCD/DCF headlines (deal/expansion signal; routed to
 #                          NER + optional deal path, not bulk-inserted)
+# ★★★ORDERED BY YIELD, AND THAT ORDER IS LOAD-BEARING (2026-07-29).
+# The loop is time-capped (`COMPETITOR_GAP_BUDGET_S`, default 90s) and `break`s
+# when the budget runs out, so WHATEVER IS FIRST GETS THE BUDGET and the tail
+# may never run at all.
+#
+# It used to lead with `dchawk` + `dchawk_providers`. DCHawk mints ZERO
+# facilities BY DESIGN — its slug parser blends street+city so city/country come
+# back None and 100% of candidates die at `_is_geocodable` before the existence
+# diff (documented since 2026-07-02). Measured on a live run 2026-07-29: dchawk
+# parsed 500 URLs for `true_gaps 0 / inserted 0`, and the run then hit
+# `budget_exhausted` at `cloudscene_providers` — i.e. the crawler spent its
+# budget on a source that cannot produce, and Cloudscene, the only real yielder,
+# was starved.
+#
+# That is the most likely reason Cloudscene sat at 962 of 11,859 sitemap URLs
+# (8.1%) despite a sweep designed to tile the whole sitemap in ~24 daily runs.
+#
+# So: FACILITY-MINTING SOURCES FIRST, signal-only sources after.
+#   cloudscene            -> the ONLY source that mints facilities today
+#   cloudscene_providers  -> provider index (no facility inserts)
+#   dcf / dcd             -> editorial signal (no facility inserts)
+#   dchawk*               -> operator list + editorial signal ONLY; last,
+#                            because it is known to yield no facilities
+# ★If the budget clips the tail, we lose signal-only sources for that run — an
+# acceptable trade against starving the one source that grows inventory. Raise
+# `COMPETITOR_GAP_BUDGET_S` if the tail matters more than it currently does.
 _GAP_SOURCES = [
-    {"slug": "dchawk", "name": "DatacenterHawk",
-     "method": "dchawk_facility",
-     "url": "https://datacenterhawk.com/__sitemap__/facilities.xml",
-     "disallowed_prefixes": ("/data", "/admin", "/api", "/rest", "/iam")},
-    {"slug": "dchawk_providers", "name": "DatacenterHawk (providers)",
-     "method": "provider_index",
-     "url": "https://datacenterhawk.com/__sitemap__/providers.xml",
-     "disallowed_prefixes": ("/data", "/admin", "/api", "/rest", "/iam")},
     {"slug": "cloudscene", "name": "Cloudscene",
      "method": "cloudscene_dc",
      "url": "https://cloudscene.com/sitemap/data-centers.xml",
@@ -106,6 +124,14 @@ _GAP_SOURCES = [
      "method": "editorial_rss",
      "url": "https://www.datacenterdynamics.com/en/rss/",
      "disallowed_prefixes": ()},
+    {"slug": "dchawk", "name": "DatacenterHawk",
+     "method": "dchawk_facility",
+     "url": "https://datacenterhawk.com/__sitemap__/facilities.xml",
+     "disallowed_prefixes": ("/data", "/admin", "/api", "/rest", "/iam")},
+    {"slug": "dchawk_providers", "name": "DatacenterHawk (providers)",
+     "method": "provider_index",
+     "url": "https://datacenterhawk.com/__sitemap__/providers.xml",
+     "disallowed_prefixes": ("/data", "/admin", "/api", "/rest", "/iam")},
 ]
 
 
