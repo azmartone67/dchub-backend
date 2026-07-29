@@ -237,16 +237,45 @@ def lint_file(p, src):
             if 'f"' not in line and "f'" not in line:
                 add(p, i, 'url-format-typo', 'literal "%s" in URL — likely f-string')
 
-    for m in re.finditer(r"INSERT\s+INTO\s+(\w+)[^;\"']*", src, re.I):
-        if 'ON CONFLICT' in m.group(0).upper(): continue
-        tbl = m.group(1).lower()
-        if tbl in WHITELIST_TABLES: continue
-        line = src[:m.start()].count('\n') + 1
-        add(p, line, 'insert-no-on-conflict',
-            f'INSERT INTO {tbl} without ON CONFLICT')
+    # 2026-07-29: tests are exempt from insert-no-on-conflict. The rule exists
+    # to make production ingest idempotent, and a test that ASSERTS ON SQL TEXT
+    # necessarily contains SQL strings it never executes — the guard test for
+    # the WS6 capture block literally asserts "INSERT INTO interconnect_queue "
+    # is ABSENT from the capture path, and got flagged for containing the words.
+    # Flagging those trains people to whitelist the real table name, which is
+    # strictly worse: it would suppress genuine violations in production code.
+    _is_test = 'tests/' in str(p).replace(os.sep, '/') or p.name.startswith('test_')
+    if not _is_test:
+        for m in re.finditer(r"INSERT\s+INTO\s+(\w+)[^;\"']*", src, re.I):
+            if 'ON CONFLICT' in m.group(0).upper(): continue
+            tbl = m.group(1).lower()
+            if tbl in WHITELIST_TABLES: continue
+            line = src[:m.start()].count('\n') + 1
+            add(p, line, 'insert-no-on-conflict',
+                f'INSERT INTO {tbl} without ON CONFLICT')
 
     try: tree = ast.parse(src)
     except Exception: return routes
+
+    # name -> url_prefix for every Blueprint declared in this file, so the
+    # duplicate-route check below compares real URLs rather than bare paths.
+    # A blueprint with no url_prefix maps to '' and behaves exactly as before.
+    _BP_PREFIXES = {}
+    for _n in ast.walk(tree):
+        if not (isinstance(_n, ast.Assign) and isinstance(_n.value, ast.Call)):
+            continue
+        _fn = _n.value.func
+        _fname = getattr(_fn, 'id', None) or getattr(_fn, 'attr', None)
+        if _fname != 'Blueprint':
+            continue
+        _pfx = ''
+        for _kw in _n.value.keywords:
+            if (_kw.arg == 'url_prefix' and isinstance(_kw.value, ast.Constant)
+                    and isinstance(_kw.value.value, str)):
+                _pfx = _kw.value.value
+        for _t in _n.targets:
+            if isinstance(_t, ast.Name):
+                _BP_PREFIXES[_t.id] = _pfx
 
     for node in ast.walk(tree):
         if isinstance(node, ast.AsyncFunctionDef):
@@ -271,7 +300,19 @@ def lint_file(p, src):
                         and dec.func.attr in {'route', 'get', 'post', 'put', 'delete', 'patch'}
                         and dec.args and isinstance(dec.args[0], ast.Constant)
                         and isinstance(dec.args[0].value, str)):
-                    routes.append((dec.args[0].value, p, dec.lineno))
+                    # 2026-07-29: qualify the path with the blueprint's
+                    # url_prefix before calling anything a duplicate. Without
+                    # this the rule compared bare decorator strings, so every
+                    # correctly-prefixed blueprint that exposes a conventional
+                    # sub-path collided with every other one — `/latest` was
+                    # reported "in 14 places" while the 14 real URLs
+                    # (/api/v1/iso/tva/latest, .../ieso/latest, ...) are all
+                    # distinct. A rule that cannot be satisfied by correct code
+                    # trains people to ignore it.
+                    _obj = dec.func.value
+                    _pfx = (_BP_PREFIXES.get(_obj.id, '')
+                            if isinstance(_obj, ast.Name) else '')
+                    routes.append((_pfx + dec.args[0].value, p, dec.lineno))
     return routes
 
 
