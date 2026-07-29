@@ -490,35 +490,133 @@ def _substation_headroom(lat, lng, radius_km=40.0):
                      "distance_km": round(d, 1)})
     near.sort(key=lambda x: x["distance_km"])
     if not near:
-        return {"substation_count": 0, "verdict": "no_transmission_nearby", "headroom_score": 0}
+        # Shape-stable with the main return below: no substations in reach means no
+        # capacity basis either, so the MVA fields are explicitly null (not 0) here too.
+        return {"substation_count": 0, "verdict": "no_transmission_nearby",
+                "headroom_score": 0, "score_basis": "substation_density_proximity",
+                "total_capacity_mva": None, "total_available_mva": None,
+                "capacity_basis": {"substations_total": 0,
+                                   "with_capacity_mva_reported": 0,
+                                   "with_capacity_mva_gt0": 0,
+                                   "with_available_mva_reported": 0,
+                                   "with_available_mva_gt0": 0,
+                                   "capacity_coverage_pct": 0.0,
+                                   "excluded_test_named": 0},
+                "est_capacity_mva_band": None,
+                "radius_km": radius_km}
     ehv = [s for s in near if (s["voltage_kv"] or 0) >= 230]   # 230kV+ = hyperscale-grade
-    cap_sum = round(sum(s["capacity_mva"] or 0 for s in near), 0)
-    avail_sum = round(sum(s["available_mva"] or 0 for s in near if s["available_mva"] is not None), 0)
     nearest = near[0]
-    # 0-100 headroom score from RELIABLE signals only: transmission-substation
+    # ── MVA basis: COUNT the rows before summing them ─────────────────────
+    # substations.capacity_mva / available_mva are effectively unpopulated — nothing
+    # writes available_mva at all, and the one capacity_mva writer stores NULL. The
+    # old `sum(x or 0 for ...)` over an all-None column therefore returned a confident
+    # 0 that reads as "zero MVA of capacity" when it means "no data", and `or None`
+    # additionally erased a legitimate 0. Where values DO exist they include rows
+    # inserted straight into prod under obvious test names, so a bare `cap_sum > 0`
+    # is not a valid basis either. Drop the fake rows, count the real ones, and report
+    # a total only when at least one real row backs it.
+    _TEST_NAMES = ("test_", "test ", "test-", "testsub", "dummy", "sample_")
+
+    def _real_row(s):
+        return not str(s["name"] or "").strip().lower().startswith(_TEST_NAMES)
+
+    test_named = [s for s in near if not _real_row(s)]
+    cap_rows   = [s for s in near if _real_row(s) and s["capacity_mva"] is not None]
+    cap_pos    = [s for s in cap_rows if (s["capacity_mva"] or 0) > 0]
+    avail_rows = [s for s in near if _real_row(s) and s["available_mva"] is not None]
+    avail_pos  = [s for s in avail_rows if (s["available_mva"] or 0) > 0]
+    # Both readings of the count are published because they differ: a row can REPORT
+    # 0.0 MVA (live "800/900 Network Substation") — not the same as reporting nothing.
+    cap_sum   = round(sum(s["capacity_mva"] for s in cap_rows), 0) if cap_rows else None
+    avail_sum = round(sum(s["available_mva"] for s in avail_rows), 0) if avail_rows else None
+    cap_basis = {
+        "substations_total": len(near),
+        "with_capacity_mva_reported": len(cap_rows),     # value present, may be 0.0
+        "with_capacity_mva_gt0": len(cap_pos),
+        "with_available_mva_reported": len(avail_rows),
+        "with_available_mva_gt0": len(avail_pos),
+        "capacity_coverage_pct": round(100.0 * len(cap_rows) / len(near), 1),
+        "excluded_test_named": len(test_named),
+    }
+    # Banded ESTIMATE, never a measurement: with the metered columns empty, the only
+    # grounded MVA signal left is voltage class. Same ladder as
+    # routes/land_power_mcp.py:193-202, widened to a low/high band because a voltage
+    # class does not pin a rating. Published under its own key — it must never be
+    # read as total_capacity_mva.
+    _BANDS = ((500, 900, 1500), (345, 500, 900), (230, 300, 500),
+              (138, 120, 250), (69, 40, 120))
+    est_lo = est_hi = est_n = implausible_kv = 0
+    for s in near:
+        kv = s["voltage_kv"]
+        if kv is None or kv <= 0:
+            continue
+        if kv > 765:                 # US transmission tops out at 765kV; the column
+            implausible_kv += 1      # carries HIFLD NODATA and live 1000/1115kV junk
+            continue
+        for floor, lo, hi in _BANDS:
+            if kv >= floor:
+                est_lo += lo; est_hi += hi; est_n += 1
+                break
+    est_band = {
+        "low_mva": est_lo,
+        "high_mva": est_hi,
+        "substations_classified": est_n,
+        "substations_no_usable_voltage": len(near) - est_n - implausible_kv,
+        "substations_implausible_voltage": implausible_kv,
+        "banded": True,
+        "method": ("voltage_class ladder (>=500kV 900-1500, >=345 500-900, >=230 "
+                   "300-500, >=138 120-250, >=69 40-120 MVA), voltages >765kV dropped"),
+        "note": ("ESTIMATE from voltage class only — not metered capacity, not "
+                 "available headroom, and not a load-serving commitment."),
+    } if est_n else None
+    # 0-100 DENSITY score from RELIABLE signals only: transmission-substation
     # DENSITY within reach + EHV presence (voltage parsed from name when the column
-    # is 0) + proximity to the nearest. The capacity_mva/available_mva columns are
-    # too sparse in HIFLD to score on — reported as a bonus when present.
+    # is 0) + proximity to the nearest. It carries NO MVA term, so what it measures
+    # is named in score_basis and its adjective ships as density_class, not verdict.
     score = min(100, int(
         min(50, len(near) * 0.7)
         + min(30, len(ehv) * 6)
         + (20 if nearest["distance_km"] <= 5 else 10 if nearest["distance_km"] <= 15 else 0)
     ))
-    verdict = ("abundant" if score >= 70 else "moderate" if score >= 40
-               else "constrained" if score >= 15 else "sparse")
+    density_class = ("abundant" if score >= 70 else "moderate" if score >= 40
+                     else "constrained" if score >= 15 else "sparse")
+    # FAIL CLOSED: `verdict` is read as a CAPACITY verdict, so only publish one when
+    # enough substations actually report capacity to corroborate it — otherwise null
+    # plus the reason. Today that withholds it essentially everywhere, which is the
+    # honest answer; the density signal still ships, under its own name.
+    _MIN_CAP_ROWS, _MIN_CAP_COVERAGE = 3, 60.0
+    if (len(cap_pos) >= _MIN_CAP_ROWS
+            and cap_basis["capacity_coverage_pct"] >= _MIN_CAP_COVERAGE):
+        verdict = density_class
+        verdict_withheld_reason = None
+    else:
+        verdict = None
+        verdict_withheld_reason = (
+            f"substation capacity_mva is unpopulated here: {len(cap_pos)} of "
+            f"{len(near)} substations report a capacity > 0 (need >={_MIN_CAP_ROWS} "
+            f"and >={int(_MIN_CAP_COVERAGE)}% coverage). No MVA-backed verdict is "
+            "available; see density_class / headroom_score, which measure substation "
+            "DENSITY and proximity, not megawatts.")
     return {
         "substation_count": len(near),
         "ehv_substation_count": len(ehv),           # >=230kV
         "nearest_substation_km": nearest["distance_km"],
         "nearest_substation": nearest["name"],
-        "total_capacity_mva": cap_sum,
-        "total_available_mva": (avail_sum or None),
+        "total_capacity_mva": cap_sum,        # null = no substation reported a value
+        "total_available_mva": avail_sum,     # null = no substation reported a value
+        "capacity_basis": cap_basis,
+        "est_capacity_mva_band": est_band,
         "top_substations": near[:6],
         "headroom_score": score,
+        "score_basis": "substation_density_proximity",
+        "density_class": density_class,
         "verdict": verdict,
+        "verdict_basis": ("substation_density_proximity, published only when reported "
+                          "capacity_mva covers enough of the radius to corroborate it"),
+        "verdict_withheld_reason": verdict_withheld_reason,
         "radius_km": radius_km,
         "source": "DC Hub substations layer (HIFLD-derived, 126k US substations)",
-        "note": "Transmission-proximity headroom proxy; feeder-level utility hosting capacity still requires per-utility GIS.",
+        "note": "Transmission-proximity headroom proxy; feeder-level utility hosting capacity still requires per-utility GIS. headroom_score counts substations and distance, NOT megawatts.",
     }
 
 
