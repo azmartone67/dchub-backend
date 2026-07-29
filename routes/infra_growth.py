@@ -252,6 +252,10 @@ def whats_new():
     if not dsn:
         return jsonify(ok=False, error="no DATABASE_URL"), 503
     deals = None
+    # Platform capability announcements. Stays None until the block below runs,
+    # so an unreachable DB publishes `platform: null` + a reason rather than an
+    # empty list (an empty list would read as "nothing shipped" — a false claim).
+    plat = None
     try:
         with psycopg2.connect(dsn, sslmode="require", connect_timeout=8) as c:
             with c.cursor() as cur:
@@ -291,6 +295,30 @@ def whats_new():
                 except Exception:
                     c.rollback()
                     dc_verified = None
+                # ── Platform capability announcements (brain-staged, owner-approved)
+                # The "New platform capabilities" cards on /whats-new were hardcoded
+                # HTML and went stale ("36 grids", "tool #73"). They are data now:
+                # routes/capability_announcements.py holds the registry, and every
+                # number in a card is resolved HERE, at serve time, on THIS cursor —
+                # no nested connection, no HTTP egress in a public request.
+                # ★ APPROVAL: a card is served only when its registry entry carries
+                # status=STATUS_APPROVED, which happens only by the owner merging the
+                # PR that sets it. Brain-staged drafts are STATUS_PENDING and can
+                # never reach this payload.
+                # FAIL SOFT: this block is its own try/except and touches nothing
+                # above it — an announcement failure must never 500 the route or
+                # blank the coverage items[] that already work.
+                try:
+                    from routes.capability_announcements import (
+                        capability_announcement_cards)
+                    plat = capability_announcement_cards(cur)
+                except Exception as _pe:
+                    try:
+                        c.rollback()
+                    except Exception:
+                        pass
+                    plat = {"ok": False,
+                            "reason": f"announcement source unavailable: {str(_pe)[:120]}"}
     except Exception as e:
         return jsonify(ok=False, error=str(e)[:200]), 500
 
@@ -327,16 +355,35 @@ def whats_new():
     # "tomorrow" for US readers late in the day → a future "updated" date).
     _asof_dates = [i["as_of"] for i in items if i.get("as_of")]
     data_as_of = max(_asof_dates) if _asof_dates else None
+    # Publish the announcements block. Three distinct states, deliberately:
+    #   unavailable  -> platform: null  + platform_unavailable_reason (UNMEASURED)
+    #   ok, none approved -> platform: [] + platform_pending count (a true "nothing
+    #                        approved yet", which is NOT the same claim as null)
+    #   ok, approved -> platform: [cards], each with its own figures[] + verify[]
+    _plat_ok = bool(plat and plat.get("ok"))
+    platform = plat.get("cards") if _plat_ok else None
+    platform_reason = None if _plat_ok else (
+        (plat or {}).get("reason") or "announcements not resolved this request")
     resp = jsonify(ok=True,
                    generated_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
                    data_as_of=data_as_of,
+                   platform=platform,
+                   platform_unavailable_reason=platform_reason,
+                   platform_as_of=(plat or {}).get("as_of"),
+                   platform_withheld=((plat or {}).get("withheld") or []) if _plat_ok else [],
+                   platform_pending=(plat or {}).get("staged_count") if _plat_ok else None,
                    total_added=total_added, items=items,
                    facilities_tracked=(layers and next((l["count"] for l in layers if l["layer"] == "data_centers"), None)) or None,
                    facilities_verified=dc_verified,
                    note="Live additions to DC Hub across infrastructure layers (rolling 7-day window). "
                         "'Data centers' total is the raw tracked count; 'verified' is the deduped subset. "
                         "Layers marked provenance='public' unify third-party open data (HIFLD/FCC/EIA); "
-                        "'curated' layers are crawled/curated by DC Hub.",
+                        "'curated' layers are crawled/curated by DC Hub. "
+                        "'platform' lists owner-approved capability announcements; every number in a "
+                        "card is resolved live at request time and carries the field name and the "
+                        "endpoint you can call to verify it. platform=null means the announcement "
+                        "source was unavailable (see platform_unavailable_reason), NOT that nothing "
+                        "shipped.",
                    source="DC Hub (dchub.cloud), CC-BY-4.0")
     resp.headers["Cache-Control"] = "public, max-age=1800"
     return resp

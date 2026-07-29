@@ -321,9 +321,26 @@ def stats_canonical():
             attach_provenance(
                 _canon_payload,
                 source="DC Hub canonical stats (Neon live counts)",
-                method=("live COUNT() at request time; facilities_verified = "
-                        "canonical fleet filter COALESCE(is_duplicate,0)=0 "
-                        "over discovered_facilities"),
+                # ★2026-07-29: this string described the WRONG FIELD. It said
+                # facilities_verified = COALESCE(is_duplicate,0)=0 — but that
+                # query is `facilities_with_keeper` (15,433 live); the served
+                # `facilities_verified` is duplicate_of_id IS NULL (13,623).
+                # An agent following the documented method got a number ~1,800
+                # off the one it was handed, from the very endpoint whose stated
+                # purpose is making surfaces agree. All four fields are now
+                # named for their own query, and the citeable one is called out.
+                method=("live COUNT() over discovered_facilities at request "
+                        "time. facilities_distinct = COUNT(DISTINCT "
+                        "canonical_slug) WHERE canonical_slug IS NOT NULL — "
+                        "distinct BUILDINGS, and the field to cite. "
+                        "facilities_records = facilities_tracked = COUNT(*) — "
+                        "raw source records, ~1.5x the buildings because the "
+                        "March 2026 backfill wrote several rows per site. "
+                        "facilities_with_keeper = COUNT(*) WHERE "
+                        "COALESCE(is_duplicate,0)=0. facilities_verified = "
+                        "COUNT(*) WHERE duplicate_of_id IS NULL. Both of the "
+                        "last two are DE-DUPLICATION states, not source "
+                        "verifications — do not publish either as 'verified'."),
                 # v1: facilities surface — counts cover the whole discovery
                 # pile, so the conservative facilities tier is tracked; the
                 # explicit fallback pins the facilities directory (no

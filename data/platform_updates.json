@@ -1,0 +1,90 @@
+{
+  "schema_version": 1,
+  "_README": [
+    "Brain-picked platform announcements rendered by https://dchub.cloud/whats-new#platform.",
+    "APPROVAL = MERGE. The brain opens a PR that adds or edits an entry here; merging that PR",
+    "is the owner's approval. There is no write endpoint, no admin toggle and no cron that",
+    "mutates this file. An entry is INVISIBLE unless status is exactly \"published\" — a draft,",
+    "a typo'd status or a missing status is withheld (routes/platform_updates.py::_is_published).",
+    "",
+    "NO FIGURES IN PROSE. These six cards replaced hardcoded HTML that went stale in public:",
+    "it said '36 grids' while the scoreboard ranked 46, and '73 tools' / 'tool #73' while the",
+    "live catalog was at 81. So `title` and `body` may not contain a figure — the loader",
+    "rejects one (::_looks_like_bare_figure). To show a number, declare a metric TOKEN; the",
+    "client binds the value live from /api/v1/canon/phrases at render time. A number that is",
+    "never stored can never go stale.",
+    "",
+    "Metric tokens with a live source: tools · facilities · markets · deals · countries.",
+    "Any other token is served as UNMEASURED (value null + a reason) and renders no number.",
+    "Never invent a token to smuggle a literal back in.",
+    "",
+    "Fields: id (stable, unique) · status · announced (YYYY-MM-DD) · tag · title · body ·",
+    "code (optional inline symbol) · link {href,label} · metric {token,label} (optional).",
+    "Order in this array is the render order — newest first."
+  ],
+  "updates": [
+    {
+      "id": "global-grid-scoreboard-intl",
+      "status": "published",
+      "announced": "2026-07-13",
+      "tag": "Global grid",
+      "title": "Japan, South Korea & Brazil join the live scoreboard",
+      "code": "get_grid_scoreboard",
+      "body": "get_grid_scoreboard (keyless) ranks national and regional grids on one real-time renewable-share scale — Japan (OCCTO), South Korea (KPX) and Brazil SIN (ONS) beside the US ISOs, EU bidding zones, GB and Taiwan. Australia and Singapore are live-partial.",
+      "link": { "href": "/playground", "label": "Try it live →" },
+      "metric": { "token": "grid_zones_ranked", "label": "grids ranked" }
+    },
+    {
+      "id": "retirement-headroom",
+      "status": "published",
+      "announced": "2026-07-13",
+      "tag": "Interconnection",
+      "title": "Spot interconnection headroom before it opens",
+      "code": "get_retirement_headroom",
+      "body": "get_retirement_headroom returns filed US generator retirements (EIA-860M) — coal and gas plants with capacity, retirement date and the nearest substations — so an agent can find where grid interconnection headroom is about to free up as plants retire.",
+      "link": { "href": "/api/v1/retirement-headroom", "label": "See the data →" }
+    },
+    {
+      "id": "provenance-envelope-v1",
+      "status": "published",
+      "announced": "2026-07-13",
+      "tag": "Trust",
+      "title": "Provenance Envelope v1 on facility search",
+      "code": "search_facilities",
+      "body": "search_facilities returns a per-record de-duplication tier — a distinct facility versus one of its source records — plus source, a CC-BY-4.0 license and a citation-URL template. The counts behind it are published live at /api/v1/stats/canonical as facilities_distinct and facilities_records.",
+      "link": { "href": "/api/v1/stats/canonical", "label": "See the counts →" },
+      "metric": { "token": "facilities", "label": "distinct facilities" }
+    },
+    {
+      "id": "agent-memory-saved-sites",
+      "status": "published",
+      "announced": "2026-07-13",
+      "tag": "Memory",
+      "title": "Your agent remembers your shortlist",
+      "code": "save_site",
+      "body": "save_site builds a durable list of candidate sites; next session get_changes returns per-site deltas — verdict flips, DCPI score moves, new nearby facilities — not just global market movers.",
+      "link": { "href": "/connect#start", "label": "Connect your AI →" }
+    },
+    {
+      "id": "error-contract-v1",
+      "status": "published",
+      "announced": "2026-07-13",
+      "tag": "Reliability",
+      "title": "A machine-readable error contract",
+      "code": "error_version:1",
+      "body": "Every error now carries error_version:1 — a severity class and a deterministic recovery hint, plus a server-computed suggested_params so your agent auto-corrects a bad parameter and re-runs without dropping context.",
+      "link": { "href": "/docs/error-codes", "label": "Error taxonomy →" }
+    },
+    {
+      "id": "cluster-sites-by-latency",
+      "status": "published",
+      "announced": "2026-07-13",
+      "tag": "New tool",
+      "title": "cluster_sites_by_latency joins the catalog",
+      "code": "cluster_sites_by_latency",
+      "body": "Clusters candidate sites by fibre round-trip latency, pruning physically-impossible low-latency pairs against SMF-28 fibre floors before any routing. Live over MCP and at /api/v1/fiber/cluster-latency.",
+      "link": { "href": "/capabilities", "label": "Browse every tool →" },
+      "metric": { "token": "tools", "label": "tools live now" }
+    }
+  ]
+}
