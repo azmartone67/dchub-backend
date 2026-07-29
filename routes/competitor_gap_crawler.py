@@ -933,6 +933,11 @@ def run_competitor_gap_scan(limit: int = _DEFAULT_PAGE_LIMIT,
                 "method": src["method"], "parsed": 0, "true_gaps": 0,
                 "inserted": 0, "dup": 0, "status": 0, "error": None}
         conn = None
+        # ★Holds the parse result for the `finally` recorder. MUST be
+        # initialised here: `finally` runs on every exit path, including
+        # ones that never reach the fetch, and an unbound name there
+        # would raise INSIDE the cleanup block.
+        _p_rec: dict = {}
         try:
             # ── network fetch — NO DB connection held ──
             # Deterministic daily offset: day-of-year * limit walks the window
@@ -942,6 +947,7 @@ def run_competitor_gap_scan(limit: int = _DEFAULT_PAGE_LIMIT,
             _off = datetime.datetime.utcnow().timetuple().tm_yday * max(limit or 0, 0)
             p = parse_competitor_sitemap(src["slug"], src["url"], limit=limit,
                                          offset=_off)
+            _p_rec = p
             srec["status"] = p["status"]
             srec["locs_seen"] = p.get("locs_seen", 0)
             if p.get("error"):
@@ -1004,10 +1010,6 @@ def run_competitor_gap_scan(limit: int = _DEFAULT_PAGE_LIMIT,
             srec["inserted"] = ins["inserted"]
             srec["dup"] = ins["dup"]
             out["total_inserted"] += ins["inserted"]
-            # ★Record the sweep AFTER inserts so `inserted`/`dup` are final.
-            # Answers "is this source unreached or already-known?" — see
-            # record_sweep's docstring. Never raises.
-            record_sweep(conn, src["slug"], srec, p, window_size=limit)
             out["total_dup"] += ins["dup"]
 
             pg = persist_coverage_gaps(conn, src["slug"], src["name"],
@@ -1029,6 +1031,39 @@ def run_competitor_gap_scan(limit: int = _DEFAULT_PAGE_LIMIT,
             except Exception:
                 pass
         finally:
+            # ★★2026-07-29: RECORD FROM `finally`, NOT the success path.
+            # The first cut called record_sweep() only after a successful
+            # insert — but the loop `continue`s early on a fetch/parse error
+            # (`if p.get("error")`), on provider_index/editorial_rss sources,
+            # and on `no_database_this_source`. None of those wrote a row, so
+            # **an ERRORING source was indistinguishable from one that never
+            # ran** — the exact absent-vs-zero failure this table was built to
+            # eliminate, reproduced inside the fix for it. Cloudscene hit it:
+            # it ran and logged nothing, leaving the coverage question open.
+            #
+            # `continue` inside a try still executes `finally`, so one call here
+            # covers every exit path — success, early-continue and exception —
+            # and carries `status`/`error` so a failed sweep is VISIBLE as a
+            # failure rather than as silence.
+            #
+            # ★Skipped only when no fetch happened (no locs_seen): the
+            # budget-break path `break`s before the fetch, and recording a
+            # phantom zero-width window there would understate coverage.
+            try:
+                if (_p_rec or {}).get("locs_seen"):
+                    _c_rec = conn if conn is not None else _conn()
+                    if _c_rec is not None:
+                        try:
+                            record_sweep(_c_rec, src["slug"], srec, _p_rec,
+                                         window_size=limit)
+                        finally:
+                            if _c_rec is not conn:
+                                try:
+                                    _c_rec.close()
+                                except Exception:
+                                    pass
+            except Exception:
+                pass          # instrumentation must never cost a crawl
             if conn is not None:
                 try:
                     conn.close()
