@@ -71,6 +71,23 @@ WHITELIST_TABLES = {
     # founder-note reservation INSERT dedupes via WHERE NOT EXISTS, which is
     # the intended semantics (no natural key to conflict on).
     'welcome_email_log',
+    # shell#41 WS6 change-capture spine: entity_changes is the append-only
+    # event log (one row per detected appearance / changed field) and
+    # entity_capture_runs the append-only run ledger. History, not state —
+    # no natural key to conflict on. (entity_state IS state and carries its
+    # own ON CONFLICT (layer, entity_key) DO UPDATE, so it is not listed.)
+    'entity_changes', 'entity_capture_runs',
+    # shell#41 WS6 queue-delta capture. TWO DIFFERENT REASONS, kept distinct so
+    # a future reader does not assume both are append-only:
+    #   interconnect_queue_runs   — genuinely append-only (one row per ingest
+    #     run, the ledger that makes `loaded_at` interpretable). No natural key.
+    #   interconnect_queue_events — DOES carry `ON CONFLICT DO NOTHING`
+    #     (routes/iso_queue_ingest.py:1432). The rule cannot see it: its window
+    #     regex stops at the first quote, so a clause living in a later string
+    #     fragment is invisible — the same blindness documented at lines 40/43/45.
+    #     Whitelisted because the rule is wrong here, NOT because the guard is
+    #     missing. If that INSERT is ever rewritten as one string, drop this.
+    'interconnect_queue_runs', 'interconnect_queue_events',
 }
 
 # ── HARD rules (r-fixpack 2026-07-02) ────────────────────────────────
