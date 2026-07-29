@@ -430,3 +430,88 @@ def test_no_push_failure_is_swallowed(name):
                     f"{name} swallows a push failure: {line.strip()!r} — that is how "
                     "SHADOWED-ROUTES.md silently stopped updating after 2026-07-13"
                 )
+
+
+# ── auth-header fallback ────────────────────────────────────────────────────
+# Railway's token types do not share a header: account/team tokens use
+# `Authorization: Bearer`, project tokens use `Project-Access-Token`. A project
+# token sent as a Bearer returns a bare "Not Authorized" that says nothing about
+# the header — 2026-07-28 that cost three trips to the Railway dashboard
+# re-minting a token that had been correct all along.
+
+
+class _FakeResp:
+    def __init__(self, payload):
+        self._payload = payload
+        self.status_code = 200
+
+    def json(self):
+        return self._payload
+
+
+def _install_fake_post(monkeypatch, accepts):
+    """Fake requests.post that only accepts one auth style. Records attempts."""
+    seen = []
+
+    def fake_post(url, json=None, headers=None, timeout=None):
+        if "Authorization" in headers:
+            style = "bearer"
+        elif "Project-Access-Token" in headers:
+            style = "project"
+        else:
+            style = "none"
+        seen.append(style)
+        if style != accepts:
+            return _FakeResp({"errors": [{"message": "Not Authorized"}]})
+        return _FakeResp({"data": {"ok": True}})
+
+    monkeypatch.setattr(rb.requests, "post", fake_post)
+    monkeypatch.setattr(rb, "_auth_style", None, raising=False)
+    return seen
+
+
+@pytest.mark.parametrize("accepts", ["bearer", "project"])
+def test_gql_succeeds_with_either_token_type(monkeypatch, accepts):
+    seen = _install_fake_post(monkeypatch, accepts)
+    assert rb.gql("query{x}", {}, "tok") == {"ok": True}
+    assert seen[-1] == accepts, f"did not end on the accepted style: {seen}"
+
+
+def test_project_token_falls_back_after_bearer_is_refused(monkeypatch):
+    """★ The regression this exists for: Bearer first, project second."""
+    seen = _install_fake_post(monkeypatch, "project")
+    rb.gql("query{x}", {}, "tok")
+    assert seen == ["bearer", "project"], f"expected both styles tried in order, got {seen}"
+
+
+def test_working_style_is_cached_so_later_calls_cost_one_request(monkeypatch):
+    seen = _install_fake_post(monkeypatch, "project")
+    rb.gql("query{x}", {}, "tok")
+    before = len(seen)
+    rb.gql("query{x}", {}, "tok")
+    assert len(seen) - before == 1, f"cached style not reused: {seen}"
+
+
+def test_a_non_auth_error_is_raised_immediately_not_retried(monkeypatch):
+    """A bad query must not be reported as an auth-header problem."""
+    seen = []
+
+    def fake_post(url, json=None, headers=None, timeout=None):
+        seen.append("call")
+        return _FakeResp({"errors": [{"message": "Cannot query field 'nope'"}]})
+
+    monkeypatch.setattr(rb.requests, "post", fake_post)
+    monkeypatch.setattr(rb, "_auth_style", None, raising=False)
+    with pytest.raises(rb.RailwayError, match="Cannot query field"):
+        rb.gql("query{nope}", {}, "tok")
+    assert len(seen) == 1, "a non-auth error was retried against the other header"
+
+
+def test_both_styles_refused_names_both_headers(monkeypatch):
+    """MUST-FAIL control: when nothing works, the error has to say so."""
+    _install_fake_post(monkeypatch, "nothing-accepts-this")
+    with pytest.raises(rb.RailwayError) as exc:
+        rb.gql("query{x}", {}, "tok")
+    msg = str(exc.value)
+    assert "Not Authorized" in msg
+    assert "bearer" in msg and "project" in msg, f"error hides what was tried: {msg}"

@@ -92,16 +92,42 @@ class RailwayError(RuntimeError):
     pass
 
 
-def gql(query: str, variables: dict, token: str, timeout: int = 30) -> dict:
-    """POST a GraphQL request and return `data`, raising on `errors`."""
+# ── auth: Railway's token types do NOT share a header ───────────────────────
+# account / team token  ->  Authorization: Bearer <token>
+# project token         ->  Project-Access-Token: <token>
+#
+# ★ Presenting a project token as a Bearer returns a bare "Not Authorized" with
+# nothing pointing at the header. Measured 2026-07-28: three separate trips to
+# the Railway dashboard were spent re-minting tokens against that error before
+# anyone suspected the header. The token had been correct the whole time — it
+# was being presented the wrong way.
+#
+# So try both rather than requiring the operator to know which type they hold.
+# The style that works is cached for the process, so a rollback pays at most one
+# extra request, once — and that only on the wrong first guess.
+AUTH_STYLES = ("bearer", "project")
+_auth_style: str | None = None
+
+
+def _auth_headers(style: str, token: str) -> dict:
+    base = {"User-Agent": "dchub-auto-rollback/1.0"}
+    if style == "bearer":
+        return {**base, "Authorization": f"Bearer {token}"}
+    return {**base, "Project-Access-Token": token}
+
+
+def _is_auth_error(msg: str) -> bool:
+    low = msg.lower()
+    return any(s in low for s in ("not authorized", "unauthorized", "authentication"))
+
+
+def _post(query: str, variables: dict, token: str, style: str, timeout: int) -> dict:
+    """One attempt with one auth style. Raises RailwayError on any failure."""
     try:
         resp = requests.post(
             API,
             json={"query": query, "variables": variables},
-            headers={
-                "Authorization": f"Bearer {token}",
-                "User-Agent": "dchub-auto-rollback/1.0",
-            },
+            headers=_auth_headers(style, token),
             timeout=timeout,
         )
     except Exception as exc:
@@ -117,6 +143,40 @@ def gql(query: str, variables: dict, token: str, timeout: int = 30) -> dict:
         msgs = "; ".join(e.get("message", "?") for e in payload["errors"])
         raise RailwayError(msgs)
     return payload.get("data") or {}
+
+
+def gql(query: str, variables: dict, token: str, timeout: int = 30) -> dict:
+    """POST a GraphQL request and return `data`, raising on `errors`.
+
+    Tries each auth style until one is accepted. Only an AUTHORIZATION failure
+    falls through to the next style — a real error (bad query, unreachable API,
+    missing deployment) is raised immediately rather than being retried and
+    reported under a misleading "tried both headers" message.
+    """
+    global _auth_style
+    order = ([_auth_style] + [s for s in AUTH_STYLES if s != _auth_style]) if _auth_style \
+        else list(AUTH_STYLES)
+
+    last: Exception | None = None
+    for style in order:
+        try:
+            data = _post(query, variables, token, style, timeout)
+        except RailwayError as exc:
+            last = exc
+            if _is_auth_error(str(exc)):
+                continue
+            raise
+        if _auth_style != style:
+            _auth_style = style
+            print(f"Railway accepted the '{style}' auth header.", file=sys.stderr)
+        return data
+
+    raise RailwayError(
+        f"{last} — rejected with every auth header tried ({', '.join(order)}). "
+        "Account and team tokens use 'Authorization: Bearer'; project tokens use "
+        "'Project-Access-Token'. Check the token is not expired and covers project "
+        f"{PROJECT_ID}."
+    )
 
 
 def commit_sha(node: dict) -> str:
