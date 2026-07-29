@@ -331,6 +331,36 @@ def send_founding_welcome_email(email: str, position: int,
                                   plan: str = "developer") -> bool:
     """Send the founding-customer welcome email. Returns True on
     success, False on any failure (never raises)."""
+    # ★★2026-07-29: HONOUR THE 24h PER-RECIPIENT DEDUPE GUARD.
+    # This sender used to skip it deliberately — the note further down said its
+    # "distinct plan label keeps it out of the key-email audits and the
+    # _welcome_recently_sent guard". That is exactly why a brand-new $9 Starter
+    # customer (alexander@ryex.net, 2026-07-29 14:35:08Z) received FOUR welcome
+    # emails inside THREE SECONDS: paid:mint, paid, starter, and this one.
+    # It is systemic, not a one-off — rfontes / landry2 / mykemiller each got 4,
+    # eren and bryanseefeld 3.
+    #
+    # ★The guard was never the problem: `_welcome_recently_sent` already keys on
+    # lower(email) + a 24h window and does NOT filter by plan. It works. It was
+    # simply not being CALLED here. A dedupe guard that senders opt out of is
+    # decoration.
+    #
+    # Fail-open on any error (matches the guard's own contract) so a DB blip can
+    # never suppress a genuine founding welcome.
+    try:
+        from main import _welcome_recently_sent as _recent
+        if _recent(email):
+            logger.info("[founding-customers] welcome SKIPPED for %s — another "
+                        "welcome already sent within 24h", email)
+            try:
+                from main import _log_welcome_email
+                _log_welcome_email(email, 'founding:cohort_welcome',
+                                   'skipped_duplicate')
+            except Exception:
+                pass
+            return False
+    except Exception:
+        pass          # guard unavailable → send (never suppress on error)
     resend_key = (os.environ.get("DCHUB_RESEND_API_KEY")
                   or "").strip()
     if not resend_key:
