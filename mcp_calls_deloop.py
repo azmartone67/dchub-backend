@@ -237,6 +237,20 @@ INTERNAL_PLATFORM_VALUES = (
 # a false inclusion (a slightly generous count we can still see and name).
 _AMBIGUOUS_NOT_EXCLUDED = ('smithery', 'glama', 'agent-toolscloud')
 
+# r-registry-crawlers family fragments (2026-07-28), single-sourced here since
+# 2026-07-30: external_platform_predicate() (LIKE form) AND
+# internal_tag_regex_predicate() (the bound-params-safe regex twin) both render
+# from THIS constant. The Agent Success Report build found the twin had
+# silently missed this entire block — the LIKE form gained nine families on
+# 07-28 while the regex form kept serving the pre-crawler verdict, exactly the
+# drift the twin's docstring promised could not happen. A family lives here or
+# it does not exist; never add one to a predicate body directly.
+# ('validator' was the ninth: found by re-reading the LIVE reach payload after
+# shipping the first eight — `mcp-server-validator` matched none of them.)
+# None of these may match _AMBIGUOUS_NOT_EXCLUDED — the guard test probes that.
+REGISTRY_CRAWLER_FAMILIES = (
+    "registry|catalog|mirror|watchdog|health|crawler|scanner|uptime|validator")
+
 
 def _internal_platform_list() -> str:
     return ",".join("'" + str(p).replace("'", "''") + "'"
@@ -268,37 +282,18 @@ def external_platform_predicate(col: str = "platform") -> str:
     #     capcheck/fix5-recheck, cap-diag-fresh-*, sweep-test2, …).
     #   · length ≤ 2 tags ('e','c','w','pw', …) are ad-hoc curl test params,
     #     never a real client; NULL/empty stays KEPT via the p='' escape.
-    return (f"({p} NOT LIKE '%dchub%' "
-            f"AND {p} NOT IN ({_internal_platform_list()}) "
-            f"AND {p} NOT LIKE '%verify%' "
-            f"AND {p} NOT LIKE '%probe%' "
-            f"AND {p} NOT LIKE '%audit%' "
-            f"AND {p} NOT LIKE '%harness%' "
-            f"AND {p} NOT LIKE '%test%' "
-            f"AND {p} NOT LIKE '%check%' "
-            f"AND {p} NOT LIKE '%diag%' "
-            f"AND {p} NOT LIKE '%sweep%' "
-            # r-registry-crawlers (2026-07-28): the recurring INFRASTRUCTURE
-            # verbs, so a newly-appearing crawler of the same shape is caught
-            # without waiting for someone to notice and extend the exact list
-            # — the same reasoning as the %harness%/%diag% families above.
-            # 'health' is safe to match broadly in THIS domain: DC Hub is
-            # data-centre infrastructure, and no AI platform names itself with
-            # it. See _AMBIGUOUS_NOT_EXCLUDED for what these must NOT catch.
-            f"AND {p} NOT LIKE '%registry%' "
-            f"AND {p} NOT LIKE '%catalog%' "
-            f"AND {p} NOT LIKE '%mirror%' "
-            f"AND {p} NOT LIKE '%watchdog%' "
-            f"AND {p} NOT LIKE '%health%' "
-            f"AND {p} NOT LIKE '%crawler%' "
-            f"AND {p} NOT LIKE '%scanner%' "
-            f"AND {p} NOT LIKE '%uptime%' "
-            # ★ 2026-07-28 follow-up: spotted in the LIVE reach payload right
-            # after shipping the families above — `mcp-server-validator`
-            # (3 agents / 156 calls) is the same class and matched none of
-            # them. Found by re-reading production rather than the list.
-            f"AND {p} NOT LIKE '%validator%' "
-            f"AND ({p} = '' OR LENGTH({p}) > 2))")
+    # Family clauses are RENDERED from the two shared constants (QA families +
+    # r-registry-crawlers), never hand-listed here, so this LIKE form and the
+    # regex twin below cannot drift again. 'health' is safe to match broadly in
+    # THIS domain: DC Hub is data-centre infrastructure, and no AI platform
+    # names itself with it. See _AMBIGUOUS_NOT_EXCLUDED for what the crawler
+    # families must NOT catch.
+    families = (INTERNAL_TAG_FAMILIES.split("|")
+                + REGISTRY_CRAWLER_FAMILIES.split("|"))
+    fam_clauses = "".join(f"AND {p} NOT LIKE '%{fam}%' " for fam in families)
+    return (f"({p} NOT IN ({_internal_platform_list()}) "
+            + fam_clauses
+            + f"AND ({p} = '' OR LENGTH({p}) > 2))")
 
 
 # ── Raw-scripting / internal UA exclusion (2026-06-24) ────────────────────
@@ -355,11 +350,18 @@ def internal_tag_regex_predicate(col: str) -> str:
     the predicate in psycopg2 queries WITH bound params — the LIKE form's
     literal % would be eaten by paramstyle substitution (the empty-tuple %
     trap's sibling). Rendered from the SAME constants (INTERNAL_PLATFORM_VALUES
-    + the QA-tag families), so the is_real_external verdict and this predicate
-    cannot drift. Same semantics: internal families and exact tags excluded,
-    length<=2 ad-hoc tags excluded, NULL/empty KEPT."""
+    + the QA-tag families + REGISTRY_CRAWLER_FAMILIES), so the is_real_external
+    verdict and this predicate cannot drift. Same semantics: internal families,
+    registry-crawler families and exact tags excluded, length<=2 ad-hoc tags
+    excluded, NULL/empty KEPT.
+
+    ★ 2026-07-30: the crawler families were MISSING here for two days — Round 12
+    added them to the LIKE form only, so every bound-params caller (high-intent
+    claims, signal canonical) kept counting registry crawlers while the identity
+    view excluded them. The families now come from the shared constant, and
+    tests/test_registry_crawler_exclusion.py pins LIKE↔regex parity per family."""
     exact = "|".join(sorted(set(INTERNAL_PLATFORM_VALUES)))
-    fams = INTERNAL_TAG_FAMILIES
+    fams = INTERNAL_TAG_FAMILIES + "|" + REGISTRY_CRAWLER_FAMILIES
     c = f"COALESCE(LOWER({col}), '')"
     return (f"({c} !~* '({fams})' "
             f"AND {c} !~ '^({exact})$' "
@@ -378,6 +380,11 @@ def normalize_write_platform(platform):
     as the platform tag BY DESIGN ("distinct platforms before we add a rule"),
     and the Flask track/proxy writers faithfully store it. That design is right
     for plausible client names ('opencode', 'devin-…') but wrong for QA tags.
+
+    REGISTRY_CRAWLER_FAMILIES is deliberately NOT in this rewrite's scope:
+    a registry crawler is a real third-party service, not one of our own junk
+    tags, and rewriting its platform to 'dchub-internal' at write time would
+    falsify forensics. The read layer excludes those families regardless.
 
     Mapping: exact INTERNAL_PLATFORM_VALUES tags, the QA-tag families, and
     1-2 char tags → 'dchub-internal' — the read layer ALREADY excludes all

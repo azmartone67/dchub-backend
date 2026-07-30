@@ -270,7 +270,27 @@ SELECT COUNT(*), COUNT(*) FILTER (WHERE tool = %s) FROM first_call
 """
 
 
-def _measure(days: int = 14) -> dict:
+def _episode_sql(extra_where: str = ""):
+    """(main_sql, first_tools_sql) with every format slot rendered.
+
+    `extra_where` is appended to the synthetic-exclusion slot in BOTH episode
+    queries. It exists for the public Agent Success Report (2026-07-30), which
+    reuses this episode model but must ALSO apply the registry-crawler
+    exclusions (mcp_calls_deloop regex-form predicates — regex, because these
+    queries run WITH bound params, where the LIKE form's literal % would be
+    eaten by paramstyle substitution). Default "" keeps the admin endpoint's
+    SQL byte-identical, so its published DEFINITION_VERSION 2 semantics do not
+    move. Callers pass fragments of trusted module constants only — never
+    request input."""
+    return (
+        _SQL.format(episode=_EPISODE_ID, synth=_SYNTH_NOT_LIKE + extra_where,
+                    handoff=_HANDOFF_SQL),
+        _SQL_FIRST_TOOLS.format(episode=_EPISODE_ID,
+                                synth=_SYNTH_NOT_LIKE + extra_where),
+    )
+
+
+def _measure(days: int = 14, extra_where: str = "") -> dict:
     out = {
         "ok": True,
         "window_days": days,
@@ -306,8 +326,7 @@ def _measure(days: int = 14) -> dict:
         return out
     try:
         with c.cursor() as cur:
-            sql = _SQL.format(episode=_EPISODE_ID, synth=_SYNTH_NOT_LIKE,
-                              handoff=_HANDOFF_SQL)
+            sql, first_tools_sql = _episode_sql(extra_where)
             cur.execute(sql, (days, FRONT_DOOR, FRONT_DOOR, FRONT_DOOR,
                               FRONT_DOOR, LEGACY_DOOR))
             (episodes, opportunities, adopted, manual, fanout, independent,
@@ -345,8 +364,7 @@ def _measure(days: int = 14) -> dict:
                 )
 
             try:
-                cur.execute(_SQL_FIRST_TOOLS.format(episode=_EPISODE_ID, synth=_SYNTH_NOT_LIKE),
-                            (days,))
+                cur.execute(first_tools_sql, (days,))
                 out["first_tool_breakdown"] = [
                     {"tool": t, "episodes": int(n or 0)} for t, n in cur.fetchall()
                 ]

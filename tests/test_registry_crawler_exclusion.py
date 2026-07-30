@@ -100,3 +100,72 @@ def test_validator_family_is_covered():
     sql = dl.external_platform_predicate()
     assert "'%validator%'" in sql
     assert _excluded("mcp-server-validator")
+
+
+# ── LIKE ↔ regex-twin parity (2026-07-30) ──────────────────────────────────
+# The regex twin MISSED the entire r-registry-crawlers block for two days:
+# Round 12 added nine families to the LIKE form only, so every bound-params
+# caller (high-intent claims, signal canonical — and now the Agent Success
+# Report's episode queries) kept counting registry crawlers while the identity
+# view excluded them. Exactly the drift the twin's docstring said could not
+# happen, reached by adding families to a predicate BODY instead of the shared
+# constant. Both forms now render from the same constants; these tests probe
+# the parity per family, so extending one form and not the other fails here
+# instead of drifting silently.
+
+def _regex_twin_parts():
+    sql = dl.internal_tag_regex_predicate("platform")
+    fams = _re.search(r"!~\* '\(([^']+)\)'", sql).group(1)
+    exact = _re.search(r"!~ '\^\(([^']+)\)\$'", sql).group(1)
+    return fams, {e.lower() for e in exact.split("|")}
+
+
+def _regex_excluded(name: str) -> bool:
+    """Python emulation of the regex twin's verdict — parsed from the rendered
+    SQL (never transcribed), same discipline as _FRAGMENTS above."""
+    fams, exact = _regex_twin_parts()
+    p = (name or "").lower()
+    if _re.search(fams, p, _re.I):
+        return True
+    if p in exact:
+        return True
+    return p != "" and len(p) <= 2
+
+
+def test_regex_twin_carries_every_like_family():
+    fams, _ = _regex_twin_parts()
+    twin = set(fams.split("|"))
+    missing = set(_FRAGMENTS) - twin
+    assert not missing, (
+        f"families in the LIKE form but not the regex twin: {sorted(missing)} — "
+        "bound-params callers would keep counting what the identity view excludes")
+
+
+def test_like_form_carries_every_regex_family():
+    """Drift is drift in either direction."""
+    fams, _ = _regex_twin_parts()
+    missing = set(fams.split("|")) - set(_FRAGMENTS)
+    assert not missing, \
+        f"families in the regex twin but not the LIKE form: {sorted(missing)}"
+
+
+@pytest.mark.parametrize("frag", sorted(set(_FRAGMENTS)))
+def test_family_probes_excluded_by_both_forms(frag):
+    """A synthetic name of each family shape must fall to BOTH predicates —
+    this is the mutation that reveals a family added to only one body."""
+    probe = f"zz-{frag}-zz"
+    assert _excluded(probe), f"LIKE form missed {probe}"
+    assert _regex_excluded(probe), f"regex twin missed {probe}"
+
+
+@pytest.mark.parametrize("name", OBSERVED_CRAWLERS)
+def test_observed_crawlers_excluded_by_regex_twin_too(name):
+    assert _regex_excluded(name), f"{name} passes the bound-params surfaces"
+
+
+@pytest.mark.parametrize(
+    "name", REAL_PLATFORMS + list(dl._AMBIGUOUS_NOT_EXCLUDED) + [""])
+def test_real_ambiguous_and_anonymous_kept_by_regex_twin(name):
+    """The expensive direction, twin edition: the regex form must not exclude
+    a single name the LIKE form keeps."""
+    assert not _regex_excluded(name), f"{name} wrongly excluded by the regex twin"
