@@ -74,7 +74,12 @@ _UA = "dchub-surface-truth/1.0 (+https://dchub.cloud; internal-audit)"
 _STALE_FLOOR = re.compile(r"\b(?:19|20|21|22|23),\d{3}\+")
 
 # Live agent-facing surfaces, by lane.
-_TEXT_SURFACES = ("/llms.txt", "/llms-full.txt")
+# ★2026-07-30: /agent added — the Agent Concierge landing is served INLINE from
+# routes/agent_concierge.py (frontend worker proxies the bare path to Flask).
+# Its title stale-cycled through retired tool counts for weeks with no live
+# check on it; it now renders ai_surface_canon.PINNED, so the canon-floor
+# presence check below fails on any stale build or >1-day-stale CF cache.
+_TEXT_SURFACES = ("/llms.txt", "/llms-full.txt", "/agent")
 _MANIFEST_SURFACES = ("/.well-known/mcp.json", "/mcp.json")
 
 # Lane 3: the files the canonical-counts FENCE scans -> the URL that actually
