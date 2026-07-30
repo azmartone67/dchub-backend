@@ -5631,6 +5631,40 @@ footer a:hover { color: var(--acc-light); }
     <strong style="color:var(--acc-light);">Excess Power Score</strong> is the contrarian metric: reserve-margin headroom, generation additions queued &lt;12mo, renewable curtailment volume, queue approval rate, stranded interconnection at retiring plants, and behind-the-meter industrial generation. Updated daily from ISO public filings + DC Hub's grid extractors.
   </p>
 
+  <!-- r-coverage (2026-07-29): COVERAGE & EXPANSION. The expansion story used to
+       live on /dcpi-v2, which was a frozen launch teaser ("275+ markets across
+       14+ countries", a hardcoded Frankfurt MW figure) and has been deleted and
+       301'd here. So: no literal counts, no MW claim, and every figure comes
+       from the route as an int or None — None drops the figure and keeps the
+       claim (see _dcpi_index_coverage / _dcpi_footprint_figures). Styling is
+       the page's existing .section-h / .stats-row / .stat, unchanged. -->
+  <div class="section-h"><span class="pip"></span>🌍 Coverage &amp; Expansion</div>
+  <p style="color:var(--tx2);font-size:0.95rem;max-width:780px;margin-bottom:14px;">
+    DCPI launched as a US-only, ISO-by-ISO read. It isn't one any more — metros outside North America are scored on the same two axes, by the same daily recompute, and appear in the same ranking as the US ones. Every figure in this section is measured when the page renders; if one can't be measured, the claim ships without the number instead of with a stale one.
+  </p>
+  {% if cov_markets or cov_grid_regions or cov_countries or cov_facilities %}
+  <div class="stats-row">
+    {% if cov_markets %}<div class="stat"><div class="num">{{ '{:,}'.format(cov_markets) }}</div><div class="label">Distinct Markets Scored</div></div>{% endif %}
+    {% if cov_grid_regions %}<div class="stat"><div class="num">{{ '{:,}'.format(cov_grid_regions) }}</div><div class="label">Grid Regions &amp; Operators</div></div>{% endif %}
+    {% if cov_countries %}<div class="stat"><div class="num">{{ '{:,}'.format(cov_countries) }}</div><div class="label">Countries · Facility Footprint</div></div>{% endif %}
+    {% if cov_facilities %}<div class="stat"><div class="num">{{ '{:,}'.format(cov_facilities) }}</div><div class="label">Distinct Facilities Mapped</div></div>{% endif %}
+  </div>
+  {% endif %}
+  {% if cov_countries or cov_facilities %}
+  <p style="color:var(--tx2);font-size:0.9rem;max-width:780px;margin:0 0 1rem;">
+    Read the halves separately: <strong>markets scored</strong> and <strong>grid regions</strong> measure the index itself. <strong>Countries</strong> and <strong>facilities</strong> measure the physical footprint the market list is built from &mdash; DC Hub tracks facilities in many more countries than the index currently scores, and the market universe is drawn from that footprint, not the reverse.
+  </p>
+  {% endif %}
+  {% if cov_markets or cov_grid_regions or cov_countries or cov_facilities %}
+  <p style="color:var(--tx3);font-size:0.84rem;max-width:780px;margin-bottom:2rem;">
+    Where each figure comes from, so you can check it.
+    {% if cov_markets %}Markets scored is the canonical distinct-market count &mdash; the same figure <a href="/api/v1/stats/canonical" style="color:var(--tx2);">/api/v1/stats/canonical</a> publishes as <span class="mono">dcpi_markets_scored</span>. It sits below the {{ total_rows }} entries listed further down this page because retired alias slugs and the rural aggregate regions collapse out of it.{% endif %}
+    {% if cov_grid_regions %}Grid regions is the row count of <a href="/api/v1/dcpi/iso-comparison" style="color:var(--tx2);">/api/v1/dcpi/iso-comparison</a>, computed from this same published score set.{% endif %}
+    {% if cov_countries or cov_facilities %}Footprint counts are <span class="mono">countries_covered</span> and <span class="mono">facilities_distinct</span> on <a href="/api/v1/stats/canonical" style="color:var(--tx2);">/api/v1/stats/canonical</a>.{% endif %}
+    Free for press citation, like the rest of the index.
+  </p>
+  {% endif %}
+
   {% if all_market_links %}
   <div class="section-h"><span class="pip"></span>🗺️ All {{ all_market_links|length }} Markets</div>
   <p style="color:var(--tx2);font-size:0.88rem;max-width:720px;margin-bottom:8px;">Every market in the DC Hub Power Index — open any market's free detail page:</p>
@@ -6358,6 +6392,128 @@ h1 {
 </html>"""
 
 
+# ---------------------------------------------------------------------------
+# COVERAGE & EXPANSION figures  (r-coverage, 2026-07-29)
+# ---------------------------------------------------------------------------
+# Why this exists: /dcpi-v2 was a FROZEN launch teaser — "275+ markets across
+# 14+ countries" and a hardcoded "Frankfurt (1,782 MW)" — and has been deleted
+# and 301'd to /dcpi (frontend PR #1091). The expansion story moves onto THIS
+# page, so it must not repeat that failure: every figure in the Coverage &
+# Expansion section is MEASURED at render time, or the claim renders without a
+# figure. No literal counts. No MW claim. Nothing that can silently go stale.
+#
+# The three rural AGGREGATE regions. These are not metros — each is a rollup of
+# a rural area — so the canonical market count excludes them, exactly as
+# canonical_stats.py:172-174 does (the query behind `markets` on /api/v1/stats
+# and `dcpi_markets_scored` on /api/v1/stats/canonical).
+_DCPI_AGGREGATE_REGION_SLUGS = ("pacific-nw-rural", "rural-spp", "upper-michigan")
+
+
+def _dcpi_index_coverage(rows) -> dict:
+    """Coverage figures for the INDEX ITSELF, derived from the same published
+    score set /dcpi already ranks — no second query and no second definition,
+    so this cannot disagree with the grid on the page.
+
+    Returns {'markets': int|None, 'grid_regions': int|None}.
+
+    markets       COUNT(DISTINCT market_name) over the published DISTINCT ON
+                  (market_slug) rows, minus the aggregate regions — the
+                  CANONICAL market count (canonical_stats.py:164-177), measured
+                  306 on 2026-07-29, the same as `dcpi_markets_scored`.
+                  ONE deliberate difference from that query: it filters
+                  COALESCE(published, true) = true, while the rows handed in
+                  here come from `published = true`, so a row with a NULL
+                  `published` counts there and not here. That makes this figure
+                  a FLOOR on the canonical one — never higher, which is the
+                  only safe direction for a published claim.
+                  It is deliberately NOT len(rows)/total_rows (310): that counts
+                  published SLUGS, which include retired alias twins (cheyenne +
+                  cheyenne-wy, portland + portland-or) plus the 3 aggregates.
+                  And it is NOT COUNT(*) of market_power_scores (317) — see
+                  routes/facilities_by_dims.py:229-255 for why publishing rows
+                  under a "markets" label is a published-number defect.
+    grid_regions  COUNT(DISTINCT iso) over the same rows, dropping the
+                  blank/NULL-iso bucket exactly as /api/v1/dcpi/iso-comparison
+                  does (routes/dcpi.py:4742), so this equals that endpoint's
+                  row count — live 49. Grouped on the RAW iso value (no upper/
+                  strip) for the same reason: to match that endpoint exactly.
+
+    A figure that measures 0 is returned as None. An unmeasured count must read
+    as unknown on the page, never as "0" — the reason /dcpi-v2 was retired.
+    """
+    rows = rows or []
+    names = {
+        (r.get("market_name") or "").strip()
+        for r in rows
+        if (r.get("market_name") or "").strip()
+        and r.get("market_slug") not in _DCPI_AGGREGATE_REGION_SLUGS
+    }
+    isos = {r.get("iso") for r in rows if (r.get("iso") or "").strip()}
+    return {
+        "markets": len(names) or None,
+        "grid_regions": len(isos) or None,
+    }
+
+
+# 10-minute in-process cache: these move on the daily 06:00 UTC recompute, and
+# /dcpi is a hot public page — one COUNT(DISTINCT) pair per 10 min per process.
+_DCPI_FOOTPRINT_TTL_S = 600
+_dcpi_footprint_cache: dict = {"ts": 0.0, "val": None}
+
+
+def _dcpi_footprint_figures() -> dict:
+    """The physical footprint the DCPI market list is DERIVED from (the market
+    universe is built from cities with >=3 tracked facilities — see the query at
+    routes/dcpi.py:954-977).
+
+    Returns {'countries': int|None, 'facilities_distinct': int|None}.
+
+    ONE query, and each figure uses the SAME SQL /api/v1/stats/canonical already
+    publishes, so the two surfaces cannot drift apart:
+      countries            -> routes/facilities_by_dims.py:199-201
+                              (`countries_covered`, live 186)
+      facilities_distinct  -> routes/facilities_by_dims.py:280-283
+                              (`facilities_distinct`, live 15,363). That file's
+                              comment at :262-278 is explicit that
+                              facilities_verified / facilities_tracked are
+                              AMBIGUOUS and that new consumers must read
+                              facilities_distinct — so that is what this reads.
+
+    Fail-soft and LOUD: on any DB error both figures come back None (the section
+    then prints its claims with no numbers) and the failure is logged at
+    warning with the exception type. A failure is NOT cached, so recovery is
+    immediate. Never returns 0 and never a frozen literal.
+    """
+    import time as _t
+    now = _t.time()
+    cached = _dcpi_footprint_cache.get("val")
+    if cached is not None and (now - (_dcpi_footprint_cache.get("ts") or 0.0)) < _DCPI_FOOTPRINT_TTL_S:
+        return dict(cached)
+    out = {"countries": None, "facilities_distinct": None}
+    try:
+        with _conn() as c, c.cursor() as cur:
+            cur.execute("""
+                SELECT
+                  (SELECT COUNT(DISTINCT country) FROM facilities
+                    WHERE country IS NOT NULL AND country != '')          AS countries,
+                  (SELECT COUNT(DISTINCT canonical_slug) FROM discovered_facilities
+                    WHERE canonical_slug IS NOT NULL)                     AS facilities_distinct
+            """)
+            row = cur.fetchone() or (None, None)
+        out["countries"] = int(row[0]) if row[0] else None
+        out["facilities_distinct"] = int(row[1]) if row[1] else None
+    except Exception as e:
+        import logging
+        logging.warning(
+            "[dcpi] coverage footprint query failed (%s: %s) — the Coverage & "
+            "Expansion section will render its claims WITHOUT figures rather "
+            "than with stale ones", type(e).__name__, e)
+        return dict(out)
+    _dcpi_footprint_cache["val"] = dict(out)
+    _dcpi_footprint_cache["ts"] = now
+    return dict(out)
+
+
 @_safe_dcpi_page
 # strict_slashes=False (2026-05-14): Flask's default 404s the trailing-slash
 # variant of a no-slash route. /dcpi/ was returning a hard 404 (and
@@ -6426,6 +6582,13 @@ def public_dashboard():
         ({'slug': r.get('market_slug'), 'name': (r.get('market_name') or r.get('market_slug'))}
          for r in rows if r.get('market_slug')),
         key=lambda m: (m['name'] or '').lower())
+    # r-coverage (2026-07-29): Coverage & Expansion figures, computed HERE — from
+    # the FULL published set, BEFORE the tier slice below — for the same reason
+    # all_market_links is. A tier-capped teaser must never shrink a COVERAGE
+    # claim: that is the r47.47 / r-hero-total bug class, where an anon viewer
+    # read "25 MARKETS SCORED" on a 310-market index.
+    _index_cov = _dcpi_index_coverage(rows)
+    _footprint_cov = _dcpi_footprint_figures()
     # 2026-05-30: keep the full 300+-market catalog for AUTHENTICATED viewers
     # (API key OR a logged-in session cookie — incl. the operator), but a
     # truly-anonymous visitor gets the capped r42ab teaser so we don't give the
@@ -6500,6 +6663,13 @@ def public_dashboard():
         total_rows=_total_rows,
         all_market_links=all_market_links,
         tier_state=_tier_state,
+        # r-coverage (2026-07-29): each of these is an int or None. None means
+        # "not measured on this render" and the template drops the figure while
+        # keeping the claim — never 0, never a frozen literal.
+        cov_markets=_index_cov["markets"],
+        cov_grid_regions=_index_cov["grid_regions"],
+        cov_countries=_footprint_cov["countries"],
+        cov_facilities=_footprint_cov["facilities_distinct"],
     )
     # phase 284: ship a Content-Security-Policy header on /dcpi so the
     # dchub-frontend qa-csp-parse preflight CI doesn't fail on this page.
