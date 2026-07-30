@@ -28,7 +28,7 @@ Registration (add near the other register_blueprint calls in main.py):
     register_radar(app)
 """
 from __future__ import annotations
-import os, json, time, threading, datetime as dt
+import os, json, time, threading, logging, html as _html, datetime as dt
 from flask import Blueprint, request, Response, jsonify
 
 from routes import radar_templates as T          # normalize + render + tier gating
@@ -47,6 +47,8 @@ except Exception:                                 # pragma: no cover - defensive
     def _webmcp_inject(page_html, tools):
         return page_html
 
+log = logging.getLogger("radar")
+
 radar_bp = Blueprint("radar", __name__)
 _PAGES_DIR = os.path.join(os.path.dirname(__file__), "radar_pages")
 
@@ -59,6 +61,44 @@ EDITIONS = [
 ]
 _BY_SLUG = {e["slug"]: e for e in EDITIONS}
 PAID = {"DEVELOPER", "PRO", "ENTERPRISE"}         # everyone else -> teaser
+
+# ── the ONE clock (r-radarclock, 2026-07-29) ─────────────────────────────────
+# Every date-derived thing on the page — the edition slot, the featured-ISO
+# slot, the printed retrieval stamp — must come from a single `now` read per
+# request, threaded explicitly. The bug this replaces: the edition number was
+# recomputed per request while the printed date came out of the 15-min cached
+# core, so for up to 15 min after 00:00 UTC (and INDEFINITELY when the
+# background rebuild kept failing silently) the page paired a new edition
+# number with the previous day's date — "Nº 004 · 2026-07-29", a pairing
+# unreachable from any single consistent clock.
+#
+# Rotation is anchored on a FIXED EPOCH ORDINAL, not day-of-year: doy resets to
+# 1 after 365 (or 366), and 365 % 4 == 1, so the old `doy % 4` jumped phase every
+# Jan 1 — 2026-12-31 and 2027-01-01 both landed on `siteselect` and one slug was
+# skipped. The epoch is ordinal(2025-12-31), chosen so that
+# (ordinal - epoch) == day-of-year for every date in 2026: the whole current
+# year's published sequence, today's edition included, is bit-identical to what
+# `doy % n` served, and the cycle simply keeps counting across the boundary.
+_CYCLE_EPOCH_ORDINAL = dt.date(2025, 12, 31).toordinal()
+
+
+def _utc_now() -> dt.datetime:
+    return dt.datetime.now(dt.timezone.utc)
+
+
+def _cycle_slot(now: dt.datetime, n: int) -> int:
+    """Rotation slot in an n-day cycle for `now` (UTC), phase-stable across the
+    year boundary. n must be > 0."""
+    return (now.date().toordinal() - _CYCLE_EPOCH_ORDINAL) % n
+
+# ★ OPEN PRODUCT QUESTION — the rotation boundary is UTC midnight, not the
+# viewer's. The owner is in America/Phoenix (UTC-7), so from ~17:00 local they
+# already see tomorrow's edition number and tomorrow's date. Whether the flip
+# should follow the viewer's local midnight instead is a PRODUCT decision, NOT
+# a bug, and is deliberately NOT decided here: a viewer-local boundary means
+# /radar stops being a single cacheable artifact (the served HTML would vary by
+# request timezone, and /radar/<slug>.json would no longer have one answer for
+# "today"). Left as UTC on purpose.
 
 # ── data core: fetched from THIS backend over loopback, shaped for normalize ──
 # r-radarfast (2026-07-17): the old {"date": core} cache was per-process, and
@@ -73,6 +113,20 @@ _CORE_DB_KEY = "radar_core_v1"
 _CORE_CACHE = {"ts": 0.0, "core": None}
 _CORE_REFRESH_LOCK = threading.Lock()
 _CORE_REFRESHING = False
+# Held for the DURATION of an inline (blocking) rebuild, so the requests that
+# arrive together at 00:00 UTC do not each fire the ~10 loopback GETs. Separate
+# from _CORE_REFRESH_LOCK, which is only ever held long enough to flip a flag.
+# Per-process, like everything else here: across gunicorn workers the brain_meta
+# write is what dedupes, so the worst case at the boundary is one inline build
+# per worker — the same cost the pre-existing first-ever path already paid.
+_CORE_INLINE_LOCK = threading.Lock()
+# A core older than this is no longer "~15 min stale while we revalidate" — it
+# means the rebuild has been failing for a while, which used to be INVISIBLE
+# (every exception swallowed at _refresh_core_async). Past this age the page and
+# the JSON feed say so out loud.
+_CORE_STALE_WARN_S = _CORE_TTL_S * 4              # 1h
+# Last background-refresh failure, surfaced in the staleness envelope.
+_CORE_LAST_ERROR: dict = {"at": 0.0, "type": "", "msg": ""}
 
 # Last-known-good per-ISO DCPI (2026-07-16 live scoreboard). Used as the fallback
 # for queue/wait/curtail/renewable, which /api/v1/grid/intelligence does NOT carry
@@ -168,7 +222,7 @@ def _iso_ttp() -> dict:
         return {}
 
 
-def _build_core() -> dict:
+def _build_core(now: dt.datetime | None = None) -> dict:
     """Assemble the `core` dict radar_templates.normalize() expects.
     EXPENSIVE (~10 sequential loopback GETs + a DB read) — only call via
     _pull_core(), which caches/SWRs it. No cache reads or writes in here.
@@ -176,8 +230,12 @@ def _build_core() -> dict:
     MAPPING SEAM — verify these field names against the live JSON of
     /api/v1/grid/intelligence/<ISO> on first run (the .get() fallbacks make it
     fail soft, not crash). Everything else in the pipeline is already verified.
+
+    `now` is the request's single clock read (see _utc_now). Passing it makes the
+    core's retrieved_at stamp and the edition number provably the same instant,
+    instead of two separate now() calls that can straddle midnight.
     """
-    today = dt.datetime.now(dt.timezone.utc)
+    today = now or _utc_now()
 
     # Per-ISO: baseline for queue/wait/curtail (not on grid/intelligence); live
     # renewable share where the endpoint returns it. Always a complete row.
@@ -249,11 +307,11 @@ def _save_core_db(ts: float, core: dict) -> None:
         pass
 
 
-def _refresh_core_sync() -> dict:
-    core = _build_core()
-    now = time.time()
-    _CORE_CACHE.update(ts=now, core=core)
-    _save_core_db(now, core)
+def _refresh_core_sync(now: dt.datetime | None = None) -> dict:
+    core = _build_core(now)
+    wall = time.time()
+    _CORE_CACHE.update(ts=wall, core=core)
+    _save_core_db(wall, core)
     return core
 
 
@@ -269,32 +327,113 @@ def _refresh_core_async() -> None:
         global _CORE_REFRESHING
         try:
             _refresh_core_sync()
-        except Exception:
-            pass
+        except Exception as e:
+            # NOT swallowed any more. A rebuild that fails forever used to pin a
+            # stale core (and, before the date check below, yesterday's date) on
+            # the page with zero signal anywhere. Record it and say so.
+            _CORE_LAST_ERROR.update(at=time.time(), type=type(e).__name__,
+                                    msg=str(e)[:200])
+            log.warning("[radar] background core refresh FAILED: %s: %s — "
+                        "serving the stale core until a rebuild succeeds",
+                        type(e).__name__, e)
         finally:
             _CORE_REFRESHING = False
 
     threading.Thread(target=_work, name="radar-core-refresh", daemon=True).start()
 
 
-def _pull_core() -> dict:
-    """Serve the data core from cache; never build inline except first-ever.
-    Order: fresh in-process → fresh brain_meta (another worker/replica built
-    it) → STALE copy served now + single-flight background rebuild → inline
-    build only when no copy exists anywhere (first request after the key is
-    introduced)."""
-    now = time.time()
-    if _CORE_CACHE["core"] and (now - _CORE_CACHE["ts"]) < _CORE_TTL_S:
-        return _CORE_CACHE["core"]
+def _core_date(core) -> str:
+    """UTC date the core's figures are stamped with ('' if absent)."""
+    return str((core or {}).get("retrieved_at") or "")[:10]
+
+
+def _staleness(ts: float, core: dict, now: dt.datetime) -> dict | None:
+    """None when the cached core may be published without comment.
+
+    Two publishable-but-not-silent conditions:
+      date_crossed    — the core is stamped with a DIFFERENT UTC date than the
+                        edition number we are about to print beside it. This is
+                        the split-brain pairing itself; never emit it mutely.
+      refresh_failing — same date, but the copy is hours old, i.e. the
+                        background rebuild is not landing.
+    """
+    today = now.date().isoformat()
+    cd = _core_date(core)
+    age = max(0.0, time.time() - (ts or 0.0))
+    reason = None
+    if cd and cd != today:
+        reason = "date_crossed"
+    elif age > _CORE_STALE_WARN_S:
+        reason = "refresh_failing"
+    if not reason:
+        return None
+    out = {"reason": reason, "core_date": cd, "edition_date": today,
+           "age_s": int(age)}
+    if _CORE_LAST_ERROR.get("type"):
+        out["last_refresh_error"] = _CORE_LAST_ERROR["type"]
+        out["last_refresh_error_msg"] = _CORE_LAST_ERROR["msg"]
+    return out
+
+
+def _pull_core(now: dt.datetime | None = None) -> tuple[dict, dict | None]:
+    """Serve the data core from cache; never build inline except first-ever or on
+    a UTC date crossing. Returns (core, staleness) — staleness is None when the
+    core is coherent with `now` and recent, else the _staleness envelope.
+
+    Order: fresh in-process → fresh brain_meta (another worker/replica built it)
+    → STALE copy served now + single-flight background rebuild → inline build
+    when no copy exists anywhere, or when the only copy is stamped with a
+    different UTC date than the edition we are about to number.
+
+    ★ The date check is the fix for the two-clock defect: freshness is no longer
+    TTL alone. A core whose retrieved_at DATE differs from `now`'s UTC date is
+    stale BY DEFINITION, because the page prints that date next to an edition
+    number derived from `now` — so a persistently-failing refresh can no longer
+    pin yesterday on today's edition. On a date crossing we rebuild INLINE
+    (at most once per replica per UTC day) instead of serving the stale copy,
+    and if even that fails we serve it with staleness surfaced rather than
+    silently lying.
+    """
+    now = now or _utc_now()
+    today = now.date().isoformat()
+    wall = time.time()
+
+    if (_CORE_CACHE["core"] and (wall - _CORE_CACHE["ts"]) < _CORE_TTL_S
+            and _core_date(_CORE_CACHE["core"]) == today):
+        return _CORE_CACHE["core"], None
+
     ts, core = _load_core_db()
-    if core and (now - ts) < _CORE_TTL_S:
+    if core and (wall - ts) < _CORE_TTL_S and _core_date(core) == today:
         _CORE_CACHE.update(ts=ts, core=core)
-        return core
-    stale = core or _CORE_CACHE["core"]
-    if stale:
-        _refresh_core_async()
-        return stale
-    return _refresh_core_sync()
+        return core, None
+
+    if core:
+        stale, stale_ts = core, ts
+    else:
+        stale, stale_ts = _CORE_CACHE["core"], _CORE_CACHE["ts"]
+
+    if not stale:
+        return _refresh_core_sync(now), None
+
+    if _core_date(stale) != today:
+        with _CORE_INLINE_LOCK:
+            # Another request may have rebuilt it while we queued on the lock.
+            if (_CORE_CACHE["core"] and _core_date(_CORE_CACHE["core"]) == today
+                    and (time.time() - _CORE_CACHE["ts"]) < _CORE_TTL_S):
+                return _CORE_CACHE["core"], None
+            try:
+                return _refresh_core_sync(now), None
+            except Exception as e:
+                _CORE_LAST_ERROR.update(at=time.time(), type=type(e).__name__,
+                                        msg=str(e)[:200])
+                log.warning("[radar] inline core rebuild FAILED on UTC date cross "
+                            "(core_date=%s edition_date=%s): %s: %s — publishing "
+                            "the stale core WITH a staleness notice",
+                            _core_date(stale), today, type(e).__name__, e)
+                return stale, _staleness(stale_ts, stale, now)
+
+    _refresh_core_async()
+    return stale, _staleness(stale_ts, stale, now)
 
 # ── tier + rendering ─────────────────────────────────────────────────────────
 def _tier() -> str:
@@ -335,6 +474,40 @@ _PROV = (
     '</div>'
 )
 
+
+def _stale_banner(stale: dict | None) -> str:
+    """Make a stuck data core VISIBLE on the page. Empty string when healthy.
+
+    The failure mode this exists for: the background rebuild raises every time,
+    the exception is caught, and the page keeps serving an old core forever while
+    still printing "LIVE". Silence is the defect — so when the core cannot be
+    refreshed we say which date the figures carry and which date the edition is."""
+    if not stale:
+        return ""
+    hours = stale.get("age_s", 0) / 3600.0
+    age = f"{hours:.1f} h" if hours >= 1 else f"{int(stale.get('age_s', 0) / 60)} min"
+    if stale.get("reason") == "date_crossed":
+        lead = ("These figures are stamped <b>%s</b> UTC, but this is the <b>%s</b> "
+                "edition &mdash; the data core could not be rebuilt across the UTC "
+                "date boundary, so the retrieval date below is NOT today."
+                % (stale.get("core_date") or "unknown", stale.get("edition_date") or ""))
+    else:
+        lead = ("These figures were retrieved <b>%s</b> ago and the background "
+                "refresh is not landing, so \"live\" currently means that old."
+                % age)
+    err = ""
+    if stale.get("last_refresh_error"):
+        err = (' Last rebuild error: <code>%s</code>.'
+               % _html.escape(str(stale["last_refresh_error"])))
+    return (
+        '<div style="max-width:1060px;margin:0 auto;padding:12px clamp(16px,4vw,40px);'
+        'font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;'
+        'line-height:1.7;color:#E0982E;background:#1A1509;border-top:1px solid #3D3111;'
+        'border-bottom:1px solid #3D3111">'
+        '<b>STALE DATA CORE</b> &mdash; ' + lead + err +
+        ' Age ' + age + '.</div>'
+    )
+
 # r-radartease (2026-07-18): one cut-off line "from today's full brief" per
 # edition — rotates daily with the edition cycle. Deliberately ends mid-thought.
 _PULL_QUOTES = {
@@ -345,23 +518,27 @@ _PULL_QUOTES = {
 }
 
 
-def _edition_tokens(slug: str, data: dict) -> dict:
+def _edition_tokens(slug: str, data: dict, now: dt.datetime | None = None) -> dict:
     """Edition-context + daily-rotation tokens for the templates (r-radartease).
 
     - edition_*/tomorrow_*: fixes the teaser's hardcoded 'Edition Nº 002' (it
       showed 002 every day regardless of the actual rotation slot) and powers
       the tomorrow-hook + edition rail.
     - featured_*: ONE full ISO row unlocked free, rotating daily through all 7
-      (day-of-year), so the free page genuinely changes every day and gives a
-      taste of the paid scoreboard depth.
+      (fixed-epoch ordinal — see _cycle_slot; this was `doy % 7`, which repeated
+      a row across every Jan 1), so the free page genuinely changes every day and
+      gives a taste of the paid scoreboard depth.
     - pull_quote: the day's cut-off line from the full brief.
+
+    `now` is the request's single clock read — the SAME one the edition slug and
+    the data core were resolved from.
     """
+    now = now or _utc_now()
     ed = _BY_SLUG[slug]
     idx = ed["no"] - 1
     nxt = EDITIONS[(idx + 1) % len(EDITIONS)]
     isos = data.get("isos") or []
-    doy = dt.datetime.now(dt.timezone.utc).timetuple().tm_yday
-    feat = isos[doy % len(isos)] if isos else {}
+    feat = isos[_cycle_slot(now, len(isos))] if isos else {}
     return {
         "edition_slug":   slug,
         "edition_no":     f"{ed['no']:03d}",
@@ -369,6 +546,10 @@ def _edition_tokens(slug: str, data: dict) -> dict:
         "tomorrow_slug":  nxt["slug"],
         "tomorrow_no":    f"{nxt['no']:03d}",
         "tomorrow_title": nxt["title"],
+        # The UTC date this edition NUMBER belongs to. Same clock as edition_no,
+        # so {{edition_date}} can never contradict {{edition_no}} the way
+        # {{retrieved_date}} (a property of the cached core) could.
+        "edition_date":   now.date().isoformat(),
         "featured_iso":     feat.get("iso"),
         "featured_wait":    feat.get("wait_mo"),
         "featured_queue":   feat.get("queue_gw"),
@@ -378,32 +559,42 @@ def _edition_tokens(slug: str, data: dict) -> dict:
     }
 
 
-def _render_edition(slug: str, tier: str) -> str:
+def _render_edition(slug: str, tier: str, now: dt.datetime | None = None) -> str:
     # TIER GATE: free/anon see the public teaser (thesis + free headline metrics +
     # locked deep sections + upgrade/agent CTA — daily-fresh via live numbers, and
     # crawlable for SEO/GEO reach); paid (DEVELOPER/PRO/ENTERPRISE) see the full
     # edition. The tease is the acquisition hook; the decision-grade depth converts.
+    now = now or _utc_now()
     template = "teaser" if tier == "tease" else slug
-    data = T.normalize(_pull_core())
-    data.update(_edition_tokens(slug, data))
+    core, stale = _pull_core(now)
+    data = T.normalize(core)
+    data.update(_edition_tokens(slug, data, now))
     with open(os.path.join(_PAGES_DIR, f"{template}.html"), encoding="utf-8") as f:
         body = T.render(f.read(), data, tier)
     # frame the publication with a slim, navigable DC Hub bar (own identity below)
-    # and close with an honest live-vs-calibrated provenance strip.
-    return _NAV + body + _PROV
+    # and close with an honest live-vs-calibrated provenance strip. A core that
+    # cannot be refreshed gets an explicit banner rather than a silent old date.
+    return _NAV + body + _stale_banner(stale) + _PROV
 
-def _today_slug() -> str:
-    doy = dt.datetime.now(dt.timezone.utc).timetuple().tm_yday
-    return EDITIONS[doy % len(EDITIONS)]["slug"]
+def _today_slug(now: dt.datetime | None = None) -> str:
+    """Today's edition slug, from the request's single clock read."""
+    now = now or _utc_now()
+    return EDITIONS[_cycle_slot(now, len(EDITIONS))]["slug"]
 
-def _teaser_json(slug: str) -> dict:
-    core = _pull_core()
+def _teaser_json(slug: str, now: dt.datetime | None = None) -> dict:
+    now = now or _utc_now()
+    core, stale = _pull_core(now)
     data = T.normalize(core)
     ed = _BY_SLUG[slug]
     isos = {r["iso"]: r for r in data["isos"]}
     return {
         "edition": slug, "cycle_no": ed["no"], "title": ed["title"],
         "retrieved_at": data["retrieved_at"],
+        # edition_date = the UTC date the edition NUMBER is for; retrieved_at =
+        # when the figures were pulled. They used to be conflated on the page.
+        "edition_date": now.date().isoformat(),
+        "stale": bool(stale),
+        "staleness": stale,
         "citation": core.get("citation", {"cite_as": "DC Hub, dchub.cloud", "license": "CC-BY-4.0"}),
         "teaser_metrics": [
             {"label": "US interconnection queue", "value": data["us_queue_gw"], "unit": "GW"},
@@ -461,21 +652,26 @@ def _webmcp_tools(slug: str) -> list[dict]:
 # ── routes ───────────────────────────────────────────────────────────────────
 @radar_bp.route("/radar")
 def radar_today():
-    slug = _today_slug()
-    return Response(_webmcp_inject(_render_edition(slug, _tier()),
+    # ONE clock read per request, threaded through slug + render + core. Two
+    # now() calls here is exactly how the edition number and the printed date
+    # came from different clocks.
+    now = _utc_now()
+    slug = _today_slug(now)
+    return Response(_webmcp_inject(_render_edition(slug, _tier(), now),
                                    _webmcp_tools(slug)),
                     mimetype="text/html")
 
 @radar_bp.route("/radar/<slug>")
 def radar_edition(slug: str):
+    now = _utc_now()
     if slug.endswith(".json"):
         base = slug[:-5]
         if base not in _BY_SLUG:
             return jsonify({"error": "unknown edition", "editions": list(_BY_SLUG)}), 404
-        return jsonify(_teaser_json(base))
+        return jsonify(_teaser_json(base, now))
     if slug not in _BY_SLUG:
         return jsonify({"error": "unknown edition", "editions": list(_BY_SLUG)}), 404
-    return Response(_webmcp_inject(_render_edition(slug, _tier()),
+    return Response(_webmcp_inject(_render_edition(slug, _tier(), now),
                                    _webmcp_tools(slug)),
                     mimetype="text/html")
 

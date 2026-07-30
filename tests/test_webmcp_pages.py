@@ -109,7 +109,7 @@ def _get(bp, path):
 def _radar_client(monkeypatch):
     import routes.radar as radar
     monkeypatch.setattr(radar, "_render_edition",
-                        lambda slug, tier: "<div>edition</div>")
+                        lambda slug, tier, now=None: "<div>edition</div>")
     monkeypatch.setattr(radar, "_tier", lambda: "tease")
     return radar
 
