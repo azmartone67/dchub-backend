@@ -2841,8 +2841,18 @@ def mcp_funnel():
                 out["real_external_prior_7d"] = None
                 out["real_external_wow_pct"] = None
 
+            # ★★2026-07-30: + refunded_at IS NULL. This was the FOURTH conversion
+            # surface and the last one still counting refunded sales as revenue.
+            # canonical_funnel, funnel_health and /health were all filtered
+            # (#1885, #1888) — this one was missed, so the Upgrade Funnel
+            # dashboard published "Paid conversions (30d): 10" while the honest
+            # count was 6 (10 raw → 8 after refunds → 6 after comp/seed).
+            # Adding a filter to three of four lock-stepped surfaces does not fix
+            # drift, it MOVES it. Any filter added to one belongs in all four.
             cur.execute(
-                "SELECT COUNT(*) FROM mcp_conversions WHERE created_at >= NOW() - INTERVAL '30 days'"
+                "SELECT COUNT(*) FROM mcp_conversions "
+                " WHERE created_at >= NOW() - INTERVAL '30 days' "
+                "   AND refunded_at IS NULL"
             )
             out["conversions_30d"] = cur.fetchone()[0]
 

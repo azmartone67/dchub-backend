@@ -2430,6 +2430,18 @@ try:
     # Onboarding Master Shell (#43) — did the human who just paid get looked
     # after? GET /admin/onboarding · /api/v1/admin/onboarding/master-tick
     # Kill: ONBOARDING_SHELL_DISABLE=1
+    # Metric & Automation Integrity Master Shell (#44)
+    # GET /admin/metric-integrity · /api/v1/admin/metric-integrity/master-tick
+    # Kill: METRIC_INTEGRITY_SHELL_DISABLE=1
+    try:
+        from routes.metric_integrity_master_shell import (
+            metric_integrity_master_shell_bp)
+        app.register_blueprint(metric_integrity_master_shell_bp)
+        print("[main] metric_integrity_master_shell_bp registered: GET /admin/metric-integrity", flush=True)
+    except Exception as _mis:
+        import logging as _l2
+        _l2.getLogger(__name__).warning("metric-integrity shell not registered: %s", str(_mis)[:140])
+
     try:
         from routes.onboarding_master_shell import onboarding_master_shell_bp
         app.register_blueprint(onboarding_master_shell_bp)
