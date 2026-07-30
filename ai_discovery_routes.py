@@ -1134,8 +1134,10 @@ Allow: /sites/$
 #
 # Bingbot is NOT in this group — see the group below.
 #
-# xAI / Grok are explicitly welcomed (documented UAs). Grok often rotates
-# residential IPs + spoofs browser UAs, so this is a welcome signal, not a gate.
+# xAI / Grok are explicitly welcomed. Alias set completed 2026-07-30 at xAI's
+# own request (Grok asked for GrokBot, xAI-Bot, Grok, xAI verbatim). Grok often
+# rotates residential IPs + spoofs browser UAs, so this is a welcome signal,
+# not a gate.
 # ============================================================================
 User-agent: GPTBot
 User-agent: OAI-SearchBot
@@ -1152,6 +1154,9 @@ User-agent: meta-externalagent
 User-agent: GrokBot
 User-agent: xAI-Grok
 User-agent: Grok-DeepSearch
+User-agent: xAI-Bot
+User-agent: Grok
+User-agent: xAI
 User-agent: Bytespider
 User-agent: CCBot
 User-agent: Googlebot
