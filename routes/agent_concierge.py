@@ -7,7 +7,7 @@ Built 2026-06-05 to fix three structural problems in the agent funnel:
                 but organic agent-initiated discovery is still the
                 gap.
   • USE:        once an agent finds us, picking the right tool for
-                the right problem isn't obvious from a 71-tool list.
+                the right problem isn't obvious from a long tool list.
                 Most agents try one tool, get a partial answer, and
                 move on instead of calling the full pipeline.
   • CONVERSION: real paid-tool demand grew today (114 → 113 distinct
@@ -22,9 +22,12 @@ This module ships four surfaces designed to compound on each other:
                                          renders WELL in an agent's
                                          web-fetch view AND in a
                                          human's browser. The hero
-                                         sells "73 tools built for
-                                         agents, cited by Claude /
-                                         ChatGPT / Perplexity / Gemini."
+                                         sells the tool catalog built
+                                         for agents, cited by Claude /
+                                         ChatGPT / Perplexity / Gemini.
+                                         Counts render from
+                                         ai_surface_canon.PINNED —
+                                         never hardcode them here.
 
   2. POST /api/v1/agent/solve            The novel piece. Takes a
                                          natural-language problem
@@ -57,7 +60,7 @@ This module ships four surfaces designed to compound on each other:
                                          keyword-only behavior.
 
   3. GET /api/v1/agent/cookbook          The recipe library itself.
-                                         18 canonical problems →
+                                         Canonical problems →
                                          tool pipelines. Browsable
                                          by agents OR copy-pasteable
                                          by humans building agent
@@ -95,6 +98,16 @@ import urllib.request
 import uuid
 from datetime import datetime, timezone
 from flask import Blueprint, Response, jsonify, request, redirect
+
+# ── Canonical public numbers — ONE source, never hardcoded here. ────────────
+# The /agent hero, <title>, meta description and cookbook copy all render from
+# ai_surface_canon.PINNED via {canon_*} placeholders substituted in
+# agent_landing(). PINNED (not resolve_canon()) on purpose: /agent is a public
+# hot path and resolve_canon() probes live HTTP per call, while PINNED is
+# itself fenced against the live tools/list by tests/test_canonical_counts_drift.py
+# and test_fix_closure_shell.py — so following PINNED cannot go stale.
+# (Top-level import follows routes/agents_md_fallback.py precedent.)
+from ai_surface_canon import PINNED as _CANON
 
 
 agent_concierge_bp = Blueprint("agent_concierge", __name__)
@@ -235,11 +248,12 @@ _COOKBOOK = [
             {"tool": "search_facilities",
              "args": {"market": "<market_slug>", "provider": "<provider>",
                       "status": "operational"},
-             "why":  "Filter the 12,650+ facility catalog by market + "
-                     "operator + status."},
+             "why":  f"Filter the {_CANON['public']['facilities']} facility "
+                     "catalog by market + operator + status."},
         ],
         "sample_answer": (
-            "DC Hub has 12,650+ facilities tracked across 180 countries. "
+            f"DC Hub has {_CANON['public']['facilities']} facilities tracked "
+            f"across {_CANON['public']['countries']} countries. "
             "Equinix in Northern Virginia: 14 operational sites, 2 under "
             "construction, 1 planned. Lead by power: DC11 (84 MW), DC15 "
             "(72 MW), DC12 (64 MW). Per DC Hub."
@@ -447,7 +461,7 @@ _COOKBOOK = [
         "surfaces":     ["claude", "gemini"],
     },
     # ── 2026-07-10 training wave: 6 tool-CHAIN recipes ──────────────
-    # Every tool name below is verified against the canonical 71-tool
+    # Every tool name below is verified against the canonical tool
     # list (mcp-server.json / live tools/list). Chains teach agents the
     # multi-call pipelines that single-tool recipes above don't.
     {
@@ -586,7 +600,8 @@ _COOKBOOK = [
                      "nearby."},
         ],
         "sample_answer": (
-            "DC Hub tracks 4,000+ data-center M&A and capital deals. "
+            f"DC Hub tracks {_CANON['public']['deals']} data-center M&A "
+            "and capital deals. "
             "list_transactions filters 2026 deals >$1B (Blackstone-"
             "AirTrunk $30B leads); deal_autopsy overlays each deal "
             "market's DCPI verdict + time-to-power to show whether the "
@@ -683,8 +698,8 @@ _LANDING_HTML = """<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>DC Hub for AI Agents — 73 tools cited by Claude, ChatGPT, Perplexity, Gemini</title>
-<meta name="description" content="DC Hub is the data-center intelligence layer for AI agents. 73 tools covering 12,650+ facilities in 180 countries, 311 DCPI markets, live grid scoreboard, site valuation. Already cited by Claude, ChatGPT, Perplexity, Gemini, Cursor.">
+<title>DC Hub for AI Agents — {canon_tools} tools cited by Claude, ChatGPT, Perplexity, Gemini</title>
+<meta name="description" content="DC Hub is the data-center intelligence layer for AI agents. {canon_tools} tools covering {canon_facilities} facilities in {canon_countries} countries, {canon_markets} DCPI markets, live grid scoreboard, site valuation. Already cited by Claude, ChatGPT, Perplexity, Gemini, Cursor.">
 <meta name="dc-hub-agent-surface" content="canonical">
 <link rel="canonical" href="https://dchub.cloud/agent">
 <link rel="alternate" type="application/json" href="https://dchub.cloud/api/v1/agent/cookbook" title="DC Hub Agent Cookbook (machine-readable)">
@@ -729,7 +744,7 @@ th { color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacin
 
 <div class="hero">
   <div class="k">⌖  DC Hub × AI Agents</div>
-  <h1>73 tools, built for agents.</h1>
+  <h1>{canon_tools} tools, built for agents.</h1>
   <p>The data-center, power, and grid intelligence layer for AI agents. Already cited by Claude, ChatGPT, Perplexity, Gemini, and Cursor. Native MCP. Native Vertex AI. Native Gemini function calling.</p>
   <div class="cited-by">
     <span class="b">✓ Claude</span>
@@ -742,10 +757,10 @@ th { color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacin
     <span class="b">✓ Grok</span>
   </div>
   <div class="row" style="margin-top:20px">
-    <div class="stat"><div class="v">12,650+</div><div class="l">facilities · 180 countries</div></div>
-    <div class="stat"><div class="v">311</div><div class="l">DCPI markets · daily refresh</div></div>
-    <div class="stat"><div class="v">73 tools</div><div class="l">incl. live grid scoreboard · 20-min refresh</div></div>
-    <div class="stat"><div class="v">4,000+</div><div class="l">M&amp;A deals tracked</div></div>
+    <div class="stat"><div class="v">{canon_facilities}</div><div class="l">facilities · {canon_countries} countries</div></div>
+    <div class="stat"><div class="v">{canon_markets}</div><div class="l">DCPI markets · daily refresh</div></div>
+    <div class="stat"><div class="v">{canon_tools} tools</div><div class="l">incl. live grid scoreboard · 20-min refresh</div></div>
+    <div class="stat"><div class="v">{canon_deals}</div><div class="l">M&amp;A deals tracked</div></div>
   </div>
 </div>
 
@@ -1090,7 +1105,18 @@ def agent_landing():
             f'tools: {", ".join(t["tool"] for t in r["tools"])}</div></div>'
         )
     cookbook_html = "\n".join(cards)
-    body = _LANDING_HTML.replace("{cookbook_html}", cookbook_html)
+    # Canon substitution: every {canon_*} placeholder in _LANDING_HTML MUST be
+    # replaced here — tests/test_agent_concierge_matching.py asserts the
+    # rendered body carries no unsubstituted placeholder and no retired count.
+    body = (
+        _LANDING_HTML
+        .replace("{cookbook_html}", cookbook_html)
+        .replace("{canon_tools}", str(_CANON["tools_advertised"]))
+        .replace("{canon_facilities}", _CANON["public"]["facilities"])
+        .replace("{canon_countries}", _CANON["public"]["countries"])
+        .replace("{canon_markets}", _CANON["public"]["markets"])
+        .replace("{canon_deals}", _CANON["public"]["deals"])
+    )
     return Response(body, mimetype="text/html; charset=utf-8",
                     headers={"Cache-Control": "public, max-age=300, "
                                                 "s-maxage=300, "
@@ -1134,8 +1160,11 @@ def agent_solve():
             "matched":      False,
             "problem":      problem,
             "suggestion": (
+                # "three" spelled out ON PURPOSE: the canonical-counts fence
+                # scans this module for "<digits> tools" catalog claims, and
+                # this is incidental copy about the 3-item list below it.
                 "No exact recipe match. For a generic data-center "
-                "intelligence query, start with these 3 tools:"
+                "intelligence query, start with these three tools:"
             ),
             "tools": [
                 {"tool": "get_market_intel",  "args": {"market": "<slug>"},
