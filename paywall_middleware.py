@@ -58,6 +58,22 @@ logger = logging.getLogger(__name__)
 # must satisfy identified-gated surfaces while staying blocked from
 # developer-gated ones — the tie is behaviorally exact. team==pro and
 # research_seed==enterprise per tier_registry rank equivalence.
+# r-admin-row (2026-07-30): 'admin' added to all three dicts, split out
+# of the starter/team/research_seed sweep (#1951) because admin in a
+# paywall deserved its own decision. Investigated first: NOTHING can
+# currently present tier='admin' to these dicts — no production code
+# registers paywall_bp or calls init_app (the module is unwired; the
+# docstring integration is aspirational), and _get_user_tier() itself
+# only ever returns enterprise/pro/developer/registered/free
+# (users.plan='admin' falls through its else-branch to 'free'). The
+# rows exist because these dicts sit on the audited tier-dict
+# containment surface (brain_consistency_radar
+# check_tier_dict_missing_keys + tests/test_admin_tier_coverage.py)
+# where every other audited dict carries an explicit admin key: any
+# future wiring, or external importer of these maps (the r32 pattern
+# above), must rank admin ABOVE enterprise — not .get()-default it to
+# anonymous rank 0 / 10 calls/day / {} features. Values mirror
+# tier_registry ('admin': rank 99, rate_limit 999999, full access).
 TIER_HIERARCHY = {
     'anonymous':  0,         # walk-in, no signup
     'anon':       0,
@@ -71,6 +87,7 @@ TIER_HIERARCHY = {
     'team':       3,         # Team = Pro-equivalent access
     'enterprise': 4,
     'research_seed': 4,      # NLR research seats = Enterprise-equivalent
+    'admin':      5,         # r-admin-row: strictly above enterprise
 }
 
 # Feature flags by tier — identified gets the same as registered
@@ -167,6 +184,14 @@ TIER_FEATURES = {
         'gridIntelligence': True,
         'exportData': True,
     },
+    'admin': {                   # r-admin-row: full access (see TIER_HIERARCHY)
+        'facilitiesSearch': True,
+        'marketIntel': True,
+        'pipelineTracking': True,
+        'transactionData': True,
+        'gridIntelligence': True,
+        'exportData': True,
+    },
 }
 
 # Rate limits (calls per day)
@@ -187,6 +212,7 @@ RATE_LIMITS = {
     'team':      10000,        # Team = Pro-equivalent rate
     'enterprise': 100000,
     'research_seed': 100000,   # NLR = Enterprise-equivalent rate
+    'admin':     999999,       # r-admin-row: mirrors tier_registry rate_limit
 }
 
 # Truncation limits per tier
