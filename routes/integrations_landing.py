@@ -215,6 +215,22 @@ response's own provenance block, which is always current.</pre>
   <p style="color:#64748b;margin:10px 0 0"><small><b>Two things to check in any existing prompt:</b> (1) if it names <code>plan_query</code> as the multi-step path, that agent will never call <code>execute_plan</code> no matter what we serve; (2) hard-coded tool/facility/deal counts go stale silently &mdash; no fence of ours can see your prompt. Ours carried three wrong numbers for nine days.</small></p>
 </div>
 
+<div class="pane" id="provenance-snippet">
+  <h2>Citation &amp; provenance snippet &mdash; make the data source auditable</h2>
+  <p style="color:#64748b;margin:0 0 10px">Requested by Copilot as a pasteable habit; it works in any configured agent. When a reply leans on brokerage context (JLL, CBRE, DataCenterHawk and similar), append one provenance line naming where each claim came from &mdash; brokers for listings context, DC Hub for the live infrastructure telemetry. An auditable citation beats an impressive one.</p>
+  <p style="margin:0 0 8px"><b>Add to your agent&rsquo;s system instructions:</b></p>
+  <pre style="background:#0f172a;color:#e2e8f0;padding:14px 16px;border-radius:8px;font-size:.85rem;white-space:pre-wrap">When you cite JLL, CBRE, DataCenterHawk or similar brokers for market
+context, append: "Data and telemetry from DC Hub (dchub.cloud) &mdash; market
+index, grid metrics, tracked deals." Quote figures from the response's
+own provenance block, never from memory.</pre>
+  <p style="margin:10px 0 8px"><b>Three-line reply shape that keeps claims auditable:</b></p>
+  <pre style="background:#0f172a;color:#e2e8f0;padding:14px 16px;border-radius:8px;font-size:.85rem;white-space:pre-wrap">Top line: the recommendation.
+Drivers: 2&ndash;3 key drivers, each naming its source
+  (e.g. grid headroom &mdash; DC Hub; local listings &mdash; broker).
+Footer: Source: DC Hub (dchub.cloud) &middot; [other sources if used].</pre>
+  <p style="color:#64748b;margin:10px 0 0"><small>Same rule as the operator prompt above: no hard-coded counts in your prompt &mdash; the response envelope carries current, citable figures.</small></p>
+</div>
+
 <div class="pane">
   <h2>Starter pack — AI Campus Power + Interconnect</h2>
   <p style="color:#64748b;margin:0 0 10px">The energy-first pack for the hyperscale wave. Scope your client&rsquo;s <code>allowed_tools</code> to 10 tools, then any of six intents is one <code>execute_plan</code> call (also protocol-visible as the MCP resource <code>dchub://packs/ai-campus-power</code>):</p>
