@@ -38,6 +38,7 @@ from flask import request, jsonify, g
 from collections import defaultdict
 import threading
 from db_utils import get_db
+import tier_registry
 
 # ═══════════════════════════════════════════════════════════════
 #  CONFIGURATION
@@ -77,78 +78,38 @@ PAYMENT_LINKS = {
 # were missing — same bug class as land_power_usage_limiter. Without
 # these keys, dict.get(plan, default) silently fell through to free's
 # values, meaning identified users (email-only signups) got the SAME
-# data caps as anonymous walk-ins. Identified is now slotted between
-# free (0) and founding (2) at level 1.
-PLAN_LEVELS = {
-    'anonymous': -1,         # no signup
-    'anon':      -1,         # alias used by some callers
-    'free':       0,         # legacy free (no email)
-    'identified': 1,         # email-only signup, no card — the "taste" tier
-    'developer':  3,         # $49/mo Developer
-    'pro':        4,
-    # r43-H (2026-05-27): founding was ranked 2 — BELOW developer(3) and
-    # pro(4) — despite the "Pro-equivalent" comment. So require_plan('pro')
-    # (level 4) denied every founding member (level 2), and they saw "free"
-    # access despite paying (the Carl Braun report). Founding is sold as
-    # Pro-equivalent and the Stripe webhook maps founding→api_tier 'pro',
-    # so it belongs at the pro level. Placed AFTER pro so the value is
-    # unambiguous.
-    'founding':   4,         # Founding members — Pro-equivalent (was 2: bug)
-    'enterprise': 5,
-    'research_seed': 5,      # research-institution tier, enterprise-equivalent
-    'admin':      99,
-}
+# data caps as anonymous walk-ins.
+# r-tier-derive (2026-07-30): the hand-copied maps drifted a THIRD
+# time — 'identified' (r32), 'founding' (r43-H, the Carl Braun
+# mis-rank), and now 'starter'/'team' were absent from PLAN_LEVELS
+# and all three limit maps below. A paying $9/mo Starter therefore
+# fell through every .get() default: access level 0 == free (failing
+# even the require_plan('identified') gate), 100 calls/day (advertised
+# 500), 50 records/day (advertised 500 — pricing sells "10× the free
+# quota"), 1 page/query (advertised 10). These maps are now DERIVED
+# from tier_registry — THE canonical tier source — so they cannot
+# drift again; the per-tier value rationale lives there. Locked by
+# tests/test_tier_consistency.py::test_gating_maps_match_tier_registry.
+# The derivation is value-identical for every previously present key
+# and only adds the missing tiers ('starter' rank 2, 'team' rank 4).
+PLAN_LEVELS = {t: v['rank'] for t, v in tier_registry.TIERS.items()}
 
-# Rate limits per tier (API requests per day)
-# r32-sweep: identified gets 50/day (5x free) — meaningful "taste"
-# above anonymous (5) and free (10). Justification: a free email
-# signup is more committed than a walk-in, deserves more than 10
-# calls before being told to upgrade.
-TIER_RATE_LIMITS = {
-    'anonymous':   5,
-    'anon':        5,
-    'free':       10,
-    'identified': 50,
-    # r43-H (2026-05-27): founding is Pro-equivalent for BENEFITS, not
-    # just access. It was getting developer-level limits (1000/day) —
-    # founding members paid for Pro-tier benefits, so match pro (5000).
-    'founding':   5000,
-    'developer':  1000,
-    'pro':        5000,
-    'enterprise': 100000,
-    'research_seed': 100000,  # r43-H: NLR custom == enterprise
-    'admin':      999999,
-}
+# Rate limits per tier (API requests per day) — derived from
+# tier_registry.TIER_LIMITS['rate_limit'] (r-tier-derive 2026-07-30;
+# see PLAN_LEVELS comment above). 'anon' is a caller alias that
+# tier_registry.TIER_LIMITS does not carry.
+TIER_RATE_LIMITS = {t: v['rate_limit'] for t, v in tier_registry.TIER_LIMITS.items()}
+TIER_RATE_LIMITS['anon'] = TIER_RATE_LIMITS['anonymous']
 
 # ── Per-day unique record caps (prevents dataset vacuuming) ──
-# Identified slotted at 200 — 4x free, half of developer. Big enough
-# to actually evaluate the dataset, small enough to drive upgrades.
-TIER_DAILY_RECORD_CAPS = {
-    'anonymous':  50,
-    'anon':       50,
-    'free':       50,
-    'identified': 200,
-    'founding':   5000,   # r43-H: founding == pro benefits (was 500)
-    'developer':  500,
-    'pro':        5000,
-    'enterprise': 999999,
-    'research_seed': 999999,  # r43-H: NLR == enterprise
-    'admin':      999999,
-}
+# Derived from tier_registry.TIER_LIMITS['record_cap'].
+TIER_DAILY_RECORD_CAPS = {t: v['record_cap'] for t, v in tier_registry.TIER_LIMITS.items()}
+TIER_DAILY_RECORD_CAPS['anon'] = TIER_DAILY_RECORD_CAPS['anonymous']
 
 # ── Max pages per paginated query ──
-TIER_PAGE_CAPS = {
-    'anonymous':  1,
-    'anon':       1,
-    'free':       2,
-    'identified': 5,
-    'founding':   50,    # r43-H: founding == pro benefits (was 10)
-    'developer':  10,
-    'pro':        50,
-    'enterprise': 999,
-    'research_seed': 999,  # r43-H: NLR == enterprise
-    'admin':      999,
-}
+# Derived from tier_registry.TIER_LIMITS['page_cap'].
+TIER_PAGE_CAPS = {t: v['page_cap'] for t, v in tier_registry.TIER_LIMITS.items()}
+TIER_PAGE_CAPS['anon'] = TIER_PAGE_CAPS['anonymous']
 
 # ── Max results per single search/list query ──
 TIER_SEARCH_LIMITS = {
@@ -240,8 +201,8 @@ PLAN_INFO = {
         'name': 'Pro',
         'price_monthly': 299,   # audit #9: was 199 — canonical is tier_registry PRICES['pro']=299 (r-reprice 2026-06-19)
         'price_annual': 2392,   # preserves the prior ~8x annual ratio at the new $299 anchor
-        'rate_limit': 10000,
-        'tagline': 'Developer + market compare + PDF reports (10,000 calls/day)',
+        'rate_limit': 5000,     # audit #9 follow-up: was 10000 — enforced limit is tier_registry TIER_LIMITS['pro']['rate_limit']=5000; no public surface sells 10k (pricing.html quotes the 2,000/day MCP lane)
+        'tagline': 'Developer + market compare + PDF reports (5,000 calls/day)',
         'show_in_gate': True,
         'features': {
             'headline_stats': True,

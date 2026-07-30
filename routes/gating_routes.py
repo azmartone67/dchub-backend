@@ -59,9 +59,18 @@ def _tier_from_api_key(api_key):
             return 'anonymous'
         try:
             cur = conn.cursor()
+            # 2026-07-30: this SELECTed by key_value OR id::text — columns
+            # mcp_dev_keys has NEVER had (live schema: api_key/tier/status,
+            # no id at all) — so it threw UndefinedColumn on every call and
+            # the fail-soft except below swallowed it: this fallback always
+            # reported 'anonymous'. Same dead-query class as
+            # flask_mcp_endpoints.validate_key (PR #1943). Match the
+            # primary path it stands in for (mcp_upgrade_gate.
+            # validate_key_tier): key column is api_key, active keys only.
             cur.execute(
-                "SELECT tier FROM mcp_dev_keys WHERE key_value = %s OR id::text = %s LIMIT 1",
-                (api_key, api_key)
+                "SELECT tier FROM mcp_dev_keys "
+                "WHERE api_key = %s AND status = 'active' LIMIT 1",
+                (api_key,)
             )
             row = cur.fetchone()
             if row and row[0]:

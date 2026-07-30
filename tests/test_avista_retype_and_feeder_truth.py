@@ -69,14 +69,57 @@ def _parse(relpath):
     return tree, src
 
 
+def _fn_free_vars(fn_node):
+    """Module-level names a function reads without binding them itself."""
+    import builtins
+    assigned, loaded = set(), set()
+    for n in ast.walk(fn_node):
+        if isinstance(n, ast.Name):
+            (assigned if isinstance(n.ctx, ast.Store) else loaded).add(n.id)
+        elif isinstance(n, (ast.Import, ast.ImportFrom)):
+            for a in n.names:
+                assigned.add((a.asname or a.name).split(".")[0])
+        elif isinstance(n, (ast.FunctionDef, ast.Lambda)):
+            args = n.args
+            assigned.update(a.arg for a in (list(args.posonlyargs)
+                                            + list(args.args)
+                                            + list(args.kwonlyargs)))
+            for v in (args.vararg, args.kwarg):
+                if v:
+                    assigned.add(v.arg)
+            if isinstance(n, ast.FunctionDef) and n is not fn_node:
+                assigned.add(n.name)
+        elif isinstance(n, ast.ExceptHandler) and n.name:
+            assigned.add(n.name)
+    return loaded - assigned - set(dir(builtins))
+
+
 def _extract(relpath, fn_names, assign_names=(), namespace=None):
     """Compile named top-level functions + assignments into a namespace.
 
     Asserts every requested name was found, that every function compiled to a
     callable, and that every requested free-variable assignment resolved —
     a missing name is either a NameError at call time or a silently untested
-    function (the third repeat of that trap in this repo)."""
+    function (the third repeat of that trap in this repo).
+
+    ★ assign_names is AUTO-EXTENDED with the kept functions' own free variables
+    (2026-07-30). Callers used to hand-list the constants, and adding a fourth
+    to check_source_contract() (_CENSORING_CEILINGS) broke this file with a
+    NameError raised from INSIDE the extracted function — i.e. the guard's
+    subject failed for a harness reason. A caller-supplied dependency list rots
+    as fast as the code it describes; anything the function genuinely needs and
+    the module does not define still fails loudly below.
+    """
     tree, _ = _parse(relpath)
+    wanted_assigns = set(assign_names)
+    for stmt in tree.body:
+        if isinstance(stmt, ast.FunctionDef) and stmt.name in fn_names:
+            wanted_assigns |= _fn_free_vars(stmt)
+    # Only names the module actually defines at top level can be supplied here;
+    # the rest (imported modules, other functions) are left to the assertions.
+    module_level = {t.id for s in tree.body if isinstance(s, ast.Assign)
+                    for t in s.targets if isinstance(t, ast.Name)}
+    assign_names = tuple(sorted(wanted_assigns & module_level))
     keep, found = [], set()
     for stmt in tree.body:
         if isinstance(stmt, ast.FunctionDef) and stmt.name in fn_names:
@@ -91,6 +134,18 @@ def _extract(relpath, fn_names, assign_names=(), namespace=None):
     missing = (set(fn_names) | set(assign_names)) - found
     assert not missing, "not found in %s: %s" % (relpath, sorted(missing))
     ns = dict(namespace or {})
+    # A top-level assignment we now pull in may itself use one of the module's
+    # imports (e.g. `logger = logging.getLogger(__name__)`), so supply exactly
+    # the plain stdlib modules this module imports — nothing else, and no
+    # third-party imports, so a flask-level dependency still refuses to load.
+    _SAFE = {"os", "json", "math", "time", "logging", "datetime", "re"}
+    for stmt in tree.body:
+        if isinstance(stmt, ast.Import):
+            for alias in stmt.names:
+                root = alias.name.split(".")[0]
+                if root in _SAFE:
+                    ns.setdefault(alias.asname or root, __import__(alias.name))
+    ns.setdefault("__name__", "hosting_capacity_ingest_under_test")
     mod = ast.Module(body=keep, type_ignores=[])
     exec(compile(ast.fix_missing_locations(mod), relpath, "exec"), ns)
     for n in fn_names:

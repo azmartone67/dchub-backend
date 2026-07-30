@@ -600,6 +600,48 @@ def cosine_gate(name: str) -> float:
     return max(float(v) for v in g.values())
 
 
+# LC6 Lane B — embed health, counted per reindex run.
+#
+# "Did the cron run" is not the failure mode here. Both providers below swallow
+# EVERY exception into a bare `return None`, and reindex() answers that with
+# `continue` — so a total embedding outage finishes cleanly, returns ok=True with
+# embedded=0, and leaves a corpus that retrieves nothing at cosine 0.0. Nothing on
+# the dead-man board sees it.
+#
+# Counted at the DISPATCHER so it stays provider-agnostic: RAG_EMBED_PROVIDER
+# defaults to mistral, and a revert to cohere must keep measuring.
+_EMBED_HEALTH = {"calls": 0, "failed": 0, "http_429": 0, "zero_norm": 0, "vectors": 0}
+
+
+def _beat_feed(*a, **kw):
+    """Lazy + fail-open: a heartbeat must never be able to break the reindex.
+
+    This module has no logger, so the fallback prints — beat_feed() itself logs
+    the HTTP-failure case at ERROR through the ingest_runs logger.
+    """
+    try:
+        from routes.ingest_runs import beat_feed
+        beat_feed(*a, **kw)
+    except Exception as e:  # noqa: BLE001
+        print(f"[rag] deadman beat failed (non-fatal): {type(e).__name__}: {e}")
+
+
+def _embed_health_reset():
+    for k in _EMBED_HEALTH:
+        _EMBED_HEALTH[k] = 0
+
+
+def _note_embed_error(exc):
+    """Record a provider error. 429 is broken out because throttling is the
+    documented way this corpus died before (the Cohere trial key, 2026-07-06) —
+    it is a quota problem, not a network blip, and wants a different response."""
+    try:
+        if getattr(exc, "code", None) == 429:
+            _EMBED_HEALTH["http_429"] += 1
+    except Exception:
+        pass
+
+
 def _embed_cohere(texts, input_type="search_document"):
     key = (os.environ.get("COHERE_API_KEY") or "").strip()
     if not key or not texts:
@@ -613,7 +655,8 @@ def _embed_cohere(texts, input_type="search_document"):
         with urllib.request.urlopen(req, timeout=30) as r:
             d = json.loads(r.read())
         return d.get("embeddings")
-    except Exception:
+    except Exception as e:
+        _note_embed_error(e)
         return None
 
 
@@ -637,7 +680,8 @@ def _embed_mistral(texts, input_type=None):
             with urllib.request.urlopen(req, timeout=45) as r:
                 d = json.loads(r.read())
             embs = [it.get("embedding") for it in (d.get("data") or [])]
-        except Exception:
+        except Exception as e:
+            _note_embed_error(e)
             return None
         if len(embs) != len(sub):
             return None
@@ -646,9 +690,22 @@ def _embed_mistral(texts, input_type=None):
 
 
 def _embed(texts, input_type="search_document"):
-    if _embed_provider() == "cohere":
-        return _embed_cohere(texts, input_type)
-    return _embed_mistral(texts, input_type)
+    _EMBED_HEALTH["calls"] += 1
+    vecs = (_embed_cohere(texts, input_type) if _embed_provider() == "cohere"
+            else _embed_mistral(texts, input_type))
+    if not vecs:
+        _EMBED_HEALTH["failed"] += 1
+        return vecs
+    # A zero-norm vector is the silent killer: it does not raise, it returns
+    # cosine 0.0 against everything, and the corpus still looks populated.
+    for v in vecs:
+        _EMBED_HEALTH["vectors"] += 1
+        try:
+            if all(abs(float(x)) < 1e-9 for x in v):
+                _EMBED_HEALTH["zero_norm"] += 1
+        except Exception:
+            pass
+    return vecs
 
 
 def _vec(v):
@@ -1476,6 +1533,7 @@ def reindex():
     if c is None:
         return jsonify(ok=False, error="db_unavailable"), 200
     embedded = 0
+    _embed_health_reset()          # LC6: counters are per-run
     try:
         with c.cursor() as cur:
             rows = _pending(cur, cap)
@@ -1513,7 +1571,19 @@ def reindex():
             emb = cur.fetchone()[0] or 0
             chunk_docs_pending = _pending_chunk_count(cur)
         remaining = max(0, total - emb) + chunk_docs_pending
+        # LC6 Lane B — RAG had no dead-man coverage at all. Report DEGRADED when
+        # the run "succeeded" but the embeddings are worthless: any 429, any
+        # failed batch (reindex() answers those with `continue`), or >5% zero-norm
+        # vectors. A clean run beats success with the embedded count.
+        _h = _EMBED_HEALTH
+        _degraded = bool(
+            _h["http_429"] or _h["failed"]
+            or (_h["vectors"] and _h["zero_norm"] / max(_h["vectors"], 1) > 0.05))
+        _beat_feed("rag-embed-index",
+                   status="degraded" if _degraded else "success",
+                   rows_inserted=embedded, cadence_hours=24)
         return jsonify(ok=True, embedded=embedded, remaining=remaining,
+                       embed_health=dict(_h),
                        narrative_docs_pending=chunk_docs_pending,
                        orphans_deleted=sum(orphans.values()),
                        orphans_by_corpus=orphans,

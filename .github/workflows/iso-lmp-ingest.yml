@@ -34,6 +34,10 @@ jobs:
         run: |
           set -euo pipefail
           resp=$(curl -sS --max-time 240 -X POST "$RAILWAY_BASE/api/v1/iso-lmp/ingest" || echo '{"error":"curl_fail"}')
+          # Persist BEFORE the exit-gate below: the per-ISO beat step runs with
+          # if: always(), so a 2-ISO outage (ok<4 -> this step exits 1) must still
+          # publish per-ISO truth. That case is exactly why the lane exists.
+          printf '%s' "$resp" > "$RUNNER_TEMP/iso-lmp.json"
           echo "$resp" | python3 -c "
           import sys, json, os
           d = json.load(sys.stdin)
@@ -45,10 +49,21 @@ jobs:
               if isinstance(rr, int):
                   rows_total += rr
               print(' ', r.get('iso'), 'rows=' + str(r.get('rows')), r.get('debug', '')[:80])
+          # isos_ok counts FETCH success only, and results[].rows is the count
+          # FETCHED. The DB write is a SEPARATE field (results[].upsert.ok). So a run
+          # where all 6 fetch cleanly and EVERY upsert fails used to beat
+          # status=success with a large rows_inserted. Carry the write truth instead.
+          wrote = sum(1 for r in d.get('results', [])
+                      if (r.get('upsert') or {}).get('ok'))
+          rows_written = sum((r.get('upsert') or {}).get('rows') or 0
+                             for r in d.get('results', []))
+          beat_status = 'success' if (total and wrote == total) else 'partial_write'
+          print(f'upserts_ok {wrote}/{total} | rows_written {rows_written} -> beat={beat_status}')
           gh = os.environ.get('GITHUB_OUTPUT')
           if gh:
               with open(gh, 'a') as f:
-                  print('rows=%d' % rows_total, file=f)
+                  print('rows=%d' % rows_written, file=f)
+                  print('beat_status=%s' % beat_status, file=f)
           sys.exit(0 if ok and ok >= 4 else 1)  # tolerate <=2 flaky sources, fail on worse
           " || { echo "$resp" | head -c 800; exit 1; }
 
@@ -64,4 +79,98 @@ jobs:
             -H "X-Admin-Key: ${{ secrets.DCHUB_ADMIN_KEY }}" \
             -H "Content-Type: application/json" \
             -H "User-Agent: dchub-ingest-beat/1.0" \
-            -d "{\"feed\":\"iso-lmp-ingest\",\"status\":\"success\",\"rows_inserted\":${{ steps.ingest.outputs.rows }}}" || true
+            -d "{\"feed\":\"iso-lmp-ingest\",\"status\":\"${{ steps.ingest.outputs.beat_status }}\",\"rows_inserted\":${{ steps.ingest.outputs.rows }}}" || true
+
+      # LC6 Lane A — per-ISO dead-man feeds.
+      #
+      # WHY: the parent feed above gates on `isos_ok >= 4`, so TWO ISOs can be dead
+      # indefinitely while the board stays green and rows_inserted stays healthy from
+      # the other four. These six feeds make each ISO independently visible.
+      #
+      # if: always() — a run where ok<4 fails the ingest step, and that is precisely
+      # the run whose per-ISO detail matters most.
+      - name: beat per-ISO deadman feeds
+        if: always()
+        continue-on-error: true
+        env:
+          DCHUB_ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          set -uo pipefail
+          [ -s "$RUNNER_TEMP/iso-lmp.json" ] || { echo "no response body — nothing to beat"; exit 0; }
+          python3 - "$RUNNER_TEMP/iso-lmp.json" <<'PY'
+          import json, os, sys, urllib.request
+          from datetime import datetime, timezone
+
+          BEAT = "https://dchub.cloud/api/v1/admin/ingest-runs/beat"
+          UA   = "dchub-ingest-beat/1.0 (+https://dchub.cloud)"
+          KEY  = os.environ.get("DCHUB_ADMIN_KEY") or ""
+
+          try:
+              doc = json.load(open(sys.argv[1]))
+          except Exception as e:
+              print("unparseable response (%s) — beating nothing" % e)
+              raise SystemExit(0)
+
+          results = doc.get("results") or []
+          if not results:
+              # curl_fail / 5xx / gateway error: no per-ISO truth exists. Beat NOTHING
+              # so every child ages honestly. Never invent a status from an absent
+              # payload — that is how a dead loop reads green.
+              print("no results[] in response — beating nothing (feeds will age)")
+              raise SystemExit(0)
+
+          now = datetime.now(timezone.utc)
+          for r in results:
+              iso = (r.get("iso") or "").strip().upper()
+              if not iso:
+                  continue
+              feed = "iso-lmp-" + iso.lower()
+              ups = r.get("upsert") or {}
+
+              if not r.get("fetch_ok"):
+                  # Source unreachable/unparseable. Do NOT beat: last-success ages and
+                  # the feed flips overdue at 2x cadence, so a transient 5xx ages
+                  # instead of flapping the board red-green-red every 10 minutes.
+                  print("  %-16s fetch_ok=false -> no beat (ageing)" % feed)
+                  continue
+
+              if not ups.get("ok"):
+                  # Fetched fine, DB write failed — the case the parent feed misses
+                  # entirely. "write_failed" is deliberately NOT in ingest_runs
+                  # _OK_STATUS, so it goes red immediately rather than ageing.
+                  status, rows = "write_failed", 0
+              else:
+                  # upsert.rows is the count actually WRITTEN ("no_rows_skipped" mode
+                  # omits it -> 0). results[].rows is the count FETCHED — not this.
+                  status, rows = "success", int(ups.get("rows") or 0)
+
+              # Real per-ISO content freshness. Catches "poller alive, rows flowing,
+              # but the rows are hours stale" — which neither the parent feed nor a
+              # row count can see.
+              mcd = r.get("interval_ending_utc")
+              if mcd:
+                  try:
+                      if datetime.fromisoformat(mcd.replace("Z", "+00:00")) > now:
+                          mcd = now.isoformat()   # clamp: >6h future is itself overdue
+                  except Exception:
+                      mcd = None
+
+              body = {"feed": feed, "status": status, "rows_inserted": rows,
+                      "cadence_hours": 1}
+              if mcd:
+                  body["max_content_date"] = mcd
+              try:
+                  req = urllib.request.Request(
+                      BEAT, data=json.dumps(body).encode(), method="POST",
+                      headers={"Content-Type": "application/json",
+                               "X-Admin-Key": KEY, "User-Agent": UA})
+                  with urllib.request.urlopen(req, timeout=20) as resp:
+                      print("  %-16s %-12s rows=%-6d http=%s" % (feed, status, rows, resp.status))
+              except Exception as e:
+                  print("  %-16s BEAT FAILED: %s" % (feed, e))   # fail-OPEN
+
+          # ISO-NE is absent BY DESIGN (routes/iso_lmp_ingest.py — its real-time LMP
+          # API is registration-gated, no public no-auth feed). No iso-lmp-isone feed
+          # exists and none should be minted: a feed with no producer is red forever.
+          print("note: ISO-NE not covered (registration-gated source, no public feed)")
+          PY

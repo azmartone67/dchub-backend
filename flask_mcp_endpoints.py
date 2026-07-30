@@ -702,12 +702,23 @@ def validate_key():
                 ur = cur.fetchone()
                 if ur and ur[0]:
                     plan_tier = ur[0].lower()
-            # Check api_keys.rate_limit_tier via api_key value (covers
-            # enterprise/research_seed keys minted outside Stripe flow)
+            # Check api_keys.rate_limit_tier (covers enterprise/
+            # research_seed keys minted outside the Stripe flow).
+            # 2026-07-30: this SELECTed by key_value/revoked_at — columns
+            # api_keys has NEVER had (live schema: key_hash + is_active
+            # INTEGER) — so it threw UndefinedColumn on every call and the
+            # fail-soft except below swallowed it: this leg (and the
+            # metered check after it) never ran. Use the same dual
+            # key_hash convention as the api_keys fallback earlier in this
+            # function and free_tier_gate._user_from_api_key: standard
+            # keys store sha256(key); partner/admin keys store the RAW
+            # key string in key_hash.
+            import hashlib as _hl2
             cur.execute(
-                "SELECT rate_limit_tier FROM api_keys WHERE key_value = %s "
-                "AND (revoked_at IS NULL OR revoked_at > NOW()) LIMIT 1",
-                (api_key,),
+                "SELECT rate_limit_tier FROM api_keys "
+                "WHERE key_hash IN (%s, %s) "
+                "AND (is_active IS NULL OR is_active = 1) LIMIT 1",
+                (_hl2.sha256(api_key.encode()).hexdigest(), api_key),
             )
             ar = cur.fetchone()
             if ar and ar[0]:
@@ -842,6 +853,36 @@ def mcp_usage_today():
         except Exception:
             pass
         return jsonify({"count": 0, "error": str(e)[:160], "fail_soft": True}), 200
+
+
+# ── GET /api/v1/mcp/monthly-usage ──────────────────────────────────────────
+# Monthly-quota counting rail (log-only phase — see monthly_quota.py).
+# Reads the per-key month rollup written by track_tool_call and reports it
+# against the tier's would-be monthly quota (mcp_daily x 30). NOTHING reads
+# this to block yet: `enforce` is hard-False until the log-only window has
+# been reviewed and enforcement ships as its own deliberate change.
+#
+# Internal-only + fail-soft for the same reasons as usage-today above.
+
+@mcp_bp.get("/api/v1/mcp/monthly-usage")
+@_require_internal
+def mcp_monthly_usage():
+    api_key = (request.args.get("api_key") or "").strip()
+    tier    = (request.args.get("tier") or "").strip().lower()
+    if not api_key:
+        return jsonify({"used": 0, "error": "api_key required"}), 200
+    try:
+        from monthly_quota import quota_snapshot
+        with _pool.connection() as conn, conn.cursor() as cur:
+            snap = quota_snapshot(cur, api_key, tier or "free")
+        return jsonify(snap), 200
+    except Exception as e:
+        try:
+            import logging as _lg
+            _lg.getLogger(__name__).warning("mcp_monthly_usage error: %s", e)
+        except Exception:
+            pass
+        return jsonify({"used": 0, "error": str(e)[:160], "fail_soft": True}), 200
 
 
 # ── r-pack5: $5/1000 prepaid-credit balance + burn (gateway-facing) ─────────
@@ -1346,6 +1387,50 @@ def claim_key():
 _IDENT_EMAIL_RE = _kc_re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
+# ── ai_testimonials quote-capture schema (2026-07-30) ──────────────────────
+# The live table carried a broad UNIQUE (platform, context) constraint
+# (ai_testimonials_platform_context_unique — live-only: no repo CREATE TABLE
+# ever declared it). context holds the COMPANY on the two volunteered-quote
+# paths below, so the SECOND quote from the same (platform, company) pair
+# violated it: identify swallowed the error (quote_captured=False),
+# /keys/claim/quote returned opaque storage_failed. Zero source='claim_quote'
+# rows ever landed (verified live 2026-07-30).
+#
+# The constraint's real job was dedup for the mcp-auto capture writers
+# (main.py auto-capture: 1-hour app-side check + bare ON CONFLICT DO NOTHING,
+# with context as the dedup key). Keep exactly that and nothing more: a
+# partial unique index scoped to the auto sources — the BARE (target-less)
+# ON CONFLICT DO NOTHING form arbitrates against partial indexes, so those
+# writers are unchanged — then drop the broad constraint so every
+# human-volunteered source (claim_quote, probes, seeds, manual adds) is no
+# longer capped at one row per (platform, context).
+# Order matters: index first, then drop, so auto-dedup never has a gap.
+_TESTIMONIAL_QUOTE_SCHEMA_SQL = (
+    """CREATE UNIQUE INDEX IF NOT EXISTS ai_testimonials_auto_dedup
+           ON ai_testimonials (platform, context)
+           WHERE source IN ('mcp-auto', 'auto')""",
+    """ALTER TABLE ai_testimonials
+           DROP CONSTRAINT IF EXISTS ai_testimonials_platform_context_unique""",
+)
+_testimonial_quote_schema_done = False
+
+
+def _ensure_testimonial_quote_schema():
+    """Converge the ai_testimonials dedup schema (idempotent, once/process).
+
+    Statements commit one-by-one via the autocommit shim. Runs on the two
+    quote-capture paths so any environment converges without a manual
+    migration (prod was migrated by hand 2026-07-30; there this is a no-op).
+    """
+    global _testimonial_quote_schema_done
+    if _testimonial_quote_schema_done:
+        return
+    with _pool.connection() as conn, conn.cursor() as cur:
+        for _stmt in _TESTIMONIAL_QUOTE_SCHEMA_SQL:
+            cur.execute(_stmt)
+    _testimonial_quote_schema_done = True
+
+
 @mcp_bp.post("/api/v1/keys/identify")
 def identify_key():
     """Tie an email to an existing dev key — the value-moment capture.
@@ -1605,6 +1690,7 @@ def identify_key():
     _quote = (str(body.get("quote") or "")).strip()
     if _quote and len(_quote) >= 15:
         try:
+            _ensure_testimonial_quote_schema()
             # Redact any email pasted into the quote so we never store PII.
             _quote_clean = _kc_re.sub(r"[^@\s]+@[^@\s]+\.[^@\s]+", "[redacted]", _quote)[:1500]
             # Defense-in-depth: redact any email pasted into name/company too (PII
@@ -1612,15 +1698,31 @@ def identify_key():
             _name = _kc_re.sub(r"[^@\s]+@[^@\s]+\.[^@\s]+", "[redacted]", str(body.get("name") or "")).strip()[:120]
             _company = _kc_re.sub(r"[^@\s]+@[^@\s]+\.[^@\s]+", "[redacted]", str(body.get("company") or "")).strip()[:160]
             with _pool.connection() as conn, conn.cursor() as cur:
+                # Idempotency guard: identify gets retried by agents; an
+                # identical resubmitted quote counts as captured without
+                # stacking a duplicate pending row. Matching on QUOTE (never
+                # context) is deliberate — a second, different quote from the
+                # same company must keep landing.
                 cur.execute(
-                    """INSERT INTO ai_testimonials
-                           (platform, agent_name, quote, context, category, source, approved)
-                       VALUES ('mcp_agent', %s, %s, %s, 'recommendation', 'claim_quote', FALSE)""",
-                    ((_name or None), _quote_clean, (_company or None)),
+                    """SELECT 1 FROM ai_testimonials
+                        WHERE source = 'claim_quote' AND platform = 'mcp_agent'
+                          AND quote = %s LIMIT 1""",
+                    (_quote_clean,),
                 )
+                if cur.fetchone() is None:
+                    cur.execute(
+                        """INSERT INTO ai_testimonials
+                               (platform, agent_name, quote, context, category, source, approved)
+                           VALUES ('mcp_agent', %s, %s, %s, 'recommendation', 'claim_quote', FALSE)""",
+                        ((_name or None), _quote_clean, (_company or None)),
+                    )
             quote_captured = True
         except Exception:
-            # Never fail identify on a capture hiccup.
+            # Never fail identify on a capture hiccup — but never invisibly
+            # either: this exact bare swallow hid every post-first-quote
+            # capture failure while the broad unique constraint was live.
+            note_swallowed_write("ai_testimonials",
+                                 where="flask_mcp_endpoints.identify_key.quote")
             quote_captured = False
 
     masked = email
@@ -1980,6 +2082,21 @@ def track_tool_call():
                      "error":             "tool_error"}.get(body.get("status")),
                 ),
             )
+        # Monthly-quota counting rail (log-only, see monthly_quota.py): same
+        # autocommit connection, separate guard — a rollup miss must never
+        # fail the track callback or the mcp_call_log row above.
+        if _eff_api_key and not _is_synthetic_selfheal:
+            try:
+                from monthly_quota import record_monthly_call
+                with _tc_conn.cursor() as _mq_cur:
+                    record_monthly_call(_mq_cur, _eff_api_key, ts_dt)
+            except Exception:
+                try:
+                    from routes._swallowed_writes import note_swallowed_write
+                    note_swallowed_write("mcp_monthly_usage",
+                                         where="flask_mcp_endpoints.track_tool_call")
+                except Exception:
+                    pass
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 200
     finally:
@@ -4876,7 +4993,27 @@ def claim_key_quote():
     # Store UNAPPROVED. agent_name <- user-chosen name; context <- company.
     # source='claim_quote'; approved defaults FALSE (manual admin approval).
     try:
+        _ensure_testimonial_quote_schema()
         with _pool.connection() as conn, conn.cursor() as cur:
+            # Exact-duplicate guard (same platform + same TEXT): a retried
+            # POST is acknowledged idempotently instead of stacking pending
+            # rows. Deliberately NOT company-scoped — the old broad UNIQUE
+            # (platform, context) constraint capped capture at one quote per
+            # company and turned every later one into storage_failed.
+            cur.execute(
+                """SELECT id FROM ai_testimonials
+                    WHERE source = 'claim_quote' AND platform = %s
+                      AND quote = %s LIMIT 1""",
+                (platform, quote),
+            )
+            _dup = cur.fetchone()
+            if _dup:
+                return jsonify(
+                    ok=True, captured=True, already_captured=True,
+                    id=_dup[0], approved=False,
+                    message=("Already had that exact note — it's pending review. "
+                             "A different quote is welcome any time."),
+                ), 200
             cur.execute(
                 """INSERT INTO ai_testimonials
                        (platform, agent_name, quote, context, category, source, approved)
@@ -4886,6 +5023,8 @@ def claim_key_quote():
             )
             new_id = (cur.fetchone() or [None])[0]
     except Exception as e:
+        note_swallowed_write("ai_testimonials",
+                             where="flask_mcp_endpoints.claim_key_quote")
         return jsonify(ok=False, error="storage_failed",
                        message="Couldn't save that right now — try again later.",
                        detail=str(e)[:120]), 200

@@ -20,6 +20,7 @@ import os
 import re
 import logging
 import datetime as _dt
+from html import escape as _esc
 from flask import Blueprint, jsonify, Response
 
 logger = logging.getLogger(__name__)
@@ -177,6 +178,43 @@ def _gather_cited_by_data(days: int = 30) -> dict:
     except Exception as e:
         logger.warning(f"cited_by verbatim citations failed: {e}")
 
+    # Customer testimonials — the human counterpart to the AI proof above.
+    # ONLY approved source='claim_quote' rows render here: those are the
+    # quotes real operators volunteered via /api/v1/keys/claim/quote or the
+    # identify flow (flask_mcp_endpoints.py), stored approved=FALSE until a
+    # human flips them via POST /api/v1/testimonials/approve. The other
+    # sources in ai_testimonials ('seed', 'verified', 'probe_%', 'mcp-auto')
+    # are AI-generated quotes and must never be presented as customer voice.
+    # No email is selected — the table has no email column by design.
+    customers = []
+    try:
+        c3 = _conn()
+        try:
+            cur3 = c3.cursor()
+            cur3.execute("""
+                SELECT agent_name, context, quote, platform,
+                       COALESCE(approved_at, created_at) AS shown_at
+                  FROM ai_testimonials
+                 WHERE approved = TRUE
+                   AND source = 'claim_quote'
+                   AND quote IS NOT NULL AND LENGTH(TRIM(quote)) >= 15
+                 ORDER BY COALESCE(approved_at, created_at) DESC NULLS LAST
+                 LIMIT 12
+            """)
+            for name, company, quote, platform, ts in (cur3.fetchall() or []):
+                customers.append({
+                    "name": (name or "").strip()[:120] or None,
+                    "company": (company or "").strip()[:160] or None,
+                    "quote": (quote or "").strip()[:500],
+                    "platform": (platform or "").strip() or None,
+                    "approved_at": ts.isoformat() if ts else None,
+                })
+        finally:
+            try: c3.close()
+            except Exception: pass
+    except Exception as e:
+        logger.warning(f"cited_by customer testimonials failed: {e}")
+
     classified = sum(p["total_calls"] for p in platforms)
     return {
         "window_days": days,
@@ -186,6 +224,7 @@ def _gather_cited_by_data(days: int = 30) -> dict:
         "platforms": platforms,
         "unattributed_calls": max(0, total_calls - classified),
         "verbatim_citations": verbatim,
+        "customer_testimonials": customers,
     }
 
 
@@ -208,7 +247,7 @@ def cited_by_page():
     total = data.get("total_calls_in_window", 0)
     rows_html = ""
     for p in platforms:
-        tools = ", ".join(f"<code>{t['tool']}</code> ({t['calls']:,})"
+        tools = ", ".join(f"<code>{_esc(t['tool'])}</code> ({t['calls']:,})"
                           for t in p["top_tools"])
         last = p.get("last_seen", "")[:10]
         rows_html += f"""<tr>
@@ -225,18 +264,49 @@ def cited_by_page():
                      'the verbatim citations are the real signal.</td></tr>')
 
     # Phase FF: verbatim AI-citation quotes — the proof a static PDF can't show.
+    # All DB-sourced text is escaped: citation quotes come from scraped AI
+    # responses and testimonials from public POST bodies — both untrusted.
     citations = data.get("verbatim_citations", [])
     quotes_html = ""
     for q in citations:
         quotes_html += f"""<div class="quote">
-          <div class="q-engine">{q['engine']}</div>
-          <div class="q-text">&ldquo;{q['quote']}&rdquo;</div>
-          <div class="q-meta">{(q.get('prompt') or '')}</div>
+          <div class="q-engine">{_esc(q['engine'])}</div>
+          <div class="q-text">&ldquo;{_esc(q['quote'])}&rdquo;</div>
+          <div class="q-meta">{_esc(q.get('prompt') or '')}</div>
         </div>"""
     quotes_section = (f"""
       <h2 class="qh">What AI platforms actually said about DC Hub</h2>
       <p class="sub" style="margin:0 0 1.2rem">Verbatim citations captured from named engines — the proof static research (DCHawk, dcByte) structurally cannot show.</p>
       <div class="quotes">{quotes_html}</div>""" if citations else "")
+
+    # Customer voice — approved, opt-in quotes only (see _gather_cited_by_data
+    # for the source='claim_quote' rationale). The founding-customer emails
+    # promise "we'll quote you on dchub.cloud/cited-by"; this is that section.
+    customers = data.get("customer_testimonials", [])
+    cust_html = ""
+    for t in customers:
+        who = _esc(t.get("name") or "Verified DC Hub operator")
+        firm = _esc(t.get("company") or "")
+        attrib = who + (f" · {firm}" if firm else "")
+        when = (t.get("approved_at") or "")[:10]
+        meta = f'<div class="q-meta">{when}</div>' if when else ""
+        cust_html += f"""<div class="quote cust">
+          <div class="q-text">&ldquo;{_esc(t['quote'])}&rdquo;</div>
+          <div class="q-attrib">— {attrib}</div>
+          {meta}
+        </div>"""
+    if cust_html:
+        customers_section = f"""
+      <h2 class="qh">What customers say</h2>
+      <p class="sub" style="margin:0 0 1.2rem">Opt-in quotes from operators holding a claimed DC Hub key — volunteered via the MCP claim flow, reviewed and approved by a human before publishing. Names and companies only, never emails.</p>
+      <div class="quotes">{cust_html}</div>"""
+    else:
+        # HONEST empty state — this section is never seeded or padded. A user
+        # already hit a bare "No testimonials surfaced yet" here once; say
+        # plainly why it's empty and how a real quote gets in.
+        customers_section = """
+      <h2 class="qh">What customers say</h2>
+      <p class="sub" style="margin:0 0 1.2rem">No customer quotes are published yet — every quote in this section is volunteered by a real operator and approved by a human before it appears, so it stays empty until the first one clears review. Hold a claimed key? Share a line via <code>POST /api/v1/keys/claim/quote</code> and it will show up here once approved.</p>"""
 
     html = f"""<!doctype html><html lang=en>
 <head><meta charset=utf-8>
@@ -280,15 +350,18 @@ code{{background:rgba(255,255,255,.06);padding:1px 6px;border-radius:4px;font-si
 .q-engine{{font-family:'JetBrains Mono',monospace;font-size:.78rem;font-weight:700;color:#a855f7;text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px}}
 .q-text{{font-size:1.02rem;color:#f3f4f6;line-height:1.55}}
 .q-meta{{color:#6b7280;font-size:.82rem;margin-top:10px;font-style:italic}}
+.quote.cust{{border-left-color:#10b981}}
+.q-attrib{{color:#10b981;font-weight:600;font-size:.92rem;margin-top:10px}}
 </style>
 </head><body>
 <div class="wrap">
 <div class="pill">● Live · Real-time MCP telemetry · Updated continuously</div>
 <h1>AI Agents Citing DC Hub</h1>
-<p class="sub">Two kinds of proof. <b style="color:#f3f4f6">Below:</b> verbatim citations from named
-AI platforms that referenced DC Hub by name. <b style="color:#f3f4f6">Then:</b> live MCP-server
-telemetry — tens of thousands of tool calls a month, most arriving via mcp-remote with generic
-user-agents, so only a fraction self-identify. Both are signals a static research PDF can't produce.</p>
+<p class="sub">Three kinds of proof. <b style="color:#f3f4f6">First:</b> what customers say —
+opt-in quotes from real operators, human-approved before publishing. <b style="color:#f3f4f6">Then:</b>
+verbatim citations from named AI platforms that referenced DC Hub by name. <b style="color:#f3f4f6">Last:</b>
+live MCP-server telemetry — tens of thousands of tool calls a month, most arriving via mcp-remote with
+generic user-agents, so only a fraction self-identify. All are signals a static research PDF can't produce.</p>
 
 <div class="kpi-row">
   <div class="kpi"><div class="kpi-v">{total:,}</div><div class="kpi-l">MCP tool calls (last 30d)</div></div>
@@ -296,6 +369,8 @@ user-agents, so only a fraction self-identify. Both are signals a static researc
   <div class="kpi"><div class="kpi-v">{len(platforms)}</div><div class="kpi-l">Self-identified platforms</div></div>
   <div class="kpi"><div class="kpi-v">{data.get('total_unique_user_agents',0)}</div><div class="kpi-l">Distinct user-agents</div></div>
 </div>
+
+{customers_section}
 
 {quotes_section}
 

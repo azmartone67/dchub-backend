@@ -19537,7 +19537,18 @@ def get_stats():
         c.execute(f"SELECT COUNT(DISTINCT provider) FROM facilities WHERE provider != '' AND provider IS NOT NULL {RAILWAY_EXCLUSION}")
         stats['total_providers'] = c.fetchone()[0] or 0
 
-        c.execute("SELECT COUNT(DISTINCT country) FROM facilities WHERE country != '' AND country IS NOT NULL")
+        # ★2026-07-30 — WRONG-TABLE PAIRING (same class as the 07-30 wrong-table
+        # audit): this counted DISTINCT country on the LEGACY `facilities` table
+        # (186) while total_facilities/facilities_distinct above count
+        # discovered_facilities (15,367). The legacy table mixes full names with
+        # ISO codes ("USA"+"US", "Germany"+"DE" — 9 of its 186 distinct values
+        # are format duplicates), so 186 over-stated; the fleet the facility
+        # figures count spans 178 distinct codes. The 186 was pasted into the
+        # mcp-server initialize instructions as "180+ countries" (an over-claim,
+        # corrected same day). Countries must be counted on the SAME table as
+        # the facility count they are paired with.
+        c.execute("SELECT COUNT(DISTINCT country) FROM discovered_facilities "
+                  "WHERE country IS NOT NULL AND country <> ''")
         stats['total_countries'] = c.fetchone()[0] or 0
         stats['countries'] = stats['total_countries']  # alias for frontends
 
@@ -24964,6 +24975,39 @@ def audit_schedulers():
         'generated_at': datetime.utcnow().isoformat()
     })
 
+def _sane_content_ts(value, now=None):
+    """(sane_iso_or_None, source) for a feed's newest-content timestamp.
+
+    LC1 — the 2026-07-19 audit's core finding was that "healthy" here meant "a row
+    exists" or "a timestamp looks recent", never "the loop ran and inserted sane
+    data". One events-page row with published_at set to the EVENT date (2026-09-21,
+    two months out) poisoned MAX(published_date) and the news feed reported healthy
+    while the real newest article was 26 minutes old.
+
+    ★ The sanity check MUST live in Python, never in that SQL. announcements
+    .published_date is TEXT; adding a `<= NOW()` predicate raised TEXT-vs-timestamp,
+    which aborted the SHARED transaction and cascaded EVERY remaining feed to
+    0/stale — the #1683 regression, whose revert comment is still on the query below.
+
+    A future date is a data defect, so it is dropped rather than clamped: reporting
+    it as "now" would manufacture the freshness the caller is asking us to prove.
+    """
+    if not value:
+        return None, 'none'
+    now = now or datetime.utcnow()
+    raw = value.isoformat() if hasattr(value, 'isoformat') else str(value)
+    try:
+        parsed = datetime.fromisoformat(raw.replace('Z', '+00:00').strip())
+        if parsed.tzinfo is not None:
+            parsed = parsed.replace(tzinfo=None)
+    except Exception:
+        # Unparseable is not automatically wrong — surface it, don't assert on it.
+        return raw, 'unparseable'
+    if parsed > now + timedelta(hours=6):
+        return None, 'future_rejected'
+    return raw, 'content'
+
+
 @app.route('/api/health/data-freshness', methods=['GET'])
 def data_freshness():
     """Unified data freshness view for ALL feeds"""
@@ -24992,15 +25036,21 @@ def data_freshness():
         news_count = safe_query("SELECT COUNT(*) FROM announcements", 0)
         news_newest = safe_query("SELECT MAX(published_date) FROM announcements")  # revert #1683: published_date is TEXT, so `<= NOW()` errors + cascades
         news_oldest = safe_query("SELECT MIN(published_date) FROM announcements")
+        # LC1: a future-dated row (an /events/ page whose published_at is the EVENT
+        # date) must not be allowed to certify the feed fresh. Sanitised in Python —
+        # see _sane_content_ts and the #1683 note above for why NOT in the SQL.
+        news_sane, news_src = _sane_content_ts(news_newest, now)
         feeds['news'] = {
             'record_count': news_count,
-            'newest_record': news_newest,
+            'newest_record': news_sane,
+            'newest_record_raw': news_newest if news_src == 'future_rejected' else None,
             'oldest_record': news_oldest,
-            'last_updated': news_newest,
+            'last_updated': news_sane,
+            'freshness_source': news_src,
             'scheduler': 'news_sync',
             'refresh_interval': '5 minutes',
             'refresh_endpoint': 'POST /api/news/refresh',
-            'health': 'healthy' if news_newest and news_newest > (now - timedelta(days=1)).isoformat() else 'stale'
+            'health': 'healthy' if news_sane and news_sane > (now - timedelta(days=1)).isoformat() else 'stale'
         }
 
         facilities_count = safe_query("SELECT COUNT(*) FROM facilities", 0)
@@ -25032,21 +25082,39 @@ def data_freshness():
             'health': 'healthy' if deals_count > 0 else 'stale'
         }
 
+        # LC1 — three separate lies lived in these two blocks:
+        #  1. `last_updated: now.isoformat()` re-stamped at READ time, so it equalled
+        #     the response timestamp to the microsecond and could NEVER go stale.
+        #  2. `health: 'healthy'` hardcoded, independent of the data.
+        #  3. the pipeline fallback `len(PIPELINE_DATA) if 'PIPELINE_DATA' in dir()`
+        #     was DEAD CODE: bare dir() inside a function lists LOCAL names, so the
+        #     test was always False and the branch always yielded 0. Removed rather
+        #     than "fixed" — reviving it would start serving sample data as real.
+        # A feed with no content timestamp now says so (freshness_source) instead of
+        # inventing one. Omitting last_updated is the honest answer.
         pipeline_count = safe_query("SELECT COUNT(*) FROM capacity_pipeline", 0)
         feeds['pipeline'] = {
-            'record_count': pipeline_count if pipeline_count else len(PIPELINE_DATA) if 'PIPELINE_DATA' in dir() else 0,
-            'last_updated': now.isoformat(),
-            'scheduler': 'manual + sample data',
+            'record_count': pipeline_count,
+            'record_count_source': 'live_table',
+            'last_updated': None,
+            'freshness_source': 'none',
+            'scheduler': 'manual',
             'refresh_interval': 'on-demand',
-            'health': 'healthy'
+            'health': 'healthy' if pipeline_count > 0 else 'stale'
         }
 
+        # markets is the worse of the two: record_count is a STATIC CONSTANT, not a
+        # measurement. Kept (callers depend on the shape) but labelled, and no longer
+        # allowed to report 'healthy' — a static list cannot be fresh or stale, so
+        # the honest verdict is 'unknown'.
         feeds['markets'] = {
             'record_count': len(SAMPLE_MARKETS),
-            'last_updated': now.isoformat(),
+            'record_count_source': 'static_constant',
+            'last_updated': None,
+            'freshness_source': 'none',
             'scheduler': 'static + live DB overlay',
             'refresh_interval': 'real-time (DB counts)',
-            'health': 'healthy'
+            'health': 'unknown'
         }
 
         transactions_count = safe_query("SELECT COUNT(*) FROM deals WHERE buyer IS NOT NULL AND buyer != '' AND seller IS NOT NULL AND seller != ''", 0)
@@ -25085,6 +25153,10 @@ def data_freshness():
         healthy_count = sum(1 for f in feeds.values() if f.get('health') == 'healthy')
         stale_count = sum(1 for f in feeds.values() if f.get('health') == 'stale')
         error_count = sum(1 for f in feeds.values() if f.get('health') == 'error')
+        # LC1: 'unknown' is a real verdict now (a feed with no measurable freshness).
+        # Counted explicitly so it can't hide inside a shrinking 'healthy' number —
+        # the whole point of the lane is that unmeasured must not read as fine.
+        unknown_count = sum(1 for f in feeds.values() if f.get('health') == 'unknown')
 
         return jsonify({
             'success': True,
@@ -25094,6 +25166,9 @@ def data_freshness():
                 'healthy': healthy_count,
                 'stale': stale_count,
                 'error': error_count,
+                'unknown': unknown_count,
+                # 'unknown' does not by itself degrade the verdict — not-measured is
+                # not the same as broken — but it is reported, never folded away.
                 'overall_health': 'healthy' if error_count == 0 and stale_count == 0 else ('degraded' if error_count == 0 else 'unhealthy')
             },
             'generated_at': now.isoformat()
