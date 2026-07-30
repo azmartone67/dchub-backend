@@ -33,7 +33,8 @@ import py_compile
 import re
 import sys
 import time
-import urllib.request
+
+import requests
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 TARGET = ROOT / "routes" / "meta_replays.py"
@@ -70,15 +71,15 @@ def _read_intents(src: str) -> list[dict]:
 
 
 def _post(payload: dict, key: str, sid: str | None = None, timeout: int = 240):
-    req = urllib.request.Request(BASE, data=json.dumps(payload).encode(), headers={
+    r = requests.post(BASE, data=json.dumps(payload).encode(), headers={
         "Content-Type": "application/json",
         "Accept": "application/json, text/event-stream",
         "User-Agent": UA,
         "X-API-Key": key,
         **({"Mcp-Session-Id": sid} if sid else {}),
-    })
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        return r.headers.get("Mcp-Session-Id"), r.read().decode()
+    }, timeout=timeout)
+    r.raise_for_status()
+    return r.headers.get("Mcp-Session-Id"), r.text
 
 
 def _parse(body: str) -> dict:
