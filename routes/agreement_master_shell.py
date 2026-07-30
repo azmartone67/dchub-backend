@@ -15,7 +15,7 @@ that should agree, silently not agreeing, and nothing checking.**
   · four separate lanes I wrote asserted a floor the audited code was
     forbidden to reach
 
-None of that is missing capability. Coverage is 12,650 facilities, 500k assets,
+None of that is missing capability. Coverage is 15,000+ facilities, 500k assets,
 80 tools, 36 shells. The constraint is AGREEMENT. And since the entire pitch is
 "live, cited ground truth for agents", every one of those is a hit on the exact
 thing we sell.

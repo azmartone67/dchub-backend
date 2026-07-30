@@ -358,7 +358,7 @@ def _gather_signals() -> dict:
         # The brain LLM consumes this signal and narrated "12,907
         # facilities tracked" in the inspector_brief which then surfaced
         # on /daily — making the page look stale because every other
-        # page (homepage, /by-the-numbers, /about) shows 12,650+. Same
+        # page (homepage, /by-the-numbers, /about) shows 15,000+. Same
         # canonical-table trap that bit /daily before (memory:
         # dchub_daily_count_gap) and that we just fixed across the
         # frontend in r48.0.

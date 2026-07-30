@@ -29,7 +29,7 @@ class EnhancedPromotionEngine:
         self.db_path = db_path
         self.site_url = 'https://dchub.cloud'
         self.site_name = 'DC Hub'
-        self.site_description = 'Real-time data center intelligence platform tracking 12,650+ facilities worldwide with fiber routes, power infrastructure, and market analytics.'
+        self.site_description = 'Real-time data center intelligence platform tracking 15,000+ facilities worldwide with fiber routes, power infrastructure, and market analytics.'
         
         # Directory submission targets
         self.directories = [
@@ -102,7 +102,7 @@ class EnhancedPromotionEngine:
         self.post_templates = {
             'linkedin': [
                 "🏢 {headline}\n\n{body}\n\n🔗 Explore the data: {url}\n\n#DataCenter #Infrastructure #Technology #RealEstate #CloudComputing",
-                "📊 Market Update: {headline}\n\n{body}\n\nTrack 12,650+ facilities at {url}\n\n#DataCenterIndustry #TechNews #MarketIntelligence",
+                "📊 Market Update: {headline}\n\n{body}\n\nTrack 15,000+ facilities at {url}\n\n#DataCenterIndustry #TechNews #MarketIntelligence",
                 "⚡ {headline}\n\n{body}\n\n🌐 Real-time insights: {url}\n\n#DCHub #DataCenters #FiberRoutes #PowerInfrastructure",
             ],
             'twitter': [
@@ -371,7 +371,7 @@ class EnhancedPromotionEngine:
                 "get_power_infrastructure"
             ],
             "data_coverage": {
-                "facilities": "12,650+",
+                "facilities": "15,000+",
                 "fiber_routes": "128+",
                 "substations": "126,427",
                 "markets": "311",
@@ -517,7 +517,7 @@ said the development team. "Our platform helps enterprises, investors, and opera
 data-driven decisions about their digital infrastructure needs."
 
 The platform features:
-- Interactive maps with 12,650+ facility markers
+- Interactive maps with 15,000+ facility markers
 - Fiber route visualization and connectivity analysis
 - Power infrastructure tracking (substations, capacity)
 - Real-time news aggregation from 60+ sources

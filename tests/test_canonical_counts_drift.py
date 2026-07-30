@@ -172,7 +172,7 @@ BANNED_STALE = [
     (
         "facilities_stale_floor",
         re.compile(r"(?<![\d,])(?:19|20|21|22|23),\d{3}\+"),
-        "12,650+ facilities",
+        "15,000+ facilities",
         "facilit",
         "2026-07-25: the pre-dedup facility floor. ai_surface_canon rebased to "
         "DISTINCT SITES on 07-24 (customer dedup audit) and the old floor became "
@@ -181,6 +181,21 @@ BANNED_STALE = [
         "21,000+ from ai_discovery_routes while the repo-root copy the fence "
         "scanned said 22,000+ and dchub-frontend said 20,000+. Pinning a single "
         "retired value would have caught one of the three.",
+    ),
+    (
+        "facilities_retired_12650",
+        re.compile(r"(?<![\d,])12,650\+"),
+        "15,000+ facilities",
+        None,
+        "2026-07-30: '12,650+' — canon itself from 07-24 to 07-28 — is now the "
+        "RETIRED floor (PINNED rebased to 15,000+, live 15,300+). It sat on the "
+        "/ai hero contradicting the SAME page's live-hydrated stat card "
+        "(15,367+), and in ~200 files across both repos; swept 07-30. No "
+        "`requires` guard on purpose: unlike a bare '232', the token 12,650+ "
+        "never occurs incidentally — any hit is the retired claim, whatever "
+        "noun follows it (the range entry above misses it entirely, which is "
+        "how the LAST retirement went unfenced — widen the guard to catch the "
+        "NEXT wrong value, not just the previous one).",
     ),
     (
         "markets_232",

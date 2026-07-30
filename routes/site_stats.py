@@ -1,7 +1,7 @@
 """Phase PP (2026-05-15) — Live site stats for homepage + /intelligence hub.
 
 A single JSON endpoint the frontend can hit on page load to replace ALL
-hardcoded numbers ("12,650+ facilities", "300+ markets", "9,000+ substations"
+hardcoded numbers ("15,000+ facilities", "300+ markets", "9,000+ substations"
 etc.). Every count is queried live; nothing is hardcoded.
 
 Why a dedicated endpoint instead of /api/v1/stats?

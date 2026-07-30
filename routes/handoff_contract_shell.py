@@ -54,7 +54,7 @@ LANES
      over-claiming upward is the direction that costs credibility. But checking
      only upward misses the drift that actually happened: canon moved to 15,000+
      during this very session, which left the homepage (13,477+) conservative and
-     the registry copy I "fixed" this morning (12,650+) stranded BELOW canon. The
+     the registry copy I "fixed" this morning (15,000+) stranded BELOW canon. The
      registry floor is a hand-maintained constant in dchub-mcp-server, so it goes
      stale every time canon moves — my own fix had already drifted within hours.
      Both directions are reported; only the upward one is critical.
@@ -241,12 +241,12 @@ def _lane_token_contract(c) -> list:
 def _lane_published_claims(c) -> list:
     """Published figures vs RESOLVED canon — in both directions.
 
-    My first version hardcoded canon as 12,650+ and asked only whether the
+    My first version hardcoded canon as 15,000+ and asked only whether the
     homepage over-claimed. Both halves were wrong. Canon has since moved to
     15,000+, so the homepage's 13,477+ is CONSERVATIVE, and a check that only
     looks upward would never notice a surface stranded BELOW canon — which is
     exactly what happened to the registry copy I "fixed" this morning at
-    12,650+. Read canon, compare both ways, and say which direction drifted.
+    15,000+. Read canon, compare both ways, and say which direction drifted.
     """
     checks = []
     try:

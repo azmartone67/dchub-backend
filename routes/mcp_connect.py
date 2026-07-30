@@ -406,7 +406,7 @@ _PAGE_TEMPLATE = """<!DOCTYPE html>
 <html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>DC Hub for {NAME} — {TOOLS} MCP tools, free tier, 30s to install</title>
-<meta name="description" content="Install DC Hub's MCP server in {NAME} in 30 seconds. {TOOLS} tools across 12,650+ data centers, 300+ power markets, live ISO grids, 1,400+ tracked deals. Free trial — no credit card.">
+<meta name="description" content="Install DC Hub's MCP server in {NAME} in 30 seconds. {TOOLS} tools across 15,000+ data centers, 300+ power markets, live ISO grids, 1,400+ tracked deals. Free trial — no credit card.">
 <meta name="robots" content="index,follow">
 <link rel="canonical" href="https://dchub.cloud/connect/{KEY}">
 <meta property="og:title" content="DC Hub MCP for {NAME}">
@@ -477,7 +477,7 @@ _PAGE_TEMPLATE = """<!DOCTYPE html>
 
 <div class="badges">
   <a href="/api/v1/mcp/quality" title="Live DC Hub operational quality score (transparent breakdown)" style="text-decoration:none"><img src="/api/v1/mcp/quality/badge.svg" alt="DC Hub quality score" style="height:22px;vertical-align:middle"></a>
-  <span class="badge"><b>12,650+</b> facilities</span>
+  <span class="badge"><b>15,000+</b> facilities</span>
   <span class="badge"><b>311</b> DCPI markets</span>
   <span class="badge"><b>43</b> US ISO/BA grids live</span>
   <span class="badge"><b>1,400+</b> M&amp;A deals</span>

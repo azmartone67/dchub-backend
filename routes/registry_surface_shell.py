@@ -14,7 +14,7 @@ Measured 2026-07-29, the Glama listing serves:
     "33 tools covering 21,000+ data-center facilities (170+ countries),
      232 US power markets"        …and  tools: []
 
-against a live server of 81 tools / 12,650+ facilities / 311 markets. Every
+against a live server of 81 tools / 15,000+ facilities / 311 markets. Every
 number is from a canon we abandoned, and the tool array is EMPTY — an agent
 browsing Glama sees a server with no capabilities at all. scripts/
 sync-tools-manifest.mjs documents this exact string ("33 tools · 232 US power

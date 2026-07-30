@@ -1773,7 +1773,7 @@ def agents_onboard(get_db=None):
                 "description": "Understand the platform's mission and capabilities",
                 "resource": "https://dchub.cloud/llms.txt",
                 "key_learnings": [
-                    "DC Hub tracks 12,650+ facilities globally",
+                    "DC Hub tracks 15,000+ facilities globally",
                     "50+ data center markets covered",
                     "Real-time grid and power data",
                     "M&A intelligence and market trends"

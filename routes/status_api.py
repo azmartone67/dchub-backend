@@ -102,7 +102,7 @@ def _build_status_payload():
     # 12,907 (legacy facilities table); `total_facilities` is 21,433
     # (discovered_facilities — what we actually track and what every other
     # surface shows). Reading main_facilities FIRST made /system-status
-    # report 12,907 while every other page said 12,650+. Same canonical-
+    # report 12,907 while every other page said 15,000+. Same canonical-
     # field anti-pattern fenced by tests/test_canonical_fields.py.
     out["stats"] = {
         "facilities": data.get("total_facilities") or data.get("discovered_facilities_raw") or data.get("main_facilities"),

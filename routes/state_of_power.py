@@ -237,7 +237,7 @@ def _gather():
         "generated_at": _dt.datetime.utcnow().isoformat() + "Z",
         "refresh": "DCPI recomputed daily; this surface reflects the latest snapshot.",
         "summary": {
-            "facilities": "12,650+",
+            "facilities": "15,000+",
             "markets": _canon_mkts(),
             "substations": 126427,
             "countries": "170+",
