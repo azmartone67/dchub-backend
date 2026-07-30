@@ -1387,6 +1387,50 @@ def claim_key():
 _IDENT_EMAIL_RE = _kc_re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
+# ── ai_testimonials quote-capture schema (2026-07-30) ──────────────────────
+# The live table carried a broad UNIQUE (platform, context) constraint
+# (ai_testimonials_platform_context_unique — live-only: no repo CREATE TABLE
+# ever declared it). context holds the COMPANY on the two volunteered-quote
+# paths below, so the SECOND quote from the same (platform, company) pair
+# violated it: identify swallowed the error (quote_captured=False),
+# /keys/claim/quote returned opaque storage_failed. Zero source='claim_quote'
+# rows ever landed (verified live 2026-07-30).
+#
+# The constraint's real job was dedup for the mcp-auto capture writers
+# (main.py auto-capture: 1-hour app-side check + bare ON CONFLICT DO NOTHING,
+# with context as the dedup key). Keep exactly that and nothing more: a
+# partial unique index scoped to the auto sources — the BARE (target-less)
+# ON CONFLICT DO NOTHING form arbitrates against partial indexes, so those
+# writers are unchanged — then drop the broad constraint so every
+# human-volunteered source (claim_quote, probes, seeds, manual adds) is no
+# longer capped at one row per (platform, context).
+# Order matters: index first, then drop, so auto-dedup never has a gap.
+_TESTIMONIAL_QUOTE_SCHEMA_SQL = (
+    """CREATE UNIQUE INDEX IF NOT EXISTS ai_testimonials_auto_dedup
+           ON ai_testimonials (platform, context)
+           WHERE source IN ('mcp-auto', 'auto')""",
+    """ALTER TABLE ai_testimonials
+           DROP CONSTRAINT IF EXISTS ai_testimonials_platform_context_unique""",
+)
+_testimonial_quote_schema_done = False
+
+
+def _ensure_testimonial_quote_schema():
+    """Converge the ai_testimonials dedup schema (idempotent, once/process).
+
+    Statements commit one-by-one via the autocommit shim. Runs on the two
+    quote-capture paths so any environment converges without a manual
+    migration (prod was migrated by hand 2026-07-30; there this is a no-op).
+    """
+    global _testimonial_quote_schema_done
+    if _testimonial_quote_schema_done:
+        return
+    with _pool.connection() as conn, conn.cursor() as cur:
+        for _stmt in _TESTIMONIAL_QUOTE_SCHEMA_SQL:
+            cur.execute(_stmt)
+    _testimonial_quote_schema_done = True
+
+
 @mcp_bp.post("/api/v1/keys/identify")
 def identify_key():
     """Tie an email to an existing dev key — the value-moment capture.
@@ -1646,6 +1690,7 @@ def identify_key():
     _quote = (str(body.get("quote") or "")).strip()
     if _quote and len(_quote) >= 15:
         try:
+            _ensure_testimonial_quote_schema()
             # Redact any email pasted into the quote so we never store PII.
             _quote_clean = _kc_re.sub(r"[^@\s]+@[^@\s]+\.[^@\s]+", "[redacted]", _quote)[:1500]
             # Defense-in-depth: redact any email pasted into name/company too (PII
@@ -1653,15 +1698,31 @@ def identify_key():
             _name = _kc_re.sub(r"[^@\s]+@[^@\s]+\.[^@\s]+", "[redacted]", str(body.get("name") or "")).strip()[:120]
             _company = _kc_re.sub(r"[^@\s]+@[^@\s]+\.[^@\s]+", "[redacted]", str(body.get("company") or "")).strip()[:160]
             with _pool.connection() as conn, conn.cursor() as cur:
+                # Idempotency guard: identify gets retried by agents; an
+                # identical resubmitted quote counts as captured without
+                # stacking a duplicate pending row. Matching on QUOTE (never
+                # context) is deliberate — a second, different quote from the
+                # same company must keep landing.
                 cur.execute(
-                    """INSERT INTO ai_testimonials
-                           (platform, agent_name, quote, context, category, source, approved)
-                       VALUES ('mcp_agent', %s, %s, %s, 'recommendation', 'claim_quote', FALSE)""",
-                    ((_name or None), _quote_clean, (_company or None)),
+                    """SELECT 1 FROM ai_testimonials
+                        WHERE source = 'claim_quote' AND platform = 'mcp_agent'
+                          AND quote = %s LIMIT 1""",
+                    (_quote_clean,),
                 )
+                if cur.fetchone() is None:
+                    cur.execute(
+                        """INSERT INTO ai_testimonials
+                               (platform, agent_name, quote, context, category, source, approved)
+                           VALUES ('mcp_agent', %s, %s, %s, 'recommendation', 'claim_quote', FALSE)""",
+                        ((_name or None), _quote_clean, (_company or None)),
+                    )
             quote_captured = True
         except Exception:
-            # Never fail identify on a capture hiccup.
+            # Never fail identify on a capture hiccup — but never invisibly
+            # either: this exact bare swallow hid every post-first-quote
+            # capture failure while the broad unique constraint was live.
+            note_swallowed_write("ai_testimonials",
+                                 where="flask_mcp_endpoints.identify_key.quote")
             quote_captured = False
 
     masked = email
@@ -4932,7 +4993,27 @@ def claim_key_quote():
     # Store UNAPPROVED. agent_name <- user-chosen name; context <- company.
     # source='claim_quote'; approved defaults FALSE (manual admin approval).
     try:
+        _ensure_testimonial_quote_schema()
         with _pool.connection() as conn, conn.cursor() as cur:
+            # Exact-duplicate guard (same platform + same TEXT): a retried
+            # POST is acknowledged idempotently instead of stacking pending
+            # rows. Deliberately NOT company-scoped — the old broad UNIQUE
+            # (platform, context) constraint capped capture at one quote per
+            # company and turned every later one into storage_failed.
+            cur.execute(
+                """SELECT id FROM ai_testimonials
+                    WHERE source = 'claim_quote' AND platform = %s
+                      AND quote = %s LIMIT 1""",
+                (platform, quote),
+            )
+            _dup = cur.fetchone()
+            if _dup:
+                return jsonify(
+                    ok=True, captured=True, already_captured=True,
+                    id=_dup[0], approved=False,
+                    message=("Already had that exact note — it's pending review. "
+                             "A different quote is welcome any time."),
+                ), 200
             cur.execute(
                 """INSERT INTO ai_testimonials
                        (platform, agent_name, quote, context, category, source, approved)
@@ -4942,6 +5023,8 @@ def claim_key_quote():
             )
             new_id = (cur.fetchone() or [None])[0]
     except Exception as e:
+        note_swallowed_write("ai_testimonials",
+                             where="flask_mcp_endpoints.claim_key_quote")
         return jsonify(ok=False, error="storage_failed",
                        message="Couldn't save that right now — try again later.",
                        detail=str(e)[:120]), 200
