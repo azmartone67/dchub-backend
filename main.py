@@ -19410,9 +19410,63 @@ def get_stats():
         except:
             pass
 
-        # HEADLINE = the deduped distinct-site count (falls back to raw, then
-        # the legacy facilities table, if dedup hasn't been applied).
-        stats['total_facilities']           = discovered_deduped or discovered_total or main_count
+        # ★2026-07-29 — TWO ENDPOINTS, TWO DEDUP ALGORITHMS, BOTH CALLED HONEST.
+        #
+        # This block computed `duplicate_of_id IS NULL` (13,635) and published it
+        # as total_facilities under the comment "the honest how-many-facilities
+        # number". Meanwhile /api/v1/stats/canonical computes distinctness by
+        # KEEPER ELECTION and publishes a full ladder:
+        #
+        #     facilities_records      23,094
+        #     facilities_with_keeper  15,445
+        #     facilities_distinct     15,363   <- the citeable fleet
+        #     facilities_verified     13,635   <- exactly this block's number
+        #
+        # So the canonical endpoint classifies our "distinct" as the VERIFIED
+        # SUBSET. Both endpoints were right about their own arithmetic and wrong
+        # about the word: duplicate_of_id predates the keeper-election repair and
+        # under-counts the fleet by ~1,730.
+        #
+        # That mattered because FIVE live surfaces read total_facilities as the
+        # headline — press.html, ai-facts.html, assets.html (incl. its nav
+        # badge), the diagnostics page, and api_response_enrichment, which stamps
+        # the number into AI response envelopes. All five under-reported.
+        #
+        # Prefer the canonical distinct count so there is ONE origin for the
+        # claim; keep the local computation as the fallback so a canonical-stats
+        # failure degrades to a real read rather than to nothing. The old value
+        # stays reachable, correctly named, as facilities_verified.
+        # The definition is owned by routes/facilities_by_dims.stats_canonical,
+        # which serves /api/v1/stats/canonical. Its QA note (2026-07-27) explains
+        # why every OTHER method is wrong: the dedup pipeline flags
+        # is_duplicate=1 without electing a keeper, so grouping by canonical_slug
+        # shows 9,318 of 14,686 distinct facilities have NO is_duplicate=0 row at
+        # all — the facility is invisible to any is_duplicate-based count. The
+        # suppressed set includes Meta Hyperion, Stargate Abilene, CoreWeave
+        # Project Horizon and Microsoft Wisconsin. COUNT(DISTINCT canonical_slug)
+        # is unambiguous by construction.
+        #
+        # NOT read from canonical_stats.get_canonical_stats(): that module returns
+        # None for facilities_distinct (its facilities_verified is a 400 floor),
+        # so sourcing it there would silently fall through to the old number
+        # while claiming the new basis — checked before wiring, because a
+        # fallback that looks like a success is the failure mode of the day.
+        _canon_distinct = None
+        try:
+            c.execute("SELECT COUNT(DISTINCT canonical_slug) "
+                      "FROM discovered_facilities WHERE canonical_slug IS NOT NULL")
+            _n = c.fetchone()[0] or 0
+            if _n > 0:
+                _canon_distinct = int(_n)
+        except Exception:
+            _canon_distinct = None
+
+        stats['total_facilities']           = (
+            _canon_distinct or discovered_deduped or discovered_total or main_count)
+        stats['facilities_distinct']        = _canon_distinct or discovered_deduped
+        stats['facilities_verified']        = discovered_deduped or discovered_verified
+        stats['facilities_count_basis']     = (
+            'canonical_slug_distinct' if _canon_distinct else 'legacy:duplicate_of_id_is_null')
         # Preserve legacy fields so existing consumers don't break:
         stats['main_facilities']            = main_count                # legacy facilities table
         stats['discovered_facilities']      = discovered_deduped or discovered_verified
