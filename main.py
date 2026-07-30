@@ -2480,6 +2480,18 @@ try:
     except Exception as _rss:
         import logging
         logging.getLogger(__name__).warning('registry_surface_shell wiring failed: %s', _rss)
+    # 2026-07-29: Handoff contract shell (#43) — one single-use claim token has TWO
+    # consumers, and our own gateway auto-redeem forecloses the human by design.
+    # GET /api/v1/admin/handoff-contract-shell
+    # Kill: HANDOFF_CONTRACT_SHELL_DISABLE=1
+    try:
+        from routes.handoff_contract_shell import register_handoff_contract_shell
+        register_handoff_contract_shell(app)
+        print("[main] handoff_contract_shell registered: GET /api/v1/admin/handoff-contract-shell",
+              flush=True)
+    except Exception as _hcs:
+        import logging
+        logging.getLogger(__name__).warning('handoff_contract_shell wiring failed: %s', _hcs)
     # 2026-07-28: Inventory-Acquisition master shell (#40) — how inventory actually
     # grows. Built after "16 feeds died on 2026-03-18" turned out to be ONE bulk
     # backfill at 03:29:40 that stamped first_seen on ~1,700 pre-existing rows.
