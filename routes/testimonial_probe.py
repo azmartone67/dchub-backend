@@ -63,7 +63,11 @@ def _require_admin(fn):
                 .replace("Bearer ", "").strip())
         )
         if not _admin_key() or provided != _admin_key():
-            return jsonify({"ok": False, "error": "unauthorized"}), 401
+            resp = jsonify({"ok": False, "error": "unauthorized"})
+            # no-store: CF has edge-cached admin GET responses before; a
+            # cached 401 would lock admins out even with the right key.
+            resp.headers["Cache-Control"] = "no-store, max-age=0"
+            return resp, 401
         return fn(*args, **kwargs)
     return wrapped
 
@@ -506,3 +510,138 @@ def dedup_testimonials():
     finally:
         try: conn.close()
         except Exception: pass
+
+
+# ───────────────────── customer-quote approval workflow ─────────────────
+# Phase cited-by-customers (2026-07-30): the claim/identify flows
+# (flask_mcp_endpoints.py) store volunteered customer quotes with
+# source='claim_quote', approved=FALSE — but no endpoint could flip
+# `approved`, so nothing ever reached the public surface and the
+# founding-customer promise ("we'll quote you on dchub.cloud/cited-by")
+# was structurally unfulfillable. These two endpoints close the loop:
+# list what's pending, approve (or demote) by id. /cited-by renders
+# approved source='claim_quote' rows in its "What customers say" section.
+#
+# Manually curated quotes (e.g. a founding customer replying by email
+# after the consent link) should be INSERTed with source='claim_quote'
+# so they flow through the same review → render path.
+
+@testimonial_probe_bp.get("/api/v1/testimonials/pending")
+@_require_admin
+def pending_testimonials():
+    """Admin: list unapproved testimonials awaiting review.
+
+    Query params:
+      source  (default 'claim_quote')  filter by source; 'all' lists every
+                                       unapproved row regardless of source.
+      limit   (default 50, max 200)
+
+    Response is no-store — admin GETs have been edge-cached before.
+    """
+    source = (request.args.get("source") or "claim_quote").strip()
+    try:
+        limit = max(1, min(int(request.args.get("limit") or 50), 200))
+    except Exception:
+        limit = 50
+    conn = _conn()
+    if conn is None:
+        return jsonify({"ok": False, "error": "no_database"}), 500
+    pending = []
+    try:
+        with conn, conn.cursor() as cur:
+            if source == "all":
+                cur.execute(
+                    """SELECT id, source, category, platform, agent_name,
+                              context, quote, created_at
+                         FROM ai_testimonials
+                        WHERE COALESCE(approved, FALSE) = FALSE
+                        ORDER BY created_at DESC NULLS LAST, id DESC
+                        LIMIT %s""", (limit,))
+            else:
+                cur.execute(
+                    """SELECT id, source, category, platform, agent_name,
+                              context, quote, created_at
+                         FROM ai_testimonials
+                        WHERE COALESCE(approved, FALSE) = FALSE
+                          AND source = %s
+                        ORDER BY created_at DESC NULLS LAST, id DESC
+                        LIMIT %s""", (source, limit))
+            for r in cur.fetchall():
+                pending.append({
+                    "id": r[0], "source": r[1], "category": r[2],
+                    "platform": r[3], "name": r[4], "company": r[5],
+                    "quote": r[6],
+                    "created_at": r[7].isoformat() if r[7] else None,
+                })
+    finally:
+        try: conn.close()
+        except Exception: pass
+    resp = jsonify({
+        "ok": True, "count": len(pending), "source_filter": source,
+        "pending": pending,
+        "approve_with": ('POST /api/v1/testimonials/approve '
+                         '{"ids": [<id>], "approved": true}'),
+    })
+    resp.headers["Cache-Control"] = "no-store, max-age=0"
+    return resp
+
+
+@testimonial_probe_bp.post("/api/v1/testimonials/approve")
+@_require_admin
+def approve_testimonials():
+    """Admin: flip `approved` on specific rows.
+
+    Body:
+      {"ids": [12, 13]}               approve (sets approved_at = NOW())
+      {"id": 12}                      single-id shorthand
+      {"ids": [12], "approved": false}  demote a published mistake
+
+    Approved source='claim_quote' rows render on /cited-by within its
+    public cache window (up to ~10 min).
+    """
+    body = request.get_json(silent=True) or {}
+    raw_ids = body.get("ids")
+    if raw_ids is None and body.get("id") is not None:
+        raw_ids = [body.get("id")]
+    if not isinstance(raw_ids, (list, tuple)):
+        raw_ids = []
+    try:
+        ids = sorted({int(i) for i in raw_ids})
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "bad_ids",
+                        "message": "ids must be integers"}), 400
+    if not ids or len(ids) > 200:
+        return jsonify({"ok": False, "error": "bad_ids",
+                        "message": "pass 1-200 integer ids"}), 400
+    approve = bool(body.get("approved", True))
+    conn = _conn()
+    if conn is None:
+        return jsonify({"ok": False, "error": "no_database"}), 500
+    try:
+        with conn, conn.cursor() as cur:
+            if approve:
+                cur.execute(
+                    """UPDATE ai_testimonials
+                          SET approved = TRUE, approved_at = NOW()
+                        WHERE id = ANY(%s)
+                          AND COALESCE(approved, FALSE) = FALSE
+                        RETURNING id""", (ids,))
+            else:
+                cur.execute(
+                    """UPDATE ai_testimonials
+                          SET approved = FALSE
+                        WHERE id = ANY(%s) AND approved = TRUE
+                        RETURNING id""", (ids,))
+            changed = [r[0] for r in cur.fetchall()]
+    finally:
+        try: conn.close()
+        except Exception: pass
+    resp = jsonify({
+        "ok": True, "approved": approve, "requested": ids,
+        "changed": changed,
+        "unchanged": [i for i in ids if i not in changed],
+        "note": ("approved claim_quote rows appear in the 'What customers "
+                 "say' section of /cited-by (public cache: up to 10 min)"),
+    })
+    resp.headers["Cache-Control"] = "no-store, max-age=0"
+    return resp
