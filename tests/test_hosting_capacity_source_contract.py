@@ -252,7 +252,12 @@ def test_contract_refuses_a_load_source_mapping_a_generation_field():
     reason = fn(bad)
     assert reason and "generation field" in reason, (
         "a load-typed source mapping a generation field was accepted")
-    ok = {"key": "sce_ica_load", "capacity_type": "load",
+    # ★ `country` added 2026-07-30: check_source_contract now requires every
+    # source to DECLARE its geography (see _ALLOWED_COUNTRIES). The REFUSAL
+    # fixture above deliberately still omits it — the country gate is ordered
+    # LAST precisely so a units bug is reported instead of being masked by a
+    # missing-country message, and `bad` proves that ordering holds.
+    ok = {"key": "sce_ica_load", "capacity_type": "load", "country": "US",
           "fields": _fields(feeder="circuit_name",
                             mw_max=("uniform_load_static_grid_legend", 1.0))}
     assert fn(ok) is None
@@ -262,7 +267,12 @@ def test_contract_refuses_an_undeclared_or_invented_capacity_type():
     fn = _contract_fn()
     assert fn({"key": "x", "fields": _fields()}), "undeclared type accepted"
     assert fn({"key": "x", "capacity_type": "solar", "fields": _fields()})
-    assert fn({"key": "x", "capacity_type": "gen", "fields": _fields()}) is None
+    # country is required as of 2026-07-30 — a source with a valid capacity_type
+    # but no declared geography is still refused, by design.
+    assert fn({"key": "x", "capacity_type": "gen", "fields": _fields()}), \
+        "a source with no declared country was accepted"
+    assert fn({"key": "x", "capacity_type": "gen", "country": "US",
+               "fields": _fields()}) is None
 
 
 def test_every_shipped_source_passes_its_own_contract():
