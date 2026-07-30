@@ -1542,17 +1542,68 @@ def check_source_contract(src: dict) -> str | None:
     return None
 
 
-def _ingest_order():
-    """LOAD sources first (stable otherwise).
+def _source_last_ingested() -> dict:
+    """utility -> MAX(ingested_at), for staleness ordering. {} if unavailable."""
+    c = _conn()
+    if c is None:
+        return {}
+    try:
+        with c.cursor() as cur:
+            cur.execute("SELECT utility, MAX(ingested_at) "
+                        "FROM hosting_capacity_feeders GROUP BY utility")
+            return {u: t for u, t in cur.fetchall() if u}
+    except Exception:
+        return {}
+    finally:
+        try:
+            c.close()
+        except Exception:
+            pass
 
-    The shared time budget is spent in list order, so whatever sits at the
-    tail is what a tight budget drops. Load is the answer that converts and
-    only a handful of utilities publish it, so gen refreshes yield first.
-    Nothing is dropped silently — unreached sources are recorded as
-    status "budget_exhausted".
+
+def _ingest_order():
+    """LOAD sources first, then STALEST first inside each group.
+
+    ★★ 2026-07-30 — WHY STALENESS AND NOT DECLARATION ORDER. This used to be
+    `sorted(SOURCES, key=load-first)` with declaration order as the stable
+    tie-break, which made the tail of the load group UNREACHABLE IN PRACTICE, not
+    merely last. Measured that day:
+
+      · comed_ev_load and nvenergy_lhc had been configured, correct, and live in
+        SOURCES for days with ZERO rows in the table.
+      · They sit 11th and 12th of 12 load sources, behind ~240k rows of
+        Dominion / SCE / SDG&E / PSE&G.
+      · A forced run reached exactly ONE source — aep_load, position 1 — wrote
+        20,000 rows at 08:05:23, and died.
+      · It died because this ingest is an in-process daemon THREAD ON THE WEB
+        SERVICE, and the web service redeployed at 08:06:44. Railway showed SIX
+        deploys in ELEVEN MINUTES that morning; the budget is 300s. On an active
+        repo the process is replaced far more often than a full pass takes.
+
+    Fixed declaration order + a process that rarely survives a full pass = the
+    run always restarts at position 1, re-does the same head, and the tail is
+    never reached. Raising the budget does not fix that; it just makes the window
+    the deploy has to hit slightly wider.
+
+    Staleness-first makes progress MONOTONIC under repeated kills: whatever a
+    killed run did not refresh is what the next run starts with, so the frontier
+    advances no matter how often the process dies. A never-ingested source sorts
+    FIRST (epoch), which is exactly the ComEd / NV Energy case.
+
+    Fail-soft: if the DB is unreachable, _source_last_ingested() returns {} and
+    every source sorts equal, degrading to the previous declaration order rather
+    than refusing to run.
     """
-    return sorted(SOURCES,
-                  key=lambda s: 0 if s.get("capacity_type") == "load" else 1)
+    last = _source_last_ingested()
+    epoch = datetime.datetime(1970, 1, 1, tzinfo=datetime.timezone.utc)
+
+    def _key(s):
+        seen = last.get(s.get("utility"))
+        if seen is not None and seen.tzinfo is None:
+            seen = seen.replace(tzinfo=datetime.timezone.utc)
+        return (0 if s.get("capacity_type") == "load" else 1, seen or epoch)
+
+    return sorted(SOURCES, key=_key)
 
 
 def _explode_features(feat: dict, src: dict, stats: dict) -> list:
