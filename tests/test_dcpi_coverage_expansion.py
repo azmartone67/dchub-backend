@@ -186,7 +186,7 @@ class _Conn:
 
 
 class _Db:
-    def __init__(self, row=(186, 15363), raise_on_connect=None,
+    def __init__(self, row=(178, 15363), raise_on_connect=None,
                  raise_on_execute=None):
         self.row = row
         self.raise_on_connect = raise_on_connect
@@ -295,10 +295,10 @@ def _footprint_ns(db):
 
 
 def test_footprint_reads_both_figures_in_one_query():
-    db = _Db(row=(186, 15363))
+    db = _Db(row=(178, 15363))
     ns = _footprint_ns(db)
     out = ns["_dcpi_footprint_figures"]()
-    assert out == {"countries": 186, "facilities_distinct": 15363}
+    assert out == {"countries": 178, "facilities_distinct": 15363}
     assert len(db.executed) == 1, (
         f"expected ONE round trip on a hot public page, got {len(db.executed)}")
 
@@ -307,22 +307,27 @@ def test_footprint_binds_the_canonical_definitions():
     """The two figures must be the same measurements /api/v1/stats/canonical
     publishes, or the page becomes another disagreeing surface. Asserted on
     the SQL actually sent to the driver, not on a comment."""
-    db = _Db(row=(186, 15363))
+    db = _Db(row=(178, 15363))
     ns = _footprint_ns(db)
     ns["_dcpi_footprint_figures"]()
     sql = " ".join(db.executed[0].split())
-    assert "COUNT(DISTINCT country) FROM facilities" in sql
-    assert "country IS NOT NULL AND country != ''" in sql
+    assert "COUNT(DISTINCT country) FROM discovered_facilities" in sql
+    assert "country IS NOT NULL AND country <> ''" in sql
     assert "COUNT(DISTINCT canonical_slug) FROM discovered_facilities" in sql
     assert "canonical_slug IS NOT NULL" in sql
+    # ★2026-07-30: countries must be counted on the SAME fleet the facility
+    # figure counts. The legacy `facilities` table (186) mixes full names with
+    # ISO codes ("USA"+"US") — pairing it with a discovered_facilities count
+    # is the wrong-table class this suite exists to prevent.
+    assert "FROM facilities" not in sql
     # facilities_verified / facilities_tracked are documented as AMBIGUOUS
-    # (routes/facilities_by_dims.py:262-278) and must not be what we cite.
+    # (routes/facilities_by_dims.py:272-288) and must not be what we cite.
     assert "duplicate_of_id" not in sql
     assert "is_duplicate" not in sql
 
 
 def test_footprint_is_cached_between_renders():
-    db = _Db(row=(186, 15363))
+    db = _Db(row=(178, 15363))
     ns = _footprint_ns(db)
     first = ns["_dcpi_footprint_figures"]()
     second = ns["_dcpi_footprint_figures"]()
@@ -331,11 +336,11 @@ def test_footprint_is_cached_between_renders():
 
 
 def test_footprint_cache_cannot_be_mutated_by_a_caller():
-    db = _Db(row=(186, 15363))
+    db = _Db(row=(178, 15363))
     ns = _footprint_ns(db)
     got = ns["_dcpi_footprint_figures"]()
     got["countries"] = 999999
-    assert ns["_dcpi_footprint_figures"]()["countries"] == 186
+    assert ns["_dcpi_footprint_figures"]()["countries"] == 178
 
 
 def test_footprint_zero_reads_as_unmeasured():
@@ -361,11 +366,11 @@ def test_footprint_failure_is_soft_and_visible(caplog):
 
 def test_footprint_failure_is_not_cached():
     """A transient failure must not pin 'unknown' for the whole TTL."""
-    db = _Db(row=(186, 15363), raise_on_execute=ValueError("boom"))
+    db = _Db(row=(178, 15363), raise_on_execute=ValueError("boom"))
     ns = _footprint_ns(db)
     assert ns["_dcpi_footprint_figures"]()["countries"] is None
     db.raise_on_execute = None
-    assert ns["_dcpi_footprint_figures"]()["countries"] == 186
+    assert ns["_dcpi_footprint_figures"]()["countries"] == 178
 
 
 # ==========================================================================
@@ -430,8 +435,8 @@ def _section(html):
 
 def test_section_renders_each_bound_figure():
     s = _section(_render(cov_markets=306, cov_grid_regions=49,
-                         cov_countries=186, cov_facilities=15363))
-    for shown in ("306", "49", "186", "15,363"):
+                         cov_countries=178, cov_facilities=15363))
+    for shown in ("306", "49", "178", "15,363"):
         assert shown in s, f"{shown} was not rendered"
     assert s.count('class="num"') == 4
 
@@ -439,7 +444,7 @@ def test_section_renders_each_bound_figure():
 def test_section_never_publishes_a_frozen_or_retired_claim():
     """No MW literal (the "Frankfurt (1,782 MW)" class) and no "275+"."""
     for figures in (
-            dict(cov_markets=306, cov_grid_regions=49, cov_countries=186,
+            dict(cov_markets=306, cov_grid_regions=49, cov_countries=178,
                  cov_facilities=15363),
             dict(cov_markets=None, cov_grid_regions=None, cov_countries=None,
                  cov_facilities=None)):
@@ -475,7 +480,7 @@ def test_coverage_figure_is_not_the_tier_capped_count():
     """count=25 is the anon teaser; the coverage figure must be the full
     index, so the capped number must not appear as a coverage tile."""
     s = _section(_render(cov_markets=306, cov_grid_regions=49,
-                         cov_countries=186, cov_facilities=15363, count=25))
+                         cov_countries=178, cov_facilities=15363, count=25))
     assert '<div class="num">25</div>' not in s
     assert '<div class="num">306</div>' in s
 
@@ -485,7 +490,7 @@ def test_section_reuses_the_pages_existing_visual_language():
     own .section-h / .stats-row / .stat classes rather than a new style
     system, and must not introduce new CSS."""
     s = _section(_render(cov_markets=306, cov_grid_regions=49,
-                         cov_countries=186, cov_facilities=15363))
+                         cov_countries=178, cov_facilities=15363))
     assert '<div class="section-h"><span class="pip"></span>' in s
     assert 'class="stats-row"' in s
     assert s.count('<div class="stat">') == 4

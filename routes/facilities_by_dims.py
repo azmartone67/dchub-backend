@@ -196,8 +196,18 @@ def stats_canonical():
             # ★2026-07-27: added `country != ''` — without it the empty-string
             # bucket counts as a country and this returned 181 while
             # /api/v1/stats (which has the guard) returned 180.
-            cur.execute("SELECT COUNT(DISTINCT country) FROM facilities "
-                        "WHERE country IS NOT NULL AND country != ''")
+            # ★2026-07-30 — WRONG-TABLE PAIRING (same class as the 07-30
+            # wrong-table audit; same fix as /api/v1/stats total_countries in
+            # main.py): this counted DISTINCT country on the LEGACY `facilities`
+            # table (186) while the citeable facility figure below
+            # (`facilities_distinct`) counts discovered_facilities (15,363+).
+            # The legacy table mixes full names with ISO codes ("USA"+"US",
+            # "Germany"+"DE" — 9 of its 186 distinct values are format
+            # duplicates), so 186 over-stated; the fleet the facility figures
+            # count spans 178 distinct codes. Countries must be counted on the
+            # SAME table as the facility count they are paired with.
+            cur.execute("SELECT COUNT(DISTINCT country) FROM discovered_facilities "
+                        "WHERE country IS NOT NULL AND country <> ''")
             stats["countries_covered"] = int(cur.fetchone()[0] or 0)
             try:
                 cur.execute("SELECT COUNT(*) FROM news")
