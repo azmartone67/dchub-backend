@@ -318,9 +318,16 @@ def _lane_layers(c) -> list:
     out.append(_check(
         "power_plants_landmine", "power_plants table is not a misleading stub",
         pp > 1000,
-        f"power_plants holds {pp} rows while ~182k plants are published from a "
-        f"DIFFERENT table. Anyone querying the obvious name gets a near-empty stub — "
-        f"rename it or point it at the real data."))
+        f"power_plants holds {pp} rows. The US plant fleet it is supposed to "
+        f"hold lives in power_plants_eia (13,446 EIA plant records) — same "
+        f"population, loaded to {pp / 134.46:.1f}%. Cause: the eia-860-plants "
+        f"crawler keys its dedup on rec['plantid'], a key the EIA v2 "
+        f"facility-fuel response does not carry, and silently skips every "
+        f"record without it (55,000 fetched, {pp} upserted, errors=0). "
+        f"Separately, ~182k rows are published from gem_power — a DIFFERENT "
+        f"POPULATION (global, generating UNITS not plants, all statuses "
+        f"including cancelled/retired), not merely a different table. Anyone "
+        f"querying the obvious name gets a near-empty stub."))
     return out
 
 

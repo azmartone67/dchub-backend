@@ -102,24 +102,112 @@ def init_subsea_tables(get_db):
 # ─────────────────────────────────────────────────────────────
 # DATA FETCHING
 # ─────────────────────────────────────────────────────────────
+USER_AGENT = 'DCHub-Intelligence/1.0 (+https://dchub.cloud; data-center-research; contact: hello@dchub.cloud)'
+
+# Politeness (added 2026-07-29, before this ingest was put back on a weekly
+# schedule). It fetches two bulk JSON documents rather than crawling pages, but
+# it had no robots.txt check and no inter-request spacing at all.
+#
+# Measured 2026-07-29 with the UA below:
+#   https://www.submarinecablemap.com/robots.txt  → HTTP 200, 24 bytes:
+#       "User-agent: *" / "Disallow:"  — an empty Disallow allows everything.
+#   https://raw.githubusercontent.com/robots.txt  → HTTP 404, i.e. no
+#       robots.txt, so nothing is disallowed on the backup mirrors either.
+# Both sources are therefore permitted today. The check is enforced at fetch
+# time rather than trusted from this note: if either policy tightens, the fetch
+# is abandoned with a logged reason instead of proceeding.
+_MIN_REQUEST_SPACING_S = 2.0
+_last_request_at = {}   # host -> monotonic timestamp of our last GET
+_robots_cache = {}      # host -> urllib.robotparser.RobotFileParser | None
+
+
+def _robots_allows(url):
+    """True if robots.txt permits USER_AGENT to fetch `url`.
+
+    One robots.txt fetch per host, cached for the life of the process. If
+    robots.txt cannot be retrieved we proceed — an unreachable or absent
+    robots.txt is the standard "no restrictions stated" case. An explicit
+    Disallow is honoured and the fetch is abandoned.
+    """
+    import time as _time
+    from urllib.parse import urlsplit
+    from urllib.robotparser import RobotFileParser
+
+    parts = urlsplit(url)
+    host = parts.netloc
+    if host not in _robots_cache:
+        rp = RobotFileParser()
+        robots_url = f"{parts.scheme}://{host}/robots.txt"
+        try:
+            resp = requests.get(robots_url, headers={'User-Agent': USER_AGENT},
+                                timeout=15)
+            if resp.status_code == 200:
+                rp.parse(resp.text.splitlines())
+                _robots_cache[host] = rp
+            else:
+                # 404/410 = no robots.txt = nothing disallowed.
+                logger.info(f"robots.txt for {host}: HTTP {resp.status_code} — "
+                            f"treating as no restrictions")
+                _robots_cache[host] = None
+        except Exception as e:
+            logger.warning(f"robots.txt fetch failed for {host} ({e}) — "
+                           f"treating as no restrictions")
+            _robots_cache[host] = None
+        _last_request_at[host] = _time.monotonic()
+
+    rp = _robots_cache.get(host)
+    if rp is None:
+        return True
+    path = parts.path or '/'
+    if parts.query:
+        path += '?' + parts.query
+    allowed = rp.can_fetch(USER_AGENT, path)
+    if not allowed:
+        logger.error(f"robots.txt DISALLOWS {url} for our UA — not fetching")
+    return allowed
+
+
+def _throttle(url):
+    """Sleep so we never issue two requests to one host inside the spacing."""
+    import time as _time
+    from urllib.parse import urlsplit
+    host = urlsplit(url).netloc
+    last = _last_request_at.get(host)
+    if last is not None:
+        wait = _MIN_REQUEST_SPACING_S - (_time.monotonic() - last)
+        if wait > 0:
+            _time.sleep(wait)
+    _last_request_at[host] = _time.monotonic()
+
+
 def _fetch_json(url, backup_url=None, timeout=60):
-    """Fetch JSON from URL with fallback."""
+    """Fetch JSON from URL with fallback.
+
+    Respects robots.txt and enforces >= _MIN_REQUEST_SPACING_S between requests
+    to the same host.
+    """
     headers = {
-        'User-Agent': 'DCHub-Intelligence/1.0 (dchub.cloud; data-center-research)',
+        'User-Agent': USER_AGENT,
         'Accept': 'application/json',
     }
-    try:
-        resp = requests.get(url, headers=headers, timeout=timeout)
+
+    def _get(u):
+        if not _robots_allows(u):
+            raise PermissionError('robots.txt disallows ' + u)
+        _throttle(u)
+        resp = requests.get(u, headers=headers, timeout=timeout)
         resp.raise_for_status()
         return resp.json()
+
+    try:
+        return _get(url)
     except Exception as e:
         logger.warning(f"Primary fetch failed ({url}): {e}")
         if backup_url:
             try:
-                resp = requests.get(backup_url, headers=headers, timeout=timeout)
-                resp.raise_for_status()
+                data = _get(backup_url)
                 logger.info(f"✅ Backup fetch succeeded: {backup_url}")
-                return resp.json()
+                return data
             except Exception as e2:
                 logger.error(f"Backup fetch also failed: {e2}")
         return None
