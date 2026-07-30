@@ -272,8 +272,10 @@ def countries_verified_phrase() -> str:
 
 def markets_phrase() -> str:
     # Floor DOWN to a clean "300+" so we never over-claim as markets grow
-    # (232->300->311 via intl expansion). Matches mcp_facts_export._markets_floor
-    # and countries_phrase() — citation-safe rounding, never above reality.
+    # (232->300->306 via intl expansion). Matches mcp_facts_export (which floors
+    # dcpi_markets_scored the same way — the exact "311" it used to publish
+    # counted score ROWS, not scored markets) and countries_phrase() —
+    # citation-safe rounding, never above reality.
     n = int(get_canonical_stats().get("markets", _FALLBACK["markets"]))
     return f"{(n // 100) * 100}+"
 
