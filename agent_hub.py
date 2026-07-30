@@ -49,7 +49,16 @@ def get_live_dchub_config():
         c.execute("SELECT COUNT(*) FROM facilities")
         facilities_count = c.fetchone()[0] or 0
         
-        c.execute("SELECT COUNT(DISTINCT country) FROM facilities WHERE country IS NOT NULL AND country != ''")
+        # ★2026-07-30 — WRONG-TABLE PAIRING (same class + same fix as
+        # countries_covered on /api/v1/stats/canonical, routes/
+        # facilities_by_dims.py): this counted DISTINCT country on the LEGACY
+        # `facilities` table, which mixes full names with ISO codes
+        # ("USA"+"US" — 9 format duplicates), over-stating the agent-facing
+        # "countries" claim. The DB-failure fallback below already serves
+        # canonical_stats "countries", which counts discovered_facilities —
+        # the live path must read the same table or the two paths diverge.
+        c.execute("SELECT COUNT(DISTINCT country) FROM discovered_facilities "
+                  "WHERE country IS NOT NULL AND country <> ''")
         countries = c.fetchone()[0] or 100
         
         c.execute("SELECT COUNT(DISTINCT city) FROM facilities WHERE city IS NOT NULL AND city != ''")

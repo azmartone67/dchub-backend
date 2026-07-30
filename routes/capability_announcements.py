@@ -102,10 +102,21 @@ _RESOLVERS = {
         "verify_field": "stats.facilities_records",
         "floor_step": 1000,
     },
+    # ★2026-07-30 — WRONG-TABLE PAIRING (same class + same fix as
+    # countries_covered on /api/v1/stats/canonical, routes/
+    # facilities_by_dims.py): this resolver read the LEGACY `facilities`
+    # table (mixed name/ISO formats — "USA"+"US" — 9 format duplicates)
+    # while the provenance_envelope card binds it in the SAME SENTENCE as
+    # facilities_distinct/facilities_records, both counted over
+    # discovered_facilities — and while verify_field points at a canonical
+    # field that #1958 moved to discovered_facilities. An agent following
+    # verify_endpoint saw a different number than the card. Byte-for-byte
+    # the stats_canonical query, per this module's contract.
     "countries_covered": {
-        "sql": ("SELECT COUNT(DISTINCT country) FROM facilities "
+        "sql": ("SELECT COUNT(DISTINCT country) FROM discovered_facilities "
                 "WHERE country IS NOT NULL AND country <> ''"),
-        "basis": "distinct non-empty country values over facilities",
+        "basis": ("distinct non-empty country values over discovered_facilities "
+                  "(the discovered fleet, same table as the facility counts)"),
         "verify_endpoint": "/api/v1/stats/canonical",
         "verify_field": "stats.countries_covered",
         "floor_step": 10,
@@ -190,7 +201,8 @@ ANNOUNCEMENTS = [
     # assembled in the MCP layer from live upstream calls, not from a table.
     # Relaxing that contract for one numberless card would cost more than the
     # card is worth, and binding an unrelated resolver (countries_covered is over
-    # `facilities`, not grid zones) would be a non-sequitur dressed as evidence.
+    # `discovered_facilities`, not grid zones) would be a non-sequitur dressed as
+    # evidence.
     # It is published at /api/v1/platform-updates, whose store permits
     # numberless entries by design.
     {

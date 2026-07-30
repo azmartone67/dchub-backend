@@ -1253,7 +1253,15 @@ def agent_stats():
             cursor.execute("SELECT COUNT(*) FROM facilities")
             total_facilities = cursor.fetchone()[0]
 
-            cursor.execute("SELECT COUNT(DISTINCT country) FROM facilities")
+            # ★2026-07-30 — WRONG-TABLE PAIRING (same class + same fix as
+            # countries_covered on /api/v1/stats/canonical, routes/
+            # facilities_by_dims.py): this counted DISTINCT country on the
+            # LEGACY `facilities` table, which mixes full names with ISO codes
+            # ("USA"+"US" — 9 format duplicates), over-stating the
+            # agent-facing "countries_covered" claim below. Count the
+            # discovered fleet — the table canonical stats count.
+            cursor.execute("SELECT COUNT(DISTINCT country) FROM discovered_facilities "
+                           "WHERE country IS NOT NULL AND country <> ''")
             total_countries = cursor.fetchone()[0]
 
             cursor.execute("SELECT COUNT(DISTINCT provider) FROM facilities")

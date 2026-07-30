@@ -399,10 +399,15 @@ def market_report():
             total_transactions = cursor.fetchone()[0] or 0
         except Exception:
             pass
+        # ★2026-07-30 — same defect r73 fixed on /api/v1/version above: a
+        # COUNTRY count mislabeled as "markets", read from the LEGACY
+        # `facilities` table (mixed name/ISO formats — "USA"+"US" — so even as
+        # a country count it over-stated). Same fix: serve the canonical DCPI
+        # market count so the two public 'markets' fields in this file agree.
         markets = 0
         try:
-            cursor.execute("SELECT COUNT(DISTINCT country) FROM facilities WHERE country IS NOT NULL")
-            markets = cursor.fetchone()[0] or 0
+            from canonical_stats import get_canonical_stats as _gcs
+            markets = int((_gcs() or {}).get('markets', 0) or 0)
         except Exception:
             pass
         return jsonify({
