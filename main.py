@@ -2430,6 +2430,18 @@ try:
     # Onboarding Master Shell (#43) — did the human who just paid get looked
     # after? GET /admin/onboarding · /api/v1/admin/onboarding/master-tick
     # Kill: ONBOARDING_SHELL_DISABLE=1
+    # White-Glove Loop Master Shell (#45) — partners, agents, product info, brain
+    # GET /admin/white-glove-loop · /api/v1/admin/white-glove-loop/master-tick
+    # Kill: WHITE_GLOVE_LOOP_SHELL_DISABLE=1
+    try:
+        from routes.white_glove_loop_master_shell import (
+            white_glove_loop_master_shell_bp)
+        app.register_blueprint(white_glove_loop_master_shell_bp)
+        print("[main] white_glove_loop_master_shell_bp registered: GET /admin/white-glove-loop", flush=True)
+    except Exception as _wgl:
+        import logging as _l3
+        _l3.getLogger(__name__).warning("white-glove loop shell not registered: %s", str(_wgl)[:140])
+
     # Metric & Automation Integrity Master Shell (#44)
     # GET /admin/metric-integrity · /api/v1/admin/metric-integrity/master-tick
     # Kill: METRIC_INTEGRITY_SHELL_DISABLE=1
