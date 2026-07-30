@@ -54,9 +54,18 @@ def test_no_new_data_set_defined():
 
 
 def test_beat_resets_counter_on_no_new_data():
+    # LC6a: the sentinel moved out of the Flask handler into record_beat(), the one
+    # shared upsert. Pin it THERE rather than anywhere in the file — record_beat
+    # being the single consecutive_zero authority is exactly what the refactor buys,
+    # so a future edit that reintroduces a second copy in the handler should fail.
     src = _read(IR)
-    assert "if status.lower() in _NO_NEW_DATA and rows_sig == 0:" in src
-    assert "rows_sig = 1" in src
+    tree = ast.parse(src)
+    fns = [n for n in tree.body
+           if isinstance(n, ast.FunctionDef) and n.name == "record_beat"]
+    assert len(fns) == 1, "record_beat() must exist exactly once at module scope"
+    body = ast.get_source_segment(src, fns[0]) or ""
+    assert "in _NO_NEW_DATA and rows_sig == 0:" in body
+    assert "rows_sig = 1" in body
 
 
 def test_deadman_zero_row_alarm_exempts_no_new_data():
