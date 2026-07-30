@@ -937,6 +937,29 @@ _MARKETS_HARDCODED = [
     ("auckland",            "Auckland",               "NZ", "TPM",      -36.85, 174.76),
     ("perth",               "Perth",                  "WA", "AEMO",     -31.95, 115.86),
     ("brisbane",            "Brisbane",               "QL", "AEMO",     -27.47, 153.03),
+
+    # r-orphan-geography (2026-07-30): pin two markets the orphan re-adopter
+    # kept re-publishing with US-doppelgänger geography. Neither can come
+    # from the dynamic loader (their discovered_facilities rows are all
+    # country ZA / CA, which the `country='US'` filter excludes), so their
+    # corrupted market_power_scores row was the ONLY source tuple and the
+    # daily recompute wrote the corruption back every run:
+    #   - johannesburg: 80 facilities, ALL South Africa (Gauteng — sibling
+    #     city of midrand, like ashburn/sterling). The row carried
+    #     state='GA' (Gauteng abbreviated, but US-state-shaped), so ISO
+    #     normalization stamped SOCO and a geocode-era backfill placed it
+    #     at Johannesburg CALIFORNIA (35.37, -117.63 — a Mojave town of
+    #     ~170 people). state GP + empty iso mirror midrand's convention;
+    #     _normalize_us_isos leaves both alone (GP is not in STATE_ISO).
+    #   - markham: 27 facilities, ALL Ontario (Greater Toronto — Cologix
+    #     TOR4, Digital Realty YYZ10, Centersquare YYZ2). The row said
+    #     NY/NYISO at the Markham HAMLET in upstate New York
+    #     (42.84, -75.23). ON/IESO, same as toronto/ottawa.
+    # Hardcoded rows beat the orphan re-adopter in _build_markets_list, so
+    # the recompute now rewrites the corrected fields daily instead of the
+    # corrupted ones. Pinned by tests/test_dcpi_orphan_geography.py.
+    ("johannesburg",        "Johannesburg",           "GP", "",       -26.20,  28.05),
+    ("markham",             "Markham",                "ON", "IESO",    43.86, -79.34),
 ]
 
 # Phase 214: try dynamic 132-market list first, fall back to hardcoded 30
