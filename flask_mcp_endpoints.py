@@ -844,6 +844,36 @@ def mcp_usage_today():
         return jsonify({"count": 0, "error": str(e)[:160], "fail_soft": True}), 200
 
 
+# ── GET /api/v1/mcp/monthly-usage ──────────────────────────────────────────
+# Monthly-quota counting rail (log-only phase — see monthly_quota.py).
+# Reads the per-key month rollup written by track_tool_call and reports it
+# against the tier's would-be monthly quota (mcp_daily x 30). NOTHING reads
+# this to block yet: `enforce` is hard-False until the log-only window has
+# been reviewed and enforcement ships as its own deliberate change.
+#
+# Internal-only + fail-soft for the same reasons as usage-today above.
+
+@mcp_bp.get("/api/v1/mcp/monthly-usage")
+@_require_internal
+def mcp_monthly_usage():
+    api_key = (request.args.get("api_key") or "").strip()
+    tier    = (request.args.get("tier") or "").strip().lower()
+    if not api_key:
+        return jsonify({"used": 0, "error": "api_key required"}), 200
+    try:
+        from monthly_quota import quota_snapshot
+        with _pool.connection() as conn, conn.cursor() as cur:
+            snap = quota_snapshot(cur, api_key, tier or "free")
+        return jsonify(snap), 200
+    except Exception as e:
+        try:
+            import logging as _lg
+            _lg.getLogger(__name__).warning("mcp_monthly_usage error: %s", e)
+        except Exception:
+            pass
+        return jsonify({"used": 0, "error": str(e)[:160], "fail_soft": True}), 200
+
+
 # ── r-pack5: $5/1000 prepaid-credit balance + burn (gateway-facing) ─────────
 # Internal-only (X-Internal-Key). The MCP gateway calls balance before serving a
 # gated flagship tool to a non-paid caller, and burn after. Both fail-soft so a
@@ -1980,6 +2010,21 @@ def track_tool_call():
                      "error":             "tool_error"}.get(body.get("status")),
                 ),
             )
+        # Monthly-quota counting rail (log-only, see monthly_quota.py): same
+        # autocommit connection, separate guard — a rollup miss must never
+        # fail the track callback or the mcp_call_log row above.
+        if _eff_api_key and not _is_synthetic_selfheal:
+            try:
+                from monthly_quota import record_monthly_call
+                with _tc_conn.cursor() as _mq_cur:
+                    record_monthly_call(_mq_cur, _eff_api_key, ts_dt)
+            except Exception:
+                try:
+                    from routes._swallowed_writes import note_swallowed_write
+                    note_swallowed_write("mcp_monthly_usage",
+                                         where="flask_mcp_endpoints.track_tool_call")
+                except Exception:
+                    pass
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 200
     finally:
