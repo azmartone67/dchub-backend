@@ -16,6 +16,11 @@ import logging
 import json
 import time
 
+from util.transmission_tables import (
+    GEOCODED_SNAPSHOT_KEY as _TX_SNAPSHOT_KEY,
+    GEOCODED_SNAPSHOT_TABLE as _TX_SNAPSHOT_TABLE,
+)
+
 logger = logging.getLogger(__name__)
 
 energy_discovery_bp = Blueprint('energy_discovery', __name__)
@@ -245,13 +250,22 @@ def energy_discovery_power_plants():
 @energy_discovery_bp.route('/api/energy-discovery/transmission-lines', methods=['GET'])
 def energy_discovery_transmission_lines():
     """Transmission lines for the Energy Discovery panel — live from
-    transmission_lines_eia (~56K rows); curated seed fallback on error/empty."""
+    transmission_lines_eia (56,108 rows); curated seed fallback on error/empty.
+
+    ★ 2026-07-29 shell(#41): transmission_lines_eia is a frozen GEOCODED
+    SNAPSHOT with no writer and no timestamp column. It is NOT the maintained
+    set — transmission_lines holds 94,626 maintained rows but stores no
+    geometry (returnGeometry=false in routes/transmission_ingest.py), so this
+    coordinate-bearing query cannot be repointed at it. `count` is a FLOOR:
+    38,518 maintained lines (40.7%) have no coordinates and cannot appear here.
+    See util/transmission_tables.py.
+    """
     try:
         market = request.args.get('market', '')
         limit = min(int(request.args.get('limit', 2000)), 5000)
         lines = _rows_from_db(
             "SELECT owner, voltage_kv, sub_1, sub_2, lat, lng, state "
-            "FROM transmission_lines_eia "
+            f"FROM {_TX_SNAPSHOT_TABLE} "
             "WHERE lat IS NOT NULL AND lng IS NOT NULL "
             "ORDER BY voltage_kv DESC NULLS LAST LIMIT %s",
             [limit],
@@ -263,7 +277,9 @@ def energy_discovery_transmission_lines():
                        'state': r[6] or '', 'market': ''})
         if not lines:
             lines = _filter_market(_TRANSMISSION_LINES, market)[:limit]
-        return jsonify({'success': True, 'data': lines, 'count': len(lines)})
+        return jsonify({'success': True, 'data': lines, 'count': len(lines),
+                        'count_is_floor': True,
+                        'served_from_key': _TX_SNAPSHOT_KEY})
     except Exception as e:
         logger.error(f"Energy discovery transmission-lines error: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500

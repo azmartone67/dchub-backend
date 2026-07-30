@@ -27,6 +27,12 @@ import threading
 import logging
 from flask import Blueprint, request, jsonify
 
+from util.transmission_tables import (
+    GEOCODED_SNAPSHOT_KEY,
+    GEOCODED_SNAPSHOT_TABLE,
+    coverage as _tx_coverage,
+)
+
 logger = logging.getLogger(__name__)
 infra_data_bp = Blueprint('infra_data', __name__)
 
@@ -88,7 +94,8 @@ def _layer_cap(tier):
 # r47.33 (2026-05-26): process-local memo for the heavy land-power-map
 # endpoints. Geographic data is the same for any caller hitting the same
 # query-param set — power_plants_eia has 13K rows, transmission_lines_eia
-# has 94K. Doing the bounding-box scan + ORDER BY on every authed map
+# has 56K (2026-07-29: this comment cited ~94K, which is the OTHER table).
+# Doing the bounding-box scan + ORDER BY on every authed map
 # load was the unhidden source of the "really slow" report. Cache by
 # normalized query-params; TTL 600s (matches what we'd advertise as
 # acceptable lag for static-ish geographic data).
@@ -274,7 +281,14 @@ def get_power_plants():
 
 
 # ═══════════════════════════════════════════════════════════════
-# TRANSMISSION LINES API — 94K+ HIFLD lines with lat/lng
+# TRANSMISSION LINES API — ~56K geocoded snapshot lines with lat/lng.
+# NOT the maintained layer: transmission_lines holds ~94.6K maintained rows and
+# stores no geometry, so what this endpoint can show is a 40.7% FLOOR.
+# LIVE-VERIFIED 2026-07-29 (/api/v1/admin/schema): transmission_lines has 14
+# columns and none of them is a coordinate, which settles the "whether the live
+# table has since gained coordinates is UNVERIFIED" question left open by #1922.
+# It has not. The repoint is impossible, not merely unattempted.
+# (2026-07-29: this banner previously claimed ~94K HIFLD lines.)
 # ═══════════════════════════════════════════════════════════════
 
 @infra_data_bp.route('/api/v1/transmission-lines', methods=['GET'])
@@ -317,9 +331,10 @@ def get_transmission_lines():
     _full = _tier in _LAYER_PAID
     limit = min(limit, _layer_cap(_tier))
 
-    # r47.33: memo by normalized params — 94K-row table makes this the
+    # r47.33: memo by normalized params — a ~56K-row bbox scan makes this the
     # single most expensive map endpoint. Tier in the key so a paid caller's
     # full result is never served to a free/anon caller.
+    # (2026-07-29: this comment cited a ~94K row count — wrong table.)
     cache_key = ('transmission-lines', _tier,
                  round(lat, 2) if lat is not None else None,
                  round(lng, 2) if lng is not None else None,
@@ -334,8 +349,12 @@ def get_transmission_lines():
         conn = _get_db()
         cur = conn.cursor()
 
-        query = """SELECT id, owner, voltage_kv, sub_1, sub_2, lat, lng, state
-                   FROM transmission_lines_eia
+        # MUST stay on the geocoded snapshot. transmission_lines has 94,626 rows
+        # but NO lat/lng (live schema verified 2026-07-29), so repointing this
+        # raises UndefinedColumn — and the except-500 below would turn the PAID
+        # map layer BLANK rather than fuller. See util/transmission_tables.py.
+        query = f"""SELECT id, owner, voltage_kv, sub_1, sub_2, lat, lng, state
+                   FROM {GEOCODED_SNAPSHOT_TABLE}
                    WHERE lat IS NOT NULL AND lng IS NOT NULL"""
         params = []
 
@@ -387,6 +406,22 @@ def get_transmission_lines():
             },
             '_cache': 'miss',
         }
+        # 2026-07-29 — STATE THE VINTAGE WHERE THE ROWS ARE SERVED. #1922 fixed
+        # the COUNT surfaces but deliberately left the spatial layers alone, so
+        # this endpoint still served a frozen snapshot with no writer and no
+        # timestamp, 38,518 lines behind the maintained table, and said nothing
+        # about it. A caller had no way to tell the layer was 40.7% short.
+        payload['served_from_key'] = GEOCODED_SNAPSHOT_KEY
+        payload['count_is_floor'] = True
+        try:
+            payload['coverage'] = _tx_coverage(cur)
+        except Exception as cov_err:                          # noqa: BLE001
+            # Fail soft: never lose the rows because the basis probe failed, and
+            # never publish a 0 or a stale coverage figure. None + reason.
+            logger.warning(f"transmission coverage probe failed: {cov_err}")
+            payload['coverage'] = None
+            payload['coverage_unmeasured_reason'] = (
+                f"{type(cov_err).__name__}: {str(cov_err)[:160]}")
         if not _full:
             payload['_gated'] = True
             payload['_upgrade_cta'] = (
@@ -763,7 +798,10 @@ _EXCLUSION_REASON = {
         'Table `transmission_lines_eia` has no writer in the codebase and no '
         'refresh path, so it cannot be current; `transmission_lines` is the '
         'maintained layer and is what /api/v1/stats and the freshness radar '
-        'report. Vintage of this snapshot is UNVERIFIED.'),
+        'report. Vintage of this snapshot is UNKNOWABLE from the data, not '
+        'merely unverified: live schema check 2026-07-29 confirms the table has '
+        '12 columns and not one of them is temporal, so it cannot report its '
+        'own age. It is older than transmission_lines by construction.'),
 }
 
 # What a 0 row count MEANS for a given member — so an unmeasured member
