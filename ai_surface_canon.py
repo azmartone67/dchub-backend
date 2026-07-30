@@ -128,7 +128,7 @@ PINNED = {
         # tests/test_honest_numbers.py:151 documents as sanctioned, matches
         # canonical_stats.markets_phrase(), and can never exceed reality.
         # routes/mcp_honest_numbers._floor() parses it to 300 exactly as it already
-        # does for the sibling "12,650+"/"1,500+"/"170+" floors, so every downstream
+        # does for the sibling "15,000+"/"1,500+"/"170+" floors, so every downstream
         # consumer keeps working. resolve_canon() overrides it live below, the same
         # way it already does for `deals`.
         "markets": "300+",
@@ -149,6 +149,13 @@ PINNED = {
                       # ~1.7x over-claim (raw rows vs distinct sites). Grok caught
                       # them on our own pages before any detector did — scrub on sight.
                       "21,000+", "21,900+", "22,000+", "21k+",
+                      # ★2026-07-30: the 07-24..07-28 floor "12,650+" is itself
+                      # retired (PINNED rebased to 15,000+, live 15,300+). It sat
+                      # on the /ai hero CONTRADICTING the same page's live stat
+                      # card, plus ~200 files across both repos — swept 07-30.
+                      # Scrub on sight; the zone worker + mcp-server tool
+                      # descriptions still carry it until their own deploys.
+                      "12,650+",
                       "10,706", "10706", "50,000+", "50000", "317 ", "332 ",
                       "232 ", "100 calls/day", "3,000+ M&A",
                       "2,000+ M&A", "2,000+ tracked deals", "2,000+ deals",

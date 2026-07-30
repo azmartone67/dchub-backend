@@ -11,7 +11,7 @@ served inline from ai_discovery_routes.py (main.py:20177 records the old file
 routes being removed), and further copies live in static/ and dchub-frontend/.
 The repo-root files the fence reads are served by NOTHING. Editing them turned
 the check green and changed nothing a model can see — four different numbers
-were live at once (20,000+, 21,000+, 22,000+) against a canon of 12,650+.
+were live at once (20,000+, 21,000+, 22,000+) against a canon of 15,000+.
 
 That is the session's recurring failure in its purest form: a check that
 verifies an artifact instead of reality stops being a check. The dead-man board

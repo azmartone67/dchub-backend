@@ -303,7 +303,7 @@ def _lane_evidence() -> list[dict]:
 
     # ZONE worker (the .well-known shadow) — the surface nothing guarded.
     # 07-25 finding: live served "73 tools over 21,000+" against a canon of
-    # 79 / 12,650+ for weeks. Red here means: redeploy the zone worker.
+    # 79 / 15,000+ for weeks. Red here means: redeploy the zone worker.
     body, err = _fetch("/.well-known/mcp/server-card.json")
     if body is None:
         out.append(_check("ev_zone_worker", "zone worker serves canon", None,

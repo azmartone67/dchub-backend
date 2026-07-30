@@ -194,7 +194,7 @@ def _compose_pitch(topic: str, story: dict, recipient: dict) -> tuple[str, str]:
     body = f"""Hi {first_name},
 
 Quick note from dchub.cloud. We run a real-time data center intelligence
-platform — 12,650+ facilities, 300+ markets, 4,000+ tracked M&A deals, live
+platform — 15,000+ facilities, 300+ markets, 4,000+ tracked M&A deals, live
 grid telemetry across 10 ISOs + 43 utility balancing authorities.
 
 The pitch is simple: this data is **free and forever-free for your

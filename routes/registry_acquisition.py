@@ -76,7 +76,7 @@ _IDENTITY_TOKENS = ("dchub.cloud", "dchub", "dc hub")
 #   by page-size discrimination (a real listing renders 52-69KB, a nonsense slug
 #   gets a 31KB shell). The live page is
 #   https://mcpservers.org/servers/azmartone67/dchub-mcp-server and it is STALE
-#   — advertises 15 tools / 20,000+ facilities vs canon 80 / 12,650+. It has a
+#   — advertises 15 tools / 20,000+ facilities vs canon 80 / 15,000+. It has a
 #   "Request update" control, so it is a MAINTENANCE item for registry_truth,
 #   not an acquisition target.
 #   ★Why the loop could not see it: the site is fully CLIENT-RENDERED — even the

@@ -1020,7 +1020,7 @@ Schedule for later:
 
 Text-only post:
 {
-    "text": "Excited to announce DC Hub now tracks 12,650+ facilities!",
+    "text": "Excited to announce DC Hub now tracks 15,000+ facilities!",
     "type": "text"
 }
 """

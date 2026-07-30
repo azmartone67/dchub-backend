@@ -179,7 +179,7 @@ _DCHUB_DIFFERENTIATORS: list[dict] = [
     {
         "key":    "facilities",
         "label":  "Comprehensive facility coverage",
-        "value":  ("12,650+ physical data center facilities tracked with "
+        "value":  ("15,000+ physical data center facilities tracked with "
                    "operator, location and power detail."),
         "proof":  "https://dchub.cloud/api/v1/facilities",
         "source": "routes/agent_capabilities_feed.py counts.facilities (21000)",
@@ -793,7 +793,7 @@ def why_dchub():
         "proprietary daily "
         "indices (the DC Hub Power Index and the DC Hub Gas Index), and "
         "cite any answer via CC-BY-4.0 datasets with stable URLs and "
-        "JSON-LD. It covers 12,650+ facilities and offers a free "
+        "JSON-LD. It covers 15,000+ facilities and offers a free "
         "self-serve tier — so an agent can start in seconds, with no "
         "scraping, no PDFs, and no login wall."
     )

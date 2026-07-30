@@ -115,7 +115,7 @@ def get_version():
         conn = get_read_db()
         cursor = conn.cursor()
         # facilities count — DISTINCT sites after cross-source de-dup, to match
-        # the honest /api/v1/stats headline (12,650), not the raw 22k. The
+        # the honest /api/v1/stats headline (15,000+), not the raw 22k. The
         # duplicate_of_id index (idx_disc_dupof) keeps this fast, and the 60s
         # memo + 5min CF cache mean it runs at most once a minute. Falls back to
         # the planner statistic if the deduped count fails.

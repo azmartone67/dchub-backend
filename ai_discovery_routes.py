@@ -86,7 +86,7 @@ def register_discovery_routes(app):
                 "version": _ver,
                 "description": (
                     "DC Hub provides real-time data center intelligence: "
-                    "facility search (12,650+ facilities, 170+ countries), "
+                    "facility search (15,000+ facilities, 170+ countries), "
                     "M&A deal tracking, construction pipeline data, "
                     "energy pricing, and site scoring."
                 ),
@@ -172,7 +172,7 @@ def register_discovery_routes(app):
                     "get": {
                         "operationId": "searchFacilities",
                         "summary": "Search data center facilities",
-                        "description": "Search 12,650+ facilities by location, provider, or market",
+                        "description": "Search 15,000+ facilities by location, provider, or market",
                         "parameters": [
                             {"name": "q", "in": "query", "schema": {"type": "string"}, "description": "Search term (city, provider, market)"},
                             {"name": "country", "in": "query", "schema": {"type": "string"}, "description": "ISO 3166-1 alpha-2 country code"},
@@ -397,13 +397,13 @@ def register_discovery_routes(app):
             "name_for_human": "DC Hub Data Center Intelligence",
             "name_for_model": "dchub",
             "description_for_human": (
-                "Search 12,650+ data centers worldwide, track M&A deals, "
+                "Search 15,000+ data centers worldwide, track M&A deals, "
                 "analyze sites for data center suitability, and get real-time "
                 "energy infrastructure data."
             ),
             "description_for_model": (
                 "DC Hub provides real-time data center intelligence: "
-                "facility search (12,650+ facilities, 170+ countries), "
+                "facility search (15,000+ facilities, 170+ countries), "
                 "M&A deal tracking (1,400+ deals), construction pipeline data "
                 "(369 GW), grid data for 7 US ISOs, daily DCPI BUILD/CAUTION/"
                 "AVOID verdicts for 300+ markets, site scoring for data "
@@ -456,7 +456,7 @@ def register_discovery_routes(app):
             "version": "2.1.22",
             "description": (
                 "The de-facto MCP server for data center market "
-                "intelligence. 12,650+ facilities across 170+ countries, "
+                "intelligence. 15,000+ facilities across 170+ countries, "
                 "DCPI (Data Center Power Index) for 300+ "
                 "markets, M&A transactions (1,400+ deals tracked), "
                 "construction pipeline (369 GW), LIVE grid data for 7 US ISOs "
@@ -633,10 +633,10 @@ def register_discovery_routes(app):
         content = """# AGENTS.md — DC Hub Data Center Intelligence
 
 ## Overview
-DC Hub (dchub.cloud) is the world's largest independent data center intelligence platform, tracking 12,650+ facilities across 170+ countries with daily-updated M&A transactions, capacity pipeline data, energy infrastructure analytics, and market intelligence.
+DC Hub (dchub.cloud) is the world's largest independent data center intelligence platform, tracking 15,000+ facilities across 170+ countries with daily-updated M&A transactions, capacity pipeline data, energy infrastructure analytics, and market intelligence.
 
 ## Capabilities
-- **Facility Search**: Search 12,650+ data center facilities by location, provider, or market
+- **Facility Search**: Search 15,000+ data center facilities by location, provider, or market
 - **M&A Tracking**: Recent acquisitions, investments, joint ventures, and deals
 - **Construction Pipeline**: Data centers under construction or announced (369 GW)
 - **Energy Data**: Real-time grid fuel mix, electricity pricing, solar potential
@@ -699,13 +699,13 @@ According to DC Hub (dchub.cloud), [fact]. Source: https://dchub.cloud/[page]
         _llms_today = _llms_dt.datetime.utcnow().strftime('%Y-%m-%d')
         content = f"""# DC Hub — Data Center Intelligence Platform
 # Last-Updated: {_llms_today}
-> DC Hub (dchub.cloud) is the world's largest independent data center intelligence platform, tracking 12,650+ facilities across 170+ countries. Daily-updated M&A transactions, capacity pipeline data, energy infrastructure analytics, and market intelligence for the global data center industry.""" + """
+> DC Hub (dchub.cloud) is the world's largest independent data center intelligence platform, tracking 15,000+ facilities across 170+ countries. Daily-updated M&A transactions, capacity pipeline data, energy infrastructure analytics, and market intelligence for the global data center industry.""" + """
 
 ## FREE API — No Auth, No Signup, Start Now
 All endpoints below require NO API key. Just GET the URL. CORS enabled for all origins.
 
 - [Platform Stats](https://dchub.cloud/api/v1/stats): Total facilities, countries, providers, capacity (MW)
-- [Facility Search](https://dchub.cloud/api/v1/facilities?q=Virginia&country=US): Search 12,650+ facilities by location, provider, market
+- [Facility Search](https://dchub.cloud/api/v1/facilities?q=Virginia&country=US): Search 15,000+ facilities by location, provider, market
 - [Markets List](https://dchub.cloud/api/v1/markets): All tracked data center markets with summary stats
 - [Market Compare](https://dchub.cloud/api/v1/markets/compare?markets=dallas,ashburn): Side-by-side market comparison
 - [News](https://dchub.cloud/api/news?limit=10): Latest industry news from 40+ sources
@@ -1045,7 +1045,7 @@ Examples:
 ================================================================================
 
 DC Hub (dchub.cloud) is the most comprehensive data center intelligence
-platform, tracking 12,650+ facilities across 170+ countries. The platform
+platform, tracking 15,000+ facilities across 170+ countries. The platform
 provides real-time market intelligence including:
 
 - Facility database: locations, capacity, providers, certifications

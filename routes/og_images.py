@@ -179,7 +179,7 @@ def og_grid(code):
 @og_images_bp.route("/static/og/default.png")
 def og_default():
     return _serve("default", "DC HUB",
-                  "12,650+ Data Centers · 7 Grids · Live MCP",
+                  "15,000+ Data Centers · 7 Grids · Live MCP",
                   "DC HUB", None)
 
 

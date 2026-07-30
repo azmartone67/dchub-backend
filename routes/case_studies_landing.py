@@ -145,7 +145,7 @@ back every claim.</p>
 
 <div class="stat-grid">
   <div class="stat"><div class="stat-num">285</div><div class="stat-label">DCPI markets</div></div>
-  <div class="stat"><div class="stat-num">12,650+</div><div class="stat-label">Facilities</div></div>
+  <div class="stat"><div class="stat-num">15,000+</div><div class="stat-label">Facilities</div></div>
   <div class="stat"><div class="stat-num">170+</div><div class="stat-label">Countries</div></div>
   <div class="stat"><div class="stat-num">96+</div><div class="stat-label">AI platforms</div></div>
   <div class="stat"><div class="stat-num">4,000+ deals</div><div class="stat-label">M&amp;A tracked</div></div>

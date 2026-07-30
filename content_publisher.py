@@ -2483,7 +2483,7 @@ def _editor_review(content_text: str):
     if not key or not text:
         return True, "editor-skip:no-key-or-empty"
     # r-qa (2026-06-27): the editor was rejecting DC Hub's OWN canonical platform
-    # numbers (12,650+ facilities / 230+ markets / 4,000+ deals) as "unverifiable"
+    # numbers (15,000+ facilities / 230+ markets / 4,000+ deals) as "unverifiable"
     # under rule 3 — a false positive that dark-held the entire LinkedIn feed
     # (every post bounced here after clearing quality + number-lead). Tell the
     # editor those figures are verified ground truth (pulled live so they track

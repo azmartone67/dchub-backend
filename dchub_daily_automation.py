@@ -126,7 +126,7 @@ def post_to_linkedin(text, article_url=None):
             "article": {
                 "source": article_url,
                 "title": "DC Hub - Data Center Intelligence",
-                "description": "Real-time data center market intelligence covering 12,650+ facilities across 170+ countries."
+                "description": "Real-time data center market intelligence covering 15,000+ facilities across 170+ countries."
             }
         }
 

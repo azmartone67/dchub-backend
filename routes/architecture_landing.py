@@ -7,7 +7,7 @@ as a canonical public page, but no route ever served it — 404 every
 visit. Pages worker even has its own OG metadata for the path:
 
   /architecture: 'Platform Architecture | DC Hub' — How DC Hub aggregates
-                  intelligence from 12,650+ facilities across 170+ countries.
+                  intelligence from 15,000+ facilities across 170+ countries.
 
 This blueprint fills the gap with a content-rich, SEO-indexed page
 documenting how DC Hub works under the hood. Live counts are pulled
@@ -23,7 +23,7 @@ _TEMPLATE = """<!DOCTYPE html>
 <html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Platform Architecture | DC Hub</title>
-<meta name="description" content="How DC Hub aggregates real-time intelligence from 12,650+ data center facilities across 170+ countries — ingestion pipelines, ISO grid feeds, DCPI scoring, MCP surface, and AI-agent integration.">
+<meta name="description" content="How DC Hub aggregates real-time intelligence from 15,000+ data center facilities across 170+ countries — ingestion pipelines, ISO grid feeds, DCPI scoring, MCP surface, and AI-agent integration.">
 <meta name="robots" content="index,follow,max-snippet:-1">
 <link rel="canonical" href="https://dchub.cloud/architecture">
 <meta property="og:title" content="Platform Architecture — DC Hub">
@@ -58,12 +58,12 @@ _TEMPLATE = """<!DOCTYPE html>
 </style></head><body>
 <div class="eyebrow">DC Hub · Platform Architecture</div>
 <h1>How DC Hub Works</h1>
-<p class="lead">DC Hub is a real-time intelligence platform for data center infrastructure: 12,650+ facilities,
+<p class="lead">DC Hub is a real-time intelligence platform for data center infrastructure: 15,000+ facilities,
 170+ countries, 300+ power markets scored daily, 4,000+ M&amp;A deals tracked, and an MCP server that lets
 AI agents query all of it directly. Here's how it fits together.</p>
 
 <div class="stat-grid" id="live-stats">
-  <div class="stat"><div class="stat-num" id="s-facilities">12,650+</div><div class="stat-label">Facilities</div></div>
+  <div class="stat"><div class="stat-num" id="s-facilities">15,000+</div><div class="stat-label">Facilities</div></div>
   <div class="stat"><div class="stat-num" id="s-countries">170+</div><div class="stat-label">Countries</div></div>
   <div class="stat"><div class="stat-num" id="s-markets">311</div><div class="stat-label">DCPI markets</div></div>
   <div class="stat"><div class="stat-num" id="s-tools">23+</div><div class="stat-label">MCP tools</div></div>

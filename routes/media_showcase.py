@@ -311,7 +311,7 @@ def compose_market_pulse(facts: dict) -> str:
             seg += f" ({_fmt(r['projects'])} projects)"
         iso_lines.append("• " + seg)
     mk = _fmt(facts.get("markets")) or "300+"
-    fac = _fmt(facts.get("facilities")) or "12,650+"
+    fac = _fmt(facts.get("facilities")) or "15,000+"
     plats = ", ".join(facts.get("platforms", [])[:6]) + " + more"
     return (
         "⚡ DC Hub — US Power Market Pulse · verified live\n\n"
@@ -351,7 +351,7 @@ def compose_milestone(facts: dict, platform: str = "Grok", detail: str = "") -> 
                      " · ".join(f"{b['market']} ~{_fmt(b['deployable_mw'])} MW" for b in bm))
     lines.append("")
     mk = _fmt(facts.get("markets")) or "300+"
-    fac = _fmt(facts.get("facilities")) or "12,650+"
+    fac = _fmt(facts.get("facilities")) or "15,000+"
     lines.append(f"{fac} facilities, {mk} power markets, live queues across 7 US ISOs — "
                  "structured, cited, callable by any agent.")
     lines.append(f"\n{n} AI platforms. One data layer. Live, cited, no PDFs. → dchub.cloud/mcp")

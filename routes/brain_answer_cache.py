@@ -407,7 +407,7 @@ _VERIFY_SYSTEM = (
     "Check every number in the ANSWER — money, MW, months, counts, "
     "percentages, years, prices. A number is SUPPORTED if it, or an "
     "equivalent formatting of it (e.g. $2.5B vs 2500000000, ~24mo vs "
-    "24 months, 12,650+ vs 21000), appears in the FACTS. Report each "
+    "24 months, 15,000+ vs 21000), appears in the FACTS. Report each "
     "UNSUPPORTED number together with the exact sentence of the ANSWER that "
     "contains it. Set ok=true only when every number in the ANSWER is "
     "supported by the FACTS."

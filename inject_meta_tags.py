@@ -34,11 +34,11 @@ from pathlib import Path
 # ============================================================
 
 HOME_META = {
-    "title": "DC Hub | Data Center Intelligence Platform | 12,650+ Facilities Worldwide",
-    "description": "Track 12,650+ data center facilities across 170+ countries. Real-time capacity tracking, AI-powered site selection, M&A deal intelligence, and market analytics for hyperscale buyers, investors, and infrastructure professionals.",
+    "title": "DC Hub | Data Center Intelligence Platform | 15,000+ Facilities Worldwide",
+    "description": "Track 15,000+ data center facilities across 170+ countries. Real-time capacity tracking, AI-powered site selection, M&A deal intelligence, and market analytics for hyperscale buyers, investors, and infrastructure professionals.",
     "keywords": "data center, colocation, site selection, market intelligence, data center map, capacity tracking, M&A deals, construction pipeline, hyperscale",
     "og_title": "DC Hub — Data Center Intelligence Platform",
-    "og_description": "Real-time intelligence for 12,650+ data centers. Capacity tracking, site selection, M&A deals, and market analytics across 170+ countries.",
+    "og_description": "Real-time intelligence for 15,000+ data centers. Capacity tracking, site selection, M&A deals, and market analytics across 170+ countries.",
 }
 
 MARKET_META = {
@@ -147,7 +147,7 @@ TOOL_META = {
     },
     "ai-agents": {
         "title": "AI Research Agents for Data Center Intelligence | DC Hub",
-        "description": "4 AI-powered agents: Sales intelligence, data enrichment, social media, and ecosystem analysis. Instant answers from 12,650+ facility database.",
+        "description": "4 AI-powered agents: Sales intelligence, data enrichment, social media, and ecosystem analysis. Instant answers from 15,000+ facility database.",
         "keywords": "AI data center agent, data center research assistant, AI market intelligence",
     },
     "api-docs": {
@@ -157,7 +157,7 @@ TOOL_META = {
     },
     "pricing": {
         "title": "DC Hub Pricing | Data Center Intelligence from $9/month",
-        "description": "Pricing from $9/month for 12,650+ facilities, Land & Power mapping, AI agents, M&A tracker, and API.",
+        "description": "Pricing from $9/month for 15,000+ facilities, Land & Power mapping, AI agents, M&A tracker, and API.",
         "keywords": "DC Hub pricing, data center intelligence pricing, data center SaaS",
     },
     "ecosystem": {
@@ -172,12 +172,12 @@ TOOL_META = {
     },
     "about": {
         "title": "About DC Hub | Data Center Intelligence Platform",
-        "description": "DC Hub tracks 12,650+ data center facilities across 170+ countries. Built for hyperscale buyers, investors, and infrastructure professionals. Based in Phoenix, AZ.",
+        "description": "DC Hub tracks 15,000+ data center facilities across 170+ countries. Built for hyperscale buyers, investors, and infrastructure professionals. Based in Phoenix, AZ.",
         "keywords": "about DC Hub, data center platform, data center intelligence",
     },
     "assets": {
-        "title": "Data Center Asset Explorer | 12,650+ Global Facilities | DC Hub",
-        "description": "Browse 12,650+ data centers worldwide. Filter by provider, location, power, tier. Detailed profiles with satellite imagery and infrastructure data.",
+        "title": "Data Center Asset Explorer | 15,000+ Global Facilities | DC Hub",
+        "description": "Browse 15,000+ data centers worldwide. Filter by provider, location, power, tier. Detailed profiles with satellite imagery and infrastructure data.",
         "keywords": "data center database, facility explorer, colocation directory, data center search",
     },
     "ai-inventory": {
@@ -321,7 +321,7 @@ def extract_facility_info(html_content, filename):
         desc_parts.append(f'{power} capacity')
     desc_parts.append('View facility details, satellite imagery, nearby infrastructure, and connectivity data on DC Hub.')
     
-    meta['description'] = '. '.join(desc_parts) if desc_parts else f'Data center facility details, satellite imagery, and infrastructure data. Part of DC Hub\'s 12,650+ facility database.'
+    meta['description'] = '. '.join(desc_parts) if desc_parts else f'Data center facility details, satellite imagery, and infrastructure data. Part of DC Hub\'s 15,000+ facility database.'
     meta['keywords'] = f'{provider} data center, {city} data center, colocation, DC Hub'.strip(', ')
     
     return meta
@@ -429,7 +429,7 @@ def process_directory(build_dir):
                 page_name = ' '.join(w.title() for w in slug.split('-'))
                 meta = {
                     'title': f'{page_name} | DC Hub',
-                    'description': f'DC Hub — Data center intelligence platform tracking 12,650+ facilities across 170+ countries. Real-time capacity, site selection, and market analytics.',
+                    'description': f'DC Hub — Data center intelligence platform tracking 15,000+ facilities across 170+ countries. Real-time capacity, site selection, and market analytics.',
                     'keywords': f'data center, DC Hub, {page_name.lower()}',
                 }
                 url = f'https://dchub.cloud/{slug}'

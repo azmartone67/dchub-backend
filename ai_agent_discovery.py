@@ -194,7 +194,7 @@ def load_file(filename):
 AGENTS_MD_FALLBACK = """# DC Hub — Data Center Intelligence Platform
 
 ## Overview
-DC Hub (dchub.cloud) tracks 12,650+ data center facilities across 170+ countries,
+DC Hub (dchub.cloud) tracks 15,000+ data center facilities across 170+ countries,
 and publishes the DC Hub Power Index (DCPI) — a daily scorecard of U.S. data center
 power availability across 300+ markets.
 Free API at https://dchub.cloud/api/v1
@@ -220,7 +220,7 @@ Free API at https://dchub.cloud/api/v1
 A2A_AGENT_CARD = {
     "protocolVersion": "0.2.1",
     "name": "DC Hub Intelligence Agent",
-    "description": "Data center intelligence platform - 12,650+ facilities, 1,400+ M&A deals, real-time grid data from 7 ISOs, site scoring, market intelligence across 170+ countries.",
+    "description": "Data center intelligence platform - 15,000+ facilities, 1,400+ M&A deals, real-time grid data from 7 ISOs, site scoring, market intelligence across 170+ countries.",
     "url": "https://dchub.cloud",
     "iconUrl": "https://dchub.cloud/favicon.ico",
     "version": "86.0.0",
@@ -236,7 +236,7 @@ A2A_AGENT_CARD = {
         {
             "id": "facility-search",
             "name": "Data Center Facility Search",
-            "description": "Search 12,650+ data center facilities worldwide by name, location, provider, or capacity.",
+            "description": "Search 15,000+ data center facilities worldwide by name, location, provider, or capacity.",
             "tags": ["data center", "colocation", "facility", "infrastructure"],
             "examples": ["Find Equinix data centers in Dallas", "List hyperscale data centers in Arizona"]
         },

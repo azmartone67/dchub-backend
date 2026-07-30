@@ -569,7 +569,7 @@ def _canonical_short_desc() -> str:
         from ai_surface_canon import PINNED
         tools = PINNED.get("tools_advertised")
         pub = PINNED.get("public") or {}
-        facs = pub.get("facilities") or "12,650+"
+        facs = pub.get("facilities") or "15,000+"
         if tools:
             return (f"Data center intelligence MCP server. {tools} tools. "
                     f"{facs} facilities.")

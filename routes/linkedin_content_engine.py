@@ -282,7 +282,7 @@ def _pull_shipped_this_week() -> dict:
     mcp_tool_calls number. Now pulls the VETTED /api/v1/whats-new adds (the same
     figures the public What's-New page shows — avoids re-deriving table/column
     names and the 5,532-vs-21,000 facilities-count conflict). Canonical headline
-    totals (12,650+ facilities · 300+ markets · 4,000+ deals) are supplied by the
+    totals (15,000+ facilities · 300+ markets · 4,000+ deals) are supplied by the
     prompt, not queried here."""
     adds = {}
     try:
@@ -611,7 +611,7 @@ def _compose_with_claude(story_type: str, data: dict, landing: str,
 
     def _call(model: str) -> str | None:
         body = json.dumps({
-            # 2026-07-15: 1200 clipped rich analyst posts mid-word (the "…12,650+
+            # 2026-07-15: 1200 clipped rich analyst posts mid-word (the "…15,000+
             # facil" cut the operator flagged) once the body + source footer ran
             # long. 1800 gives an analytical LinkedIn post + citation room to
             # finish; thinking stays OFF so all of it is output, not reasoning.

@@ -33,7 +33,7 @@ import glob
 # CANONICAL VALUES — Single source of truth
 # ═══════════════════════════════════════════════════════════════
 CANONICAL = {
-    'facilities': '12,650+',
+    'facilities': '15,000+',
     'facilities_number': '12650',
     'countries': '170+',
     'deals_tracked': '4,000+ deals',
