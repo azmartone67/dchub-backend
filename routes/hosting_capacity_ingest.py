@@ -153,6 +153,16 @@ _GATE_DAYS = 6
 # else is a mislabelled capacity, which is worse than no row at all.
 _ALLOWED_CAPACITY_TYPES = ("load", "gen", "bus_headroom")
 
+# ISO-3166-1 alpha-2, and an EXPLICIT allow-list rather than a regex, so adding a
+# geography is a decision someone made rather than a typo that validated.
+# ★ Why this column exists at all: /coverage sums total_feeders across every row.
+# Before `country`, ingesting a non-US utility would have silently folded NZ/AU/UK
+# feeders into a figure every US-facing consumer reads as the US footprint — the
+# same unit-mixing defect as publishing GIS rows as feeders, one axis over.
+# total_feeders therefore stays US-ONLY and the rest are reported separately;
+# see hosting_capacity_coverage_endpoint().
+_ALLOWED_COUNTRIES = ("US", "NZ", "AU", "GB", "CA")
+
 # Field names that are DER/GENERATION capacity wherever they appear. If a
 # source declares capacity_type "load" and maps one of these into mw_max /
 # mw_min, it is a mis-wire and check_source_contract() refuses the source.
@@ -290,6 +300,7 @@ SOURCES = [
     {"utility": "PHI (Pepco/Delmarva/ACE)",
      "key": "phi",
      "capacity_type": "gen",   # Feeder_Large_Gen_HC = DER export headroom
+     "country": "US",
      "url": ("https://services3.arcgis.com/agWTKEK7X5K1Bx7o/arcgis/rest/"
              "services/PHI_Hosting_Capacity_Public/FeatureServer/0/query"),
      "fields": {"feeder": "FeederID", "substation": "Substation",
@@ -301,6 +312,7 @@ SOURCES = [
     {"utility": "National Grid NY",
      "key": "ngrid_ny",
      "capacity_type": "gen",   # NYSDP feeder_max_hc = DER hosting capacity
+     "country": "US",
      "url": ("https://systemdataportal.nationalgrid.com/arcgis/rest/"
              "services/NYSDP/Hosting_Capacity_Data/MapServer/0/query"),
      "fields": {"feeder": "Master_CDF", "substation": None,
@@ -321,6 +333,7 @@ SOURCES = [
     {"utility": "Dominion Energy VA (binned)",
      "key": "dominion_va",
      "capacity_type": "gen",
+     "country": "US",
      "url": ("https://services.arcgis.com/DmE6Z8jKWf8lv84J/arcgis/rest/"
              "services/Primary_Hosting_Capacity_Available_EB/"
              "FeatureServer/6/query"),
@@ -332,6 +345,7 @@ SOURCES = [
     {"utility": "Con Edison NY",
      "key": "coned",
      "capacity_type": "gen",
+     "country": "US",
      "url": ("https://services.arcgis.com/ciPnsNFi1JLWVjva/arcgis/rest/"
              "services/CECONY_NodalHCV_Prod/FeatureServer/0/query"),
      "fields": {"feeder": "FEEDER_ID", "substation": "FRIENDLY_CIRCUIT_NAME",
@@ -343,6 +357,7 @@ SOURCES = [
     {"utility": "Orange & Rockland NY",
      "key": "oru",
      "capacity_type": "gen",
+     "country": "US",
      "url": ("https://services.arcgis.com/ciPnsNFi1JLWVjva/arcgis/rest/"
              "services/ORU_NodalHCV_Prod/FeatureServer/0/query"),
      # ORU sibling uses CIRCUIT (not FEEDER_ID) — probed 2026-07-27.
@@ -355,6 +370,7 @@ SOURCES = [
     {"utility": "NYSEG/RG&E",
      "key": "nyseg_rge",
      "capacity_type": "gen",
+     "country": "US",
      "url": ("https://services.arcgis.com/c0HK6TaWF3mGiNhc/arcgis/rest/"
              "services/NY_Nodal_HC_HFS/FeatureServer/0/query"),
      "fields": {"feeder": "circuit_1", "substation": "SUBSTATION",
@@ -366,6 +382,7 @@ SOURCES = [
     {"utility": "Rhode Island Energy",
      "key": "ri_energy",
      "capacity_type": "gen",
+     "country": "US",
      "url": ("https://services.arcgis.com/NTSXKyJwdnK9ffCb/arcgis/rest/"
              "services/RI_Hosting_Capacity_2025/FeatureServer/0/query"),
      "fields": {"feeder": "Network_ID", "substation": "Substation",
@@ -381,6 +398,7 @@ SOURCES = [
     {"utility": "BGE (Baltimore)",
      "key": "bge",
      "capacity_type": "gen",
+     "country": "US",
      "url": ("https://services3.arcgis.com/agWTKEK7X5K1Bx7o/arcgis/rest/"
              "services/BGE_HOSTING_CAPACITY_AGOL/FeatureServer/37/query"),
      "fields": {"feeder": None, "substation": None,
@@ -395,6 +413,7 @@ SOURCES = [
     {"utility": "Xcel NSP (MN/ND/SD)",
      "key": "xcel_nsp",
      "capacity_type": "gen",
+     "country": "US",
      "url_candidates": [
         ("https://services1.arcgis.com/eM84fwjsSggLQk61/arcgis/rest/"
          "services/NSP_HCA_Blurred_GEN_Popup_July_2026/FeatureServer/0/query"),
@@ -412,6 +431,7 @@ SOURCES = [
     {"utility": "Xcel PSCO (Colorado)",
      "key": "xcel_psco",
      "capacity_type": "gen",
+     "country": "US",
      "url_candidates": [
         ("https://services1.arcgis.com/eM84fwjsSggLQk61/arcgis/rest/"
          "services/PSCO_Blurred_Popup_GEN_June_2026/FeatureServer/0/query"),
@@ -426,6 +446,7 @@ SOURCES = [
     {"utility": "AEP Ohio & I&M (load)",
      "key": "aep_load",
      "capacity_type": "load",
+     "country": "US",
      "url": ("https://services.arcgis.com/ZnwBsu4Q8SvSAofV/arcgis/rest/"
              "services/PROD_MI_HC_GRID/FeatureServer/0/query"),
      "fields": {"feeder": "CIRCUITID", "substation": "SUBSTATION",
@@ -438,6 +459,7 @@ SOURCES = [
     {"utility": "Ameren Illinois (load)",
      "key": "ameren_il_load",
      "capacity_type": "load",
+     "country": "US",
      "url": ("https://services5.arcgis.com/3jEEGnl6c1x9Sze7/arcgis/rest/"
              "services/AIC_LC_Grids/FeatureServer/0/query"),
      # MAXLOADMW_TXT is a STRING holding MW — _num() casts it.
@@ -449,6 +471,7 @@ SOURCES = [
     {"utility": "DTE Electric (MI)",
      "key": "dte",
      "capacity_type": "gen",
+     "country": "US",
      "url": ("https://services.arcgis.com/jVbCQRNRZvxyQyrx/arcgis/rest/"
              "services/HCA_June_2023/FeatureServer/0/query"),
      # Service NAME says 2023 but Date_of_La verified 2026-04-14.
@@ -485,6 +508,7 @@ SOURCES = [
     {"utility": "Avista (gen interconnection study)",
      "key": "avista_bus",
      "capacity_type": "gen",
+     "country": "US",
      "url": ("https://services3.arcgis.com/WlYQgAChrqj0tuQi/arcgis/rest/"
              "services/HeatMap_MW_Impact_PRD/FeatureServer/0/query"),
      "key_extra": ("MW_Input", "Limiting_Element", "Limiting_CTG"),
@@ -515,6 +539,7 @@ SOURCES = [
     {"utility": "Central Hudson (load headroom)",
      "key": "cenhud_load",
      "capacity_type": "load",
+     "country": "US",
      "where": "Feeder IS NOT NULL",
      "url": ("https://services1.arcgis.com/CEN9MBRF2dIzEmKF/arcgis/rest/"
              "services/Electrification_HC/FeatureServer/0/query"),
@@ -527,6 +552,7 @@ SOURCES = [
     {"utility": "Central Hudson (DER HC)",
      "key": "cenhud_gen",
      "capacity_type": "gen",
+     "country": "US",
      "where": "Feeder IS NOT NULL",
      "url": ("https://services1.arcgis.com/CEN9MBRF2dIzEmKF/arcgis/rest/"
              "services/Hosting_Capacity_Stage3/FeatureServer/0/query"),
@@ -539,6 +565,7 @@ SOURCES = [
     {"utility": "National Grid MA",
      "key": "ngrid_ma",
      "capacity_type": "gen",
+     "country": "US",
      "headers": {"User-Agent": "Mozilla/5.0 (compatible; DCHub-GridData/1.0)",
                  "Referer": "https://systemdataportal.nationalgrid.com/"},
      # ★ MASDP_HostingCapacity returns EMPTY geometry (server config) —
@@ -559,6 +586,7 @@ SOURCES = [
     {"utility": "Eversource CT (via Cadmus)",
      "key": "eversource_ct",
      "capacity_type": "gen",
+     "country": "US",
      "url": ("https://services3.arcgis.com/p04uQpu9ausDBOAh/arcgis/rest/"
              "services/DG_Hosting_CT_Final_full/FeatureServer/56/query"),
      "fields": {"feeder": "CIRCUITID", "substation": "DIST_SUB_NAME",
@@ -599,6 +627,7 @@ SOURCES = [
     {"utility": "Dominion Energy VA (EV load)",
      "key": "dominion_va_ev_load",
      "capacity_type": "load",
+     "country": "US",
      "url": ("https://services.arcgis.com/DmE6Z8jKWf8lv84J/arcgis/rest/"
              "services/EV_Hosting_Capacity_Available_EB/"
              "FeatureServer/14/query"),
@@ -653,6 +682,7 @@ SOURCES = [
     {"utility": "SCE (Southern California Edison, load)",
      "key": "sce_ica_load",
      "capacity_type": "load",
+     "country": "US",
      "url": ("https://drpep.sce.com/arcgis_server/rest/services/Hosted/"
              "ICA_Layer/FeatureServer/15/query"),
      "where": "uniform_load_static_grid_legend >= 0",
@@ -742,6 +772,7 @@ SOURCES = [
     {"utility": "SDG&E (San Diego Gas & Electric, load)",
      "key": "sdge_ica_load",
      "capacity_type": "load",
+     "country": "US",
      "url": ("https://services.arcgis.com/S0EUI1eVapjRPS5e/arcgis/rest/"
              "services/ICA_MAP_PROD_LoadCapacityGrids_VW/FeatureServer/0/query"),
      # Excludes the 1,827 censored rows at the 10 MW clip (TRAP 1). The
@@ -831,6 +862,7 @@ SOURCES = [
     {"utility": "Duke Energy Ohio (Cincinnati, load)",
      "key": "duke_oh_load",
      "capacity_type": "load",
+     "country": "US",
      "url": ("https://services3.arcgis.com/oX5r75R7mapdoI2F/arcgis/rest/"
              "services/Ohio_Load_Map/FeatureServer/0/query"),
      "id_is_multi": True,
@@ -895,6 +927,7 @@ SOURCES = [
     {"utility": "PSE&G New Jersey (EV load allowance)",
      "key": "pseg_nj_load",
      "capacity_type": "load",
+     "country": "US",
      "url": ("https://services.arcgis.com/yHb9HdkiNl1PZaOr/arcgis/rest/"
              "services/EVCapacity/FeatureServer/0/query"),
      "where": "CAPACITY_REMAINING IS NOT NULL",
@@ -953,6 +986,7 @@ SOURCES = [
     {"utility": "PECO (Philadelphia) — MVA, not MW",
      "key": "peco_load",
      "capacity_type": "load",
+     "country": "US",
      "url": ("https://services3.arcgis.com/agWTKEK7X5K1Bx7o/arcgis/rest/"
              "services/PECO_Available_Distribution_Capacity_Map/"
              "FeatureServer/0/query"),
@@ -1011,6 +1045,7 @@ SOURCES = [
     {"utility": "LADWP (City of LA) — NO-CAPACITY flag only",
      "key": "ladwp_no_capacity",
      "capacity_type": "load",
+     "country": "US",
      "url": ("https://services7.arcgis.com/ZzOj15zjzIfDG8aL/arcgis/rest/"
              "services/PowerCapacity/FeatureServer/0/query"),
      "where": "Capacity_Status = 'No Capacity'",
@@ -1097,6 +1132,7 @@ SOURCES = [
     {"utility": "ComEd (Chicago) — EV load capacity",
      "key": "comed_ev_load",
      "capacity_type": "load",
+     "country": "US",
      "url": ("https://utility.arcgis.com/usrsvcs/servers/"
              "3e659d584f4b47c1b6647b229f93fe48/rest/services/"
              "ComEd_EV_Load_Capacity_JUN2026/FeatureServer/28/query"),
@@ -1198,6 +1234,7 @@ SOURCES = [
     {"utility": "NV Energy (load hosting capacity)",
      "key": "nvenergy_lhc",
      "capacity_type": "load",
+     "country": "US",
      "url": ("https://services.nvenergy.com/GISSvc/1.0/retrieveMapInfoDRP/"
              "arcgis/rest/services/DRP/DRP_WebApp/MapServer/31/query"),
      # Excludes the 200 censored 'Over 20MW' sections (see above). NULLs are
@@ -1302,6 +1339,7 @@ SOURCES = [
     {"utility": "NV Energy (GNA bank deficiency register) — flag only",
      "key": "nvenergy_gna",
      "capacity_type": "bus_headroom",
+     "country": "US",
      "url": ("https://services.nvenergy.com/GISSvc/1.0/retrieveMapInfoDRP/"
              "arcgis/rest/services/DRP/DRP_WebApp/MapServer/9/query"),
      "where": ("DRP_GIS_DATA.DRP_GNA.DRP_YEAR = '2025' AND "
@@ -1411,6 +1449,11 @@ CREATE TABLE IF NOT EXISTS hosting_capacity_feeders (
     lng          DOUBLE PRECISION,
     src_updated  TEXT,
     capacity_type TEXT NOT NULL DEFAULT 'gen',
+    -- ISO-3166-1 alpha-2. Defaults to US because every row that predates this
+    -- column IS US, but SOURCES entries must DECLARE it (check_source_contract)
+    -- so a new source can never inherit a geography nobody chose -- the same
+    -- lesson capacity_type taught when it defaulted to 'gen'.
+    country TEXT NOT NULL DEFAULT 'US',
     ingested_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE UNIQUE INDEX IF NOT EXISTS uq_hcf_feeder
@@ -1539,6 +1582,22 @@ def check_source_contract(src: dict) -> str | None:
                     "where-clause %r does not exclude it — those rows are "
                     "unmeasured, not equal to %s"
                     % (key, field, value, _evidence, src.get("where"), value))
+
+    # ── geography, LAST ──
+    # Declared, never defaulted: a source that inherits "US" by omission would
+    # land non-US feeders inside the US-only total_feeders figure on /coverage,
+    # which is unit-mixing a caller cannot see.
+    # ★ Ordered last DELIBERATELY. An earlier draft checked this first, and a
+    # source with BOTH a mislabelled generation field and no country reported
+    # only the missing country — the country message masked the units bug, which
+    # is the more dangerous of the two. Two sibling contract tests caught it by
+    # asserting on the specific refusal text. Cheap-and-structural checks last,
+    # meaning-of-the-megawatts checks first.
+    cc = src.get("country")
+    if cc not in _ALLOWED_COUNTRIES:
+        return ("country %r is not one of %s — every source must DECLARE the "
+                "geography its rows describe (ISO-3166-1 alpha-2)"
+                % (cc, list(_ALLOWED_COUNTRIES)))
     return None
 
 
@@ -1797,7 +1856,11 @@ def map_feature(feat: dict, src: dict) -> dict | None:
            # No .get() default any more: every entry DECLARES its type and
            # check_source_contract() refuses the source otherwise, so a new
            # source can never inherit a meaning nobody chose.
-           "capacity_type": src["capacity_type"]}
+           "capacity_type": src["capacity_type"],
+           # Same rule as capacity_type: DECLARED, never defaulted. src["country"]
+           # not src.get(), so a source missing it raises here instead of quietly
+           # landing in the US-only total_feeders figure.
+           "country": src["country"]}
     if src.get("dedupe_key"):
         # carried out-of-band for _dedupe_rows(); never written to the table
         row["_dedupe"] = attrs.get(src["dedupe_key"])
@@ -2078,10 +2141,19 @@ def run_hosting_capacity_ingest(force: bool = False) -> dict:
                 cur.execute("ALTER TABLE hosting_capacity_feeders "
                             "ADD COLUMN IF NOT EXISTS capacity_type "
                             "TEXT NOT NULL DEFAULT 'gen'")
+                # DEFAULT 'US' backfills every pre-existing row correctly:
+                # all 28 shipped sources are US utilities. Verified before the
+                # column existed, so the backfill is a statement of fact, not
+                # an assumption.
+                cur.execute("ALTER TABLE hosting_capacity_feeders "
+                            "ADD COLUMN IF NOT EXISTS country "
+                            "TEXT NOT NULL DEFAULT 'US'")
+                cur.execute("CREATE INDEX IF NOT EXISTS ix_hcf_country "
+                            "ON hosting_capacity_feeders (country)")
             c.commit()
         except Exception:
             c.rollback()
-            logger.info("hosting_capacity: capacity_type ALTER deferred "
+            logger.info("hosting_capacity: capacity_type/country ALTER deferred "
                         "(table locked); continuing without it")
         with c.cursor() as cur:
             cur.execute("SET lock_timeout = 0")
@@ -2091,26 +2163,43 @@ def run_hosting_capacity_ingest(force: bool = False) -> dict:
         c.commit()
         has_type = "capacity_type" in live_cols
         out["capacity_type_column"] = has_type
+        # Same live-column intersection as capacity_type: the ALTER above may be
+        # deferred under lock, so the INSERT is built from what the table HAS.
+        has_country = "country" in live_cols
+        out["country_column"] = has_country
         # WS9 hardening: fetch → BATCH-write → COMMIT per source. Single-row
         # round-trips took ~20ms each (60k rows ≈ 20 min — thread died on
         # web worker recycle before anything committed). execute_values
         # batches + per-source commits make progress durable.
         from psycopg2.extras import execute_values
+        # ★ Build the optional column list and the matching SET list as NAMED
+        # parts and interpolate by name. An earlier draft used positional %s and
+        # a concatenated tuple, which silently mapped the capacity_type SET
+        # clause into the COLUMN list — a two-optional-column INSERT is where
+        # positional interpolation stops being readable. The two lists must stay
+        # in the SAME ORDER as the value tuples appended below.
+        _opt_cols = ""
+        _opt_sets = ""
+        if has_type:
+            _opt_cols += ", capacity_type"
+            _opt_sets += " capacity_type = EXCLUDED.capacity_type,"
+        if has_country:
+            _opt_cols += ", country"
+            _opt_sets += " country = EXCLUDED.country,"
         _UPSERT_SQL = """
             INSERT INTO hosting_capacity_feeders
               (utility, feeder_key, feeder_id, substation, state,
                region, voltage_kv, capacity_mw_max, capacity_mw_min,
-               queued_gen_kw, lat, lng, src_updated%s)
-            VALUES %%s
+               queued_gen_kw, lat, lng, src_updated{cols})
+            VALUES %s
             ON CONFLICT (utility, feeder_key) DO UPDATE SET
               capacity_mw_max = EXCLUDED.capacity_mw_max,
               capacity_mw_min = EXCLUDED.capacity_mw_min,
               queued_gen_kw = EXCLUDED.queued_gen_kw,
               voltage_kv = EXCLUDED.voltage_kv,
-              src_updated = EXCLUDED.src_updated,%s
+              src_updated = EXCLUDED.src_updated,{sets}
               ingested_at = NOW()
-        """ % ((", capacity_type", " capacity_type = EXCLUDED.capacity_type,")
-               if has_type else ("", ""))
+        """.format(cols=_opt_cols, sets=_opt_sets)
         for src in _ingest_order():
             key = src["key"]
             # ── contract first: a mislabelled source is never crawled ──
@@ -2124,11 +2213,13 @@ def run_hosting_capacity_ingest(force: bool = False) -> dict:
                 # ★ recorded, not skipped. "we ran out of time" and "the
                 # utility published nothing" must never look the same.
                 out["sources"][key] = {"status": "budget_exhausted", "rows": 0,
-                                       "capacity_type": src["capacity_type"]}
+                                       "capacity_type": src["capacity_type"],
+                                       "country": src["country"]}
                 continue
             res = _fetch_pages(src, deadline)
             st = {"status": res["status"], "rows": 0,
                   "capacity_type": src["capacity_type"],
+                  "country": src["country"],
                   "rows_scanned": res["rows_scanned"],
                   "features_fetched": res["features"],
                   # None means the utility publishes no feeder identifier —
@@ -2169,7 +2260,9 @@ def run_hosting_capacity_ingest(force: bool = False) -> dict:
                         r["voltage_kv"], r["capacity_mw_max"],
                         r["capacity_mw_min"], r["queued_gen_kw"],
                         r["lat"], r["lng"], r["src_updated"])
-                vals.append(base + ((r["capacity_type"],) if has_type else ()))
+                vals.append(base
+                            + ((r["capacity_type"],) if has_type else ())
+                            + ((r["country"],) if has_country else ()))
             try:
                 with c.cursor() as cur:
                     execute_values(cur, _UPSERT_SQL, vals, page_size=500)
@@ -2244,21 +2337,46 @@ def hosting_capacity_feeders_endpoint():
     if not (-180 <= w < e <= 180 and -90 <= s < n <= 90):
         return jsonify(error="bad_bbox"), 400
     limit = max(1, min(int(_rq.args.get("limit", 3000) or 3000), 4000))
+    # Optional ?country=US filter. Validated against the allow-list rather than
+    # passed through, so a typo returns 400 instead of an empty layer that reads
+    # as "no feeders here".
+    want_country = (_rq.args.get("country") or "").strip().upper() or None
+    if want_country and want_country not in _ALLOWED_COUNTRIES:
+        return jsonify(error="bad_country",
+                       hint="country must be one of %s"
+                            % list(_ALLOWED_COUNTRIES)), 400
     c = _conn()
     if c is None:
         return jsonify(error="no_database"), 503
     try:
         with c.cursor() as cur:
+            # Live-column probe: the country ALTER can be deferred under lock.
+            cur.execute("SELECT column_name FROM information_schema.columns "
+                        " WHERE table_name = 'hosting_capacity_feeders' "
+                        "   AND column_name = 'country'")
+            _has_country = bool(cur.fetchall())
+            if want_country and not _has_country:
+                return jsonify(error="country_filter_unavailable",
+                               hint=("the country column has not been created on "
+                                     "this deploy yet; retry after the next "
+                                     "ingest applies the migration")), 503
+            _params = [w, e, s, n]
+            _where = ""
+            if want_country:
+                _where = " AND country = %s"
+                _params.append(want_country)
+            _params.append(limit)
             cur.execute("""
                 SELECT utility, feeder_id, substation, region, voltage_kv,
                        capacity_mw_max, capacity_mw_min, lat, lng,
-                       src_updated, capacity_type
+                       src_updated, capacity_type{cc}
                   FROM hosting_capacity_feeders
                  WHERE lng BETWEEN %s AND %s AND lat BETWEEN %s AND %s
-                   AND capacity_mw_max IS NOT NULL
+                   AND capacity_mw_max IS NOT NULL{where}
                  ORDER BY capacity_mw_max DESC
                  LIMIT %s
-            """, (w, e, s, n, limit))
+            """.format(cc=", country" if _has_country else "",
+                       where=_where), tuple(_params))
             # Attribution and basis ride on EVERY row, not in a footnote —
             # several operators require the credit as a condition of use, and
             # a megawatt figure without its basis is not publishable here.
@@ -2267,6 +2385,7 @@ def hosting_capacity_feeders_endpoint():
                         "capacity_mw_max": r[5], "capacity_mw_min": r[6],
                         "lat": r[7], "lng": r[8], "src_updated": r[9],
                         "capacity_type": r[10],
+                        "country": (r[11] if _has_country and len(r) > 11 else "US"),
                         "attribution": _SOURCE_ATTRIBUTION.get(r[0]),
                         "capacity_basis": _SOURCE_CAPACITY_BASIS.get(r[0])}
                        for r in cur.fetchall()]
@@ -2322,17 +2441,24 @@ def hosting_capacity_coverage_endpoint():
         return jsonify(error="no_database"), 503
     try:
         with c.cursor() as cur:
+            # The country ALTER can be deferred under lock (see the ingest), so
+            # probe the LIVE column set rather than assuming the repo DDL — a
+            # bare SELECT of a missing column would 500 the whole endpoint.
+            cur.execute("SELECT column_name FROM information_schema.columns "
+                        " WHERE table_name = 'hosting_capacity_feeders' "
+                        "   AND column_name = 'country'")
+            _has_country = bool(cur.fetchall())
             cur.execute("""
                 SELECT utility, COUNT(*), COUNT(DISTINCT feeder_id),
                        ROUND(AVG(lat)::numeric, 4), ROUND(AVG(lng)::numeric, 4),
                        ROUND(MIN(lat)::numeric, 4), ROUND(MIN(lng)::numeric, 4),
                        ROUND(MAX(lat)::numeric, 4), ROUND(MAX(lng)::numeric, 4),
                        ROUND(MAX(capacity_mw_max)::numeric, 1),
-                       MAX(capacity_type)
+                       MAX(capacity_type){cc}
                   FROM hosting_capacity_feeders
                  WHERE lat IS NOT NULL AND lng IS NOT NULL
                  GROUP BY utility ORDER BY COUNT(*) DESC
-            """)
+            """.format(cc=", MAX(country)" if _has_country else ""))
             markets = []
             for r in cur.fetchall():
                 # ★ rows ≠ feeders. Rows are GIS geometry (vertices, line
@@ -2355,17 +2481,49 @@ def hosting_capacity_coverage_endpoint():
                     "binned": "binned" in (r[0] or ""),
                     "attribution": _SOURCE_ATTRIBUTION.get(r[0]),
                     "capacity_basis": _SOURCE_CAPACITY_BASIS.get(r[0]),
+                    # Explicit on every row. Before this column existed the
+                    # geography was an unstated assumption that happened to be
+                    # true; an unstated assumption is what breaks the first time
+                    # a non-US source lands.
+                    "country": (r[11] if _has_country and len(r) > 11 else "US"),
                 })
+        # ★★ total_feeders IS US-ONLY, AND STAYS US-ONLY. Every consumer of this
+        # figure today — the map jump-list, the coverage headline, the MCP
+        # blurb — reads it as the US footprint, because until `country` existed
+        # every row WAS US. Silently widening it the moment a non-US source
+        # lands would change what a published number means without changing its
+        # name: the same defect as counting GIS vertices as feeders, one axis
+        # over. Non-US coverage is reported in `by_country` and
+        # `total_feeders_non_us`, so growth is visible and additive rather than
+        # retroactively redefining the headline.
+        _us = [m for m in markets if m["country"] == "US"]
+        _by_country = {}
+        for m in markets:
+            b = _by_country.setdefault(m["country"], {
+                "utilities": 0, "feeders": 0, "geometry_rows": 0})
+            b["utilities"] += 1
+            b["feeders"] += m["feeders"] or 0
+            b["geometry_rows"] += m["geometry_rows"]
         resp = jsonify(markets=markets,
                        # `feeders` is None for utilities that publish no
                        # identifier, so it cannot be summed blindly — and the
                        # total is explicitly PARTIAL rather than pretending
                        # those territories contribute zero feeders.
-                       total_feeders=sum(m["feeders"] or 0 for m in markets),
+                       total_feeders=sum(m["feeders"] or 0 for m in _us),
                        total_feeders_basis=(
-                           "sum of DISTINCT feeder ids; utilities publishing "
-                           "no feeder identifier contribute 0 to this total "
-                           "and report feeders=null (unknown, not none)"),
+                           "US ONLY — sum of DISTINCT feeder ids over rows with "
+                           "country='US'. Utilities publishing no feeder "
+                           "identifier contribute 0 and report feeders=null "
+                           "(unknown, not none). Non-US coverage is NOT in this "
+                           "figure: see by_country and total_feeders_non_us. "
+                           "This total was US-only before the country column "
+                           "existed and is held US-only deliberately, so its "
+                           "meaning does not change as new geographies land."),
+                       total_feeders_non_us=sum(
+                           m["feeders"] or 0 for m in markets
+                           if m["country"] != "US"),
+                       by_country=_by_country,
+                       countries_covered=sorted(_by_country),
                        utilities_without_feeder_ids=sorted(
                            m["utility"] for m in markets if not m["feeders"]),
                        total_geometry_rows=sum(m["geometry_rows"] for m in markets),
