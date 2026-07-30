@@ -7,7 +7,7 @@
     "mutates this file. An entry is INVISIBLE unless status is exactly \"published\" — a draft,",
     "a typo'd status or a missing status is withheld (routes/platform_updates.py::_is_published).",
     "",
-    "NO FIGURES IN PROSE. These six cards replaced hardcoded HTML that went stale in public:",
+    "NO FIGURES IN PROSE. The first cards here replaced hardcoded HTML that went stale in public:",
     "it said '36 grids' while the scoreboard ranked 46, and '73 tools' / 'tool #73' while the",
     "live catalog was at 81. So `title` and `body` may not contain a figure — the loader",
     "rejects one (::_looks_like_bare_figure). To show a number, declare a metric TOKEN; the",
@@ -24,6 +24,49 @@
   ],
   "updates": [
     {
+      "id": "dcpi-methodology-machine-readable",
+      "status": "published",
+      "announced": "2026-07-29",
+      "tag": "Method",
+      "title": "The DCPI method is now machine-readable",
+      "code": "/api/v1/dcpi/methodology",
+      "body": "Every DCPI indicator weight, every cap, every verdict band and the full revision history are now served as JSON at /api/v1/dcpi/methodology, emitted from the same constants the scorer imports — so the published method and the live index cannot drift into describing different formulas. The known limitations ship in the same payload, including an input that is never populated and therefore contributes a structural zero to every constraint score.",
+      "link": {
+        "href": "/api/v1/dcpi/methodology",
+        "label": "Read the method →"
+      },
+      "metric": {
+        "token": "markets",
+        "label": "markets scored"
+      }
+    },
+    {
+      "id": "cross-layer-site-discovery",
+      "status": "published",
+      "announced": "2026-07-29",
+      "tag": "Site discovery",
+      "title": "Cross-layer site discovery produces candidates, not rankings",
+      "code": "/api/v1/sites/cross-layer",
+      "body": "GET /api/v1/sites/cross-layer builds a candidate set out of the physical layers themselves — the substation layer is the search space, with fiber coverage, carrier presence, DCPI market context and optional floodplain evidence attached to each anchor — instead of re-ranking a shortlist the caller already had. It also declares what it refuses to answer: constraint_coverage names measured MW headroom as absent from every layer, with the reason, so an agent can see the hole instead of inferring a number nobody measured.",
+      "link": {
+        "href": "/api/v1/sites/cross-layer?lat=39.0438&lon=-77.4874&radius_km=25",
+        "label": "See it over Loudoun →"
+      }
+    },
+    {
+      "id": "grid-scoreboard-honest-counts",
+      "status": "published",
+      "announced": "2026-07-29",
+      "tag": "Global grid",
+      "title": "The grid scoreboard separates zones ranked from independent feeds",
+      "code": "get_grid_scoreboard",
+      "body": "get_grid_scoreboard now returns the ranked-zone count and the count of independent upstream feeds as two separate named fields, each with its basis, because one combined figure read as far more independent sourcing than exists — most ranked zones arrive through a single ENTSO-E feed. Neither figure is stored on this card: both move between calls, and DC Hub publishes no keyless grid-zone count to bind against, so what is published here is the split itself.",
+      "link": {
+        "href": "/playground",
+        "label": "Try it live →"
+      }
+    },
+    {
       "id": "global-grid-scoreboard-intl",
       "status": "published",
       "announced": "2026-07-13",
@@ -31,8 +74,14 @@
       "title": "Japan, South Korea & Brazil join the live scoreboard",
       "code": "get_grid_scoreboard",
       "body": "get_grid_scoreboard (keyless) ranks national and regional grids on one real-time renewable-share scale — Japan (OCCTO), South Korea (KPX) and Brazil SIN (ONS) beside the US ISOs, EU bidding zones, GB and Taiwan. Australia and Singapore are live-partial.",
-      "link": { "href": "/playground", "label": "Try it live →" },
-      "metric": { "token": "grid_zones_ranked", "label": "grids ranked" }
+      "link": {
+        "href": "/playground",
+        "label": "Try it live →"
+      },
+      "metric": {
+        "token": "grid_zones_ranked",
+        "label": "grids ranked"
+      }
     },
     {
       "id": "retirement-headroom",
@@ -42,7 +91,10 @@
       "title": "Spot interconnection headroom before it opens",
       "code": "get_retirement_headroom",
       "body": "get_retirement_headroom returns filed US generator retirements (EIA-860M) — coal and gas plants with capacity, retirement date and the nearest substations — so an agent can find where grid interconnection headroom is about to free up as plants retire.",
-      "link": { "href": "/api/v1/retirement-headroom", "label": "See the data →" }
+      "link": {
+        "href": "/api/v1/retirement-headroom",
+        "label": "See the data →"
+      }
     },
     {
       "id": "provenance-envelope-v1",
@@ -52,8 +104,14 @@
       "title": "Provenance Envelope v1 on facility search",
       "code": "search_facilities",
       "body": "search_facilities returns a per-record de-duplication tier — a distinct facility versus one of its source records — plus source, a CC-BY-4.0 license and a citation-URL template. The counts behind it are published live at /api/v1/stats/canonical as facilities_distinct and facilities_records.",
-      "link": { "href": "/api/v1/stats/canonical", "label": "See the counts →" },
-      "metric": { "token": "facilities", "label": "distinct facilities" }
+      "link": {
+        "href": "/api/v1/stats/canonical",
+        "label": "See the counts →"
+      },
+      "metric": {
+        "token": "facilities",
+        "label": "distinct facilities"
+      }
     },
     {
       "id": "agent-memory-saved-sites",
@@ -63,7 +121,10 @@
       "title": "Your agent remembers your shortlist",
       "code": "save_site",
       "body": "save_site builds a durable list of candidate sites; next session get_changes returns per-site deltas — verdict flips, DCPI score moves, new nearby facilities — not just global market movers.",
-      "link": { "href": "/connect#start", "label": "Connect your AI →" }
+      "link": {
+        "href": "/connect#start",
+        "label": "Connect your AI →"
+      }
     },
     {
       "id": "error-contract-v1",
@@ -73,7 +134,10 @@
       "title": "A machine-readable error contract",
       "code": "error_version:1",
       "body": "Every error now carries error_version:1 — a severity class and a deterministic recovery hint, plus a server-computed suggested_params so your agent auto-corrects a bad parameter and re-runs without dropping context.",
-      "link": { "href": "/docs/error-codes", "label": "Error taxonomy →" }
+      "link": {
+        "href": "/docs/error-codes",
+        "label": "Error taxonomy →"
+      }
     },
     {
       "id": "cluster-sites-by-latency",
@@ -83,8 +147,14 @@
       "title": "cluster_sites_by_latency joins the catalog",
       "code": "cluster_sites_by_latency",
       "body": "Clusters candidate sites by fibre round-trip latency, pruning physically-impossible low-latency pairs against SMF-28 fibre floors before any routing. Live over MCP and at /api/v1/fiber/cluster-latency.",
-      "link": { "href": "/capabilities", "label": "Browse every tool →" },
-      "metric": { "token": "tools", "label": "tools live now" }
+      "link": {
+        "href": "/capabilities",
+        "label": "Browse every tool →"
+      },
+      "metric": {
+        "token": "tools",
+        "label": "tools live now"
+      }
     }
   ]
 }

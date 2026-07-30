@@ -121,8 +121,16 @@ def _looks_like_bare_figure(text) -> bool:
         # words are purely alphabetic and capped at two so identifiers like
         # "SMF-28 fibre floors" and "EIA-860M" still cannot trip it, and so a
         # number far away in the same sentence is not dragged in.
+        # ★ The noun list is the fence's blind spot, not the regex shape. The
+        # 2026-07-29 cards talk about SUBSTATIONS, FEEDS and SOURCES, and none
+        # of those were listed — "cross-layer search across 126,840
+        # substations" sailed straight through a guard that catches "36 grids".
+        # Caught by a must-fail control in tests/test_platform_updates_gate.py,
+        # not by review. Add the noun BEFORE writing a card that uses it.
         _n = (r"tools?|grids?|zones?|markets?|countries|countr\w*|"
-              r"facilit\w*|data[\s-]?cent\w+|records?|deals?|verified|tracked")
+              r"facilit\w*|data[\s-]?cent\w+|records?|deals?|verified|tracked|"
+              r"substations?|feeds?|sources?|sites?|assets?|plants?|routes?|"
+              r"entities|entit\w*")
         pat = re.compile(
             r"\b\d[\d,]*\+?\s*(?:[A-Za-z]+[\s-]+){0,2}(?:" + _n + r")\b"
             r"|\b(?:" + _n + r")\s*#\s*\d"
