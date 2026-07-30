@@ -193,7 +193,16 @@ REGISTRY = [
     {
         "key": "dcpi_markets",
         "mode": "milestone", "round_step": 25, "value_key": "n", "score": 70,
-        "metric_sql": "SELECT COUNT(*) AS n FROM market_power_scores",
+        # ★2026-07-30 — same audit as _canonical_stats "markets" above: this was
+        # COUNT(*) of market_power_scores ROWS (317 live) announced as scored
+        # MARKETS. Now the canonical markets query (canonical_stats.py) + AS n
+        # for value_key. The canonical count (306 live) sits BELOW the stored
+        # 317 baseline — safe: milestone fires only when the 25-bucket
+        # INCREASES and _milestone derives from the CURRENT value, so the drop
+        # re-announces nothing; the source stays quiet until canonical ≥ 325.
+        "metric_sql": ("SELECT COUNT(DISTINCT market_name) AS n FROM market_power_scores "
+                       "WHERE COALESCE(published, true) = true "
+                       "AND market_slug NOT IN ('pacific-nw-rural','rural-spp','upper-michigan')"),
         "source_url": "https://dchub.cloud/dcpi",
         "headline": lambda r: (f"The DC Hub Power Index now scores {int(r['_milestone'])}+ "
                                f"markets on buildable headroom"),
