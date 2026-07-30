@@ -192,7 +192,50 @@ def age_hours(iso_ts):
     return (NOW - t).total_seconds() / 3600.0
 
 
+# How often deadman-watch.yml itself is scheduled. MUST be kept in sync with the
+# cron in that workflow — _assert_watch_margin() below is what makes the coupling
+# visible instead of silent.
+WATCH_INTERVAL_H = 2.0
+# A feed is overdue at 2x its cadence. If the watcher runs less often than that, it
+# CANNOT keep the feed green: the feed ages past the threshold between two beats and
+# the board reports a dead loop that is in fact running fine. Demand real headroom,
+# not just "less than" — GitHub cron drift of 25-35 min is routine.
+WATCH_MARGIN = 1.5
+
+
+def _assert_watch_margin():
+    """Report any feed this watcher structurally cannot keep green.
+
+    2026-07-30: the watcher ran every 6h while seven feeds were registered at
+    cadence 3h — overdue at exactly 6h. Zero margin, so ordinary cron drift flipped
+    all seven red simultaneously (07-28 and again 07-30) while every underlying
+    workflow was succeeding minutes earlier. Six hours of false RED on the board that
+    exists to tell us what is really dead.
+
+    Warn-only ON PURPOSE: a hard exit here would take the watcher down, and a blind
+    watcher is strictly worse than a noisy one. The 2026-07-19 rule stands — watcher
+    problems must never masquerade as dead loops.
+    """
+    floor = WATCH_INTERVAL_H * WATCH_MARGIN
+    bad = {wf: cad for wf, cad in WORKFLOWS.items() if (2.0 * cad) < floor}
+    if bad:
+        print(f"::error::deadman-watch runs every {WATCH_INTERVAL_H}h but "
+              f"{len(bad)} feed(s) go overdue sooner than {floor}h — they will "
+              f"FALSE-RED on ordinary cron drift: "
+              + ", ".join(f"{wf}(cad {cad}h -> overdue {2*cad}h)"
+                          for wf, cad in sorted(bad.items())))
+        print("::error::fix: raise the cadence, run this watcher more often, or have "
+              "that loop beat itself from its own workflow (see iso-lmp-ingest.yml)")
+    else:
+        tightest = min(WORKFLOWS.values()) if WORKFLOWS else None
+        if tightest is not None:
+            print(f"watch margin OK: interval {WATCH_INTERVAL_H}h vs tightest "
+                  f"overdue threshold {2*tightest}h")
+    return bad
+
+
 def main():
+    _assert_watch_margin()
     overdue = []          # (feed, reason, cadence) — a loop genuinely stopped succeeding
     blind = []            # feeds the Actions API could not report on (watcher blind)
     seen_feeds = set()
