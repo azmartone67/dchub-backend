@@ -48,6 +48,17 @@ CLAIM_TOKEN_TTL_S = 24 * 3600     # 24h
 
 KIND_MCP_SESSION             = "mcp_session"             # Round 1: MCP paywall
 KIND_STATE_OF_2026_VISITOR   = "state_of_2026_visitor"   # Round 2: web reader
+# Shell #44 r-two-artifacts (2026-07-30): the HUMAN-audience view link. One
+# single-use claim token cannot serve both an agent and a human — the gateway
+# auto-redeems the claim in median 0.85s ("binds the trial key with NO human
+# page-open" is the redeem contract), so every human click has 410'd since
+# launch and claim_page_opened_at fired 0× all-time. The human artifact is a
+# SEPARATE kind: durable (7d), multi-open, binds nothing on open. Audience
+# separation is enforced at every consumer: /claim and /redeem reject this
+# kind; /relay accepts only it.
+KIND_HUMAN_VIEW              = "human_view"
+
+HUMAN_VIEW_TTL_S = 7 * 24 * 3600   # a human reads email/Slack on human time
 
 
 # ── secret ────────────────────────────────────────────────────────────
@@ -105,11 +116,14 @@ def sign_claim_token(
 
 # ── verify ───────────────────────────────────────────────────────────
 
-def verify_claim_token(token: str) -> dict | None:
+def verify_claim_token(token: str, max_age_s: int | None = None) -> dict | None:
     """Returns {kind, session_id, extra, ts} on success, None on any failure.
 
-    Also rejects tokens older than CLAIM_TOKEN_TTL_S. Backward-compat:
-    legacy 3-field tokens get kind=mcp_session implicitly.
+    Rejects tokens older than max_age_s (default CLAIM_TOKEN_TTL_S — the
+    original 24h contract, unchanged for every existing caller). Kinds with a
+    different lifetime pass their own bound: the human-view link verifies
+    with HUMAN_VIEW_TTL_S because a human reads on human time. Backward-
+    compat: legacy 3-field tokens get kind=mcp_session implicitly.
     """
     if not token or "." not in token:
         return None
@@ -138,7 +152,7 @@ def verify_claim_token(token: str) -> dict | None:
             sid, extra, ts_s = parts
 
         ts = int(ts_s)
-        if (int(time.time()) - ts) > CLAIM_TOKEN_TTL_S:
+        if (int(time.time()) - ts) > (max_age_s or CLAIM_TOKEN_TTL_S):
             return None
         return {"kind": kind, "session_id": sid, "extra": extra, "ts": ts}
     except Exception:

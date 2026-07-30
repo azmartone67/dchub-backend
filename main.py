@@ -38355,6 +38355,18 @@ try:
 except Exception as _asr_e:
     print(f"[main] agent_success_report register skipped: {_asr_e}", file=sys.stderr)
 
+# Master shell #44 — HANDOFF TRUTH (2026-07-30): read-only conductor over the
+# two-artifact relay repair (human /relay view link + funnel human_acted v2,
+# shipped in routes/mcp_high_intent_claim.py + the handoff funnel). Four lanes:
+# instrument, pending human sends (reminder only — never sends), in-flight
+# watch (attribution gate + representation-drift probes), hygiene targets.
+try:
+    from routes.handoff_truth_master_shell import handoff_truth_bp
+    app.register_blueprint(handoff_truth_bp)
+    print("[main] handoff_truth_bp registered: /api/v1/admin/handoff-truth/state", flush=True)
+except Exception as _ht_e:
+    print(f"[main] handoff_truth register skipped: {_ht_e}", file=sys.stderr)
+
 # operator one-off email (admin-keyed, logged, idempotent) — controlled single
 # sends the templated cohorts don't cover (e.g. a mis-target correction).
 try:

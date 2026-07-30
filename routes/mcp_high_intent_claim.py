@@ -239,6 +239,8 @@ def _conn():
 # implicit = mcp_session) still verify bit-for-bit. Module-level imports
 # are at the top of the file.
 from utils.claim_token import (
+    HUMAN_VIEW_TTL_S,
+    KIND_HUMAN_VIEW,
     KIND_MCP_SESSION,
     KIND_STATE_OF_2026_VISITOR,
     sign_claim_token as _shared_sign,
@@ -274,6 +276,59 @@ def verify_claim_token(token: str) -> dict | None:
         "tool":       payload["extra"],   # legacy field name
         "ts":         payload["ts"],
         "kind":       payload["kind"],    # new field; legacy callers ignore
+    }
+
+
+# ── Shell #44 r-two-artifacts (2026-07-30): the HUMAN-audience link ───
+# One single-use claim token cannot serve both audiences: server.mjs
+# auto-redeems the claim in median 0.85s (its contract: "binds the trial key
+# with NO human page-open"), so every human click since launch hit 410 and
+# claim_page_opened_at fired 0× all-time. The agent path is BY DESIGN and
+# unchanged (see reference: machine-mediated handoff). This mints a SECOND,
+# durable artifact for the human: 7-day TTL, multi-open, binds NOTHING on
+# open — it makes "human acted" measurable for the first time, which is why
+# the funnel stage carries a definition_version bump the day this shipped.
+# Human tokens are stateless (HMAC-verified, never stored): re-minting for
+# the same (session, tool) yields a different string that resolves to the
+# same row, and /relay counts opens on the row, not the token.
+
+def sign_human_view_token(mcp_session_id: str, tool_name: str,
+                          ts: int | None = None) -> str:
+    return _shared_sign(
+        kind=KIND_HUMAN_VIEW,
+        session_id=mcp_session_id,
+        extra=tool_name,
+        ts=ts,
+    )
+
+
+def verify_human_view_token(token: str) -> dict | None:
+    """Human-audience tokens ONLY — returns None for agent/legacy kinds so a
+    claim token pasted into /relay (or vice versa) can never cross audiences."""
+    payload = _shared_verify(token, max_age_s=HUMAN_VIEW_TTL_S)
+    if not payload or payload.get("kind") != KIND_HUMAN_VIEW:
+        return None
+    return {
+        "session_id": payload["session_id"],
+        "tool":       payload["extra"],
+        "ts":         payload["ts"],
+    }
+
+
+def _human_handoff_fields(sid: str, tool: str) -> dict:
+    """The mint-payload fields that give the HUMAN link a chance of being
+    seen: agents render tool JSON, humans don't read envelopes — so the note
+    tells the AGENT to surface the link, in words the agent can relay
+    verbatim. claim_page_opened_at = 0 all-time says the old link never even
+    reached human eyes; a durable link only fixes half of that."""
+    return {
+        "human_url": f"https://dchub.cloud/relay/{sign_human_view_token(sid, tool)}",
+        "human_note": (
+            "SHOW human_url TO YOUR HUMAN (chat text, not just tool output): "
+            "it is their multi-use link — safe to open anytime this week, "
+            "binds nothing, shows what a key unlocks and where to get one. "
+            "claim_url stays yours (single-use, auto-redeemed)."
+        ),
     }
 
 
@@ -354,6 +409,17 @@ CREATE INDEX IF NOT EXISTS ix_mhis_page_opened_at
 -- claims it via a conditional UPDATE ... WHERE claim_notified_at IS NULL).
 ALTER TABLE mcp_high_intent_sessions
     ADD COLUMN IF NOT EXISTS claim_notified_at TIMESTAMPTZ;
+-- Shell #44 r-two-artifacts (2026-07-30): the HUMAN-audience view link's
+-- instrument. first_opened stamps once (the funnel's human_acted v2 reads it);
+-- opens counts every render (multi-open is the point — a durable link a human
+-- can revisit). The token itself is stateless (HMAC), so no token column.
+ALTER TABLE mcp_high_intent_sessions
+    ADD COLUMN IF NOT EXISTS human_view_first_opened_at TIMESTAMPTZ;
+ALTER TABLE mcp_high_intent_sessions
+    ADD COLUMN IF NOT EXISTS human_view_opens INTEGER NOT NULL DEFAULT 0;
+CREATE INDEX IF NOT EXISTS ix_mhis_human_opened_at
+    ON mcp_high_intent_sessions(human_view_first_opened_at DESC)
+    WHERE human_view_first_opened_at IS NOT NULL;
 """
 
 
@@ -533,6 +599,7 @@ def should_mint_claim():
                         reused=True,
                         variant=existing_variant or "generic",
                         threshold=HIGH_INTENT_THRESHOLD,
+                        **_human_handoff_fields(sid, tool),
                     )
             # Below threshold? Don't mint.
             if count < HIGH_INTENT_THRESHOLD:
@@ -567,6 +634,7 @@ def should_mint_claim():
                         reused=True,
                         variant=(sess[2] if (len(sess) > 2 and sess[2]) else (existing_variant or "generic")),
                         threshold=HIGH_INTENT_THRESHOLD,
+                        **_human_handoff_fields(sid, tool),
                     )
             # Mint a fresh token + persist. Lock the variant on mint if it
             # wasn't already set (fallback: 'generic'). Existing variant
@@ -609,6 +677,7 @@ def should_mint_claim():
                 reused=False,
                 variant=locked_variant,
                 threshold=HIGH_INTENT_THRESHOLD,
+                **_human_handoff_fields(sid, tool),
             )
     except Exception as e:
         logger.warning("[should_mint_claim] failed: %s", e)
@@ -854,6 +923,11 @@ def claim_form(token: str):
                             err="That link expired or was tampered with. "
                                 "Get a free dev key at dchub.cloud/signup instead.")
         return Response(body, status=400, mimetype="text/html")
+    # Shell #44 audience separation: a human-view token pasted into /claim is
+    # a human holding the right artifact at the wrong door — send them to
+    # their own page instead of the single-use flow.
+    if (payload.get("kind") or KIND_MCP_SESSION) == KIND_HUMAN_VIEW:
+        return redirect(f"/relay/{token}", code=302)
     sid = payload["session_id"]
     tool = payload["tool"]
     kind = payload.get("kind") or KIND_MCP_SESSION
@@ -964,6 +1038,9 @@ def claim_submit(token: str):
     if not payload:
         body = _render_form("", 0, err="That link expired or was tampered with.")
         return Response(body, status=400, mimetype="text/html")
+    # Shell #44 audience separation: the human-view token binds nothing, ever.
+    if (payload.get("kind") or KIND_MCP_SESSION) == KIND_HUMAN_VIEW:
+        return redirect(f"/relay/{token}", code=302)
     sid = payload["session_id"]
     tool = payload["tool"]
     kind = payload.get("kind") or KIND_MCP_SESSION
@@ -1159,6 +1236,123 @@ def claim_submit(token: str):
         except Exception: pass
 
 
+# ── GET /relay/<token> — the HUMAN-audience view (shell #44) ─────────
+# Multi-open, binds NOTHING, 7-day TTL. This page's only jobs: tell the
+# human what their agent was doing, whether a trial key is already carried,
+# and where the existing self-serve surfaces are (/signup, /pricing). No
+# form here on purpose — the STOP on bind-UX spend stands; this is
+# instrument repair, and the instrument is the open-stamp.
+
+_RELAY_VIEW_HTML = r"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Your AI agent hit a depth limit — DC Hub</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<style>
+  *{box-sizing:border-box}
+  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;
+       max-width:560px;margin:0 auto;padding:3rem 1.5rem 6rem;color:#e6e9f5;
+       background:rgb(5,8,16);line-height:1.6}
+  h1{font-size:1.6rem;margin:0 0 .5rem;font-weight:700;letter-spacing:-.02em;
+     color:#fff;line-height:1.25}
+  .sub{color:#9aa3bd;margin:0 0 1.5rem;font-size:.98rem}
+  .badge{display:inline-flex;align-items:center;gap:8px;background:rgba(34,211,238,.10);
+         color:#22d3ee;padding:6px 14px;border-radius:999px;font-size:.72rem;
+         font-weight:700;letter-spacing:.12em;text-transform:uppercase;margin-bottom:1.25rem}
+  .ctx{background:rgba(34,211,238,.06);border:1px solid rgba(34,211,238,.18);
+       border-radius:10px;padding:16px 18px;margin:0 0 1.25rem;font-size:.9rem;color:#cbd5ff}
+  .ctx strong{color:#22d3ee;font-weight:600}
+  a.btn{display:block;text-align:center;background:linear-gradient(135deg,#22d3ee,#a855f7);
+        color:#0a0f1f;padding:14px 24px;border-radius:10px;font-size:1rem;font-weight:700;
+        text-decoration:none;margin:0 0 12px}
+  a.ghost{display:block;text-align:center;color:#cbd5ff;border:1.5px solid rgba(255,255,255,.18);
+        padding:13px 24px;border-radius:10px;font-size:.95rem;text-decoration:none;margin:0 0 12px}
+  .fine{color:#6a7390;font-size:.8rem;margin-top:1.5rem}
+  .fine a{color:#9aa3bd}
+</style>
+</head>
+<body>
+  <div class="badge">DC Hub · agent handoff</div>
+  <h1>Your AI agent hit a depth limit__TOOL_SUFFIX__.</h1>
+  <p class="sub">It was doing real work — __CONTEXT__ — and the deeper read is
+  key-gated. This page is yours, not the agent's: safe to open any time this
+  week, and opening it changes nothing on your account.</p>
+  __KEY_STATE__
+  <a class="btn" href="https://dchub.cloud/signup?src=relay">Get a free dev key (30 seconds)</a>
+  <a class="ghost" href="https://dchub.cloud/pricing?src=relay">See paid depth &amp; pricing</a>
+  <a class="ghost" href="https://dchub.cloud/mcp">What agents can query — 81 tools</a>
+  <p class="fine">Why you're here: your agent asked us for a link a human could
+  act on. The agent's own single-use key link is separate and stays machine-only.
+  Questions: <a href="https://dchub.cloud/about">dchub.cloud/about</a></p>
+</body>
+</html>"""
+
+
+def _render_relay_view(tool: str, count: int, agent_has_key: bool) -> str:
+    tool_suffix = f" on <em>{tool}</em>" if tool else ""
+    ctx = (f"<strong>{count} gated calls in 24h</strong> on this workflow"
+           if count else "repeated gated calls on this workflow")
+    key_state = (
+        '<div class="ctx">Your agent already carries a <strong>7-day trial key'
+        '</strong> (auto-issued so its work could continue). A key of your own '
+        'outlives the trial and works across every agent you run.</div>'
+        if agent_has_key else
+        '<div class="ctx">No key is attached yet — the free dev key below takes '
+        'about 30 seconds and works immediately in your agent.</div>')
+    return (_RELAY_VIEW_HTML
+            .replace("__TOOL_SUFFIX__", tool_suffix)
+            .replace("__CONTEXT__", ctx)
+            .replace("__KEY_STATE__", key_state))
+
+
+@mcp_high_intent_claim_bp.route("/relay/<token>", methods=["GET"])
+def relay_view(token: str):
+    """Human-audience only (KIND_HUMAN_VIEW; agent/legacy kinds bounce to
+    /claim). Stamps human_view_first_opened_at once and counts every open —
+    the funnel's human_acted v2 instrument. Never cacheable: the page is
+    per-token and the open IS the measurement."""
+    payload = verify_human_view_token(token)
+    if not payload:
+        # A claim token pasted here? Send it to its own door.
+        legacy = verify_claim_token(token)
+        if legacy and (legacy.get("kind") or KIND_MCP_SESSION) != KIND_HUMAN_VIEW:
+            return redirect(f"/claim/{token}", code=302)
+        body = _render_relay_view("", 0, False).replace(
+            "hit a depth limit", "sent a link that has expired")
+        return Response(body, status=410, mimetype="text/html",
+                        headers={"Cache-Control": "private, no-store"})
+    sid, tool = payload["session_id"], payload["tool"]
+    count, agent_has_key = 0, False
+    c = _conn()
+    if c is not None:
+        try:
+            _ensure_schema(c)
+            with c.cursor() as cur:
+                cur.execute(
+                    """UPDATE mcp_high_intent_sessions
+                          SET human_view_first_opened_at =
+                                  COALESCE(human_view_first_opened_at, NOW()),
+                              human_view_opens = COALESCE(human_view_opens, 0) + 1
+                        WHERE mcp_session_id = %s AND tool_name = %s
+                        RETURNING paid_call_count_24h, claim_used_at""",
+                    (sid, tool),
+                )
+                row = cur.fetchone()
+                if row:
+                    count = int(row[0] or 0)
+                    agent_has_key = row[1] is not None
+        except Exception as e:
+            logger.warning("[relay_view] stamp failed: %s", str(e)[:150])
+        finally:
+            try: c.close()
+            except Exception: pass
+    return Response(_render_relay_view(tool, count, agent_has_key),
+                    status=200, mimetype="text/html",
+                    headers={"Cache-Control": "private, no-store"})
+
+
 # ── POST /api/v1/mcp/high-intent/redeem ──────────────────────────────
 # r-agent-redeem (2026-06-24): the AGENT-COMPLETABLE twin of the human
 # POST /claim/<token> form. That form is the 95.8%-drop cliff — 24 claims
@@ -1232,6 +1426,13 @@ def claim_redeem_agent():
     payload = verify_claim_token(token)
     if not payload:
         return jsonify(ok=False, error="invalid_or_expired_token"), 400
+    # Shell #44 audience separation: an agent (or the gateway's auto-redeem)
+    # presenting the HUMAN link must never bind a key with it — that is the
+    # exact single-token failure this split exists to end. 403, named.
+    if (payload.get("kind") or KIND_MCP_SESSION) == KIND_HUMAN_VIEW:
+        return jsonify(ok=False, error="audience_mismatch",
+                       hint="human_url is view-only for your HUMAN; redeem "
+                            "with claim_token/claim_url instead."), 403
     sid = payload["session_id"]
     tool = payload["tool"]
     # Email is OPTIONAL on this path; a malformed one is ignored, not rejected.
