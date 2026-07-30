@@ -124,6 +124,65 @@ def test_backend_maps_founding_equals_pro():
         ("\n(skipped: " + "; ".join(f for f in fails if f.startswith('SKIP')) + ")" if any(f.startswith('SKIP') for f in fails) else "")
 
 
+# ── 2b. Gating maps must MATCH tier_registry, key for key ───────────
+def test_gating_maps_match_tier_registry():
+    """r-tier-derive (2026-07-30): 'starter' (and 'team') were missing
+    from PLAN_LEVELS / TIER_RATE_LIMITS / TIER_DAILY_RECORD_CAPS /
+    TIER_PAGE_CAPS, so a paying $9 Starter fell through every
+    dict.get() default: access level 0 == free (failing even the
+    require_plan('identified') gate on deals_routes), 100 calls/day
+    (advertised 500), 50 records/day (advertised 500 — pricing sells
+    "10× the free quota"), 1 page/query (advertised 10). 'identified'
+    (r32) and 'founding' (r43-H) were the same class. The maps are now
+    derived from tier_registry; this test locks every key AND value to
+    the registry so a hand-edit can't reintroduce drift. Unlike
+    chk_map above, an import failure here is a FAILURE, not a
+    tolerated SKIP — if api_tier_gating stops importing, this guard is
+    dead and CI must go red, not silently green."""
+    import tier_registry as tr
+    import api_tier_gating as atg
+    fails = []
+
+    # PLAN_LEVELS ≡ tier_registry.TIERS rank, both directions.
+    for t, meta in tr.TIERS.items():
+        if atg.PLAN_LEVELS.get(t) != meta['rank']:
+            fails.append(f"PLAN_LEVELS[{t!r}] = {atg.PLAN_LEVELS.get(t)!r} "
+                         f"!= registry rank {meta['rank']!r}")
+    for t in atg.PLAN_LEVELS:
+        if t not in tr.TIERS:
+            fails.append(f"PLAN_LEVELS key {t!r} unknown to tier_registry.TIERS")
+
+    # The three limit maps ≡ tier_registry.TIER_LIMITS columns.
+    for attr, col in (('TIER_RATE_LIMITS', 'rate_limit'),
+                      ('TIER_DAILY_RECORD_CAPS', 'record_cap'),
+                      ('TIER_PAGE_CAPS', 'page_cap')):
+        m = getattr(atg, attr)
+        for t, lim in tr.TIER_LIMITS.items():
+            if m.get(t) != lim[col]:
+                fails.append(f"{attr}[{t!r}] = {m.get(t)!r} "
+                             f"!= registry {col} {lim[col]!r}")
+        # 'anon' is a caller alias absent from TIER_LIMITS — it must
+        # mirror 'anonymous', and no OTHER key may bypass the registry.
+        if m.get('anon') != m.get('anonymous'):
+            fails.append(f"{attr}: alias 'anon' ({m.get('anon')!r}) "
+                         f"!= 'anonymous' ({m.get('anonymous')!r})")
+        for t in m:
+            if t != 'anon' and t not in tr.TIER_LIMITS:
+                fails.append(f"{attr} key {t!r} unknown to tier_registry.TIER_LIMITS")
+
+    # Pin the sold numbers independently of BOTH maps, so a registry-side
+    # typo can't silently propagate through the derivation.
+    if atg.TIER_DAILY_RECORD_CAPS.get('starter') != 500:
+        fails.append(f"starter record cap "
+                     f"{atg.TIER_DAILY_RECORD_CAPS.get('starter')!r} != 500 "
+                     "(pricing copy: 10× the free quota)")
+    if atg.TIER_DAILY_RECORD_CAPS.get('free') != 50:
+        fails.append(f"free record cap "
+                     f"{atg.TIER_DAILY_RECORD_CAPS.get('free')!r} != 50")
+
+    assert not fails, "Gating-map ↔ tier_registry drift:\n" + "\n".join(fails)
+
+
 # ── 3. Frontend / MCP JS maps: 'founding' must appear ───────────────
 def test_frontend_js_maps_have_founding():
     fails = []
@@ -169,6 +228,7 @@ if __name__ == "__main__":
     for fn in (test_registry_founding_equals_pro,
                test_registry_pricing_canonical,
                test_backend_maps_founding_equals_pro,
+               test_gating_maps_match_tier_registry,
                test_frontend_js_maps_have_founding,
                test_generate_api_key_matches_schema):
         _FAILURES.clear()

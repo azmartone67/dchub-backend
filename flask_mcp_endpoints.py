@@ -702,12 +702,23 @@ def validate_key():
                 ur = cur.fetchone()
                 if ur and ur[0]:
                     plan_tier = ur[0].lower()
-            # Check api_keys.rate_limit_tier via api_key value (covers
-            # enterprise/research_seed keys minted outside Stripe flow)
+            # Check api_keys.rate_limit_tier (covers enterprise/
+            # research_seed keys minted outside the Stripe flow).
+            # 2026-07-30: this SELECTed by key_value/revoked_at — columns
+            # api_keys has NEVER had (live schema: key_hash + is_active
+            # INTEGER) — so it threw UndefinedColumn on every call and the
+            # fail-soft except below swallowed it: this leg (and the
+            # metered check after it) never ran. Use the same dual
+            # key_hash convention as the api_keys fallback earlier in this
+            # function and free_tier_gate._user_from_api_key: standard
+            # keys store sha256(key); partner/admin keys store the RAW
+            # key string in key_hash.
+            import hashlib as _hl2
             cur.execute(
-                "SELECT rate_limit_tier FROM api_keys WHERE key_value = %s "
-                "AND (revoked_at IS NULL OR revoked_at > NOW()) LIMIT 1",
-                (api_key,),
+                "SELECT rate_limit_tier FROM api_keys "
+                "WHERE key_hash IN (%s, %s) "
+                "AND (is_active IS NULL OR is_active = 1) LIMIT 1",
+                (_hl2.sha256(api_key.encode()).hexdigest(), api_key),
             )
             ar = cur.fetchone()
             if ar and ar[0]:
