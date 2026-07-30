@@ -212,7 +212,9 @@ def test_every_metric_declares_the_full_publish_contract():
 
 def test_incomplete_contract_is_unpublishable():
     """The gate is enforced in code, not remembered: a registry entry missing
-    a contract field must refuse to carry a value."""
+    a contract field must refuse to carry a value — and must say WHY in a
+    sentence a human can act on without reverse-engineering the field list
+    (round-2, ChatGPT: publish_block_reason)."""
     asr.METRICS["_test_bad_metric"] = {
         "definition": "x", "unit": "x", "source": "x",
         "definition_version": 1, "definition_changelog": {1: "x"},
@@ -224,6 +226,9 @@ def test_incomplete_contract_is_unpublishable():
         assert b["value"] is None, "a value leaked through an incomplete contract"
         assert set(b["missing_contract_fields"]) == \
             {"observation", "assumptions", "consumers"}
+        reason = b["publish_block_reason"]
+        for f in ("observation", "assumptions", "consumers"):
+            assert f in reason, f"block reason does not name {f!r}"
     finally:
         del asr.METRICS["_test_bad_metric"]
 
@@ -237,11 +242,13 @@ def test_metric_blocks_carry_the_contract():
         assert field in b
 
 
-def test_payload_envelope_is_versioned_and_v2_documents_the_restructure():
-    assert asr.REPORT_DEFINITION_VERSION >= 2
+def test_payload_envelope_is_versioned_and_changelog_is_complete():
+    assert asr.REPORT_DEFINITION_VERSION >= 3
     for i in range(1, asr.REPORT_DEFINITION_VERSION + 1):
         assert i in asr.REPORT_DEFINITION_CHANGELOG
     assert "learning" in asr.REPORT_DEFINITION_CHANGELOG[2].lower()
+    assert "semver" in asr.REPORT_DEFINITION_CHANGELOG[3].lower(), \
+        "v3 must document the declined semver ask, not just the additions"
 
 
 def test_episode_metrics_declare_their_population_difference():
@@ -283,7 +290,8 @@ def test_offline_build_produces_the_full_shape(monkeypatch):
             seen.add(key)
             assert b["value"] is None
             assert b["status"] in ("UNAVAILABLE", "UNMEASURED")
-    for key, b in p["sections"][-1]["computed"].items():
+    learn = p["sections"][-1]
+    for key, b in learn["behaviour"]["computed"].items():
         if key in asr.METRICS:
             seen.add(key)
             assert b["status"] in ("UNAVAILABLE", "UNMEASURED")
@@ -294,14 +302,66 @@ def test_offline_build_produces_the_full_shape(monkeypatch):
     assert p["publish_contract"]["required_fields"] == list(asr.PUBLISH_CONTRACT_FIELDS)
 
 
-def test_learning_notes_are_dated_kinded_and_sourced():
+def test_offline_learning_split_and_confidence(monkeypatch):
+    """Round-2 shape: learning separates measurement_integrity from behaviour
+    (a telemetry repair must never read as behaviour change), and confidence
+    is DECLARED — word states with a why, never a number."""
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.delenv("NEON_DATABASE_URL", raising=False)
+    p = asr._build_report()
+    learn = p["sections"][-1]
+    assert "why_split" in learn
+    mi, bh = learn["measurement_integrity"], learn["behaviour"]
+    assert mi["notes"] and bh["notes"], "both learning groups must carry notes"
+    assert "attribution_trend" in mi, \
+        "the attribution gauge is measurement quality, not agent behaviour"
+    assert all(n["class"] == "measurement_integrity" for n in mi["notes"])
+    assert all(n["class"] == "behaviour" for n in bh["notes"])
+
+    conf = p["confidence"]
+    assert "not scored" in conf["note"] or "declared" in conf["note"]
+    for axis in ("platform_attribution", "planner_denominator",
+                 "second_recipe_denominator", "definition_versions",
+                 "observation_window"):
+        st = conf[axis]["state"]
+        assert isinstance(st, str) and not st.replace(".", "").isdigit(), \
+            f"{axis}: confidence state must be a word, never a number"
+        assert conf[axis]["why"].strip(), f"{axis}: a state without a why"
+    assert conf["platform_attribution"]["state"] == "partial"
+    assert conf["planner_denominator"]["state"] == "unavailable"
+
+    pc = p["publish_contract"]
+    assert "invariant" in pc
+    assert "recomputed" in pc["invariant"] and "frozen" in pc["invariant"], \
+        "the invariant must name both permitted resolutions"
+    assert pc["machine_readable"] == "/api/v1/reports/agent-success/contract"
+
+
+def test_contract_endpoint_derives_from_the_constant():
+    """The machine-readable contract (round-2, Copilot) must be GENERATED
+    from PUBLISH_CONTRACT_FIELDS — a hand-written schema is a second copy,
+    and second copies drift. Also pins the declined-semver decision."""
+    c = asr._contract_payload()
+    assert c["required"] == ["value", "status"] + list(asr.PUBLISH_CONTRACT_FIELDS)
+    for field in c["required"]:
+        assert field in c["properties"], f"required field {field!r} has no schema"
+    dv = c["properties"]["definition_version"]
+    assert dv["type"] == "integer"
+    assert "semver" in dv["description"], \
+        "the version-format decision must be documented where consumers read"
+    assert c["report_definition_version"] == asr.REPORT_DEFINITION_VERSION
+    assert "UNPUBLISHABLE" in c["properties"]["status"]["enum"]
+
+
+def test_learning_notes_are_dated_kinded_classed_and_sourced():
     """Learning is editorial state, so its discipline is provenance: every
-    entry carries an ISO date, a kind, and a source. Undated 'we improved
-    things' notes are how stale claims fossilize into reports."""
+    entry carries an ISO date, a kind, a class (round-2 split), and a source.
+    Undated 'we improved things' notes are how stale claims fossilize."""
     assert asr.LEARNING_NOTES, "the learning section cannot ship empty"
     for n in asr.LEARNING_NOTES:
         date.fromisoformat(n["date"])   # raises on a malformed date
-        assert n["kind"] in ("improved", "degraded", "measurement")
+        assert n["kind"] in ("improved", "degraded", "measurement", "observed")
+        assert n["class"] in ("measurement_integrity", "behaviour")
         assert n["note"].strip() and n["source"].strip()
 
 

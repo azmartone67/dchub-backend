@@ -27,6 +27,22 @@ its round-3 design constraints (Perplexity converged on the same artifact —
      computable off the existing episode model). Recipe-LIFECYCLE logging
      needs a schema change and stays out of scope here, on purpose.
 
+ROUND-2 FEEDBACK (same day, after the partners read the live payload):
+  · ChatGPT: UNPUBLISHABLE now carries a human-readable publish_block_reason
+    (auditable, not just machine-parsable); the Learning section splits
+    MEASUREMENT INTEGRITY from BEHAVIOUR so a telemetry repair can never be
+    read as a change in agent behaviour; a top-level `confidence` block
+    DECLARES why each axis should or shouldn't be trusted (states are words,
+    never a synthetic percentage — same philosophy as refusing composites);
+    and publish_contract states the invariant: a definition_version change
+    must never silently alter historical interpretation.
+  · Copilot: the metric contract is machine-readable at
+    GET /api/v1/reports/agent-success/contract — GENERATED from
+    PUBLISH_CONTRACT_FIELDS (derived, never transcribed, the drift class this
+    repo keeps paying for). Its semver ask was DECLINED: versions here are
+    integers because ANY meaning change bumps (MAJOR-only semantics), and a
+    format migration would break pinned consumers for zero semantic gain.
+
 Every number on this surface is crawler-excluded. That is the report's whole
 reason to exist as a separate endpoint: the 07-28 audit found the "real agent"
 init population dominated by MCP registry crawlers/indexers/health checkers,
@@ -99,7 +115,7 @@ _STMT_TIMEOUT_MS = 6000
 
 # The payload SHAPE version. Individual metrics carry their own versions —
 # bump those when a metric's MEANING changes; bump this when the envelope does.
-REPORT_DEFINITION_VERSION = 2
+REPORT_DEFINITION_VERSION = 3
 REPORT_DEFINITION_CHANGELOG = {
     1: "initial (PR #1954, 2026-07-30 morning): flat metrics dict; five "
        "deliverable metrics; per-platform gate; crawler-excluded population",
@@ -111,6 +127,16 @@ REPORT_DEFINITION_CHANGELOG = {
        "second_recipe_take_up_pct, execution quality gains "
        "episode_result_rate, learning carries week-over-week deltas plus "
        "dated notes; composite scores explicitly refused",
+    3: "round-2 feedback (same day, partners read the live payload): "
+       "UNPUBLISHABLE carries publish_block_reason (ChatGPT); learning splits "
+       "measurement_integrity from behaviour so a telemetry repair can never "
+       "read as behaviour change (ChatGPT — attribution trend lives under "
+       "measurement_integrity because it gauges measurement quality, not "
+       "agent behaviour); declared-not-scored confidence block (ChatGPT); "
+       "no-silent-reinterpretation invariant stated in publish_contract "
+       "(ChatGPT); machine-readable metric contract at /contract (Copilot); "
+       "integer version format documented, semver declined — any meaning "
+       "change bumps, so versions are MAJOR-only by construction",
 }
 
 # Round-3 rule 2, made operational: a metric renders only when its whole
@@ -520,44 +546,59 @@ def _second_recipe_sql() -> str:
         episode=_EPISODE_ID, synth=_SYNTH_NOT_LIKE + CRAWLER_EXCLUSION_WHERE)
 
 
-# ── Learning notes — dated, sourced, kinds: improved | degraded | measurement.
-# Curated editorial state, deliberately versioned in git rather than invented
-# at runtime: "what changed" is a claim about causes, and causes don't come
-# out of a GROUP BY. Dated facts stay true after the week moves on.
+# ── Learning notes — dated, sourced, kinds: improved | degraded |
+# measurement | observed. Curated editorial state, deliberately versioned in
+# git rather than invented at runtime: "what changed" is a claim about
+# causes, and causes don't come out of a GROUP BY. Dated facts stay true
+# after the week moves on.
+#
+# Round-2 (ChatGPT): every note also carries `class` — measurement_integrity
+# vs behaviour — and the section renders the two groups separately, so a
+# telemetry repair can never be mistaken for a change in what agents did.
 LEARNING_NOTES = (
-    {"date": "2026-07-28", "kind": "measurement",
+    {"date": "2026-07-28", "kind": "measurement", "class": "measurement_integrity",
      "note": "Registry-crawler exclusions applied to the identity views — 12 "
              "named crawlers/indexers/health checkers plus 9 family patterns "
              "removed from the 'real agent' population (measured impact: "
              "calls −4.1%, agents −3). Numbers spanning this date are not "
              "comparable without this note.",
      "source": "dchub-backend #1865/#1866, applied 2026-07-28 22:12Z"},
-    {"date": "2026-07-28", "kind": "measurement",
+    {"date": "2026-07-28", "kind": "measurement", "class": "measurement_integrity",
      "note": "Generic client_name bucket split: rows named "
              "'mcp'/'mcp-client'/'client'/'default' now classify as "
              "'mcp-generic-client' (real traffic, kept) or 'internal-dchub' "
              "(self-traffic, excluded) instead of passing through verbatim as "
              "a fake platform.",
      "source": "dchub-backend mcp_calls_deloop, 2026-07-28"},
-    {"date": "2026-07-28", "kind": "improved",
+    {"date": "2026-07-28", "kind": "improved", "class": "measurement_integrity",
      "note": "Platform-attribution fix: clientInfo.name now survives the "
              "stateless call path. Generic-bucket share moved 88% → 77.8% in "
              "the first two days; per-platform reach publishes here once the "
              "share holds ≤80% across a fully post-fix week (earliest "
-             "2026-08-04). Live trajectory: reach section gate.",
+             "2026-08-04). This is a TELEMETRY repair — the agents did not "
+             "change, our ability to see who they are did.",
      "source": "dchub-mcp-server (client_name_raw + platform recall)"},
-    {"date": "2026-07-30", "kind": "improved",
+    {"date": "2026-07-30", "kind": "improved", "class": "behaviour",
      "note": "Planner v5.6: tax-incentive intents route to get_tax_incentives "
              "— the tool was registered but unroutable (register ≠ routable), "
-             "so Meta's #1 intent had been landing on facility_search.",
+             "so Meta's #1 intent had been landing on facility_search. This "
+             "changes what agents GET, so downstream behaviour may shift.",
      "source": "dchub-mcp-server #106"},
-    {"date": "2026-07-30", "kind": "measurement",
+    {"date": "2026-07-30", "kind": "measurement", "class": "measurement_integrity",
      "note": "This report's episode metrics gained the same crawler "
              "exclusions as the identity views — the bound-params regex "
              "predicate had silently missed all nine crawler families for two "
              "days, so bound-params surfaces were still counting registry "
              "crawlers the identity view excluded.",
      "source": "dchub-backend #1954"},
+    {"date": "2026-07-30", "kind": "observed", "class": "behaviour",
+     "note": "First reading of the week: planner adoption 0.0% (0 of 202 "
+             "opportunity episodes led with execute_plan) while manual "
+             "orchestration ran 72.8%. The fleet is dominated by one "
+             "generic-client cohort, so this may move sharply once "
+             "attribution resolves who these agents are — read it with the "
+             "confidence block, not alone.",
+     "source": "this report, first live build 2026-07-30T08:09Z"},
 )
 
 
@@ -625,9 +666,12 @@ def _metric_block(key, value, status, **extra):
     entry = METRICS[key]
     missing = [f for f in PUBLISH_CONTRACT_FIELDS if not entry.get(f)]
     if missing:
-        logger.error("[agent-success] %s missing contract fields %s — "
-                     "refusing to publish a value", key, missing)
+        # Round-2 (ChatGPT): the block must be auditable by a HUMAN at a
+        # glance, not reverse-engineered from a field list.
+        reason = "missing contract declaration: " + ", ".join(missing)
+        logger.error("[agent-success] %s UNPUBLISHABLE — %s", key, reason)
         return {"value": None, "status": "UNPUBLISHABLE",
+                "publish_block_reason": reason,
                 "missing_contract_fields": missing}
     block = {"value": value, "status": status}
     block.update(extra)
@@ -650,6 +694,16 @@ def _build_report() -> dict:
                     "assumptions, definition version, and consumer are all "
                     "declared (round-3 partner rule; enforced fail-closed)",
             "required_fields": list(PUBLISH_CONTRACT_FIELDS),
+            # Round-2 (ChatGPT): the cross-release invariant, stated where
+            # consumers read, not remembered where authors edit.
+            "invariant": "a definition_version change must never silently "
+                         "alter historical interpretation: either history is "
+                         "recomputed under the new definition (our default — "
+                         "the identity views classify ALL history at read "
+                         "time, so every window in this payload carries "
+                         "current definitions), or history stays frozen and "
+                         "the changelog marks the discontinuity explicitly",
+            "machine_readable": "/api/v1/reports/agent-success/contract",
         },
         "no_composite_score": NO_COMPOSITE_POLICY,
         "population": (
@@ -930,9 +984,16 @@ def _build_report() -> dict:
         {
             "section": "learning",
             "question": SECTION_QUESTIONS["learning"],
-            "computed": {
-                "tool_calls_wow_pct": blocks["tool_calls_wow_pct"],
-                "active_agents_wow_pct": blocks["active_agents_wow_pct"],
+            # Round-2 (ChatGPT): the split exists so a telemetry repair can
+            # never be read as a change in agent behaviour. attribution_trend
+            # sits under measurement_integrity deliberately — it gauges OUR
+            # ability to see, not what agents did.
+            "why_split": "measurement_integrity = changes to how we see; "
+                         "behaviour = changes in what agents did (or what "
+                         "the product does to them). Never conflate.",
+            "measurement_integrity": {
+                "notes": [n for n in LEARNING_NOTES
+                          if n["class"] == "measurement_integrity"],
                 "attribution_trend": {
                     "baseline_2026_07_28": MCP_BUCKET_SHARE_PRE_FIX,
                     "generic_bucket_share_7d": mcp_share,
@@ -942,9 +1003,66 @@ def _build_report() -> dict:
                             "attribution is genuinely improving",
                 },
             },
-            "notes": list(LEARNING_NOTES),
+            "behaviour": {
+                "computed": {
+                    "tool_calls_wow_pct": blocks["tool_calls_wow_pct"],
+                    "active_agents_wow_pct": blocks["active_agents_wow_pct"],
+                },
+                "notes": [n for n in LEARNING_NOTES
+                          if n["class"] == "behaviour"],
+            },
         },
     ]
+
+    # ── confidence — DECLARED, never scored (round-2, ChatGPT) ─────────────
+    # States are words with a why; no synthetic percentage exists or may be
+    # added (same philosophy as refusing composite scores: don't replace
+    # uncertainty with aesthetics).
+    opportunities = blocks["planner_adoption_pct"].get("denominator")
+    second_den = blocks["second_recipe_take_up_pct"].get("denominator")
+    out["confidence"] = {
+        "note": "declared, not scored — each axis states WHY to trust or "
+                "doubt it; there is deliberately no confidence percentage",
+        "platform_attribution": {
+            "state": "partial" if (mcp_share is None or
+                                   mcp_share > MCP_BUCKET_MAX_SHARE_TO_PUBLISH
+                                   or days_since_fix <
+                                   ATTRIBUTION_MIN_ACCUMULATION_DAYS)
+                     else "verified",
+            "why": ("generic bucket holds "
+                    + (f"{round(100 * mcp_share, 1)}%" if mcp_share is not None
+                       else "an unmeasured share")
+                    + " of real calls; per-platform stays gated until the "
+                      "share verifies ≤80% across a fully post-fix week"),
+        },
+        "planner_denominator": {
+            "state": ("unavailable" if opportunities is None
+                      else "sparse" if opportunities < 30 else "stable"),
+            "why": f"{opportunities} opportunity episodes in the window"
+                   if opportunities is not None else
+                   "episode source unavailable this build",
+        },
+        "second_recipe_denominator": {
+            "state": ("unavailable" if second_den is None
+                      else "sparse" if second_den < 30 else "stable"),
+            "why": f"{second_den} episode(s) invoked the planner at all — "
+                   "read the rate as a count, not a trend"
+                   if second_den is not None else
+                   "episode source unavailable this build",
+        },
+        "definition_versions": {
+            "state": "locked",
+            "why": "every metric carries an integer definition_version + "
+                   "changelog; meaning changes arrive only as version bumps "
+                   "(see publish_contract.invariant)",
+        },
+        "observation_window": {
+            "state": "7d rolling",
+            "why": "both WoW windows are recomputed under current "
+                   "definitions at read time — a definition change cannot "
+                   "masquerade as a week-over-week move",
+        },
+    }
 
     # ok = at least one metric actually measured (or honestly UNMEASURED).
     # A build where every block failed is a failed build — the route must not
@@ -1009,3 +1127,74 @@ def agent_success_report():
         payload["cache_age_s"] = 0.0
         return jsonify(payload), 200, {"Cache-Control": "public, max-age=300"}
     return jsonify(data), 503
+
+
+def _contract_payload() -> dict:
+    """The metric publish contract, machine-readable (round-2, Copilot).
+
+    GENERATED from PUBLISH_CONTRACT_FIELDS — a hand-written schema would be a
+    second copy of the contract, and second copies drift (the exact class
+    this repo hit three times in July). A consumer that validates blocks
+    against this schema and pins definition_version gets semantic-drift
+    detection for free: any meaning change arrives as a version bump with a
+    changelog entry, per publish_contract.invariant."""
+    props = {
+        "value": {
+            "type": ["number", "integer", "null"],
+            "description": "null whenever status is not MEASURED — a rate "
+                           "off an empty denominator is null, never 0 or 100",
+        },
+        "status": {
+            "enum": ["MEASURED", "UNMEASURED", "UNAVAILABLE", "UNPUBLISHABLE"],
+            "description": "UNMEASURED = source ran, nothing to divide; "
+                           "UNAVAILABLE = source never ran; UNPUBLISHABLE = "
+                           "contract incomplete (see publish_block_reason)",
+        },
+        "definition": {"type": "string"},
+        "observation": {
+            "type": "string",
+            "description": "the raw observed thing, before any derivation",
+        },
+        "assumptions": {"type": "array", "items": {"type": "string"},
+                        "minItems": 1},
+        "definition_version": {
+            "type": "integer", "minimum": 1,
+            "description": "INTEGER, deliberately not semver: any change in "
+                           "MEANING bumps the version (even if name and type "
+                           "hold), so every bump is MAJOR by construction — "
+                           "minor/patch lanes would carry no information, "
+                           "and a format migration would break pinned "
+                           "consumers for zero semantic gain",
+        },
+        "definition_changelog": {
+            "type": "object",
+            "description": "one entry per version 1..definition_version; a "
+                           "version without a changelog entry fails CI",
+        },
+        "consumers": {"type": "array", "items": {"type": "string"},
+                      "minItems": 1},
+        "unit": {"type": "string"},
+        "source": {"type": "string"},
+    }
+    return {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$id": "https://dchub.cloud/api/v1/reports/agent-success/contract",
+        "title": "DC Hub Agent Success Report — metric publish contract",
+        "description": "Every metric block in /api/v1/reports/agent-success "
+                       "validates against this object. Enforcement is "
+                       "fail-closed at render: an incomplete contract yields "
+                       "status UNPUBLISHABLE with publish_block_reason and "
+                       "no value.",
+        "type": "object",
+        "required": ["value", "status"] + list(PUBLISH_CONTRACT_FIELDS),
+        "properties": props,
+        "report_definition_version": REPORT_DEFINITION_VERSION,
+    }
+
+
+@agent_success_report_bp.route("/api/v1/reports/agent-success/contract",
+                               methods=["GET"])
+def agent_success_contract():
+    """Static, DB-free, cacheable — the contract changes only with a deploy."""
+    return jsonify(_contract_payload()), 200, {
+        "Cache-Control": "public, max-age=3600"}
