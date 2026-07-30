@@ -1849,7 +1849,7 @@ def _source_last_ingested() -> dict:
 
 
 def _ingest_order():
-    """LOAD sources first, then STALEST first inside each group.
+    """STALEST source first; load-first only breaks ties.
 
     ★★ 2026-07-30 — WHY STALENESS AND NOT DECLARATION ORDER. This used to be
     `sorted(SOURCES, key=load-first)` with declaration order as the stable
@@ -1888,7 +1888,27 @@ def _ingest_order():
         seen = last.get(s.get("utility"))
         if seen is not None and seen.tzinfo is None:
             seen = seen.replace(tzinfo=datetime.timezone.utc)
-        return (0 if s.get("capacity_type") == "load" else 1, seen or epoch)
+        # ★★ 2026-07-30 (second pass) — STALENESS IS THE PRIMARY KEY NOW, with
+        # load-first demoted to a TIE-BREAK. The first pass fixed starvation
+        # INSIDE each group and left the group split as a hard priority, which
+        # simply moved the starvation up a level: with 12 load sources ahead of
+        # it, group 1 stopped being reached at all.
+        #
+        # Measured the same day, a few hours after the first fix shipped:
+        #   · every `load` source        last ingested 2026-07-30 09:51  (today)
+        #   · every `gen` source         last ingested 2026-07-27 07:37  (3d old)
+        #   · 14 gen utilities, not one refreshed in three days
+        #   · the two new Ausgrid GEN sources never ran at all, while the two
+        #     Ausgrid LOAD sources landed on the first pass
+        # A hard type priority + a budget smaller than the priority group = the
+        # low-priority group is not "last", it is unreachable. Same shape as the
+        # declaration-order bug, so the same remedy applies one level up.
+        #
+        # Staleness-primary is fair AND still monotonic: the stalest source
+        # anywhere goes next, so no group can be starved by another growing.
+        # load-first survives where it actually matters — a cold start has every
+        # source at epoch, so the tie-break puts load coverage in first.
+        return (seen or epoch, 0 if s.get("capacity_type") == "load" else 1)
 
     return sorted(SOURCES, key=_key)
 
