@@ -60,7 +60,8 @@ import datetime
 import json
 import os
 import sys
-import urllib.request
+
+import requests
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -92,11 +93,12 @@ class ExportError(RuntimeError):
 
 
 def _get_json(path: str) -> dict:
-    # NB: a default urllib UA gets bot-filtered at the edge — always set one.
-    req = urllib.request.Request(
-        BASE_URL + path, headers={"User-Agent": "dchub-mcp-facts-export/1.0"})
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        body = json.loads(resp.read().decode("utf-8"))
+    # requests, not urllib — regression-lint bans urllib on Railway (#1940).
+    # NB: a default library UA gets bot-filtered at the edge — always set one.
+    resp = requests.get(BASE_URL + path, timeout=30,
+                        headers={"User-Agent": "dchub-mcp-facts-export/1.0"})
+    resp.raise_for_status()
+    body = resp.json()
     if not isinstance(body, dict):
         raise ExportError(f"{path}: non-object response")
     return body
