@@ -44,13 +44,22 @@ jobs:
             echo "::warning::DCHUB_ADMIN_KEY not set — skipping autonomy tick"
             exit 0
           fi
-          response=$(curl -sS --max-time 180 -X POST \
+          # curl -sS (no -f) exits 0 on 401/500, so the old `|| echo curl_fail`
+          # fallback NEVER fired: an auth or origin failure produced a green run
+          # with a parsed-zeros summary, while deadman-watch beats this feed off
+          # the run CONCLUSION. Capture the status and fail loudly instead.
+          http=$(curl -sS --max-time 180 -X POST \
             -H "X-Admin-Key: $ADMIN_KEY" \
             -H "Content-Type: application/json" \
-            "$RAILWAY_BASE/api/v1/brain/autonomy/tick" \
-            || echo '{"ok":false,"error":"curl_fail"}')
+            -o response.json -w '%{http_code}' \
+            "$RAILWAY_BASE/api/v1/brain/autonomy/tick") || http="000"
+          response=$(cat response.json 2>/dev/null || echo '{}')
           echo "$response" | head -c 4000
           echo
+          if [ "$http" != "200" ]; then
+            echo "::error::HTTP $http from $RAILWAY_BASE — the loop did NOT run (was silently green before this gate)"
+            exit 1
+          fi
           echo "$response" | python3 -c "
           import json, sys
           try:
@@ -77,13 +86,22 @@ jobs:
             echo "::warning::DCHUB_ADMIN_KEY not set — skipping automerge run"
             exit 0
           fi
-          response=$(curl -sS --max-time 120 -X POST \
+          # curl -sS (no -f) exits 0 on 401/500, so the old `|| echo curl_fail`
+          # fallback NEVER fired: an auth or origin failure produced a green run
+          # with a parsed-zeros summary, while deadman-watch beats this feed off
+          # the run CONCLUSION. Capture the status and fail loudly instead.
+          http=$(curl -sS --max-time 120 -X POST \
             -H "X-Admin-Key: $ADMIN_KEY" \
             -H "Content-Type: application/json" \
-            "$RAILWAY_BASE/api/v1/brain/automerge/run" \
-            || echo '{"ok":false,"error":"curl_fail"}')
+            -o response.json -w '%{http_code}' \
+            "$RAILWAY_BASE/api/v1/brain/automerge/run") || http="000"
+          response=$(cat response.json 2>/dev/null || echo '{}')
           echo "$response" | head -c 4000
           echo
+          if [ "$http" != "200" ]; then
+            echo "::error::HTTP $http from $RAILWAY_BASE — the loop did NOT run (was silently green before this gate)"
+            exit 1
+          fi
           echo "$response" | python3 -c "
           import json, sys
           try:
@@ -107,13 +125,22 @@ jobs:
             echo "::warning::DCHUB_ADMIN_KEY not set — skipping smoke-regression tick"
             exit 0
           fi
-          response=$(curl -sS --max-time 150 -X POST \
+          # curl -sS (no -f) exits 0 on 401/500, so the old `|| echo curl_fail`
+          # fallback NEVER fired: an auth or origin failure produced a green run
+          # with a parsed-zeros summary, while deadman-watch beats this feed off
+          # the run CONCLUSION. Capture the status and fail loudly instead.
+          http=$(curl -sS --max-time 150 -X POST \
             -H "X-Admin-Key: $ADMIN_KEY" \
             -H "Content-Type: application/json" \
-            "$RAILWAY_BASE/api/v1/brain/smoke-regression/tick" \
-            || echo '{"ok":false,"error":"curl_fail"}')
+            -o response.json -w '%{http_code}' \
+            "$RAILWAY_BASE/api/v1/brain/smoke-regression/tick") || http="000"
+          response=$(cat response.json 2>/dev/null || echo '{}')
           echo "$response" | head -c 4000
           echo
+          if [ "$http" != "200" ]; then
+            echo "::error::HTTP $http from $RAILWAY_BASE — the loop did NOT run (was silently green before this gate)"
+            exit 1
+          fi
           echo "$response" | python3 -c "
           import json, sys
           try:
@@ -139,13 +166,22 @@ jobs:
             echo "::warning::DCHUB_ADMIN_KEY not set — skipping automerge canary"
             exit 0
           fi
-          response=$(curl -sS --max-time 120 -X POST \
+          # curl -sS (no -f) exits 0 on 401/500, so the old `|| echo curl_fail`
+          # fallback NEVER fired: an auth or origin failure produced a green run
+          # with a parsed-zeros summary, while deadman-watch beats this feed off
+          # the run CONCLUSION. Capture the status and fail loudly instead.
+          http=$(curl -sS --max-time 120 -X POST \
             -H "X-Admin-Key: $ADMIN_KEY" \
             -H "Content-Type: application/json" \
-            "$RAILWAY_BASE/api/v1/brain/automerge/canary" \
-            || echo '{"ok":false,"error":"curl_fail"}')
+            -o response.json -w '%{http_code}' \
+            "$RAILWAY_BASE/api/v1/brain/automerge/canary") || http="000"
+          response=$(cat response.json 2>/dev/null || echo '{}')
           echo "$response" | head -c 4000
           echo
+          if [ "$http" != "200" ]; then
+            echo "::error::HTTP $http from $RAILWAY_BASE — the loop did NOT run (was silently green before this gate)"
+            exit 1
+          fi
           echo "$response" | python3 -c "
           import json, sys
           try:
