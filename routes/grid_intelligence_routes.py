@@ -10,6 +10,10 @@ Aggregates data from existing DC Hub tables:
   - eia_retail_rates (energy pricing)
   - discovered_facilities + facilities (facility counts)
   - substations, transmission_lines_eia, gas_pipelines, power_plants_eia (infrastructure)
+    ★ transmission_lines_eia is a 56,108-row GEOCODED SNAPSHOT, not the
+      maintained set (transmission_lines = 94,626 rows, attributes-only, so it
+      cannot be queried by proximity). Transmission proximity counts are FLOORS.
+      See util/transmission_tables.py.
   - tax_incentives_neon (incentives)
   - fema_risk_index (risk data)
   - epa_egrid (carbon data)
@@ -30,6 +34,10 @@ import logging
 import json
 import traceback
 from flask import Blueprint, request, jsonify
+
+from util.transmission_tables import (
+    GEOCODED_SNAPSHOT_TABLE as _TX_SNAPSHOT_TABLE,
+)
 
 try:
     from main import _apply_grid_queue_override
@@ -323,7 +331,12 @@ def _get_infra_counts(lat, lon, radius_km=50, conn=None):
     """
     counts = {
         'substations': 0,
-        'transmission_lines': 0,
+        # 2026-07-29 shell(#41): pre-init None, NOT 0. This count comes from the
+        # geocoded transmission snapshot, which is 38,518 lines (40.7%) behind
+        # the maintained national table — and on query failure a pre-init 0
+        # published "no transmission near this site" to a PAYING caller. That is
+        # exactly the BUG-021 flattering-zero (admin-qa.html:68). None + reason.
+        'transmission_lines': None,
         'power_plants': 0,
         'gas_pipelines': 0,
     }
@@ -351,17 +364,30 @@ def _get_infra_counts(lat, lon, radius_km=50, conn=None):
         except Exception as e:
             logger.warning(f"[grid_intel] Substations query failed near ({lat},{lon}): {e}")
 
-        # Transmission lines (uses lat/lng)
+        # Transmission lines (uses lat/lng) — MUST stay on the geocoded
+        # snapshot: the maintained transmission_lines table has 94,626 rows but
+        # no lat/lng columns, so this proximity count cannot be repointed there.
+        # The number is therefore a FLOOR of what is really near the site.
         try:
-            cur.execute("""
-                SELECT COUNT(*) FROM transmission_lines_eia
+            cur.execute(f"""
+                SELECT COUNT(*) FROM {_TX_SNAPSHOT_TABLE}
                 WHERE lat IS NOT NULL AND lng IS NOT NULL
                 AND ABS(lat - %s) < %s AND ABS(lng - %s) < %s
             """, (lat, deg_lat, lon, deg_lon))
             row = cur.fetchone()
-            counts['transmission_lines'] = row[0] if row else 0
+            counts['transmission_lines'] = row[0] if row else None
+            counts['transmission_lines_is_floor'] = True
+            counts['transmission_lines_basis'] = (
+                f"live COUNT(*) within the bbox from {_TX_SNAPSHOT_TABLE}, a "
+                "frozen geocoded snapshot with no writer and no timestamp. It "
+                "is 38,518 lines behind the maintained transmission_lines table "
+                "(94,626 rows), which stores no geometry and so cannot be "
+                "queried by proximity. Real nearby count is >= this figure.")
         except Exception as e:
             logger.warning(f"[grid_intel] Transmission query failed near ({lat},{lon}): {e}")
+            counts['transmission_lines'] = None
+            counts['transmission_lines_unmeasured_reason'] = (
+                f"{type(e).__name__}: {str(e)[:160]}")
 
         # Power plants (uses lat/lng)
         try:

@@ -11,6 +11,11 @@ v2.2 Changes (Mar 23, 2026):
   - list_transactions: switched from REST proxy to Neon-direct (deals table)
   - get_infrastructure: switched from 4× REST proxy to Neon-direct
     (substations, transmission_lines_eia, gas_pipelines, power_plants_eia)
+    ★ 2026-07-29: transmission_lines_eia is a 56,108-row GEOCODED SNAPSHOT with
+    no writer, NOT the maintained set — transmission_lines holds 94,626 rows but
+    no coordinates, so the spatial layer cannot be repointed. The `transmission`
+    layer count is a FLOOR and now ships a `coverage` block stating the vintage
+    and the 38,518-line geocoding gap. See util/transmission_tables.py.
   - Connection pool: _get_connection() now used by 14/20 tools directly
 
 v2.1 Changes (Mar 23, 2026):
@@ -321,6 +326,11 @@ import psycopg2
 import psycopg2.extras
 from mcp_upgrade_gate import gated, gate_tool_call
 from routes._freshness import freshness_dict_from_url
+from util.transmission_tables import (
+    GEOCODED_SNAPSHOT_KEY as _TX_SNAPSHOT_KEY,
+    GEOCODED_SNAPSHOT_TABLE as _TX_SNAPSHOT_TABLE,
+    coverage as _tx_coverage,
+)
 
 def _get_connection():
     """Get a direct Neon database connection for MCP tools."""
@@ -1758,16 +1768,33 @@ async def get_infrastructure(
                     results["substations"] = {"data": rows, "count": len(rows)}
 
                 elif lyr == "transmission":
-                    cur.execute("""
+                    # 2026-07-29 shell(#41): MUST stay on the geocoded snapshot.
+                    # The maintained transmission_lines table (94,626 rows) has
+                    # no lat/lng, so repointing this raises UndefinedColumn — and
+                    # the `except layer_err` below would hand the AGENT an empty
+                    # transmission layer at DEBUG log level. A confident empty
+                    # answer to a citing agent is worse than a partial one.
+                    # The snapshot is 38,518 lines behind, so `count` is a FLOOR
+                    # and the coverage block now says so.
+                    cur.execute(f"""
                         SELECT name, voltage_kv, lat, lng, state
-                        FROM transmission_lines_eia
+                        FROM {_TX_SNAPSHOT_TABLE}
                         WHERE lat BETWEEN %s AND %s AND lng BETWEEN %s AND %s
                           AND COALESCE(voltage_kv, 0) >= %s
                         ORDER BY (lat - %s)^2 + (lng - %s)^2
                         LIMIT %s
                     """, (*bbox, min_voltage_kv, lat, lon, limit))
                     rows = [dict(r) for r in cur.fetchall()]
-                    results["transmission_lines"] = {"data": rows, "count": len(rows)}
+                    _tx = {"data": rows, "count": len(rows),
+                           "count_is_floor": True,
+                           "served_from_key": _TX_SNAPSHOT_KEY}
+                    try:
+                        _tx["coverage"] = _tx_coverage(cur)
+                    except Exception as _cov_err:             # noqa: BLE001
+                        _tx["coverage"] = None
+                        _tx["coverage_unmeasured_reason"] = (
+                            f"{type(_cov_err).__name__}: {str(_cov_err)[:160]}")
+                    results["transmission_lines"] = _tx
 
                 elif lyr == "gas_pipelines":
                     cur.execute("""

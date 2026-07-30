@@ -9,6 +9,12 @@ Aggregates data from existing DC Hub tables:
   - eia_retail_rates (energy pricing)
   - discovered_facilities + facilities (facility counts)
   - substations, transmission_lines_eia, gas_pipelines, power_plants_eia (infrastructure)
+    ★ transmission_lines_eia is a 56,108-row GEOCODED SNAPSHOT, not the
+      maintained set (transmission_lines = 94,626 rows, attributes-only).
+      Transmission proximity counts here are FLOORS.
+      NOTE: this file appears to be a superseded copy of
+      routes/grid_intelligence_routes.py and is not the registered blueprint —
+      it was left doc-only on purpose. See util/transmission_tables.py.
   - tax_incentives_neon (incentives)
   - fema_risk_index (risk data)
   - epa_egrid (carbon data)
