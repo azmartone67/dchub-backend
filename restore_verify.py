@@ -56,6 +56,58 @@ def fail(msg):
     sys.exit(1)
 
 
+# 2026-07-30: run 30264550927 died on the connect below with
+#   FATAL: the database system is not yet accepting connections
+#   DETAIL: Consistent recovery state has not been yet reached.
+# That is CRASH RECOVERY, not a slow first boot — restore-test.yml already gates
+# on pg_isready for 90s when the container starts. It means the throwaway server
+# went DOWN mid-job (disk exhaustion or OOM during the ~17GB restore) and is
+# replaying WAL, which is slow precisely because we run it with fsync=off /
+# full_page_writes=off for restore speed.
+#
+# Waiting is correct; waiting SILENTLY is not — a restart we don't record turns a
+# loud failure into a slow green. So: bounded retry, and every attempt is printed
+# so the workflow's post-mortem step can attribute the delay.
+_RECOVERY_STATES = (
+    "not yet accepting connections",
+    "consistent recovery state",
+    "starting up",
+    "recovery mode",
+)
+
+
+def _connect_when_ready(dsn, budget_seconds=600, interval=10):
+    """Connect, tolerating a server still in crash recovery. Bounded, and loud.
+
+    Only recovery states are retried — bad credentials, wrong host and refused
+    connections still fail on the first attempt, exactly as before.
+    """
+    import time
+
+    deadline = time.time() + budget_seconds
+    attempt = 0
+    while True:
+        attempt += 1
+        try:
+            conn = psycopg2.connect(dsn, connect_timeout=30)
+            if attempt > 1:
+                # Never let this pass unremarked: a recovering server means the
+                # restore ENVIRONMENT failed, even when the verify then succeeds.
+                print(f"::warning::target Postgres was in recovery; connected on "
+                      f"attempt {attempt}. The server RESTARTED mid-job — see the "
+                      f"container post-mortem step for why.")
+            return conn
+        except psycopg2.OperationalError as e:
+            msg = str(e).lower()
+            if not any(s in msg for s in _RECOVERY_STATES):
+                raise
+            if time.time() >= deadline:
+                fail(f"target Postgres still in recovery after {budget_seconds}s "
+                     f"({attempt} attempts): {str(e)[:200]}")
+            print(f"  target in recovery (attempt {attempt}), retrying in {interval}s ...")
+            time.sleep(interval)
+
+
 def table_estimates(conn):
     """{public table -> reltuples estimate}. Instant, no table scan."""
     cur = conn.cursor()
@@ -75,7 +127,7 @@ def main():
     if "neon.tech" in TARGET:
         fail("RESTORE_TARGET_URL points at neon.tech — refusing (must be a throwaway DB)")
 
-    tconn = psycopg2.connect(TARGET, connect_timeout=30)
+    tconn = _connect_when_ready(TARGET)
     tconn.autocommit = True
     cur = tconn.cursor()
     cur.execute("ANALYZE")

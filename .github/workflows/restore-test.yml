@@ -135,7 +135,46 @@ jobs:
           fi
           exit 0   # verify step is the gate; diagnostics above explain any shortfall
 
+      # 2026-07-30: the verify step failed with "Consistent recovery state has not
+      # been yet reached" — the throwaway server had RESTARTED since the boot
+      # readiness gate above. Catch that HERE, where we can still say why, rather
+      # than as a confusing connection error inside restore_verify.py.
+      - name: Throwaway Postgres health gate (pre-verify)
+        run: |
+          set -uo pipefail
+          echo "disk:"; df -h / | tail -1
+          restarts=$(docker inspect -f '{{.RestartCount}}' pgrt 2>/dev/null || echo "?")
+          state=$(docker inspect -f '{{.State.Status}}' pgrt 2>/dev/null || echo "?")
+          oom=$(docker inspect -f '{{.State.OOMKilled}}' pgrt 2>/dev/null || echo "?")
+          echo "container: state=$state restarts=$restarts oom_killed=$oom"
+          if [ "$restarts" != "0" ] || [ "$oom" = "true" ]; then
+            echo "::warning::throwaway Postgres restarted mid-job (restarts=$restarts oom=$oom) — the restore environment failed even if verify passes"
+            echo "--- postgres log (last 60) ---"
+            docker logs --tail 60 pgrt 2>&1 || true
+          fi
+          # pg_isready returns non-zero while the server rejects connections during
+          # recovery, so this genuinely waits it out. Unlike the boot gate it runs
+          # AFTER the restore — which is when the crash happens.
+          echo "waiting for the server to finish any recovery (max 10m)..."
+          for i in $(seq 1 60); do
+            docker exec pgrt pg_isready -U postgres -q && break
+            sleep 10
+          done
+          docker exec pgrt pg_isready -U postgres
+
       - name: Verify restore
         env:
           SOURCE_DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: python restore_verify.py
+
+      # Converts "it failed again" into an attributable cause. If the next red is
+      # disk or OOM we learn it on the first look instead of the fourth day.
+      - name: Post-mortem (only when verify failed)
+        if: failure()
+        run: |
+          echo "disk:"; df -h / | tail -1
+          docker inspect -f 'state={{.State.Status}} restarts={{.RestartCount}} oom={{.State.OOMKilled}} exit={{.State.ExitCode}}' pgrt || true
+          echo "--- postgres log (last 200) ---"
+          docker logs --tail 200 pgrt 2>&1 || true
+          echo "--- restore.err space/crash lines ---"
+          grep -aiE "No space|could not extend|server closed|out of memory|terminating connection" restore.err | tail -30 || echo "(none)"
