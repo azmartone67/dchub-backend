@@ -139,6 +139,15 @@ AGENT_CODE_SURFACES = (
     os.path.join("routes", "mcp_connect.py"),
     os.path.join("routes", "mcp_tool_catalog.py"),
     os.path.join("routes", "agent_a2a.py"),
+    # ★2026-07-30: /agent (Agent Concierge landing) is served INLINE from this
+    # route module — the frontend worker proxies the bare /agent path to Flask,
+    # so no frontend heal can reach it. It was absent from this tuple and its
+    # title/hero stale-cycled through retired tool counts while the fence stayed
+    # green (ChatGPT's citation card was still showing a two-generations-old
+    # count). Same class as ai_discovery_routes.py above: fence the SERVED
+    # source. Counts there now render from ai_surface_canon.PINNED, so this scan
+    # should find no literals — it exists to catch a re-hardcode.
+    os.path.join("routes", "agent_concierge.py"),
 )
 
 # ── Allow-list: lines that are explicitly historical/retrospective are exempt.

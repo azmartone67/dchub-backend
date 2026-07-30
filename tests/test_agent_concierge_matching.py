@@ -253,3 +253,48 @@ def test_match_cosine_env_still_honored(monkeypatch):
     assert ac._concierge_match_cosine() == 0.99
     monkeypatch.setenv("CONCIERGE_MATCH_COSINE", "not-a-float")
     assert ac._concierge_match_cosine() == 0.55
+
+
+# ── /agent landing renders canon counts (2026-07-30) ─────────────────
+#
+# The landing page sat on a stale hardcoded tool count for weeks (title said
+# one retired count, ChatGPT's cached citation card an even older one) because
+# nothing asserted the RENDERED body against ai_surface_canon. The fence
+# (tests/test_canonical_counts_drift.py) now scans this module's SOURCE for
+# re-hardcodes; this test covers the other half — the substitution actually
+# runs, on the body an agent receives.
+
+def test_agent_landing_renders_canon_counts():
+    from ai_surface_canon import PINNED
+
+    body = ac.agent_landing().get_data(as_text=True)
+
+    # Every placeholder substituted — a dropped .replace() is exactly how a
+    # computed fix gets silently discarded.
+    assert "{canon_" not in body
+    assert "{cookbook_html}" not in body
+
+    tools = PINNED["tools_advertised"]
+    assert f"— {tools} tools cited by" in body, "<title> must carry canon count"
+    assert f"<h1>{tools} tools, built for agents.</h1>" in body
+    pub = PINNED["public"]
+    for key in ("facilities", "markets", "countries", "deals"):
+        assert pub[key] in body, f"canon public[{key!r}] missing from /agent body"
+
+    # The retired literals this fix removed must never reappear.
+    for stale in ("73 tools", "48 tools", "12,650+", "180 countries",
+                  "311 DCPI", "4,000+"):
+        assert stale not in body, f"retired literal {stale!r} back on /agent"
+
+
+def test_agent_cookbook_copy_renders_canon_counts():
+    """The find-facilities recipe's why/sample_answer are agent-served copy
+    (via /api/v1/agent/solve and /api/v1/agent/cookbook) — they must follow
+    canon too, not carry their own frozen floor."""
+    from ai_surface_canon import PINNED
+
+    blob = json.dumps(ac._COOKBOOK)
+    assert PINNED["public"]["facilities"] in blob
+    assert PINNED["public"]["deals"] in blob
+    for stale in ("12,650+", "180 countries", "4,000+"):
+        assert stale not in blob
