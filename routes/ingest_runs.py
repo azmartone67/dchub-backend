@@ -74,6 +74,55 @@ def _ensure(cur):
     )
 
 
+def record_beat(feed, status="success", rows=None, mcd=None, cad=None,
+                lr=None, note=None):
+    """THE upsert. One row per feed; the consecutive_zero counter is authoritative HERE.
+
+    LC6a: extracted verbatim from the POST /beat handler so the HTTP path and
+    in-process callers share ONE implementation. Before this there were eleven
+    hand-rolled loopback POSTs across the codebase and no shared code path at all,
+    so any change to the zero-row alarm semantics had to be made in one place and
+    hoped-for in ten others.
+
+    Takes ALREADY-COERCED values — all HTTP concerns (auth, JSON parsing, type
+    coercion, status codes) stay in the handler, which is why the wire behaviour is
+    byte-identical. Raises on failure; callers decide whether to fail soft.
+    """
+    dsn = _dsn()
+    if not dsn:
+        raise RuntimeError("no DATABASE_URL")
+    # Sentinel so ON CONFLICT can tell "rows==0" (bump) from "rows unknown" (leave counter).
+    rows_sig = rows if rows is not None else -1
+    # no_new_data asserts zero rows is EXPECTED → feed the counter a positive
+    # sentinel so it RESETS (clears any red built up before the producer
+    # learned to report no_new_data) instead of climbing toward the alarm.
+    if str(status).lower() in _NO_NEW_DATA and rows_sig == 0:
+        rows_sig = 1
+    with psycopg2.connect(dsn, sslmode="require", connect_timeout=8) as c, c.cursor() as cur:
+        _ensure(cur)
+        cur.execute(
+            """INSERT INTO ingest_runs
+                   (feed, last_run, last_status, rows_inserted, max_content_date,
+                    cadence_hours, consecutive_zero, note, updated_at)
+               VALUES (%s, COALESCE(%s::timestamptz, NOW()), %s, %s, %s::timestamptz, %s,
+                       CASE WHEN %s = 0 THEN 1 ELSE 0 END, %s, NOW())
+               ON CONFLICT (feed) DO UPDATE SET
+                   last_run         = COALESCE(EXCLUDED.last_run, ingest_runs.last_run),
+                   last_status      = EXCLUDED.last_status,
+                   rows_inserted    = COALESCE(EXCLUDED.rows_inserted, ingest_runs.rows_inserted),
+                   max_content_date = COALESCE(EXCLUDED.max_content_date, ingest_runs.max_content_date),
+                   cadence_hours    = COALESCE(EXCLUDED.cadence_hours, ingest_runs.cadence_hours),
+                   consecutive_zero = CASE WHEN %s = 0
+                                           THEN ingest_runs.consecutive_zero + 1
+                                           WHEN %s < 0 THEN ingest_runs.consecutive_zero
+                                           ELSE 0 END,
+                   note             = COALESCE(EXCLUDED.note, ingest_runs.note),
+                   updated_at       = NOW()""",
+            (feed, lr, status, rows, mcd, cad, rows_sig, note, rows_sig, rows_sig),
+        )
+        c.commit()
+
+
 @ingest_runs_bp.route("/api/v1/admin/ingest-runs/beat", methods=["POST"])
 def beat():
     """A scheduler (or the off-worker watcher) records its last SUCCESSFUL run.
@@ -105,37 +154,11 @@ def beat():
         cad = None
     lr = (str(j.get("last_run")).strip() or None) if j.get("last_run") else None
     note = (str(j.get("note")).strip()[:280] or None) if j.get("note") else None
-    # Sentinel so ON CONFLICT can tell "rows==0" (bump) from "rows unknown" (leave counter).
-    rows_sig = rows if rows is not None else -1
-    # no_new_data asserts zero rows is EXPECTED → feed the counter a positive
-    # sentinel so it RESETS (clears any red built up before the producer
-    # learned to report no_new_data) instead of climbing toward the alarm.
-    if status.lower() in _NO_NEW_DATA and rows_sig == 0:
-        rows_sig = 1
     try:
-        with psycopg2.connect(dsn, sslmode="require", connect_timeout=8) as c, c.cursor() as cur:
-            _ensure(cur)
-            cur.execute(
-                """INSERT INTO ingest_runs
-                       (feed, last_run, last_status, rows_inserted, max_content_date,
-                        cadence_hours, consecutive_zero, note, updated_at)
-                   VALUES (%s, COALESCE(%s::timestamptz, NOW()), %s, %s, %s::timestamptz, %s,
-                           CASE WHEN %s = 0 THEN 1 ELSE 0 END, %s, NOW())
-                   ON CONFLICT (feed) DO UPDATE SET
-                       last_run         = COALESCE(EXCLUDED.last_run, ingest_runs.last_run),
-                       last_status      = EXCLUDED.last_status,
-                       rows_inserted    = COALESCE(EXCLUDED.rows_inserted, ingest_runs.rows_inserted),
-                       max_content_date = COALESCE(EXCLUDED.max_content_date, ingest_runs.max_content_date),
-                       cadence_hours    = COALESCE(EXCLUDED.cadence_hours, ingest_runs.cadence_hours),
-                       consecutive_zero = CASE WHEN %s = 0
-                                               THEN ingest_runs.consecutive_zero + 1
-                                               WHEN %s < 0 THEN ingest_runs.consecutive_zero
-                                               ELSE 0 END,
-                       note             = COALESCE(EXCLUDED.note, ingest_runs.note),
-                       updated_at       = NOW()""",
-                (feed, lr, status, rows, mcd, cad, rows_sig, note, rows_sig, rows_sig),
-            )
-            c.commit()
+        # LC6a: the upsert (and the consecutive_zero semantics) now live in
+        # record_beat(). Everything above is unchanged HTTP concern; the wire
+        # contract — status codes, JSON shape, fail-soft on DB error — is identical.
+        record_beat(feed, status=status, rows=rows, mcd=mcd, cad=cad, lr=lr, note=note)
     except Exception as e:  # noqa: BLE001 — fail soft, ledger must never 500 a caller into a retry storm
         log.warning("ingest_runs beat failed for %s: %s", feed, e)
         return jsonify(ok=False, error=str(e)[:200]), 500
@@ -166,6 +189,25 @@ def beat_feed(feed, status="success", rows_inserted=0, max_content_date=None,
     import urllib.request as _urlreq
 
     base = base_url or ("http://127.0.0.1:%s" % (os.environ.get("PORT") or "8080"))
+    # LC6a: prefer the DIRECT call. This is the fast path the original spec wanted —
+    # no loopback HTTP, no admin-key round trip, no rate limiter, no CF edge, and it
+    # works in a background thread that has no request context. The HTTP fallback
+    # below stays for callers with no DB reach (a worker-side beat pointed at
+    # base_url, or a process with no DATABASE_URL).
+    # Only skipped when the caller explicitly targeted another origin.
+    if base_url is None:
+        try:
+            _mcd = max_content_date
+            if _mcd is not None:
+                _now = datetime.datetime.now(datetime.timezone.utc)
+                if _mcd > _now:
+                    _mcd = _now
+                _mcd = _mcd.isoformat()
+            record_beat(feed, status=status, rows=int(rows_inserted or 0),
+                        mcd=_mcd, cad=cadence_hours)
+            return
+        except Exception as e:  # noqa: BLE001 — fall through to HTTP, never raise
+            log.warning("deadman direct beat failed feed=%s (%s) — trying HTTP", feed, e)
     if max_content_date is not None:
         # Clamp: a content date >6h in the future is itself an overdue reason, so a
         # timezone bug upstream must not be able to poison the freshness signal.
