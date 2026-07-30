@@ -33,13 +33,6 @@ PRICE_TIERS = ["starter", "developer", "pro", "team", "enterprise"]
 DAILY_TIERS = ["free", "identified", "starter", "developer", "pro", "enterprise"]
 
 
-def _markets_floor() -> str:
-    # 2026-07-10: exact live count, not a floor — "300+" undersold 311 and
-    # drifted the registry surfaces off the honest-numbers canon.
-    n = int(c.get_canonical_stats().get("markets", 311))
-    return str(n)
-
-
 def build() -> dict:
     s = c.get_canonical_stats()
     return {
@@ -56,9 +49,18 @@ def build() -> dict:
         "pricing_usd_month": {k: t.price(k) for k in PRICE_TIERS},
         "calls_per_day": {k: t.calls_per_day(k) for k in DAILY_TIERS},
         "numbers": {
-            "facilities": c.facilities_phrase(),       # "12,650+"
-            "countries": c.countries_phrase(),         # "170+"
-            "markets": _markets_floor(),               # "311" (exact live count)
+            # ★2026-07-30: facilities was facilities_phrase() — the RAW discovery
+            # pile (COUNT(*) incl. flagged duplicates, ~23k), i.e. exactly the
+            # over-claim basis the 07-24 dedup rebase retired; a regeneration
+            # would have emitted "23,000+" against a real fleet of 15,367.
+            # countries moves to the verified basis for the same reason, and
+            # markets to the floor form ("300+") that PINNED and
+            # /api/v1/canon/phrases standardised on 07-29 — all three now match
+            # what resolve_canon() serves, so a regenerated facts file can never
+            # disagree with the phrases owner.
+            "facilities": c.facilities_verified_phrase(),
+            "countries": c.countries_verified_phrase(),
+            "markets": c.markets_phrase(),
             # ★2026-07-29: was the hardcoded "4,000+" — the ONE key in this block
             # that bypassed the governance module it already imports as `c`, and it
             # floored ROWS of the ~2.9x-duplicated `deals` pile, not deals. The

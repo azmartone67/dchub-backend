@@ -19537,7 +19537,18 @@ def get_stats():
         c.execute(f"SELECT COUNT(DISTINCT provider) FROM facilities WHERE provider != '' AND provider IS NOT NULL {RAILWAY_EXCLUSION}")
         stats['total_providers'] = c.fetchone()[0] or 0
 
-        c.execute("SELECT COUNT(DISTINCT country) FROM facilities WHERE country != '' AND country IS NOT NULL")
+        # ★2026-07-30 — WRONG-TABLE PAIRING (same class as the 07-30 wrong-table
+        # audit): this counted DISTINCT country on the LEGACY `facilities` table
+        # (186) while total_facilities/facilities_distinct above count
+        # discovered_facilities (15,367). The legacy table mixes full names with
+        # ISO codes ("USA"+"US", "Germany"+"DE" — 9 of its 186 distinct values
+        # are format duplicates), so 186 over-stated; the fleet the facility
+        # figures count spans 178 distinct codes. The 186 was pasted into the
+        # mcp-server initialize instructions as "180+ countries" (an over-claim,
+        # corrected same day). Countries must be counted on the SAME table as
+        # the facility count they are paired with.
+        c.execute("SELECT COUNT(DISTINCT country) FROM discovered_facilities "
+                  "WHERE country IS NOT NULL AND country <> ''")
         stats['total_countries'] = c.fetchone()[0] or 0
         stats['countries'] = stats['total_countries']  # alias for frontends
 
