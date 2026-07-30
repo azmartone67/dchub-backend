@@ -167,10 +167,15 @@ indexes = [
     ("idx_power_plants_lat_lon",
      "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_power_plants_lat_lon ON power_plants (lat, lon) WHERE lat IS NOT NULL"),
 
-    # API keys — used on every authenticated request
-    ("idx_api_keys_value", 
-     "CREATE INDEX IF NOT EXISTS idx_api_keys_value ON api_keys (key_value) WHERE is_active = TRUE"),
-    
+    # API keys — every authenticated request looks up by key_hash, which is
+    # already uniquely indexed live (api_keys_key_hash_key + idx_api_keys_hash,
+    # verified via pg_indexes 2026-07-30). The entry that sat here indexed
+    # api_keys(key_value) — a column the table has never had — with
+    # `WHERE is_active = TRUE` on an INTEGER column, which Postgres rejects
+    # outright (integer = boolean). Removed rather than repointed: there is
+    # nothing left to create.
+
+
     # Daily record usage — used by tier gating on every MCP call
     ("idx_daily_usage_key_date", 
      "CREATE INDEX IF NOT EXISTS idx_daily_usage_key_date ON daily_record_usage (api_key, usage_date)"),
