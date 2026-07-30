@@ -5944,7 +5944,7 @@ DCPI_MARKET_TEMPLATE = """<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>{{ s.market_name }} · DCPI {% if gated %}{{ s.verdict or 'LOW_SIGNAL' }}{% else %}{{ s.excess_power_score }}{% endif %} | DC Hub</title>
+<title>{{ s.market_name }} · DCPI {% if gated %}{{ s.verdict or 'LOW_SIGNAL' }}{% else %}{{ s.excess_power_score }}{% endif %}{% if s.iso %} · {{ s.iso }} grid{% endif %} | DC Hub</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <!-- r78: all ~308 DCPI city pages shipped WITHOUT a meta description (GSC
      indexability drag) — og:description existed but Google reads name=description.
