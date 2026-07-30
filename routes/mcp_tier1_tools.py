@@ -813,6 +813,7 @@ def score_facility():
     }), 200
 
 
+# AUTO-REPAIR: duplicate route '/health' also in main.py:6588 — review and remove one
 @mcp_tier1_bp.route("/health", methods=["GET"])
 def health():
     return jsonify({
