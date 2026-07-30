@@ -49,6 +49,7 @@ Run:  python3 -m pytest tests/test_hosting_capacity_source_invariants.py -v
 from __future__ import annotations
 
 import ast
+import builtins
 import pathlib
 
 import pytest
@@ -124,6 +125,35 @@ def _sources() -> list:
     return sources
 
 
+
+def _free_vars(fn_node):
+    """Module-level names the function reads without binding them itself.
+
+    Shared shape with tests/test_hosting_capacity_source_contract.py. Binds
+    lambda params as well as def params — omitting those reports an ordinary
+    comprehension/lambda variable as an unresolvable module constant.
+    """
+    assigned, loaded = set(), set()
+    for n in ast.walk(fn_node):
+        if isinstance(n, ast.Name):
+            (assigned if isinstance(n.ctx, ast.Store) else loaded).add(n.id)
+        elif isinstance(n, (ast.Import, ast.ImportFrom)):
+            for a in n.names:
+                assigned.add((a.asname or a.name).split(".")[0])
+        elif isinstance(n, (ast.FunctionDef, ast.Lambda)):
+            args = n.args
+            assigned.update(a.arg for a in (list(args.posonlyargs)
+                                            + list(args.args)
+                                            + list(args.kwonlyargs)))
+            for v in (args.vararg, args.kwarg):
+                if v:
+                    assigned.add(v.arg)
+            if isinstance(n, ast.FunctionDef) and n is not fn_node:
+                assigned.add(n.name)
+        elif isinstance(n, ast.ExceptHandler) and n.name:
+            assigned.add(n.name)
+    return loaded - assigned - set(dir(builtins))
+
 def _contract_ns() -> dict:
     """Build a namespace holding the REAL check_source_contract() + its globals.
 
@@ -131,8 +161,22 @@ def _contract_ns() -> dict:
     would raise NameError — or worse, silently test nothing if the call were
     wrapped. Every name is asserted present after the exec.
     """
-    wanted = {"_ALLOWED_CAPACITY_TYPES", "_GEN_ONLY_FIELDS",
-              "_ROW_NOT_FEEDER_SOURCES"}
+    # ★ DERIVED from the function, not hardcoded. This was a literal triple
+    # until 2026-07-30, when the contract gained a fourth constant
+    # (_CENSORING_CEILINGS) and every test through this helper died on a
+    # NameError. That is the right failure — but a hardcoded dependency list
+    # rots as fast as the code it describes, so the set now comes from the
+    # function's own free variables and the assertion below still catches one
+    # that genuinely cannot be resolved.
+    fn_node = None
+    for stmt in _tree().body:
+        if isinstance(stmt, ast.FunctionDef) and stmt.name == "check_source_contract":
+            fn_node = stmt
+            break
+    assert fn_node is not None, "check_source_contract() not found in the ingest module"
+    assert fn_node.body, "check_source_contract() parsed with an EMPTY body"
+    wanted = _free_vars(fn_node)
+    assert wanted, "check_source_contract() reads NO module constants — extract is broken"
     keep, found_fn = [], False
     for stmt in _tree().body:
         if isinstance(stmt, ast.Assign) and any(

@@ -96,6 +96,60 @@ def _by_key(sources):
     return {s["key"]: s for s in sources}
 
 
+def _free_vars(fn_node):
+    """Module-level names the function reads without binding them itself."""
+    import builtins
+    assigned, loaded = set(), set()
+    for n in ast.walk(fn_node):
+        if isinstance(n, ast.Name):
+            (assigned if isinstance(n.ctx, ast.Store) else loaded).add(n.id)
+        elif isinstance(n, (ast.Import, ast.ImportFrom)):
+            for a in n.names:
+                assigned.add((a.asname or a.name).split(".")[0])
+        elif isinstance(n, (ast.FunctionDef, ast.Lambda)):
+            args = n.args
+            assigned.update(a.arg for a in (list(args.posonlyargs)
+                                            + list(args.args)
+                                            + list(args.kwonlyargs)))
+            for v in (args.vararg, args.kwarg):
+                if v:
+                    assigned.add(v.arg)
+            if isinstance(n, ast.FunctionDef) and n is not fn_node:
+                assigned.add(n.name)
+        elif isinstance(n, ast.ExceptHandler) and n.name:
+            assigned.add(n.name)
+    return loaded - assigned - set(dir(builtins))
+
+
+def _contract_fn():
+    """The REAL check_source_contract(), exec'd against its own free variables.
+
+    Dependencies are DERIVED from the function rather than listed, so a new
+    module constant is supplied automatically; a name that genuinely cannot be
+    resolved still fails loudly here instead of leaving the function silently
+    untested.
+    """
+    tree = _tree()
+    fn_node = next((s for s in tree.body
+                    if isinstance(s, ast.FunctionDef)
+                    and s.name == "check_source_contract"), None)
+    assert fn_node is not None, "check_source_contract() not found"
+    assert fn_node.body, "check_source_contract() parsed with an EMPTY body"
+    free = _free_vars(fn_node)
+    assert free, "check_source_contract() reads NO module constants — extract broken"
+    keep = [s for s in tree.body
+            if isinstance(s, ast.Assign) and any(
+                isinstance(t, ast.Name) and t.id in free for t in s.targets)]
+    assert keep, "none of the contract's constants were found in the module"
+    module = ast.Module(body=keep + [fn_node], type_ignores=[])
+    ns: dict = {}
+    exec(compile(ast.fix_missing_locations(module), "<contract>", "exec"), ns)
+    unresolved = free - set(ns)
+    assert not unresolved, "free vars unresolved: %s" % sorted(unresolved)
+    assert callable(ns.get("check_source_contract"))
+    return ns["check_source_contract"]
+
+
 def _field_names(src):
     """Every source field name actually mapped into a column."""
     out = []
@@ -215,6 +269,93 @@ def test_nv_censoring_ceiling_is_excluded_not_published():
         "nvenergy_lhc where-clause is %r — it must exclude the 20 MW study "
         "cap, whose rows are censored ('Over 20MW'), not measured at 20"
         % src.get("where"))
+
+
+# ── the censoring-ceiling CLASS (2026-07-30) ────────────────────────────
+# NV Energy clips at 20 ("Over 20MW"); SDG&E clips at 10. Two utilities, one
+# defect shape, so the ceilings are now declared in _CENSORING_CEILINGS and
+# check_source_contract() enforces the exclusion at RUNTIME. These tests pin
+# the registry AND prove the enforcement is not vacuous.
+
+def test_every_declared_censoring_ceiling_is_excluded_by_its_where():
+    tree = _tree()
+    ceilings = _literal(tree, "_CENSORING_CEILINGS")
+    assert ceilings, "_CENSORING_CEILINGS extracted EMPTY — assertions would be vacuous"
+    by_key = _by_key(_sources(tree))
+    for key, (field, value, evidence) in ceilings.items():
+        src = by_key.get(key)
+        assert src is not None, "%s has a declared ceiling but is not configured" % key
+        where = (src.get("where") or "").replace(" ", "")
+        assert ("%s<%s" % (field, value)).replace(" ", "") in where, (
+            "%s clips at %s = %s (%s) but its where-clause %r does not exclude "
+            "it — a censored row published as a maximum both states an "
+            "unmeasured quantity AND understates the best circuits"
+            % (key, field, value, evidence, src.get("where")))
+
+
+def test_contract_refuses_a_source_that_publishes_its_censored_ceiling():
+    """MUST-FAIL control for the runtime ceiling guard.
+
+    Without this, test_every_declared_censoring_ceiling_is_excluded_by_its_where
+    only proves the CURRENT config is right — it would keep passing if the
+    enforcement in check_source_contract() were deleted. Here the where-clause is
+    mutated to drop the exclusion and the REAL contract function must refuse.
+    """
+    check = _contract_fn()
+    tree = _tree()
+    ceilings = _literal(tree, "_CENSORING_CEILINGS")
+    by_key = _by_key(_sources(tree))
+    checked = 0
+    for key, (field, value, _evidence) in ceilings.items():
+        src = dict(by_key[key])
+        # drop just the ceiling bound, keep the rest of the clause
+        src["where"] = (src.get("where") or "").replace(
+            "%s < %s" % (field, value), "%s >= 0" % field)
+        reason = check(src)
+        assert reason, (
+            "contract ACCEPTED %s with its censoring ceiling included — the "
+            "runtime guard is not enforcing _CENSORING_CEILINGS" % key)
+        assert "censoring ceiling" in reason, (
+            "%s was refused for the wrong reason: %r" % (key, reason))
+        checked += 1
+    assert checked, "no ceiling source was exercised — control is vacuous"
+
+
+def test_sdge_load_layer_is_vetted():
+    """SDG&E: PROD not QA, the load Double not the binned string, gen twins
+    guarded, and rows folded to circuits."""
+    tree = _tree()
+    src = _by_key(_sources(tree)).get("sdge_ica_load")
+    assert src is not None, "sdge_ica_load is not configured"
+    url = src.get("url") or ""
+    assert "ICA_MAP_PROD_" in url, (
+        "sdge_ica_load points at %r — the PROD layer is the published one; the "
+        "QA twin is not what the utility serves to the public" % url)
+    assert "LoadCapacityGrids" in url, (
+        "sdge_ica_load must read the LOAD grid layer, not the generation one: %r" % url)
+    fields = src.get("fields") or {}
+    mw_max = fields.get("mw_max")
+    name = mw_max[0] if isinstance(mw_max, tuple) else mw_max
+    assert name == "ICAWOF_UNILOAD", (
+        "sdge_ica_load maps %r into mw_max — expected the load Double" % name)
+    assert name != "LABELTEXT_LCA", "LABELTEXT_LCA is display binning, not a figure"
+    gen_only = _name_set(tree, "_GEN_ONLY_FIELDS")
+    for twin in ("ICAWOF_UNIGENERATION", "ICAWNOF_UNIGENERATION",
+                 "ICAWOF_PVGENERATION", "ICAWNOF_PVGENERATION"):
+        assert twin in gen_only, (
+            "%s sits in the same row as the load field and is not in "
+            "_GEN_ONLY_FIELDS — nothing would stop it shipping as load" % twin)
+    granular = _literal(tree, "_ROW_NOT_FEEDER_SOURCES")
+    assert "sdge_ica_load" in granular, (
+        "sdge_ica_load rows are ICA grid cells (771.6 per circuit) and it is "
+        "not registered as a row-is-not-a-feeder source")
+    assert fields.get("feeder") == "CIRCUIT_NAME", (
+        "sdge_ica_load must map the circuit id so feeders can be counted apart "
+        "from cells; got %r" % fields.get("feeder"))
+    basis = src.get("capacity_basis") or ""
+    assert "CENSORED" in basis and "771.6" in basis, (
+        "sdge_ica_load capacity_basis must state the 10 MW clip and the "
+        "cells-per-circuit ratio")
 
 
 def test_nv_section_rows_are_folded_to_feeders():

@@ -62,6 +62,7 @@ Run:  python3 -m pytest tests/test_hosting_capacity_source_contract.py -v
 from __future__ import annotations
 
 import ast
+import builtins
 import pathlib
 
 import pytest
@@ -110,19 +111,63 @@ def _func_src(name: str) -> str:
     raise AssertionError(f"{name}() not found in {_MOD.name}")
 
 
+def _func_node(name: str) -> ast.FunctionDef:
+    """The FunctionDef node, for free-variable analysis."""
+    _src, tree = _tree()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == name:
+            assert node.body, f"{name}() parsed with an EMPTY body"
+            return node
+    raise AssertionError(f"{name}() not found in {_MOD.name}")
+
+
+def _free_vars(fn_node):
+    """Module-level names the function reads without binding them itself."""
+    assigned, loaded = set(), set()
+    for n in ast.walk(fn_node):
+        if isinstance(n, ast.Name):
+            (assigned if isinstance(n.ctx, ast.Store) else loaded).add(n.id)
+        elif isinstance(n, (ast.Import, ast.ImportFrom)):
+            for a in n.names:
+                assigned.add((a.asname or a.name).split(".")[0])
+        elif isinstance(n, (ast.FunctionDef, ast.Lambda)):
+            args = n.args
+            assigned.update(a.arg for a in (list(args.posonlyargs)
+                                            + list(args.args)
+                                            + list(args.kwonlyargs)))
+            for v in (args.vararg, args.kwarg):
+                if v:
+                    assigned.add(v.arg)
+            if isinstance(n, ast.FunctionDef) and n is not fn_node:
+                assigned.add(n.name)
+        elif isinstance(n, ast.ExceptHandler) and n.name:
+            assigned.add(n.name)
+    return loaded - assigned - set(dir(builtins))
+
+
 def _contract_fn():
     """exec the real check_source_contract against its free variables.
 
     A NameError here means a free var stopped resolving, which would otherwise
     leave the function SILENTLY untested.
+
+    ★ The free-var list is DERIVED from the function, not hardcoded. It used to
+    be a literal triple, and adding a fourth constant to the contract
+    (_CENSORING_CEILINGS, 2026-07-30) broke this harness with a NameError — the
+    good outcome, but only because the exec happens to run the function. A
+    hardcoded list of dependencies rots exactly as fast as the code it
+    describes; deriving it means the next constant is supplied automatically and
+    a genuinely MISSING one still fails loudly below.
     """
-    ns = {"_ALLOWED_CAPACITY_TYPES": _literal("_ALLOWED_CAPACITY_TYPES"),
-          "_GEN_ONLY_FIELDS": set(_literal("_GEN_ONLY_FIELDS")),
-          "_ROW_NOT_FEEDER_SOURCES": _literal("_ROW_NOT_FEEDER_SOURCES")}
+    fn_node = _func_node("check_source_contract")
+    ns = {}
+    for name in sorted(_free_vars(fn_node)):
+        value = _literal(name)          # raises if it is not a module constant
+        ns[name] = set(value) if isinstance(value, (set, frozenset)) else value
     exec(compile(_func_src("check_source_contract"), "<hci>", "exec"), ns)
-    for free_var in ("_ALLOWED_CAPACITY_TYPES", "_GEN_ONLY_FIELDS",
-                     "_ROW_NOT_FEEDER_SOURCES"):
-        assert free_var in ns, f"free var {free_var} unresolved"
+    unresolved = _free_vars(fn_node) - set(ns)
+    assert not unresolved, f"free vars unresolved: {sorted(unresolved)}"
+    assert ns, "namespace is empty — the extraction read nothing"
     return ns["check_source_contract"]
 
 
