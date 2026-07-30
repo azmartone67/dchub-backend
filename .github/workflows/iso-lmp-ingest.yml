@@ -155,8 +155,16 @@ jobs:
                   except Exception:
                       mcd = None
 
+              # cadence 3h -> overdue at 6h. NOT 1h: the workflow header claims
+              # "*/10 -> 15-25 min real cadence", but MEASURED intervals over the
+              # last 10 runs are mean 52 min / max 69 min — GitHub throttles this
+              # cron roughly 5x. A 1h cadence would put the overdue threshold at
+              # 120 min, only 1.7x the observed worst gap, so a single skipped run
+              # would flip all six feeds red at once. That is the exact failure the
+              # deadman-watch margin fix (#1941) removed; do not reintroduce it
+              # here. 3h matches the parent iso-lmp-ingest registration in watch.py.
               body = {"feed": feed, "status": status, "rows_inserted": rows,
-                      "cadence_hours": 1}
+                      "cadence_hours": 3}
               if mcd:
                   body["max_content_date"] = mcd
               try:
