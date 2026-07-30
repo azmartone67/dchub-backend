@@ -437,23 +437,26 @@ def cross_layer_sites():
     # ABSENT from this dict — it is never reported as "validated".
     coverage = {
         "headroom_mw": {"status": "unavailable", "reason":
-            "no measured MW headroom exists in any layer — substations."
-            "available_mva is populated on ~0 rows, /api/v1/grid/status "
-            "'grid_headroom' is a voltage-class ladder (nameplate class, not "
-            "headroom), and get_grid_scoreboard carries no headroom field. "
-            "WS6 (aa3b4b92) already withheld this verdict. The one "
-            "transmission-voltage source ever ingested (Avista) turned out to "
-            "be a utility GENERATION-interconnection study (publisher-"
-            "labelled 'GenerationInterconnectionHeatMap', MW field a "
-            "pass/fail flag on nine discrete study sizes) and was retyped "
-            "'gen' 2026-07-30 — so zero measured transmission LOAD "
-            "capability exists. Distribution-feeder LOAD capacity is "
-            "published for some territories and reported separately under "
+            "No measured megawatt headroom exists in any data layer, so a "
+            "headroom value is withheld rather than estimated. Detail: "
+            "substations.available_mva is populated on ~0 rows; the "
+            "/api/v1/grid/status 'grid_headroom' figure is a voltage-class "
+            "ladder (nameplate class, not headroom); get_grid_scoreboard "
+            "carries no headroom field. The one transmission-voltage source "
+            "ever ingested (Avista) turned out to be a utility GENERATION-"
+            "interconnection study (publisher-labelled "
+            "'GenerationInterconnectionHeatMap', MW field a pass/fail flag "
+            "on nine discrete study sizes) and was reclassified 'gen' on "
+            "2026-07-30 — so zero measured transmission LOAD capability "
+            "exists. Distribution-feeder LOAD capacity is published for "
+            "some territories and reported separately under "
             "feeder_capacity_mw; it is single-feeder scale, not campus "
             "scale."},
         "parcel_acres": {"status": "unavailable", "reason":
-            "parcel_boundaries covers ONE county (Loudoun VA, 132,557 rows); "
-            "land_parcels is read by no route. Blocked on WS4."},
+            "Parcel data covers only one US county, so acreage, zoning and "
+            "ownership are not evaluated. Detail: parcel_boundaries covers "
+            "Loudoun County, VA alone (132,557 rows), and the land_parcels "
+            "table is not yet served by any public route."},
         # Overwritten below from a LIVE read of hosting_capacity_feeders,
         # split by capacity_type — see _feeder_capacity_clause(). This
         # initial value only survives if the feeder read never ran.
@@ -462,8 +465,11 @@ def cross_layer_sites():
             "(request failed before the feeder query) — value withheld "
             "rather than guessed"},
         "transmission_line_km": {"status": "unavailable", "reason":
-            "transmission_lines has no coordinate columns across 94,626 rows; "
-            "line proximity here would silently mean substation proximity."},
+            "Distance to transmission lines cannot be measured, because the "
+            "line records carry no coordinates. Detail: transmission_lines "
+            "has no coordinate columns across any of its 94,626 rows, so a "
+            "'near transmission' figure here would silently measure "
+            "distance to a substation instead."},
     }
     dropped = {}
     notes = []
