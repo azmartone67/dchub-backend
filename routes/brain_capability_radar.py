@@ -103,7 +103,15 @@ def _canonical_stats() -> dict | None:
                 out = {
                     "verified":  _count("SELECT COUNT(*) FROM discovered_facilities WHERE COALESCE(is_duplicate,0)=0"),
                     "tracked":   _count("SELECT COUNT(*) FROM discovered_facilities"),
-                    "countries": _count("SELECT COUNT(DISTINCT country) FROM facilities WHERE country IS NOT NULL"),
+                    # ★2026-07-30 — WRONG-TABLE PAIRING (same class + same fix
+                    # as countries_covered on /api/v1/stats/canonical, routes/
+                    # facilities_by_dims.py): this read the LEGACY `facilities`
+                    # table (mixed name/ISO formats — "USA"+"US") while
+                    # verified/tracked above count discovered_facilities, and
+                    # while this function's contract is byte-for-byte the
+                    # stats_canonical queries. #1958 moved the canonical field
+                    # to discovered_facilities; the mirror must follow.
+                    "countries": _count("SELECT COUNT(DISTINCT country) FROM discovered_facilities WHERE country IS NOT NULL AND country <> ''"),
                     "markets":   _count("SELECT COUNT(*) FROM market_power_scores"),
                     "deals":     _count("SELECT COUNT(*) FROM deals"),
                     "tools":     73.0,

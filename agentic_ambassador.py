@@ -436,7 +436,16 @@ class AgenticAmbassador:
                 cursor.execute("SELECT COUNT(*) FROM facilities")
                 facility_count = cursor.fetchone()[0] or 9603
 
-                cursor.execute("SELECT COUNT(DISTINCT country) FROM facilities WHERE country IS NOT NULL")
+                # ★2026-07-30 — WRONG-TABLE PAIRING (same class + same fix as
+                # countries_covered on /api/v1/stats/canonical, routes/
+                # facilities_by_dims.py): this counted DISTINCT country on the
+                # LEGACY `facilities` table, which mixes full names with ISO
+                # codes ("USA"+"US" — 9 format duplicates). The count lands in
+                # outreach copy ("across {country_count} countries") sent to
+                # external partners — an over-claim if read from the dirty
+                # table. Count the discovered fleet, same as canonical stats.
+                cursor.execute("SELECT COUNT(DISTINCT country) FROM discovered_facilities "
+                               "WHERE country IS NOT NULL AND country <> ''")
                 country_count = cursor.fetchone()[0] or 179
 
                 cursor.execute("SELECT COUNT(*) FROM deals")

@@ -93,8 +93,13 @@ def _build_stats() -> dict:
             except Exception:
                 pass
             try:
+                # ★2026-07-30: added `country <> ''` — byte-for-byte the
+                # countries_covered query on /api/v1/stats/canonical. Without
+                # the guard the empty-string bucket counts as a country and
+                # the homepage reads one higher than canonical (the exact
+                # ★2026-07-27 divergence documented in facilities_by_dims.py).
                 s["countries"] = int(_scalar(cur,
-                    "SELECT COUNT(DISTINCT country) FROM discovered_facilities WHERE country IS NOT NULL"))
+                    "SELECT COUNT(DISTINCT country) FROM discovered_facilities WHERE country IS NOT NULL AND country <> ''"))
             except Exception:
                 s["countries"] = int(_scalar(cur,
                     "SELECT COUNT(DISTINCT country) FROM facilities WHERE country IS NOT NULL"))
