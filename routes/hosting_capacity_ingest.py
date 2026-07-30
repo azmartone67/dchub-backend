@@ -83,6 +83,41 @@ that only config can defuse:
 Attribution is EXACTLY "NV Energy" on both NV entries — the string the
 SERVICE ROOT publishes, where the layer endpoints publish an empty one.
 
+── SDG&E, the second CPUC ICA load layer (probed 2026-07-30) ──────────
+  * sdge_ica_load (load) — San Diego, 497,700 rows: the LARGEST single load
+    source in this table. Found by searching the ArcGIS Online catalog for
+    owner:SDGE_ICA rather than by guessing a URL, which also surfaced that
+    the PROD layer (ICA_MAP_PROD_*) is the one to read, not the QA twin.
+    Three traps, all measured before the entry was written:
+      - 10 MW is a CENSORING CEILING (1,827 rows at exactly 10, ZERO above,
+        0.1-step values below). Excluded, not published as a maximum — the
+        same call as nvenergy_lhc's "Over 20MW".
+      - FOUR generation Doubles share the row with the load field; all four
+        are now in _GEN_ONLY_FIELDS.
+      - Rows are ICA GRID CELLS at 771.6 per circuit. ★ The ratio had to be
+        ENUMERATED by paged groupBy: this service silently ignores
+        multi-field returnDistinctValues and reported 497,700 distinct
+        (SUBID, CIRCUIT_NAME) pairs — the row count, and impossible for 645
+        circuits over 103 substations. Believing it would have turned every
+        row count into a feeder count.
+    Also recorded: WOF and WNOF load are IDENTICAL on all 497,700 rows (so
+    neither is the conservative read), LABELTEXT_LCA is display binning whose
+    top bucket collapses 2 MW to the ceiling, and the service publishes NO
+    copyright string at layer or root — so the attribution names the
+    publisher and says so, rather than inventing a licence.
+
+★ WHY THE US GAP IS NOT AN INGEST BACKLOG (catalog sweep, 2026-07-30).
+Searched the ArcGIS Online catalog for a public capacity feature service in
+every major uncovered data-centre market. Oncor 0 · CenterPoint 0 · APS 0 ·
+SRP 0 · Duke Carolinas 0 · Evergy 0 · Puget Sound 0 · Portland General 0 ·
+Dominion SC 0 · TVA 0. Hosting-capacity maps exist where a PUC ordered them;
+Texas, Arizona and the Southeast publish nothing, so no amount of ingest work
+closes those markets. Do not file them as TODOs — they are absent upstream.
+Still deliberately skipped on terms grounds, unchanged: Georgia Power (tool
+terms mark results confidential) and PG&E (registration-gated; the only
+PGE_ICA item on the public catalog is a THIRD-PARTY copy, and ingesting that
+would launder a gated source).
+
 Budget note: the two load layers are big (Dominion ~104k exploded
 rows, SCE 637,977 usable). _ingest_order() runs LOAD sources FIRST so
 a tight HOSTING_CAPACITY_INGEST_BUDGET_S starves gen refreshes rather
@@ -130,6 +165,12 @@ _GEN_ONLY_FIELDS = {
     "uniform_generation", "uniform_generation_static_grid",
     "uniform_generation_static_grid_legend", "ica_overall_pv",
     "ica_overall_gen", "uniform_generation_op_flex",
+    # ★ SDG&E is the SCE trap again, four times over: on
+    # ICA_MAP_PROD_LoadCapacityGrids_VW these four generation Doubles sit in
+    # the SAME ROW as ICAWOF_UNILOAD and would all map cleanly into mw_max.
+    # Nothing but these names stops a gen figure shipping as siteable load.
+    "ICAWOF_UNIGENERATION", "ICAWNOF_UNIGENERATION",
+    "ICAWOF_PVGENERATION", "ICAWNOF_PVGENERATION",
 }
 
 # Sources whose ROWS ARE NOT FEEDERS, and the knob that must be declared to
@@ -147,6 +188,14 @@ _ROW_NOT_FEEDER_SOURCES = {
     "dominion_va_ev_load": ("attribute_dissolved_multipart", "explode_multipart"),
     # 676,467 rows -> 3,723 circuits (~172 line sections per circuit).
     "sce_ica_load": ("line_sections", "feeder_field"),
+    # 497,700 rows -> 645 circuits = 771.6 GRID CELLS per circuit, the
+    # second-worst ratio here. ENUMERATED by paged groupBy over
+    # (SUBID, CIRCUIT_NAME) on 2026-07-30 — the single-shot
+    # returnDistinctValues+returnCountOnly returned 497,700 (the ROW count),
+    # impossible for 645 circuits over 103 substations, because this service
+    # silently ignores multi-field distinct counting. A believed 1.0x would
+    # have made every row count a feeder count.
+    "sdge_ica_load": ("ica_grid_cells", "feeder_field"),
     # 287,307 rows -> 2,317 distinct base_circuitid. ★ MEASURED 123.5x, NOT
     # the ~285x carried in the survey brief — the brief's figure is 2.3x too
     # high. Enumerated on 2026-07-29 via paged groupBy covering all 2,317
@@ -171,6 +220,30 @@ _ROW_NOT_FEEDER_SOURCES = {
     "avista_bus": ("per_constraint_study_rows", "key_extra"),
 }
 
+# Sources whose publisher CLIPS the study at a ceiling, so the rows sitting on
+# that ceiling are CENSORED ("Over 20MW", "Above 2") rather than measured. Those
+# rows must be EXCLUDED by the source's `where`, never published as a maximum:
+# doing so states an unmeasured quantity as a number AND understates the very
+# circuits a large load cares about most.
+#
+# Two instances now, from two different utilities — so this is a CLASS, not a
+# quirk, and it gets a registry instead of a second hand-written special case.
+# The evidence shape that identifies one: a pile of rows at exactly the max with
+# ZERO above it, on a field whose values otherwise step continuously.
+#
+#   key -> (field, ceiling, evidence)
+_CENSORING_CEILINGS = {
+    # 200 sections at exactly 20.0, none above; NV labels it "Over 20MW".
+    "nvenergy_lhc": ("DRP_GIS_DATA.DRP_HCA.LHC", 20,
+                     "200 sections at exactly 20.0, 0 above; publisher label "
+                     "'Over 20MW'"),
+    # Measured 2026-07-30: >10 = 0 rows, =10 = 1,827 rows, and the values below
+    # step 9.5/9.6/9.7/9.8/9.9 — a 0.1 scale that stops dead at 10.
+    "sdge_ica_load": ("ICAWOF_UNILOAD", 10,
+                      "1,827 cells at exactly 10, 0 above, 0.1-step values "
+                      "below (9.5-9.9); published ceiling becomes 9.9"),
+}
+
 # Cap on parts exploded from one multipart feature — a backstop against a
 # pathological geometry, NOT a sampling knob.
 # ★ Set from measurement, not taste. Dominion path counts over 900 features
@@ -192,6 +265,11 @@ _MAX_ROWS_OVERRIDE = {
         os.environ.get("HOSTING_CAPACITY_DOMINION_EV_MAX_ROWS", "0")) or None,
     "sce_ica_load": int(
         os.environ.get("HOSTING_CAPACITY_SCE_MAX_ROWS", "0")) or None,
+    # 495,873 usable cells (497,700 minus the 1,827 censored at the 10 MW
+    # clip) over 645 circuits. The default below is the capacity-DESC head;
+    # raise this for a fuller backfill (which really wants sharding by SUBID).
+    "sdge_ica_load": int(
+        os.environ.get("HOSTING_CAPACITY_SDGE_MAX_ROWS", "0")) or None,
     # 287,307 vertices / 2,317 circuits. The default 40k is the capacity-DESC
     # HEAD, so a routine run holds the highest-capacity circuits; raise this
     # for a complete backfill (which really wants sharding by base_circuitid).
@@ -608,6 +686,109 @@ SOURCES = [
                 "mw_max": ("uniform_load_static_grid_legend", 1.0),
                 "mw_min": None, "queued_kw": None,
                 "updated": "changed_date_forecast"}},
+    #
+    # ★★ SDG&E — San Diego. The second CPUC ICA load layer, and the largest
+    # single LOAD source in this table: 497,700 rows measured live 2026-07-30.
+    # Sibling of sce_ica_load (same CPUC mandate, same ICA vocabulary), so the
+    # vetting below is the SCE pattern re-measured, not assumed from it.
+    # ★★ TRAP 1 — 10 IS A CENSORING CEILING, NOT A MAXIMUM. Measured:
+    #   ICAWOF_UNILOAD > 10   ->      0 rows
+    #   ICAWOF_UNILOAD = 10   ->  1,827 rows
+    #   9 < ICAWOF_UNILOAD < 10 -> 1,474 rows
+    #   distinct values above 9.4: 9.5, 9.6, 9.7, 9.8, 9.9, 10
+    # A 0.1-step scale that stops dead at 10 with 1,827 rows piled on the
+    # boundary and none beyond is a clip, exactly like NV Energy's "Over 20MW"
+    # (200 sections at exactly 20.0). Publishing those 1,827 as 10 MW would
+    # UNDERSTATE the best circuits in San Diego and cap the layer at a value
+    # SDG&E never claimed. They are EXCLUDED by the `where`, not published —
+    # the same call as nvenergy_lhc. A censored row is unmeasured, not 10.
+    # ★★ TRAP 2 — FOUR GENERATION DOUBLES SIT IN THE SAME ROW. ICAWOF_/
+    # ICAWNOF_ UNIGENERATION and PVGENERATION are all Doubles alongside the
+    # load field and would all map cleanly into mw_max. Only the field name
+    # stops the swap, so all four are in _GEN_ONLY_FIELDS and
+    # check_source_contract() refuses this source if one is ever wired in.
+    # ★ WOF vs WNOF is a NON-CHOICE here, recorded so nobody "corrects" it to
+    # the other in search of a conservative read: ICAWNOF_UNILOAD equals
+    # ICAWOF_UNILOAD on all 497,700 rows (measured: 0 rows where either is
+    # greater). They are the same data under two names on this layer.
+    # ★ DO NOT READ LABELTEXT_LCA. It is the map's display binning —
+    # '0', 'Up To 1.00', '1.00-1.50', '1.50-2.00', 'Above 2' — so its top
+    # bucket collapses everything from 2 MW to the ceiling. The Double is
+    # precise to 0.1; the string is a legend.
+    # ★ ROWS ARE 771.6x FEEDERS, the second-worst ratio in this table.
+    # ENUMERATED, not extrapolated: a paged groupBy over (SUBID, CIRCUIT_NAME)
+    # returned 645 groups for 497,700 rows. ★ The single-shot
+    # returnDistinctValues+returnCountOnly on that pair returned 497,700 —
+    # i.e. the row count — which is arithmetically impossible for 645 circuits
+    # across 103 substations (<= 66,435 combinations). The server silently
+    # ignores multi-field distinct counting on this service. Trusting it would
+    # have recorded a 1.0x ratio and turned every row count into a feeder
+    # count. Page the groupBy; never believe a distinct-count you did not
+    # enumerate.
+    # ★ CIRCUIT_NAME is globally unique: distinct CIRCUIT_NAME (645) equals
+    # distinct (SUBID, CIRCUIT_NAME) (645), so the feeder field alone is a
+    # sound fold key and does not need the substation prefixed.
+    # ★ 31,328 rows are exactly 0 and are KEPT — a measured zero is an answer
+    # ("this circuit has no load capacity"), unlike the censored 10s. No NULLs
+    # exist in the field. RESTRICTED is 'N' on all 497,700 rows, so there is no
+    # withheld subset to filter.
+    # ★ NO ATTRIBUTION IS PUBLISHED. copyrightText is '' on both the layer and
+    # the service root, and serviceDescription/description are empty too — so
+    # unlike the NV entries there is no publisher string to copy. The
+    # attribution below therefore names the publisher and says the service
+    # itself asserts none, rather than inventing a licence.
+    # ★ Geometry is POLYGON (grid cells), not polyline: rings, one part each,
+    # so explode_multipart is not needed.
+    {"utility": "SDG&E (San Diego Gas & Electric, load)",
+     "key": "sdge_ica_load",
+     "capacity_type": "load",
+     "url": ("https://services.arcgis.com/S0EUI1eVapjRPS5e/arcgis/rest/"
+             "services/ICA_MAP_PROD_LoadCapacityGrids_VW/FeatureServer/0/query"),
+     # Excludes the 1,827 censored rows at the 10 MW clip (TRAP 1). The
+     # >= 0 half keeps the 31,328 measured zeros.
+     "where": "ICAWOF_UNILOAD >= 0 AND ICAWOF_UNILOAD < 10",
+     # Explicit, for the same reason as SCE: a later edit to mw_max must not
+     # silently move the capacity-DESC crawl onto another field.
+     "order_field": "ICAWOF_UNILOAD",
+     "delay_s": 2.0,
+     # 495,873 usable rows (497,700 minus the 1,827 censored). The default is
+     # the capacity-DESC HEAD, not the territory; the run records
+     # rows_scanned + truncated. Sharding by SUBID (103) is the follow-up for a
+     # complete backfill.
+     # Env override: HOSTING_CAPACITY_SDGE_MAX_ROWS (_MAX_ROWS_OVERRIDE).
+     "max_rows": 40000,
+     "attribution": ("San Diego Gas & Electric — ICA (Integration Capacity "
+                     "Analysis) public map, CPUC-mandated. The service "
+                     "publishes no copyright or licence string of its own."),
+     "capacity_basis": (
+         "MW of LOAD capacity available in an ICA grid cell (CPUC Integration "
+         "Capacity Analysis), from SDG&E's own production ICA map. Units are "
+         "MW: the field is a Double on a 0.1 step with a 10 MW study clip, "
+         "which is MW-plausible and kW-absurd on 12 kV circuits, and it is "
+         "the load-side sibling of SCE's identically-scoped ICA layer. "
+         "The four GENERATION twins in the same row (ICAWOF_/ICAWNOF_ "
+         "UNIGENERATION and PVGENERATION) are NOT read. "
+         "★ SDG&E clips the study at 10 MW: the 1,827 cells reported as "
+         "exactly 10.0 are CENSORED, not measured, and are excluded rather "
+         "than published as a maximum — so this layer's published ceiling is "
+         "9.9 MW and the true value on those cells is unknown and higher. "
+         "A reported 0.0 is a real measured zero (31,328 cells) and is kept. "
+         "Rows are GRID CELLS, 771.6 per circuit (497,700 rows over 645 "
+         "circuits, enumerated by paged groupBy), folded to one row per "
+         "circuit; THE FOLD IS NOT LOSSLESS — capacity varies across a "
+         "circuit's cells, so the row kept is the HIGHEST-capacity cell on "
+         "that circuit AT THAT CELL'S OWN LOCATION. Read it as 'SDG&E "
+         "publishes this MW at this point', never as the capacity of the "
+         "whole circuit. Coverage is the capacity-DESC head, not the full "
+         "territory. LABELTEXT_LCA is display binning and is not read."),
+     "fields": {"feeder": "CIRCUIT_NAME", "substation": "SUBID",
+                "state": None, "region": None,
+                "voltage_kv": "VOLTAGE",               # kV, SmallInteger
+                "mw_max": ("ICAWOF_UNILOAD", 1.0),
+                "mw_min": None, "queued_kw": None,
+                # No date field of any kind exists on this layer (checked
+                # every field for a Date type and for 'date' in the name).
+                "updated": None}},
     #
     # ══ LOAD expansion, tier 2 (probed + re-probed 2026-07-29) ═══════════
     #
@@ -1346,6 +1527,18 @@ def check_source_contract(src: dict) -> str | None:
         elif not src.get(knob):
             return ("%s rows are %s and %r is not declared" %
                     (key, granularity, knob))
+    # A registered censoring ceiling must actually be excluded by the query.
+    # Enforced at RUNTIME, not only in tests: the failure mode is publishing a
+    # censored row as a measured maximum, which no downstream reader can detect.
+    ceil = _CENSORING_CEILINGS.get(key)
+    if ceil:
+        field, value, _evidence = ceil
+        where = (src.get("where") or "").replace(" ", "")
+        if ("%s<%s" % (field, value)).replace(" ", "") not in where:
+            return ("%s has a censoring ceiling at %s = %s (%s) but its "
+                    "where-clause %r does not exclude it — those rows are "
+                    "unmeasured, not equal to %s"
+                    % (key, field, value, _evidence, src.get("where"), value))
     return None
 
 
