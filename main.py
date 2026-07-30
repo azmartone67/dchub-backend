@@ -38339,6 +38339,20 @@ try:
 except Exception as _aa_e:
     print(f"[main] agent_adoption_master_shell register skipped: {_aa_e}", file=sys.stderr)
 
+# Agent Success Report (2026-07-30, ChatGPT's partner-round proposal): PUBLIC
+# weekly 7d totals — tool calls, active agents, planner adoption, manual
+# orchestration, median time-to-first-result — every number crawler-excluded
+# (mcp_calls_identity + the planner-bypass episode model with the same
+# exclusions), every metric versioned, per-platform split gated until the
+# 07-28 attribution fix has accumulated AND verifiably dropped the generic
+# 'mcp' bucket share. SWR-cached; kill: AGENT_SUCCESS_REPORT_DISABLE=1.
+try:
+    from routes.agent_success_report import agent_success_report_bp
+    app.register_blueprint(agent_success_report_bp)
+    print("[main] agent_success_report_bp registered: /api/v1/reports/agent-success", flush=True)
+except Exception as _asr_e:
+    print(f"[main] agent_success_report register skipped: {_asr_e}", file=sys.stderr)
+
 # operator one-off email (admin-keyed, logged, idempotent) — controlled single
 # sends the templated cohorts don't cover (e.g. a mis-target correction).
 try:
