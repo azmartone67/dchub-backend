@@ -112,15 +112,26 @@ TIER_PAGE_CAPS = {t: v['page_cap'] for t, v in tier_registry.TIER_LIMITS.items()
 TIER_PAGE_CAPS['anon'] = TIER_PAGE_CAPS['anonymous']
 
 # ── Max results per single search/list query ──
+# Deliberately NOT derived from tier_registry — this map is its own
+# scale (per-query result width, not a daily quota) and has no
+# TIER_LIMITS column. That also means r-tier-derive could not fix it:
+# r-starter-sweep (2026-07-30) adds the keys by hand instead, because
+# a missing key fell through enforce_search_limit's .get(tier, 25) to
+# the ANONYMOUS cap. starter=100 joins the identified/founding/
+# developer plateau (owner-confirmed in the PR); team==pro and
+# research_seed==enterprise per tier_registry equivalence.
 TIER_SEARCH_LIMITS = {
     'anonymous':  25,
     'anon':       25,
     'free':       50,
     'identified': 100,
+    'starter':    100,
     'founding':   100,
     'developer':  100,
     'pro':        500,
+    'team':       500,
     'enterprise': 1000,
+    'research_seed': 1000,
     'admin':      9999,
 }
 
@@ -129,15 +140,25 @@ TIER_SEARCH_LIMITS = {
 # email-gated ones like get_news) so a free-with-email signup actually
 # notices something improved. Paid-only tools still gated by
 # PAID_ONLY_TOOLS in mcp_upgrade_gate.py.
+# Deliberately NOT derived from tier_registry: registry mcp_results is
+# a different, looser scale (it says anonymous 5; this map says 3), so
+# r-tier-derive could not cover it. r-starter-sweep (2026-07-30) adds
+# starter=20 by hand — between identified 15 and developer 25, and
+# equal to api_data_protection's starter max_results_per_response=20,
+# so both response-width caps agree (owner-confirmed in the PR).
+# team==pro, research_seed==enterprise per tier_registry equivalence.
 MCP_TIER_RESULT_LIMITS = {
     'anonymous':  3,
     'anon':       3,
     'free':       5,
     'identified': 15,
+    'starter':    20,
     'founding':   25,
     'developer':  25,
     'pro':        100,
+    'team':       100,
     'enterprise': 999,
+    'research_seed': 999,
     'admin':      999,
 }
 

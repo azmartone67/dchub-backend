@@ -4997,17 +4997,27 @@ def check_tier_dict_missing_keys() -> list[dict]:
     Land & Power to silently treat paying $49/mo Developer customers
     as free-tier (they hit 1 search/month instead of 50). Root cause:
     tier-limit dicts predated the canonical anonymous → identified →
-    developer → pro+ ladder and were missing entries, so
+    starter → developer → pro+ ladder and were missing entries, so
     `dict.get(tier, default)` fell through to free defaults.
 
-    Detector imports each known tier-limit dict and verifies the four
+    Detector imports each known tier-limit dict and verifies the five
     canonical tier names are present. Flags any gap so the brain
     surfaces the regression risk BEFORE a customer hits it.
 
+    r-starter-sweep (2026-07-30): 'starter' added to REQUIRED. The set
+    predated the r34 starter tier, which is exactly why this radar
+    never flagged the starter gaps PR #1943 fixed — the detector was
+    GREEN because its own requirement list was stale, not because the
+    dicts were complete. Adding a new tier? It must ALSO be added
+    here, or this check goes blind to it the same way.
+
     Adding a new tier-limit table? Add it to TIER_DICTS_TO_CHECK
-    below — that's the bug-class containment surface."""
+    below — that's the bug-class containment surface.
+    tests/test_tier_consistency.py::test_tier_dicts_cover_canonical_five
+    mirrors this audit in CI (it AST-parses what it cannot import), so
+    a gap fails the PR before this radar ever sees it in prod."""
     findings: list[dict] = []
-    REQUIRED = {'anonymous', 'identified', 'developer', 'pro'}
+    REQUIRED = {'anonymous', 'identified', 'starter', 'developer', 'pro'}
     # (module_path, dict_attr_name, description)
     TIER_DICTS_TO_CHECK = [
         ('api_tier_gating', 'TIER_RATE_LIMITS',

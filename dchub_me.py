@@ -46,15 +46,23 @@ from flask import Blueprint, jsonify, request
 # calls), and a developer paying $49/mo got the same. Now every
 # canonical tier appears explicitly so dict.get(tier, default) never
 # silently demotes a customer.
+# r-starter-sweep (2026-07-30): starter/team/research_seed added — a
+# missing key fell through LIMITS.get(tier, LIMITS["free"]) to free's 5
+# MCP calls/day. starter per_minute/per_hour mirror main.py's
+# _tier_rate_limits starter row (GEO-0704); daily_mcp_calls=200 is the
+# canonical tier_registry mcp_daily. team==pro, research_seed==enterprise.
 LIMITS = {
     "anonymous":  {"per_minute": 60,   "per_hour": 500,   "daily_mcp_calls": 5},
     "anon":       {"per_minute": 60,   "per_hour": 500,   "daily_mcp_calls": 5},
     "free":       {"per_minute": 60,   "per_hour": 500,   "daily_mcp_calls": 5},
     "identified": {"per_minute": 120,  "per_hour": 1500,  "daily_mcp_calls": 25},   # 5x free taste
+    "starter":    {"per_minute": 120,  "per_hour": 2000,  "daily_mcp_calls": 200},  # $9/mo
     "developer":  {"per_minute": 200,  "per_hour": 3000,  "daily_mcp_calls": 500},  # $49/mo
     "pro":        {"per_minute": 300,  "per_hour": 5000,  "daily_mcp_calls": 1000},
     "founding":   {"per_minute": 300,  "per_hour": 5000,  "daily_mcp_calls": 1000},
+    "team":       {"per_minute": 300,  "per_hour": 5000,  "daily_mcp_calls": 1000},
     "enterprise": {"per_minute": 1000, "per_hour": 20000, "daily_mcp_calls": 100000},
+    "research_seed": {"per_minute": 1000, "per_hour": 20000, "daily_mcp_calls": 100000},
     "admin":      {"per_minute": 5000, "per_hour": 99999, "daily_mcp_calls": 999999},
 }
 

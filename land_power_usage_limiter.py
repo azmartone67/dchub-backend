@@ -83,6 +83,16 @@ LAND_POWER_LIMITS = {
         'label': 'Identified',
         'upgrade_text': 'Upgrade to Developer ($49/mo) for 50 searches + 15 filters per month.',
     },
+    'starter': {
+        # r-starter-sweep (2026-07-30): $9/mo Starter — between
+        # Identified (3/5) and Developer (50/15), same positioning as
+        # API_MONTHLY_LIMITS' r34 starter row below. Was missing →
+        # fell through to the free default.
+        'searches_per_month': 15,
+        'max_filters': 10,
+        'label': 'Starter',
+        'upgrade_text': 'Upgrade to Developer ($49/mo) for 50 searches + 15 filters per month.',
+    },
     'developer': {
         # $49/mo paid tier. Generous limits — 50 searches/month
         # (≈2/day) + 15 filters/search covers most professional usage.
@@ -111,6 +121,20 @@ LAND_POWER_LIMITS = {
         'label': 'Founding Member',
         'upgrade_text': None,
     },
+    # r-starter-sweep (2026-07-30): team==pro, research_seed==enterprise
+    # per tier_registry equivalence — both fell through to free defaults.
+    'team': {
+        'searches_per_month': -1,
+        'max_filters': -1,
+        'label': 'Team',
+        'upgrade_text': None,
+    },
+    'research_seed': {
+        'searches_per_month': -1,
+        'max_filters': -1,
+        'label': 'Research',
+        'upgrade_text': None,
+    },
     'admin': {
         'searches_per_month': -1,
         'max_filters': -1,
@@ -130,7 +154,9 @@ API_MONTHLY_LIMITS = {
     'starter': 1500,         # r34: $9/mo Starter — 1.5K calls/month (~50/day)
     'developer': 10000,      # $49/mo — 10K calls/month (~333/day)
     'pro': 300000,           # was 10K/day * 30 = 300K/month
+    'team': 300000,          # r-starter-sweep: team==pro equivalence
     'enterprise': 3000000,
+    'research_seed': 3000000,  # r-starter-sweep: ==enterprise (NLR seats)
     'founding': 300000,
     'admin': 9999999,
 }

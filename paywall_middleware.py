@@ -51,16 +51,26 @@ logger = logging.getLogger(__name__)
 # as aliases so callers from any subsystem find their tier without
 # falling through to the 'free' default. Same bug class as Land &
 # Power had — paying customers silently demoted to free defaults.
+# r-starter-sweep (2026-07-30): starter/team/research_seed added — a
+# paying tier missing here got TIER_HIERARCHY.get(tier, 0) = anonymous
+# access. starter ties with identified at 1: this coarse ladder has no
+# slot between 1 and developer's 2, gates compare with >=, and starter
+# must satisfy identified-gated surfaces while staying blocked from
+# developer-gated ones — the tie is behaviorally exact. team==pro and
+# research_seed==enterprise per tier_registry rank equivalence.
 TIER_HIERARCHY = {
     'anonymous':  0,         # walk-in, no signup
     'anon':       0,
     'free':       0,
     'registered': 1,         # legacy alias
     'identified': 1,         # canonical email-only signup tier
+    'starter':    1,         # $9/mo — identified access + bigger quotas
     'founding':   3,         # Founding cohort = Pro-equivalent
     'developer':  2,
     'pro':        3,
-    'enterprise': 4
+    'team':       3,         # Team = Pro-equivalent access
+    'enterprise': 4,
+    'research_seed': 4,      # NLR research seats = Enterprise-equivalent
 }
 
 # Feature flags by tier — identified gets the same as registered
@@ -98,6 +108,17 @@ TIER_FEATURES = {
         'gridIntelligence': False,
         'exportData': False,
     },
+    'starter': {                 # r-starter-sweep: $9/mo buys quota + API
+                                 # access, not deeper data surfaces —
+                                 # registry TIER_FEATURES keeps starter at
+                                 # identified's 'teaser', so same flags.
+        'facilitiesSearch': True,
+        'marketIntel': True,
+        'pipelineTracking': False,
+        'transactionData': False,
+        'gridIntelligence': False,
+        'exportData': False,
+    },
     'developer': {
         'facilitiesSearch': True,
         'marketIntel': True,
@@ -122,7 +143,23 @@ TIER_FEATURES = {
         'gridIntelligence': True,
         'exportData': True,
     },
+    'team': {                    # Team = Pro-equivalent feature set
+        'facilitiesSearch': True,
+        'marketIntel': True,
+        'pipelineTracking': True,
+        'transactionData': True,
+        'gridIntelligence': True,
+        'exportData': True,
+    },
     'enterprise': {
+        'facilitiesSearch': True,
+        'marketIntel': True,
+        'pipelineTracking': True,
+        'transactionData': True,
+        'gridIntelligence': True,
+        'exportData': True,
+    },
+    'research_seed': {           # NLR research seats = Enterprise-equivalent
         'facilitiesSearch': True,
         'marketIntel': True,
         'pipelineTracking': True,
@@ -142,10 +179,14 @@ RATE_LIMITS = {
     'free':      10,
     'registered': 50,
     'identified': 50,
+    'starter':   500,          # r-starter-sweep: registry rate_limit for
+                               # starter; was falling to .get(tier, 10)
     'founding':  10000,        # founding = Pro-equivalent rate
     'developer': 1000,
     'pro':       10000,
+    'team':      10000,        # Team = Pro-equivalent rate
     'enterprise': 100000,
+    'research_seed': 100000,   # NLR = Enterprise-equivalent rate
 }
 
 # Truncation limits per tier
