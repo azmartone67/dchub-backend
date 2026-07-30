@@ -370,6 +370,27 @@ def _run_sync() -> dict:
     out["ok"] = out["rows_synced"] > 0
     out["duration_seconds"] = round(time.time() - started, 2)
     out["finished_at"] = datetime.now(timezone.utc).isoformat()
+
+    # LC6 Lane C — d1-sync had NO dead-man coverage: this hourly mirror could stop
+    # for days and nothing would notice. Note that out["ok"] above and the sync_log
+    # status written earlier are BOTH `rows_synced > 0` and so both ignore a
+    # non-empty errors[] — a partially-failed sync records as healthy. The beat
+    # does not: any error is degraded, and a sync that mirrored nothing is broken
+    # rather than "idle" (D1 is the bottom failover origin; empty is never fine).
+    try:
+        from routes.ingest_runs import beat_feed
+        if out["errors"]:
+            _st = "degraded"
+        elif out["rows_synced"]:
+            _st = "success"
+        else:
+            _st = "zero_rows"
+        beat_feed("d1-sync", status=_st,
+                  rows_inserted=int(out["rows_synced"] or 0),
+                  cadence_hours=3)     # hourly job -> two free misses before red
+    except Exception:
+        logger.exception("d1-sync deadman beat failed (non-fatal)")
+
     return out
 
 

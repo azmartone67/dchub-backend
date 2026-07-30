@@ -142,6 +142,57 @@ def beat():
     return jsonify(ok=True, feed=feed)
 
 
+def beat_feed(feed, status="success", rows_inserted=0, max_content_date=None,
+              cadence_hours=24, base_url=None):
+    """In-process beat helper (LC6). Fail-OPEN — never raises into the caller.
+
+    HTTP-only by design. LC6a proposes a module-level record_beat() so the HTTP
+    handler and in-process callers share ONE consecutive_zero code path; that has
+    not shipped, and an import of a function that does not exist would raise on
+    every call and be swallowed — the monitored loop would look instrumented while
+    beating nothing. When LC6a lands, the direct-call fast path belongs HERE, and
+    the ten hand-rolled copies of this POST (agent_request_writer.py,
+    competitor_gap_crawler.py, tools/infra_fetch.py and the master shells) should
+    migrate onto it.
+
+    Loopback is correct for WEB-process callers (routes/*): that container serves
+    the port. It is NOT correct from dchub-worker, which is the brain/scheduler and
+    does not serve the API — worker-side callers must pass base_url explicitly
+    (the internal Railway hostname), or the beat is silently dropped.
+    """
+    if os.environ.get("DEADMAN_BEAT_DISABLE") == "1":
+        return
+    import json as _json
+    import urllib.request as _urlreq
+
+    base = base_url or ("http://127.0.0.1:%s" % (os.environ.get("PORT") or "8080"))
+    if max_content_date is not None:
+        # Clamp: a content date >6h in the future is itself an overdue reason, so a
+        # timezone bug upstream must not be able to poison the freshness signal.
+        now = datetime.datetime.now(datetime.timezone.utc)
+        if max_content_date > now:
+            max_content_date = now
+        max_content_date = max_content_date.isoformat()
+
+    body = {"feed": feed, "status": status,
+            "rows_inserted": int(rows_inserted or 0),
+            "cadence_hours": cadence_hours}
+    if max_content_date:
+        body["max_content_date"] = max_content_date
+    try:
+        req = _urlreq.Request(
+            base.rstrip("/") + "/api/v1/admin/ingest-runs/beat",
+            data=_json.dumps(body).encode(), method="POST",
+            headers={"Content-Type": "application/json",
+                     "X-Admin-Key": os.environ.get("DCHUB_ADMIN_KEY") or "",
+                     "User-Agent": "dchub-deadman-beat/1.0 (+https://dchub.cloud)"})
+        _urlreq.urlopen(req, timeout=10)
+    except Exception as e:  # noqa: BLE001
+        # A dropped beat is a real gap — log at ERROR so it is greppable — but never
+        # propagate: the monitored loop's own work matters more than its heartbeat.
+        log.error("deadman beat DROPPED feed=%s status=%s err=%s", feed, status, e)
+
+
 @ingest_runs_bp.route("/api/v1/admin/ingest-runs/purge", methods=["POST"])
 def purge():
     """Remove feed(s) from the ledger — use when retiring a loop from the registry.
