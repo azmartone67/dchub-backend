@@ -183,14 +183,20 @@ def test_claim_quote_dup_guards_match_on_quote_not_context():
             f"was the bug this replaces: {g!r}")
 
 
-def test_claim_quote_inserts_stay_plain():
-    """Both claim_quote INSERTs must stay ON CONFLICT-free: a target-less DO
-    NOTHING here would silently eat rows again the day someone widens the
-    partial index, and there is no constraint left to target."""
+def test_claim_quote_inserts_use_bare_do_nothing_only():
+    """Both claim_quote INSERTs carry the BARE target-less ON CONFLICT DO
+    NOTHING (house insert-no-on-conflict regression lint). It is inert for
+    these rows — the only unique index is the auto-scoped partial one, whose
+    predicate (pinned by test_schema_sql_shape_and_order) can never match
+    source='claim_quote' — so real idempotency stays with the app-side
+    quote-scoped guards. What must NEVER appear is a NAMED conflict target:
+    the broad constraint it would name is gone (hard error), and widening
+    the partial index instead would silently eat customer quotes again."""
     src = " ".join(_read("flask_mcp_endpoints.py").split())
     inserts = re.findall(
         r"INSERT INTO ai_testimonials \(platform, agent_name, quote, context, "
         r"category, source, approved\).*?(?:\"\"\")", src)
     assert len(inserts) == 2, "expected exactly the two claim_quote INSERTs"
     for ins in inserts:
-        assert "ON CONFLICT" not in ins.upper()
+        assert "ON CONFLICT DO NOTHING" in ins, f"bare DO NOTHING required: {ins!r}"
+        assert "ON CONFLICT (" not in ins and "ON CONFLICT ON CONSTRAINT" not in ins
