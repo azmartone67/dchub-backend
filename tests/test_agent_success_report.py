@@ -335,6 +335,9 @@ def test_offline_learning_split_and_confidence(monkeypatch):
     assert "recomputed" in pc["invariant"] and "frozen" in pc["invariant"], \
         "the invariant must name both permitted resolutions"
     assert pc["machine_readable"] == "/api/v1/reports/agent-success/contract"
+    # Round-3: Meta cited a metric with the ENVELOPE's version. The payload
+    # must tell citers which version to pin, in place.
+    assert "ENVELOPE" in pc["version_scopes"] and "metric" in pc["version_scopes"]
 
 
 def test_contract_endpoint_derives_from_the_constant():
