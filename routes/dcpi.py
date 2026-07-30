@@ -6470,11 +6470,17 @@ def _dcpi_footprint_figures() -> dict:
 
     ONE query, and each figure uses the SAME SQL /api/v1/stats/canonical already
     publishes, so the two surfaces cannot drift apart:
-      countries            -> routes/facilities_by_dims.py:199-201
-                              (`countries_covered`, live 186)
-      facilities_distinct  -> routes/facilities_by_dims.py:280-283
+      countries            -> routes/facilities_by_dims.py:209-211
+                              (`countries_covered`, live 178). ★2026-07-30:
+                              counted on discovered_facilities — the same fleet
+                              facilities_distinct counts. It used to read the
+                              LEGACY `facilities` table (186), which mixes full
+                              names with ISO codes ("USA"+"US"), pairing a
+                              wrong-table country count with a discovered-fleet
+                              facility count.
+      facilities_distinct  -> routes/facilities_by_dims.py:290-293
                               (`facilities_distinct`, live 15,363). That file's
-                              comment at :262-278 is explicit that
+                              comment at :272-288 is explicit that
                               facilities_verified / facilities_tracked are
                               AMBIGUOUS and that new consumers must read
                               facilities_distinct — so that is what this reads.
@@ -6494,8 +6500,8 @@ def _dcpi_footprint_figures() -> dict:
         with _conn() as c, c.cursor() as cur:
             cur.execute("""
                 SELECT
-                  (SELECT COUNT(DISTINCT country) FROM facilities
-                    WHERE country IS NOT NULL AND country != '')          AS countries,
+                  (SELECT COUNT(DISTINCT country) FROM discovered_facilities
+                    WHERE country IS NOT NULL AND country <> '')          AS countries,
                   (SELECT COUNT(DISTINCT canonical_slug) FROM discovered_facilities
                     WHERE canonical_slug IS NOT NULL)                     AS facilities_distinct
             """)
