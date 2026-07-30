@@ -419,7 +419,10 @@ def test_headroom_reason_records_the_retype():
     tree, _ = _parse(_XLAYER)
     consts = [n.value for n in ast.walk(tree)
               if isinstance(n, ast.Constant) and isinstance(n.value, str)]
-    headroom = [s for s in consts if "no measured MW headroom exists" in s]
+    # 2026-07-30 public-reason hygiene: the served string now leads with a
+    # plain-English sentence (no WS/commit codenames) — match the new register.
+    headroom = [s for s in consts
+                if "No measured megawatt headroom exists" in s]
     assert headroom, "the headroom_mw reason string disappeared"
     joined = " ".join(consts)
     assert "GENERATION-interconnection" in joined, (
