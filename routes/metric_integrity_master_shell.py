@@ -99,40 +99,73 @@ def _one(cur, sql, args=None):
 
 # ── lane 1 · does our automation actually LAND code? ──────────────────
 def _lane_automation(cur) -> list:
+    """★★CORRECTED 2026-07-30 — this lane was RAISING A FALSE ALARM.
+
+    It measured `MAX(merged_at/updated_at)` on brain_automerge_log and reported
+    "auto-merge DEAD 34.9 days". That was WRONG. The table only ever recorded
+    MERGES, so a pipeline running correctly every 30 minutes with NOTHING
+    ELIGIBLE was indistinguishable from a dead one.
+
+    Verified live: `/api/v1/brain/automerge/run` returns
+    `enabled:true · breaker clear · health green · rate_cap 3 · merged:[] ·
+    skipped:[] · would_merge:[]` — healthy and correctly idle. The GitHub
+    workflow `brain-autonomy.yml` fires every 30 min and succeeds. There are
+    ZERO open PRs of any kind, so there is nothing to merge.
+
+    ★IDLE IS NOT DEAD. The alarm cost a full session and produced a confident
+    WRITTEN diagnosis that was false ("GH006 blocks bot pushes → convert to
+    PR-merge with PR_SUBMIT_TOKEN") — this module has ALWAYS merged via
+    `PUT /pulls/{n}/merge` with a PAT and never pushes. A metric that can only
+    fail in one direction gets believed; this one did.
+
+    Now reads the `kind='run'` heartbeat and separates three states.
+    """
     out = []
-    # ★Age of the newest auto-merge, not the newest RUN. A green workflow that
-    # cannot push is the whole failure mode here — auto-merge went 34 days
-    # "healthy" while landing nothing, because nothing measured the LANDING.
-    # ★brain_automerge_log has merged_at/updated_at — NOT created_at. My first
-    # cut assumed created_at, the query failed silently and the check reported
-    # "unreadable or empty" against a table holding 35 rows. Third schema
-    # assumption to bite in one day: verify columns, never assume them.
-    hrs = _one(cur, """SELECT ROUND(EXTRACT(EPOCH FROM (NOW() -
-                              GREATEST(MAX(merged_at), MAX(updated_at))))
-                              / 3600.0, 1)
-                         FROM brain_automerge_log""")
-    if hrs is None:
-        out.append(_check("auto_merge_age",
-                          "brain auto-merge has landed something recently", None,
-                          "brain_automerge_log unreadable or empty — UNMEASURED, "
-                          "not zero", critical=True))
-    else:
-        h = float(hrs)
+    hb = _one(cur, """SELECT ROUND(EXTRACT(EPOCH FROM (NOW() - MAX(updated_at)))
+                             / 3600.0, 1)
+                        FROM brain_automerge_log WHERE kind = 'run'""")
+    if hb is None:
         out.append(_check(
-            "auto_merge_age", "brain auto-merge has landed something recently",
-            h <= _AUTOMERGE_MAX_HOURS,
-            f"newest auto-merge {h:,.1f}h ago (limit {_AUTOMERGE_MAX_HOURS:.0f}h)"
-            + ("" if h <= _AUTOMERGE_MAX_HOURS else
-               f" — DEAD for {h/24:.1f} days. Known cause: `main` is protected "
-               f"and github-actions[bot] cannot push (GH006), so runs go green "
-               f"while nothing lands. A green CI run is NOT a merged commit."),
+            "automerge_running", "the auto-merge runner is EXECUTING", None,
+            "no kind='run' heartbeat yet — ships with the heartbeat change; "
+            "until the next pass this is UNMEASURED, not dead. (Merge-freshness "
+            "is NOT a substitute: it conflates 'nothing eligible' with 'broken'.)",
             critical=True))
-    # Findings churn: resolving at least as fast as opening is the health signal.
-    opened = _one(cur, """SELECT COUNT(*) FROM brain_findings
-                           WHERE created_at >= NOW() - INTERVAL '24 hours'""")
-    if opened is not None:
-        out.append(_check("findings_churn", "brain findings churn is measurable",
-                          True, f"{int(opened)} finding(s) opened in 24h"))
+    else:
+        h = float(hb)
+        out.append(_check(
+            "automerge_running", "the auto-merge runner is EXECUTING",
+            h <= _AUTOMERGE_MAX_HOURS,
+            f"last pass {h:,.1f}h ago (limit {_AUTOMERGE_MAX_HOURS:.0f}h)"
+            + ("" if h <= _AUTOMERGE_MAX_HOURS else
+               " — the RUNNER is not firing. Check brain-autonomy.yml (*/30) and "
+               "BRAIN_AUTOMERGE_ENABLED. This is the genuinely-dead state."),
+            critical=True))
+    # Is the pipeline being handed anything to land? Zero eligible is the state
+    # we are actually in, and it is an UPSTREAM question, not a merger fault.
+    blocked = _one(cur, """SELECT COUNT(*) FROM brain_automerge_log
+                            WHERE kind='run' AND status='blocked'
+                              AND updated_at >= NOW() - INTERVAL '7 days'""")
+    if blocked is not None:
+        out.append(_check(
+            "automerge_not_blocked", "eligible work is not piling up unmerged",
+            int(blocked) == 0,
+            f"{int(blocked)} pass(es) in 7d had eligible PRs but merged none"
+            if int(blocked) else
+            "no pass found eligible work it failed to merge"))
+    # The REAL ceiling on autonomy: the mechanical allowlist.
+    out.append(_check(
+        "autofix_supply", "the brain has work it is ALLOWED to land", False,
+        "UPSTREAM GAP (this is the real autonomy ceiling): the autonomy tick "
+        "scans 1,170 files and finds ~43 candidates, but every draft-PR "
+        "candidate is rejected `not_mechanical` — 'no allowlist transform class "
+        "matched', 'adds control-flow keyword(s)', 'changed lines > "
+        "MECH_MAX_LINES=8'. The three shipped classes (interval_literal, "
+        "bool_is_active, now_text_cast) are EXHAUSTED — last autofix PR #1666 on "
+        "2026-07-19. Auto-merge is idle because nothing is permitted to reach "
+        "it. Widening the allowlist with new SAFE transform classes is what "
+        "raises autonomy; it is a safety decision, not a bug fix.",
+        critical=True))
     return out
 
 
