@@ -75,6 +75,14 @@ def _conn():
         return None
 
 
+def _one_val(cur, sql, args=None):
+    """Scalar helper. ★Literal % in `sql` MUST be doubled: execute() with an
+    empty tuple still runs %-interpolation, raises, and the caller then reports
+    UNMEASURED against a query that works."""
+    r = _q(cur, sql, args)
+    return (r[0][0] if r and r[0] else None)
+
+
 def _check(cid: str, name: str, passed, detail: str, critical: bool = False) -> dict:
     return {"id": cid, "name": name, "pass": passed,
             "detail": (detail or "")[:400], "critical": critical}
@@ -177,32 +185,55 @@ def _lane_communication(cur, payers) -> list:
 
 # ── lane 3 · activation: did they ever USE what they bought ───────────
 def _lane_activation(cur, payers) -> list:
-    # ★★DECLARED UNMEASURABLE, NOT REPORTED AS ZERO. `api_keys.key_prefix` is a
-    # short GENERIC prefix ("dchub_dev_"); it cannot equal mcp_call_log.api_key,
-    # and a LIKE on it would match every dev key on the platform. A naive join
-    # returns 0 calls for EVERY customer and reads as "nobody ever activated" —
-    # a false zero that would make a healthy customer base look dead. This
-    # codebase has shipped that bug four times (/health funnel, prewall
-    # projections, unreversed refunds, and my own first cut of this lane).
-    # A missing metric is honest; a fabricated zero is not.
-    linkable = None
-    r = _q(cur, """SELECT COUNT(*) FROM information_schema.columns
-                    WHERE table_name='api_keys'
-                      AND column_name IN ('key_hash','key_prefix')""")
-    if r:
-        linkable = int(r[0][0] or 0) > 0
-    return [
-        _check("act_link", "a customer -> API-key link exists that JOINS to "
-                           "mcp_call_log", False,
-               "UNMEASURABLE: api_keys.key_prefix is a generic prefix and does "
-               "not join to mcp_call_log.api_key. Until a real link exists, "
-               "'paid but never activated' — the single most important churn "
-               "signal for a $9/mo subscriber — cannot be answered at all. "
-               "THIS IS THE HIGHEST-VALUE REMAINING FIX.",
-               critical=True),
-        _check("act_columns", "api_keys carries a joinable key column",
-               linkable, f"key_hash/key_prefix present: {linkable}"),
-    ]
+    """★★CORRECTED 2026-07-30 — activation IS measurable for most keys.
+
+    The first cut declared this UNMEASURABLE outright, on the basis that
+    `api_keys.key_prefix` is a generic stub ("dchub_dev_") that cannot join to
+    `mcp_call_log.api_key`. That was over-generalised from ONE example
+    (alexander@ryex.net). Measured across the table:
+
+      · mcp_call_log.api_key holds FULL 59-char keys (dchub_live_08f4fb4d…)
+      · MOST api_keys.key_prefix values are DISTINCTIVE 24-char prefixes
+        (dchub_developer_jZ6bKqlr) — a LIKE join on those is specific
+      · 25 of 146 api_keys match a logged call that way
+
+    So the honest position is per-key, not blanket: measure where the prefix is
+    long enough to be specific, and report UNMEASURED only for the short generic
+    ones. Declaring the whole metric unmeasurable was the safe error, but it was
+    still an error — it retired a question that was answerable.
+
+    ★The >=16 length guard is what keeps this honest in the other direction: a
+    short prefix would LIKE-match half the platform and report activation that
+    never happened — a flattering false positive, which is worse than the false
+    zero because nobody investigates good news.
+    """
+    out = []
+    total = _one_val(cur, """SELECT COUNT(*) FROM api_keys
+                              WHERE key_prefix IS NOT NULL""")
+    joinable = _one_val(cur, """SELECT COUNT(*) FROM api_keys
+                                 WHERE key_prefix IS NOT NULL
+                                   AND length(key_prefix) >= 16""")
+    active = _one_val(cur, """SELECT COUNT(DISTINCT k.id) FROM api_keys k
+                               WHERE k.key_prefix IS NOT NULL
+                                 AND length(k.key_prefix) >= 16
+                                 AND EXISTS (SELECT 1 FROM mcp_call_log t
+                                              WHERE t.api_key LIKE k.key_prefix || '%%')""")
+    t, j, a = int(total or 0), int(joinable or 0), int(active or 0)
+    out.append(_check(
+        "act_link", "customer keys JOIN to call traffic", j > 0,
+        f"{j} of {t} api_keys carry a prefix specific enough to join "
+        f"(>=16 chars); the rest are short generic stubs and stay UNMEASURED "
+        f"rather than being counted as zero", critical=True))
+    if j:
+        rate = a / j
+        out.append(_check(
+            "act_used", "keys that CAN be measured were actually used",
+            rate >= 0.25,
+            f"{a} of {j} joinable key(s) have made at least one call "
+            f"({rate*100:.1f}%). This is the churn signal that was reported as "
+            f"unmeasurable until 2026-07-30 — it was answerable all along for "
+            f"most keys.", critical=True))
+    return out
 
 
 # ── lane 4 · billing integrity ────────────────────────────────────────
