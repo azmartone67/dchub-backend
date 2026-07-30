@@ -26,9 +26,13 @@ approximated — an agent must be able to see the hole)
     headroom field at all. WS6 (commit aa3b4b92) already adjudicated this and
     withholds the verdict without a numeric basis. There is nothing to filter on.
   • parcel acreage / zoning / ownership — one county of coverage (WS4).
-  • feeder capacity — `hosting_capacity_feeders.capacity_mw_max` sits next to
-    `queued_gen_kw` behind a `capacity_type` discriminator: it answers "can I
-    INJECT", never "can I ENERGISE". Wrong physical quantity for load siting.
+  • feeder capacity — SPLIT by `hosting_capacity_feeders.capacity_type`
+    (2026-07-30). Rows typed 'load' ARE utility-published load-serving
+    capacity and are surfaced with value + unit + basis — single-distribution-
+    feeder scale (~7.5-32 MW), never campus-scale headroom. Rows typed 'gen'
+    answer "can I INJECT", never "can I ENERGISE" — wrong physical quantity,
+    still excluded by design. The old clause declared the WHOLE table gen,
+    which had become factually wrong (9 of 24 live territories are load).
   • transmission-line distance — `transmission_lines` has ZERO coordinate
     columns across 94,626 rows. Every "near transmission" answer in this
     codebase is really "near the from_sub substation". Offering a line-distance
@@ -52,8 +56,9 @@ uses latitude/longitude · carrier_facility_presence uses facility_lat/facility_
 
 COST CONTRACT — the pool lesson (sitemap stampede). A geographic scope is
 MANDATORY (400 without one). Every SQL carries a LIMIT. The number of DB round
-trips is bounded and INDEPENDENT of `limit`: 1 anchors + 1 markets, +1 iff fiber
-was asked for, +1 iff carriers were asked for. Per-point enrichment is banned:
+trips is bounded and INDEPENDENT of `limit`: 1 anchors + 1 markets, +1 feeders
+(when anchors exist), +1 iff fiber was asked for, +1 iff carriers were asked
+for. Per-point enrichment is banned:
 /api/infrastructure/connectivity/score measures 1.2-1.9 s PER POINT against
 fcc_fiber_hex, so N of those would blow both the request budget and the pool.
 Proximity is resolved by one set-wide bbox query + a coarse grid index in Python.
@@ -90,9 +95,10 @@ MAX_LIMIT = 200
 DEFAULT_MAX_MARKET_KM = 75.0        # nearest-CENTROID join, never containment
 
 _ANCHOR_SQL_LIMIT = 4000            # same cap depth_master_shell.py:456 uses
-_SET_SQL_LIMIT = 20000              # fiber / carrier set-wide bbox reads
+_SET_SQL_LIMIT = 20000              # fiber / carrier / feeder set-wide reads
 _MAX_RADIUS_KM = 250.0
 _MINT_CAP = 50                      # candidates cost 2 round trips each
+_FEEDER_PAD_KM = 25.0               # feeder bbox pad around the anchor pool
 
 # Floodplain is a per-point EXTERNAL call. Bounded three ways so a wide search
 # can never turn into a FEMA hammer: call cap, wall-clock budget, and a hard
@@ -311,6 +317,82 @@ def _bool_arg(args, name):
     return str(args.get(name) or "").strip().lower() in ("1", "true", "yes", "on")
 
 
+# The gen half of the feeder story, kept in its original words: it was and
+# remains the right sentence for capacity_type='gen' rows. What changed on
+# 2026-07-30 is that it may no longer be generalised to the whole table —
+# load-typed rows are a different physical quantity and are surfaced.
+_FEEDER_GEN_REASON = (
+    "hosting_capacity_feeders rows typed 'gen' are DER/generation hosting "
+    "capacity ('can I inject'), not load energisation capacity. Wrong "
+    "physical quantity — excluded by design, not by omission.")
+
+
+def _feeder_capacity_clause(rows, basis_map=None):
+    """→ the constraint_coverage['feeder_capacity_mw'] dict, from a LIVE read.
+
+    `rows` = [(utility, capacity_mw_max, capacity_type, src_updated), ...]
+    near the scope (capacity_mw_max never NULL — the query excludes flag-only
+    rows). Split by capacity_type:
+
+      • load rows exist  → the value is the best LOAD-typed feeder, with its
+        utility, unit and basis attached. Gen rows NEVER contribute to the
+        value, however large — they are counted and their exclusion reason
+        travels alongside.
+      • only gen rows    → unavailable, keeping the wrong-physical-quantity
+        reason (it is correct for gen).
+      • no rows at all   → unavailable + reason. Never 0: absence of feeder
+        coverage is unknown, not zero.
+
+    The scale caveat is mandatory: these are single DISTRIBUTION feeders
+    (~7.5-32 MW territory maxima), not campus-scale transmission service.
+    """
+    load_rows = [r for r in rows
+                 if (r[2] or "gen") == "load" and r[1] is not None]
+    gen_n = sum(1 for r in rows if (r[2] or "gen") != "load")
+    if load_rows:
+        best = max(load_rows, key=lambda r: float(r[1]))
+        utility = best[0] or ""
+        # PECO stores MVA (its own legend's unit); everything else is MW.
+        # The mislabel-proof signal is the utility label, which carries the
+        # unit warning end-to-end.
+        unit = ("MVA (upper bound on MW — the publisher states no power "
+                "factor)") if "MVA" in utility else "MW"
+        clause = {
+            "status": "validated",
+            "value": float(best[1]),
+            "unit": unit,
+            "utility": utility,
+            "as_of": best[3],
+            "basis": ("single-distribution-feeder LOAD capacity, utility-"
+                      "published — the best load-typed feeder within ~%d km "
+                      "of the scope's anchors. NOT campus-scale transmission "
+                      "headroom: one feeder, informational, not binding "
+                      "interconnection guidance." % int(_FEEDER_PAD_KM)),
+            "load_feeder_rows_in_scope": len(load_rows),
+            "source": "hosting_capacity_feeders WHERE capacity_type='load' "
+                      "(utility-published hosting-capacity GIS)",
+        }
+        if basis_map:
+            ub = basis_map.get(utility)
+            if ub:
+                clause["utility_capacity_basis"] = ub
+        if gen_n:
+            clause["gen_rows_excluded"] = gen_n
+            clause["gen_exclusion_reason"] = _FEEDER_GEN_REASON
+        return clause
+    if gen_n:
+        return {"status": "unavailable",
+                "reason": _FEEDER_GEN_REASON + (
+                    " Only gen-typed feeders exist near this scope (%d rows); "
+                    "load-typed coverage is listed at "
+                    "/api/v1/grid/hosting-capacity/coverage." % gen_n)}
+    return {"status": "unavailable", "reason":
+            "no utility-published hosting-capacity feeder rows near this "
+            "scope. Load-serving feeder capacity is published only for a "
+            "limited set of utility territories — see "
+            "/api/v1/grid/hosting-capacity/coverage for which."}
+
+
 # ── the route ──────────────────────────────────────────────────────────────
 @cross_layer_sites_bp.route("/api/v1/sites/cross-layer")
 def cross_layer_sites():
@@ -359,14 +441,26 @@ def cross_layer_sites():
             "available_mva is populated on ~0 rows, /api/v1/grid/status "
             "'grid_headroom' is a voltage-class ladder (nameplate class, not "
             "headroom), and get_grid_scoreboard carries no headroom field. "
-            "WS6 (aa3b4b92) already withheld this verdict."},
+            "WS6 (aa3b4b92) already withheld this verdict. The one "
+            "transmission-voltage source ever ingested (Avista) turned out to "
+            "be a utility GENERATION-interconnection study (publisher-"
+            "labelled 'GenerationInterconnectionHeatMap', MW field a "
+            "pass/fail flag on nine discrete study sizes) and was retyped "
+            "'gen' 2026-07-30 — so zero measured transmission LOAD "
+            "capability exists. Distribution-feeder LOAD capacity is "
+            "published for some territories and reported separately under "
+            "feeder_capacity_mw; it is single-feeder scale, not campus "
+            "scale."},
         "parcel_acres": {"status": "unavailable", "reason":
             "parcel_boundaries covers ONE county (Loudoun VA, 132,557 rows); "
             "land_parcels is read by no route. Blocked on WS4."},
+        # Overwritten below from a LIVE read of hosting_capacity_feeders,
+        # split by capacity_type — see _feeder_capacity_clause(). This
+        # initial value only survives if the feeder read never ran.
         "feeder_capacity_mw": {"status": "unavailable", "reason":
-            "hosting_capacity_feeders.capacity_mw_max is DER/generation hosting "
-            "capacity ('can I inject'), not load energisation capacity. Wrong "
-            "physical quantity — excluded by design, not by omission."},
+            "hosting-capacity feeder layer was not read for this scope "
+            "(request failed before the feeder query) — value withheld "
+            "rather than guessed"},
         "transmission_line_km": {"status": "unavailable", "reason":
             "transmission_lines has no coordinate columns across 94,626 rows; "
             "line proximity here would silently mean substation proximity."},
@@ -387,6 +481,7 @@ def cross_layer_sites():
     carrier_truncated = False
     fiber_pts = None
     carrier_pts = None
+    feeder_rows = None
     market_vintage = None
     try:
         cur = conn.cursor()
@@ -522,6 +617,34 @@ def cross_layer_sites():
                 cur, ("SELECT facility_lat, facility_lng, carrier_name "
                       "FROM carrier_facility_presence"),
                 "facility_lat", "facility_lng", pool, pad)
+
+        # ── QUERY 5 — hosting-capacity feeders near the scope: ONE bounded
+        # bbox read, split downstream by capacity_type. Rows typed 'load'
+        # are the real "what can a new load DRAW here" number (single-
+        # distribution-feeder scale); 'gen' rows stay excluded by design.
+        # Load-first ordering so gen rows can never crowd load rows out of
+        # the LIMIT. Own try/except: a feeder-table problem degrades this
+        # ONE clause to its declared-unread reason, never the whole search.
+        if pool:
+            try:
+                _la = [a["lat"] for a in pool]
+                _lo = [a["lng"] for a in pool]
+                _pad_lat = _FEEDER_PAD_KM / 111.0
+                _pad_lng = _FEEDER_PAD_KM / (111.0 * max(
+                    0.05, math.cos(math.radians((min(_la) + max(_la)) / 2))))
+                cur.execute(
+                    "SELECT utility, capacity_mw_max, capacity_type, "
+                    "src_updated FROM hosting_capacity_feeders "
+                    "WHERE lat BETWEEN %s AND %s AND lng BETWEEN %s AND %s "
+                    "AND capacity_mw_max IS NOT NULL "
+                    "ORDER BY (capacity_type = 'load') DESC, "
+                    "capacity_mw_max DESC LIMIT %s",
+                    [min(_la) - _pad_lat, max(_la) + _pad_lat,
+                     min(_lo) - _pad_lng, max(_lo) + _pad_lng,
+                     _SET_SQL_LIMIT])
+                feeder_rows = cur.fetchall()
+            except Exception:
+                feeder_rows = None
     except Exception as e:
         try:
             conn.close()
@@ -561,6 +684,19 @@ def cross_layer_sites():
             **({"partial_reason": "set-wide carrier read hit its %d-row cap"
                 % _SET_SQL_LIMIT} if carrier_truncated else {}),
         }
+
+    # feeder capacity: LIVE clause from the rows just read. basis_map is the
+    # per-utility capacity_basis the ingest module attaches to every serving
+    # row — fail-soft: without it the clause still carries its own basis.
+    if feeder_rows is not None:
+        _basis_map = None
+        try:
+            from routes.hosting_capacity_ingest import _SOURCE_CAPACITY_BASIS \
+                as _basis_map
+        except Exception:
+            _basis_map = None
+        coverage["feeder_capacity_mw"] = _feeder_capacity_clause(
+            feeder_rows, _basis_map)
 
     _derive = None
     try:
@@ -833,7 +969,8 @@ def cross_layer_sites():
         "dropped_by_constraints": dropped,
         "results": results,
         "db_round_trips": 2 + (1 if fiber_pts is not None else 0)
-                            + (1 if carrier_pts is not None else 0),
+                            + (1 if carrier_pts is not None else 0)
+                            + (1 if feeder_rows is not None else 0),
         "_source": "DC Hub — dchub.cloud",
         "_cite": "Data: DC Hub (dchub.cloud), CC-BY-4.0 — cite as \"DC Hub, dchub.cloud\"",
         "provenance": _provenance(),

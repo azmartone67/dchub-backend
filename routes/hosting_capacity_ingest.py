@@ -161,6 +161,14 @@ _ROW_NOT_FEEDER_SOURCES = {
     # section, so an unfolded row count would inflate a 1,251-feeder territory
     # into a 977k-feeder one.
     "nvenergy_lhc": ("line_sections", "dedupe_key"),
+    # 19,764 source rows -> 197 buses (100.3x, measured 2026-07-30): each row
+    # is one (bus × study size × limiting element × contingency) tuple from a
+    # generation-interconnection study, and the point-only key collapsed them
+    # to the per-bus MAXIMUM under the capacity-DESC crawl (bus 'Huetter'
+    # stored at 200 MW while failing 2 of its 10 constraints at 20 MW — read
+    # back from the live table). key_extra keeps every constraint row its own
+    # key; fields["feeder"] stays None so no row count is ever a feeder count.
+    "avista_bus": ("per_constraint_study_rows", "key_extra"),
 }
 
 # Cap on parts exploded from one multipart feature — a backstop against a
@@ -371,13 +379,54 @@ SOURCES = [
                 "mw_max": ("Hosting__1", 0.001),          # kW → MW
                 "mw_min": None, "queued_kw": "Installed",
                 "updated": "Date_of_La"}},
-    # Transmission BUS headroom (Spokane/Post Falls) — not distribution
-    # HC; typed separately so it can never be blended with feeder HC.
-    {"utility": "Avista (bus headroom)",
+    # ★★ AVISTA — RETYPED bus_headroom → gen, 2026-07-30. This shipped as
+    # "Avista (bus headroom)" ("transmission bus MW available"), and it is
+    # NOT that. Per the publisher's own AGOL item metadata (item
+    # 34c5773cf6dc44a798b300d0ebab0ecb: snippet "Contains data used by
+    # Generation Interconnection maps and apps", description "Release:
+    # 2026.GenerationInterconnectionHeatMap.R1"), the layer is a
+    # GENERATION-interconnection transfer study — "can I inject", not what
+    # a load can draw. The field list corroborates it (Direction_Source,
+    # Trans_Lim, Percent_OTDF, Limiting_CTG = transfer-capability/OTDF
+    # language). We hold ZERO measured transmission LOAD capability.
+    # ★★ MW_Available IS A PASS/FAIL FLAG, NOT A MEASUREMENT: across all
+    # 19,764 source rows it takes exactly two values — MW_Input (the
+    # studied request size passed) or 0 (it failed) — over nine discrete
+    # study sizes (20/40/80/100/120/150/200/250/300 MW). The old
+    # territory max "300.0" was the largest scenario Avista chose to
+    # study, not a capacity.
+    # ★★ THE OLD POINT-ONLY KEY KEPT THE MOST FLATTERING ROW: rows are
+    # (bus × study size × limiting element × contingency) tuples, ~100x
+    # per bus (19,764 → 197), and capacity-DESC paging + keep-first dedup
+    # collapsed each bus to its MAXIMUM passing size, discarding every
+    # binding constraint (bus 'Huetter' fails 2/10 constraints at 20 MW
+    # yet was stored at 200 MW — read back from the live table
+    # 2026-07-30). key_extra mirrors dominion_va_ev_load: a key collision
+    # now means genuinely identical data, so every constraint row lands.
+    # The old mislabelled rows are deleted by _RETRACTED_UTILITIES below.
+    {"utility": "Avista (gen interconnection study)",
      "key": "avista_bus",
-     "capacity_type": "bus_headroom",
+     "capacity_type": "gen",
      "url": ("https://services3.arcgis.com/WlYQgAChrqj0tuQi/arcgis/rest/"
              "services/HeatMap_MW_Impact_PRD/FeatureServer/0/query"),
+     "key_extra": ("MW_Input", "Limiting_Element", "Limiting_CTG"),
+     "delay_s": 2.0,
+     "capacity_basis": ("GENERATION-interconnection study value — NOT load "
+                        "capacity and NOT a measured bus headroom. Avista's "
+                        "own AGOL metadata labels the layer 'Generation "
+                        "Interconnection' ('2026.GenerationInterconnection"
+                        "HeatMap.R1', item 34c5773cf6dc44a798b300d0ebab0ecb). "
+                        "MW_Available is a PASS/FAIL flag: it equals the "
+                        "studied injection size (MW_Input, one of nine "
+                        "discrete scenarios from 20 to 300 MW) where that "
+                        "size cleared one limiting element under one "
+                        "contingency, and 0 where it failed. Read a row as "
+                        "'this injection size passed/failed THIS constraint', "
+                        "never as a continuous headroom; the binding "
+                        "capability of a bus is the MINIMUM across its "
+                        "constraint rows. Rows are (bus × study size × "
+                        "limiting element × contingency) tuples, not "
+                        "feeders."),
      "fields": {"feeder": None, "substation": "Bus_Name",
                 "state": None, "region": None, "voltage_kv": "Bus_Voltage",
                 "mw_max": ("MW_Available", 1.0),
@@ -1201,6 +1250,64 @@ def _conn():
         return None
 
 
+# ★★ RETRACTED utility labels — stored rows under these labels were published
+# under a WRONG MEANING and must be deleted, not merely re-typed. The upsert
+# has no delete path (ON CONFLICT keeps orphans forever — the stale-twin
+# trap), so retraction is an explicit step. Entries are exact `utility`
+# strings; each names its evidence:
+#   "Avista (bus headroom)" — a generation-interconnection study (publisher's
+#   own AGOL metadata: "GenerationInterconnectionHeatMap") stored as per-bus
+#   FLATTERING MAXIMA of a pass/fail flag, typed as transmission bus
+#   headroom. Confirmed against the live table 2026-07-30: every stored value
+#   was one of the nine discrete study sizes, and bus 'Huetter' read 200 MW
+#   while failing 2/10 constraints at 20 MW. Re-ingested honestly as
+#   "Avista (gen interconnection study)" (key avista_bus, capacity_type gen,
+#   per-constraint keys) — the new label lands under new keys, so the old
+#   rows would otherwise sit beside it forever.
+_RETRACTED_UTILITIES = (
+    "Avista (bus headroom)",
+)
+
+
+def run_capacity_retractions() -> dict:
+    """Delete rows stored under retracted utility labels. Idempotent: after
+    the first pass every DELETE matches nothing. Fail-soft (a DB problem
+    reports itself and never blocks the ingest that follows), and runs
+    BEFORE the weekly gate — a retraction is a correction, not an ingest,
+    and must not wait for the next crawl window."""
+    out: dict = {"deleted": {}}
+    if not _RETRACTED_UTILITIES:
+        return out
+    c = _conn()
+    if c is None:
+        out["status"] = "no_database"
+        return out
+    try:
+        with c.cursor() as cur:
+            for label in _RETRACTED_UTILITIES:
+                cur.execute("DELETE FROM hosting_capacity_feeders "
+                            "WHERE utility = %s", (label,))
+                if cur.rowcount:
+                    out["deleted"][label] = cur.rowcount
+        c.commit()
+        if out["deleted"]:
+            logger.warning("hosting_capacity: RETRACTED mislabelled rows: %s",
+                           out["deleted"])
+    except Exception as e:
+        try:
+            c.rollback()
+        except Exception:
+            pass
+        # e.g. the table does not exist yet on a fresh DB — nothing to retract
+        out["status"] = "retraction_failed: %s" % str(e)[:80]
+    finally:
+        try:
+            c.close()
+        except Exception:
+            pass
+    return out
+
+
 def check_source_contract(src: dict) -> str | None:
     """Return a REASON STRING if `src` must not be ingested, else None.
 
@@ -1216,13 +1323,19 @@ def check_source_contract(src: dict) -> str | None:
         return ("capacity_type %r is not one of %s — every source must "
                 "DECLARE what its megawatts mean" % (ct, list(_ALLOWED_CAPACITY_TYPES)))
     fields = src.get("fields") or {}
-    if ct == "load":
+    # ★ bus_headroom gets the SAME gen-field protection as load, not less:
+    # both assert "the RIGHT physical quantity" (what can be drawn / what a
+    # bus holds), so a known GENERATION field mapped into either is a
+    # mis-wire. The old `if ct == "load"` exempted bus_headroom entirely —
+    # the gap that let a generation-interconnection study ship typed as
+    # transmission bus headroom (Avista, retyped 2026-07-30).
+    if ct in ("load", "bus_headroom"):
         for slot in ("mw_max", "mw_min"):
             spec = fields.get(slot)
             name = spec[0] if isinstance(spec, tuple) else spec
             if name and name in _GEN_ONLY_FIELDS:
                 return ("%s maps generation field %r into %s but declares "
-                        "capacity_type 'load'" % (key, name, slot))
+                        "capacity_type %r" % (key, name, slot, ct))
     gran = _ROW_NOT_FEEDER_SOURCES.get(key)
     if gran:
         granularity, knob = gran
@@ -1688,10 +1801,19 @@ def _ran_recently() -> bool:
 def run_hosting_capacity_ingest(force: bool = False) -> dict:
     if os.environ.get("HOSTING_CAPACITY_INGEST_DISABLE") == "1":
         return {"status": "disabled"}
+    # Retractions run BEFORE the weekly gate: deleting rows published under a
+    # wrong meaning must not wait ~6 days for the next crawl window, and the
+    # gate reads MAX(ingested_at), which a recent (mislabelled) ingest sets.
+    retracted = run_capacity_retractions()
     if not force and _ran_recently():
-        return {"status": "skipped_recent"}
+        out = {"status": "skipped_recent"}
+        if retracted.get("deleted"):
+            out["retracted"] = retracted["deleted"]
+        return out
     deadline = time.monotonic() + _BUDGET_S
     out = {"status": "ok", "sources": {}, "rows": 0}
+    if retracted.get("deleted"):
+        out["retracted"] = retracted["deleted"]
     c = _conn()
     if c is None:
         out["status"] = "no_database"
