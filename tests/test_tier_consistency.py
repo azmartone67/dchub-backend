@@ -183,6 +183,98 @@ def test_gating_maps_match_tier_registry():
     assert not fails, "Gating-map ↔ tier_registry drift:\n" + "\n".join(fails)
 
 
+# ── 2c. Every audited tier dict must cover the canonical five ───────
+def test_tier_dicts_cover_canonical_five():
+    """r-starter-sweep (2026-07-30): the brain radar's
+    check_tier_dict_missing_keys REQUIRED set predated the r34 starter
+    tier (it checked anonymous/identified/developer/pro only) — which
+    is exactly why the radar never flagged the starter gaps PR #1943
+    fixed. This test mirrors the radar's full audit list and requires
+    the canonical FIVE (anonymous/identified/starter/developer/pro) in
+    every dict, and asserts the radar's own REQUIRED literal carries
+    'starter' so the runtime containment can't quietly regress either.
+
+    paywall_middleware is checked by AST, not import: it imports
+    stripe at module scope and the CI unit-tests venv deliberately
+    does not install stripe. Everything else imports — and an import
+    failure is a FAILURE, not a tolerated SKIP (a guard that can't
+    load its subject is dead, and CI must go red, not silently green).
+    """
+    CANON = {'anonymous', 'identified', 'starter', 'developer', 'pro'}
+    fails = []
+
+    IMPORTABLE_TARGETS = [
+        ('api_tier_gating', 'TIER_RATE_LIMITS'),
+        ('api_tier_gating', 'TIER_DAILY_RECORD_CAPS'),
+        ('api_tier_gating', 'TIER_PAGE_CAPS'),
+        ('api_tier_gating', 'TIER_SEARCH_LIMITS'),
+        ('api_tier_gating', 'MCP_TIER_RESULT_LIMITS'),
+        ('api_tier_gating', 'PLAN_LEVELS'),
+        ('dchub_me', 'LIMITS'),
+        ('land_power_usage_limiter', 'LAND_POWER_LIMITS'),
+        ('land_power_usage_limiter', 'API_MONTHLY_LIMITS'),
+        ('alert_system_v2', 'ALERT_LIMITS'),
+        ('free_tier_limiter', 'TIER_LIMITS'),
+        ('api_data_protection', 'PROTECTION_CONFIG.daily_record_caps'),
+        ('api_data_protection', 'PROTECTION_CONFIG.max_results_per_response'),
+    ]
+    for modpath, attr in IMPORTABLE_TARGETS:
+        try:
+            mod = __import__(modpath, fromlist=[attr.split('.')[0]])
+        except Exception as e:
+            fails.append(f"{modpath}: import failed ({str(e)[:80]}) — "
+                         f"this guard is dead, fix the import")
+            continue
+        parts = attr.split('.')
+        obj = getattr(mod, parts[0], None)
+        for part in parts[1:]:
+            obj = obj.get(part) if isinstance(obj, dict) else None
+        if not isinstance(obj, dict):
+            fails.append(f"{modpath}.{attr}: did not resolve to a dict")
+            continue
+        missing = sorted(CANON - set(obj.keys()))
+        if missing:
+            fails.append(f"{modpath}.{attr}: missing canonical tier keys "
+                         f"{missing}")
+
+    # paywall_middleware — AST, because CI has no stripe (see docstring).
+    import ast
+    src = open(os.path.join(ROOT, 'paywall_middleware.py'),
+               encoding='utf-8').read()
+    found = {}
+    for node in ast.walk(ast.parse(src)):
+        if (isinstance(node, ast.Assign) and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+                and node.targets[0].id in ('TIER_HIERARCHY', 'RATE_LIMITS',
+                                           'TIER_FEATURES')
+                and isinstance(node.value, ast.Dict)):
+            found[node.targets[0].id] = {
+                ast.literal_eval(k) for k in node.value.keys if k is not None}
+    for name in ('TIER_HIERARCHY', 'RATE_LIMITS', 'TIER_FEATURES'):
+        if name not in found:
+            fails.append(f"paywall_middleware.{name}: dict literal not found "
+                         f"by AST — was it renamed or made dynamic?")
+            continue
+        missing = sorted(CANON - found[name])
+        if missing:
+            fails.append(f"paywall_middleware.{name}: missing canonical tier "
+                         f"keys {missing}")
+
+    # The radar's own REQUIRED set must carry the canonical five, or the
+    # runtime containment surface silently regresses to the pre-starter era.
+    rsrc = open(os.path.join(ROOT, 'routes', 'brain_consistency_radar.py'),
+                encoding='utf-8').read()
+    i = rsrc.index('def check_tier_dict_missing_keys')
+    j = rsrc.index('REQUIRED', i)
+    required_literal = rsrc[j:rsrc.index('}', j) + 1]
+    for tier in sorted(CANON):
+        if f"'{tier}'" not in required_literal:
+            fails.append(f"brain_consistency_radar check_tier_dict_missing_keys "
+                         f"REQUIRED is missing '{tier}'")
+
+    assert not fails, "Canonical-five tier coverage gaps:\n" + "\n".join(fails)
+
+
 # ── 3. Frontend / MCP JS maps: 'founding' must appear ───────────────
 def test_frontend_js_maps_have_founding():
     fails = []
@@ -269,8 +361,10 @@ if __name__ == "__main__":
                test_registry_pricing_canonical,
                test_backend_maps_founding_equals_pro,
                test_gating_maps_match_tier_registry,
+               test_tier_dicts_cover_canonical_five,
                test_frontend_js_maps_have_founding,
-               test_generate_api_key_matches_schema):
+               test_generate_api_key_matches_schema,
+               test_plan_info_rate_limits_match_registry):
         _FAILURES.clear()
         try:
             fn()

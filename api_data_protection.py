@@ -73,7 +73,9 @@ PROTECTION_CONFIG = {
         "developer":  500,        # $49/mo
         "founding":  2000,        # Pro-equivalent
         "pro":       2000,
+        "team":      2000,        # r-starter-sweep: team==pro equivalence
         "enterprise": 10000,
+        "research_seed": 10000,   # r-starter-sweep: ==enterprise (NLR seats)
         "admin":     999999,
     },
     # Max results per single API response (hard cap regardless of ?limit=)
@@ -86,7 +88,9 @@ PROTECTION_CONFIG = {
         "developer":  25,
         "founding":  100,
         "pro":       100,
+        "team":      100,    # r-starter-sweep: team==pro equivalence
         "enterprise": 100,
+        "research_seed": 100,  # r-starter-sweep: ==enterprise (NLR seats)
         "admin":     999,
     },
     # Anomaly detection thresholds

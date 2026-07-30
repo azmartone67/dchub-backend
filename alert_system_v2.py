@@ -121,7 +121,9 @@ ALERT_LIMITS = {
     'developer':  25,        # $49/mo
     'founding':   50,        # Pro-equivalent
     'pro':        50,
+    'team':       50,        # r-starter-sweep: team==pro equivalence
     'enterprise': 500,
+    'research_seed': 500,    # r-starter-sweep: ==enterprise (NLR seats)
     'admin':      9999,
 }
 

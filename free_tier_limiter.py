@@ -68,6 +68,13 @@ TIER_LIMITS = {
         'land_power_max_filters': 5,
         'api_requests_per_month': 100,
     },
+    'starter': {              # $9/mo — r-starter-sweep (2026-07-30):
+                              # mirrors LAND_POWER_LIMITS/API_MONTHLY_LIMITS
+                              # starter rows (15 searches, 10 filters, 1.5K)
+        'land_power_searches_per_month': 15,
+        'land_power_max_filters': 10,
+        'api_requests_per_month': 1500,
+    },
     'developer': {            # $49/mo
         'land_power_searches_per_month': 50,
         'land_power_max_filters': 15,
@@ -83,7 +90,17 @@ TIER_LIMITS = {
         'land_power_max_filters': 999,
         'api_requests_per_month': 300000,    # bumped from 10000 to match r32-3
     },
+    'team': {                 # r-starter-sweep: team==pro equivalence
+        'land_power_searches_per_month': 999999,
+        'land_power_max_filters': 999,
+        'api_requests_per_month': 300000,
+    },
     'enterprise': {
+        'land_power_searches_per_month': 999999,
+        'land_power_max_filters': 999,
+        'api_requests_per_month': 3000000,
+    },
+    'research_seed': {        # r-starter-sweep: ==enterprise (NLR seats)
         'land_power_searches_per_month': 999999,
         'land_power_max_filters': 999,
         'api_requests_per_month': 3000000,
