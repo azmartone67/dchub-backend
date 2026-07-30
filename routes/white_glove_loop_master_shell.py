@@ -274,6 +274,85 @@ def _lane_brain(cur) -> list:
     return out
 
 
+# ── lane 5 · DC Hub Media: is it an ANALYST or a metronome? ───────────
+# ★MEASURED 2026-07-30, and the headline finding is NOT repetition.
+# 70 posts in 30d. Repetition is real but modest: 6 opening lines reused across
+# 13 posts, 11 of 70 >70% similar to a nearby post (~16-19%).
+# The number that matters: 2,761 total impressions across 70 posts —
+# a MEDIAN OF 16 IMPRESSIONS PER POST, 36 total engagements in a month.
+# Rewriting copy that reaches 16 people changes nothing. Distribution is the
+# constraint, and "stop repeating yourself" is an answer to the wrong question.
+# ★Also: 46 of 70 posts are post_type='manual'. The BRAIN drives a minority of
+# output (auto_dcpi 14, auto_share 4, auto_mcp_adoption 2, auto_market_intel 1,
+# auto_news 1), so "the brain should direct media" is not yet true by volume.
+_MEDIA_MIN_MEDIAN_IMPRESSIONS = int(
+    os.environ.get("WHITE_GLOVE_MEDIA_MIN_IMPRESSIONS", "100"))
+_MEDIA_MAX_REPEAT_SHARE = float(
+    os.environ.get("WHITE_GLOVE_MEDIA_MAX_REPEAT", "0.15"))
+
+
+def _lane_media(cur) -> list:
+    out = []
+    rows = None
+    try:
+        cur.execute("""SELECT COALESCE(post_type,'?'), COALESCE(content,''),
+                              COALESCE(impressions,0)
+                         FROM linkedin_posts
+                        WHERE COALESCE(status,'') = 'success'
+                          AND posted_at >= NOW() - make_interval(days => %s)""",
+                    (_DAYS,))
+        rows = cur.fetchall()
+    except Exception as e:  # noqa: BLE001
+        logger.debug("[wg-loop] media query failed: %s", str(e)[:140])
+    if rows is None:
+        return [_check("media_reach", "media output is measurable", None,
+                       "linkedin_posts unreadable — UNMEASURED, not zero",
+                       critical=False)]
+    n = len(rows)
+    if not n:
+        return [_check("media_posting", "DC Hub Media is publishing", False,
+                       f"0 successful posts in {_DAYS}d. ★status is 'success', "
+                       f"NOT 'posted' — a wrong status literal reports a healthy "
+                       f"channel as dead (hit this while writing the lane).",
+                       critical=True)]
+    imps = sorted(int(r[2] or 0) for r in rows)
+    median = imps[len(imps) // 2]
+    # repetition: how many posts share an opening line with another post
+    firsts = {}
+    for _, ct, _ in rows:
+        k = (ct or "").strip().split("\n")[0][:55]
+        firsts[k] = firsts.get(k, 0) + 1
+    repeated = sum(v for v in firsts.values() if v > 1)
+    rep_share = repeated / n
+    brain_driven = sum(1 for r in rows if str(r[0] or "").startswith("auto_"))
+    out.append(_check(
+        "media_posting", "DC Hub Media is publishing", True,
+        f"{n} successful post(s) in {_DAYS}d"))
+    # ★REACH FIRST. This is deliberately ordered ahead of the repetition check:
+    # if reach is this low, novelty is not the binding constraint and tuning
+    # copy is motion without progress.
+    out.append(_check(
+        "media_reach", "posts actually REACH people",
+        median >= _MEDIA_MIN_MEDIAN_IMPRESSIONS,
+        f"median {median} impression(s)/post over {n} posts "
+        f"(floor {_MEDIA_MIN_MEDIAN_IMPRESSIONS}). DISTRIBUTION is the "
+        f"constraint — rewriting copy that reaches this few people changes "
+        f"nothing, so fix reach BEFORE novelty.",
+        critical=True))
+    out.append(_check(
+        "media_novelty", "posts are not repeating themselves",
+        rep_share <= _MEDIA_MAX_REPEAT_SHARE,
+        f"{repeated}/{n} post(s) share an opening line with another "
+        f"({rep_share*100:.0f}%, ceiling {_MEDIA_MAX_REPEAT_SHARE*100:.0f}%)"))
+    out.append(_check(
+        "media_brain_driven", "the BRAIN drives media, not hand-written posts",
+        brain_driven > (n / 2),
+        f"{brain_driven}/{n} posts are brain-generated (post_type auto_*); "
+        f"the rest are manual. 'The brain should direct media' is not yet true "
+        f"by volume.", critical=True))
+    return out
+
+
 def _run_tick() -> dict:
     out = {"shell": "white-glove-loop", "n": 45, "window_days": _DAYS,
            "lanes": [], "note": (
@@ -295,6 +374,8 @@ def _run_tick() -> dict:
                  _lane_product()),
                 ("4 · brain expansion — thinking vs LANDING",
                  _lane_brain(cur)),
+                ("5 · DC Hub Media — analyst or metronome?",
+                 _lane_media(cur)),
             ]
             for label, checks in lanes:
                 out["lanes"].append({"lane": label, "checks": checks,
