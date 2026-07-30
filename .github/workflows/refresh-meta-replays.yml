@@ -1,0 +1,54 @@
+# Weekly keyed re-capture of the /integrations/meta rendered replays.
+#
+# Meta AI's citation engine weights recency, so the page's retrieved_at must
+# move weekly — but only HONESTLY: scripts/refresh_meta_replays.py re-runs the
+# real captures and the stamp moves only when every capture succeeded and every
+# intent still routed to its expected class. A failure leaves the file (and the
+# stamp) untouched and turns this job red — never a silent re-stamp.
+#
+# CI never pushes main (repo rule): the refresh lands as an auto-merge PR that
+# goes through the same required checks as any other change.
+name: refresh-meta-replays
+
+on:
+  schedule:
+    - cron: "23 7 * * 1"   # Mondays 07:23 UTC
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: refresh-meta-replays
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Re-capture keyed replays (stamp moves only on full success)
+        env:
+          DCHUB_REVIEWER_KEY: ${{ secrets.DCHUB_REVIEWER_KEY }}
+        run: python3 scripts/refresh_meta_replays.py
+
+      - name: Open auto-merge PR with the rebake
+        env:
+          GH_TOKEN: ${{ secrets.PR_SUBMIT_TOKEN }}
+        run: |
+          if git diff --quiet -- routes/meta_replays.py; then
+            echo "no drift — captures identical, stamp not moved"
+            exit 0
+          fi
+          d=$(date -u +%Y%m%d)
+          git config user.name "dchub-replay-refresh"
+          git config user.email "api@dchub.cloud"
+          git switch -c "chore/replay-refresh-$d"
+          git add routes/meta_replays.py
+          git commit -m "chore(meta-replays): weekly keyed re-capture $d"
+          git push -u origin HEAD
+          gh pr create --fill
+          gh pr merge --auto --squash

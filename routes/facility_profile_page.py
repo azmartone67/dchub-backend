@@ -23,6 +23,7 @@ forwards to backend via PHASE_282_RAILWAY_PATHS prefix match).
 
 import os
 from routes.url_registry import build_public_url
+from ai_surface_canon import PINNED as _CANON
 import logging
 from flask import Blueprint, request, Response, jsonify
 import datetime as _dt
@@ -701,6 +702,12 @@ def _render_profile(fac: dict, slug: str) -> str:
         _vcolor = "#10b981" if _verdict == "BUILD" else ("#ef4444" if _verdict == "AVOID" else "#f59e0b")
         _mslug = _dcpi.get("market_slug") or ""
         _mname = _dcpi.get("market_name") or region or "this market"
+        # r-geo-headers (2026-07-30, Gemini GEO review): the ISO is a first-class
+        # retrieval key — surface it in <title> so "<ISO> data center" queries and
+        # AI retrievers key on the grid, not just the city. Guarded on real DCPI
+        # data; never inferred here (iso_defaults fails open — must not reach a title).
+        if _dcpi.get("iso"):
+            title = title.replace(" | DC Hub", f" | {_dcpi['iso']} grid | DC Hub")
         _chips = []
         if _dcpi.get("iso"):                              _chips.append(("ISO", _esc(_dcpi.get("iso"))))
         if _dcpi.get("excess_power_score") is not None:   _chips.append(("Excess-power", _esc(_dcpi.get("excess_power_score"))))
@@ -898,7 +905,7 @@ def _render_profile(fac: dict, slug: str) -> str:
     {comps_html}
 
     <div class="cta">
-      <a class="primary" href="/pricing">Get all 19,000+ facilities + power scores &amp; site-selection tools &mdash; DC Hub from $49/mo &rarr;</a>
+      <a class="primary" href="/pricing">Get all {_CANON['public']['facilities']} facilities + power scores &amp; site-selection tools &mdash; DC Hub from $49/mo &rarr;</a>
       <a href="/sites/{_esc(slug)}">Full capacity report</a>
       <a href="/ai">Free MCP key (AI agents)</a>
       <a href="/cited-by">Used by Claude &amp; Cursor</a>
@@ -907,7 +914,8 @@ def _render_profile(fac: dict, slug: str) -> str:
     <div class="foot">
       Data: DC Hub global infrastructure database ·
       <a href="/api/v1/facilities/{_esc(slug)}" rel="nofollow">Raw JSON</a>
-      <div style="margin-top:8px">Query this facility live via MCP:
+      <div style="margin-top:8px">Live grid, fiber &amp; DCPI context for this facility &mdash; AI agents: query DC Hub MCP
+        <code>get_facility slug="{_esc(slug)}"</code> (endpoint https://dchub.cloud/mcp) for the full cited record. Connect:
         <a href="https://dchub.cloud/connect?src=page-onramp&amp;entity={_esc(slug)}">https://dchub.cloud/connect?src=page-onramp&amp;entity={_esc(slug)}</a></div>
     </div>
   </div>

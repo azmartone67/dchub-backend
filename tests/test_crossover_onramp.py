@@ -98,7 +98,12 @@ def test_facility_profile_jsonld_and_onramp():
     # onramp line, slug interpolated (& is HTML-escaped in the anchor)
     assert (f"https://dchub.cloud/connect?src=page-onramp&amp;entity={FAC_SLUG}"
             in html)
-    assert "Query this facility live via MCP" in html
+    # r-geo-headers (2026-07-30): the footer carries Meta's extraction-surviving
+    # line — the named tool + slug + endpoint survive Meta AI's extractor even
+    # while its live-crawl allowlist blocks the domain. Pin all three parts.
+    assert "AI agents: query DC Hub MCP" in html
+    assert f'get_facility slug="{FAC_SLUG}"' in html
+    assert "https://dchub.cloud/mcp" in html
 
 
 def test_facility_profile_route_cite_header(monkeypatch):
