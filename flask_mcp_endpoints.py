@@ -1710,11 +1710,18 @@ def identify_key():
                     (_quote_clean,),
                 )
                 if cur.fetchone() is None:
+                    # Bare TARGET-LESS ON CONFLICT DO NOTHING (house ingest-
+                    # idempotency lint). Inert for claim_quote rows today: the
+                    # only unique index on this table is the auto-scoped
+                    # partial one, whose predicate can never match
+                    # source='claim_quote'. Never name a conflict target here.
                     cur.execute(
                         """INSERT INTO ai_testimonials
                                (platform, agent_name, quote, context, category, source, approved)
-                           VALUES ('mcp_agent', %s, %s, %s, 'recommendation', 'claim_quote', FALSE)""",
-                        ((_name or None), _quote_clean, (_company or None)),
+                           VALUES (%s, %s, %s, %s, %s, %s, FALSE)
+                           ON CONFLICT DO NOTHING""",
+                        ("mcp_agent", (_name or None), _quote_clean,
+                         (_company or None), "recommendation", "claim_quote"),
                     )
             quote_captured = True
         except Exception:
@@ -5014,12 +5021,16 @@ def claim_key_quote():
                     message=("Already had that exact note — it's pending review. "
                              "A different quote is welcome any time."),
                 ), 200
+            # Bare TARGET-LESS ON CONFLICT DO NOTHING (house ingest-idempotency
+            # lint); inert for claim_quote rows — see the identify-path twin.
             cur.execute(
                 """INSERT INTO ai_testimonials
                        (platform, agent_name, quote, context, category, source, approved)
-                   VALUES (%s, %s, %s, %s, 'recommendation', 'claim_quote', FALSE)
+                   VALUES (%s, %s, %s, %s, %s, %s, FALSE)
+                   ON CONFLICT DO NOTHING
                    RETURNING id""",
-                (platform, (name or None), quote, (company or None)),
+                (platform, (name or None), quote, (company or None),
+                 "recommendation", "claim_quote"),
             )
             new_id = (cur.fetchone() or [None])[0]
     except Exception as e:
