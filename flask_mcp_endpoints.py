@@ -330,8 +330,20 @@ def handoff_funnel():
         # human-click instrument claim_page_opened_at has fired 0× all-time). Read
         # the GET-/claim instrument for human_acted; keep claim_used_at as a separate
         # 'redeemed' diagnostic (human form-submit OR machine auto-redeem).
+        #
+        # Shell #44 r-two-artifacts (2026-07-30) — human_acted DEFINITION v2:
+        # v1's instrument was structurally unmeasurable — the /claim link was
+        # single-use and the gateway burned it in median 0.85s, so a human
+        # click could only ever land on a 410. The relay now mints a SECOND,
+        # human-audience artifact (/relay/<token>: 7d TTL, multi-open, binds
+        # nothing) and human_acted reads ITS open-stamp. v1's instrument is
+        # kept below as a labelled legacy diagnostic. Weeks that span
+        # 2026-07-30 mix an unmeasurable stage with a measurable one — that
+        # is exactly what the definition block declares.
         opened  = one("select count(distinct mcp_session_id) from mcp_high_intent_sessions "
-                      "where claim_page_opened_at is not null and first_hit_at > now() - interval '%s'" % iv)
+                      "where human_view_first_opened_at is not null and first_hit_at > now() - interval '%s'" % iv)
+        opened_legacy = one("select count(distinct mcp_session_id) from mcp_high_intent_sessions "
+                            "where claim_page_opened_at is not null and first_hit_at > now() - interval '%s'" % iv)
         emailed = one("select count(distinct mcp_session_id) from mcp_high_intent_sessions "
                       "where claim_email is not null and claim_email <> '' "
                       "and first_hit_at > now() - interval '%s'" % iv)
@@ -357,6 +369,27 @@ def handoff_funnel():
         return {
             "steps": steps,
             "emails_captured_total": captured,
+            "human_acted_legacy_claim_page": opened_legacy,
+            "definitions": {
+                "human_acted": {
+                    "definition_version": 2,
+                    "definition_changelog": {
+                        1: "first GET of the /claim page (claim_page_opened_at). "
+                           "Structurally unmeasurable: the single-use token was "
+                           "auto-redeemed by the gateway in median 0.85s, so a "
+                           "human click could only land on a 410 — fired 0x "
+                           "all-time.",
+                        2: "first open of the HUMAN-audience view link "
+                           "(/relay/<token>: 7-day TTL, multi-open, binds "
+                           "nothing on open; human_view_first_opened_at). "
+                           "Instrument live 2026-07-30 — the stage measures "
+                           "human attention for the first time, so windows "
+                           "spanning that date mix an unmeasurable stage with "
+                           "a measurable one. v1 kept alongside as "
+                           "human_acted_legacy_claim_page.",
+                    },
+                },
+            },
             "rates": {
                 "paywall_to_relay_pct": pct(minted, paywall),
                 "relay_to_human_pct": pct(opened, minted),
@@ -364,12 +397,15 @@ def handoff_funnel():
                 "paywall_to_paid_pct": pct(paid, paywall),
             },
             "biggest_leak": (
-                # r-leak-truth (2026-07-15): relay→human_click is machine-mediated
+                # r-leak-truth (2026-07-15): relay→human_click WAS machine-mediated
                 # BY DESIGN — server.mjs auto-redeems the claim ~1s after mint, so
-                # claim_page_opened_at (human_click) is ~0 all-time and is NOT a
-                # leak. Point operators at the real drop-offs: minting relays,
-                # turning machine-redeemed claims into a captured email (identity),
-                # then into paid.
+                # claim_page_opened_at (human_click) is ~0 all-time and was NOT a
+                # leak. Shell #44 (2026-07-30) made the stage measurable with the
+                # separate human-view artifact, so relay→human is a REAL candidate
+                # leak again — but a near-zero early read may mean agents don't
+                # SURFACE the link to their humans (the mint payload's human_note
+                # asks them to), not that humans decline. Judge after weeks, not
+                # days, and against human_view_opens, not assumptions.
                 "paywall→relay_mint" if (paywall and (minted or 0) < paywall * 0.5)
                 else "relay→redeemed" if ((minted or 0) and (used or 0) < (minted or 0) * 0.5)
                 else "redeemed→identified" if ((used or 0) and (emailed or 0) < (used or 0) * 0.5)
