@@ -18230,10 +18230,24 @@ def energy_discovery_status_inline():
             # "column updated_at does not exist" warnings on every health
             # refresh even though _count_max falls back to created_at. Set
             # the right column here so the first query succeeds.
+            # Phase plant-count-truth (2026-07-29): total_power_plants read the
+            # bare `power_plants` table, which holds 66 rows for the entire
+            # United States and 9,609 MW. That is not a differently-scoped
+            # population — it is the SAME US EIA-860 plant fleet as
+            # power_plants_eia (13,446), loaded to 0.5%: the 2026-03-30
+            # eia-860-plants run fetched 55,000 records, upserted 66 and
+            # reported errors=0, because land_power_crawler's dedup step keys on
+            # rec['plantid'], a key the EIA v2 facility-fuel response does not
+            # carry, and silently `continue`s every record without it.
+            # 66 plants for the US has no basis, so it is not published.
+            # Repointed to power_plants_eia, which makes this endpoint agree
+            # with its sibling /api/energy-discovery/status (same figure, same
+            # table) instead of disagreeing with it by 204x under an identical
+            # key name. See out['basis'] below.
             for label, table, ts in [
                 ('total_substations',     'substations',     'updated_at'),
                 ('total_pipelines',       'gas_pipelines',   'updated_at'),
-                ('total_power_plants',    'power_plants',    'created_at'),
+                ('total_power_plants',    'power_plants_eia', None),
                 ('total_transmissions',   'transmission_lines', 'created_at'),
                 ('total_wind_projects',   'wind_projects',   'updated_at'),
                 # 2026-07-03: real tables are *_stations / *_plants — the bare
@@ -18247,7 +18261,14 @@ def energy_discovery_status_inline():
                 try:
                     cur.execute("SELECT to_regclass(%s)", (f"public.{table}",))
                     if not (cur.fetchone() or [None])[0]:
-                        out['data'][label] = 0
+                        # A table that does not exist is UNMEASURED, not zero.
+                        # Publishing 0 here is what tripped the ingestion
+                        # watchdog on gas_compressors/gas_processings in #1409
+                        # while the data sat in differently-named tables.
+                        out['data'][label] = None
+                        out['data'].setdefault('unmeasured', {})[label] = (
+                            'table public.%s does not exist on this deploy — no '
+                            'count is published; this is not a count of 0' % table)
                         continue
                 except Exception:
                     try: conn.rollback()
@@ -18257,10 +18278,67 @@ def energy_discovery_status_inline():
                 out['data'][label] = n
                 if latest:
                     out['data'][label.replace('total_', 'latest_')] = latest
+            # Same repoint as total_power_plants above: summing capacity over the
+            # 66-row `power_plants` stub published 9,609 MW as the installed
+            # generating capacity of the United States.
             try:
-                cur.execute("SELECT COALESCE(SUM(capacity_mw),0) FROM power_plants")
+                cur.execute("SELECT COALESCE(SUM(nameplate_capacity_mw),0) "
+                            "FROM power_plants_eia")
                 cap = cur.fetchone() or (0,)
                 out['data']['total_capacity_mw'] = int(cap[0] or 0)
+            except Exception:
+                # UNMEASURED, not zero. A capacity of 0 MW reads as a measured
+                # fact; omitting the key does not.
+                out['data'].pop('total_capacity_mw', None)
+                out['data']['total_capacity_mw_unavailable_reason'] = (
+                    'SUM(nameplate_capacity_mw) over power_plants_eia failed; '
+                    'no capacity figure is published rather than 0')
+                try: conn.rollback()
+                except Exception: pass
+            # Per-figure basis. `power_plants` and `discovered_power_plants` and
+            # the MCP's "182k" read as one population to a customer and are
+            # three different measurements of three different things.
+            out['basis'] = {
+                'total_power_plants': {
+                    'table': 'power_plants_eia',
+                    'population': 'plant-level inventory from the EIA "Power '
+                                  'Plants in the US" ArcGIS layer',
+                    'scope': 'United States only. Plant level, not generating '
+                             'units. The table carries no status column, so '
+                             'operating status is a property of the upstream '
+                             'EIA layer and is not asserted here.',
+                    'not_the_same_as': 'discovered_power_plants on '
+                                       '/api/v1/infrastructure (US source '
+                                       'records across three overlapping '
+                                       'catalogs, not distinct plants) or the '
+                                       'global GEM unit inventory on '
+                                       '/api/v1/global-power (generating units, '
+                                       'all statuses, ~170 countries). The '
+                                       'three are not additive.',
+                },
+                'total_capacity_mw': {
+                    'table': 'power_plants_eia',
+                    'population': 'SUM(nameplate_capacity_mw) over the same US '
+                                  'plant inventory',
+                    'scope': 'United States; nameplate, not net summer/winter '
+                             'capability.',
+                },
+            }
+            # total_wind_projects came from `wind_projects`, which is empty, so
+            # this endpoint published 0 wind projects for the US while its
+            # sibling published 1,352 from power_plants_eia. Count the same way
+            # the sibling does; an empty purpose-built table is not evidence of
+            # zero wind plants.
+            try:
+                cur.execute("SELECT COUNT(*) FROM power_plants_eia "
+                            "WHERE primary_fuel ILIKE %s", ('%wind%',))
+                out['data']['total_wind_projects'] = int((cur.fetchone() or (0,))[0] or 0)
+                out['basis']['total_wind_projects'] = {
+                    'table': 'power_plants_eia',
+                    'population': 'plants whose primary_fuel matches "wind"',
+                    'scope': 'United States; plant level, counted by primary '
+                             'fuel — NOT a project / interconnection-queue count.',
+                }
             except Exception:
                 try: conn.rollback()
                 except Exception: pass
@@ -18268,8 +18346,15 @@ def energy_discovery_status_inline():
             # table had a different timestamp column (power_plants has
             # `created_at`, not `updated_at`) or didn't exist. Per-
             # table query + column probe degrades gracefully.
+            # `power_plants` dropped 2026-07-29: its MAX(created_at) published
+            # "power_plants last synced 2026-03-30" — a real timestamp for the
+            # 66-row stub, attached to a figure now sourced from
+            # power_plants_eia. A stale date beside a fresh number is worse than
+            # no date. power_plants_eia carries no timestamp column (it is a
+            # full-replace load), so it correctly reports no sync time at all
+            # rather than borrowing the stub's.
             out['data']['recent_syncs'] = []
-            for src_tbl in ('substations', 'fiber_routes', 'power_plants', 'pipelines'):
+            for src_tbl in ('substations', 'fiber_routes', 'power_plants_eia', 'pipelines'):
                 try:
                     cur.execute("""
                         SELECT column_name FROM information_schema.columns
@@ -18292,8 +18377,11 @@ def energy_discovery_status_inline():
                     try: conn.rollback()
                     except Exception: pass
                     continue
+            # `total_substations` can now be None (table absent = unmeasured),
+            # so this must not int(None).
+            _subs = out['data'].get('total_substations')
             out['data']['seed_data'] = (
-                int(out['data'].get('total_substations', 0)) < 1000
+                True if _subs is None else int(_subs) < 1000
             )
             try: conn.close()
             except Exception: pass
@@ -29468,6 +29556,122 @@ def _bundle6a_edge_cache(resp):
 
 
 
+# ── Standalone loader registry — ONE source of truth for entry points ───────
+# Phase subsea-registry (2026-07-29). Both admin loader endpoints below used
+# to carry their OWN hard-coded list of candidate function names, and four of
+# the eleven registered modules named functions that do not exist:
+#
+#   hifld_communications     registered ('load'|'main'|'run') — defines none;
+#                            it is a live HIFLD query/blueprint module and
+#                            ingests nothing at all (a category error, not a
+#                            rename).
+#   eia860_bulk_loader       registered ('load'|'main'|'run') — defines
+#                            load_eia860(csv_path).
+#   subsea_cable_ingestion   registered ('ingest'|'run'|'main') — defines
+#                            run_subsea_sync(get_db).
+#   energy_auto_discovery    registered ('run'|'sync'|'main') — defines
+#                            run_full_sync(conn).
+#
+# Every one of those reported "no callable entry point" into a JSON body that
+# still carried {"success": true}, so the endpoint looked healthy and the
+# loader fired nothing. The name mismatch is only half of it: THREE of the
+# four real entry points take a REQUIRED argument, and both endpoints called
+# f() with none — so a bare rename would have swapped "no entry point" for a
+# TypeError. `needs` records what the runner must supply, and
+# tests/test_loader_entrypoint_registry.py AST-parses each module to assert
+# both halves: the name resolves to a top-level def AND its required-argument
+# count matches `needs`.
+#
+#   needs='none'    → called f()
+#   needs='get_db'  → called f(get_db)   (the connection FACTORY, not a conn)
+#   needs='conn'    → called f(conn)     (a live conn, closed by the runner)
+#
+# `unrunnable` marks a module that cannot be driven from an HTTP admin
+# endpoint at all. It is reported with that reason and ok=False instead of a
+# misleading "no callable entry point".
+_STANDALONE_LOADERS = {
+    'load_substations':        {'entry': 'load',            'needs': 'none'},
+    'hifld_substation_loader': {'entry': 'main',            'needs': 'none'},
+    'pipeline_sync':           {'entry': 'main',            'needs': 'none'},
+    'facility_ingestion':      {'entry': 'main',            'needs': 'none'},
+    'eia_generator_reseed':    {'entry': 'main',            'needs': 'none'},
+    'eia_gas_bulk_loader':     {'entry': 'main',            'needs': 'none'},
+    'subsea_cable_ingestion':  {'entry': 'run_subsea_sync', 'needs': 'get_db'},
+    'energy_auto_discovery':   {'entry': 'run_full_sync',   'needs': 'conn'},
+    'eia860_bulk_loader':      {'entry': 'load_eia860',     'needs': 'csv_path',
+                                'unrunnable': 'load_eia860(csv_path) reads an '
+                                'EIA-860 CSV off local disk; no such file exists '
+                                'on the Railway dyno, so this loader cannot be '
+                                'driven over HTTP. Run it from a shell with the '
+                                'CSV present.'},
+    'hifld_communications':    {'entry': None,              'needs': None,
+                                'unrunnable': 'not a loader — hifld_communications '
+                                'is a live HIFLD query/blueprint module '
+                                '(register_comms_routes, query_hifld_comms). It '
+                                'writes no table and has no ingestion entry '
+                                'point; it was registered here by mistake.'},
+}
+
+
+def _run_standalone_loader(mod_name):
+    """Import one registered loader module and invoke its declared entry point.
+
+    Returns a per-module status dict. Never raises. The entry-point NAME and
+    the argument it needs both come from _STANDALONE_LOADERS — this function
+    does not guess at alternates, because guessing is what let four modules
+    sit registered under names they never defined while the response still
+    read {"success": true}.
+    """
+    spec = _STANDALONE_LOADERS.get(mod_name)
+    if not spec:
+        return {'ok': False, 'error': 'module not in _STANDALONE_LOADERS registry'}
+    if spec.get('unrunnable'):
+        return {'ok': False, 'skipped': True, 'entry_point': spec.get('entry'),
+                'error': spec['unrunnable']}
+
+    rec = {'ok': False, 'entry_point': spec['entry'], 'needs': spec['needs']}
+    conn = None
+    try:
+        mod = __import__(mod_name)
+        fn = getattr(mod, spec['entry'], None)
+        if not callable(fn):
+            # Registry drift: the module no longer defines what we registered.
+            # tests/test_loader_entrypoint_registry.py is meant to catch this
+            # before deploy; if we are here, that test was skipped or stale.
+            rec['error'] = ('registry drift: %s does not define a callable %s'
+                            % (mod_name, spec['entry']))
+            return rec
+        if spec['needs'] == 'none':
+            res = fn()
+        elif spec['needs'] == 'get_db':
+            res = fn(get_db)
+        elif spec['needs'] == 'conn':
+            conn = get_db()
+            res = fn(conn)
+        else:
+            rec['error'] = 'unsupported needs=%r' % (spec['needs'],)
+            return rec
+        rec['ok'] = True
+        if res is not None:
+            rec['result'] = str(res)[:300]
+        else:
+            rec['result'] = 'ran'
+    except ModuleNotFoundError as e:
+        rec['error'] = 'module not found: ' + str(e)[:200]
+    except SystemExit as e:
+        rec['error'] = ('SystemExit code=' + str(getattr(e, 'code', None))
+                        + ' (loader called sys.exit; upstream API likely down)')
+    except Exception as e:
+        rec['error'] = type(e).__name__ + ': ' + str(e)[:300]
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+    return rec
+
+
 # --- phase 12c: one-shot admin endpoint to repopulate stale data ------------
 # Calls each known loader module's entry point. Returns per-module status
 # so we can see exactly which one is broken (vs the silent failure of
@@ -29486,35 +29690,28 @@ def phase12c_admin_load_all():
     if not (sent and sent in {a for a in allowed if a}):
         return jsonify({'error': 'forbidden'}), 403
 
-    out = {'success': True, 'loaders': {}}
+    out = {'loaders': {}}
+    # Module names only — entry points and their argument needs live in
+    # _STANDALONE_LOADERS so this list and phase 12f's cannot drift apart.
     loaders = [
-        ('hifld_substation_loader', 'load'),
-        ('hifld_communications', 'load'),
-        ('eia860_bulk_loader', 'load'),
-        ('eia_gas_bulk_loader', 'load'),
-        ('pipeline_sync', 'sync'),
-        ('facility_ingestion', 'ingest'),
-        ('subsea_cable_ingestion', 'ingest'),
-        ('eia_generator_reseed', 'reseed'),
+        'hifld_substation_loader',
+        'hifld_communications',
+        'eia860_bulk_loader',
+        'eia_gas_bulk_loader',
+        'pipeline_sync',
+        'facility_ingestion',
+        'subsea_cable_ingestion',
+        'eia_generator_reseed',
     ]
-    for mod, fn in loaders:
-        try:
-            m = __import__(mod)
-            f = getattr(m, fn, None)
-            if not callable(f):
-                # try common alternates
-                for alt in ('main', 'run', 'execute', 'load_all'):
-                    f = getattr(m, alt, None)
-                    if callable(f): fn = alt; break
-            if not callable(f):
-                out['loaders'][mod] = {'ok': False, 'error': f'no callable entry point ({fn})'}
-                continue
-            res = f()
-            out['loaders'][mod] = {'ok': True, 'result': str(res)[:200] if res is not None else 'ran'}
-        except ModuleNotFoundError as e:
-            out['loaders'][mod] = {'ok': False, 'error': f'module not found: {e}'}
-        except Exception as e:
-            out['loaders'][mod] = {'ok': False, 'error': type(e).__name__ + ': ' + str(e)[:200]}
+    for mod in loaders:
+        out['loaders'][mod] = _run_standalone_loader(mod)
+    # `success` used to be hard-coded true even when every loader failed, so
+    # the endpoint read healthy while nothing ran. Report what happened.
+    ran_ok = [m for m, r in out['loaders'].items() if r.get('ok')]
+    failed = [m for m, r in out['loaders'].items() if not r.get('ok')]
+    out['success'] = not failed
+    out['ran_ok'] = ran_ok
+    out['failed'] = failed
     out['ran_at'] = datetime.utcnow().isoformat()
     return jsonify(out)
 # --- end phase 12c ----------------------------------------------------------
@@ -29542,45 +29739,20 @@ def phase12f_run_all_loaders():
     if not (sent and sent in {a for a in allowed if a}):
         return jsonify({'error': 'forbidden'}), 403
 
-    # (module_name, [candidate_entry_point_function_names])
-    loaders = [
-        ('load_substations',          ['load']),
-        ('hifld_substation_loader',   ['load','main','run']),
-        ('eia860_bulk_loader',        ['load','main','run']),
-        ('pipeline_sync',             ['sync','load','main','run']),
-        ('facility_ingestion',        ['ingest','run','main']),
-        ('hifld_communications',      ['load','main','run']),
-        ('subsea_cable_ingestion',    ['ingest','run','main']),
-        ('eia_generator_reseed',      ['reseed','main','run']),
-        ('energy_auto_discovery',     ['run','sync','main']),
-        ('eia_gas_bulk_loader',       ['load','main','run']),
-    ]
-    out = {'success': True, 'ran_at': datetime.utcnow().isoformat(), 'loaders': {}}
-    for mod_name, candidates in loaders:
-        rec = {'ok': False}
-        try:
-            mod = __import__(mod_name)
-            fn = None; fn_name = None
-            for c in candidates:
-                if hasattr(mod, c) and callable(getattr(mod, c)):
-                    fn = getattr(mod, c); fn_name = c; break
-            if fn is None:
-                rec['error'] = 'no callable entry point in ' + str(candidates)
-            else:
-                try:
-                    res = fn()
-                    rec['ok'] = True
-                    rec['entry_point'] = fn_name
-                    if res is not None:
-                        rec['result'] = str(res)[:300]
-                except Exception as e:
-                    rec['error'] = type(e).__name__ + ': ' + str(e)[:300]
-                    rec['entry_point'] = fn_name
-        except ModuleNotFoundError as e:
-            rec['error'] = 'module not found: ' + str(e)[:200]
-        except Exception as e:
-            rec['error'] = type(e).__name__ + ': ' + str(e)[:300]
-        out['loaders'][mod_name] = rec
+    # Module names only — the entry point each module actually DEFINES, and the
+    # argument it requires, come from _STANDALONE_LOADERS. The old
+    # candidate-list-per-endpoint shape is what let this endpoint and phase 12c
+    # disagree, and let four modules stay registered under names that do not
+    # exist while the response still read {"success": true}.
+    loaders = list(_STANDALONE_LOADERS.keys())
+    out = {'ran_at': datetime.utcnow().isoformat(), 'loaders': {}}
+    for mod_name in loaders:
+        out['loaders'][mod_name] = _run_standalone_loader(mod_name)
+    ran_ok = [m for m, r in out['loaders'].items() if r.get('ok')]
+    failed = [m for m, r in out['loaders'].items() if not r.get('ok')]
+    out['success'] = not failed
+    out['ran_ok'] = ran_ok
+    out['failed'] = failed
     return jsonify(out)
 # --- end phase 12f ----------------------------------------------------------
 
@@ -33215,17 +33387,82 @@ def cf_stub_state_rankings():
             pass
         return jsonify({"success": False, "error": str(e)}), 500
 
+# Per-key basis for /api/v1/infrastructure. The response keys here are raw
+# internal TABLE names that predate any naming review, and two of them are
+# actively misleading without this note:
+#
+#   discovered_power_plants  reads like a plant count next to stats'
+#       `power_plants` (13,446). It is neither the same population nor a plant
+#       count: it is source RECORDS from three overlapping US catalogs (HIFLD,
+#       osm_overpass, eia_nccs_enrichment) whose only uniqueness key is
+#       UNIQUE(object_id, source) — per-source — so one real plant arriving
+#       from two catalogs is stored twice. Measured US-only (0 rows within
+#       400 km of central Germany, 800 km of central China, 600 km of
+#       Brasilia) and demonstrably overlapping the EIA fleet.
+#   transmission_lines_eia   is the STALE geocoded snapshot, not the
+#       maintained transmission table. /api/v1/infrastructure/stats publishes
+#       the maintained figure as `transmission_lines` and this snapshot
+#       separately as `transmission_lines_geocoded_snapshot`. Never sum them.
+#
+# Renaming the keys would break live callers, so the names stay and the basis
+# is published alongside them. Any consumer that shows one of these to a human
+# must show its scope with it.
+_INFRA_COUNT_BASIS = {
+    'substations': {
+        'table': 'substations',
+        'population': 'electric substations (HIFLD-derived), all voltages',
+        'scope': 'United States',
+    },
+    'transmission_lines_eia': {
+        'table': 'transmission_lines_eia',
+        'population': 'geocoded transmission-line snapshot — NOT the maintained '
+                      'transmission table',
+        'scope': 'United States; stale snapshot. The maintained count is '
+                 '`transmission_lines` on /api/v1/infrastructure/stats. Do not '
+                 'sum the two — same population, two tables.',
+    },
+    'gas_pipelines': {
+        'table': 'gas_pipelines',
+        'population': 'natural-gas pipeline segments',
+        'scope': 'United States',
+    },
+    'discovered_power_plants': {
+        'table': 'discovered_power_plants',
+        'population': 'source RECORDS from three overlapping catalogs (HIFLD, '
+                      'OSM Overpass, EIA NCCS enrichment) — NOT distinct '
+                      'plants, and not deduplicated across sources',
+        'scope': 'United States. Overlaps the EIA plant fleet published as '
+                 '`power_plants` (13,446, table power_plants_eia); these are '
+                 'not additive and the duplication rate is unmeasured.',
+    },
+}
+
+# Layer names callers pass today. The parameter has never filtered this
+# response — it was read by nobody and silently ignored, so `?layer=transmission`
+# returned the identical global count dict. Rejecting it now would break live
+# callers (the MCP passes it), so it is accepted and its no-op is DECLARED.
+_INFRA_KNOWN_LAYERS = ('substations', 'transmission', 'gas', 'power_plants')
+
+
 @app.route('/api/v1/infrastructure', methods=['GET'])
 def cf_stub_infrastructure():
     """Infrastructure asset counts. Supports optional lat/lon/radius_km for nearby filtering.
 
     When lat & lon provided, returns counts of assets within a bounding box
     of `radius_km` (default 50 km) around the point. Otherwise returns global counts.
+
+    Every count is accompanied by its basis in `basis`. A count that could not
+    be measured is null with a reason in `unmeasured` — never 0. A silent
+    `except: counts[table] = 0` here previously published 0 for any table that
+    errored or lacked lat/lng columns, which is how this endpoint reported
+    "gas_pipelines: 0" and "transmission_lines_eia: 0" near Houston while both
+    tables held tens of thousands of rows.
     """
     import math as _m
     lat = request.args.get('lat', type=float)
     lon = request.args.get('lon', type=float)
     radius_km = request.args.get('radius_km', 50, type=float)
+    layer = (request.args.get('layer') or '').strip().lower()
     use_geo = (lat is not None and lon is not None)
 
     bbox = None
@@ -33242,10 +33479,12 @@ def cf_stub_infrastructure():
         conn = get_pg_connection()
         cur = conn.cursor()
         counts = {}
+        unmeasured = {}
         for table in ['substations', 'transmission_lines_eia', 'gas_pipelines', 'discovered_power_plants']:
             try:
                 if use_geo:
                     found = False
+                    last_err = None
                     for lat_col in LAT_COLS:
                         if found: break
                         for lon_col in LON_COLS:
@@ -33258,22 +33497,48 @@ def cf_stub_infrastructure():
                                 counts[table] = cur.fetchone()[0]
                                 found = True
                                 break
-                            except Exception:
+                            except Exception as ce:
+                                last_err = ce
                                 try: conn.rollback()
                                 except Exception: pass
                     if not found:
-                        counts[table] = 0
+                        # No lat/lng column pair on this table — the radius
+                        # filter is not answerable here. 0 would read as "no
+                        # assets nearby", which is a different and false claim.
+                        counts[table] = None
+                        unmeasured[table] = (
+                            'no latitude/longitude column pair on this table, so '
+                            'a radius filter cannot be applied — this is NOT a '
+                            'count of zero assets nearby. Last DB error: %s'
+                            % (str(last_err)[:120] if last_err else 'none')
+                        )
                 else:
                     cur.execute(f"SELECT COUNT(*) FROM {table}")
                     counts[table] = cur.fetchone()[0]
-            except Exception:
-                counts[table] = 0
+            except Exception as e:
+                counts[table] = None
+                unmeasured[table] = 'count failed: %s' % (str(e)[:160],)
                 try: conn.rollback()
                 except Exception: pass
         return_pg_connection(conn)
-        result = {"success": True, "counts": counts}
+        result = {
+            "success": True,
+            "counts": counts,
+            "basis": _INFRA_COUNT_BASIS,
+        }
+        if unmeasured:
+            result["unmeasured"] = unmeasured
         if use_geo:
             result["filter"] = {"lat": lat, "lon": lon, "radius_km": radius_km}
+        if layer:
+            result["layer_note"] = (
+                "the `layer` parameter is accepted for backward compatibility "
+                "but does NOT filter this response — every count above is "
+                "returned regardless of the value you passed (%r). Recognised "
+                "layer names: %s. Use /api/v1/infrastructure/stats for the "
+                "full per-member breakdown with its published basis."
+                % (layer, ', '.join(_INFRA_KNOWN_LAYERS))
+            )
         return jsonify(result)
     except Exception as e:
         try:

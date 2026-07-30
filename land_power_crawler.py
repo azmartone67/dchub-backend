@@ -347,10 +347,33 @@ def crawl_power_plants(get_db, full_refresh=False):
         logger.info(f"  📊 Total plant records fetched: {fetched}")
 
         # Deduplicate by plant_id (keep latest)
+        #
+        # 2026-07-29: this loop is why `power_plants` holds 66 rows for the whole
+        # United States. It keyed only on rec['plantid'] and `continue`d on
+        # anything without it — and the EIA v2 facility-fuel response does not
+        # use that spelling for essentially any row. The 2026-03-30 run fetched
+        # 55,000 records, upserted 66, and reported errors=0, because errors is
+        # only incremented by the INSERT handler below: the other 54,934 never
+        # reached it. /api/land-power/status called that outcome "healthy".
+        #
+        # Two fixes: accept the spellings EIA actually returns, and COUNT the
+        # drops so a silent 99.9% loss can never again be reported as success.
+        PLANT_ID_KEYS = ('plantid', 'plantCode', 'plantcode', 'plant_id',
+                         'plantId', 'plant_code')
         plant_map = {}
+        dropped_no_plant_id = 0
+        sample_dropped_keys = None
         for rec in all_plants:
-            pid = str(rec.get('plantid', ''))
+            pid = ''
+            for _k in PLANT_ID_KEYS:
+                v = rec.get(_k)
+                if v not in (None, ''):
+                    pid = str(v)
+                    break
             if not pid:
+                dropped_no_plant_id += 1
+                if sample_dropped_keys is None and isinstance(rec, dict):
+                    sample_dropped_keys = sorted(rec.keys())[:15]
                 continue
             # Keep the record with highest capacity or most recent
             existing = plant_map.get(pid)
@@ -408,6 +431,21 @@ def crawl_power_plants(get_db, full_refresh=False):
 
         conn.commit()
         logger.info(f"✅ Power plants: {upserted} upserted, {errors} errors")
+
+        # A record dropped before the INSERT never touches `errors`, so a total
+        # collapse used to look like a clean run. Make it loud and make it
+        # countable.
+        if dropped_no_plant_id:
+            pct = (dropped_no_plant_id / fetched * 100) if fetched else 0.0
+            msg = (f"DROPPED {dropped_no_plant_id} of {fetched} EIA records "
+                   f"({pct:.1f}%) — no plant id under any of {PLANT_ID_KEYS}. "
+                   f"Sample keys on a dropped record: {sample_dropped_keys}")
+            logger.error("❌ " + msg)
+            error_detail.append(msg[:400])
+            if pct > 50:
+                # More than half the payload discarded is a failed run, not a
+                # partial one. Count it so no caller reads this as healthy.
+                errors += 1
 
     except Exception as e:
         errors += 1
@@ -1157,21 +1195,69 @@ def register_land_power_routes(app, get_db, require_admin):
                 FROM market_power_profiles
                 ORDER BY power_readiness_score DESC
             """)
+            # Phase plant-count-truth (2026-07-29): every generation member of
+            # these stored profiles was computed from the `power_plants` table,
+            # which holds 66 rows for the entire United States (see
+            # crawl_power_plants above). Houston came out at 1 power plant /
+            # 86.9 MW / renewable_pct 0, and Houston, San Antonio and Austin
+            # carry IDENTICAL values because the builder aggregates
+            # `WHERE state = %s` and stores a STATE roll-up under a MARKET name.
+            #
+            # Those members cannot be annotated into correctness, so they are
+            # not published: null plus a reason, per house rule (an unmeasured
+            # figure is never 0). power_readiness_score is computed FROM them,
+            # so it is withheld too — a score derived from a 0.5%-loaded table
+            # is not a measurement. The substation / transmission / gas members
+            # are unaffected and still published.
+            _GEN_REASON = (
+                "withheld: computed from the `power_plants` table, which holds "
+                "66 rows for the whole US (~0.5% of the 13,446-plant EIA fleet "
+                "in power_plants_eia) as of the 2026-03-30 build. Not zero — "
+                "unmeasured. Re-derive from power_plants_eia before publishing."
+            )
+            _SCORE_REASON = (
+                "withheld: power_readiness_score is a function of "
+                "total_generation_mw and renewable_pct, both of which are "
+                "withheld above."
+            )
             profiles = []
             for r in cur.fetchall():
                 profiles.append({
                     "market": r[0], "state": r[1],
                     "substations": r[2], "avg_voltage_kv": round(r[3] or 0, 1),
                     "transmission_lines": r[4], "transmission_miles": round(r[5] or 0, 1),
-                    "gas_pipelines": r[6], "power_plants": r[7],
-                    "total_mw": round(r[8] or 0, 1),
-                    "solar_mw": round(r[9] or 0, 1), "wind_mw": round(r[10] or 0, 1),
-                    "natural_gas_mw": round(r[11] or 0, 1), "nuclear_mw": round(r[12] or 0, 1),
-                    "renewable_pct": round(r[13] or 0, 1),
-                    "power_readiness_score": r[14],
+                    "gas_pipelines": r[6],
+                    "power_plants": None,
+                    "total_mw": None,
+                    "solar_mw": None, "wind_mw": None,
+                    "natural_gas_mw": None, "nuclear_mw": None,
+                    "renewable_pct": None,
+                    "power_readiness_score": None,
                     "last_updated": str(r[15]),
                 })
-            return jsonify({"markets": profiles, "count": len(profiles)})
+            return jsonify({
+                "markets": profiles,
+                "count": len(profiles),
+                "unmeasured": {
+                    "power_plants": _GEN_REASON,
+                    "total_mw": _GEN_REASON,
+                    "solar_mw": _GEN_REASON,
+                    "wind_mw": _GEN_REASON,
+                    "natural_gas_mw": _GEN_REASON,
+                    "nuclear_mw": _GEN_REASON,
+                    "renewable_pct": _GEN_REASON,
+                    "power_readiness_score": _SCORE_REASON,
+                },
+                "basis": {
+                    "geographic": "each row's infrastructure members are a "
+                                  "STATE-level roll-up (WHERE state = ...) "
+                                  "stored under a market name, so every market "
+                                  "in the same state carries identical values. "
+                                  "They are not metro-level figures.",
+                    "freshness": "profiles are a stored build, not live — see "
+                                 "each row's last_updated.",
+                },
+            })
         except Exception as e:
             return jsonify({"error": str(e)}), 500
         finally:

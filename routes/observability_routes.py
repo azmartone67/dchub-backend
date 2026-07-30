@@ -19,9 +19,15 @@ import datetime
 observability_bp = Blueprint('observability', __name__)
 
 
+# Phase plant-count-truth (2026-07-29): 'total_power_plants' and
+# 'total_capacity_mw' were recorded from the 66-row `power_plants` stub. They
+# are renamed at the writer to name their table (…_stub_table) and the real US
+# EIA fleet is recorded as …_eia. The anomaly detector below watches the EIA
+# series — the stub series is still written so its history stays readable, but
+# an anomaly in a 66-row stub is not a signal worth alerting on.
 CRITICAL_METRICS = [
-    'total_substations', 'total_pipelines', 'total_power_plants',
-    'total_fiber_routes', 'total_capacity_mw',
+    'total_substations', 'total_pipelines', 'total_power_plants_eia',
+    'total_fiber_routes', 'total_capacity_mw_eia',
     'mcp_tool_calls_24h', 'mcp_conversions_24h', 'agent_requests_24h',
     'health_score', 'linkedin_impressions_24h',
     'pricing_page_views_24h', 'upgrade_signals_24h',
@@ -300,13 +306,30 @@ def snapshot():
             # cycle (the schema_drift detector was repeatedly flagging
             # pipelines, gas_compressors, wind_projects which don't exist
             # on this deploy).
+            # Phase plant-count-truth (2026-07-29): the two power-plant metrics
+            # below are recorded from the bare `power_plants` table, which holds
+            # 66 rows / 9,609 MW for the entire United States — the same US
+            # EIA-860 population as power_plants_eia (13,446), loaded to 0.5% by
+            # a crawler whose dedup step silently drops every record lacking a
+            # 'plantid' key. This is a TIME SERIES, so the metrics are NOT
+            # silently repointed: doing that would splice a 204x step change
+            # into history with no marker. They are RENAMED to say which table
+            # they measure, and the real fleet figure is recorded alongside
+            # under its own name, so the discontinuity is visible as two series
+            # rather than hidden inside one.
             samples = {}
             for label, table, sql in [
                 ('total_substations',    'substations',    "SELECT COUNT(*) FROM substations"),
                 ('total_pipelines',      'pipelines',      "SELECT COUNT(*) FROM pipelines"),
-                ('total_power_plants',   'power_plants',   "SELECT COUNT(*) FROM power_plants"),
+                ('total_power_plants_stub_table', 'power_plants',
+                 "SELECT COUNT(*) FROM power_plants"),
+                ('total_power_plants_eia', 'power_plants_eia',
+                 "SELECT COUNT(*) FROM power_plants_eia"),
                 ('total_fiber_routes',   'fiber_routes',   "SELECT COUNT(*) FROM fiber_routes"),
-                ('total_capacity_mw',    'power_plants',   "SELECT COALESCE(SUM(capacity_mw),0) FROM power_plants"),
+                ('total_capacity_mw_stub_table', 'power_plants',
+                 "SELECT COALESCE(SUM(capacity_mw),0) FROM power_plants"),
+                ('total_capacity_mw_eia', 'power_plants_eia',
+                 "SELECT COALESCE(SUM(nameplate_capacity_mw),0) FROM power_plants_eia"),
                 # Phase FF+11-schemafix (2026-05-19): column is `created_at`,
                 # not `called_at`. The wrong name aborted the request's
                 # transaction, which is why subsequent INSERT INTO

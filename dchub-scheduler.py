@@ -98,7 +98,11 @@ logging.basicConfig(
 log = logging.getLogger('dchub-scheduler')
 
 # ============================================================
-# JOB DEFINITIONS — 21 active (v3.9)
+# JOB DEFINITIONS — 34 entries in JOBS as of 2026-07-29 (was "21 active",
+# stale by 13). This header is a COMMENT and drifts; `len(JOBS)` is the truth.
+# What is NOT the truth: an entry in DISABLED_JOBS below. The run loop iterates
+# JOBS only, so anything down there fires nothing no matter what schedule it
+# carries — see the note above DISABLED_JOBS.
 # ============================================================
 JOBS = {
     'permit_scraper': {
@@ -424,6 +428,25 @@ JOBS = {
         'hours': [1, 5, 9, 13, 17, 21],
         'minute': 50,
         'timeout': 180,
+    },
+    # Phase subsea-registry (2026-07-29): ACTIVATED — moved out of
+    # DISABLED_JOBS, where it had been sitting with a full weekly
+    # hours/minute/day_of_week schedule and NO disabled_reason, directly under
+    # a comment that read "Fiber/subsea sync — weekly Wednesday 03:00+". It
+    # read exactly like a live job and fired nothing: the run loop iterates
+    # JOBS only. Its endpoint is correctly wired (fiber_integration.py:89 →
+    # run_subsea_sync) and the tables it writes (subsea_cables,
+    # subsea_landing_points) already hold 691 cables / 1,908 landing points
+    # from an earlier manual run — upstream now has 696 unique cables / 1,918
+    # landing points, so this closes a small standing drift, not a cold start.
+    'subsea_sync': {
+        'name': 'Subsea Cables — Sync',
+        'endpoint': '/api/jobs/subsea-sync',
+        'method': 'POST',
+        'hours': [3],
+        'minute': 30,
+        'day_of_week': 2,                  # Wednesday
+        'timeout': 1800,
     },
 }
 
@@ -942,7 +965,13 @@ DISABLED_JOBS = {
         'timeout': 3600,
     },
 
-    # ── Fiber/subsea sync (3 endpoints) — weekly Wednesday 03:00+, staggered ──
+    # ── Fiber/carrier sync — NOT RUNNING ─────────────────────────────────────
+    # These are in DISABLED_JOBS, so the run loop (which iterates JOBS only)
+    # never fires them. The hours/minute/day_of_week below are the schedule
+    # they WOULD run on if re-enabled — they are not a schedule in effect.
+    # Every entry here carries a disabled_reason; an entry without one reads as
+    # live and is how subsea_sync stayed silently dead (2026-07-29). If you add
+    # a job here, add its reason.
     'fiber_full_sync': {
         'name': 'Fiber — Full Sync',
         'endpoint': '/api/jobs/fiber-full-sync',
@@ -951,15 +980,10 @@ DISABLED_JOBS = {
         'minute': 0,
         'day_of_week': 2,                  # Wednesday
         'timeout': 3600,
-    },
-    'subsea_sync': {
-        'name': 'Subsea Cables — Sync',
-        'endpoint': '/api/jobs/subsea-sync',
-        'method': 'POST',
-        'hours': [3],
-        'minute': 30,
-        'day_of_week': 2,                  # Wednesday
-        'timeout': 1800,
+        'disabled_reason': 'never activated; NOT verified — /api/v1/fiber/summary '
+                           'reports fiber_routes 0 from the fiber-integration '
+                           'tables, so re-enabling needs the ingest checked '
+                           'first rather than scheduled blind',
     },
     'carrier_sync': {
         'name': 'Carrier — Sync',
@@ -969,6 +993,11 @@ DISABLED_JOBS = {
         'minute': 0,
         'day_of_week': 2,                  # Wednesday
         'timeout': 1800,
+        'disabled_reason': 'never activated; 286 carriers / 609,022 '
+                           'carrier_facility_links already loaded, so this is '
+                           'a refresh not a cold start — re-enable only after '
+                           'confirming it does not re-link across the two '
+                           'carrier id-spaces',
     },
     # Phase RRR-press-loop-cron (2026-05-18) — close the brain ↔ press
     # loop. Saturday 11:00 UTC: brain pulls last 7d of ship-wins,

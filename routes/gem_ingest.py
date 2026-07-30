@@ -256,8 +256,32 @@ def get_global_power():
             if r.get(k) is not None:
                 r[k] = float(r[k])
 
+    # `total` is COUNT(*) over gem_power for this source — it ignores EVERY
+    # filter above, including the "lat IS NOT NULL AND lng IS NOT NULL" that
+    # constrains the rows actually served. It is the table total, not the total
+    # matching your query and not a count of geocoded rows. It is also a UNIT
+    # count, not a plant count: gem_power rows carry both plant_name and
+    # unit_name, and on the rows this endpoint serves distinct
+    # (plant_name, country) runs ~1.27 rows per plant. And it spans ALL
+    # statuses — a measured floor of 17,137 rows are cancelled, shelved,
+    # retired or mothballed, so "operating + planned" does not describe it.
+    # Anything republishing this number must carry those three qualifications.
+    _basis = {
+        "total_is_unfiltered": True,
+        "total_counts": "generating UNITS, not plants",
+        "total_includes_ungeocoded": True,
+        "total_includes_all_statuses": True,
+        "note": ("`total` is COUNT(*) over the whole gem_power source and "
+                 "ignores every filter including the geocoding filter that "
+                 "restricts the rows returned. Use `count` for the rows in "
+                 "this response. Rows are generating units, not plants, and "
+                 "span all statuses including cancelled / shelved / retired / "
+                 "mothballed — do not publish it as 'plants operating + "
+                 "planned'."),
+    }
     if a.get("format") == "json":
-        return jsonify(ok=True, count=len(recs), total=total,
+        return jsonify(ok=True, count=len(recs), total=total, table_total=total,
+                       total_basis=_basis,
                        as_of=str(asof) if asof else None,
                        source="GEM Global Integrated Power Tracker", units=recs)
 
@@ -267,6 +291,7 @@ def get_global_power():
         "properties": {k: v for k, v in r.items() if k not in ("lat", "lng")},
     } for r in recs]
     resp = jsonify({"type": "FeatureCollection", "count": len(feats), "total": total,
+                    "table_total": total, "total_basis": _basis,
                     "as_of": str(asof) if asof else None,
                     "source": "GEM Global Integrated Power Tracker (CC-BY, via DC Hub)",
                     "features": feats})
