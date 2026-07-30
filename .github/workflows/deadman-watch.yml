@@ -6,7 +6,17 @@ name: deadman-watch — alarm when a loop stops SUCCEEDING
 
 on:
   schedule:
-    - cron: '43 */6 * * *'   # every 6h, offset from the ingestion watchdog (:10)
+    # ★ THE WATCHER MUST RUN WELL INSIDE THE TIGHTEST THRESHOLD IT POLICES.
+    # Was '43 */6' (every 6h). Seven feeds are registered at cadence 3h, and a feed
+    # goes overdue at 2x cadence = 6h — so the watcher's own interval EQUALED the
+    # threshold it was checking. Zero margin. GitHub cron drift is routine (observed
+    # runs: 01:09, 07:38, 13:18, 19:07Z — 25-35 min late every time), so all seven
+    # flipped red together on 2026-07-28 and again on 2026-07-30 while every one of
+    # the underlying workflows was succeeding minutes earlier.
+    # The tell: iso-lmp-ingest is ALSO cadence 3h and stayed GREEN throughout —
+    # because it beats itself from its own workflow instead of relying on this one.
+    # Every 2h gives a 3x margin against the 6h floor. See _assert_watch_margin().
+    - cron: '43 */2 * * *'   # every 2h, offset from the ingestion watchdog (:10)
   workflow_dispatch: {}
 
 permissions:
