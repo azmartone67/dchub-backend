@@ -8,15 +8,48 @@
 #   - dchub.cloud serves 200 through the failover-aware edge worker
 #     (x-dc-hub-served-by present; primary = railway-primary)
 #
-# The DEEP forced-origin-failover-to-Render drill is a follow-up: it needs the
-# current force mechanism + Render's x-dc-hub-served-by value confirmed. Until then
-# CANARY_SECRET is OPTIONAL and used only for an informational (non-fatal) probe.
+# v3.1 (2026-07-30) — LC3: the deep forced-failover drill, now that both v3.0 TODO
+# unknowns are confirmed live.
+#
+#   force mechanism : X-DCHUB-Force-Backend: render|railway  (_worker.js:1981)
+#                     per-request QA escape hatch, unauthenticated, never mutates
+#                     global routing.
+#   Render's tag    : render-PRIMARY, not render-secondary. _tagBackend()
+#                     (_worker.js:1906) emits `${backend}-${mode}`, and the force
+#                     header makes render the CHOSEN primary. Asserting
+#                     "render-secondary" would have failed 100% of runs on a
+#                     perfectly healthy system — the SAME bug class as the 92-day
+#                     `x-backend-used: replit` red this script was written to end.
+#
+# ★★ TWO WAYS THIS DRILL CAN LIE, both now closed:
+#
+#  1. v3.0's step-3 "forced" probe was a DEAD NO-OP. It sent
+#     `X-Dchub-Canary: $CANARY_SECRET`, a header _worker.js reads NOWHERE (verified
+#     on frontend main: zero non-comment hits). So `[api forced] INFO` has been
+#     printing the PRIMARY's own values under a "forced" label — reassuring, and
+#     evidence of nothing.
+#
+#  2. CLOUDFLARE CACHE. A forced GET whose response is already cached returns the
+#     cached PRIMARY body, force header and all. Measured live: without a
+#     cache-buster the forced probe returned railway-primary/is_failover=false;
+#     with one, the same request returned render-primary/is_failover=true. Every
+#     probe below therefore carries a unique `?_=<ts>`.
+#
+# The drill asserts is_failover=true on the payload SPECIFICALLY so that a silently
+# unforced probe (either failure above) is FATAL rather than flattering.
+#
+# Ships with FAILOVER_DEEP_DRILL_ENFORCE=0: the deep drill prints WOULD-FAIL and
+# does not set the exit code, so it cannot flip a green feed red on day one.
+# ★ Arming it to =1 after one clean week is a REQUIRED follow-up.
 set -u
 
 MCP_URL="https://dchub.cloud/mcp"
 API_URL="https://dchub.cloud/api/ai/mcp-health"
-UA="dchub-failover-canary/3.0"          # a User-Agent avoids CF bot-403 on this zone
+FRESH_URL="https://dchub.cloud/api/v1/ops/origin-freshness"
+UA="dchub-failover-canary/3.1"          # a User-Agent avoids CF bot-403 on this zone
 EXPECT_PRIMARY="railway-primary"
+EXPECT_FORCED="render-primary"
+ENFORCE="${FAILOVER_DEEP_DRILL_ENFORCE:-0}"
 INIT='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"canary","version":"1"}}}'
 FAIL=0
 
@@ -53,12 +86,57 @@ else
   echo "[api primary] WARN served-by=$api_served (not $EXPECT_PRIMARY — failover may be active)"
 fi
 
-# 3) OPTIONAL, NON-FATAL: if a force-secret is present, record what a forced failover
-#    routes to today (informational — feeds the deep-drill follow-up).
-if [[ -n "${CANARY_SECRET:-}" ]]; then
-  f_hdrs=$(curl -sS -o /dev/null -D - "$API_URL" -A "$UA" --max-time 20 -H "X-Dchub-Canary: $CANARY_SECRET")
-  echo "[api forced] INFO status=$(http_status "$f_hdrs") served-by=$(served_by "$f_hdrs") (non-fatal; deep drill TODO)"
+# 3) DEEP DRILL — force the edge onto Render and prove the mirror actually serves.
+#    Replaces v3.0's dead X-Dchub-Canary probe. CANARY_SECRET is no longer used:
+#    the real force mechanism needs no secret.
+deep_fail=0
+note() {   # respect ENFORCE: loud either way, only fatal when armed
+  if [[ "$ENFORCE" == "1" ]]; then echo "[api forced] FAIL $1" >&2; deep_fail=1
+  else echo "[api forced] WOULD-FAIL $1 (ENFORCE=0, not failing the run)"; fi
+}
+
+cb="$(date +%s)$RANDOM"     # ★ cache-buster: without it CF serves the cached PRIMARY
+f_hdrs=$(curl -sS -o /dev/null -D - "$FRESH_URL?_=$cb" -A "$UA" --max-time 25 \
+  -H "X-DCHUB-Force-Backend: render")
+f_body=$(curl -sS "$FRESH_URL?_=${cb}b" -A "$UA" --max-time 25 \
+  -H "X-DCHUB-Force-Backend: render")
+f_status=$(http_status "$f_hdrs")
+f_served=$(served_by "$f_hdrs")
+f_isfo=$(printf '%s' "$f_body" | tr -d ' ' | grep -o '"is_failover":[a-z]*' | cut -d: -f2)
+f_commit=$(printf '%s' "$f_body" | grep -o '"commit":"[^"]*"' | cut -d'"' -f4)
+
+if [[ "$f_status" != "200" ]]; then
+  note "forced probe status=${f_status:-none}"
+elif [[ "$f_isfo" != "true" ]]; then
+  # THE important assertion. If the force silently did not apply — dead header, CF
+  # cache, worker rollback — we are reading the PRIMARY and would otherwise report
+  # a passing "failover drill" having never touched Render.
+  note "is_failover=${f_isfo:-missing} — the force did NOT apply; this probe read the PRIMARY, not Render"
+elif [[ "$f_served" != "$EXPECT_FORCED" ]]; then
+  note "served-by=$f_served expected=$EXPECT_FORCED"
+else
+  echo "[api forced] OK served-by=$f_served is_failover=true commit=${f_commit:-?}"
+  # Commit drift: assert ANCESTRY, never equality. Render trails main by design
+  # (measured: 247 commits, still a true ancestor); equality would false-red on
+  # every Railway deploy. Needs fetch-depth: 0 — a shallow checkout cannot answer
+  # this, so an unknown object is reported as UNKNOWN, never as drift.
+  if [[ -n "$f_commit" ]] && git cat-file -e "${f_commit}^{commit}" 2>/dev/null; then
+    if git merge-base --is-ancestor "$f_commit" HEAD 2>/dev/null; then
+      echo "[api forced] OK render commit $f_commit is an ancestor of HEAD ($(git rev-list --count "$f_commit"..HEAD 2>/dev/null) behind)"
+    else
+      note "render commit $f_commit is NOT an ancestor of HEAD — the mirror is on a divergent build"
+    fi
+  else
+    echo "[api forced] UNKNOWN commit $f_commit not in this clone (need fetch-depth: 0) — not treated as drift"
+  fi
 fi
+[[ "$deep_fail" -eq 1 ]] && FAIL=1
+
+# NOT COVERED, stated so it is never mistaken for tested: the KV tier
+# (x-cache-kv / x-cache-kv-age) is consulted ONLY after BOTH origins fail and has no
+# per-request pin, so it cannot be drilled without a real outage. There is also no
+# generic D1 serving tier — env.DCHUB_DB backs specific query routes, not serving.
+echo "[coverage] KV tier NOT drilled (no per-request pin; needs a real dual-origin outage)"
 
 [[ "$MODE" == "drill" && $FAIL -eq 0 ]] && echo "=== all checks passed ==="
 exit $FAIL

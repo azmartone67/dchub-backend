@@ -33,13 +33,23 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          # v3.1's commit-drift check asks whether Render's deployed commit is an
+          # ANCESTOR of HEAD. The default shallow clone (depth 1) cannot answer that
+          # — the object is simply absent — so the drill would report UNKNOWN every
+          # run. Full history is what makes the assertion possible at all.
+          fetch-depth: 0
 
       - name: Make script executable
         run: chmod +x ./dchub-failover-check.sh
 
       - name: Run failover canary
         env:
-          CANARY_SECRET: ${{ secrets.CANARY_SECRET }}
+          # FAILOVER_DEEP_DRILL_ENFORCE=0 -> the deep drill prints WOULD-FAIL and does
+          # not set the exit code. Ships unarmed so a brand-new assertion cannot flip
+          # a GREEN feed red on day one. ★ Arming to 1 after one clean week is a
+          # REQUIRED follow-up — until then the deep drill is observation, not a gate.
+          FAILOVER_DEEP_DRILL_ENFORCE: '0'
         run: ./dchub-failover-check.sh drill
 
       - name: Notify on workflow failure
