@@ -30,6 +30,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install requests (the script's one dependency — never rely on the runner image)
+        run: python3 -m pip install --quiet requests
+
       - name: Re-capture keyed replays (stamp moves only on full success)
         env:
           DCHUB_REVIEWER_KEY: ${{ secrets.DCHUB_REVIEWER_KEY }}
