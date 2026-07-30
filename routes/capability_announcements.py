@@ -142,6 +142,57 @@ _RESOLVERS = {
 # stay hardcoded in the page until a keyless backend projection exists; adding
 # them here without a resolver would only produce a permanently withheld card.
 ANNOUNCEMENTS = [
+    # ── 2026-07-29 ────────────────────────────────────────────────────
+    # These three were staged into data/platform_updates.json first, which feeds
+    # /api/v1/platform-updates — NOT the `platform` block on /api/v1/whats-new
+    # that this module serves. Two announcement systems shipped the same day and
+    # the cards went into the one the page does not read, so they were live at
+    # one endpoint and invisible on the page they were written for. Registered
+    # here so they actually reach /whats-new. Consolidating the two stores is
+    # tracked separately; duplicating three entries is the smaller wrong.
+    {
+        "key": "dcpi_methodology_published",
+        "status": STATUS_APPROVED,
+        "approved_pr": "owner-approved in the PR that adds this entry",
+        "shipped_at": "2026-07-29",
+        "tag": "Method",
+        "title": "The DCPI method is now machine-readable",
+        "body": ("Every indicator weight, every ceiling, every verdict band and the full "
+                 "revision history are served as JSON at /api/v1/dcpi/methodology, emitted "
+                 "from the same constants the scorer imports — so the published method and "
+                 "the running index cannot drift into describing different formulas. The "
+                 "known limitations ship in the same payload. Covers "
+                 "{dcpi_markets_scored} scored markets."),
+        "cta_href": "/api/v1/dcpi/methodology",
+        "cta_label": "Read the method",
+    },
+    {
+        "key": "cross_layer_site_discovery",
+        "status": STATUS_APPROVED,
+        "approved_pr": "owner-approved in the PR that adds this entry",
+        "shipped_at": "2026-07-29",
+        "tag": "Site discovery",
+        "title": "Cross-layer site discovery produces candidates, not rankings",
+        "body": ("GET /api/v1/sites/cross-layer builds a candidate set out of the physical "
+                 "layers themselves — the substation layer is the search space, with fiber "
+                 "coverage, carrier presence and market context from {dcpi_markets_scored} "
+                 "scored markets attached to each anchor — instead of re-ranking a shortlist "
+                 "the caller already had. It also declares what it refuses to answer: "
+                 "constraint_coverage names measured power headroom as absent from every "
+                 "layer, with the reason, so an agent can see the hole rather than infer a "
+                 "figure nobody measured."),
+        "cta_href": "/api/v1/sites/cross-layer?lat=39.0438&lon=-77.4874&radius_km=25",
+        "cta_label": "See it over Loudoun",
+    },
+    # grid_scoreboard_honest_counts is DELIBERATELY NOT registered here. This
+    # registry requires every entry to bind a live numeric resolver, and no
+    # keyless SQL source publishes a grid-zone count — the scoreboard is
+    # assembled in the MCP layer from live upstream calls, not from a table.
+    # Relaxing that contract for one numberless card would cost more than the
+    # card is worth, and binding an unrelated resolver (countries_covered is over
+    # `facilities`, not grid zones) would be a non-sequitur dressed as evidence.
+    # It is published at /api/v1/platform-updates, whose store permits
+    # numberless entries by design.
     {
         "key": "provenance_envelope",
         "status": STATUS_APPROVED,
