@@ -1378,6 +1378,234 @@ SOURCES = [
                 "voltage_kv": None,
                 "mw_max": None, "mw_min": None,
                 "queued_kw": None, "updated": None}},
+    {
+     "key": "ausgrid_uhc_primary_load",
+     "capacity_type": "load",
+     "country": "AU",
+     "url": ("https://portal.data.nsw.gov.au/arcgis/rest/services/Hosted/"
+             "Ausgrid_UHC_Data/FeatureServer/0/query"),
+     # A LITERAL year, not a clock read. SOURCES must stay evaluable from a bare
+     # literal (the contract harness execs it with only `os` in scope), and a
+     # self-advancing pin would silently select a year Ausgrid may not publish.
+     # test_ausgrid_forecast_year_pin_is_current fails when this needs bumping.
+     "where": "year = 2026",
+     "order_field": "available_capacity__load__at_n_",
+     "delay_s": 2.0,
+     "attribution": ("Ausgrid \u2014 Unlocking Hosting Capacity (UHC) "
+                     "transmission hosting-capacity data, published via the NSW "
+                     "Government data portal (data.nsw.gov.au, dataset "
+                     "80dbe042b881417c94ea34e229ce920b). The service publishes "
+                     "no copyright or licence string of its own."),
+     "capacity_basis": ("Available LOAD capacity at N-1 on an Ausgrid PRIMARY (sub-transmission) substation, 216 substations, from Ausgrid's own UHC layer. "
+                          "\u2605 UNITS ARE NOT PUBLISHED BY AUSGRID and are NOT asserted as MW "
+                          "here. The layer carries no description and no copyrightText, "
+                          "and the field alias is bare. Australian distribution-planning "
+                          "practice (AER DAPR guidelines) states available substation "
+                          "capacity in MVA \u2014 apparent power \u2014 and the observed "
+                          "range (0.0-420.1 at 132 kV) fits MVA and MW equally, so the "
+                          "numbers cannot settle it. Treated as MVA: MVA >= MW at any "
+                          "power factor below unity, so reading it as MW would OVER-state "
+                          "deliverable real power \u2014 the direction this repo refuses. "
+                          "Same handling as the PECO layer. Converting needs the "
+                          "substation power factor, which Ausgrid does not publish. "
+                          "\u2605 A FORECAST, NOT A LIVE READING, AND NOT FRESH: every row "
+                          "carries extract_date=20240627 (Ausgrid extracted it on "
+                          "2024-06-27) while the year column spans 2025-2034. The row "
+                          "ingested is the pinned year below \u2014 a value projected "
+                          "about two years earlier for a year that has since arrived. It "
+                          "does not bind live and is never present-day measured headroom. "
+                          "\u2605 ONE ROW PER SUBSTATION PER FORECAST YEAR upstream: 2,160 = "
+                          "216 substations x 10 years (primary), 2,120 = 212 x 10 "
+                          "(secondary). The where-clause pins ONE year, so rows == "
+                          "substations and nothing is folded; unfiltered it would publish "
+                          "ten futures of one substation as ten assets. Capacity DECLINES "
+                          "across the forecast (Chullora STSS load 420.1 in 2025 -> 409.5 "
+                          "in 2030), so the pinned year is the highest of the ten: right "
+                          "for \"available now\", wrong for any later year. The pin is a "
+                          "LITERAL, fenced by test_ausgrid_forecast_year_pin_is_current \u2014 "
+                          "rolling it forward requires re-verifying Ausgrid still "
+                          "publishes that year, because an empty year would publish "
+                          "\"no capacity\" where the truth is \"this forecast expired\". "
+                          "N-1 basis: capacity available with one element out of service \u2014 "
+                          "the planning standard, not nameplate. Geometry is published "
+                          "in EPSG:3857 and requested as EPSG:4326."),
+     "fields": {"feeder": None, "substation": "substation", "state": None,
+                "region": None, "voltage_kv": "voltage_level_primary",
+                "mw_max": ("available_capacity__load__at_n_", 1.0), "mw_min": None,
+                "queued_kw": None, "updated": None},
+     "utility": "Ausgrid NSW (Sydney/Hunter/Central Coast) \u2014 primary, load",
+    },
+    {
+     "key": "ausgrid_uhc_primary_gen",
+     "capacity_type": "gen",
+     "country": "AU",
+     "url": ("https://portal.data.nsw.gov.au/arcgis/rest/services/Hosted/"
+             "Ausgrid_UHC_Data/FeatureServer/0/query"),
+     # A LITERAL year, not a clock read. SOURCES must stay evaluable from a bare
+     # literal (the contract harness execs it with only `os` in scope), and a
+     # self-advancing pin would silently select a year Ausgrid may not publish.
+     # test_ausgrid_forecast_year_pin_is_current fails when this needs bumping.
+     "where": "year = 2026",
+     "order_field": "available_capacity__generation_",
+     "delay_s": 2.0,
+     "attribution": ("Ausgrid \u2014 Unlocking Hosting Capacity (UHC) "
+                     "transmission hosting-capacity data, published via the NSW "
+                     "Government data portal (data.nsw.gov.au, dataset "
+                     "80dbe042b881417c94ea34e229ce920b). The service publishes "
+                     "no copyright or licence string of its own."),
+     "capacity_basis": ("Available GENERATION hosting capacity at N-1 on an Ausgrid PRIMARY (sub-transmission) substation, 216 substations. DER injection headroom \u2014 it does NOT serve new demand. "
+                          "\u2605 UNITS ARE NOT PUBLISHED BY AUSGRID and are NOT asserted as MW "
+                          "here. The layer carries no description and no copyrightText, "
+                          "and the field alias is bare. Australian distribution-planning "
+                          "practice (AER DAPR guidelines) states available substation "
+                          "capacity in MVA \u2014 apparent power \u2014 and the observed "
+                          "range (0.0-420.1 at 132 kV) fits MVA and MW equally, so the "
+                          "numbers cannot settle it. Treated as MVA: MVA >= MW at any "
+                          "power factor below unity, so reading it as MW would OVER-state "
+                          "deliverable real power \u2014 the direction this repo refuses. "
+                          "Same handling as the PECO layer. Converting needs the "
+                          "substation power factor, which Ausgrid does not publish. "
+                          "\u2605 A FORECAST, NOT A LIVE READING, AND NOT FRESH: every row "
+                          "carries extract_date=20240627 (Ausgrid extracted it on "
+                          "2024-06-27) while the year column spans 2025-2034. The row "
+                          "ingested is the pinned year below \u2014 a value projected "
+                          "about two years earlier for a year that has since arrived. It "
+                          "does not bind live and is never present-day measured headroom. "
+                          "\u2605 ONE ROW PER SUBSTATION PER FORECAST YEAR upstream: 2,160 = "
+                          "216 substations x 10 years (primary), 2,120 = 212 x 10 "
+                          "(secondary). The where-clause pins ONE year, so rows == "
+                          "substations and nothing is folded; unfiltered it would publish "
+                          "ten futures of one substation as ten assets. Capacity DECLINES "
+                          "across the forecast (Chullora STSS load 420.1 in 2025 -> 409.5 "
+                          "in 2030), so the pinned year is the highest of the ten: right "
+                          "for \"available now\", wrong for any later year. The pin is a "
+                          "LITERAL, fenced by test_ausgrid_forecast_year_pin_is_current \u2014 "
+                          "rolling it forward requires re-verifying Ausgrid still "
+                          "publishes that year, because an empty year would publish "
+                          "\"no capacity\" where the truth is \"this forecast expired\". "
+                          "N-1 basis: capacity available with one element out of service \u2014 "
+                          "the planning standard, not nameplate. Geometry is published "
+                          "in EPSG:3857 and requested as EPSG:4326."),
+     "fields": {"feeder": None, "substation": "substation", "state": None,
+                "region": None, "voltage_kv": "voltage_level_primary",
+                "mw_max": ("available_capacity__generation_", 1.0), "mw_min": None,
+                "queued_kw": None, "updated": None},
+     "utility": "Ausgrid NSW (Sydney/Hunter/Central Coast) \u2014 primary, generation",
+    },
+    {
+     "key": "ausgrid_uhc_secondary_load",
+     "capacity_type": "load",
+     "country": "AU",
+     "url": ("https://portal.data.nsw.gov.au/arcgis/rest/services/Hosted/"
+             "Ausgrid_UHC_Data/FeatureServer/1/query"),
+     # A LITERAL year, not a clock read. SOURCES must stay evaluable from a bare
+     # literal (the contract harness execs it with only `os` in scope), and a
+     # self-advancing pin would silently select a year Ausgrid may not publish.
+     # test_ausgrid_forecast_year_pin_is_current fails when this needs bumping.
+     "where": "year = 2026",
+     "order_field": "available_capacity__load__at_n_",
+     "delay_s": 2.0,
+     "attribution": ("Ausgrid \u2014 Unlocking Hosting Capacity (UHC) "
+                     "transmission hosting-capacity data, published via the NSW "
+                     "Government data portal (data.nsw.gov.au, dataset "
+                     "80dbe042b881417c94ea34e229ce920b). The service publishes "
+                     "no copyright or licence string of its own."),
+     "capacity_basis": ("Available LOAD capacity at N-1 on an Ausgrid SECONDARY (zone) substation, 212 substations. voltage_kv is the HV (primary) side \u2014 33-132 kV \u2014 because that is the side the N-1 capacity is assessed on; the LV side is 11 kV on every row. "
+                          "\u2605 UNITS ARE NOT PUBLISHED BY AUSGRID and are NOT asserted as MW "
+                          "here. The layer carries no description and no copyrightText, "
+                          "and the field alias is bare. Australian distribution-planning "
+                          "practice (AER DAPR guidelines) states available substation "
+                          "capacity in MVA \u2014 apparent power \u2014 and the observed "
+                          "range (0.0-420.1 at 132 kV) fits MVA and MW equally, so the "
+                          "numbers cannot settle it. Treated as MVA: MVA >= MW at any "
+                          "power factor below unity, so reading it as MW would OVER-state "
+                          "deliverable real power \u2014 the direction this repo refuses. "
+                          "Same handling as the PECO layer. Converting needs the "
+                          "substation power factor, which Ausgrid does not publish. "
+                          "\u2605 A FORECAST, NOT A LIVE READING, AND NOT FRESH: every row "
+                          "carries extract_date=20240627 (Ausgrid extracted it on "
+                          "2024-06-27) while the year column spans 2025-2034. The row "
+                          "ingested is the pinned year below \u2014 a value projected "
+                          "about two years earlier for a year that has since arrived. It "
+                          "does not bind live and is never present-day measured headroom. "
+                          "\u2605 ONE ROW PER SUBSTATION PER FORECAST YEAR upstream: 2,160 = "
+                          "216 substations x 10 years (primary), 2,120 = 212 x 10 "
+                          "(secondary). The where-clause pins ONE year, so rows == "
+                          "substations and nothing is folded; unfiltered it would publish "
+                          "ten futures of one substation as ten assets. Capacity DECLINES "
+                          "across the forecast (Chullora STSS load 420.1 in 2025 -> 409.5 "
+                          "in 2030), so the pinned year is the highest of the ten: right "
+                          "for \"available now\", wrong for any later year. The pin is a "
+                          "LITERAL, fenced by test_ausgrid_forecast_year_pin_is_current \u2014 "
+                          "rolling it forward requires re-verifying Ausgrid still "
+                          "publishes that year, because an empty year would publish "
+                          "\"no capacity\" where the truth is \"this forecast expired\". "
+                          "N-1 basis: capacity available with one element out of service \u2014 "
+                          "the planning standard, not nameplate. Geometry is published "
+                          "in EPSG:3857 and requested as EPSG:4326."),
+     "fields": {"feeder": None, "substation": "substation", "state": None,
+                "region": None, "voltage_kv": "voltage_level_primary",
+                "mw_max": ("available_capacity__load__at_n_", 1.0), "mw_min": None,
+                "queued_kw": None, "updated": None},
+     "utility": "Ausgrid NSW (Sydney/Hunter/Central Coast) \u2014 zone, load",
+    },
+    {
+     "key": "ausgrid_uhc_secondary_gen",
+     "capacity_type": "gen",
+     "country": "AU",
+     "url": ("https://portal.data.nsw.gov.au/arcgis/rest/services/Hosted/"
+             "Ausgrid_UHC_Data/FeatureServer/1/query"),
+     # A LITERAL year, not a clock read. SOURCES must stay evaluable from a bare
+     # literal (the contract harness execs it with only `os` in scope), and a
+     # self-advancing pin would silently select a year Ausgrid may not publish.
+     # test_ausgrid_forecast_year_pin_is_current fails when this needs bumping.
+     "where": "year = 2026",
+     "order_field": "available_capacity__generation_",
+     "delay_s": 2.0,
+     "attribution": ("Ausgrid \u2014 Unlocking Hosting Capacity (UHC) "
+                     "transmission hosting-capacity data, published via the NSW "
+                     "Government data portal (data.nsw.gov.au, dataset "
+                     "80dbe042b881417c94ea34e229ce920b). The service publishes "
+                     "no copyright or licence string of its own."),
+     "capacity_basis": ("Available GENERATION hosting capacity at N-1 on an Ausgrid SECONDARY (zone) substation, 212 substations. DER injection headroom; does NOT serve new demand. voltage_kv is the HV (primary) side. "
+                          "\u2605 UNITS ARE NOT PUBLISHED BY AUSGRID and are NOT asserted as MW "
+                          "here. The layer carries no description and no copyrightText, "
+                          "and the field alias is bare. Australian distribution-planning "
+                          "practice (AER DAPR guidelines) states available substation "
+                          "capacity in MVA \u2014 apparent power \u2014 and the observed "
+                          "range (0.0-420.1 at 132 kV) fits MVA and MW equally, so the "
+                          "numbers cannot settle it. Treated as MVA: MVA >= MW at any "
+                          "power factor below unity, so reading it as MW would OVER-state "
+                          "deliverable real power \u2014 the direction this repo refuses. "
+                          "Same handling as the PECO layer. Converting needs the "
+                          "substation power factor, which Ausgrid does not publish. "
+                          "\u2605 A FORECAST, NOT A LIVE READING, AND NOT FRESH: every row "
+                          "carries extract_date=20240627 (Ausgrid extracted it on "
+                          "2024-06-27) while the year column spans 2025-2034. The row "
+                          "ingested is the pinned year below \u2014 a value projected "
+                          "about two years earlier for a year that has since arrived. It "
+                          "does not bind live and is never present-day measured headroom. "
+                          "\u2605 ONE ROW PER SUBSTATION PER FORECAST YEAR upstream: 2,160 = "
+                          "216 substations x 10 years (primary), 2,120 = 212 x 10 "
+                          "(secondary). The where-clause pins ONE year, so rows == "
+                          "substations and nothing is folded; unfiltered it would publish "
+                          "ten futures of one substation as ten assets. Capacity DECLINES "
+                          "across the forecast (Chullora STSS load 420.1 in 2025 -> 409.5 "
+                          "in 2030), so the pinned year is the highest of the ten: right "
+                          "for \"available now\", wrong for any later year. The pin is a "
+                          "LITERAL, fenced by test_ausgrid_forecast_year_pin_is_current \u2014 "
+                          "rolling it forward requires re-verifying Ausgrid still "
+                          "publishes that year, because an empty year would publish "
+                          "\"no capacity\" where the truth is \"this forecast expired\". "
+                          "N-1 basis: capacity available with one element out of service \u2014 "
+                          "the planning standard, not nameplate. Geometry is published "
+                          "in EPSG:3857 and requested as EPSG:4326."),
+     "fields": {"feeder": None, "substation": "substation", "state": None,
+                "region": None, "voltage_kv": "voltage_level_primary",
+                "mw_max": ("available_capacity__generation_", 1.0), "mw_min": None,
+                "queued_kw": None, "updated": None},
+     "utility": "Ausgrid NSW (Sydney/Hunter/Central Coast) \u2014 zone, generation",
+    },
 ]
 
 # ── NOT INGESTED, tier 1 (2026-07-29) ───────────────────────────────────
