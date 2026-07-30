@@ -50,7 +50,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import urllib.request
 from datetime import date, datetime, timezone
 
 from flask import Blueprint, jsonify, request
@@ -108,13 +107,15 @@ def _conn():
 
 def _probe(url: str, timeout: int = 10):
     """Tiny GET with a self-identifying UA (classifies internal, never counts
-    as an agent). Returns (status, body_prefix) or (None, error)."""
+    as an agent). requests, not urllib — the regression lint bans
+    urllib.request on Railway (#1940 class). Returns (status, body_prefix)
+    or (None, error)."""
     try:
-        req = urllib.request.Request(
-            url, headers={"User-Agent": "dchub-shell44-handoff-truth/1.0",
-                          "Cache-Control": "no-cache"})
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            return r.status, r.read(65536).decode("utf-8", "replace")
+        import requests
+        r = requests.get(url, timeout=timeout,
+                         headers={"User-Agent": "dchub-shell44-handoff-truth/1.0",
+                                  "Cache-Control": "no-cache"})
+        return r.status_code, (r.text or "")[:65536]
     except Exception as e:
         return None, str(e)[:120]
 
