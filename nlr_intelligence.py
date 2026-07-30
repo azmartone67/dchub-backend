@@ -307,16 +307,50 @@ def geothermal_potential():
     nearest_name = zones[0]["name"]  if zones else "None"
     nearest_km   = zones[0]["distance_km"] if zones else None
 
-    # Pull nearby geothermal plants from DB (power_plants table)
+    # Pull nearby geothermal plants from power_plants_eia.
+    #
+    # Phase plant-count-truth (2026-07-29) — this block had a DOUBLE fault and
+    # published a confident false negative. Measured live on production with a
+    # privileged key BEFORE the fix:
+    #
+    #   /api/v1/geothermal-potential?lat=39.5&lon=-119.8&state=NV  (Reno)
+    #       -> nearby_geothermal_plants: []   source: "... + EIA-860"
+    #   /api/v1/geothermal-potential?lat=33.15&lon=-115.6&state=CA (Imperial V.)
+    #       -> nearby_geothermal_plants: []   source: "... + EIA-860"
+    #
+    # Those are the two densest geothermal areas in the United States.
+    # power_plants_eia holds 67 geothermal plants: CA 33, NV 26, UT 3, OR 2,
+    # NM 1, HI 1, ID 1. Both faults had to be fixed for either to matter:
+    #
+    #   a) WRONG TABLE. It read `power_plants` — the 66-row stub (see
+    #      land_power_crawler.crawl_power_plants). That table holds ZERO rows
+    #      matching geothermal at all, so even spelled correctly this query
+    #      could only ever return [].
+    #   b) WRONG COLUMN. It selected `lng`, but `power_plants` spells it `lon`
+    #      (verified against information_schema, not the repo DDL). That is an
+    #      UndefinedColumn every single call, swallowed by the `except` below,
+    #      which left `nearby_plants` at its seed `[]` — indistinguishable from
+    #      a real "no geothermal plants nearby", and published under
+    #      source: "DC Hub + USGS EGS Atlas + EIA-860".
+    #
+    # power_plants_eia does spell it `lng`. Filter on `primary_fuel`, NOT on
+    # the `geothermal_mw` column: geothermal_mw is populated on 0 of 13,446
+    # rows, so `geothermal_mw > 0` is another guaranteed-empty predicate.
+    # A failure now reports itself instead of masquerading as a measurement.
     nearby_plants = []
+    plants_unmeasured = None
     conn = _get_db_safe()
+    if conn is None:
+        plants_unmeasured = ("no database connection available on this request; "
+                             "plant proximity not measured (this is not a "
+                             "statement that no plants are nearby)")
     if conn:
         try:
             cur = conn.cursor()
             cur.execute("""
-                SELECT name, capacity_mw, lat, lng
-                FROM power_plants
-                WHERE fuel_type ILIKE '%geothermal%'
+                SELECT name, nameplate_capacity_mw, lat, lng
+                FROM power_plants_eia
+                WHERE primary_fuel ILIKE '%geothermal%'
                   AND lat  BETWEEN %s AND %s
                   AND lng  BETWEEN %s AND %s
                 LIMIT 10
@@ -329,7 +363,16 @@ def geothermal_potential():
             cur.close()
             conn.close()
         except Exception as exc:
-            logger.debug("NLR geothermal plants query: %s", exc)
+            # Was logger.debug + a silent fall-through to []. The whole point of
+            # the fault above is that a swallowed error is published as a
+            # finding. Log it loudly and carry the reason into the response.
+            logger.warning("NLR geothermal plants query failed: %s", exc)
+            nearby_plants = []
+            plants_unmeasured = (
+                f"query over power_plants_eia failed, so plant proximity was "
+                f"NOT measured. This is not a statement that no geothermal "
+                f"plants are nearby: {str(exc)[:200]}"
+            )
             try: conn.rollback()
             except Exception: pass
             try: conn.close()
@@ -347,6 +390,16 @@ def geothermal_potential():
             "nearby_zones": zones,
         },
         "nearby_geothermal_plants": nearby_plants,
+        # An empty list must never again be readable as "none nearby" when it
+        # actually means "the query never ran". None when the list is measured.
+        "nearby_geothermal_plants_unmeasured": plants_unmeasured,
+        "nearby_geothermal_plants_basis": (
+            "power_plants_eia WHERE primary_fuel ILIKE '%geothermal%' within a "
+            "+/-3 degree lat/lng box, nearest 10 by great-circle distance. "
+            "67 geothermal plants nationwide (CA 33, NV 26, UT 3, OR 2, NM 1, "
+            "HI 1, ID 1). Operating status is NOT asserted: power_plants_eia "
+            "has no `status` column."
+        ),
         "nlr_relevance": {
             "research_zone": geo_score >= 40,
             "aries_compatible": aries_compat,

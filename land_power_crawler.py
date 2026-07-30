@@ -1276,13 +1276,65 @@ def register_land_power_routes(app, get_db, require_admin):
             if not row:
                 return jsonify({"error": "Market not found"}), 404
 
-            # Also get nearby power plants
             state = row[2]
+
+            # Phase plant-count-truth (2026-07-29) — this endpoint had THREE
+            # faults, all measured live against production before the fix:
+            #
+            # 1. WRONG TABLE. The plant list read `power_plants`, which holds
+            #    66 rows for the entire United States. It is not a
+            #    differently-scoped population: it is the SAME EIA-860 plant
+            #    population as the healthy 13,446-row `power_plants_eia`,
+            #    loaded to ~0.5% because crawl_power_plants keyed its dedup on
+            #    rec['plantid'] — a spelling the EIA v2 facility-fuel response
+            #    does not return — and silently dropped 54,934 of 55,000
+            #    fetched records while reporting errors=0 (fixed in #1923; the
+            #    66 rows are the pre-fix 2026-03-30 build and are what is live
+            #    today).
+            #    What that published: of the 42 markets in
+            #    market_power_profiles, 34 got an EMPTY `large_power_plants`
+            #    list, because only 13 states have any row at all in the stub
+            #    and only 17 rows nationwide clear capacity_mw > 100. Austin,
+            #    Dallas-Fort Worth, Houston and San Antonio all got [] — the
+            #    real figure from power_plants_eia is 437 Texas plants over
+            #    100 MW. The other 8 markets got 1-2 rows where the EIA table
+            #    holds 24-241. An empty list is not "no large plants nearby",
+            #    and it was published with no way for a caller to tell the
+            #    difference. Repointed to power_plants_eia.
+            #
+            # 2. HARD 500. The substations query selected `lon`. The live
+            #    `substations` table has no `lon` column — it is `lng` (36
+            #    columns, verified against information_schema). So this
+            #    endpoint returned
+            #      {"error": "column \"lon\" does not exist ..."}  HTTP 500
+            #    for EVERY market, and the CF worker turned that into a 503
+            #    "Backend unreachable". Fixing fault 1 alone would have
+            #    changed nothing a caller could see, because the response
+            #    never got built. power_plants_eia also spells it `lng`, so
+            #    both queries below now read `lng` — the published JSON key
+            #    stays "lon" (that is the existing contract, and it is a
+            #    longitude either way). Do not "fix" the key back to the
+            #    column name.
+            #
+            # 3. STATE ROLL-UP UNDER A MARKET NAME — DISCLOSED, NOT FIXED.
+            #    Both queries filter `WHERE state = %s`, so every market in a
+            #    state returns identical lists. That is not repairable here:
+            #    market_power_profiles carries no geography but `state` (20
+            #    columns, no centroid, no county, no CBSA), and there is no
+            #    market->metro table in the database to join to. Re-deriving
+            #    at metro scope needs a market geography source that does not
+            #    exist yet, so the scope is now stated in the response
+            #    instead of implied by the route name, and the sibling markets
+            #    that return the identical payload are named explicitly. This
+            #    matches the disclosure the plural /market-profiles endpoint
+            #    makes (#1923) rather than silently keeping a state figure
+            #    labelled as a market one.
             cur.execute("""
-                SELECT name, operator, capacity_mw, fuel_category, lat, lon
-                FROM power_plants
-                WHERE state = %s AND capacity_mw > 100
-                ORDER BY capacity_mw DESC
+                SELECT name, utility_name, nameplate_capacity_mw, primary_fuel,
+                       lat, lng
+                FROM power_plants_eia
+                WHERE state = %s AND nameplate_capacity_mw > 100
+                ORDER BY nameplate_capacity_mw DESC
                 LIMIT 20
             """, (state,))
             large_plants = [
@@ -1291,7 +1343,7 @@ def register_land_power_routes(app, get_db, require_admin):
             ]
 
             cur.execute("""
-                SELECT name, voltage_kv, max_voltage_kv, lat, lon
+                SELECT name, voltage_kv, max_voltage_kv, lat, lng
                 FROM substations
                 WHERE state = %s AND voltage_kv >= 230
                 ORDER BY voltage_kv DESC
@@ -1302,10 +1354,58 @@ def register_land_power_routes(app, get_db, require_admin):
                 for r in cur.fetchall()
             ]
 
+            # Name the markets that share this state, so "these numbers are a
+            # state roll-up" is checkable rather than a claim. Best-effort: a
+            # failure here must not take the endpoint down again.
+            siblings = []
+            try:
+                cur.execute("""
+                    SELECT market FROM market_power_profiles
+                    WHERE state = %s AND market <> %s
+                    ORDER BY market
+                """, (state, market))
+                siblings = [r[0] for r in cur.fetchall()]
+            except Exception:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                siblings = None
+
+            _SCOPE = (
+                f"STATE roll-up for {state}, not a metro figure. Both lists "
+                f"below are `WHERE state = '{state}'`, so every market in "
+                f"{state} returns byte-identical lists. Disclosed, not fixed: "
+                f"market_power_profiles carries no geography but `state`, and "
+                f"there is no market->metro mapping to re-derive from."
+            )
             return jsonify({
                 "market": market,
+                "state": state,
                 "large_power_plants": large_plants,
                 "high_voltage_substations": high_voltage_subs,
+                "basis": {
+                    "geographic_scope": _SCOPE,
+                    "identical_for_markets": siblings,
+                    "large_power_plants": (
+                        "power_plants_eia (13,446 US EIA-860 plant records), "
+                        "nameplate_capacity_mw > 100, top 20 by nameplate. "
+                        "NOT the bare `power_plants` table, which is a 66-row "
+                        "stub of the same population."
+                    ),
+                    "operating_status": (
+                        "NOT ASSERTED. power_plants_eia has no `status` column, "
+                        "so whether a plant is currently operating is an "
+                        "upstream property we cannot state per row. This list "
+                        "is EIA-860 plant records over 100 MW nameplate, not a "
+                        "list of operating plants. (The previous 66-row source "
+                        "did carry `status` and never filtered on it either, so "
+                        "no assertion is lost here — it was never made.)"
+                    ),
+                    "high_voltage_substations": (
+                        "substations, voltage_kv >= 230, top 20 by voltage."
+                    ),
+                },
             })
         except Exception as e:
             return jsonify({"error": str(e)}), 500
