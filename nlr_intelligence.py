@@ -347,10 +347,26 @@ def geothermal_potential():
     if conn:
         try:
             cur = conn.cursor()
+            # ★ '%%geothermal%%', NOT '%geothermal%'. psycopg2 runs Python
+            # %-formatting over the statement CLIENT-SIDE whenever params are
+            # passed, so a literal % is a format directive: '%g' consumes an
+            # argument, the trailing %s then runs off the end, and execute()
+            # raises IndexError: tuple index out of range before the SQL ever
+            # reaches Postgres. Measured both ways against the live database:
+            #     '%geothermal%'   -> IndexError: tuple index out of range
+            #     '%%geothermal%%' -> 10 rows
+            # This is also the TRUE proximate cause of the pre-#1930 empty
+            # list. The wrong table and the `lng`/`lon` mismatch documented
+            # above are both real and both still had to be fixed — but this
+            # raised FIRST, client-side, so the UndefinedColumn was never
+            # actually reached. #1930 named the wrong error and carried the
+            # bug forward: the repoint landed and still published nothing,
+            # which is only visible because that same PR made the failure
+            # report itself instead of falling through to [].
             cur.execute("""
                 SELECT name, nameplate_capacity_mw, lat, lng
                 FROM power_plants_eia
-                WHERE primary_fuel ILIKE '%geothermal%'
+                WHERE primary_fuel ILIKE '%%geothermal%%'
                   AND lat  BETWEEN %s AND %s
                   AND lng  BETWEEN %s AND %s
                 LIMIT 10

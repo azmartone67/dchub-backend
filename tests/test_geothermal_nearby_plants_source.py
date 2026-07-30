@@ -53,14 +53,49 @@ THE CONTRACT
       reason distinguishable from a genuine "none nearby", and the failure is
       logged above DEBUG.
   G6. A genuine empty result stays empty WITHOUT a false reason attached.
+  G7. Literal % in the statement is escaped as %% (see below — this is the one
+      that got through).
+
+★★ THIS FILE CERTIFIED A BROKEN FIX ONCE. Recorded because it is the reusable
+   lesson. #1930 repointed the query to power_plants_eia, every test here
+   passed, and production STILL published an empty list — because psycopg2 runs
+   Python %-formatting over the statement CLIENT-SIDE when params are passed, so
+   `ILIKE '%geothermal%'` beside %s placeholders raises
+
+       IndexError: tuple index out of range
+
+   before the SQL is ever sent. Measured both ways against the live database:
+   '%geothermal%' -> IndexError; '%%geothermal%%' -> 10 rows.
+
+   That also means #1930 named the WRONG proximate cause. The wrong table and
+   the `lng`/`lon` mismatch are both real and both had to be fixed, but this
+   raised first, client-side, so the UndefinedColumn was never reached.
+
+   The harness let it through because the stub cursor validated tables and
+   columns but never modelled the BINDING step — it only ever saw SQL that
+   psycopg2 would have refused to send. A stub that is more forgiving than the
+   driver certifies code the driver rejects. _Cur.execute now performs the
+   %-interpolation first, so this class cannot pass again.
+
+   It was caught at all only because #1930 also replaced the silent
+   `except: pass` -> [] with a published reason. The fix was wrong; the
+   instrumentation shipped alongside it is what surfaced that within minutes.
 
 EXPECTED PASS/FAIL — MEASURED, not predicted.
 ─────────────────────────────────────────────
-Measured by extracting origin/main @ d85b287d with `git archive`, dropping this
-file into that tree, and running it there.
+Measured by extracting origin/main with `git archive`, dropping this file into
+that tree, and running it there.
 
-UNPATCHED (origin/main @ d85b287d):   5 failed, 3 passed, 1 xfailed
-PATCHED (this branch):                0 failed, 8 passed, 1 xfailed
+UNPATCHED (origin/main @ a974f5d5, i.e. WITH #1930's repoint already in):
+    3 failed, 6 passed, 1 xfailed
+    The repoint is already there, so only the %-escape failures remain:
+        test_literal_percent_is_escaped_for_psycopg2_client_side_binding  (G7)
+        test_a_real_result_is_published_near_reno                         (G4)
+        test_a_genuinely_empty_area_is_empty_without_a_false_reason       (G6)
+PATCHED (this branch):                0 failed, 9 passed, 1 xfailed
+
+For the record, against pre-#1930 main @ d85b287d this file measured
+5 failed, 3 passed, 1 xfailed.
 
 `1 xfailed` on BOTH runs. A conftest-level abort or collection error exits 0 with
 0 tests and renders as an ordinary green; the control's presence in the summary
@@ -177,6 +212,21 @@ class _Cur:
         self.log.append(s)
         if self.fail:
             raise RuntimeError("simulated connection reset mid-query")
+
+        # ★ psycopg2 runs Python %-formatting over the statement CLIENT-SIDE
+        # before anything is sent. A literal % that is not doubled is a format
+        # directive, so `ILIKE '%geothermal%'` next to %s params raises
+        # IndexError here — never reaching Postgres, and never reaching any of
+        # the column checks below. The first version of this stub skipped this
+        # step, which is exactly why it certified a repoint that published
+        # nothing in production. Model the binding, not just the SQL.
+        if params is not None:
+            try:
+                sql % tuple(params)
+            except (IndexError, TypeError, ValueError) as exc:
+                raise IndexError(
+                    f"{exc} — literal % in the statement must be escaped as %%"
+                ) from exc
 
         m = re.search(r"(?i)\bfrom\s+([A-Za-z_][A-Za-z0-9_]*)", s)
         assert m, f"stub could not find a table in: {s}"
@@ -318,6 +368,33 @@ def test_reads_the_eia_table_with_the_column_that_table_actually_has():
     assert "lng" in sql.lower(), f"query lost the `lng` column: {sql}"
     assert not re.search(r"(?i)(^|[\s,(])lon([\s,)]|$)", sql), (
         f"selects `lon` from power_plants_eia, whose live column is `lng`: {sql}")
+
+
+# ── G7 ────────────────────────────────────────────────────────────────────────
+def test_literal_percent_is_escaped_for_psycopg2_client_side_binding():
+    """The ILIKE wildcards must be %% — see the stub's binding step.
+
+    This is the fault that shipped in #1930: the repoint to power_plants_eia was
+    correct and still published nothing, because psycopg2 never sent the query.
+    Pinning it at BOTH levels — the literal in the source, and the binding in
+    the harness — because the source check alone is easy to satisfy accidentally
+    and the harness check alone would not say why.
+    """
+    fn, _ = _extract()
+    sql = _plant_sql(fn)
+    assert sql, "no plants query found"
+    # Every % in the statement must be either a %s placeholder or a doubled %%.
+    leftovers = re.sub(r"%%|%s", "", sql)
+    assert "%" not in leftovers, (
+        f"un-escaped literal % in a parameterised statement — psycopg2 will "
+        f"treat it as a format directive and raise IndexError client-side "
+        f"before the query is sent: {sql}")
+
+    # And prove the harness would actually catch a regression here.
+    bad = ("SELECT name FROM power_plants_eia WHERE primary_fuel ILIKE "
+           "'%geothermal%' AND lat BETWEEN %s AND %s")
+    with pytest.raises(IndexError):
+        _Cur([]).execute(bad, (1, 2))
 
 
 # ── G3 ────────────────────────────────────────────────────────────────────────
