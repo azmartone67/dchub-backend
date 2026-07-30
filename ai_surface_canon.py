@@ -133,7 +133,7 @@ PINNED = {
         # way it already does for `deals`.
         "markets": "300+",
         "deals": "1,500+",   # ★2026-07-24: live distinct = 1,553, floor raised 1,400 -> 1,500. DISTINCT tracked deals (== canonical_stats.deals_phrase). ★2026-07-17: was "4,000+", itself an over-claim — it floored ROWS, and the AUTO id embeds the ingest date so one deal accrues a row per day (4,275 rows -> ~1,420 distinct). ★NOT the raw `deals` COUNT(*) that /api/v1/stats returns. resolve_canon() overrides this live.
-        "countries": "170+",
+        "countries": "170+",  # ★2026-07-30 VERIFIED correct: the deduped fleet spans 178 distinct codes (incl. territories) → floor "170+". NOT "180+": /api/v1/stats served countries=186 off the legacy `facilities` table, which double-counts 9 full-name/ISO-code pairs ("USA"+"US"). resolve_canon() now overrides this live (countries_verified_phrase).
     },
     # Values known to be STALE/WRONG on some surface — the sentinel flags these.
     # NB: DeepSeek/Mistral were REMOVED (2026-07-01) — they're legitimate
@@ -416,6 +416,26 @@ def resolve_canon() -> dict:
         c["public"]["markets"] = _mp
     except Exception as e:
         c["_markets_error"] = str(e)[:120]
+    # ★2026-07-30: countries self-heals too — it was the LAST headline number
+    # still served only from the pin (deals/facilities/markets/tools all
+    # override above), so the pin stayed right by luck, not by wiring. The same
+    # day, the mcp-server initialize instructions were bound to "180+
+    # countries" off /api/v1/stats `countries` = 186 — but that figure was
+    # measured on the LEGACY `facilities` table, which mixes full names
+    # ("USA", "Germany") with ISO codes ("US", "DE"); 9 of its 186 distinct
+    # values are format duplicates of a code already present. The deduped
+    # fleet the "15,300+ facilities" claim counts spans 178 distinct codes
+    # (measured 2026-07-30, discovered_facilities, incl. territories) →
+    # honest floor "170+", and "180+" was an over-claim. Countries must be
+    # measured on the SAME table as the facility count they are paired with —
+    # never on the legacy `facilities` table.
+    try:
+        from canonical_stats import countries_verified_phrase as _countries_phrase
+        _cp = _countries_phrase()
+        c["countries_phrase_live"] = _cp
+        c["public"]["countries"] = _cp
+    except Exception as e:
+        c["_countries_error"] = str(e)[:120]
     # live tool count from the MCP server — override the pinned fallback so
     # every resolve_canon() consumer tracks tools/list and never goes stale.
     try:
