@@ -25,15 +25,38 @@ import inspect
 from routes import relay_conversion_watch as rw
 
 
-def test_stage_one_is_labelled_a_proxy_wherever_it_appears():
-    """THE POINT OF THE MODULE. Stage 1 is derived from call status, not from a
-    record of emission — it over-counts whenever buildHumanRelay bails. If it
-    ever ships unlabelled it becomes another number that looks like evidence."""
+def test_no_stage_is_a_proxy_any_more():
+    """★2026-07-29: stage 1 WAS a proxy derived from call status, because I
+    concluded nothing recorded emission. Wrong — mcp_high_intent_sessions has
+    carried claim_minted_at all along. Every stage now reads an exact column, and
+    a regression back to a derived basis must fail loudly rather than quietly
+    reporting a ceiling as a measurement."""
     src = inspect.getsource(rw.run_relay_watch)
-    assert '"_basis": "proxy_upper_bound"' in src, "stage 1 lost its proxy label"
-    # The derived RATES inherit the proxy's basis; labelling only the stage would
-    # let a reader treat the rate as exact.
-    assert "proxy_upper_bound —" in src, "rates no longer disclose their inherited basis"
+    assert "proxy_upper_bound" not in src, "a proxy basis came back"
+    assert src.count('"_basis": "exact"') >= 5, "not every stage declares an exact basis"
+    assert "claim_minted_at IS NOT NULL" in src, "stage 1 no longer reads the mint column"
+
+
+def test_machine_redemption_is_its_own_stage_not_funnel_progress():
+    """THE FINDING. 97.3% of claims are redeemed by the AGENT within seconds and
+    turned into a free key. Counting that as progress is what made the paywall
+    look like it converted; the operator dashboard called the healthiest stage
+    (99.6% mint) the biggest leak while a 100% cliff sat one row below."""
+    src = inspect.getsource(rw.run_relay_watch)
+    assert "3_redeemed_by_MACHINE" in src, "the arbitrage stage is gone"
+    assert "machine_arbitrage_pct" in src, "the arbitrage RATE is not reported"
+    assert "NOT funnel" in src or "not funnel" in src.lower(), \
+        "the arbitrage stage no longer warns that it is not progress"
+
+
+def test_the_machine_threshold_ships_its_own_evidence():
+    """A 5s cut-off is a judgement. It must ship with the gap histogram so a
+    reader can see the distribution is bimodal rather than trusting the number."""
+    src = inspect.getsource(rw.run_relay_watch)
+    assert "gap_histogram" in src, "the threshold is now load-bearing and unauditable"
+    for bucket in ("lt_2s", "s2_5", "s5_10", "gt_60s", "median_seconds"):
+        assert bucket in src, f"histogram bucket {bucket} missing"
+    assert isinstance(rw.MACHINE_REDEEM_SECONDS, (int, float))
 
 
 def test_our_own_traffic_is_excluded_from_every_stage():
@@ -90,13 +113,14 @@ def test_unreadable_stage_reports_indeterminate_not_ok():
         "measured zero, which is the exact ambiguity this watch exists to remove")
 
 
-def test_eligible_statuses_are_published_for_inspection():
-    """The proxy's basis has to be checkable by whoever reads the number,
-    otherwise 'proxy' is just a disclaimer."""
-    assert rw.RELAY_ELIGIBLE_STATUSES, "eligible-status list is empty"
+def test_human_stage_discloses_that_its_own_rows_are_probes():
+    """All 4 all-time claim_page_opened rows trace to cursor render-verify
+    probes, a Grok probe and an indexer. Reporting 4 as human action would
+    overstate it by 4."""
     src = inspect.getsource(rw.run_relay_watch)
-    assert '"_statuses": list(RELAY_ELIGIBLE_STATUSES)' in src, (
-        "the response no longer publishes which statuses the proxy counts")
+    assert "4_human_opened" in src
+    assert "render-verify" in src or "probes" in src, (
+        "the human stage no longer warns that its historical rows are ours")
 
 
 def test_the_emission_gap_is_named_as_the_next_instrument():

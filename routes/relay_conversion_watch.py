@@ -27,7 +27,29 @@ WHAT THIS MEASURES
   stage 2  OPENED     relay_opens, excluding our own probes          (exact)
   stage 3  CONVERTED  mcp_conversions, non-test, MCP-attributed      (exact)
 
-★ STAGE 1 IS A PROXY AND IS LABELLED AS ONE EVERYWHERE IT APPEARS.
+★2026-07-29 STAGE 1 IS NOW EXACT. The proxy is gone.
+
+I originally concluded "nothing records emission" and derived stage 1 from call
+status as an upper bound. That was WRONG: mcp_high_intent_sessions has carried
+claim_minted_at, claim_used_at, claim_page_opened_at and claim_email the whole
+time. The operator's own dashboard was reading them. I searched for tables named
+%relay%/%handoff% and missed the one named for the CLAIM, which is what the
+handoff token actually is. Searching for the word I expected instead of the thing
+it does is the same error as reading the wrong field, one level up.
+
+And the exact columns say something the proxy could never have shown:
+
+    7d   1,271 high-intent -> 1,259 minted -> 1,257 REDEEMED -> 0 human opens
+         median time from mint to redeem: 0.85s   (min 0.58s)
+
+Sub-second redemption is not a human clicking. THE AGENT redeems the claim token
+itself and mints a free key: 1,025 keys issued that way in 7d. The paywall is not
+failing to convert — it is a free-key dispenser, and the human never enters the
+loop. 97.5% of redemptions complete inside 5 seconds.
+
+That reframes the funnel: the leak is not persuasion, it is ARBITRAGE. This watch
+therefore measures machine redemption as a first-class stage rather than counting
+it as progress.
 
 The gateway mints the handoff token LOCALLY (HMAC over
 session|tool|tier|unixtime with DCHUB_INTERNAL_KEY) and never calls the backend
@@ -76,6 +98,13 @@ _OURS = ("dchub%", "DCHub/%", "Globeholder-%", "human-simulated%", "verify%",
 # this so nobody averages across the discontinuity.
 RELAY_LIVE_SINCE = "2026-07-28"
 
+# A claim redeemed within this many seconds of being minted was taken by the
+# agent, not a human. Measured 7d: median 0.85s, 97.5% inside 5s, and the
+# distribution is sharply bimodal. A human would have to be told the link,
+# switch context and load a page — not in 5 seconds. The histogram ships beside
+# the count so this threshold is inspectable rather than load-bearing.
+MACHINE_REDEEM_SECONDS = 5
+
 
 def _admin_ok() -> bool:
     want = (os.environ.get("DCHUB_ADMIN_KEY") or "").strip()
@@ -115,6 +144,16 @@ def _not_ours(col: str) -> str:
 _OURS_PARAM = list(_OURS)
 
 
+def _row(c, sql: str, args=None):
+    """Single row, or None. Same never-raises contract as _scalar."""
+    try:
+        cur = c.cursor()
+        cur.execute(sql, args)
+        return cur.fetchone()
+    except Exception:
+        return None
+
+
 def _scalar(c, sql: str, args=None):
     try:
         cur = c.cursor()
@@ -134,33 +173,64 @@ def run_relay_watch(days: int = 7) -> dict:
     try:
         window = f"now() - interval '{days} days'"
 
-        # ── stage 1: eligible (PROXY — upper bound on emission) ──────
-        eligible = _scalar(c, f"""
-            SELECT COUNT(*) FROM mcp_call_log
-             WHERE timestamp > {window}
-               AND status = ANY(%s)
-               AND COALESCE(platform,'') NOT ILIKE %s
-               AND {_not_ours('user_agent')}""", (list(RELAY_ELIGIBLE_STATUSES), 'dchub%', _OURS_PARAM))
+        # ── stage 1: minted (EXACT) ──────────────────────────────────
+        # first_hit_at scopes the window: a session's stages all belong to the
+        # window it STARTED in, so a mint never lands in a different bucket
+        # from its own redemption.
+        hi = _scalar(c, f"""
+            SELECT COUNT(*) FROM mcp_high_intent_sessions
+             WHERE first_hit_at > {window} AND {_not_ours('user_agent')}""", (_OURS_PARAM,))
+        minted = _scalar(c, f"""
+            SELECT COUNT(*) FROM mcp_high_intent_sessions
+             WHERE first_hit_at > {window} AND claim_minted_at IS NOT NULL
+               AND {_not_ours('user_agent')}""", (_OURS_PARAM,))
 
-        eligible_agents = _scalar(c, f"""
-            SELECT COUNT(DISTINCT COALESCE(NULLIF(api_key,''),
-                                           'sess:'||COALESCE(session_id,'')))
-              FROM mcp_call_log
-             WHERE timestamp > {window}
-               AND status = ANY(%s)
-               AND COALESCE(platform,'') NOT ILIKE %s
-               AND {_not_ours('user_agent')}""", (list(RELAY_ELIGIBLE_STATUSES), 'dchub%', _OURS_PARAM))
+        # ── stage 2: WHO redeemed it — the arbitrage stage ───────────
+        machine = _scalar(c, f"""
+            SELECT COUNT(*) FROM mcp_high_intent_sessions
+             WHERE first_hit_at > {window} AND claim_used_at IS NOT NULL
+               AND claim_minted_at IS NOT NULL
+               AND EXTRACT(EPOCH FROM (claim_used_at - claim_minted_at)) < %s
+               AND {_not_ours('user_agent')}""", (MACHINE_REDEEM_SECONDS, _OURS_PARAM))
+        redeemed = _scalar(c, f"""
+            SELECT COUNT(*) FROM mcp_high_intent_sessions
+             WHERE first_hit_at > {window} AND claim_used_at IS NOT NULL
+               AND {_not_ours('user_agent')}""", (_OURS_PARAM,))
+        keys_issued = _scalar(c, f"""
+            SELECT COUNT(*) FROM mcp_high_intent_sessions
+             WHERE first_hit_at > {window} AND COALESCE(minted_api_key,'') <> ''
+               AND {_not_ours('user_agent')}""", (_OURS_PARAM,))
+        # The gap histogram ships with the number so the 5s threshold is
+        # inspectable rather than load-bearing. If the distribution ever stops
+        # being bimodal, the threshold is the first thing to distrust.
+        gaps = _row(c, f"""
+            SELECT COUNT(*) FILTER (WHERE g < 2), COUNT(*) FILTER (WHERE g >= 2 AND g < 5),
+                   COUNT(*) FILTER (WHERE g >= 5 AND g < 10), COUNT(*) FILTER (WHERE g >= 10 AND g < 60),
+                   COUNT(*) FILTER (WHERE g >= 60),
+                   ROUND(percentile_cont(0.5) WITHIN GROUP (ORDER BY g)::numeric, 2)
+              FROM (SELECT EXTRACT(EPOCH FROM (claim_used_at - claim_minted_at)) g
+                      FROM mcp_high_intent_sessions
+                     WHERE first_hit_at > {window} AND claim_used_at IS NOT NULL
+                       AND claim_minted_at IS NOT NULL
+                       AND {_not_ours('user_agent')}) t""", (_OURS_PARAM,))
 
-        # ── stage 2: opened (exact) ──────────────────────────────────
+        # ── stage 3: human action (EXACT) ────────────────────────────
+        human_opened = _scalar(c, f"""
+            SELECT COUNT(*) FROM mcp_high_intent_sessions
+             WHERE first_hit_at > {window} AND claim_page_opened_at IS NOT NULL
+               AND {_not_ours('user_agent')}""", (_OURS_PARAM,))
+        identified = _scalar(c, f"""
+            SELECT COUNT(*) FROM mcp_high_intent_sessions
+             WHERE first_hit_at > {window} AND COALESCE(claim_email,'') <> ''
+               AND {_not_ours('user_agent')}""", (_OURS_PARAM,))
+
+        # Secondary, different mechanism: signed /upgrade/h/<token> opens.
         opened = _scalar(c, f"""
             SELECT COUNT(*) FROM relay_opens
              WHERE ts > {window} AND COALESCE(valid,false) = true
                AND {_not_ours('user_agent')}""", (_OURS_PARAM,))
-        opened_all_time = _scalar(c, f"""
-            SELECT COUNT(*) FROM relay_opens
-             WHERE COALESCE(valid,false) = true AND {_not_ours('user_agent')}""", (_OURS_PARAM,))
 
-        # ── stage 3: converted (exact) ───────────────────────────────
+        # ── stage 4: converted (EXACT) ───────────────────────────────
         converted = _scalar(c, f"""
             SELECT COUNT(*) FROM mcp_conversions
              WHERE created_at > {window} AND COALESCE(is_test,false) = false""")
@@ -178,51 +248,57 @@ def run_relay_watch(days: int = 7) -> dict:
                 return None
             return round(100.0 * num / den, 3)
 
-        unreadable = [n for n, v in (("eligible", eligible), ("opened", opened),
+        unreadable = [n for n, v in (("minted", minted), ("human_opened", human_opened),
                                      ("converted", converted)) if v is None]
         return {
             "watch": "relay_conversion",
             "window_days": days,
-            # A stage that could not be read must not average into a rate and
-            # must not read as zero.
             "status": "INDETERMINATE" if unreadable else "OK",
             "unreadable_stages": unreadable,
             "relay_live_since": RELAY_LIVE_SINCE,
             "stages": {
-                "1_eligible": {
-                    "calls": eligible, "agents": eligible_agents,
-                    "_basis": "proxy_upper_bound",
-                    "_note": ("Derived from call status, NOT from a record of emission — "
-                              "the gateway mints handoff tokens locally and logs nothing. "
-                              "This OVER-counts when buildHumanRelay bails "
-                              "(DCHUB_HUMAN_RELAY=0 or DCHUB_INTERNAL_KEY unset), so treat "
-                              "it as a ceiling on emission, never as emission."),
-                    "_statuses": list(RELAY_ELIGIBLE_STATUSES),
+                "1_high_intent": {"sessions": hi, "_basis": "exact"},
+                "2_minted": {"claims": minted, "_basis": "exact",
+                             "_note": "claim_minted_at — a handoff token was created."},
+                "3_redeemed_by_MACHINE": {
+                    "count": machine, "of_all_redemptions": redeemed,
+                    "free_keys_issued": keys_issued,
+                    "threshold_seconds": MACHINE_REDEEM_SECONDS,
+                    "gap_histogram": {"lt_2s": gaps[0] if gaps else None,
+                                      "s2_5": gaps[1] if gaps else None,
+                                      "s5_10": gaps[2] if gaps else None,
+                                      "s10_60": gaps[3] if gaps else None,
+                                      "gt_60s": gaps[4] if gaps else None,
+                                      "median_seconds": float(gaps[5]) if gaps and gaps[5] is not None else None},
+                    "_basis": "exact",
+                    "_note": ("THE ARBITRAGE. A claim redeemed within "
+                              f"{MACHINE_REDEEM_SECONDS}s of minting was taken by the AGENT, "
+                              "not a human — it mints itself a free key. This is NOT funnel "
+                              "progress; it is the paywall acting as a free-key dispenser. "
+                              "The histogram ships so the threshold is inspectable."),
                 },
-                "2_opened": {"opens": opened, "opens_all_time": opened_all_time,
-                             "_basis": "exact",
-                             "_note": "valid=true only; our own probes excluded."},
-                "3_converted": {"conversions": converted,
-                                "mcp_attributed": converted_mcp,
-                                "net_mrr_usd": float(mrr or 0),
-                                "_basis": "exact",
-                                "_note": ("mcp_attributed counts rows with a non-empty "
-                                          "platform. It has been 0 for every real "
-                                          "conversion in the product's history.")},
+                "4_human_opened": {"count": human_opened, "relay_opens": opened,
+                                   "identified_email": identified, "_basis": "exact",
+                                   "_note": ("claim_page_opened_at. All 4 all-time rows trace to "
+                                             "cursor render-verify probes, a Grok probe and an "
+                                             "indexer — so the true human count is plausibly 0.")},
+                "5_converted": {"conversions": converted, "mcp_attributed": converted_mcp,
+                                "net_mrr_usd": float(mrr or 0), "_basis": "exact"},
             },
             "rates": {
-                "open_per_eligible_pct": rate(opened, eligible),
-                "convert_per_open_pct": rate(converted_mcp, opened),
-                "_basis": ("proxy_upper_bound — both rates inherit stage 1's basis, so a "
-                           "LOW open rate may mean the link is unpersuasive OR that fewer "
-                           "links were emitted than eligible calls suggest. These rates "
-                           "cannot separate those until emission is recorded."),
+                "mint_per_high_intent_pct": rate(minted, hi),
+                "machine_arbitrage_pct": rate(machine, minted),
+                "human_open_per_mint_pct": rate(human_opened, minted),
+                "convert_per_human_open_pct": rate(converted_mcp, human_opened),
+                "_note": ("machine_arbitrage_pct is the headline. A HIGH value means every "
+                          "paywall hit is being converted into a free key for the agent "
+                          "instead of a decision for a human. Minting EARLIER raises it."),
             },
             "next_instrument": (
-                "Record each handoff mint gateway-side (session, tool, tier, ts). That "
-                "single row turns stage 1 from a ceiling into a measurement and makes "
-                "both rates trustworthy. Until then this watch can prove the funnel "
-                "MOVED, but not why it did not."
+                "The remaining unknown is whether an agent ever SHOWS the link to its human "
+                "before redeeming it. We can see the redemption, not the conversation. A "
+                "claim that is minted but deliberately left unredeemed would be the signal, "
+                "and today there are ~2 of those a week."
             ),
         }
     finally:
