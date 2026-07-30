@@ -599,6 +599,20 @@ LEARNING_NOTES = (
              "attribution resolves who these agents are — read it with the "
              "confidence block, not alone.",
      "source": "this report, first live build 2026-07-30T08:09Z"},
+    # Round-3 (ChatGPT): "the assistant's citations become probes for
+    # documentation freshness … public representations are contracts too."
+    # A stale landing page is the same defect class as a duplicated test
+    # fragment or a stale operator prompt — a secondary representation of a
+    # canonical truth. Capture such observations here whenever they occur.
+    {"date": "2026-07-30", "kind": "observed", "class": "measurement_integrity",
+     "note": "A partner's citation card exposed public-representation drift: "
+             "/agent was serving '73 tools' live (canon: 81) while ChatGPT's "
+             "cached citation card still read '48'. Nobody ran a validator — "
+             "a normal answer's citation was the probe. Fix + heal-coverage "
+             "for the page were spun off the same day; citation-exposed "
+             "drift gets recorded here as a first-class signal whenever a "
+             "partner's footer catches one of our surfaces stale.",
+     "source": "ChatGPT round-3 exchange; /agent heal task, 2026-07-30"},
 )
 
 
@@ -703,6 +717,15 @@ def _build_report() -> dict:
                          "time, so every window in this payload carries "
                          "current definitions), or history stays frozen and "
                          "the changelog marks the discontinuity explicitly",
+            # Round-3 (Meta cited "tool_calls_7d … def_v2" — that is the
+            # ENVELOPE version, not the metric's): say it where citers read.
+            "version_scopes": "two version scopes — do not conflate when "
+                              "citing. The top-level definition_version is "
+                              "the ENVELOPE (payload shape); each metric "
+                              "block carries its OWN definition_version (its "
+                              "meaning). Pin the metric's version when citing "
+                              "a metric; pin the envelope version when "
+                              "parsing the payload.",
             "machine_readable": "/api/v1/reports/agent-success/contract",
         },
         "no_composite_score": NO_COMPOSITE_POLICY,
