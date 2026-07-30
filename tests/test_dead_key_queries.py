@@ -15,6 +15,24 @@ class as the flask_mcp_endpoints.validate_key leg fixed by PR #1943:
     column (live schema: api_key/tier/status, no id at all), so the
     fallback always reported 'anonymous'.
 
+Extended 2026-07-30 (second PR) for the rest of free_tier_limiter.py —
+the four remaining execute-chains plus a `result.rowcount` read off
+execute()'s None return:
+
+  - _get_usage / _increment_usage: chained + dict-indexed, and the
+    fallback INSERT declared ON CONFLICT (user_id), which is not a
+    unique key on free_tier_usage (real key: user_id, usage_type,
+    usage_month) — Postgres rejects the statement. Live DB has NO
+    free_tier_usage table at all (db_utils skips DDL), so reads must
+    fail-open to 0.
+  - _get_user_tier: also selected users.stripe_subscription_id +
+    stripe_subscription_status — neither exists live (real names:
+    stripe_customer_id, subscription_status). Paying pro/enterprise
+    users were always told 'free'.
+  - the two /api/admin/usage closures: selected users.is_admin (no such
+    column; live `role` has no 'admin' value either) — now gate on
+    DCHUB_ADMIN_KEY instead of the users table.
+
 Three layers here:
   1. Functional stub tests that drive the REAL functions against a
      cursor that behaves like db_utils.PGCursorWrapper (execute
@@ -183,16 +201,179 @@ def test_gating_routes_dev_key_fallback_resolves_tier():
     assert params == ('dch_live_stubkey',)
 
 
+# ── 1d. usage read: tuple row, no chaining, fail-open on DB error ────
+
+def test_get_usage_reads_tuple_row():
+    import free_tier_limiter as ftl
+
+    conn = _StubConn(rows=[(7,)])
+    orig = ftl._get_db
+    ftl._get_db = lambda: conn
+    try:
+        n = ftl._get_usage('user-42', 'api_request')
+    finally:
+        ftl._get_db = orig
+
+    assert n == 7, (
+        f"_get_usage returned {n!r} — the read is dead again "
+        "(execute-chaining or dict-indexed tuple row)")
+    assert len(conn.cur.executed) == 1
+    sql, params = conn.cur.executed[0]
+    assert 'free_tier_usage' in sql and 'usage_count' in sql
+    assert params[0] == 'user-42' and params[1] == 'api_request'
+
+
+def test_get_usage_fails_open_to_zero():
+    """The live DB has NO free_tier_usage table (db_utils skips DDL, and
+    nothing else creates it — verified 2026-07-30). A thrown read must
+    degrade to 0, not propagate a 500 into every gated endpoint."""
+    import free_tier_limiter as ftl
+
+    class _ThrowingConn(_StubConn):
+        def cursor(self, *a, **k):
+            raise RuntimeError('relation "free_tier_usage" does not exist')
+
+    orig = ftl._get_db
+    ftl._get_db = lambda: _ThrowingConn(rows=[])
+    try:
+        n = ftl._get_usage('user-42', 'api_request')
+    finally:
+        ftl._get_db = orig
+
+    assert n == 0, f"missing-table read must fail-open to 0, got {n!r}"
+
+
+# ── 1e. tier lookup: live columns only, paid plans honored ───────────
+
+def test_get_user_tier_resolves_paid_plans():
+    """users.plan is the live tier field. The dead query also selected
+    stripe_subscription_id + stripe_subscription_status (live names:
+    stripe_customer_id, subscription_status) — every lookup threw and
+    paying users were treated as free."""
+    import free_tier_limiter as ftl
+
+    for plan, want in [('pro', 'pro'), ('enterprise', 'enterprise'),
+                       ('developer', 'developer'), ('founding', 'founding'),
+                       ('professional', 'pro'), ('ent', 'enterprise'),
+                       # starter/team/research_seed entries landed in #1951
+                       ('starter', 'starter'), ('team', 'team'),
+                       ('research_seed', 'research_seed'),
+                       ('legacy_gold', 'free'),  # unknown plan → free limits
+                       (None, 'free')]:
+        conn = _StubConn(rows=[(plan,)])
+        orig = ftl._get_db
+        ftl._get_db = lambda: conn
+        try:
+            got = ftl._get_user_tier('user-42')
+        finally:
+            ftl._get_db = orig
+
+        assert got == want, f"plan={plan!r}: got {got!r}, want {want!r}"
+        assert got in ftl.TIER_LIMITS, (
+            "tier must be a TIER_LIMITS key — check_api_limit indexes "
+            "TIER_LIMITS[tier] when building 429 headers")
+        sql, _params = conn.cur.executed[0]
+        for dead in ('stripe_subscription_status', 'stripe_subscription_id',
+                     'is_admin'):
+            assert dead not in sql, f"users.{dead} does not exist live"
+
+
+def test_get_user_tier_unknown_user_is_free():
+    import free_tier_limiter as ftl
+
+    conn = _StubConn(rows=[])
+    orig = ftl._get_db
+    ftl._get_db = lambda: conn
+    try:
+        got = ftl._get_user_tier('nobody@nowhere.invalid')
+    finally:
+        ftl._get_db = orig
+    assert got == 'free'
+
+
+# ── 1f. increment: single upsert on the table's real unique key ──────
+
+def test_increment_usage_upserts_on_composite_key():
+    import free_tier_limiter as ftl
+
+    conn = _StubConn(rows=[])
+    orig = ftl._get_db
+    ftl._get_db = lambda: conn
+    try:
+        ftl._increment_usage('user-42', 'api_request')
+    finally:
+        ftl._get_db = orig
+
+    assert len(conn.cur.executed) == 1, (
+        "one statement expected — the old two-step UPDATE/INSERT read "
+        ".rowcount off execute()'s None return")
+    sql, params = conn.cur.executed[0]
+    assert 'ON CONFLICT (user_id, usage_type, usage_month)' in sql, (
+        "upsert must key on the table's UNIQUE(user_id, usage_type, "
+        "usage_month) — ON CONFLICT (user_id) is not a unique key and "
+        "Postgres rejects the whole statement")
+    assert 'usage_count = free_tier_usage.usage_count + 1' in sql
+    assert params[0] == 'user-42' and params[1] == 'api_request'
+
+
+# ── 1g. admin endpoints gate on DCHUB_ADMIN_KEY, not users.is_admin ──
+
+def test_admin_usage_endpoints_gate_on_admin_key():
+    """The admin closures selected users.is_admin — no such column live,
+    and live `role` has no 'admin' value, so a role-based repoint would
+    deny forever. They now gate on DCHUB_ADMIN_KEY."""
+    from flask import Flask
+    import free_tier_limiter as ftl
+
+    # Rows consumed in order: init's to_regclass verify, then for the
+    # authorized GET: tier lookup, land-power usage, api usage.
+    conn = _StubConn(rows=[('free_tier_usage',), ('pro',), (2,), (9,)])
+    orig = ftl._get_db
+    ftl._get_db = lambda: conn
+    env_orig = os.environ.get('DCHUB_ADMIN_KEY')
+    os.environ['DCHUB_ADMIN_KEY'] = 'stub-admin-key'
+    try:
+        app = Flask('dead_key_queries_admin_test')
+        ftl.init_free_tier_limiter(app)
+        client = app.test_client()
+
+        denied = client.get('/api/admin/usage/user-42')
+        assert denied.status_code == 403
+
+        ok = client.get('/api/admin/usage/user-42',
+                        headers={'X-Admin-Key': 'stub-admin-key'})
+        assert ok.status_code == 200
+        body = ok.get_json()
+        assert body['tier'] == 'pro'
+        assert body['land_power']['searches_used'] == 2
+        assert body['api']['requests_used'] == 9
+
+        reset = client.post('/api/admin/usage/user-42/reset',
+                            headers={'X-Admin-Key': 'stub-admin-key'})
+        assert reset.status_code == 200
+        assert reset.get_json()['success'] is True
+    finally:
+        ftl._get_db = orig
+        if env_orig is None:
+            os.environ.pop('DCHUB_ADMIN_KEY', None)
+        else:
+            os.environ['DCHUB_ADMIN_KEY'] = env_orig
+
+    executed_sql = [sql for sql, _ in conn.cur.executed]
+    assert any('DELETE FROM free_tier_usage' in s for s in executed_sql)
+    assert not any('is_admin' in s for s in executed_sql), (
+        "users.is_admin does not exist — admin auth is DCHUB_ADMIN_KEY")
+
+
 # ── 2. repo-wide sweep: the dead columns must not reappear in SQL ────
 
 # Known stragglers, each pending its own PR. An entry here only mutes
 # THAT file — delete the entry when its fix merges so the fence
-# re-arms for the file.
-_SWEEP_ALLOW = {
-    'add_performance_indexes.py':
-        'dead CREATE INDEX on api_keys(key_value) + is_active = TRUE '
-        'on an INTEGER column — follow-up task, remove entry when fixed',
-}
+# re-arms for the file. Empty as of 2026-07-30: the last entry
+# (add_performance_indexes.py's dead CREATE INDEX on api_keys(key_value))
+# was removed when that index entry was dropped — key_hash is already
+# uniquely indexed live.
+_SWEEP_ALLOW = {}
 
 # (table, dead-fragment REGEX) pairs: a single string literal mentioning
 # the table AND matching the fragment is a dead query. Comments never
@@ -206,6 +387,12 @@ _DEAD_PAIRS = [
     ('api_keys', r'\brevoked_at\b'),
     ('mcp_dev_keys', r'\bkey_value\b'),
     ('mcp_dev_keys', r'(?<![\w.])id::text'),
+    # users has subscription_status / stripe_customer_id — the stripe_-
+    # prefixed *_subscription_status name never existed (2026-07-30 sweep:
+    # free_tier_limiter was the only file using it). users.is_admin and
+    # users.stripe_subscription_id are NOT fenced here: those tokens
+    # appear across many files in non-users contexts, unaudited.
+    ('users', r'\bstripe_subscription_status\b'),
 ]
 
 _SKIP_DIRS = {'tests', 'node_modules', '__pycache__', 'venv', '.venv'}
@@ -274,14 +461,38 @@ def _chained_fetches_in(path, func_name):
                          "renamed, update this fence rather than deleting it")
 
 
+def _execute_value_uses_in_file(path):
+    """Whole-file scan for ANY use of execute()'s return value — not just
+    .fetchone() chains. PGCursorWrapper.execute returns None, so
+    `c.execute(...).anything` AttributeErrors and
+    `result = c.execute(...)` assigns None (the free_tier_limiter
+    _increment_usage bug read `.rowcount` off it via such an assign)."""
+    with open(os.path.join(ROOT, path), encoding='utf-8') as f:
+        tree = ast.parse(f.read())
+
+    def _is_execute_call(n):
+        return (isinstance(n, ast.Call)
+                and isinstance(n.func, ast.Attribute)
+                and n.func.attr in ('execute', 'executemany'))
+
+    hits = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute) and _is_execute_call(node.value):
+            hits.append(f"{path}:{node.lineno}: .{node.attr} chained off execute()")
+        elif (isinstance(node, (ast.Assign, ast.AnnAssign, ast.NamedExpr))
+                and _is_execute_call(getattr(node, 'value', None))):
+            hits.append(f"{path}:{node.lineno}: execute() return value assigned")
+    return hits
+
+
 def test_fixed_lookups_do_not_chain_execute():
-    """db_utils.PGCursorWrapper.execute returns None, so
-    `c.execute(...).fetchone()` always AttributeErrors under Postgres.
-    Scoped to the two fixed functions — free_tier_limiter still has
-    four OTHER chained calls (lines ~152/201/640/664) awaiting their
-    own PR; widen this to whole-file once those land."""
-    bad = (_chained_fetches_in('free_tier_limiter.py', '_get_current_user_id')
+    """db_utils.PGCursorWrapper.execute returns None, so any use of its
+    return value is dead under Postgres. free_tier_limiter.py is fully
+    clean as of 2026-07-30 (the last four chains + a rowcount-off-execute
+    fixed), so it gets the whole-file scan; gating_routes.py stays scoped
+    to its one fixed function — the rest of that file is unaudited."""
+    bad = (_execute_value_uses_in_file('free_tier_limiter.py')
            + _chained_fetches_in(os.path.join('routes', 'gating_routes.py'),
                                  '_tier_from_api_key'))
-    assert not bad, ("sqlite-style execute(...).fetch chaining reintroduced "
-                     "(dead under PGCursorWrapper): " + ", ".join(bad))
+    assert not bad, ("execute() return value used — dead under "
+                     "PGCursorWrapper (returns None): " + ", ".join(bad))

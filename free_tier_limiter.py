@@ -123,7 +123,17 @@ def _get_db():
 
 
 def _init_tables():
-    """Create the free_tier_usage table if it doesn't exist."""
+    """Create the free_tier_usage table if it doesn't exist — then VERIFY.
+
+    ★ db_utils.PGCursorWrapper skips DDL by default (SKIP_DDL=1, a
+    deliberate boot-path guard), so the CREATEs below are no-ops in
+    production, and the live DB has no free_tier_usage table (verified
+    2026-07-30). This function used to log "✅ initialized"
+    unconditionally — success reported, nothing created. The to_regclass
+    check below is the honest part: if the table is absent, say so. It
+    must be created by a one-shot/migration (cf. add_performance_indexes
+    .py), not by this boot path.
+    """
     conn = _get_db()
     try:
         c = conn.cursor()
@@ -141,13 +151,23 @@ def _init_tables():
         """)
         c = conn.cursor()
         c.execute("""
-            CREATE INDEX IF NOT EXISTS idx_free_tier_user_month 
+            CREATE INDEX IF NOT EXISTS idx_free_tier_user_month
             ON free_tier_usage(user_id, usage_type, usage_month)
         """)
         conn.commit()
-        logger.info("✅ Free tier usage table initialized")
+        c = conn.cursor()
+        c.execute("SELECT to_regclass('public.free_tier_usage')")
+        row = c.fetchone()
+        if row and row[0]:
+            logger.info("✅ Free tier usage table present")
+        else:
+            logger.error(
+                "free_tier_usage table MISSING — db_utils skips DDL "
+                "(SKIP_DDL), so this module cannot create it at boot; "
+                "usage reads fail-open to 0 and increments are lost "
+                "until a migration creates the table")
     except Exception as e:
-        logger.error(f"Failed to init free_tier_usage table: {e}")
+        logger.error(f"Failed to init/verify free_tier_usage table: {e}")
     finally:
         conn.close()
 
@@ -162,15 +182,28 @@ def _current_month():
 
 
 def _get_usage(user_id, usage_type):
-    """Get current month's usage count for a user."""
+    """Get current month's usage count for a user.
+
+    Fail-open: any DB error degrades to 0 (never block callers on a
+    broken meter) but is logged — and as of 2026-07-30 the live DB has
+    no free_tier_usage table at all (see _init_tables), so until a
+    migration creates it the error path IS the expected path. The old
+    body chained .fetchone() off execute() (returns None under
+    PGCursorWrapper) and dict-indexed the tuple row, with no except —
+    it could only throw.
+    """
     conn = _get_db()
     try:
         c = conn.cursor()
-        row = c.execute(
+        c.execute(
             "SELECT usage_count FROM free_tier_usage WHERE user_id=%s AND usage_type=%s AND usage_month=%s",
             (str(user_id), usage_type, _current_month())
-        ).fetchone()
-        return row['usage_count'] if row else 0
+        )
+        row = c.fetchone()
+        return row[0] if row else 0
+    except Exception as e:
+        logger.error(f"free_tier_usage read failed for {user_id}/{usage_type}: {e}")
+        return 0
     finally:
         conn.close()
 
@@ -181,22 +214,20 @@ def _increment_usage(user_id, usage_type):
     month = _current_month()
     now = datetime.now(timezone.utc).isoformat()
     try:
-        # Try to increment existing record
+        # Single upsert keyed on the table's UNIQUE(user_id, usage_type,
+        # usage_month). The old two-step read `result.rowcount` off
+        # execute()'s return value (None under PGCursorWrapper), and its
+        # fallback INSERT declared ON CONFLICT (user_id) — not a unique
+        # key on this table, so Postgres rejects that statement outright.
         c = conn.cursor()
-        result = c.execute(
-            """UPDATE free_tier_usage 
-               SET usage_count = usage_count + 1, last_used = %s
-               WHERE user_id=%s AND usage_type=%s AND usage_month=%s""",
-            (now, str(user_id), usage_type, month)
+        c.execute(
+            """INSERT INTO free_tier_usage (user_id, usage_type, usage_month, usage_count, last_used)
+               VALUES (%s, %s, %s, 1, %s)
+               ON CONFLICT (user_id, usage_type, usage_month)
+               DO UPDATE SET usage_count = free_tier_usage.usage_count + 1,
+                             last_used = EXCLUDED.last_used""",
+            (str(user_id), usage_type, month, now)
         )
-        if result.rowcount == 0:
-            # No existing record — create one with count=1
-            c = conn.cursor()
-            c.execute(
-                """INSERT INTO free_tier_usage (user_id, usage_type, usage_month, usage_count, last_used)
-                   VALUES (%s, %s, %s, 1, %s) ON CONFLICT (user_id) DO UPDATE SET usage_type = EXCLUDED.usage_type, usage_month = EXCLUDED.usage_month, usage_count = EXCLUDED.usage_count, last_used = EXCLUDED.last_used""",
-                (str(user_id), usage_type, month, now)
-            )
         conn.commit()
     except Exception as e:
         logger.error(f"Failed to increment usage for {user_id}/{usage_type}: {e}")
@@ -207,40 +238,41 @@ def _increment_usage(user_id, usage_type):
 
 def _get_user_tier(user_id):
     """Look up user's subscription tier from the users table.
-    
-    Checks for Stripe subscription status or plan field.
-    Returns 'free', 'pro', or 'enterprise'.
+
+    Returns a TIER_LIMITS key. Any plan with an explicit TIER_LIMITS
+    entry passes through ('pro', 'starter', 'developer', 'founding',
+    'team', 'enterprise', 'research_seed', ... — every live plan value
+    has one as of #1951); unknown plans fall back to 'free' limits —
+    add a TIER_LIMITS entry to change that, not a branch here.
     """
     conn = _get_db()
     try:
-        # Check users table for plan/subscription info
+        # Live users schema (verified 2026-07-30): id / google_id / email
+        # are all TEXT, and `plan` is the canonical tier field — Stripe
+        # webhooks and the demotion pipeline (routes/paid_account_health)
+        # maintain it directly. The old query selected
+        # stripe_subscription_id + stripe_subscription_status, neither of
+        # which exists live (real names: stripe_customer_id,
+        # subscription_status), so it threw UndefinedColumn before the
+        # execute-chain even got a say; every caller was told 'free',
+        # including paying pro/enterprise users.
         c = conn.cursor()
-        row = c.execute(
-            """SELECT plan, stripe_subscription_id, stripe_subscription_status 
-               FROM users WHERE id=%s OR google_id=%s OR email=%s""",
+        c.execute(
+            "SELECT plan FROM users WHERE id=%s OR google_id=%s OR email=%s LIMIT 1",
             (str(user_id), str(user_id), str(user_id))
-        ).fetchone()
-        
+        )
+        row = c.fetchone()
+
         if not row:
             return 'free'
-        
-        plan = (row['plan'] or 'free').lower()
-        sub_status = (row['stripe_subscription_status'] or '').lower()
-        
-        # Active Stripe subscription overrides plan field
-        if sub_status in ('active', 'trialing'):
-            if plan in ('enterprise', 'ent'):
-                return 'enterprise'
-            elif plan in ('pro', 'professional'):
-                return 'pro'
-        
-        # Fall back to plan field
-        if plan in ('enterprise', 'ent'):
-            return 'enterprise'
-        elif plan in ('pro', 'professional'):
-            return 'pro'
-        
-        return 'free'
+
+        plan = (row[0] or 'free').strip().lower()
+        if plan == 'ent':
+            plan = 'enterprise'
+        elif plan == 'professional':
+            plan = 'pro'
+
+        return plan if plan in TIER_LIMITS else 'free'
     except Exception as e:
         logger.error(f"Error checking user tier: {e}")
         return 'free'
@@ -552,6 +584,24 @@ def _get_current_user_id():
     return None
 
 
+def _admin_request_ok():
+    """Admin gate for the /api/admin/usage endpoints.
+
+    2026-07-30: these endpoints used to SELECT is_admin FROM users — a
+    column the live users table has never had (and live `role` values
+    contain no 'admin' either, so repointing at role would deny forever).
+    Use the repo-wide convention instead: X-Admin-Key header (or
+    admin_key param) against DCHUB_ADMIN_KEY, constant-time (cf.
+    ai_surface_sentinel._admin_ok).
+    """
+    import hmac
+    configured = (os.environ.get('DCHUB_ADMIN_KEY') or '').strip()
+    presented = (request.headers.get('X-Admin-Key')
+                 or request.args.get('admin_key') or '').strip()
+    return bool(configured and presented
+                and hmac.compare_digest(presented, configured))
+
+
 def _count_filters(req):
     """Count the number of filters in a Land & Power search request.
     
@@ -641,50 +691,29 @@ def init_free_tier_limiter(app):
             'upgrade_url': 'https://dchub.cloud/pricing' if not can_search else None
         })
     
-    # Admin endpoint for checking any user's usage
+    # Admin endpoint for checking any user's usage. Both admin routes gate
+    # on DCHUB_ADMIN_KEY via _admin_request_ok() — the users-table
+    # is_admin lookup they carried was dead twice over (no such column
+    # live, plus execute-chaining).
     @app.route('/api/admin/usage/<user_id>', methods=['GET'])
     def admin_usage_stats(user_id):
         """Admin: Get any user's usage stats."""
-        # Verify admin
-        current_user = _get_current_user_id()
-        if not current_user:
-            return jsonify({'error': 'Auth required'}), 401
-        
-        # Simple admin check — adjust to match your admin logic
-        conn = _get_db()
-        try:
-            c = conn.cursor()
-            row = c.execute(
-                "SELECT is_admin FROM users WHERE id=%s OR google_id=%s",
-                (current_user, current_user)
-            ).fetchone()
-            if not row or not row['is_admin']:
-                return jsonify({'error': 'Admin access required'}), 403
-        finally:
-            conn.close()
-        
+        if not _admin_request_ok():
+            return jsonify({'error': 'Admin access required'}), 403
+
         stats = get_usage_stats(user_id)
         stats['success'] = True
         return jsonify(stats)
-    
+
     # Admin: Reset a user's usage (e.g., for support)
     @app.route('/api/admin/usage/<user_id>/reset', methods=['POST'])
     def admin_reset_usage(user_id):
         """Admin: Reset a user's monthly usage."""
-        current_user = _get_current_user_id()
-        if not current_user:
-            return jsonify({'error': 'Auth required'}), 401
-        
+        if not _admin_request_ok():
+            return jsonify({'error': 'Admin access required'}), 403
+
         conn = _get_db()
         try:
-            c = conn.cursor()
-            row = c.execute(
-                "SELECT is_admin FROM users WHERE id=%s OR google_id=%s",
-                (current_user, current_user)
-            ).fetchone()
-            if not row or not row['is_admin']:
-                return jsonify({'error': 'Admin access required'}), 403
-            
             month = _current_month()
             c = conn.cursor()
             c.execute(
@@ -693,6 +722,9 @@ def init_free_tier_limiter(app):
             )
             conn.commit()
             return jsonify({'success': True, 'message': f'Usage reset for user {user_id} for {month}'})
+        except Exception as e:
+            conn.rollback()
+            return jsonify({'success': False, 'error': str(e)}), 500
         finally:
             conn.close()
     
