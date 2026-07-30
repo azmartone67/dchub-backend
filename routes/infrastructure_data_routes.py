@@ -9,10 +9,17 @@ Register in main.py:
     register_infra_data_routes(app, get_pg_connection)
 
 Tables required (already created by bulk loaders):
-    - power_plants_eia (13,441 rows)
-    - transmission_lines_eia (94K+ rows) 
-    - submarine_cables (690 rows)
-    - submarine_cable_landings (landing points)
+    - power_plants_eia (~13.4K rows)
+    - transmission_lines_eia (~56K rows — a GEOCODED SNAPSHOT with lat/lng and
+      NO writer in this repo, so no refresh path. The maintained transmission
+      layer is `transmission_lines` (~94.6K rows, routes/transmission_ingest.py),
+      which stores no geometry. The two are NOT interchangeable: the map layer
+      endpoints below need coordinates and therefore still read the snapshot,
+      while COUNT surfaces report the maintained table. Corrected 2026-07-29 —
+      this docstring previously claimed "94K+ rows" for the 56K table.)
+    - submarine_cables (0 rows live — the subsea ingest has never run; upstream
+      population is ~717 cables, proxied by /api/v1/infrastructure/submarine-cables)
+    - submarine_cable_landings (0 rows live, same cause; upstream ~1,918 points)
 """
 import math
 import time
@@ -31,8 +38,9 @@ def register_infra_data_routes(app, get_db_func):
     app.register_blueprint(infra_data_bp)
     logger.info("✅ Infrastructure Data Routes v2 registered")
     logger.info("   📍 /api/v1/power-plants (13K+ EIA plants)")
-    logger.info("   ⚡ /api/v1/transmission-lines (94K+ HIFLD lines)")
-    logger.info("   🌊 /api/v1/submarine-cables (690 cables + landings)")
+    logger.info("   ⚡ /api/v1/transmission-lines (~56K geocoded snapshot; the "
+                "maintained ~94.6K layer is transmission_lines, no geometry)")
+    logger.info("   🌊 /api/v1/submarine-cables (DB table empty — ingest never ran)")
     logger.info("   📡 /api/v1/cable-landing-points (cable_landing_points table)")
 
 
@@ -648,41 +656,288 @@ def get_cable_landing_points():
 
 # ═══════════════════════════════════════════════════════════════
 # INFRASTRUCTURE STATS — Combined counts for all tables
+#
+# 2026-07-29 — DECONTAMINATION. Three defects shipped here. All three
+# were live-probed on dchub.cloud before this change; the numbers quoted
+# below are what the endpoint actually published.
+#
+#   1. `total` WAS `sum(stats.values())` — a BLIND sum whose last member
+#      is discovered_facilities. It published 305,471 = 282,377
+#      infrastructure assets + 23,094 DATA-CENTRE FACILITIES. Facilities
+#      are a subset of the built world, not an infrastructure asset
+#      class; the two populations must never be summed. The homepage
+#      capability tile already refuses this endpoint's `total` and
+#      re-sums an explicit allow-list of layer keys for exactly that
+#      reason — the endpoint now does the same thing itself, so no
+#      consumer has to work around us to get an honest number.
+#      A blind sum() is also structurally unsafe: ANY key appended to
+#      the member list silently moves a published figure with no review
+#      touching the number. Members are now an explicit role-tagged
+#      allow-list and the payload states its own basis.
+#
+#   2. `transmission_lines` COUNTED THE WRONG TABLE. It read
+#      `transmission_lines_eia` (56,108) while /api/v1/stats and
+#      /api/v1/freshness/radar read `transmission_lines` (94,626) — one
+#      concept, 1.7x apart, on keyless endpoints, and BOTH figures
+#      render on the homepage simultaneously (hero pill 94.6k vs the
+#      capability tile summing 56,108). Neither query filters: both are
+#      bare COUNT(*). The divergence is purely the table NAME —
+#      substations, gas_pipelines and fiber_routes resolve to the same
+#      table on both endpoints and agree exactly (126,841 / 30,918 /
+#      55,064). `transmission_lines` is maintained by a documented
+#      full-replace ingest (routes/transmission_ingest.py: "~94,619
+#      features", "The 94k EIA set supersedes the stale 52k HIFLD") and
+#      the freshness radar reports it fresh. `transmission_lines_eia`
+#      has NO WRITER ANYWHERE IN THIS REPO — grep for INSERT INTO /
+#      CREATE TABLE / DELETE FROM / COPY against it returns nothing — so
+#      it cannot be current by construction. `transmission_lines`
+#      therefore takes the name, and the stale geocoded table keeps its
+#      number under an honest one: `transmission_lines_geocoded_snapshot`.
+#      That member is EXCLUDED from the asset total: it is a SUBSET of
+#      the same population, so summing both would double-count
+#      transmission. Publishing it rather than dropping it keeps the old
+#      value observable, so a consumer that sees a number move can find
+#      out which population it was looking at.
+#      ★ NOT REPOINTED HERE: the SPATIAL consumers of
+#      transmission_lines_eia — this file's GET /api/v1/transmission-lines,
+#      dchub_mcp_server.py, routes/grid_intelligence_routes.py,
+#      routes/energy_discovery_routes.py. They filter on lat/lng, and
+#      transmission_lines is ingested with returnGeometry=false ("the
+#      target table stores no geometry"), so repointing them would
+#      return rows with null coordinates and break the map layer.
+#      Whether the live table has since gained coordinates is UNVERIFIED
+#      from source alone. This commit fixes the COUNT surfaces only;
+#      repointing the map/MCP layers is a separate, DB-verified change.
+#
+#   3. A bare `except: stats[key] = 0` COLLAPSED missing-table,
+#      permission-error and genuinely-empty into the identical published
+#      value 0, for all eight members. submarine_cables and
+#      submarine_cable_landings both published 0 while DC Hub's OWN
+#      keyless /api/v1/infrastructure/submarine-cables returns 717
+#      cables / 1,918 landings from TeleGeography on the same deploy. 0
+#      was never the population — it is an ingest that has never run
+#      (main.py registers subsea_cable_ingestion under entry-point names
+#      the module does not define, so it reports 'no callable entry
+#      point' and fires nothing). Unmeasured members now emit null plus
+#      a machine-readable reason and contribute NOTHING to any total.
+#      Never 0.
 # ═══════════════════════════════════════════════════════════════
+
+# Role tags decide what a member is allowed to contribute to:
+#   'asset'    — an infrastructure asset class. Sums into
+#                infrastructure_assets_total.
+#   'subset'   — a narrower or stale view of a population already
+#                counted by an 'asset' member. Published for legibility,
+#                NEVER summed (it would double-count).
+#   'facility' — DATA-CENTRE facilities. A different population from
+#                infrastructure assets. Published for continuity, NEVER
+#                summed into an asset total.
+_STATS_MEMBERS = (
+    # (published_key,                        table,                      role)
+    ('gas_pipelines',                        'gas_pipelines',            'asset'),
+    ('power_plants',                         'power_plants_eia',         'asset'),
+    ('transmission_lines',                   'transmission_lines',       'asset'),
+    ('submarine_cables',                     'submarine_cables',         'asset'),
+    ('submarine_cable_landings',             'submarine_cable_landings', 'asset'),
+    ('substations',                          'substations',              'asset'),
+    ('fiber_routes',                         'fiber_routes',             'asset'),
+    ('transmission_lines_geocoded_snapshot', 'transmission_lines_eia',   'subset'),
+    ('discovered_facilities',                'discovered_facilities',    'facility'),
+)
+
+ASSET_KEYS = tuple(k for k, _t, role in _STATS_MEMBERS if role == 'asset')
+
+# Why a non-asset member is excluded from the asset total. Published in
+# the basis block so a consumer can see the exclusion was deliberate and
+# does not have to guess whether we simply forgot to add it up.
+_EXCLUSION_REASON = {
+    'discovered_facilities': (
+        'DATA-CENTRE FACILITIES, not an infrastructure asset class. A different '
+        'population from the asset layers — facilities sit on top of the built '
+        'world rather than being part of it. Summing the two inflates an asset '
+        'count with buildings. Use /api/v1/stats/canonical for facility counts.'),
+    'transmission_lines_geocoded_snapshot': (
+        'A stale geocoded snapshot of the SAME population already counted by '
+        '`transmission_lines`, retained under an explicit name so the number is '
+        'still observable. Summing both would double-count transmission lines. '
+        'Table `transmission_lines_eia` has no writer in the codebase and no '
+        'refresh path, so it cannot be current; `transmission_lines` is the '
+        'maintained layer and is what /api/v1/stats and the freshness radar '
+        'report. Vintage of this snapshot is UNVERIFIED.'),
+}
+
+# What a 0 row count MEANS for a given member — so an unmeasured member
+# can state why rather than publishing a bare, uninterpretable 0.
+_MEMBER_EMPTY_REASON = {
+    'submarine_cables': (
+        'table exists but holds 0 rows: the subsea ingest has never run '
+        '(subsea_cable_ingestion is registered in main.py under entry-point '
+        'names it does not define, so it fires nothing). The real population is '
+        '~717 cables per TeleGeography, served live and keyless at '
+        '/api/v1/infrastructure/submarine-cables. 0 is not the count.'),
+    'submarine_cable_landings': (
+        'table exists but holds 0 rows: the subsea ingest has never run '
+        '(subsea_cable_ingestion is registered in main.py under entry-point '
+        'names it does not define, so it fires nothing). The real population is '
+        '~1,918 landing points per TeleGeography, served live and keyless at '
+        '/api/v1/infrastructure/submarine-cables. 0 is not the count.'),
+}
+_DEFAULT_EMPTY_REASON = (
+    'table present but holds 0 rows. COUNT(*) cannot distinguish "never '
+    'populated" from a true zero, and those are different claims, so this is '
+    'reported as unmeasured rather than published as a count of 0.')
+
+_ASSET_TOTAL_DEFINITION = (
+    'Sum of the DISTINCT physical-infrastructure asset layers only. EXCLUDES '
+    'data-centre facilities (a different population) and excludes any member '
+    'tagged as a subset of a layer already counted. Unit: one per source record '
+    'in the named table — not miles, not megawatts, not deduplicated real-world '
+    'structures. Unmeasured members contribute nothing, so when '
+    'complete=false the figure is a FLOOR that can only be below reality.')
+
+
+def _stats_rollback(conn):
+    """Clear an aborted transaction so one bad member can't take the rest down."""
+    try:
+        conn.rollback()
+    except Exception:
+        pass
+
+
+def _measure_member(cur, conn, key, table):
+    """COUNT(*) one member. Returns (value, reason).
+
+    (int, None) = measured, and the int is > 0.
+    (None, str) = UNMEASURED, with a machine-readable reason.
+
+    Never returns 0 as a count. A table that was never populated and a
+    table whose true population is zero are DIFFERENT CLAIMS, and
+    COUNT(*) alone cannot tell them apart — so 0 is reported as
+    unmeasured with a reason instead of being published as a figure.
+    """
+    if not isinstance(table, str) or not table.replace('_', '').isalnum():
+        return None, 'invalid_table_identifier'
+    # to_regclass returns NULL for an absent table WITHOUT raising, so an
+    # absent member cannot abort the surrounding transaction and drag the
+    # other members down with it (the old bare-except path rolled back
+    # mid-loop and published 0 for whatever tripped it).
+    try:
+        cur.execute("SELECT to_regclass(%s)", ('public.' + table,))
+        row = cur.fetchone()
+    except Exception as exc:
+        _stats_rollback(conn)
+        return None, 'table_lookup_failed: %s' % type(exc).__name__
+    if not row or not row[0]:
+        return None, 'table_absent: public.%s does not exist' % table
+    try:
+        cur.execute("SELECT COUNT(*) FROM %s" % table)
+        got = cur.fetchone()
+    except Exception as exc:
+        _stats_rollback(conn)
+        return None, 'count_failed: %s' % type(exc).__name__
+    value = (got or [None])[0]
+    if value is None:
+        return None, 'count_returned_null'
+    try:
+        value = int(value)
+    except (TypeError, ValueError):
+        return None, 'count_not_an_integer'
+    if value <= 0:
+        return None, _MEMBER_EMPTY_REASON.get(key, _DEFAULT_EMPTY_REASON)
+    return value, None
+
+
+def build_infrastructure_stats_payload(measured):
+    """Assemble the /api/v1/infrastructure/stats body from measured counts.
+
+    `measured` maps published_key -> (value, reason) exactly as
+    _measure_member returns it. PURE: no DB, no Flask, no module globals
+    beyond the member table — so tests/test_infra_stats_asset_total.py
+    can drive every branch (facility contamination, an unmeasured
+    member, the transmission subset) without a database.
+    """
+    stats = {}
+    unmeasured = {}
+    summed = []
+    for key, _table, role in _STATS_MEMBERS:
+        value, reason = measured.get(key, (None, 'not_probed'))
+        stats[key] = value
+        if value is None:
+            unmeasured[key] = reason
+        elif role == 'asset':
+            summed.append(key)
+
+    asset_total = sum(stats[k] for k in summed) if summed else None
+    asset_unmeasured = [k for k in ASSET_KEYS if stats.get(k) is None]
+
+    basis = {
+        'definition': _ASSET_TOTAL_DEFINITION,
+        'members_summed': summed,
+        'members_unmeasured': asset_unmeasured,
+        'excluded': {
+            key: _EXCLUSION_REASON.get(key, 'not an infrastructure asset layer')
+            for key, _t, role in _STATS_MEMBERS if role != 'asset'
+        },
+        'complete': not asset_unmeasured,
+        'is_floor': bool(asset_unmeasured),
+    }
+    if asset_total is None:
+        basis['unavailable_reason'] = (
+            'no infrastructure asset layer could be measured — emitting null '
+            'rather than 0, because 0 would read as "there are no assets".')
+
+    payload = {
+        'success': True,
+        'stats': stats,
+        'unmeasured': unmeasured,
+        'infrastructure_assets_total': asset_total,
+        'infrastructure_assets_basis': basis,
+    }
+
+    # `total` is DEPRECATED but PRESERVED: it is a public field and
+    # unknown consumers already read it, so it keeps its historical
+    # composition (asset layers + discovered_facilities) rather than
+    # being redefined underneath them. It is no longer a blind
+    # sum(stats.values()) — an added member can't silently move it — and
+    # it now carries a note saying exactly what it merges, so the
+    # contamination is stated instead of implied. Its value did move
+    # with this change, because `transmission_lines` was corrected from
+    # the stale 56,108 table to the maintained 94,626 one; that is a
+    # fixed count for an unchanged concept, and it is called out here
+    # rather than left for a consumer to discover.
+    legacy_keys = [k for k, _t, role in _STATS_MEMBERS
+                   if role in ('asset', 'facility')]
+    payload['total'] = sum(stats[k] for k in legacy_keys
+                           if stats.get(k) is not None)
+    payload['total_note'] = (
+        'DEPRECATED — merges two different populations: infrastructure asset '
+        'layers PLUS discovered_facilities (data-centre facilities). Do not use '
+        'it as an infrastructure-asset count. Use infrastructure_assets_total, '
+        'which excludes facilities and publishes its member list in '
+        'infrastructure_assets_basis. Unmeasured members contribute nothing. '
+        'Composition retained for backward compatibility; note that '
+        '`transmission_lines` was corrected on 2026-07-29 from the unmaintained '
+        '`transmission_lines_eia` table to the maintained `transmission_lines` '
+        'table, so this figure moved without its definition changing.')
+    return payload
+
 
 @infra_data_bp.route('/api/v1/infrastructure/stats', methods=['GET'])
 def get_infrastructure_stats():
-    """Get counts from all infrastructure tables."""
+    """Counts per infrastructure table, plus a facility-free asset total.
+
+    Publishes `infrastructure_assets_total` with its basis and member
+    list. Unmeasured members are null + a reason, never 0. See the block
+    comment above for why each of those is the way it is.
+    """
     conn = None
     try:
         conn = _get_db()
         cur = conn.cursor()
-
-        stats = {}
-        tables = [
-            ('gas_pipelines', 'gas_pipelines'),
-            ('power_plants', 'power_plants_eia'),
-            ('transmission_lines', 'transmission_lines_eia'),
-            ('submarine_cables', 'submarine_cables'),
-            ('submarine_cable_landings', 'submarine_cable_landings'),
-            ('substations', 'substations'),
-            ('fiber_routes', 'fiber_routes'),
-            ('discovered_facilities', 'discovered_facilities'),
-        ]
-
-        for key, table in tables:
-            try:
-                cur.execute(f"SELECT COUNT(*) FROM {table}")
-                stats[key] = cur.fetchone()[0]
-            except:
-                stats[key] = 0
-                conn.rollback()
-
-        return jsonify({
-            'success': True,
-            'stats': stats,
-            'total': sum(stats.values())
-        })
+        measured = {}
+        for key, table, _role in _STATS_MEMBERS:
+            measured[key] = _measure_member(cur, conn, key, table)
+        return jsonify(build_infrastructure_stats_payload(measured))
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
     finally:
