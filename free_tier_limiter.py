@@ -506,12 +506,27 @@ def _get_current_user_id():
         conn = _get_db()
         try:
             c = conn.cursor()
-            row = c.execute(
-                "SELECT user_id FROM api_keys WHERE key_value=%s AND is_active=1",
-                (api_key,)
-            ).fetchone()
-            if row:
-                return str(row['user_id'])
+            # 2026-07-30: this SELECTed by key_value — a column api_keys
+            # has NEVER had (live schema: key_hash + is_active INTEGER) —
+            # chained .fetchone() off execute() (which returns None here,
+            # not the cursor) and dict-indexed the tuple row. All three
+            # threw on every call and the fail-soft except below swallowed
+            # it, so key-only callers were never identified — decorated
+            # endpoints 401'd them as anonymous. Same dead-query class as
+            # flask_mcp_endpoints.validate_key (PR #1943); use the same
+            # dual key_hash convention as free_tier_gate._user_from_api_key:
+            # standard keys store sha256(key); partner/admin keys store
+            # the RAW key string in key_hash.
+            import hashlib as _hl
+            c.execute(
+                "SELECT user_id FROM api_keys "
+                "WHERE key_hash IN (%s, %s) "
+                "AND (is_active IS NULL OR is_active = 1) LIMIT 1",
+                (_hl.sha256(api_key.encode()).hexdigest(), api_key),
+            )
+            row = c.fetchone()
+            if row and row[0]:
+                return str(row[0])
         except Exception:
             pass
         finally:
