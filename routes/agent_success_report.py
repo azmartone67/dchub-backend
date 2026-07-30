@@ -1,9 +1,31 @@
 """agent_success_report.py — the public weekly Agent Success Report (2026-07-30).
 
-ChatGPT's one genuinely new proposal from the 07-30 partner round: a public,
-versioned weekly report of whether AI agents are actually SUCCEEDING here —
-not raw traffic, which we already publish, but adoption of the front door and
-time-to-first-result, on the honest population.
+ChatGPT's proposal from the 07-30 partner round, restructured the same day to
+its round-3 design constraints (Perplexity converged on the same artifact —
+"the activation board IS this report"). The requirements, verbatim enough:
+
+  1. STRUCTURE AROUND CONTRACTS, NOT COUNTS — five sections:
+       Reach              which ecosystems discovered DC Hub
+       Activation         did connected agents actually call
+       Planner adoption   did they choose the intended entry point
+       Execution quality  did workflows complete with integrity
+       Learning           what changed this week that improved/degraded
+                          behaviour — and the report ENDS here, on what the
+                          numbers taught us, not on numbers.
+     (sections are an ARRAY: JSON object keys carry no order, and Flask may
+     sort them — an array is the only way "learning comes last" survives
+     serialization.)
+  2. PUBLISH GATE RULE — "no derived metric may appear unless its
+     observation, assumptions, definition version, and consumer are all
+     declared." Enforced fail-closed in _metric_block: a registry entry
+     missing any contract field renders UNPUBLISHABLE with no value.
+  3. NO COMPOSITE "HEALTH SCORES" — explicitly refused. The week's work
+     separated observation/policy, execution/integrity, adoption/
+     orchestration; one blended number would collapse exactly those
+     distinctions. The payload says so, and a test pins it.
+  4. Second-recipe take-up joins time-to-first-result in Activation (both
+     computable off the existing episode model). Recipe-LIFECYCLE logging
+     needs a schema change and stays out of scope here, on purpose.
 
 Every number on this surface is crawler-excluded. That is the report's whole
 reason to exist as a separate endpoint: the 07-28 audit found the "real agent"
@@ -16,30 +38,26 @@ SOURCES — exactly two, both pre-existing:
   · mcp_calls_identity — the canonical crawler-excluded identity VIEW
     (rendered from mcp_calls_deloop by scripts/render_identity_views.py;
     registry-crawler families applied to Neon 2026-07-28 22:12Z, 9/9 verified).
-    Supplies: tool calls, active agents, median time-to-first-result, and the
-    generic-'mcp'-bucket share that gates the per-platform split.
+    Supplies: tool calls, active agents, median time-to-first-result, episode
+    result rate, and the generic-bucket share that gates the per-platform
+    split.
   · the planner-bypass agent-day episode model (routes/planner_bypass.py,
     DEFINITION_VERSION 2) — planner adoption vs manual orchestration with the
-    observed/judgement split. Reused via _measure(extra_where=…) with the
-    registry-crawler exclusions ADDED (regex-form predicates, because those
-    queries run with bound params where a literal LIKE % eats an argument).
-    The population therefore differs from the admin endpoint's — each metric
-    block below declares its own definition_version for exactly that reason.
+    observed/judgement split, and the second-recipe query built from the same
+    episode identity. Reused with the registry-crawler exclusions ADDED
+    (regex-form predicates, because those queries run with bound params where
+    a literal LIKE % eats an argument). The population therefore differs from
+    the admin endpoint's — each metric declares that in its own contract.
 
-HOUSE RULES ENFORCED HERE (tests pin all three):
-  · every rate is None + status UNMEASURED on an empty denominator — a rate
-    that could not be measured must never render as 0% or 100%;
-  · every metric carries definition_version + definition_changelog, and a
-    version without a changelog entry fails CI (the planner-bypass pattern:
-    the numbers were never wrong, the MEANING moved — so the meaning is now a
-    declared, versioned contract);
-  · per-platform splits are GATED AT BIRTH: the attribution fix (client_name_raw
-    on the stateless path, dchub-mcp-server 8c0d08b) landed 2026-07-28, needs
-    ~7 days of accumulation, AND the generic-'mcp' bucket share must have
-    actually dropped before a per-platform number is publishable. The gate is
-    encoded, not remembered: the split publishes itself only when BOTH
-    conditions verify against live data, and the payload shows the gate state
-    either way. (7d window: judging the fix early would measure the old data.)
+HOUSE RULES ENFORCED HERE (tests pin all of them):
+  · every rate is None + status UNMEASURED on an empty denominator;
+  · every metric carries the full publish contract (observation, assumptions,
+    definition_version + changelog, consumers, definition, unit, source);
+  · per-platform splits are GATED AT BIRTH: the attribution fix
+    (client_name_raw on the stateless path, dchub-mcp-server 2026-07-28)
+    needs ~7 days of accumulation AND a verified drop of the generic-bucket
+    share before a per-platform number is publishable. The gate is encoded,
+    not remembered, and its state ships in the payload either way.
 
 Endpoint (public, read-only, cached):
   GET /api/v1/reports/agent-success
@@ -66,6 +84,9 @@ from mcp_calls_deloop import (
 )
 from routes.planner_bypass import (
     DEFINITION_VERSION as EPISODE_MODEL_VERSION,
+    FRONT_DOOR,
+    _EPISODE_ID,
+    _SYNTH_NOT_LIKE,
     _measure as _episode_measure,
     _rate,
 )
@@ -76,20 +97,59 @@ agent_success_report_bp = Blueprint("agent_success_report", __name__)
 WINDOW_DAYS = 7
 _STMT_TIMEOUT_MS = 6000
 
-# The payload SHAPE version (field layout / gating semantics). Individual
-# metrics carry their own versions below — bump those when a metric's MEANING
-# changes; bump this when the envelope itself does.
-REPORT_DEFINITION_VERSION = 1
+# The payload SHAPE version. Individual metrics carry their own versions —
+# bump those when a metric's MEANING changes; bump this when the envelope does.
+REPORT_DEFINITION_VERSION = 2
 REPORT_DEFINITION_CHANGELOG = {
-    1: "initial — weekly rolling 7d window; crawler-excluded population only; "
-       "per-platform split gated on attribution accumulation + verified "
-       "generic-bucket drop",
+    1: "initial (PR #1954, 2026-07-30 morning): flat metrics dict; five "
+       "deliverable metrics; per-platform gate; crawler-excluded population",
+    2: "round-3 partner requirements (same day): five contract sections — "
+       "reach → activation → planner adoption → execution quality → learning, "
+       "and the report ENDS with learning; publish contract (observation / "
+       "assumptions / definition_version / consumers) required on every "
+       "derived metric, fail-closed as UNPUBLISHABLE; activation gains "
+       "second_recipe_take_up_pct, execution quality gains "
+       "episode_result_rate, learning carries week-over-week deltas plus "
+       "dated notes; composite scores explicitly refused",
 }
+
+# Round-3 rule 2, made operational: a metric renders only when its whole
+# semantic contract is declared. Missing any of these ⇒ UNPUBLISHABLE.
+PUBLISH_CONTRACT_FIELDS = (
+    "definition", "observation", "assumptions", "definition_version",
+    "definition_changelog", "consumers", "unit", "source",
+)
+
+# Round-3 rule 1: fixed narrative order, learning LAST.
+SECTION_ORDER = ("reach", "activation", "planner_adoption",
+                 "execution_quality", "learning")
+
+SECTION_QUESTIONS = {
+    "reach": "Which ecosystems discovered DC Hub?",
+    "activation": "Did connected agents actually call?",
+    "planner_adoption": "Did agents choose the intended entry point?",
+    "execution_quality": "Did workflows complete with integrity?",
+    "learning": "What changed this week that improved or degraded behaviour?",
+}
+
+# Round-3 rule 3. Present in the payload so its absence can never be read as
+# an oversight, and pinned by a test so nobody "helpfully" adds one.
+NO_COMPOSITE_POLICY = (
+    "REFUSED by design (round-3 partner rule): no blended 'agent success "
+    "score' exists on this surface. Observation is separated from policy, "
+    "execution from integrity, adoption from orchestration — a composite "
+    "would collapse exactly those distinctions."
+)
+
+_CONSUMERS_DEFAULT = [
+    "AI-partner weekly rounds (7 platforms)",
+    "public consumers of /api/v1/reports/agent-success",
+]
 
 # ── Crawler exclusions for the EPISODE queries (mcp_call_log) ──────────────
 # The identity view already carries the exclusions for everything read from
-# mcp_calls_identity. The episode model reads mcp_call_log WITH bound params,
-# so it gets the regex twins of the same shared family constants. Regex form
+# mcp_calls_identity. The episode queries read mcp_call_log WITH bound params,
+# so they get the regex twins of the same shared family constants. Regex form
 # is load-bearing: the LIKE form's literal % would be consumed by psycopg2
 # paramstyle substitution (the trap that took /api/v1/map down 2026-07-17).
 CRAWLER_EXCLUSION_WHERE = (
@@ -122,7 +182,7 @@ def _attribution_gate(days_since_fix, mcp_share):
     """(passed, status, reason). Pure — fully unit-testable.
 
     Both conditions must hold: the trailing window is entirely post-fix, AND
-    the generic-'mcp' bucket share measurably dropped below the pre-fix
+    the generic-client bucket share measurably dropped below the pre-fix
     baseline. Either alone is not evidence the split is honest: early data
     still measures the old writer, and an aged window with an unchanged share
     means the fix did not take."""
@@ -147,18 +207,41 @@ def _attribution_gate(days_since_fix, mcp_share):
     return (True, "MEASURED", "attribution accumulation and bucket-share gates passed")
 
 
-# ── Metric definitions — the versioned contract this surface publishes ─────
-# Every metric block in the payload is rendered from THIS registry, so a
-# metric cannot ship without its version and changelog (test-pinned). Bump a
+def _wow_pct(cur_v, prev_v):
+    """Week-over-week delta, or None when the prior window is empty — a delta
+    off nothing is not 100%, it is unmeasurable."""
+    if cur_v is None or not prev_v:
+        return None
+    return round(100.0 * (cur_v - prev_v) / prev_v, 1)
+
+
+# ── Metric registry — the versioned contract this surface publishes ────────
+# Every metric block in the payload is rendered from THIS registry through
+# _metric_block(), which fail-closes on an incomplete contract. Bump a
 # metric's version whenever its MEANING changes, even if name and type do not
 # — the name/type-stable case is exactly the one that bit agent_adoption's
 # planner_first consumer.
+_EPISODE_ASSUMPTIONS = [
+    "execute_plan availability is ASSUMED, not measured — a client's "
+    "allowed_tools scoping is invisible to the server",
+    "multi-capability intent is INFERRED from behaviour; the user's question "
+    "is never logged",
+    "hand-off is APPROXIMATED from params (a later call carrying a chaining "
+    "key the first call lacked); results are not logged, so true dataflow is "
+    "unobservable",
+]
+
 METRICS = {
     "tool_calls_7d": {
         "definition": "COUNT(*) over mcp_calls_identity WHERE is_real_external, "
                       "trailing 7 days. Counts tool CALLS, never sessions.",
+        "observation": "rows in the crawler-excluded identity view inside the "
+                       "window — direct count, nothing derived",
+        "assumptions": ["a call is one tracked tool invocation; client retries "
+                        "are separate calls"],
         "unit": "calls",
         "source": "mcp_calls_identity (crawler-excluded view over mcp_tool_calls)",
+        "consumers": _CONSUMERS_DEFAULT,
         "definition_version": 1,
         "definition_changelog": {
             1: "initial — identity-view population (internal traffic, scripted "
@@ -168,11 +251,15 @@ METRICS = {
     },
     "active_agents_7d": {
         "definition": "COUNT(DISTINCT agent_id) over mcp_calls_identity WHERE "
-                      "is_real_external AND is_public_ip, trailing 7 days. "
-                      "agent_id = md5(first public X-Forwarded-For hop); "
-                      "Cloudflare-POP hops are NULL and never counted.",
+                      "is_real_external AND is_public_ip, trailing 7 days.",
+        "observation": "distinct md5(first public X-Forwarded-For hop) values "
+                       "among real rows; Cloudflare-POP hops carry NULL "
+                       "agent_id and are never counted (their calls still are)",
+        "assumptions": ["one NAT/proxy egress IP = one agent — a shared egress "
+                        "undercounts, a rotating one overcounts"],
         "unit": "distinct agents",
         "source": "mcp_calls_identity",
+        "consumers": _CONSUMERS_DEFAULT,
         "definition_version": 1,
         "definition_changelog": {
             1: "initial — same agent grain as /api/v1/reach real_agents_7d "
@@ -182,11 +269,15 @@ METRICS = {
     "planner_adoption_pct": {
         "definition": "Of agent-day episodes with 2+ calls (opportunities), the "
                       "share whose FIRST call was execute_plan. Pure observation "
-                      "— no judgement about whether the planner SHOULD have been "
-                      "used.",
+                      "— no judgement about whether the planner SHOULD have "
+                      "been used.",
+        "observation": "first tool name per agent-day episode, episodes with "
+                       "2+ calls in the window",
+        "assumptions": _EPISODE_ASSUMPTIONS,
         "unit": "% of opportunity episodes",
         "source": f"planner-bypass episode model v{EPISODE_MODEL_VERSION} "
                   "(mcp_call_log, agent-day unit) + registry-crawler exclusions",
+        "consumers": _CONSUMERS_DEFAULT + ["activation board (specced)"],
         "definition_version": 1,
         "definition_changelog": {
             1: "initial — episode model v2 semantics (agent-day unit; durable "
@@ -204,9 +295,13 @@ METRICS = {
                       "different args) and single-capability lookups are excluded "
                       "and reported separately — they are correct usage, not "
                       "bypass.",
+        "observation": "distinct-tool counts and param-key hand-off signals per "
+                       "agent-day episode",
+        "assumptions": _EPISODE_ASSUMPTIONS,
         "unit": "% of opportunity episodes",
         "source": f"planner-bypass episode model v{EPISODE_MODEL_VERSION} "
                   "(mcp_call_log, agent-day unit) + registry-crawler exclusions",
+        "consumers": _CONSUMERS_DEFAULT,
         "definition_version": 1,
         "definition_changelog": {
             1: "initial — episode model v2 semantics with the registry-crawler "
@@ -222,22 +317,113 @@ METRICS = {
                       "Median across episodes with at least one successful "
                       "call; episodes with none are counted separately, never "
                       "averaged in as zero.",
+        "observation": "per-episode first-call timestamp, first-success "
+                       "timestamp and its response_time_ms, identity grain",
+        "assumptions": [
+            "success is writer-reported: a tracker payload with no status "
+            "field records success=TRUE, so 'first result' means 'first call "
+            "not explicitly reported failed'",
+            "response_time_ms=0 rows contribute the arrival gap alone",
+        ],
         "unit": "milliseconds (median)",
         "source": "mcp_calls_identity (agent_id × day grain)",
+        "consumers": _CONSUMERS_DEFAULT + ["activation board (specced)"],
         "definition_version": 1,
         "definition_changelog": {
-            1: "initial — success is writer-reported (a tracker payload with no "
-               "status field records success=TRUE), so 'first result' means "
-               "'first call not explicitly reported failed'",
+            1: "initial — Perplexity's activation-board metric, computed off "
+               "the episode model as converged in round 3",
+        },
+    },
+    "second_recipe_take_up_pct": {
+        "definition": "Of agent-day episodes that invoked execute_plan at least "
+                      "once, the share that invoked it AGAIN with a different "
+                      "non-empty intent inside the same episode — the starter "
+                      "pack's next_recipe actually taken.",
+        "observation": "distinct non-empty execute_plan intent strings per "
+                       "agent-day episode",
+        "assumptions": [
+            "'recipe' = a distinct execute_plan intent string; two phrasings "
+            "of one question read as two recipes",
+            "cross-day returns are retention, not take-up — this measures "
+            "within the same agent-day episode",
+            "empty intents never count as a distinct recipe",
+        ],
+        "unit": "% of episodes with ≥1 execute_plan call",
+        "source": "mcp_call_log (planner-bypass episode identity) + "
+                  "registry-crawler exclusions",
+        "consumers": _CONSUMERS_DEFAULT + ["activation board (specced)"],
+        "definition_version": 1,
+        "definition_changelog": {
+            1: "initial — the second Perplexity activation metric computable "
+               "without schema changes. Recipe-LIFECYCLE logging (did the "
+               "recipe COMPLETE) needs a schema change and is explicitly out "
+               "of scope here.",
+        },
+    },
+    "episode_result_rate": {
+        "definition": "Share of agent-day episodes (identity grain) whose "
+                      "calls produced at least one successful result in the "
+                      "window.",
+        "observation": "episodes vs episodes-with-a-success from the same "
+                       "query that feeds median_time_to_first_result_ms",
+        "assumptions": [
+            "identity grain (md5 of first public XFF hop), NOT the planner "
+            "episode grain — the two units are declared separately on purpose",
+            "success is writer-reported (see median_time_to_first_result_ms)",
+        ],
+        "unit": "% of agent-day episodes",
+        "source": "mcp_calls_identity (agent_id × day grain)",
+        "consumers": _CONSUMERS_DEFAULT,
+        "definition_version": 1,
+        "definition_changelog": {
+            1: "initial — execution-quality floor: a workflow that never got "
+               "one successful result back did not complete with integrity",
+        },
+    },
+    "tool_calls_wow_pct": {
+        "definition": "Percent change of crawler-excluded tool calls vs the "
+                      "prior rolling 7-day window (days 8-14).",
+        "observation": "the two window counts; the delta is arithmetic on top",
+        "assumptions": [
+            "both windows measured under the SAME definitions — a definition "
+            "change between windows would masquerade as behaviour change, "
+            "which is what definition_version exists to catch",
+        ],
+        "unit": "% change week-over-week",
+        "source": "mcp_calls_identity",
+        "consumers": _CONSUMERS_DEFAULT,
+        "definition_version": 1,
+        "definition_changelog": {
+            1: "initial — None (UNMEASURED) when the prior window is empty; a "
+               "delta off nothing is not +100%",
+        },
+    },
+    "active_agents_wow_pct": {
+        "definition": "Percent change of distinct real agents vs the prior "
+                      "rolling 7-day window (days 8-14).",
+        "observation": "the two window distinct-agent counts",
+        "assumptions": [
+            "same-definition windows (see tool_calls_wow_pct)",
+            "agent identity is IP-derived; egress churn between windows adds "
+            "noise both directions",
+        ],
+        "unit": "% change week-over-week",
+        "source": "mcp_calls_identity",
+        "consumers": _CONSUMERS_DEFAULT,
+        "definition_version": 1,
+        "definition_changelog": {
+            1: "initial — None (UNMEASURED) when the prior window is empty",
         },
     },
 }
 
-# ── SQL — all identity-view queries run with NO bound params ───────────────
+# ── SQL — identity-view queries run with NO bound params ───────────────────
 # Window and thresholds are trusted module constants inlined as literals, so
 # psycopg2 performs no %-substitution and PLATFORM_CASE's ILIKE '%…%' literals
 # are safe exactly as they are in mcp_calls_deloop itself.
 _W = f"created_at >= NOW() - ({WINDOW_DAYS} * INTERVAL '1 day')"
+_W_PREV = (f"created_at >= NOW() - ({2 * WINDOW_DAYS} * INTERVAL '1 day') "
+           f"AND created_at < NOW() - ({WINDOW_DAYS} * INTERVAL '1 day')")
 
 _SQL_TOTALS = f"""
 SELECT COUNT(*) FILTER (WHERE is_real_external)                        AS tool_calls,
@@ -245,6 +431,14 @@ SELECT COUNT(*) FILTER (WHERE is_real_external)                        AS tool_c
                                           AND is_public_ip)            AS active_agents
   FROM mcp_calls_identity
  WHERE {_W}
+"""
+
+_SQL_TOTALS_PREV = f"""
+SELECT COUNT(*) FILTER (WHERE is_real_external)                        AS tool_calls,
+       COUNT(DISTINCT agent_id) FILTER (WHERE is_real_external
+                                          AND is_public_ip)            AS active_agents
+  FROM mcp_calls_identity
+ WHERE {_W_PREV}
 """
 
 _SQL_TTFR = f"""
@@ -292,6 +486,80 @@ SELECT ({PLATFORM_CASE.strip()})                                  AS platform,
  GROUP BY 1 ORDER BY calls DESC LIMIT 15
 """
 
+# ── Second-recipe take-up — episode grain over mcp_call_log, WITH params ───
+# Built from the planner-bypass episode identity + synthetic exclusions plus
+# the crawler regex predicates, so this and the adoption metrics cannot
+# diverge on population. Runs with bound params (days, FRONT_DOOR) through
+# _bounded_params — NEVER through _bounded, and PLATFORM_CASE must never
+# appear here (its ILIKE literals are unsafe next to substitution).
+_SQL_SECOND_RECIPE = """
+WITH scoped AS (
+  SELECT {episode} AS episode_id,
+         timestamp::date AS day,
+         COALESCE(params->>'intent', '') AS intent
+    FROM mcp_call_log
+   WHERE timestamp > NOW() - make_interval(days => %s)
+     AND tool = %s
+     AND ({episode}) <> 'sess:'
+     {synth}
+),
+ep AS (
+  SELECT episode_id, day,
+         COUNT(*) AS plan_calls,
+         COUNT(DISTINCT intent) FILTER (WHERE intent <> '') AS distinct_intents
+    FROM scoped GROUP BY episode_id, day
+)
+SELECT COUNT(*)                                       AS plan_episodes,
+       COUNT(*) FILTER (WHERE distinct_intents >= 2)  AS second_recipe_episodes
+  FROM ep
+"""
+
+
+def _second_recipe_sql() -> str:
+    return _SQL_SECOND_RECIPE.format(
+        episode=_EPISODE_ID, synth=_SYNTH_NOT_LIKE + CRAWLER_EXCLUSION_WHERE)
+
+
+# ── Learning notes — dated, sourced, kinds: improved | degraded | measurement.
+# Curated editorial state, deliberately versioned in git rather than invented
+# at runtime: "what changed" is a claim about causes, and causes don't come
+# out of a GROUP BY. Dated facts stay true after the week moves on.
+LEARNING_NOTES = (
+    {"date": "2026-07-28", "kind": "measurement",
+     "note": "Registry-crawler exclusions applied to the identity views — 12 "
+             "named crawlers/indexers/health checkers plus 9 family patterns "
+             "removed from the 'real agent' population (measured impact: "
+             "calls −4.1%, agents −3). Numbers spanning this date are not "
+             "comparable without this note.",
+     "source": "dchub-backend #1865/#1866, applied 2026-07-28 22:12Z"},
+    {"date": "2026-07-28", "kind": "measurement",
+     "note": "Generic client_name bucket split: rows named "
+             "'mcp'/'mcp-client'/'client'/'default' now classify as "
+             "'mcp-generic-client' (real traffic, kept) or 'internal-dchub' "
+             "(self-traffic, excluded) instead of passing through verbatim as "
+             "a fake platform.",
+     "source": "dchub-backend mcp_calls_deloop, 2026-07-28"},
+    {"date": "2026-07-28", "kind": "improved",
+     "note": "Platform-attribution fix: clientInfo.name now survives the "
+             "stateless call path. Generic-bucket share moved 88% → 77.8% in "
+             "the first two days; per-platform reach publishes here once the "
+             "share holds ≤80% across a fully post-fix week (earliest "
+             "2026-08-04). Live trajectory: reach section gate.",
+     "source": "dchub-mcp-server (client_name_raw + platform recall)"},
+    {"date": "2026-07-30", "kind": "improved",
+     "note": "Planner v5.6: tax-incentive intents route to get_tax_incentives "
+             "— the tool was registered but unroutable (register ≠ routable), "
+             "so Meta's #1 intent had been landing on facility_search.",
+     "source": "dchub-mcp-server #106"},
+    {"date": "2026-07-30", "kind": "measurement",
+     "note": "This report's episode metrics gained the same crawler "
+             "exclusions as the identity views — the bound-params regex "
+             "predicate had silently missed all nine crawler families for two "
+             "days, so bound-params surfaces were still counting registry "
+             "crawlers the identity view excluded.",
+     "source": "dchub-backend #1954"},
+)
+
 
 def _conn():
     import psycopg2
@@ -310,7 +578,9 @@ def _bounded(cur, sql, fetch="one"):
     """One aggregate per explicit transaction with SET LOCAL statement_timeout
     — the only form that sticks on Neon's pooled endpoint (see
     flask_mcp_endpoints._reach_bounded, verified live 2026-07-01). ROLLBACK on
-    error so a timed-out query never poisons the next one."""
+    error so a timed-out query never poisons the next one. NO params by
+    design: the identity queries inline PLATFORM_CASE, whose ILIKE '%…%'
+    literals are only safe when no substitution runs."""
     cur.execute("BEGIN")
     try:
         cur.execute("SET LOCAL statement_timeout = %d" % _STMT_TIMEOUT_MS)
@@ -326,11 +596,42 @@ def _bounded(cur, sql, fetch="one"):
         raise
 
 
+def _bounded_params(cur, sql, params, fetch="one"):
+    """The WITH-params sibling of _bounded, for the mcp_call_log episode
+    queries only. Their SQL must stay free of single-percent literals (the
+    synthetic exclusions are %%-doubled; the crawler predicates are regex
+    form) — tests emulate the substitution to hold that."""
+    cur.execute("BEGIN")
+    try:
+        cur.execute("SET LOCAL statement_timeout = %d" % _STMT_TIMEOUT_MS)
+        cur.execute(sql, params)
+        result = cur.fetchone() if fetch == "one" else cur.fetchall()
+        cur.execute("COMMIT")
+        return result
+    except Exception:
+        try:
+            cur.execute("ROLLBACK")
+        except Exception:
+            pass
+        raise
+
+
 def _metric_block(key, value, status, **extra):
-    """Render one metric with its full versioned contract attached."""
+    """Render one metric with its full publish contract attached — and refuse
+    to render a value whose contract is incomplete (round-3 rule 2). A missing
+    contract field is a build-time defect (tests assert the registry is
+    complete), so UNPUBLISHABLE should never appear in production — but the
+    gate is enforced here, not remembered."""
+    entry = METRICS[key]
+    missing = [f for f in PUBLISH_CONTRACT_FIELDS if not entry.get(f)]
+    if missing:
+        logger.error("[agent-success] %s missing contract fields %s — "
+                     "refusing to publish a value", key, missing)
+        return {"value": None, "status": "UNPUBLISHABLE",
+                "missing_contract_fields": missing}
     block = {"value": value, "status": status}
     block.update(extra)
-    block.update(METRICS[key])
+    block.update(entry)
     return block
 
 
@@ -344,6 +645,13 @@ def _build_report() -> dict:
         "window_days": WINDOW_DAYS,
         "definition_version": REPORT_DEFINITION_VERSION,
         "definition_changelog": REPORT_DEFINITION_CHANGELOG,
+        "publish_contract": {
+            "rule": "no derived metric may appear unless its observation, "
+                    "assumptions, definition version, and consumer are all "
+                    "declared (round-3 partner rule; enforced fail-closed)",
+            "required_fields": list(PUBLISH_CONTRACT_FIELDS),
+        },
+        "no_composite_score": NO_COMPOSITE_POLICY,
         "population": (
             "real external agents only. Internal/self traffic, scripted UAs, QA "
             "tags AND MCP registry/health/scanner crawlers are excluded "
@@ -358,94 +666,161 @@ def _build_report() -> dict:
                              f"{EPISODE_MODEL_VERSION} over mcp_call_log, with "
                              "the same crawler exclusions added (regex form)",
         },
-        "metrics": {},
+        "section_order": list(SECTION_ORDER),
     }
 
-    c = _conn()
-    if c is None:
-        out["ok"] = False
-        out["error"] = "no database connection"
-        for key in METRICS:
-            out["metrics"][key] = _metric_block(key, None, "UNAVAILABLE")
-        return out
-
+    blocks = {}
     mcp_share = None
     platform_rows = None
     split_error = None
-    try:
-        with c.cursor() as cur:
-            # ── totals off the identity view ────────────────────────────────
-            try:
-                calls, agents = _bounded(cur, _SQL_TOTALS)
-                out["metrics"]["tool_calls_7d"] = _metric_block(
-                    "tool_calls_7d", int(calls or 0), "MEASURED")
-                out["metrics"]["active_agents_7d"] = _metric_block(
-                    "active_agents_7d", int(agents or 0), "MEASURED")
-            except Exception as e:
-                logger.warning("[agent-success] totals: %s", str(e)[:150])
+    prev_calls = prev_agents = None
+    cur_calls = cur_agents = None
 
-            # ── median time-to-first-result ─────────────────────────────────
-            try:
-                episodes, with_result, ttfr = _bounded(cur, _SQL_TTFR)
-                episodes, with_result = int(episodes or 0), int(with_result or 0)
-                measured = with_result > 0 and ttfr is not None
-                block = _metric_block(
-                    "median_time_to_first_result_ms",
-                    round(float(ttfr), 1) if measured else None,
-                    "MEASURED" if measured else "UNMEASURED",
-                    episodes=episodes,
-                    episodes_with_result=with_result,
-                    episodes_without_result=episodes - with_result,
-                )
-                if not measured:
-                    block["unmeasured_reason"] = (
-                        "no agent-day episode in the window recorded a "
-                        "successful call — nothing to take a median over"
-                    )
-                out["metrics"]["median_time_to_first_result_ms"] = block
-            except Exception as e:
-                logger.warning("[agent-success] ttfr: %s", str(e)[:150])
-
-            # ── generic-bucket share (the attribution gate's evidence) ──────
-            try:
-                real_calls, generic_calls = _bounded(cur, _SQL_MCP_SHARE)
-                real_calls, generic_calls = int(real_calls or 0), int(generic_calls or 0)
-                if real_calls:
-                    mcp_share = round(generic_calls / real_calls, 4)
-            except Exception as e:
-                logger.warning("[agent-success] generic share: %s", str(e)[:150])
-
-            # ── the split itself — computed ONLY behind the gate ────────────
-            if _attribution_gate(days_since_fix, mcp_share)[0]:
-                try:
-                    rows = _bounded(cur, _SQL_PLATFORM_SPLIT, fetch="all")
-                    platform_rows = [
-                        {"platform": p, "calls": int(n or 0), "agents": int(a or 0)}
-                        for (p, n, a) in (rows or [])
-                    ]
-                except Exception as e:
-                    logger.warning("[agent-success] split: %s", str(e)[:150])
-                    split_error = str(e)[:150]
-    except Exception as e:
-        logger.warning("[agent-success] identity block: %s", str(e)[:200])
-    finally:
+    c = _conn()
+    if c is None:
+        out["error"] = "no database connection"
+    else:
         try:
-            c.close()
-        except Exception:
-            pass
+            with c.cursor() as cur:
+                # ── totals off the identity view ────────────────────────────
+                try:
+                    calls, agents = _bounded(cur, _SQL_TOTALS)
+                    cur_calls, cur_agents = int(calls or 0), int(agents or 0)
+                    blocks["tool_calls_7d"] = _metric_block(
+                        "tool_calls_7d", cur_calls, "MEASURED")
+                    blocks["active_agents_7d"] = _metric_block(
+                        "active_agents_7d", cur_agents, "MEASURED")
+                except Exception as e:
+                    logger.warning("[agent-success] totals: %s", str(e)[:150])
+                try:
+                    pcalls, pagents = _bounded(cur, _SQL_TOTALS_PREV)
+                    prev_calls, prev_agents = int(pcalls or 0), int(pagents or 0)
+                except Exception as e:
+                    logger.warning("[agent-success] prev totals: %s", str(e)[:150])
 
-    # A partial DB failure must degrade to explicit UNAVAILABLE blocks, never
-    # to a 500 and never to invented zeros.
-    for key in ("tool_calls_7d", "active_agents_7d",
-                "median_time_to_first_result_ms"):
-        out["metrics"].setdefault(
-            key, _metric_block(key, None, "UNAVAILABLE",
-                               error="identity view query failed"))
+                # ── time-to-first-result + result rate (one query) ──────────
+                try:
+                    episodes, with_result, ttfr = _bounded(cur, _SQL_TTFR)
+                    episodes, with_result = int(episodes or 0), int(with_result or 0)
+                    measured = with_result > 0 and ttfr is not None
+                    block = _metric_block(
+                        "median_time_to_first_result_ms",
+                        round(float(ttfr), 1) if measured else None,
+                        "MEASURED" if measured else "UNMEASURED",
+                        episodes=episodes,
+                        episodes_with_result=with_result,
+                        episodes_without_result=episodes - with_result,
+                    )
+                    if not measured:
+                        block["unmeasured_reason"] = (
+                            "no agent-day episode in the window recorded a "
+                            "successful call — nothing to take a median over")
+                    blocks["median_time_to_first_result_ms"] = block
+                    blocks["episode_result_rate"] = _metric_block(
+                        "episode_result_rate",
+                        _rate(with_result, episodes),
+                        "MEASURED" if episodes else "UNMEASURED",
+                        numerator=with_result, denominator=episodes)
+                except Exception as e:
+                    logger.warning("[agent-success] ttfr: %s", str(e)[:150])
+
+                # ── second-recipe take-up (episode grain, WITH params) ──────
+                try:
+                    plan_eps, second_eps = _bounded_params(
+                        cur, _second_recipe_sql(), (WINDOW_DAYS, FRONT_DOOR))
+                    plan_eps, second_eps = int(plan_eps or 0), int(second_eps or 0)
+                    blocks["second_recipe_take_up_pct"] = _metric_block(
+                        "second_recipe_take_up_pct",
+                        _rate(second_eps, plan_eps),
+                        "MEASURED" if plan_eps else "UNMEASURED",
+                        numerator=second_eps, denominator=plan_eps,
+                        denominator_definition="agent-day episodes with ≥1 "
+                                                "execute_plan call")
+                    if not plan_eps:
+                        blocks["second_recipe_take_up_pct"]["unmeasured_reason"] = (
+                            "no episode in the window called execute_plan — "
+                            "take-up of a second recipe is unmeasurable, not 0%")
+                except Exception as e:
+                    logger.warning("[agent-success] second recipe: %s", str(e)[:150])
+
+                # ── generic-bucket share (the attribution gate's evidence) ──
+                try:
+                    real_calls, generic_calls = _bounded(cur, _SQL_MCP_SHARE)
+                    real_calls, generic_calls = int(real_calls or 0), int(generic_calls or 0)
+                    if real_calls:
+                        mcp_share = round(generic_calls / real_calls, 4)
+                except Exception as e:
+                    logger.warning("[agent-success] generic share: %s", str(e)[:150])
+
+                # ── the split itself — computed ONLY behind the gate ────────
+                if _attribution_gate(days_since_fix, mcp_share)[0]:
+                    try:
+                        rows = _bounded(cur, _SQL_PLATFORM_SPLIT, fetch="all")
+                        platform_rows = [
+                            {"platform": p, "calls": int(n or 0), "agents": int(a or 0)}
+                            for (p, n, a) in (rows or [])
+                        ]
+                    except Exception as e:
+                        logger.warning("[agent-success] split: %s", str(e)[:150])
+                        split_error = str(e)[:150]
+        except Exception as e:
+            logger.warning("[agent-success] identity block: %s", str(e)[:200])
+        finally:
+            try:
+                c.close()
+            except Exception:
+                pass
+
+    # ── episode metrics (planner adoption / manual orchestration) ──────────
+    episode_context = {}
+    try:
+        ep = _episode_measure(WINDOW_DAYS, extra_where=CRAWLER_EXCLUSION_WHERE)
+        if not (ep.get("ok") and ep.get("status") in ("MEASURED", "UNMEASURED")):
+            raise RuntimeError(ep.get("error") or "episode measure failed")
+        opportunities = ep.get("opportunities")
+        shared = {
+            "denominator": opportunities,
+            "denominator_definition": "agent-day episodes with 2+ calls in the window",
+            "episodes_total": ep.get("episodes"),
+        }
+        measured = ep["status"] == "MEASURED"
+        adoption = _metric_block(
+            "planner_adoption_pct",
+            ep.get("planner_adoption_pct") if measured else None,
+            ep["status"], numerator=ep.get("planner_adopted"), **shared)
+        manual = _metric_block(
+            "manual_orchestration_pct",
+            ep.get("manual_orchestration_pct") if measured else None,
+            ep["status"], numerator=ep.get("manual_orchestration"), **shared)
+        if not measured:
+            for b in (adoption, manual):
+                b["unmeasured_reason"] = ep.get("unmeasured_reason") or (
+                    "no opportunity episodes in the window")
+        blocks["planner_adoption_pct"] = adoption
+        blocks["manual_orchestration_pct"] = manual
+        episode_context = {
+            "front_door": ep.get("front_door"),
+            "legacy_door_first_episodes": ep.get("legacy_door_first"),
+            "not_counted_as_bypass": {
+                "benign_fanout": ep.get("benign_fanout"),
+                "benign_direct_single_call": ep.get("benign_direct_single_call"),
+                "independent_multi_no_handoff": ep.get("independent_multi_no_handoff"),
+            },
+            "episode_model_assumptions": ep.get("assumptions"),
+        }
+    except Exception as e:
+        logger.warning("[agent-success] episodes: %s", str(e)[:150])
+
+    # A partial failure must degrade to explicit UNAVAILABLE blocks, never to
+    # a 500 and never to invented zeros.
+    for key in METRICS:
+        blocks.setdefault(key, _metric_block(
+            key, None, "UNAVAILABLE", error="source query failed"))
 
     # ── per-platform block — the gate IS the payload, present either way ───
-    passed, status, reason = _attribution_gate(days_since_fix, mcp_share)
+    passed, gate_status, reason = _attribution_gate(days_since_fix, mcp_share)
     per_platform = {
-        "status": status,
+        "status": gate_status,
         "reason": reason,
         "definition_version": 1,
         "definition_changelog": {
@@ -480,59 +855,104 @@ def _build_report() -> dict:
         else:
             per_platform["status"] = "UNAVAILABLE"
             per_platform["error"] = split_error or "split query failed"
-    out["per_platform"] = per_platform
 
-    # ── episode metrics (planner adoption / manual orchestration) ──────────
-    # Own connection inside _episode_measure; crawler exclusions threaded in.
-    try:
-        ep = _episode_measure(WINDOW_DAYS, extra_where=CRAWLER_EXCLUSION_WHERE)
-        opportunities = ep.get("opportunities")
-        shared = {
-            "numerator_unit": "agent-day episodes",
-            "denominator": opportunities,
-            "denominator_definition": "episodes with 2+ calls in the window",
-            "episodes_total": ep.get("episodes"),
-        }
-        if ep.get("ok") and ep.get("status") in ("MEASURED", "UNMEASURED"):
-            measured = ep["status"] == "MEASURED"
-            adoption = _metric_block(
-                "planner_adoption_pct",
-                ep.get("planner_adoption_pct") if measured else None,
-                ep["status"], numerator=ep.get("planner_adopted"), **shared)
-            manual = _metric_block(
-                "manual_orchestration_pct",
-                ep.get("manual_orchestration_pct") if measured else None,
-                ep["status"], numerator=ep.get("manual_orchestration"), **shared)
-            if not measured:
-                for b in (adoption, manual):
-                    b["unmeasured_reason"] = ep.get("unmeasured_reason") or (
-                        "no opportunity episodes in the window")
-            else:
-                # Context that keeps the two rates honest at a glance: what was
-                # deliberately NOT counted against the fleet.
-                adoption["not_counted_as_bypass"] = manual["not_counted_as_bypass"] = {
-                    "benign_fanout": ep.get("benign_fanout"),
-                    "benign_direct_single_call": ep.get("benign_direct_single_call"),
-                    "independent_multi_no_handoff": ep.get("independent_multi_no_handoff"),
-                }
-            out["metrics"]["planner_adoption_pct"] = adoption
-            out["metrics"]["manual_orchestration_pct"] = manual
-            out["assumptions"] = ep.get("assumptions")
-        else:
-            raise RuntimeError(ep.get("error") or "episode measure failed")
-    except Exception as e:
-        logger.warning("[agent-success] episodes: %s", str(e)[:150])
-        for key in ("planner_adoption_pct", "manual_orchestration_pct"):
-            out["metrics"][key] = _metric_block(key, None, "UNAVAILABLE",
-                                                error=str(e)[:150])
+    # ── week-over-week (learning's computed evidence) ───────────────────────
+    # Status taxonomy matters here: UNAVAILABLE = the window queries never
+    # ran (no verdict at all); UNMEASURED = they ran but the prior window is
+    # empty (a delta off nothing is not +100%); MEASURED otherwise.
+    def _wow_status(cur_v, prev_v):
+        if cur_v is None or prev_v is None:
+            return "UNAVAILABLE"
+        return "MEASURED" if prev_v else "UNMEASURED"
+
+    blocks["tool_calls_wow_pct"] = _metric_block(
+        "tool_calls_wow_pct", _wow_pct(cur_calls, prev_calls),
+        _wow_status(cur_calls, prev_calls),
+        current_window=cur_calls, prior_window=prev_calls)
+    blocks["active_agents_wow_pct"] = _metric_block(
+        "active_agents_wow_pct", _wow_pct(cur_agents, prev_agents),
+        _wow_status(cur_agents, prev_agents),
+        current_window=cur_agents, prior_window=prev_agents)
+
+    if mcp_share is None:
+        trend_direction = "unmeasured"
+    elif mcp_share <= MCP_BUCKET_SHARE_PRE_FIX - 0.02:
+        trend_direction = "improving"
+    elif mcp_share <= MCP_BUCKET_SHARE_PRE_FIX + 0.02:
+        trend_direction = "flat"
+    else:
+        trend_direction = "worsening"
+
+    # ── the five sections, learning LAST (round-3 rule 1) ───────────────────
+    out["sections"] = [
+        {
+            "section": "reach",
+            "question": SECTION_QUESTIONS["reach"],
+            "per_platform": per_platform,
+            "note": "ecosystem-level reach stays gated until platform "
+                    "attribution verifies; the gate block above — with its "
+                    "live generic-bucket gauge — is the honest answer today",
+        },
+        {
+            "section": "activation",
+            "question": SECTION_QUESTIONS["activation"],
+            "metrics": {
+                "tool_calls_7d": blocks["tool_calls_7d"],
+                "active_agents_7d": blocks["active_agents_7d"],
+                "median_time_to_first_result_ms":
+                    blocks["median_time_to_first_result_ms"],
+                "second_recipe_take_up_pct":
+                    blocks["second_recipe_take_up_pct"],
+            },
+            "out_of_scope": "recipe COMPLETION (lifecycle logging) needs a "
+                            "schema change — queued separately, absence here "
+                            "is scope, not oversight",
+        },
+        {
+            "section": "planner_adoption",
+            "question": SECTION_QUESTIONS["planner_adoption"],
+            "metrics": {
+                "planner_adoption_pct": blocks["planner_adoption_pct"],
+            },
+            "context": episode_context or None,
+        },
+        {
+            "section": "execution_quality",
+            "question": SECTION_QUESTIONS["execution_quality"],
+            "metrics": {
+                "manual_orchestration_pct": blocks["manual_orchestration_pct"],
+                "episode_result_rate": blocks["episode_result_rate"],
+            },
+            "note": "manual orchestration is the OBSERVED hand-chaining shape "
+                    "(the judgement 'bypass' stays on the admin surface); "
+                    "result rate is the completion floor",
+        },
+        {
+            "section": "learning",
+            "question": SECTION_QUESTIONS["learning"],
+            "computed": {
+                "tool_calls_wow_pct": blocks["tool_calls_wow_pct"],
+                "active_agents_wow_pct": blocks["active_agents_wow_pct"],
+                "attribution_trend": {
+                    "baseline_2026_07_28": MCP_BUCKET_SHARE_PRE_FIX,
+                    "generic_bucket_share_7d": mcp_share,
+                    "direction": trend_direction,
+                    "note": "generic-bucket share of real calls — the gauge "
+                            "the per-platform gate watches; falling means "
+                            "attribution is genuinely improving",
+                },
+            },
+            "notes": list(LEARNING_NOTES),
+        },
+    ]
 
     # ok = at least one metric actually measured (or honestly UNMEASURED).
-    # A build where every block is UNAVAILABLE is a failed build — the route
-    # must not cache it, and a consumer must not mistake it for a quiet week.
-    out["ok"] = any(b.get("status") != "UNAVAILABLE"
-                    for b in out["metrics"].values())
+    # A build where every block failed is a failed build — the route must not
+    # cache it, and a consumer must not mistake it for a quiet week.
+    out["ok"] = any(b.get("status") not in ("UNAVAILABLE", "UNPUBLISHABLE")
+                    for b in blocks.values())
     if not out["ok"]:
-        out["error"] = "all metrics unavailable"
+        out.setdefault("error", "all metrics unavailable")
     return out
 
 

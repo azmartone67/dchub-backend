@@ -1,14 +1,18 @@
 """Guards for routes/agent_success_report.py — the public weekly report.
 
-Pure-function tests over the SQL strings, the versioned metric registry and
-the attribution gate. No DB, no network, never imports main (green-main
-convention: nothing in tests/ may exit at module scope).
+Pure-function tests over the SQL strings, the versioned metric registry, the
+attribution gate and the round-3 contract structure. No DB, no network, never
+imports main (green-main convention: nothing in tests/ may exit at module
+scope). The offline-build tests run _build_report() with the DB env removed —
+the degraded path must produce the complete five-section shape.
 
-The three hard rules this surface ships under, each pinned below:
+The rules this surface ships under, each pinned below:
   1. nothing publishes without the crawler exclusions applied;
   2. every rate is None + UNMEASURED on an empty denominator;
   3. per-platform splits stay gated until the 07-28 attribution fix has both
-     accumulated ~7 days AND verifiably dropped the generic-'mcp' share.
+     accumulated ~7 days AND verifiably dropped the generic-bucket share;
+  4. round-3: five contract sections ending with LEARNING; full publish
+     contract on every derived metric, fail-closed; no composite scores.
 """
 from datetime import date
 
@@ -22,8 +26,9 @@ dl = pytest.importorskip("mcp_calls_deloop")
 # ── rule 1: crawler exclusions on every published number ───────────────────
 
 def _identity_queries():
-    return [("totals", asr._SQL_TOTALS), ("ttfr", asr._SQL_TTFR),
-            ("share", asr._SQL_MCP_SHARE), ("split", asr._SQL_PLATFORM_SPLIT)]
+    return [("totals", asr._SQL_TOTALS), ("totals_prev", asr._SQL_TOTALS_PREV),
+            ("ttfr", asr._SQL_TTFR), ("share", asr._SQL_MCP_SHARE),
+            ("split", asr._SQL_PLATFORM_SPLIT)]
 
 
 def test_identity_queries_read_the_excluded_view_only():
@@ -38,9 +43,19 @@ def test_identity_queries_read_the_excluded_view_only():
 def test_agent_grain_is_distinct_agent_id_public_only():
     """Agents = COUNT(DISTINCT agent_id) on public IPs — the /api/v1/reach
     grain. Never session_id (rotates per connection, ~1.2 calls each)."""
-    assert "COUNT(DISTINCT agent_id)" in asr._SQL_TOTALS
-    assert "is_public_ip" in asr._SQL_TOTALS
-    assert "session_id" not in asr._SQL_TOTALS
+    for sql in (asr._SQL_TOTALS, asr._SQL_TOTALS_PREV):
+        assert "COUNT(DISTINCT agent_id)" in sql
+        assert "is_public_ip" in sql
+        assert "session_id" not in sql
+
+
+def test_prev_window_is_disjoint():
+    """WoW compares two DISJOINT rolling windows — an overlapping prior window
+    would flatten every real change toward zero."""
+    assert f"created_at < NOW() - ({asr.WINDOW_DAYS} * INTERVAL '1 day')" \
+        in asr._SQL_TOTALS_PREV
+    assert f"created_at >= NOW() - ({2 * asr.WINDOW_DAYS} * INTERVAL '1 day')" \
+        in asr._SQL_TOTALS_PREV
 
 
 def test_episode_exclusions_derive_from_the_deloop_module():
@@ -72,6 +87,21 @@ def test_episode_sql_binds_with_exclusions_applied():
         out = sql % args
         for i in range(n):
             assert f"__ARG{i}__" in out, f"{label}: argument {i} never bound"
+
+
+def test_second_recipe_sql_binds_and_carries_exclusions():
+    """Same emulation discipline for the second-recipe query: 2 placeholders
+    (days, front door), episode identity + synthetic + crawler exclusions all
+    present, and PLATFORM_CASE (whose ILIKE literals are substitution-unsafe)
+    must never appear in a WITH-params query."""
+    sql = asr._second_recipe_sql()
+    assert "mcp_call_log" in sql
+    assert "distinct_intents >= 2" in sql
+    assert "api_key" in sql, "episode identity lost (must be the agent-day unit)"
+    assert dl.internal_tag_regex_predicate("platform") in sql
+    assert "ILIKE" not in sql, "classifier fragments are unsafe next to params"
+    out = sql % ("__ARG0__", "__ARG1__")
+    assert "__ARG0__" in out and "__ARG1__" in out
 
 
 def test_identity_sql_runs_without_params():
@@ -137,47 +167,81 @@ def test_rates_are_none_on_empty_denominator():
     assert asr._rate(3, 4) == 75.0
 
 
+def test_wow_is_none_on_empty_prior_window():
+    """A delta off nothing is not +100%, it is unmeasurable."""
+    assert asr._wow_pct(500, 0) is None
+    assert asr._wow_pct(500, None) is None
+    assert asr._wow_pct(None, 400) is None
+    assert asr._wow_pct(440, 400) == 10.0
+    assert asr._wow_pct(360, 400) == -10.0
+
+
 def test_metric_block_never_invents_a_status():
     b = asr._metric_block("tool_calls_7d", None, "UNAVAILABLE", error="x")
     assert b["value"] is None and b["status"] == "UNAVAILABLE"
 
 
-# ── versioned metric contract (the house DEFINITION_VERSION rule) ───────────
+# ── round-3 rule 2: the publish contract, fail-closed ───────────────────────
 
-def test_deliverable_metrics_are_all_registered():
+def test_registry_covers_exactly_the_published_metrics():
     assert set(asr.METRICS) == {
         "tool_calls_7d", "active_agents_7d", "planner_adoption_pct",
         "manual_orchestration_pct", "median_time_to_first_result_ms",
+        "second_recipe_take_up_pct", "episode_result_rate",
+        "tool_calls_wow_pct", "active_agents_wow_pct",
     }
 
 
-def test_every_metric_declares_version_and_complete_changelog():
-    """A bump with no changelog entry is a version nobody can act on — and a
-    consumer reading v1 semantics off a v2 producer is how agent_adoption's
-    planner_first recommended the opposite of the fix."""
+def test_every_metric_declares_the_full_publish_contract():
+    """Round-3 rule, verbatim: 'no derived metric may appear unless its
+    observation, assumptions, definition version, and consumer are all
+    declared.' Plus the house fields (definition/unit/source/changelog)."""
     for key, m in asr.METRICS.items():
+        for field in asr.PUBLISH_CONTRACT_FIELDS:
+            assert m.get(field), f"{key}: contract field {field!r} missing/empty"
         v = m["definition_version"]
         assert isinstance(v, int) and v >= 1, f"{key}: bad version {v!r}"
         for i in range(1, v + 1):
             assert i in m["definition_changelog"], \
                 f"{key}: version {i} has no changelog entry"
-        for field in ("definition", "unit", "source"):
-            assert m.get(field), f"{key}: missing {field}"
+        assert isinstance(m["assumptions"], list) and m["assumptions"], \
+            f"{key}: assumptions must be a non-empty list"
+        assert isinstance(m["consumers"], list) and m["consumers"], \
+            f"{key}: consumers must be a non-empty list"
 
 
-def test_payload_envelope_is_versioned_too():
-    assert asr.REPORT_DEFINITION_VERSION >= 1
-    for i in range(1, asr.REPORT_DEFINITION_VERSION + 1):
-        assert i in asr.REPORT_DEFINITION_CHANGELOG
+def test_incomplete_contract_is_unpublishable():
+    """The gate is enforced in code, not remembered: a registry entry missing
+    a contract field must refuse to carry a value."""
+    asr.METRICS["_test_bad_metric"] = {
+        "definition": "x", "unit": "x", "source": "x",
+        "definition_version": 1, "definition_changelog": {1: "x"},
+        # observation, assumptions, consumers missing
+    }
+    try:
+        b = asr._metric_block("_test_bad_metric", 42, "MEASURED")
+        assert b["status"] == "UNPUBLISHABLE"
+        assert b["value"] is None, "a value leaked through an incomplete contract"
+        assert set(b["missing_contract_fields"]) == \
+            {"observation", "assumptions", "consumers"}
+    finally:
+        del asr.METRICS["_test_bad_metric"]
 
 
 def test_metric_blocks_carry_the_contract():
-    """Every rendered block inherits version + changelog from the registry, so
-    a metric physically cannot ship unversioned."""
+    """Every rendered block inherits the full contract from the registry, so a
+    metric physically cannot ship unversioned."""
     b = asr._metric_block("median_time_to_first_result_ms", 812.5, "MEASURED")
-    assert b["definition_version"] >= 1
-    assert 1 in b["definition_changelog"]
     assert b["value"] == 812.5
+    for field in asr.PUBLISH_CONTRACT_FIELDS:
+        assert field in b
+
+
+def test_payload_envelope_is_versioned_and_v2_documents_the_restructure():
+    assert asr.REPORT_DEFINITION_VERSION >= 2
+    for i in range(1, asr.REPORT_DEFINITION_VERSION + 1):
+        assert i in asr.REPORT_DEFINITION_CHANGELOG
+    assert "learning" in asr.REPORT_DEFINITION_CHANGELOG[2].lower()
 
 
 def test_episode_metrics_declare_their_population_difference():
@@ -188,6 +252,67 @@ def test_episode_metrics_declare_their_population_difference():
         log = " ".join(asr.METRICS[key]["definition_changelog"].values())
         assert "exclusion" in log.lower(), \
             f"{key}: population difference undeclared"
+
+
+# ── round-3 rule 1: five sections, learning LAST ────────────────────────────
+
+def test_section_order_is_the_contract_order():
+    assert asr.SECTION_ORDER == ("reach", "activation", "planner_adoption",
+                                 "execution_quality", "learning")
+    assert asr.SECTION_ORDER[-1] == "learning", "the report must END on learning"
+    for s in asr.SECTION_ORDER:
+        assert s in asr.SECTION_QUESTIONS
+
+
+def test_offline_build_produces_the_full_shape(monkeypatch):
+    """The degraded path (no DB) must still produce all five sections in
+    order, every metric present with an explicit non-value status, the gate
+    closed, and ok=False so the route never caches it. Sections are an ARRAY
+    — JSON object keys carry no order, and 'learning last' must survive
+    serialization."""
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.delenv("NEON_DATABASE_URL", raising=False)
+    p = asr._build_report()
+    assert p["ok"] is False
+    names = [s["section"] for s in p["sections"]]
+    assert names == list(asr.SECTION_ORDER)
+    assert p["sections"][-1]["section"] == "learning"
+    seen = set()
+    for s in p["sections"]:
+        for key, b in (s.get("metrics") or {}).items():
+            seen.add(key)
+            assert b["value"] is None
+            assert b["status"] in ("UNAVAILABLE", "UNMEASURED")
+    for key, b in p["sections"][-1]["computed"].items():
+        if key in asr.METRICS:
+            seen.add(key)
+            assert b["status"] in ("UNAVAILABLE", "UNMEASURED")
+    assert seen == set(asr.METRICS), f"metrics missing from sections: {set(asr.METRICS) - seen}"
+    reach = p["sections"][0]
+    assert reach["per_platform"]["gate"]["passed"] is False
+    assert "platforms" not in reach["per_platform"]
+    assert p["publish_contract"]["required_fields"] == list(asr.PUBLISH_CONTRACT_FIELDS)
+
+
+def test_learning_notes_are_dated_kinded_and_sourced():
+    """Learning is editorial state, so its discipline is provenance: every
+    entry carries an ISO date, a kind, and a source. Undated 'we improved
+    things' notes are how stale claims fossilize into reports."""
+    assert asr.LEARNING_NOTES, "the learning section cannot ship empty"
+    for n in asr.LEARNING_NOTES:
+        date.fromisoformat(n["date"])   # raises on a malformed date
+        assert n["kind"] in ("improved", "degraded", "measurement")
+        assert n["note"].strip() and n["source"].strip()
+
+
+# ── round-3 rule 3: no composite score, ever ────────────────────────────────
+
+def test_no_composite_score_anywhere():
+    import re
+    for key in list(asr.METRICS) + list(asr.SECTION_ORDER):
+        assert not re.search(r"(score|grade|health)", key), \
+            f"{key!r} smells like a composite — round-3 explicitly refused these"
+    assert "REFUSED" in asr.NO_COMPOSITE_POLICY
 
 
 # ── rule 3: the per-platform attribution gate ───────────────────────────────

@@ -38339,8 +38339,10 @@ try:
 except Exception as _aa_e:
     print(f"[main] agent_adoption_master_shell register skipped: {_aa_e}", file=sys.stderr)
 
-# Agent Success Report (2026-07-30, ChatGPT's partner-round proposal): PUBLIC
-# weekly 7d totals — tool calls, active agents, planner adoption, manual
+# Agent Success Report (2026-07-30, ChatGPT's partner-round proposal; round-3
+# shape: five contract sections — reach → activation → planner adoption →
+# execution quality → learning, ENDING with learning): PUBLIC weekly 7d
+# totals — tool calls, active agents, planner adoption, manual
 # orchestration, median time-to-first-result — every number crawler-excluded
 # (mcp_calls_identity + the planner-bypass episode model with the same
 # exclusions), every metric versioned, per-platform split gated until the
