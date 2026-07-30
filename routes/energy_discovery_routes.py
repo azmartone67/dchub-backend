@@ -469,19 +469,119 @@ def energy_discovery_status():
 
             # recent_syncs from any source we can find
             # Phase FF+6: power_plants uses created_at, not updated_at
-            try:
-                cur.execute(
-                    "SELECT 'substations' AS source, MAX(updated_at) AS at FROM substations "
-                    "UNION ALL SELECT 'fiber_routes', MAX(updated_at) FROM fiber_routes "
-                    "UNION ALL SELECT 'power_plants', MAX(created_at) FROM power_plants"
-                )
-                out['data']['recent_syncs'] = [
-                    {'source': r[0], 'at': str(r[1]) if r[1] else None}
-                    for r in cur.fetchall()
-                ]
-            except Exception:
-                try: conn.rollback()
-                except Exception: pass
+            #
+            # Phase plant-count-truth (2026-07-29): the `power_plants` member is
+            # GONE from this list. Measured live on this endpoint before the fix:
+            #
+            #     total_power_plants = 13446          <- power_plants_eia (:423)
+            #     recent_syncs[power_plants] = 2026-03-30 07:30:25
+            #
+            # Those two are about DIFFERENT TABLES. The count is the real US EIA
+            # fleet; the timestamp was MAX(created_at) over the bare
+            # `power_plants` table, which holds 66 rows for the entire United
+            # States — the same EIA-860 population loaded to ~0.5% because the
+            # crawler's dedup step keys on rec['plantid'], a spelling the EIA v2
+            # facility-fuel response does not return, and silently skipped
+            # 54,934 of 55,000 records while reporting errors=0
+            # (land_power_crawler.py crawl_power_plants, fixed in #1923).
+            #
+            # So a reader saw a fresh, correct 13,446 welded to a four-month-old
+            # date and concluded the EIA fleet was four months stale. A stale
+            # date beside a fresh number is worse than no date: it is a wrong
+            # answer to "how current is this?", not a missing one.
+            #
+            # `power_plants_eia` carries NO timestamp column (it is a
+            # full-replace load — see scripts/load_power_plants.py DDL, and
+            # :423 already passes ts=None for exactly this reason), so it cannot
+            # honestly report a sync time. It reports `at: None` WITH a reason
+            # rather than borrowing the stub's date.
+            #
+            # This deliberately goes one step further than the sibling
+            # /api/v1/energy/discovery/status (main.py, #1923), which drops a
+            # table with no timestamp column silently: an omission leaves the
+            # caller unable to tell "not tracked" from "never synced". House
+            # rule is null + a reason, never a bare gap.
+            #
+            # The UNION ALL is also gone. It bound three tables into one
+            # statement, so a single missing table or renamed column failed the
+            # whole query and left recent_syncs as the seed `[]` — an empty list
+            # published as if it meant "no syncs have happened". Per-table probe
+            # + per-table reason instead.
+            _SYNC_SOURCES = (
+                # (table, preferred ts column)
+                ('substations',      'updated_at'),
+                ('fiber_routes',     'updated_at'),
+                ('power_plants_eia', None),
+            )
+            _syncs = []
+            for _tbl, _pref in _SYNC_SOURCES:
+                try:
+                    cur.execute(
+                        "SELECT column_name FROM information_schema.columns "
+                        " WHERE table_schema = 'public' AND table_name = %s",
+                        (_tbl,))
+                    _cols = {r[0] for r in cur.fetchall()}
+                except Exception:
+                    try: conn.rollback()
+                    except Exception: pass
+                    _syncs.append({
+                        'source': _tbl, 'at': None,
+                        'unmeasured': 'could not read column list for this table',
+                    })
+                    continue
+                if not _cols:
+                    _syncs.append({
+                        'source': _tbl, 'at': None,
+                        'unmeasured': 'table absent on this deploy',
+                    })
+                    continue
+                _ts = next((c for c in (_pref, 'updated_at', 'created_at',
+                                        'loaded_at', 'retrieved_at')
+                            if c and c in _cols), None)
+                if not _ts:
+                    _syncs.append({
+                        'source': _tbl, 'at': None,
+                        'unmeasured': (
+                            'this table carries no timestamp column, so it has '
+                            'no per-row sync time to report. Not stale — '
+                            'unmeasured.'),
+                    })
+                    continue
+                try:
+                    cur.execute(f"SELECT MAX({_ts}) FROM {_tbl}")
+                    _v = (cur.fetchone() or [None])[0]
+                    _syncs.append({
+                        'source': _tbl,
+                        'at': str(_v) if _v else None,
+                        'basis': f'MAX({_ts}) over {_tbl}',
+                    })
+                except Exception:
+                    try: conn.rollback()
+                    except Exception: pass
+                    _syncs.append({
+                        'source': _tbl, 'at': None,
+                        'unmeasured': f'MAX({_ts}) over {_tbl} failed',
+                    })
+            out['data']['recent_syncs'] = _syncs
+            # Name the table and scope behind each published plant figure, so
+            # `power_plants` can never again be read as the source of a count
+            # that comes from power_plants_eia.
+            out['data']['basis'] = {
+                'total_power_plants': (
+                    'COUNT(*) over power_plants_eia — US EIA-860 plant records. '
+                    'NOT the bare `power_plants` table, which is a 66-row stub '
+                    'of the same population.'),
+                'total_capacity_mw': (
+                    'SUM(nameplate_capacity_mw) over power_plants_eia, US only.'),
+                'total_wind_projects': (
+                    "COUNT(*) over power_plants_eia WHERE primary_fuel ILIKE "
+                    "'%wind%' — wind PLANTS by primary fuel, not "
+                    'interconnection-queue projects.'),
+                'recent_syncs': (
+                    'per-table MAX(timestamp); a table with no timestamp column '
+                    'reports at=None plus a reason rather than borrowing '
+                    "another table's date."),
+            }
 
             # seed_data flag: false if substations > 1000 (real data ingested)
             out['data']['seed_data'] = (
