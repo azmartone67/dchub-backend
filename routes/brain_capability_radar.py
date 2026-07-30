@@ -112,7 +112,15 @@ def _canonical_stats() -> dict | None:
                     # stats_canonical queries. #1958 moved the canonical field
                     # to discovered_facilities; the mirror must follow.
                     "countries": _count("SELECT COUNT(DISTINCT country) FROM discovered_facilities WHERE country IS NOT NULL AND country <> ''"),
-                    "markets":   _count("SELECT COUNT(*) FROM market_power_scores"),
+                    # ★2026-07-30 — same audit: this was COUNT(*) of
+                    # market_power_scores ROWS — score rows, not scored
+                    # markets, a different and larger number. Byte-for-byte
+                    # the canonical markets query (canonical_stats.py):
+                    # DISTINCT market_name, published only, minus the three
+                    # aggregate regions.
+                    "markets":   _count("SELECT COUNT(DISTINCT market_name) FROM market_power_scores "
+                                        "WHERE COALESCE(published, true) = true "
+                                        "AND market_slug NOT IN ('pacific-nw-rural','rural-spp','upper-michigan')"),
                     "deals":     _count("SELECT COUNT(*) FROM deals"),
                     "tools":     73.0,
                 }

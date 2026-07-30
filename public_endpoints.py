@@ -391,8 +391,27 @@ def market_report():
     try:
         conn = get_read_db()
         cursor = conn.cursor()
-        cursor.execute("SELECT COUNT(*) FROM facilities")
-        total_facilities = cursor.fetchone()[0] or 0
+        # ★2026-07-30 — wrong-table pairing, same audit as the countries fix
+        # (#1958/#1966): this counted the LEGACY `facilities` table while
+        # /api/v1/version above serves the deduped discovered count. Same
+        # query + same fallback shape as version: DISTINCT sites after
+        # cross-source de-dup, planner statistic if the deduped count fails.
+        total_facilities = 0
+        try:
+            cursor.execute(
+                "SELECT COUNT(*) FROM discovered_facilities WHERE duplicate_of_id IS NULL")
+            row = cursor.fetchone()
+            if row and row[0]:
+                total_facilities = int(row[0])
+        except Exception:
+            try:
+                cursor.execute(
+                    "SELECT reltuples::bigint FROM pg_class WHERE relname = 'discovered_facilities'")
+                row = cursor.fetchone()
+                if row and row[0]:
+                    total_facilities = int(row[0])
+            except Exception:
+                pass
         total_transactions = 0
         try:
             cursor.execute("SELECT COUNT(*) FROM deals")
