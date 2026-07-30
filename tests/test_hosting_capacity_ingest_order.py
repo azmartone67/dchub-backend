@@ -193,20 +193,77 @@ def test_no_freshness_data_degrades_instead_of_raising():
     assert loads, "no load sources survived the fail-soft path"
 
 
-def test_load_still_outranks_gen():
-    """O3 — unchanged priority: the draw-side answer goes first."""
+def test_load_outranks_gen_only_as_a_tie_break():
+    """O3 — REVERSED 2026-07-30, deliberately, on measured evidence.
+
+    This test used to assert the opposite: "the type rank must dominate
+    staleness". That invariant is what starved the whole gen group. Measured
+    live a few hours after the staleness-inside-group fix shipped:
+
+        every `load` source   last ingested 2026-07-30 09:51   (today)
+        every `gen`  source   last ingested 2026-07-27 07:37   (3 days old)
+        14 gen utilities, not one refreshed in three days
+        two brand-new Ausgrid GEN sources never ran at all, while the two
+        Ausgrid LOAD sources landed on the first pass
+
+    A hard type priority plus a budget smaller than the priority group does not
+    make the second group LAST, it makes it UNREACHABLE — the same shape as the
+    declaration-order bug this file was originally written for, one level up.
+
+    So staleness is primary and the type rank is the TIE-BREAK. Load priority
+    still applies where it actually matters: on a cold start every source is at
+    epoch, so the tie-break puts the draw-side answer first.
+    """
     srcs = _sources()
-    # make the load sources the FRESHEST, so only the type rank can order them
     fresh = datetime.datetime(2026, 7, 30, tzinfo=datetime.timezone.utc)
-    stale = datetime.datetime(2020, 1, 1, tzinfo=datetime.timezone.utc)
+    stale = datetime.datetime(2026, 7, 27, tzinfo=datetime.timezone.utc)
     last = {s["utility"]: (fresh if s.get("capacity_type") == "load" else stale)
             for s in srcs}
     ordered = _order_fn(last)()
     types = [s.get("capacity_type") for s in ordered]
-    first_non_load = next((i for i, t in enumerate(types) if t != "load"), len(types))
-    assert "load" not in types[first_non_load:], (
-        "a load source was ordered after a gen source even though load is "
-        "freshest — the type rank must dominate staleness: %s" % types)
+    first_load = next((i for i, t in enumerate(types) if t == "load"), len(types))
+    assert "load" not in types[:first_load], "internal: bad index"
+    assert first_load > 0, (
+        "a FRESH load source still ran before a 3-day-stale gen source — that "
+        "is the starvation this change removes: %s" % types)
+
+    # ...and the tie-break still favours load when staleness is equal, which is
+    # every cold start.
+    epoch_all = {}
+    ordered2 = _order_fn(epoch_all)()
+    types2 = [s.get("capacity_type") for s in ordered2]
+    first_non_load = next((i for i, t in enumerate(types2) if t != "load"),
+                          len(types2))
+    assert "load" not in types2[first_non_load:], (
+        "with all sources equally stale the tie-break must still put load "
+        "first: %s" % types2)
+
+
+def test_no_capacity_type_group_can_be_starved_by_another_growing():
+    """The generalisation: adding load sources must not push gen out of reach.
+
+    Simulates the live situation — a big load group all refreshed today, a gen
+    group three days old — and asserts the stalest work is scheduled first
+    regardless of type. Pins the property, not the current source list.
+    """
+    srcs = _sources()
+    fresh = datetime.datetime(2026, 7, 30, 9, 51, tzinfo=datetime.timezone.utc)
+    stale = datetime.datetime(2026, 7, 27, 7, 37, tzinfo=datetime.timezone.utc)
+    last = {}
+    for s in srcs:
+        last[s["utility"]] = fresh if s.get("capacity_type") == "load" else stale
+    ordered = _order_fn(last)()
+    n_gen = sum(1 for s in srcs if s.get("capacity_type") != "load")
+    head = ordered[:n_gen]
+    assert all(s.get("capacity_type") != "load" for s in head), (
+        "the stale non-load group is not scheduled first: %s"
+        % [(s["key"], s.get("capacity_type")) for s in head])
+    # and a never-ingested source outranks everything, whatever its type
+    last2 = dict(last)
+    victim = next(s for s in srcs if s.get("capacity_type") == "gen")
+    last2.pop(victim["utility"], None)
+    assert _order_fn(last2)()[0]["key"] == victim["key"], (
+        "a never-ingested gen source did not sort first")
 
 
 # ── O1: the actual fix ───────────────────────────────────────────────────────
