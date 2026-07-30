@@ -652,6 +652,15 @@ def _record_token_dead(detail: str) -> None:
 # ════════════════════════════════════════════════════════════════════
 #  1) AUTO-MERGE
 # ════════════════════════════════════════════════════════════════════
+# ★ONE string literal, and QUOTE-FREE. regression_lint matches
+# `INSERT INTO (\w+)` followed by `[^;"']*` — the character class STOPS at the
+# first quote, so neither an inlined 'run' literal NOR implicit string
+# concatenation lets it see the trailing ON CONFLICT: the clause looks missing
+# and the rule fires. Keeping the whole statement in a single quote-free literal
+# is the only shape the rule can read. (Its own header warns about this.)
+_HEARTBEAT_SQL = "INSERT INTO brain_automerge_log (kind, status, detail) VALUES (%s, %s, %s) ON CONFLICT DO NOTHING"  # noqa: E501
+
+
 def _log_run_heartbeat(eligible: int, merged: int, skipped: int,
                        note: str = "") -> None:
     """Write ONE `kind='run'` row per auto-merge pass.
@@ -690,9 +699,15 @@ def _log_run_heartbeat(eligible: int, merged: int, skipped: int,
                 # (slug/day/window style) would be wrong here — freshness reads
                 # MAX(updated_at), so a duplicate heartbeat is harmless while a
                 # SUPPRESSED one would make a live runner look stale.
-                "INSERT INTO brain_automerge_log (kind, status, detail) "
-                "VALUES ('run', %s, %s) ON CONFLICT DO NOTHING",
-                ("idle" if eligible == 0 else ("merged" if merged else "blocked"),
+                # ★Parameterize `kind` instead of inlining 'run'. The lint
+                # rule matches `INSERT INTO (\w+)[^;"']*` — it STOPS at the
+                # first quote, so a literal like 'run' inside VALUES ends the
+                # match before ON CONFLICT is ever seen and the clause appears
+                # missing. Quote-free SQL keeps the whole statement visible to
+                # the rule. (The linter's own header warns about this shape.)
+                _HEARTBEAT_SQL,
+                ("run",
+                 "idle" if eligible == 0 else ("merged" if merged else "blocked"),
                  (f"eligible={eligible} merged={merged} skipped={skipped}"
                   + (f" · {note}" if note else ""))[:500]),
             )
