@@ -201,8 +201,8 @@ PLAN_INFO = {
         'name': 'Pro',
         'price_monthly': 299,   # audit #9: was 199 — canonical is tier_registry PRICES['pro']=299 (r-reprice 2026-06-19)
         'price_annual': 2392,   # preserves the prior ~8x annual ratio at the new $299 anchor
-        'rate_limit': 10000,
-        'tagline': 'Developer + market compare + PDF reports (10,000 calls/day)',
+        'rate_limit': 5000,     # audit #9 follow-up: was 10000 — enforced limit is tier_registry TIER_LIMITS['pro']['rate_limit']=5000; no public surface sells 10k (pricing.html quotes the 2,000/day MCP lane)
+        'tagline': 'Developer + market compare + PDF reports (5,000 calls/day)',
         'show_in_gate': True,
         'features': {
             'headline_stats': True,
