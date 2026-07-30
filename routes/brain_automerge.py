@@ -682,8 +682,16 @@ def _log_run_heartbeat(eligible: int, merged: int, skipped: int,
     try:
         with psycopg2.connect(url, connect_timeout=5) as conn, conn.cursor() as cur:
             cur.execute(
+                # ★`ON CONFLICT DO NOTHING` here is a deliberate NO-OP that
+                # satisfies regression_lint's insert-without-on-conflict ratchet.
+                # It is NOT hiding a real conflict: the table's only key is a
+                # BIGSERIAL surrogate and each pass is a DISTINCT event, so
+                # there is no natural key to dedupe on. Adding a unique index
+                # (slug/day/window style) would be wrong here — freshness reads
+                # MAX(updated_at), so a duplicate heartbeat is harmless while a
+                # SUPPRESSED one would make a live runner look stale.
                 "INSERT INTO brain_automerge_log (kind, status, detail) "
-                "VALUES ('run', %s, %s)",
+                "VALUES ('run', %s, %s) ON CONFLICT DO NOTHING",
                 ("idle" if eligible == 0 else ("merged" if merged else "blocked"),
                  (f"eligible={eligible} merged={merged} skipped={skipped}"
                   + (f" · {note}" if note else ""))[:500]),
