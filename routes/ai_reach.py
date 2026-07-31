@@ -80,11 +80,18 @@ def ai_reach():
            "window": "~recent (id-bounded ≈7d)",
            "note": "Honest reach = DISTINCT public IPs per platform (real agent sources), not cumulative request volume. The big 'requests served' counts are real traffic but loop-inflated; this is the addressable reach.",
            "basis": ("distinct_agents_7d counts DISTINCT non-Cloudflare public client IPs "
-                     "that pass the canonical is_real_external de-loop — the SAME basis as "
-                     "/api/v1/stats/live-proof.distinct_callers_7d. It is an IP-derived PROXY "
-                     "for agents, not a true agent identity: agent_id is md5(client_ip), so "
-                     "several agents behind one NAT count once, and one agent on a rotating "
-                     "proxy counts many times. Treat it as distinct calling SOURCES.")}
+                     "that pass the canonical is_real_external de-loop. SAME identity basis "
+                     "as /api/v1/stats/live-proof.distinct_callers_7d but NOT the same "
+                     "WINDOW: the fast path reads the reach_weekly ISO-week rollup (max of "
+                     "the last 2 weeks), so mid-week it reports a partial week and runs "
+                     "BELOW the trailing-7d canonical count — 64 vs 95 on 2026-07-31. For "
+                     "the honest trailing-7d agent count use real_agents_7d in THIS "
+                     "payload (or /api/v1/mcp/funnel.real_external_agents_7d — same "
+                     "single-sourced query). It is an IP-derived PROXY for agents, not a true "
+                     "agent identity: agent_id is md5(client_ip), so several agents behind "
+                     "one NAT count once, and one agent on a rotating proxy counts many "
+                     "times. Treat it as distinct calling SOURCES."),
+           "window_basis": "ISO calendar week (reach_weekly rollup), NOT trailing 7d"}
     # fail-soft (2026-06-14): this is a PUBLIC DISPLAY endpoint for the /ai page —
     # it must NEVER return 5xx. A 5xx throws an F12 console error and can blank the
     # reach lines (caught live: a cold replica whose first request hit the 9s scan

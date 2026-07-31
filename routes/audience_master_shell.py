@@ -184,6 +184,12 @@ def _ensure_tables() -> bool:
                     detail              JSONB
                 )
             """)
+            # CREATE TABLE IF NOT EXISTS is a no-op on an existing table, so a
+            # new column needs its own ALTER — the table predates this one.
+            cur.execute("""
+                ALTER TABLE audience_snapshots
+                ADD COLUMN IF NOT EXISTS real_agents_7d_loose INTEGER
+            """)
         return True
     except Exception:
         return False
@@ -201,7 +207,24 @@ def tier1_measure() -> dict:
 
     real_calls = _num(fd.get("tool_calls_7d_real"))
     probe_calls = _num(fd.get("tool_calls_7d_probes"))
-    real_agents = _num(fd.get("unique_ips_7d_real")) or _num(rd.get("distinct_agents_7d"))
+    # ★★2026-07-31: was `unique_ips_7d_real OR distinct_agents_7d` — it took
+    # the LOOSER of two counters that disagreed 2.3x (145 vs 64 on 07-31) and
+    # published it as the headline. Neither was right: the funnel field is a
+    # loose DISTINCT ip_address (keeps scripted clients + CF edge, ~1.5x high)
+    # and reach's distinct_agents_7d is the canonical basis on an ISO-WEEK
+    # rollup, so mid-week it reads ~33% low. Canonical trailing-7d = 95.
+    #
+    # Both canonical fields below come from ONE query
+    # (mcp_calls_deloop.canonical_external_activity_sql, added by r-agent-
+    # parity the same day) — funnel and reach publish it under different
+    # names, so try both before degrading. Order: canonical → ISO-week rollup
+    # → loose, each step labelled, so a cold funnel still yields a number and
+    # the report says which basis produced it.
+    real_agents_loose = _num(fd.get("unique_ips_7d_real"))
+    real_agents = (_num(fd.get("real_external_agents_7d"))
+                   or _num(rd.get("real_agents_7d"))
+                   or _num(rd.get("distinct_agents_7d"))
+                   or real_agents_loose)
     upgrade_signals = _num(fd.get("upgrade_signals_7d"))
     total = (real_calls or 0) + (probe_calls or 0)
     probe_ratio = round((probe_calls or 0) / total, 3) if total else None
@@ -221,6 +244,18 @@ def tier1_measure() -> dict:
 
     return {
         "real_agents_7d": real_agents,
+        # The old loose counter, carried so the pre-07-31 series stays
+        # interpretable: every audience_snapshots row before that date holds a
+        # LOOSE number ~1.5x the canonical one. Compare like with like.
+        "real_agents_7d_loose": real_agents_loose,
+        "real_agents_basis": (
+            "canonical (funnel.real_external_agents_7d)"
+            if _num(fd.get("real_external_agents_7d"))
+            else "canonical (reach.real_agents_7d)" if _num(rd.get("real_agents_7d"))
+            else "reach rollup (ISO week — runs low mid-week)"
+            if _num(rd.get("distinct_agents_7d"))
+            else "LOOSE unique_ips_7d_real — canonical unavailable"
+        ),
         "real_calls_7d": real_calls,
         "probe_calls_7d": probe_calls,
         "probe_ratio": probe_ratio,
@@ -320,12 +355,14 @@ def _persist(m: dict, geo: dict) -> bool:
         with c.cursor() as cur:
             cur.execute("""
                 INSERT INTO audience_snapshots
-                  (real_agents_7d, real_calls_7d, probe_calls_7d, probe_ratio,
+                  (real_agents_7d, real_agents_7d_loose, real_calls_7d,
+                   probe_calls_7d, probe_ratio,
                    claude_share, new_agents_7d, upgrade_signals_7d,
                    geo_surface_health, geo_query_coverage, geo_gaps, detail)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             """, (
-                m.get("real_agents_7d"), m.get("real_calls_7d"), m.get("probe_calls_7d"),
+                m.get("real_agents_7d"), m.get("real_agents_7d_loose"),
+                m.get("real_calls_7d"), m.get("probe_calls_7d"),
                 m.get("probe_ratio"), m.get("claude_share"), m.get("new_agents_7d"),
                 m.get("upgrade_signals_7d"), geo.get("surface_health"),
                 geo.get("query_coverage"), json.dumps(geo.get("gaps") or []),
