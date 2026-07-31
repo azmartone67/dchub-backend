@@ -20414,10 +20414,15 @@ def facilities_by_market():
     routes/facilities_by_dims.py was removed — Werkzeug serves the
     first-registered rule, which is this one).
 
-    Contract: ?market= is honored (city ILIKE substring), counts use the
-    canonical fleet filter COALESCE(is_duplicate,0)=0 (#1539), and the
-    served shape stays {success, data:[{market,count,total_mw,...}]} —
-    ai-inventory.html and routes/slack_app.py read `.data`.
+    Contract: ?market= is honored (city ILIKE substring); `count` is
+    DISTINCT SITES — COUNT(DISTINCT canonical_slug) over fleet rows
+    (COALESCE(is_duplicate,0)=0, #1539), matching stats_canonical's
+    facilities_distinct semantics (keeper-election is additive, so raw
+    keeper ROWS over-count sites; NULL slugs are uncounted, same as canon).
+    total_mw stays a row-sum over fleet rows (known over-count where a site
+    has multiple keeper rows). Served shape stays
+    {success, data:[{market,count,total_mw,...}]} — ai-inventory.html and
+    routes/slack_app.py read `.data`.
     """
     limit = request.args.get('limit', 15, type=int)
     limit = min(limit, 50)
@@ -20429,7 +20434,7 @@ def facilities_by_market():
         market_sql = "AND city ILIKE %s" if market_filter else ""
         params = ([f"%{market_filter}%"] if market_filter else []) + [limit]
         c.execute(f"""
-            SELECT city as market, COUNT(*) as count,
+            SELECT city as market, COUNT(DISTINCT canonical_slug) as count,
                    COALESCE(SUM(power_mw), 0) as total_mw,
                    COUNT(DISTINCT provider) as operator_count
             FROM discovered_facilities
@@ -20446,7 +20451,8 @@ def facilities_by_market():
                  'operator_count': r[3]} for r in rows]
         return jsonify({'success': True, 'data': data, 'count': len(data),
                         'market_filter': market_filter or None,
-                        'source': 'discovered_facilities, canonical fleet filter (#1539)'})
+                        'source': ('discovered_facilities, distinct sites '
+                                   '(canonical_slug) under fleet filter (#1539)')})
     except Exception as e:
         logger.error(f"by-market error: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
@@ -20462,9 +20468,10 @@ def facilities_by_provider():
     path (same ghost-route reconcile as by-market above; the shadowed twin in
     routes/facilities_by_dims.py was removed 2026-07-31).
 
-    Contract: ?provider= honored (ILIKE substring), canonical fleet filter
-    COALESCE(is_duplicate,0)=0 (#1539), served shape stays
-    {success, data:[{provider,count,total_mw,...}]}.
+    Contract: ?provider= honored (ILIKE substring); `count` is DISTINCT
+    SITES — COUNT(DISTINCT canonical_slug) over fleet rows
+    (COALESCE(is_duplicate,0)=0, #1539) — see by-market above for the
+    semantics. Served shape stays {success, data:[{provider,count,...}]}.
     """
     limit = request.args.get('limit', 15, type=int)
     limit = min(limit, 50)
@@ -20476,7 +20483,7 @@ def facilities_by_provider():
         provider_sql = "AND provider ILIKE %s" if provider_filter else ""
         params = ([f"%{provider_filter}%"] if provider_filter else []) + [limit]
         c.execute(f"""
-            SELECT provider, COUNT(*) as count,
+            SELECT provider, COUNT(DISTINCT canonical_slug) as count,
                    COALESCE(SUM(power_mw), 0) as total_mw,
                    COUNT(DISTINCT city) as market_count
             FROM discovered_facilities
@@ -20493,7 +20500,8 @@ def facilities_by_provider():
                  'market_count': r[3]} for r in rows]
         return jsonify({'success': True, 'data': data, 'count': len(data),
                         'provider_filter': provider_filter or None,
-                        'source': 'discovered_facilities, canonical fleet filter (#1539)'})
+                        'source': ('discovered_facilities, distinct sites '
+                                   '(canonical_slug) under fleet filter (#1539)')})
     except Exception as e:
         logger.error(f"by-provider error: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500

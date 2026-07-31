@@ -172,6 +172,8 @@ def test_by_market_honors_filter_fleet_filter_and_shape():
         rows=[("Ashburn", 171, 3647.2, 42)])
     assert "FROM discovered_facilities" in cur.sql
     assert "COALESCE(is_duplicate, 0) = 0" in cur.sql
+    assert "COUNT(DISTINCT canonical_slug) as count" in cur.sql, (
+        "count must be DISTINCT SITES, not keeper rows")
     assert "city ILIKE %s" in cur.sql
     assert _RAILWAY_MARKER in cur.sql, "RAILWAY_EXCLUSION dropped from SQL"
     assert cur.params == ("%ashburn%", 5), cur.params
@@ -186,6 +188,7 @@ def test_by_market_unfiltered_keeps_top_n_behavior():
         "facilities_by_market", {}, rows=[("London", 390, 1336.0, 88)])
     assert "ILIKE %s" not in cur.sql
     assert "COALESCE(is_duplicate, 0) = 0" in cur.sql
+    assert "COUNT(DISTINCT canonical_slug) as count" in cur.sql
     assert cur.params == (15,), cur.params
     assert payload["success"] is True and payload["market_filter"] is None
     assert payload["data"][0]["market"] == "London"
@@ -198,6 +201,8 @@ def test_by_provider_honors_filter_fleet_filter_and_shape():
         rows=[("Equinix", 260, 2100.0, 71)])
     assert "FROM discovered_facilities" in cur.sql
     assert "COALESCE(is_duplicate, 0) = 0" in cur.sql
+    assert "COUNT(DISTINCT canonical_slug) as count" in cur.sql, (
+        "count must be DISTINCT SITES, not keeper rows")
     assert "provider ILIKE %s" in cur.sql
     assert _RAILWAY_MARKER in cur.sql
     assert cur.params == ("%equinix%", 5), cur.params
