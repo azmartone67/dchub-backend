@@ -407,7 +407,12 @@ def _resolve_caller(get_db_conn):
     except Exception:
         pass
     try:
-        if request.remote_addr in ('127.0.0.1', '::1', 'localhost'):
+        # '::ffff:127.0.0.1' is what a dual-stack ([::]) listener reports for an
+        # IPv4 loopback connect — without it, a server-to-server localhost call
+        # (e.g. routes/radar.py _internal) is metered as an anonymous session
+        # and 402s after FREE_MAP_SESSIONS days.
+        if request.remote_addr in ('127.0.0.1', '::1', 'localhost',
+                                   '::ffff:127.0.0.1'):
             return True, None
     except Exception:
         pass
