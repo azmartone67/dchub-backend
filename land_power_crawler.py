@@ -93,7 +93,7 @@ def init_land_power_tables(get_db):
     """Create/update land & power tables in PostgreSQL (Neon)."""
     conn = None
     try:
-        conn = get_db()
+        conn = _ingest_conn(get_db)
         c = conn.cursor()
 
         # Power plants (EIA-860)
@@ -249,6 +249,47 @@ def init_land_power_tables(get_db):
 # ─────────────────────────────────────────────────────────────
 # HTTP HELPERS
 # ─────────────────────────────────────────────────────────────
+
+def get_db():
+    """A connection the INGEST OWNS for its whole run — never the web pool.
+
+    ★★★ THE 60-SECOND FORCED RECLAIM. main.py's pool documents it in its own
+    words: "Leaked idle-in-tx connections are reaped by Neon (20s), held-but-
+    ACTIVE ones by the app's 60s FORCED RECLAIM." Every crawler here holds its
+    connection across a paged fetch plus a bulk write — measured 130-160s on
+    production — so the pool reclaims it mid-run and the next statement raises
+
+        psycopg2.InterfaceError: connection already closed
+
+    That is why the fetch always succeeded and the write never landed, and why
+    power_plants stayed at 66 rows through the route fix (#1990), the reporter
+    fix (#1994), the endpoint fix (#1996), the per-source runner (#1999) and the
+    batched insert (#2003). Each was a real defect; none of them was THIS one.
+
+    The web pool is sized and policed for sub-second request handlers. A
+    minutes-long ingest is not that workload and must not borrow from it — it
+    connects directly and closes in its own finally. This is the same rule the
+    @contextmanager GC-close trap arrived at from the other direction: the
+    caller must fully own the connection for its lifetime.
+
+    Falls back to the pool only when no DSN is configured, so nothing breaks in
+    environments that never set one.
+    """
+    dsn = (os.environ.get('DATABASE_URL')
+           or os.environ.get('NEON_DATABASE_URL')
+           or '').strip()
+    if dsn:
+        import psycopg2 as _pg
+        conn = _pg.connect(dsn, connect_timeout=15,
+                           keepalives=1, keepalives_idle=30,
+                           keepalives_interval=10, keepalives_count=3)
+        logger.info("  🔌 ingest owns a direct connection (pool bypassed — "
+                    "the 60s forced reclaim would kill a multi-minute crawl)")
+        return conn
+    logger.warning("  ⚠️  no DATABASE_URL — falling back to the pooled "
+                   "connection; a crawl over 60s will be reclaimed mid-run")
+    return get_db()
+
 
 def _fetch_json(url, params=None, retries=MAX_RETRIES):
     """Fetch JSON with retry + rate limiting."""
@@ -655,7 +696,7 @@ def crawl_power_plants(get_db, full_refresh=False):
                     existing['nameplate-capacity-mw'] = rec.get('nameplate-capacity-mw')
 
         # Upsert into database
-        conn = get_db()
+        conn = _ingest_conn(get_db)
         cur = conn.cursor()
 
         # ★★★ BATCHED, NOT ONE ROUND-TRIP PER PLANT. Measured 2026-07-31: the
@@ -801,7 +842,7 @@ def crawl_substations(get_db, full_refresh=False):
         fetched = len(features)
         logger.info(f"  ⚡ Fetched {fetched} substations (endpoint reported {_count})")
 
-        conn = get_db()
+        conn = _ingest_conn(get_db)
         cur = conn.cursor()
         batch = []
 
@@ -980,7 +1021,7 @@ def crawl_transmission_lines(get_db, full_refresh=False):
         fetched = len(features)
         logger.info(f"  🔗 Fetched {fetched} transmission lines")
 
-        conn = get_db()
+        conn = _ingest_conn(get_db)
         cur = conn.cursor()
         batch = []
 
@@ -1139,7 +1180,7 @@ def crawl_gas_pipelines(get_db, full_refresh=False):
             if key not in pipe_map:
                 pipe_map[key] = rec
 
-        conn = get_db()
+        conn = _ingest_conn(get_db)
         cur = conn.cursor()
 
         for (name, area), rec in pipe_map.items():
@@ -1196,7 +1237,7 @@ def generate_market_power_profiles(get_db):
     started = time.time()
     conn = None
     try:
-        conn = get_db()
+        conn = _ingest_conn(get_db)
         cur = conn.cursor()
 
         # Create profiles table
