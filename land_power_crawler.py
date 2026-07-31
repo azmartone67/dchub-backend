@@ -1554,6 +1554,83 @@ def register_land_power_routes(app, get_db, require_admin):
                 except Exception:
                     pass
 
+        # ★★★ PER-SOURCE AND SYNCHRONOUS BY DEFAULT — this is the whole point.
+        #
+        # A spawned background thread on this service CANNOT SURVIVE. Measured
+        # 2026-07-31: the web service redeployed 12 times in 63 minutes
+        # (02:06 02:18 02:21 02:26 02:29 02:33 02:35 02:46 02:52 02:59 03:03
+        # 03:09) — roughly every 5 minutes, because many sessions merge PRs into
+        # this repo all day. A sync fired at 03:01:54 was killed by the 03:03
+        # deploy about 70 seconds in and wrote NOTHING. That is why the only
+        # rows this log has ever held are fast-fail errors (~13s, inside the
+        # window): anything that takes minutes has never once completed.
+        #
+        # So the unit of work is ONE SOURCE, run INSIDE the request:
+        #     plants        15 pages    ~18s + fetch
+        #     substations   38 pages    ~46s + fetch
+        #     transmission  45 pages    ~54s + fetch
+        # Each fits the dispatcher's 300s budget and a typical deploy gap; the
+        # four chained together do not. A source killed mid-flight simply retries
+        # next cycle, and /status shows it as stale meanwhile.
+        #
+        # ★ The response carries the crawl's REAL result, so the GitHub Actions
+        # log shows what happened instead of "spawned".
+        _RUNNERS = {
+            'eia-860-plants': crawl_power_plants,
+            'hifld-substations': crawl_substations,
+            'hifld-transmission': crawl_transmission_lines,
+            'eia-ng-pipelines': crawl_gas_pipelines,
+        }
+        source = (request.args.get('source') or '').strip()
+        if source:
+            if source not in _RUNNERS:
+                return jsonify(error='unknown_source',
+                               known=sorted(_RUNNERS)), 400
+            started_at = time.time()
+            try:
+                _RUNNERS[source](get_db, full)
+                ok = True
+                err = None
+            except Exception as e:
+                ok = False
+                err = str(e)[:300]
+            # Report from the LOG, not from the return value — the crawlers
+            # return None and the log row is the durable record.
+            row = None
+            conn2 = None
+            try:
+                conn2 = get_db()
+                c2 = conn2.cursor()
+                c2.execute("""
+                    SELECT records_fetched, records_upserted, records_skipped,
+                           errors, error_detail
+                      FROM land_power_sync_log
+                     WHERE source = %s ORDER BY created_at DESC LIMIT 1
+                """, (source,))
+                r = c2.fetchone()
+                if r:
+                    row = {'fetched': r[0], 'upserted': r[1], 'skipped': r[2],
+                           'errors': r[3], 'detail': (r[4] or '')[:300]}
+            except Exception:
+                pass
+            finally:
+                if conn2:
+                    try:
+                        conn2.close()
+                    except Exception:
+                        pass
+            status_code = 200 if (ok and row and not row.get('errors')) else 500
+            return jsonify({
+                'source': source,
+                'completed': ok,
+                'elapsed_s': round(time.time() - started_at, 1),
+                'result': row,
+                'exception': err,
+                'previous_last_success': prev.get(source) if isinstance(prev, dict) else None,
+            }), status_code
+
+        # No ?source= — spawn the whole chain. Kept for manual use and clearly
+        # labelled: on this service it will very likely be killed by a deploy.
         import threading
         threading.Thread(target=run_land_power_sync, args=(get_db, full),
                          daemon=True, name='land-power-job').start()
@@ -1561,9 +1638,12 @@ def register_land_power_routes(app, get_db, require_admin):
             'status': 'spawned',
             'mode': 'full' if full else 'incremental',
             'previous_last_success': prev,
-            'note': ("This 202 means a crawl STARTED, not that it worked. "
-                     "previous_last_success is the outcome of the run before "
-                     "this one; read /api/land-power/status for the verdict."),
+            'note': ("This 202 means a crawl STARTED, not that it worked, and on "
+                     "this service a multi-minute background thread is usually "
+                     "killed by the next deploy (12 in 63 minutes, measured). "
+                     "Prefer ?source=<key>, which runs ONE crawler synchronously "
+                     "and returns its real result. Read /api/land-power/status "
+                     "for the verdict."),
         }), 202
 
     @app.route('/api/land-power/status')
