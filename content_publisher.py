@@ -2031,6 +2031,25 @@ def _classify_post_for_dedup(text: str) -> str:
     return "other"
 
 
+def _x_source_class(press_release_id, lead_kind, text: str) -> str:
+    """SOURCE class for the X drain's one-per-class-per-day rule (2026-07-31).
+
+    X publishes at most 2/day, so diversity there has to operate on where a
+    row CAME FROM, not just its copy: every press-release distribution row is
+    one class ("press" — the headline+link+hashtags shape reads as the same
+    template regardless of story), each editorial-desk lead kind is its own
+    class ("lead:deal", "lead:dcpi_build", …), and unstamped rows fall back to
+    the copy classifier the LinkedIn drain uses. The 2026-07-17 verbatim audit
+    measured X at 100% one template — the press class taking every slot; the
+    14d re-measure (07-31) still had it at 22 of 27 posts."""
+    if press_release_id is not None:
+        return "press"
+    lk = (lead_kind or "").strip().lower()
+    if lk:
+        return "lead:" + lk
+    return _classify_post_for_dedup(text or "")
+
+
 # ---------------------------------------------------------------------------
 # r63 (2026-05-29) — pre-publish media-judgment guard.
 #
@@ -4303,53 +4322,100 @@ def start_twitter_publisher():
                         logger.info(f"Twitter auto-publisher: already {pub_today} today, skipping")
                         _record_attempt("twitter", "skipped_cap")
                         continue
+                    # X-diversity port (2026-07-31): the LinkedIn drain's per-class
+                    # 1/day rule, keyed on SOURCE class (_x_source_class) because
+                    # with only 2 slots/day the press-release template was taking
+                    # both (22 of 27 X posts in the 14d re-measure). Seen-set is
+                    # rebuilt from today's published rows each fire, same shape as
+                    # _seen_classes_today in the LinkedIn loop. Fail-open: an
+                    # unreadable seen-set never dark-holds the publisher.
+                    _seen_x_classes = set()
+                    try:
+                        cur.execute("""SELECT content, press_release_id, lead_kind
+                                         FROM social_media_posts
+                                        WHERE status = 'published'
+                                          AND publish_platform = 'twitter'
+                                          AND published_at LIKE %s""", (today + '%',))
+                        for _r in cur.fetchall() or []:
+                            _seen_x_classes.add(_x_source_class(
+                                _r.get('press_release_id') if hasattr(_r, 'get') else _r[1],
+                                _r.get('lead_kind') if hasattr(_r, 'get') else _r[2],
+                                (_r.get('content') if hasattr(_r, 'get') else _r[0]) or ''))
+                    except Exception:
+                        _seen_x_classes = set()
                     # Item 17 (2026-06-30): priority-first drain (priority defaults
-                    # to 0 so legacy rows keep oldest-first order).
-                    cur.execute("SELECT id, content FROM social_media_posts WHERE status = 'approved' AND platform = 'twitter' ORDER BY priority DESC, created_at ASC LIMIT 1")
-                    row = cur.fetchone()
-                    if not row:
+                    # to 0 so legacy rows keep oldest-first order). 2026-07-31:
+                    # LIMIT 1 -> bounded candidate window, so a class-conflicted
+                    # head row no longer takes the day's slot by default — the
+                    # drain scans past it to a row from a class that hasn't fired
+                    # today (the LinkedIn drain's rotation shape).
+                    cur.execute("SELECT id, content, press_release_id, lead_kind FROM social_media_posts WHERE status = 'approved' AND platform = 'twitter' ORDER BY priority DESC, created_at ASC LIMIT 40")
+                    candidates = cur.fetchall() or []
+                    if not candidates:
                         logger.debug("Twitter auto-publisher: no approved Twitter posts")
                         _record_attempt("twitter", "no_queued")
                         continue
-                    post_id = row['id']
-                    content_text = row['content']
-                    # Item 17 (2026-06-30): content_hash dedupe — if this exact body
-                    # already published (on ANY platform), don't re-ship it. Cheap
-                    # sha256 lookup against the content_hash index; advances the
-                    # queue by marking the dup 'rejected' (same terminal-advance the
-                    # r78 skip path uses) so the LIMIT-1 head never wedges. Fail-soft:
-                    # any error here just falls through to the normal publish path.
-                    try:
-                        import hashlib as _hl
-                        _chash = _hl.sha256((content_text or '').strip().encode('utf-8')).hexdigest()
-                        cur.execute("UPDATE social_media_posts SET content_hash = %s WHERE id = %s AND content_hash IS DISTINCT FROM %s", (_chash, post_id, _chash))
-                        cur.execute("SELECT 1 FROM social_media_posts WHERE content_hash = %s AND status = 'published' LIMIT 1", (_chash,))
-                        if cur.fetchone():
-                            logger.warning("Twitter auto-publisher: SKIPPED post %s — content_hash already published (dedupe)", post_id)
-                            cur.execute("UPDATE social_media_posts SET status = 'rejected' WHERE id = %s", (post_id,))
-                            conn.commit()
-                            _record_attempt("twitter", "skipped_cap")
+                    row = None
+                    post_id = None
+                    content_text = ''
+                    _class_skips = 0
+                    for _cand in candidates:
+                        _cid = _cand.get('id') if hasattr(_cand, 'get') else _cand[0]
+                        _ctext = (_cand.get('content') if hasattr(_cand, 'get') else _cand[1]) or ''
+                        _cls = _x_source_class(
+                            _cand.get('press_release_id') if hasattr(_cand, 'get') else _cand[2],
+                            _cand.get('lead_kind') if hasattr(_cand, 'get') else _cand[3],
+                            _ctext)
+                        # Time-scoped class conflict — NON-terminal (the LinkedIn
+                        # drain's semantics): the row stays approved and becomes
+                        # eligible when the day rolls over; content-intrinsic
+                        # refusals below stay terminal (r78).
+                        if _cls in _seen_x_classes:
+                            _class_skips += 1
                             continue
-                    except Exception:
-                        try: conn.rollback()
-                        except Exception: pass
-                    # r63 (2026-05-29): same entity-level + zero-stat judgment as
-                    # the LinkedIn loop. Twitter picks a single oldest row, so a
-                    # skip just defers to the next cycle (no rotation here).
-                    _skip, _why = _should_skip_publish(cur, content_text or '', 'twitter')
-                    if _skip:
-                        logger.warning("Twitter auto-publisher: SKIPPED post %s for dedup/judgment — %s", post_id, _why)
-                        # r78: TERMINAL reject — a LIMIT-1 oldest-first queue
-                        # wedges forever on a rejected head row (post 750 was
-                        # re-judged every 6h for 5 days; X shipped 0 posts/7d
-                        # while 223 approved rows queued behind it). Skip
-                        # reasons are content-intrinsic (quality/dedup/editor)
-                        # and never pass on retry, so mark the row rejected to
-                        # advance the queue, and feed the lesson back to the
-                        # generator the way the LinkedIn path already does.
-                        cur.execute("UPDATE social_media_posts SET status = 'rejected' WHERE id = %s", (post_id,))
-                        conn.commit()
-                        _record_media_block('twitter', _why, content_text or '')
+                        # Item 17 (2026-06-30): content_hash dedupe — if this exact
+                        # body already published (on ANY platform), don't re-ship
+                        # it. Cheap sha256 lookup against the content_hash index;
+                        # advances the queue by marking the dup 'rejected' (same
+                        # terminal-advance the r78 skip path uses). Fail-soft: any
+                        # error falls through to the normal publish path.
+                        try:
+                            import hashlib as _hl
+                            _chash = _hl.sha256(_ctext.strip().encode('utf-8')).hexdigest()
+                            cur.execute("UPDATE social_media_posts SET content_hash = %s WHERE id = %s AND content_hash IS DISTINCT FROM %s", (_chash, _cid, _chash))
+                            cur.execute("SELECT 1 FROM social_media_posts WHERE content_hash = %s AND status = 'published' LIMIT 1", (_chash,))
+                            if cur.fetchone():
+                                logger.warning("Twitter auto-publisher: SKIPPED post %s — content_hash already published (dedupe)", _cid)
+                                cur.execute("UPDATE social_media_posts SET status = 'rejected' WHERE id = %s", (_cid,))
+                                conn.commit()
+                                continue
+                        except Exception:
+                            try: conn.rollback()
+                            except Exception: pass
+                        # r63 (2026-05-29): same entity-level + zero-stat judgment
+                        # as the LinkedIn loop, judged on the wire text.
+                        _skip, _why = _should_skip_publish(cur, _ctext, 'twitter')
+                        if _skip:
+                            logger.warning("Twitter auto-publisher: SKIPPED post %s for dedup/judgment — %s", _cid, _why)
+                            # r78: TERMINAL reject — skip reasons here are
+                            # content-intrinsic (quality/dedup/editor) and never
+                            # pass on retry, so mark the row rejected to advance
+                            # the queue, and feed the lesson back to the
+                            # generator the way the LinkedIn path already does.
+                            cur.execute("UPDATE social_media_posts SET status = 'rejected' WHERE id = %s", (_cid,))
+                            conn.commit()
+                            _record_media_block('twitter', _why, _ctext)
+                            continue
+                        row = _cand
+                        post_id = _cid
+                        content_text = _ctext
+                        break
+                    if row is None:
+                        if _class_skips:
+                            logger.warning(
+                                "Twitter auto-publisher: %d approved candidate(s) skipped by the per-class 1/day rule (classes already fired today: %s); none published this fire",
+                                _class_skips, sorted(_seen_x_classes))
+                        _record_attempt("twitter", "no_queued")
                         continue
                     success, result = _post_to_twitter(content_text)
                     now = datetime.utcnow().isoformat() + 'Z'
