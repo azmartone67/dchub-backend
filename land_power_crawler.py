@@ -267,6 +267,153 @@ def _fetch_json(url, params=None, retries=MAX_RETRIES):
     return None
 
 
+# ─────────────────────────────────────────────────────────────
+# SELF-HEALING ARCGIS SOURCE RESOLUTION
+# ─────────────────────────────────────────────────────────────
+# ★★★ WHY THIS EXISTS. Both HIFLD feeds were pinned to a single hardcoded
+# opendata.arcgis.com dataset URL. Those URLs went HTTP 500 ("Item does not
+# exist or is inaccessible") and STAYED dead for four months while
+# /api/land-power/status reported "healthy". Every run recorded fetched=0,
+# errors=1 — the evidence was there and nothing read it.
+#
+# A single pinned URL is a single point of silent failure for a feed nobody
+# watches. These layers get republished under new org/service ids regularly, so
+# the crawler now RESOLVES its endpoint at run time from an ordered candidate
+# list and records which one it picked and why.
+#
+# ★★ VALIDATION IS COUNT *AND* FIELDS, NEVER HTTP 200. Measured 2026-07-31 while
+# finding these: one substation candidate answers 200 with a perfectly valid
+# FeatureServer carrying every expected field — and 128 rows, against a national
+# layer of 75,328. "It responded" is not "it is the right layer". A candidate
+# must clear a row floor AND expose the fields the parser reads, or the next
+# outage is a silent 99.8% data loss instead of a visible zero.
+#
+# ★ Ordering is by preference, but a candidate below the floor is REJECTED, not
+# ranked — measured, the transmission layer exists at 89,744 features on one org
+# and 52,244 on another (the smaller one is a different population, close to
+# transmission_lines_eia's 56,108, not the 94,626 maintained layer). Picking the
+# first that merely responds would have quietly swapped the population.
+_ARCGIS_LAYERS = {
+    'hifld-substations': {
+        'label': 'HIFLD electric substations',
+        # live 75,328 (2026-07-31); floor well below that so a partial refresh
+        # upstream does not hard-fail the crawl, but a decoy layer cannot pass.
+        'min_rows': 40000,
+        'required_fields': ('ID', 'NAME', 'STATE', 'COUNTY', 'CITY',
+                            'MAX_VOLT', 'MIN_VOLT', 'TYPE', 'STATUS'),
+        'candidates': (
+            # verified 2026-07-31: 75,328 points, 59 states/provinces,
+            # every required field present
+            'https://services5.arcgis.com/HDRa0B57OVrv2E1q/ArcGIS/rest/'
+            'services/Electric_Substations/FeatureServer/0',
+            # verified same day: valid FeatureServer, all fields — and only 128
+            # rows. Kept DELIBERATELY as a live regression case for the row
+            # floor: if the floor is ever removed this candidate silently wins
+            # on a day the first one is down.
+            'https://services.arcgis.com/G4S1dGvn7PIgYd6Y/ArcGIS/rest/'
+            'services/HIFLD_electric_power_substations/FeatureServer/0',
+        ),
+    },
+    'hifld-transmission': {
+        'label': 'HIFLD electric power transmission lines',
+        # live 89,744 (2026-07-31) against a maintained transmission_lines table
+        # of 94,626 — same population. The 52,244-feature layer on another org
+        # is NOT, and the floor is what keeps it out.
+        'min_rows': 70000,
+        'required_fields': ('ID', 'OWNER', 'VOLTAGE', 'SUB_1', 'SUB_2',
+                            'TYPE', 'STATUS'),
+        'candidates': (
+            'https://services5.arcgis.com/HDRa0B57OVrv2E1q/ArcGIS/rest/'
+            'services/Electric_Power_Transmission_Lines/FeatureServer/0',
+        ),
+    },
+}
+
+
+def _arcgis_probe(url):
+    """(count, fields, error) for one candidate. Never raises.
+
+    Uses the module's own _fetch_json (retry + rate limit + REQUEST_TIMEOUT); it
+    takes no timeout kwarg, and passing one silently turned every probe into a
+    TypeError verdict — which the resolver then reported as "no usable
+    endpoint". Caught on the first live run precisely because the verdict list
+    names the real exception per candidate instead of collapsing to a bare
+    failure.
+    """
+    try:
+        meta = _fetch_json(url, params={'f': 'json'})
+        if not isinstance(meta, dict) or meta.get('error'):
+            return None, None, f"metadata error: {str(meta.get('error'))[:120]}"
+        fields = {f.get('name') for f in (meta.get('fields') or [])}
+        cnt = _fetch_json(url + '/query', params={
+            'where': '1=1', 'returnCountOnly': 'true', 'f': 'json'})
+        if not isinstance(cnt, dict) or cnt.get('count') is None:
+            return None, fields, "count query returned no count"
+        return int(cnt['count']), fields, None
+    except Exception as e:
+        return None, None, f"{type(e).__name__}: {str(e)[:120]}"
+
+
+def _resolve_arcgis_layer(key):
+    """Pick the first candidate that clears BOTH the row floor and the fields.
+
+    Returns (url, count, note). Raises RuntimeError listing every candidate's
+    verdict if none qualify — so the sync log records WHY the whole layer is
+    unavailable, not just that it is.
+    """
+    spec = _ARCGIS_LAYERS[key]
+    verdicts = []
+    for url in spec['candidates']:
+        count, fields, err = _arcgis_probe(url)
+        short = url.split('/services/')[-1][:48]
+        if err:
+            verdicts.append(f"{short}: {err}")
+            continue
+        missing = [f for f in spec['required_fields'] if f not in (fields or ())]
+        if missing:
+            verdicts.append(f"{short}: rows={count} but MISSING fields {missing}")
+            continue
+        if count < spec['min_rows']:
+            verdicts.append(
+                f"{short}: only {count} rows, below the {spec['min_rows']} floor "
+                f"— a valid endpoint serving the wrong population")
+            continue
+        note = (f"resolved to {short} — {count} features, all "
+                f"{len(spec['required_fields'])} required fields present"
+                + (f"; rejected earlier candidates: {'; '.join(verdicts)}"
+                   if verdicts else ""))
+        logger.info(f"  🔎 {spec['label']}: {note}")
+        return url, count, note
+    raise RuntimeError(
+        f"no usable endpoint for {spec['label']} — every candidate failed "
+        f"validation (row floor {spec['min_rows']}, required fields "
+        f"{list(spec['required_fields'])}): " + " | ".join(verdicts))
+
+
+def _fetch_arcgis_geojson(url, page_size=2000, max_features=200000):
+    """Page a FeatureServer as GeoJSON into the shape the parsers already expect.
+
+    ArcGIS f=geojson returns features[].properties + features[].geometry, which
+    is byte-for-byte the structure the substation/transmission parsers already
+    read from the old opendata download — so nothing downstream changes.
+    """
+    feats = []
+    offset = 0
+    while True:
+        page = _fetch_json(url + '/query', params={
+            'where': '1=1', 'outFields': '*', 'f': 'geojson',
+            'returnGeometry': 'true',
+            'resultOffset': offset, 'resultRecordCount': page_size,
+        })
+        got = (page or {}).get('features') or []
+        feats.extend(got)
+        if len(got) < page_size or len(feats) >= max_features:
+            break
+        offset += page_size
+        time.sleep(0.2)
+    return {'type': 'FeatureCollection', 'features': feats}
+
+
 def _fetch_geojson_stream(url, retries=MAX_RETRIES):
     """Fetch large GeoJSON files with streaming to conserve memory."""
     for attempt in range(retries):
@@ -613,6 +760,9 @@ def crawl_substations(get_db, full_refresh=False):
     Public GeoJSON — no API key needed.
     """
     started = time.time()
+    # Bound HERE, not inside the try — a reporter must never read a name
+    # its own try owns (the #1994 NameError-while-reporting regression).
+    source_note = None
     fetched = 0
     upserted = 0
     errors = 0
@@ -622,14 +772,18 @@ def crawl_substations(get_db, full_refresh=False):
 
     conn = None
     try:
-        # HIFLD data can be large (~70K features), use streaming
-        geojson = _fetch_geojson_stream(HIFLD_SUBSTATIONS_URL)
+        # Resolve the endpoint at run time instead of trusting a pin — the old
+        # hardcoded opendata.arcgis.com URL has been HTTP 500 since at least
+        # 2026-03-29 and every run recorded fetched=0 while /status said healthy.
+        _url, _count, _note = _resolve_arcgis_layer('hifld-substations')
+        source_note = _note
+        geojson = _fetch_arcgis_geojson(_url)
         if not geojson or 'features' not in geojson:
             raise ValueError("No features in HIFLD substations response")
 
         features = geojson['features']
         fetched = len(features)
-        logger.info(f"  ⚡ Fetched {fetched} substations")
+        logger.info(f"  ⚡ Fetched {fetched} substations (endpoint reported {_count})")
 
         conn = get_db()
         cur = conn.cursor()
@@ -702,7 +856,8 @@ def crawl_substations(get_db, full_refresh=False):
 
     duration = time.time() - started
     _log_sync(get_db, 'hifld-substations', fetched, upserted, fetched - upserted, errors,
-              '; '.join(error_detail) if error_detail else None, duration)
+              ('; '.join(error_detail) if error_detail
+               else source_note), duration)
 
 
 def _upsert_substations(cur, batch):
@@ -787,6 +942,9 @@ def crawl_transmission_lines(get_db, full_refresh=False):
     Public GeoJSON — no API key needed.
     """
     started = time.time()
+    # Bound HERE, not inside the try — a reporter must never read a name
+    # its own try owns (the #1994 NameError-while-reporting regression).
+    source_note = None
     fetched = 0
     upserted = 0
     errors = 0
@@ -796,7 +954,9 @@ def crawl_transmission_lines(get_db, full_refresh=False):
 
     conn = None
     try:
-        geojson = _fetch_geojson_stream(HIFLD_TRANSMISSION_URL)
+        _url, _count, _note = _resolve_arcgis_layer('hifld-transmission')
+        source_note = _note
+        geojson = _fetch_arcgis_geojson(_url)
         if not geojson or 'features' not in geojson:
             raise ValueError("No features in HIFLD transmission response")
 
@@ -816,7 +976,11 @@ def crawl_transmission_lines(get_db, full_refresh=False):
                 continue
 
             # Calculate length from geometry if available
-            length_miles = _safe_float(props.get('SHAPE_Length', props.get('LENGTH', 0)))
+            length_miles = _safe_float(
+                props.get('SHAPE_Length',
+                    props.get('SHAPE_Leng',
+                        props.get('Shape__Length',
+                            props.get('LENGTH', 0)))))
             # HIFLD sometimes gives length in meters, convert
             if length_miles and length_miles > 10000:
                 length_miles = length_miles * 0.000621371  # meters to miles
@@ -860,7 +1024,8 @@ def crawl_transmission_lines(get_db, full_refresh=False):
 
     duration = time.time() - started
     _log_sync(get_db, 'hifld-transmission', fetched, upserted, fetched - upserted, errors,
-              '; '.join(error_detail) if error_detail else None, duration)
+              ('; '.join(error_detail) if error_detail
+               else source_note), duration)
 
 
 def _upsert_transmission(cur, batch):
@@ -1336,6 +1501,70 @@ def register_land_power_routes(app, get_db, require_admin):
             "mode": "full" if full else "incremental",
             "message": "Land & Power sync running in background"
         })
+
+    @app.route('/api/jobs/land-power-sync', methods=['POST'])
+    def job_land_power_sync():
+        """Scheduler entry point — matches the /api/jobs/* dispatcher convention.
+
+        ★★★ WHY THIS EXISTS. dchub-scheduler.py declares
+        `land_power_sync_incremental` at 04:30 in its JOBS dict, and that entire
+        34-job dict is DEAD CODE: nothing invokes the file (every reference
+        outside it is a comment or a doc), railway.json runs start_web.sh, and
+        3 days of HTTP logs showed exactly ONE POST to /api/land-power/sync — a
+        manual one. The land-power feeds therefore last ran 2026-03-30.
+        .github/workflows/dchub-jobs.yml IS live and succeeding hourly, so this
+        route exposes the sync under the convention that dispatcher already
+        speaks (/api/jobs/<name>, X-API-Key) rather than adding a new secret or
+        reviving 34 dormant jobs — several of which send email and post publicly.
+
+        ★★ IT REPORTS THE PREVIOUS RUN'S OUTCOME, NOT THIS ONE'S. The crawl takes
+        longer than the dispatcher's 300s budget, so it must be spawned — and a
+        200 that means "a thread was created" is exactly the flattering-green
+        that let this feed die unnoticed. So the response carries the CURRENT
+        /status verdict, which describes the run before this one. A scheduler log
+        line that says `previous_status: red` is a real signal; `status: started`
+        is not.
+        """
+        provided = {(request.headers.get(h) or '').strip()
+                    for h in ('X-API-Key', 'X-Admin-Key', 'X-Internal-Key')}
+        expected = {(os.environ.get(k) or '').strip()
+                    for k in ('DCHUB_ADMIN_KEY', 'DCHUB_INTERNAL_KEY')}
+        expected.discard('')
+        if expected and not (provided & expected):
+            return jsonify(error='unauthorized'), 401
+
+        full = request.args.get('full', 'false').lower() == 'true'
+        prev = None
+        conn = None
+        try:
+            conn = get_db()
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT source, MAX(created_at) FILTER (
+                           WHERE errors = 0 AND records_upserted > 0)
+                  FROM land_power_sync_log GROUP BY source
+            """)
+            prev = {r[0]: (str(r[1]) if r[1] else None) for r in cur.fetchall()}
+        except Exception as e:
+            prev = {'_error': str(e)[:120]}
+        finally:
+            if conn:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
+        import threading
+        threading.Thread(target=run_land_power_sync, args=(get_db, full),
+                         daemon=True, name='land-power-job').start()
+        return jsonify({
+            'status': 'spawned',
+            'mode': 'full' if full else 'incremental',
+            'previous_last_success': prev,
+            'note': ("This 202 means a crawl STARTED, not that it worked. "
+                     "previous_last_success is the outcome of the run before "
+                     "this one; read /api/land-power/status for the verdict."),
+        }), 202
 
     @app.route('/api/land-power/status')
     def land_power_status():
