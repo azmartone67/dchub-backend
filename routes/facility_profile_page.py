@@ -263,17 +263,32 @@ def _slugify(text: str) -> str:
     return _re2.sub(r"[^a-z0-9]+", "-", (text or "").lower()).strip("-")
 
 
-def _fac_slug(fac_id, provider, name) -> str:
-    """Canonical facility slug — MUST match the sitemap format
-    /facilities/{provider-slug}-{name-slug}-{stable_hash8(provider,name)} so
-    comparable-facility links resolve to the canonical URL with no duplicate-URL
-    or redirect penalty. r-stable-slug (2026-06-16): hash is now keyed on the
-    STABLE provider|name (invariant across re-ingestion), NOT the volatile id —
-    fac_id is kept in the signature for callers but ignored for the hash."""
-    from routes.facility_slug import stable_hash8
-    h8 = stable_hash8(provider, name)
+def _legacy_name_part(provider, name) -> str:
+    """The PRE-dedupe name-part — unconditional `{provider}-{name}` under this
+    module's historical slugify. Used ONLY to MATCH legacy indexed slugs in
+    _resolve_legacy_slug: those were composed exactly this way (doubled brand
+    prefix and all), so matching them against today's deduped form would break
+    tier-0 for precisely the doubled-name population the resolver exists to
+    save (validated 95% recovery / 0 mis-redirects). Emitters must NOT use
+    this — they go through _fac_slug."""
     ps, ns = _slugify(provider or ""), _slugify(name or "")
-    return f"{ps}-{ns}-{h8}" if ps else f"{ns}-{h8}"
+    return f"{ps}-{ns}" if ps else ns
+
+
+def _fac_slug(fac_id, provider, name) -> str:
+    """Canonical facility slug for EMITTED links (comparables, 301 targets).
+
+    r-routeslug (2026-07-31): DELEGATES to the freeze composer
+    (facility_slug_freeze.build_canonical_slug — provider-prefix dedupe +
+    ascii folding), byte-identical to the sitemap/freeze. The old local
+    compose emitted the doubled pre-dedupe form for unfrozen brand-prefixed
+    rows. The hash8 tail is unchanged (keyed on STABLE provider|name,
+    r-stable-slug 2026-06-16), so emitted links resolve exactly as before;
+    fac_id stays in the signature for callers but the hash never keys on it.
+    Returns "" when un-sluggable (short/empty name) — callers skip those
+    rather than emit a broken link."""
+    from routes.facility_slug_freeze import build_canonical_slug
+    return build_canonical_slug(provider, name) or ""
 
 
 # Legal-suffix / filler tokens dropped from legacy-slug matching.
@@ -315,8 +330,22 @@ def _resolve_legacy_slug(slug: str):
             c = conn.cursor()
             conds = " AND ".join(
                 ["LOWER(COALESCE(provider,'')||' '||COALESCE(name,'')) LIKE %s"] * len(toks))
+            # Stored-first 301 target: probe for the frozen column (live DDL
+            # can lag) so a confident match lands on the LIVE canonical slug —
+            # for pre-dedupe-frozen rows that is the stored doubled form, NOT
+            # today's builder output (the freeze is forward-only).
+            _has_canon = False
+            try:
+                c.execute("SELECT 1 FROM information_schema.columns "
+                          "WHERE table_name='discovered_facilities' "
+                          "AND column_name='canonical_slug'")
+                _has_canon = c.fetchone() is not None
+            except Exception:
+                try: conn.rollback()
+                except Exception: pass
+            _cs = "canonical_slug" if _has_canon else "NULL AS canonical_slug"
             c.execute(
-                "SELECT id, provider, name FROM discovered_facilities "
+                "SELECT id, provider, name, " + _cs + " FROM discovered_facilities "
                 "WHERE name IS NOT NULL AND name <> '' AND " + conds + " "
                 "ORDER BY COALESCE(power_mw,0) DESC, id ASC LIMIT 25",
                 [f"%{t}%" for t in toks])
@@ -330,23 +359,27 @@ def _resolve_legacy_slug(slug: str):
             # one. Specific names match only the facility + its few duplicates.
             if len(cands) >= 25:
                 return None
-            # Tier 0: exact canonical name-part match — pure hash-churn + real
-            # duplicates. GUARD: generic names (provider repeated as name, e.g.
-            # "amazon-web-services-amazon-web-services") map to dozens of DISTINCT
-            # facilities sharing one name-part; redirecting those would point the
-            # old URL at the WRONG facility, so only resolve a SMALL match set.
-            exact = [(rid, rprov, rname) for (rid, rprov, rname) in cands
-                     if _fac_slug(rid, rprov, rname).rsplit("-", 1)[0] == name_part]
+            # Tier 0: exact name-part match against the PRE-dedupe compose
+            # (_legacy_name_part) — legacy indexed slugs were built with the
+            # unconditional provider prefix, so the matcher must reproduce
+            # THAT form, not today's deduped one. Catches pure hash-churn +
+            # real duplicates. GUARD: generic names (provider repeated as
+            # name, e.g. "amazon-web-services-amazon-web-services") map to
+            # dozens of DISTINCT facilities sharing one name-part; redirecting
+            # those would point the old URL at the WRONG facility, so only
+            # resolve a SMALL match set.
+            exact = [row for row in cands
+                     if _legacy_name_part(row[1], row[2]) == name_part]
             if 1 <= len(exact) <= 3:
-                rid, rprov, rname = exact[0]    # cands ordered best (power) first
-                return _fac_slug(rid, rprov, rname)
+                rid, rprov, rname, rcanon = exact[0]   # best (power) first
+                return (rcanon or _fac_slug(rid, rprov, rname)) or None
             if len(exact) > 3:
                 return None                     # generic name → not safely resolvable
             # Tier 1: exactly one candidate carries every distinctive token
             # (covers cleaned company prefixes where the name-part changed).
             if len(cands) == 1:
-                rid, rprov, rname = cands[0]
-                return _fac_slug(rid, rprov, rname)
+                rid, rprov, rname, rcanon = cands[0]
+                return (rcanon or _fac_slug(rid, rprov, rname)) or None
             return None
         finally:
             try:
@@ -411,6 +444,8 @@ def _comparables_html(fac: dict, limit: int = 6) -> str:
     items = []
     for rid, rname, rprov, rpow, rcanon in rows:
         slug = rcanon or _fac_slug(rid, rprov, rname)
+        if not slug:      # un-sluggable (sub-3-char name) — skip, don't 404-link
+            continue
         extra = ""
         if rprov and rprov.strip().lower() != (rname or "").strip().lower():
             extra += f" &middot; {_esc(rprov)}"

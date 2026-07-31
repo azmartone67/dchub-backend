@@ -158,31 +158,38 @@ def _neon_query(sql: str, params: tuple = ()):
         except Exception: pass
 
 
-def _slugify(text: str) -> str:
-    """Match the slug logic used by the worker /facilities/<slug> route."""
-    import re, hashlib
-    if not text:
-        return ""
-    s = text.lower().strip()
-    s = re.sub(r"[^a-z0-9 -]", "", s)
-    s = re.sub(r"[- ]+", "-", s)
-    return s.strip("-")
+def _canon_slug_select() -> str:
+    """`df.canonical_slug` when the live column exists, else a NULL alias.
+    Probed via information_schema (live DDL can lag repo DDL — serve_sitemap
+    probes exactly this column before naming it). Fail-soft: any probe error
+    degrades to the live-compute path rather than blocking the sync."""
+    try:
+        probe = _neon_query(
+            "SELECT 1 FROM information_schema.columns "
+            "WHERE table_name = 'discovered_facilities' "
+            "  AND column_name = 'canonical_slug'")
+        return "df.canonical_slug" if probe else "NULL AS canonical_slug"
+    except Exception:
+        return "NULL AS canonical_slug"
 
 
 def _build_facility_slug(row: dict) -> str:
-    """Reproduce the slug pattern from main.py:2546 _slugify so the
-    D1 mirror keys match the public-facing /facilities/<slug> URLs."""
-    # r-stable-slug (2026-06-16): hash on provider|name (stable), NOT id (churns
-    # every re-ingestion) — must match the sitemap/lookup so D1 mirror keys align.
-    from routes.facility_slug import stable_hash8
-    provider_slug = _slugify(row.get("provider") or "")
-    name_slug = _slugify(row.get("name") or "")
-    if name_slug and len(name_slug) >= 3:
-        short_hash = stable_hash8(row.get("provider"), row.get("name"))
-        if provider_slug:
-            return f"{provider_slug}-{name_slug}-{short_hash}"
-        return f"{name_slug}-{short_hash}"
-    return ""
+    """The D1 mirror KEY = the row's LIVE canonical /facilities/<slug> segment.
+
+    r-routeslug (2026-07-31): DELEGATE to the freeze module instead of the old
+    local `{provider}-{name}-{hash8}` compose, which lacked the provider-prefix
+    dedupe + ascii folding the freeze stores — it keyed every unfrozen
+    brand-prefixed row under the doubled pre-dedupe form
+    (iron-mountain-iron-mountain-lon-3-…) that the live surfaces no longer
+    emit. frozen_slug_for_row prefers the STORED canonical_slug (selected by
+    _run_sync when live DDL has it — set-once, byte-identical to the sitemap;
+    for pre-dedupe-frozen rows that stored doubled form IS the live URL) and
+    falls back to build_canonical_slug for unfrozen rows. Returns "" when
+    un-sluggable (short/no name); _assign_unique_slugs id-fallbacks those.
+    Re-keying is safe here: the upsert conflicts ON (id) and prune is by
+    synced_at, so a changed slug UPDATEs its row in place — no orphans."""
+    from routes.facility_slug_freeze import frozen_slug_for_row
+    return frozen_slug_for_row(row) or ""
 
 
 def _assign_unique_slugs(rows: list) -> None:
@@ -199,9 +206,11 @@ def _assign_unique_slugs(rows: list) -> None:
     non-empty slugs is still correct: it makes every facility addressable via the
     failover /facilities/<slug> route and keeps the mirror tidy.
 
-    We keep the SEO-aligned slug wherever _build_facility_slug produces one,
-    give empty slugs a deterministic id-based value, and de-collide the ~26
-    genuine provider|name duplicates by suffixing the id. Rows are pre-sorted
+    We keep the SEO-aligned slug wherever _build_facility_slug produces one
+    (since r-routeslug that is the freeze composer's output — its ascii folding
+    also shrinks the no-name class: CJK/accented names now slug instead of
+    emptying), give empty slugs a deterministic id-based value, and de-collide
+    the ~26 genuine provider|name duplicates by suffixing the id. Rows are pre-sorted
     deterministically (ORDER BY power_mw, id) so slug ownership is stable across
     runs and the mirror does not churn. Result: every row carries a distinct,
     non-empty slug and batches commit cleanly.
@@ -234,11 +243,14 @@ def _run_sync() -> dict:
         return out
 
     # 1) Read facilities from Neon. Mirror only rows the map needs.
-    rows = _neon_query("""
+    # canonical_slug rides along (probed — see _canon_slug_select) so the
+    # mirror key can prefer the frozen set-once slug over a live compute.
+    rows = _neon_query(f"""
         SELECT df.id, df.name, df.provider, df.city, df.state, df.country,
                df.market, df.latitude, df.longitude,
                COALESCE(df.power_mw, f.power_mw) AS power_mw,
-               df.sqft, df.status, df.facility_type, df.address
+               df.sqft, df.status, df.facility_type, df.address,
+               {_canon_slug_select()}
         FROM discovered_facilities df
         LEFT JOIN facilities f ON f.id = df.merged_facility_id
         WHERE df.latitude IS NOT NULL
