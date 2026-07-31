@@ -95,6 +95,24 @@ def test_state_is_validated_and_iso_never_guessed():
     assert "iso_context" in src
 
 
+def test_vintages_are_fail_soft_and_live_schema_true():
+    """2nd live landmine of the endpoint's first hour: the LIVE
+    interconnect_queue predates the repo DDL's created_at column (LIVE ≠ repo
+    DDL — the power_plants class). Queue recency must read queue_date, every
+    vintage lookup must be individually fail-soft, and a missing vintage must
+    never take the timeline down."""
+    src = open(pat.__file__, encoding="utf-8").read()
+    assert "MAX(queue_date) FROM interconnect_queue" in src
+    assert "created_at) FROM interconnect_queue" not in src, \
+        "phantom column is back — the live table does not have created_at"
+    assert "def _vintage(sql):" in src
+    for probe in ("MAX(ingested_at) FROM planned_generators",
+                  "MAX(source_month) FROM generator_retirements",
+                  "MAX(queue_date) FROM interconnect_queue"):
+        assert f'_vintage("SELECT {probe}")' in src, \
+            f"vintage lookup not fail-soft: {probe}"
+
+
 def test_mw_is_context_only():
     """A requested MW must never produce an energize-by date."""
     src = open(pat.__file__, encoding="utf-8").read()

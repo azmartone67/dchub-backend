@@ -260,24 +260,37 @@ def _build(state: str, years: int, mw) -> dict:
             }
 
             # ── per-lane vintages — a timeline without dates on its own data
-            #    would be the exact overclaim this tool exists to avoid ─────
-            v1 = _bounded(cur, "SELECT MAX(ingested_at) FROM planned_generators",
-                          fetch="one")
-            v2 = _bounded(cur, "SELECT MAX(source_month) FROM generator_retirements",
-                          fetch="one")
-            v3 = _bounded(cur, "SELECT MAX(created_at) FROM interconnect_queue",
-                          fetch="one")
+            #    would be the exact overclaim this tool exists to avoid.
+            # Each lookup is individually fail-soft: a missing vintage renders
+            # null, it must never take the timeline down. Live-schema lesson
+            # (2nd landmine of this endpoint's first hour): the LIVE
+            # interconnect_queue predates the repo DDL's created_at column —
+            # LIVE ≠ repo DDL, the power_plants class — so queue recency reads
+            # MAX(queue_date) (proven live) and is LABELLED as what it is.
+            def _vintage(sql):
+                try:
+                    r = _bounded(cur, sql, fetch="one")
+                    return r[0] if r else None
+                except Exception as ve:
+                    logger.warning("[power-timeline] vintage: %s", str(ve)[:120])
+                    return None
+
+            v1 = _vintage("SELECT MAX(ingested_at) FROM planned_generators")
+            v2 = _vintage("SELECT MAX(source_month) FROM generator_retirements")
+            v3 = _vintage("SELECT MAX(queue_date) FROM interconnect_queue")
             out["sources"] = {
                 "planned_generators": {
                     "feed": "EIA-860M monthly (planned + under-construction "
                             "generators)",
-                    "vintage": v1[0].isoformat() if v1 and v1[0] else None},
+                    "vintage": v1.isoformat() if v1 else None},
                 "generator_retirements": {
                     "feed": "EIA-860M planned retirements",
-                    "vintage": str(v2[0]) if v2 and v2[0] else None},
+                    "vintage": str(v2) if v2 else None},
                 "interconnect_queue": {
                     "feed": "LBNL interconnection queue",
-                    "vintage": v3[0].isoformat() if v3 and v3[0] else None},
+                    "latest_queue_entry": v3.isoformat() if v3 else None,
+                    "vintage_note": "recency shown as the newest queue-entry "
+                                    "date the feed carries"},
             }
             if not timeline:
                 out["empty_reason"] = (
