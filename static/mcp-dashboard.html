@@ -69,8 +69,8 @@ async function load() {
     const tcpTxt = (tcp == null) ? '' :
       ` · top caller <b style="color:${tcp >= 25 ? '#d29922' : '#888'}">${tcp}%</b> of external (${(d.top_caller_calls_7d_complete ?? 0).toLocaleString()} calls, ${(d.external_ips_7d_complete ?? 0)} IPs${tcp >= 25 ? ' — one caller dominates, read the trend with care' : ''})`;
     document.getElementById('kpis').innerHTML = `
-      <div class="card" style="border-color:#3fb950"><div class="label">Agents (7d · distinct external)</div><div class="value">${(d.external_ips_7d_complete ?? d.unique_ips_7d_real ?? 0).toLocaleString()}</div>
-        <div class="sub-value">the number that compounds — distinct AI agents, self/probe excluded${agentsWowTxt}</div></div>
+      <div class="card" style="border-color:#3fb950"><div class="label">Agents (rolling 7d · distinct external)</div><div class="value">${(d.real_external_agents_7d ?? d.external_ips_7d_complete ?? d.unique_ips_7d_real ?? 0).toLocaleString()}</div>
+        <div class="sub-value">the number that compounds — canonical identity count (mcp_calls_identity view: crawlers, probes &amp; self-traffic excluded; IP-derived — same figure as /ai and the funnel API)${agentsWowTxt}</div></div>
       <div class="card" style="border-color:#3fb950"><div class="label">Paid conversions (30d)</div><div class="value">${d.conversions_30d ?? 0}</div>
         <div class="sub-value">real paid customers via web/organic handoff — the revenue KPI</div></div>
       <div class="card"><div class="label">Tool calls (7d · volume — context)</div><div class="value" style="color:#8b949e">${(d.tool_calls_7d_complete_real ?? d.tool_calls_7d_complete ?? d.tool_calls_7d ?? 0).toLocaleString()}</div>
