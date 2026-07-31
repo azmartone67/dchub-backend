@@ -103,6 +103,11 @@ def _call_dchub(path: str, params: dict = None, timeout: float = 8) -> dict:
         return {"error": f"{type(e).__name__}: {str(e)[:120]}"}
 
 
+def _slack_esc(s) -> str:
+    """Escape Slack mrkdwn control chars in interpolated data (&, <, >)."""
+    return str(s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
 # ─── Slash command handler ───────────────────────────────────────────
 @slack_app_bp.route("/command", methods=["POST"])
 def slack_command():
@@ -128,14 +133,33 @@ def slack_command():
     args = parts[1] if len(parts) > 1 else ""
 
     if cmd == "search":
-        d = _call_dchub("/api/v1/facilities/by-market", {"market": args, "limit": 5})
-        items = d.get("data", d.get("facilities", []))
+        if not args:
+            return _ephemeral("Usage: `/dchub search <city or operator>` — e.g. `/dchub search ashburn`")
+        # /api/v1/facilities (anon → free tier): per-facility rows with
+        # name/provider/city/profile_url; q= matches city AND operator.
+        # NOT /facilities/by-market — that returns market AGGREGATES
+        # ({market,count,total_mw}, no id/name), which this renderer
+        # once mis-read as facilities: every line was "facility/None|?".
+        # Free tier omits power_mw, so no MW column here.
+        d = _call_dchub("/api/v1/facilities", {"q": args, "limit": 5})
+        items = d.get("data") or []
         if not items:
+            if "error" in d:
+                return _ephemeral("Facility search is temporarily unavailable — try again in a minute.")
             return _ephemeral(f"No facilities found matching `{args}`. Try a city name or operator.")
-        lines = [f"*Top facilities matching `{args}`:*"]
+        total = d.get("total_matching") or len(items)
+        lines = [f"*Top facilities matching `{_slack_esc(args)}`* ({total} tracked):"]
         for f in items[:5]:
-            mw = f.get("power_mw") or "—"
-            lines.append(f"• <https://dchub.cloud/facility/{f.get('id')}|{f.get('name','?')}> — {f.get('provider','?')}, {mw} MW")
+            name = _slack_esc(f.get("name") or "Unnamed facility")
+            provider = _slack_esc(f.get("provider") or "operator n/a")
+            loc = _slack_esc(f.get("location_display") or ", ".join(
+                str(x) for x in (f.get("city"), f.get("state") or f.get("country")) if x))
+            url = f.get("profile_url")
+            link = f"<{url}|{name}>" if url else name
+            lines.append(f"• {link} — {provider}" + (f" · {loc}" if loc else ""))
+        if total > len(items):
+            lines.append(f"_Showing {len(items)} of {total} — "
+                          f"<https://dchub.cloud/facilities/directory|browse the full directory>_")
         return _in_channel("\n".join(lines))
 
     if cmd == "grid":
