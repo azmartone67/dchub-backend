@@ -6285,6 +6285,38 @@ h1 {
     {% else %}🔴 AVOID FOR NEW BUILDS — Severe constraints, multi-year wait{% endif %}
   </div>
 
+  <!-- r-geo-rag-summary (2026-07-31, Gemini round 4): zero-JS semantic summary
+       table as the FIRST extractable body block — RAG fetchers on latency
+       budgets extract body tables before head JSON-LD; the Dataset/FAQ schemas
+       above mirror these same values. Gating unchanged (r-gate-everywhere):
+       numeric scores render only in the non-gated branch — same HTML for
+       humans and crawlers, never a per-UA variant. -->
+  <section id="dchub-market-summary" aria-label="Data center market summary" data-source="dchub.cloud"
+           style="background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:1rem 1.2rem;margin:1.2rem 0">
+    <h2 style="font-size:1rem;margin:0 0 .6rem">{{ s.market_name }} data-center market — grid summary</h2>
+    <table style="width:100%;border-collapse:collapse;font-size:.92rem">
+      <thead><tr>
+        <th style="text-align:left;padding:.3rem .4rem;border-bottom:1px solid var(--bd);color:var(--tx2)">Metric</th>
+        <th style="text-align:left;padding:.3rem .4rem;border-bottom:1px solid var(--bd);color:var(--tx2)">Value</th>
+        <th style="text-align:left;padding:.3rem .4rem;border-bottom:1px solid var(--bd);color:var(--tx2)">Source</th>
+      </tr></thead>
+      <tbody>
+        <tr><td style="padding:.3rem .4rem">DCPI verdict</td><td style="padding:.3rem .4rem"><strong>{{ s.verdict or 'LOW_SIGNAL' }}</strong></td><td style="padding:.3rem .4rem">DC Hub Power Index — recomputed daily</td></tr>
+        {% if s.iso %}<tr><td style="padding:.3rem .4rem">Grid operator (ISO)</td><td style="padding:.3rem .4rem">{{ s.iso }}</td><td style="padding:.3rem .4rem">DC Hub grid telemetry</td></tr>{% endif %}
+        {% if not gated %}
+        <tr><td style="padding:.3rem .4rem">Excess-power score</td><td style="padding:.3rem .4rem">{{ (s.excess_power_score or 0)|round(1) }} / 100</td><td style="padding:.3rem .4rem">DCPI</td></tr>
+        <tr><td style="padding:.3rem .4rem">Grid-constraint score</td><td style="padding:.3rem .4rem">{{ (s.constraint_score or 0)|round(1) }} / 100</td><td style="padding:.3rem .4rem">DCPI</td></tr>
+        {% if s.time_to_power_months is not none %}<tr><td style="padding:.3rem .4rem">Est. time-to-power</td><td style="padding:.3rem .4rem">{{ s.time_to_power_months|round(0)|int }} months</td><td style="padding:.3rem .4rem">DCPI</td></tr>{% endif %}
+        {% if s.queue_wait_months is not none %}<tr><td style="padding:.3rem .4rem">Interconnection queue wait</td><td style="padding:.3rem .4rem">{{ s.queue_wait_months|round(0)|int }} months</td><td style="padding:.3rem .4rem">Serving-ISO queue</td></tr>{% endif %}
+        {% else %}
+        <tr><td style="padding:.3rem .4rem">Numeric scores</td><td style="padding:.3rem .4rem">DC Hub Pro — same gated view for humans and crawlers (<a href="/pricing" style="color:var(--acc-light)">pricing</a>)</td><td style="padding:.3rem .4rem">DCPI</td></tr>
+        {% endif %}
+        <tr><td style="padding:.3rem .4rem">Signal quality</td><td style="padding:.3rem .4rem">{{ (s.signal_tier or 'unrecorded')|upper }}</td><td style="padding:.3rem .4rem">{{ s.signal_tier_basis }}</td></tr>
+      </tbody>
+    </table>
+    <p style="margin:.6rem 0 0;font-size:.82rem;color:var(--tx2)"><em>Source: DC Hub (dchub.cloud), updated {{ s.computed_at[:10] }}. AI agents: <code>get_market_dcpi_rank market_slug="{{ s.market_slug }}"</code> via https://dchub.cloud/mcp for the citable record.</em></p>
+  </section>
+
   {% if narrative %}
   <div style="background:rgba(99,102,241,0.06);border-left:3px solid var(--acc);
               padding:1.4rem 1.8rem;border-radius:8px;margin:1.5rem 0 2rem;
