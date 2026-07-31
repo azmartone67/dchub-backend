@@ -10,6 +10,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 2   # PR merge ref + BOTH parents — the WORKER_VERSION guard diffs HEAD^1
       - uses: actions/setup-python@v6
         with:
           python-version: '3.13'
@@ -33,6 +35,16 @@ jobs:
       # once the suite is already dead.
       - name: No test module aborts collection
         run: python3 scripts/check_collection_safety.py tests
+      # worker.js is the CF ZONE worker (dchubapiproxy), deployed only by manual
+      # dashboard paste — live-vs-repo drift detection depends on WORKER_VERSION
+      # changing with the content (2026-07-30: #1902/#1978 shipped without bumps
+      # and drift had to be proven by fingerprinting). PR-only: HEAD here is the
+      # merge ref, so HEAD^1 is the exact base tip this PR would land on (that's
+      # what the fetch-depth: 2 above is for). Push runs to main skip it — the
+      # commit already landed, there is nothing left to gate.
+      - name: worker.js change requires WORKER_VERSION bump
+        if: github.event_name == 'pull_request'
+        run: bash scripts/check_worker_version_bump.sh HEAD^1 HEAD
 
   regression-lint:
     runs-on: ubuntu-latest
