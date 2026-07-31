@@ -38367,6 +38367,19 @@ try:
 except Exception as _ht_e:
     print(f"[main] handoff_truth register skipped: {_ht_e}", file=sys.stderr)
 
+# Power availability timeline (2026-07-30, brain digest's most-endorsed
+# proposal): WHEN does power get easier in a state — dated supply-side signals
+# (EIA-860M planned generators by confidence class + scheduled retirements)
+# with LBNL queue depth as congestion context. Generation≠deliverable-load is
+# declared, never blurred; public keyless; feeds get_power_availability_timeline
+# on the MCP side.
+try:
+    from routes.power_availability_timeline import power_availability_timeline_bp
+    app.register_blueprint(power_availability_timeline_bp)
+    print("[main] power_availability_timeline_bp registered: /api/v1/power/availability-timeline", flush=True)
+except Exception as _pat_e:
+    print(f"[main] power_availability_timeline register skipped: {_pat_e}", file=sys.stderr)
+
 # operator one-off email (admin-keyed, logged, idempotent) — controlled single
 # sends the templated cohorts don't cover (e.g. a mis-target correction).
 try:
